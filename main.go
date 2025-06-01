@@ -40,7 +40,16 @@ import (
 	"time"
 )
 
-var version = "dev"
+var (
+	version   = "dev"
+	debugMode = false
+)
+
+func debugLog(format string, v ...interface{}) {
+	if debugMode {
+		log.Printf("[DEBUG] "+format, v...)
+	}
+}
 
 var httpClient = &http.Client{
 	Timeout: 10 * time.Second,
@@ -98,7 +107,7 @@ func fetchLibraries() ([]Library, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	url := getAudiobookShelfURL() + "/api/libraries"
-	log.Printf("Fetching libraries from: %s", url)
+	debugLog("Fetching libraries from: %s", url)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -111,7 +120,7 @@ func fetchLibraries() ([]Library, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		log.Printf("AudiobookShelf libraries error body: %s", string(body))
+		debugLog("AudiobookShelf libraries error body: %s", string(body))
 		return nil, fmt.Errorf("AudiobookShelf API error: %s", resp.Status)
 	}
 	body, err := io.ReadAll(resp.Body)
@@ -122,7 +131,7 @@ func fetchLibraries() ([]Library, error) {
 		Libraries []Library `json:"libraries"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		log.Printf("JSON unmarshal error (libraries): %v", err)
+		debugLog("JSON unmarshal error (libraries): %v", err)
 		return nil, err
 	}
 	return result.Libraries, nil
@@ -133,7 +142,7 @@ func fetchLibraryItems(libraryID string) ([]Item, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	url := fmt.Sprintf("%s/api/libraries/%s/items", getAudiobookShelfURL(), libraryID)
-	log.Printf("Fetching items from: %s", url)
+	debugLog("Fetching items from: %s", url)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -146,7 +155,7 @@ func fetchLibraryItems(libraryID string) ([]Item, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		log.Printf("AudiobookShelf items error body: %s", string(body))
+		debugLog("AudiobookShelf items error body: %s", string(body))
 		return nil, fmt.Errorf("AudiobookShelf API error: %s", resp.Status)
 	}
 	body, err := io.ReadAll(resp.Body)
@@ -157,7 +166,7 @@ func fetchLibraryItems(libraryID string) ([]Item, error) {
 		Items []Item `json:"items"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		log.Printf("JSON unmarshal error (items): %v", err)
+		debugLog("JSON unmarshal error (items): %v", err)
 		return nil, err
 	}
 	return result.Items, nil
@@ -165,7 +174,7 @@ func fetchLibraryItems(libraryID string) ([]Item, error) {
 
 // Fetch audiobooks with progress from all libraries
 func fetchAudiobookShelfStats() ([]Audiobook, error) {
-	log.Printf("Fetching AudiobookShelf stats using new API...")
+	debugLog("Fetching AudiobookShelf stats using new API...")
 	libs, err := fetchLibraries()
 	if err != nil {
 		return nil, err
@@ -174,7 +183,7 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 	for _, lib := range libs {
 		items, err := fetchLibraryItems(lib.ID)
 		if err != nil {
-			log.Printf("Failed to fetch items for library %s: %v", lib.Name, err)
+			debugLog("Failed to fetch items for library %s: %v", lib.Name, err)
 			continue
 		}
 		for _, item := range items {
@@ -197,6 +206,7 @@ func syncToHardcover(a Audiobook) error {
 	if a.Progress < 1.0 {
 		return nil
 	}
+	debugLog("Syncing to Hardcover: %+v", a)
 	// Prepare mutation variables (you may need to look up book IDs in Hardcover)
 	variables := map[string]interface{}{
 		"input": map[string]interface{}{
@@ -226,6 +236,7 @@ func syncToHardcover(a Audiobook) error {
 		return err
 	}
 	defer resp.Body.Close()
+	debugLog("Hardcover API response status: %s", resp.Status)
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("hardcover API error: %s - %s", resp.Status, string(body))
@@ -251,7 +262,14 @@ func runSync() {
 func main() {
 	healthCheck := flag.Bool("health-check", false, "Run health check and exit")
 	showVersion := flag.Bool("version", false, "Show version and exit")
+	verbose := flag.Bool("v", false, "Enable verbose debug logging")
 	flag.Parse()
+
+	// Enable debug mode if -v flag or DEBUG_MODE env var is set
+	if *verbose || os.Getenv("DEBUG_MODE") == "true" {
+		debugMode = true
+		log.Printf("Verbose debug logging enabled (flag or DEBUG_MODE)")
+	}
 
 	if *showVersion {
 		fmt.Println(version)

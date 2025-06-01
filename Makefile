@@ -19,7 +19,7 @@ test:
 	go test -v ./...
 
 docker-build:
-	docker build --build-arg VERSION=$(VERSION) -t ghcr.io/drallgood/audiobookshelf-hardcover-sync:$(VERSION) .
+	docker buildx build --load --build-arg VERSION=$(VERSION) -t ghcr.io/drallgood/audiobookshelf-hardcover-sync:$(VERSION) .
 
 docker-run:
 	docker run --rm -it -p 8080:8080 --env-file .env.example ghcr.io/drallgood/audiobookshelf-hardcover-sync:$(VERSION)
