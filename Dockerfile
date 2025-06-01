@@ -1,34 +1,24 @@
-# Build stage
-FROM golang:1.24.2-alpine as builder
+# syntax=docker/dockerfile:1
 
-ARG VERSION=dev
-WORKDIR /app
+# Build stage
+FROM golang:1.24.2-alpine AS build
+WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+RUN CGO_ENABLED=0 go build -o /out/main main.go
 
-RUN apk add --no-cache git ca-certificates tzdata && \
-    go mod tidy && \
-    CGO_ENABLED=0 go build \
-      -ldflags="-w -s -X main.version=$VERSION -extldflags '-static'" \
-      -a -installsuffix cgo \
-      -o main .
-
-# Final stage
+# Final minimal image
 FROM scratch
+COPY --from=build /out/main /main
+# Copy system CA certificates from Alpine
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+# Add entrypoint script
+COPY entrypoint.sh /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
 
-ARG VERSION=dev
-LABEL maintainer="patrice@brendamour.net" \
-      org.opencontainers.image.version="$VERSION" \
-      org.opencontainers.image.source="https://github.com/drallgood/audiobookshelf-hardcover-sync" \
-      description="Audiobookshelf Hardcover Sync"
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=3s CMD ["/main", "-healthcheck"]
 
-WORKDIR /app
+# Expose port if needed (uncomment if your app listens on a port)
 EXPOSE 8080
-
-COPY --from=builder /app/main .
-
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD ["/app/main", "--health-check"] || exit 1
-
-CMD ["/app/main"]

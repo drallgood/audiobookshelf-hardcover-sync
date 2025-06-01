@@ -76,6 +76,30 @@ make docker-run VERSION=dev
    docker compose up -d
    ```
 
+### Using a Custom CA Certificate (for Internal TLS)
+
+If your AudiobookShelf server uses a certificate signed by a custom or internal CA, you can provide your CA certificate at runtime without rebuilding the image.
+
+1. Save your CA certificate as `ca.crt`.
+2. When running the container, mount your CA cert to `/ca.crt`:
+   
+   **Docker Compose example:**
+   ```yaml
+   services:
+     abs-hardcover-sync:
+       # ...existing config...
+       volumes:
+         - ./ca.crt:/ca.crt:ro
+   ```
+   **Docker CLI example:**
+   ```sh
+   docker run -v $(pwd)/ca.crt:/ca.crt:ro ... ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
+   ```
+
+At startup, the container will automatically combine your custom CA with the system CA bundle and set `SSL_CERT_FILE` so your internal certificates are trusted.
+
+> **Note:** No image rebuild is required. The CA is picked up at runtime via the entrypoint script.
+
 ### Endpoints
 - `GET /healthz` — Health check
 - `POST/GET /sync` — Trigger a sync manually
