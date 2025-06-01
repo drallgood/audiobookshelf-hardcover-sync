@@ -115,6 +115,7 @@ type Audiobook struct {
 	Title    string  `json:"title"`
 	Author   string  `json:"author"`
 	ISBN     string  `json:"isbn,omitempty"`
+	ISBN10   string  `json:"isbn10,omitempty"`
 	Progress float64 `json:"progress"`
 	ASIN     string  `json:"asin,omitempty"`
 }
@@ -223,14 +224,19 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 				author := item.Media.Metadata.AuthorName
 				isbn := item.Media.Metadata.ISBN
 				asin := item.Media.Metadata.ASIN
+				isbn10 := ""
 				if isbn == "" {
 					isbn = item.Media.Metadata.ISBN13
+				}
+				if item.Media.Metadata.ISBN != "" && len(item.Media.Metadata.ISBN) == 10 {
+					isbn10 = item.Media.Metadata.ISBN
 				}
 				audiobooks = append(audiobooks, Audiobook{
 					ID:       item.ID,
 					Title:    title,
 					Author:   author,
 					ISBN:     isbn,
+					ISBN10:   isbn10,
 					ASIN:     asin,
 					Progress: item.Progress,
 				})
@@ -384,6 +390,67 @@ func syncToHardcover(a Audiobook) error {
 					Editions []struct {
 						ID   string `json:"id"`
 						ASIN string `json:"asin"`
+					} `json:"editions"`
+				} `json:"books"`
+			} `json:"data"`
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		if err := json.Unmarshal(body, &result); err != nil {
+			return err
+		}
+		if len(result.Data.Books) > 0 {
+			bookId = result.Data.Books[0].ID
+			if len(result.Data.Books[0].Editions) > 0 {
+				editionId = result.Data.Books[0].Editions[0].ID
+			}
+		}
+	}
+	// 1b. Try ISBN10 if present and not already tried
+	if bookId == "" && a.ISBN10 != "" {
+		query := `
+		query BookByISBN10($isbn10: String!) {
+		  books(where: { editions: { isbn_10: { _eq: $isbn10 } } }, limit: 1) {
+			id
+			title
+			editions(where: { isbn_10: { _eq: $isbn10 } }) {
+			  id
+			  isbn_13
+			  isbn_10
+			  asin
+			}
+		  }
+		}`
+		variables := map[string]interface{}{"isbn10": a.ISBN10}
+		payload := map[string]interface{}{"query": query, "variables": variables}
+		payloadBytes, _ := json.Marshal(payload)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(payloadBytes))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			body, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("hardcover books query error: %s - %s", resp.Status, string(body))
+		}
+		var result struct {
+			Data struct {
+				Books []struct {
+					ID       string `json:"id"`
+					Editions []struct {
+						ID     string `json:"id"`
+						ISBN10 string `json:"isbn_10"`
 					} `json:"editions"`
 				} `json:"books"`
 			} `json:"data"`
