@@ -386,10 +386,11 @@ func syncToHardcover(a Audiobook) error {
 		var result struct {
 			Data struct {
 				Books []struct {
-					ID       string `json:"id"`
+					ID       json.Number `json:"id"`
 					Editions []struct {
-						ID   string `json:"id"`
-						ASIN string `json:"asin"`
+						ID     json.Number `json:"id"`
+						ISBN10 string      `json:"isbn_10"`
+						ASIN   string      `json:"asin"`
 					} `json:"editions"`
 				} `json:"books"`
 			} `json:"data"`
@@ -402,9 +403,9 @@ func syncToHardcover(a Audiobook) error {
 			return err
 		}
 		if len(result.Data.Books) > 0 {
-			bookId = result.Data.Books[0].ID
+			bookId = result.Data.Books[0].ID.String()
 			if len(result.Data.Books[0].Editions) > 0 {
-				editionId = result.Data.Books[0].Editions[0].ID
+				editionId = result.Data.Books[0].Editions[0].ID.String()
 			}
 		}
 	}
@@ -447,10 +448,10 @@ func syncToHardcover(a Audiobook) error {
 		var result struct {
 			Data struct {
 				Books []struct {
-					ID       string `json:"id"`
+					ID       json.Number `json:"id"`
 					Editions []struct {
-						ID     string `json:"id"`
-						ISBN10 string `json:"isbn_10"`
+						ID     json.Number `json:"id"`
+						ISBN10 string      `json:"isbn_10"`
 					} `json:"editions"`
 				} `json:"books"`
 			} `json:"data"`
@@ -463,9 +464,9 @@ func syncToHardcover(a Audiobook) error {
 			return err
 		}
 		if len(result.Data.Books) > 0 {
-			bookId = result.Data.Books[0].ID
+			bookId = result.Data.Books[0].ID.String()
 			if len(result.Data.Books[0].Editions) > 0 {
-				editionId = result.Data.Books[0].Editions[0].ID
+				editionId = result.Data.Books[0].Editions[0].ID.String()
 			}
 		}
 	}
@@ -508,10 +509,10 @@ func syncToHardcover(a Audiobook) error {
 		var result struct {
 			Data struct {
 				Books []struct {
-					ID       string `json:"id"`
+					ID       json.Number `json:"id"`
 					Editions []struct {
-						ID   string `json:"id"`
-						ASIN string `json:"asin"`
+						ID   json.Number `json:"id"`
+						ASIN string      `json:"asin"`
 					} `json:"editions"`
 				} `json:"books"`
 			} `json:"data"`
@@ -524,9 +525,9 @@ func syncToHardcover(a Audiobook) error {
 			return err
 		}
 		if len(result.Data.Books) > 0 {
-			bookId = result.Data.Books[0].ID
+			bookId = result.Data.Books[0].ID.String()
 			if len(result.Data.Books[0].Editions) > 0 {
-				editionId = result.Data.Books[0].Editions[0].ID
+				editionId = result.Data.Books[0].Editions[0].ID.String()
 			}
 		}
 	}
