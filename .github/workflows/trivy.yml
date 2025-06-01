@@ -24,7 +24,7 @@ jobs:
           tags: local/abs-hardcover-sync:trivy-scan
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@v0.16.2
+        uses: aquasecurity/trivy-action@v0.19.0
         with:
           image-ref: local/abs-hardcover-sync:trivy-scan
           format: table
