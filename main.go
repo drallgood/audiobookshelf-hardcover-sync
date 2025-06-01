@@ -1,3 +1,28 @@
+// audiobookshelf-hardcover-sync
+//
+// Syncs Audiobookshelf to Hardcover.
+//
+// Features:
+// - Periodic sync (set SYNC_INTERVAL, e.g. "10m", "1h")
+// - Manual sync via HTTP POST/GET to /sync
+// - Health check at /healthz
+// - Configurable via environment variables
+//
+// Environment Variables:
+//   AUDIOBOOKSHELF_URL      URL to your AudiobookShelf server
+//   AUDIOBOOKSHELF_TOKEN    API token for AudiobookShelf
+//   HARDCOVER_TOKEN         API token for Hardcover
+//   SYNC_INTERVAL           (optional) Go duration string for periodic sync
+//
+// Usage:
+//   ./main                  # Runs initial sync, then waits for /sync or SYNC_INTERVAL
+//   ./main --health-check   # Health check mode for Docker
+//   ./main --version        # Print version
+//
+// Endpoints:
+//   GET /healthz           # Health check
+//   POST/GET /sync         # Trigger a sync
+
 package main
 
 import (
@@ -117,9 +142,24 @@ func syncToHardcover(a Audiobook) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("Hardcover API error: %s - %s", resp.Status, string(body))
+		return fmt.Errorf("hardcover API error: %s - %s", resp.Status, string(body))
 	}
 	return nil
+}
+
+func runSync() {
+	books, err := fetchAudiobookShelfStats()
+	if err != nil {
+		log.Printf("Failed to fetch AudiobookShelf stats: %v", err)
+		return
+	}
+	for _, book := range books {
+		if err := syncToHardcover(book); err != nil {
+			log.Printf("Failed to sync book '%s': %v", book.Title, err)
+		} else {
+			log.Printf("Synced book: %s", book.Title)
+		}
+	}
 }
 
 func main() {
@@ -150,11 +190,18 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
+
+	http.HandleFunc("/sync", func(w http.ResponseWriter, r *http.Request) {
+		go runSync()
+		w.WriteHeader(http.StatusAccepted)
+		w.Write([]byte("sync triggered"))
+	})
+
 	shutdown := make(chan os.Signal, 1)
 	signal.Notify(shutdown, os.Interrupt, syscall.SIGTERM)
 	server := &http.Server{Addr: ":8080"}
 	go func() {
-		log.Printf("Health endpoint running on :8080/healthz")
+		log.Printf("Health and sync endpoints running on :8080/healthz and :8080/sync")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Health endpoint error: %v", err)
 		}
@@ -169,16 +216,22 @@ func main() {
 		}
 	}
 
-	books, err := fetchAudiobookShelfStats()
-	if err != nil {
-		log.Fatalf("Failed to fetch AudiobookShelf stats: %v", err)
-	}
-	for _, book := range books {
-		if err := syncToHardcover(book); err != nil {
-			log.Printf("Failed to sync book '%s': %v", book.Title, err)
-		} else {
-			log.Printf("Synced book: %s", book.Title)
+	runSync() // Initial sync at startup
+
+	syncInterval := os.Getenv("SYNC_INTERVAL")
+	if syncInterval != "" {
+		dur, err := time.ParseDuration(syncInterval)
+		if err != nil {
+			log.Fatalf("Invalid SYNC_INTERVAL: %v", err)
 		}
+		ticker := time.NewTicker(dur)
+		defer ticker.Stop()
+		go func() {
+			for range ticker.C {
+				log.Printf("Periodic sync triggered by SYNC_INTERVAL=%s", syncInterval)
+				runSync()
+			}
+		}()
 	}
 
 	<-shutdown

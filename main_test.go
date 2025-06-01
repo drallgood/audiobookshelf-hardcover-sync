@@ -31,3 +31,8 @@ func TestSyncToHardcover_Finished_NoToken(t *testing.T) {
 		t.Error("expected error when HARDCOVER_TOKEN is missing, got nil")
 	}
 }
+
+func TestRunSync_NoPanic(t *testing.T) {
+	// Should not panic or crash even if env vars are missing
+	runSync()
+}
