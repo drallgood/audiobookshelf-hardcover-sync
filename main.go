@@ -13,6 +13,7 @@
 //   AUDIOBOOKSHELF_TOKEN    API token for AudiobookShelf
 //   HARDCOVER_TOKEN         API token for Hardcover
 //   SYNC_INTERVAL           (optional) Go duration string for periodic sync
+//   HARDCOVER_SYNC_DELAY_MS (optional) Delay between Hardcover syncs in milliseconds
 //
 // Usage:
 //   ./main                  # Runs initial sync, then waits for /sync or SYNC_INTERVAL
@@ -36,6 +37,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -67,6 +69,18 @@ func getAudiobookShelfToken() string {
 
 func getHardcoverToken() string {
 	return os.Getenv("HARDCOVER_TOKEN")
+}
+
+func getHardcoverSyncDelay() time.Duration {
+	delayStr := os.Getenv("HARDCOVER_SYNC_DELAY_MS")
+	if delayStr == "" {
+		return 1500 * time.Millisecond // default 1.5s
+	}
+	delayMs, err := strconv.Atoi(delayStr)
+	if err != nil || delayMs < 0 {
+		return 1500 * time.Millisecond
+	}
+	return time.Duration(delayMs) * time.Millisecond
 }
 
 // AudiobookShelf API response structures (updated)
@@ -254,24 +268,43 @@ func syncToHardcover(a Audiobook) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	// Use the hardcover API URL directly in syncToHardcover
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/graphql", bytes.NewBuffer(payloadBytes))
-	if err != nil {
-		return err
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/graphql", bytes.NewBuffer(payloadBytes))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			lastErr = err
+			break
+		}
+		defer resp.Body.Close()
+		debugLog("Hardcover API response status: %s", resp.Status)
+		if resp.StatusCode == 429 {
+			body, _ := io.ReadAll(resp.Body)
+			debugLog("Hardcover API throttled: %s", string(body))
+			// Check for Retry-After header
+			if retry := resp.Header.Get("Retry-After"); retry != "" {
+				if sec, err := strconv.Atoi(retry); err == nil && sec > 0 {
+					time.Sleep(time.Duration(sec) * time.Second)
+					continue
+				}
+			}
+			time.Sleep(3 * time.Second) // fallback wait
+			continue
+		}
+		if resp.StatusCode != 200 {
+			body, _ := io.ReadAll(resp.Body)
+			lastErr = fmt.Errorf("hardcover API error: %s - %s", resp.Status, string(body))
+			break
+		}
+		return nil // success
 	}
-	req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	debugLog("Hardcover API response status: %s", resp.Status)
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("hardcover API error: %s - %s", resp.Status, string(body))
-	}
-	return nil
+	return lastErr
 }
 
 func runSync() {
@@ -280,7 +313,11 @@ func runSync() {
 		log.Printf("Failed to fetch AudiobookShelf stats: %v", err)
 		return
 	}
-	for _, book := range books {
+	delay := getHardcoverSyncDelay()
+	for i, book := range books {
+		if i > 0 {
+			time.Sleep(delay)
+		}
 		if err := syncToHardcover(book); err != nil {
 			log.Printf("Failed to sync book '%s': %v", book.Title, err)
 		} else {

@@ -19,6 +19,7 @@ Syncs Audiobookshelf to Hardcover.
 | AUDIOBOOKSHELF_TOKEN    | API token for AudiobookShelf (see instructions below; required for all API requests)         |
 | HARDCOVER_TOKEN         | API token for Hardcover                                                                     |
 | SYNC_INTERVAL           | (optional) Go duration string for periodic sync                                             |
+| HARDCOVER_SYNC_DELAY_MS | (optional) Delay between Hardcover syncs in milliseconds (default: 1500)                    |
 
 You can copy `.env.example` to `.env` and fill in your values.
 
@@ -107,6 +108,16 @@ At startup, the container will automatically combine your custom CA with the sys
 ### Endpoints
 - `GET /healthz` — Health check
 - `POST/GET /sync` — Trigger a sync manually
+
+### Rate Limiting / Throttling
+
+If you see errors like `429 Too Many Requests` or `{ "error": "Throttled" }` from Hardcover, the sync tool will automatically delay between requests (default 1.5s, configurable via `HARDCOVER_SYNC_DELAY_MS`) and retry up to 3 times on 429 errors, respecting the `Retry-After` header if present.
+
+You can increase the delay if you have a large library or continue to see throttling:
+
+```sh
+export HARDCOVER_SYNC_DELAY_MS=3000 # 3 seconds between syncs
+```
 
 ### Pulling from GitHub Container Registry (GHCR)
 To pull the latest image:
