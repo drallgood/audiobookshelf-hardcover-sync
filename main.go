@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -68,7 +68,7 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("AudiobookShelf API error: %s", resp.Status)
 	}
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +116,7 @@ func syncToHardcover(a Audiobook) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		body, _ := ioutil.ReadAll(resp.Body)
+		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("Hardcover API error: %s - %s", resp.Status, string(body))
 	}
 	return nil
