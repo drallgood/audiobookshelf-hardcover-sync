@@ -15,7 +15,7 @@ RUN apk add --no-cache git ca-certificates tzdata && \
       -o main .
 
 # Final stage
-FROM alpine:3.20
+FROM scratch
 
 ARG VERSION=dev
 LABEL maintainer="patrice@brendamour.net" \
@@ -26,12 +26,7 @@ LABEL maintainer="patrice@brendamour.net" \
 WORKDIR /app
 EXPOSE 8080
 
-RUN addgroup -g 1001 -S appgroup && \
-    adduser -u 1001 -S appuser -G appgroup
-
-COPY --from=builder --chown=appuser:appgroup /app/main .
-
-USER appuser
+COPY --from=builder /app/main .
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD ["/app/main", "--health-check"] || exit 1
