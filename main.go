@@ -229,19 +229,22 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 
 // Sync each finished audiobook to Hardcover
 func syncToHardcover(a Audiobook) error {
-	// Only sync fully finished books
+	var statusId int
+	input := map[string]interface{}{
+		"title":  a.Title,
+		"author": a.Author,
+	}
 	if a.Progress < 1.0 {
-		return nil
+		statusId = 2 // 2 = currently reading
+		input["statusId"] = statusId
+		input["progress"] = a.Progress
+	} else {
+		statusId = 3 // 3 = read
+		input["statusId"] = statusId
 	}
 	debugLog("Syncing to Hardcover: %+v", a)
-	// Prepare mutation variables (you may need to look up book IDs in Hardcover)
 	variables := map[string]interface{}{
-		"input": map[string]interface{}{
-			"title":    a.Title,
-			"author":   a.Author,
-			"statusId": 3, // 3 = read
-			// Add other fields as needed
-		},
+		"input": input,
 	}
 	payload := map[string]interface{}{
 		"query":     hardcoverMutation,
