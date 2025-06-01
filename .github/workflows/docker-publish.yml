@@ -17,10 +17,22 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
       - name: Run tests
         run: go test -v ./...
 
@@ -52,6 +64,14 @@ jobs:
         with:
           images: ghcr.io/drallgood/audiobookshelf-hardcover-sync
 
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
       - name: Build and push Docker image (multi-arch)
         uses: docker/build-push-action@v6
         with:
@@ -63,6 +83,8 @@ jobs:
             ghcr.io/drallgood/audiobookshelf-hardcover-sync:${{ github.sha }}
             ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache,mode=max
 
       - name: Tag beta for main branch (not a release)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
