@@ -145,11 +145,13 @@ func fetchLibraryItems(libraryID string) ([]Item, error) {
 	debugLog("Fetching items from: %s", url)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
+		debugLog("Error creating request: %v", err)
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+getAudiobookShelfToken())
 	resp, err := httpClient.Do(req)
 	if err != nil {
+		debugLog("HTTP request error: %v", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -160,14 +162,20 @@ func fetchLibraryItems(libraryID string) ([]Item, error) {
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		debugLog("Error reading response body: %v", err)
 		return nil, err
 	}
 	var result struct {
 		Items []Item `json:"items"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		debugLog("JSON unmarshal error (items): %v", err)
+		detail := string(body)
+		debugLog("JSON unmarshal error (items): %v, body: %s", err, detail)
 		return nil, err
+	}
+	debugLog("Fetched %d items for library %s", len(result.Items), libraryID)
+	if len(result.Items) == 0 {
+		debugLog("No items found for library %s", libraryID)
 	}
 	return result.Items, nil
 }
@@ -177,6 +185,7 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 	debugLog("Fetching AudiobookShelf stats using new API...")
 	libs, err := fetchLibraries()
 	if err != nil {
+		debugLog("Error fetching libraries: %v", err)
 		return nil, err
 	}
 	var audiobooks []Audiobook
@@ -186,6 +195,7 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 			debugLog("Failed to fetch items for library %s: %v", lib.Name, err)
 			continue
 		}
+		debugLog("Processing %d items for library %s", len(items), lib.Name)
 		for _, item := range items {
 			if item.Type == "audiobook" {
 				audiobooks = append(audiobooks, Audiobook{
@@ -197,6 +207,7 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 			}
 		}
 	}
+	debugLog("Total audiobooks found: %d", len(audiobooks))
 	return audiobooks, nil
 }
 
