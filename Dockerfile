@@ -9,12 +9,11 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o /out/main main.go
 
 # Final minimal image
-FROM scratch
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
 COPY --from=build /out/main /main
-# Copy system CA certificates from Alpine
-COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-# Add entrypoint script
 COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 
 # Healthcheck
