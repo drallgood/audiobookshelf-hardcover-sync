@@ -222,20 +222,17 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 				title := item.Media.Metadata.Title
 				author := item.Media.Metadata.AuthorName
 				isbn := item.Media.Metadata.ISBN
+				asin := item.Media.Metadata.ASIN
 				if isbn == "" {
 					isbn = item.Media.Metadata.ISBN13
-				}
-				// If no ISBN, try ASIN as ISBN-10 fallback
-				if isbn == "" && item.Media.Metadata.ASIN != "" {
-					isbn = item.Media.Metadata.ASIN
 				}
 				audiobooks = append(audiobooks, Audiobook{
 					ID:       item.ID,
 					Title:    title,
 					Author:   author,
 					ISBN:     isbn,
+					ASIN:     asin,
 					Progress: item.Progress,
-					ASIN:     item.Media.Metadata.ASIN,
 				})
 			}
 		}
@@ -343,8 +340,9 @@ func lookupHardcoverBookIDRaw(title, author string) (string, error) {
 // Sync each finished audiobook to Hardcover
 func syncToHardcover(a Audiobook) error {
 	var bookId, editionId string
-	if a.ISBN != "" {
-		// Query for book and edition by ISBN/ISBN13/ASIN (if ISBN is actually an ASIN, this will still work for some books)
+	// 1. Try ISBN/ISBN13 if present and not an ASIN
+	if a.ISBN != "" && (a.ASIN == "" || a.ISBN != a.ASIN) {
+		// Query for book and edition by ISBN/ISBN13
 		query := `
 		query BookByISBN($isbn: String!) {
 		  books(where: { editions: { isbn_13: { _eq: $isbn } } }, limit: 1) {
@@ -404,8 +402,8 @@ func syncToHardcover(a Audiobook) error {
 			}
 		}
 	}
-	// If not found by ISBN, and we have an ASIN, try by ASIN
-	if bookId == "" && a.ISBN == "" && a.ASIN != "" {
+	// 2. Try ASIN if present
+	if bookId == "" && a.ASIN != "" {
 		query := `
 		query BookByASIN($asin: String!) {
 		  books(where: { editions: { asin: { _eq: $asin } } }, limit: 1) {
@@ -465,8 +463,8 @@ func syncToHardcover(a Audiobook) error {
 			}
 		}
 	}
+	// 3. Fallback: lookup by title/author
 	if bookId == "" {
-		// fallback: lookup by title/author
 		var err error
 		bookId, err = lookupHardcoverBookID(a.Title, a.Author)
 		if err != nil {
