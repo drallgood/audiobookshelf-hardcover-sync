@@ -1,0 +1,28 @@
+services:
+  abs-hardcover-sync:
+    image: ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
+    container_name: abs-hardcover-sync
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "/app/main", "--health-check"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 256M
+        reservations:
+          cpus: '0.10'
+          memory: 64M

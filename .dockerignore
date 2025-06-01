@@ -1,0 +1,15 @@
+# .dockerignore
+# Ignore files and folders not needed in the container
+.git
+.gitignore
+README.md
+LICENSE
+*.md
+*.log
+test/
+*.test
+*.swp
+*.swo
+.idea/
+.vscode/
+*.DS_Store
