@@ -40,18 +40,23 @@ import (
 	"time"
 )
 
-// Configurable environment variables
-var (
-	audiobookshelfURL   = os.Getenv("AUDIOBOOKSHELF_URL") // e.g. "https://abs.example.com"
-	audiobookshelfToken = os.Getenv("AUDIOBOOKSHELF_TOKEN")
-	hardcoverURL        = "https://api.hardcover.app/graphql"
-	hardcoverToken      = os.Getenv("HARDCOVER_TOKEN")
-)
-
 var version = "dev"
 
 var httpClient = &http.Client{
 	Timeout: 10 * time.Second,
+}
+
+// Getter functions for environment variables
+func getAudiobookShelfURL() string {
+	return os.Getenv("AUDIOBOOKSHELF_URL")
+}
+
+func getAudiobookShelfToken() string {
+	return os.Getenv("AUDIOBOOKSHELF_TOKEN")
+}
+
+func getHardcoverToken() string {
+	return os.Getenv("HARDCOVER_TOKEN")
 }
 
 // AudiobookShelf API response structures (updated)
@@ -92,13 +97,13 @@ mutation AddBookToShelf($input: AddBookToShelfInput!) {
 func fetchLibraries() ([]Library, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	url := audiobookshelfURL + "/api/libraries"
+	url := getAudiobookShelfURL() + "/api/libraries"
 	log.Printf("Fetching libraries from: %s", url)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+audiobookshelfToken)
+	req.Header.Set("Authorization", "Bearer "+getAudiobookShelfToken())
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -127,13 +132,13 @@ func fetchLibraries() ([]Library, error) {
 func fetchLibraryItems(libraryID string) ([]Item, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	url := fmt.Sprintf("%s/api/libraries/%s/items", audiobookshelfURL, libraryID)
+	url := fmt.Sprintf("%s/api/libraries/%s/items", getAudiobookShelfURL(), libraryID)
 	log.Printf("Fetching items from: %s", url)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+audiobookshelfToken)
+	req.Header.Set("Authorization", "Bearer "+getAudiobookShelfToken())
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -208,11 +213,12 @@ func syncToHardcover(a Audiobook) error {
 	payloadBytes, _ := json.Marshal(payload)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "POST", hardcoverURL, bytes.NewBuffer(payloadBytes))
+	// Use the hardcover API URL directly in syncToHardcover
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/graphql", bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+hardcoverToken)
+	req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
 	resp, err := httpClient.Do(req)

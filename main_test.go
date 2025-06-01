@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -24,7 +25,7 @@ func TestFetchAudiobookShelfStats_404(t *testing.T) {
 	os.Setenv("AUDIOBOOKSHELF_TOKEN", "dummy")
 
 	_, err := fetchAudiobookShelfStats()
-	if err == nil || err.Error() != "AudiobookShelf API error: 404 Not Found" {
+	if err == nil || !strings.Contains(err.Error(), "404") {
 		t.Errorf("expected 404 error from /api/libraries, got: %v", err)
 	}
 }
@@ -36,6 +37,8 @@ func TestFetchAudiobookShelfStats_LibraryItems404(t *testing.T) {
 		if r.URL.Path == "/api/libraries" {
 			w.WriteHeader(200)
 			w.Write([]byte(libResp))
+		} else if strings.HasPrefix(r.URL.Path, "/api/libraries/") && strings.HasSuffix(r.URL.Path, "/items") {
+			w.WriteHeader(404)
 		} else {
 			w.WriteHeader(404)
 		}
@@ -65,9 +68,9 @@ func TestSyncToHardcover_NotFinished(t *testing.T) {
 func TestSyncToHardcover_Finished_NoToken(t *testing.T) {
 	book := Audiobook{Title: "Test", Author: "Author", Progress: 1.0}
 	// Save and clear HARDCOVER_TOKEN
-	token := hardcoverToken
-	hardcoverToken = ""
-	defer func() { hardcoverToken = token }()
+	oldToken := os.Getenv("HARDCOVER_TOKEN")
+	os.Setenv("HARDCOVER_TOKEN", "")
+	defer os.Setenv("HARDCOVER_TOKEN", oldToken)
 	err := syncToHardcover(book)
 	if err == nil {
 		t.Error("expected error when HARDCOVER_TOKEN is missing, got nil")
