@@ -36,5 +36,4 @@ USER appuser
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD ["/app/main", "--health-check"] || exit 1
 
-ENTRYPOINT ["/app/main"]
 CMD ["/app/main"]
