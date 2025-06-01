@@ -166,18 +166,18 @@ func fetchLibraryItems(libraryID string) ([]Item, error) {
 		return nil, err
 	}
 	var result struct {
-		Items []Item `json:"items"`
+		Results []Item `json:"results"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		detail := string(body)
-		debugLog("JSON unmarshal error (items): %v, body: %s", err, detail)
+		debugLog("JSON unmarshal error (results): %v, body: %s", err, detail)
 		return nil, err
 	}
-	debugLog("Fetched %d items for library %s", len(result.Items), libraryID)
-	if len(result.Items) == 0 {
+	debugLog("Fetched %d items for library %s", len(result.Results), libraryID)
+	if len(result.Results) == 0 {
 		debugLog("No items found for library %s", libraryID)
 	}
-	return result.Items, nil
+	return result.Results, nil
 }
 
 // Fetch audiobooks with progress from all libraries
