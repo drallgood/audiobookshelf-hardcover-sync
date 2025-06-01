@@ -95,6 +95,7 @@ type MediaMetadata struct {
 	AuthorName string `json:"authorName"`
 	ISBN       string `json:"isbn,omitempty"`
 	ISBN13     string `json:"isbn_13,omitempty"`
+	ASIN       string `json:"asin,omitempty"`
 }
 
 type Media struct {
@@ -223,6 +224,10 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 				if isbn == "" {
 					isbn = item.Media.Metadata.ISBN13
 				}
+				// If no ISBN, try ASIN as ISBN-10 fallback
+				if isbn == "" && item.Media.Metadata.ASIN != "" {
+					isbn = item.Media.Metadata.ASIN
+				}
 				audiobooks = append(audiobooks, Audiobook{
 					ID:       item.ID,
 					Title:    title,
@@ -237,8 +242,43 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 	return audiobooks, nil
 }
 
+// Helper to normalize book titles for better matching
+func normalizeTitle(title string) string {
+	title = strings.ToLower(title)
+	title = strings.TrimSpace(title)
+	// Remove common audiobook suffixes
+	suffixes := []string{"(unabridged)", "(abridged)", "(a novel)", "(novel)", "(audio book)", "(audiobook)", "(audio)"}
+	for _, s := range suffixes {
+		if strings.HasSuffix(title, s) {
+			title = strings.TrimSpace(strings.TrimSuffix(title, s))
+		}
+	}
+	// Remove trailing punctuation
+	title = strings.TrimRight(title, ".:;,- ")
+	return title
+}
+
 // Lookup Hardcover bookId by title and author using the books(filter: {title, author}) GraphQL query
 func lookupHardcoverBookID(title, author string) (string, error) {
+	// Try original title first
+	id, err := lookupHardcoverBookIDRaw(title, author)
+	if err == nil {
+		return id, nil
+	}
+	// Fallback: try normalized title
+	normTitle := normalizeTitle(title)
+	if normTitle != title {
+		debugLog("Retrying Hardcover lookup with normalized title: '%s'", normTitle)
+		id, err2 := lookupHardcoverBookIDRaw(normTitle, author)
+		if err2 == nil {
+			return id, nil
+		}
+	}
+	return "", err
+}
+
+// Raw lookup (no normalization)
+func lookupHardcoverBookIDRaw(title, author string) (string, error) {
 	query := `
 	query BooksByTitleAuthor($title: String!, $author: String!) {
 	  books(filter: {title: $title, author: $author}) {
