@@ -9,7 +9,7 @@ COPY . .
 
 RUN apk add --no-cache git ca-certificates tzdata && \
     go mod tidy && \
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    CGO_ENABLED=0 go build \
       -ldflags="-w -s -X main.version=$VERSION -extldflags '-static'" \
       -a -installsuffix cgo \
       -o main .
