@@ -36,6 +36,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -74,12 +75,21 @@ type Library struct {
 	Name string `json:"name"`
 }
 
+type MediaMetadata struct {
+	Title      string `json:"title"`
+	AuthorName string `json:"authorName"`
+}
+
+type Media struct {
+	ID       string        `json:"id"`
+	Metadata MediaMetadata `json:"metadata"`
+}
+
 type Item struct {
-	ID       string  `json:"id"`
-	Title    string  `json:"title"`
-	Author   string  `json:"author"`
-	Type     string  `json:"type"`
-	Progress float64 `json:"progress"`
+	ID        string  `json:"id"`
+	MediaType string  `json:"mediaType"`
+	Media     Media   `json:"media"`
+	Progress  float64 `json:"progress"`
 }
 
 type Audiobook struct {
@@ -196,12 +206,18 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 			continue
 		}
 		debugLog("Processing %d items for library %s", len(items), lib.Name)
-		for _, item := range items {
-			if item.Type == "audiobook" {
+		for i, item := range items {
+			if i < 5 { // Log first 5 item types for debug
+				detail := item.MediaType
+				debugLog("Item %d mediaType: %s", i, detail)
+			}
+			if strings.EqualFold(item.MediaType, "book") {
+				title := item.Media.Metadata.Title
+				author := item.Media.Metadata.AuthorName
 				audiobooks = append(audiobooks, Audiobook{
 					ID:       item.ID,
-					Title:    item.Title,
-					Author:   item.Author,
+					Title:    title,
+					Author:   author,
 					Progress: item.Progress,
 				})
 			}

@@ -60,8 +60,8 @@ func TestFetchAudiobookShelfStats_LibraryItems404(t *testing.T) {
 func TestFetchAudiobookShelfStats_MultipleLibrariesAndItems(t *testing.T) {
 	// /api/libraries returns two libraries, each with items (some audiobooks, some not)
 	libResp := `{"libraries":[{"id":"lib1","name":"Lib1"},{"id":"lib2","name":"Lib2"}]}`
-	itemsResp1 := `{"results":[{"id":"a1","title":"Book1","author":"Auth1","type":"audiobook","progress":1.0},{"id":"e1","title":"Epub1","author":"Auth2","type":"epub","progress":0.5}]}`
-	itemsResp2 := `{"results":[{"id":"a2","title":"Book2","author":"Auth3","type":"audiobook","progress":0.7}]}`
+	itemsResp1 := `{"results":[{"id":"a1","mediaType":"book","media":{"id":"m1","metadata":{"title":"Book1","authorName":"Auth1"}},"progress":1.0},{"id":"e1","mediaType":"epub","media":{"id":"m2","metadata":{"title":"Epub1","authorName":"Auth2"}},"progress":0.5}]}`
+	itemsResp2 := `{"results":[{"id":"a2","mediaType":"book","media":{"id":"m3","metadata":{"title":"Book2","authorName":"Auth3"}},"progress":0.7}]}`
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/libraries" {
 			w.WriteHeader(200)
@@ -95,6 +95,12 @@ func TestFetchAudiobookShelfStats_MultipleLibrariesAndItems(t *testing.T) {
 	if books[0].ID != "a1" || books[1].ID != "a2" {
 		t.Errorf("unexpected audiobook IDs: %+v", books)
 	}
+	if books[0].Title != "Book1" || books[1].Title != "Book2" {
+		t.Errorf("unexpected audiobook titles: %+v", books)
+	}
+	if books[0].Author != "Auth1" || books[1].Author != "Auth3" {
+		t.Errorf("unexpected audiobook authors: %+v", books)
+	}
 }
 
 func TestFetchLibraryItems_EmptyResults(t *testing.T) {
@@ -116,7 +122,8 @@ func TestFetchLibraryItems_EmptyResults(t *testing.T) {
 }
 
 func TestFetchLibraryItems_MalformedJSON(t *testing.T) {
-	badJSON := `{"results": [ { "id": "a1", "title": "Book1" "author": "Auth1" } ]}` // missing comma
+	badJSON := `{"results": [ { "id": "a1", "mediaType": "book" "media": { "id": "m1", "metadata": { "title": "Book1" } } } ]}` // missing comma
+
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 		w.Write([]byte(badJSON))
