@@ -66,12 +66,16 @@ func TestFetchAudiobookShelfStats_MultipleLibrariesAndItems(t *testing.T) {
 		if r.URL.Path == "/api/libraries" {
 			w.WriteHeader(200)
 			w.Write([]byte(libResp))
-		} else if r.URL.Path == "/api/libraries/lib1/items" {
-			w.WriteHeader(200)
-			w.Write([]byte(itemsResp1))
-		} else if r.URL.Path == "/api/libraries/lib2/items" {
-			w.WriteHeader(200)
-			w.Write([]byte(itemsResp2))
+		} else if strings.HasPrefix(r.URL.Path, "/api/libraries/") && strings.HasSuffix(r.URL.Path, "/items") {
+			if strings.Contains(r.URL.Path, "lib1") {
+				w.WriteHeader(200)
+				w.Write([]byte(itemsResp1))
+			} else if strings.Contains(r.URL.Path, "lib2") {
+				w.WriteHeader(200)
+				w.Write([]byte(itemsResp2))
+			} else {
+				w.WriteHeader(404)
+			}
 		} else {
 			w.WriteHeader(404)
 		}
@@ -86,6 +90,7 @@ func TestFetchAudiobookShelfStats_MultipleLibrariesAndItems(t *testing.T) {
 	}
 	if len(books) != 2 {
 		t.Errorf("expected 2 audiobooks, got: %d", len(books))
+		return
 	}
 	if books[0].ID != "a1" || books[1].ID != "a2" {
 		t.Errorf("unexpected audiobook IDs: %+v", books)
