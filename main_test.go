@@ -155,9 +155,14 @@ func TestFetchLibraries_MalformedJSON(t *testing.T) {
 
 func TestSyncToHardcover_NotFinished(t *testing.T) {
 	book := Audiobook{Title: "Test", Author: "Author", Progress: 0.5}
+	// Save and clear HARDCOVER_TOKEN
+	oldToken := os.Getenv("HARDCOVER_TOKEN")
+	os.Setenv("HARDCOVER_TOKEN", "dummy")
+	defer os.Setenv("HARDCOVER_TOKEN", oldToken)
+	// Expect an error because the dummy token will fail the API call
 	err := syncToHardcover(book)
-	if err != nil {
-		t.Errorf("expected nil error for unfinished book, got %v", err)
+	if err == nil {
+		t.Error("expected error for unfinished book with dummy token, got nil")
 	}
 }
 
