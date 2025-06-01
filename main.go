@@ -54,7 +54,20 @@ var httpClient = &http.Client{
 	Timeout: 10 * time.Second,
 }
 
-// AudiobookShelf API response structures (simplified)
+// AudiobookShelf API response structures (updated)
+type Library struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type Item struct {
+	ID       string  `json:"id"`
+	Title    string  `json:"title"`
+	Author   string  `json:"author"`
+	Type     string  `json:"type"`
+	Progress float64 `json:"progress"`
+}
+
 type Audiobook struct {
 	ID       string  `json:"id"`
 	Title    string  `json:"title"`
@@ -75,11 +88,12 @@ mutation AddBookToShelf($input: AddBookToShelfInput!) {
 }
 `
 
-// Fetch audiobooks with progress from AudiobookShelf
-func fetchAudiobookShelfStats() ([]Audiobook, error) {
+// Fetch libraries from AudiobookShelf
+func fetchLibraries() ([]Library, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	url := audiobookshelfURL + "/api/audiobooks"
+	url := audiobookshelfURL + "/api/libraries"
+	log.Printf("Fetching libraries from: %s", url)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -91,6 +105,8 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("AudiobookShelf libraries error body: %s", string(body))
 		return nil, fmt.Errorf("AudiobookShelf API error: %s", resp.Status)
 	}
 	body, err := io.ReadAll(resp.Body)
@@ -98,12 +114,76 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 		return nil, err
 	}
 	var result struct {
-		Audiobooks []Audiobook `json:"audiobooks"`
+		Libraries []Library `json:"libraries"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
+		log.Printf("JSON unmarshal error (libraries): %v", err)
 		return nil, err
 	}
-	return result.Audiobooks, nil
+	return result.Libraries, nil
+}
+
+// Fetch items for a library
+func fetchLibraryItems(libraryID string) ([]Item, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	url := fmt.Sprintf("%s/api/libraries/%s/items", audiobookshelfURL, libraryID)
+	log.Printf("Fetching items from: %s", url)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+audiobookshelfToken)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("AudiobookShelf items error body: %s", string(body))
+		return nil, fmt.Errorf("AudiobookShelf API error: %s", resp.Status)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		Items []Item `json:"items"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		log.Printf("JSON unmarshal error (items): %v", err)
+		return nil, err
+	}
+	return result.Items, nil
+}
+
+// Fetch audiobooks with progress from all libraries
+func fetchAudiobookShelfStats() ([]Audiobook, error) {
+	log.Printf("Fetching AudiobookShelf stats using new API...")
+	libs, err := fetchLibraries()
+	if err != nil {
+		return nil, err
+	}
+	var audiobooks []Audiobook
+	for _, lib := range libs {
+		items, err := fetchLibraryItems(lib.ID)
+		if err != nil {
+			log.Printf("Failed to fetch items for library %s: %v", lib.Name, err)
+			continue
+		}
+		for _, item := range items {
+			if item.Type == "audiobook" {
+				audiobooks = append(audiobooks, Audiobook{
+					ID:       item.ID,
+					Title:    item.Title,
+					Author:   item.Author,
+					Progress: item.Progress,
+				})
+			}
+		}
+	}
+	return audiobooks, nil
 }
 
 // Sync each finished audiobook to Hardcover

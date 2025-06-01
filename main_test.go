@@ -1,6 +1,9 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"testing"
 )
 
@@ -9,6 +12,45 @@ func TestFetchAudiobookShelfStats_NoEnv(t *testing.T) {
 	_, err := fetchAudiobookShelfStats()
 	if err == nil {
 		t.Error("expected error when env vars are missing, got nil")
+	}
+}
+
+func TestFetchAudiobookShelfStats_404(t *testing.T) {
+	// Start a test server that always returns 404 for any path
+	ts := httptest.NewServer(http.NotFoundHandler())
+	defer ts.Close()
+
+	os.Setenv("AUDIOBOOKSHELF_URL", ts.URL)
+	os.Setenv("AUDIOBOOKSHELF_TOKEN", "dummy")
+
+	_, err := fetchAudiobookShelfStats()
+	if err == nil || err.Error() != "AudiobookShelf API error: 404 Not Found" {
+		t.Errorf("expected 404 error from /api/libraries, got: %v", err)
+	}
+}
+
+func TestFetchAudiobookShelfStats_LibraryItems404(t *testing.T) {
+	// /api/libraries returns one library, but /api/libraries/{id}/items returns 404
+	libResp := `{"libraries":[{"id":"lib1","name":"Test Library"}]}`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/libraries" {
+			w.WriteHeader(200)
+			w.Write([]byte(libResp))
+		} else {
+			w.WriteHeader(404)
+		}
+	}))
+	defer ts.Close()
+
+	os.Setenv("AUDIOBOOKSHELF_URL", ts.URL)
+	os.Setenv("AUDIOBOOKSHELF_TOKEN", "dummy")
+
+	books, err := fetchAudiobookShelfStats()
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+	if len(books) != 0 {
+		t.Errorf("expected 0 audiobooks, got: %d", len(books))
 	}
 }
 

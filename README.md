@@ -40,6 +40,10 @@ You can copy `.env.example` to `.env` and fill in your values.
 3. Generate a new API token and copy it.
 4. Set `HARDCOVER_TOKEN` to the token you generated.
 
+## How it works
+
+This service fetches all libraries from your AudiobookShelf server using the `/api/libraries` endpoint, then fetches all items for each library using `/api/libraries/{libraryId}/items`. It filters for items of type `audiobook` and syncs their progress to Hardcover.
+
 ## Getting Started
 
 ### Prerequisites
