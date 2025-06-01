@@ -11,6 +11,7 @@ Syncs Audiobookshelf to Hardcover.
 - Health check at `/healthz`
 - Multi-arch container images (amd64, arm64)
 - Secure, minimal, and production-ready
+- Robust debug logging (`-v` flag or `DEBUG_MODE=1`)
 
 ## Environment Variables
 | Variable                | Description                                                                                 |
@@ -20,6 +21,7 @@ Syncs Audiobookshelf to Hardcover.
 | HARDCOVER_TOKEN         | API token for Hardcover                                                                     |
 | SYNC_INTERVAL           | (optional) Go duration string for periodic sync                                             |
 | HARDCOVER_SYNC_DELAY_MS | (optional) Delay between Hardcover syncs in milliseconds (default: 1500)                    |
+| DEBUG_MODE              | (optional) Set to `1` to enable verbose debug logging                                       |
 
 You can copy `.env.example` to `.env` and fill in your values.
 
@@ -29,7 +31,11 @@ You can copy `.env.example` to `.env` and fill in your values.
 1. Log in to your AudiobookShelf web UI as an admin/user.
 2. Go to **config → users**, then click on your account.
 3. Copy your API token from the user details page.
-   - Alternatively, you can obtain the API token programmatically using the Login endpoint; the token is in `response.user.token`.
+   - Alternatively, you can obtain the API token programmatically using the Login endpoint; the token is in `response.user.token`. For example:
+     ```sh
+     curl -X POST "https://your-abs-server/api/login" -H 'Content-Type: application/json' -d '{"username":"YOUR_USER","password":"YOUR_PASS"}'
+     # The token is in response.user.token
+     ```
 4. Set `AUDIOBOOKSHELF_URL` to your server URL (e.g., https://abs.example.com).
 5. Set `AUDIOBOOKSHELF_TOKEN` to the token you copied.
 
@@ -43,7 +49,7 @@ You can copy `.env.example` to `.env` and fill in your values.
 
 ## How it works
 
-This service fetches all libraries from your AudiobookShelf server using the `/api/libraries` endpoint, then fetches all items for each library using `/api/libraries/{libraryId}/items`. It filters for items of type `audiobook` and syncs their progress to Hardcover.
+This service fetches all libraries from your AudiobookShelf server using the `/api/libraries` endpoint, then fetches all items for each library using `/api/libraries/{libraryId}/items`. It filters for items with `mediaType == "book"` and extracts title/author from `media.metadata`, then syncs their progress to Hardcover. Only in-progress books (statusId=2) are synced with progress.
 
 ## Getting Started
 
@@ -101,13 +107,13 @@ If your AudiobookShelf server uses a certificate signed by a custom or internal 
    docker run -v $(pwd)/ca.crt:/ca.crt:ro ... ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
    ```
 
-At startup, the container will automatically combine your custom CA with the system CA bundle and set `SSL_CERT_FILE` so your internal certificates are trusted.
+At startup, the container will automatically combine your custom CA with the system CA bundle and set `SSL_CERT_FILE` so your internal certificates are trusted. This is handled by the `entrypoint.sh` script.
 
 > **Note:** No image rebuild is required. The CA is picked up at runtime via the entrypoint script.
 
 ### Endpoints
 - `GET /healthz` — Health check
-- `POST/GET /sync` — Trigger a sync manually
+- `POST/GET /sync` — Trigger a sync manually (both methods supported)
 
 ### Rate Limiting / Throttling
 
@@ -118,6 +124,16 @@ You can increase the delay if you have a large library or continue to see thrott
 ```sh
 export HARDCOVER_SYNC_DELAY_MS=3000 # 3 seconds between syncs
 ```
+
+### Debug Logging
+
+To enable verbose debug logging for troubleshooting, either run with the `-v` flag or set the environment variable:
+
+```sh
+export DEBUG_MODE=1
+```
+
+This will print detailed logs for API requests, responses, errors, and sync progress.
 
 ### Pulling from GitHub Container Registry (GHCR)
 To pull the latest image:
@@ -145,6 +161,8 @@ To run tests:
 ```sh
 make test
 ```
+
+Tests cover the AudiobookShelf and Hardcover API integration, error handling, rate limiting, and progress sync logic. Contributions to test coverage are welcome!
 
 ## Contributing
 Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
