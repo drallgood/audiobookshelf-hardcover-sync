@@ -22,6 +22,7 @@ Syncs Audiobookshelf to Hardcover.
 | SYNC_INTERVAL            | (optional) Go duration string for periodic sync                                             |
 | HARDCOVER_SYNC_DELAY_MS  | (optional) Delay between Hardcover syncs in milliseconds (default: 1500)                    |
 | MINIMUM_PROGRESS_THRESHOLD | (optional) Minimum progress threshold to sync books (0.0-1.0, default: 0.01 = 1%)           |
+| AUDIOBOOK_MATCH_MODE     | (optional) Behavior when ASIN lookup fails: `continue` (default), `skip`, `fail`            |
 | DEBUG_MODE               | (optional) Set to `1` to enable verbose debug logging                                       |
 
 You can copy `.env.example` to `.env` and fill in your values.

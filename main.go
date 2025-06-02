@@ -104,6 +104,18 @@ func getMinimumProgressThreshold() float64 {
 	return threshold
 }
 
+// getAudiobookMatchMode returns the behavior when ASIN lookup fails
+// Options: "continue" (default), "skip", "fail"
+func getAudiobookMatchMode() string {
+	mode := strings.ToLower(os.Getenv("AUDIOBOOK_MATCH_MODE"))
+	switch mode {
+	case "skip", "fail":
+		return mode
+	default:
+		return "continue" // default for backwards compatibility
+	}
+}
+
 // AudiobookShelf API response structures (updated)
 type Library struct {
 	ID   string `json:"id"`
@@ -1438,6 +1450,24 @@ func syncToHardcover(a Audiobook) error {
 	// Validate that we have a valid bookId before proceeding
 	if bookId == "" {
 		return fmt.Errorf("failed to find valid Hardcover bookId for '%s' by '%s' (ISBN: %s, ASIN: %s) - all lookup methods returned empty bookId", a.Title, a.Author, a.ISBN, a.ASIN)
+	}
+
+	// SAFETY CHECK: Handle audiobook edition matching behavior
+	// This helps prevent syncing audiobook progress to wrong editions (ebook/physical)
+	if a.ASIN != "" && editionId == "" {
+		matchMode := getAudiobookMatchMode()
+		
+		switch matchMode {
+		case "fail":
+			return fmt.Errorf("ASIN lookup failed for audiobook '%s' (ASIN: %s) and AUDIOBOOK_MATCH_MODE=fail. Cannot guarantee correct audiobook edition match", a.Title, a.ASIN)
+		case "skip":
+			debugLog("SKIPPING: ASIN lookup failed for '%s' (ASIN: %s) and AUDIOBOOK_MATCH_MODE=skip. Avoiding potential wrong edition sync.", a.Title, a.ASIN)
+			return nil // Skip this book entirely
+		default: // "continue"
+			debugLog("WARNING: ASIN lookup failed for '%s' (ASIN: %s), using fallback book matching. Progress may not sync correctly if this isn't the audiobook edition.", a.Title, a.ASIN)
+			debugLog("Consider manually checking if bookId %s corresponds to the correct audiobook edition in Hardcover", bookId)
+			debugLog("To change this behavior, set AUDIOBOOK_MATCH_MODE=skip or AUDIOBOOK_MATCH_MODE=fail")
+		}
 	}
 
 	// Step 2: Check if user already has this book and compare status/progress
