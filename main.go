@@ -1501,15 +1501,17 @@ func syncToHardcover(a Audiobook) error {
 			if existingProgressSeconds != targetProgressSeconds {
 				debugLog("Updating existing user_book_read id=%d for '%s': progressSeconds=%d -> %d", existingReadId, a.Title, existingProgressSeconds, targetProgressSeconds)
 				updateMutation := `
-				mutation UpdateUserBookRead($id: Int!, $progressSeconds: Int!) {
-				  update_user_book_read_by_pk(pk_columns: {id: $id}, _set: {progress_seconds: $progressSeconds}) {
+				mutation UpdateUserBookRead($id: Int!, $object: DatesReadInput!) {
+				  update_user_book_read(id: $id, object: $object) {
 					id
 					progress_seconds
 				  }
 				}`
 				variables := map[string]interface{}{
-					"id":              existingReadId,
-					"progressSeconds": targetProgressSeconds,
+					"id": existingReadId,
+					"object": map[string]interface{}{
+						"progress_seconds": targetProgressSeconds,
+					},
 				}
 				payload := map[string]interface{}{
 					"query":     updateMutation,

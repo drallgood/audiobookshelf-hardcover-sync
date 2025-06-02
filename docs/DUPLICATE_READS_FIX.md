@@ -61,7 +61,7 @@ if targetProgressSeconds > 0 {
     if existingReadId > 0 {
         // Update existing entry if progress changed
         if existingProgressSeconds != targetProgressSeconds {
-            // Use update_user_book_read_by_pk mutation
+            // Use update_user_book_read mutation (fixed GraphQL schema issue)
         }
     } else {
         // Create new entry
@@ -130,3 +130,39 @@ The fix has been tested with:
 - **Existing Duplicates**: This fix prevents new duplicates but doesn't remove existing ones
 - **Data Cleanup**: Consider running a cleanup script to remove duplicate entries if needed
 - **No Breaking Changes**: The fix is fully backward compatible with existing data
+
+## GraphQL Mutation Fix
+
+### Issue
+The original implementation used `update_user_book_read_by_pk` which doesn't exist in Hardcover's GraphQL API, causing sync failures with errors like:
+```
+Cannot query field 'update_user_book_read_by_pk' on type 'mutation_root'
+```
+
+### Solution
+Fixed the mutation to use the correct `update_user_book_read` mutation with proper parameter structure:
+
+#### Before (Invalid Mutation):
+```graphql
+mutation UpdateUserBookRead($id: Int!, $progressSeconds: Int!) {
+  update_user_book_read_by_pk(pk_columns: {id: $id}, _set: {progress_seconds: $progressSeconds}) {
+    id
+    progress_seconds
+  }
+}
+```
+
+#### After (Correct Mutation):
+```graphql
+mutation UpdateUserBookRead($id: Int!, $object: DatesReadInput!) {
+  update_user_book_read(id: $id, object: $object) {
+    id
+    progress_seconds
+  }
+}
+```
+
+The fix ensures that:
+- Uses the valid `update_user_book_read` mutation from Hardcover's API
+- Properly structures the `object` parameter as `DatesReadInput` type
+- Correctly updates the `progress_seconds` field for existing reads
