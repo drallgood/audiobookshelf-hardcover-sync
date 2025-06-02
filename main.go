@@ -240,6 +240,7 @@ func fetchUserProgress() (map[string]float64, error) {
 
 	// Try the authenticated user's session data endpoint first
 	endpoints := []string{
+		"/api/me",
 		"/api/me/listening-sessions",
 		"/api/sessions",
 		"/api/me/progress",
@@ -272,6 +273,29 @@ func fetchUserProgress() (map[string]float64, error) {
 				continue
 			}
 			debugLog("Progress endpoint %s response: %s", endpoint, string(body))
+
+			// Try /api/me response structure with mediaProgress
+			var meResp struct {
+				MediaProgress []struct {
+					ID          string  `json:"id"`
+					Progress    float64 `json:"progress"`
+					IsFinished  bool    `json:"isFinished"`
+					CurrentTime float64 `json:"currentTime"`
+				} `json:"mediaProgress"`
+			}
+			if err := json.Unmarshal(body, &meResp); err == nil && len(meResp.MediaProgress) > 0 {
+				for _, item := range meResp.MediaProgress {
+					if item.IsFinished {
+						progressData[item.ID] = 1.0
+						debugLog("Found manually finished book in mediaProgress: %s (isFinished=true)", item.ID)
+					} else {
+						progressData[item.ID] = item.Progress
+						debugLog("Found progress in mediaProgress: %s progress=%.6f", item.ID, item.Progress)
+					}
+				}
+				debugLog("Successfully parsed %d progress items from %s (mediaProgress)", len(progressData), endpoint)
+				return progressData, nil
+			}
 
 			// Try different response structures
 			var itemsInProgress []struct {
@@ -334,23 +358,23 @@ func fetchUserProgress() (map[string]float64, error) {
 			}
 			if err := json.Unmarshal(body, &sessionsResp); err == nil && len(sessionsResp.Sessions) > 0 {
 				debugLog("Successfully parsed %d listening sessions from %s", len(sessionsResp.Sessions), endpoint)
-				
+
 				// Build progress map from the latest session for each item
 				latestProgress := make(map[string]float64)
 				latestCurrentTime := make(map[string]float64)
 				latestTotalDuration := make(map[string]float64)
-				
+
 				for i, session := range sessionsResp.Sessions {
-					debugLog("Session %d: LibraryItemID=%s, Duration=%.2f, CurrentTime=%.2f, Progress=%.6f", 
+					debugLog("Session %d: LibraryItemID=%s, Duration=%.2f, CurrentTime=%.2f, Progress=%.6f",
 						i, session.LibraryItemID, session.Duration, session.CurrentTime, session.Progress)
-						
+
 					if session.LibraryItemID != "" {
 						var sessionProgress float64
-						
+
 						// Calculate progress from currentTime and duration
 						if session.Duration > 0 && session.CurrentTime > 0 {
 							sessionProgress = session.CurrentTime / session.Duration
-							debugLog("Session progress calculated from currentTime/duration: %.6f (%.2fs / %.2fs) for item %s", 
+							debugLog("Session progress calculated from currentTime/duration: %.6f (%.2fs / %.2fs) for item %s",
 								sessionProgress, session.CurrentTime, session.Duration, session.LibraryItemID)
 						} else if session.Progress > 0 {
 							// Fallback to direct progress field if available
@@ -359,7 +383,7 @@ func fetchUserProgress() (map[string]float64, error) {
 						} else {
 							debugLog("No valid progress data found for session %d (item %s)", i, session.LibraryItemID)
 						}
-						
+
 						// Keep the most recent progress for each item
 						if existing, exists := latestProgress[session.LibraryItemID]; !exists || sessionProgress > existing {
 							latestProgress[session.LibraryItemID] = sessionProgress
@@ -369,10 +393,10 @@ func fetchUserProgress() (map[string]float64, error) {
 						}
 					}
 				}
-				
+
 				for itemID, progress := range latestProgress {
 					progressData[itemID] = progress
-					debugLog("Final session progress for item %s: %.6f (%.2fs / %.2fs)", 
+					debugLog("Final session progress for item %s: %.6f (%.2fs / %.2fs)",
 						itemID, progress, latestCurrentTime[itemID], latestTotalDuration[itemID])
 				}
 				debugLog("Successfully parsed %d progress items from %s (sessions)", len(progressData), endpoint)
@@ -400,26 +424,26 @@ func fetchUserProgress() (map[string]float64, error) {
 			}
 			if err := json.Unmarshal(body, &sessions); err == nil && len(sessions) > 0 {
 				debugLog("Successfully parsed %d sessions from %s (bare array)", len(sessions), endpoint)
-				
+
 				// Build progress map from the latest session for each item
 				latestProgress := make(map[string]float64)
 				for i, session := range sessions {
-					debugLog("Session %d: LibraryItemID=%s, Duration=%.2f, CurrentTime=%.2f, Progress=%.6f", 
+					debugLog("Session %d: LibraryItemID=%s, Duration=%.2f, CurrentTime=%.2f, Progress=%.6f",
 						i, session.LibraryItemID, session.Duration, session.CurrentTime, session.Progress)
-						
+
 					if session.LibraryItemID != "" {
 						var sessionProgress float64
-						
+
 						// Calculate progress from currentTime and duration
 						if session.Duration > 0 && session.CurrentTime > 0 {
 							sessionProgress = session.CurrentTime / session.Duration
-							debugLog("Session progress calculated: %.6f = %.2f / %.2f for item %s", 
+							debugLog("Session progress calculated: %.6f = %.2f / %.2f for item %s",
 								sessionProgress, session.CurrentTime, session.Duration, session.LibraryItemID)
 						} else if session.Progress > 0 {
 							sessionProgress = session.Progress
 							debugLog("Session progress from direct field: %.6f for item %s", sessionProgress, session.LibraryItemID)
 						}
-						
+
 						// Keep the most recent progress for each item
 						if existing, exists := latestProgress[session.LibraryItemID]; !exists || sessionProgress > existing {
 							latestProgress[session.LibraryItemID] = sessionProgress
@@ -427,14 +451,14 @@ func fetchUserProgress() (map[string]float64, error) {
 						}
 					}
 				}
-				
+
 				for itemID, progress := range latestProgress {
 					progressData[itemID] = progress
 				}
 				debugLog("Successfully parsed %d progress items from %s (sessions array)", len(progressData), endpoint)
 				return progressData, nil
 			}
-			
+
 			// Try generic JSON parsing to understand the structure
 			var genericData map[string]interface{}
 			if err := json.Unmarshal(body, &genericData); err == nil {
@@ -446,7 +470,7 @@ func fetchUserProgress() (map[string]float64, error) {
 					}
 					return keys
 				}())
-				
+
 				// Check if there's session data at different levels
 				if sessionsData, ok := genericData["sessions"]; ok {
 					debugLog("Found 'sessions' key in response")
@@ -460,24 +484,24 @@ func fetchUserProgress() (map[string]float64, error) {
 								}
 								return keys
 							}())
-							
+
 							// Extract progress manually
 							if libraryItemID, hasID := firstSession["libraryItemId"].(string); hasID && libraryItemID != "" {
 								var sessionProgress float64
-								
+
 								if currentTime, hasTime := firstSession["currentTime"].(float64); hasTime {
 									if duration, hasDuration := firstSession["duration"].(float64); hasDuration && duration > 0 {
 										sessionProgress = currentTime / duration
-										debugLog("Manual session progress calculated: %.6f = %.2f / %.2f", 
+										debugLog("Manual session progress calculated: %.6f = %.2f / %.2f",
 											sessionProgress, currentTime, duration)
 									}
 								}
-								
+
 								if progress, hasProgress := firstSession["progress"].(float64); hasProgress && sessionProgress == 0 {
 									sessionProgress = progress
 									debugLog("Manual session progress from direct field: %.6f", sessionProgress)
 								}
-								
+
 								if sessionProgress > 0 {
 									progressData[libraryItemID] = sessionProgress
 									debugLog("Successfully extracted manual progress for item %s: %.6f", libraryItemID, sessionProgress)
@@ -612,40 +636,7 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 					isbn10 = item.Media.Metadata.ISBN
 				}
 
-				// Determine progress from different possible sources
-				progress := item.Progress
-
-				// 1. Check if we have progress data from the /api/me/progress endpoint
-				if userProgress, hasProgress := progressData[item.ID]; hasProgress {
-					progress = userProgress
-					debugLog("Using progress from /api/me/progress: %.6f for '%s'", progress, title)
-				} else if item.UserProgress != nil {
-					// 2. Check UserProgress field in the item
-					progress = item.UserProgress.Progress
-					debugLog("Using UserProgress.Progress: %.6f for '%s'", progress, title)
-				} else if item.IsFinished {
-					// 3. Check if item is marked as finished
-					progress = 1.0
-					debugLog("Item marked as finished, setting progress to 1.0 for '%s'", title)
-				}
-
-				// 4. If progress is still 0, try fetching individual item progress
-				if progress == 0 {
-					indivProgress, isFinished, err := fetchItemProgress(item.ID)
-					if err == nil {
-						progress = indivProgress
-						if isFinished {
-							progress = 1.0
-						}
-						debugLog("Using individual item progress: %.6f for '%s'", progress, title)
-					} else {
-						debugLog("Failed to fetch individual progress for item '%s': %v", title, err)
-					}
-				}
-
-				debugLog("Item '%s' final progress: %.6f (raw: %.6f, UserProgress: %v, IsFinished: %v)", title, progress, item.Progress, item.UserProgress != nil, item.IsFinished)
-
-				// Extract duration and current time information
+				// Extract duration and current time information first
 				var currentTime, totalDuration float64
 
 				// Try to get duration from various sources
@@ -657,7 +648,67 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 					totalDuration = item.UserProgress.TotalDuration
 				}
 
+				// Determine progress from different possible sources
+				progress := item.Progress
+
 				// Get current time position
+				if item.UserProgress != nil && item.UserProgress.CurrentTime > 0 {
+					currentTime = item.UserProgress.CurrentTime
+				} else if totalDuration > 0 && progress > 0 {
+					// Calculate current time from progress percentage (initial estimate)
+					currentTime = totalDuration * progress
+				}
+
+				// 1. Check if we have progress data from the /api/me/progress endpoint
+				if userProgress, hasProgress := progressData[item.ID]; hasProgress {
+					progress = userProgress
+					debugLog("Using progress from /api/me/progress: %.6f for '%s'", progress, title)
+				} else if item.UserProgress != nil {
+					// 2. Check UserProgress field in the item
+					if item.UserProgress.IsFinished {
+						progress = 1.0
+						debugLog("UserProgress.IsFinished is true, setting progress to 1.0 for '%s'", title)
+					} else {
+						progress = item.UserProgress.Progress
+						debugLog("Using UserProgress.Progress: %.6f for '%s'", progress, title)
+					}
+				} else if item.IsFinished {
+					// 3. Check if item is marked as finished
+					progress = 1.0
+					debugLog("Item.IsFinished is true, setting progress to 1.0 for '%s'", title)
+				}
+
+				// 4. If progress is still 0, try fetching individual item progress
+				if progress == 0 {
+					indivProgress, isFinished, err := fetchItemProgress(item.ID)
+					if err == nil {
+						progress = indivProgress
+						if isFinished {
+							progress = 1.0
+						}
+						debugLog("Using individual item progress: %.6f (finished: %v) for '%s'", progress, isFinished, title)
+					} else {
+						debugLog("Failed to fetch individual progress for item '%s': %v", title, err)
+					}
+				}
+
+				// 5. If progress is still 0, try the enhanced finished book detection
+				if progress == 0 {
+					debugLog("Trying enhanced finished book detection for '%s' with currentTime=%.2f, totalDuration=%.2f", 
+						title, currentTime, totalDuration)
+					isFinished, detectedProgress := isBookLikelyFinished(item.ID, currentTime, totalDuration)
+					if isFinished {
+						progress = 1.0
+						debugLog("Enhanced detection found '%s' is finished, setting progress to 1.0", title)
+					} else if detectedProgress > 0 {
+						progress = detectedProgress
+						debugLog("Enhanced detection found progress %.6f for '%s'", progress, title)
+					}
+				}
+
+				debugLog("Item '%s' final progress: %.6f (raw: %.6f, UserProgress: %v, IsFinished: %v)", title, progress, item.Progress, item.UserProgress != nil, item.IsFinished)
+
+				// Recalculate current time with final progress if needed
 				if item.UserProgress != nil && item.UserProgress.CurrentTime > 0 {
 					currentTime = item.UserProgress.CurrentTime
 				} else if totalDuration > 0 && progress > 0 {
@@ -782,12 +833,128 @@ func lookupHardcoverBookIDRaw(title, author string) (string, error) {
 	return "", fmt.Errorf("no matching book found for '%s' by '%s'", title, author)
 }
 
+// Detect potentially finished books using listening sessions and other indicators
+func isBookLikelyFinished(itemID string, currentTime, totalDuration float64) (bool, float64) {
+	// If we have valid duration data, check if the book is essentially finished
+	if totalDuration > 0 && currentTime > 0 {
+		progressRatio := currentTime / totalDuration
+
+		// Consider books with >= 95% completion as finished
+		// This accounts for books where users stop a few minutes before the end
+		if progressRatio >= 0.95 {
+			debugLog("Book %s appears finished based on duration analysis: %.2f%% (%.2fs / %.2fs)",
+				itemID, progressRatio*100, currentTime, totalDuration)
+			return true, 1.0
+		}
+
+		// Return the calculated progress if it's meaningful
+		if progressRatio >= 0.01 { // At least 1% progress
+			debugLog("Book %s has calculated progress: %.2f%% (%.2fs / %.2fs)",
+				itemID, progressRatio*100, currentTime, totalDuration)
+			return false, progressRatio
+		}
+	}
+
+	// Try to fetch listening sessions for this specific item to get more accurate data
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Check for item-specific listening sessions
+	url := fmt.Sprintf("%s/api/items/%s/listening-sessions", getAudiobookShelfURL(), itemID)
+	debugLog("Checking item-specific listening sessions: %s", url)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return false, 0
+	}
+	req.Header.Set("Authorization", "Bearer "+getAudiobookShelfToken())
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return false, 0
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 200 {
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return false, 0
+		}
+
+		// Try to parse sessions response
+		var sessionsData struct {
+			Sessions []struct {
+				CurrentTime   float64 `json:"currentTime"`
+				Duration      float64 `json:"duration"`
+				TotalDuration float64 `json:"totalDuration"`
+				Progress      float64 `json:"progress"`
+				UpdatedAt     int64   `json:"updatedAt"`
+			} `json:"sessions"`
+		}
+
+		if err := json.Unmarshal(body, &sessionsData); err == nil && len(sessionsData.Sessions) > 0 {
+			// Find the most recent session
+			var latestSession *struct {
+				CurrentTime   float64 `json:"currentTime"`
+				Duration      float64 `json:"duration"`
+				TotalDuration float64 `json:"totalDuration"`
+				Progress      float64 `json:"progress"`
+				UpdatedAt     int64   `json:"updatedAt"`
+			}
+
+			for i := range sessionsData.Sessions {
+				session := &sessionsData.Sessions[i]
+				if latestSession == nil || session.UpdatedAt > latestSession.UpdatedAt {
+					latestSession = session
+				}
+			}
+
+			if latestSession != nil {
+				// Use session's duration info if available
+				sessionDuration := latestSession.Duration
+				if sessionDuration == 0 && latestSession.TotalDuration > 0 {
+					sessionDuration = latestSession.TotalDuration
+				}
+
+				if sessionDuration > 0 && latestSession.CurrentTime > 0 {
+					sessionProgress := latestSession.CurrentTime / sessionDuration
+					debugLog("Latest session for %s: %.2f%% (%.2fs / %.2fs)",
+						itemID, sessionProgress*100, latestSession.CurrentTime, sessionDuration)
+
+					// Check if this session indicates completion
+					if sessionProgress >= 0.95 {
+						debugLog("Book %s appears finished based on latest session data", itemID)
+						return true, 1.0
+					}
+
+					if sessionProgress >= 0.01 {
+						return false, sessionProgress
+					}
+				}
+
+				// Check direct progress field from session
+				if latestSession.Progress >= 0.95 {
+					debugLog("Book %s appears finished based on session progress field: %.2f%%",
+						itemID, latestSession.Progress*100)
+					return true, 1.0
+				}
+
+				if latestSession.Progress >= 0.01 {
+					debugLog("Book %s has session progress: %.2f%%", itemID, latestSession.Progress*100)
+					return false, latestSession.Progress
+				}
+			}
+		}
+	}
+
+	return false, 0
+}
+
 // Sync each finished audiobook to Hardcover
 func syncToHardcover(a Audiobook) error {
 	var bookId, editionId string
-	
+
 	debugLog("Starting book matching for '%s' by '%s' (ISBN: %s, ASIN: %s)", a.Title, a.Author, a.ISBN, a.ASIN)
-	
+
 	// PRIORITY 1: Try ASIN first since it's most likely to match the actual audiobook edition
 	if a.ASIN != "" {
 		query := `
@@ -831,10 +998,10 @@ func syncToHardcover(a Audiobook) error {
 				Books []struct {
 					ID       json.Number `json:"id"`
 					Editions []struct {
-						ID               json.Number `json:"id"`
-						ASIN             string      `json:"asin"`
-						ReadingFormatID  *int        `json:"reading_format_id"`
-						AudioSeconds     *int        `json:"audio_seconds"`
+						ID              json.Number `json:"id"`
+						ASIN            string      `json:"asin"`
+						ReadingFormatID *int        `json:"reading_format_id"`
+						AudioSeconds    *int        `json:"audio_seconds"`
 					} `json:"editions"`
 				} `json:"books"`
 			} `json:"data"`
@@ -849,13 +1016,13 @@ func syncToHardcover(a Audiobook) error {
 		if len(result.Data.Books) > 0 && len(result.Data.Books[0].Editions) > 0 {
 			bookId = result.Data.Books[0].ID.String()
 			editionId = result.Data.Books[0].Editions[0].ID.String()
-			debugLog("Found audiobook via ASIN: bookId=%s, editionId=%s, format_id=%v, audio_seconds=%v", 
+			debugLog("Found audiobook via ASIN: bookId=%s, editionId=%s, format_id=%v, audio_seconds=%v",
 				bookId, editionId, result.Data.Books[0].Editions[0].ReadingFormatID, result.Data.Books[0].Editions[0].AudioSeconds)
 		} else {
 			debugLog("No audiobook edition found for ASIN %s", a.ASIN)
 		}
 	}
-	
+
 	// PRIORITY 2: Try ISBN/ISBN13 only if ASIN didn't work and ISBN is different from ASIN
 	if bookId == "" && a.ISBN != "" && (a.ASIN == "" || a.ISBN != a.ASIN) {
 		// Query for book and edition by ISBN/ISBN13
@@ -980,7 +1147,7 @@ func syncToHardcover(a Audiobook) error {
 			}
 		}
 	}
-	
+
 	// PRIORITY 3: Fallback to title/author lookup
 	if bookId == "" {
 		var err error
@@ -989,12 +1156,12 @@ func syncToHardcover(a Audiobook) error {
 			return fmt.Errorf("could not find Hardcover bookId for '%s' by '%s' (ISBN: %s, ASIN: %s): %v", a.Title, a.Author, a.ISBN, a.ASIN, err)
 		}
 	}
-	
+
 	// Validate that we have a valid bookId before proceeding
 	if bookId == "" {
 		return fmt.Errorf("failed to find valid Hardcover bookId for '%s' by '%s' (ISBN: %s, ASIN: %s) - all lookup methods returned empty bookId", a.Title, a.Author, a.ISBN, a.ASIN)
 	}
-	
+
 	// Step 2: Insert or update user book
 	statusId := 3 // default to read
 	if a.Progress < 0.99 {
@@ -1108,13 +1275,13 @@ func syncToHardcover(a Audiobook) error {
 		}
 
 		debugLog("Syncing progress for '%s': %d seconds (%.2f%%)", a.Title, progressSeconds, a.Progress*100)
-		
+
 		// Use the enhanced insertUserBookRead function which includes reading_format_id for audiobooks
 		// This ensures Hardcover recognizes it as an audiobook and doesn't ignore progress_seconds
 		if err := insertUserBookRead(userBookId, progressSeconds, a.Progress >= 0.99); err != nil {
 			return fmt.Errorf("failed to sync progress for '%s': %v", a.Title, err)
 		}
-		
+
 		debugLog("Successfully synced progress for '%s': %d seconds", a.Title, progressSeconds)
 	}
 	return nil
@@ -1228,14 +1395,29 @@ func runSync() {
 		return
 	}
 
-	// Filter books that have meaningful progress
+	// Filter books that have meaningful progress or are likely finished
 	minProgress := getMinimumProgressThreshold()
 	var booksToSync []Audiobook
 	for _, book := range books {
 		if book.Progress > minProgress { // Only sync books with more than the minimum progress
 			booksToSync = append(booksToSync, book)
 		} else {
-			debugLog("Skipping book '%s' with progress %.6f (< %.2f%%)", book.Title, book.Progress, minProgress*100)
+			// For books with low/zero progress, check if they might actually be finished
+			// using the enhanced detection methods
+			isFinished, actualProgress := isBookLikelyFinished(book.ID, book.CurrentTime, book.TotalDuration)
+			if isFinished {
+				// Update the book's progress to reflect that it's finished
+				book.Progress = 1.0
+				booksToSync = append(booksToSync, book)
+				debugLog("Book '%s' appears finished despite low reported progress (%.6f) - adding to sync with progress 1.0", book.Title, book.Progress)
+			} else if actualProgress > minProgress {
+				// Update the book's progress with the better calculated value
+				book.Progress = actualProgress
+				booksToSync = append(booksToSync, book)
+				debugLog("Book '%s' has better calculated progress (%.6f) - adding to sync", book.Title, actualProgress)
+			} else {
+				debugLog("Skipping book '%s' with progress %.6f (< %.2f%%)", book.Title, book.Progress, minProgress*100)
+			}
 		}
 	}
 

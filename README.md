@@ -57,9 +57,13 @@ The service only syncs books that have meaningful progress (configurable via `MI
 
 ### Accurate Progress Calculation
 Progress is calculated using the most accurate method available:
-1. **Current Time**: Uses actual `currentTime` from AudiobookShelf when available
-2. **Duration Calculation**: Calculates progress from `totalDuration * progressPercentage` when duration is known
-3. **Fallback**: Uses a reasonable 10-hour duration estimate (much better than the previous 1-hour assumption)
+1. **User Progress API**: Fetches progress from `/api/me` endpoint which includes manually finished books with `isFinished=true` flags
+2. **Current Time**: Uses actual `currentTime` from AudiobookShelf when available
+3. **Duration Calculation**: Calculates progress from `totalDuration * progressPercentage` when duration is known
+4. **Fallback**: Uses a reasonable 10-hour duration estimate (much better than the previous 1-hour assumption)
+
+### Manual Finish Detection
+The service now properly detects books that have been manually marked as finished in AudiobookShelf, even if their progress percentage is less than 100%. This is achieved by checking the `mediaProgress` data from the `/api/me` endpoint for `isFinished=true` flags.
 
 ### Status Mapping
 - Books with progress >= 99% are marked as "read" (status_id=3) on Hardcover

@@ -33,3 +33,5 @@ go.work.sum
 
 main
 audiobookshelf-hardcover-sync
+audiobookshelf-openapi.json
+hardcover-schema.graphql

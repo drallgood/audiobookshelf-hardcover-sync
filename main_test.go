@@ -314,3 +314,208 @@ func TestFetchUserProgress_ListeningSessions(t *testing.T) {
 		t.Errorf("Expected progress %.6f for li_item456, got %.6f", expectedProgress2, progress)
 	}
 }
+
+func TestFetchUserProgress_MediaProgress(t *testing.T) {
+	// Mock server for testing /api/me endpoint with mediaProgress parsing
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/me" {
+			// Mock response with mediaProgress data that includes manually finished books
+			response := `{
+				"id": "usr_123456789",
+				"username": "testuser",
+				"email": "test@example.com",
+				"type": "user",
+				"token": "test-token",
+				"mediaProgress": [
+					{
+						"id": "li_manual_finished",
+						"progress": 0.98,
+						"isFinished": true,
+						"currentTime": 19800.0,
+						"duration": 20000.0
+					},
+					{
+						"id": "li_in_progress",
+						"progress": 0.45,
+						"isFinished": false,
+						"currentTime": 9000.0,
+						"duration": 20000.0
+					},
+					{
+						"id": "li_manual_finished_2",
+						"progress": 0.75,
+						"isFinished": true,
+						"currentTime": 15000.0,
+						"duration": 20000.0
+					}
+				],
+				"librariesAccessible": []
+			}`
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(response))
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	// Set environment variables for the test
+	originalURL := os.Getenv("AUDIOBOOKSHELF_URL")
+	originalToken := os.Getenv("AUDIOBOOKSHELF_TOKEN")
+	originalDebug := debugMode
+	
+	os.Setenv("AUDIOBOOKSHELF_URL", server.URL)
+	os.Setenv("AUDIOBOOKSHELF_TOKEN", "test-token")
+	debugMode = true
+	
+	defer func() {
+		os.Setenv("AUDIOBOOKSHELF_URL", originalURL)
+		os.Setenv("AUDIOBOOKSHELF_TOKEN", originalToken)
+		debugMode = originalDebug
+	}()
+
+	// Test the function
+	progressData, err := fetchUserProgress()
+	
+	// Verify results
+	if err != nil {
+		t.Errorf("Expected no error, got: %v", err)
+	}
+	
+	if len(progressData) != 3 {
+		t.Errorf("Expected 3 progress items, got %d", len(progressData))
+	}
+	
+	// Check manually finished book 1 (should be 1.0 despite progress being 0.98)
+	if progress, exists := progressData["li_manual_finished"]; !exists {
+		t.Errorf("Expected progress for li_manual_finished, but not found")
+	} else if progress != 1.0 {
+		t.Errorf("Expected progress 1.0 for manually finished book li_manual_finished, got %.6f", progress)
+	}
+	
+	// Check in-progress book (should keep original progress)
+	if progress, exists := progressData["li_in_progress"]; !exists {
+		t.Errorf("Expected progress for li_in_progress, but not found")
+	} else if progress != 0.45 {
+		t.Errorf("Expected progress 0.45 for li_in_progress, got %.6f", progress)
+	}
+	
+	// Check manually finished book 2 (should be 1.0 despite progress being 0.75)
+	if progress, exists := progressData["li_manual_finished_2"]; !exists {
+		t.Errorf("Expected progress for li_manual_finished_2, but not found")
+	} else if progress != 1.0 {
+		t.Errorf("Expected progress 1.0 for manually finished book li_manual_finished_2, got %.6f", progress)
+	}
+}
+
+func TestIntegration_ManuallyFinishedBooks(t *testing.T) {
+	// This test validates that manually finished books detected from /api/me 
+	// are properly integrated into the overall progress detection hierarchy
+	
+	// Mock server that provides both /api/me and library endpoints
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/me":
+			// Mock /api/me response with manually finished book
+			response := `{
+				"id": "usr_123456789",
+				"mediaProgress": [
+					{
+						"id": "li_manually_finished_book",
+						"progress": 0.85,
+						"isFinished": true,
+						"currentTime": 17000.0,
+						"duration": 20000.0
+					}
+				]
+			}`
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(response))
+		case "/api/libraries":
+			// Mock libraries response
+			response := `{
+				"libraries": [
+					{
+						"id": "lib_test123",
+						"name": "Test Library",
+						"mediaType": "book"
+					}
+				]
+			}`
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(response))
+		case "/api/libraries/lib_test123/items":
+			// Mock library items with a book that should be detected as manually finished
+			response := `{
+				"results": [
+					{
+						"id": "li_manually_finished_book",
+						"mediaType": "book",
+						"progress": 0.85,
+						"isFinished": false,
+						"media": {
+							"metadata": {
+								"title": "Test Manually Finished Book",
+								"authorName": "Test Author",
+								"duration": 20000.0
+							}
+						}
+					}
+				]
+			}`
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(response))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	// Set environment variables for the test
+	originalURL := os.Getenv("AUDIOBOOKSHELF_URL")
+	originalToken := os.Getenv("AUDIOBOOKSHELF_TOKEN")
+	originalDebug := debugMode
+	
+	os.Setenv("AUDIOBOOKSHELF_URL", server.URL)
+	os.Setenv("AUDIOBOOKSHELF_TOKEN", "test-token")
+	debugMode = true
+	
+	defer func() {
+		os.Setenv("AUDIOBOOKSHELF_URL", originalURL)
+		os.Setenv("AUDIOBOOKSHELF_TOKEN", originalToken)
+		debugMode = originalDebug
+	}()
+
+	// Test the integration
+	audiobooks, err := fetchAudiobookShelfStats()
+	
+	// Verify results
+	if err != nil {
+		t.Errorf("Expected no error, got: %v", err)
+	}
+	
+	if len(audiobooks) != 1 {
+		t.Errorf("Expected 1 audiobook, got %d", len(audiobooks))
+		return
+	}
+	
+	book := audiobooks[0]
+	
+	// Verify that the manually finished book is detected as fully complete (progress 1.0)
+	// even though the library item shows progress 0.85
+	if book.Progress != 1.0 {
+		t.Errorf("Expected manually finished book to have progress 1.0, got %.6f", book.Progress)
+	}
+	
+	if book.Title != "Test Manually Finished Book" {
+		t.Errorf("Expected title 'Test Manually Finished Book', got '%s'", book.Title)
+	}
+	
+	if book.Author != "Test Author" {
+		t.Errorf("Expected author 'Test Author', got '%s'", book.Author)
+	}
+}
