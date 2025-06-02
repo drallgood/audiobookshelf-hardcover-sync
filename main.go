@@ -1522,18 +1522,21 @@ func syncToHardcover(a Audiobook) error {
 	if bookId == "" {
 		var err error
 		bookId, err = lookupHardcoverBookID(a.Title, a.Author)
-		if err != nil {
-			// Apply the audiobook match mode when title/author lookup fails too
-			matchMode := getAudiobookMatchMode()
-			switch matchMode {
-			case "fail":
-				return fmt.Errorf("book lookup failed for audiobook '%s' by '%s' (ISBN: %s, ASIN: %s) and AUDIOBOOK_MATCH_MODE=fail: %v", a.Title, a.Author, a.ISBN, a.ASIN, err)
-			case "skip":
-				debugLog("SKIPPING: Book lookup failed for '%s' by '%s' (ISBN: %s, ASIN: %s) and AUDIOBOOK_MATCH_MODE=skip: %v", a.Title, a.Author, a.ISBN, a.ASIN, err)
-				return nil // Skip this book entirely
-			default: // "continue"
-				return fmt.Errorf("could not find Hardcover bookId for '%s' by '%s' (ISBN: %s, ASIN: %s): %v", a.Title, a.Author, a.ISBN, a.ASIN, err)
-			}
+		if err != nil {		// Apply the audiobook match mode when title/author lookup fails too
+		matchMode := getAudiobookMatchMode()
+		switch matchMode {
+		case "fail":
+			return fmt.Errorf("book lookup failed for audiobook '%s' by '%s' (ISBN: %s, ASIN: %s) and AUDIOBOOK_MATCH_MODE=fail: %v", a.Title, a.Author, a.ISBN, a.ASIN, err)
+		case "skip":
+			// Collect this mismatch for manual review before skipping
+			reason := fmt.Sprintf("Book lookup failed - not found in Hardcover database using ASIN %s, ISBN %s, or title/author search", a.ASIN, a.ISBN)
+			addBookMismatch(a.Title, a.Author, a.ISBN, a.ASIN, "", "", reason)
+			
+			debugLog("SKIPPING: Book lookup failed for '%s' by '%s' (ISBN: %s, ASIN: %s) and AUDIOBOOK_MATCH_MODE=skip: %v", a.Title, a.Author, a.ISBN, a.ASIN, err)
+			return nil // Skip this book entirely
+		default: // "continue"
+			return fmt.Errorf("could not find Hardcover bookId for '%s' by '%s' (ISBN: %s, ASIN: %s): %v", a.Title, a.Author, a.ISBN, a.ASIN, err)
+		}
 		}
 	}
 
@@ -1555,11 +1558,17 @@ func syncToHardcover(a Audiobook) error {
 				return fmt.Errorf("no audiobook edition found for '%s' by '%s' (ISBN: %s) and AUDIOBOOK_MATCH_MODE=fail. Cannot guarantee correct audiobook edition match", a.Title, a.Author, a.ISBN)
 			}
 		case "skip":
+			// Collect this mismatch for manual review before skipping
+			var reason string
 			if a.ASIN != "" {
+				reason = fmt.Sprintf("ASIN lookup failed for ASIN %s - no audiobook edition found. Book was skipped to avoid wrong edition sync.", a.ASIN)
 				debugLog("SKIPPING: ASIN lookup failed for '%s' (ASIN: %s) and AUDIOBOOK_MATCH_MODE=skip. Avoiding potential wrong edition sync.", a.Title, a.ASIN)
 			} else {
+				reason = fmt.Sprintf("No audiobook edition found using ISBN %s - only non-audiobook editions available. Book was skipped to avoid wrong edition sync.", a.ISBN)
 				debugLog("SKIPPING: No audiobook edition found for '%s' by '%s' (ISBN: %s) and AUDIOBOOK_MATCH_MODE=skip. Avoiding potential wrong edition sync.", a.Title, a.Author, a.ISBN)
 			}
+			addBookMismatch(a.Title, a.Author, a.ISBN, a.ASIN, bookId, editionId, reason)
+			
 			return nil // Skip this book entirely
 		default: // "continue"
 			var reason string
