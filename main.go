@@ -277,20 +277,21 @@ func fetchUserProgress() (map[string]float64, error) {
 			// Try /api/me response structure with mediaProgress
 			var meResp struct {
 				MediaProgress []struct {
-					ID          string  `json:"id"`
-					Progress    float64 `json:"progress"`
-					IsFinished  bool    `json:"isFinished"`
-					CurrentTime float64 `json:"currentTime"`
+					ID            string  `json:"id"`
+					LibraryItemId string  `json:"libraryItemId"`
+					Progress      float64 `json:"progress"`
+					IsFinished    bool    `json:"isFinished"`
+					CurrentTime   float64 `json:"currentTime"`
 				} `json:"mediaProgress"`
 			}
 			if err := json.Unmarshal(body, &meResp); err == nil && len(meResp.MediaProgress) > 0 {
 				for _, item := range meResp.MediaProgress {
 					if item.IsFinished {
-						progressData[item.ID] = 1.0
-						debugLog("Found manually finished book in mediaProgress: %s (isFinished=true)", item.ID)
+						progressData[item.LibraryItemId] = 1.0
+						debugLog("Found manually finished book in mediaProgress: %s (isFinished=true)", item.LibraryItemId)
 					} else {
-						progressData[item.ID] = item.Progress
-						debugLog("Found progress in mediaProgress: %s progress=%.6f", item.ID, item.Progress)
+						progressData[item.LibraryItemId] = item.Progress
+						debugLog("Found progress in mediaProgress: %s progress=%.6f", item.LibraryItemId, item.Progress)
 					}
 				}
 				debugLog("Successfully parsed %d progress items from %s (mediaProgress)", len(progressData), endpoint)

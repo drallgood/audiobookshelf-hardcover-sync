@@ -328,21 +328,24 @@ func TestFetchUserProgress_MediaProgress(t *testing.T) {
 				"token": "test-token",
 				"mediaProgress": [
 					{
-						"id": "li_manual_finished",
+						"id": "progress_id_1",
+						"libraryItemId": "li_manual_finished",
 						"progress": 0.98,
 						"isFinished": true,
 						"currentTime": 19800.0,
 						"duration": 20000.0
 					},
 					{
-						"id": "li_in_progress",
+						"id": "progress_id_2",
+						"libraryItemId": "li_in_progress",
 						"progress": 0.45,
 						"isFinished": false,
 						"currentTime": 9000.0,
 						"duration": 20000.0
 					},
 					{
-						"id": "li_manual_finished_2",
+						"id": "progress_id_3",
+						"libraryItemId": "li_manual_finished_2",
 						"progress": 0.75,
 						"isFinished": true,
 						"currentTime": 15000.0,
@@ -422,7 +425,8 @@ func TestIntegration_ManuallyFinishedBooks(t *testing.T) {
 				"id": "usr_123456789",
 				"mediaProgress": [
 					{
-						"id": "li_manually_finished_book",
+						"id": "progress_id_manually_finished",
+						"libraryItemId": "li_manually_finished_book",
 						"progress": 0.85,
 						"isFinished": true,
 						"currentTime": 17000.0,
