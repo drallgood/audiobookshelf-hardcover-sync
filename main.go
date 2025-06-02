@@ -829,8 +829,8 @@ func lookupHardcoverBookIDRaw(title, author string) (string, error) {
 	var result struct {
 		Data struct {
 			Books []struct {
-				ID            string `json:"id"`
-				Title         string `json:"title"`
+				ID            json.Number `json:"id"`
+				Title         string      `json:"title"`
 				Contributions []struct {
 					Author struct {
 						Name string `json:"name"`
@@ -851,7 +851,7 @@ func lookupHardcoverBookIDRaw(title, author string) (string, error) {
 			// Check if any of the book's authors match the requested author
 			for _, contribution := range book.Contributions {
 				if strings.Contains(strings.ToLower(contribution.Author.Name), strings.ToLower(author)) {
-					return book.ID, nil
+					return book.ID.String(), nil
 				}
 			}
 		}
@@ -1443,7 +1443,17 @@ func syncToHardcover(a Audiobook) error {
 		var err error
 		bookId, err = lookupHardcoverBookID(a.Title, a.Author)
 		if err != nil {
-			return fmt.Errorf("could not find Hardcover bookId for '%s' by '%s' (ISBN: %s, ASIN: %s): %v", a.Title, a.Author, a.ISBN, a.ASIN, err)
+			// Apply the audiobook match mode when title/author lookup fails too
+			matchMode := getAudiobookMatchMode()
+			switch matchMode {
+			case "fail":
+				return fmt.Errorf("book lookup failed for audiobook '%s' by '%s' (ISBN: %s, ASIN: %s) and AUDIOBOOK_MATCH_MODE=fail: %v", a.Title, a.Author, a.ISBN, a.ASIN, err)
+			case "skip":
+				debugLog("SKIPPING: Book lookup failed for '%s' by '%s' (ISBN: %s, ASIN: %s) and AUDIOBOOK_MATCH_MODE=skip: %v", a.Title, a.Author, a.ISBN, a.ASIN, err)
+				return nil // Skip this book entirely
+			default: // "continue"
+				return fmt.Errorf("could not find Hardcover bookId for '%s' by '%s' (ISBN: %s, ASIN: %s): %v", a.Title, a.Author, a.ISBN, a.ASIN, err)
+			}
 		}
 	}
 
@@ -1454,17 +1464,29 @@ func syncToHardcover(a Audiobook) error {
 
 	// SAFETY CHECK: Handle audiobook edition matching behavior
 	// This helps prevent syncing audiobook progress to wrong editions (ebook/physical)
-	if a.ASIN != "" && editionId == "" {
+	if editionId == "" {
 		matchMode := getAudiobookMatchMode()
 		
 		switch matchMode {
 		case "fail":
-			return fmt.Errorf("ASIN lookup failed for audiobook '%s' (ASIN: %s) and AUDIOBOOK_MATCH_MODE=fail. Cannot guarantee correct audiobook edition match", a.Title, a.ASIN)
+			if a.ASIN != "" {
+				return fmt.Errorf("ASIN lookup failed for audiobook '%s' (ASIN: %s) and AUDIOBOOK_MATCH_MODE=fail. Cannot guarantee correct audiobook edition match", a.Title, a.ASIN)
+			} else {
+				return fmt.Errorf("no audiobook edition found for '%s' by '%s' (ISBN: %s) and AUDIOBOOK_MATCH_MODE=fail. Cannot guarantee correct audiobook edition match", a.Title, a.Author, a.ISBN)
+			}
 		case "skip":
-			debugLog("SKIPPING: ASIN lookup failed for '%s' (ASIN: %s) and AUDIOBOOK_MATCH_MODE=skip. Avoiding potential wrong edition sync.", a.Title, a.ASIN)
+			if a.ASIN != "" {
+				debugLog("SKIPPING: ASIN lookup failed for '%s' (ASIN: %s) and AUDIOBOOK_MATCH_MODE=skip. Avoiding potential wrong edition sync.", a.Title, a.ASIN)
+			} else {
+				debugLog("SKIPPING: No audiobook edition found for '%s' by '%s' (ISBN: %s) and AUDIOBOOK_MATCH_MODE=skip. Avoiding potential wrong edition sync.", a.Title, a.Author, a.ISBN)
+			}
 			return nil // Skip this book entirely
 		default: // "continue"
-			debugLog("WARNING: ASIN lookup failed for '%s' (ASIN: %s), using fallback book matching. Progress may not sync correctly if this isn't the audiobook edition.", a.Title, a.ASIN)
+			if a.ASIN != "" {
+				debugLog("WARNING: ASIN lookup failed for '%s' (ASIN: %s), using fallback book matching. Progress may not sync correctly if this isn't the audiobook edition.", a.Title, a.ASIN)
+			} else {
+				debugLog("WARNING: No audiobook edition found for '%s' by '%s' (ISBN: %s), using general book matching. Progress may not sync correctly if this isn't the audiobook edition.", a.Title, a.Author, a.ISBN)
+			}
 			debugLog("Consider manually checking if bookId %s corresponds to the correct audiobook edition in Hardcover", bookId)
 			debugLog("To change this behavior, set AUDIOBOOK_MATCH_MODE=skip or AUDIOBOOK_MATCH_MODE=fail")
 		}
