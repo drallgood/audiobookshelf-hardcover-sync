@@ -1,0 +1,630 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"math"
+	"net/http"
+	"strconv"
+	"time"
+)
+
+// syncToHardcover syncs a single audiobook to Hardcover with comprehensive book matching
+// and conditional sync logic to avoid unnecessary API calls
+func syncToHardcover(a Audiobook) error {
+	var bookId, editionId string
+	var asinLookupSucceeded bool // Track if ASIN lookup found audiobook edition
+
+	debugLog("Starting book matching for '%s' by '%s' (ISBN: %s, ASIN: %s)", a.Title, a.Author, a.ISBN, a.ASIN)
+
+	// PRIORITY 1: Try ASIN first since it's most likely to match the actual audiobook edition
+	if a.ASIN != "" {
+		query := `
+		query BookByASIN($asin: String!) {
+		  books(where: { editions: { asin: { _eq: $asin }, reading_format_id: { _eq: 2 } } }, limit: 1) {
+			id
+			title
+			editions(where: { asin: { _eq: $asin }, reading_format_id: { _eq: 2 } }) {
+			  id
+			  asin
+			  isbn_13
+			  isbn_10
+			  reading_format_id
+			  audio_seconds
+			}
+		  }
+		}`
+		variables := map[string]interface{}{"asin": a.ASIN}
+		payload := map[string]interface{}{"query": query, "variables": variables}
+		payloadBytes, _ := json.Marshal(payload)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(payloadBytes))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			body, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("hardcover books query error: %s - %s", resp.Status, string(body))
+		}
+		var result struct {
+			Data struct {
+				Books []struct {
+					ID       json.Number `json:"id"`
+					Editions []struct {
+						ID              json.Number `json:"id"`
+						ASIN            string      `json:"asin"`
+						ReadingFormatID *int        `json:"reading_format_id"`
+						AudioSeconds    *int        `json:"audio_seconds"`
+					} `json:"editions"`
+				} `json:"books"`
+			} `json:"data"`
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		if err := json.Unmarshal(body, &result); err != nil {
+			return err
+		}
+		if len(result.Data.Books) > 0 && len(result.Data.Books[0].Editions) > 0 {
+			bookId = result.Data.Books[0].ID.String()
+			editionId = result.Data.Books[0].Editions[0].ID.String()
+			asinLookupSucceeded = true
+			debugLog("Found audiobook via ASIN: bookId=%s, editionId=%s, format_id=%v, audio_seconds=%v",
+				bookId, editionId, result.Data.Books[0].Editions[0].ReadingFormatID, result.Data.Books[0].Editions[0].AudioSeconds)
+		} else {
+			debugLog("No audiobook edition found for ASIN %s", a.ASIN)
+		}
+	}
+
+	// PRIORITY 2: Try ISBN/ISBN13 only if ASIN didn't work and ISBN is different from ASIN
+	if bookId == "" && a.ISBN != "" && (a.ASIN == "" || a.ISBN != a.ASIN) {
+		// Query for book and edition by ISBN/ISBN13
+		query := `
+		query BookByISBN($isbn: String!) {
+		  books(where: { editions: { isbn_13: { _eq: $isbn } } }, limit: 1) {
+			id
+			title
+			editions(where: { isbn_13: { _eq: $isbn } }) {
+			  id
+			  isbn_13
+			  isbn_10
+			  asin
+			}
+		  }
+		}`
+		variables := map[string]interface{}{"isbn": a.ISBN}
+		payload := map[string]interface{}{"query": query, "variables": variables}
+		payloadBytes, _ := json.Marshal(payload)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(payloadBytes))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			body, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("hardcover books query error: %s - %s", resp.Status, string(body))
+		}
+		var result struct {
+			Data struct {
+				Books []struct {
+					ID       json.Number `json:"id"`
+					Editions []struct {
+						ID     json.Number `json:"id"`
+						ISBN10 string      `json:"isbn_10"`
+						ASIN   string      `json:"asin"`
+					} `json:"editions"`
+				} `json:"books"`
+			} `json:"data"`
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		if err := json.Unmarshal(body, &result); err != nil {
+			return err
+		}
+		if len(result.Data.Books) > 0 {
+			bookId = result.Data.Books[0].ID.String()
+			if len(result.Data.Books[0].Editions) > 0 {
+				editionId = result.Data.Books[0].Editions[0].ID.String()
+			}
+		}
+	}
+	// 1b. Try ISBN10 if present and not already tried
+	if bookId == "" && a.ISBN10 != "" {
+		query := `
+		query BookByISBN10($isbn10: String!) {
+		  books(where: { editions: { isbn_10: { _eq: $isbn10 } } }, limit: 1) {
+			id
+			title
+			editions(where: { isbn_10: { _eq: $isbn10 } }) {
+			  id
+			  isbn_13
+			  isbn_10
+			  asin
+			}
+		  }
+		}`
+		variables := map[string]interface{}{"isbn10": a.ISBN10}
+		payload := map[string]interface{}{"query": query, "variables": variables}
+		payloadBytes, _ := json.Marshal(payload)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(payloadBytes))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			body, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("hardcover books query error: %s - %s", resp.Status, string(body))
+		}
+		var result struct {
+			Data struct {
+				Books []struct {
+					ID       json.Number `json:"id"`
+					Editions []struct {
+						ID     json.Number `json:"id"`
+						ISBN10 string      `json:"isbn_10"`
+					} `json:"editions"`
+				} `json:"books"`
+			} `json:"data"`
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		if err := json.Unmarshal(body, &result); err != nil {
+			return err
+		}
+		if len(result.Data.Books) > 0 {
+			bookId = result.Data.Books[0].ID.String()
+			if len(result.Data.Books[0].Editions) > 0 {
+				editionId = result.Data.Books[0].Editions[0].ID.String()
+			}
+		}
+	}
+
+	// PRIORITY 3: Fallback to title/author lookup
+	if bookId == "" {
+		var err error
+		bookId, err = lookupHardcoverBookID(a.Title, a.Author)
+		if err != nil {
+			// Apply the audiobook match mode when title/author lookup fails too
+			matchMode := getAudiobookMatchMode()
+			switch matchMode {
+			case "fail":
+				return fmt.Errorf("book lookup failed for audiobook '%s' by '%s' (ISBN: %s, ASIN: %s) and AUDIOBOOK_MATCH_MODE=fail: %v", a.Title, a.Author, a.ISBN, a.ASIN, err)
+			case "skip":
+				// Collect this mismatch for manual review before skipping
+				reason := fmt.Sprintf("Book lookup failed - not found in Hardcover database using ASIN %s, ISBN %s, or title/author search", a.ASIN, a.ISBN)
+				addBookMismatch(a.Title, a.Author, a.ISBN, a.ASIN, "", "", reason)
+				
+				debugLog("SKIPPING: Book lookup failed for '%s' by '%s' (ISBN: %s, ASIN: %s) and AUDIOBOOK_MATCH_MODE=skip: %v", a.Title, a.Author, a.ISBN, a.ASIN, err)
+				return nil // Skip this book entirely
+			default: // "continue"
+				return fmt.Errorf("could not find Hardcover bookId for '%s' by '%s' (ISBN: %s, ASIN: %s): %v", a.Title, a.Author, a.ISBN, a.ASIN, err)
+			}
+		}
+	}
+
+	// Validate that we have a valid bookId before proceeding
+	if bookId == "" {
+		return fmt.Errorf("failed to find valid Hardcover bookId for '%s' by '%s' (ISBN: %s, ASIN: %s) - all lookup methods returned empty bookId", a.Title, a.Author, a.ISBN, a.ASIN)
+	}
+
+	// SAFETY CHECK: Handle audiobook edition matching behavior
+	// This helps prevent syncing audiobook progress to wrong editions (ebook/physical)
+	if editionId == "" || (a.ASIN != "" && !asinLookupSucceeded) {
+		matchMode := getAudiobookMatchMode()
+		
+		switch matchMode {
+		case "fail":
+			if a.ASIN != "" {
+				return fmt.Errorf("ASIN lookup failed for audiobook '%s' (ASIN: %s) and AUDIOBOOK_MATCH_MODE=fail. Cannot guarantee correct audiobook edition match", a.Title, a.ASIN)
+			} else {
+				return fmt.Errorf("no audiobook edition found for '%s' by '%s' (ISBN: %s) and AUDIOBOOK_MATCH_MODE=fail. Cannot guarantee correct audiobook edition match", a.Title, a.Author, a.ISBN)
+			}
+		case "skip":
+			// Collect this mismatch for manual review before skipping
+			var reason string
+			if a.ASIN != "" {
+				reason = fmt.Sprintf("ASIN lookup failed for ASIN %s - no audiobook edition found. Book was skipped to avoid wrong edition sync.", a.ASIN)
+				debugLog("SKIPPING: ASIN lookup failed for '%s' (ASIN: %s) and AUDIOBOOK_MATCH_MODE=skip. Avoiding potential wrong edition sync.", a.Title, a.ASIN)
+			} else {
+				reason = fmt.Sprintf("No audiobook edition found using ISBN %s - only non-audiobook editions available. Book was skipped to avoid wrong edition sync.", a.ISBN)
+				debugLog("SKIPPING: No audiobook edition found for '%s' by '%s' (ISBN: %s) and AUDIOBOOK_MATCH_MODE=skip. Avoiding potential wrong edition sync.", a.Title, a.Author, a.ISBN)
+			}
+			
+			addBookMismatch(a.Title, a.Author, a.ISBN, a.ASIN, bookId, editionId, reason)
+			
+			return nil // Skip this book entirely
+		default: // "continue"
+			var reason string
+			if a.ASIN != "" {
+				reason = fmt.Sprintf("ASIN lookup failed for ASIN %s, using fallback book matching. Progress may not sync correctly if this isn't the audiobook edition.", a.ASIN)
+				debugLog("WARNING: ASIN lookup failed for '%s' (ASIN: %s), using fallback book matching. Progress may not sync correctly if this isn't the audiobook edition.", a.Title, a.ASIN)
+			} else {
+				reason = fmt.Sprintf("No audiobook edition found using ISBN %s, using general book matching. Progress may not sync correctly if this isn't the audiobook edition.", a.ISBN)
+				debugLog("WARNING: No audiobook edition found for '%s' by '%s' (ISBN: %s), using general book matching. Progress may not sync correctly if this isn't the audiobook edition.", a.Title, a.Author, a.ISBN)
+			}
+			
+			// Collect this mismatch for manual review
+			addBookMismatch(a.Title, a.Author, a.ISBN, a.ASIN, bookId, editionId, reason)
+			
+			debugLog("To change this behavior, set AUDIOBOOK_MATCH_MODE=skip or AUDIOBOOK_MATCH_MODE=fail")
+		}
+	}
+
+	// Step 2: Check if user already has this book and compare status/progress
+	existingUserBookId, existingStatusId, existingProgressSeconds, err := checkExistingUserBook(bookId)
+	if err != nil {
+		return fmt.Errorf("failed to check existing user book for '%s': %v", a.Title, err)
+	}
+
+	// Determine the target status for this book
+	targetStatusId := 3 // default to read
+	if a.Progress < 0.99 {
+		targetStatusId = 2 // currently reading
+	}
+
+	// Calculate target progress in seconds
+	var targetProgressSeconds int
+	if a.Progress > 0 {
+		if a.CurrentTime > 0 {
+			targetProgressSeconds = int(math.Round(a.CurrentTime))
+		} else if a.TotalDuration > 0 && a.Progress > 0 {
+			targetProgressSeconds = int(math.Round(a.Progress * a.TotalDuration))
+		} else {
+			// Fallback: use progress percentage * reasonable audiobook duration (10 hours)
+			fallbackDuration := 36000.0 // 10 hours in seconds
+			targetProgressSeconds = int(math.Round(a.Progress * fallbackDuration))
+		}
+		// Ensure we have at least 1 second of progress
+		if targetProgressSeconds < 1 {
+			targetProgressSeconds = 1
+		}
+	}
+
+	// Check if we need to sync (book doesn't exist OR status/progress has changed)
+	var userBookId int
+	needsSync := false
+
+	if existingUserBookId == 0 {
+		// Book doesn't exist - need to create it
+		needsSync = true
+		debugLog("Book '%s' not found in user's Hardcover library - will create", a.Title)
+	} else {
+		// Book exists - check if status or progress has meaningfully changed
+		userBookId = existingUserBookId
+
+		statusChanged := existingStatusId != targetStatusId
+
+		// Consider progress changed if the difference is significant (more than 30 seconds or 10%)
+		progressThreshold := int(math.Max(30, float64(targetProgressSeconds)*0.1))
+		progressChanged := targetProgressSeconds > 0 &&
+			(existingProgressSeconds == 0 ||
+				math.Abs(float64(targetProgressSeconds-existingProgressSeconds)) > float64(progressThreshold))
+
+		if statusChanged || progressChanged {
+			needsSync = true
+			debugLog("Book '%s' needs update - status changed: %t (%d->%d), progress changed: %t (%ds->%ds)",
+				a.Title, statusChanged, existingStatusId, targetStatusId, progressChanged, existingProgressSeconds, targetProgressSeconds)
+		} else {
+			debugLog("Book '%s' already up-to-date in Hardcover (status: %d, progress: %ds) - skipping",
+				a.Title, existingStatusId, existingProgressSeconds)
+			return nil
+		}
+	}
+
+	// Only proceed with sync if needed
+	if !needsSync {
+		return nil
+	}
+
+	// If book doesn't exist, create it
+	if existingUserBookId == 0 {
+		userBookInput := map[string]interface{}{
+			"book_id":   toInt(bookId),
+			"status_id": targetStatusId,
+		}
+		if editionId != "" {
+			userBookInput["edition_id"] = toInt(editionId)
+		}
+		debugLog("Creating new user book for '%s' by '%s' (Progress: %.6f) with status_id=%d, userBookInput=%+v", a.Title, a.Author, a.Progress, targetStatusId, userBookInput)
+		insertUserBookMutation := `
+		mutation InsertUserBook($object: UserBookCreateInput!) {
+		  insert_user_book(object: $object) {
+			id
+			user_book { id status_id }
+			error
+		  }
+		}`
+		variables := map[string]interface{}{"object": userBookInput}
+		payload := map[string]interface{}{"query": insertUserBookMutation, "variables": variables}
+		payloadBytes, _ := json.Marshal(payload)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		for attempt := 0; attempt < 3; attempt++ {
+			req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(payloadBytes))
+			if err != nil {
+				return err
+			}
+			req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				continue
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode == 429 {
+				if retry := resp.Header.Get("Retry-After"); retry != "" {
+					if sec, err := strconv.Atoi(retry); err == nil && sec > 0 {
+						time.Sleep(time.Duration(sec) * time.Second)
+						continue
+					}
+				}
+				time.Sleep(3 * time.Second)
+				continue
+			}
+			if resp.StatusCode != 200 {
+				continue
+			}
+			var result struct {
+				Data struct {
+					InsertUserBook struct {
+						ID       int `json:"id"`
+						UserBook struct {
+							ID       int `json:"id"`
+							StatusID int `json:"status_id"`
+						} `json:"user_book"`
+						Error *string `json:"error"`
+					} `json:"insert_user_book"`
+				} `json:"data"`
+			}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				continue
+			}
+			if err := json.Unmarshal(body, &result); err != nil {
+				continue
+			}
+			if result.Data.InsertUserBook.Error != nil {
+				debugLog("insert_user_book error: %s", *result.Data.InsertUserBook.Error)
+				return fmt.Errorf("insert_user_book error: %s", *result.Data.InsertUserBook.Error)
+			}
+			userBookId = result.Data.InsertUserBook.UserBook.ID
+			debugLog("insert_user_book: id=%d, status_id=%d", userBookId, result.Data.InsertUserBook.UserBook.StatusID)
+			if result.Data.InsertUserBook.UserBook.StatusID != targetStatusId {
+				debugLog("Warning: Hardcover returned status_id=%d, expected %d", result.Data.InsertUserBook.UserBook.StatusID, targetStatusId)
+			}
+			break
+		}
+		if userBookId == 0 {
+			return fmt.Errorf("failed to insert user book for '%s'", a.Title)
+		}
+	}
+
+	// Step 3: Insert user book read (progress) - only if we have meaningful progress
+	if targetProgressSeconds > 0 {
+		debugLog("Syncing progress for '%s': %d seconds (%.2f%%)", a.Title, targetProgressSeconds, a.Progress*100)
+
+		// Check if a user_book_read already exists for today
+		today := time.Now().Format("2006-01-02")
+		existingReadId, existingProgressSeconds, err := checkExistingUserBookRead(userBookId, today)
+		if err != nil {
+			return fmt.Errorf("failed to check existing user book read for '%s': %v", a.Title, err)
+		}
+
+		if existingReadId > 0 {
+			// Update existing user_book_read if progress has changed
+			if existingProgressSeconds != targetProgressSeconds {
+				debugLog("Updating existing user_book_read id=%d for '%s': progressSeconds=%d -> %d", existingReadId, a.Title, existingProgressSeconds, targetProgressSeconds)
+				updateMutation := `
+				mutation UpdateUserBookRead($id: Int!, $object: DatesReadInput!) {
+				  update_user_book_read(id: $id, object: $object) {
+					id
+					error
+					user_book_read {
+					  id
+					  progress_seconds
+					  started_at
+					  finished_at
+					}
+				  }
+				}`
+				variables := map[string]interface{}{
+					"id": existingReadId,
+					"object": map[string]interface{}{
+						"progress_seconds": targetProgressSeconds,
+					},
+				}
+				payload := map[string]interface{}{
+					"query":     updateMutation,
+					"variables": variables,
+				}
+				payloadBytes, err := json.Marshal(payload)
+				if err != nil {
+					return fmt.Errorf("failed to marshal update_user_book_read payload: %v", err)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(payloadBytes))
+				if err != nil {
+					return fmt.Errorf("failed to create request: %v", err)
+				}
+				req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
+
+				resp, err := httpClient.Do(req)
+				if err != nil {
+					return fmt.Errorf("http request failed: %v", err)
+				}
+				defer resp.Body.Close()
+
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					return fmt.Errorf("failed to read response: %v", err)
+				}
+
+				debugLog("update_user_book_read response: %s", string(body))
+
+				var result struct {
+					Data struct {
+						UpdateUserBookRead struct {
+							ID           int     `json:"id"`
+							Error        *string `json:"error"`
+							UserBookRead *struct {
+								ID              int     `json:"id"`
+								ProgressSeconds int     `json:"progress_seconds"`
+								StartedAt       string  `json:"started_at"`
+								FinishedAt      *string `json:"finished_at"`
+							} `json:"user_book_read"`
+						} `json:"update_user_book_read"`
+					} `json:"data"`
+					Errors []struct {
+						Message string `json:"message"`
+					} `json:"errors"`
+				}
+
+				if err := json.Unmarshal(body, &result); err != nil {
+					return fmt.Errorf("failed to parse response: %v", err)
+				}
+
+				if len(result.Errors) > 0 {
+					return fmt.Errorf("graphql errors: %v", result.Errors)
+				}
+
+				if result.Data.UpdateUserBookRead.Error != nil {
+					return fmt.Errorf("update error: %s", *result.Data.UpdateUserBookRead.Error)
+				}
+
+				debugLog("Successfully updated user_book_read with id: %d", result.Data.UpdateUserBookRead.ID)
+				if result.Data.UpdateUserBookRead.UserBookRead != nil {
+					debugLog("Confirmed progress update: %d seconds", result.Data.UpdateUserBookRead.UserBookRead.ProgressSeconds)
+				}
+			} else {
+				debugLog("No update needed for existing user_book_read id=%d (progress already %d seconds)", existingReadId, existingProgressSeconds)
+			}
+		} else {
+			// Enhanced duplicate prevention: Check if book was recently finished before creating new read entry
+			// This prevents spam in Hardcover feed from books that are already marked as "read"
+			if a.Progress >= 0.99 { // Only check for finished books
+				recentlyFinished, finishDate, err := checkRecentFinishedRead(userBookId)
+				if err != nil {
+					debugLog("Warning: Failed to check recent finished reads for '%s': %v", a.Title, err)
+					// Continue with normal flow even if check fails
+				} else if recentlyFinished {
+					debugLog("Skipping duplicate read entry for '%s' - already finished on %s (within last 30 days)", a.Title, finishDate)
+					return nil
+				}
+			}
+
+			// Create new user book read entry
+			debugLog("Creating new user_book_read for '%s': %d seconds (%.2f%%)", a.Title, targetProgressSeconds, a.Progress*100)
+			// Use the enhanced insertUserBookRead function which includes reading_format_id for audiobooks
+			// This ensures Hardcover recognizes it as an audiobook and doesn't ignore progress_seconds
+			if err := insertUserBookRead(userBookId, targetProgressSeconds, a.Progress >= 0.99); err != nil {
+				return fmt.Errorf("failed to sync progress for '%s': %v", a.Title, err)
+			}
+
+			debugLog("Successfully synced progress for '%s': %d seconds", a.Title, targetProgressSeconds)
+		}
+	}
+	return nil
+}
+
+// runSync orchestrates the complete sync process:
+// 1. Fetches all audiobooks from AudiobookShelf
+// 2. Filters books based on progress thresholds
+// 3. Attempts enhanced detection for potentially finished books
+// 4. Syncs each qualifying book to Hardcover with rate limiting
+// 5. Reports sync results and potential mismatches
+func runSync() {
+	books, err := fetchAudiobookShelfStats()
+	if err != nil {
+		log.Printf("Failed to fetch library items: %v", err)
+		return
+	}
+
+	// Clear any previous mismatches before starting new sync
+	clearMismatches()
+
+	// Filter books by configured progress threshold
+	minProgress := getMinimumProgressThreshold()
+	var booksToSync []Audiobook
+
+	for _, book := range books {
+		if book.Progress >= minProgress {
+			booksToSync = append(booksToSync, book)
+		} else {
+			// Enhanced detection for books that may be actually finished
+			// Some audiobooks might show lower progress due to credits/silence at the end
+			if book.Progress >= 0.95 && book.TotalDuration > 0 {
+				actualProgress := float64(book.CurrentTime) / book.TotalDuration
+				if actualProgress >= minProgress {
+					booksToSync = append(booksToSync, book)
+					debugLog("Book '%s' has better calculated progress (%.6f) - adding to sync", book.Title, actualProgress)
+				} else {
+					debugLog("Skipping book '%s' with progress %.6f (< %.2f%%)", book.Title, book.Progress, minProgress*100)
+				}
+			} else {
+				debugLog("Skipping book '%s' with progress %.6f (< %.2f%%)", book.Title, book.Progress, minProgress*100)
+			}
+		}
+	}
+
+	log.Printf("Found %d books with progress to sync (out of %d total books)", len(booksToSync), len(books))
+
+	if len(booksToSync) == 0 {
+		log.Printf("No books with progress found to sync")
+		return
+	}
+
+	delay := getHardcoverSyncDelay()
+	for i, book := range booksToSync {
+		if i > 0 {
+			time.Sleep(delay)
+		}
+		if err := syncToHardcover(book); err != nil {
+			log.Printf("Failed to sync book '%s' (Progress: %.2f%%): %v", book.Title, book.Progress*100, err)
+		} else {
+			log.Printf("Synced book: %s (Progress: %.2f%%)", book.Title, book.Progress*100)
+		}
+	}
+	
+	// Print summary of books that may need manual review
+	printMismatchSummary()
+}
