@@ -41,10 +41,22 @@ type BookMismatch struct {
 
 ## When Mismatches Are Collected
 
-Mismatches are collected when:
+Mismatches are collected in the following scenarios:
+
+### 1. Complete Book Lookup Failure (with AUDIOBOOK_MATCH_MODE=skip)
+- Book not found in Hardcover database using ASIN, ISBN, or title/author search
+- Book is skipped but mismatch is collected for manual review
+
+### 2. Audiobook Edition Matching Failure (with AUDIOBOOK_MATCH_MODE=skip)  
+- Book found in Hardcover but no audiobook edition available
+- Only non-audiobook editions (ebook/physical) found
+- Book is skipped but mismatch is collected for manual review
+
+### 3. Fallback Book Matching (with AUDIOBOOK_MATCH_MODE=continue)
 - ASIN lookup fails and fallback book matching is used
 - No audiobook edition found for ISBN and general book matching is used
-- The system cannot guarantee the matched book is the correct audiobook edition
+- System cannot guarantee the matched book is the correct audiobook edition
+- Book sync continues but mismatch is collected for manual review
 
 ## Example Output
 
@@ -91,9 +103,9 @@ Mismatches are collected when:
 ## Environment Variable Integration
 
 The feature works with existing `AUDIOBOOK_MATCH_MODE` settings:
-- `continue` (default): Collects mismatches and continues syncing
-- `skip`: Books are skipped, no mismatches collected
-- `fail`: Sync fails on first mismatch, no summary needed
+- `continue` (default): Collects mismatches and continues syncing with fallback matching
+- `skip`: Books are skipped to avoid wrong editions, but mismatches are still collected for review
+- `fail`: Sync fails immediately on mismatch, no summary needed (process stops)
 
 ## Technical Details
 
