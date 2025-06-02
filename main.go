@@ -777,7 +777,7 @@ func lookupHardcoverBookID(title, author string) (string, error) {
 func lookupHardcoverBookIDRaw(title, author string) (string, error) {
 	query := `
 	query BooksByTitleAuthor($title: String!, $author: String!) {
-	  books(where: {title: {_eq: $title}, contributions: {author: {name: {_ilike: $author}}}}) {
+	  books(where: {title: {_eq: $title}, contributions: {author: {name: {_eq: $author}}}}) {
 		id
 		title
 		contributions {
