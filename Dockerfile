@@ -14,9 +14,12 @@ COPY . .
 # Enable Go build cache
 ENV GOCACHE=/go-cache
 
-# Build the binary with cache and reproducibility
+# Accept version build arg
+ARG VERSION=dev
+
+# Build the binary with cache and reproducibility, injecting version
 RUN --mount=type=cache,target=/go-cache \
-    CGO_ENABLED=0 go build -trimpath -o /out/main .
+    CGO_ENABLED=0 go build -trimpath -ldflags="-X main.version=${VERSION}" -o /out/main .
 
 # Final minimal image
 FROM alpine:3.20
