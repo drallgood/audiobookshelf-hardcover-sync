@@ -39,12 +39,15 @@ func getHardcoverSyncDelay() time.Duration {
 func getMinimumProgressThreshold() float64 {
 	threshold := os.Getenv("MINIMUM_PROGRESS_THRESHOLD")
 	if threshold == "" {
-		return 0.0 // Default: sync all books with any progress > 0
+		return 0.01 // Default: minimum progress threshold
 	}
 	if val, err := strconv.ParseFloat(threshold, 64); err == nil {
-		return val
+		// Validate range - must be between 0 and 1
+		if val >= 0 && val <= 1 {
+			return val
+		}
 	}
-	return 0.0
+	return 0.01 // Return default for invalid values
 }
 
 // getAudiobookMatchMode returns the behavior when ASIN lookup fails

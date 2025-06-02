@@ -163,6 +163,12 @@ func TestSyncToHardcover_NotFinished(t *testing.T) {
 	oldToken := os.Getenv("HARDCOVER_TOKEN")
 	os.Setenv("HARDCOVER_TOKEN", "dummy")
 	defer os.Setenv("HARDCOVER_TOKEN", oldToken)
+	
+	// Save and set AUDIOBOOK_MATCH_MODE to continue (tests expect errors, not skips)
+	oldMode := os.Getenv("AUDIOBOOK_MATCH_MODE")
+	os.Setenv("AUDIOBOOK_MATCH_MODE", "continue")
+	defer os.Setenv("AUDIOBOOK_MATCH_MODE", oldMode)
+	
 	// Expect an error because the dummy token will fail the API call
 	err := syncToHardcover(book)
 	if err == nil {
@@ -176,6 +182,12 @@ func TestSyncToHardcover_Finished_NoToken(t *testing.T) {
 	oldToken := os.Getenv("HARDCOVER_TOKEN")
 	os.Setenv("HARDCOVER_TOKEN", "")
 	defer os.Setenv("HARDCOVER_TOKEN", oldToken)
+	
+	// Save and set AUDIOBOOK_MATCH_MODE to continue (tests expect errors, not skips)
+	oldMode := os.Getenv("AUDIOBOOK_MATCH_MODE")
+	os.Setenv("AUDIOBOOK_MATCH_MODE", "continue")
+	defer os.Setenv("AUDIOBOOK_MATCH_MODE", oldMode)
+	
 	err := syncToHardcover(book)
 	if err == nil {
 		t.Error("expected error when HARDCOVER_TOKEN is missing, got nil")
