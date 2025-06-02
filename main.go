@@ -539,9 +539,9 @@ func syncToHardcover(a Audiobook) error {
 			return fmt.Errorf("could not find Hardcover bookId for '%s' by '%s' (ISBN: %s, ASIN: %s): %v", a.Title, a.Author, a.ISBN, a.ASIN, err)
 		}
 	}
-	// Step 2: Insert user book
+	// Step 2: Insert or update user book
 	statusId := 3 // default to read
-	if a.Progress < 1.0 {
+	if a.Progress < 0.99 {
 		statusId = 2 // currently reading
 	}
 	userBookInput := map[string]interface{}{
@@ -551,11 +551,12 @@ func syncToHardcover(a Audiobook) error {
 	if editionId != "" {
 		userBookInput["edition_id"] = toInt(editionId)
 	}
+	debugLog("Syncing book '%s' by '%s' (Progress: %.6f) with status_id=%d, userBookInput=%+v", a.Title, a.Author, a.Progress, statusId, userBookInput)
 	insertUserBookMutation := `
 	mutation InsertUserBook($object: UserBookCreateInput!) {
 	  insert_user_book(object: $object) {
 		id
-		user_book { id }
+		user_book { id status_id }
 		error
 	  }
 	}`
@@ -596,7 +597,8 @@ func syncToHardcover(a Audiobook) error {
 				InsertUserBook struct {
 					ID       int `json:"id"`
 					UserBook struct {
-						ID int `json:"id"`
+						ID       int `json:"id"`
+						StatusID int `json:"status_id"`
 					} `json:"user_book"`
 					Error *string `json:"error"`
 				} `json:"insert_user_book"`
@@ -610,18 +612,23 @@ func syncToHardcover(a Audiobook) error {
 			continue
 		}
 		if result.Data.InsertUserBook.Error != nil {
+			debugLog("insert_user_book error: %s", *result.Data.InsertUserBook.Error)
 			return fmt.Errorf("insert_user_book error: %s", *result.Data.InsertUserBook.Error)
 		}
 		userBookId = result.Data.InsertUserBook.UserBook.ID
+		debugLog("insert_user_book: id=%d, status_id=%d", userBookId, result.Data.InsertUserBook.UserBook.StatusID)
+		if result.Data.InsertUserBook.UserBook.StatusID != statusId {
+			debugLog("Warning: Hardcover returned status_id=%d, expected %d", result.Data.InsertUserBook.UserBook.StatusID, statusId)
+		}
 		break
 	}
 	if userBookId == 0 {
 		return fmt.Errorf("failed to insert user book for '%s'", a.Title)
 	}
 	// Step 3: Insert user book read (progress)
-	if a.Progress > 0 && a.Progress < 1.0 {
-		// Assume total duration is not available, so use progress_seconds as seconds listened
-		progressSeconds := int(math.Round(a.Progress * 3600)) // fallback: 1hr book, scale as needed
+	if a.Progress > 0 {
+		// For finished books, use 3600 seconds as a fallback duration
+		progressSeconds := int(math.Round(a.Progress * 3600))
 		insertUserBookReadMutation := `
 		mutation InsertUserBookRead($user_book_id: Int!, $user_book_read: DatesReadInput!) {
 		  insert_user_book_read(user_book_id: $user_book_id, user_book_read: $user_book_read) {

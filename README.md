@@ -49,7 +49,9 @@ You can copy `.env.example` to `.env` and fill in your values.
 
 ## How it works
 
-This service fetches all libraries from your AudiobookShelf server using the `/api/libraries` endpoint, then fetches all items for each library using `/api/libraries/{libraryId}/items`. It filters for items with `mediaType == "book"` and extracts title/author from `media.metadata`, then syncs their progress to Hardcover. Only in-progress books (statusId=2) are synced with progress.
+This service fetches all libraries from your AudiobookShelf server using the `/api/libraries` endpoint, then fetches all items for each library using `/api/libraries/{libraryId}/items`. It filters for items with `mediaType == "book"` and extracts title/author from `media.metadata`, then syncs their progress to Hardcover. 
+
+Progress is recorded for all books with any progress (> 0%), including finished books. Books with progress >= 99% are marked as "read" (status_id=3) on Hardcover, while books with less progress are marked as "currently reading" (status_id=2). The service looks up books by ISBN-13, ISBN-10, or ASIN first, then falls back to title/author matching for better accuracy.
 
 ## Getting Started
 

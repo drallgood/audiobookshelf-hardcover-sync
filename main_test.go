@@ -9,7 +9,10 @@ import (
 )
 
 func TestFetchAudiobookShelfStats_NoEnv(t *testing.T) {
-	// This test expects no env vars set, so the function should fail
+	// Clear env vars to simulate missing configuration
+	os.Unsetenv("AUDIOBOOKSHELF_URL")
+	os.Unsetenv("AUDIOBOOKSHELF_TOKEN")
+	os.Unsetenv("HARDCOVER_TOKEN")
 	_, err := fetchAudiobookShelfStats()
 	if err == nil {
 		t.Error("expected error when env vars are missing, got nil")
