@@ -1242,6 +1242,7 @@ func checkRecentFinishedRead(userBookID int) (bool, string, error) {
 // Sync each finished audiobook to Hardcover
 func syncToHardcover(a Audiobook) error {
 	var bookId, editionId string
+	var asinLookupSucceeded bool // Track if ASIN lookup found audiobook edition
 
 	debugLog("Starting book matching for '%s' by '%s' (ISBN: %s, ASIN: %s)", a.Title, a.Author, a.ISBN, a.ASIN)
 
@@ -1306,6 +1307,7 @@ func syncToHardcover(a Audiobook) error {
 		if len(result.Data.Books) > 0 && len(result.Data.Books[0].Editions) > 0 {
 			bookId = result.Data.Books[0].ID.String()
 			editionId = result.Data.Books[0].Editions[0].ID.String()
+			asinLookupSucceeded = true
 			debugLog("Found audiobook via ASIN: bookId=%s, editionId=%s, format_id=%v, audio_seconds=%v",
 				bookId, editionId, result.Data.Books[0].Editions[0].ReadingFormatID, result.Data.Books[0].Editions[0].AudioSeconds)
 		} else {
@@ -1464,7 +1466,7 @@ func syncToHardcover(a Audiobook) error {
 
 	// SAFETY CHECK: Handle audiobook edition matching behavior
 	// This helps prevent syncing audiobook progress to wrong editions (ebook/physical)
-	if editionId == "" {
+	if editionId == "" || (a.ASIN != "" && !asinLookupSucceeded) {
 		matchMode := getAudiobookMatchMode()
 		
 		switch matchMode {
