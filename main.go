@@ -1135,6 +1135,98 @@ func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, err
 	return existingReadId, existingProgressSeconds, nil
 }
 
+// checkRecentFinishedRead checks if a user_book_read with status "read" (finished) already exists
+// for the given user_book_id within the last 30 days to prevent duplicate finished reads
+func checkRecentFinishedRead(userBookID int) (bool, string, error) {
+	// Calculate date 30 days ago
+	thirtyDaysAgo := time.Now().AddDate(0, 0, -30).Format("2006-01-02")
+
+	query := `
+	query CheckRecentFinishedRead($userBookId: Int!, $since: String!) {
+	  user_book_reads(
+		where: {
+		  user_book_id: { _eq: $userBookId }
+		  finished_at: { _is_null: false }
+		  finished_at: { _gte: $since }
+		}
+		order_by: { finished_at: desc }
+		limit: 1
+	  ) {
+		id
+		finished_at
+	  }
+	}`
+
+	variables := map[string]interface{}{
+		"userBookId": userBookID,
+		"since":      thirtyDaysAgo,
+	}
+
+	requestBody := map[string]interface{}{
+		"query":     query,
+		"variables": variables,
+	}
+
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return false, "", fmt.Errorf("failed to marshal request: %v", err)
+	}
+
+	req, err := http.NewRequest("POST", "https://hardcover.app/api/graphql", bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return false, "", fmt.Errorf("failed to create request: %v", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, "", fmt.Errorf("failed to execute request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, "", fmt.Errorf("request failed with status: %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, "", fmt.Errorf("failed to read response: %v", err)
+	}
+
+	debugLog("checkRecentFinishedRead response: %s", string(body))
+
+	var result struct {
+		Data struct {
+			UserBookReads []struct {
+				ID         int    `json:"id"`
+				FinishedAt string `json:"finished_at"`
+			} `json:"user_book_reads"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		return false, "", fmt.Errorf("failed to parse response: %v", err)
+	}
+
+	if len(result.Errors) > 0 {
+		return false, "", fmt.Errorf("GraphQL errors: %v", result.Errors)
+	}
+
+	if len(result.Data.UserBookReads) > 0 {
+		finishedAt := result.Data.UserBookReads[0].FinishedAt
+		debugLog("Found recent finished read for user_book_id %d: finished on %s", userBookID, finishedAt)
+		return true, finishedAt, nil
+	}
+
+	debugLog("No recent finished read found for user_book_id %d within last 30 days", userBookID)
+	return false, "", nil
+}
+
 // Sync each finished audiobook to Hardcover
 func syncToHardcover(a Audiobook) error {
 	var bookId, editionId string
@@ -1601,6 +1693,19 @@ func syncToHardcover(a Audiobook) error {
 				debugLog("No update needed for existing user_book_read id=%d (progress already %d seconds)", existingReadId, existingProgressSeconds)
 			}
 		} else {
+			// Enhanced duplicate prevention: Check if book was recently finished before creating new read entry
+			// This prevents spam in Hardcover feed from books that are already marked as "read"
+			if a.Progress >= 0.99 { // Only check for finished books
+				recentlyFinished, finishDate, err := checkRecentFinishedRead(userBookId)
+				if err != nil {
+					debugLog("Warning: Failed to check recent finished reads for '%s': %v", a.Title, err)
+					// Continue with normal flow even if check fails
+				} else if recentlyFinished {
+					debugLog("Skipping duplicate read entry for '%s' - already finished on %s (within last 30 days)", a.Title, finishDate)
+					return nil
+				}
+			}
+
 			// Create new user book read entry
 			debugLog("Creating new user_book_read for '%s': %d seconds (%.2f%%)", a.Title, targetProgressSeconds, a.Progress*100)
 
