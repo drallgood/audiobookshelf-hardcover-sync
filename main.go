@@ -279,7 +279,7 @@ func fetchUserProgress() (map[string]float64, error) {
 				Progress   float64 `json:"progress"`
 				IsFinished bool    `json:"isFinished"`
 			}
-			if err := json.Unmarshal(body, &itemsInProgress); err == nil {
+			if err := json.Unmarshal(body, &itemsInProgress); err == nil && len(itemsInProgress) > 0 {
 				for _, item := range itemsInProgress {
 					if item.IsFinished {
 						progressData[item.ID] = 1.0
@@ -299,7 +299,7 @@ func fetchUserProgress() (map[string]float64, error) {
 					IsFinished bool    `json:"isFinished"`
 				} `json:"libraryItems"`
 			}
-			if err := json.Unmarshal(body, &libItemsResp); err == nil {
+			if err := json.Unmarshal(body, &libItemsResp); err == nil && len(libItemsResp.LibraryItems) > 0 {
 				for _, item := range libItemsResp.LibraryItems {
 					if item.IsFinished {
 						progressData[item.ID] = 1.0
@@ -333,24 +333,53 @@ func fetchUserProgress() (map[string]float64, error) {
 				} `json:"sessions"`
 			}
 			if err := json.Unmarshal(body, &sessionsResp); err == nil && len(sessionsResp.Sessions) > 0 {
+				debugLog("Successfully parsed %d listening sessions from %s", len(sessionsResp.Sessions), endpoint)
+				
 				// Build progress map from the latest session for each item
 				latestProgress := make(map[string]float64)
-				for _, session := range sessionsResp.Sessions {
+				latestCurrentTime := make(map[string]float64)
+				latestTotalDuration := make(map[string]float64)
+				
+				for i, session := range sessionsResp.Sessions {
+					debugLog("Session %d: LibraryItemID=%s, Duration=%.2f, CurrentTime=%.2f, Progress=%.6f", 
+						i, session.LibraryItemID, session.Duration, session.CurrentTime, session.Progress)
+						
 					if session.LibraryItemID != "" {
+						var sessionProgress float64
+						
+						// Calculate progress from currentTime and duration
+						if session.Duration > 0 && session.CurrentTime > 0 {
+							sessionProgress = session.CurrentTime / session.Duration
+							debugLog("Session progress calculated from currentTime/duration: %.6f (%.2fs / %.2fs) for item %s", 
+								sessionProgress, session.CurrentTime, session.Duration, session.LibraryItemID)
+						} else if session.Progress > 0 {
+							// Fallback to direct progress field if available
+							sessionProgress = session.Progress
+							debugLog("Session progress from direct field: %.6f for item %s", sessionProgress, session.LibraryItemID)
+						} else {
+							debugLog("No valid progress data found for session %d (item %s)", i, session.LibraryItemID)
+						}
+						
 						// Keep the most recent progress for each item
-						if existing, exists := latestProgress[session.LibraryItemID]; !exists || session.Progress > existing {
-							latestProgress[session.LibraryItemID] = session.Progress
+						if existing, exists := latestProgress[session.LibraryItemID]; !exists || sessionProgress > existing {
+							latestProgress[session.LibraryItemID] = sessionProgress
+							latestCurrentTime[session.LibraryItemID] = session.CurrentTime
+							latestTotalDuration[session.LibraryItemID] = session.Duration
+							debugLog("Updated latest progress for item %s: %.6f", session.LibraryItemID, sessionProgress)
 						}
 					}
 				}
+				
 				for itemID, progress := range latestProgress {
 					progressData[itemID] = progress
+					debugLog("Final session progress for item %s: %.6f (%.2fs / %.2fs)", 
+						itemID, progress, latestCurrentTime[itemID], latestTotalDuration[itemID])
 				}
 				debugLog("Successfully parsed %d progress items from %s (sessions)", len(progressData), endpoint)
 				return progressData, nil
 			}
 
-			// Try bare sessions array
+			// Try bare sessions array or generic JSON structure
 			var sessions []struct {
 				ID              string                 `json:"id"`
 				LibraryItemID   string                 `json:"libraryItemId"`
@@ -370,21 +399,94 @@ func fetchUserProgress() (map[string]float64, error) {
 				UpdatedAt       int64                  `json:"updatedAt"`
 			}
 			if err := json.Unmarshal(body, &sessions); err == nil && len(sessions) > 0 {
+				debugLog("Successfully parsed %d sessions from %s (bare array)", len(sessions), endpoint)
+				
 				// Build progress map from the latest session for each item
 				latestProgress := make(map[string]float64)
-				for _, session := range sessions {
+				for i, session := range sessions {
+					debugLog("Session %d: LibraryItemID=%s, Duration=%.2f, CurrentTime=%.2f, Progress=%.6f", 
+						i, session.LibraryItemID, session.Duration, session.CurrentTime, session.Progress)
+						
 					if session.LibraryItemID != "" {
+						var sessionProgress float64
+						
+						// Calculate progress from currentTime and duration
+						if session.Duration > 0 && session.CurrentTime > 0 {
+							sessionProgress = session.CurrentTime / session.Duration
+							debugLog("Session progress calculated: %.6f = %.2f / %.2f for item %s", 
+								sessionProgress, session.CurrentTime, session.Duration, session.LibraryItemID)
+						} else if session.Progress > 0 {
+							sessionProgress = session.Progress
+							debugLog("Session progress from direct field: %.6f for item %s", sessionProgress, session.LibraryItemID)
+						}
+						
 						// Keep the most recent progress for each item
-						if existing, exists := latestProgress[session.LibraryItemID]; !exists || session.Progress > existing {
-							latestProgress[session.LibraryItemID] = session.Progress
+						if existing, exists := latestProgress[session.LibraryItemID]; !exists || sessionProgress > existing {
+							latestProgress[session.LibraryItemID] = sessionProgress
+							debugLog("Updated latest progress for item %s: %.6f", session.LibraryItemID, sessionProgress)
 						}
 					}
 				}
+				
 				for itemID, progress := range latestProgress {
 					progressData[itemID] = progress
 				}
 				debugLog("Successfully parsed %d progress items from %s (sessions array)", len(progressData), endpoint)
 				return progressData, nil
+			}
+			
+			// Try generic JSON parsing to understand the structure
+			var genericData map[string]interface{}
+			if err := json.Unmarshal(body, &genericData); err == nil {
+				debugLog("Successfully parsed generic JSON structure from %s", endpoint)
+				debugLog("Top-level keys in response: %v", func() []string {
+					keys := make([]string, 0, len(genericData))
+					for k := range genericData {
+						keys = append(keys, k)
+					}
+					return keys
+				}())
+				
+				// Check if there's session data at different levels
+				if sessionsData, ok := genericData["sessions"]; ok {
+					debugLog("Found 'sessions' key in response")
+					if sessionArray, ok := sessionsData.([]interface{}); ok && len(sessionArray) > 0 {
+						debugLog("Sessions is an array with %d items", len(sessionArray))
+						if firstSession, ok := sessionArray[0].(map[string]interface{}); ok {
+							debugLog("First session keys: %v", func() []string {
+								keys := make([]string, 0, len(firstSession))
+								for k := range firstSession {
+									keys = append(keys, k)
+								}
+								return keys
+							}())
+							
+							// Extract progress manually
+							if libraryItemID, hasID := firstSession["libraryItemId"].(string); hasID && libraryItemID != "" {
+								var sessionProgress float64
+								
+								if currentTime, hasTime := firstSession["currentTime"].(float64); hasTime {
+									if duration, hasDuration := firstSession["duration"].(float64); hasDuration && duration > 0 {
+										sessionProgress = currentTime / duration
+										debugLog("Manual session progress calculated: %.6f = %.2f / %.2f", 
+											sessionProgress, currentTime, duration)
+									}
+								}
+								
+								if progress, hasProgress := firstSession["progress"].(float64); hasProgress && sessionProgress == 0 {
+									sessionProgress = progress
+									debugLog("Manual session progress from direct field: %.6f", sessionProgress)
+								}
+								
+								if sessionProgress > 0 {
+									progressData[libraryItemID] = sessionProgress
+									debugLog("Successfully extracted manual progress for item %s: %.6f", libraryItemID, sessionProgress)
+									return progressData, nil
+								}
+							}
+						}
+					}
+				}
 			}
 
 			debugLog("Could not parse response from %s", endpoint)

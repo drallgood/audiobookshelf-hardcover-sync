@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -232,4 +233,84 @@ func TestGetMinimumProgressThreshold(t *testing.T) {
 
 	// Clean up
 	os.Unsetenv("MINIMUM_PROGRESS_THRESHOLD")
+}
+
+func TestFetchUserProgress_ListeningSessions(t *testing.T) {
+	// Mock server for testing listening sessions parsing
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/me/listening-sessions" {
+			// Mock response with listening sessions data that mimics your AudiobookShelf server
+			response := `{
+				"sessions": [
+					{
+						"id": "session1",
+						"libraryItemId": "li_item123",
+						"currentTime": 5031.93,
+						"duration": 21039.77,
+						"progress": 0.239,
+						"createdAt": 1672531200,
+						"updatedAt": 1672531200
+					},
+					{
+						"id": "session2", 
+						"libraryItemId": "li_item456",
+						"currentTime": 1800.0,
+						"duration": 7200.0,
+						"progress": 0.25,
+						"createdAt": 1672531300,
+						"updatedAt": 1672531300
+					}
+				]
+			}`
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(response))
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	// Set environment variables for the test
+	originalURL := os.Getenv("AUDIOBOOKSHELF_URL")
+	originalToken := os.Getenv("AUDIOBOOKSHELF_TOKEN")
+	originalDebug := debugMode
+	
+	os.Setenv("AUDIOBOOKSHELF_URL", server.URL)
+	os.Setenv("AUDIOBOOKSHELF_TOKEN", "test-token")
+	debugMode = true
+	
+	defer func() {
+		os.Setenv("AUDIOBOOKSHELF_URL", originalURL)
+		os.Setenv("AUDIOBOOKSHELF_TOKEN", originalToken)
+		debugMode = originalDebug
+	}()
+
+	// Test the function
+	progressData, err := fetchUserProgress()
+	
+	// Verify results
+	if err != nil {
+		t.Errorf("Expected no error, got: %v", err)
+	}
+	
+	if len(progressData) != 2 {
+		t.Errorf("Expected 2 progress items, got: %d", len(progressData))
+	}
+	
+	// Check first item progress (should be calculated from currentTime/duration)
+	expectedProgress1 := 5031.93 / 21039.77 // ~0.239
+	if progress, exists := progressData["li_item123"]; !exists {
+		t.Errorf("Expected progress for li_item123, but not found")
+	} else if math.Abs(progress-expectedProgress1) > 0.001 {
+		t.Errorf("Expected progress %.6f for li_item123, got %.6f", expectedProgress1, progress)
+	}
+	
+	// Check second item progress
+	expectedProgress2 := 1800.0 / 7200.0 // 0.25
+	if progress, exists := progressData["li_item456"]; !exists {
+		t.Errorf("Expected progress for li_item456, but not found")
+	} else if math.Abs(progress-expectedProgress2) > 0.001 {
+		t.Errorf("Expected progress %.6f for li_item456, got %.6f", expectedProgress2, progress)
+	}
 }
