@@ -777,10 +777,14 @@ func lookupHardcoverBookID(title, author string) (string, error) {
 func lookupHardcoverBookIDRaw(title, author string) (string, error) {
 	query := `
 	query BooksByTitleAuthor($title: String!, $author: String!) {
-	  books(filter: {title: $title, author: $author}) {
+	  books(where: {title: {_eq: $title}, contributions: {author: {name: {_ilike: $author}}}}) {
 		id
 		title
-		author
+		contributions {
+		  author {
+			name
+		  }
+		}
 	  }
 	}`
 	variables := map[string]interface{}{
@@ -813,9 +817,13 @@ func lookupHardcoverBookIDRaw(title, author string) (string, error) {
 	var result struct {
 		Data struct {
 			Books []struct {
-				ID     string `json:"id"`
-				Title  string `json:"title"`
-				Author string `json:"author"`
+				ID            string `json:"id"`
+				Title         string `json:"title"`
+				Contributions []struct {
+					Author struct {
+						Name string `json:"name"`
+					} `json:"author"`
+				} `json:"contributions"`
 			} `json:"books"`
 		} `json:"data"`
 	}
@@ -827,8 +835,13 @@ func lookupHardcoverBookIDRaw(title, author string) (string, error) {
 		return "", err
 	}
 	for _, book := range result.Data.Books {
-		if strings.EqualFold(book.Title, title) && strings.EqualFold(book.Author, author) {
-			return book.ID, nil
+		if strings.EqualFold(book.Title, title) {
+			// Check if any of the book's authors match the requested author
+			for _, contribution := range book.Contributions {
+				if strings.Contains(strings.ToLower(contribution.Author.Name), strings.ToLower(author)) {
+					return book.ID, nil
+				}
+			}
 		}
 	}
 	return "", fmt.Errorf("no matching book found for '%s' by '%s'", title, author)
