@@ -950,6 +950,93 @@ func isBookLikelyFinished(itemID string, currentTime, totalDuration float64) (bo
 	return false, 0
 }
 
+// checkExistingUserBook checks if the user already has this book in their Hardcover library
+// Returns: userBookId (0 if not found), currentStatusId, currentProgressSeconds, error
+func checkExistingUserBook(bookId string) (int, int, int, error) {
+	query := `
+	query CheckUserBook($bookId: Int!) {
+	  user_books(where: { book_id: { _eq: $bookId } }, limit: 1) {
+		id
+		status_id
+		book_id
+		user_book_reads(order_by: { created_at: desc }, limit: 1) {
+		  progress_seconds
+		  finished_at
+		}
+	  }
+	}`
+	
+	variables := map[string]interface{}{"bookId": toInt(bookId)}
+	payload := map[string]interface{}{"query": query, "variables": variables}
+	payloadBytes, _ := json.Marshal(payload)
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
+	
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return 0, 0, 0, fmt.Errorf("hardcover user_books query error: %s - %s", resp.Status, string(body))
+	}
+	
+	var result struct {
+		Data struct {
+			UserBooks []struct {
+				ID       int `json:"id"`
+				StatusID int `json:"status_id"`
+				BookID   int `json:"book_id"`
+				UserBookReads []struct {
+					ProgressSeconds *int    `json:"progress_seconds"`
+					FinishedAt      *string `json:"finished_at"`
+				} `json:"user_book_reads"`
+			} `json:"user_books"`
+		} `json:"data"`
+	}
+	
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	
+	if err := json.Unmarshal(body, &result); err != nil {
+		return 0, 0, 0, err
+	}
+	
+	// If no user book found, return 0s to indicate we need to create it
+	if len(result.Data.UserBooks) == 0 {
+		debugLog("No existing user book found for bookId=%s", bookId)
+		return 0, 0, 0, nil
+	}
+	
+	userBook := result.Data.UserBooks[0]
+	userBookId := userBook.ID
+	currentStatusId := userBook.StatusID
+	currentProgressSeconds := 0
+	
+	// Get the most recent progress if available
+	if len(userBook.UserBookReads) > 0 && userBook.UserBookReads[0].ProgressSeconds != nil {
+		currentProgressSeconds = *userBook.UserBookReads[0].ProgressSeconds
+	}
+	
+	debugLog("Found existing user book: userBookId=%d, statusId=%d, progressSeconds=%d", 
+		userBookId, currentStatusId, currentProgressSeconds)
+	
+	return userBookId, currentStatusId, currentProgressSeconds, nil
+}
+
 // Sync each finished audiobook to Hardcover
 func syncToHardcover(a Audiobook) error {
 	var bookId, editionId string
@@ -1163,127 +1250,167 @@ func syncToHardcover(a Audiobook) error {
 		return fmt.Errorf("failed to find valid Hardcover bookId for '%s' by '%s' (ISBN: %s, ASIN: %s) - all lookup methods returned empty bookId", a.Title, a.Author, a.ISBN, a.ASIN)
 	}
 
-	// Step 2: Insert or update user book
-	statusId := 3 // default to read
-	if a.Progress < 0.99 {
-		statusId = 2 // currently reading
+	// Step 2: Check if user already has this book and compare status/progress
+	existingUserBookId, existingStatusId, existingProgressSeconds, err := checkExistingUserBook(bookId)
+	if err != nil {
+		return fmt.Errorf("failed to check existing user book for '%s': %v", a.Title, err)
 	}
-	userBookInput := map[string]interface{}{
-		"book_id":   toInt(bookId),
-		"status_id": statusId,
-	}
-	if editionId != "" {
-		userBookInput["edition_id"] = toInt(editionId)
-	}
-	debugLog("Syncing book '%s' by '%s' (Progress: %.6f) with status_id=%d, userBookInput=%+v", a.Title, a.Author, a.Progress, statusId, userBookInput)
-	insertUserBookMutation := `
-	mutation InsertUserBook($object: UserBookCreateInput!) {
-	  insert_user_book(object: $object) {
-		id
-		user_book { id status_id }
-		error
-	  }
-	}`
-	variables := map[string]interface{}{"object": userBookInput}
-	payload := map[string]interface{}{"query": insertUserBookMutation, "variables": variables}
-	payloadBytes, _ := json.Marshal(payload)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	var userBookId int
-	for attempt := 0; attempt < 3; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(payloadBytes))
-		if err != nil {
-			return err
-		}
-		req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
-		resp, err := httpClient.Do(req)
-		if err != nil {
-			continue
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode == 429 {
-			if retry := resp.Header.Get("Retry-After"); retry != "" {
-				if sec, err := strconv.Atoi(retry); err == nil && sec > 0 {
-					time.Sleep(time.Duration(sec) * time.Second)
-					continue
-				}
-			}
-			time.Sleep(3 * time.Second)
-			continue
-		}
-		if resp.StatusCode != 200 {
-			continue
-		}
-		var result struct {
-			Data struct {
-				InsertUserBook struct {
-					ID       int `json:"id"`
-					UserBook struct {
-						ID       int `json:"id"`
-						StatusID int `json:"status_id"`
-					} `json:"user_book"`
-					Error *string `json:"error"`
-				} `json:"insert_user_book"`
-			} `json:"data"`
-		}
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			continue
-		}
-		if err := json.Unmarshal(body, &result); err != nil {
-			continue
-		}
-		if result.Data.InsertUserBook.Error != nil {
-			debugLog("insert_user_book error: %s", *result.Data.InsertUserBook.Error)
-			return fmt.Errorf("insert_user_book error: %s", *result.Data.InsertUserBook.Error)
-		}
-		userBookId = result.Data.InsertUserBook.UserBook.ID
-		debugLog("insert_user_book: id=%d, status_id=%d", userBookId, result.Data.InsertUserBook.UserBook.StatusID)
-		if result.Data.InsertUserBook.UserBook.StatusID != statusId {
-			debugLog("Warning: Hardcover returned status_id=%d, expected %d", result.Data.InsertUserBook.UserBook.StatusID, statusId)
-		}
-		break
-	}
-	if userBookId == 0 {
-		return fmt.Errorf("failed to insert user book for '%s'", a.Title)
-	}
-	// Step 3: Insert user book read (progress)
-	if a.Progress > 0 {
-		var progressSeconds int
 
-		// Use actual current time if available
+	// Determine the target status for this book
+	targetStatusId := 3 // default to read
+	if a.Progress < 0.99 {
+		targetStatusId = 2 // currently reading
+	}
+
+	// Calculate target progress in seconds
+	var targetProgressSeconds int
+	if a.Progress > 0 {
 		if a.CurrentTime > 0 {
-			progressSeconds = int(math.Round(a.CurrentTime))
-			debugLog("Using actual current time: %.2f seconds for '%s'", a.CurrentTime, a.Title)
+			targetProgressSeconds = int(math.Round(a.CurrentTime))
 		} else if a.TotalDuration > 0 && a.Progress > 0 {
-			// Calculate progress seconds from total duration and progress percentage
-			progressSeconds = int(math.Round(a.Progress * a.TotalDuration))
-			debugLog("Calculated progress from duration: %.2f%% of %.2fs = %d seconds for '%s'",
-				a.Progress*100, a.TotalDuration, progressSeconds, a.Title)
+			targetProgressSeconds = int(math.Round(a.Progress * a.TotalDuration))
 		} else {
 			// Fallback: use progress percentage * reasonable audiobook duration (10 hours)
 			fallbackDuration := 36000.0 // 10 hours in seconds
-			progressSeconds = int(math.Round(a.Progress * fallbackDuration))
-			debugLog("Using fallback duration calculation: %.2f%% of %.2fs = %d seconds for '%s'",
-				a.Progress*100, fallbackDuration, progressSeconds, a.Title)
+			targetProgressSeconds = int(math.Round(a.Progress * fallbackDuration))
 		}
-
 		// Ensure we have at least 1 second of progress
-		if progressSeconds < 1 {
-			progressSeconds = 1
+		if targetProgressSeconds < 1 {
+			targetProgressSeconds = 1
 		}
+	}
 
-		debugLog("Syncing progress for '%s': %d seconds (%.2f%%)", a.Title, progressSeconds, a.Progress*100)
+	// Check if we need to sync (book doesn't exist OR status/progress has changed)
+	var userBookId int
+	needsSync := false
+
+	if existingUserBookId == 0 {
+		// Book doesn't exist - need to create it
+		needsSync = true
+		debugLog("Book '%s' not found in user's Hardcover library - will create", a.Title)
+	} else {
+		// Book exists - check if status or progress has meaningfully changed
+		userBookId = existingUserBookId
+		
+		statusChanged := existingStatusId != targetStatusId
+		
+		// Consider progress changed if the difference is significant (more than 30 seconds or 10%)
+		progressThreshold := int(math.Max(30, float64(targetProgressSeconds)*0.1))
+		progressChanged := targetProgressSeconds > 0 && 
+			(existingProgressSeconds == 0 || 
+			 math.Abs(float64(targetProgressSeconds-existingProgressSeconds)) > float64(progressThreshold))
+
+		if statusChanged || progressChanged {
+			needsSync = true
+			debugLog("Book '%s' needs update - status changed: %t (%d->%d), progress changed: %t (%ds->%ds)", 
+				a.Title, statusChanged, existingStatusId, targetStatusId, progressChanged, existingProgressSeconds, targetProgressSeconds)
+		} else {
+			debugLog("Book '%s' already up-to-date in Hardcover (status: %d, progress: %ds) - skipping", 
+				a.Title, existingStatusId, existingProgressSeconds)
+			return nil
+		}
+	}
+
+	// Only proceed with sync if needed
+	if !needsSync {
+		return nil
+	}
+
+	// If book doesn't exist, create it
+	if existingUserBookId == 0 {
+		userBookInput := map[string]interface{}{
+			"book_id":   toInt(bookId),
+			"status_id": targetStatusId,
+		}
+		if editionId != "" {
+			userBookInput["edition_id"] = toInt(editionId)
+		}
+		debugLog("Creating new user book for '%s' by '%s' (Progress: %.6f) with status_id=%d, userBookInput=%+v", a.Title, a.Author, a.Progress, targetStatusId, userBookInput)
+		insertUserBookMutation := `
+		mutation InsertUserBook($object: UserBookCreateInput!) {
+		  insert_user_book(object: $object) {
+			id
+			user_book { id status_id }
+			error
+		  }
+		}`
+		variables := map[string]interface{}{"object": userBookInput}
+		payload := map[string]interface{}{"query": insertUserBookMutation, "variables": variables}
+		payloadBytes, _ := json.Marshal(payload)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		for attempt := 0; attempt < 3; attempt++ {
+			req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(payloadBytes))
+			if err != nil {
+				return err
+			}
+			req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				continue
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode == 429 {
+				if retry := resp.Header.Get("Retry-After"); retry != "" {
+					if sec, err := strconv.Atoi(retry); err == nil && sec > 0 {
+						time.Sleep(time.Duration(sec) * time.Second)
+						continue
+					}
+				}
+				time.Sleep(3 * time.Second)
+				continue
+			}
+			if resp.StatusCode != 200 {
+				continue
+			}
+			var result struct {
+				Data struct {
+					InsertUserBook struct {
+						ID       int `json:"id"`
+						UserBook struct {
+							ID       int `json:"id"`
+							StatusID int `json:"status_id"`
+						} `json:"user_book"`
+						Error *string `json:"error"`
+					} `json:"insert_user_book"`
+				} `json:"data"`
+			}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				continue
+			}
+			if err := json.Unmarshal(body, &result); err != nil {
+				continue
+			}
+			if result.Data.InsertUserBook.Error != nil {
+				debugLog("insert_user_book error: %s", *result.Data.InsertUserBook.Error)
+				return fmt.Errorf("insert_user_book error: %s", *result.Data.InsertUserBook.Error)
+			}
+			userBookId = result.Data.InsertUserBook.UserBook.ID
+			debugLog("insert_user_book: id=%d, status_id=%d", userBookId, result.Data.InsertUserBook.UserBook.StatusID)
+			if result.Data.InsertUserBook.UserBook.StatusID != targetStatusId {
+				debugLog("Warning: Hardcover returned status_id=%d, expected %d", result.Data.InsertUserBook.UserBook.StatusID, targetStatusId)
+			}
+			break
+		}
+		if userBookId == 0 {
+			return fmt.Errorf("failed to insert user book for '%s'", a.Title)
+		}
+	}
+
+	// Step 3: Insert user book read (progress) - only if we have meaningful progress
+	if targetProgressSeconds > 0 {
+		debugLog("Syncing progress for '%s': %d seconds (%.2f%%)", a.Title, targetProgressSeconds, a.Progress*100)
 
 		// Use the enhanced insertUserBookRead function which includes reading_format_id for audiobooks
 		// This ensures Hardcover recognizes it as an audiobook and doesn't ignore progress_seconds
-		if err := insertUserBookRead(userBookId, progressSeconds, a.Progress >= 0.99); err != nil {
+		if err := insertUserBookRead(userBookId, targetProgressSeconds, a.Progress >= 0.99); err != nil {
 			return fmt.Errorf("failed to sync progress for '%s': %v", a.Title, err)
 		}
 
-		debugLog("Successfully synced progress for '%s': %d seconds", a.Title, progressSeconds)
+		debugLog("Successfully synced progress for '%s': %d seconds", a.Title, targetProgressSeconds)
 	}
 	return nil
 }

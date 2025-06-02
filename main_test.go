@@ -523,3 +523,44 @@ func TestIntegration_ManuallyFinishedBooks(t *testing.T) {
 		t.Errorf("Expected author 'Test Author', got '%s'", book.Author)
 	}
 }
+
+func TestCheckExistingUserBook_NoBook(t *testing.T) {
+	// Mock Hardcover API for checking user books - no books found
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response := `{
+			"data": {
+				"user_books": []
+			}
+		}`
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(response))
+	}))
+	defer server.Close()
+
+	// Create a temporary test that uses the mock server
+	oldToken := getHardcoverToken()
+	os.Setenv("HARDCOVER_TOKEN", "test-token")
+	defer func() {
+		if oldToken == "" {
+			os.Unsetenv("HARDCOVER_TOKEN")
+		} else {
+			os.Setenv("HARDCOVER_TOKEN", oldToken)
+		}
+	}()
+
+	// We need to patch the function to use our test server
+	// For now, let's test with a simple mock that expects certain behavior
+	
+	// This test is more for documentation than actual testing since we can't easily 
+	// mock the HTTP client in the current implementation
+	t.Skip("Skipping integration test - requires mocking HTTP client")
+}
+
+func TestSyncToHardcover_ConditionalSync(t *testing.T) {
+	// Test that the sync logic properly checks for existing books
+	// This is more of an integration test that would require mocking
+	// the Hardcover API responses
+	
+	t.Skip("Skipping integration test - requires full API mocking")
+}
