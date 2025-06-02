@@ -103,11 +103,20 @@ type Media struct {
 	Metadata MediaMetadata `json:"metadata"`
 }
 
+type UserProgress struct {
+	Progress      float64 `json:"progress"`
+	CurrentTime   float64 `json:"currentTime"`
+	IsFinished    bool    `json:"isFinished"`
+	TimeRemaining float64 `json:"timeRemaining"`
+}
+
 type Item struct {
-	ID        string  `json:"id"`
-	MediaType string  `json:"mediaType"`
-	Media     Media   `json:"media"`
-	Progress  float64 `json:"progress"`
+	ID           string        `json:"id"`
+	MediaType    string        `json:"mediaType"`
+	Media        Media         `json:"media"`
+	Progress     float64       `json:"progress"`
+	UserProgress *UserProgress `json:"userProgress,omitempty"`
+	IsFinished   bool          `json:"isFinished"`
 }
 
 type Audiobook struct {
@@ -155,11 +164,12 @@ func fetchLibraries() ([]Library, error) {
 	return result.Libraries, nil
 }
 
-// Fetch items for a library
+// Fetch items for a library with progress
 func fetchLibraryItems(libraryID string) ([]Item, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	url := fmt.Sprintf("%s/api/libraries/%s/items", getAudiobookShelfURL(), libraryID)
+	// Include progress in the query parameters
+	url := fmt.Sprintf("%s/api/libraries/%s/items?include=progress", getAudiobookShelfURL(), libraryID)
 	debugLog("Fetching items from: %s", url)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -183,6 +193,7 @@ func fetchLibraryItems(libraryID string) ([]Item, error) {
 		debugLog("Error reading response body: %v", err)
 		return nil, err
 	}
+	debugLog("Raw API response: %s", string(body))
 	var result struct {
 		Results []Item `json:"results"`
 	}
@@ -198,9 +209,143 @@ func fetchLibraryItems(libraryID string) ([]Item, error) {
 	return result.Results, nil
 }
 
+// Fetch user progress data from AudiobookShelf
+func fetchUserProgress() (map[string]float64, error) {
+	progressData := make(map[string]float64)
+	
+	// Try multiple endpoints for progress data
+	endpoints := []string{
+		"/api/me/items-in-progress",
+		"/api/me/progress", 
+		"/api/me/library-items/progress",
+	}
+	
+	for _, endpoint := range endpoints {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		url := fmt.Sprintf("%s%s", getAudiobookShelfURL(), endpoint)
+		debugLog("Trying progress endpoint: %s", url)
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			cancel()
+			continue
+		}
+		req.Header.Set("Authorization", "Bearer "+getAudiobookShelfToken())
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			cancel()
+			debugLog("HTTP error for %s: %v", endpoint, err)
+			continue
+		}
+		
+		if resp.StatusCode == 200 {
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			cancel()
+			if err != nil {
+				continue
+			}
+			debugLog("Progress endpoint %s response: %s", endpoint, string(body))
+			
+			// Try different response structures
+			var itemsInProgress []struct {
+				ID         string  `json:"id"`
+				Progress   float64 `json:"progress"`
+				IsFinished bool    `json:"isFinished"`
+			}
+			if err := json.Unmarshal(body, &itemsInProgress); err == nil {
+				for _, item := range itemsInProgress {
+					if item.IsFinished {
+						progressData[item.ID] = 1.0
+					} else {
+						progressData[item.ID] = item.Progress
+					}
+				}
+				debugLog("Successfully parsed %d progress items from %s", len(progressData), endpoint)
+				return progressData, nil
+			}
+			
+			// Try libraryItems structure
+			var libItemsResp struct {
+				LibraryItems []struct {
+					ID         string  `json:"id"`
+					Progress   float64 `json:"progress"`
+					IsFinished bool    `json:"isFinished"`
+				} `json:"libraryItems"`
+			}
+			if err := json.Unmarshal(body, &libItemsResp); err == nil {
+				for _, item := range libItemsResp.LibraryItems {
+					if item.IsFinished {
+						progressData[item.ID] = 1.0
+					} else {
+						progressData[item.ID] = item.Progress
+					}
+				}
+				debugLog("Successfully parsed %d progress items from %s (libraryItems)", len(progressData), endpoint)
+				return progressData, nil
+			}
+			
+			debugLog("Could not parse response from %s", endpoint)
+		} else {
+			resp.Body.Close()
+			cancel()
+			debugLog("Endpoint %s returned status %d", endpoint, resp.StatusCode)
+		}
+	}
+	
+	debugLog("No progress endpoints returned usable data, returning empty map")
+	return progressData, nil
+}
+
+// Fetch progress for a specific library item
+func fetchItemProgress(itemID string) (float64, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	url := fmt.Sprintf("%s/api/me/item/%s/progress", getAudiobookShelfURL(), itemID)
+	debugLog("Fetching individual progress for item %s from: %s", itemID, url)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	req.Header.Set("Authorization", "Bearer "+getAudiobookShelfToken())
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return 0, false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return 0, false, fmt.Errorf("progress API returned %d", resp.StatusCode)
+	}
+	
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, false, err
+	}
+	
+	var progressResp struct {
+		Progress   float64 `json:"progress"`
+		IsFinished bool    `json:"isFinished"`
+	}
+	if err := json.Unmarshal(body, &progressResp); err != nil {
+		return 0, false, err
+	}
+	
+	if progressResp.IsFinished {
+		return 1.0, true, nil
+	}
+	return progressResp.Progress, progressResp.Progress > 0, nil
+}
+
 // Fetch audiobooks with progress from all libraries
 func fetchAudiobookShelfStats() ([]Audiobook, error) {
 	debugLog("Fetching AudiobookShelf stats using new API...")
+
+	// First, try to get user progress data
+	progressData, err := fetchUserProgress()
+	if err != nil {
+		debugLog("Error fetching user progress: %v, continuing with item-level progress", err)
+		progressData = make(map[string]float64)
+	}
+
 	libs, err := fetchLibraries()
 	if err != nil {
 		debugLog("Error fetching libraries: %v", err)
@@ -231,6 +376,40 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 				if item.Media.Metadata.ISBN != "" && len(item.Media.Metadata.ISBN) == 10 {
 					isbn10 = item.Media.Metadata.ISBN
 				}
+
+				// Determine progress from different possible sources
+				progress := item.Progress
+
+				// 1. Check if we have progress data from the /api/me/progress endpoint
+				if userProgress, hasProgress := progressData[item.ID]; hasProgress {
+					progress = userProgress
+					debugLog("Using progress from /api/me/progress: %.6f for '%s'", progress, title)
+				} else if item.UserProgress != nil {
+					// 2. Check UserProgress field in the item
+					progress = item.UserProgress.Progress
+					debugLog("Using UserProgress.Progress: %.6f for '%s'", progress, title)
+				} else if item.IsFinished {
+					// 3. Check if item is marked as finished
+					progress = 1.0
+					debugLog("Item marked as finished, setting progress to 1.0 for '%s'", title)
+				}
+				
+				// 4. If progress is still 0, try fetching individual item progress
+				if progress == 0 {
+					indivProgress, isFinished, err := fetchItemProgress(item.ID)
+					if err == nil {
+						progress = indivProgress
+						if isFinished {
+							progress = 1.0
+						}
+						debugLog("Using individual item progress: %.6f for '%s'", progress, title)
+					} else {
+						debugLog("Failed to fetch individual progress for item '%s': %v", title, err)
+					}
+				}
+				
+				debugLog("Item '%s' final progress: %.6f (raw: %.6f, UserProgress: %v, IsFinished: %v)", title, progress, item.Progress, item.UserProgress != nil, item.IsFinished)
+
 				audiobooks = append(audiobooks, Audiobook{
 					ID:       item.ID,
 					Title:    title,
@@ -238,7 +417,7 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 					ISBN:     isbn,
 					ISBN10:   isbn10,
 					ASIN:     asin,
-					Progress: item.Progress,
+					Progress: progress,
 				})
 			}
 		}
