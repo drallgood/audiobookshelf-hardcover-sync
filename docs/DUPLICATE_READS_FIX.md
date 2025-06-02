@@ -157,7 +157,7 @@ mutation UpdateUserBookRead($id: Int!, $progressSeconds: Int!) {
 mutation UpdateUserBookRead($id: Int!, $object: DatesReadInput!) {
   update_user_book_read(id: $id, object: $object) {
     id
-    progress_seconds
+    error
   }
 }
 ```
@@ -166,3 +166,13 @@ The fix ensures that:
 - Uses the valid `update_user_book_read` mutation from Hardcover's API
 - Properly structures the `object` parameter as `DatesReadInput` type
 - Correctly updates the `progress_seconds` field for existing reads
+- Only selects available response fields (`id` and `error`) from `UserBookReadIdType`
+
+### Additional Fix: Response Field Selection
+
+During testing, we discovered that the original mutation was trying to select `progress_seconds` in the response, but the `UserBookReadIdType` return type only includes:
+- `id`: The ID of the updated read entry
+- `error`: Any error message from the operation  
+- `user_book_read`: The full user_book_read object (if needed)
+
+The fix was updated to only select the available `id` and `error` fields, which is sufficient for validation purposes.

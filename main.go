@@ -1504,7 +1504,13 @@ func syncToHardcover(a Audiobook) error {
 				mutation UpdateUserBookRead($id: Int!, $object: DatesReadInput!) {
 				  update_user_book_read(id: $id, object: $object) {
 					id
-					progress_seconds
+					error
+					user_book_read {
+					  id
+					  progress_seconds
+					  started_at
+					  finished_at
+					}
 				  }
 				}`
 				variables := map[string]interface{}{
@@ -1547,8 +1553,14 @@ func syncToHardcover(a Audiobook) error {
 				var result struct {
 					Data struct {
 						UpdateUserBookRead struct {
-							ID    int     `json:"id"`
-							Error *string `json:"error"`
+							ID           int     `json:"id"`
+							Error        *string `json:"error"`
+							UserBookRead *struct {
+								ID              int     `json:"id"`
+								ProgressSeconds int     `json:"progress_seconds"`
+								StartedAt       string  `json:"started_at"`
+								FinishedAt      *string `json:"finished_at"`
+							} `json:"user_book_read"`
 						} `json:"update_user_book_read"`
 					} `json:"data"`
 					Errors []struct {
@@ -1569,6 +1581,9 @@ func syncToHardcover(a Audiobook) error {
 				}
 
 				debugLog("Successfully updated user_book_read with id: %d", result.Data.UpdateUserBookRead.ID)
+				if result.Data.UpdateUserBookRead.UserBookRead != nil {
+					debugLog("Confirmed progress update: %d seconds", result.Data.UpdateUserBookRead.UserBookRead.ProgressSeconds)
+				}
 			} else {
 				debugLog("No update needed for existing user_book_read id=%d (progress already %d seconds)", existingReadId, existingProgressSeconds)
 			}
