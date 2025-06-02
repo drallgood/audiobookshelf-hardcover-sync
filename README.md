@@ -14,14 +14,15 @@ Syncs Audiobookshelf to Hardcover.
 - Robust debug logging (`-v` flag or `DEBUG_MODE=1`)
 
 ## Environment Variables
-| Variable                | Description                                                                                 |
-|-------------------------|---------------------------------------------------------------------------------------------|
-| AUDIOBOOKSHELF_URL      | URL to your AudiobookShelf server                                                            |
-| AUDIOBOOKSHELF_TOKEN    | API token for AudiobookShelf (see instructions below; required for all API requests)         |
-| HARDCOVER_TOKEN         | API token for Hardcover                                                                     |
-| SYNC_INTERVAL           | (optional) Go duration string for periodic sync                                             |
-| HARDCOVER_SYNC_DELAY_MS | (optional) Delay between Hardcover syncs in milliseconds (default: 1500)                    |
-| DEBUG_MODE              | (optional) Set to `1` to enable verbose debug logging                                       |
+| Variable                 | Description                                                                                 |
+|--------------------------|-------------------------------------------------------------------------------------------|
+| AUDIOBOOKSHELF_URL       | URL to your AudiobookShelf server                                                            |
+| AUDIOBOOKSHELF_TOKEN     | API token for AudiobookShelf (see instructions below; required for all API requests)         |
+| HARDCOVER_TOKEN          | API token for Hardcover                                                                     |
+| SYNC_INTERVAL            | (optional) Go duration string for periodic sync                                             |
+| HARDCOVER_SYNC_DELAY_MS  | (optional) Delay between Hardcover syncs in milliseconds (default: 1500)                    |
+| MINIMUM_PROGRESS_THRESHOLD | (optional) Minimum progress threshold to sync books (0.0-1.0, default: 0.01 = 1%)           |
+| DEBUG_MODE               | (optional) Set to `1` to enable verbose debug logging                                       |
 
 You can copy `.env.example` to `.env` and fill in your values.
 
@@ -49,9 +50,21 @@ You can copy `.env.example` to `.env` and fill in your values.
 
 ## How it works
 
-This service fetches all libraries from your AudiobookShelf server using the `/api/libraries` endpoint, then fetches all items for each library using `/api/libraries/{libraryId}/items`. It filters for items with `mediaType == "book"` and extracts title/author from `media.metadata`, then syncs their progress to Hardcover. 
+This service fetches all libraries from your AudiobookShelf server using the `/api/libraries` endpoint, then fetches all items for each library using `/api/libraries/{libraryId}/items`. It filters for items with `mediaType == "book"` and extracts title/author from `media.metadata`, then syncs their progress to Hardcover.
 
-Progress is recorded for all books with any progress (> 0%), including finished books. Books with progress >= 99% are marked as "read" (status_id=3) on Hardcover, while books with less progress are marked as "currently reading" (status_id=2). The service looks up books by ISBN-13, ISBN-10, or ASIN first, then falls back to title/author matching for better accuracy.
+### Smart Progress Filtering
+The service only syncs books that have meaningful progress (configurable via `MINIMUM_PROGRESS_THRESHOLD`, default 1%). This prevents syncing books that have been barely started or accidentally opened.
+
+### Accurate Progress Calculation
+Progress is calculated using the most accurate method available:
+1. **Current Time**: Uses actual `currentTime` from AudiobookShelf when available
+2. **Duration Calculation**: Calculates progress from `totalDuration * progressPercentage` when duration is known
+3. **Fallback**: Uses a reasonable 10-hour duration estimate (much better than the previous 1-hour assumption)
+
+### Status Mapping
+- Books with progress >= 99% are marked as "read" (status_id=3) on Hardcover
+- Books with less progress are marked as "currently reading" (status_id=2)
+- The service looks up books by ISBN-13, ISBN-10, or ASIN first, then falls back to title/author matching for better accuracy
 
 ## Getting Started
 

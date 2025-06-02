@@ -185,3 +185,51 @@ func TestRunSync_NoPanic(t *testing.T) {
 	// Should not panic or crash even if env vars are missing
 	runSync()
 }
+
+// Test the minimum progress threshold function
+func TestGetMinimumProgressThreshold(t *testing.T) {
+	// Test default value when env var is not set
+	os.Unsetenv("MINIMUM_PROGRESS_THRESHOLD")
+	if threshold := getMinimumProgressThreshold(); threshold != 0.01 {
+		t.Errorf("expected default threshold 0.01, got %f", threshold)
+	}
+
+	// Test valid threshold value
+	os.Setenv("MINIMUM_PROGRESS_THRESHOLD", "0.05")
+	if threshold := getMinimumProgressThreshold(); threshold != 0.05 {
+		t.Errorf("expected threshold 0.05, got %f", threshold)
+	}
+
+	// Test invalid threshold value (non-numeric)
+	os.Setenv("MINIMUM_PROGRESS_THRESHOLD", "invalid")
+	if threshold := getMinimumProgressThreshold(); threshold != 0.01 {
+		t.Errorf("expected default threshold 0.01 for invalid input, got %f", threshold)
+	}
+
+	// Test threshold value too high
+	os.Setenv("MINIMUM_PROGRESS_THRESHOLD", "1.5")
+	if threshold := getMinimumProgressThreshold(); threshold != 0.01 {
+		t.Errorf("expected default threshold 0.01 for value > 1, got %f", threshold)
+	}
+
+	// Test negative threshold value
+	os.Setenv("MINIMUM_PROGRESS_THRESHOLD", "-0.1")
+	if threshold := getMinimumProgressThreshold(); threshold != 0.01 {
+		t.Errorf("expected default threshold 0.01 for negative value, got %f", threshold)
+	}
+
+	// Test edge case: exactly 1.0
+	os.Setenv("MINIMUM_PROGRESS_THRESHOLD", "1.0")
+	if threshold := getMinimumProgressThreshold(); threshold != 1.0 {
+		t.Errorf("expected threshold 1.0, got %f", threshold)
+	}
+
+	// Test edge case: exactly 0.0
+	os.Setenv("MINIMUM_PROGRESS_THRESHOLD", "0.0")
+	if threshold := getMinimumProgressThreshold(); threshold != 0.0 {
+		t.Errorf("expected threshold 0.0, got %f", threshold)
+	}
+
+	// Clean up
+	os.Unsetenv("MINIMUM_PROGRESS_THRESHOLD")
+}
