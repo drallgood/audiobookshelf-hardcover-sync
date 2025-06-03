@@ -276,19 +276,15 @@ func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, err
 	return existingReadId, existingProgressSeconds, nil
 }
 
-// checkRecentFinishedRead checks if a user_book_read with status "read" (finished) already exists
-// for the given user_book_id within the last 30 days to prevent duplicate finished reads
-func checkRecentFinishedRead(userBookID int) (bool, string, error) {
-	// Calculate date 30 days ago
-	thirtyDaysAgo := time.Now().AddDate(0, 0, -30).Format("2006-01-02")
-
+// checkExistingFinishedRead checks if ANY user_book_read with status "read" (finished) already exists
+// for the given user_book_id to prevent duplicate finished reads entirely
+func checkExistingFinishedRead(userBookID int) (bool, string, error) {
 	query := `
-	query CheckRecentFinishedRead($userBookId: Int!, $since: String!) {
+	query CheckExistingFinishedRead($userBookId: Int!) {
 	  user_book_reads(
 		where: {
 		  user_book_id: { _eq: $userBookId }
 		  finished_at: { _is_null: false }
-		  finished_at: { _gte: $since }
 		}
 		order_by: { finished_at: desc }
 		limit: 1
@@ -300,7 +296,6 @@ func checkRecentFinishedRead(userBookID int) (bool, string, error) {
 
 	variables := map[string]interface{}{
 		"userBookId": userBookID,
-		"since":      thirtyDaysAgo,
 	}
 
 	requestBody := map[string]interface{}{
@@ -336,7 +331,7 @@ func checkRecentFinishedRead(userBookID int) (bool, string, error) {
 		return false, "", fmt.Errorf("failed to read response: %v", err)
 	}
 
-	debugLog("checkRecentFinishedRead response: %s", string(body))
+	debugLog("checkExistingFinishedRead response: %s", string(body))
 
 	var result struct {
 		Data struct {
@@ -360,11 +355,11 @@ func checkRecentFinishedRead(userBookID int) (bool, string, error) {
 
 	if len(result.Data.UserBookReads) > 0 {
 		finishedAt := result.Data.UserBookReads[0].FinishedAt
-		debugLog("Found recent finished read for user_book_id %d: finished on %s", userBookID, finishedAt)
+		debugLog("Found existing finished read for user_book_id %d: finished on %s", userBookID, finishedAt)
 		return true, finishedAt, nil
 	}
 
-	debugLog("No recent finished read found for user_book_id %d within last 30 days", userBookID)
+	debugLog("No existing finished read found for user_book_id %d", userBookID)
 	return false, "", nil
 }
 

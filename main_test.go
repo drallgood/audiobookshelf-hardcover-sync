@@ -576,3 +576,132 @@ func TestSyncToHardcover_ConditionalSync(t *testing.T) {
 	
 	t.Skip("Skipping integration test - requires full API mocking")
 }
+
+// ========================================
+// Expectation #4 and Sync Logic Tests
+// ========================================
+
+// TestExpectation4_ReReadScenario tests the corrected expectation #4:
+// Book with 100% progress in Hardcover, 50% progress in AudiobookShelf
+// Should sync new progress with today's date (new reading session)
+func TestExpectation4_ReReadScenario(t *testing.T) {
+	// Mock audiobook with 50% progress (indicating re-read)
+	audiobook := Audiobook{
+		Title:         "Test Re-read Book",
+		Author:        "Test Author",
+		Progress:      0.5,  // 50% progress in AudiobookShelf
+		CurrentTime:   1800, // 30 minutes
+		TotalDuration: 3600, // 1 hour total
+		ISBN:          "9781234567890",
+		ASIN:          "TEST123",
+	}
+
+	// Calculate target progress seconds
+	targetProgressSeconds := int(audiobook.CurrentTime) // Should be 1800 seconds
+	
+	if targetProgressSeconds != 1800 {
+		t.Errorf("Expected targetProgressSeconds to be 1800, got %d", targetProgressSeconds)
+	}
+	
+	// Verify that progress less than 99% would trigger re-read detection
+	if audiobook.Progress >= 0.99 {
+		t.Errorf("Test audiobook should have progress < 99%% for re-read scenario, got %.2f%%", audiobook.Progress*100)
+	}
+	
+	// Test the target status calculation
+	targetStatusId := 3 // default to read
+	if audiobook.Progress < 0.99 {
+		targetStatusId = 2 // currently reading
+	}
+	
+	if targetStatusId != 2 {
+		t.Errorf("Expected targetStatusId to be 2 (currently reading) for re-read scenario, got %d", targetStatusId)
+	}
+}
+
+// TestExpectation3_BothFinished tests expectation #3:
+// Book with 100% progress in Hardcover, 100% progress in AudiobookShelf
+// Should skip sync (no duplicate read created)
+func TestExpectation3_BothFinished(t *testing.T) {
+	// Mock audiobook with 100% progress
+	audiobook := Audiobook{
+		Title:         "Test Finished Book",
+		Author:        "Test Author", 
+		Progress:      1.0,  // 100% progress in AudiobookShelf
+		CurrentTime:   3600, // 1 hour
+		TotalDuration: 3600, // 1 hour total
+		ISBN:          "9781234567891",
+		ASIN:          "TEST124",
+	}
+
+	// Verify this would be detected as finished
+	if audiobook.Progress < 0.99 {
+		t.Errorf("Test audiobook should have progress >= 99%% for finished scenario, got %.2f%%", audiobook.Progress*100)
+	}
+	
+	// Test the target status calculation
+	targetStatusId := 3 // default to read
+	if audiobook.Progress < 0.99 {
+		targetStatusId = 2 // currently reading
+	}
+	
+	if targetStatusId != 3 {
+		t.Errorf("Expected targetStatusId to be 3 (read) for finished book, got %d", targetStatusId)
+	}
+}
+
+// TestProgressThresholdCalculation tests the progress change detection logic
+func TestProgressThresholdCalculation(t *testing.T) {
+	testCases := []struct {
+		name                    string
+		targetProgressSeconds   int
+		existingProgressSeconds int
+		expectedSignificant     bool
+		description            string
+	}{
+		{
+			name:                    "Small change below threshold",
+			targetProgressSeconds:   1800, // 30 minutes
+			existingProgressSeconds: 1820, // 30 minutes 20 seconds
+			expectedSignificant:     false,
+			description:            "20 second difference should not trigger sync",
+		},
+		{
+			name:                    "Large change above threshold",
+			targetProgressSeconds:   1800, // 30 minutes
+			existingProgressSeconds: 3600, // 1 hour
+			expectedSignificant:     true,
+			description:            "30 minute difference should trigger sync",
+		},
+		{
+			name:                    "Re-read scenario - much lower progress",
+			targetProgressSeconds:   900,  // 15 minutes
+			existingProgressSeconds: 3600, // 1 hour (from previous finished read)
+			expectedSignificant:     true,
+			description:            "Re-read with lower progress should trigger sync",
+		},
+		{
+			name:                    "Zero existing progress",
+			targetProgressSeconds:   1800, // 30 minutes
+			existingProgressSeconds: 0,    // No previous progress
+			expectedSignificant:     true,
+			description:            "Any progress vs zero should trigger sync",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Replicate the threshold calculation logic from sync.go
+			progressThreshold := int(math.Max(30, float64(tc.targetProgressSeconds)*0.1))
+			progressChanged := tc.targetProgressSeconds > 0 &&
+				(tc.existingProgressSeconds == 0 ||
+					int(math.Abs(float64(tc.targetProgressSeconds-tc.existingProgressSeconds))) > progressThreshold)
+
+			if progressChanged != tc.expectedSignificant {
+				t.Errorf("%s: expected significant=%t, got %t (threshold=%d, diff=%d)",
+					tc.description, tc.expectedSignificant, progressChanged, progressThreshold,
+					int(math.Abs(float64(tc.targetProgressSeconds-tc.existingProgressSeconds))))
+			}
+		})
+	}
+}

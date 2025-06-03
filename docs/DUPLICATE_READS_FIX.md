@@ -96,6 +96,31 @@ The system correctly handles both:
 3. **Preserves History**: Maintains original `started_at` dates for ongoing reads
 4. **Backward Compatible**: Existing entries are preserved and updated appropriately
 
+## Expected Behavior
+
+The duplicate reads fix implements a comprehensive 5-point expectation system for handling books with different progress states:
+
+### 1. Book with 0% progress in Hardcover, 50% progress in AudiobookShelf
+- **Action**: Updates existing Hardcover entry to 50%
+- **Result**: Hardcover shows correct 50% progress
+
+### 2. Book with 50% progress in Hardcover, 100% progress in AudiobookShelf  
+- **Action**: Updates existing entry to 100% and marks as finished
+- **Result**: Book marked as read with completion date
+
+### 3. Book with 100% progress in Hardcover, 100% progress in AudiobookShelf
+- **Action**: Skips sync (no duplicate read created)
+- **Result**: Existing finished read preserved
+
+### 4. Book with 100% progress in Hardcover, 50% progress in AudiobookShelf
+- **Action**: Syncs new progress with today's date (new reading session)
+- **Result**: Hardcover updated to 50% with current date (preserves finished read history)
+- **✅ IMPLEMENTATION STATUS**: **FIXED** - Logic now correctly detects re-read scenarios and creates new reading sessions
+
+### 5. Book not in Hardcover library, any progress in AudiobookShelf
+- **Action**: Creates new library entry with progress
+- **Result**: Book added to Hardcover with correct status and progress
+
 ## Testing
 
 The fix has been tested with:

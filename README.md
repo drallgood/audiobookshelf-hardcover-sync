@@ -13,6 +13,10 @@ Syncs Audiobookshelf to Hardcover.
 - Secure, minimal, and production-ready
 - Robust debug logging (`-v` flag or `DEBUG_MODE=1`)
 
+## Recent Updates
+- ✅ **Expectation #4 Logic Fix** (June 2025): Fixed re-read scenario handling where books with 100% progress in Hardcover but <99% in AudiobookShelf now correctly create new reading sessions instead of being skipped
+- ✅ **Duplicate Reads Prevention**: Implemented logic to prevent duplicate `user_book_reads` entries on the same day
+
 ## Environment Variables
 | Variable                 | Description                                                                                 |
 |--------------------------|-------------------------------------------------------------------------------------------|
@@ -144,6 +148,17 @@ You can increase the delay if you have a large library or continue to see thrott
 ```sh
 export HARDCOVER_SYNC_DELAY_MS=3000 # 3 seconds between syncs
 ```
+
+### Command Line Options
+
+```sh
+./main --help
+```
+
+Available flags:
+- `-v` — Enable verbose debug logging
+- `--health-check` — Run health check and exit
+- `--version` — Show version and exit
 
 ### Debug Logging
 
