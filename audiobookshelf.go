@@ -588,6 +588,7 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 					Progress:      progress,
 					CurrentTime:   currentTime,
 					TotalDuration: totalDuration,
+					Metadata:      item.Media.Metadata, // Include full metadata for enhanced mismatch collection
 				})
 			}
 		}

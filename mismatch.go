@@ -1,8 +1,8 @@
 package main
 
 import (
-	"log"
-	"time"
+"log"
+"time"
 )
 
 // Global slice to collect mismatches during sync
@@ -24,6 +24,37 @@ func addBookMismatch(title, author, isbn, asin, bookID, editionID, reason string
 	debugLog("MISMATCH COLLECTED: %s - %s", title, reason)
 }
 
+// addBookMismatchWithMetadata adds a book mismatch with enhanced metadata to the global collection
+func addBookMismatchWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, duration float64) {
+	// Convert duration from seconds to hours for easier reading
+	durationHours := duration / 3600.0
+	
+	// Handle release date - prefer publishedDate, fallback to publishedYear
+	releaseDate := metadata.PublishedDate
+	if releaseDate == "" && metadata.PublishedYear != "" {
+		releaseDate = metadata.PublishedYear
+	}
+	
+	mismatch := BookMismatch{
+		Title:         metadata.Title,
+		Subtitle:      metadata.Subtitle,
+		Author:        metadata.AuthorName,
+		Narrator:      metadata.NarratorName,
+		Publisher:     metadata.Publisher,
+		PublishedYear: metadata.PublishedYear,
+		ReleaseDate:   releaseDate,
+		Duration:      durationHours,
+		ISBN:          metadata.ISBN,
+		ASIN:          metadata.ASIN,
+		BookID:        bookID,
+		EditionID:     editionID,
+		Reason:        reason,
+		Timestamp:     time.Now(),
+	}
+	bookMismatches = append(bookMismatches, mismatch)
+	debugLog("MISMATCH COLLECTED: %s - %s", metadata.Title, reason)
+}
+
 // printMismatchSummary prints a summary of all collected mismatches
 func printMismatchSummary() {
 	if len(bookMismatches) == 0 {
@@ -36,7 +67,22 @@ func printMismatchSummary() {
 	
 	for i, mismatch := range bookMismatches {
 		log.Printf("%d. Title: %s", i+1, mismatch.Title)
+		if mismatch.Subtitle != "" {
+			log.Printf("   Subtitle: %s", mismatch.Subtitle)
+		}
 		log.Printf("   Author: %s", mismatch.Author)
+		if mismatch.Narrator != "" {
+			log.Printf("   Narrator: %s", mismatch.Narrator)
+		}
+		if mismatch.Publisher != "" {
+			log.Printf("   Publisher: %s", mismatch.Publisher)
+		}
+		if mismatch.ReleaseDate != "" {
+			log.Printf("   Release Date: %s", mismatch.ReleaseDate)
+		}
+		if mismatch.Duration > 0 {
+			log.Printf("   Duration: %.1f hours", mismatch.Duration)
+		}
 		if mismatch.ISBN != "" {
 			log.Printf("   ISBN: %s", mismatch.ISBN)
 		}

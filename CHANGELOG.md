@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.2.0] - 2025-06-03
+
+### Added
+- **Enhanced Mismatch Collection**: Upgraded book mismatch tracking system with rich metadata
+  - Added detailed metadata fields: subtitle, narrator, publisher, published year/date, duration
+  - Duration display in human-readable hours format (e.g., "18.1 hours")
+  - Enhanced `Audiobook` struct to carry full metadata through sync process
+  - Comprehensive mismatch summaries with all available book information
+  - Improved manual review process with better identification data
+- **Backward Compatibility**: Preserved original `addBookMismatch()` function for existing integrations
+
+### Technical
+- Extended `BookMismatch` struct with 7 additional metadata fields
+- Created `addBookMismatchWithMetadata()` function with metadata processing
+- Updated sync process to use enhanced metadata collection at all mismatch points
+- Added metadata flow from `fetchAudiobookShelfStats()` through to mismatch collection
+
 ## [v1.1.0] - 2025-06-02
 
 ### Added

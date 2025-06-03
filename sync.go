@@ -228,7 +228,7 @@ func syncToHardcover(a Audiobook) error {
 			case "skip":
 				// Collect this mismatch for manual review before skipping
 				reason := fmt.Sprintf("Book lookup failed - not found in Hardcover database using ASIN %s, ISBN %s, or title/author search", a.ASIN, a.ISBN)
-				addBookMismatch(a.Title, a.Author, a.ISBN, a.ASIN, "", "", reason)
+				addBookMismatchWithMetadata(a.Metadata, "", "", reason, a.TotalDuration)
 				
 				debugLog("SKIPPING: Book lookup failed for '%s' by '%s' (ISBN: %s, ASIN: %s) and AUDIOBOOK_MATCH_MODE=skip: %v", a.Title, a.Author, a.ISBN, a.ASIN, err)
 				return nil // Skip this book entirely
@@ -266,7 +266,7 @@ func syncToHardcover(a Audiobook) error {
 				debugLog("SKIPPING: No audiobook edition found for '%s' by '%s' (ISBN: %s) and AUDIOBOOK_MATCH_MODE=skip. Avoiding potential wrong edition sync.", a.Title, a.Author, a.ISBN)
 			}
 			
-			addBookMismatch(a.Title, a.Author, a.ISBN, a.ASIN, bookId, editionId, reason)
+			addBookMismatchWithMetadata(a.Metadata, bookId, editionId, reason, a.TotalDuration)
 			
 			return nil // Skip this book entirely
 		default: // "continue"
@@ -280,7 +280,7 @@ func syncToHardcover(a Audiobook) error {
 			}
 			
 			// Collect this mismatch for manual review
-			addBookMismatch(a.Title, a.Author, a.ISBN, a.ASIN, bookId, editionId, reason)
+			addBookMismatchWithMetadata(a.Metadata, bookId, editionId, reason, a.TotalDuration)
 			
 			debugLog("To change this behavior, set AUDIOBOOK_MATCH_MODE=skip or AUDIOBOOK_MATCH_MODE=fail")
 		}
@@ -316,7 +316,7 @@ func syncToHardcover(a Audiobook) error {
 		}
 	}
 
-	// Check if we need to sync (book doesn't exist OR status/progress has changed)
+	// Check if we need to sync (book doesn't exist OR status/progress has changed OR re-read scenario)
 	var userBookId int
 	needsSync := false
 
@@ -325,25 +325,41 @@ func syncToHardcover(a Audiobook) error {
 		needsSync = true
 		debugLog("Book '%s' not found in user's Hardcover library - will create", a.Title)
 	} else {
-		// Book exists - check if status or progress has meaningfully changed
+		// Book exists - check if status or progress has meaningfully changed OR if this is a re-read scenario
 		userBookId = existingUserBookId
 
-		statusChanged := existingStatusId != targetStatusId
-
-		// Consider progress changed if the difference is significant (more than 30 seconds or 10%)
-		progressThreshold := int(math.Max(30, float64(targetProgressSeconds)*0.1))
-		progressChanged := targetProgressSeconds > 0 &&
-			(existingProgressSeconds == 0 ||
-				math.Abs(float64(targetProgressSeconds-existingProgressSeconds)) > float64(progressThreshold))
-
-		if statusChanged || progressChanged {
+		// EXPECTATION #4 IMPLEMENTATION: Check for re-read scenario
+		// If there's a finished read in Hardcover but AudiobookShelf shows in-progress (< 99%), 
+		// this indicates a re-read and should always sync
+		hasExistingFinishedRead, finishDate, err := checkExistingFinishedRead(userBookId)
+		if err != nil {
+			debugLog("Warning: Failed to check existing finished reads for '%s': %v", a.Title, err)
+			// Continue with normal logic if check fails
+		} else if hasExistingFinishedRead && a.Progress < 0.99 {
+			// EXPECTATION #4: Book has finished read in Hardcover but shows in-progress in AudiobookShelf
+			// This is a re-read scenario - always sync to create new reading session
 			needsSync = true
-			debugLog("Book '%s' needs update - status changed: %t (%d->%d), progress changed: %t (%ds->%ds)",
-				a.Title, statusChanged, existingStatusId, targetStatusId, progressChanged, existingProgressSeconds, targetProgressSeconds)
+			debugLog("RE-READ: Book '%s' has finished read in Hardcover (finished on %s) but shows %.2f%% progress in AudiobookShelf - syncing as new reading session", 
+				a.Title, finishDate, a.Progress*100)
 		} else {
-			debugLog("Book '%s' already up-to-date in Hardcover (status: %d, progress: %ds) - skipping",
-				a.Title, existingStatusId, existingProgressSeconds)
-			return nil
+			// Normal sync logic for other scenarios
+			statusChanged := existingStatusId != targetStatusId
+
+			// Consider progress changed if the difference is significant (more than 30 seconds or 10%)
+			progressThreshold := int(math.Max(30, float64(targetProgressSeconds)*0.1))
+			progressChanged := targetProgressSeconds > 0 &&
+				(existingProgressSeconds == 0 ||
+					math.Abs(float64(targetProgressSeconds-existingProgressSeconds)) > float64(progressThreshold))
+
+			if statusChanged || progressChanged {
+				needsSync = true
+				debugLog("Book '%s' needs update - status changed: %t (%d->%d), progress changed: %t (%ds->%ds)",
+					a.Title, statusChanged, existingStatusId, targetStatusId, progressChanged, existingProgressSeconds, targetProgressSeconds)
+			} else {
+				debugLog("Book '%s' already up-to-date in Hardcover (status: %d, progress: %ds) - skipping",
+					a.Title, existingStatusId, existingProgressSeconds)
+				return nil
+			}
 		}
 	}
 
@@ -539,17 +555,30 @@ func syncToHardcover(a Audiobook) error {
 				debugLog("No update needed for existing user_book_read id=%d (progress already %d seconds)", existingReadId, existingProgressSeconds)
 			}
 		} else {
-			// Enhanced duplicate prevention: Check if book was recently finished before creating new read entry
-			// This prevents spam in Hardcover feed from books that are already marked as "read"
-			if a.Progress >= 0.99 { // Only check for finished books
-				recentlyFinished, finishDate, err := checkRecentFinishedRead(userBookId)
+			// IMPLEMENTATION OF USER'S EXACT EXPECTATIONS:
+			// 1) If book is finished in ABS AND already has ANY finished read in Hardcover → do nothing (EXPECTATION #3)
+			// 2) If book is finished in ABS but has NO finished read in Hardcover → create read entry  
+			// 3) If book is in-progress in ABS → handle reading sessions appropriately
+			// 4) If book has finished read in Hardcover but is in-progress in ABS → create new read entry (re-read scenario)
+
+			if a.Progress >= 0.99 { 
+				// Book is finished in AudiobookShelf
+				// Check if there's ANY existing finished read for this book (regardless of date)
+				hasExistingFinishedRead, finishDate, err := checkExistingFinishedRead(userBookId)
 				if err != nil {
-					debugLog("Warning: Failed to check recent finished reads for '%s': %v", a.Title, err)
+					debugLog("Warning: Failed to check existing finished reads for '%s': %v", a.Title, err)
 					// Continue with normal flow even if check fails
-				} else if recentlyFinished {
-					debugLog("Skipping duplicate read entry for '%s' - already finished on %s (within last 30 days)", a.Title, finishDate)
+				} else if hasExistingFinishedRead {
+					// EXPECTATION #3: Book is finished in ABS AND has finished read in Hardcover → DO NOTHING
+					debugLog("SKIP: Book '%s' is finished in ABS but already has a finished read in Hardcover (finished on %s) - doing nothing to avoid duplicate", a.Title, finishDate)
 					return nil
 				}
+				// EXPECTATION #2: Book is finished in ABS but has NO finished read in Hardcover → CREATE READ ENTRY
+				debugLog("CREATE: Book '%s' is finished in ABS but has no finished read in Hardcover - creating read entry with today's dates", a.Title)
+			} else {
+				// EXPECTATION #3 & #4: Book is in progress in ABS → handle reading sessions appropriately
+				// This includes both new reading sessions and re-read scenarios (handled by conditional sync logic above)
+				debugLog("UPDATE: Book '%s' is in progress in ABS (%.2f%%) - creating/updating read entry", a.Title, a.Progress*100)
 			}
 
 			// Create new user book read entry

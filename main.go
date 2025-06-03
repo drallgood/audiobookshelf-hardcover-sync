@@ -39,7 +39,7 @@ import (
 )
 
 var (
-	version = "v1.1.0" // Application version
+	version = "v1.2.0" // Application version
 )
 
 
