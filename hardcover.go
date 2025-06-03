@@ -107,20 +107,38 @@ func lookupHardcoverBookIDRaw(title, author string) (string, error) {
 // checkExistingUserBook checks if the user already has this book in their Hardcover library
 // Returns: userBookId (0 if not found), currentStatusId, currentProgressSeconds, error
 func checkExistingUserBook(bookId string) (int, int, int, error) {
+	// Get current user to ensure we only query their data
+	currentUser, err := getCurrentUser()
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("failed to get current user: %v", err)
+	}
+
+	// First try to find user books with reads, explicitly filtered by user
 	query := `
-	query CheckUserBook($bookId: Int!) {
-	  user_books(where: { book_id: { _eq: $bookId } }, limit: 1) {
+	query CheckUserBook($bookId: Int!, $username: citext!) {
+	  user_books(
+		where: { 
+		  book_id: { _eq: $bookId }
+		  user: { username: { _eq: $username } }
+		  user_book_reads: { id: { _is_null: false } }
+		}, 
+		order_by: { id: desc }, 
+		limit: 1
+	  ) {
 		id
 		status_id
 		book_id
-		user_book_reads(order_by: { created_at: desc }, limit: 1) {
+		user_book_reads(order_by: { started_at: desc }, limit: 1) {
 		  progress_seconds
 		  finished_at
 		}
 	  }
 	}`
 
-	variables := map[string]interface{}{"bookId": toInt(bookId)}
+	variables := map[string]interface{}{
+		"bookId":   toInt(bookId),
+		"username": currentUser,
+	}
 	payload := map[string]interface{}{"query": query, "variables": variables}
 	payloadBytes, _ := json.Marshal(payload)
 
@@ -169,6 +187,69 @@ func checkExistingUserBook(bookId string) (int, int, int, error) {
 		return 0, 0, 0, err
 	}
 
+	// If no user book with reads found, try fallback query for any user book
+	if len(result.Data.UserBooks) == 0 {
+		debugLog("No user book with reads found for bookId=%s, trying fallback query", bookId)
+		
+		fallbackQuery := `
+		query CheckUserBookFallback($bookId: Int!, $username: citext!) {
+		  user_books(
+			where: { 
+			  book_id: { _eq: $bookId }
+			  user: { username: { _eq: $username } }
+			}, 
+			order_by: { id: desc }, 
+			limit: 1
+		  ) {
+			id
+			status_id
+			book_id
+			user_book_reads(order_by: { started_at: desc }, limit: 1) {
+			  progress_seconds
+			  finished_at
+			}
+		  }
+		}`
+		
+		fallbackVariables := map[string]interface{}{
+			"bookId":   toInt(bookId),
+			"username": currentUser,
+		}
+		fallbackPayload := map[string]interface{}{"query": fallbackQuery, "variables": fallbackVariables}
+		fallbackPayloadBytes, _ := json.Marshal(fallbackPayload)
+		
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel2()
+		
+		req2, err := http.NewRequestWithContext(ctx2, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(fallbackPayloadBytes))
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		req2.Header.Set("Authorization", "Bearer "+getHardcoverToken())
+		req2.Header.Set("Content-Type", "application/json")
+		req2.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
+
+		resp2, err := httpClient.Do(req2)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		defer resp2.Body.Close()
+
+		if resp2.StatusCode != 200 {
+			body2, _ := io.ReadAll(resp2.Body)
+			return 0, 0, 0, fmt.Errorf("hardcover user_books fallback query error: %s - %s", resp2.Status, string(body2))
+		}
+
+		body2, err := io.ReadAll(resp2.Body)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+
+		if err := json.Unmarshal(body2, &result); err != nil {
+			return 0, 0, 0, err
+		}
+	}
+
 	// If no user book found, return 0s to indicate we need to create it
 	if len(result.Data.UserBooks) == 0 {
 		debugLog("No existing user book found for bookId=%s", bookId)
@@ -194,11 +275,18 @@ func checkExistingUserBook(bookId string) (int, int, int, error) {
 // checkExistingUserBookRead checks if a user_book_read already exists for the given user_book_id on today's date
 // Returns: existingReadId (0 if not found), existingProgressSeconds, error
 func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, error) {
+	// Get current user to ensure we only query their data
+	currentUser, err := getCurrentUser()
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to get current user: %v", err)
+	}
+
 	query := `
-	query CheckUserBookRead($userBookId: Int!, $targetDate: date!) {
+	query CheckUserBookRead($userBookId: Int!, $targetDate: date!, $username: citext!) {
 	  user_book_reads(where: { 
 		user_book_id: { _eq: $userBookId },
-		started_at: { _eq: $targetDate }
+		started_at: { _eq: $targetDate },
+		user_book: { user: { username: { _eq: $username } } }
 	  }, limit: 1) {
 		id
 		progress_seconds
@@ -210,6 +298,7 @@ func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, err
 	variables := map[string]interface{}{
 		"userBookId": userBookID,
 		"targetDate": targetDate,
+		"username":   currentUser,
 	}
 	payload := map[string]interface{}{"query": query, "variables": variables}
 	payloadBytes, _ := json.Marshal(payload)
@@ -279,12 +368,19 @@ func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, err
 // checkExistingFinishedRead checks if ANY user_book_read with status "read" (finished) already exists
 // for the given user_book_id to prevent duplicate finished reads entirely
 func checkExistingFinishedRead(userBookID int) (bool, string, error) {
+	// Get current user to ensure we only query their data
+	currentUser, err := getCurrentUser()
+	if err != nil {
+		return false, "", fmt.Errorf("failed to get current user: %v", err)
+	}
+
 	query := `
-	query CheckExistingFinishedRead($userBookId: Int!) {
+	query CheckExistingFinishedRead($userBookId: Int!, $username: citext!) {
 	  user_book_reads(
 		where: {
 		  user_book_id: { _eq: $userBookId }
 		  finished_at: { _is_null: false }
+		  user_book: { user: { username: { _eq: $username } } }
 		}
 		order_by: { finished_at: desc }
 		limit: 1
@@ -296,6 +392,7 @@ func checkExistingFinishedRead(userBookID int) (bool, string, error) {
 
 	variables := map[string]interface{}{
 		"userBookId": userBookID,
+		"username":   currentUser,
 	}
 
 	requestBody := map[string]interface{}{
@@ -456,4 +553,58 @@ func insertUserBookRead(userBookID int, progressSeconds int, isFinished bool) er
 
 	debugLog("Successfully inserted user_book_read with id: %d", result.Data.InsertUserBookRead.ID)
 	return nil
+}
+
+// getCurrentUser gets the current authenticated user's information
+func getCurrentUser() (string, error) {
+	query := `
+	query GetCurrentUser {
+	  me {
+		username
+	  }
+	}`
+
+	payload := map[string]interface{}{"query": query}
+	payloadBytes, _ := json.Marshal(payload)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("hardcover me query error: %s - %s", resp.Status, string(body))
+	}
+
+	var result struct {
+		Data struct {
+			Me struct {
+				Username string `json:"username"`
+			} `json:"me"`
+		} `json:"data"`
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", err
+	}
+
+	return result.Data.Me.Username, nil
 }

@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.2.1] - 2025-06-04
+
+### Security
+- **CRITICAL**: Fixed GraphQL security vulnerability where API returned data from other users
+- **Fixed**: GraphQL variable type mismatch (`String!` vs `citext!`) causing query failures
+- **Added**: Explicit user filtering to all GraphQL queries to prevent cross-user data leakage
+- **Added**: `getCurrentUser()` function for authenticated user validation
+- **Enhanced**: Defense-in-depth security with relationship-based filtering in `user_book_reads` queries
+- **Fixed**: Enhanced query strategy with user-scoped fallback queries
+
+### Technical  
+- Updated `checkExistingUserBook()` with proper user filtering and improved ordering
+- Added user validation to `checkExistingUserBookRead()` and `checkExistingFinishedRead()`
+- Changed GraphQL ordering from invalid `created_at` to valid `started_at` field
+- All queries now include `user: { username: { _eq: $username } }` filtering
+
 ## [v1.2.0] - 2025-06-03
 
 ### Added
