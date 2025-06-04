@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.2.4] - 2025-06-04
+
+### Added
+- **Enhanced Formatting**: Improved readability of duration and date displays in mismatch reports
+  - Added `formatDuration()` function to convert decimal hours to human-readable "Xh Ym Zs" format
+  - Added `formatReleaseDate()` function with support for multiple date formats (YYYY-MM-DD, MM/DD/YYYY, etc.)
+  - Enhanced mismatch collection to use new formatting functions for better user experience
+  - Comprehensive test coverage for new formatting functions with example outputs
+- **Build Improvements**: Added test binaries to .gitignore to keep repository clean
+
+### Technical
+- Refactored mismatch metadata handling to use centralized formatting functions
+- Added support for parsing various date formats including partial dates (year/month only)
+- Improved duration display consistency across all mismatch reporting
+
 ## [v1.2.3] - 2025-06-04
 
 ### Fixed
