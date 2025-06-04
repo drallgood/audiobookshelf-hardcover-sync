@@ -12,6 +12,9 @@ var httpClient = &http.Client{
 	Timeout: 10 * time.Second,
 }
 
+// Cache for current user to avoid repeated API calls
+var cachedCurrentUser string
+
 // Getter functions for environment variables
 func getAudiobookShelfURL() string {
 	return os.Getenv("AUDIOBOOKSHELF_URL")

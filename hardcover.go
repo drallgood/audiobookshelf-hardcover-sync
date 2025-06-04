@@ -555,7 +555,38 @@ func insertUserBookRead(userBookID int, progressSeconds int, isFinished bool) er
 }
 
 // getCurrentUser gets the current authenticated user's information
+// This function caches the result to avoid repeated API calls during a sync run
 func getCurrentUser() (string, error) {
+	return getCurrentUserCached()
+}
+
+// getCurrentUserCached returns cached user or fetches and caches it
+func getCurrentUserCached() (string, error) {
+	// Return cached user if already fetched
+	if cachedCurrentUser != "" {
+		return cachedCurrentUser, nil
+	}
+
+	// Fetch user from API
+	user, err := fetchCurrentUserFromAPI()
+	if err != nil {
+		return "", err
+	}
+
+	// Cache the result
+	cachedCurrentUser = user
+	debugLog("Cached current user: %s", user)
+	return user, nil
+}
+
+// clearCurrentUserCache clears the cached current user (useful for testing or fresh sync runs)
+func clearCurrentUserCache() {
+	cachedCurrentUser = ""
+	debugLog("Cleared current user cache")
+}
+
+// fetchCurrentUserFromAPI does the actual API call to get current user
+func fetchCurrentUserFromAPI() (string, error) {
 	query := `
 	query GetCurrentUser {
 	  me {

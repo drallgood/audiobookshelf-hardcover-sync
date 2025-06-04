@@ -602,6 +602,9 @@ func syncToHardcover(a Audiobook) error {
 // 4. Syncs each qualifying book to Hardcover with rate limiting
 // 5. Reports sync results and potential mismatches
 func runSync() {
+	// Clear cached user at start of each sync run to ensure fresh authentication
+	clearCurrentUserCache()
+	
 	books, err := fetchAudiobookShelfStats()
 	if err != nil {
 		log.Printf("Failed to fetch library items: %v", err)
