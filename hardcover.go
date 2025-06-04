@@ -272,7 +272,7 @@ func checkExistingUserBook(bookId string) (int, int, int, error) {
 	return userBookId, currentStatusId, currentProgressSeconds, nil
 }
 
-// checkExistingUserBookRead checks if a user_book_read already exists for the given user_book_id on today's date
+// checkExistingUserBookRead checks if a user_book_read already exists for the given user_book_id that isn't finished
 // Returns: existingReadId (0 if not found), existingProgressSeconds, error
 func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, error) {
 	// Get current user to ensure we only query their data
@@ -282,12 +282,12 @@ func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, err
 	}
 
 	query := `
-	query CheckUserBookRead($userBookId: Int!, $targetDate: date!, $username: citext!) {
+	query CheckUserBookRead($userBookId: Int!, $username: citext!) {
 	  user_book_reads(where: { 
 		user_book_id: { _eq: $userBookId },
-		started_at: { _eq: $targetDate },
+		finished_at: { _is_null: true },
 		user_book: { user: { username: { _eq: $username } } }
-	  }, limit: 1) {
+	  }, order_by: { started_at: desc }, limit: 1) {
 		id
 		progress_seconds
 		started_at
@@ -297,7 +297,6 @@ func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, err
 
 	variables := map[string]interface{}{
 		"userBookId": userBookID,
-		"targetDate": targetDate,
 		"username":   currentUser,
 	}
 	payload := map[string]interface{}{"query": query, "variables": variables}
@@ -345,9 +344,9 @@ func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, err
 		return 0, 0, err
 	}
 
-	// If no user book read found for this date, return 0s to indicate we need to create it
+	// If no user book read found for this book, return 0s to indicate we need to create it
 	if len(result.Data.UserBookReads) == 0 {
-		debugLog("No existing user_book_read found for userBookId=%d on date=%s", userBookID, targetDate)
+		debugLog("No existing unfinished user_book_read found for userBookId=%d", userBookID)
 		return 0, 0, nil
 	}
 
@@ -359,8 +358,8 @@ func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, err
 		existingProgressSeconds = *userBookRead.ProgressSeconds
 	}
 
-	debugLog("Found existing user_book_read: id=%d, progressSeconds=%d, date=%s",
-		existingReadId, existingProgressSeconds, targetDate)
+	debugLog("Found existing unfinished user_book_read: id=%d, progressSeconds=%d, startedAt=%s",
+		existingReadId, existingProgressSeconds, *userBookRead.StartedAt)
 
 	return existingReadId, existingProgressSeconds, nil
 }
