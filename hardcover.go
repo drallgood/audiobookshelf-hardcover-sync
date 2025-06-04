@@ -286,6 +286,7 @@ func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, err
 	  user_book_reads(where: { 
 		user_book_id: { _eq: $userBookId },
 		finished_at: { _is_null: true },
+		started_at: { _is_null: false },
 		user_book: { user: { username: { _eq: $username } } }
 	  }, order_by: { started_at: desc }, limit: 1) {
 		id
@@ -344,10 +345,79 @@ func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, err
 		return 0, 0, err
 	}
 
-	// If no user book read found for this book, return 0s to indicate we need to create it
+	// If no user book read found for this book, try fallback query for entries with null started_at
 	if len(result.Data.UserBookReads) == 0 {
-		debugLog("No existing unfinished user_book_read found for userBookId=%d", userBookID)
-		return 0, 0, nil
+		debugLog("No unfinished user_book_read with valid started_at found for userBookId=%d, trying fallback", userBookID)
+		
+		// Fallback query to find ANY unfinished reads (including those with null started_at)
+		fallbackQuery := `
+		query CheckUserBookReadFallback($userBookId: Int!, $username: citext!) {
+		  user_book_reads(where: { 
+			user_book_id: { _eq: $userBookId },
+			finished_at: { _is_null: true },
+			user_book: { user: { username: { _eq: $username } } }
+		  }, order_by: { id: desc }, limit: 1) {
+			id
+			progress_seconds
+			started_at
+			finished_at
+		  }
+		}`
+		
+		fallbackPayload := map[string]interface{}{"query": fallbackQuery, "variables": variables}
+		fallbackPayloadBytes, _ := json.Marshal(fallbackPayload)
+		
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel2()
+		
+		req2, err := http.NewRequestWithContext(ctx2, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(fallbackPayloadBytes))
+		if err != nil {
+			return 0, 0, err
+		}
+		req2.Header.Set("Authorization", "Bearer "+getHardcoverToken())
+		req2.Header.Set("Content-Type", "application/json")
+		req2.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
+		
+		resp2, err := httpClient.Do(req2)
+		if err != nil {
+			return 0, 0, err
+		}
+		defer resp2.Body.Close()
+		
+		if resp2.StatusCode != 200 {
+			body2, _ := io.ReadAll(resp2.Body)
+			return 0, 0, fmt.Errorf("hardcover fallback user_book_reads query error: %s - %s", resp2.Status, string(body2))
+		}
+		
+		body2, err := io.ReadAll(resp2.Body)
+		if err != nil {
+			return 0, 0, err
+		}
+		
+		if err := json.Unmarshal(body2, &result); err != nil {
+			return 0, 0, err
+		}
+		
+		if len(result.Data.UserBookReads) == 0 {
+			debugLog("No existing unfinished user_book_read found at all for userBookId=%d", userBookID)
+			return 0, 0, nil
+		}
+		
+		debugLog("Found unfinished user_book_read via fallback query for userBookId=%d", userBookID)
+	}
+
+	// Debug: log all found entries to understand selection logic
+	debugLog("Found %d unfinished user_book_read entries for userBookId=%d:", len(result.Data.UserBookReads), userBookID)
+	for i, read := range result.Data.UserBookReads {
+		startedAtStr := "null"
+		if read.StartedAt != nil {
+			startedAtStr = *read.StartedAt
+		}
+		progressSeconds := 0
+		if read.ProgressSeconds != nil {
+			progressSeconds = *read.ProgressSeconds
+		}
+		debugLog("  Entry %d: id=%d, progressSeconds=%d, startedAt=%s", i+1, read.ID, progressSeconds, startedAtStr)
 	}
 
 	userBookRead := result.Data.UserBookReads[0]
@@ -363,7 +433,7 @@ func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, err
 		startedAtStr = *userBookRead.StartedAt
 	}
 
-	debugLog("Found existing unfinished user_book_read: id=%d, progressSeconds=%d, startedAt=%s",
+	debugLog("Selected user_book_read: id=%d, progressSeconds=%d, startedAt=%s",
 		existingReadId, existingProgressSeconds, startedAtStr)
 
 	return existingReadId, existingProgressSeconds, nil
