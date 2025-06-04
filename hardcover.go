@@ -358,8 +358,13 @@ func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, err
 		existingProgressSeconds = *userBookRead.ProgressSeconds
 	}
 
+	startedAtStr := "null"
+	if userBookRead.StartedAt != nil {
+		startedAtStr = *userBookRead.StartedAt
+	}
+
 	debugLog("Found existing unfinished user_book_read: id=%d, progressSeconds=%d, startedAt=%s",
-		existingReadId, existingProgressSeconds, *userBookRead.StartedAt)
+		existingReadId, existingProgressSeconds, startedAtStr)
 
 	return existingReadId, existingProgressSeconds, nil
 }
