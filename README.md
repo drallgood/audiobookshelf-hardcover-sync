@@ -14,6 +14,7 @@ Syncs Audiobookshelf to Hardcover.
 - Robust debug logging (`-v` flag or `DEBUG_MODE=1`)
 
 ## Recent Updates
+- 🚀 **Incremental/Delta Sync** (June 2025): Added timestamp-based incremental syncing to reduce API calls and improve performance. Only processes books with changes since last sync.
 - ✅ **Expectation #4 Logic Fix** (June 2025): Fixed re-read scenario handling where books with 100% progress in Hardcover but <99% in AudiobookShelf now correctly create new reading sessions instead of being skipped
 - ✅ **Duplicate Reads Prevention**: Implemented logic to prevent duplicate `user_book_reads` entries on the same day
 
@@ -27,6 +28,9 @@ Syncs Audiobookshelf to Hardcover.
 | HARDCOVER_SYNC_DELAY_MS  | (optional) Delay between Hardcover syncs in milliseconds (default: 1500)                    |
 | MINIMUM_PROGRESS_THRESHOLD | (optional) Minimum progress threshold to sync books (0.0-1.0, default: 0.01 = 1%)           |
 | AUDIOBOOK_MATCH_MODE     | (optional) Behavior when ASIN lookup fails: `continue` (default), `skip`, `fail`            |
+| INCREMENTAL_SYNC_MODE    | (optional) Incremental sync mode: `enabled` (default), `disabled`, `auto`                   |
+| SYNC_STATE_FILE          | (optional) Path to sync state file for incremental sync (default: `sync_state.json`)        |
+| FORCE_FULL_SYNC          | (optional) Force full sync on next run: `true`, `false` (default)                           |
 | DEBUG_MODE               | (optional) Set to `1` to enable verbose debug logging                                       |
 
 You can copy `.env.example` to `.env` and fill in your values.

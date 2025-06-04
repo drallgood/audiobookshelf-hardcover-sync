@@ -599,20 +599,100 @@ func syncToHardcover(a Audiobook) error {
 	return nil
 }
 
-// runSync orchestrates the complete sync process:
-// 1. Fetches all audiobooks from AudiobookShelf
-// 2. Filters books based on progress thresholds
-// 3. Attempts enhanced detection for potentially finished books
-// 4. Syncs each qualifying book to Hardcover with rate limiting
-// 5. Reports sync results and potential mismatches
+// runSync orchestrates the complete sync process with support for incremental sync:
+// 1. Loads sync state and determines sync mode (full vs incremental)
+// 2. Fetches audiobooks from AudiobookShelf (full library or recent changes)
+// 3. Filters books based on progress thresholds and incremental criteria
+// 4. Attempts enhanced detection for potentially finished books
+// 5. Syncs each qualifying book to Hardcover with rate limiting
+// 6. Updates and saves sync state
+// 7. Reports sync results and potential mismatches
 func runSync() {
 	// Clear cached user at start of each sync run to ensure fresh authentication
 	clearCurrentUserCache()
 
-	books, err := fetchAudiobookShelfStats()
+	// Load sync state to determine sync mode
+	state, err := loadSyncState()
 	if err != nil {
-		log.Printf("Failed to fetch library items: %v", err)
-		return
+		log.Printf("Warning: Failed to load sync state, performing full sync: %v", err)
+		state = &SyncState{
+			LastSyncTimestamp: 0,
+			LastFullSync:      0,
+			Version:           StateVersion,
+		}
+	}
+
+	// Determine if we should perform full or incremental sync
+	isFullSync := shouldPerformFullSync(state)
+	syncMode := "full"
+	if !isFullSync {
+		syncMode = "incremental"
+	}
+
+	log.Printf("Starting %s sync (incremental mode: %s)", syncMode, getIncrementalSyncMode())
+
+	var books []Audiobook
+	var recentItemIds []string
+
+	if isFullSync {
+		// Full sync: fetch all audiobooks
+		books, err = fetchAudiobookShelfStats()
+		if err != nil {
+			log.Printf("Failed to fetch library items: %v", err)
+			return
+		}
+		debugLog("Full sync: fetched %d total books", len(books))
+	} else {
+		// Incremental sync: fetch recent changes first, then filter audiobooks
+		timestampThreshold := getTimestampThreshold(state)
+		debugLog("Incremental sync: looking for changes since timestamp %d", timestampThreshold)
+
+		recentItemIds, err = fetchRecentListeningSessions(timestampThreshold)
+		if err != nil {
+			log.Printf("Failed to fetch recent listening sessions, falling back to full sync: %v", err)
+			// Fallback to full sync
+			books, err = fetchAudiobookShelfStats()
+			if err != nil {
+				log.Printf("Failed to fetch library items: %v", err)
+				return
+			}
+			isFullSync = true
+			syncMode = "full (fallback)"
+			debugLog("Fallback to full sync: fetched %d total books", len(books))
+		} else {
+			debugLog("Incremental sync: found %d items with recent activity", len(recentItemIds))
+
+			if len(recentItemIds) == 0 {
+				log.Printf("No recent activity found since last sync - nothing to sync")
+				// Update timestamp even if no changes found
+				updateSyncTimestamp(state, false)
+				if err := saveSyncState(state); err != nil {
+					log.Printf("Warning: Failed to save sync state: %v", err)
+				}
+				return
+			}
+
+			// Fetch all audiobooks and filter to only recently updated ones
+			allBooks, err := fetchAudiobookShelfStats()
+			if err != nil {
+				log.Printf("Failed to fetch library items: %v", err)
+				return
+			}
+			// Create a map for quick lookup of recent item IDs
+			recentItemMap := make(map[string]bool)
+			for _, itemId := range recentItemIds {
+				recentItemMap[itemId] = true
+			}
+
+			// Filter books to only include those with recent activity
+			for _, book := range allBooks {
+				if recentItemMap[book.ID] {
+					books = append(books, book)
+				}
+			}
+
+			debugLog("Incremental sync: filtered to %d books with recent activity (from %d total books)", len(books), len(allBooks))
+		}
 	}
 
 	// Clear any previous mismatches before starting new sync
@@ -642,14 +722,21 @@ func runSync() {
 		}
 	}
 
-	log.Printf("Found %d books with progress to sync (out of %d total books)", len(booksToSync), len(books))
+	log.Printf("Found %d books with progress to sync (out of %d candidate books)", len(booksToSync), len(books))
 
 	if len(booksToSync) == 0 {
 		log.Printf("No books with progress found to sync")
+		// Update sync state even if no books to sync
+		updateSyncTimestamp(state, isFullSync)
+		if err := saveSyncState(state); err != nil {
+			log.Printf("Warning: Failed to save sync state: %v", err)
+		}
 		return
 	}
 
+	// Sync books to Hardcover with rate limiting
 	delay := getHardcoverSyncDelay()
+	successCount := 0
 	for i, book := range booksToSync {
 		if i > 0 {
 			time.Sleep(delay)
@@ -658,8 +745,18 @@ func runSync() {
 			log.Printf("Failed to sync book '%s' (Progress: %.2f%%): %v", book.Title, book.Progress*100, err)
 		} else {
 			log.Printf("Synced book: %s (Progress: %.2f%%)", book.Title, book.Progress*100)
+			successCount++
 		}
 	}
+
+	// Update sync state after successful sync
+	updateSyncTimestamp(state, isFullSync)
+	if err := saveSyncState(state); err != nil {
+		log.Printf("Warning: Failed to save sync state: %v", err)
+	}
+
+	// Print sync summary
+	log.Printf("Sync complete: %d/%d books synced successfully (%s)", successCount, len(booksToSync), syncMode)
 
 	// Print summary of books that may need manual review
 	printMismatchSummary()

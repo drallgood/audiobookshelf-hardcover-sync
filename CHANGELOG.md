@@ -5,9 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [v1.2.5] - 2025-06-04
+## [v1.3.0] - 2025-06-05
+
+### Added
+- **🚀 Incremental/Delta Sync**: Major performance improvement with timestamp-based incremental syncing
+  - Added persistent sync state management with `sync_state.json` file
+  - Only processes books with changes since last sync using AudiobookShelf listening session timestamps
+  - Automatic fallback to full sync when incremental data is unavailable or on first run
+  - Configurable sync modes: `enabled` (default), `disabled`, or `auto`
+  - Smart full sync scheduling: automatically performs full sync after 7 days or when forced
+  - New environment variables:
+    - `INCREMENTAL_SYNC_MODE`: Control incremental sync behavior
+    - `SYNC_STATE_FILE`: Custom path for sync state storage (default: `sync_state.json`)
+    - `FORCE_FULL_SYNC`: Force full sync on next run (automatically resets after use)
+  - Comprehensive logging to show sync mode and progress
+  - Reduces API calls significantly for large libraries with minimal changes
 
 ### Fixed
+- **LibraryItemID Field Reference**: Fixed incorrect field access in incremental sync filtering
+  - Changed from `book.Metadata.LibraryItemID` to `book.ID` to match actual data structure
+  - Ensures proper book filtering in incremental sync mode
 - **Duplicate User Book Reads**: Fixed issue where multiple `user_book_reads` entries were created for the same book when reading across different days
   - Modified `checkExistingUserBookRead()` to check for any unfinished reads instead of date-specific reads
   - Changed GraphQL query from `started_at: { _eq: $targetDate }` to `finished_at: { _is_null: true }`
@@ -24,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Cache is cleared at start of each sync run to ensure fresh authentication
   - Significantly reduces API load and improves sync performance for large libraries
   - For 100 books: reduces from 300 API calls to 1 per sync session
+
+### Technical Details
+- Added `incremental.go` with sync state management functions
+- Enhanced `fetchRecentListeningSessions()` to query AudiobookShelf sessions API with timestamp filtering
+- Modified `runSync()` to integrate incremental sync logic with existing sync workflow
+- Added comprehensive test coverage for incremental sync functionality
+- Backward compatible: existing setups continue to work without configuration changes
 
 ## [v1.2.4] - 2025-06-04
 

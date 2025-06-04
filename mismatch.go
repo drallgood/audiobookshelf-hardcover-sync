@@ -1,8 +1,8 @@
 package main
 
 import (
-"log"
-"time"
+	"log"
+	"time"
 )
 
 // Global slice to collect mismatches during sync
@@ -28,10 +28,10 @@ func addBookMismatch(title, author, isbn, asin, bookID, editionID, reason string
 func addBookMismatchWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, duration float64) {
 	// Convert duration from seconds to hours for easier reading
 	durationHours := duration / 3600.0
-	
+
 	// Handle release date - prefer publishedDate, fallback to publishedYear with formatting
 	releaseDate := formatReleaseDate(metadata.PublishedDate, metadata.PublishedYear)
-	
+
 	mismatch := BookMismatch{
 		Title:         metadata.Title,
 		Subtitle:      metadata.Subtitle,
@@ -61,7 +61,7 @@ func printMismatchSummary() {
 
 	log.Printf("⚠️  MANUAL REVIEW NEEDED: Found %d book(s) that may need verification", len(bookMismatches))
 	log.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	
+
 	for i, mismatch := range bookMismatches {
 		log.Printf("%d. Title: %s", i+1, mismatch.Title)
 		if mismatch.Subtitle != "" {
@@ -94,12 +94,12 @@ func printMismatchSummary() {
 		}
 		log.Printf("   Issue: %s", mismatch.Reason)
 		log.Printf("   Time: %s", mismatch.Timestamp.Format("2006-01-02 15:04:05"))
-		
+
 		if i < len(bookMismatches)-1 {
 			log.Printf("   ──────────────────────────────────────────────────────────────────────")
 		}
 	}
-	
+
 	log.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Printf("💡 RECOMMENDATIONS:")
 	log.Printf("   1. Check if the Hardcover Book ID corresponds to the correct audiobook edition")

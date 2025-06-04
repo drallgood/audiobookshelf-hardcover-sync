@@ -700,3 +700,111 @@ func isBookLikelyFinished(itemID string, currentTime, totalDuration float64) (bo
 
 	return false, progressRatio
 }
+
+// fetchRecentListeningSessions fetches listening sessions that were updated after the given timestamp
+// This enables incremental sync by only processing sessions that have changed since the last sync
+func fetchRecentListeningSessions(sinceTimestamp int64) ([]string, error) {
+	debugLog("Fetching listening sessions updated since timestamp: %d", sinceTimestamp)
+
+	endpoints := []string{
+		"/api/me/listening-sessions",
+		"/api/sessions",
+		"/api/me/sessions",
+	}
+
+	var updatedItemIds []string
+	itemIdSet := make(map[string]bool) // Use set to avoid duplicates
+
+	for _, endpoint := range endpoints {
+		url := getAudiobookShelfURL() + endpoint
+		debugLog("Trying incremental session endpoint: %s", endpoint)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			cancel()
+			continue
+		}
+
+		req.Header.Set("Authorization", "Bearer "+getAudiobookShelfToken())
+		req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			cancel()
+			continue
+		}
+
+		if resp.StatusCode == 200 {
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			cancel()
+
+			if err != nil {
+				continue
+			}
+
+			// Try sessions response structure
+			var sessionsResp struct {
+				Sessions []struct {
+					ID            string `json:"id"`
+					LibraryItemID string `json:"libraryItemId"`
+					CreatedAt     int64  `json:"createdAt"`
+					UpdatedAt     int64  `json:"updatedAt"`
+				} `json:"sessions"`
+			}
+
+			if err := json.Unmarshal(body, &sessionsResp); err == nil && len(sessionsResp.Sessions) > 0 {
+				debugLog("Found %d sessions from %s", len(sessionsResp.Sessions), endpoint)
+
+				for _, session := range sessionsResp.Sessions {
+					// Check if session was updated after our timestamp threshold
+					if session.UpdatedAt > sinceTimestamp || session.CreatedAt > sinceTimestamp {
+						if session.LibraryItemID != "" && !itemIdSet[session.LibraryItemID] {
+							updatedItemIds = append(updatedItemIds, session.LibraryItemID)
+							itemIdSet[session.LibraryItemID] = true
+							debugLog("Found updated session for item %s (UpdatedAt: %d, CreatedAt: %d)",
+								session.LibraryItemID, session.UpdatedAt, session.CreatedAt)
+						}
+					}
+				}
+
+				debugLog("Found %d unique updated items from sessions", len(updatedItemIds))
+				return updatedItemIds, nil
+			}
+
+			// Try bare sessions array
+			var sessions []struct {
+				ID            string `json:"id"`
+				LibraryItemID string `json:"libraryItemId"`
+				CreatedAt     int64  `json:"createdAt"`
+				UpdatedAt     int64  `json:"updatedAt"`
+			}
+
+			if err := json.Unmarshal(body, &sessions); err == nil && len(sessions) > 0 {
+				debugLog("Found %d sessions from %s (bare array)", len(sessions), endpoint)
+
+				for _, session := range sessions {
+					if session.UpdatedAt > sinceTimestamp || session.CreatedAt > sinceTimestamp {
+						if session.LibraryItemID != "" && !itemIdSet[session.LibraryItemID] {
+							updatedItemIds = append(updatedItemIds, session.LibraryItemID)
+							itemIdSet[session.LibraryItemID] = true
+							debugLog("Found updated session for item %s (UpdatedAt: %d, CreatedAt: %d)",
+								session.LibraryItemID, session.UpdatedAt, session.CreatedAt)
+						}
+					}
+				}
+
+				debugLog("Found %d unique updated items from sessions", len(updatedItemIds))
+				return updatedItemIds, nil
+			}
+		} else {
+			resp.Body.Close()
+			cancel()
+			debugLog("Endpoint %s returned status %d", endpoint, resp.StatusCode)
+		}
+	}
+
+	debugLog("No recent listening sessions found or API not available")
+	return updatedItemIds, nil
+}

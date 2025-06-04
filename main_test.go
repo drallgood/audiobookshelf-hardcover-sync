@@ -163,12 +163,12 @@ func TestSyncToHardcover_NotFinished(t *testing.T) {
 	oldToken := os.Getenv("HARDCOVER_TOKEN")
 	os.Setenv("HARDCOVER_TOKEN", "dummy")
 	defer os.Setenv("HARDCOVER_TOKEN", oldToken)
-	
+
 	// Save and set AUDIOBOOK_MATCH_MODE to continue (tests expect errors, not skips)
 	oldMode := os.Getenv("AUDIOBOOK_MATCH_MODE")
 	os.Setenv("AUDIOBOOK_MATCH_MODE", "continue")
 	defer os.Setenv("AUDIOBOOK_MATCH_MODE", oldMode)
-	
+
 	// Expect an error because the dummy token will fail the API call
 	err := syncToHardcover(book)
 	if err == nil {
@@ -182,12 +182,12 @@ func TestSyncToHardcover_Finished_NoToken(t *testing.T) {
 	oldToken := os.Getenv("HARDCOVER_TOKEN")
 	os.Setenv("HARDCOVER_TOKEN", "")
 	defer os.Setenv("HARDCOVER_TOKEN", oldToken)
-	
+
 	// Save and set AUDIOBOOK_MATCH_MODE to continue (tests expect errors, not skips)
 	oldMode := os.Getenv("AUDIOBOOK_MATCH_MODE")
 	os.Setenv("AUDIOBOOK_MATCH_MODE", "continue")
 	defer os.Setenv("AUDIOBOOK_MATCH_MODE", oldMode)
-	
+
 	err := syncToHardcover(book)
 	if err == nil {
 		t.Error("expected error when HARDCOVER_TOKEN is missing, got nil")
@@ -287,11 +287,11 @@ func TestFetchUserProgress_ListeningSessions(t *testing.T) {
 	originalURL := os.Getenv("AUDIOBOOKSHELF_URL")
 	originalToken := os.Getenv("AUDIOBOOKSHELF_TOKEN")
 	originalDebug := debugMode
-	
+
 	os.Setenv("AUDIOBOOKSHELF_URL", server.URL)
 	os.Setenv("AUDIOBOOKSHELF_TOKEN", "test-token")
 	debugMode = true
-	
+
 	defer func() {
 		os.Setenv("AUDIOBOOKSHELF_URL", originalURL)
 		os.Setenv("AUDIOBOOKSHELF_TOKEN", originalToken)
@@ -300,16 +300,16 @@ func TestFetchUserProgress_ListeningSessions(t *testing.T) {
 
 	// Test the function
 	progressData, err := fetchUserProgress()
-	
+
 	// Verify results
 	if err != nil {
 		t.Errorf("Expected no error, got: %v", err)
 	}
-	
+
 	if len(progressData) != 2 {
 		t.Errorf("Expected 2 progress items, got: %d", len(progressData))
 	}
-	
+
 	// Check first item progress (should be calculated from currentTime/duration)
 	expectedProgress1 := 5031.93 / 21039.77 // ~0.239
 	if progress, exists := progressData["li_item123"]; !exists {
@@ -317,7 +317,7 @@ func TestFetchUserProgress_ListeningSessions(t *testing.T) {
 	} else if math.Abs(progress-expectedProgress1) > 0.001 {
 		t.Errorf("Expected progress %.6f for li_item123, got %.6f", expectedProgress1, progress)
 	}
-	
+
 	// Check second item progress
 	expectedProgress2 := 1800.0 / 7200.0 // 0.25
 	if progress, exists := progressData["li_item456"]; !exists {
@@ -379,11 +379,11 @@ func TestFetchUserProgress_MediaProgress(t *testing.T) {
 	originalURL := os.Getenv("AUDIOBOOKSHELF_URL")
 	originalToken := os.Getenv("AUDIOBOOKSHELF_TOKEN")
 	originalDebug := debugMode
-	
+
 	os.Setenv("AUDIOBOOKSHELF_URL", server.URL)
 	os.Setenv("AUDIOBOOKSHELF_TOKEN", "test-token")
 	debugMode = true
-	
+
 	defer func() {
 		os.Setenv("AUDIOBOOKSHELF_URL", originalURL)
 		os.Setenv("AUDIOBOOKSHELF_TOKEN", originalToken)
@@ -392,30 +392,30 @@ func TestFetchUserProgress_MediaProgress(t *testing.T) {
 
 	// Test the function
 	progressData, err := fetchUserProgress()
-	
+
 	// Verify results
 	if err != nil {
 		t.Errorf("Expected no error, got: %v", err)
 	}
-	
+
 	if len(progressData) != 3 {
 		t.Errorf("Expected 3 progress items, got %d", len(progressData))
 	}
-	
+
 	// Check manually finished book 1 (should be 1.0 despite progress being 0.98)
 	if progress, exists := progressData["li_manual_finished"]; !exists {
 		t.Errorf("Expected progress for li_manual_finished, but not found")
 	} else if progress != 1.0 {
 		t.Errorf("Expected progress 1.0 for manually finished book li_manual_finished, got %.6f", progress)
 	}
-	
+
 	// Check in-progress book (should keep original progress)
 	if progress, exists := progressData["li_in_progress"]; !exists {
 		t.Errorf("Expected progress for li_in_progress, but not found")
 	} else if progress != 0.45 {
 		t.Errorf("Expected progress 0.45 for li_in_progress, got %.6f", progress)
 	}
-	
+
 	// Check manually finished book 2 (should be 1.0 despite progress being 0.75)
 	if progress, exists := progressData["li_manual_finished_2"]; !exists {
 		t.Errorf("Expected progress for li_manual_finished_2, but not found")
@@ -425,9 +425,9 @@ func TestFetchUserProgress_MediaProgress(t *testing.T) {
 }
 
 func TestIntegration_ManuallyFinishedBooks(t *testing.T) {
-	// This test validates that manually finished books detected from /api/me 
+	// This test validates that manually finished books detected from /api/me
 	// are properly integrated into the overall progress detection hierarchy
-	
+
 	// Mock server that provides both /api/me and library endpoints
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -495,11 +495,11 @@ func TestIntegration_ManuallyFinishedBooks(t *testing.T) {
 	originalURL := os.Getenv("AUDIOBOOKSHELF_URL")
 	originalToken := os.Getenv("AUDIOBOOKSHELF_TOKEN")
 	originalDebug := debugMode
-	
+
 	os.Setenv("AUDIOBOOKSHELF_URL", server.URL)
 	os.Setenv("AUDIOBOOKSHELF_TOKEN", "test-token")
 	debugMode = true
-	
+
 	defer func() {
 		os.Setenv("AUDIOBOOKSHELF_URL", originalURL)
 		os.Setenv("AUDIOBOOKSHELF_TOKEN", originalToken)
@@ -508,29 +508,29 @@ func TestIntegration_ManuallyFinishedBooks(t *testing.T) {
 
 	// Test the integration
 	audiobooks, err := fetchAudiobookShelfStats()
-	
+
 	// Verify results
 	if err != nil {
 		t.Errorf("Expected no error, got: %v", err)
 	}
-	
+
 	if len(audiobooks) != 1 {
 		t.Errorf("Expected 1 audiobook, got %d", len(audiobooks))
 		return
 	}
-	
+
 	book := audiobooks[0]
-	
+
 	// Verify that the manually finished book is detected as fully complete (progress 1.0)
 	// even though the library item shows progress 0.85
 	if book.Progress != 1.0 {
 		t.Errorf("Expected manually finished book to have progress 1.0, got %.6f", book.Progress)
 	}
-	
+
 	if book.Title != "Test Manually Finished Book" {
 		t.Errorf("Expected title 'Test Manually Finished Book', got '%s'", book.Title)
 	}
-	
+
 	if book.Author != "Test Author" {
 		t.Errorf("Expected author 'Test Author', got '%s'", book.Author)
 	}
@@ -563,8 +563,8 @@ func TestCheckExistingUserBook_NoBook(t *testing.T) {
 
 	// We need to patch the function to use our test server
 	// For now, let's test with a simple mock that expects certain behavior
-	
-	// This test is more for documentation than actual testing since we can't easily 
+
+	// This test is more for documentation than actual testing since we can't easily
 	// mock the HTTP client in the current implementation
 	t.Skip("Skipping integration test - requires mocking HTTP client")
 }
@@ -573,7 +573,7 @@ func TestSyncToHardcover_ConditionalSync(t *testing.T) {
 	// Test that the sync logic properly checks for existing books
 	// This is more of an integration test that would require mocking
 	// the Hardcover API responses
-	
+
 	t.Skip("Skipping integration test - requires full API mocking")
 }
 
@@ -598,22 +598,22 @@ func TestExpectation4_ReReadScenario(t *testing.T) {
 
 	// Calculate target progress seconds
 	targetProgressSeconds := int(audiobook.CurrentTime) // Should be 1800 seconds
-	
+
 	if targetProgressSeconds != 1800 {
 		t.Errorf("Expected targetProgressSeconds to be 1800, got %d", targetProgressSeconds)
 	}
-	
+
 	// Verify that progress less than 99% would trigger re-read detection
 	if audiobook.Progress >= 0.99 {
 		t.Errorf("Test audiobook should have progress < 99%% for re-read scenario, got %.2f%%", audiobook.Progress*100)
 	}
-	
+
 	// Test the target status calculation
 	targetStatusId := 3 // default to read
 	if audiobook.Progress < 0.99 {
 		targetStatusId = 2 // currently reading
 	}
-	
+
 	if targetStatusId != 2 {
 		t.Errorf("Expected targetStatusId to be 2 (currently reading) for re-read scenario, got %d", targetStatusId)
 	}
@@ -626,7 +626,7 @@ func TestExpectation3_BothFinished(t *testing.T) {
 	// Mock audiobook with 100% progress
 	audiobook := Audiobook{
 		Title:         "Test Finished Book",
-		Author:        "Test Author", 
+		Author:        "Test Author",
 		Progress:      1.0,  // 100% progress in AudiobookShelf
 		CurrentTime:   3600, // 1 hour
 		TotalDuration: 3600, // 1 hour total
@@ -638,13 +638,13 @@ func TestExpectation3_BothFinished(t *testing.T) {
 	if audiobook.Progress < 0.99 {
 		t.Errorf("Test audiobook should have progress >= 99%% for finished scenario, got %.2f%%", audiobook.Progress*100)
 	}
-	
+
 	// Test the target status calculation
 	targetStatusId := 3 // default to read
 	if audiobook.Progress < 0.99 {
 		targetStatusId = 2 // currently reading
 	}
-	
+
 	if targetStatusId != 3 {
 		t.Errorf("Expected targetStatusId to be 3 (read) for finished book, got %d", targetStatusId)
 	}
@@ -657,35 +657,35 @@ func TestProgressThresholdCalculation(t *testing.T) {
 		targetProgressSeconds   int
 		existingProgressSeconds int
 		expectedSignificant     bool
-		description            string
+		description             string
 	}{
 		{
 			name:                    "Small change below threshold",
 			targetProgressSeconds:   1800, // 30 minutes
 			existingProgressSeconds: 1820, // 30 minutes 20 seconds
 			expectedSignificant:     false,
-			description:            "20 second difference should not trigger sync",
+			description:             "20 second difference should not trigger sync",
 		},
 		{
 			name:                    "Large change above threshold",
 			targetProgressSeconds:   1800, // 30 minutes
 			existingProgressSeconds: 3600, // 1 hour
 			expectedSignificant:     true,
-			description:            "30 minute difference should trigger sync",
+			description:             "30 minute difference should trigger sync",
 		},
 		{
 			name:                    "Re-read scenario - much lower progress",
 			targetProgressSeconds:   900,  // 15 minutes
 			existingProgressSeconds: 3600, // 1 hour (from previous finished read)
 			expectedSignificant:     true,
-			description:            "Re-read with lower progress should trigger sync",
+			description:             "Re-read with lower progress should trigger sync",
 		},
 		{
 			name:                    "Zero existing progress",
 			targetProgressSeconds:   1800, // 30 minutes
 			existingProgressSeconds: 0,    // No previous progress
 			expectedSignificant:     true,
-			description:            "Any progress vs zero should trigger sync",
+			description:             "Any progress vs zero should trigger sync",
 		},
 	}
 

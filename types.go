@@ -10,7 +10,7 @@ type BookMismatch struct {
 	Narrator      string
 	Publisher     string
 	PublishedYear string
-	ReleaseDate   string // Maps to PublishedDate from API
+	ReleaseDate   string  // Maps to PublishedDate from API
 	Duration      float64 // Duration in hours for easier reading
 	ISBN          string
 	ASIN          string

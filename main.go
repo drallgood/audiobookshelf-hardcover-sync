@@ -42,20 +42,6 @@ var (
 	version = "v1.2.3" // Application version
 )
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 func main() {
 	healthCheck := flag.Bool("health-check", false, "Run health check and exit")
 	showVersion := flag.Bool("version", false, "Show version and exit")

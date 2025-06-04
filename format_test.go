@@ -49,7 +49,7 @@ func TestFormatReleaseDate(t *testing.T) {
 	for _, test := range tests {
 		result := formatReleaseDate(test.publishedDate, test.publishedYear)
 		if result != test.expected {
-			t.Errorf("formatReleaseDate(%q, %q) = %q; expected %q", 
+			t.Errorf("formatReleaseDate(%q, %q) = %q; expected %q",
 				test.publishedDate, test.publishedYear, result, test.expected)
 		}
 	}
