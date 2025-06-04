@@ -29,11 +29,8 @@ func addBookMismatchWithMetadata(metadata MediaMetadata, bookID, editionID, reas
 	// Convert duration from seconds to hours for easier reading
 	durationHours := duration / 3600.0
 	
-	// Handle release date - prefer publishedDate, fallback to publishedYear
-	releaseDate := metadata.PublishedDate
-	if releaseDate == "" && metadata.PublishedYear != "" {
-		releaseDate = metadata.PublishedYear
-	}
+	// Handle release date - prefer publishedDate, fallback to publishedYear with formatting
+	releaseDate := formatReleaseDate(metadata.PublishedDate, metadata.PublishedYear)
 	
 	mismatch := BookMismatch{
 		Title:         metadata.Title,
@@ -81,7 +78,7 @@ func printMismatchSummary() {
 			log.Printf("   Release Date: %s", mismatch.ReleaseDate)
 		}
 		if mismatch.Duration > 0 {
-			log.Printf("   Duration: %.1f hours", mismatch.Duration)
+			log.Printf("   Duration: %s", formatDuration(mismatch.Duration))
 		}
 		if mismatch.ISBN != "" {
 			log.Printf("   ISBN: %s", mismatch.ISBN)

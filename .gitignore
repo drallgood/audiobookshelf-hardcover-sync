@@ -32,6 +32,7 @@ go.work.sum
 # .vscode/
 
 main
+test-main
 audiobookshelf-hardcover-sync
 audiobookshelf-openapi.json
 hardcover-schema.graphql
