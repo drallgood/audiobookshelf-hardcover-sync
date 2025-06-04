@@ -229,7 +229,7 @@ func syncToHardcover(a Audiobook) error {
 				// Collect this mismatch for manual review before skipping
 				reason := fmt.Sprintf("Book lookup failed - not found in Hardcover database using ASIN %s, ISBN %s, or title/author search", a.ASIN, a.ISBN)
 				addBookMismatchWithMetadata(a.Metadata, "", "", reason, a.TotalDuration)
-				
+
 				debugLog("SKIPPING: Book lookup failed for '%s' by '%s' (ISBN: %s, ASIN: %s) and AUDIOBOOK_MATCH_MODE=skip: %v", a.Title, a.Author, a.ISBN, a.ASIN, err)
 				return nil // Skip this book entirely
 			default: // "continue"
@@ -247,7 +247,7 @@ func syncToHardcover(a Audiobook) error {
 	// This helps prevent syncing audiobook progress to wrong editions (ebook/physical)
 	if editionId == "" || (a.ASIN != "" && !asinLookupSucceeded) {
 		matchMode := getAudiobookMatchMode()
-		
+
 		switch matchMode {
 		case "fail":
 			if a.ASIN != "" {
@@ -265,9 +265,9 @@ func syncToHardcover(a Audiobook) error {
 				reason = fmt.Sprintf("No audiobook edition found using ISBN %s - only non-audiobook editions available. Book was skipped to avoid wrong edition sync.", a.ISBN)
 				debugLog("SKIPPING: No audiobook edition found for '%s' by '%s' (ISBN: %s) and AUDIOBOOK_MATCH_MODE=skip. Avoiding potential wrong edition sync.", a.Title, a.Author, a.ISBN)
 			}
-			
+
 			addBookMismatchWithMetadata(a.Metadata, bookId, editionId, reason, a.TotalDuration)
-			
+
 			return nil // Skip this book entirely
 		default: // "continue"
 			var reason string
@@ -278,10 +278,10 @@ func syncToHardcover(a Audiobook) error {
 				reason = fmt.Sprintf("No audiobook edition found using ISBN %s, using general book matching. Progress may not sync correctly if this isn't the audiobook edition.", a.ISBN)
 				debugLog("WARNING: No audiobook edition found for '%s' by '%s' (ISBN: %s), using general book matching. Progress may not sync correctly if this isn't the audiobook edition.", a.Title, a.Author, a.ISBN)
 			}
-			
+
 			// Collect this mismatch for manual review
 			addBookMismatchWithMetadata(a.Metadata, bookId, editionId, reason, a.TotalDuration)
-			
+
 			debugLog("To change this behavior, set AUDIOBOOK_MATCH_MODE=skip or AUDIOBOOK_MATCH_MODE=fail")
 		}
 	}
@@ -329,7 +329,7 @@ func syncToHardcover(a Audiobook) error {
 		userBookId = existingUserBookId
 
 		// EXPECTATION #4 IMPLEMENTATION: Check for re-read scenario
-		// If there's a finished read in Hardcover but AudiobookShelf shows in-progress (< 99%), 
+		// If there's a finished read in Hardcover but AudiobookShelf shows in-progress (< 99%),
 		// this indicates a re-read and should always sync
 		hasExistingFinishedRead, finishDate, err := checkExistingFinishedRead(userBookId)
 		if err != nil {
@@ -339,7 +339,7 @@ func syncToHardcover(a Audiobook) error {
 			// EXPECTATION #4: Book has finished read in Hardcover but shows in-progress in AudiobookShelf
 			// This is a re-read scenario - always sync to create new reading session
 			needsSync = true
-			debugLog("RE-READ: Book '%s' has finished read in Hardcover (finished on %s) but shows %.2f%% progress in AudiobookShelf - syncing as new reading session", 
+			debugLog("RE-READ: Book '%s' has finished read in Hardcover (finished on %s) but shows %.2f%% progress in AudiobookShelf - syncing as new reading session",
 				a.Title, finishDate, a.Progress*100)
 		} else {
 			// Normal sync logic for other scenarios
@@ -557,11 +557,13 @@ func syncToHardcover(a Audiobook) error {
 		} else {
 			// IMPLEMENTATION OF USER'S EXACT EXPECTATIONS:
 			// 1) If book is finished in ABS AND already has ANY finished read in Hardcover → do nothing (EXPECTATION #3)
-			// 2) If book is finished in ABS but has NO finished read in Hardcover → create read entry  
+			// 2) If book is finished in ABS but has NO finished read in Hardcover → create read entry
 			// 3) If book is in-progress in ABS → handle reading sessions appropriately
 			// 4) If book has finished read in Hardcover but is in-progress in ABS → create new read entry (re-read scenario)
 
-			if a.Progress >= 0.99 { 
+			shouldCreateReadEntry := true
+
+			if a.Progress >= 0.99 {
 				// Book is finished in AudiobookShelf
 				// Check if there's ANY existing finished read for this book (regardless of date)
 				hasExistingFinishedRead, finishDate, err := checkExistingFinishedRead(userBookId)
@@ -581,12 +583,14 @@ func syncToHardcover(a Audiobook) error {
 				debugLog("UPDATE: Book '%s' is in progress in ABS (%.2f%%) - creating/updating read entry", a.Title, a.Progress*100)
 			}
 
-			// Create new user book read entry
-			debugLog("Creating new user_book_read for '%s': %d seconds (%.2f%%)", a.Title, targetProgressSeconds, a.Progress*100)
-			// Use the enhanced insertUserBookRead function which includes reading_format_id for audiobooks
-			// This ensures Hardcover recognizes it as an audiobook and doesn't ignore progress_seconds
-			if err := insertUserBookRead(userBookId, targetProgressSeconds, a.Progress >= 0.99); err != nil {
-				return fmt.Errorf("failed to sync progress for '%s': %v", a.Title, err)
+			// Only create new user book read entry if the expectation logic determined we should
+			if shouldCreateReadEntry {
+				debugLog("Creating new user_book_read for '%s': %d seconds (%.2f%%)", a.Title, targetProgressSeconds, a.Progress*100)
+				// Use the enhanced insertUserBookRead function which includes reading_format_id for audiobooks
+				// This ensures Hardcover recognizes it as an audiobook and doesn't ignore progress_seconds
+				if err := insertUserBookRead(userBookId, targetProgressSeconds, a.Progress >= 0.99); err != nil {
+					return fmt.Errorf("failed to sync progress for '%s': %v", a.Title, err)
+				}
 			}
 
 			debugLog("Successfully synced progress for '%s': %d seconds", a.Title, targetProgressSeconds)
@@ -604,7 +608,7 @@ func syncToHardcover(a Audiobook) error {
 func runSync() {
 	// Clear cached user at start of each sync run to ensure fresh authentication
 	clearCurrentUserCache()
-	
+
 	books, err := fetchAudiobookShelfStats()
 	if err != nil {
 		log.Printf("Failed to fetch library items: %v", err)
@@ -656,7 +660,7 @@ func runSync() {
 			log.Printf("Synced book: %s (Progress: %.2f%%)", book.Title, book.Progress*100)
 		}
 	}
-	
+
 	// Print summary of books that may need manual review
 	printMismatchSummary()
 }
