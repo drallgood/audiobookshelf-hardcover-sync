@@ -591,7 +591,7 @@ func getCurrentUser() (string, error) {
 
 	var result struct {
 		Data struct {
-			Me struct {
+			Me []struct {
 				Username string `json:"username"`
 			} `json:"me"`
 		} `json:"data"`
@@ -602,9 +602,15 @@ func getCurrentUser() (string, error) {
 		return "", err
 	}
 
+	debugLog("getCurrentUser response: %s", string(body))
+
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to parse getCurrentUser response: %v", err)
 	}
 
-	return result.Data.Me.Username, nil
+	if len(result.Data.Me) == 0 {
+		return "", fmt.Errorf("no user data returned from me query")
+	}
+
+	return result.Data.Me[0].Username, nil
 }
