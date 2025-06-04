@@ -405,7 +405,7 @@ func checkExistingFinishedRead(userBookID int) (bool, string, error) {
 		return false, "", fmt.Errorf("failed to marshal request: %v", err)
 	}
 
-	req, err := http.NewRequest("POST", "https://hardcover.app/api/graphql", bytes.NewBuffer(jsonBody))
+	req, err := http.NewRequest("POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(jsonBody))
 	if err != nil {
 		return false, "", fmt.Errorf("failed to create request: %v", err)
 	}
