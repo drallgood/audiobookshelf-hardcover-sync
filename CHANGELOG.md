@@ -13,6 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Changed GraphQL query from `started_at: { _eq: $targetDate }` to `finished_at: { _is_null: true }`
   - Added ordering by `started_at desc` to get the most recent unfinished read
   - Prevents duplicate read tracking entries when continuing books on different days
+- **Panic Fix**: Fixed runtime panic when Hardcover returns `user_book_reads` with null `started_at` values
+  - Added nil check for `userBookRead.StartedAt` before dereferencing in debug logs
+  - Use "null" string when `StartedAt` is nil instead of causing application crash
+  - Prevents `invalid memory address or nil pointer dereference` error
+
+### Changed
+- **Performance Optimization**: Reduced `getCurrentUser()` API calls from 3 per book to 1 per sync run
+  - Added caching mechanism for current user authentication
+  - Cache is cleared at start of each sync run to ensure fresh authentication
+  - Significantly reduces API load and improves sync performance for large libraries
+  - For 100 books: reduces from 300 API calls to 1 per sync session
 
 ## [v1.2.4] - 2025-06-04
 
