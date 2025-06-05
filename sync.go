@@ -480,11 +480,22 @@ func syncToHardcover(a Audiobook) error {
 					}
 				  }
 				}`
+				
+				// CRITICAL FIX: Always set started_at to prevent null values from wiping out reading history
+				// If the book is finished, also set finished_at
+				updateObject := map[string]interface{}{
+					"progress_seconds": targetProgressSeconds,
+					"started_at":       time.Now().Format("2006-01-02"), // Ensure started_at is never null
+				}
+				
+				// If book is finished (>= 99%), also set finished_at
+				if a.Progress >= 0.99 {
+					updateObject["finished_at"] = time.Now().Format("2006-01-02")
+				}
+				
 				variables := map[string]interface{}{
-					"id": existingReadId,
-					"object": map[string]interface{}{
-						"progress_seconds": targetProgressSeconds,
-					},
+					"id":     existingReadId,
+					"object": updateObject,
 				}
 				payload := map[string]interface{}{
 					"query":     updateMutation,

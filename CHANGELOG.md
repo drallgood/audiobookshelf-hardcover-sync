@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.3.1] - 2025-06-05
+
+### Fixed
+- **🚨 CRITICAL**: Fixed reading history being wiped out when updating existing `user_book_read` entries
+  - **Issue**: When updating progress on existing reads, `started_at: null` was being preserved, removing reading history
+  - **Root Cause**: `update_user_book_read` mutation was only sending `progress_seconds` without ensuring `started_at` is set
+  - **Fix**: Always set `started_at` to current date when updating existing reads to prevent null values
+  - **Impact**: Prevents loss of reading start dates and maintains proper reading history
+  - Also ensures `finished_at` is properly set when books reach 99%+ completion
+  - Added comprehensive test coverage for the reading history fix
+
 ## [v1.3.0] - 2025-06-05
 
 ### Added
