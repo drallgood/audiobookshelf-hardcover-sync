@@ -294,7 +294,9 @@ func syncToHardcover(a Audiobook) error {
 
 	// Determine the target status for this book
 	targetStatusId := 3 // default to read
-	if a.Progress < 0.99 {
+	if a.Progress == 0 && getSyncWantToRead() {
+		targetStatusId = 1 // want to read
+	} else if a.Progress < 0.99 {
 		targetStatusId = 2 // currently reading
 	}
 
@@ -711,11 +713,18 @@ func runSync() {
 
 	// Filter books by configured progress threshold
 	minProgress := getMinimumProgressThreshold()
+	syncWantToRead := getSyncWantToRead()
 	var booksToSync []Audiobook
 
 	for _, book := range books {
-		if book.Progress >= minProgress {
+		// Allow books with 0% progress if SYNC_WANT_TO_READ is enabled
+		shouldSync := book.Progress >= minProgress || (book.Progress == 0 && syncWantToRead)
+		
+		if shouldSync {
 			booksToSync = append(booksToSync, book)
+			if book.Progress == 0 && syncWantToRead {
+				debugLog("Including book '%s' with 0%% progress for 'Want to read' sync", book.Title)
+			}
 		} else {
 			// Enhanced detection for books that may be actually finished
 			// Some audiobooks might show lower progress due to credits/silence at the end

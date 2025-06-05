@@ -6,6 +6,7 @@ Syncs Audiobookshelf to Hardcover.
 
 ## Features
 - Syncs your Audiobookshelf library with Hardcover
+- Optional "Want to Read" sync for unstarted books (set `SYNC_WANT_TO_READ=true`)
 - Periodic sync (set `SYNC_INTERVAL`, e.g. `10m`, `1h`)
 - Manual sync via HTTP POST/GET to `/sync`
 - Health check at `/healthz`
@@ -14,6 +15,8 @@ Syncs Audiobookshelf to Hardcover.
 - Robust debug logging (`-v` flag or `DEBUG_MODE=1`)
 
 ## Recent Updates
+- 🎯 **"Want to Read" Default Enabled v1.3.2** (June 2025): "Want to Read" sync is now enabled by default! Unstarted books (0% progress) are automatically synced to Hardcover as "Want to Read" status. Set `SYNC_WANT_TO_READ=false` to disable.
+- 🚨 **CRITICAL HOTFIX v1.3.1** (June 2025): Fixed critical regression where reading history was being wiped out during sync operations. The `update_user_book_read` mutation now properly preserves `started_at` dates. **IMMEDIATE UPGRADE REQUIRED** for all v1.3.0 users.
 - 🚀 **Incremental/Delta Sync** (June 2025): Added timestamp-based incremental syncing to reduce API calls and improve performance. Only processes books with changes since last sync.
 - ✅ **Expectation #4 Logic Fix** (June 2025): Fixed re-read scenario handling where books with 100% progress in Hardcover but <99% in AudiobookShelf now correctly create new reading sessions instead of being skipped
 - ✅ **Duplicate Reads Prevention**: Implemented logic to prevent duplicate `user_book_reads` entries on the same day
@@ -28,6 +31,7 @@ Syncs Audiobookshelf to Hardcover.
 | HARDCOVER_SYNC_DELAY_MS  | (optional) Delay between Hardcover syncs in milliseconds (default: 1500)                    |
 | MINIMUM_PROGRESS_THRESHOLD | (optional) Minimum progress threshold to sync books (0.0-1.0, default: 0.01 = 1%)           |
 | AUDIOBOOK_MATCH_MODE     | (optional) Behavior when ASIN lookup fails: `continue` (default), `skip`, `fail`            |
+| SYNC_WANT_TO_READ        | (optional) Sync books with 0% progress as "Want to Read": `true` (default), `false`         |
 | INCREMENTAL_SYNC_MODE    | (optional) Incremental sync mode: `enabled` (default), `disabled`, `auto`                   |
 | SYNC_STATE_FILE          | (optional) Path to sync state file for incremental sync (default: `sync_state.json`)        |
 | FORCE_FULL_SYNC          | (optional) Force full sync on next run: `true`, `false` (default)                           |
@@ -56,6 +60,40 @@ You can copy `.env.example` to `.env` and fill in your values.
 2. Go to your account settings or API section.
 3. Generate a new API token and copy it.
 4. Set `HARDCOVER_TOKEN` to the token you generated.
+
+## Features Configuration
+
+### Want to Read Sync
+
+By default, the sync tool processes both books with reading progress and unstarted books (0% progress) as "Want to Read" status in Hardcover. You can disable this behavior if you only want to sync books with actual progress.
+
+To disable this feature:
+```sh
+export SYNC_WANT_TO_READ=false
+```
+
+**How it works:**
+- Books with 0% progress are synced to Hardcover with status "Want to Read" (status_id=1)
+- Books with any progress (>0% but <99%) are synced as "Currently Reading" (status_id=2)  
+- Books with ≥99% progress are synced as "Read" (status_id=3)
+
+**Use cases:**
+- You have books in your AudiobookShelf library that you plan to read but haven't started
+- You want to maintain a comprehensive "Want to Read" list in Hardcover
+- You're migrating from another platform and want to preserve your reading list
+
+**Example usage:**
+```sh
+# Feature is enabled by default, no configuration needed
+
+# To disable syncing of unstarted books:
+SYNC_WANT_TO_READ=false
+
+# Or run with the environment variable
+SYNC_WANT_TO_READ=false ./main
+```
+
+This feature is enabled by default. If you prefer the old behavior (only syncing books with progress), set `SYNC_WANT_TO_READ=false`.
 
 ## How it works
 

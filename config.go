@@ -64,3 +64,11 @@ func getAudiobookMatchMode() string {
 		return "continue"
 	}
 }
+
+// getSyncWantToRead returns whether to sync books with 0% progress as "Want to read"
+// Default: true (sync unstarted books as "Want to Read")
+func getSyncWantToRead() bool {
+	val := strings.ToLower(os.Getenv("SYNC_WANT_TO_READ"))
+	// Default to true unless explicitly disabled
+	return val != "false" && val != "0" && val != "no"
+}
