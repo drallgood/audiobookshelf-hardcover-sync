@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.3.2] - 2025-06-05
+
+### Changed
+- **🎯 DEFAULT BEHAVIOR**: "Want to Read" sync is now **enabled by default**
+  - **Breaking Change**: `SYNC_WANT_TO_READ` now defaults to `true` instead of `false`
+  - **User Impact**: Unstarted books (0% progress) will automatically sync to Hardcover as "Want to Read" status
+  - **Migration**: Users who prefer the old behavior can set `SYNC_WANT_TO_READ=false` to disable
+  - **Logic Update**: Changed from opt-in (`"true"`) to opt-out (`!= "false", "0", "no"`)
+
+### Added
+- **📖 "Want to Read" Feature Documentation**: Comprehensive documentation for the "Want to Read" sync feature
+  - Added detailed "Want to Read Sync" section to README.md with use cases and examples
+  - Updated environment variables table to reflect new default behavior
+  - Added configuration examples and migration guidance
+- **🧪 Comprehensive Test Suite**: Created `want_to_read_test.go` with 17 tests
+  - 12 environment variable tests covering default behavior and edge cases
+  - 5 status logic tests validating status determination for different progress levels
+  - 100% test coverage for the "Want to Read" feature
+
+### Fixed
+- **📚 Book Filtering Logic**: Enhanced book filtering to properly include 0% progress books when "Want to Read" sync is enabled
+  - Updated `runSync()` to check both progress threshold and "Want to Read" configuration
+  - Added debug logging for books included via "Want to Read" sync
+- **🎛️ Configuration Logic**: Improved `getSyncWantToRead()` function with robust default handling
+  - Defaults to `true` for better out-of-the-box experience
+  - Handles edge cases like empty values, invalid strings, and case variations
+  - Maintains backward compatibility while improving user experience
+
+### Technical Details
+- **Status Mapping**: 0% progress → "Want to Read" (status_id=1) when enabled, "Currently Reading" (status_id=2) when disabled
+- **Environment Variable**: `SYNC_WANT_TO_READ=true` (default), set to `false`/`0`/`no` to disable
+- **Performance**: No performance impact as filtering logic is optimized
+
 ## [v1.3.1] - 2025-06-05
 
 ### Fixed
