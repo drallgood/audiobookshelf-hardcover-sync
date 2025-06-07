@@ -14,6 +14,13 @@ This is a Go application that syncs reading progress and book data between Audio
 - `types.go` - Data structures and type definitions
 - `utils.go` - Utility functions
 - `incremental.go` - Incremental sync functionality
+- `docs/` - Documentation for specific features and fixes
+- `tests/` - Test files for various functionalities
+
+### API definitions
+
+- Use GraphQL for Hardcover API, see `hardcover-schema.graphql` for schema definitions
+- Use REST for AudiobookShelf API, documented in `audiobookshelf-openapi.json`
 
 ### Testing
 - All new features should include comprehensive test coverage
@@ -49,6 +56,19 @@ This is a Go application that syncs reading progress and book data between Audio
 - Error handling should be comprehensive with proper logging
 - New sync features should be configurable via environment variables
 - Follow existing patterns for API interactions and data mapping
+- Follow idiomatic Go conventions (https://go.dev/doc/effective_go).
+- Use named functions over long anonymous ones.
+- Organize logic into small, composable functions.
+- Prefer interfaces for dependencies to enable mocking and testing.
+- Use gofmt or goimports to enforce formatting.
+- Avoid unnecessary abstraction; keep things simple and readable.
+
+### Iteration & Review
+
+- Review Copilot output before committing.
+- Refactor generated code to ensure readability and testability.
+- Use comments to give Copilot context for better suggestions.
+- Regenerate parts that are unidiomatic or too complex.
 
 ### Documentation
 - Keep README.md updated with new features and environment variables

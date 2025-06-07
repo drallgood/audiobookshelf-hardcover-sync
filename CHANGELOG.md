@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **📚 Owned Flag Auto-Fix**: Fixed and enhanced owned flag handling for books that are skipped during sync
+  - Modified `checkExistingUserBook()` to return both owned status and edition_id from Hardcover
+  - Updated sync logic to automatically mark books as owned using `edition_owned` mutation when needed
+  - Added comprehensive owned flag checking even when status/progress are up-to-date
+  - Integrated `markBookAsOwned()` function to actually fix missing owned flags (not just detect them)
+  - Enhanced logging for all owned flag operations and edge cases
+  - Created comprehensive test coverage for owned flag scenarios
+  - **Key improvement**: Books that should be owned are now automatically marked as owned during sync
+
 ## [v1.4.1] - 2025-06-07
 
 ### Fixed

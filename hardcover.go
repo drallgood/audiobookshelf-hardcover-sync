@@ -105,12 +105,12 @@ func lookupHardcoverBookIDRaw(title, author string) (string, error) {
 }
 
 // checkExistingUserBook checks if the user already has this book in their Hardcover library
-// Returns: userBookId (0 if not found), currentStatusId, currentProgressSeconds, error
-func checkExistingUserBook(bookId string) (int, int, int, error) {
+// Returns: userBookId (0 if not found), currentStatusId, currentProgressSeconds, existingOwned, editionId (0 if not found), error
+func checkExistingUserBook(bookId string) (int, int, int, bool, int, error) {
 	// Get current user to ensure we only query their data
 	currentUser, err := getCurrentUser()
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("failed to get current user: %v", err)
+		return 0, 0, 0, false, 0, fmt.Errorf("failed to get current user: %v", err)
 	}
 
 	// First try to find user books with reads, explicitly filtered by user
@@ -128,6 +128,8 @@ func checkExistingUserBook(bookId string) (int, int, int, error) {
 		id
 		status_id
 		book_id
+		edition_id
+		owned
 		user_book_reads(order_by: { started_at: desc }, limit: 1) {
 		  progress_seconds
 		  finished_at
@@ -147,7 +149,7 @@ func checkExistingUserBook(bookId string) (int, int, int, error) {
 
 	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(payloadBytes))
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, false, 0, err
 	}
 	req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
 	req.Header.Set("Content-Type", "application/json")
@@ -155,21 +157,23 @@ func checkExistingUserBook(bookId string) (int, int, int, error) {
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, false, 0, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		return 0, 0, 0, fmt.Errorf("hardcover user_books query error: %s - %s", resp.Status, string(body))
+		return 0, 0, 0, false, 0, fmt.Errorf("hardcover user_books query error: %s - %s", resp.Status, string(body))
 	}
 
 	var result struct {
 		Data struct {
 			UserBooks []struct {
-				ID            int `json:"id"`
-				StatusID      int `json:"status_id"`
-				BookID        int `json:"book_id"`
+				ID            int  `json:"id"`
+				StatusID      int  `json:"status_id"`
+				BookID        int  `json:"book_id"`
+				EditionID     *int `json:"edition_id"`
+				Owned         bool `json:"owned"`
 				UserBookReads []struct {
 					ProgressSeconds *int    `json:"progress_seconds"`
 					FinishedAt      *string `json:"finished_at"`
@@ -180,11 +184,11 @@ func checkExistingUserBook(bookId string) (int, int, int, error) {
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, false, 0, err
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, false, 0, err
 	}
 
 	// If no user book with reads found, try fallback query for any user book
@@ -204,6 +208,8 @@ func checkExistingUserBook(bookId string) (int, int, int, error) {
 			id
 			status_id
 			book_id
+			edition_id
+			owned
 			user_book_reads(order_by: { started_at: desc }, limit: 1) {
 			  progress_seconds
 			  finished_at
@@ -223,7 +229,7 @@ func checkExistingUserBook(bookId string) (int, int, int, error) {
 
 		req2, err := http.NewRequestWithContext(ctx2, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(fallbackPayloadBytes))
 		if err != nil {
-			return 0, 0, 0, err
+			return 0, 0, 0, false, 0, err
 		}
 		req2.Header.Set("Authorization", "Bearer "+getHardcoverToken())
 		req2.Header.Set("Content-Type", "application/json")
@@ -231,45 +237,52 @@ func checkExistingUserBook(bookId string) (int, int, int, error) {
 
 		resp2, err := httpClient.Do(req2)
 		if err != nil {
-			return 0, 0, 0, err
+			return 0, 0, 0, false, 0, err
 		}
 		defer resp2.Body.Close()
 
 		if resp2.StatusCode != 200 {
 			body2, _ := io.ReadAll(resp2.Body)
-			return 0, 0, 0, fmt.Errorf("hardcover user_books fallback query error: %s - %s", resp2.Status, string(body2))
+			return 0, 0, 0, false, 0, fmt.Errorf("hardcover user_books fallback query error: %s - %s", resp2.Status, string(body2))
 		}
 
 		body2, err := io.ReadAll(resp2.Body)
 		if err != nil {
-			return 0, 0, 0, err
+			return 0, 0, 0, false, 0, err
 		}
 
 		if err := json.Unmarshal(body2, &result); err != nil {
-			return 0, 0, 0, err
+			return 0, 0, 0, false, 0, err
 		}
 	}
 
 	// If no user book found, return 0s to indicate we need to create it
 	if len(result.Data.UserBooks) == 0 {
 		debugLog("No existing user book found for bookId=%s", bookId)
-		return 0, 0, 0, nil
+		return 0, 0, 0, false, 0, nil
 	}
 
 	userBook := result.Data.UserBooks[0]
 	userBookId := userBook.ID
 	currentStatusId := userBook.StatusID
+	currentOwned := userBook.Owned
 	currentProgressSeconds := 0
+	currentEditionId := 0
+
+	// Get edition ID if available
+	if userBook.EditionID != nil {
+		currentEditionId = *userBook.EditionID
+	}
 
 	// Get the most recent progress if available
 	if len(userBook.UserBookReads) > 0 && userBook.UserBookReads[0].ProgressSeconds != nil {
 		currentProgressSeconds = *userBook.UserBookReads[0].ProgressSeconds
 	}
 
-	debugLog("Found existing user book: userBookId=%d, statusId=%d, progressSeconds=%d",
-		userBookId, currentStatusId, currentProgressSeconds)
+	debugLog("Found existing user book: userBookId=%d, statusId=%d, progressSeconds=%d, owned=%t, editionId=%d",
+		userBookId, currentStatusId, currentProgressSeconds, currentOwned, currentEditionId)
 
-	return userBookId, currentStatusId, currentProgressSeconds, nil
+	return userBookId, currentStatusId, currentProgressSeconds, currentOwned, currentEditionId, nil
 }
 
 // checkExistingUserBookRead checks if a user_book_read already exists for the given user_book_id that isn't finished
@@ -626,6 +639,100 @@ func insertUserBookRead(userBookID int, progressSeconds int, isFinished bool) er
 	}
 
 	debugLog("Successfully inserted user_book_read with id: %d", result.Data.InsertUserBookRead.ID)
+	return nil
+}
+
+// markBookAsOwned marks a book as owned in Hardcover using the edition_owned mutation
+// This works with edition IDs, not book IDs
+func markBookAsOwned(editionId string) error {
+	if editionId == "" {
+		return fmt.Errorf("edition ID is required for marking book as owned")
+	}
+
+	mutation := `
+	mutation EditionOwned($id: Int!) {
+	  ownership: edition_owned(id: $id) {
+		id
+		list_book {
+		  id
+		  book_id
+		  edition_id
+		}
+	  }
+	}`
+
+	variables := map[string]interface{}{
+		"id": toInt(editionId),
+	}
+
+	payload := map[string]interface{}{
+		"query":     mutation,
+		"variables": variables,
+	}
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal edition_owned payload: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %v", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("http request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("edition_owned mutation error: %s - %s", resp.Status, string(body))
+	}
+
+	var result struct {
+		Data struct {
+			Ownership struct {
+				ID       *int `json:"id"`
+				ListBook *struct {
+					ID        int `json:"id"`
+					BookID    int `json:"book_id"`
+					EditionID int `json:"edition_id"`
+				} `json:"list_book"`
+			} `json:"ownership"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %v", err)
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		return fmt.Errorf("failed to parse response: %v", err)
+	}
+
+	if len(result.Errors) > 0 {
+		return fmt.Errorf("GraphQL errors: %v", result.Errors)
+	}
+
+	if result.Data.Ownership.ID == nil {
+		debugLog("Book with edition_id=%s was not marked as owned (may already be owned)", editionId)
+	} else {
+		debugLog("Successfully marked book as owned: edition_id=%s, list_book_id=%d", editionId, *result.Data.Ownership.ID)
+	}
+
 	return nil
 }
 

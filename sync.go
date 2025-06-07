@@ -287,7 +287,7 @@ func syncToHardcover(a Audiobook) error {
 	}
 
 	// Step 2: Check if user already has this book and compare status/progress
-	existingUserBookId, existingStatusId, existingProgressSeconds, err := checkExistingUserBook(bookId)
+	existingUserBookId, existingStatusId, existingProgressSeconds, existingOwned, existingEditionId, err := checkExistingUserBook(bookId)
 	if err != nil {
 		return fmt.Errorf("failed to check existing user book for '%s': %v", a.Title, err)
 	}
@@ -353,13 +353,39 @@ func syncToHardcover(a Audiobook) error {
 				(existingProgressSeconds == 0 ||
 					math.Abs(float64(targetProgressSeconds-existingProgressSeconds)) > float64(progressThreshold))
 
+			// Check if owned flag needs updating
+			targetOwned := getSyncOwned()
+			ownedChanged := targetOwned != existingOwned
+
 			if statusChanged || progressChanged {
 				needsSync = true
 				debugLog("Book '%s' needs update - status changed: %t (%d->%d), progress changed: %t (%ds->%ds)",
 					a.Title, statusChanged, existingStatusId, targetStatusId, progressChanged, existingProgressSeconds, targetProgressSeconds)
-			} else {
-				debugLog("Book '%s' already up-to-date in Hardcover (status: %d, progress: %ds) - skipping",
+			} else if ownedChanged {
+				// Handle owned flag change separately
+				if targetOwned && !existingOwned && existingEditionId > 0 {
+					// Need to mark as owned and we have an edition ID
+					debugLog("Book '%s' status/progress up-to-date but needs to be marked as owned (edition_id: %d)",
+						a.Title, existingEditionId)
+					if err := markBookAsOwned(fmt.Sprintf("%d", existingEditionId)); err != nil {
+						debugLog("Failed to mark book '%s' as owned: %v", a.Title, err)
+					} else {
+						debugLog("Successfully marked book '%s' as owned", a.Title)
+					}
+				} else if targetOwned && !existingOwned && existingEditionId == 0 {
+					debugLog("Book '%s' needs to be marked as owned but no edition_id available - cannot use edition_owned mutation",
+						a.Title)
+				} else if !targetOwned && existingOwned {
+					debugLog("Book '%s' should not be owned but currently is - cannot unmark owned flag",
+						a.Title)
+				}
+
+				debugLog("Book '%s' already up-to-date in Hardcover (status: %d, progress: %ds) - skipping sync",
 					a.Title, existingStatusId, existingProgressSeconds)
+				return nil
+			} else {
+				debugLog("Book '%s' already up-to-date in Hardcover (status: %d, progress: %ds, owned: %t) - skipping",
+					a.Title, existingStatusId, existingProgressSeconds, existingOwned)
 				return nil
 			}
 		}
@@ -485,19 +511,19 @@ func syncToHardcover(a Audiobook) error {
 					}
 				  }
 				}`
-				
+
 				// CRITICAL FIX: Always set started_at to prevent null values from wiping out reading history
 				// If the book is finished, also set finished_at
 				updateObject := map[string]interface{}{
 					"progress_seconds": targetProgressSeconds,
 					"started_at":       time.Now().Format("2006-01-02"), // Ensure started_at is never null
 				}
-				
+
 				// If book is finished (>= 99%), also set finished_at
 				if a.Progress >= 0.99 {
 					updateObject["finished_at"] = time.Now().Format("2006-01-02")
 				}
-				
+
 				variables := map[string]interface{}{
 					"id":     existingReadId,
 					"object": updateObject,
@@ -722,7 +748,7 @@ func runSync() {
 	for _, book := range books {
 		// Allow books with 0% progress if SYNC_WANT_TO_READ is enabled
 		shouldSync := book.Progress >= minProgress || (book.Progress == 0 && syncWantToRead)
-		
+
 		if shouldSync {
 			booksToSync = append(booksToSync, book)
 			if book.Progress == 0 && syncWantToRead {
