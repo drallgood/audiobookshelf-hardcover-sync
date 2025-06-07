@@ -736,6 +736,309 @@ func markBookAsOwned(editionId string) error {
 	return nil
 }
 
+// OwnedBook represents a book in the user's "Owned" list
+type OwnedBook struct {
+	ListBookID int    `json:"list_book_id"`
+	BookID     int    `json:"book_id"`
+	EditionID  *int   `json:"edition_id"`
+	Title      string `json:"title"`
+	Author     string `json:"author"`
+	ImageURL   string `json:"image_url"`
+	ISBN10     string `json:"isbn_10"`
+	ISBN13     string `json:"isbn_13"`
+	DateAdded  string `json:"date_added"`
+}
+
+// getOwnedBooks retrieves all books marked as owned by querying the user's "Owned" list
+// This is the correct way to get owned books in Hardcover - NOT through user_books.owned field
+func getOwnedBooks() ([]OwnedBook, error) {
+	currentUser, err := getCurrentUser()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current user: %v", err)
+	}
+
+	// Query to get the user's "Owned" list and all books in it
+	query := `
+	query GetOwnedBooks($username: citext!) {
+	  lists(
+		where: {
+		  user: { username: { _eq: $username } }
+		  name: { _eq: "Owned" }
+		}
+	  ) {
+		id
+		name
+		books_count
+		list_books {
+		  id
+		  book_id
+		  edition_id
+		  date_added
+		  book {
+			id
+			title
+			contributions {
+			  author {
+				name
+			  }
+			}
+		  }
+		  edition {
+			id
+			title
+			isbn_10
+			isbn_13
+		  }
+		}
+	  }
+	}`
+
+	variables := map[string]interface{}{
+		"username": currentUser,
+	}
+
+	payload := map[string]interface{}{
+		"query":     query,
+		"variables": variables,
+	}
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal query: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %v", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("http request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API error: %s - %s", resp.Status, string(body))
+	}
+
+	var result struct {
+		Data struct {
+			Lists []struct {
+				ID         int    `json:"id"`
+				Name       string `json:"name"`
+				BooksCount int    `json:"books_count"`
+				ListBooks  []struct {
+					ID        int    `json:"id"`
+					BookID    int    `json:"book_id"`
+					EditionID *int   `json:"edition_id"`
+					DateAdded string `json:"date_added"`
+					Book      struct {
+						ID           int    `json:"id"`
+						Title        string `json:"title"`
+						ImageURL     string `json:"image_url"`
+						ISBN10       string `json:"isbn_10"`
+						ISBN13       string `json:"isbn_13"`
+						Contributions []struct {
+							Author struct {
+								Name string `json:"name"`
+							} `json:"author"`
+						} `json:"contributions"`
+					} `json:"book"`
+					Edition *struct {
+						ID       int    `json:"id"`
+						Title    string `json:"title"`
+						ISBN10   string `json:"isbn_10"`
+						ISBN13   string `json:"isbn_13"`
+						ImageURL string `json:"image_url"`
+					} `json:"edition"`
+				} `json:"list_books"`
+			} `json:"lists"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %v", err)
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %v", err)
+	}
+
+	if len(result.Errors) > 0 {
+		return nil, fmt.Errorf("GraphQL errors: %v", result.Errors)
+	}
+
+	if len(result.Data.Lists) == 0 {
+		debugLog("No 'Owned' list found for user %s", currentUser)
+		return []OwnedBook{}, nil
+	}
+
+	ownedList := result.Data.Lists[0]
+	debugLog("Found 'Owned' list (ID: %d) with %d books", ownedList.ID, ownedList.BooksCount)
+
+	var ownedBooks []OwnedBook
+	for _, listBook := range ownedList.ListBooks {
+		// Get primary author
+		var author string
+		if len(listBook.Book.Contributions) > 0 {
+			author = listBook.Book.Contributions[0].Author.Name
+		}
+
+		// Prefer edition info if available, otherwise use book info
+		title := listBook.Book.Title
+		imageURL := listBook.Book.ImageURL
+		isbn10 := listBook.Book.ISBN10
+		isbn13 := listBook.Book.ISBN13
+
+		if listBook.Edition != nil {
+			if listBook.Edition.Title != "" {
+				title = listBook.Edition.Title
+			}
+			if listBook.Edition.ImageURL != "" {
+				imageURL = listBook.Edition.ImageURL
+			}
+			if listBook.Edition.ISBN10 != "" {
+				isbn10 = listBook.Edition.ISBN10
+			}
+			if listBook.Edition.ISBN13 != "" {
+				isbn13 = listBook.Edition.ISBN13
+			}
+		}
+
+		ownedBook := OwnedBook{
+			ListBookID: listBook.ID,
+			BookID:     listBook.BookID,
+			EditionID:  listBook.EditionID,
+			Title:      title,
+			Author:     author,
+			ImageURL:   imageURL,
+			ISBN10:     isbn10,
+			ISBN13:     isbn13,
+			DateAdded:  listBook.DateAdded,
+		}
+
+		ownedBooks = append(ownedBooks, ownedBook)
+	}
+
+	debugLog("Retrieved %d owned books from Hardcover", len(ownedBooks))
+	return ownedBooks, nil
+}
+
+// isBookOwnedDirect checks if a specific book is in the user's owned list
+// Returns ownership status, list_book_id, and error
+func isBookOwnedDirect(bookID int) (bool, int, error) {
+	currentUser, err := getCurrentUser()
+	if err != nil {
+		return false, 0, fmt.Errorf("failed to get current user: %v", err)
+	}
+
+	query := `
+	query CheckBookOwnership($username: citext!, $bookId: Int!) {
+	  lists(
+		where: {
+		  user: { username: { _eq: $username } }
+		  name: { _eq: "Owned" }
+		  list_books: { book_id: { _eq: $bookId } }
+		}
+	  ) {
+		id
+		list_books(where: { book_id: { _eq: $bookId } }) {
+		  id
+		  book_id
+		  edition_id
+		}
+	  }
+	}`
+
+	variables := map[string]interface{}{
+		"username": currentUser,
+		"bookId":   bookID,
+	}
+
+	payload := map[string]interface{}{
+		"query":     query,
+		"variables": variables,
+	}
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return false, 0, fmt.Errorf("failed to marshal query: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		return false, 0, fmt.Errorf("failed to create request: %v", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return false, 0, fmt.Errorf("http request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return false, 0, fmt.Errorf("API error: %s - %s", resp.Status, string(body))
+	}
+
+	var result struct {
+		Data struct {
+			Lists []struct {
+				ID        int `json:"id"`
+				ListBooks []struct {
+					ID        int  `json:"id"`
+					BookID    int  `json:"book_id"`
+					EditionID *int `json:"edition_id"`
+				} `json:"list_books"`
+			} `json:"lists"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, 0, fmt.Errorf("failed to read response: %v", err)
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		return false, 0, fmt.Errorf("failed to parse response: %v", err)
+	}
+
+	if len(result.Errors) > 0 {
+		return false, 0, fmt.Errorf("GraphQL errors: %v", result.Errors)
+	}
+
+	// If we have a list with list_books, the book is owned
+	if len(result.Data.Lists) > 0 && len(result.Data.Lists[0].ListBooks) > 0 {
+		listBookID := result.Data.Lists[0].ListBooks[0].ID
+		return true, listBookID, nil
+	}
+
+	return false, 0, nil // Not owned
+}
+
 // getCurrentUser gets the current authenticated user's information
 // This function caches the result to avoid repeated API calls during a sync run
 func getCurrentUser() (string, error) {
