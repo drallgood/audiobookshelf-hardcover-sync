@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.4.1] - 2025-06-07
+
+### Fixed
+- **🌍 Container Timezone Support**: Fixed timezone handling in Docker containers
+  - **Issue**: Container logs showed UTC timestamps regardless of `TZ` environment variable
+  - **Solution**: Added `tzdata` package to Alpine base image and timezone configuration in Go application
+  - **Functionality**: Container now properly respects `TZ` environment variable (e.g., `TZ=Europe/Vienna`)
+  - **Compatibility**: Maintains backward compatibility - works with or without `TZ` variable
+  - **Logging**: Application now logs timezone confirmation when `TZ` is set
+  - **Technical**: Go application sets `time.Local` based on `TZ` environment variable
+
 ## [v1.4.0] - 2025-06-07
 
 ### Added

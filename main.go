@@ -39,10 +39,20 @@ import (
 )
 
 var (
-	version = "v1.4.0" // Application version
+	version = "v1.4.1" // Application version
 )
 
 func main() {
+	// Configure timezone from environment variable if set
+	if tz := os.Getenv("TZ"); tz != "" {
+		if loc, err := time.LoadLocation(tz); err == nil {
+			time.Local = loc
+			log.Printf("Timezone set to: %s", tz)
+		} else {
+			log.Printf("Warning: Failed to load timezone %s: %v", tz, err)
+		}
+	}
+
 	healthCheck := flag.Bool("health-check", false, "Run health check and exit")
 	showVersion := flag.Bool("version", false, "Show version and exit")
 	verbose := flag.Bool("v", false, "Enable verbose debug logging")
