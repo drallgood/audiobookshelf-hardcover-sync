@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.5.0] - 2025-06-08
+
+### Added
+- **📚 Owned Books Query Functions**: Added proper owned books querying capabilities
+  - **`OwnedBook` struct**: Data structure for representing owned books with complete metadata
+  - **`getOwnedBooks()` function**: Retrieves all books from user's "Owned" list using correct GraphQL query
+  - **`isBookOwnedDirect()` function**: Checks if a specific book is owned by querying the lists table
+  - **Key Discovery**: Hardcover stores ownership in the "Owned" list, not the `user_books.owned` field
+  - **Correct API Usage**: Uses `lists` table approach instead of faulty `user_books.owned` field
+  - **Well-Documented**: Functions include comments explaining the correct ownership model
+  - **Future-Ready**: Core functions available for implementing owned books sync features
+
 ### Fixed
 - **📚 Owned Flag Auto-Fix**: Fixed and enhanced owned flag handling for books that are skipped during sync
   - Modified `checkExistingUserBook()` to return both owned status and edition_id from Hardcover
