@@ -14,19 +14,23 @@ This is a Go application that syncs reading progress and book data between Audio
 - `types.go` - Data structures and type definitions
 - `utils.go` - Utility functions
 - `incremental.go` - Incremental sync functionality
+- `mismatch.go` - Mismatch detection and collection features
 - `docs/` - Documentation for specific features and fixes
-- `tests/` - Test files for various functionalities
 
 ### API definitions
 
 - Use GraphQL for Hardcover API, see `hardcover-schema.graphql` for schema definitions
 - Use REST for AudiobookShelf API, documented in `audiobookshelf-openapi.json`
+- **Important**: Hardcover ownership is stored in the `lists` table (via "Owned" list), NOT in `user_books.owned` field
+- The `user_books.owned` field is unreliable and always returns `false` - use `getOwnedBooks()` and `isBookOwnedDirect()` functions instead
 
 ### Testing
 - All new features should include comprehensive test coverage
 - Use `go test -v ./...` to run all tests
-- Current test files: `main_test.go`, `format_test.go`, `incremental_test.go`, `owned_test.go`, `want_to_read_test.go`, `reading_history_fix_test.go`
-- tests should go in the `tests/` directory, with filenames ending in `_test.go`
+- Test files follow Go conventions with pattern `*_test.go` in the root directory (same package as source)
+- Current test files: `main_test.go`, `format_test.go`, `incremental_test.go`, `owned_test.go`, `owned_flag_test.go`, `want_to_read_test.go`, `reading_history_fix_test.go`
+- Tests include unit tests, integration tests, and configuration validation
+- Use table-driven tests and subtests for comprehensive coverage
 
 ### Environment Configuration
 - All configuration uses environment variables

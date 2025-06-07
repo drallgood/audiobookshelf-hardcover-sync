@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"testing"
 )
 
@@ -53,24 +52,4 @@ func TestFormatReleaseDate(t *testing.T) {
 				test.publishedDate, test.publishedYear, result, test.expected)
 		}
 	}
-}
-
-func ExampleFormatDuration() {
-	fmt.Println(formatDuration(8.2))
-	fmt.Println(formatDuration(12.9))
-	fmt.Println(formatDuration(1.5))
-	// Output:
-	// 8h 12m 00s
-	// 12h 54m 00s
-	// 1h 30m 00s
-}
-
-func ExampleFormatReleaseDate() {
-	fmt.Println(formatReleaseDate("2020-01-15", ""))
-	fmt.Println(formatReleaseDate("", "2020"))
-	fmt.Println(formatReleaseDate("January 2020", ""))
-	// Output:
-	// Jan 15, 2020
-	// 2020
-	// Jan 2020
 }
