@@ -72,3 +72,11 @@ func getSyncWantToRead() bool {
 	// Default to true unless explicitly disabled
 	return val != "false" && val != "0" && val != "no"
 }
+
+// getSyncOwned returns whether to mark synced books as "owned" in Hardcover
+// Default: true (mark synced books as owned)
+func getSyncOwned() bool {
+	val := strings.ToLower(os.Getenv("SYNC_OWNED"))
+	// Default to true unless explicitly disabled
+	return val != "false" && val != "0" && val != "no"
+}

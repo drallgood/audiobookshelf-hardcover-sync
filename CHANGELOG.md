@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.4.0] - 2025-06-07
+
+### Added
+- **🏠 Owned Books Marking**: New feature to mark synced books as "owned" in Hardcover
+  - **Environment Variable**: `SYNC_OWNED=true` (enabled by default)
+  - **Functionality**: Automatically marks synced books as "owned" to distinguish from wishlist items
+  - **Integration**: Added to `insert_user_book` GraphQL mutation when creating new user books
+  - **Configuration**: Can be disabled with `SYNC_OWNED=false` if ownership tracking not desired
+- **🧪 Comprehensive Test Coverage**: Added `owned_test.go` with 12 test cases
+  - Tests environment variable parsing with various boolean values
+  - Validates default behavior (enabled by default)
+  - Ensures proper handling of edge cases and invalid values
+- **📖 Documentation**: Updated README.md with owned books sync section
+  - Added `SYNC_OWNED` to environment variables table
+  - Created dedicated "Owned Books Sync" configuration section
+  - Updated features list to highlight ownership tracking capability
+
+### Changed
+- **📚 User Book Creation**: Enhanced sync logic to include ownership information
+  - Modified `userBookInput` map to include `"owned": true` when `getSyncOwned()` returns true
+  - Only affects newly created books; existing books in Hardcover remain unchanged
+  - Ownership status is independent of reading status (Want to Read, Currently Reading, Read)
+
+### Technical Details
+- **Config Function**: Added `getSyncOwned()` function following same pattern as `getSyncWantToRead()`
+- **Default Behavior**: Enabled by default to provide better library organization out of the box
+- **API Integration**: Seamlessly integrates with existing Hardcover GraphQL mutations
+- **Testing**: 100% test coverage for the new functionality with comprehensive edge case handling
+
 ## [v1.3.2] - 2025-06-05
 
 ### Changed

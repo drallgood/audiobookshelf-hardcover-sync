@@ -379,6 +379,9 @@ func syncToHardcover(a Audiobook) error {
 		if editionId != "" {
 			userBookInput["edition_id"] = toInt(editionId)
 		}
+		if getSyncOwned() {
+			userBookInput["owned"] = true
+		}
 		debugLog("Creating new user book for '%s' by '%s' (Progress: %.6f) with status_id=%d, userBookInput=%+v", a.Title, a.Author, a.Progress, targetStatusId, userBookInput)
 		insertUserBookMutation := `
 		mutation InsertUserBook($object: UserBookCreateInput!) {

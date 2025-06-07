@@ -2,250 +2,342 @@
 
 [![Trivy Scan](https://github.com/drallgood/audiobookshelf-hardcover-sync/actions/workflows/trivy.yml/badge.svg)](https://github.com/drallgood/audiobookshelf-hardcover-sync/actions/workflows/trivy.yml)
 
-Syncs Audiobookshelf to Hardcover.
+Automatically syncs your Audiobookshelf library with Hardcover, including reading progress, book status, and ownership information.
 
 ## Features
-- Syncs your Audiobookshelf library with Hardcover
-- Optional "Want to Read" sync for unstarted books (set `SYNC_WANT_TO_READ=true`)
-- Periodic sync (set `SYNC_INTERVAL`, e.g. `10m`, `1h`)
-- Manual sync via HTTP POST/GET to `/sync`
-- Health check at `/healthz`
-- Multi-arch container images (amd64, arm64)
-- Secure, minimal, and production-ready
-- Robust debug logging (`-v` flag or `DEBUG_MODE=1`)
+- 📚 **Full Library Sync**: Syncs your entire Audiobookshelf library with Hardcover
+- 🎯 **Smart Status Management**: Automatically sets "Want to Read", "Currently Reading", and "Read" status based on progress
+- 🏠 **Ownership Tracking**: Marks synced books as "owned" to distinguish from wishlist items
+- ⚡ **Incremental Sync**: Efficient timestamp-based syncing to reduce API calls
+- 🔄 **Periodic Sync**: Configurable automatic syncing (e.g., every 10 minutes or 1 hour)
+- 🎛️ **Manual Sync**: HTTP endpoints for on-demand synchronization
+- 🏥 **Health Monitoring**: Built-in health check endpoint
+- 🐳 **Container Ready**: Multi-arch Docker images (amd64, arm64)
+- 🔍 **Debug Logging**: Comprehensive logging for troubleshooting
+- 🛡️ **Production Ready**: Secure, minimal, and battle-tested
 
-## Recent Updates
-- 🎯 **"Want to Read" Default Enabled v1.3.2** (June 2025): "Want to Read" sync is now enabled by default! Unstarted books (0% progress) are automatically synced to Hardcover as "Want to Read" status. Set `SYNC_WANT_TO_READ=false` to disable.
-- 🚨 **CRITICAL HOTFIX v1.3.1** (June 2025): Fixed critical regression where reading history was being wiped out during sync operations. The `update_user_book_read` mutation now properly preserves `started_at` dates. **IMMEDIATE UPGRADE REQUIRED** for all v1.3.0 users.
-- 🚀 **Incremental/Delta Sync** (June 2025): Added timestamp-based incremental syncing to reduce API calls and improve performance. Only processes books with changes since last sync.
-- ✅ **Expectation #4 Logic Fix** (June 2025): Fixed re-read scenario handling where books with 100% progress in Hardcover but <99% in AudiobookShelf now correctly create new reading sessions instead of being skipped
-- ✅ **Duplicate Reads Prevention**: Implemented logic to prevent duplicate `user_book_reads` entries on the same day
+## Quick Start
 
-## Environment Variables
-| Variable                 | Description                                                                                 |
-|--------------------------|-------------------------------------------------------------------------------------------|
-| AUDIOBOOKSHELF_URL       | URL to your AudiobookShelf server                                                            |
-| AUDIOBOOKSHELF_TOKEN     | API token for AudiobookShelf (see instructions below; required for all API requests)         |
-| HARDCOVER_TOKEN          | API token for Hardcover                                                                     |
-| SYNC_INTERVAL            | (optional) Go duration string for periodic sync                                             |
-| HARDCOVER_SYNC_DELAY_MS  | (optional) Delay between Hardcover syncs in milliseconds (default: 1500)                    |
-| MINIMUM_PROGRESS_THRESHOLD | (optional) Minimum progress threshold to sync books (0.0-1.0, default: 0.01 = 1%)           |
-| AUDIOBOOK_MATCH_MODE     | (optional) Behavior when ASIN lookup fails: `continue` (default), `skip`, `fail`            |
-| SYNC_WANT_TO_READ        | (optional) Sync books with 0% progress as "Want to Read": `true` (default), `false`         |
-| INCREMENTAL_SYNC_MODE    | (optional) Incremental sync mode: `enabled` (default), `disabled`, `auto`                   |
-| SYNC_STATE_FILE          | (optional) Path to sync state file for incremental sync (default: `sync_state.json`)        |
-| FORCE_FULL_SYNC          | (optional) Force full sync on next run: `true`, `false` (default)                           |
-| DEBUG_MODE               | (optional) Set to `1` to enable verbose debug logging                                       |
-
-You can copy `.env.example` to `.env` and fill in your values.
-
-## Setup Instructions
-
-### AudiobookShelf Setup
-1. Log in to your AudiobookShelf web UI as an admin/user.
-2. Go to **config → users**, then click on your account.
-3. Copy your API token from the user details page.
-   - Alternatively, you can obtain the API token programmatically using the Login endpoint; the token is in `response.user.token`. For example:
-     ```sh
-     curl -X POST "https://your-abs-server/api/login" -H 'Content-Type: application/json' -d '{"username":"YOUR_USER","password":"YOUR_PASS"}'
-     # The token is in response.user.token
-     ```
-4. Set `AUDIOBOOKSHELF_URL` to your server URL (e.g., https://abs.example.com).
-5. Set `AUDIOBOOKSHELF_TOKEN` to the token you copied.
-
-> **Note:** AudiobookShelf does not support username/password or session/JWT tokens for API access. You must use an API token as described above. For GET requests, the API token is sent as a Bearer token (or optionally as a query string).
-
-### Hardcover Setup
-1. Log in to https://hardcover.app.
-2. Go to your account settings or API section.
-3. Generate a new API token and copy it.
-4. Set `HARDCOVER_TOKEN` to the token you generated.
-
-## Features Configuration
-
-### Want to Read Sync
-
-By default, the sync tool processes both books with reading progress and unstarted books (0% progress) as "Want to Read" status in Hardcover. You can disable this behavior if you only want to sync books with actual progress.
-
-To disable this feature:
-```sh
-export SYNC_WANT_TO_READ=false
-```
-
-**How it works:**
-- Books with 0% progress are synced to Hardcover with status "Want to Read" (status_id=1)
-- Books with any progress (>0% but <99%) are synced as "Currently Reading" (status_id=2)  
-- Books with ≥99% progress are synced as "Read" (status_id=3)
-
-**Use cases:**
-- You have books in your AudiobookShelf library that you plan to read but haven't started
-- You want to maintain a comprehensive "Want to Read" list in Hardcover
-- You're migrating from another platform and want to preserve your reading list
-
-**Example usage:**
-```sh
-# Feature is enabled by default, no configuration needed
-
-# To disable syncing of unstarted books:
-SYNC_WANT_TO_READ=false
-
-# Or run with the environment variable
-SYNC_WANT_TO_READ=false ./main
-```
-
-This feature is enabled by default. If you prefer the old behavior (only syncing books with progress), set `SYNC_WANT_TO_READ=false`.
-
-## How it works
-
-This service fetches all libraries from your AudiobookShelf server using the `/api/libraries` endpoint, then fetches all items for each library using `/api/libraries/{libraryId}/items`. It filters for items with `mediaType == "book"` and extracts title/author from `media.metadata`, then syncs their progress to Hardcover.
-
-### Smart Progress Filtering
-The service only syncs books that have meaningful progress (configurable via `MINIMUM_PROGRESS_THRESHOLD`, default 1%). This prevents syncing books that have been barely started or accidentally opened.
-
-### Accurate Progress Calculation
-Progress is calculated using the most accurate method available:
-1. **User Progress API**: Fetches progress from `/api/me` endpoint which includes manually finished books with `isFinished=true` flags
-2. **Current Time**: Uses actual `currentTime` from AudiobookShelf when available
-3. **Duration Calculation**: Calculates progress from `totalDuration * progressPercentage` when duration is known
-4. **Fallback**: Uses a reasonable 10-hour duration estimate (much better than the previous 1-hour assumption)
-
-### Manual Finish Detection
-The service now properly detects books that have been manually marked as finished in AudiobookShelf, even if their progress percentage is less than 100%. This is achieved by checking the `mediaProgress` data from the `/api/me` endpoint for `isFinished=true` flags.
-
-### Status Mapping
-- Books with progress >= 99% are marked as "read" (status_id=3) on Hardcover
-- Books with less progress are marked as "currently reading" (status_id=2)
-- The service looks up books by ISBN-13, ISBN-10, or ASIN first, then falls back to title/author matching for better accuracy
-
-## Getting Started
-
-### Prerequisites
-- Go 1.22+
-- Docker (for container usage)
-
-### Building Locally
-```sh
-git clone https://github.com/drallgood/audiobookshelf-hardcover-sync.git
-cd audiobookshelf-hardcover-sync
-cp .env.example .env # Edit as needed
-make build
-./main
-```
-
-### Running with Docker
-Build the image:
-```sh
-make docker-build VERSION=dev
-```
-Run the container:
-```sh
-make docker-run VERSION=dev
-```
-
-### Running with Docker Compose
-1. Copy `.env.example` to `.env` and edit your secrets:
+### Using Docker Compose (Recommended)
+1. Create a `.env` file with your API tokens:
    ```sh
    cp .env.example .env
-   # Edit .env as needed
+   # Edit .env with your AUDIOBOOKSHELF_URL, AUDIOBOOKSHELF_TOKEN, and HARDCOVER_TOKEN
    ```
+
 2. Start the service:
    ```sh
    docker compose up -d
    ```
 
-### Using a Custom CA Certificate (for Internal TLS)
+### Using Docker
+```sh
+docker run -d \
+  -e AUDIOBOOKSHELF_URL=https://your-abs-server.com \
+  -e AUDIOBOOKSHELF_TOKEN=your_abs_token \
+  -e HARDCOVER_TOKEN=your_hardcover_token \
+  -e SYNC_INTERVAL=1h \
+  --name abs-hardcover-sync \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
+```
 
-If your AudiobookShelf server uses a certificate signed by a custom or internal CA, you can provide your CA certificate at runtime without rebuilding the image.
+## Configuration
 
-1. Save your CA certificate as `ca.crt`.
-2. When running the container, mount your CA cert to `/ca.crt`:
-   
-   **Docker Compose example:**
-   ```yaml
-   services:
-     abs-hardcover-sync:
-       # ...existing config...
-       volumes:
-         - ./ca.crt:/ca.crt:ro
-   ```
-   **Docker CLI example:**
-   ```sh
-   docker run -v $(pwd)/ca.crt:/ca.crt:ro ... ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
-   ```
+### Required Environment Variables
+| Variable | Description |
+|----------|-------------|
+| `AUDIOBOOKSHELF_URL` | URL to your AudiobookShelf server (e.g., `https://abs.example.com`) |
+| `AUDIOBOOKSHELF_TOKEN` | API token for AudiobookShelf (see setup instructions below) |
+| `HARDCOVER_TOKEN` | API token for Hardcover (see setup instructions below) |
 
-At startup, the container will automatically combine your custom CA with the system CA bundle and set `SSL_CERT_FILE` so your internal certificates are trusted. This is handled by the `entrypoint.sh` script.
+### Optional Environment Variables
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SYNC_INTERVAL` | None | Periodic sync interval (e.g., `10m`, `1h`, `30s`) |
+| `SYNC_WANT_TO_READ` | `true` | Sync unstarted books (0% progress) as "Want to Read" |
+| `SYNC_OWNED` | `true` | Mark synced books as "owned" in Hardcover |
+| `INCREMENTAL_SYNC_MODE` | `enabled` | Incremental sync mode: `enabled`, `disabled`, `auto` |
+| `MINIMUM_PROGRESS_THRESHOLD` | `0.01` | Minimum progress to sync (0.0-1.0, 0.01 = 1%) |
+| `HARDCOVER_SYNC_DELAY_MS` | `1500` | Delay between API calls to prevent rate limiting |
+| `AUDIOBOOK_MATCH_MODE` | `continue` | ASIN lookup failure behavior: `continue`, `skip`, `fail` |
+| `SYNC_STATE_FILE` | `sync_state.json` | Path to incremental sync state file |
+| `FORCE_FULL_SYNC` | `false` | Force full sync on next run |
+| `DEBUG_MODE` | `false` | Enable verbose debug logging (`1` or `true`) |
 
-> **Note:** No image rebuild is required. The CA is picked up at runtime via the entrypoint script.
+## Setup Instructions
+
+### Getting Your API Tokens
+
+#### AudiobookShelf Token
+1. Log in to your AudiobookShelf web interface
+2. Navigate to **Settings → Users** and click on your account
+3. Copy the API token from your user profile
+4. Set `AUDIOBOOKSHELF_URL` to your server URL and `AUDIOBOOKSHELF_TOKEN` to your token
+
+> **Alternative**: Get token via API:
+> ```sh
+> curl -X POST "https://your-abs-server/api/login" \
+>   -H 'Content-Type: application/json' \
+>   -d '{"username":"YOUR_USER","password":"YOUR_PASS"}'
+> # Token is in response.user.token
+> ```
+
+#### Hardcover Token
+1. Log in to [hardcover.app](https://hardcover.app)
+2. Go to your account settings → API section
+3. Generate a new API token
+4. Set `HARDCOVER_TOKEN` to your generated token
+
+### Feature Configuration
+
+#### Want to Read Sync
+**Default: Enabled** - Unstarted books (0% progress) are synced as "Want to Read" in Hardcover.
+
+```sh
+# Disable if you only want to sync books with progress
+export SYNC_WANT_TO_READ=false
+```
+
+**Status Mapping:**
+- 0% progress → "Want to Read" (status_id=1)
+- 1-98% progress → "Currently Reading" (status_id=2)
+- ≥99% progress → "Read" (status_id=3)
+
+#### Owned Books Sync
+**Default: Enabled** - Synced books are marked as "owned" to distinguish from wishlist items.
+
+```sh
+# Disable if you don't want to mark books as owned
+export SYNC_OWNED=false
+```
+
+This helps you:
+- Distinguish owned books from wishlist items
+- Maintain accurate ownership records
+- Filter your Hardcover library by ownership status
+
+## How It Works
+
+### Sync Process
+1. **Fetch Libraries**: Retrieves all libraries from AudiobookShelf (`/api/libraries`)
+2. **Get Library Items**: Fetches items from each library (`/api/libraries/{id}/items`)
+3. **Filter Books**: Processes only items with `mediaType == "book"`
+4. **Progress Detection**: Uses multiple methods for accurate progress tracking
+5. **Book Matching**: Matches books using ISBN, ASIN, or title/author
+6. **Status Sync**: Creates or updates books in Hardcover with correct status
+
+### Smart Features
+
+#### Incremental Sync
+- **Timestamp-based**: Only processes books changed since last sync
+- **State Persistence**: Maintains sync state in `sync_state.json`
+- **Performance**: Reduces API calls and improves sync speed
+
+#### Accurate Progress Tracking
+1. **User Progress API**: Checks `/api/me` for manually finished books
+2. **Current Time**: Uses actual listening position when available
+3. **Smart Calculation**: Handles edge cases and provides fallbacks
+4. **Manual Finish Detection**: Respects AudiobookShelf "mark as finished" status
+
+#### Book Matching Priority
+1. ISBN-13, ISBN-10, or ASIN lookup (most accurate)
+2. Title and author matching (fallback)
+3. Configurable behavior when matches fail
+
+### Rate Limiting & Reliability
+- **Auto-retry**: Retries failed requests up to 3 times
+- **Throttling**: Respects Hardcover rate limits with configurable delays
+- **429 Handling**: Automatically backs off when rate limited
+- **Error Recovery**: Continues processing other books on individual failures
+
+## Usage
 
 ### Endpoints
-- `GET /healthz` — Health check
-- `POST/GET /sync` — Trigger a sync manually (both methods supported)
+- `GET /healthz` — Health check endpoint
+- `POST /sync` — Trigger manual sync
+- `GET /sync` — Trigger manual sync (alternative)
 
-### Rate Limiting / Throttling
-
-If you see errors like `429 Too Many Requests` or `{ "error": "Throttled" }` from Hardcover, the sync tool will automatically delay between requests (default 1.5s, configurable via `HARDCOVER_SYNC_DELAY_MS`) and retry up to 3 times on 429 errors, respecting the `Retry-After` header if present.
-
-You can increase the delay if you have a large library or continue to see throttling:
-
+### Command Line
 ```sh
-export HARDCOVER_SYNC_DELAY_MS=3000 # 3 seconds between syncs
+# Run once
+./main
+
+# Enable debug logging
+./main -v
+# or
+DEBUG_MODE=1 ./main
+
+# Show version
+./main --version
+
+# Health check
+./main --health-check
 ```
 
-### Command Line Options
+## Advanced Configuration
 
-```sh
-./main --help
+### Custom CA Certificates
+For AudiobookShelf servers with custom SSL certificates:
+
+```yaml
+# docker-compose.yml
+services:
+  abs-hardcover-sync:
+    image: ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
+    volumes:
+      - ./ca.crt:/ca.crt:ro  # Mount your CA certificate
+    environment:
+      # ... your environment variables
 ```
 
-Available flags:
-- `-v` — Enable verbose debug logging
-- `--health-check` — Run health check and exit
-- `--version` — Show version and exit
+The container automatically trusts custom CAs at runtime.
 
-### Debug Logging
-
-To enable verbose debug logging for troubleshooting, either run with the `-v` flag or set the environment variable:
+### Rate Limiting Configuration
+If you encounter `429 Too Many Requests` errors:
 
 ```sh
+# Increase delay between API calls (default: 1500ms)
+export HARDCOVER_SYNC_DELAY_MS=3000
+
+# For very large libraries
+export HARDCOVER_SYNC_DELAY_MS=5000
+```
+
+### Troubleshooting
+Enable debug logging to diagnose issues:
+
+```sh
+# Via environment variable
 export DEBUG_MODE=1
+
+# Via command line flag
+./main -v
 ```
 
-This will print detailed logs for API requests, responses, errors, and sync progress.
+Debug logs include:
+- API request/response details
+- Book matching logic
+- Progress calculations
+- Error context
 
-### Pulling from GitHub Container Registry (GHCR)
-To pull the latest image:
+## Development
+
+### Building from Source
 ```sh
-docker pull ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
+git clone https://github.com/drallgood/audiobookshelf-hardcover-sync.git
+cd audiobookshelf-hardcover-sync
+cp .env.example .env  # Edit with your tokens
+make build
+./main
 ```
 
-### Publishing to GHCR
-Images are published automatically via GitHub Actions on every push to main and on release.
-
-## Multi-Architecture Images
-Images are published for both `linux/amd64` and `linux/arm64` platforms. This means you can run the container on most modern servers, desktops, and ARM-based devices (like Raspberry Pi and Apple Silicon Macs).
-
-## Makefile Usage
-Common tasks are available via the Makefile:
-- `make build` – Build the Go binary
-- `make run` – Build and run locally
-- `make lint` – Run Go vet and lint
-- `make test` – Run tests
-- `make docker-build` – Build the Docker image
-- `make docker-run` – Run the Docker image with Compose
-
-## Testing
-To run tests:
+### Docker Development
 ```sh
+# Build image
+make docker-build VERSION=dev
+
+# Run with compose
+make docker-run VERSION=dev
+```
+
+### Testing
+```sh
+# Run all tests
 make test
+
+# Run with coverage
+go test -v -cover ./...
+
+# Lint code
+make lint
 ```
 
-Tests cover the AudiobookShelf and Hardcover API integration, error handling, rate limiting, and progress sync logic. Contributions to test coverage are welcome!
+### Available Make Targets
+- `make build` — Build Go binary
+- `make run` — Build and run locally  
+- `make test` — Run test suite
+- `make lint` — Run linters
+- `make docker-build` — Build Docker image
+- `make docker-run` — Run with Docker Compose
+
+## Deployment
+
+### Docker Hub / GHCR
+Pre-built multi-architecture images are available:
+
+```sh
+# Pull latest
+docker pull ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
+
+# Pull specific version  
+docker pull ghcr.io/drallgood/audiobookshelf-hardcover-sync:v1.4.0
+```
+
+**Supported Platforms:**
+- `linux/amd64` (Intel/AMD servers, most cloud providers)
+- `linux/arm64` (ARM servers, Raspberry Pi, Apple Silicon)
+
+### Production Deployment
+For production use, consider:
+
+1. **Resource Limits**: Set appropriate CPU/memory limits
+2. **Restart Policy**: Use `restart: unless-stopped` or similar
+3. **Health Monitoring**: Monitor the `/healthz` endpoint
+4. **Log Management**: Configure log rotation and shipping
+5. **Security**: Run as non-root user (images use `nobody:nobody`)
+
+```yaml
+# docker-compose.yml
+services:
+  abs-hardcover-sync:
+    image: ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
+    restart: unless-stopped
+    environment:
+      - AUDIOBOOKSHELF_URL=${AUDIOBOOKSHELF_URL}
+      - AUDIOBOOKSHELF_TOKEN=${AUDIOBOOKSHELF_TOKEN}
+      - HARDCOVER_TOKEN=${HARDCOVER_TOKEN}
+      - SYNC_INTERVAL=1h
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.5'
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+```
+
+## Recent Updates & Migration
+
+### v1.4.0 (Current)
+- ✨ **New**: Owned books marking (`SYNC_OWNED=true` by default)
+- 🎯 **Enhanced**: "Want to Read" sync now enabled by default
+- ⚡ **Improved**: Better incremental sync performance
+- 🔧 **Fixed**: Re-read scenario handling and duplicate prevention
+
+### Migration Notes
+- **From v1.3.x**: No breaking changes, new features enabled by default
+- **From v1.2.x**: Set `SYNC_WANT_TO_READ=false` if you prefer old behavior
+- **From v1.1.x**: Review incremental sync settings (`INCREMENTAL_SYNC_MODE`)
 
 ## Contributing
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-## Security
-See [SECURITY.md](SECURITY.md) for vulnerability reporting.
+We welcome contributions! Please see our [contributing guidelines](CONTRIBUTING.md) for details.
 
-## License
-This project is licensed under the terms of the Apache 2.0 license. See [LICENSE](LICENSE) for details.
+**Areas for contribution:**
+- 🧪 Test coverage improvements
+- 📖 Documentation enhancements  
+- 🐛 Bug fixes and performance improvements
+- ✨ New features and integrations
+
+## Support & Community
+
+- 📋 **Issues**: [GitHub Issues](https://github.com/drallgood/audiobookshelf-hardcover-sync/issues)
+- 🔒 **Security**: See [SECURITY.md](SECURITY.md) for vulnerability reporting
+- 📜 **License**: [Apache 2.0](LICENSE)
+
+---
+
+**⭐ If this project helps you, please consider giving it a star on GitHub!**
