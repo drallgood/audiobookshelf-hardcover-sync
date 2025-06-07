@@ -24,9 +24,9 @@ This is a Go application that syncs reading progress and book data between Audio
 
 ### Testing
 - All new features should include comprehensive test coverage
-- Test files follow pattern `*_test.go`
 - Use `go test -v ./...` to run all tests
 - Current test files: `main_test.go`, `format_test.go`, `incremental_test.go`, `owned_test.go`, `want_to_read_test.go`, `reading_history_fix_test.go`
+- tests should go in the `tests/` directory, with filenames ending in `_test.go`
 
 ### Environment Configuration
 - All configuration uses environment variables
