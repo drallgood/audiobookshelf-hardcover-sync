@@ -11,8 +11,8 @@ import (
 
 func TestBookMismatchDurationSeconds(t *testing.T) {
 	tests := []struct {
-		durationHours    float64
-		expectedSeconds  int
+		durationHours     float64
+		expectedSeconds   int
 		expectedFormatted string
 	}{
 		{0, 0, "0h 0m 0s"},
@@ -29,8 +29,8 @@ func TestBookMismatchDurationSeconds(t *testing.T) {
 		t.Run(test.expectedFormatted, func(t *testing.T) {
 			// Create a BookMismatch with the duration
 			mismatch := BookMismatch{
-				Title:    "Test Book",
-				Duration: test.durationHours,
+				Title:           "Test Book",
+				Duration:        test.durationHours,
 				DurationSeconds: int(test.durationHours*3600 + 0.5), // Same calculation as in addBookMismatchWithMetadata
 			}
 
@@ -98,7 +98,7 @@ func TestExportMismatchesJSON(t *testing.T) {
 	bookMismatches = []BookMismatch{
 		{
 			Title:           "Book One",
-			Author:          "Author One", 
+			Author:          "Author One",
 			Duration:        5.5,
 			DurationSeconds: 19800, // 5.5 * 3600
 			ISBN:            "111",
@@ -112,7 +112,7 @@ func TestExportMismatchesJSON(t *testing.T) {
 			Author:          "Author Two",
 			Duration:        12.25,
 			DurationSeconds: 44100, // 12.25 * 3600
-			ISBN:            "222", 
+			ISBN:            "222",
 			Publisher:       "Publisher Two",
 			BookID:          "hc-2",
 			Reason:          "Test reason 2",
@@ -149,11 +149,11 @@ func TestExportMismatchesJSON(t *testing.T) {
 	// Verify that duration in seconds is correctly calculated
 	expectedFirstSeconds := 19800  // 5.5 hours * 3600 seconds/hour
 	expectedSecondSeconds := 44100 // 12.25 hours * 3600 seconds/hour
-	
+
 	if result[0].DurationSeconds != expectedFirstSeconds {
 		t.Errorf("First book duration seconds calculation: got %d, expected %d", result[0].DurationSeconds, expectedFirstSeconds)
 	}
-	
+
 	if result[1].DurationSeconds != expectedSecondSeconds {
 		t.Errorf("Second book duration seconds calculation: got %d, expected %d", result[1].DurationSeconds, expectedSecondSeconds)
 	}
@@ -196,7 +196,7 @@ func TestSaveMismatchesJSONFileIndividual(t *testing.T) {
 
 	// Create a temporary directory for testing
 	tempDir := t.TempDir()
-	
+
 	// Set up environment variable for testing
 	originalEnv := os.Getenv("MISMATCH_JSON_FILE")
 	os.Setenv("MISMATCH_JSON_FILE", tempDir)
