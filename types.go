@@ -7,20 +7,21 @@ import (
 
 // BookMismatch represents a book that may need manual verification
 type BookMismatch struct {
-	Title         string
-	Subtitle      string
-	Author        string
-	Narrator      string
-	Publisher     string
-	PublishedYear string
-	ReleaseDate   string  // Maps to PublishedDate from API
-	Duration      float64 // Duration in hours for easier reading
-	ISBN          string
-	ASIN          string
-	BookID        string
-	EditionID     string
-	Reason        string
-	Timestamp     time.Time
+	Title           string
+	Subtitle        string
+	Author          string
+	Narrator        string
+	Publisher       string
+	PublishedYear   string
+	ReleaseDate     string  // Maps to PublishedDate from API
+	Duration        float64 // Duration in hours for easier reading
+	DurationSeconds int     // Duration in seconds for JSON processing
+	ISBN            string
+	ASIN            string
+	BookID          string
+	EditionID       string
+	Reason          string
+	Timestamp       time.Time
 }
 
 // AudiobookShelf API response structures

@@ -809,4 +809,9 @@ func runSync() {
 
 	// Print summary of books that may need manual review
 	printMismatchSummary()
+
+	// Save mismatches to JSON file if enabled
+	if err := saveMismatchesJSONFile(); err != nil {
+		log.Printf("Warning: Failed to save mismatches to JSON file: %v", err)
+	}
 }

@@ -87,3 +87,9 @@ func getDryRun() bool {
 	val := strings.ToLower(os.Getenv("DRY_RUN"))
 	return val == "true" || val == "1" || val == "yes"
 }
+
+// getMismatchJSONFile returns the directory path to save individual mismatch JSON files
+// Default: empty string (no file output)
+func getMismatchJSONFile() string {
+	return os.Getenv("MISMATCH_JSON_FILE")
+}

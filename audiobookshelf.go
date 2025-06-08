@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 )
@@ -518,12 +520,8 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 					currentTime = totalDuration * progress
 				}
 
-				// 1. Check if we have progress data from the /api/me/progress endpoint
-				if userProgress, hasProgress := progressData[item.ID]; hasProgress {
-					progress = userProgress
-					debugLog("Using progress from /api/me/progress: %.6f for '%s'", progress, title)
-				} else if item.UserProgress != nil {
-					// 2. Check UserProgress field in the item
+				// 1. First check UserProgress field in the item (most reliable)
+				if item.UserProgress != nil {
 					if item.UserProgress.IsFinished {
 						progress = 1.0
 						debugLog("UserProgress.IsFinished is true, setting progress to 1.0 for '%s'", title)
@@ -532,9 +530,50 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 						debugLog("Using UserProgress.Progress: %.6f for '%s'", progress, title)
 					}
 				} else if item.IsFinished {
-					// 3. Check if item is marked as finished
+					// 2. Check if item is marked as finished
 					progress = 1.0
 					debugLog("Item.IsFinished is true, setting progress to 1.0 for '%s'", title)
+				}
+
+				// 3. Check if we have progress data from the /api/me/progress endpoint (but validate against UserProgress)
+				if userProgress, hasProgress := progressData[item.ID]; hasProgress {
+					// If we have UserProgress.CurrentTime, validate the /api/me/progress value
+					if item.UserProgress != nil && item.UserProgress.CurrentTime > 0 && totalDuration > 0 {
+						calculatedProgressFromCurrentTime := item.UserProgress.CurrentTime / totalDuration
+						if math.Abs(calculatedProgressFromCurrentTime - userProgress) > 0.05 { // 5% tolerance
+							debugLog("Progress discrepancy between /api/me/progress (%.6f) and UserProgress.CurrentTime-based (%.6f) for '%s', preferring UserProgress", 
+								userProgress, calculatedProgressFromCurrentTime, title)
+							// Keep the UserProgress-based value already set above
+						} else {
+							progress = userProgress
+							debugLog("Using validated progress from /api/me/progress: %.6f for '%s'", progress, title)
+						}
+					} else {
+						// No UserProgress.CurrentTime available, but validate if the progress seems reasonable
+						if totalDuration > 0 && userProgress > 0 {
+							estimatedCurrentTime := userProgress * totalDuration
+							// If the estimated currentTime is very small (< 1 minute) but totalDuration is long (> 30 minutes),
+							// this might be a stale or incorrect progress value
+							if estimatedCurrentTime < 60 && totalDuration > 1800 { // Less than 1 minute progress on 30+ minute book
+								debugLog("Suspicious progress from /api/me/progress (%.6f = %.1fs) for long book '%s' (%.1f hours), trying listening sessions API", 
+									userProgress, estimatedCurrentTime, title, totalDuration/3600)
+								// Try to get correct progress from listening sessions API
+								sessionProgress := getProgressFromListeningSessions(item.ID, totalDuration)
+								if sessionProgress > 0 {
+									progress = sessionProgress
+									debugLog("Using progress from listening sessions: %.6f for '%s'", progress, title)
+								} else {
+									debugLog("No progress found from listening sessions, skipping suspicious /api/me/progress value")
+								}
+							} else {
+								progress = userProgress
+								debugLog("Using progress from /api/me/progress: %.6f for '%s'", progress, title)
+							}
+						} else {
+							progress = userProgress
+							debugLog("Using progress from /api/me/progress: %.6f for '%s'", progress, title)
+						}
+					}
 				}
 
 				// 4. If progress is still 0, try fetching individual item progress
@@ -551,7 +590,23 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 					}
 				}
 
-				// 5. If progress is still 0, try the enhanced finished book detection
+				// 5. If progress is still 0, try the listening sessions API directly 
+				if progress == 0 && totalDuration > 0 {
+					debugLog("No progress found from other sources, trying listening sessions API for '%s'", title)
+					sessionProgress := getProgressFromListeningSessions(item.ID, totalDuration)
+					if sessionProgress > 0 {
+						progress = sessionProgress
+						debugLog("Using progress from listening sessions API: %.6f for '%s'", progress, title)
+						
+						// Also calculate currentTime from this progress if we don't have it
+						if currentTime == 0 {
+							currentTime = progress * totalDuration
+							debugLog("Calculated currentTime from listening sessions progress: %.2fs", currentTime)
+						}
+					}
+				}
+
+				// 6. If progress is still 0, try the enhanced finished book detection
 				if progress == 0 {
 					debugLog("Trying enhanced finished book detection for '%s' with currentTime=%.2f, totalDuration=%.2f",
 						title, currentTime, totalDuration)
@@ -567,12 +622,25 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 
 				debugLog("Item '%s' final progress: %.6f (raw: %.6f, UserProgress: %v, IsFinished: %v)", title, progress, item.Progress, item.UserProgress != nil, item.IsFinished)
 
-				// Recalculate current time with final progress if needed
+				// Use current time from UserProgress if available, otherwise calculate from progress
 				if item.UserProgress != nil && item.UserProgress.CurrentTime > 0 {
 					currentTime = item.UserProgress.CurrentTime
+					// Also verify the progress matches the currentTime to avoid inconsistencies
+					if totalDuration > 0 {
+						calculatedProgress := currentTime / totalDuration
+						debugLog("UserProgress currentTime: %.2fs, calculated progress: %.6f, final progress: %.6f", 
+							currentTime, calculatedProgress, progress)
+						// If there's a significant discrepancy, prefer the currentTime-based progress
+						if math.Abs(calculatedProgress - progress) > 0.05 { // 5% tolerance
+							debugLog("Progress discrepancy detected, using currentTime-based progress: %.6f instead of %.6f", 
+								calculatedProgress, progress)
+							progress = calculatedProgress
+						}
+					}
 				} else if totalDuration > 0 && progress > 0 {
-					// Calculate current time from progress percentage
+					// Calculate current time from progress percentage only if no UserProgress.CurrentTime
 					currentTime = totalDuration * progress
+					debugLog("Calculated currentTime from progress: %.2fs = %.2fs * %.6f", currentTime, totalDuration, progress)
 				}
 
 				debugLog("Duration info for '%s': currentTime=%.2fs, totalDuration=%.2fs (%.2f hours)",
@@ -807,4 +875,266 @@ func fetchRecentListeningSessions(sinceTimestamp int64) ([]string, error) {
 
 	debugLog("No recent listening sessions found or API not available")
 	return updatedItemIds, nil
+}
+
+// getProgressFromListeningSessions attempts to get accurate progress from the listening sessions API
+// when other progress sources are unreliable or missing
+func getProgressFromListeningSessions(itemID string, totalDuration float64) float64 {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Try multiple possible endpoints for item-specific listening sessions
+	endpoints := []string{
+		fmt.Sprintf("/api/items/%s/listening-sessions", itemID),
+		fmt.Sprintf("/api/library-items/%s/listening-sessions", itemID),
+		fmt.Sprintf("/api/me/library-item/%s/listening-sessions", itemID),
+		fmt.Sprintf("/api/me/item/%s/listening-sessions", itemID),
+		fmt.Sprintf("/api/items/%s/sessions", itemID),
+		fmt.Sprintf("/api/library-items/%s/sessions", itemID),
+	}
+
+	for _, endpoint := range endpoints {
+		url := getAudiobookShelfURL() + endpoint
+		debugLog("Trying listening sessions endpoint: %s", url)
+
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			debugLog("Error creating request for %s: %v", endpoint, err)
+			continue
+		}
+		req.Header.Set("Authorization", "Bearer "+getAudiobookShelfToken())
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			debugLog("Error fetching from %s: %v", endpoint, err)
+			continue
+		}
+
+		if resp.StatusCode != 200 {
+			resp.Body.Close()
+			debugLog("Endpoint %s returned status %d", endpoint, resp.StatusCode)
+			continue
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			debugLog("Error reading response from %s: %v", endpoint, err)
+			continue
+		}
+
+		debugLog("Response from %s: %s", endpoint, string(body))
+
+		// Try to get progress from this endpoint
+		progress := parseListeningSessionsResponse(body, itemID, totalDuration)
+		if progress > 0 {
+			debugLog("Successfully got progress %.6f from endpoint %s", progress, endpoint)
+			return progress
+		}
+	}
+
+	debugLog("No meaningful progress found from any listening sessions endpoint for item %s", itemID)
+	return 0
+}
+
+// parseListeningSessionsResponse parses different possible response formats from listening sessions endpoints
+func parseListeningSessionsResponse(body []byte, itemID string, totalDuration float64) float64 {
+	// Try multiple possible response structures
+	
+	// Format 1: Sessions wrapped in an object
+	var sessionData struct {
+		Sessions []struct {
+			CurrentTime   float64 `json:"currentTime"`
+			Duration      float64 `json:"duration"`
+			TotalDuration float64 `json:"totalDuration"`
+			Progress      float64 `json:"progress"`
+			CreatedAt     int64   `json:"createdAt"`
+			UpdatedAt     int64   `json:"updatedAt"`
+		} `json:"sessions"`
+	}
+
+	if err := json.Unmarshal(body, &sessionData); err == nil && len(sessionData.Sessions) > 0 {
+		debugLog("Found %d sessions in wrapped format", len(sessionData.Sessions))
+		return extractProgressFromSessions(sessionData.Sessions, totalDuration)
+	}
+
+	// Format 2: Direct array of sessions
+	var sessions []struct {
+		CurrentTime   float64 `json:"currentTime"`
+		Duration      float64 `json:"duration"`
+		TotalDuration float64 `json:"totalDuration"`
+		Progress      float64 `json:"progress"`
+		CreatedAt     int64   `json:"createdAt"`
+		UpdatedAt     int64   `json:"updatedAt"`
+	}
+
+	if err := json.Unmarshal(body, &sessions); err == nil && len(sessions) > 0 {
+		debugLog("Found %d sessions in direct array format", len(sessions))
+		return extractProgressFromSessions(sessions, totalDuration)
+	}
+
+	// Format 3: Single session object (not array)
+	var singleSession struct {
+		CurrentTime   float64 `json:"currentTime"`
+		Duration      float64 `json:"duration"`
+		TotalDuration float64 `json:"totalDuration"`
+		Progress      float64 `json:"progress"`
+		CreatedAt     int64   `json:"createdAt"`
+		UpdatedAt     int64   `json:"updatedAt"`
+	}
+
+	if err := json.Unmarshal(body, &singleSession); err == nil && (singleSession.CurrentTime > 0 || singleSession.Progress > 0) {
+		debugLog("Found single session object")
+		return extractProgressFromSingleSession(singleSession, totalDuration)
+	}
+
+	// Format 4: Try to parse as generic JSON and look for any progress data
+	var genericData map[string]interface{}
+	if err := json.Unmarshal(body, &genericData); err == nil {
+		debugLog("Parsing as generic JSON, keys: %v", getKeys(genericData))
+		return extractProgressFromGeneric(genericData, totalDuration)
+	}
+
+	debugLog("Could not parse listening sessions response in any known format")
+	return 0
+}
+
+// Helper function to extract progress from session array
+func extractProgressFromSessions(sessions interface{}, totalDuration float64) float64 {
+	// Use reflection to handle both specific struct and interface{} arrays
+	sessionsValue := reflect.ValueOf(sessions)
+	if sessionsValue.Kind() != reflect.Slice {
+		return 0
+	}
+
+	sessionCount := sessionsValue.Len()
+	if sessionCount == 0 {
+		return 0
+	}
+
+	// Get the most recent session (last in array)
+	lastSession := sessionsValue.Index(sessionCount - 1)
+	return extractProgressFromSessionValue(lastSession, totalDuration)
+}
+
+// Helper function to extract progress from a single session
+func extractProgressFromSingleSession(session interface{}, totalDuration float64) float64 {
+	return extractProgressFromSessionValue(reflect.ValueOf(session), totalDuration)
+}
+
+// Helper function to extract progress from a session using reflection
+func extractProgressFromSessionValue(sessionValue reflect.Value, totalDuration float64) float64 {
+	var currentTime, duration, progress float64
+
+	// Extract fields using reflection or direct access
+	if sessionValue.Kind() == reflect.Struct {
+		if field := sessionValue.FieldByName("CurrentTime"); field.IsValid() && field.CanFloat() {
+			currentTime = field.Float()
+		}
+		if field := sessionValue.FieldByName("Duration"); field.IsValid() && field.CanFloat() {
+			duration = field.Float()
+		}
+		if field := sessionValue.FieldByName("TotalDuration"); field.IsValid() && field.CanFloat() {
+			totalDur := field.Float()
+			if totalDur > 0 {
+				duration = totalDur
+			}
+		}
+		if field := sessionValue.FieldByName("Progress"); field.IsValid() && field.CanFloat() {
+			progress = field.Float()
+		}
+	}
+
+	debugLog("Session data: CurrentTime=%.2f, Duration=%.2f, Progress=%.6f, TotalDuration=%.2f",
+		currentTime, duration, progress, totalDuration)
+
+	// Calculate progress from currentTime and duration
+	if duration > 0 && currentTime > 0 {
+		calculatedProgress := currentTime / duration
+		debugLog("Calculated progress: %.6f (%.2fs / %.2fs)", calculatedProgress, currentTime, duration)
+		if calculatedProgress > 0.001 { // Only meaningful progress
+			return calculatedProgress
+		}
+	}
+
+	// Use total duration fallback
+	if totalDuration > 0 && currentTime > 0 {
+		calculatedProgress := currentTime / totalDuration
+		debugLog("Calculated progress with total duration: %.6f (%.2fs / %.2fs)", calculatedProgress, currentTime, totalDuration)
+		if calculatedProgress > 0.001 {
+			return calculatedProgress
+		}
+	}
+
+	// Fallback to direct progress field
+	if progress > 0.001 {
+		debugLog("Using direct progress field: %.6f", progress)
+		return progress
+	}
+
+	return 0
+}
+
+// Helper function to extract progress from generic JSON
+func extractProgressFromGeneric(data map[string]interface{}, totalDuration float64) float64 {
+	// Look for sessions at various levels
+	if sessions, ok := data["sessions"]; ok {
+		if sessionSlice, ok := sessions.([]interface{}); ok && len(sessionSlice) > 0 {
+			if lastSession, ok := sessionSlice[len(sessionSlice)-1].(map[string]interface{}); ok {
+				return extractProgressFromGenericSession(lastSession, totalDuration)
+			}
+		}
+	}
+
+	// Look for direct session data
+	return extractProgressFromGenericSession(data, totalDuration)
+}
+
+// Helper function to extract progress from a generic session map
+func extractProgressFromGenericSession(session map[string]interface{}, totalDuration float64) float64 {
+	var currentTime, duration, progress float64
+
+	if ct, ok := session["currentTime"].(float64); ok {
+		currentTime = ct
+	}
+	if d, ok := session["duration"].(float64); ok {
+		duration = d
+	}
+	if td, ok := session["totalDuration"].(float64); ok && td > 0 {
+		duration = td
+	}
+	if p, ok := session["progress"].(float64); ok {
+		progress = p
+	}
+
+	debugLog("Generic session: CurrentTime=%.2f, Duration=%.2f, Progress=%.6f", currentTime, duration, progress)
+
+	// Calculate progress
+	if duration > 0 && currentTime > 0 {
+		calculatedProgress := currentTime / duration
+		if calculatedProgress > 0.001 {
+			return calculatedProgress
+		}
+	}
+
+	if totalDuration > 0 && currentTime > 0 {
+		calculatedProgress := currentTime / totalDuration
+		if calculatedProgress > 0.001 {
+			return calculatedProgress
+		}
+	}
+
+	if progress > 0.001 {
+		return progress
+	}
+
+	return 0
+}
+
+// Helper function to get keys from map
+func getKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
