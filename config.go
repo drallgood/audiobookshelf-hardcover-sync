@@ -80,3 +80,10 @@ func getSyncOwned() bool {
 	// Default to true unless explicitly disabled
 	return val != "false" && val != "0" && val != "no"
 }
+
+// getDryRun returns whether to run in dry run mode (no actual API calls for modifications)
+// Default: false (perform actual API calls)
+func getDryRun() bool {
+	val := strings.ToLower(os.Getenv("DRY_RUN"))
+	return val == "true" || val == "1" || val == "yes"
+}

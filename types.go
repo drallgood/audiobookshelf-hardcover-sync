@@ -1,6 +1,9 @@
 package main
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // BookMismatch represents a book that may need manual verification
 type BookMismatch struct {
@@ -77,4 +80,63 @@ type Audiobook struct {
 	CurrentTime   float64       `json:"currentTime,omitempty"`   // Current position in seconds
 	TotalDuration float64       `json:"totalDuration,omitempty"` // Total duration in seconds
 	Metadata      MediaMetadata `json:"metadata,omitempty"`      // Full metadata for enhanced mismatch collection
+}
+
+// ID lookup and search functionality types
+
+// PersonSearchResult represents a person (author/narrator) search result
+type PersonSearchResult struct {
+	ID          int    `json:"id"`
+	Name        string `json:"name"`
+	BooksCount  int    `json:"books_count"`
+	Bio         string `json:"bio"`
+	IsCanonical bool   `json:"is_canonical"`
+	CanonicalID *int   `json:"canonical_id"`
+}
+
+// PublisherSearchResult represents a publisher search result
+type PublisherSearchResult struct {
+	ID            int    `json:"id"`
+	Name          string `json:"name"`
+	EditionsCount int    `json:"editions_count"`
+	IsCanonical   bool   `json:"is_canonical"`
+	CanonicalID   *int   `json:"canonical_id"`
+}
+
+// PersonSearchResponse represents the GraphQL response for person searches
+type PersonSearchResponse struct {
+	Data struct {
+		Authors []PersonSearchResult `json:"authors"`
+	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+// PublisherSearchResponse represents the GraphQL response for publisher searches
+type PublisherSearchResponse struct {
+	Data struct {
+		Publishers []PublisherSearchResult `json:"publishers"`
+	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+// SearchAPIResponse represents the response from Hardcover's search API
+type SearchAPIResponse struct {
+	Data struct {
+		Search struct {
+			Error     *string       `json:"error"`
+			IDs       []json.Number `json:"ids"` // Use json.Number to handle both strings and integers
+			Page      int           `json:"page"`
+			PerPage   int           `json:"per_page"`
+			Query     string        `json:"query"`
+			QueryType string        `json:"query_type"`
+			Results   interface{}   `json:"results"`
+		} `json:"search"`
+	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
 }

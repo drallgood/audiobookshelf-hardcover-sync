@@ -37,3 +37,18 @@ audiobookshelf-hardcover-sync
 audiobookshelf-openapi.json
 hardcover-schema.graphql
 abs-hardcover-sync
+
+# Personal book files and temporary test data
+*_personal.json
+test_*.json
+debug_*.json
+
+# Temporary files
+*.tmp
+*.temp
+*~
+.DS_Store
+
+# Build artifacts
+sync-test
+test_build

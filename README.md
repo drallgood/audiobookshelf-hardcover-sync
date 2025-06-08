@@ -14,6 +14,8 @@ Automatically syncs your Audiobookshelf library with Hardcover, including readin
 - 🏥 **Health Monitoring**: Built-in health check endpoint
 - 🐳 **Container Ready**: Multi-arch Docker images (amd64, arm64)
 - 🔍 **Debug Logging**: Comprehensive logging for troubleshooting
+- 🔧 **Edition Creation Tools**: Interactive tools for creating missing audiobook editions
+- 🔍 **ID Lookup**: Search and verify author, narrator, and publisher IDs from Hardcover database
 - 🛡️ **Production Ready**: Secure, minimal, and battle-tested
 
 ## Quick Start
@@ -172,7 +174,184 @@ DEBUG_MODE=1 ./main
 
 # Health check
 ./main --health-check
+
+# Edition creation commands
+./main --create-edition                           # Interactive edition creation
+./main --create-edition-prepopulated            # Interactive with prepopulation
+./main --generate-example filename.json         # Generate blank template
+./main --generate-prepopulated bookid:file.json # Generate prepopulated template
+./main --enhance-template file.json:bookid      # Enhance existing template
+./main --create-edition-json filename.json      # Create from JSON file
+
+# ID lookup commands for edition creation
+./main --lookup-author                           # Search for author IDs by name
+./main --lookup-narrator                         # Search for narrator IDs by name  
+./main --lookup-publisher                        # Search for publisher IDs by name
+./main --verify-author-id 12345                  # Verify author ID
+./main --verify-narrator-id 67890                # Verify narrator ID
+./main --verify-publisher-id 54321               # Verify publisher ID
 ```
+
+#### ID Lookup Tools
+When creating editions, you need to find the correct Hardcover IDs for authors, narrators, and publishers. These lookup tools help you search the Hardcover database interactively:
+
+```sh
+# Search for authors by name (fuzzy matching)
+./main --lookup-author
+# Interactive prompt: Enter author name to search: Stephen King
+# Shows results with IDs, book counts, and canonical vs alias status
+
+# Search for narrators by name
+./main --lookup-narrator  
+# Similar to author search but filters for people with narrator roles
+
+# Search for publishers by name
+./main --lookup-publisher
+# Shows publisher results with edition counts
+
+# Bulk lookup commands (comma-separated names)
+./main --bulk-lookup-authors "Stephen King,Brandon Sanderson"
+./main --bulk-lookup-narrators "Jim Dale,Kate Reading" 
+./main --bulk-lookup-publishers "Penguin,Macmillan"
+
+# Verify specific IDs
+./main --verify-author-id 123456      # Check author details
+./main --verify-narrator-id 789012    # Check narrator details  
+./main --verify-publisher-id 345678   # Check publisher details
+
+# Image upload utility
+./main --upload-image "https://example.com/image.jpg:Cover art description"
+```
+
+**Key Features:**
+- **Fuzzy search**: Partial name matching (e.g., "King" finds "Stephen King")
+- **Canonical detection**: Shows which entries are primary vs aliases
+- **Relevance sorting**: Results ordered by popularity (book/edition counts)
+- **Role filtering**: Narrator search only shows people who have narrated books
+- **ID verification**: Confirm IDs and see full details before using in JSON files
+- **Bulk lookup**: Search multiple names at once with comma-separated lists
+- **Image upload**: Upload cover images from URLs for use in editions
+
+### Edition Creation Tools
+This tool includes comprehensive functionality to create new audiobook editions in Hardcover when books are missing ASINs:
+
+```sh
+# Interactive edition creation (manual entry)
+./main --create-edition
+
+# Interactive edition creation with prepopulation
+./main --create-edition-prepopulated
+
+# Generate example JSON template
+./main --generate-example my_book.json
+
+# Generate prepopulated template from existing book
+./main --generate-prepopulated 123456:my_book.json
+
+# Enhance existing template with book data
+./main --enhance-template my_book.json:123456
+
+# Create edition from JSON file
+./main --create-edition-json my_book.json
+```
+
+#### Interactive Edition Creation
+The `--create-edition` flag launches an interactive CLI that guides you through:
+- Entering book ID, title, ASIN, and image URL
+- Looking up and validating authors and narrators
+- Setting publisher, release date, and audio length
+- Confirming all details before creation
+
+#### Prepopulated Edition Creation
+The `--create-edition-prepopulated` flag provides **automated data population** from existing Hardcover books:
+
+**Features:**
+- 🎯 **Auto-fills metadata** from existing Hardcover book data
+- 📚 **Populates authors, narrators, and publishers** automatically
+- 🔍 **Validates data** before template generation
+- ⚡ **Saves time** by reducing manual data entry
+- 🛠️ **Extensible** for future external API integrations
+
+**Workflow:**
+1. Enter or select the Hardcover book ID
+2. Tool fetches comprehensive book metadata from Hardcover
+3. Automatically populates all available fields (title, authors, narrators, publishers, etc.)
+4. You only need to add missing fields like ASIN and image URL
+5. Creates the edition with validated, complete data
+
+#### Batch Edition Creation
+For multiple editions, use JSON files with automated prepopulation:
+
+**Option 1: Generate prepopulated template**
+```sh
+# Generate template with data from Hardcover book ID 123456
+./main --generate-prepopulated 123456:book1.json
+```
+
+**Option 2: Enhance existing template**
+```sh
+# Add book data to existing template
+./main --enhance-template book1.json:123456
+```
+
+**Option 3: Manual template creation**
+```sh
+# Generate blank template
+./main --generate-example book1.json
+```
+
+**Example JSON with all configurable fields:**
+```json
+{
+  "book_id": 123456,
+  "title": "The Martian",
+  "subtitle": "A Novel",
+  "image_url": "https://m.media-amazon.com/images/I/...",
+  "asin": "B00B5HZGUG",
+  "isbn_10": "0553418025",
+  "isbn_13": "9780553418026",
+  "author_ids": [12345],
+  "narrator_ids": [54321],
+  "publisher_id": 999,
+  "release_date": "2024-01-15",
+  "audio_seconds": 53357,
+  "edition_format": "Audible Audio",
+  "edition_information": "Unabridged",
+  "language_id": 1,
+  "country_id": 1
+}
+```
+
+**Field descriptions:**
+- `book_id`: Hardcover book ID (required)
+- `title`: Edition title (required)
+- `subtitle`: Edition subtitle (optional)
+- `image_url`: Cover image URL (required)
+- `asin`: Audible ASIN (required)
+- `isbn_10`: ISBN-10 identifier (optional)
+- `isbn_13`: ISBN-13 identifier (optional)
+- `author_ids`: Array of Hardcover author IDs (required)
+- `narrator_ids`: Array of Hardcover narrator IDs (optional)
+- `publisher_id`: Hardcover publisher ID (optional)
+- `release_date`: Release date in YYYY-MM-DD format (required)
+- `audio_seconds`: Audio duration in seconds (required)
+- `edition_format`: Edition format description (optional, defaults to "Audible Audio")
+- `edition_information`: Additional edition information (optional)
+- `language_id`: Language ID (optional, defaults to 1 for English)
+- `country_id`: Country ID (optional, defaults to 1 for USA)
+
+**Then create the edition:**
+```sh
+./main --create-edition-json book1.json
+```
+
+#### Prepopulation Benefits
+- **Reduced errors**: Automatically validates author/narrator/publisher IDs
+- **Time savings**: No need to manually look up existing book metadata
+- **Consistency**: Uses standardized data from Hardcover's database
+- **Future-ready**: Designed to integrate with external APIs (Audible, Goodreads, etc.)
+
+**Note**: The prepopulation feature fetches existing book data from Hardcover's database, so you only need to provide the book ID and any missing fields like ASIN or image URL. This significantly reduces the manual work required for edition creation.
 
 ## Advanced Configuration
 
@@ -219,6 +398,34 @@ Debug logs include:
 - Book matching logic
 - Progress calculations
 - Error context
+
+### Dry Run Mode
+Test image upload and edition creation without making actual API calls:
+
+```sh
+# Enable dry run mode
+export DRY_RUN=true   # or DRY_RUN=1, DRY_RUN=yes
+
+# Test image upload
+./main --upload-image "https://example.com/image.jpg" "Test Description"
+# Returns fake ID: 999999
+
+# Test edition creation from JSON
+./main --create-edition-json my_book.json
+# Returns fake Image ID: 888888, Edition ID: 777777
+```
+
+**Dry run benefits:**
+- 🧪 **Test without side effects**: Validate your workflow without creating actual records
+- 🐛 **Debug API issues**: Isolate problems in image upload logic vs API connectivity
+- 📚 **Verify JSON structure**: Ensure your edition JSON files are properly formatted
+- ⚡ **Fast iteration**: Test changes quickly without waiting for API calls
+
+**What gets simulated in dry run:**
+- ✅ Image uploads (both CLI and edition creation)
+- ✅ Edition creation mutations
+- ✅ All GraphQL API calls in edition workflow
+- ❌ Regular sync operations (not yet supported)
 
 ## Development
 
@@ -297,6 +504,7 @@ services:
       - AUDIOBOOKSHELF_TOKEN=${AUDIOBOOKSHELF_TOKEN}
       - HARDCOVER_TOKEN=${HARDCOVER_TOKEN}
       - SYNC_INTERVAL=1h
+      - DRY_RUN=false                    # Enable dry run mode (true/1/yes)
     deploy:
       resources:
         limits:

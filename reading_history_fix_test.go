@@ -96,17 +96,17 @@ func TestReadingHistoryFix(t *testing.T) {
 // TestReadingHistoryFixValidateDate tests that the date format is correct
 func TestReadingHistoryFixValidateDate(t *testing.T) {
 	now := time.Now().Format("2006-01-02")
-	
+
 	// Verify the date format is valid
 	if _, err := time.Parse("2006-01-02", now); err != nil {
 		t.Errorf("Invalid date format: %s, error: %v", now, err)
 	}
-	
+
 	// Verify it's today's date
 	expected := time.Now().Format("2006-01-02")
 	if now != expected {
 		t.Errorf("Expected today's date %s, got %s", expected, now)
 	}
-	
+
 	t.Logf("✅ Date format validation passed: %s", now)
 }

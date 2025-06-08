@@ -24,6 +24,22 @@ This is a Go application that syncs reading progress and book data between Audio
 - **Important**: Hardcover ownership is stored in the `lists` table (via "Owned" list), NOT in `user_books.owned` field
 - The `user_books.owned` field is unreliable and always returns `false` - use `getOwnedBooks()` and `isBookOwnedDirect()` functions instead
 
+#### Hardcover API Limitations
+- API tokens automatically expire after 1 year, and reset on January 1st.
+- API is rate-limited to 60 requests per minute.
+- The following queries are disabled:
+    - _like
+    - _nlike
+    - _ilike
+    - _niregex
+    - _nregex
+    - _iregex
+    - _regex
+    - _nsimilar
+    - _similar
+    - Queries have a max timeout of 30 seconds.
+    - Queries have a maximum depth of 3.
+
 ### Testing
 - All new features should include comprehensive test coverage
 - Use `go test -v ./...` to run all tests

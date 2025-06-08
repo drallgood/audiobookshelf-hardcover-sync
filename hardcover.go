@@ -777,6 +777,11 @@ func getOwnedBooks() ([]OwnedBook, error) {
 		  book {
 			id
 			title
+			isbn_10
+			isbn_13
+			image {
+			  url
+			}
 			contributions {
 			  author {
 				name
@@ -788,6 +793,9 @@ func getOwnedBooks() ([]OwnedBook, error) {
 			title
 			isbn_10
 			isbn_13
+			image {
+			  url
+			}
 		  }
 		}
 	  }
@@ -842,11 +850,13 @@ func getOwnedBooks() ([]OwnedBook, error) {
 					EditionID *int   `json:"edition_id"`
 					DateAdded string `json:"date_added"`
 					Book      struct {
-						ID           int    `json:"id"`
-						Title        string `json:"title"`
-						ImageURL     string `json:"image_url"`
-						ISBN10       string `json:"isbn_10"`
-						ISBN13       string `json:"isbn_13"`
+						ID    int    `json:"id"`
+						Title string `json:"title"`
+						Image *struct {
+							URL string `json:"url"`
+						} `json:"image"`
+						ISBN10        string `json:"isbn_10"`
+						ISBN13        string `json:"isbn_13"`
 						Contributions []struct {
 							Author struct {
 								Name string `json:"name"`
@@ -854,11 +864,13 @@ func getOwnedBooks() ([]OwnedBook, error) {
 						} `json:"contributions"`
 					} `json:"book"`
 					Edition *struct {
-						ID       int    `json:"id"`
-						Title    string `json:"title"`
-						ISBN10   string `json:"isbn_10"`
-						ISBN13   string `json:"isbn_13"`
-						ImageURL string `json:"image_url"`
+						ID     int    `json:"id"`
+						Title  string `json:"title"`
+						ISBN10 string `json:"isbn_10"`
+						ISBN13 string `json:"isbn_13"`
+						Image  *struct {
+							URL string `json:"url"`
+						} `json:"image"`
 					} `json:"edition"`
 				} `json:"list_books"`
 			} `json:"lists"`
@@ -899,7 +911,10 @@ func getOwnedBooks() ([]OwnedBook, error) {
 
 		// Prefer edition info if available, otherwise use book info
 		title := listBook.Book.Title
-		imageURL := listBook.Book.ImageURL
+		var imageURL string
+		if listBook.Book.Image != nil {
+			imageURL = listBook.Book.Image.URL
+		}
 		isbn10 := listBook.Book.ISBN10
 		isbn13 := listBook.Book.ISBN13
 
@@ -907,8 +922,8 @@ func getOwnedBooks() ([]OwnedBook, error) {
 			if listBook.Edition.Title != "" {
 				title = listBook.Edition.Title
 			}
-			if listBook.Edition.ImageURL != "" {
-				imageURL = listBook.Edition.ImageURL
+			if listBook.Edition.Image != nil && listBook.Edition.Image.URL != "" {
+				imageURL = listBook.Edition.Image.URL
 			}
 			if listBook.Edition.ISBN10 != "" {
 				isbn10 = listBook.Edition.ISBN10
@@ -1128,4 +1143,636 @@ func fetchCurrentUserFromAPI() (string, error) {
 	}
 
 	return result.Data.Me[0].Username, nil
+}
+
+// BookMetadataResponse represents detailed book information from Hardcover
+type BookMetadataResponse struct {
+	ID            json.Number        `json:"id"`
+	Title         string             `json:"title"`
+	Subtitle      string             `json:"subtitle"`
+	ReleaseDate   string             `json:"release_date"`
+	AudioSeconds  int                `json:"audio_seconds"`
+	Image         *ImageInfo         `json:"image"`
+	Contributions []ContributionInfo `json:"contributions"`
+	Editions      []EditionInfo      `json:"editions"`
+}
+
+type ImageInfo struct {
+	URL string `json:"url"`
+}
+
+type ContributionInfo struct {
+	Role   string     `json:"contribution"`
+	Author AuthorInfo `json:"author"`
+}
+
+type AuthorInfo struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+type EditionInfo struct {
+	ID           json.Number   `json:"id"`
+	Title        string        `json:"title"`
+	Subtitle     string        `json:"subtitle"`
+	ASIN         string        `json:"asin"`
+	ISBN10       string        `json:"isbn_10"`
+	ISBN13       string        `json:"isbn_13"`
+	AudioSeconds int           `json:"audio_seconds"`
+	ReleaseDate  string        `json:"release_date"`
+	PublisherID  int           `json:"publisher_id"`
+	Publisher    PublisherInfo `json:"publisher"`
+	Image        *ImageInfo    `json:"image"`
+}
+
+type PublisherInfo struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+// getDetailedBookMetadata fetches comprehensive book metadata from Hardcover for edition creation prepopulation
+func getDetailedBookMetadata(bookID string) (*BookMetadataResponse, error) {
+	query := `
+	query BookDetailedMetadata($bookId: Int!) {
+	  books(where: { id: { _eq: $bookId } }, limit: 1) {
+		id
+		title
+		subtitle
+		release_date
+		audio_seconds
+		image {
+		  url
+		}
+		contributions {
+		  contribution
+		  author {
+			id
+			name
+		  }
+		}
+		editions {
+		  id
+		  title
+		  subtitle
+		  asin
+		  isbn_10
+		  isbn_13
+		  audio_seconds
+		  release_date
+		  publisher_id
+		  publisher {
+			id
+			name
+		  }
+		  image {
+			url
+		  }
+		}
+	  }
+	}`
+
+	bookIDInt := 0
+	if _, err := fmt.Sscanf(bookID, "%d", &bookIDInt); err != nil {
+		return nil, fmt.Errorf("invalid book ID format: %s", bookID)
+	}
+
+	variables := map[string]interface{}{
+		"bookId": bookIDInt,
+	}
+
+	payload := map[string]interface{}{
+		"query":     query,
+		"variables": variables,
+	}
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal query: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %v", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("hardcover detailed metadata query error: %s - %s", resp.Status, string(body))
+	}
+
+	var result struct {
+		Data struct {
+			Books []BookMetadataResponse `json:"books"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %v", err)
+	}
+
+	debugLog("Detailed book metadata response: %s", string(body))
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %v", err)
+	}
+
+	if len(result.Errors) > 0 {
+		return nil, fmt.Errorf("graphql errors: %v", result.Errors)
+	}
+
+	if len(result.Data.Books) == 0 {
+		return nil, fmt.Errorf("book with ID %s not found", bookID)
+	}
+
+	book := result.Data.Books[0]
+	debugLog("Found book metadata: title='%s', subtitle='%s', editions=%d, contributions=%d",
+		book.Title, book.Subtitle, len(book.Editions), len(book.Contributions))
+
+	return &book, nil
+}
+
+// extractAuthorIDs extracts author IDs from contributions with role="author"
+func extractAuthorIDs(contributions []ContributionInfo) []int {
+	authorIDs := []int{}
+	for _, contrib := range contributions {
+		if strings.EqualFold(contrib.Role, "author") {
+			authorIDs = append(authorIDs, contrib.Author.ID)
+		}
+	}
+	return authorIDs
+}
+
+// extractNarratorIDs extracts narrator IDs from contributions with role="narrator"
+func extractNarratorIDs(contributions []ContributionInfo) []int {
+	narratorIDs := []int{}
+	for _, contrib := range contributions {
+		if strings.EqualFold(contrib.Role, "narrator") {
+			narratorIDs = append(narratorIDs, contrib.Author.ID)
+		}
+	}
+	return narratorIDs
+}
+
+// searchPersonIDs uses Hardcover's search API to find person IDs by name and type
+// makeHardcoverRequest is a helper function to make GraphQL requests to Hardcover API
+func makeHardcoverRequest(query string, variables map[string]interface{}) ([]byte, error) {
+	payload := map[string]interface{}{
+		"query":     query,
+		"variables": variables,
+	}
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal query: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %v", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("GraphQL query error: %s - %s", resp.Status, string(body))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %v", err)
+	}
+
+	debugLog("GraphQL response: %s", string(body))
+	return body, nil
+}
+
+func searchPersonIDs(name, personType string, limit int) ([]int, error) {
+	query := `
+	query SearchPeople($query: String!, $queryType: String, $perPage: Int) {
+		search(
+			query: $query
+			query_type: $queryType
+			per_page: $perPage
+		) {
+			error
+			ids
+			query_type
+		}
+	}`
+
+	variables := map[string]interface{}{
+		"query":     name,
+		"queryType": personType,
+		"perPage":   limit,
+	}
+
+	resp, err := makeHardcoverRequest(query, variables)
+	if err != nil {
+		return nil, fmt.Errorf("search API request failed: %v", err)
+	}
+
+	var searchResp SearchAPIResponse
+	if err := json.Unmarshal(resp, &searchResp); err != nil {
+		return nil, fmt.Errorf("failed to parse search response: %v", err)
+	}
+
+	if len(searchResp.Errors) > 0 {
+		return nil, fmt.Errorf("GraphQL errors: %v", searchResp.Errors)
+	}
+
+	if searchResp.Data.Search.Error != nil {
+		return nil, fmt.Errorf("search API error: %s", *searchResp.Data.Search.Error)
+	}
+
+	// Convert json.Number to int
+	var ids []int
+	for _, jsonNum := range searchResp.Data.Search.IDs {
+		id, err := jsonNum.Int64()
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert ID to integer: %v", err)
+		}
+		ids = append(ids, int(id))
+	}
+
+	return ids, nil
+}
+
+// searchAuthors searches for authors by name using the search API
+func searchAuthors(name string, limit int) ([]PersonSearchResult, error) {
+	// First, use the search API to get author IDs
+	ids, err := searchPersonIDs(name, "author", limit)
+	if err != nil {
+		return nil, fmt.Errorf("author search failed: %v", err)
+	}
+
+	if len(ids) == 0 {
+		return []PersonSearchResult{}, nil
+	}
+
+	// Then fetch full details for those IDs
+	query := `
+	query GetAuthorsByIDs($ids: [Int!]!) {
+		authors(
+			where: {
+				id: { _in: $ids }
+			}
+		) {
+			id
+			name
+			books_count
+			bio
+			canonical_id
+		}
+	}`
+
+	variables := map[string]interface{}{
+		"ids": ids,
+	}
+
+	result, err := executePersonSearch(query, variables)
+	if err != nil {
+		return nil, fmt.Errorf("author details fetch failed: %v", err)
+	}
+
+	// Add canonical flag and sort to match the search result order
+	for i := range result {
+		result[i].IsCanonical = result[i].CanonicalID == nil
+	}
+
+	// Sort to match the search result order
+	sortedResult := make([]PersonSearchResult, 0, len(result))
+	for _, id := range ids {
+		for _, person := range result {
+			if person.ID == id {
+				sortedResult = append(sortedResult, person)
+				break
+			}
+		}
+	}
+
+	return sortedResult, nil
+}
+
+// searchNarrators searches for narrators by name using the search API
+func searchNarrators(name string, limit int) ([]PersonSearchResult, error) {
+	// First, use the search API to get narrator IDs
+	ids, err := searchPersonIDs(name, "narrator", limit)
+	if err != nil {
+		return nil, fmt.Errorf("narrator search failed: %v", err)
+	}
+
+	if len(ids) == 0 {
+		return []PersonSearchResult{}, nil
+	}
+
+	// Then fetch full details for those IDs, filtering for those with narrator contributions
+	query := `
+	query GetNarratorsByIDs($ids: [Int!]!) {
+		authors(
+			where: {
+				id: { _in: $ids }
+				contributions: {
+					contribution: { _eq: "narrator" }
+				}
+			}
+		) {
+			id
+			name
+			books_count
+			bio
+			canonical_id
+		}
+	}`
+
+	variables := map[string]interface{}{
+		"ids": ids,
+	}
+
+	result, err := executePersonSearch(query, variables)
+	if err != nil {
+		return nil, fmt.Errorf("narrator details fetch failed: %v", err)
+	}
+
+	// Add canonical flag and sort to match the search result order
+	for i := range result {
+		result[i].IsCanonical = result[i].CanonicalID == nil
+	}
+
+	// Sort to match the search result order
+	sortedResult := make([]PersonSearchResult, 0, len(result))
+	for _, id := range ids {
+		for _, person := range result {
+			if person.ID == id {
+				sortedResult = append(sortedResult, person)
+				break
+			}
+		}
+	}
+
+	return sortedResult, nil
+}
+
+// searchPublishers searches for publishers by name using the search API
+func searchPublishers(name string, limit int) ([]PublisherSearchResult, error) {
+	// First, use the search API to get publisher IDs
+	ids, err := searchPersonIDs(name, "publisher", limit)
+	if err != nil {
+		return nil, fmt.Errorf("publisher search failed: %v", err)
+	}
+
+	if len(ids) == 0 {
+		return []PublisherSearchResult{}, nil
+	}
+
+	// Then fetch full details for those IDs
+	query := `
+	query GetPublishersByIDs($ids: [bigint!]!) {
+		publishers(
+			where: {
+				id: { _in: $ids }
+			}
+		) {
+			id
+			name
+			editions_count
+			canonical_id
+		}
+	}`
+
+	variables := map[string]interface{}{
+		"ids": ids,
+	}
+
+	resp, err := makeHardcoverRequest(query, variables)
+	if err != nil {
+		return nil, fmt.Errorf("publisher details fetch failed: %v", err)
+	}
+
+	var result PublisherSearchResponse
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %v", err)
+	}
+
+	if len(result.Errors) > 0 {
+		return nil, fmt.Errorf("GraphQL errors: %v", result.Errors)
+	}
+
+	// Add canonical flag and sort to match the search result order
+	for i := range result.Data.Publishers {
+		result.Data.Publishers[i].IsCanonical = result.Data.Publishers[i].CanonicalID == nil
+	}
+
+	// Sort to match the search result order
+	sortedResult := make([]PublisherSearchResult, 0, len(result.Data.Publishers))
+	for _, id := range ids {
+		for _, publisher := range result.Data.Publishers {
+			if publisher.ID == id {
+				sortedResult = append(sortedResult, publisher)
+				break
+			}
+		}
+	}
+
+	return sortedResult, nil
+}
+
+// executePersonSearch is a helper function for author/narrator searches
+func executePersonSearch(query string, variables map[string]interface{}) ([]PersonSearchResult, error) {
+	resp, err := makeHardcoverRequest(query, variables)
+	if err != nil {
+		return nil, fmt.Errorf("person search request failed: %v", err)
+	}
+
+	var result PersonSearchResponse
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %v", err)
+	}
+
+	if len(result.Errors) > 0 {
+		return nil, fmt.Errorf("GraphQL errors: %v", result.Errors)
+	}
+
+	return result.Data.Authors, nil
+}
+
+// getPersonByID retrieves a specific person (author/narrator) by ID
+func getPersonByID(id int) (*PersonSearchResult, error) {
+	query := `
+	query GetPersonByID($id: Int!) {
+		authors(where: { id: { _eq: $id } }) {
+			id
+			name
+			books_count
+			bio
+			canonical_id
+		}
+	}`
+
+	variables := map[string]interface{}{
+		"id": id,
+	}
+
+	result, err := executePersonSearch(query, variables)
+	if err != nil {
+		return nil, fmt.Errorf("person lookup failed: %v", err)
+	}
+
+	if len(result) == 0 {
+		return nil, fmt.Errorf("person with ID %d not found", id)
+	}
+
+	person := result[0]
+	person.IsCanonical = person.CanonicalID == nil
+	return &person, nil
+}
+
+// getPublisherByID retrieves a specific publisher by ID
+func getPublisherByID(id int) (*PublisherSearchResult, error) {
+	query := `
+	query GetPublisherByID($id: bigint!) {
+		publishers(where: { id: { _eq: $id } }) {
+			id
+			name
+			editions_count
+			canonical_id
+		}
+	}`
+
+	variables := map[string]interface{}{
+		"id": id,
+	}
+
+	resp, err := makeHardcoverRequest(query, variables)
+	if err != nil {
+		return nil, fmt.Errorf("publisher lookup request failed: %v", err)
+	}
+
+	var result PublisherSearchResponse
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %v", err)
+	}
+
+	if len(result.Errors) > 0 {
+		return nil, fmt.Errorf("GraphQL errors: %v", result.Errors)
+	}
+
+	if len(result.Data.Publishers) == 0 {
+		return nil, fmt.Errorf("publisher with ID %d not found", id)
+	}
+
+	publisher := result.Data.Publishers[0]
+	publisher.IsCanonical = publisher.CanonicalID == nil
+	return &publisher, nil
+}
+
+// uploadImageToHardcover uploads an image from URL to Hardcover
+func uploadImageToHardcover(imageURL string, bookID int) (int, error) {
+	// Check if we're in dry run mode
+	if getDryRun() {
+		debugLog("DRY RUN: Would upload image URL: %s for book ID: %d", imageURL, bookID)
+		return 999999, nil // Return a fake ID for dry run
+	}
+
+	mutation := `
+	mutation InsertImage($image: ImageInput!) {
+		insert_image(image: $image) {
+			id
+			image {
+				id
+				url
+				imageable_id
+				imageable_type
+			}
+		}
+	}`
+
+	variables := map[string]interface{}{
+		"image": map[string]interface{}{
+			"url":            imageURL,
+			"imageable_type": "Book",
+			"imageable_id":   bookID,
+		},
+	}
+
+	resp, err := makeHardcoverRequest(mutation, variables)
+	if err != nil {
+		return 0, fmt.Errorf("image upload request failed: %v", err)
+	}
+
+	var result struct {
+		Data struct {
+			InsertImage struct {
+				ID    int `json:"id"`
+				Image struct {
+					ID            int    `json:"id"`
+					URL           string `json:"url"`
+					ImageableID   int    `json:"imageable_id"`
+					ImageableType string `json:"imageable_type"`
+				} `json:"image"`
+			} `json:"insert_image"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return 0, fmt.Errorf("failed to parse response: %v", err)
+	}
+
+	if len(result.Errors) > 0 {
+		return 0, fmt.Errorf("GraphQL errors: %v", result.Errors)
+	}
+
+	if result.Data.InsertImage.Image.ID == 0 {
+		return 0, fmt.Errorf("image upload failed: no ID returned")
+	}
+
+	return result.Data.InsertImage.Image.ID, nil
+}
+
+// isHardcoverAssetURL checks if the image URL is already from Hardcover's asset domain
+// Returns: isHardcoverAsset (bool), skipUpload (bool), error
+func isHardcoverAssetURL(imageURL string) (bool, bool, error) {
+	if imageURL == "" {
+		return false, false, nil
+	}
+
+	// Check if URL is from Hardcover's exact assets domain
+	if strings.HasPrefix(imageURL, "https://assets.hardcover.app/") || strings.HasPrefix(imageURL, "http://assets.hardcover.app/") {
+		debugLog("Image URL is already from Hardcover assets domain: %s", imageURL)
+		return true, true, nil
+	}
+
+	debugLog("Image URL is not from Hardcover assets domain, will upload: %s", imageURL)
+	return false, false, nil
 }

@@ -1,0 +1,11 @@
+{
+  "book_id": 123456,
+  "title": "Example Audiobook",
+  "image_url": "https://m.media-amazon.com/images/I/51example.jpg",
+  "asin": "B01EXAMPLE",
+  "author_ids": [12345, 67890],
+  "narrator_ids": [54321, 98765],
+  "publisher_id": 999,
+  "release_date": "2024-01-15",
+  "audio_seconds": 53357
+}

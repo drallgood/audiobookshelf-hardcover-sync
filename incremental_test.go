@@ -33,7 +33,7 @@ func TestSyncStateManagement(t *testing.T) {
 	now := time.Now().UnixMilli()
 	state.LastSyncTimestamp = now
 	state.LastFullSync = now
-	
+
 	err = saveSyncState(state)
 	if err != nil {
 		t.Fatalf("Expected no error saving state, got: %v", err)
@@ -57,11 +57,11 @@ func TestSyncStateManagement(t *testing.T) {
 
 func TestShouldPerformFullSync(t *testing.T) {
 	tests := []struct {
-		name           string
-		forceFullSync  string
-		lastFullSync   int64
-		expected       bool
-		description    string
+		name          string
+		forceFullSync string
+		lastFullSync  int64
+		expected      bool
+		description   string
 	}{
 		{
 			name:          "Force full sync enabled",
@@ -138,7 +138,7 @@ func TestGetStateFilePath(t *testing.T) {
 			// Set up environment variable
 			oldVal := os.Getenv("SYNC_STATE_FILE")
 			defer os.Setenv("SYNC_STATE_FILE", oldVal)
-			
+
 			if tt.envValue != "" {
 				os.Setenv("SYNC_STATE_FILE", tt.envValue)
 			} else {
@@ -186,7 +186,7 @@ func TestIncrementalSyncMode(t *testing.T) {
 			// Set up environment variable
 			oldVal := os.Getenv("INCREMENTAL_SYNC_MODE")
 			defer os.Setenv("INCREMENTAL_SYNC_MODE", oldVal)
-			
+
 			if tt.envValue != "" {
 				os.Setenv("INCREMENTAL_SYNC_MODE", tt.envValue)
 			} else {
@@ -204,25 +204,25 @@ func TestIncrementalSyncMode(t *testing.T) {
 func TestTimestampThreshold(t *testing.T) {
 	now := time.Now()
 	baseTimestamp := now.Add(-24 * time.Hour).UnixMilli() // 24 hours ago
-	
+
 	state := &SyncState{
 		LastSyncTimestamp: baseTimestamp,
-		Version:          StateVersion,
+		Version:           StateVersion,
 	}
-	
+
 	threshold := getTimestampThreshold(state)
-	
+
 	// The threshold should be slightly before the base timestamp (buffer of 5 minutes)
 	expectedThreshold := baseTimestamp - (5 * 60 * 1000) // 5 minutes in milliseconds
-	
+
 	if threshold != expectedThreshold {
 		t.Errorf("Expected threshold %d, got %d", expectedThreshold, threshold)
 	}
-	
+
 	// Test with zero timestamp
 	zeroState := &SyncState{
 		LastSyncTimestamp: 0,
-		Version:          StateVersion,
+		Version:           StateVersion,
 	}
 	zeroThreshold := getTimestampThreshold(zeroState)
 	if zeroThreshold != 0 {

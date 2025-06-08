@@ -705,3 +705,288 @@ func TestProgressThresholdCalculation(t *testing.T) {
 		})
 	}
 }
+
+func TestUploadImageToHardcover_DryRun(t *testing.T) {
+	// Save current DRY_RUN env var
+	oldDryRun := os.Getenv("DRY_RUN")
+	defer func() {
+		if oldDryRun == "" {
+			os.Unsetenv("DRY_RUN")
+		} else {
+			os.Setenv("DRY_RUN", oldDryRun)
+		}
+	}()
+
+	// Test with DRY_RUN=true
+	os.Setenv("DRY_RUN", "true")
+
+	testURL := "https://example.com/test-image.jpg"
+	testBookID := 431810
+
+	id, err := uploadImageToHardcover(testURL, testBookID)
+
+	// Should not return an error
+	if err != nil {
+		t.Errorf("Expected no error in dry run mode, got: %v", err)
+	}
+
+	// Should return the fake ID
+	if id != 999999 {
+		t.Errorf("Expected fake ID 999999 in dry run mode, got: %d", id)
+	}
+
+	// Test with DRY_RUN=false (should fail without valid token)
+	os.Setenv("DRY_RUN", "false")
+
+	// Save and set a dummy token to avoid empty token errors
+	oldToken := os.Getenv("HARDCOVER_TOKEN")
+	os.Setenv("HARDCOVER_TOKEN", "dummy-token")
+	defer func() {
+		if oldToken == "" {
+			os.Unsetenv("HARDCOVER_TOKEN")
+		} else {
+			os.Setenv("HARDCOVER_TOKEN", oldToken)
+		}
+	}()
+
+	// Use same test book ID as above
+	_, err = uploadImageToHardcover(testURL, testBookID)
+
+	// Should return an error when not in dry run mode (because API call will fail)
+	if err == nil {
+		t.Error("Expected error when not in dry run mode with dummy token, got nil")
+	}
+}
+
+func TestUploadImageToHardcover_DryRunVariations(t *testing.T) {
+	// Save current DRY_RUN env var
+	oldDryRun := os.Getenv("DRY_RUN")
+	defer func() {
+		if oldDryRun == "" {
+			os.Unsetenv("DRY_RUN")
+		} else {
+			os.Setenv("DRY_RUN", oldDryRun)
+		}
+	}()
+
+	testURL := "https://example.com/test-image.jpg"
+	testBookID := 431810
+
+	// Test different variations of DRY_RUN values that should enable dry run
+	dryRunValues := []string{"true", "TRUE", "1", "yes", "YES"}
+
+	for _, value := range dryRunValues {
+		t.Run("DRY_RUN="+value, func(t *testing.T) {
+			os.Setenv("DRY_RUN", value)
+
+			id, err := uploadImageToHardcover(testURL, testBookID)
+
+			if err != nil {
+				t.Errorf("Expected no error in dry run mode with DRY_RUN=%s, got: %v", value, err)
+			}
+
+			if id != 999999 {
+				t.Errorf("Expected fake ID 999999 in dry run mode with DRY_RUN=%s, got: %d", value, id)
+			}
+		})
+	}
+}
+
+func TestExecuteImageMutation_DryRun(t *testing.T) {
+	// Save current DRY_RUN env var
+	oldDryRun := os.Getenv("DRY_RUN")
+	defer func() {
+		if oldDryRun == "" {
+			os.Unsetenv("DRY_RUN")
+		} else {
+			os.Setenv("DRY_RUN", oldDryRun)
+		}
+	}()
+
+	// Test with DRY_RUN=true
+	os.Setenv("DRY_RUN", "true")
+
+	testPayload := map[string]interface{}{
+		"query": "mutation InsertImage($image: ImageInput!) { ... }",
+		"variables": map[string]interface{}{
+			"image": map[string]interface{}{
+				"url":            "https://example.com/test-image.jpg",
+				"imageable_type": "Book",
+				"imageable_id":   123456,
+			},
+		},
+	}
+
+	id, err := executeImageMutation(testPayload)
+
+	// Should not return an error
+	if err != nil {
+		t.Errorf("Expected no error in dry run mode, got: %v", err)
+	}
+
+	// Should return the fake ID
+	if id != 888888 {
+		t.Errorf("Expected fake ID 888888 in dry run mode, got: %d", id)
+	}
+
+	// Test with DRY_RUN=false (should fail without valid token/API call)
+	os.Setenv("DRY_RUN", "false")
+
+	// This should fail because we're not in dry run mode and don't have a valid setup
+	_, err = executeImageMutation(testPayload)
+	if err == nil {
+		t.Error("Expected error when not in dry run mode without valid API setup")
+	}
+}
+
+func TestExecuteEditionMutation_DryRun(t *testing.T) {
+	// Save current DRY_RUN env var
+	oldDryRun := os.Getenv("DRY_RUN")
+	defer func() {
+		if oldDryRun == "" {
+			os.Unsetenv("DRY_RUN")
+		} else {
+			os.Setenv("DRY_RUN", oldDryRun)
+		}
+	}()
+
+	// Test with DRY_RUN=true
+	os.Setenv("DRY_RUN", "true")
+
+	testPayload := map[string]interface{}{
+		"query": "mutation CreateEdition($bookId: Int!, $edition: EditionInput!) { ... }",
+		"variables": map[string]interface{}{
+			"bookId": 123456,
+			"edition": map[string]interface{}{
+				"title": "Test Book",
+				"asin":  "B00TESTBOOK",
+			},
+		},
+	}
+
+	id, err := executeEditionMutation(testPayload)
+
+	// Should not return an error
+	if err != nil {
+		t.Errorf("Expected no error in dry run mode, got: %v", err)
+	}
+
+	// Should return the fake ID
+	if id != 777777 {
+		t.Errorf("Expected fake ID 777777 in dry run mode, got: %d", id)
+	}
+
+	// Test with DRY_RUN=false (should fail without valid token/API call)
+	os.Setenv("DRY_RUN", "false")
+
+	// This should fail because we're not in dry run mode and don't have a valid setup
+	_, err = executeEditionMutation(testPayload)
+	if err == nil {
+		t.Error("Expected error when not in dry run mode without valid API setup")
+	}
+}
+
+func TestCreateHardcoverEdition_DryRun(t *testing.T) {
+	// Save current DRY_RUN env var
+	oldDryRun := os.Getenv("DRY_RUN")
+	defer func() {
+		if oldDryRun == "" {
+			os.Unsetenv("DRY_RUN")
+		} else {
+			os.Setenv("DRY_RUN", oldDryRun)
+		}
+	}()
+
+	// Test with DRY_RUN=true
+	os.Setenv("DRY_RUN", "true")
+
+	testInput := EditionCreatorInput{
+		BookID:      123456,
+		Title:       "Test Audiobook",
+		ImageURL:    "https://example.com/test-cover.jpg",
+		ASIN:        "B00TESTBOOK",
+		AuthorIDs:   []int{11111, 22222},
+		NarratorIDs: []int{33333},
+		PublisherID: 44444,
+		ReleaseDate: "2024-01-15",
+		AudioLength: 3600,
+	}
+
+	result, err := CreateHardcoverEdition(testInput)
+
+	// Should not return an error
+	if err != nil {
+		t.Errorf("Expected no error in dry run mode, got: %v", err)
+	}
+
+	// Should return success with fake IDs
+	if result == nil {
+		t.Error("Expected result to be non-nil in dry run mode")
+	} else {
+		if !result.Success {
+			t.Errorf("Expected success=true in dry run mode, got: %t", result.Success)
+		}
+		if result.ImageID != 888888 {
+			t.Errorf("Expected fake ImageID 888888 in dry run mode, got: %d", result.ImageID)
+		}
+		if result.EditionID != 777777 {
+			t.Errorf("Expected fake EditionID 777777 in dry run mode, got: %d", result.EditionID)
+		}
+		if result.Error != "" {
+			t.Errorf("Expected no error in dry run mode, got: %s", result.Error)
+		}
+	}
+
+	t.Logf("✅ Dry run edition creation result: %+v", result)
+}
+
+func TestCreateHardcoverEdition_DryRun_NoImage(t *testing.T) {
+	// Save current DRY_RUN env var
+	oldDryRun := os.Getenv("DRY_RUN")
+	defer func() {
+		if oldDryRun == "" {
+			os.Unsetenv("DRY_RUN")
+		} else {
+			os.Setenv("DRY_RUN", oldDryRun)
+		}
+	}()
+
+	// Test with DRY_RUN=true and no image URL
+	os.Setenv("DRY_RUN", "true")
+
+	testInput := EditionCreatorInput{
+		BookID:      123456,
+		Title:       "Test Audiobook Without Image",
+		ImageURL:    "", // No image URL
+		ASIN:        "B00TESTBOOK",
+		AuthorIDs:   []int{11111},
+		NarratorIDs: []int{33333},
+		PublisherID: 44444,
+		ReleaseDate: "2024-01-15",
+		AudioLength: 3600,
+	}
+
+	result, err := CreateHardcoverEdition(testInput)
+
+	// Should not return an error
+	if err != nil {
+		t.Errorf("Expected no error in dry run mode with no image, got: %v", err)
+	}
+
+	// Should return success with fake edition ID and 0 image ID
+	if result == nil {
+		t.Error("Expected result to be non-nil in dry run mode")
+	} else {
+		if !result.Success {
+			t.Errorf("Expected success=true in dry run mode, got: %t", result.Success)
+		}
+		if result.ImageID != 0 {
+			t.Errorf("Expected ImageID 0 in dry run mode with no image, got: %d", result.ImageID)
+		}
+		if result.EditionID != 777777 {
+			t.Errorf("Expected fake EditionID 777777 in dry run mode, got: %d", result.EditionID)
+		}
+	}
+
+	t.Logf("✅ Dry run edition creation (no image) result: %+v", result)
+}
