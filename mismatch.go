@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -160,6 +161,40 @@ func saveMismatchesJSONFile() error {
 	return createEditionReadyMismatchFiles(dirPath)
 }
 
+// cleanupOldMismatchFiles removes old JSON files from the mismatch directory
+// to prevent accumulation of outdated data
+func cleanupOldMismatchFiles(dirPath string) error {
+	files, err := os.ReadDir(dirPath)
+	if err != nil {
+		// Directory doesn't exist or can't be read, no cleanup needed
+		return nil
+	}
+
+	deletedCount := 0
+	for _, file := range files {
+		if file.IsDir() {
+			continue // Skip subdirectories
+		}
+
+		// Only delete JSON files to avoid accidentally removing other files
+		if strings.HasSuffix(strings.ToLower(file.Name()), ".json") {
+			filePath := filepath.Join(dirPath, file.Name())
+			if err := os.Remove(filePath); err != nil {
+				log.Printf("Warning: Failed to remove old mismatch file %s: %v", filePath, err)
+			} else {
+				deletedCount++
+				debugLog("Removed old mismatch file: %s", file.Name())
+			}
+		}
+	}
+
+	if deletedCount > 0 {
+		log.Printf("🧹 Cleaned up %d old mismatch JSON files from %s", deletedCount, dirPath)
+	}
+
+	return nil
+}
+
 // createEditionReadyMismatchFiles saves mismatches as edition-ready JSON files
 // These files can be used directly with the edition creation process
 func createEditionReadyMismatchFiles(dirPath string) error {
@@ -172,6 +207,13 @@ func createEditionReadyMismatchFiles(dirPath string) error {
 		return fmt.Errorf("failed to create directory %s: %v", dirPath, err)
 	}
 
+	// Clean up old JSON files in the directory before creating new ones
+	err := cleanupOldMismatchFiles(dirPath)
+	if err != nil {
+		log.Printf("Warning: Failed to clean up old mismatch files: %v", err)
+		// Continue processing even if cleanup fails
+	}
+
 	// Save each mismatch as an edition-ready JSON file
 	savedCount := 0
 	for i, mismatch := range bookMismatches {
@@ -180,7 +222,7 @@ func createEditionReadyMismatchFiles(dirPath string) error {
 		if len(safeTitle) > 50 {
 			safeTitle = safeTitle[:50] // Limit filename length
 		}
-		
+
 		fileName := fmt.Sprintf("%03d_%s.json", i+1, safeTitle)
 		filePath := filepath.Join(dirPath, fileName)
 
@@ -205,7 +247,7 @@ func createEditionReadyMismatchFiles(dirPath string) error {
 
 	log.Printf("🏗️  Edition-ready files saved to directory: %s", dirPath)
 	log.Printf("📊 Successfully saved: %d/%d edition creation JSON files", savedCount, len(bookMismatches))
-	
+
 	if savedCount < len(bookMismatches) {
 		log.Printf("⚠️  Some files failed to save - check warnings above")
 	}
@@ -219,22 +261,31 @@ func createEditionReadyMismatchFiles(dirPath string) error {
 func convertMismatchToEditionInput(mismatch BookMismatch) EditionCreatorInput {
 	// Create edition input with available data
 	input := EditionCreatorInput{
-		BookID:        0, // Will need to be filled manually - requires book lookup/creation
+		BookID:        0, // Will be parsed from mismatch.BookID if available
 		Title:         mismatch.Title,
 		Subtitle:      mismatch.Subtitle,
 		ImageURL:      "", // Will need to be determined from ASIN if available
 		ASIN:          mismatch.ASIN,
-		ISBN10:        "", // Will need to be extracted from ISBN if available
-		ISBN13:        "", // Will need to be extracted from ISBN if available
+		ISBN10:        "",      // Will need to be extracted from ISBN if available
+		ISBN13:        "",      // Will need to be extracted from ISBN if available
 		AuthorIDs:     []int{}, // Will attempt smart lookup
 		NarratorIDs:   []int{}, // Will attempt smart lookup
-		PublisherID:   0, // Will attempt smart lookup
+		PublisherID:   0,       // Will attempt smart lookup
 		ReleaseDate:   mismatch.ReleaseDate,
 		AudioLength:   mismatch.DurationSeconds,
 		EditionFormat: "Audible Audio", // Default for audiobooks
-		EditionInfo:   "", // Enhanced info will be added
-		LanguageID:    1, // Default to English
-		CountryID:     1, // Default to USA
+		EditionInfo:   "",              // Enhanced info will be added
+		LanguageID:    1,               // Default to English
+		CountryID:     1,               // Default to USA
+	}
+
+	// Parse BookID from string if available
+	if mismatch.BookID != "" {
+		if bookID, err := strconv.Atoi(mismatch.BookID); err == nil {
+			input.BookID = bookID
+		} else {
+			debugLog("Failed to parse BookID '%s' as integer: %v", mismatch.BookID, err)
+		}
 	}
 
 	// Generate Audible image URL from ASIN if available
@@ -246,7 +297,7 @@ func convertMismatchToEditionInput(mismatch BookMismatch) EditionCreatorInput {
 	if mismatch.ISBN != "" {
 		isbn := strings.ReplaceAll(mismatch.ISBN, "-", "")
 		isbn = strings.ReplaceAll(isbn, " ", "")
-		
+
 		if len(isbn) == 10 {
 			input.ISBN10 = isbn
 		} else if len(isbn) == 13 {
@@ -276,7 +327,7 @@ func convertMismatchToEditionInput(mismatch BookMismatch) EditionCreatorInput {
 		}
 	}
 
-	// Smart narrator processing  
+	// Smart narrator processing
 	if mismatch.Narrator != "" {
 		narratorIDs, narratorMsg := processNarratorsWithLookup(mismatch.Narrator)
 		input.NarratorIDs = narratorIDs
@@ -310,7 +361,7 @@ func convertMismatchToEditionInput(mismatch BookMismatch) EditionCreatorInput {
 	if len(lookupErrors) > 0 {
 		infoSections = append(infoSections, fmt.Sprintf("LOOKUP NEEDED: %s", strings.Join(lookupErrors, "; ")))
 	}
-	
+
 	if len(infoSections) > 0 {
 		input.EditionInfo = strings.Join(infoSections, " | ")
 	}
@@ -352,7 +403,7 @@ func processAuthorsWithLookup(authorString string) ([]int, string) {
 
 	// Split multiple authors (common patterns: ", " and " and ")
 	var authorNames []string
-	
+
 	// First try splitting by ", " (most common)
 	if strings.Contains(authorString, ", ") {
 		authorNames = strings.Split(authorString, ", ")
@@ -379,7 +430,7 @@ func processAuthorsWithLookup(authorString string) ([]int, string) {
 		cleanName := strings.TrimSuffix(name, " PhD")
 		cleanName = strings.TrimSuffix(cleanName, " Ph.D")
 		cleanName = strings.TrimSuffix(cleanName, " Dr.")
-		
+
 		// Try searching for this author
 		authors, err := searchAuthors(cleanName, 3) // Limit to 3 to avoid too many results
 		if err != nil {
@@ -438,7 +489,7 @@ func processNarratorsWithLookup(narratorString string) ([]int, string) {
 
 	// Split multiple narrators (common patterns: ", " and " and ")
 	var narratorNames []string
-	
+
 	if strings.Contains(narratorString, ", ") {
 		narratorNames = strings.Split(narratorString, ", ")
 	} else if strings.Contains(narratorString, " and ") {
@@ -473,7 +524,7 @@ func processNarratorsWithLookup(narratorString string) ([]int, string) {
 				notFoundNames = append(notFoundNames, name)
 				continue
 			}
-			
+
 			if len(authors) > 0 {
 				topAuthor := authors[0]
 				messages = append(messages, fmt.Sprintf("'%s' found as author (ID: %d) - verify narrator role", name, topAuthor.ID))
@@ -543,7 +594,7 @@ func processPublisherWithLookup(publisherName string) (int, string) {
 	}
 
 	publisherName = strings.TrimSpace(publisherName)
-	
+
 	// Try searching for this publisher
 	publishers, err := searchPublishers(publisherName, 3)
 	if err != nil {
@@ -572,6 +623,6 @@ func processPublisherWithLookup(publisherName string) (int, string) {
 	if !topResult.IsCanonical {
 		canonicalNote = " (alias)"
 	}
-	
+
 	return 0, fmt.Sprintf("'%s' -> suggest %s (ID: %d%s)", publisherName, topResult.Name, topResult.ID, canonicalNote)
 }

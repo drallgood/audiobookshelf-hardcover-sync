@@ -583,11 +583,16 @@ func insertUserBookRead(userBookID int, progressSeconds int, isFinished bool) er
 		"variables": variables,
 	}
 
-	debugLog("Using insert_user_book_read with variables: %+v", variables)
+	debugLog("=== GraphQL Mutation: insert_user_book_read ===")
+	debugLog("Mutation variables: %+v", variables)
+	debugLog("Full mutation payload: %+v", payload)
+
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal insert_user_book_read payload: %v", err)
 	}
+
+	debugLog("Mutation request body: %s", string(payloadBytes))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -670,10 +675,17 @@ func markBookAsOwned(editionId string) error {
 		"variables": variables,
 	}
 
+	debugLog("=== GraphQL Mutation: edition_owned ===")
+	debugLog("Edition ID: %s (converted to int: %d)", editionId, toInt(editionId))
+	debugLog("Mutation variables: %+v", variables)
+	debugLog("Full mutation payload: %+v", payload)
+
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal edition_owned payload: %v", err)
 	}
+
+	debugLog("Mutation request body: %s", string(payloadBytes))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -693,8 +705,17 @@ func markBookAsOwned(editionId string) error {
 	}
 	defer resp.Body.Close()
 
+	debugLog("edition_owned response status: %d %s", resp.StatusCode, resp.Status)
+	debugLog("edition_owned response headers: %+v", resp.Header)
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %v", err)
+	}
+
+	debugLog("edition_owned raw response: %s", string(body))
+
 	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("edition_owned mutation error: %s - %s", resp.Status, string(body))
 	}
 
@@ -714,23 +735,27 @@ func markBookAsOwned(editionId string) error {
 		} `json:"errors"`
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response: %v", err)
-	}
-
 	if err := json.Unmarshal(body, &result); err != nil {
 		return fmt.Errorf("failed to parse response: %v", err)
 	}
 
 	if len(result.Errors) > 0 {
+		debugLog("GraphQL errors in edition_owned: %+v", result.Errors)
 		return fmt.Errorf("GraphQL errors: %v", result.Errors)
 	}
+
+	debugLog("edition_owned result data: %+v", result.Data)
 
 	if result.Data.Ownership.ID == nil {
 		debugLog("Book with edition_id=%s was not marked as owned (may already be owned)", editionId)
 	} else {
 		debugLog("Successfully marked book as owned: edition_id=%s, list_book_id=%d", editionId, *result.Data.Ownership.ID)
+		if result.Data.Ownership.ListBook != nil {
+			debugLog("Ownership details - ListBook ID: %d, Book ID: %d, Edition ID: %d",
+				result.Data.Ownership.ListBook.ID,
+				result.Data.Ownership.ListBook.BookID,
+				result.Data.Ownership.ListBook.EditionID)
+		}
 	}
 
 	return nil
@@ -1333,6 +1358,10 @@ func extractNarratorIDs(contributions []ContributionInfo) []int {
 // searchPersonIDs uses Hardcover's search API to find person IDs by name and type
 // makeHardcoverRequest is a helper function to make GraphQL requests to Hardcover API
 func makeHardcoverRequest(query string, variables map[string]interface{}) ([]byte, error) {
+	// Rate limiting: Hardcover API is limited to 60 requests per minute
+	// Add a delay between requests to avoid 429 errors
+	time.Sleep(1200 * time.Millisecond) // 1.2 seconds = 50 requests/minute (safe margin)
+
 	payload := map[string]interface{}{
 		"query":     query,
 		"variables": variables,
@@ -1360,6 +1389,20 @@ func makeHardcoverRequest(query string, variables map[string]interface{}) ([]byt
 		return nil, fmt.Errorf("request failed: %v", err)
 	}
 	defer resp.Body.Close()
+
+	// Handle rate limiting with exponential backoff
+	if resp.StatusCode == 429 {
+		debugLog("Rate limited (429), waiting 60 seconds before retry...")
+		time.Sleep(60 * time.Second)
+		
+		// Retry the request once
+		resp2, err2 := httpClient.Do(req)
+		if err2 != nil {
+			return nil, fmt.Errorf("retry request failed: %v", err2)
+		}
+		defer resp2.Body.Close()
+		resp = resp2
+	}
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
