@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -155,7 +156,23 @@ func saveMismatchesJSONFile() error {
 		return fmt.Errorf("failed to create directory %s: %v", dirPath, err)
 	}
 
-	// Save each mismatch as an individual JSON file
+	// Save each mismatch as an edition-ready JSON file
+	return createEditionReadyMismatchFiles(dirPath)
+}
+
+// createEditionReadyMismatchFiles saves mismatches as edition-ready JSON files
+// These files can be used directly with the edition creation process
+func createEditionReadyMismatchFiles(dirPath string) error {
+	if len(bookMismatches) == 0 {
+		return nil
+	}
+
+	// Create directory if it doesn't exist
+	if err := os.MkdirAll(dirPath, 0755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %v", dirPath, err)
+	}
+
+	// Save each mismatch as an edition-ready JSON file
 	savedCount := 0
 	for i, mismatch := range bookMismatches {
 		// Create a safe filename from title and index
@@ -167,10 +184,13 @@ func saveMismatchesJSONFile() error {
 		fileName := fmt.Sprintf("%03d_%s.json", i+1, safeTitle)
 		filePath := filepath.Join(dirPath, fileName)
 
-		// Convert single mismatch to JSON
-		jsonData, err := json.MarshalIndent(mismatch, "", "  ")
+		// Convert mismatch to EditionCreatorInput format
+		editionInput := convertMismatchToEditionInput(mismatch)
+
+		// Convert to JSON
+		jsonData, err := json.MarshalIndent(editionInput, "", "  ")
 		if err != nil {
-			log.Printf("Warning: Failed to marshal mismatch %d (%s): %v", i+1, mismatch.Title, err)
+			log.Printf("Warning: Failed to marshal edition input %d (%s): %v", i+1, mismatch.Title, err)
 			continue
 		}
 
@@ -183,14 +203,119 @@ func saveMismatchesJSONFile() error {
 		savedCount++
 	}
 
-	log.Printf("💾 Mismatches saved to directory: %s", dirPath)
-	log.Printf("📊 Successfully saved: %d/%d individual JSON files", savedCount, len(bookMismatches))
+	log.Printf("🏗️  Edition-ready files saved to directory: %s", dirPath)
+	log.Printf("📊 Successfully saved: %d/%d edition creation JSON files", savedCount, len(bookMismatches))
 	
 	if savedCount < len(bookMismatches) {
 		log.Printf("⚠️  Some files failed to save - check warnings above")
 	}
 
 	return nil
+}
+
+// convertMismatchToEditionInput converts a BookMismatch to EditionCreatorInput format
+// This enhanced version integrates existing lookup functions to provide better role identification
+// and potentially auto-populate IDs when found
+func convertMismatchToEditionInput(mismatch BookMismatch) EditionCreatorInput {
+	// Create edition input with available data
+	input := EditionCreatorInput{
+		BookID:        0, // Will need to be filled manually - requires book lookup/creation
+		Title:         mismatch.Title,
+		Subtitle:      mismatch.Subtitle,
+		ImageURL:      "", // Will need to be determined from ASIN if available
+		ASIN:          mismatch.ASIN,
+		ISBN10:        "", // Will need to be extracted from ISBN if available
+		ISBN13:        "", // Will need to be extracted from ISBN if available
+		AuthorIDs:     []int{}, // Will attempt smart lookup
+		NarratorIDs:   []int{}, // Will attempt smart lookup
+		PublisherID:   0, // Will attempt smart lookup
+		ReleaseDate:   mismatch.ReleaseDate,
+		AudioLength:   mismatch.DurationSeconds,
+		EditionFormat: "Audible Audio", // Default for audiobooks
+		EditionInfo:   "", // Enhanced info will be added
+		LanguageID:    1, // Default to English
+		CountryID:     1, // Default to USA
+	}
+
+	// Generate Audible image URL from ASIN if available
+	if mismatch.ASIN != "" {
+		input.ImageURL = fmt.Sprintf("https://m.media-amazon.com/images/I/51%s._SL500_.jpg", mismatch.ASIN)
+	}
+
+	// Extract ISBN-10 and ISBN-13 from the ISBN field
+	if mismatch.ISBN != "" {
+		isbn := strings.ReplaceAll(mismatch.ISBN, "-", "")
+		isbn = strings.ReplaceAll(isbn, " ", "")
+		
+		if len(isbn) == 10 {
+			input.ISBN10 = isbn
+		} else if len(isbn) == 13 {
+			input.ISBN13 = isbn
+		}
+	}
+
+	// Enhanced lookup logic using existing sophisticated search functions
+	var manualSteps []string
+	var lookupErrors []string
+
+	// Book ID lookup
+	if input.BookID == 0 {
+		manualSteps = append(manualSteps, "book_id: Search for existing book or create new one")
+	}
+
+	// Smart author processing
+	if mismatch.Author != "" {
+		authorIDs, authorMsg := processAuthorsWithLookup(mismatch.Author)
+		input.AuthorIDs = authorIDs
+		if authorMsg != "" {
+			if len(authorIDs) > 0 {
+				manualSteps = append(manualSteps, fmt.Sprintf("author_ids: %s", authorMsg))
+			} else {
+				lookupErrors = append(lookupErrors, fmt.Sprintf("author_ids: %s", authorMsg))
+			}
+		}
+	}
+
+	// Smart narrator processing  
+	if mismatch.Narrator != "" {
+		narratorIDs, narratorMsg := processNarratorsWithLookup(mismatch.Narrator)
+		input.NarratorIDs = narratorIDs
+		if narratorMsg != "" {
+			if len(narratorIDs) > 0 {
+				manualSteps = append(manualSteps, fmt.Sprintf("narrator_ids: %s", narratorMsg))
+			} else {
+				lookupErrors = append(lookupErrors, fmt.Sprintf("narrator_ids: %s", narratorMsg))
+			}
+		}
+	}
+
+	// Smart publisher processing
+	if mismatch.Publisher != "" {
+		publisherID, publisherMsg := processPublisherWithLookup(mismatch.Publisher)
+		input.PublisherID = publisherID
+		if publisherMsg != "" {
+			if publisherID > 0 {
+				manualSteps = append(manualSteps, fmt.Sprintf("publisher_id: %s", publisherMsg))
+			} else {
+				lookupErrors = append(lookupErrors, fmt.Sprintf("publisher_id: %s", publisherMsg))
+			}
+		}
+	}
+
+	// Build enhanced EditionInfo with smart lookup results
+	var infoSections []string
+	if len(manualSteps) > 0 {
+		infoSections = append(infoSections, fmt.Sprintf("VERIFY: %s", strings.Join(manualSteps, "; ")))
+	}
+	if len(lookupErrors) > 0 {
+		infoSections = append(infoSections, fmt.Sprintf("LOOKUP NEEDED: %s", strings.Join(lookupErrors, "; ")))
+	}
+	
+	if len(infoSections) > 0 {
+		input.EditionInfo = strings.Join(infoSections, " | ")
+	}
+
+	return input
 }
 
 // sanitizeFilename removes or replaces characters that are invalid in filenames
@@ -214,4 +339,239 @@ func sanitizeFilename(title string) string {
 		}
 	}
 	return result
+}
+
+// Smart lookup helper functions that integrate with existing search functionality
+
+// processAuthorsWithLookup attempts to find and validate authors using the existing search functions
+// Returns: found IDs (can be empty), message for EditionInfo
+func processAuthorsWithLookup(authorString string) ([]int, string) {
+	if authorString == "" {
+		return []int{}, ""
+	}
+
+	// Split multiple authors (common patterns: ", " and " and ")
+	var authorNames []string
+	
+	// First try splitting by ", " (most common)
+	if strings.Contains(authorString, ", ") {
+		authorNames = strings.Split(authorString, ", ")
+	} else if strings.Contains(authorString, " and ") {
+		// Split by " and " but be careful of names like "John and Jane Smith"
+		parts := strings.Split(authorString, " and ")
+		authorNames = parts
+	} else {
+		// Single author
+		authorNames = []string{authorString}
+	}
+
+	var foundIDs []int
+	var messages []string
+	var notFoundNames []string
+
+	for _, name := range authorNames {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+
+		// Remove common suffixes that might interfere with search
+		cleanName := strings.TrimSuffix(name, " PhD")
+		cleanName = strings.TrimSuffix(cleanName, " Ph.D")
+		cleanName = strings.TrimSuffix(cleanName, " Dr.")
+		
+		// Try searching for this author
+		authors, err := searchAuthors(cleanName, 3) // Limit to 3 to avoid too many results
+		if err != nil {
+			debugLog("Author search failed for '%s': %v", cleanName, err)
+			notFoundNames = append(notFoundNames, name)
+			continue
+		}
+
+		if len(authors) == 0 {
+			notFoundNames = append(notFoundNames, name)
+			continue
+		}
+
+		// Check for exact matches first
+		var exactMatch *PersonSearchResult
+		for _, author := range authors {
+			if strings.EqualFold(author.Name, name) || strings.EqualFold(author.Name, cleanName) {
+				exactMatch = &author
+				break
+			}
+		}
+
+		if exactMatch != nil {
+			foundIDs = append(foundIDs, exactMatch.ID)
+			canonicalNote := ""
+			if !exactMatch.IsCanonical {
+				canonicalNote = " (alias)"
+			}
+			messages = append(messages, fmt.Sprintf("Found %s (ID: %d%s)", exactMatch.Name, exactMatch.ID, canonicalNote))
+		} else {
+			// No exact match, provide search suggestion with top result
+			topResult := authors[0]
+			canonicalNote := ""
+			if !topResult.IsCanonical {
+				canonicalNote = " (alias)"
+			}
+			messages = append(messages, fmt.Sprintf("'%s' -> suggest %s (ID: %d%s)", name, topResult.Name, topResult.ID, canonicalNote))
+		}
+	}
+
+	// Add any names that weren't found
+	for _, name := range notFoundNames {
+		messages = append(messages, fmt.Sprintf("'%s' -> search manually", name))
+	}
+
+	resultMsg := strings.Join(messages, "; ")
+	return foundIDs, resultMsg
+}
+
+// processNarratorsWithLookup attempts to find and validate narrators, with smart role detection
+// Returns: found IDs (can be empty), message for EditionInfo
+func processNarratorsWithLookup(narratorString string) ([]int, string) {
+	if narratorString == "" {
+		return []int{}, ""
+	}
+
+	// Split multiple narrators (common patterns: ", " and " and ")
+	var narratorNames []string
+	
+	if strings.Contains(narratorString, ", ") {
+		narratorNames = strings.Split(narratorString, ", ")
+	} else if strings.Contains(narratorString, " and ") {
+		parts := strings.Split(narratorString, " and ")
+		narratorNames = parts
+	} else {
+		narratorNames = []string{narratorString}
+	}
+
+	var foundIDs []int
+	var messages []string
+	var notFoundNames []string
+
+	for _, name := range narratorNames {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+
+		// Remove common suffixes
+		cleanName := strings.TrimSuffix(name, " PhD")
+		cleanName = strings.TrimSuffix(cleanName, " Ph.D")
+		cleanName = strings.TrimSuffix(cleanName, " Dr.")
+
+		// First try searching as narrator
+		narrators, err := searchNarrators(cleanName, 3)
+		if err != nil {
+			debugLog("Narrator search failed for '%s': %v", cleanName, err)
+			// If narrator search fails, try as author (person might be narrator but listed as author)
+			authors, authorErr := searchAuthors(cleanName, 3)
+			if authorErr != nil {
+				notFoundNames = append(notFoundNames, name)
+				continue
+			}
+			
+			if len(authors) > 0 {
+				topAuthor := authors[0]
+				messages = append(messages, fmt.Sprintf("'%s' found as author (ID: %d) - verify narrator role", name, topAuthor.ID))
+			} else {
+				notFoundNames = append(notFoundNames, name)
+			}
+			continue
+		}
+
+		if len(narrators) == 0 {
+			// Try searching as author (some narrators might be listed primarily as authors)
+			authors, authorErr := searchAuthors(cleanName, 3)
+			if authorErr == nil && len(authors) > 0 {
+				topAuthor := authors[0]
+				canonicalNote := ""
+				if !topAuthor.IsCanonical {
+					canonicalNote = " (alias)"
+				}
+				messages = append(messages, fmt.Sprintf("'%s' found as author %s (ID: %d%s) - verify narrator role", name, topAuthor.Name, topAuthor.ID, canonicalNote))
+			} else {
+				notFoundNames = append(notFoundNames, name)
+			}
+			continue
+		}
+
+		// Check for exact matches first
+		var exactMatch *PersonSearchResult
+		for _, narrator := range narrators {
+			if strings.EqualFold(narrator.Name, name) || strings.EqualFold(narrator.Name, cleanName) {
+				exactMatch = &narrator
+				break
+			}
+		}
+
+		if exactMatch != nil {
+			foundIDs = append(foundIDs, exactMatch.ID)
+			canonicalNote := ""
+			if !exactMatch.IsCanonical {
+				canonicalNote = " (alias)"
+			}
+			messages = append(messages, fmt.Sprintf("Found narrator %s (ID: %d%s)", exactMatch.Name, exactMatch.ID, canonicalNote))
+		} else {
+			// No exact match, provide search suggestion
+			topResult := narrators[0]
+			canonicalNote := ""
+			if !topResult.IsCanonical {
+				canonicalNote = " (alias)"
+			}
+			messages = append(messages, fmt.Sprintf("'%s' -> suggest narrator %s (ID: %d%s)", name, topResult.Name, topResult.ID, canonicalNote))
+		}
+	}
+
+	// Add any names that weren't found
+	for _, name := range notFoundNames {
+		messages = append(messages, fmt.Sprintf("'%s' -> search manually", name))
+	}
+
+	resultMsg := strings.Join(messages, "; ")
+	return foundIDs, resultMsg
+}
+
+// processPublisherWithLookup attempts to find and validate publisher
+// Returns: found ID (0 if not found), message for EditionInfo
+func processPublisherWithLookup(publisherName string) (int, string) {
+	if publisherName == "" {
+		return 0, ""
+	}
+
+	publisherName = strings.TrimSpace(publisherName)
+	
+	// Try searching for this publisher
+	publishers, err := searchPublishers(publisherName, 3)
+	if err != nil {
+		debugLog("Publisher search failed for '%s': %v", publisherName, err)
+		return 0, fmt.Sprintf("'%s' -> search manually (search failed)", publisherName)
+	}
+
+	if len(publishers) == 0 {
+		return 0, fmt.Sprintf("'%s' -> search manually (no results)", publisherName)
+	}
+
+	// Check for exact matches first
+	for _, publisher := range publishers {
+		if strings.EqualFold(publisher.Name, publisherName) {
+			canonicalNote := ""
+			if !publisher.IsCanonical {
+				canonicalNote = " (alias)"
+			}
+			return publisher.ID, fmt.Sprintf("Found %s (ID: %d%s)", publisher.Name, publisher.ID, canonicalNote)
+		}
+	}
+
+	// No exact match, provide search suggestion with top result
+	topResult := publishers[0]
+	canonicalNote := ""
+	if !topResult.IsCanonical {
+		canonicalNote = " (alias)"
+	}
+	
+	return 0, fmt.Sprintf("'%s' -> suggest %s (ID: %d%s)", publisherName, topResult.Name, topResult.ID, canonicalNote)
 }

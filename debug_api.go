@@ -1,12 +1,12 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
-	"time"
+"context"
+"encoding/json"
+"fmt"
+"io"
+"net/http"
+"time"
 )
 
 // Test function to directly inspect AudiobookShelf API responses

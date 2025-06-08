@@ -33,6 +33,7 @@ go.work.sum
 
 main
 test-main
+test-build
 audiobookshelf-hardcover-sync
 audiobookshelf-openapi.json
 hardcover-schema.graphql

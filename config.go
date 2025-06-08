@@ -93,3 +93,10 @@ func getDryRun() bool {
 func getMismatchJSONFile() string {
 	return os.Getenv("MISMATCH_JSON_FILE")
 }
+
+// getEnableDebugAPI returns whether to enable debug API response analysis
+// Default: false (disable debug API analysis unless explicitly enabled)
+func getEnableDebugAPI() bool {
+	val := strings.ToLower(os.Getenv("DEBUG_MODE"))
+	return val == "true" || val == "1" || val == "yes"
+}

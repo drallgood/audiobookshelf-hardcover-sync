@@ -1,132 +1,101 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
+"encoding/json"
+"fmt"
+"strings"
 )
 
-// debugAPIResponse logs detailed information about API response values
-// to help identify unit conversion issues (milliseconds vs seconds)
+// debugAPIResponse analyzes API responses to help debug unit conversion issues
 func debugAPIResponse(endpoint string, body []byte) {
-	if !debugMode {
+	if !getEnableDebugAPI() {
 		return
 	}
-
+	
 	debugLog("=== API Response Debug for %s ===", endpoint)
-
-	// Try to parse as generic JSON to inspect raw values
-	var genericData map[string]interface{}
-	if err := json.Unmarshal(body, &genericData); err == nil {
-		debugLog("Raw JSON structure keys: %v", getMapKeys(genericData))
-
-		// Look for mediaProgress data
-		if mediaProgress, ok := genericData["mediaProgress"].([]interface{}); ok {
-			debugLog("Found mediaProgress array with %d items", len(mediaProgress))
-			for i, item := range mediaProgress {
-				if itemMap, ok := item.(map[string]interface{}); ok {
-					debugAPIProgressItem(fmt.Sprintf("mediaProgress[%d]", i), itemMap)
-				}
-			}
-		}
-
-		// Look for sessions data
-		if sessions, ok := genericData["sessions"].([]interface{}); ok {
-			debugLog("Found sessions array with %d items", len(sessions))
-			for i, session := range sessions {
-				if sessionMap, ok := session.(map[string]interface{}); ok {
-					debugAPIProgressItem(fmt.Sprintf("sessions[%d]", i), sessionMap)
-				}
-			}
-		}
-
-		// Look for direct session data (single item responses)
-		if _, hasCurrentTime := genericData["currentTime"]; hasCurrentTime {
-			debugAPIProgressItem("direct_session", genericData)
-		}
+	
+	// Try to parse as JSON and look for common time-related fields
+	var jsonData interface{}
+	if err := json.Unmarshal(body, &jsonData); err != nil {
+		debugLog("Failed to parse JSON response: %v", err)
+		return
 	}
-
-	debugLog("=== End API Response Debug ===")
-}
-
-// debugAPIProgressItem logs progress-related fields from an API response item
-func debugAPIProgressItem(itemName string, item map[string]interface{}) {
-	var currentTime, duration, totalDuration, progress float64
-	var hasCurrentTime, hasDuration, hasTotalDuration, hasProgress bool
-
-	if ct, ok := item["currentTime"].(float64); ok {
-		currentTime = ct
-		hasCurrentTime = true
-	}
-	if d, ok := item["duration"].(float64); ok {
-		duration = d
-		hasDuration = true
-	}
-	if td, ok := item["totalDuration"].(float64); ok {
-		totalDuration = td
-		hasTotalDuration = true
-	}
-	if p, ok := item["progress"].(float64); ok {
-		progress = p
-		hasProgress = true
-	}
-
-	debugLog("Item %s:", itemName)
-	if hasCurrentTime {
-		debugLog("  currentTime: %.2f (%.2f minutes, %.2f hours)",
-			currentTime, currentTime/60, currentTime/3600)
-
-		// Check if this might be in milliseconds
-		if currentTime > 1000 {
-			debugLog("  -> Potential milliseconds: %.2f seconds (%.2f minutes)",
-				currentTime/1000, currentTime/60000)
-		}
-	}
-	if hasDuration {
-		debugLog("  duration: %.2f (%.2f minutes, %.2f hours)",
-			duration, duration/60, duration/3600)
-	}
-	if hasTotalDuration {
-		debugLog("  totalDuration: %.2f (%.2f minutes, %.2f hours)",
-			totalDuration, totalDuration/60, totalDuration/3600)
-	}
-	if hasProgress {
-		debugLog("  progress: %.6f (%.2f%%)", progress, progress*100)
-	}
-
-	// Calculate progress ratio if we have the data
-	if hasCurrentTime && (hasDuration || hasTotalDuration) {
-		var calcDuration float64
-		if hasTotalDuration && totalDuration > 0 {
-			calcDuration = totalDuration
-		} else if hasDuration && duration > 0 {
-			calcDuration = duration
-		}
-
-		if calcDuration > 0 {
-			ratio := currentTime / calcDuration
-			debugLog("  calculated progress: %.6f (%.2f%%) from currentTime/duration",
-				ratio, ratio*100)
-
-			// Check if treating currentTime as milliseconds would make more sense
-			if currentTime > 1000 {
-				ratioFromMs := (currentTime / 1000) / calcDuration
-				debugLog("  if currentTime were milliseconds: %.6f (%.2f%%)",
-					ratioFromMs, ratioFromMs*100)
-
-				// Flag if the millisecond interpretation seems more reasonable
-				if ratioFromMs > 0.001 && ratioFromMs < 1.1 && (ratio > 1.1 || ratio < 0.001) {
-					debugLog("  *** UNIT MISMATCH DETECTED: currentTime appears to be in milliseconds ***")
-				}
-			}
+	
+	// Look for time-related fields in the response
+	timeFields := findTimeFields(jsonData, "")
+	if len(timeFields) > 0 {
+		debugLog("Found time-related fields in %s:", endpoint)
+		for _, field := range timeFields {
+			debugLog("  %s", field)
 		}
 	}
 }
 
-// Helper function to get keys from a map
-func getMapKeys(m map[string]interface{}) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
+// findTimeFields recursively searches for time-related fields in JSON data
+func findTimeFields(data interface{}, path string) []string {
+	var fields []string
+	
+	switch v := data.(type) {
+	case map[string]interface{}:
+		for key, value := range v {
+			newPath := key
+			if path != "" {
+				newPath = path + "." + key
+			}
+			
+			// Check if this field looks time-related
+			if isTimeField(key, value) {
+				fields = append(fields, fmt.Sprintf("%s: %v", newPath, value))
+			}
+			
+			// Recursively check nested objects
+			fields = append(fields, findTimeFields(value, newPath)...)
+		}
+	case []interface{}:
+		for i, item := range v {
+			newPath := fmt.Sprintf("%s[%d]", path, i)
+			fields = append(fields, findTimeFields(item, newPath)...)
+		}
 	}
-	return keys
+	
+	return fields
+}
+
+// isTimeField checks if a field looks like it contains time data
+func isTimeField(key string, value interface{}) bool {
+	lowerKey := strings.ToLower(key)
+	
+	// Check if field name suggests time data
+	timeKeywords := []string{
+		"time", "duration", "progress", "seconds", "minutes", "hours",
+		"current", "total", "elapsed", "remaining", "position",
+	}
+	
+	isTimeKey := false
+	for _, keyword := range timeKeywords {
+		if strings.Contains(lowerKey, keyword) {
+			isTimeKey = true
+			break
+		}
+	}
+	
+	if !isTimeKey {
+		return false
+	}
+	
+	// Check if value is numeric (could be time data)
+	switch v := value.(type) {
+	case float64:
+		// Check for suspicious values that might indicate unit conversion issues
+		if v > 100 && v < 100000 {
+			return true
+		}
+		return v > 0
+	case int:
+		return v > 0
+	case int64:
+		return v > 0
+	default:
+		return false
+	}
 }

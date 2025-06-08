@@ -260,14 +260,14 @@ func TestSaveMismatchesJSONFileIndividual(t *testing.T) {
 		}
 	}
 
-	// Verify file contents
+	// Verify file contents (now in EditionCreatorInput format)
 	firstFilePath := filepath.Join(tempDir, "001_Test_Book_One.json")
 	content, err := os.ReadFile(firstFilePath)
 	if err != nil {
 		t.Fatalf("Failed to read first file: %v", err)
 	}
 
-	var result BookMismatch
+	var result EditionCreatorInput
 	err = json.Unmarshal(content, &result)
 	if err != nil {
 		t.Fatalf("Failed to unmarshal JSON from file: %v", err)
@@ -277,8 +277,8 @@ func TestSaveMismatchesJSONFileIndividual(t *testing.T) {
 		t.Errorf("Expected title 'Test Book One', got %s", result.Title)
 	}
 
-	if result.DurationSeconds != 19800 {
-		t.Errorf("Expected duration seconds 19800, got %d", result.DurationSeconds)
+	if result.AudioLength != 19800 {
+		t.Errorf("Expected duration seconds 19800, got %d", result.AudioLength)
 	}
 
 	// Clean up
