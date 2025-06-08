@@ -66,7 +66,7 @@ func TestUnitConversionFix(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := convertTimeUnits(tt.currentTime, tt.totalDuration)
-			
+
 			// Use a small tolerance for floating point comparison
 			tolerance := 0.01
 			if abs(result-tt.expectedTime) > tolerance {
@@ -88,19 +88,19 @@ func TestProgressCalculationWithFixedConversion(t *testing.T) {
 	// Test the specific case from the log
 	currentTime := 42671.61
 	totalDuration := 42672.0
-	
+
 	result := convertTimeUnits(currentTime, totalDuration)
-	
+
 	// Should NOT be converted since it's a reasonable audiobook duration
 	if result != currentTime {
 		t.Errorf("Allegiant case: convertTimeUnits(%.2f, %.2f) = %.2f, expected %.2f (no conversion)",
 			currentTime, totalDuration, result, currentTime)
 	}
-	
+
 	// Test progress calculation
 	progress := calculateProgressWithConversion(currentTime, 0, totalDuration)
 	expectedProgress := currentTime / totalDuration // Should be very close to 1.0
-	
+
 	tolerance := 0.001
 	if abs(progress-expectedProgress) > tolerance {
 		t.Errorf("Progress calculation: got %.6f, expected %.6f", progress, expectedProgress)

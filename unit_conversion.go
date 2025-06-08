@@ -90,7 +90,7 @@ func convertProgressData(currentTime, duration, totalDuration float64) (float64,
 	if convertedCurrentTime != currentTime { // We did convert currentTime
 		// If currentTime was converted, check if duration fields should also be converted
 		// Use a more aggressive approach: if the ratio suggests unit mismatch, convert duration too
-		
+
 		// Check if duration values are also extremely large (> 50 hours)
 		if duration > 180000 { // > 50 hours in seconds, might be milliseconds
 			convertedDuration = duration / 1000.0
@@ -100,7 +100,7 @@ func convertProgressData(currentTime, duration, totalDuration float64) (float64,
 			convertedTotalDuration = totalDuration / 1000.0
 			debugLog("Also converted totalDuration %.2f -> %.2f seconds", totalDuration, convertedTotalDuration)
 		}
-		
+
 		// Additional check: if currentTime needed conversion but totalDuration is small,
 		// check if totalDuration should also be converted to maintain unit consistency
 		if totalDuration > 0 && totalDuration <= 180000 {
@@ -108,8 +108,8 @@ func convertProgressData(currentTime, duration, totalDuration float64) (float64,
 			testConvertedTotal := totalDuration / 1000.0
 			newRatio := convertedCurrentTime / testConvertedTotal
 			originalRatio := currentTime / totalDuration
-			
-			// If the original ratio was very high (> 50) and converting totalDuration 
+
+			// If the original ratio was very high (> 50) and converting totalDuration
 			// makes the ratio more reasonable (< 10), then convert totalDuration too
 			if originalRatio > 50.0 && newRatio > 0.1 && newRatio < 10.0 && testConvertedTotal > 0.1 {
 				convertedTotalDuration = testConvertedTotal
