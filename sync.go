@@ -357,9 +357,31 @@ func syncToHardcover(a Audiobook) error {
 				(existingProgressSeconds == 0 ||
 					math.Abs(float64(targetProgressSeconds-existingProgressSeconds)) > float64(progressThreshold))
 
-			// Check if owned flag needs updating
+			// Check if owned flag needs updating using proper ownership checking
 			targetOwned := getSyncOwned()
-			ownedChanged := targetOwned != existingOwned
+			var ownedChanged bool
+			var actualOwned bool
+
+			if targetOwned {
+				// Use proper ownership checking instead of unreliable user_books.owned field
+				bookIDInt := toInt(bookId)
+				var err error
+				actualOwned, _, err = isBookOwnedDirect(bookIDInt)
+				if err != nil {
+					debugLog("Warning: Failed to check actual ownership status for '%s': %v", a.Title, err)
+					// Fall back to existingOwned if ownership check fails
+					actualOwned = existingOwned
+				}
+				ownedChanged = targetOwned != actualOwned
+
+				if existingOwned != actualOwned {
+					debugLog("Ownership status mismatch for '%s': user_books.owned=%t, actual_owned_list=%t (using actual)",
+						a.Title, existingOwned, actualOwned)
+				}
+			} else {
+				// If sync owned is disabled, use the existing unreliable field for compatibility
+				ownedChanged = targetOwned != existingOwned
+			}
 
 			if statusChanged || progressChanged {
 				needsSync = true
@@ -367,7 +389,7 @@ func syncToHardcover(a Audiobook) error {
 					a.Title, statusChanged, existingStatusId, targetStatusId, progressChanged, existingProgressSeconds, targetProgressSeconds)
 			} else if ownedChanged {
 				// Handle owned flag change separately
-				if targetOwned && !existingOwned && existingEditionId > 0 {
+				if targetOwned && !actualOwned && existingEditionId > 0 {
 					// Need to mark as owned and we have an edition ID
 					debugLog("Book '%s' status/progress up-to-date but needs to be marked as owned (edition_id: %d)",
 						a.Title, existingEditionId)
@@ -376,7 +398,7 @@ func syncToHardcover(a Audiobook) error {
 					} else {
 						debugLog("Successfully marked book '%s' as owned", a.Title)
 					}
-				} else if targetOwned && !existingOwned && existingEditionId == 0 {
+				} else if targetOwned && !actualOwned && existingEditionId == 0 {
 					debugLog("Book '%s' needs to be marked as owned but no edition_id available - cannot use edition_owned mutation",
 						a.Title)
 				} else if !targetOwned && existingOwned {
@@ -409,10 +431,9 @@ func syncToHardcover(a Audiobook) error {
 		if editionId != "" {
 			userBookInput["edition_id"] = toInt(editionId)
 		}
-		if getSyncOwned() {
-			userBookInput["owned"] = true
-		}
+		// Note: ownership is handled via the "Owned" list, not user_books.owned field
 		debugLog("Creating new user book for '%s' by '%s' (Progress: %.6f) with status_id=%d, userBookInput=%+v", a.Title, a.Author, a.Progress, targetStatusId, userBookInput)
+
 		insertUserBookMutation := `
 		mutation InsertUserBook($object: UserBookCreateInput!) {
 		  insert_user_book(object: $object) {
@@ -423,7 +444,15 @@ func syncToHardcover(a Audiobook) error {
 		}`
 		variables := map[string]interface{}{"object": userBookInput}
 		payload := map[string]interface{}{"query": insertUserBookMutation, "variables": variables}
+
+		debugLog("=== GraphQL Mutation: insert_user_book ===")
+		debugLog("Book: '%s' by '%s'", a.Title, a.Author)
+		debugLog("Target status_id: %d, Progress: %.6f", targetStatusId, a.Progress)
+		debugLog("Mutation variables: %+v", variables)
+		debugLog("Full mutation payload: %+v", payload)
+
 		payloadBytes, _ := json.Marshal(payload)
+		debugLog("insert_user_book request body: %s", string(payloadBytes))
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		for attempt := 0; attempt < 3; attempt++ {
@@ -449,9 +478,13 @@ func syncToHardcover(a Audiobook) error {
 				time.Sleep(3 * time.Second)
 				continue
 			}
+			debugLog("insert_user_book response status: %d %s", resp.StatusCode, resp.Status)
+			debugLog("insert_user_book response headers: %+v", resp.Header)
 			if resp.StatusCode != 200 {
+				debugLog("insert_user_book non-200 response, headers: %+v", resp.Header)
 				continue
 			}
+
 			var result struct {
 				Data struct {
 					InsertUserBook struct {
@@ -463,14 +496,33 @@ func syncToHardcover(a Audiobook) error {
 						Error *string `json:"error"`
 					} `json:"insert_user_book"`
 				} `json:"data"`
+				Errors []struct {
+					Message string        `json:"message"`
+					Path    []interface{} `json:"path"`
+				} `json:"errors"`
 			}
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
+				debugLog("Failed to read response body: %v", err)
 				continue
 			}
+
+			// Log the raw response for debugging
+			debugLog("insert_user_book raw response: %s", string(body))
+
 			if err := json.Unmarshal(body, &result); err != nil {
+				debugLog("Failed to unmarshal response: %v", err)
 				continue
 			}
+
+			// Check for GraphQL errors first
+			if len(result.Errors) > 0 {
+				for _, gqlErr := range result.Errors {
+					debugLog("GraphQL error: %s (path: %v)", gqlErr.Message, gqlErr.Path)
+				}
+				return fmt.Errorf("GraphQL errors: %s", result.Errors[0].Message)
+			}
+
 			if result.Data.InsertUserBook.Error != nil {
 				debugLog("insert_user_book error: %s", *result.Data.InsertUserBook.Error)
 				return fmt.Errorf("insert_user_book error: %s", *result.Data.InsertUserBook.Error)
@@ -480,6 +532,19 @@ func syncToHardcover(a Audiobook) error {
 			if result.Data.InsertUserBook.UserBook.StatusID != targetStatusId {
 				debugLog("Warning: Hardcover returned status_id=%d, expected %d", result.Data.InsertUserBook.UserBook.StatusID, targetStatusId)
 			}
+
+			// Handle ownership marking if enabled and edition_id is available
+			if getSyncOwned() && editionId != "" {
+				debugLog("Marking newly created user book as owned (edition_id: %s)", editionId)
+				if err := markBookAsOwned(editionId); err != nil {
+					debugLog("Warning: Failed to mark book '%s' as owned: %v", a.Title, err)
+				} else {
+					debugLog("Successfully marked book '%s' as owned", a.Title)
+				}
+			} else if getSyncOwned() && editionId == "" {
+				debugLog("Warning: Cannot mark book '%s' as owned - no edition_id available", a.Title)
+			}
+
 			break
 		}
 		if userBookId == 0 {
@@ -502,6 +567,7 @@ func syncToHardcover(a Audiobook) error {
 			// Update existing user_book_read if progress has changed
 			if existingProgressSeconds != targetProgressSeconds {
 				debugLog("Updating existing user_book_read id=%d for '%s': progressSeconds=%d -> %d", existingReadId, a.Title, existingProgressSeconds, targetProgressSeconds)
+
 				updateMutation := `
 				mutation UpdateUserBookRead($id: Int!, $object: DatesReadInput!) {
 				  update_user_book_read(id: $id, object: $object) {
@@ -536,10 +602,20 @@ func syncToHardcover(a Audiobook) error {
 					"query":     updateMutation,
 					"variables": variables,
 				}
+
+				debugLog("=== GraphQL Mutation: update_user_book_read ===")
+				debugLog("Book: '%s' by '%s'", a.Title, a.Author)
+				debugLog("Existing read ID: %d, Progress: %d -> %d seconds", existingReadId, existingProgressSeconds, targetProgressSeconds)
+				debugLog("Update object: %+v", updateObject)
+				debugLog("Mutation variables: %+v", variables)
+				debugLog("Full mutation payload: %+v", payload)
+
 				payloadBytes, err := json.Marshal(payload)
 				if err != nil {
 					return fmt.Errorf("failed to marshal update_user_book_read payload: %v", err)
 				}
+
+				debugLog("update_user_book_read request body: %s", string(payloadBytes))
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
 				req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(payloadBytes))
@@ -556,12 +632,15 @@ func syncToHardcover(a Audiobook) error {
 				}
 				defer resp.Body.Close()
 
+				debugLog("update_user_book_read response status: %d %s", resp.StatusCode, resp.Status)
+				debugLog("update_user_book_read response headers: %+v", resp.Header)
+
 				body, err := io.ReadAll(resp.Body)
 				if err != nil {
 					return fmt.Errorf("failed to read response: %v", err)
 				}
 
-				debugLog("update_user_book_read response: %s", string(body))
+				debugLog("update_user_book_read raw response: %s", string(body))
 
 				var result struct {
 					Data struct {
@@ -585,15 +664,24 @@ func syncToHardcover(a Audiobook) error {
 					return fmt.Errorf("failed to parse response: %v", err)
 				}
 
+				debugLog("update_user_book_read result data: %+v", result.Data)
+
 				if len(result.Errors) > 0 {
+					debugLog("GraphQL errors in update_user_book_read: %+v", result.Errors)
 					return fmt.Errorf("graphql errors: %v", result.Errors)
 				}
 
 				if result.Data.UpdateUserBookRead.Error != nil {
+					debugLog("update_user_book_read error: %s", *result.Data.UpdateUserBookRead.Error)
 					return fmt.Errorf("update error: %s", *result.Data.UpdateUserBookRead.Error)
 				}
 
 				debugLog("Successfully updated user_book_read with id: %d", result.Data.UpdateUserBookRead.ID)
+				if result.Data.UpdateUserBookRead.UserBookRead != nil {
+					ubr := result.Data.UpdateUserBookRead.UserBookRead
+					debugLog("Updated reading progress details - ID: %d, Progress: %d seconds, Started: %s, Finished: %v",
+						ubr.ID, ubr.ProgressSeconds, ubr.StartedAt, ubr.FinishedAt)
+				}
 				if result.Data.UpdateUserBookRead.UserBookRead != nil {
 					debugLog("Confirmed progress update: %d seconds", result.Data.UpdateUserBookRead.UserBookRead.ProgressSeconds)
 				}

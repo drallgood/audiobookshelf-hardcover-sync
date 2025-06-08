@@ -247,10 +247,15 @@ func executeImageMutation(payload map[string]interface{}) (int, error) {
 		return 888888, nil // Return a fake ID for dry run
 	}
 
+	debugLog("=== GraphQL Mutation: insert_image ===")
+	debugLog("Image mutation payload: %+v", payload)
+
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return 0, fmt.Errorf("failed to marshal image payload: %v", err)
 	}
+
+	debugLog("Image mutation request body: %s", string(payloadBytes))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -270,10 +275,15 @@ func executeImageMutation(payload map[string]interface{}) (int, error) {
 	}
 	defer resp.Body.Close()
 
+	debugLog("Image mutation response status: %d %s", resp.StatusCode, resp.Status)
+	debugLog("Image mutation response headers: %+v", resp.Header)
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return 0, fmt.Errorf("failed to read image response: %v", err)
 	}
+
+	debugLog("Image mutation raw response: %s", string(body))
 
 	if resp.StatusCode != 200 {
 		return 0, fmt.Errorf("image mutation failed with status %d: %s", resp.StatusCode, string(body))
@@ -296,11 +306,16 @@ func executeImageMutation(payload map[string]interface{}) (int, error) {
 		return 0, fmt.Errorf("failed to parse image response: %v", err)
 	}
 
+	debugLog("Image mutation result data: %+v", result.Data)
+
 	if len(result.Errors) > 0 {
+		debugLog("GraphQL errors in image creation: %+v", result.Errors)
 		return 0, fmt.Errorf("GraphQL errors in image creation: %v", result.Errors)
 	}
 
-	return result.Data.InsertResponse.Image.ID, nil
+	imageID := result.Data.InsertResponse.Image.ID
+	debugLog("Successfully created image with ID: %d", imageID)
+	return imageID, nil
 }
 
 // executeEditionMutation executes the edition creation mutation
@@ -311,10 +326,15 @@ func executeEditionMutation(payload map[string]interface{}) (int, error) {
 		return 777777, nil // Return a fake ID for dry run
 	}
 
+	debugLog("=== GraphQL Mutation: insert_edition ===")
+	debugLog("Edition mutation payload: %+v", payload)
+
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return 0, fmt.Errorf("failed to marshal edition payload: %v", err)
 	}
+
+	debugLog("Edition mutation request body: %s", string(payloadBytes))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -334,12 +354,15 @@ func executeEditionMutation(payload map[string]interface{}) (int, error) {
 	}
 	defer resp.Body.Close()
 
+	debugLog("Edition mutation response status: %d %s", resp.StatusCode, resp.Status)
+	debugLog("Edition mutation response headers: %+v", resp.Header)
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return 0, fmt.Errorf("failed to read edition response: %v", err)
 	}
 
-	debugLog("Edition creation response: %s", string(body))
+	debugLog("Edition mutation raw response: %s", string(body))
 
 	if resp.StatusCode != 200 {
 		return 0, fmt.Errorf("edition mutation failed with status %d: %s", resp.StatusCode, string(body))
@@ -364,17 +387,24 @@ func executeEditionMutation(payload map[string]interface{}) (int, error) {
 		return 0, fmt.Errorf("failed to parse edition response: %v", err)
 	}
 
+	debugLog("Edition mutation result data: %+v", result.Data)
+
 	if len(result.Errors) > 0 {
+		debugLog("GraphQL errors in edition creation: %+v", result.Errors)
 		return 0, fmt.Errorf("GraphQL errors in edition creation: %v", result.Errors)
 	}
 
 	if len(result.Data.InsertEdition.Errors) > 0 {
+		debugLog("Edition creation specific errors: %+v", result.Data.InsertEdition.Errors)
 		return 0, fmt.Errorf("edition creation errors: %v", result.Data.InsertEdition.Errors)
 	}
 
 	editionID := result.Data.InsertEdition.Edition.ID
 	if editionID == 0 {
 		editionID = result.Data.InsertEdition.ID // Fallback to top-level ID
+		debugLog("Using fallback edition ID: %d", editionID)
+	} else {
+		debugLog("Successfully created edition with ID: %d", editionID)
 	}
 
 	return editionID, nil
