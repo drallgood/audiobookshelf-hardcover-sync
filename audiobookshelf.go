@@ -131,6 +131,9 @@ func fetchUserProgress() (map[string]float64, error) {
 				continue
 			}
 			debugLog("Progress endpoint %s response: %s", endpoint, string(body))
+			
+			// Debug the API response for unit conversion issues
+			debugAPIResponse(endpoint, body)
 
 			// Try /api/me response structure with mediaProgress
 			var meResp struct {
@@ -232,9 +235,11 @@ func fetchUserProgress() (map[string]float64, error) {
 
 						// Calculate progress from currentTime and duration
 						if session.Duration > 0 && session.CurrentTime > 0 {
-							sessionProgress = session.CurrentTime / session.Duration
+							// Apply unit conversion before calculating progress
+							convertedCurrentTime := convertTimeUnits(session.CurrentTime, session.Duration)
+							sessionProgress = convertedCurrentTime / session.Duration
 							debugLog("Session progress calculated from currentTime/duration: %.6f (%.2fs / %.2fs) for item %s",
-								sessionProgress, session.CurrentTime, session.Duration, session.LibraryItemID)
+								sessionProgress, convertedCurrentTime, session.Duration, session.LibraryItemID)
 						} else if session.Progress > 0 {
 							// Fallback to direct progress field if available
 							sessionProgress = session.Progress
@@ -295,9 +300,11 @@ func fetchUserProgress() (map[string]float64, error) {
 
 						// Calculate progress from currentTime and duration
 						if session.Duration > 0 && session.CurrentTime > 0 {
-							sessionProgress = session.CurrentTime / session.Duration
+							// Apply unit conversion before calculating progress
+							convertedCurrentTime := convertTimeUnits(session.CurrentTime, session.Duration)
+							sessionProgress = convertedCurrentTime / session.Duration
 							debugLog("Session progress calculated: %.6f = %.2f / %.2f for item %s",
-								sessionProgress, session.CurrentTime, session.Duration, session.LibraryItemID)
+								sessionProgress, convertedCurrentTime, session.Duration, session.LibraryItemID)
 						} else if session.Progress > 0 {
 							sessionProgress = session.Progress
 							debugLog("Session progress from direct field: %.6f for item %s", sessionProgress, session.LibraryItemID)
@@ -350,9 +357,11 @@ func fetchUserProgress() (map[string]float64, error) {
 
 								if currentTime, hasTime := firstSession["currentTime"].(float64); hasTime {
 									if duration, hasDuration := firstSession["duration"].(float64); hasDuration && duration > 0 {
-										sessionProgress = currentTime / duration
+										// Apply unit conversion before calculating progress
+										convertedCurrentTime := convertTimeUnits(currentTime, duration)
+										sessionProgress = convertedCurrentTime / duration
 										debugLog("Manual session progress calculated: %.6f = %.2f / %.2f",
-											sessionProgress, currentTime, duration)
+											sessionProgress, convertedCurrentTime, duration)
 									}
 								}
 
@@ -515,6 +524,8 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 				// Get current time position
 				if item.UserProgress != nil && item.UserProgress.CurrentTime > 0 {
 					currentTime = item.UserProgress.CurrentTime
+					// Apply unit conversion to handle milliseconds vs seconds
+					currentTime = convertTimeUnits(currentTime, totalDuration)
 				} else if totalDuration > 0 && progress > 0 {
 					// Calculate current time from progress percentage (initial estimate)
 					currentTime = totalDuration * progress
@@ -625,6 +636,8 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 				// Use current time from UserProgress if available, otherwise calculate from progress
 				if item.UserProgress != nil && item.UserProgress.CurrentTime > 0 {
 					currentTime = item.UserProgress.CurrentTime
+					// Apply unit conversion to handle milliseconds vs seconds
+					currentTime = convertTimeUnits(currentTime, totalDuration)
 					// Also verify the progress matches the currentTime to avoid inconsistencies
 					if totalDuration > 0 {
 						calculatedProgress := currentTime / totalDuration
@@ -923,6 +936,9 @@ func getProgressFromListeningSessions(itemID string, totalDuration float64) floa
 		}
 
 		debugLog("Response from %s: %s", endpoint, string(body))
+		
+		// Debug the API response for unit conversion issues
+		debugAPIResponse(endpoint, body)
 
 		// Try to get progress from this endpoint
 		progress := parseListeningSessionsResponse(body, itemID, totalDuration)
@@ -1047,31 +1063,11 @@ func extractProgressFromSessionValue(sessionValue reflect.Value, totalDuration f
 	debugLog("Session data: CurrentTime=%.2f, Duration=%.2f, Progress=%.6f, TotalDuration=%.2f",
 		currentTime, duration, progress, totalDuration)
 
-	// Calculate progress from currentTime and duration
-	if duration > 0 && currentTime > 0 {
-		calculatedProgress := currentTime / duration
-		debugLog("Calculated progress: %.6f (%.2fs / %.2fs)", calculatedProgress, currentTime, duration)
-		if calculatedProgress > 0.001 { // Only meaningful progress
-			return calculatedProgress
-		}
-	}
+	// Apply unit conversion to handle milliseconds vs seconds
+	currentTime, duration, totalDuration = convertProgressData(currentTime, duration, totalDuration)
 
-	// Use total duration fallback
-	if totalDuration > 0 && currentTime > 0 {
-		calculatedProgress := currentTime / totalDuration
-		debugLog("Calculated progress with total duration: %.6f (%.2fs / %.2fs)", calculatedProgress, currentTime, totalDuration)
-		if calculatedProgress > 0.001 {
-			return calculatedProgress
-		}
-	}
-
-	// Fallback to direct progress field
-	if progress > 0.001 {
-		debugLog("Using direct progress field: %.6f", progress)
-		return progress
-	}
-
-	return 0
+	// Calculate progress using the converted values
+	return calculateProgressWithConversion(currentTime, duration, totalDuration)
 }
 
 // Helper function to extract progress from generic JSON
@@ -1108,26 +1104,11 @@ func extractProgressFromGenericSession(session map[string]interface{}, totalDura
 
 	debugLog("Generic session: CurrentTime=%.2f, Duration=%.2f, Progress=%.6f", currentTime, duration, progress)
 
-	// Calculate progress
-	if duration > 0 && currentTime > 0 {
-		calculatedProgress := currentTime / duration
-		if calculatedProgress > 0.001 {
-			return calculatedProgress
-		}
-	}
+	// Apply unit conversion to handle milliseconds vs seconds
+	currentTime, duration, _ = convertProgressData(currentTime, duration, totalDuration)
 
-	if totalDuration > 0 && currentTime > 0 {
-		calculatedProgress := currentTime / totalDuration
-		if calculatedProgress > 0.001 {
-			return calculatedProgress
-		}
-	}
-
-	if progress > 0.001 {
-		return progress
-	}
-
-	return 0
+	// Calculate progress using the converted values
+	return calculateProgressWithConversion(currentTime, duration, totalDuration)
 }
 
 // Helper function to get keys from map

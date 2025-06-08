@@ -86,6 +86,7 @@ func main() {
 	bulkLookupNarrators := flag.String("bulk-lookup-narrators", "", "Search for multiple narrators by comma-separated names")
 	bulkLookupPublishers := flag.String("bulk-lookup-publishers", "", "Search for multiple publishers by comma-separated names")
 	uploadImage := flag.String("upload-image", "", "Upload image from URL to Hardcover (format: url:bookID:description)")
+	debugAPI := flag.Bool("debug-api", false, "Debug AudiobookShelf API endpoints")
 	flag.Parse()
 
 	// Enable debug mode if -v flag or DEBUG_MODE env var is set
@@ -96,6 +97,11 @@ func main() {
 
 	if *showVersion {
 		fmt.Println(version)
+		os.Exit(0)
+	}
+
+	if *debugAPI {
+		debugAudiobookShelfAPI()
 		os.Exit(0)
 	}
 

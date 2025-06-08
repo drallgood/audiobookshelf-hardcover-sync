@@ -300,11 +300,15 @@ func syncToHardcover(a Audiobook) error {
 		targetStatusId = 2 // currently reading
 	}
 
-	// Calculate target progress in seconds
+	// Calculate target progress in seconds with unit conversion
 	var targetProgressSeconds int
 	if a.Progress > 0 {
 		if a.CurrentTime > 0 {
-			targetProgressSeconds = int(math.Round(a.CurrentTime))
+			// Apply unit conversion to fix millisecond/second issues
+			convertedCurrentTime := convertTimeUnits(a.CurrentTime, a.TotalDuration)
+			targetProgressSeconds = int(math.Round(convertedCurrentTime))
+			debugLog("Progress calculation for '%s': originalCurrentTime=%.2f, convertedCurrentTime=%.2f, targetProgressSeconds=%d",
+				a.Title, a.CurrentTime, convertedCurrentTime, targetProgressSeconds)
 		} else if a.TotalDuration > 0 && a.Progress > 0 {
 			targetProgressSeconds = int(math.Round(a.Progress * a.TotalDuration))
 		} else {

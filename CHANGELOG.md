@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **🔧 1000x Progress Multiplication Error**: Fixed critical bug where progress values were being multiplied by 1000
+  - **Root Cause**: AudiobookShelf API sometimes returns `currentTime` in milliseconds while `totalDuration` is in seconds
+  - **Unit Conversion**: Added automatic detection and conversion of millisecond values to seconds
+  - **Smart Detection**: `convertTimeUnits()` function intelligently identifies when conversion is needed
+  - **Comprehensive Fix**: Applied unit conversion throughout all progress calculation paths
+  - **Progress Calculation**: Updated `calculateProgressWithConversion()` to handle mixed units
+  - **API Response Debugging**: Added `debugAPIResponse()` function to identify unit mismatches
+  - **Backward Compatible**: Maintains compatibility with correctly formatted API responses
+  - **Test Coverage**: Added comprehensive tests including reproduction of original bug scenario
+  - **Real-world Impact**: Prevents progress values like 500.0 or 1000.0 being sent to Hardcover instead of 0.5 or 1.0
+
 ## [v1.5.0] - 2025-06-08
 
 ### Added
