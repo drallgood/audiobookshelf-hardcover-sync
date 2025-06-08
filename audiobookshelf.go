@@ -131,7 +131,7 @@ func fetchUserProgress() (map[string]float64, error) {
 				continue
 			}
 			debugLog("Progress endpoint %s response: %s", endpoint, string(body))
-			
+
 			// Debug the API response for unit conversion issues
 			debugAPIResponse(endpoint, body)
 
@@ -551,8 +551,8 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 					// If we have UserProgress.CurrentTime, validate the /api/me/progress value
 					if item.UserProgress != nil && item.UserProgress.CurrentTime > 0 && totalDuration > 0 {
 						calculatedProgressFromCurrentTime := item.UserProgress.CurrentTime / totalDuration
-						if math.Abs(calculatedProgressFromCurrentTime - userProgress) > 0.05 { // 5% tolerance
-							debugLog("Progress discrepancy between /api/me/progress (%.6f) and UserProgress.CurrentTime-based (%.6f) for '%s', preferring UserProgress", 
+						if math.Abs(calculatedProgressFromCurrentTime-userProgress) > 0.05 { // 5% tolerance
+							debugLog("Progress discrepancy between /api/me/progress (%.6f) and UserProgress.CurrentTime-based (%.6f) for '%s', preferring UserProgress",
 								userProgress, calculatedProgressFromCurrentTime, title)
 							// Keep the UserProgress-based value already set above
 						} else {
@@ -566,7 +566,7 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 							// If the estimated currentTime is very small (< 1 minute) but totalDuration is long (> 30 minutes),
 							// this might be a stale or incorrect progress value
 							if estimatedCurrentTime < 60 && totalDuration > 1800 { // Less than 1 minute progress on 30+ minute book
-								debugLog("Suspicious progress from /api/me/progress (%.6f = %.1fs) for long book '%s' (%.1f hours), trying listening sessions API", 
+								debugLog("Suspicious progress from /api/me/progress (%.6f = %.1fs) for long book '%s' (%.1f hours), trying listening sessions API",
 									userProgress, estimatedCurrentTime, title, totalDuration/3600)
 								// Try to get correct progress from listening sessions API
 								sessionProgress := getProgressFromListeningSessions(item.ID, totalDuration)
@@ -601,14 +601,14 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 					}
 				}
 
-				// 5. If progress is still 0, try the listening sessions API directly 
+				// 5. If progress is still 0, try the listening sessions API directly
 				if progress == 0 && totalDuration > 0 {
 					debugLog("No progress found from other sources, trying listening sessions API for '%s'", title)
 					sessionProgress := getProgressFromListeningSessions(item.ID, totalDuration)
 					if sessionProgress > 0 {
 						progress = sessionProgress
 						debugLog("Using progress from listening sessions API: %.6f for '%s'", progress, title)
-						
+
 						// Also calculate currentTime from this progress if we don't have it
 						if currentTime == 0 {
 							currentTime = progress * totalDuration
@@ -641,11 +641,11 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 					// Also verify the progress matches the currentTime to avoid inconsistencies
 					if totalDuration > 0 {
 						calculatedProgress := currentTime / totalDuration
-						debugLog("UserProgress currentTime: %.2fs, calculated progress: %.6f, final progress: %.6f", 
+						debugLog("UserProgress currentTime: %.2fs, calculated progress: %.6f, final progress: %.6f",
 							currentTime, calculatedProgress, progress)
 						// If there's a significant discrepancy, prefer the currentTime-based progress
-						if math.Abs(calculatedProgress - progress) > 0.05 { // 5% tolerance
-							debugLog("Progress discrepancy detected, using currentTime-based progress: %.6f instead of %.6f", 
+						if math.Abs(calculatedProgress-progress) > 0.05 { // 5% tolerance
+							debugLog("Progress discrepancy detected, using currentTime-based progress: %.6f instead of %.6f",
 								calculatedProgress, progress)
 							progress = calculatedProgress
 						}
@@ -936,7 +936,7 @@ func getProgressFromListeningSessions(itemID string, totalDuration float64) floa
 		}
 
 		debugLog("Response from %s: %s", endpoint, string(body))
-		
+
 		// Debug the API response for unit conversion issues
 		debugAPIResponse(endpoint, body)
 
@@ -955,7 +955,7 @@ func getProgressFromListeningSessions(itemID string, totalDuration float64) floa
 // parseListeningSessionsResponse parses different possible response formats from listening sessions endpoints
 func parseListeningSessionsResponse(body []byte, itemID string, totalDuration float64) float64 {
 	// Try multiple possible response structures
-	
+
 	// Format 1: Sessions wrapped in an object
 	var sessionData struct {
 		Sessions []struct {
