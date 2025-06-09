@@ -431,8 +431,8 @@ func processAuthorsWithLookup(authorString string) ([]int, string) {
 		cleanName = strings.TrimSuffix(cleanName, " Ph.D")
 		cleanName = strings.TrimSuffix(cleanName, " Dr.")
 
-		// Try searching for this author
-		authors, err := searchAuthors(cleanName, 3) // Limit to 3 to avoid too many results
+		// Try searching for this author (with caching)
+		authors, err := searchAuthorsCached(cleanName, 3) // Limit to 3 to avoid too many results
 		if err != nil {
 			debugLog("Author search failed for '%s': %v", cleanName, err)
 			notFoundNames = append(notFoundNames, name)
@@ -514,12 +514,12 @@ func processNarratorsWithLookup(narratorString string) ([]int, string) {
 		cleanName = strings.TrimSuffix(cleanName, " Ph.D")
 		cleanName = strings.TrimSuffix(cleanName, " Dr.")
 
-		// First try searching as narrator
-		narrators, err := searchNarrators(cleanName, 3)
+		// First try searching as narrator (with caching)
+		narrators, err := searchNarratorsCached(cleanName, 3)
 		if err != nil {
 			debugLog("Narrator search failed for '%s': %v", cleanName, err)
-			// If narrator search fails, try as author (person might be narrator but listed as author)
-			authors, authorErr := searchAuthors(cleanName, 3)
+			// If narrator search fails, try as author (person might be narrator but listed as author) - with caching
+			authors, authorErr := searchAuthorsCached(cleanName, 3)
 			if authorErr != nil {
 				notFoundNames = append(notFoundNames, name)
 				continue
@@ -535,8 +535,8 @@ func processNarratorsWithLookup(narratorString string) ([]int, string) {
 		}
 
 		if len(narrators) == 0 {
-			// Try searching as author (some narrators might be listed primarily as authors)
-			authors, authorErr := searchAuthors(cleanName, 3)
+			// Try searching as author (some narrators might be listed primarily as authors) - with caching
+			authors, authorErr := searchAuthorsCached(cleanName, 3)
 			if authorErr == nil && len(authors) > 0 {
 				topAuthor := authors[0]
 				canonicalNote := ""
@@ -595,8 +595,8 @@ func processPublisherWithLookup(publisherName string) (int, string) {
 
 	publisherName = strings.TrimSpace(publisherName)
 
-	// Try searching for this publisher
-	publishers, err := searchPublishers(publisherName, 3)
+	// Try searching for this publisher (with caching)
+	publishers, err := searchPublishersCached(publisherName, 3)
 	if err != nil {
 		debugLog("Publisher search failed for '%s': %v", publisherName, err)
 		return 0, fmt.Sprintf("'%s' -> search manually (search failed)", publisherName)

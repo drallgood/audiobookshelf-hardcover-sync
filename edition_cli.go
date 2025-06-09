@@ -557,7 +557,7 @@ func lookupAuthorIDCommand() error {
 
 	fmt.Printf("Searching for authors matching '%s'...\n\n", name)
 
-	authors, err := searchAuthors(name, 10)
+	authors, err := searchAuthorsCached(name, 10)
 	if err != nil {
 		return fmt.Errorf("author search failed: %v", err)
 	}
@@ -620,7 +620,7 @@ func lookupNarratorIDCommand() error {
 
 	fmt.Printf("Searching for narrators matching '%s'...\n\n", name)
 
-	narrators, err := searchNarrators(name, 10)
+	narrators, err := searchNarratorsCached(name, 10)
 	if err != nil {
 		return fmt.Errorf("narrator search failed: %v", err)
 	}
@@ -683,7 +683,7 @@ func lookupPublisherIDCommand() error {
 
 	fmt.Printf("Searching for publishers matching '%s'...\n\n", name)
 
-	publishers, err := searchPublishers(name, 10)
+	publishers, err := searchPublishersCached(name, 10)
 	if err != nil {
 		return fmt.Errorf("publisher search failed: %v", err)
 	}
@@ -801,7 +801,7 @@ func bulkLookupAuthorsCommand(authorNames string) error {
 
 		fmt.Printf("--- Author %d: %s ---\n", i+1, name)
 
-		authors, err := searchAuthors(name, 5)
+		authors, err := searchAuthorsCached(name, 5)
 		if err != nil {
 			fmt.Printf("❌ Search failed for '%s': %v\n\n", name, err)
 			continue
@@ -850,7 +850,7 @@ func bulkLookupNarratorsCommand(narratorNames string) error {
 
 		fmt.Printf("--- Narrator %d: %s ---\n", i+1, name)
 
-		narrators, err := searchNarrators(name, 5)
+		narrators, err := searchNarratorsCached(name, 5)
 		if err != nil {
 			fmt.Printf("❌ Search failed for '%s': %v\n\n", name, err)
 			continue
@@ -899,7 +899,7 @@ func bulkLookupPublishersCommand(publisherNames string) error {
 
 		fmt.Printf("--- Publisher %d: %s ---\n", i+1, name)
 
-		publishers, err := searchPublishers(name, 5)
+		publishers, err := searchPublishersCached(name, 5)
 		if err != nil {
 			fmt.Printf("❌ Search failed for '%s': %v\n\n", name, err)
 			continue

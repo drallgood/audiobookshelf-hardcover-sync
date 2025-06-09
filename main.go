@@ -270,6 +270,9 @@ func main() {
 
 	log.Printf("audiobookshelf-hardcover-sync version %s starting", version)
 
+	// Initialize caching system
+	initCache()
+
 	required := []string{"AUDIOBOOKSHELF_URL", "AUDIOBOOKSHELF_TOKEN", "HARDCOVER_TOKEN"}
 	for _, v := range required {
 		if os.Getenv(v) == "" {

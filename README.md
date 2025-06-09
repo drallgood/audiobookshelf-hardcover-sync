@@ -9,6 +9,7 @@ Automatically syncs your Audiobookshelf library with Hardcover, including readin
 - 🎯 **Smart Status Management**: Automatically sets "Want to Read", "Currently Reading", and "Read" status based on progress
 - 🏠 **Ownership Tracking**: Marks synced books as "owned" to distinguish from wishlist items
 - ⚡ **Incremental Sync**: Efficient timestamp-based syncing to reduce API calls
+- 🚀 **Smart Caching**: Intelligent caching of author/narrator lookups with cross-role discovery
 - 🔄 **Periodic Sync**: Configurable automatic syncing (e.g., every 10 minutes or 1 hour)
 - 🎛️ **Manual Sync**: HTTP endpoints for on-demand synchronization
 - 🏥 **Health Monitoring**: Built-in health check endpoint

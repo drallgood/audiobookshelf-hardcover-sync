@@ -765,6 +765,13 @@ func runSync() {
 
 	log.Printf("Starting %s sync (incremental mode: %s)", syncMode, getIncrementalSyncMode())
 
+	// Log initial cache statistics
+	if debugMode {
+		stats := getCacheStats()
+		log.Printf("[CACHE] Starting sync with cache stats: %d total entries (%d authors, %d narrators, %d publishers)", 
+			stats["total_entries"], stats["authors"], stats["narrators"], stats["publishers"])
+	}
+
 	var books []Audiobook
 	var recentItemIds []string
 
@@ -898,6 +905,11 @@ func runSync() {
 
 	// Print sync summary
 	log.Printf("Sync complete: %d/%d books synced successfully (%s)", successCount, len(booksToSync), syncMode)
+
+	// Log final cache statistics
+	stats := getCacheStats()
+	log.Printf("[CACHE] Final cache stats: %d total entries (%d authors, %d narrators, %d publishers)", 
+		stats["total_entries"].(int), stats["authors"].(int), stats["narrators"].(int), stats["publishers"].(int))
 
 	// Print summary of books that may need manual review
 	printMismatchSummary()
