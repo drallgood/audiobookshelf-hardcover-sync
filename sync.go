@@ -228,7 +228,7 @@ func syncToHardcover(a Audiobook) error {
 			case "skip":
 				// Collect this mismatch for manual review before skipping
 				reason := fmt.Sprintf("Book lookup failed - not found in Hardcover database using ASIN %s, ISBN %s, or title/author search", a.ASIN, a.ISBN)
-				addBookMismatchWithMetadata(a.Metadata, "", "", reason, a.TotalDuration)
+				addBookMismatchWithMetadata(a.Metadata, "", "", reason, a.TotalDuration, a.ID)
 
 				debugLog("SKIPPING: Book lookup failed for '%s' by '%s' (ISBN: %s, ASIN: %s) and AUDIOBOOK_MATCH_MODE=skip: %v", a.Title, a.Author, a.ISBN, a.ASIN, err)
 				return nil // Skip this book entirely
@@ -266,7 +266,7 @@ func syncToHardcover(a Audiobook) error {
 				debugLog("SKIPPING: No audiobook edition found for '%s' by '%s' (ISBN: %s) and AUDIOBOOK_MATCH_MODE=skip. Avoiding potential wrong edition sync.", a.Title, a.Author, a.ISBN)
 			}
 
-			addBookMismatchWithMetadata(a.Metadata, bookId, editionId, reason, a.TotalDuration)
+			addBookMismatchWithMetadata(a.Metadata, bookId, editionId, reason, a.TotalDuration, a.ID)
 
 			return nil // Skip this book entirely
 		default: // "continue"
@@ -280,7 +280,7 @@ func syncToHardcover(a Audiobook) error {
 			}
 
 			// Collect this mismatch for manual review
-			addBookMismatchWithMetadata(a.Metadata, bookId, editionId, reason, a.TotalDuration)
+			addBookMismatchWithMetadata(a.Metadata, bookId, editionId, reason, a.TotalDuration, a.ID)
 
 			debugLog("To change this behavior, set AUDIOBOOK_MATCH_MODE=skip or AUDIOBOOK_MATCH_MODE=fail")
 		}
@@ -776,8 +776,8 @@ func runSync() {
 	var recentItemIds []string
 
 	if isFullSync {
-		// Full sync: fetch all audiobooks
-		books, err = fetchAudiobookShelfStats()
+		// Full sync: fetch all audiobooks with enhanced progress detection
+		books, err = fetchAudiobookShelfStatsEnhanced()
 		if err != nil {
 			log.Printf("Failed to fetch library items: %v", err)
 			return
@@ -791,8 +791,8 @@ func runSync() {
 		recentItemIds, err = fetchRecentListeningSessions(timestampThreshold)
 		if err != nil {
 			log.Printf("Failed to fetch recent listening sessions, falling back to full sync: %v", err)
-			// Fallback to full sync
-			books, err = fetchAudiobookShelfStats()
+			// Fallback to full sync with enhanced progress detection
+			books, err = fetchAudiobookShelfStatsEnhanced()
 			if err != nil {
 				log.Printf("Failed to fetch library items: %v", err)
 				return
@@ -814,7 +814,7 @@ func runSync() {
 			}
 
 			// Fetch all audiobooks and filter to only recently updated ones
-			allBooks, err := fetchAudiobookShelfStats()
+			allBooks, err := fetchAudiobookShelfStatsEnhanced()
 			if err != nil {
 				log.Printf("Failed to fetch library items: %v", err)
 				return

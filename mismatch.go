@@ -31,7 +31,7 @@ func addBookMismatch(title, author, isbn, asin, bookID, editionID, reason string
 }
 
 // addBookMismatchWithMetadata adds a book mismatch with enhanced metadata to the global collection
-func addBookMismatchWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, duration float64) {
+func addBookMismatchWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, duration float64, audiobookShelfID string) {
 	// Convert duration from seconds to hours for easier reading
 	durationHours := duration / 3600.0
 	// Store duration in seconds as integer for JSON processing
@@ -41,21 +41,22 @@ func addBookMismatchWithMetadata(metadata MediaMetadata, bookID, editionID, reas
 	releaseDate := formatReleaseDate(metadata.PublishedDate, metadata.PublishedYear)
 
 	mismatch := BookMismatch{
-		Title:           metadata.Title,
-		Subtitle:        metadata.Subtitle,
-		Author:          metadata.AuthorName,
-		Narrator:        metadata.NarratorName,
-		Publisher:       metadata.Publisher,
-		PublishedYear:   metadata.PublishedYear,
-		ReleaseDate:     releaseDate,
-		Duration:        durationHours,
-		DurationSeconds: durationSeconds,
-		ISBN:            metadata.ISBN,
-		ASIN:            metadata.ASIN,
-		BookID:          bookID,
-		EditionID:       editionID,
-		Reason:          reason,
-		Timestamp:       time.Now(),
+		Title:             metadata.Title,
+		Subtitle:          metadata.Subtitle,
+		Author:            metadata.AuthorName,
+		Narrator:          metadata.NarratorName,
+		Publisher:         metadata.Publisher,
+		PublishedYear:     metadata.PublishedYear,
+		ReleaseDate:       releaseDate,
+		Duration:          durationHours,
+		DurationSeconds:   durationSeconds,
+		ISBN:              metadata.ISBN,
+		ASIN:              metadata.ASIN,
+		BookID:            bookID,
+		EditionID:         editionID,
+		AudiobookShelfID:  audiobookShelfID,
+		Reason:            reason,
+		Timestamp:         time.Now(),
 	}
 	bookMismatches = append(bookMismatches, mismatch)
 	debugLog("MISMATCH COLLECTED: %s - %s", metadata.Title, reason)
@@ -288,10 +289,9 @@ func convertMismatchToEditionInput(mismatch BookMismatch) EditionCreatorInput {
 		}
 	}
 
-	// Generate Audible image URL from ASIN if available
-	if mismatch.ASIN != "" {
-		input.ImageURL = fmt.Sprintf("https://m.media-amazon.com/images/I/51%s._SL500_.jpg", mismatch.ASIN)
-	}
+	// Generate cover image URL from AudiobookShelf API
+	// Use the cover API endpoint which provides the actual cover image
+	input.ImageURL = fmt.Sprintf("%s/api/items/%s/cover", getAudiobookShelfURL(), mismatch.AudiobookShelfID)
 
 	// Extract ISBN-10 and ISBN-13 from the ISBN field
 	if mismatch.ISBN != "" {

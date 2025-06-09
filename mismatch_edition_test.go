@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -18,21 +19,22 @@ func TestEditionReadyMismatchFiles(t *testing.T) {
 
 	// Add a test mismatch with metadata similar to the "Accelerate" example
 	testMismatch := BookMismatch{
-		Title:           "Accelerate: Building and Scaling High Performing Technology Organizations",
-		Subtitle:        "The Science of Lean Software and DevOps: Building and Scaling High Performing Technology Organizations",
-		Author:          "Jez Humble, Gene Kim, Nicole Forsgren PhD",
-		Narrator:        "Nicole Forsgren",
-		Publisher:       "IT Revolution Press",
-		PublishedYear:   "2018",
-		ReleaseDate:     "2018",
-		Duration:        4.982984719166667,
-		DurationSeconds: 17939,
-		ISBN:            "",
-		ASIN:            "B07BLZDZFQ",
-		BookID:          "",
-		EditionID:       "",
-		Reason:          "Book lookup failed - not found in Hardcover database using ASIN B07BLZDZFQ, ISBN , or title/author search",
-		Timestamp:       time.Now(),
+		Title:             "Accelerate: Building and Scaling High Performing Technology Organizations",
+		Subtitle:          "The Science of Lean Software and DevOps: Building and Scaling High Performing Technology Organizations",
+		Author:            "Jez Humble, Gene Kim, Nicole Forsgren PhD",
+		Narrator:          "Nicole Forsgren",
+		Publisher:         "IT Revolution Press",
+		PublishedYear:     "2018",
+		ReleaseDate:       "2018",
+		Duration:          4.982984719166667,
+		DurationSeconds:   17939,
+		ISBN:              "",
+		ASIN:              "B07BLZDZFQ",
+		BookID:            "",
+		EditionID:         "",
+		AudiobookShelfID:  "test-audiobook-id-123",
+		Reason:            "Book lookup failed - not found in Hardcover database using ASIN B07BLZDZFQ, ISBN , or title/author search",
+		Timestamp:         time.Now(),
 	}
 
 	bookMismatches = append(bookMismatches, testMismatch)
@@ -90,8 +92,8 @@ func TestEditionReadyMismatchFiles(t *testing.T) {
 		t.Errorf("EditionInfo should contain manual lookup instructions, got: %s", editionInput.EditionInfo)
 	}
 
-	// Check that Audible image URL is generated correctly
-	expectedImageURL := "https://m.media-amazon.com/images/I/51B07BLZDZFQ._SL500_.jpg"
+	// Check that AudiobookShelf cover URL is generated correctly
+	expectedImageURL := fmt.Sprintf("%s/api/items/%s/cover", getAudiobookShelfURL(), testMismatch.AudiobookShelfID)
 	if editionInput.ImageURL != expectedImageURL {
 		t.Errorf("Image URL mismatch: expected %s, got %s", expectedImageURL, editionInput.ImageURL)
 	}

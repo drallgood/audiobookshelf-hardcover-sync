@@ -574,7 +574,11 @@ func fetchAudiobookShelfStats() ([]Audiobook, error) {
 									progress = sessionProgress
 									debugLog("Using progress from listening sessions: %.6f for '%s'", progress, title)
 								} else {
-									debugLog("No progress found from listening sessions, skipping suspicious /api/me/progress value")
+									// Instead of discarding suspicious progress, treat very small progress on long books as potentially finished
+									// This handles cases where books show minimal progress due to timing/unit issues but are actually complete
+									debugLog("No progress found from listening sessions, treating suspicious progress as potentially finished for '%s'", title)
+									progress = 1.0 // Assume finished for very small progress on long books
+									debugLog("Setting progress to 1.0 (finished) for '%s' due to suspicious small progress on long audiobook", title)
 								}
 							} else {
 								progress = userProgress

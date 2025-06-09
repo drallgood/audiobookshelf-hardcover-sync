@@ -7,21 +7,22 @@ import (
 
 // BookMismatch represents a book that may need manual verification
 type BookMismatch struct {
-	Title           string
-	Subtitle        string
-	Author          string
-	Narrator        string
-	Publisher       string
-	PublishedYear   string
-	ReleaseDate     string  // Maps to PublishedDate from API
-	Duration        float64 // Duration in hours for easier reading
-	DurationSeconds int     // Duration in seconds for JSON processing
-	ISBN            string
-	ASIN            string
-	BookID          string
-	EditionID       string
-	Reason          string
-	Timestamp       time.Time
+	Title             string
+	Subtitle          string
+	Author            string
+	Narrator          string
+	Publisher         string
+	PublishedYear     string
+	ReleaseDate       string  // Maps to PublishedDate from API
+	Duration          float64 // Duration in hours for easier reading
+	DurationSeconds   int     // Duration in seconds for JSON processing
+	ISBN              string
+	ASIN              string
+	BookID            string
+	EditionID         string
+	AudiobookShelfID  string  // AudiobookShelf item ID for image URL generation
+	Reason            string
+	Timestamp         time.Time
 }
 
 // AudiobookShelf API response structures
@@ -48,9 +49,10 @@ type MediaMetadata struct {
 }
 
 type Media struct {
-	ID       string        `json:"id"`
-	Metadata MediaMetadata `json:"metadata"`
-	Duration float64       `json:"duration,omitempty"` // Backup duration location
+	ID        string        `json:"id"`
+	Metadata  MediaMetadata `json:"metadata"`
+	Duration  float64       `json:"duration,omitempty"` // Backup duration location
+	CoverPath string        `json:"coverPath,omitempty"` // Path to cover image file
 }
 
 type UserProgress struct {
