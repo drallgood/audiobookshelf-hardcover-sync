@@ -292,12 +292,48 @@ func syncToHardcover(a Audiobook) error {
 		return fmt.Errorf("failed to check existing user book for '%s': %v", a.Title, err)
 	}
 
-	// Determine the target status for this book
+	// Determine the target status for this book with enhanced finished book detection
 	targetStatusId := 3 // default to read
-	if a.Progress == 0 && getSyncWantToRead() {
-		targetStatusId = 1 // want to read
-	} else if a.Progress < 0.99 {
+	
+	// Check if book is actually finished despite showing 0% progress
+	// This can happen when enhanced detection fails to properly identify finished books
+	isBookFinished := a.Progress >= 0.99
+	
+	// Additional checks for finished status using enhanced detection
+	if !isBookFinished && a.Progress == 0 {
+		// Try enhanced item-specific detection as a fallback
+		if enhancedProgress, enhancedFinished, err := fetchItemProgressEnhanced(a.ID); err == nil {
+			if enhancedFinished || enhancedProgress >= 0.99 {
+				isBookFinished = true
+				debugLog("Enhanced detection found book '%s' is actually finished (enhanced_finished=%t, enhanced_progress=%.6f)", 
+					a.Title, enhancedFinished, enhancedProgress)
+			}
+		}
+		
+		// Also check if book appears to be finished based on listening position
+		if !isBookFinished && a.CurrentTime > 0 && a.TotalDuration > 0 {
+			actualProgress := a.CurrentTime / a.TotalDuration
+			remainingTime := a.TotalDuration - a.CurrentTime
+			if actualProgress >= 0.95 || remainingTime <= 300 { // Within 95% or 5 minutes of end
+				isBookFinished = true
+				debugLog("Book '%s' appears finished based on position: %.2f%% complete, %.1f minutes remaining", 
+					a.Title, actualProgress*100, remainingTime/60)
+			}
+		}
+	}
+	
+	// Set status based on actual finished state
+	if isBookFinished {
+		targetStatusId = 3 // read
+	} else if a.Progress > 0 || (a.CurrentTime > 0 && a.TotalDuration > 0) {
 		targetStatusId = 2 // currently reading
+	} else if getSyncWantToRead() {
+		// Only set to "want to read" if we're certain the book is not finished
+		targetStatusId = 1 // want to read
+	} else {
+		// If want to read sync is disabled and book shows no progress, skip it
+		debugLog("Skipping book '%s' with 0%% progress (SYNC_WANT_TO_READ disabled)", a.Title)
+		targetStatusId = 2 // default to currently reading
 	}
 
 	// Calculate target progress in seconds with unit conversion
