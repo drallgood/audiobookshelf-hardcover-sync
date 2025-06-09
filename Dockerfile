@@ -25,7 +25,7 @@ RUN --mount=type=cache,target=/go-cache \
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata
 COPY --from=build /out/main /main
-COPY entrypoint.sh /entrypoint.sh
+COPY scripts/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 
