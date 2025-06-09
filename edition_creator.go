@@ -95,6 +95,12 @@ func uploadImageFromURL(bookID int, imageURL string) (int, error) {
 		return 888888, nil // Return a fake ID for dry run
 	}
 
+	// Check if this is a local AudiobookShelf URL that Hardcover can't access
+	if isLocalAudiobookShelfURL(imageURL) {
+		debugLog("Detected local AudiobookShelf URL: %s", imageURL)
+		return uploadLocalImageToHardcover(bookID, imageURL)
+	}
+
 	// Use the working uploadImageToHardcover function from hardcover.go
 	// This bypasses the webhook issue by using direct GraphQL mutation
 	return uploadImageToHardcover(imageURL, bookID)
