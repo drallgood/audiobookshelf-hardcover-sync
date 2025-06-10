@@ -67,6 +67,9 @@ docker run -d \
 | `SYNC_STATE_FILE` | `sync_state.json` | Path to incremental sync state file |
 | `FORCE_FULL_SYNC` | `false` | Force full sync on next run |
 | `DEBUG_MODE` | `false` | Enable verbose debug logging (`1` or `true`) |
+| `AUDIBLE_API_ENABLED` | `false` | Enable Audible API integration for enhanced metadata |
+| `AUDIBLE_API_TOKEN` | None | API token for Audible service (if required) |
+| `AUDIBLE_API_TIMEOUT` | `10s` | Timeout for Audible API requests (e.g., `5s`, `30s`) |
 
 ## Setup Instructions
 

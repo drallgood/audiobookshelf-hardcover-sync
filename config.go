@@ -119,3 +119,29 @@ func getTestBookLimit() int {
 	}
 	return 0
 }
+
+// getAudibleAPIEnabled returns whether Audible API integration is enabled
+// Default: false (Audible API integration disabled unless explicitly enabled)
+func getAudibleAPIEnabled() bool {
+	val := strings.ToLower(os.Getenv("AUDIBLE_API_ENABLED"))
+	return val == "true" || val == "1" || val == "yes"
+}
+
+// getAudibleAPIToken returns the Audible API token from environment variables
+// Default: empty string (no API token)
+func getAudibleAPIToken() string {
+	return os.Getenv("AUDIBLE_API_TOKEN")
+}
+
+// getAudibleAPITimeout returns the timeout for Audible API requests
+// Default: 10 seconds
+func getAudibleAPITimeout() time.Duration {
+	timeoutStr := os.Getenv("AUDIBLE_API_TIMEOUT")
+	if timeoutStr == "" {
+		return 10 * time.Second
+	}
+	if timeout, err := time.ParseDuration(timeoutStr); err == nil {
+		return timeout
+	}
+	return 10 * time.Second
+}

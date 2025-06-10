@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **🎧 Audible API Integration**: Added comprehensive Audible API integration for enhanced metadata
+  - **External Data Enhancement**: `enhanceWithExternalData()` function now integrates real Audible API data
+  - **Full Date Lookup**: Converts year-only dates (e.g., "2023") to complete dates (e.g., "2023-12-25")
+  - **Smart Date Logic**: `isDateMoreSpecific()` compares date specificity and only enhances when beneficial
+  - **Duration Enhancement**: Adds accurate audiobook duration when missing from Hardcover data
+  - **Image Quality**: Upgrades to higher resolution Audible cover images when available
+  - **Publisher Caching Enhancement**: Improved publisher lookup caching for better performance
+  - **Comprehensive Configuration**: New environment variables `AUDIBLE_API_ENABLED`, `AUDIBLE_API_TOKEN`, `AUDIBLE_API_TIMEOUT`
+  - **Graceful Fallback**: Continues working even when Audible API is unavailable or rate-limited
+  - **Source Tracking**: Distinguishes between "hardcover+audible" and "hardcover+external" data sources
+  - **ASIN Validation**: Robust ASIN format validation and error handling
+  - **Test Coverage**: Comprehensive unit and integration tests for all Audible API functionality
+  - **Documentation**: Complete documentation in `docs/AUDIBLE_API_INTEGRATION.md`
+
 ### Fixed
 - **🔧 RE-READ Detection Fix**: Fixed incorrect RE-READ detection for manually finished books
   - **Root Cause**: Books marked as "Finished" in AudiobookShelf but showing 0% progress due to API detection issues were incorrectly treated as re-read scenarios

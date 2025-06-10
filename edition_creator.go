@@ -820,12 +820,81 @@ func enhanceWithExternalData(prepopulated *PrepopulatedEditionInput, asin string
 
 	debugLog("Attempting to enhance edition data with external data for ASIN: %s", asin)
 
-	// TODO: Implement external API integration (e.g., Audible API)
-	// This is a placeholder for future enhancement with external data sources
-	// For now, we just update the ASIN if it wasn't already populated
+	// Check if Audible API integration is enabled
+	if !getAudibleAPIEnabled() {
+		debugLog("Audible API integration is disabled, skipping external enhancement")
+		// Update ASIN if it wasn't already populated
+		if prepopulated.ASIN == "" {
+			prepopulated.ASIN = asin
+			prepopulated.PrepopulationSource = "hardcover+external"
+		}
+		return nil
+	}
+
+	// Attempt to fetch metadata from Audible
+	audibleMetadata, err := getAudibleMetadata(asin)
+	if err != nil {
+		debugLog("Failed to fetch Audible metadata for ASIN %s: %v", asin, err)
+		// Still update ASIN even if external fetch failed
+		if prepopulated.ASIN == "" {
+			prepopulated.ASIN = asin
+			prepopulated.PrepopulationSource = "hardcover+external"
+		}
+		return nil // Don't fail the entire process for external data issues
+	}
+
+	debugLog("Successfully fetched Audible metadata for ASIN: %s", asin)
+
+	// Check if we got meaningful data from Audible (not just fallback data)
+	hasRealAudibleData := audibleMetadata.Title != "" || audibleMetadata.Publisher != "" || 
+		!audibleMetadata.ReleaseDate.IsZero() || audibleMetadata.Duration > 0 || 
+		audibleMetadata.Subtitle != "" || len(audibleMetadata.Authors) > 0
+
+	// Enhance the prepopulated data with Audible metadata
+	// Only update fields that are empty or would be improved by external data
+
+	// Always update ASIN
 	if prepopulated.ASIN == "" {
-		prepopulated.ASIN = asin
+		prepopulated.ASIN = audibleMetadata.ASIN
+	}
+
+	// Enhance release date with full date if we only have partial data
+	if !audibleMetadata.ReleaseDate.IsZero() {
+		audibleDate := formatAudibleDate(audibleMetadata.ReleaseDate)
+		if audibleDate != "" {
+			// If we don't have a release date, or if the Audible date is more specific
+			if prepopulated.ReleaseDate == "" || isDateMoreSpecific(audibleDate, prepopulated.ReleaseDate) {
+				debugLog("Enhancing release date: '%s' -> '%s'", prepopulated.ReleaseDate, audibleDate)
+				prepopulated.ReleaseDate = audibleDate
+			}
+		}
+	}
+
+	// Enhance duration if not available
+	if prepopulated.AudioSeconds == 0 && audibleMetadata.Duration > 0 {
+		debugLog("Enhancing audio duration: %d seconds", audibleMetadata.Duration)
+		prepopulated.AudioSeconds = audibleMetadata.Duration
+	}
+
+	// Enhance subtitle if not available
+	if prepopulated.Subtitle == "" && audibleMetadata.Subtitle != "" {
+		debugLog("Enhancing subtitle: '%s'", audibleMetadata.Subtitle)
+		prepopulated.Subtitle = audibleMetadata.Subtitle
+	}
+
+	// Enhance image URL if not available and Audible has a better one
+	if (prepopulated.ImageURL == "" || isAudibleImageBetter(audibleMetadata.ImageURL, prepopulated.ImageURL)) && audibleMetadata.ImageURL != "" {
+		debugLog("Enhancing image URL: '%s'", audibleMetadata.ImageURL)
+		prepopulated.ImageURL = audibleMetadata.ImageURL
+	}
+
+	// Update prepopulation source based on whether we got real Audible data
+	if hasRealAudibleData {
+		prepopulated.PrepopulationSource = "hardcover+audible"
+		debugLog("Successfully enhanced edition data with Audible metadata")
+	} else {
 		prepopulated.PrepopulationSource = "hardcover+external"
+		debugLog("Enhanced edition data with external metadata (minimal)")
 	}
 
 	return nil

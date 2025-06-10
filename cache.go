@@ -289,10 +289,19 @@ func searchNarratorsCached(name string, limit int) ([]PersonSearchResult, error)
 
 // searchPublishersCached wraps searchPublishers with caching
 func searchPublishersCached(name string, limit int) ([]PublisherSearchResult, error) {
-	// For publishers, we cache the first result's ID for exact matches
-	// but still need to perform full searches for multiple results
+	// Check cache first for exact publisher ID matches
+	if publisherID, found := personCache.GetPublisher(name); found {
+		// We have an exact match cached, but we might still want full search results
+		// for display purposes. Check if we should return just the cached result.
+		debugLog("Cache: Found exact publisher match for '%s' (ID: %d)", name, publisherID)
+		
+		// For exact matches, try to get the full publisher details
+		if publisher, err := getPublisherByID(publisherID); err == nil {
+			return []PublisherSearchResult{*publisher}, nil
+		}
+	}
 	
-	// Perform actual search (publishers are less frequently searched)
+	// Cache miss - perform actual search
 	results, err := searchPublishers(name, limit)
 	if err != nil {
 		return nil, err
@@ -302,6 +311,7 @@ func searchPublishersCached(name string, limit int) ([]PublisherSearchResult, er
 	for _, result := range results {
 		if strings.EqualFold(result.Name, name) {
 			personCache.PutPublisher(name, result.ID)
+			debugLog("Cache: Stored exact publisher match '%s' -> ID %d", name, result.ID)
 			break
 		}
 	}
