@@ -765,6 +765,16 @@ func syncToHardcover(a Audiobook) error {
 				} else if hasExistingFinishedRead {
 					// EXPECTATION #3: Book is finished in ABS AND has finished read in Hardcover → DO NOTHING
 					debugLog("SKIP: Book '%s' is finished in ABS but already has a finished read in Hardcover (finished on %s) - doing nothing to avoid duplicate", a.Title, finishDate)
+					
+					// Even though we're skipping progress sync, we might still need to update the status
+					if existingUserBookId > 0 && existingStatusId != targetStatusId {
+						debugLog("Updating user book status for '%s': %d -> %d (skipped progress sync)", a.Title, existingStatusId, targetStatusId)
+						if err := updateUserBookStatus(existingUserBookId, targetStatusId); err != nil {
+							debugLog("Warning: Failed to update status for '%s': %v", a.Title, err)
+						} else {
+							debugLog("Successfully updated status for '%s' from %d to %d", a.Title, existingStatusId, targetStatusId)
+						}
+					}
 					return nil
 				}
 				// EXPECTATION #2: Book is finished in ABS but has NO finished read in Hardcover → CREATE READ ENTRY
@@ -788,6 +798,19 @@ func syncToHardcover(a Audiobook) error {
 			debugLog("Successfully synced progress for '%s': %d seconds", a.Title, targetProgressSeconds)
 		}
 	}
+
+	// Step 4: Update user book status if needed (after successful progress sync or skip)
+	// This handles cases like changing from "Want to Read" (1) to "Read" (3) when books are finished
+	if existingUserBookId > 0 && existingStatusId != targetStatusId {
+		debugLog("Updating user book status for '%s': %d -> %d", a.Title, existingStatusId, targetStatusId)
+		if err := updateUserBookStatus(existingUserBookId, targetStatusId); err != nil {
+			debugLog("Warning: Failed to update status for '%s': %v", a.Title, err)
+			// Don't fail the entire sync for status update issues, just log the warning
+		} else {
+			debugLog("Successfully updated status for '%s' from %d to %d", a.Title, existingStatusId, targetStatusId)
+		}
+	}
+
 	return nil
 }
 

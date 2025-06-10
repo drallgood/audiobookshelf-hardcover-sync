@@ -647,6 +647,107 @@ func insertUserBookRead(userBookID int, progressSeconds int, isFinished bool) er
 	return nil
 }
 
+// updateUserBookStatus updates the status of a user book in Hardcover
+// This is used to change book status from "Want to Read" (1) to "Read" (3) when books are finished
+func updateUserBookStatus(userBookID int, statusID int) error {
+	mutation := `
+	mutation UpdateUserBookStatus($id: Int!, $object: UserBookUpdateInput!) {
+	  update_user_book(id: $id, object: $object) {
+		id
+		error
+		user_book {
+		  id
+		  status_id
+		}
+	  }
+	}`
+
+	variables := map[string]interface{}{
+		"id": userBookID,
+		"object": map[string]interface{}{
+			"status_id": statusID,
+		},
+	}
+
+	payload := map[string]interface{}{
+		"query":     mutation,
+		"variables": variables,
+	}
+
+	debugLog("=== GraphQL Mutation: update_user_book (status) ===")
+	debugLog("User Book ID: %d, New Status ID: %d", userBookID, statusID)
+	debugLog("Mutation variables: %+v", variables)
+	debugLog("Full mutation payload: %+v", payload)
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal update_user_book payload: %v", err)
+	}
+
+	debugLog("update_user_book request body: %s", string(payloadBytes))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %v", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("http request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %v", err)
+	}
+
+	debugLog("update_user_book response: %s", string(body))
+
+	var result struct {
+		Data struct {
+			UpdateUserBook struct {
+				ID       int     `json:"id"`
+				Error    *string `json:"error"`
+				UserBook *struct {
+					ID       int `json:"id"`
+					StatusID int `json:"status_id"`
+				} `json:"user_book"`
+			} `json:"update_user_book"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		return fmt.Errorf("failed to parse response: %v", err)
+	}
+
+	if len(result.Errors) > 0 {
+		return fmt.Errorf("graphql errors: %v", result.Errors)
+	}
+
+	if result.Data.UpdateUserBook.Error != nil {
+		return fmt.Errorf("update error: %s", *result.Data.UpdateUserBook.Error)
+	}
+
+	debugLog("Successfully updated user_book status with id: %d", result.Data.UpdateUserBook.ID)
+	if result.Data.UpdateUserBook.UserBook != nil {
+		debugLog("Confirmed status update - ID: %d, Status ID: %d", 
+			result.Data.UpdateUserBook.UserBook.ID, 
+			result.Data.UpdateUserBook.UserBook.StatusID)
+	}
+	return nil
+}
+
 // markBookAsOwned marks a book as owned in Hardcover using the edition_owned mutation
 // This works with edition IDs, not book IDs
 func markBookAsOwned(editionId string) error {
