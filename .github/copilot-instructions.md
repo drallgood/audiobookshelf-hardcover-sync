@@ -15,14 +15,19 @@ This is a Go application that syncs reading progress and book data between Audio
 - `utils.go` - Utility functions
 - `incremental.go` - Incremental sync functionality
 - `mismatch.go` - Mismatch detection and collection features
+- `enhanced_progress_detection.go` - Enhanced progress detection using `/api/me` endpoint
 - `docs/` - Documentation for specific features and fixes
+- `mismatches/` - can be ignored
 
 ### API definitions
 
 - Use GraphQL for Hardcover API, see `hardcover-schema.graphql` for schema definitions
 - Use REST for AudiobookShelf API, documented in `audiobookshelf-openapi.json`
+- AudiobookShelf git project https://github.com/advplyr/audiobookshelf/tree/master and (outdated) API docs https://api.audiobookshelf.org/
 - **Important**: Hardcover ownership is stored in the `lists` table (via "Owned" list), NOT in `user_books.owned` field
 - The `user_books.owned` field is unreliable and always returns `false` - use `getOwnedBooks()` and `isBookOwnedDirect()` functions instead
+- **Enhanced Progress Detection**: Uses `/api/me` endpoint for accurate finished book detection with `isFinished` flags
+- **RE-READ Detection Logic**: Fixed to check `isBookFinished` status before treating books as re-read scenarios to prevent false positives
 
 #### Hardcover API Limitations
 - API tokens automatically expire after 1 year, and reset on January 1st.

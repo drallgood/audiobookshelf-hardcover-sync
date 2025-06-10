@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **🔧 RE-READ Detection Fix**: Fixed incorrect RE-READ detection for manually finished books
+  - **Root Cause**: Books marked as "Finished" in AudiobookShelf but showing 0% progress due to API detection issues were incorrectly treated as re-read scenarios
+  - **Enhanced API Integration**: Now uses `/api/me` endpoint for accurate finished book detection with `isFinished` flags
+  - **Smart Logic**: Modified RE-READ detection to check `isBookFinished` status before treating as re-read scenario
+  - **Conservative Skip Logic**: Added safeguards for books with finished reads in Hardcover but 0% progress in AudiobookShelf
+  - **URL Fix**: Updated AudiobookShelf URL handling to support reverse proxy with `/audiobookshelf` path prefix
+  - **Type Corrections**: Fixed API response type definitions to match actual `/api/me` endpoint structure
+  - **False Positive Prevention**: Eliminates incorrect duplicate read entries for books like "If I Was Your Girl" and "Earth Afire"
+  - **Backward Compatible**: Maintains compatibility with existing API responses and configurations
 - **🔧 1000x Progress Multiplication Error**: Fixed critical bug where progress values were being multiplied by 1000
   - **Root Cause**: AudiobookShelf API sometimes returns `currentTime` in milliseconds while `totalDuration` is in seconds
   - **Unit Conversion**: Added automatic detection and conversion of millisecond values to seconds

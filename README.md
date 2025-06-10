@@ -10,6 +10,7 @@ Automatically syncs your Audiobookshelf library with Hardcover, including readin
 - 🏠 **Ownership Tracking**: Marks synced books as "owned" to distinguish from wishlist items
 - ⚡ **Incremental Sync**: Efficient timestamp-based syncing to reduce API calls
 - 🚀 **Smart Caching**: Intelligent caching of author/narrator lookups with cross-role discovery
+- 📊 **Enhanced Progress Detection**: Uses `/api/me` endpoint for accurate finished book detection, preventing false re-read scenarios
 - 🔄 **Periodic Sync**: Configurable automatic syncing (e.g., every 10 minutes or 1 hour)
 - 🎛️ **Manual Sync**: HTTP endpoints for on-demand synchronization
 - 🏥 **Health Monitoring**: Built-in health check endpoint
@@ -76,6 +77,14 @@ docker run -d \
 2. Navigate to **Settings → Users** and click on your account
 3. Copy the API token from your user profile
 4. Set `AUDIOBOOKSHELF_URL` to your server URL and `AUDIOBOOKSHELF_TOKEN` to your token
+
+> **Important for Reverse Proxy Setups**: If AudiobookShelf is behind a reverse proxy with a path prefix, include the full path in your URL:
+> ```sh
+> # Example for reverse proxy with /audiobookshelf path
+> AUDIOBOOKSHELF_URL=https://your-domain.com/audiobookshelf
+> 
+> # NOT just: https://your-domain.com
+> ```
 
 > **Alternative**: Get token via API:
 > ```sh
@@ -520,16 +529,70 @@ services:
 
 ## Recent Updates & Migration
 
-### v1.4.0 (Current)
+### v1.5.0 (Latest)
+- 🔧 **Fixed**: RE-READ detection for manually finished books - eliminates false positive re-read scenarios
+- 📊 **Enhanced**: Progress detection using `/api/me` endpoint for accurate finished book status
+- 🛡️ **Conservative**: Skip logic for edge cases to prevent duplicate entries
+- 🔗 **URL Support**: Better reverse proxy handling with path prefix support
+- 🔧 **Fixed**: 1000x progress multiplication error with smart unit conversion
+
+### v1.4.0
 - ✨ **New**: Owned books marking (`SYNC_OWNED=true` by default)
 - 🎯 **Enhanced**: "Want to Read" sync now enabled by default
 - ⚡ **Improved**: Better incremental sync performance
 - 🔧 **Fixed**: Re-read scenario handling and duplicate prevention
 
 ### Migration Notes
+- **From v1.4.x**: No breaking changes, enhanced progress detection is automatic
 - **From v1.3.x**: No breaking changes, new features enabled by default
 - **From v1.2.x**: Set `SYNC_WANT_TO_READ=false` if you prefer old behavior
 - **From v1.1.x**: Review incremental sync settings (`INCREMENTAL_SYNC_MODE`)
+- **Reverse Proxy Users**: Update `AUDIOBOOKSHELF_URL` to include full path if using path prefix
+
+## Troubleshooting
+
+### Common Issues
+
+#### Enhanced Progress Detection Issues
+If you're experiencing issues with book progress not syncing correctly:
+
+1. **Check AudiobookShelf URL Configuration**
+   ```sh
+   # For reverse proxy setups, include the full path
+   AUDIOBOOKSHELF_URL=https://your-domain.com/audiobookshelf
+   ```
+
+2. **Enable Debug Mode**
+   ```sh
+   DEBUG_MODE=true
+   ```
+   Look for messages like:
+   - `[DEBUG] Found authorize data for 'Book Title': isFinished=true`
+   - `[DEBUG] Enhanced progress detection found X items`
+
+3. **API Endpoint Access**
+   Ensure your AudiobookShelf token has access to the `/api/me` endpoint by testing:
+   ```sh
+   curl -H "Authorization: Bearer YOUR_TOKEN" \
+        "https://your-abs-server/audiobookshelf/api/me"
+   ```
+
+#### False RE-READ Detection (Legacy Issue)
+If books are still being incorrectly treated as re-reads:
+- Update to the latest version (v1.5.0+) which includes the RE-READ detection fix
+- Check that enhanced progress detection is working (see debug logs)
+- Verify your AudiobookShelf URL includes the correct path prefix
+
+#### Progress Not Syncing
+- Check `MINIMUM_PROGRESS_THRESHOLD` setting (default: 0.001 = 0.1%)
+- Verify books are marked as "Finished" in AudiobookShelf if they should be 100%
+- Enable debug mode to see detailed progress calculations
+
+### Getting Help
+For additional support:
+- 📋 Check [existing issues](https://github.com/drallgood/audiobookshelf-hardcover-sync/issues)
+- 📖 Review [Enhanced Progress Detection docs](docs/ENHANCED_PROGRESS_DETECTION.md)
+- 🐛 Create a new issue with debug logs if problems persist
 
 ## Contributing
 
