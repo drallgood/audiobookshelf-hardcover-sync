@@ -37,6 +37,8 @@ func lookupHardcoverBookIDRaw(title, author string) (string, error) {
 	  books(where: {title: {_eq: $title}, contributions: {author: {name: {_eq: $author}}}}) {
 		id
 		title
+		book_status_id
+		canonical_id
 		contributions {
 		  author {
 			name
@@ -76,6 +78,8 @@ func lookupHardcoverBookIDRaw(title, author string) (string, error) {
 			Books []struct {
 				ID            json.Number `json:"id"`
 				Title         string      `json:"title"`
+				BookStatusID  int         `json:"book_status_id"`
+				CanonicalID   *int        `json:"canonical_id"`
 				Contributions []struct {
 					Author struct {
 						Name string `json:"name"`
@@ -96,7 +100,13 @@ func lookupHardcoverBookIDRaw(title, author string) (string, error) {
 			// Check if any of the book's authors match the requested author
 			for _, contribution := range book.Contributions {
 				if strings.Contains(strings.ToLower(contribution.Author.Name), strings.ToLower(author)) {
-					return book.ID.String(), nil
+					// Handle deduped books: use canonical_id if book_status_id = 4 (deduped)
+					bookID := book.ID.String()
+					if book.BookStatusID == 4 && book.CanonicalID != nil {
+						bookID = fmt.Sprintf("%d", *book.CanonicalID)
+						debugLog("Book ID %s is deduped (status 4), using canonical_id %d instead", book.ID.String(), *book.CanonicalID)
+					}
+					return bookID, nil
 				}
 			}
 		}

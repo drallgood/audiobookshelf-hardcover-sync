@@ -29,6 +29,8 @@ func syncToHardcover(a Audiobook) error {
 		  books(where: { editions: { asin: { _eq: $asin }, reading_format_id: { _eq: 2 } } }, limit: 1) {
 			id
 			title
+			book_status_id
+			canonical_id
 			editions(where: { asin: { _eq: $asin }, reading_format_id: { _eq: 2 } }) {
 			  id
 			  asin
@@ -63,8 +65,10 @@ func syncToHardcover(a Audiobook) error {
 		var result struct {
 			Data struct {
 				Books []struct {
-					ID       json.Number `json:"id"`
-					Editions []struct {
+					ID           json.Number `json:"id"`
+					BookStatusID int         `json:"book_status_id"`
+					CanonicalID  *int        `json:"canonical_id"`
+					Editions     []struct {
 						ID              json.Number `json:"id"`
 						ASIN            string      `json:"asin"`
 						ReadingFormatID *int        `json:"reading_format_id"`
@@ -81,7 +85,15 @@ func syncToHardcover(a Audiobook) error {
 			return err
 		}
 		if len(result.Data.Books) > 0 && len(result.Data.Books[0].Editions) > 0 {
-			bookId = result.Data.Books[0].ID.String()
+			book := result.Data.Books[0]
+			bookId = book.ID.String()
+			
+			// Handle deduped books: use canonical_id if book_status_id = 4 (deduped)
+			if book.BookStatusID == 4 && book.CanonicalID != nil {
+				bookId = fmt.Sprintf("%d", *book.CanonicalID)
+				debugLog("Book ID %s is deduped (status 4), using canonical_id %d instead", book.ID.String(), *book.CanonicalID)
+			}
+			
 			editionId = result.Data.Books[0].Editions[0].ID.String()
 			asinLookupSucceeded = true
 			debugLog("Found audiobook via ASIN: bookId=%s, editionId=%s, format_id=%v, audio_seconds=%v",
@@ -99,6 +111,8 @@ func syncToHardcover(a Audiobook) error {
 		  books(where: { editions: { isbn_13: { _eq: $isbn } } }, limit: 1) {
 			id
 			title
+			book_status_id
+			canonical_id
 			editions(where: { isbn_13: { _eq: $isbn } }) {
 			  id
 			  isbn_13
@@ -131,8 +145,10 @@ func syncToHardcover(a Audiobook) error {
 		var result struct {
 			Data struct {
 				Books []struct {
-					ID       json.Number `json:"id"`
-					Editions []struct {
+					ID           json.Number `json:"id"`
+					BookStatusID int         `json:"book_status_id"`
+					CanonicalID  *int        `json:"canonical_id"`
+					Editions     []struct {
 						ID     json.Number `json:"id"`
 						ISBN10 string      `json:"isbn_10"`
 						ASIN   string      `json:"asin"`
@@ -148,7 +164,15 @@ func syncToHardcover(a Audiobook) error {
 			return err
 		}
 		if len(result.Data.Books) > 0 {
-			bookId = result.Data.Books[0].ID.String()
+			book := result.Data.Books[0]
+			bookId = book.ID.String()
+			
+			// Handle deduped books: use canonical_id if book_status_id = 4 (deduped)
+			if book.BookStatusID == 4 && book.CanonicalID != nil {
+				bookId = fmt.Sprintf("%d", *book.CanonicalID)
+				debugLog("Book ID %s is deduped (status 4), using canonical_id %d instead", book.ID.String(), *book.CanonicalID)
+			}
+			
 			if len(result.Data.Books[0].Editions) > 0 {
 				editionId = result.Data.Books[0].Editions[0].ID.String()
 			}
@@ -161,6 +185,8 @@ func syncToHardcover(a Audiobook) error {
 		  books(where: { editions: { isbn_10: { _eq: $isbn10 } } }, limit: 1) {
 			id
 			title
+			book_status_id
+			canonical_id
 			editions(where: { isbn_10: { _eq: $isbn10 } }) {
 			  id
 			  isbn_13
@@ -193,8 +219,10 @@ func syncToHardcover(a Audiobook) error {
 		var result struct {
 			Data struct {
 				Books []struct {
-					ID       json.Number `json:"id"`
-					Editions []struct {
+					ID           json.Number `json:"id"`
+					BookStatusID int         `json:"book_status_id"`
+					CanonicalID  *int        `json:"canonical_id"`
+					Editions     []struct {
 						ID     json.Number `json:"id"`
 						ISBN10 string      `json:"isbn_10"`
 					} `json:"editions"`
@@ -209,7 +237,15 @@ func syncToHardcover(a Audiobook) error {
 			return err
 		}
 		if len(result.Data.Books) > 0 {
-			bookId = result.Data.Books[0].ID.String()
+			book := result.Data.Books[0]
+			bookId = book.ID.String()
+			
+			// Handle deduped books: use canonical_id if book_status_id = 4 (deduped)
+			if book.BookStatusID == 4 && book.CanonicalID != nil {
+				bookId = fmt.Sprintf("%d", *book.CanonicalID)
+				debugLog("Book ID %s is deduped (status 4), using canonical_id %d instead", book.ID.String(), *book.CanonicalID)
+			}
+			
 			if len(result.Data.Books[0].Editions) > 0 {
 				editionId = result.Data.Books[0].Editions[0].ID.String()
 			}
