@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -298,25 +299,27 @@ func syncToHardcover(a Audiobook) error {
 	// Check if book is actually finished despite showing 0% progress
 	// This can happen when enhanced detection fails to properly identify finished books
 	isBookFinished := a.Progress >= 0.99
+	debugLog("Initial finished status for '%s': isBookFinished=%t (progress=%.6f)", a.Title, isBookFinished, a.Progress)
 	
-	// Additional checks for finished status using enhanced detection
+	// Additional checks for finished status using enhanced detection via /api/authorize
 	if !isBookFinished && a.Progress == 0 {
-		// Try enhanced item-specific detection as a fallback
-		if enhancedProgress, enhancedFinished, err := fetchItemProgressEnhanced(a.ID); err == nil {
-			if enhancedFinished || enhancedProgress >= 0.99 {
-				isBookFinished = true
-				debugLog("Enhanced detection found book '%s' is actually finished (enhanced_finished=%t, enhanced_progress=%.6f)", 
-					a.Title, enhancedFinished, enhancedProgress)
-			}
+		debugLog("Running enhanced finished book detection for '%s' (0%% progress)", a.Title)
+		
+		// Use the new authorize endpoint detection
+		if enhanceFinishedBookDetection(a.Title, a.ID, a.Progress) {
+			isBookFinished = true
+			debugLog("✅ FINISHED BOOK DETECTED: Enhanced detection found book '%s' is actually finished via /api/authorize", a.Title)
 		}
 		
 		// Also check if book appears to be finished based on listening position
 		if !isBookFinished && a.CurrentTime > 0 && a.TotalDuration > 0 {
 			actualProgress := a.CurrentTime / a.TotalDuration
 			remainingTime := a.TotalDuration - a.CurrentTime
+			debugLog("Position-based detection for '%s': actualProgress=%.6f (%.2f%%), remainingTime=%.1fs", 
+				a.Title, actualProgress, actualProgress*100, remainingTime)
 			if actualProgress >= 0.95 || remainingTime <= 300 { // Within 95% or 5 minutes of end
 				isBookFinished = true
-				debugLog("Book '%s' appears finished based on position: %.2f%% complete, %.1f minutes remaining", 
+				debugLog("✅ FINISHED BOOK DETECTED: Book '%s' appears finished based on position: %.2f%% complete, %.1f minutes remaining", 
 					a.Title, actualProgress*100, remainingTime/60)
 			}
 		}
@@ -378,11 +381,30 @@ func syncToHardcover(a Audiobook) error {
 			debugLog("Warning: Failed to check existing finished reads for '%s': %v", a.Title, err)
 			// Continue with normal logic if check fails
 		} else if hasExistingFinishedRead && a.Progress < 0.99 {
-			// EXPECTATION #4: Book has finished read in Hardcover but shows in-progress in AudiobookShelf
-			// This is a re-read scenario - always sync to create new reading session
-			needsSync = true
-			debugLog("RE-READ: Book '%s' has finished read in Hardcover (finished on %s) but shows %.2f%% progress in AudiobookShelf - syncing as new reading session",
-				a.Title, finishDate, a.Progress*100)
+			// CRITICAL FIX: Be more conservative about re-read detection
+			// Check if this is actually a finished book that AudiobookShelf is reporting incorrectly
+			debugLog("FINISHED BOOK CHECK: Book '%s' has finished read in Hardcover and shows %.2f%% progress in ABS, but isBookFinished=%t",
+				a.Title, a.Progress*100, isBookFinished)
+			
+			if isBookFinished {
+				// This is a manually finished book that AudiobookShelf is reporting with 0% progress
+				// Don't treat as re-read, treat as already finished
+				debugLog("FINISHED BOOK: Book '%s' is actually finished in AudiobookShelf despite 0%% progress - skipping sync (already finished in both systems)",
+					a.Title)
+				return nil // Skip this book entirely
+			} else if a.Progress == 0 && a.CurrentTime == 0 {
+				// CONSERVATIVE APPROACH: If book shows 0% progress AND 0 current time, 
+				// it might be a manually finished book that we can't detect properly.
+				// Don't assume it's a re-read - skip to avoid creating duplicate entries
+				debugLog("CONSERVATIVE SKIP: Book '%s' has finished read in Hardcover but shows 0%% progress and 0 current time in AudiobookShelf - likely manually finished, skipping to avoid duplicate",
+					a.Title)
+				return nil // Skip this book entirely
+			} else {
+				// This appears to be a genuine re-read scenario (has some progress/current time)
+				needsSync = true
+				debugLog("RE-READ: Book '%s' has finished read in Hardcover (finished on %s) but shows %.2f%% progress in AudiobookShelf - syncing as new reading session",
+					a.Title, finishDate, a.Progress*100)
+			}
 		} else {
 			// Normal sync logic for other scenarios
 			statusChanged := existingStatusId != targetStatusId
@@ -874,6 +896,36 @@ func runSync() {
 
 	// Clear any previous mismatches before starting new sync
 	clearMismatches()
+
+	// Apply test book filtering if configured
+	testBookFilter := getTestBookFilter()
+	testBookLimit := getTestBookLimit()
+	
+	debugLog("Test filtering config: filter='%s', limit=%d", testBookFilter, testBookLimit)
+	
+	if testBookFilter != "" {
+		debugLog("Applying TEST_BOOK_FILTER: '%s'", testBookFilter)
+		var filteredBooks []Audiobook
+		for _, book := range books {
+			if strings.Contains(strings.ToLower(book.Title), strings.ToLower(testBookFilter)) {
+				filteredBooks = append(filteredBooks, book)
+				debugLog("Book '%s' matches filter - including", book.Title)
+			} else {
+				debugLog("Book '%s' does not match filter - excluding", book.Title)
+			}
+		}
+		originalCount := len(books)
+		books = filteredBooks
+		log.Printf("TEST_BOOK_FILTER: filtered from %d to %d books matching '%s'", originalCount, len(filteredBooks), testBookFilter)
+	} else {
+		debugLog("No TEST_BOOK_FILTER configured, skipping filtering")
+	}
+	
+	if testBookLimit > 0 && len(books) > testBookLimit {
+		debugLog("Applying TEST_BOOK_LIMIT: %d", testBookLimit)
+		books = books[:testBookLimit]
+		log.Printf("TEST_BOOK_LIMIT: limited to %d books", testBookLimit)
+	}
 
 	// Filter books by configured progress threshold
 	minProgress := getMinimumProgressThreshold()

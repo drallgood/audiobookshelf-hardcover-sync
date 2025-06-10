@@ -100,3 +100,22 @@ func getEnableDebugAPI() bool {
 	val := strings.ToLower(os.Getenv("DEBUG_MODE"))
 	return val == "true" || val == "1" || val == "yes"
 }
+
+// getTestBookFilter returns the book title filter for testing
+// Default: empty string (no filtering)
+func getTestBookFilter() string {
+	return strings.TrimSpace(os.Getenv("TEST_BOOK_FILTER"))
+}
+
+// getTestBookLimit returns the maximum number of books to process for testing
+// Default: 0 (no limit)
+func getTestBookLimit() int {
+	limit := os.Getenv("TEST_BOOK_LIMIT")
+	if limit == "" {
+		return 0
+	}
+	if val, err := strconv.Atoi(limit); err == nil && val > 0 {
+		return val
+	}
+	return 0
+}

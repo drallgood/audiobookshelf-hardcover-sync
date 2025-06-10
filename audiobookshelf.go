@@ -1123,3 +1123,134 @@ func getKeys(m map[string]interface{}) []string {
 	}
 	return keys
 }
+
+// fetchAuthorizeData fetches comprehensive user data from /api/me endpoint
+func fetchAuthorizeData() (*AuthorizeResponse, error) {
+	url := getAudiobookShelfURL() + "/api/me"
+	debugLog("Fetching user data from /api/me: %s", url)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %v", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+getAudiobookShelfToken())
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch authorize data: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
+	}
+
+	var authorizeResp AuthorizeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&authorizeResp); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %v", err)
+	}
+
+	debugLog("Successfully fetched user data: %d media progress entries", len(authorizeResp.MediaProgress))
+	return &authorizeResp, nil
+}
+
+// getMediaProgressByLibraryItemID looks up media progress by library item ID
+func getMediaProgressByLibraryItemID(authorizeData *AuthorizeResponse, libraryItemID string) *MediaProgress {
+	if authorizeData == nil {
+		return nil
+	}
+
+	for _, progress := range authorizeData.MediaProgress {
+		if progress.LibraryItemID == libraryItemID {
+			return &progress
+		}
+	}
+	return nil
+}
+
+// fetchAudiobookShelfStatsEnhanced fetches audiobooks with enhanced progress detection using /api/authorize
+func fetchAudiobookShelfStatsEnhanced() ([]Audiobook, error) {
+	debugLog("Fetching AudiobookShelf stats using enhanced API detection...")
+
+	// First get basic audiobook data
+	libs, err := fetchLibraries()
+	if err != nil {
+		debugLog("Error fetching libraries: %v", err)
+		return nil, err
+	}
+
+	var audiobooks []Audiobook
+	for _, lib := range libs {
+		items, err := fetchLibraryItems(lib.ID)
+		if err != nil {
+			debugLog("Failed to fetch items for library %s: %v", lib.Name, err)
+			continue
+		}
+		debugLog("Processing %d items for library %s", len(items), lib.Name)
+		
+		for i, item := range items {
+			if i < 5 {
+				debugLog("Item %d mediaType: %s", i, item.MediaType)
+			}
+			if strings.EqualFold(item.MediaType, "book") {
+				title := item.Media.Metadata.Title
+				author := item.Media.Metadata.AuthorName
+				isbn := item.Media.Metadata.ISBN
+				asin := item.Media.Metadata.ASIN
+				isbn10 := ""
+				if isbn == "" {
+					isbn = item.Media.Metadata.ISBN13
+				}
+				if item.Media.Metadata.ISBN != "" && len(item.Media.Metadata.ISBN) == 10 {
+					isbn10 = item.Media.Metadata.ISBN
+				}
+
+				// Extract duration information
+				var currentTime, totalDuration float64
+				if item.Media.Metadata.Duration > 0 {
+					totalDuration = item.Media.Metadata.Duration
+				} else if item.Media.Duration > 0 {
+					totalDuration = item.Media.Duration
+				} else if item.UserProgress != nil && item.UserProgress.TotalDuration > 0 {
+					totalDuration = item.UserProgress.TotalDuration
+				}
+
+				// Start with basic progress
+				progress := item.Progress
+
+				// Calculate current time
+				if item.UserProgress != nil && item.UserProgress.CurrentTime > 0 {
+					currentTime = item.UserProgress.CurrentTime
+					currentTime = convertTimeUnits(currentTime, totalDuration)
+				} else if totalDuration > 0 && progress > 0 {
+					currentTime = totalDuration * progress
+				}
+
+				debugLog("Enhanced stats for '%s': progress=%.6f, currentTime=%.2fs, totalDuration=%.2fs", 
+					title, progress, currentTime, totalDuration)
+
+				audiobooks = append(audiobooks, Audiobook{
+					ID:            item.ID,
+					Title:         title,
+					Author:        author,
+					ISBN:          isbn,
+					ISBN10:        isbn10,
+					ASIN:          asin,
+					Progress:      progress,
+					CurrentTime:   currentTime,
+					TotalDuration: totalDuration,
+					Metadata:      item.Media.Metadata,
+				})
+			}
+		}
+	}
+
+	debugLog("Enhanced stats found %d audiobooks", len(audiobooks))
+	
+	// Now enhance the progress data using /api/authorize
+	enhanced := enhanceProgressDetection(audiobooks)
+	return enhanced, nil
+}
