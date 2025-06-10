@@ -49,6 +49,8 @@ func CreateHardcoverEdition(input EditionCreatorInput) (*EditionCreatorResult, e
 	// Step 1: Check if image already exists, upload if needed
 	var imageID int
 	var err error
+	var hasLocalImage bool
+	var localImageURL string
 
 	if input.ImageURL != "" {
 		isHardcoverAsset, skipUpload, err := isHardcoverAssetURL(input.ImageURL)
@@ -61,13 +63,22 @@ func CreateHardcoverEdition(input EditionCreatorInput) (*EditionCreatorResult, e
 			debugLog("Skipping image upload for book %d - URL is already from Hardcover assets: %s", input.BookID, input.ImageURL)
 			// Don't set imageID since we're not uploading - let the edition be created without an image
 			imageID = 0
+		} else if isLocalAudiobookShelfURL(input.ImageURL) {
+			// For local images, we'll upload them AFTER creating the edition
+			debugLog("Local image detected - will upload after edition creation: %s", input.ImageURL)
+			hasLocalImage = true
+			localImageURL = input.ImageURL
+			imageID = 0 // Create edition without image first
 		} else {
+			// For external URLs, upload normally before creating edition
 			imageID, err = uploadImageFromURL(input.BookID, input.ImageURL)
 			if err != nil {
-				result.Error = fmt.Sprintf("Failed to upload image: %v", err)
-				return result, err
+				debugLog("Warning: Failed to upload image for book %d: %v", input.BookID, err)
+				debugLog("Proceeding with edition creation without image...")
+				imageID = 0 // Continue without image
+			} else {
+				debugLog("Successfully uploaded new image for book %d, image_id: %d", input.BookID, imageID)
 			}
-			debugLog("Successfully uploaded new image for book %d, image_id: %d", input.BookID, imageID)
 		}
 	}
 
@@ -78,6 +89,29 @@ func CreateHardcoverEdition(input EditionCreatorInput) (*EditionCreatorResult, e
 	if err != nil {
 		result.Error = fmt.Sprintf("Failed to create edition: %v", err)
 		return result, err
+	}
+
+	// Step 3: If we have a local image, upload it now that we have the edition ID
+	if hasLocalImage {
+		debugLog("Uploading local image to newly created edition %d", editionID)
+		localImageID, err := uploadLocalImageToExistingEdition(editionID, localImageURL)
+		if err != nil {
+			debugLog("Warning: Failed to upload local image to edition %d: %v", editionID, err)
+			// Don't fail the entire process - edition was created successfully
+		} else {
+			debugLog("Successfully uploaded local image to edition %d, image_id: %d", editionID, localImageID)
+			result.ImageID = localImageID
+			
+			// Step 4: Update the edition to reference the uploaded image
+			debugLog("Updating edition %d to reference image %d", editionID, localImageID)
+			err = updateEditionWithImage(editionID, localImageID)
+			if err != nil {
+				debugLog("Warning: Failed to update edition %d with image %d: %v", editionID, localImageID, err)
+				// Don't fail - the image is uploaded and linked, just the edition record isn't updated
+			} else {
+				debugLog("Successfully updated edition %d with image %d", editionID, localImageID)
+			}
+		}
 	}
 
 	result.Success = true
@@ -98,7 +132,9 @@ func uploadImageFromURL(bookID int, imageURL string) (int, error) {
 	// Check if this is a local AudiobookShelf URL that Hardcover can't access
 	if isLocalAudiobookShelfURL(imageURL) {
 		debugLog("Detected local AudiobookShelf URL: %s", imageURL)
-		return uploadLocalImageToHardcover(bookID, imageURL)
+		// Local images cannot be uploaded before edition creation because they need an edition ID
+		// This will be handled in the CreateHardcoverEdition flow after the edition is created
+		return 0, fmt.Errorf("local image upload requires edition ID - will be handled after edition creation")
 	}
 
 	// Use the working uploadImageToHardcover function from hardcover.go
@@ -163,13 +199,17 @@ func createEditionWithMetadata(input EditionCreatorInput, imageID int) (int, err
 
 	// Build edition DTO
 	editionDTO := map[string]interface{}{
-		"image_id":          imageID,
 		"title":             input.Title,
 		"contributions":     contributions,
 		"reading_format_id": 2, // Audiobook format
 		"audio_seconds":     input.AudioLength,
 		"release_date":      input.ReleaseDate,
 		"asin":              input.ASIN,
+	}
+
+	// Add image ID only if we have one (successful upload)
+	if imageID > 0 {
+		editionDTO["image_id"] = imageID
 	}
 
 	// Add subtitle if provided
