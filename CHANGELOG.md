@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.5.0] - 2025-06-10
+
 ### Fixed
 - **🔧 RE-READ Detection Fix**: Fixed incorrect RE-READ detection for manually finished books
   - **Root Cause**: Books marked as "Finished" in AudiobookShelf but showing 0% progress due to API detection issues were incorrectly treated as re-read scenarios
@@ -28,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Test Coverage**: Added comprehensive tests including reproduction of original bug scenario
   - **Real-world Impact**: Prevents progress values like 500.0 or 1000.0 being sent to Hardcover instead of 0.5 or 1.0
 
-## [v1.5.0] - 2025-06-08
+## [v1.4.9] - 2025-06-08
 
 ### Added
 - **📚 Owned Books Query Functions**: Added proper owned books querying capabilities
