@@ -652,7 +652,7 @@ func syncToHardcover(a Audiobook) error {
 
 		// Check if a user_book_read already exists for today
 		today := time.Now().Format("2006-01-02")
-		existingReadId, existingProgressSeconds, err := checkExistingUserBookRead(userBookId, today)
+		existingReadId, existingProgressSeconds, existingStartedAt, err := checkExistingUserBookRead(userBookId, today)
 		if err != nil {
 			return fmt.Errorf("failed to check existing user book read for '%s': %v", a.Title, err)
 		}
@@ -676,11 +676,19 @@ func syncToHardcover(a Audiobook) error {
 				  }
 				}`
 
-				// CRITICAL FIX: Always set started_at to prevent null values from wiping out reading history
+				// CRITICAL FIX: Preserve original started_at to prevent reading history from being overwritten
 				// If the book is finished, also set finished_at
 				updateObject := map[string]interface{}{
 					"progress_seconds": targetProgressSeconds,
-					"started_at":       time.Now().Format("2006-01-02"), // Ensure started_at is never null
+				}
+
+				// Preserve the original started_at date if available, otherwise use current date
+				if existingStartedAt != "" {
+					updateObject["started_at"] = existingStartedAt
+					debugLog("Preserving original started_at date: %s", existingStartedAt)
+				} else {
+					updateObject["started_at"] = time.Now().Format("2006-01-02")
+					debugLog("No existing started_at found, using current date: %s", time.Now().Format("2006-01-02"))
 				}
 
 				// If book is finished (>= 99%), also set finished_at
@@ -699,6 +707,8 @@ func syncToHardcover(a Audiobook) error {
 
 				debugLog("=== GraphQL Mutation: update_user_book_read ===")
 				debugLog("Book: '%s' by '%s'", a.Title, a.Author)
+				debugLog("Existing read ID: %d, preserving started_at: %s", existingReadId, existingStartedAt)
+				debugLog("Progress update: %d -> %d seconds", existingProgressSeconds, targetProgressSeconds)
 				debugLog("Existing read ID: %d, Progress: %d -> %d seconds", existingReadId, existingProgressSeconds, targetProgressSeconds)
 				debugLog("Update object: %+v", updateObject)
 				debugLog("Mutation variables: %+v", variables)
@@ -1065,4 +1075,70 @@ func runSync() {
 	if err := saveMismatchesJSONFile(); err != nil {
 		log.Printf("Warning: Failed to save mismatches to JSON file: %v", err)
 	}
+}
+
+// getCurrentUserID fetches the current user's ID from Hardcover
+func getCurrentUserID() (string, error) {
+	query := `
+	query Me {
+	  me {
+		id
+		username
+	  }
+	}`
+	
+	payload := map[string]interface{}{"query": query}
+	payloadBytes, _ := json.Marshal(payload)
+	
+	req, err := http.NewRequest("POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		return "", err
+	}
+	
+	req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
+	
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	
+	debugLog("Hardcover me response: %s", string(body))
+	
+	// Try different response structures
+	var result1 struct {
+		Data struct {
+			Me struct {
+				ID       string `json:"id"`
+				Username string `json:"username"`
+			} `json:"me"`
+		} `json:"data"`
+	}
+	
+	if err := json.Unmarshal(body, &result1); err == nil && result1.Data.Me.ID != "" {
+		return result1.Data.Me.ID, nil
+	}
+	
+	// Alternative structure with array
+	var result2 struct {
+		Data struct {
+			Me []struct {
+				ID       string `json:"id"`
+				Username string `json:"username"`
+			} `json:"me"`
+		} `json:"data"`
+	}
+	
+	if err := json.Unmarshal(body, &result2); err == nil && len(result2.Data.Me) > 0 {
+		return result2.Data.Me[0].ID, nil
+	}
+	
+	return "", fmt.Errorf("failed to parse user ID from response: %s", string(body))
 }

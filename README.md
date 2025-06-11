@@ -70,6 +70,15 @@ docker run -d \
 | `AUDIBLE_API_ENABLED` | `false` | Enable Audible API integration for enhanced metadata |
 | `AUDIBLE_API_TOKEN` | None | API token for Audible service (if required) |
 | `AUDIBLE_API_TIMEOUT` | `10s` | Timeout for Audible API requests (e.g., `5s`, `30s`) |
+| `DRY_RUN` | `false` | Enable dry run mode for testing (`true`, `1`, or `yes`) |
+| `MISMATCH_JSON_FILE` | None | Directory path for saving individual mismatch JSON files |
+| `TZ` | System default | Timezone for container logs (e.g., `Europe/Vienna`, `UTC`) |
+
+### Development & Testing Variables
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TEST_BOOK_FILTER` | None | Filter books by title for development testing (case-insensitive) |
+| `TEST_BOOK_LIMIT` | None | Limit number of books to process for development testing |
 
 ## Setup Instructions
 

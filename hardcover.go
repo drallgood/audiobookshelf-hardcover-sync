@@ -296,12 +296,12 @@ func checkExistingUserBook(bookId string) (int, int, int, bool, int, error) {
 }
 
 // checkExistingUserBookRead checks if a user_book_read already exists for the given user_book_id that isn't finished
-// Returns: existingReadId (0 if not found), existingProgressSeconds, error
-func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, error) {
+// Returns: existingReadId (0 if not found), existingProgressSeconds, existingStartedAt, error
+func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, string, error) {
 	// Get current user to ensure we only query their data
 	currentUser, err := getCurrentUser()
 	if err != nil {
-		return 0, 0, fmt.Errorf("failed to get current user: %v", err)
+		return 0, 0, "", fmt.Errorf("failed to get current user: %v", err)
 	}
 
 	query := `
@@ -331,7 +331,7 @@ func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, err
 
 	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(payloadBytes))
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
 	req.Header.Set("Content-Type", "application/json")
@@ -339,13 +339,13 @@ func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, err
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		return 0, 0, fmt.Errorf("hardcover user_book_reads query error: %s - %s", resp.Status, string(body))
+		return 0, 0, "", fmt.Errorf("hardcover user_book_reads query error: %s - %s", resp.Status, string(body))
 	}
 
 	var result struct {
@@ -361,11 +361,11 @@ func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, err
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, "", err
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
-		return 0, 0, err
+		return 0, 0, "", err
 	}
 
 	// If no user book read found for this book, try fallback query for entries with null started_at
@@ -395,7 +395,7 @@ func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, err
 
 		req2, err := http.NewRequestWithContext(ctx2, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(fallbackPayloadBytes))
 		if err != nil {
-			return 0, 0, err
+			return 0, 0, "", err
 		}
 		req2.Header.Set("Authorization", "Bearer "+getHardcoverToken())
 		req2.Header.Set("Content-Type", "application/json")
@@ -403,27 +403,27 @@ func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, err
 
 		resp2, err := httpClient.Do(req2)
 		if err != nil {
-			return 0, 0, err
+			return 0, 0, "", err
 		}
 		defer resp2.Body.Close()
 
 		if resp2.StatusCode != 200 {
 			body2, _ := io.ReadAll(resp2.Body)
-			return 0, 0, fmt.Errorf("hardcover fallback user_book_reads query error: %s - %s", resp2.Status, string(body2))
+			return 0, 0, "", fmt.Errorf("hardcover fallback user_book_reads query error: %s - %s", resp2.Status, string(body2))
 		}
 
 		body2, err := io.ReadAll(resp2.Body)
 		if err != nil {
-			return 0, 0, err
+			return 0, 0, "", err
 		}
 
 		if err := json.Unmarshal(body2, &result); err != nil {
-			return 0, 0, err
+			return 0, 0, "", err
 		}
 
 		if len(result.Data.UserBookReads) == 0 {
 			debugLog("No existing unfinished user_book_read found at all for userBookId=%d", userBookID)
-			return 0, 0, nil
+			return 0, 0, "", nil
 		}
 
 		debugLog("Found unfinished user_book_read via fallback query for userBookId=%d", userBookID)
@@ -446,9 +446,14 @@ func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, err
 	userBookRead := result.Data.UserBookReads[0]
 	existingReadId := userBookRead.ID
 	existingProgressSeconds := 0
+	existingStartedAt := ""
 
 	if userBookRead.ProgressSeconds != nil {
 		existingProgressSeconds = *userBookRead.ProgressSeconds
+	}
+
+	if userBookRead.StartedAt != nil {
+		existingStartedAt = *userBookRead.StartedAt
 	}
 
 	startedAtStr := "null"
@@ -459,7 +464,7 @@ func checkExistingUserBookRead(userBookID int, targetDate string) (int, int, err
 	debugLog("Selected user_book_read: id=%d, progressSeconds=%d, startedAt=%s",
 		existingReadId, existingProgressSeconds, startedAtStr)
 
-	return existingReadId, existingProgressSeconds, nil
+	return existingReadId, existingProgressSeconds, existingStartedAt, nil
 }
 
 // checkExistingFinishedRead checks if ANY user_book_read with status "read" (finished) already exists
@@ -1929,4 +1934,141 @@ func isHardcoverAssetURL(imageURL string) (bool, bool, error) {
 
 	debugLog("Image URL is not from Hardcover assets domain, will upload: %s", imageURL)
 	return false, false, nil
+}
+
+// diagNoseNullEdition queries a user_book_read entry to understand why edition might be null
+func diagnoseNullEdition(userBookReadID int) {
+	if !debugMode {
+		return
+	}
+
+	debugLog("=== Diagnosing NULL Edition Issue for user_book_read ID: %d ===", userBookReadID)
+
+	query := `
+	query DiagnoseNullEdition($id: Int!) {
+	  user_book_reads(where: { id: { _eq: $id } }) {
+		id
+		progress_seconds
+		started_at
+		finished_at
+		user_book_id
+		user_book {
+		  id
+		  book_id
+		  edition_id
+		  status_id
+		  owned
+		  book {
+			id
+			title
+		  }
+		  edition {
+			id
+			title
+			isbn_10
+			isbn_13
+			asin
+		  }
+		}
+	  }
+	}`
+
+	variables := map[string]interface{}{
+		"id": userBookReadID,
+	}
+	payload := map[string]interface{}{"query": query, "variables": variables}
+	payloadBytes, _ := json.Marshal(payload)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		debugLog("Failed to create diagnostic request: %v", err)
+		return
+	}
+
+	req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		debugLog("Failed to execute diagnostic query: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		debugLog("Failed to read diagnostic response: %v", err)
+		return
+	}
+
+	debugLog("Diagnostic query response: %s", string(body))
+
+	var result struct {
+		Data struct {
+			UserBookReads []struct {
+				ID             int `json:"id"`
+				ProgressSeconds *int `json:"progress_seconds"`
+				StartedAt      *string `json:"started_at"`
+				FinishedAt     *string `json:"finished_at"`
+				UserBookID     int `json:"user_book_id"`
+				UserBook       struct {
+					ID        int  `json:"id"`
+					BookID    int  `json:"book_id"`
+					EditionID *int `json:"edition_id"`
+					StatusID  int  `json:"status_id"`
+					Owned     bool `json:"owned"`
+					Book      struct {
+						ID    int    `json:"id"`
+						Title string `json:"title"`
+					} `json:"book"`
+					Edition *struct {
+						ID     int     `json:"id"`
+						Title  string  `json:"title"`
+						ISBN10 *string `json:"isbn_10"`
+						ISBN13 *string `json:"isbn_13"`
+						ASIN   *string `json:"asin"`
+					} `json:"edition"`
+				} `json:"user_book"`
+			} `json:"user_book_reads"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		debugLog("Failed to parse diagnostic response: %v", err)
+		return
+	}
+
+	if len(result.Data.UserBookReads) == 0 {
+		debugLog("No user_book_read found with ID %d", userBookReadID)
+		return
+	}
+
+	read := result.Data.UserBookReads[0]
+	userBook := read.UserBook
+
+	debugLog("=== Diagnostic Results ===")
+	debugLog("user_book_read ID: %d", read.ID)
+	debugLog("user_book ID: %d", read.UserBookID)
+	debugLog("book_id: %d (%s)", userBook.BookID, userBook.Book.Title)
+	
+	if userBook.EditionID != nil {
+		debugLog("edition_id: %d", *userBook.EditionID)
+		if userBook.Edition != nil {
+			debugLog("edition found: %s", userBook.Edition.Title)
+			if userBook.Edition.ASIN != nil {
+				debugLog("edition ASIN: %s", *userBook.Edition.ASIN)
+			}
+		} else {
+			debugLog("WARNING: edition_id is set (%d) but edition is NULL - possible orphaned reference", *userBook.EditionID)
+		}
+	} else {
+		debugLog("WARNING: edition_id is NULL - this causes the edition field to be null in queries")
+	}
+	
+	debugLog("status_id: %d, owned: %t", userBook.StatusID, userBook.Owned)
+	debugLog("=== End Diagnostic ===")
 }

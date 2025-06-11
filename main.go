@@ -19,19 +19,30 @@
 //   ./main                       # Runs initial sync, then waits for /sync or SYNC_INTERVAL
 //   ./main --health-check        # Health check mode for Docker
 //   ./main --version             # Print version
+//   ./main -v                    # Enable verbose debug logging
+//   ./main --debug-api           # Debug AudiobookShelf API endpoints
+//
+//   # Edition creation tools
 //   ./main --create-edition      # Interactive edition creation tool
+//   ./main --create-edition-prepopulated # Interactive with Hardcover data prepopulation
 //   ./main --create-edition-json FILE # Create edition from JSON file
-//   ./main --generate-example FILE.json # Generate example JSON file for batch creation
+//   ./main --generate-example FILE.json # Generate example JSON template
+//   ./main --generate-prepopulated bookid:file.json # Generate prepopulated template
+//   ./main --enhance-template file.json:bookid # Enhance existing template
+//
+//   # ID lookup and verification tools
 //   ./main --lookup-author       # Search for author IDs by name
 //   ./main --lookup-narrator     # Search for narrator IDs by name
 //   ./main --lookup-publisher    # Search for publisher IDs by name
-//   ./main --bulk-lookup-authors "Name1,Name2" # Search for multiple authors
-//   ./main --bulk-lookup-narrators "Name1,Name2" # Search for multiple narrators
-//   ./main --bulk-lookup-publishers "Name1,Name2" # Search for multiple publishers
 //   ./main --verify-author-id ID # Verify and get details for a specific author ID
 //   ./main --verify-narrator-id ID # Verify and get details for a specific narrator ID
 //   ./main --verify-publisher-id ID # Verify and get details for a specific publisher ID
-//   ./main --upload-image "url:description" # Upload image from URL to Hardcover
+//   ./main --bulk-lookup-authors "Name1,Name2" # Search for multiple authors
+//   ./main --bulk-lookup-narrators "Name1,Name2" # Search for multiple narrators
+//   ./main --bulk-lookup-publishers "Name1,Name2" # Search for multiple publishers
+//
+//   # Image upload
+//   ./main --upload-image "url:bookID:description" # Upload image from URL to Hardcover
 //
 // Endpoints:
 //   GET /healthz           # Health check
@@ -87,6 +98,7 @@ func main() {
 	bulkLookupPublishers := flag.String("bulk-lookup-publishers", "", "Search for multiple publishers by comma-separated names")
 	uploadImage := flag.String("upload-image", "", "Upload image from URL to Hardcover (format: url:bookID:description)")
 	debugAPI := flag.Bool("debug-api", false, "Debug AudiobookShelf API endpoints")
+
 	flag.Parse()
 
 	// Enable debug mode if -v flag or DEBUG_MODE env var is set
