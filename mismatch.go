@@ -418,6 +418,13 @@ func convertMismatchToEditionInput(mismatch BookMismatch) EditionCreatorInput {
 					input.EditionInfo = "ENHANCED: Data enhanced with Audible API"
 				}
 				debugLog("Successfully enhanced mismatch data with Audible API for '%s'", input.Title)
+			} else if prepopulated.PrepopulationSource == "hardcover+external" {
+				if input.EditionInfo != "" {
+					input.EditionInfo += " | ENHANCED: Data enhanced with external metadata"
+				} else {
+					input.EditionInfo = "ENHANCED: Data enhanced with external metadata"
+				}
+				debugLog("Successfully enhanced mismatch data with external metadata for '%s'", input.Title)
 			}
 		}
 	}

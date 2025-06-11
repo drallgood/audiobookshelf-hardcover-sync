@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **🔧 CRITICAL: Edition Field NULL Fix**: Fixed critical bug where `edition` field became `null` in `user_book_read` entries
+  - **Root Cause**: `insertUserBookRead()` and `update_user_book_read` mutations were missing `edition_id` field in `DatesReadInput` objects
+  - **Data Loss Prevention**: Without `edition_id`, Hardcover couldn't link reading entries to specific editions, causing `edition` field to become `null`
+  - **Function Enhancement**: Modified `insertUserBookRead()` signature to accept `editionID` parameter
+  - **Mutation Updates**: Added `edition_id` field to both insert and update `DatesReadInput` objects with validation
+  - **Sync Logic**: Updated sync.go to pass `existingEditionId` from `checkExistingUserBook()` context
+  - **Debug Features**: Added diagnostic logging and `diagnoseNullEdition()` calls for troubleshooting
+  - **Data Integrity**: Preserves edition information in all user reading entries, preventing loss of audiobook edition context
+  - **Test Coverage**: Comprehensive test suite in `edition_field_fix_test.go` with 100% pass rate
+  - **Impact**: Critical fix for maintaining reading history integrity with proper edition tracking
+- **🔧 Mismatch Enhancement Logic**: Fixed incorrect condition in mismatch.go enhancement detection
+  - **Bug**: Changed condition from `"mismatch+audible"` to `"hardcover+audible"` for proper enhancement marker detection
+  - **Context**: Ensures Audible API enhancement markers are correctly applied in edition creation files
+
 ### Added
 - **🎧 Audible API Integration**: Added comprehensive Audible API integration for enhanced metadata
   - **External Data Enhancement**: `enhanceWithExternalData()` function now integrates real Audible API data
