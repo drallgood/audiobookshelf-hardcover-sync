@@ -366,6 +366,62 @@ func convertMismatchToEditionInput(mismatch BookMismatch) EditionCreatorInput {
 		input.EditionInfo = strings.Join(infoSections, " | ")
 	}
 
+	// Enhance with Audible API data if enabled and ASIN is available
+	if input.ASIN != "" {
+		// Create a PrepopulatedEditionInput for the enhancement function
+		prepopulated := PrepopulatedEditionInput{
+			BookID:              input.BookID,
+			Title:               input.Title,
+			Subtitle:            input.Subtitle,
+			ImageURL:            input.ImageURL,
+			ASIN:                input.ASIN,
+			ISBN10:              input.ISBN10,
+			ISBN13:              input.ISBN13,
+			AuthorIDs:           input.AuthorIDs,
+			NarratorIDs:         input.NarratorIDs,
+			PublisherID:         input.PublisherID,
+			ReleaseDate:         input.ReleaseDate,
+			AudioSeconds:        input.AudioLength,
+			EditionFormat:       input.EditionFormat,
+			EditionInfo:         input.EditionInfo,
+			LanguageID:          input.LanguageID,
+			CountryID:           input.CountryID,
+			PrepopulationSource: "mismatch",
+		}
+
+		// Attempt Audible API enhancement
+		if err := enhanceWithExternalData(&prepopulated, input.ASIN); err != nil {
+			debugLog("Failed to enhance mismatch data with Audible API for ASIN %s: %v", input.ASIN, err)
+		} else {
+			// Update the input with enhanced data
+			input.Title = prepopulated.Title
+			input.Subtitle = prepopulated.Subtitle
+			input.ImageURL = prepopulated.ImageURL
+			input.ASIN = prepopulated.ASIN
+			input.ISBN10 = prepopulated.ISBN10
+			input.ISBN13 = prepopulated.ISBN13
+			input.AuthorIDs = prepopulated.AuthorIDs
+			input.NarratorIDs = prepopulated.NarratorIDs
+			input.PublisherID = prepopulated.PublisherID
+			input.ReleaseDate = prepopulated.ReleaseDate
+			input.AudioLength = prepopulated.AudioSeconds
+			input.EditionFormat = prepopulated.EditionFormat
+			input.EditionInfo = prepopulated.EditionInfo
+			input.LanguageID = prepopulated.LanguageID
+			input.CountryID = prepopulated.CountryID
+
+			// Add enhancement info to EditionInfo if successful
+			if prepopulated.PrepopulationSource == "mismatch+audible" {
+				if input.EditionInfo != "" {
+					input.EditionInfo += " | ENHANCED: Data enhanced with Audible API"
+				} else {
+					input.EditionInfo = "ENHANCED: Data enhanced with Audible API"
+				}
+				debugLog("Successfully enhanced mismatch data with Audible API for '%s'", input.Title)
+			}
+		}
+	}
+
 	return input
 }
 
