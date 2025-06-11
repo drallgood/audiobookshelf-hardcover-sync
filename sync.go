@@ -678,8 +678,17 @@ func syncToHardcover(a Audiobook) error {
 
 				// CRITICAL FIX: Preserve original started_at to prevent reading history from being overwritten
 				// If the book is finished, also set finished_at
+				// CRITICAL FIX: Include edition_id to prevent edition field from being null
 				updateObject := map[string]interface{}{
 					"progress_seconds": targetProgressSeconds,
+				}
+
+				// Set edition_id if available (CRITICAL FIX: prevents edition field from being null)
+				if existingEditionId > 0 {
+					updateObject["edition_id"] = existingEditionId
+					debugLog("Setting edition_id in update_user_book_read: %d", existingEditionId)
+				} else {
+					debugLog("WARNING: No edition_id available for update - edition field may become null")
 				}
 
 				// Preserve the original started_at date if available, otherwise use current date
@@ -789,6 +798,11 @@ func syncToHardcover(a Audiobook) error {
 				if result.Data.UpdateUserBookRead.UserBookRead != nil {
 					debugLog("Confirmed progress update: %d seconds", result.Data.UpdateUserBookRead.UserBookRead.ProgressSeconds)
 				}
+				
+				// Diagnose potential null edition issues in debug mode
+				if debugMode && result.Data.UpdateUserBookRead.ID > 0 {
+					diagnoseNullEdition(result.Data.UpdateUserBookRead.ID)
+				}
 			} else {
 				debugLog("No update needed for existing user_book_read id=%d (progress already %d seconds)", existingReadId, existingProgressSeconds)
 			}
@@ -836,7 +850,8 @@ func syncToHardcover(a Audiobook) error {
 				debugLog("Creating new user_book_read for '%s': %d seconds (%.2f%%)", a.Title, targetProgressSeconds, a.Progress*100)
 				// Use the enhanced insertUserBookRead function which includes reading_format_id for audiobooks
 				// This ensures Hardcover recognizes it as an audiobook and doesn't ignore progress_seconds
-				if err := insertUserBookRead(userBookId, targetProgressSeconds, a.Progress >= 0.99); err != nil {
+				// CRITICAL FIX: Pass edition_id to prevent edition field from being null
+				if err := insertUserBookRead(userBookId, targetProgressSeconds, a.Progress >= 0.99, existingEditionId); err != nil {
 					return fmt.Errorf("failed to sync progress for '%s': %v", a.Title, err)
 				}
 			}

@@ -564,11 +564,19 @@ func checkExistingFinishedRead(userBookID int) (bool, string, error) {
 
 // insertUserBookRead is a function that uses the insert_user_book_read mutation
 // to sync progress to Hardcover
-func insertUserBookRead(userBookID int, progressSeconds int, isFinished bool) error {
+func insertUserBookRead(userBookID int, progressSeconds int, isFinished bool, editionID int) error {
 	// Prepare the input for the mutation
 	userBookRead := map[string]interface{}{
 		"progress_seconds":  progressSeconds,
 		"reading_format_id": 2, // Audiobook format
+	}
+
+	// Set edition_id if available (CRITICAL FIX: prevents edition field from being null)
+	if editionID > 0 {
+		userBookRead["edition_id"] = editionID
+		debugLog("Setting edition_id in user_book_read: %d", editionID)
+	} else {
+		debugLog("WARNING: No edition_id provided - edition field will be null in user_book_read")
 	}
 
 	// Set dates based on completion status
@@ -659,6 +667,12 @@ func insertUserBookRead(userBookID int, progressSeconds int, isFinished bool) er
 	}
 
 	debugLog("Successfully inserted user_book_read with id: %d", result.Data.InsertUserBookRead.ID)
+	
+	// Diagnose potential null edition issues in debug mode
+	if debugMode && result.Data.InsertUserBookRead.ID > 0 {
+		diagnoseNullEdition(result.Data.InsertUserBookRead.ID)
+	}
+	
 	return nil
 }
 

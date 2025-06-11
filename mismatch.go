@@ -411,7 +411,7 @@ func convertMismatchToEditionInput(mismatch BookMismatch) EditionCreatorInput {
 			input.CountryID = prepopulated.CountryID
 
 			// Add enhancement info to EditionInfo if successful
-			if prepopulated.PrepopulationSource == "mismatch+audible" {
+			if prepopulated.PrepopulationSource == "hardcover+audible" {
 				if input.EditionInfo != "" {
 					input.EditionInfo += " | ENHANCED: Data enhanced with Audible API"
 				} else {
