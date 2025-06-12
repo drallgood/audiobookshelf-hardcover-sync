@@ -324,10 +324,13 @@ func syncToHardcover(a Audiobook) error {
 	}
 
 	// Step 2: Check if user already has this book and compare status/progress
-	existingUserBookId, existingStatusId, existingProgressSeconds, existingOwned, existingEditionId, err := checkExistingUserBook(bookId)
+	existingUserBookId, existingStatusId, existingProgressSeconds, existingOwned, existingEditionId, userBookReadEditionId, err := checkExistingUserBook(bookId)
 	if err != nil {
 		return fmt.Errorf("failed to check existing user book for '%s': %v", a.Title, err)
 	}
+	
+	debugLog("DEBUG: checkExistingUserBook returned - userBookId=%d, statusId=%d, progressSeconds=%d, owned=%t, editionId=%d, userBookReadEditionId=%v", 
+		existingUserBookId, existingStatusId, existingProgressSeconds, existingOwned, existingEditionId, userBookReadEditionId)
 
 	// Determine the target status for this book with enhanced finished book detection
 	targetStatusId := 3 // default to read
@@ -477,10 +480,24 @@ func syncToHardcover(a Audiobook) error {
 				ownedChanged = targetOwned != existingOwned
 			}
 
-			if statusChanged || progressChanged {
+			// EDITION MISMATCH DETECTION: Check if user_book_read.edition_id is null or different from user_book.edition_id
+			editionMismatch := false
+			if existingEditionId > 0 {
+				if userBookReadEditionId == nil {
+					editionMismatch = true
+					debugLog("EDITION MISMATCH: Book '%s' has user_book.edition_id=%d but user_book_read.edition_id is NULL - forcing update",
+						a.Title, existingEditionId)
+				} else if *userBookReadEditionId != existingEditionId {
+					editionMismatch = true
+					debugLog("EDITION MISMATCH: Book '%s' has user_book.edition_id=%d but user_book_read.edition_id=%d - forcing update",
+						a.Title, existingEditionId, *userBookReadEditionId)
+				}
+			}
+
+			if statusChanged || progressChanged || editionMismatch {
 				needsSync = true
-				debugLog("Book '%s' needs update - status changed: %t (%d->%d), progress changed: %t (%ds->%ds)",
-					a.Title, statusChanged, existingStatusId, targetStatusId, progressChanged, existingProgressSeconds, targetProgressSeconds)
+				debugLog("Book '%s' needs update - status changed: %t (%d->%d), progress changed: %t (%ds->%ds), edition mismatch: %t",
+					a.Title, statusChanged, existingStatusId, targetStatusId, progressChanged, existingProgressSeconds, targetProgressSeconds, editionMismatch)
 			} else if ownedChanged {
 				// Handle owned flag change separately
 				if targetOwned && !actualOwned && existingEditionId > 0 {
@@ -652,15 +669,20 @@ func syncToHardcover(a Audiobook) error {
 
 		// Check if a user_book_read already exists for today
 		today := time.Now().Format("2006-01-02")
-		existingReadId, existingProgressSeconds, existingStartedAt, err := checkExistingUserBookRead(userBookId, today)
+		existingData, err := checkExistingUserBookRead(userBookId, today)
 		if err != nil {
 			return fmt.Errorf("failed to check existing user book read for '%s': %v", a.Title, err)
 		}
 
-		if existingReadId > 0 {
+		if existingData != nil {
 			// Update existing user_book_read if progress has changed
+			existingProgressSeconds := 0
+			if existingData.ProgressSeconds != nil {
+				existingProgressSeconds = *existingData.ProgressSeconds
+			}
+
 			if existingProgressSeconds != targetProgressSeconds {
-				debugLog("Updating existing user_book_read id=%d for '%s': progressSeconds=%d -> %d", existingReadId, a.Title, existingProgressSeconds, targetProgressSeconds)
+				debugLog("Updating existing user_book_read id=%d for '%s': progressSeconds=%d -> %d", existingData.ID, a.Title, existingProgressSeconds, targetProgressSeconds)
 
 				updateMutation := `
 				mutation UpdateUserBookRead($id: Int!, $object: DatesReadInput!) {
@@ -676,25 +698,32 @@ func syncToHardcover(a Audiobook) error {
 				  }
 				}`
 
-				// CRITICAL FIX: Preserve original started_at to prevent reading history from being overwritten
-				// If the book is finished, also set finished_at
-				// CRITICAL FIX: Include edition_id to prevent edition field from being null
+				// CRITICAL FIX: Preserve ALL existing fields to prevent data loss
 				updateObject := map[string]interface{}{
 					"progress_seconds": targetProgressSeconds,
 				}
 
-				// Set edition_id if available (CRITICAL FIX: prevents edition field from being null)
-				if existingEditionId > 0 {
+				// Preserve existing edition_id to prevent it from being set to NULL
+				if existingData.EditionID != nil {
+					updateObject["edition_id"] = *existingData.EditionID
+					debugLog("Preserving existing edition_id in update: %d", *existingData.EditionID)
+				} else if existingEditionId > 0 {
 					updateObject["edition_id"] = existingEditionId
-					debugLog("Setting edition_id in update_user_book_read: %d", existingEditionId)
+					debugLog("Setting edition_id from lookup in update: %d", existingEditionId)
 				} else {
 					debugLog("WARNING: No edition_id available for update - edition field may become null")
 				}
 
+				// Preserve existing reading_format_id to prevent it from being set to NULL
+				if existingData.ReadingFormatID != nil {
+					updateObject["reading_format_id"] = *existingData.ReadingFormatID
+					debugLog("Preserving existing reading_format_id in update: %d", *existingData.ReadingFormatID)
+				}
+
 				// Preserve the original started_at date if available, otherwise use current date
-				if existingStartedAt != "" {
-					updateObject["started_at"] = existingStartedAt
-					debugLog("Preserving original started_at date: %s", existingStartedAt)
+				if existingData.StartedAt != nil && *existingData.StartedAt != "" {
+					updateObject["started_at"] = *existingData.StartedAt
+					debugLog("Preserving original started_at date: %s", *existingData.StartedAt)
 				} else {
 					updateObject["started_at"] = time.Now().Format("2006-01-02")
 					debugLog("No existing started_at found, using current date: %s", time.Now().Format("2006-01-02"))
@@ -706,7 +735,7 @@ func syncToHardcover(a Audiobook) error {
 				}
 
 				variables := map[string]interface{}{
-					"id":     existingReadId,
+					"id":     existingData.ID,
 					"object": updateObject,
 				}
 				payload := map[string]interface{}{
@@ -716,9 +745,12 @@ func syncToHardcover(a Audiobook) error {
 
 				debugLog("=== GraphQL Mutation: update_user_book_read ===")
 				debugLog("Book: '%s' by '%s'", a.Title, a.Author)
-				debugLog("Existing read ID: %d, preserving started_at: %s", existingReadId, existingStartedAt)
+				startedAtStr := "null"
+				if existingData.StartedAt != nil {
+					startedAtStr = *existingData.StartedAt
+				}
+				debugLog("Existing read ID: %d, preserving started_at: %s", existingData.ID, startedAtStr)
 				debugLog("Progress update: %d -> %d seconds", existingProgressSeconds, targetProgressSeconds)
-				debugLog("Existing read ID: %d, Progress: %d -> %d seconds", existingReadId, existingProgressSeconds, targetProgressSeconds)
 				debugLog("Update object: %+v", updateObject)
 				debugLog("Mutation variables: %+v", variables)
 				debugLog("Full mutation payload: %+v", payload)
@@ -804,7 +836,7 @@ func syncToHardcover(a Audiobook) error {
 					diagnoseNullEdition(result.Data.UpdateUserBookRead.ID)
 				}
 			} else {
-				debugLog("No update needed for existing user_book_read id=%d (progress already %d seconds)", existingReadId, existingProgressSeconds)
+				debugLog("No update needed for existing user_book_read id=%d (progress already %d seconds)", existingData.ID, existingProgressSeconds)
 			}
 		} else {
 			// IMPLEMENTATION OF USER'S EXACT EXPECTATIONS:
@@ -848,6 +880,7 @@ func syncToHardcover(a Audiobook) error {
 			// Only create new user book read entry if the expectation logic determined we should
 			if shouldCreateReadEntry {
 				debugLog("Creating new user_book_read for '%s': %d seconds (%.2f%%)", a.Title, targetProgressSeconds, a.Progress*100)
+				debugLog("DEBUG: existingEditionId value being passed to insertUserBookRead: %d", existingEditionId)
 				// Use the enhanced insertUserBookRead function which includes reading_format_id for audiobooks
 				// This ensures Hardcover recognizes it as an audiobook and doesn't ignore progress_seconds
 				// CRITICAL FIX: Pass edition_id to prevent edition field from being null

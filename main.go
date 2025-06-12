@@ -64,7 +64,7 @@ import (
 )
 
 var (
-	version = "v1.6.0" // Application version
+	version = "v1.6.1" // Application version
 )
 
 func main() {
@@ -98,6 +98,7 @@ func main() {
 	bulkLookupPublishers := flag.String("bulk-lookup-publishers", "", "Search for multiple publishers by comma-separated names")
 	uploadImage := flag.String("upload-image", "", "Upload image from URL to Hardcover (format: url:bookID:description)")
 	debugAPI := flag.Bool("debug-api", false, "Debug AudiobookShelf API endpoints")
+	debugSync := flag.Bool("debug-sync", false, "Run single sync with debug output and exit")
 
 	flag.Parse()
 
@@ -114,6 +115,27 @@ func main() {
 
 	if *debugAPI {
 		debugAudiobookShelfAPI()
+		os.Exit(0)
+	}
+
+	if *debugSync {
+		// Enable debug mode for detailed output
+		debugMode = true
+		log.Printf("Debug sync mode enabled - running single sync operation and exiting")
+		
+		// Initialize caching system
+		initCache()
+
+		required := []string{"AUDIOBOOKSHELF_URL", "AUDIOBOOKSHELF_TOKEN", "HARDCOVER_TOKEN"}
+		for _, v := range required {
+			if os.Getenv(v) == "" {
+				log.Fatalf("Missing required env var: %s", v)
+			}
+		}
+
+		log.Printf("Starting debug sync operation...")
+		runSync()
+		log.Printf("Debug sync operation completed. Check the output above for DEBUG messages.")
 		os.Exit(0)
 	}
 

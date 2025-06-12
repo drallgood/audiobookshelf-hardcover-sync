@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.1] - 2025-06-12
+
+### Fixed
+- **🚨 CRITICAL: Complete Data Loss Prevention**: Comprehensive fix for GraphQL partial update data loss
+  - **Root Cause**: Hardcover's GraphQL `update_user_book_read` mutation sets unmentioned fields to NULL
+  - **Solution**: Enhanced `checkExistingUserBookRead()` to retrieve ALL existing fields before updates
+  - **Protected Fields**: `progress_seconds`, `started_at`, `finished_at`, `edition_id`, `reading_format_id`
+  - **Comprehensive Preservation**: All existing data is now preserved during progress updates
+  - **Enhanced Data Structure**: New `ExistingUserBookReadData` struct for complete field management
+  - **Updated Queries**: GraphQL queries now include `edition_id` and `reading_format_id` fields
+  - **Fallback Protection**: Both primary and fallback queries enhanced with complete field selection
+  - **Test Coverage**: Comprehensive tests verify no data loss during updates
+  - **Impact**: Prevents critical reading history and metadata loss that was affecting user accounts
+
 ## [1.6.0] - 2025-06-12
 
 ### Security
