@@ -93,7 +93,7 @@ The enhanced metadata foundation enables future improvements such as:
 
 - Export capabilities for mismatch reports
 - Automated suggestion systems for better matches
-- Integration with external metadata sources
+- ASIN reference tracking for audiobook identification
 - Advanced filtering and search capabilities
 
 This feature represents a significant improvement in the user experience for managing and resolving sync issues in the audiobookshelf-hardcover-sync tool.

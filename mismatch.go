@@ -410,22 +410,16 @@ func convertMismatchToEditionInput(mismatch BookMismatch) EditionCreatorInput {
 			input.LanguageID = prepopulated.LanguageID
 			input.CountryID = prepopulated.CountryID
 
-			// Add enhancement info to EditionInfo if successful
-			if prepopulated.PrepopulationSource == "hardcover+audible" {
+			// Add ASIN reference info if available
+			if prepopulated.PrepopulationSource == "hardcover+asin" && input.ASIN != "" {
 				if input.EditionInfo != "" {
-					input.EditionInfo += " | ENHANCED: Data enhanced with Audible API"
+					input.EditionInfo += " | ASIN: " + input.ASIN
 				} else {
-					input.EditionInfo = "ENHANCED: Data enhanced with Audible API"
+					input.EditionInfo = "ASIN: " + input.ASIN
 				}
-				debugLog("Successfully enhanced mismatch data with Audible API for '%s'", input.Title)
-			} else if prepopulated.PrepopulationSource == "hardcover+external" {
-				if input.EditionInfo != "" {
-					input.EditionInfo += " | ENHANCED: Data enhanced with external metadata"
-				} else {
-					input.EditionInfo = "ENHANCED: Data enhanced with external metadata"
-				}
-				debugLog("Successfully enhanced mismatch data with external metadata for '%s'", input.Title)
+				debugLog("Added ASIN reference %s to mismatch data for '%s'", input.ASIN, input.Title)
 			}
+			// No enhancement markers for non-functional APIs
 		}
 	}
 

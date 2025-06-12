@@ -18,24 +18,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Data Integrity**: Preserves edition information in all user reading entries, preventing loss of audiobook edition context
   - **Test Coverage**: Comprehensive test suite in `edition_field_fix_test.go` with 100% pass rate
   - **Impact**: Critical fix for maintaining reading history integrity with proper edition tracking
-- **🔧 Mismatch Enhancement Logic**: Fixed incorrect condition in mismatch.go enhancement detection
-  - **Bug**: Changed condition from `"mismatch+audible"` to `"hardcover+audible"` for proper enhancement marker detection
-  - **Context**: Ensures Audible API enhancement markers are correctly applied in edition creation files
+- **🎯 Honest Enhancement Markers**: Simplified mismatch enhancement to accurately reflect actual capabilities
+  - **Issue**: Previous markers claimed "enhanced with external metadata" when only ASIN was added
+  - **Fix**: Replaced with honest "ASIN: {value}" reference markers when ASIN is available
+  - **Source**: Uses `"hardcover+asin"` source attribution for ASIN reference only
 
-### Added
-- **🎧 Audible API Integration**: Added comprehensive Audible API integration for enhanced metadata
-  - **External Data Enhancement**: `enhanceWithExternalData()` function now integrates real Audible API data
-  - **Full Date Lookup**: Converts year-only dates (e.g., "2023") to complete dates (e.g., "2023-12-25")
-  - **Smart Date Logic**: `isDateMoreSpecific()` compares date specificity and only enhances when beneficial
-  - **Duration Enhancement**: Adds accurate audiobook duration when missing from Hardcover data
-  - **Image Quality**: Upgrades to higher resolution Audible cover images when available
-  - **Publisher Caching Enhancement**: Improved publisher lookup caching for better performance
-  - **Comprehensive Configuration**: New environment variables `AUDIBLE_API_ENABLED`, `AUDIBLE_API_TOKEN`, `AUDIBLE_API_TIMEOUT`
-  - **Graceful Fallback**: Continues working even when Audible API is unavailable or rate-limited
-  - **Source Tracking**: Distinguishes between "hardcover+audible" and "hardcover+external" data sources
-  - **ASIN Validation**: Robust ASIN format validation and error handling
-  - **Test Coverage**: Comprehensive unit and integration tests for all Audible API functionality
-  - **Documentation**: Complete documentation in `docs/AUDIBLE_API_INTEGRATION.md`
+### Removed
+- **❌ Non-functional API Integrations**: Removed misleading external API integration code
+  - **Reason**: Audible has no public API available, and web scraping is blocked by anti-bot measures
+  - **Cleanup**: Removed `audible.go`, `openlibrary.go`, and related non-functional integration files
+  - **Honest Implementation**: `enhanceWithExternalData()` now only adds ASIN reference without false enhancement claims
+  - **Configuration**: Removed non-functional environment variables (`AUDIBLE_API_ENABLED`, `AUDIBLE_API_TOKEN`, `AUDIBLE_API_TIMEOUT`)
+  - **Documentation**: Updated to reflect actual capabilities instead of theoretical integrations
 
 ### Fixed
 - **🔧 RE-READ Detection Fix**: Fixed incorrect RE-READ detection for manually finished books

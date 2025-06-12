@@ -6,48 +6,36 @@ import (
 	"time"
 )
 
-func TestMismatchAudibleAPIIntegration(t *testing.T) {
+func TestMismatchASINReferenceIntegration(t *testing.T) {
 	// Save original environment variables
-	originalAPIEnabled := os.Getenv("AUDIBLE_API_ENABLED")
 	originalDryRun := os.Getenv("DRY_RUN")
 	
 	// Restore environment variables after test
 	defer func() {
-		os.Setenv("AUDIBLE_API_ENABLED", originalAPIEnabled)
 		os.Setenv("DRY_RUN", originalDryRun)
 	}()
 
 	// Test scenarios
 	tests := []struct {
 		name       string
-		apiEnabled string
 		asin       string
-		expectEnhancement bool
+		expectASIN bool
 	}{
 		{
-			name:       "API enabled with valid ASIN",
-			apiEnabled: "true",
+			name:       "With valid ASIN",
 			asin:       "B01234567X",
-			expectEnhancement: true,
+			expectASIN: true,
 		},
 		{
-			name:       "API disabled",
-			apiEnabled: "false", 
-			asin:       "B01234567X",
-			expectEnhancement: false,
-		},
-		{
-			name:       "API enabled with empty ASIN",
-			apiEnabled: "true",
+			name:       "With empty ASIN",
 			asin:       "",
-			expectEnhancement: false,
+			expectASIN: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Set up environment
-			os.Setenv("AUDIBLE_API_ENABLED", tt.apiEnabled)
 			os.Setenv("DRY_RUN", "true") // Ensure we don't make real API calls
 
 			// Clear any existing mismatches
@@ -55,7 +43,7 @@ func TestMismatchAudibleAPIIntegration(t *testing.T) {
 
 			// Create a test mismatch with ASIN
 			testMismatch := BookMismatch{
-				Title:             "Test Book for Audible Integration",
+				Title:             "Test Book for ASIN Reference",
 				Subtitle:          "A Test Subtitle",
 				Author:            "Test Author",
 				Narrator:          "Test Narrator",
@@ -69,11 +57,11 @@ func TestMismatchAudibleAPIIntegration(t *testing.T) {
 				BookID:            "",
 				EditionID:         "",
 				AudiobookShelfID:  "test-audiobook-id-123",
-				Reason:            "Test mismatch for Audible API integration",
+				Reason:            "Test mismatch for ASIN reference",
 				Timestamp:         time.Now(),
 			}
 
-			// Test the conversion with Audible API integration
+			// Test the conversion with ASIN reference
 			editionInput := convertMismatchToEditionInput(testMismatch)
 
 			// Verify basic conversion worked
@@ -85,19 +73,16 @@ func TestMismatchAudibleAPIIntegration(t *testing.T) {
 				t.Errorf("ASIN mismatch: expected %s, got %s", testMismatch.ASIN, editionInput.ASIN)
 			}
 
-			// Check if enhancement was applied when expected
-			if tt.expectEnhancement && tt.asin != "" {
-				// When API is enabled and ASIN is provided, some enhancement should occur
-				// Even if the API call fails (in dry run), the ASIN should still be present
+			// Check if ASIN reference was preserved when expected
+			if tt.expectASIN && tt.asin != "" {
 				if editionInput.ASIN == "" {
-					t.Error("Expected ASIN to be preserved during enhancement")
+					t.Error("Expected ASIN to be preserved")
 				}
 				
-				// Check if enhancement info was added to EditionInfo
-				if !contains(editionInput.EditionInfo, "ENHANCED") && tt.apiEnabled == "true" {
+				// Check if ASIN reference info was added to EditionInfo
+				if tt.asin != "" && !contains(editionInput.EditionInfo, "ASIN:") {
 					t.Logf("EditionInfo: %s", editionInput.EditionInfo)
-					// Note: In dry run mode or when API fails, we might not get the ENHANCED flag
-					// This is acceptable behavior
+					// Note: ASIN reference might not appear if book matching fails
 				}
 			}
 
@@ -136,32 +121,7 @@ func containsInMiddle(str, substr string) bool {
 	return false
 }
 
-func TestMismatchAudibleAPIRealIntegration(t *testing.T) {
-	// This test only runs if API is actually enabled
-	if !getAudibleAPIEnabled() {
-		t.Skip("Audible API not enabled, skipping real integration test")
-	}
-
-	// Clear any existing mismatches
-	clearMismatches()
-
-	// Create a test mismatch with a real ASIN (this won't make real API calls in test environment)
-	testMismatch := BookMismatch{
-		Title:             "The Martian",
-		Author:            "Andy Weir", 
-		ASIN:              "B00B5HZGUG", // Real ASIN for The Martian audiobook
-		DurationSeconds:   53357,
-		AudiobookShelfID:  "test-id",
-		Reason:            "Integration test",
-		Timestamp:         time.Now(),
-	}
-
-	editionInput := convertMismatchToEditionInput(testMismatch)
-
-	// Basic validation
-	if editionInput.ASIN != testMismatch.ASIN {
-		t.Errorf("ASIN should be preserved: expected %s, got %s", testMismatch.ASIN, editionInput.ASIN)
-	}
-
-	t.Logf("Real integration test completed with ASIN: %s", editionInput.ASIN)
+func TestMismatchASINReferenceRealIntegration(t *testing.T) {
+	// Skip this test - no external API integration available
+	t.Skip("External API integration removed - only ASIN reference functionality available")
 }

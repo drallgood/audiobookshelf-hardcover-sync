@@ -67,11 +67,8 @@ docker run -d \
 | `SYNC_STATE_FILE` | `sync_state.json` | Path to incremental sync state file |
 | `FORCE_FULL_SYNC` | `false` | Force full sync on next run |
 | `DEBUG_MODE` | `false` | Enable verbose debug logging (`1` or `true`) |
-| `AUDIBLE_API_ENABLED` | `false` | Enable Audible API integration for enhanced metadata |
-| `AUDIBLE_API_TOKEN` | None | API token for Audible service (if required) |
-| `AUDIBLE_API_TIMEOUT` | `10s` | Timeout for Audible API requests (e.g., `5s`, `30s`) |
 | `DRY_RUN` | `false` | Enable dry run mode for testing (`true`, `1`, or `yes`) |
-| `MISMATCH_JSON_FILE` | None | Directory path for saving individual mismatch JSON files with Audible API enhancement |
+| `MISMATCH_JSON_FILE` | None | Directory path for saving individual mismatch JSON files |
 | `TZ` | System default | Timezone for container logs (e.g., `Europe/Vienna`, `UTC`) |
 
 ### Development & Testing Variables
@@ -371,7 +368,7 @@ For multiple editions, use JSON files with automated prepopulation:
 - **Reduced errors**: Automatically validates author/narrator/publisher IDs
 - **Time savings**: No need to manually look up existing book metadata
 - **Consistency**: Uses standardized data from Hardcover's database
-- **Future-ready**: Designed to integrate with external APIs (Audible, Goodreads, etc.)
+- **Future-ready**: Designed to work with ASIN references and existing metadata sources
 
 **Note**: The prepopulation feature fetches existing book data from Hardcover's database, so you only need to provide the book ID and any missing fields like ASIN or image URL. This significantly reduces the manual work required for edition creation.
 

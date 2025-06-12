@@ -4,17 +4,9 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"os"
 )
 
-func TestMismatchAudibleEnhancementActual(t *testing.T) {
-	// Save original environment
-	originalEnabled := os.Getenv("AUDIBLE_API_ENABLED")
-	defer os.Setenv("AUDIBLE_API_ENABLED", originalEnabled)
-
-	// Enable Audible API for this test
-	os.Setenv("AUDIBLE_API_ENABLED", "true")
-
+func TestMismatchASINEnhancementActual(t *testing.T) {
 	// Test with the real example from the logs
 	mismatch := BookMismatch{
 		Title:             "Blue Shift (Unabridged)",
@@ -38,7 +30,7 @@ func TestMismatchAudibleEnhancementActual(t *testing.T) {
 	t.Logf("Testing mismatch enhancement for: %s", mismatch.Title)
 	t.Logf("ASIN: %s", mismatch.ASIN)
 
-	// Convert mismatch to edition input (this should trigger Audible enhancement)
+	// Convert mismatch to edition input (this should preserve ASIN reference)
 	editionInput := convertMismatchToEditionInput(mismatch)
 
 	t.Logf("Results:")
@@ -51,17 +43,17 @@ func TestMismatchAudibleEnhancementActual(t *testing.T) {
 		t.Errorf("ASIN mismatch: expected %s, got %s", mismatch.ASIN, editionInput.ASIN)
 	}
 
-	// Check if enhancement marker was added
-	// The API will likely fail in test mode, but it should at least try and add "hardcover+external" enhancement
+	// Check if ASIN reference marker was added
+	// The system will add ASIN reference when available
 	if editionInput.EditionInfo != "" {
-		if strings.Contains(editionInput.EditionInfo, "ENHANCED:") {
-			t.Logf("✅ SUCCESS: Enhancement marker found in EditionInfo!")
-			t.Logf("Enhancement marker: %s", editionInput.EditionInfo)
+		if strings.Contains(editionInput.EditionInfo, "ASIN:") {
+			t.Logf("✅ SUCCESS: ASIN reference marker found in EditionInfo!")
+			t.Logf("ASIN reference marker: %s", editionInput.EditionInfo)
 		} else {
-			t.Logf("ℹ️  INFO: No enhancement marker found, but EditionInfo has content: %s", editionInput.EditionInfo)
+			t.Logf("ℹ️  INFO: No ASIN reference marker found, but EditionInfo has content: %s", editionInput.EditionInfo)
 		}
 	} else {
-		t.Logf("ℹ️  INFO: EditionInfo is empty - enhancement may not have been triggered")
+		t.Logf("ℹ️  INFO: EditionInfo is empty - ASIN reference may not have been added")
 	}
 
 	// The most important thing is that the function doesn't crash and returns valid data
@@ -74,14 +66,7 @@ func TestMismatchAudibleEnhancementActual(t *testing.T) {
 	}
 }
 
-func TestMismatchAudibleEnhancementDisabled(t *testing.T) {
-	// Save original environment
-	originalEnabled := os.Getenv("AUDIBLE_API_ENABLED")
-	defer os.Setenv("AUDIBLE_API_ENABLED", originalEnabled)
-
-	// Disable Audible API for this test
-	os.Setenv("AUDIBLE_API_ENABLED", "false")
-
+func TestMismatchASINEnhancementDisabled(t *testing.T) {
 	// Test with the same example
 	mismatch := BookMismatch{
 		Title:             "Blue Shift (Unabridged)",
@@ -94,17 +79,17 @@ func TestMismatchAudibleEnhancementDisabled(t *testing.T) {
 		Timestamp:         time.Now(),
 	}
 
-	t.Logf("Testing with Audible API disabled for: %s", mismatch.Title)
+	t.Logf("Testing with ASIN reference for: %s", mismatch.Title)
 
-	// Convert mismatch to edition input (should work without API)
+	// Convert mismatch to edition input (should work with ASIN reference)
 	editionInput := convertMismatchToEditionInput(mismatch)
 
-	t.Logf("Results with API disabled:")
+	t.Logf("Results with ASIN reference:")
 	t.Logf("Title: %s", editionInput.Title)
 	t.Logf("ASIN: %s", editionInput.ASIN)
 	t.Logf("EditionInfo: %s", editionInput.EditionInfo)
 
-	// Should still work without enhancement
+	// Should still work without external enhancement
 	if editionInput.Title != mismatch.Title {
 		t.Errorf("Title mismatch: expected %s, got %s", mismatch.Title, editionInput.Title)
 	}

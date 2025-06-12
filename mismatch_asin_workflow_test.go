@@ -8,14 +8,12 @@ import (
 	"time"
 )
 
-func TestMismatchJSONFileCreationWithAudibleAPI(t *testing.T) {
+func TestMismatchJSONFileCreationWithASINReference(t *testing.T) {
 	// Save original environment variables
-	originalAPIEnabled := os.Getenv("AUDIBLE_API_ENABLED")
 	originalMismatchDir := os.Getenv("MISMATCH_JSON_FILE")
 	
 	// Restore environment variables after test
 	defer func() {
-		os.Setenv("AUDIBLE_API_ENABLED", originalAPIEnabled)
 		os.Setenv("MISMATCH_JSON_FILE", originalMismatchDir)
 	}()
 
@@ -23,7 +21,6 @@ func TestMismatchJSONFileCreationWithAudibleAPI(t *testing.T) {
 	tempDir := t.TempDir()
 
 	// Set up environment for the test
-	os.Setenv("AUDIBLE_API_ENABLED", "true")
 	os.Setenv("MISMATCH_JSON_FILE", tempDir)
 	os.Setenv("DRY_RUN", "true") // Ensure no real API calls
 
@@ -43,11 +40,11 @@ func TestMismatchJSONFileCreationWithAudibleAPI(t *testing.T) {
 			Duration:          6.5,
 			DurationSeconds:   23400,
 			ISBN:              "",
-			ASIN:              "B01TESTASIN", // This should trigger Audible API enhancement
+			ASIN:              "B01TESTASIN", // This should preserve ASIN reference
 			BookID:            "",
 			EditionID:         "",
 			AudiobookShelfID:  "test-audiobook-id-1",
-			Reason:            "Test mismatch with ASIN for Audible API integration",
+			Reason:            "Test mismatch with ASIN for reference",
 			Timestamp:         time.Now(),
 		},
 		{
@@ -59,7 +56,7 @@ func TestMismatchJSONFileCreationWithAudibleAPI(t *testing.T) {
 			Duration:          4.0,
 			DurationSeconds:   14400,
 			ISBN:              "9781234567890",
-			ASIN:              "", // No ASIN - should not trigger Audible API
+			ASIN:              "", // No ASIN - no reference added
 			BookID:            "",
 			EditionID:         "",
 			AudiobookShelfID:  "test-audiobook-id-2",
@@ -122,7 +119,7 @@ func TestMismatchJSONFileCreationWithAudibleAPI(t *testing.T) {
 					t.Errorf("File %s: ASIN mismatch - expected %s, got %s", file.Name(), expectedMismatch.ASIN, editionInput.ASIN)
 				}
 
-				// The Audible API enhancement should have been attempted (even if it fails in test mode)
+				// The ASIN reference should have been preserved
 				t.Logf("File %s: ASIN book processed correctly with ASIN %s", file.Name(), editionInput.ASIN)
 			} else {
 				// For books without ASIN, verify no ASIN was added
@@ -159,12 +156,12 @@ func TestMismatchJSONFileCreationWithAudibleAPI(t *testing.T) {
 	// Clean up test data
 	clearMismatches()
 
-	t.Logf("Successfully validated %d mismatch JSON files with Audible API integration", len(files))
+	t.Logf("Successfully validated %d mismatch JSON files with ASIN reference", len(files))
 }
 
-func TestAudibleAPIIntegrationInRealWorkflow(t *testing.T) {
+func TestASINReferenceInRealWorkflow(t *testing.T) {
 	// This test simulates the real workflow where mismatches are collected during sync
-	// and then JSON files are created with Audible API enhancement
+	// and then JSON files are created with ASIN reference
 
 	// Save original environment variables
 	originalAPIEnabled := os.Getenv("AUDIBLE_API_ENABLED")
@@ -202,7 +199,7 @@ func TestAudibleAPIIntegrationInRealWorkflow(t *testing.T) {
 		t.Fatalf("Expected 1 mismatch to be collected, got %d", len(bookMismatches))
 	}
 
-	// Create the JSON files (this should trigger Audible API enhancement)
+	// Create the JSON files (this should preserve ASIN reference)
 	err := saveMismatchesJSONFile()
 	if err != nil {
 		t.Fatalf("Failed to save mismatch JSON files: %v", err)
@@ -244,7 +241,7 @@ func TestAudibleAPIIntegrationInRealWorkflow(t *testing.T) {
 		t.Errorf("Audio length mismatch: expected 25200, got %d", editionInput.AudioLength)
 	}
 
-	// The Audible API integration should have been attempted
+	// The ASIN reference should have been preserved
 	t.Logf("Real workflow test completed successfully")
 	t.Logf("Generated file: %s", files[0].Name())
 	t.Logf("Title: %s", editionInput.Title)
