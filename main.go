@@ -64,7 +64,7 @@ import (
 )
 
 var (
-	version = "v1.5.0" // Application version
+	version = "v1.6.0" // Application version
 )
 
 func main() {
