@@ -11,7 +11,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
+
+	"github.com/drallgood/audiobookshelf-hardcover-sync/config"
 )
 
 // syncToHardcover syncs a single audiobook to Hardcover with comprehensive book matching
@@ -87,13 +90,11 @@ func syncToHardcover(a Audiobook) error {
 		if len(result.Data.Books) > 0 && len(result.Data.Books[0].Editions) > 0 {
 			book := result.Data.Books[0]
 			bookId = book.ID.String()
-			
 			// Handle deduped books: use canonical_id if book_status_id = 4 (deduped)
 			if book.BookStatusID == 4 && book.CanonicalID != nil {
 				bookId = fmt.Sprintf("%d", *book.CanonicalID)
 				debugLog("Book ID %s is deduped (status 4), using canonical_id %d instead", book.ID.String(), *book.CanonicalID)
 			}
-			
 			editionId = result.Data.Books[0].Editions[0].ID.String()
 			asinLookupSucceeded = true
 			debugLog("Found audiobook via ASIN: bookId=%s, editionId=%s, format_id=%v, audio_seconds=%v",
@@ -166,13 +167,11 @@ func syncToHardcover(a Audiobook) error {
 		if len(result.Data.Books) > 0 {
 			book := result.Data.Books[0]
 			bookId = book.ID.String()
-			
 			// Handle deduped books: use canonical_id if book_status_id = 4 (deduped)
 			if book.BookStatusID == 4 && book.CanonicalID != nil {
 				bookId = fmt.Sprintf("%d", *book.CanonicalID)
 				debugLog("Book ID %s is deduped (status 4), using canonical_id %d instead", book.ID.String(), *book.CanonicalID)
 			}
-			
 			if len(result.Data.Books[0].Editions) > 0 {
 				editionId = result.Data.Books[0].Editions[0].ID.String()
 			}
@@ -239,13 +238,11 @@ func syncToHardcover(a Audiobook) error {
 		if len(result.Data.Books) > 0 {
 			book := result.Data.Books[0]
 			bookId = book.ID.String()
-			
 			// Handle deduped books: use canonical_id if book_status_id = 4 (deduped)
 			if book.BookStatusID == 4 && book.CanonicalID != nil {
 				bookId = fmt.Sprintf("%d", *book.CanonicalID)
 				debugLog("Book ID %s is deduped (status 4), using canonical_id %d instead", book.ID.String(), *book.CanonicalID)
 			}
-			
 			if len(result.Data.Books[0].Editions) > 0 {
 				editionId = result.Data.Books[0].Editions[0].ID.String()
 			}
@@ -908,131 +905,56 @@ func syncToHardcover(a Audiobook) error {
 	return nil
 }
 
-// runSync orchestrates the complete sync process with support for incremental sync:
-// 1. Loads sync state and determines sync mode (full vs incremental)
-// 2. Fetches audiobooks from AudiobookShelf (full library or recent changes)
-// 3. Filters books based on progress thresholds and incremental criteria
-// 4. Attempts enhanced detection for potentially finished books
-// 5. Syncs each qualifying book to Hardcover with rate limiting
-// 6. Updates and saves sync state
-// 7. Reports sync results and potential mismatches
 func runSync() {
-	// Clear cached user at start of each sync run to ensure fresh authentication
-	clearCurrentUserCache()
+	// Initialize HTTP client with retry and circuit breaker
+	httpClient := http.NewClient(&http.ClientConfig{
+		Timeout:           30 * time.Second,
+		MaxRetries:        3,
+		RetryWaitTime:     1 * time.Second,
+		RetryMaxWaitTime:  10 * time.Second,
+		RetryOnHTTPError:  true,
+		RetryOnTimeout:    true,
+		DisableKeepAlives: false,
+	})
 
-	// Load sync state to determine sync mode
-	state, err := loadSyncState()
+	// Initialize Audiobookshelf client
+	abClient := audiobookshelf.NewClient(
+		cfg.Audiobookshelf.URL,
+		cfg.Audiobookshelf.Username,
+		cfg.Audiobookshelf.Password,
+		httpClient,
+	)
+
+	// Initialize Hardcover client
+	hcClient, err := hardcover.NewClient(cfg, httpClient)
 	if err != nil {
-		log.Printf("Warning: Failed to load sync state, performing full sync: %v", err)
-		state = &SyncState{
-			LastSyncTimestamp: 0,
-			LastFullSync:      0,
-			Version:           StateVersion,
-		}
+		log.Fatalf("Failed to initialize Hardcover client: %v", err)
 	}
 
-	// Determine if we should perform full or incremental sync
-	isFullSync := shouldPerformFullSync(state)
-	syncMode := "full"
-	if !isFullSync {
-		syncMode = "incremental"
+	// Initialize batch client
+	batchClient, err := hardcover.NewBatchClient(cfg, httpClient)
+	if err != nil {
+		log.Fatalf("Failed to initialize batch client: %v", err)
 	}
 
-	log.Printf("Starting %s sync (incremental mode: %s)", syncMode, getIncrementalSyncMode())
+	// Configure batch client
+	batchClient = batchClient.
+		WithBatchSize(cfg.Concurrency.BatchSize).
+		WithWorkers(cfg.Concurrency.MaxWorkers).
+		WithRateLimit(cfg.Concurrency.RequestsPerSecond)
 
-	// Log initial cache statistics
-	if debugMode {
-		stats := getCacheStats()
-		log.Printf("[CACHE] Starting sync with cache stats: %d total entries (%d authors, %d narrators, %d publishers)", 
-			stats["total_entries"], stats["authors"], stats["narrators"], stats["publishers"])
+	// Get all books from Audiobookshelf
+	log.Println("Fetching books from Audiobookshelf...")
+	abBooks, err := abClient.GetAllBooks()
+	if err != nil {
+		log.Fatalf("Failed to get books from Audiobookshelf: %v", err)
 	}
+	log.Printf("Found %d books in Audiobookshelf", len(abBooks))
 
-	var books []Audiobook
-	var recentItemIds []string
-
-	if isFullSync {
-		// Full sync: fetch all audiobooks with enhanced progress detection
-		books, err = fetchAudiobookShelfStatsEnhanced()
-		if err != nil {
-			log.Printf("Failed to fetch library items: %v", err)
-			return
-		}
-		debugLog("Full sync: fetched %d total books", len(books))
-	} else {
-		// Incremental sync: fetch recent changes first, then filter audiobooks
-		timestampThreshold := getTimestampThreshold(state)
-		debugLog("Incremental sync: looking for changes since timestamp %d", timestampThreshold)
-
-		recentItemIds, err = fetchRecentListeningSessions(timestampThreshold)
-		if err != nil {
-			log.Printf("Failed to fetch recent listening sessions, falling back to full sync: %v", err)
-			// Fallback to full sync with enhanced progress detection
-			books, err = fetchAudiobookShelfStatsEnhanced()
-			if err != nil {
-				log.Printf("Failed to fetch library items: %v", err)
-				return
-			}
-			isFullSync = true
-			syncMode = "full (fallback)"
-			debugLog("Fallback to full sync: fetched %d total books", len(books))
-		} else {
-			debugLog("Incremental sync: found %d items with recent activity", len(recentItemIds))
-
-			if len(recentItemIds) == 0 {
-				log.Printf("No recent activity found since last sync - nothing to sync")
-				// Update timestamp even if no changes found
-				updateSyncTimestamp(state, false)
-				if err := saveSyncState(state); err != nil {
-					log.Printf("Warning: Failed to save sync state: %v", err)
-				}
-				return
-			}
-
-			// Fetch all audiobooks and filter to only recently updated ones
-			allBooks, err := fetchAudiobookShelfStatsEnhanced()
-			if err != nil {
-				log.Printf("Failed to fetch library items: %v", err)
-				return
-			}
-			// Create a map for quick lookup of recent item IDs
-			recentItemMap := make(map[string]bool)
-			for _, itemId := range recentItemIds {
-				recentItemMap[itemId] = true
-			}
-
-			// Filter books to only include those with recent activity
-			for _, book := range allBooks {
-				if recentItemMap[book.ID] {
-					books = append(books, book)
-				}
-			}
-
-			debugLog("Incremental sync: filtered to %d books with recent activity (from %d total books)", len(books), len(allBooks))
-		}
-	}
-
-	// Clear any previous mismatches before starting new sync
-	clearMismatches()
-
-	// Apply test book filtering if configured
-	testBookFilter := getTestBookFilter()
-	testBookLimit := getTestBookLimit()
-	
-	debugLog("Test filtering config: filter='%s', limit=%d", testBookFilter, testBookLimit)
-	
-	if testBookFilter != "" {
-		debugLog("Applying TEST_BOOK_FILTER: '%s'", testBookFilter)
-		var filteredBooks []Audiobook
-		for _, book := range books {
-			if strings.Contains(strings.ToLower(book.Title), strings.ToLower(testBookFilter)) {
-				filteredBooks = append(filteredBooks, book)
-				debugLog("Book '%s' matches filter - including", book.Title)
-			} else {
-				debugLog("Book '%s' does not match filter - excluding", book.Title)
-			}
-		}
-		originalCount := len(books)
-		books = filteredBooks
+	// Filter books to sync
+	var booksToSync []*audiobookshelf.Book
+	for _, book := range abBooks {
+		if shouldSyncBook(book, cfg) {
 		log.Printf("TEST_BOOK_FILTER: filtered from %d to %d books matching '%s'", originalCount, len(filteredBooks), testBookFilter)
 	} else {
 		debugLog("No TEST_BOOK_FILTER configured, skipping filtering")
@@ -1087,19 +1009,26 @@ func runSync() {
 		return
 	}
 
-	// Sync books to Hardcover with rate limiting
-	delay := getHardcoverSyncDelay()
-	successCount := 0
-	for i, book := range booksToSync {
-		if i > 0 {
-			time.Sleep(delay)
-		}
-		if err := syncToHardcover(book); err != nil {
-			log.Printf("Failed to sync book '%s' (Progress: %.2f%%): %v", book.Title, book.Progress*100, err)
-		} else {
-			log.Printf("Synced book: %s (Progress: %.2f%%)", book.Title, book.Progress*100)
-			successCount++
-		}
+	// Load config to get concurrency settings
+	cfg, err := config.Load("")
+	if err != nil {
+		log.Printf("Failed to load config, using default concurrency settings: %v", err)
+		cfg = config.DefaultConfig()
+	}
+
+	// Process books concurrently using worker pool
+	startTime := time.Now()
+	successCount, errorCount := ProcessBooks(booksToSync, cfg.GetConcurrentWorkers())
+	
+	// Log sync statistics
+	duration := time.Since(startTime)
+	booksPerSecond := float64(len(booksToSync)) / duration.Seconds()
+	log.Printf("Processed %d books in %s (%.2f books/sec)", 
+		len(booksToSync), duration.Round(time.Millisecond), booksPerSecond)
+	
+	if errorCount > 0 {
+		log.Printf("Completed with %d errors (%.1f%% success rate)", 
+			errorCount, float64(successCount)/float64(len(booksToSync))*100)
 	}
 
 	// Update sync state after successful sync

@@ -4,7 +4,22 @@
 
 Automatically syncs your Audiobookshelf library with Hardcover, including reading progress, book status, and ownership information.
 
+## Documentation
+
+For comprehensive documentation, including advanced features, configuration, and development guides, please see the [Documentation Directory](docs/README.md).
+
+Key highlights:
+- [Getting Started](docs/README.md#getting-started)
+- [Configuration Reference](docs/CONFIGURATION.md)
+- [Advanced Features](docs/ADVANCED_FEATURES.md)
+- [Troubleshooting Guide](docs/TROUBLESHOOTING.md)
+- [API Reference](docs/API.md)
+
 ## Features
+
+For detailed information on advanced features and configuration, see the [Advanced Features](docs/ADVANCED_FEATURES.md) documentation.
+
+Key features include:
 - 📚 **Full Library Sync**: Syncs your entire Audiobookshelf library with Hardcover
 - 🎯 **Smart Status Management**: Automatically sets "Want to Read", "Currently Reading", and "Read" status based on progress
 - 🏠 **Ownership Tracking**: Marks synced books as "owned" to distinguish from wishlist items
@@ -76,6 +91,27 @@ docker run -d \
 |----------|---------|-------------|
 | `TEST_BOOK_FILTER` | None | Filter books by title for development testing (case-insensitive) |
 | `TEST_BOOK_LIMIT` | None | Limit number of books to process for development testing |
+
+## API Endpoints
+
+The service provides the following HTTP endpoints:
+
+### Sync Endpoints
+- `GET /sync` - Start a manual sync (returns immediately)
+- `GET /sync/status` - Get current sync status
+- `GET /sync/stats` - Get sync statistics
+- `POST /sync/reset` - Reset sync state (forces full sync on next run)
+
+### Health & Monitoring
+- `GET /health` - Health check endpoint
+- `GET /metrics` - Prometheus metrics (if enabled)
+- `GET /debug/pprof` - Debug profiling information
+
+### Tools & Utilities
+- `POST /tools/editions` - Create missing audiobook editions
+- `GET /tools/search?q=title` - Search for books on Hardcover
+- `GET /tools/authors?q=name` - Search for authors on Hardcover
+- `GET /tools/narrators?q=name` - Search for narrators on Hardcover
 
 ## Setup Instructions
 
@@ -602,6 +638,111 @@ For additional support:
 - 📋 Check [existing issues](https://github.com/drallgood/audiobookshelf-hardcover-sync/issues)
 - 📖 Review [Enhanced Progress Detection docs](docs/ENHANCED_PROGRESS_DETECTION.md)
 - 🐛 Create a new issue with debug logs if problems persist
+
+## Troubleshooting
+
+### Common Issues
+
+#### Sync Not Working
+- **Symptom**: Books aren't syncing to Hardcover
+  - ✅ **Check**: Verify your API tokens are correct and not expired
+  - ✅ **Check**: Ensure `AUDIOBOOKSHELF_URL` is accessible from the container
+  - ✅ **Check**: Look for error messages in the logs
+  - 💡 **Tip**: Enable debug logging with `DEBUG_MODE=true`
+
+#### Rate Limiting
+- **Symptom**: Requests are being rate limited
+  - ✅ **Check**: The service automatically handles rate limiting with retries
+  - ⚙️ **Adjust**: Increase `HARDCOVER_SYNC_DELAY_MS` (default: 1500ms)
+  - 💡 **Tip**: Check the logs for 429 (Too Many Requests) responses
+
+#### Book Mismatches
+- **Symptom**: Books aren't being matched correctly
+  - ✅ **Check**: Verify the book has proper metadata (ASIN, ISBN, title, author)
+  - 🔍 **Inspect**: Check the mismatch report in `MISMATCH_JSON_FILE`
+  - ⚙️ **Adjust**: Try different `AUDIOBOOK_MATCH_MODE` settings
+
+### Debugging
+
+#### Enable Debug Logs
+```bash
+# Set debug mode
+export DEBUG_MODE=true
+
+# Run with debug logging
+./abs-hardcover-sync
+```
+
+#### Check Container Logs
+```bash
+docker logs -f abs-hardcover-sync
+```
+
+#### Dry Run Mode
+Test sync without making changes:
+```bash
+export DRY_RUN=true
+./abs-hardcover-sync
+```
+
+## Development Setup
+
+### Prerequisites
+- Go 1.21 or later
+- Docker and Docker Compose (for testing with containers)
+- Make (optional, for build automation)
+
+### Building from Source
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/drallgood/audiobookshelf-hardcover-sync.git
+   cd audiobookshelf-hardcover-sync
+   ```
+
+2. Build the binary:
+   ```bash
+   make build
+   # Or manually:
+   # go build -o abs-hardcover-sync
+   ```
+
+3. Run tests:
+   ```bash
+   make test
+   # Or manually:
+   # go test -v ./...
+   ```
+
+### Running Locally
+
+1. Copy the example environment file:
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Edit `.env` with your configuration
+
+3. Run the application:
+   ```bash
+   make run
+   # Or manually:
+   # go run main.go
+   ```
+
+### Development Containers
+
+For a consistent development environment, use the provided dev container:
+
+1. Open the project in VS Code
+2. Install the "Dev Containers" extension
+3. Reopen in Container when prompted
+
+### Code Style
+
+- Follow standard Go formatting (`go fmt`)
+- Run `make lint` to check for style issues
+- Write tests for new features and bug fixes
 
 ## Contributing
 
