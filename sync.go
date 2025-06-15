@@ -449,7 +449,7 @@ func syncToHardcover(a Audiobook) error {
 			statusChanged := existingStatusId != targetStatusId
 
 			// Consider progress changed if the difference is significant (more than 30 seconds or 10%)
-			progressThreshold := int(math.Max(30, float64(targetProgressSeconds)*0.1))
+			progressThreshold := int(math.Max(30, float64(targetProgressSeconds)*getProgressChangeThreshold()))
 			progressChanged := targetProgressSeconds > 0 &&
 				(existingProgressSeconds == 0 ||
 					math.Abs(float64(targetProgressSeconds-existingProgressSeconds)) > float64(progressThreshold))
