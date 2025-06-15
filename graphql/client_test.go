@@ -1,5 +1,4 @@
-// graphql/client_test.go
-package graphql_test
+package graphql
 
 import (
 	"context"
@@ -7,10 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
-	"github.com/drallgood/audiobookshelf-hardcover-sync/graphql"
-	"github.com/drallgood/audiobookshelf-hardcover-sync/http"
-	"github.com/drallgood/audiobookshelf-hardcover-sync/logging"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/config"
+	customhttp "github.com/drallgood/audiobookshelf-hardcover-sync/http"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -29,11 +28,21 @@ func TestGraphQLClient(t *testing.T) {
 		err := json.NewDecoder(r.Body).Decode(&reqBody)
 		require.NoError(t, err)
 
-		// Prepare response
-		resp := map[string]interface{}{
-			"data": map[string]interface{}{
-				"test": "success",
-			},
+		// Prepare response based on the query
+		var resp map[string]interface{}
+		if reqBody.Query == `{ test }` {
+			resp = map[string]interface{}{
+				"data": map[string]interface{}{
+					"test": "success",
+				},
+			}
+		} else if reqBody.Query == `query Test($id: ID!) { test }` {
+			// For the variables test, just return a success response
+			resp = map[string]interface{}{
+				"data": map[string]interface{}{
+					"test": "success",
+				},
+			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -41,34 +50,41 @@ func TestGraphQLClient(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	// Create HTTP client
-	httpClient := http.NewClient(nil) // Using default config for tests
+	// Create a proper HTTP client with default config
+	cfg := &config.Config{
+		HTTP: config.HTTPConfig{
+			Timeout:            30 * time.Second,
+			MaxIdleConns:       100,
+			IdleConnTimeout:    90 * time.Second,
+			DisableCompression: false,
+			RetryWaitMin:       1 * time.Second,
+			RetryWaitMax:       30 * time.Second,
+			MaxRetries:         3,
+		},
+	}
+	httpClient := customhttp.NewClient(cfg)
 
 	// Create GraphQL client
-	gqlClient := graphql.NewClient(ts.URL, httpClient)
+	gqlClient := NewClient(ts.URL, httpClient)
 
 	// Test query
 	t.Run("successful query", func(t *testing.T) {
-		var result struct {
+		// Execute query
+		var resp struct {
 			Test string `json:"test"`
 		}
+		err := gqlClient.Query(context.Background(), `{ test }`, nil, &resp)
+		require.NoError(t, err)
 
-		query := `query Test { test }`
-		err := gqlClient.Query(context.Background(), query, nil, &result)
-
-		assert.NoError(t, err)
-		assert.Equal(t, "success", result.Test)
+		// Verify the response
+		assert.Equal(t, "success", resp.Test)
 	})
 
 	// Test with variables
 	t.Run("with variables", func(t *testing.T) {
-		var result struct {
-			Test string `json:"test"`
-		}
-
 		query := `query Test($id: ID!) { test }`
 		vars := map[string]interface{}{"id": "123"}
-		err := gqlClient.Query(context.Background(), query, vars, &result)
+		err := gqlClient.Query(context.Background(), query, vars, nil)
 
 		assert.NoError(t, err)
 	})
@@ -86,14 +102,11 @@ func TestGraphQLClient(t *testing.T) {
 		}))
 		defer errorServer.Close()
 
-		client := graphql.NewClient(errorServer.URL, httpClient)
+		client := NewClient(errorServer.URL, httpClient)
 		err := client.Query(context.Background(), "query {}", nil, nil)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "test error")
 	})
 }
 
-func init() {
-	// Initialize logger for tests
-	logging.InitForTesting()
-}
+// Test helper functions can be added here if needed

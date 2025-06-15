@@ -5,8 +5,67 @@ import (
 )
 
 // ErrorType represents different categories of errors
-//go:generate stringer -type=ErrorType
 type ErrorType int
+
+// String returns the string representation of the ErrorType
+func (et ErrorType) String() string {
+	switch et {
+	case APIError:
+		return "APIError"
+	case APIUnauthorized:
+		return "APIUnauthorized"
+	case APIForbidden:
+		return "APIForbidden"
+	case APIRateLimit:
+		return "APIRateLimit"
+	case APIConnection:
+		return "APIConnection"
+	case APIRequestTimeout:
+		return "APIRequestTimeout"
+	case APIResponseParse:
+		return "APIResponseParse"
+	case APINotFound:
+		return "APINotFound"
+	case APIConflict:
+		return "APIConflict"
+	case APITooManyRequests:
+		return "APITooManyRequests"
+	case APIInternalServer:
+		return "APIInternalServer"
+	case ConfigError:
+		return "ConfigError"
+	case ValidationError:
+		return "ValidationError"
+	case NotFoundError:
+		return "NotFoundError"
+	case PermissionError:
+		return "PermissionError"
+	case DuplicateError:
+		return "DuplicateError"
+	case TimeoutError:
+		return "TimeoutError"
+	case NetworkError:
+		return "NetworkError"
+	case StorageError:
+		return "StorageError"
+	case DatabaseError:
+		return "DatabaseError"
+	case AuthenticationError:
+		return "AuthenticationError"
+	case AuthorizationError:
+		return "AuthorizationError"
+	case RateLimitError:
+		return "RateLimitError"
+	case ServiceUnavailable:
+		return "ServiceUnavailable"
+	case CircuitBreakerError:
+		return "CircuitBreakerError"
+	case UnknownError:
+		return "UnknownError"
+	default:
+		return fmt.Sprintf("ErrorType(%d)", et)
+	}
+}
 
 const (
 	// API Errors
@@ -53,9 +112,9 @@ type Error struct {
 // Error implements the error interface
 func (e *Error) Error() string {
 	if e.Details != "" {
-		return fmt.Sprintf("%s: %s (details: %s)", e.Type, e.Message, e.Details)
+		return fmt.Sprintf("%s: %s (details: %s)", e.Type.String(), e.Message, e.Details)
 	}
-	return fmt.Sprintf("%s: %s", e.Type, e.Message)
+	return fmt.Sprintf("%s: %s", e.Type.String(), e.Message)
 }
 
 // New creates a new structured error

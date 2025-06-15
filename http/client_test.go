@@ -1,23 +1,20 @@
-package http_test
+package http
 
 import (
-	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
-	httpclient "github.com/drallgood/audiobookshelf-hardcover-sync/http"
-	"github.com/drallgood/audiobookshelf-hardcover-sync/logging"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestNewClient(t *testing.T) {
 	// Create a test config
-	cfg := &httpclient.Config{
-		HTTP: httpclient.HTTPConfig{
+	cfg := &config.Config{
+		HTTP: config.HTTPConfig{
 			Timeout:            30 * time.Second,
 			MaxIdleConns:       100,
 			IdleConnTimeout:    90 * time.Second,
@@ -28,7 +25,7 @@ func TestNewClient(t *testing.T) {
 		},
 	}
 
-	client := httpclient.NewClient(cfg)
+	client := NewClient(cfg)
 	assert.NotNil(t, client)
 	assert.NotNil(t, client.Client)
 }
@@ -42,8 +39,8 @@ func TestClient_Do_Success(t *testing.T) {
 	defer ts.Close()
 
 	// Create client with test config
-	client := httpclient.NewClient(&httpclient.Config{
-		HTTP: httpclient.HTTPConfig{
+	client := NewClient(&config.Config{
+		HTTP: config.HTTPConfig{
 			Timeout:          5 * time.Second,
 			RetryWaitMin:     10 * time.Millisecond,
 			RetryWaitMax:     20 * time.Millisecond,
@@ -82,9 +79,9 @@ func TestClient_Do_Retry(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	// Create client with test config
-	client := httpclient.NewClient(&httpclient.Config{
-		HTTP: httpclient.HTTPConfig{
+	// Create HTTP client with test config
+	cfg := &config.Config{
+		HTTP: config.HTTPConfig{
 			Timeout:          5 * time.Second,
 			RetryWaitMin:     10 * time.Millisecond,
 			RetryWaitMax:     20 * time.Millisecond,
@@ -93,15 +90,15 @@ func TestClient_Do_Retry(t *testing.T) {
 			IdleConnTimeout:  30 * time.Second,
 			DisableCompression: false,
 		},
-	})
-
+	}
+	httpClient := NewClient(cfg)
 
 	// Create request
-	req, err := client.NewRequest("GET", ts.URL, nil)
+	req, err := httpClient.NewRequest("GET", ts.URL, nil)
 	require.NoError(t, err)
 
 	// Execute request
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -165,9 +162,9 @@ func TestClient_HTTP_Methods(t *testing.T) {
 			ts := httptest.NewServer(tt.handler)
 			defer ts.Close()
 
-			// Create client with test config
-			client := httpclient.NewClient(&httpclient.Config{
-				HTTP: httpclient.HTTPConfig{
+			// Create HTTP client with test config
+			cfg := &config.Config{
+				HTTP: config.HTTPConfig{
 					Timeout:          5 * time.Second,
 					RetryWaitMin:     10 * time.Millisecond,
 					RetryWaitMax:     20 * time.Millisecond,
@@ -176,8 +173,8 @@ func TestClient_HTTP_Methods(t *testing.T) {
 					IdleConnTimeout:  30 * time.Second,
 					DisableCompression: false,
 				},
-			})
-
+			}
+			httpClient := NewClient(cfg)
 
 			// Create and execute request based on method
 			var resp *http.Response
@@ -185,13 +182,13 @@ func TestClient_HTTP_Methods(t *testing.T) {
 
 			switch tt.method {
 			case "GET":
-				resp, err = client.Get(ts.URL)
+				resp, err = httpClient.Get(ts.URL)
 			case "POST":
-				resp, err = client.Post(ts.URL, tt.body)
+				resp, err = httpClient.Post(ts.URL, tt.body)
 			case "PUT":
-				resp, err = client.Put(ts.URL, tt.body)
+				resp, err = httpClient.Put(ts.URL, tt.body)
 			case "DELETE":
-				resp, err = client.Delete(ts.URL)
+				resp, err = httpClient.Delete(ts.URL)
 			}
 
 			require.NoError(t, err)
@@ -205,5 +202,5 @@ func TestClient_HTTP_Methods(t *testing.T) {
 
 func init() {
 	// Initialize logger for tests
-	logging.InitForTesting()
+	// Removed undefined logging reference
 }
