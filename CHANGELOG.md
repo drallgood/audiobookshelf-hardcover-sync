@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Batch Processing**: Implemented high-performance batch processing for book operations
+  - **Batch Book Lookup**: Look up multiple books in a single request
+  - **Batch Status Updates**: Update status and progress for multiple books at once
+  - **Batch Book Sync**: Full synchronization of multiple books with progress tracking
+  - **Smart Rate Limiting**: Configurable delays between API calls to prevent rate limiting
+  - **Error Handling**: Graceful handling of partial failures with automatic retries
+
+### Changed
+- **HTTP Client**: Refactored HTTP client with improved error handling and retry logic
+- **GraphQL Client**: Enhanced GraphQL client with batch operation support
+- **Documentation**: Updated README with batch processing details, performance tuning, and developer setup
+- **Testing**: Added comprehensive integration tests for batch operations
+
+### Fixed
+- **Integration Tests**: Resolved issues with test server response handling
+- **Data Mapping**: Fixed status and progress mapping in batch responses
+- **Error Handling**: Improved error messages and logging for batch operations
+
+
 ## [1.6.1] - 2025-06-12
 
 ### Fixed
