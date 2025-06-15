@@ -14,17 +14,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Batch Book Sync**: Full synchronization of multiple books with progress tracking
   - **Smart Rate Limiting**: Configurable delays between API calls to prevent rate limiting
   - **Error Handling**: Graceful handling of partial failures with automatic retries
+- **Type Safety**: Added comprehensive type safety throughout the codebase
+  - Standardized on `*Audiobook` pointer type for consistency
+  - Improved null safety with proper nil checks
+- **Documentation**: Added comprehensive developer documentation
+  - Enhanced `CONTRIBUTING.md` with detailed development guidelines
+  - Updated `DEVELOPMENT.md` with code organization and debugging information
 
 ### Changed
 - **HTTP Client**: Refactored HTTP client with improved error handling and retry logic
 - **GraphQL Client**: Enhanced GraphQL client with batch operation support
 - **Documentation**: Updated README with batch processing details, performance tuning, and developer setup
 - **Testing**: Added comprehensive integration tests for batch operations
+- **Code Organization**: Restructured code for better maintainability
+  - Moved types to dedicated packages
+  - Improved package boundaries and dependencies
 
 ### Fixed
 - **Integration Tests**: Resolved issues with test server response handling
 - **Data Mapping**: Fixed status and progress mapping in batch responses
 - **Error Handling**: Improved error messages and logging for batch operations
+- **Type Mismatches**: Fixed type mismatches between `Audiobook` and `*Audiobook`
+- **Test Failures**: Addressed test failures related to type changes and function signatures
 
 
 ## [1.6.1] - 2025-06-12

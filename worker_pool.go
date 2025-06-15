@@ -4,13 +4,12 @@ import (
 	"context"
 	"log"
 	"sync"
-	"time"
 )
 
 // WorkerPool manages a pool of worker goroutines to process books concurrently
 type WorkerPool struct {
 	maxWorkers   int
-	taskQueue    chan Audiobook
+	taskQueue    chan *Audiobook
 	resultChan   chan error
 	wg           sync.WaitGroup
 	ctx          context.Context
@@ -25,7 +24,7 @@ func NewWorkerPool(maxWorkers int) *WorkerPool {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &WorkerPool{
 		maxWorkers: maxWorkers,
-		taskQueue:  make(chan Audiobook, 100), // Buffer to avoid blocking
+		taskQueue:  make(chan *Audiobook, 100), // Buffer to avoid blocking
 		resultChan: make(chan error, 100),
 		ctx:        ctx,
 		cancel:     cancel,
@@ -49,7 +48,10 @@ func (wp *WorkerPool) Stop() {
 }
 
 // AddTask adds a book to the task queue
-func (wp *WorkerPool) AddTask(book Audiobook) {
+func (wp *WorkerPool) AddTask(book *Audiobook) {
+	if book == nil {
+		return
+	}
 	wp.mu.Lock()
 	wp.totalTasks++
 	wp.mu.Unlock()
@@ -107,7 +109,7 @@ func (wp *WorkerPool) worker(id int) {
 }
 
 // ProcessBooks processes a slice of books concurrently using the worker pool
-func ProcessBooks(books []Audiobook, maxWorkers int) (int, int) {
+func ProcessBooks(books []*Audiobook, maxWorkers int) (int, int) {
 	if len(books) == 0 {
 		return 0, 0
 	}

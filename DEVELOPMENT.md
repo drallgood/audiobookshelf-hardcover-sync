@@ -1,53 +1,213 @@
 # Development Guide
 
-This document provides information for developers working on the Audiobookshelf-Hardcover Sync project.
+This document provides comprehensive information for developers working on the Audiobookshelf-Hardcover Sync project.
+
+## Table of Contents
+- [Prerequisites](#prerequisites)
+- [Getting Started](#getting-started)
+- [Building](#building)
+- [Testing](#testing)
+- [Code Organization](#code-organization)
+- [Development Workflow](#development-workflow)
+- [Debugging](#debugging)
+- [Performance Considerations](#performance-considerations)
+- [Release Process](#release-process)
+- [License](#license)
 
 ## Prerequisites
 
 - Go 1.24 or later
 - Docker and Docker Compose (for testing with containers)
-- Make (optional, for build automation)
+- Make (for build automation)
+- Git (for version control)
 
 ## Getting Started
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/drallgood/audiobookshelf-hardcover-sync.git
-   cd audiobookshelf-hardcover-sync
-   ```
+### 1. Clone the Repository
+```bash
+git clone https://github.com/drallgood/audiobookshelf-hardcover-sync.git
+cd audiobookshelf-hardcover-sync
+```
 
-2. **Install dependencies**
-   ```bash
-   go mod download
-   ```
+### 2. Install Dependencies
+```bash
+go mod download
+```
 
-3. **Set up environment variables**
-   ```bash
-   cp .env.example .env
-   # Edit .env with your configuration
-   ```
+### 3. Configure Environment
+```bash
+cp .env.example .env
+# Edit .env with your configuration
+```
 
 ## Building
 
-### Build the binary
+### Development Build
+Build the binary for your current platform:
 ```bash
 make build
 ```
 
-### Build with Docker
+The binary will be output as `main` in the project root.
+
+### Production Build
+Build an optimized binary with version information:
+```bash
+make release
+```
+
+### Docker Build
+Build a Docker image:
 ```bash
 make docker-build
 ```
 
-### Run tests
+## Testing
+
+### Running Tests
+
+#### Unit Tests
 ```bash
-# Run unit tests
 make test
+```
 
-# Run integration tests
+#### Integration Tests
+```bash
 make test-integration
+```
 
-# Run all tests with coverage
+#### All Tests with Coverage
+```bash
+make test-cover
+```
+
+### Writing Tests
+
+- Place test files next to the code they test with `_test.go` suffix
+- Use table-driven tests for testing multiple scenarios
+- Mock external dependencies in tests
+- Follow the [Go testing best practices](https://golang.org/doc/code.html#Testing)
+
+## Code Organization
+
+The project follows the standard Go project layout:
+
+```
+.
+├── cmd/                  # Main application entry points
+│   └── main.go           # CLI entry point
+├── internal/             # Private application code
+│   ├── batch/            # Batch processing logic
+│   ├── config/           # Configuration management
+│   ├── hardcover/        # Hardcover API client
+│   ├── http/             # HTTP client with retries
+│   ├── models/           # Data models
+│   ├── sync/             # Synchronization logic
+│   └── worker/           # Worker pool implementation
+├── pkg/                  # Reusable packages
+├── scripts/              # Build and deployment scripts
+└── test/                 # Test utilities and fixtures
+```
+
+## Development Workflow
+
+1. **Create a feature branch**
+   ```bash
+   git checkout -b feature/your-feature-name
+   ```
+
+2. **Make your changes**
+   - Follow the code style guidelines
+   - Write tests for new functionality
+   - Update documentation as needed
+
+3. **Run tests**
+   ```bash
+   make test
+   make test-integration
+   ```
+
+4. **Commit your changes**
+   ```bash
+   git add .
+   git commit -m "Add feature: brief description"
+   ```
+
+5. **Push your changes**
+   ```bash
+   git push origin feature/your-feature-name
+   ```
+
+6. **Open a pull request**
+   - Create a pull request against the `main` branch
+   - Request review from maintainers
+
+## Debugging
+
+### Using Delve (Go Debugger)
+
+1. Install Delve:
+   ```bash
+   go install github.com/go-delve/delve/cmd/dlv@latest
+   ```
+
+2. Start debugging:
+   ```bash
+   dlv debug .
+   ```
+
+### Debugging in VS Code
+
+1. Install the Go extension
+2. Add the following to your `launch.json`:
+   ```json
+   {
+       "version": "0.2.0",
+       "configurations": [
+           {
+               "name": "Debug",
+               "type": "go",
+               "request": "launch",
+               "mode": "auto",
+               "program": "${workspaceFolder}",
+               "env": {},
+               "args": []
+           }
+       ]
+   }
+   ```
+
+## Performance Considerations
+
+### Batch Processing
+- The application uses batch processing to reduce API calls
+- Batch size can be configured in the configuration
+
+### Concurrency
+- Worker pools are used for concurrent processing
+- Number of workers can be configured
+
+### Rate Limiting
+- Built-in rate limiting to prevent API throttling
+- Configured via environment variables
+
+## Release Process
+
+1. Update the version in `VERSION` file
+2. Update `CHANGELOG.md` with release notes
+3. Create a git tag:
+   ```bash
+   git tag -a v1.0.0 -m "Release v1.0.0"
+   ```
+4. Push the tag:
+   ```bash
+   git push origin v1.0.0
+   ```
+5. GitHub Actions will automatically build and publish the release
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 make test-coverage
 ```
 

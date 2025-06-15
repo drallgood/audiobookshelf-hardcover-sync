@@ -9,17 +9,44 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/config"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/hardcover"
+	httpclient "github.com/drallgood/audiobookshelf-hardcover-sync/http"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/types"
 )
+
+// shouldSyncBook determines if a book should be synced based on configuration and book state
+func shouldSyncBook(book Audiobook, cfg *config.Config) bool {
+	// Always sync if we're in debug mode
+	if cfg.App.Debug {
+		return true
+	}
+
+	// Skip if the book has no progress
+	if book.Progress <= 0 {
+		return false
+	}
+
+	// Skip if the book is finished (progress >= 100%)
+	if book.Progress >= 100 {
+		return false
+	}
+
+	// Sync if the book has been started but not finished
+	return book.CurrentTime > 0
+}
 
 // syncToHardcover syncs a single audiobook to Hardcover with comprehensive book matching
 // and conditional sync logic to avoid unnecessary API calls
-func syncToHardcover(a Audiobook) error {
+func syncToHardcover(a *Audiobook) error {
+	if a == nil {
+		return fmt.Errorf("cannot sync nil audiobook")
+	}
 	var bookId, editionId string
 	var asinLookupSucceeded bool // Track if ASIN lookup found audiobook edition
 
@@ -325,42 +352,42 @@ func syncToHardcover(a Audiobook) error {
 	if err != nil {
 		return fmt.Errorf("failed to check existing user book for '%s': %v", a.Title, err)
 	}
-	
-	debugLog("DEBUG: checkExistingUserBook returned - userBookId=%d, statusId=%d, progressSeconds=%d, owned=%t, editionId=%d, userBookReadEditionId=%v", 
+
+	debugLog("DEBUG: checkExistingUserBook returned - userBookId=%d, statusId=%d, progressSeconds=%d, owned=%t, editionId=%d, userBookReadEditionId=%v",
 		existingUserBookId, existingStatusId, existingProgressSeconds, existingOwned, existingEditionId, userBookReadEditionId)
 
 	// Determine the target status for this book with enhanced finished book detection
 	targetStatusId := 3 // default to read
-	
+
 	// Check if book is actually finished despite showing 0% progress
 	// This can happen when enhanced detection fails to properly identify finished books
 	isBookFinished := a.Progress >= 0.99
 	debugLog("Initial finished status for '%s': isBookFinished=%t (progress=%.6f)", a.Title, isBookFinished, a.Progress)
-	
+
 	// Additional checks for finished status using enhanced detection via /api/authorize
 	if !isBookFinished && a.Progress == 0 {
 		debugLog("Running enhanced finished book detection for '%s' (0%% progress)", a.Title)
-		
+
 		// Use the new authorize endpoint detection
 		if enhanceFinishedBookDetection(a.Title, a.ID, a.Progress) {
 			isBookFinished = true
 			debugLog("✅ FINISHED BOOK DETECTED: Enhanced detection found book '%s' is actually finished via /api/authorize", a.Title)
 		}
-		
+
 		// Also check if book appears to be finished based on listening position
 		if !isBookFinished && a.CurrentTime > 0 && a.TotalDuration > 0 {
 			actualProgress := a.CurrentTime / a.TotalDuration
 			remainingTime := a.TotalDuration - a.CurrentTime
-			debugLog("Position-based detection for '%s': actualProgress=%.6f (%.2f%%), remainingTime=%.1fs", 
+			debugLog("Position-based detection for '%s': actualProgress=%.6f (%.2f%%), remainingTime=%.1fs",
 				a.Title, actualProgress, actualProgress*100, remainingTime)
 			if actualProgress >= 0.95 || remainingTime <= 300 { // Within 95% or 5 minutes of end
 				isBookFinished = true
-				debugLog("✅ FINISHED BOOK DETECTED: Book '%s' appears finished based on position: %.2f%% complete, %.1f minutes remaining", 
+				debugLog("✅ FINISHED BOOK DETECTED: Book '%s' appears finished based on position: %.2f%% complete, %.1f minutes remaining",
 					a.Title, actualProgress*100, remainingTime/60)
 			}
 		}
 	}
-	
+
 	// Set status based on actual finished state
 	if isBookFinished {
 		targetStatusId = 3 // read
@@ -421,7 +448,7 @@ func syncToHardcover(a Audiobook) error {
 			// Check if this is actually a finished book that AudiobookShelf is reporting incorrectly
 			debugLog("FINISHED BOOK CHECK: Book '%s' has finished read in Hardcover and shows %.2f%% progress in ABS, but isBookFinished=%t",
 				a.Title, a.Progress*100, isBookFinished)
-			
+
 			if isBookFinished {
 				// This is a manually finished book that AudiobookShelf is reporting with 0% progress
 				// Don't treat as re-read, treat as already finished
@@ -429,7 +456,7 @@ func syncToHardcover(a Audiobook) error {
 					a.Title)
 				return nil // Skip this book entirely
 			} else if a.Progress == 0 && a.CurrentTime == 0 {
-				// CONSERVATIVE APPROACH: If book shows 0% progress AND 0 current time, 
+				// CONSERVATIVE APPROACH: If book shows 0% progress AND 0 current time,
 				// it might be a manually finished book that we can't detect properly.
 				// Don't assume it's a re-read - skip to avoid creating duplicate entries
 				debugLog("CONSERVATIVE SKIP: Book '%s' has finished read in Hardcover but shows 0%% progress and 0 current time in AudiobookShelf - likely manually finished, skipping to avoid duplicate",
@@ -827,7 +854,7 @@ func syncToHardcover(a Audiobook) error {
 				if result.Data.UpdateUserBookRead.UserBookRead != nil {
 					debugLog("Confirmed progress update: %d seconds", result.Data.UpdateUserBookRead.UserBookRead.ProgressSeconds)
 				}
-				
+
 				// Diagnose potential null edition issues in debug mode
 				if debugMode && result.Data.UpdateUserBookRead.ID > 0 {
 					diagnoseNullEdition(result.Data.UpdateUserBookRead.ID)
@@ -854,7 +881,7 @@ func syncToHardcover(a Audiobook) error {
 				} else if hasExistingFinishedRead {
 					// EXPECTATION #3: Book is finished in ABS AND has finished read in Hardcover → DO NOTHING
 					debugLog("SKIP: Book '%s' is finished in ABS but already has a finished read in Hardcover (finished on %s) - doing nothing to avoid duplicate", a.Title, finishDate)
-					
+
 					// Even though we're skipping progress sync, we might still need to update the status
 					if existingUserBookId > 0 && existingStatusId != targetStatusId {
 						debugLog("Updating user book status for '%s': %d -> %d (skipped progress sync)", a.Title, existingStatusId, targetStatusId)
@@ -905,144 +932,193 @@ func syncToHardcover(a Audiobook) error {
 	return nil
 }
 
+// Use the shared SyncState from the types package
+// type SyncState is now defined in types/sync_state.go
+
+// Default concurrency settings
+const (
+	defaultBatchSize = 10
+	defaultRPS       = 10
+)
+
 func runSync() {
-	// Initialize HTTP client with retry and circuit breaker
-	httpClient := http.NewClient(&http.ClientConfig{
-		Timeout:           30 * time.Second,
-		MaxRetries:        3,
-		RetryWaitTime:     1 * time.Second,
-		RetryMaxWaitTime:  10 * time.Second,
-		RetryOnHTTPError:  true,
-		RetryOnTimeout:    true,
-		DisableKeepAlives: false,
-	})
+	// Load or create sync state
+	state := &types.SyncState{
+		Version:           types.StateVersion,
+		LastSync:          time.Now(),
+		LastSyncTimestamp: time.Now().UnixMilli(),
+		SyncCount:         0,
+		SyncStatus:        "started",
+		SyncMode:          "full", // Will be updated based on sync type
+	}
 
-	// Initialize Audiobookshelf client
-	abClient := audiobookshelf.NewClient(
-		cfg.Audiobookshelf.URL,
-		cfg.Audiobookshelf.Username,
-		cfg.Audiobookshelf.Password,
-		httpClient,
-	)
+	// Load configuration
+	cfg, err := config.Load("")
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
 
-	// Initialize Hardcover client
-	hcClient, err := hardcover.NewClient(cfg, httpClient)
+	// Initialize HTTP client with configuration
+	httpClient := httpclient.NewClient(cfg)
+
+
+	// Initialize Hardcover batch client
+	hcClient, err := hardcover.NewBatchClient(cfg, httpClient)
 	if err != nil {
 		log.Fatalf("Failed to initialize Hardcover client: %v", err)
 	}
 
-	// Initialize batch client
-	batchClient, err := hardcover.NewBatchClient(cfg, httpClient)
-	if err != nil {
-		log.Fatalf("Failed to initialize batch client: %v", err)
-	}
-
-	// Configure batch client
-	batchClient = batchClient.
-		WithBatchSize(cfg.Concurrency.BatchSize).
+	// Configure client with concurrency settings
+	hcClient = hcClient.WithBatchSize(types.DefaultBatchSize).
 		WithWorkers(cfg.Concurrency.MaxWorkers).
-		WithRateLimit(cfg.Concurrency.RequestsPerSecond)
+		WithRateLimit(types.DefaultRPS)
 
 	// Get all books from Audiobookshelf
 	log.Println("Fetching books from Audiobookshelf...")
-	abBooks, err := abClient.GetAllBooks()
+	abBooks, err := fetchAudiobookShelfStatsEnhanced()
 	if err != nil {
 		log.Fatalf("Failed to get books from Audiobookshelf: %v", err)
 	}
 	log.Printf("Found %d books in Audiobookshelf", len(abBooks))
 
 	// Filter books to sync
-	var booksToSync []*audiobookshelf.Book
-	for _, book := range abBooks {
-		if shouldSyncBook(book, cfg) {
-		log.Printf("TEST_BOOK_FILTER: filtered from %d to %d books matching '%s'", originalCount, len(filteredBooks), testBookFilter)
+	var booksToSync []*Audiobook
+	for i := range abBooks {
+		if shouldSyncBook(abBooks[i], cfg) {
+			booksToSync = append(booksToSync, &abBooks[i])
+		}
+	}
+
+	// Apply test filters if configured
+	testBookFilter := os.Getenv("TEST_BOOK_FILTER")
+	if testBookFilter != "" {
+		var filteredBooks []*Audiobook
+		originalCount := len(booksToSync)
+		for _, book := range booksToSync {
+			if strings.Contains(strings.ToLower(book.Title), strings.ToLower(testBookFilter)) {
+				filteredBooks = append(filteredBooks, book)
+			}
+		}
+		booksToSync = filteredBooks
+		log.Printf("TEST_BOOK_FILTER: filtered from %d to %d books matching '%s'", originalCount, len(booksToSync), testBookFilter)
 	} else {
 		debugLog("No TEST_BOOK_FILTER configured, skipping filtering")
 	}
-	
-	if testBookLimit > 0 && len(books) > testBookLimit {
+
+	testBookLimitStr := os.Getenv("TEST_BOOK_LIMIT")
+	testBookLimit := 0
+	if testBookLimitStr != "" {
+		var err error
+		testBookLimit, err = strconv.Atoi(testBookLimitStr)
+		if err != nil {
+			log.Printf("Invalid TEST_BOOK_LIMIT value '%s', using 0 (no limit)", testBookLimitStr)
+			testBookLimit = 0
+		}
+	}
+
+	if testBookLimit > 0 && len(booksToSync) > testBookLimit {
 		debugLog("Applying TEST_BOOK_LIMIT: %d", testBookLimit)
-		books = books[:testBookLimit]
+		booksToSync = booksToSync[:testBookLimit]
 		log.Printf("TEST_BOOK_LIMIT: limited to %d books", testBookLimit)
 	}
+
+	log.Printf("Found %d books to sync after filtering", len(booksToSync))
 
 	// Filter books by configured progress threshold
 	minProgress := getMinimumProgressThreshold()
 	syncWantToRead := getSyncWantToRead()
-	var booksToSync []Audiobook
 
-	for _, book := range books {
+	var filteredBooks []*Audiobook
+	for _, book := range booksToSync {
+		// Skip books with no progress tracking
+		if book.Progress <= 0 {
+			continue
+		}
+
+		// Calculate progress percentage
+		progress := 0.0
+		if book.TotalDuration > 0 {
+			progress = float64(book.CurrentTime) / float64(book.TotalDuration)
+		}
+
 		// Allow books with 0% progress if SYNC_WANT_TO_READ is enabled
-		shouldSync := book.Progress >= minProgress || (book.Progress == 0 && syncWantToRead)
+		shouldSync := progress >= minProgress || (progress == 0 && syncWantToRead)
 
 		if shouldSync {
-			booksToSync = append(booksToSync, book)
-			if book.Progress == 0 && syncWantToRead {
+			filteredBooks = append(filteredBooks, book)
+			if progress == 0 && syncWantToRead {
 				debugLog("Including book '%s' with 0%% progress for 'Want to read' sync", book.Title)
 			}
 		} else {
 			// Enhanced detection for books that may be actually finished
 			// Some audiobooks might show lower progress due to credits/silence at the end
-			if book.Progress >= 0.95 && book.TotalDuration > 0 {
-				actualProgress := float64(book.CurrentTime) / book.TotalDuration
+			if progress >= 0.95 && book.TotalDuration > 0 {
+				actualProgress := float64(book.CurrentTime) / float64(book.TotalDuration)
 				if actualProgress >= minProgress {
-					booksToSync = append(booksToSync, book)
+					filteredBooks = append(filteredBooks, book)
 					debugLog("Book '%s' has better calculated progress (%.6f) - adding to sync", book.Title, actualProgress)
 				} else {
-					debugLog("Skipping book '%s' with progress %.6f (< %.2f%%)", book.Title, book.Progress, minProgress*100)
+					debugLog("Skipping book '%s' with progress %.6f (< %.2f%%)", book.Title, progress, minProgress*100)
 				}
 			} else {
-				debugLog("Skipping book '%s' with progress %.6f (< %.2f%%)", book.Title, book.Progress, minProgress*100)
+				debugLog("Skipping book '%s' with progress %.6f (< %.2f%%)", book.Title, progress, minProgress*100)
 			}
 		}
 	}
 
-	log.Printf("Found %d books with progress to sync (out of %d candidate books)", len(booksToSync), len(books))
+	booksToSync = filteredBooks
+
+	log.Printf("Found %d books with progress to sync (out of %d total books)", len(booksToSync), len(abBooks))
 
 	if len(booksToSync) == 0 {
-		log.Printf("No books with progress found to sync")
+		log.Println("No books to sync after filtering by progress")
 		// Update sync state even if no books to sync
-		updateSyncTimestamp(state, isFullSync)
+		state.LastSync = time.Now()
 		if err := saveSyncState(state); err != nil {
 			log.Printf("Warning: Failed to save sync state: %v", err)
 		}
 		return
 	}
 
-	// Load config to get concurrency settings
-	cfg, err := config.Load("")
-	if err != nil {
-		log.Printf("Failed to load config, using default concurrency settings: %v", err)
-		cfg = config.DefaultConfig()
-	}
-
 	// Process books concurrently using worker pool
 	startTime := time.Now()
 	successCount, errorCount := ProcessBooks(booksToSync, cfg.GetConcurrentWorkers())
-	
+
 	// Log sync statistics
 	duration := time.Since(startTime)
 	booksPerSecond := float64(len(booksToSync)) / duration.Seconds()
-	log.Printf("Processed %d books in %s (%.2f books/sec)", 
+	log.Printf("Processed %d books in %s (%.2f books/sec)",
 		len(booksToSync), duration.Round(time.Millisecond), booksPerSecond)
-	
+
 	if errorCount > 0 {
-		log.Printf("Completed with %d errors (%.1f%% success rate)", 
+		log.Printf("Completed with %d errors (%.1f%% success rate)",
 			errorCount, float64(successCount)/float64(len(booksToSync))*100)
 	}
 
-	// Update sync state after successful sync
-	updateSyncTimestamp(state, isFullSync)
-	if err := saveSyncState(state); err != nil {
-		log.Printf("Warning: Failed to save sync state: %v", err)
+	// Update sync state with current timestamp
+	state.LastSync = time.Now()
+	state.SyncCount += len(booksToSync)
+
+	// Update sync state with completion status
+	state.SyncStatus = "completed"
+	state.LastSync = time.Now()
+	state.LastSyncTimestamp = time.Now().UnixMilli()
+
+	// Save sync state
+	err = saveSyncState(state)
+	if err != nil {
+		log.Printf("Error saving sync state: %v", err)
+	} else {
+		debugLog("Sync completed successfully. Processed %d books (%d synced, %d failed)",
+			state.BooksProcessed, state.BooksSynced, state.BooksFailed)
 	}
 
 	// Print sync summary
-	log.Printf("Sync complete: %d/%d books synced successfully (%s)", successCount, len(booksToSync), syncMode)
+	log.Printf("Sync complete: %d/%d books synced successfully (%s)", successCount, len(booksToSync), state.SyncMode)
 
 	// Log final cache statistics
 	stats := getCacheStats()
-	log.Printf("[CACHE] Final cache stats: %d total entries (%d authors, %d narrators, %d publishers)", 
+	log.Printf("[CACHE] Final cache stats: %d total entries (%d authors, %d narrators, %d publishers)",
 		stats["total_entries"].(int), stats["authors"].(int), stats["narrators"].(int), stats["publishers"].(int))
 
 	// Print summary of books that may need manual review
@@ -1063,32 +1139,32 @@ func getCurrentUserID() (string, error) {
 		username
 	  }
 	}`
-	
+
 	payload := map[string]interface{}{"query": query}
 	payloadBytes, _ := json.Marshal(payload)
-	
+
 	req, err := http.NewRequest("POST", "https://api.hardcover.app/v1/graphql", bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return "", err
 	}
-	
+
 	req.Header.Set("Authorization", "Bearer "+getHardcoverToken())
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "AudiobookShelfSyncScript/1.0")
-	
+
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-	
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
-	
+
 	debugLog("Hardcover me response: %s", string(body))
-	
+
 	// Try different response structures
 	var result1 struct {
 		Data struct {
@@ -1098,11 +1174,11 @@ func getCurrentUserID() (string, error) {
 			} `json:"me"`
 		} `json:"data"`
 	}
-	
+
 	if err := json.Unmarshal(body, &result1); err == nil && result1.Data.Me.ID != "" {
 		return result1.Data.Me.ID, nil
 	}
-	
+
 	// Alternative structure with array
 	var result2 struct {
 		Data struct {
@@ -1112,10 +1188,10 @@ func getCurrentUserID() (string, error) {
 			} `json:"me"`
 		} `json:"data"`
 	}
-	
+
 	if err := json.Unmarshal(body, &result2); err == nil && len(result2.Data.Me) > 0 {
 		return result2.Data.Me[0].ID, nil
 	}
-	
+
 	return "", fmt.Errorf("failed to parse user ID from response: %s", string(body))
 }
