@@ -1080,9 +1080,9 @@ func runSync() {
 		return
 	}
 
-	// Process books concurrently using worker pool
+	// Process books using batch processing
 	startTime := time.Now()
-	successCount, errorCount := ProcessBooks(booksToSync, cfg.GetConcurrentWorkers())
+	successCount, errorCount := ProcessBooks(booksToSync, cfg.GetConcurrentWorkers(), hcClient)
 
 	// Log sync statistics
 	duration := time.Since(startTime)

@@ -27,9 +27,9 @@ func NewBatchClient(cfg *config.Config, httpClient *httpclient.Client) (*BatchCl
 
 	// Create batch client with rate limiting
 	batchClient := &BatchClient{
-		batchSize:  10,                    // Default batch size
-		workers:    5,                     // Default number of workers
-		rateLimit:  100 * time.Millisecond, // Default to 10 req/s
+		batchSize:  3,                     // Reduced batch size to minimize API load
+		workers:    1,                     // Single worker to prevent concurrency issues
+		rateLimit:  time.Second,           // 1 second between requests to respect rate limits
 	}
 
 	// Create batch HTTP client

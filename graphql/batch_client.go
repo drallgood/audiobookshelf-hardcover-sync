@@ -69,9 +69,9 @@ func NewBatchClientFromHTTP(httpClient *httpclient.Client, endpoint string, opts
 	batchClient := httpclient.NewBatchClient(
 		httpClient,
 		httpclient.BatchClientConfig{
-			BatchSize:  10,
-			MaxWorkers: 5,
-			RateLimit:  100 * time.Millisecond, // 10 req/s
+			BatchSize:  3,                    // Further reduced to minimize API load
+			MaxWorkers: 1,                    // Single worker to prevent concurrency issues
+			RateLimit:  time.Second,          // Increased to 1s between requests
 		},
 	)
 

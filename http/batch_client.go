@@ -51,13 +51,13 @@ type BatchClient struct {
 // NewBatchClient creates a new batch client with the given configuration
 func NewBatchClient(client *Client, cfg BatchClientConfig) *BatchClient {
 	if cfg.BatchSize <= 0 {
-		cfg.BatchSize = 10
+		cfg.BatchSize = 3 // Further reduced to minimize API load
 	}
 	if cfg.MaxWorkers <= 0 {
-		cfg.MaxWorkers = 5
+		cfg.MaxWorkers = 1 // Single worker to prevent concurrency issues
 	}
 	if cfg.RateLimit <= 0 {
-		cfg.RateLimit = 100 * time.Millisecond // 10 req/s by default
+		cfg.RateLimit = time.Second // Increased to 1s between requests
 	}
 
 	return &BatchClient{

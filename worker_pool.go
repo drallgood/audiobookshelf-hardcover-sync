@@ -4,6 +4,8 @@ import (
 	"context"
 	"log"
 	"sync"
+
+	"github.com/drallgood/audiobookshelf-hardcover-sync/hardcover"
 )
 
 // WorkerPool manages a pool of worker goroutines to process books concurrently
@@ -108,43 +110,50 @@ func (wp *WorkerPool) worker(id int) {
 	}
 }
 
-// ProcessBooks processes a slice of books concurrently using the worker pool
-func ProcessBooks(books []*Audiobook, maxWorkers int) (int, int) {
+// ProcessBooks processes a slice of books using batch processing
+func ProcessBooks(books []*Audiobook, maxWorkers int, hcClient *hardcover.BatchClient) (int, int) {
 	if len(books) == 0 {
 		return 0, 0
 	}
+
+	// Convert Audiobook slice to hardcover.Book slice for batch processing
+	hcBooks := make([]*hardcover.Book, 0, len(books))
+	bookMap := make(map[string]*Audiobook) // Map Hardcover book ID to Audiobook
 	
-	// Limit number of workers to number of books if necessary
-	if maxWorkers > len(books) {
-		maxWorkers = len(books)
-	}
-	if maxWorkers < 1 {
-		maxWorkers = 1
-	}
-	
-	// Create and start worker pool
-	pool := NewWorkerPool(maxWorkers)
-	pool.Start()
-	defer pool.Stop()
-	
-	// Add all books to the task queue in a separate goroutine
-	go func() {
-		for _, book := range books {
-			pool.AddTask(book)
+	for _, book := range books {
+		hcBook := &hardcover.Book{
+			Title:    book.Title,
+			Author:   book.Author,
+			Progress: book.Progress * 100, // Convert to percentage
+			// Add other fields as needed
 		}
-	}()
-	
+		hcBooks = append(hcBooks, hcBook)
+		bookMap[hcBook.ID] = book
+	}
+
+	// Use BatchSyncBooks to process books in batches
+	results, err := hcClient.BatchSyncBooks(context.Background(), hcBooks)
+	if err != nil {
+		log.Printf("Error during batch sync: %v", err)
+		return 0, len(books) // All failed if batch fails
+	}
+
 	// Process results
+	successCount := 0
 	errors := 0
-	for range books {
-		select {
-		case err := <-pool.Results():
-			if err != nil {
-				errors++
+	for _, result := range results {
+		if result.Error != nil {
+			log.Printf("Failed to sync book %s: %v", result.BookID, result.Error)
+			errors++
+		} else {
+			successCount++
+			// Update the original book with synced data if needed
+			if book, exists := bookMap[result.BookID]; exists {
+				book.ID = result.BookID
+				// Update other fields as needed
 			}
 		}
 	}
-	
-	successCount := pool.SuccessCount()
+
 	return successCount, errors
 }
