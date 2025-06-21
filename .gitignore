@@ -28,17 +28,8 @@ go.work.sum
 .env
 
 # Editor/IDE
-.idea/
-.vscode/
-*.swo
-*.swp
-*~
-*.bak
-*.e
-*.tmp.*
-!*.tmproj
-.DS_Store
-*.sw?
+# .idea/
+# .vscode/
 
 main
 test-main

@@ -7,7 +7,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestFetchAudiobookShelfStats_NoEnv(t *testing.T) {
@@ -159,7 +158,7 @@ func TestFetchLibraries_MalformedJSON(t *testing.T) {
 }
 
 func TestSyncToHardcover_NotFinished(t *testing.T) {
-	book := &Audiobook{Title: "Test", Author: "Author", Progress: 0.5}
+	book := Audiobook{Title: "Test", Author: "Author", Progress: 0.5}
 	// Save and clear HARDCOVER_TOKEN
 	oldToken := os.Getenv("HARDCOVER_TOKEN")
 	os.Setenv("HARDCOVER_TOKEN", "dummy")
@@ -178,7 +177,7 @@ func TestSyncToHardcover_NotFinished(t *testing.T) {
 }
 
 func TestSyncToHardcover_Finished_NoToken(t *testing.T) {
-	book := &Audiobook{Title: "Test", Author: "Author", Progress: 1.0}
+	book := Audiobook{Title: "Test", Author: "Author", Progress: 1.0}
 	// Save and clear HARDCOVER_TOKEN
 	oldToken := os.Getenv("HARDCOVER_TOKEN")
 	os.Setenv("HARDCOVER_TOKEN", "")
@@ -195,29 +194,8 @@ func TestSyncToHardcover_Finished_NoToken(t *testing.T) {
 	}
 }
 
-// TestRunSync_NoPanic verifies that runSync() doesn't panic when run without configuration.
-// This test is skipped in CI environments or when no Audiobookshelf server is available.
 func TestRunSync_NoPanic(t *testing.T) {
-	// Skip in CI environment
-	if os.Getenv("CI") != "" {
-		t.Skip("Skipping TestRunSync_NoPanic in CI environment - requires running Audiobookshelf server")
-	}
-
-	// Check if we can connect to a local Audiobookshelf server
-	testServer := os.Getenv("AUDIOBOOKSHELF_URL")
-	if testServer == "" {
-		testServer = "http://localhost:13378" // Default Audiobookshelf port
-	}
-
-	// Try to connect to the server
-	client := &http.Client{Timeout: 1 * time.Second}
-	resp, err := client.Get(testServer + "/api/libraries")
-	if err != nil || resp.StatusCode != http.StatusOK {
-		t.Skip("Skipping TestRunSync_NoPanic - no Audiobookshelf server available at", testServer)
-	}
-	defer resp.Body.Close()
-
-	// Run the actual test
+	// Should not panic or crash even if env vars are missing
 	runSync()
 }
 

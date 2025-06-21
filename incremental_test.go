@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/drallgood/audiobookshelf-hardcover-sync/types"
 )
 
 func TestSyncStateManagement(t *testing.T) {
@@ -27,8 +25,8 @@ func TestSyncStateManagement(t *testing.T) {
 	if state.LastSyncTimestamp != 0 {
 		t.Errorf("Expected LastSyncTimestamp to be 0, got: %d", state.LastSyncTimestamp)
 	}
-	if state.Version != types.StateVersion {
-		t.Errorf("Expected Version to be %s, got: %s", types.StateVersion, state.Version)
+	if state.Version != StateVersion {
+		t.Errorf("Expected Version to be %s, got: %s", StateVersion, state.Version)
 	}
 
 	// Test saving state
@@ -52,8 +50,8 @@ func TestSyncStateManagement(t *testing.T) {
 	if loadedState.LastFullSync != now {
 		t.Errorf("Expected LastFullSync to be %d, got: %d", now, loadedState.LastFullSync)
 	}
-	if loadedState.Version != types.StateVersion {
-		t.Errorf("Expected Version to be %s, got: %s", types.StateVersion, loadedState.Version)
+	if loadedState.Version != StateVersion {
+		t.Errorf("Expected Version to be %s, got: %s", StateVersion, loadedState.Version)
 	}
 }
 
@@ -103,9 +101,9 @@ func TestShouldPerformFullSync(t *testing.T) {
 			os.Setenv("FORCE_FULL_SYNC", tt.forceFullSync)
 
 			// Create state with specified lastFullSync
-			state := &types.SyncState{
+			state := &SyncState{
 				LastFullSync: tt.lastFullSync,
-				Version:      types.StateVersion,
+				Version:      StateVersion,
 			}
 
 			// Test shouldPerformFullSync
@@ -207,9 +205,9 @@ func TestTimestampThreshold(t *testing.T) {
 	now := time.Now()
 	baseTimestamp := now.Add(-24 * time.Hour).UnixMilli() // 24 hours ago
 
-	state := &types.SyncState{
+	state := &SyncState{
 		LastSyncTimestamp: baseTimestamp,
-		Version:           types.StateVersion,
+		Version:           StateVersion,
 	}
 
 	threshold := getTimestampThreshold(state)
@@ -222,9 +220,9 @@ func TestTimestampThreshold(t *testing.T) {
 	}
 
 	// Test with zero timestamp
-	zeroState := &types.SyncState{
+	zeroState := &SyncState{
 		LastSyncTimestamp: 0,
-		Version:           types.StateVersion,
+		Version:           StateVersion,
 	}
 	zeroThreshold := getTimestampThreshold(zeroState)
 	if zeroThreshold != 0 {

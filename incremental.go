@@ -6,9 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"time"
-
-	"github.com/drallgood/audiobookshelf-hardcover-sync/types"
 )
+
+// SyncState represents the persistent sync state
+type SyncState struct {
+	LastSyncTimestamp int64  `json:"lastSyncTimestamp"` // Unix timestamp in milliseconds
+	LastFullSync      int64  `json:"lastFullSync"`      // Unix timestamp of last full sync
+	Version           string `json:"version"`           // State file version for compatibility
+}
 
 const (
 	// State file location (configurable via environment variable)
@@ -28,13 +33,13 @@ func getStateFilePath() string {
 }
 
 // loadSyncState loads the sync state from persistent storage
-func loadSyncState() (*types.SyncState, error) {
+func loadSyncState() (*SyncState, error) {
 	stateFile := getStateFilePath()
 
 	// If file doesn't exist, return a new state (first run)
 	if _, err := os.Stat(stateFile); os.IsNotExist(err) {
 		debugLog("No sync state file found, starting with fresh state")
-		return &types.SyncState{
+		return &SyncState{
 			LastSyncTimestamp: 0,
 			LastFullSync:      0,
 			Version:           StateVersion,
@@ -43,33 +48,27 @@ func loadSyncState() (*types.SyncState, error) {
 
 	data, err := os.ReadFile(stateFile)
 	if err != nil {
-		return nil, fmt.Errorf("error reading state file: %v", err)
+		return nil, fmt.Errorf("failed to read sync state file: %v", err)
 	}
 
-	state := &types.SyncState{}
-	if err := json.Unmarshal(data, state); err != nil {
-		return nil, fmt.Errorf("error parsing state file: %v", err)
-	}
-
-	// Initialize zero values if needed
-	if state.Version == "" {
-		state.Version = StateVersion
-	}
-	if state.LastSync.IsZero() {
-		state.LastSync = time.Now()
-	}
-	if state.LastSyncTimestamp == 0 {
-		state.LastSyncTimestamp = time.Now().UnixMilli()
+	var state SyncState
+	if err := json.Unmarshal(data, &state); err != nil {
+		debugLog("Failed to parse sync state file, starting fresh: %v", err)
+		return &SyncState{
+			LastSyncTimestamp: 0,
+			LastFullSync:      0,
+			Version:           StateVersion,
+		}, nil
 	}
 
 	debugLog("Loaded sync state: LastSync=%d, LastFullSync=%d",
 		state.LastSyncTimestamp, state.LastFullSync)
 
-	return state, nil
+	return &state, nil
 }
 
 // saveSyncState saves the sync state to persistent storage
-func saveSyncState(state *types.SyncState) error {
+func saveSyncState(state *SyncState) error {
 	stateFile := getStateFilePath()
 
 	// Create directory if it doesn't exist
@@ -95,48 +94,37 @@ func saveSyncState(state *types.SyncState) error {
 }
 
 // shouldPerformFullSync determines if a full sync should be performed
-func shouldPerformFullSync(state *types.SyncState) bool {
+func shouldPerformFullSync(state *SyncState) bool {
 	now := time.Now()
-
-	// Check if full sync is forced via environment variable
-	if os.Getenv("FORCE_FULL_SYNC") == "true" {
-		debugLog("Performing full sync: FORCE_FULL_SYNC is true")
-		return true
-	}
 
 	// Force full sync if we've never done one
 	if state.LastFullSync == 0 {
-		debugLog("Performing full sync: first run")
+		debugLog("No previous full sync found, performing full sync")
 		return true
 	}
 
-	// Check if it's been more than MaxDaysBetweenFullSync days since last full sync
-	lastFullSync := time.UnixMilli(state.LastFullSync)
+	// Force full sync if it's been too long since last full sync
+	lastFullSync := time.Unix(state.LastFullSync/1000, 0)
 	daysSinceFullSync := now.Sub(lastFullSync).Hours() / 24
 
 	if daysSinceFullSync >= MaxDaysBetweenFullSync {
-		debugLog("Performing full sync: last full sync was %.1f days ago", daysSinceFullSync)
+		debugLog("Last full sync was %.1f days ago, performing full sync", daysSinceFullSync)
 		return true
 	}
 
-	// Check if incremental sync is explicitly disabled
-	switch getIncrementalSyncMode() {
-	case "disabled":
-		debugLog("Performing full sync: incremental sync is disabled")
-		return true
-	case "enabled":
-		debugLog("Performing incremental sync: explicitly enabled")
-		return false
-	}
-
-	// Default to full sync if we can't determine the last sync time
-	if state.LastSyncTimestamp == 0 {
-		debugLog("Performing full sync: no previous sync timestamp")
+	// Check environment variable for forcing full sync
+	if os.Getenv("FORCE_FULL_SYNC") == "true" {
+		debugLog("FORCE_FULL_SYNC environment variable set, performing full sync")
 		return true
 	}
 
-	// Default to incremental sync
-	debugLog("Performing incremental sync: last full sync was %.1f days ago", daysSinceFullSync)
+	// Check if incremental sync is disabled
+	if getIncrementalSyncMode() == "disabled" {
+		debugLog("Incremental sync disabled, performing full sync")
+		return true
+	}
+
+	debugLog("Using incremental sync (last full sync: %.1f days ago)", daysSinceFullSync)
 	return false
 }
 
@@ -153,45 +141,31 @@ func getIncrementalSyncMode() string {
 }
 
 // updateSyncTimestamp updates the sync state with the current timestamp
-func updateSyncTimestamp(state *types.SyncState, isFullSync bool) {
-	now := time.Now()
-	state.LastSync = now
-	state.LastSyncTimestamp = now.UnixMilli()
+func updateSyncTimestamp(state *SyncState, isFullSync bool) {
+	now := time.Now().UnixMilli()
+	state.LastSyncTimestamp = now
 
 	if isFullSync {
-		state.LastFullSync = now.UnixMilli()
+		state.LastFullSync = now
 	}
-	
-	// Update sync metadata
-	state.SyncCount++
-	state.SyncStatus = "success"
-	if isFullSync {
-		state.SyncMode = "full"
-	} else {
-		state.SyncMode = "incremental"
-	}
+
 	state.Version = StateVersion
 }
 
 // getTimestampThreshold returns the timestamp threshold for incremental sync
-func getTimestampThreshold(state *types.SyncState) int64 {
-	// If we've never synced, return 0 to get all books
-	if state.LastSyncTimestamp == 0 {
-		return 0
-	}
-
+func getTimestampThreshold(state *SyncState) int64 {
 	// Use last sync timestamp as the threshold for incremental updates
 	// We subtract a small buffer (5 minutes) to handle clock skew and ensure we don't miss updates
 	bufferMs := int64(5 * 60 * 1000) // 5 minutes in milliseconds
-	
-	// Return the threshold with buffer
 	threshold := state.LastSyncTimestamp - bufferMs
+
+	// Ensure threshold is not negative
 	if threshold < 0 {
-		return 0
+		threshold = 0
 	}
-	
-	debugLog("Using incremental sync threshold: %d (last sync: %s)", 
-		threshold, time.UnixMilli(state.LastSyncTimestamp).Format(time.RFC3339))
-		
+
+	debugLog("Using timestamp threshold: %d (last sync: %d, buffer: %dms)",
+		threshold, state.LastSyncTimestamp, bufferMs)
+
 	return threshold
 }

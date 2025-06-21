@@ -313,13 +313,9 @@ type ExistingUserBookReadData struct {
 	ReadingFormatID *int    `json:"reading_format_id"`
 }
 
-// checkExistingUserBookRead checks if a user_book_read already exists for the given userBookId
-// Returns the most recent unfinished read if found, nil otherwise
-func checkExistingUserBookRead(userBookID int, date string) (*ExistingUserBookReadData, error) {
-	if userBookID == 0 {
-		return nil, nil
-	}
-
+// checkExistingUserBookRead checks if a user_book_read already exists for the given user_book_id that isn't finished
+// Returns: existingReadData (nil if not found), error
+func checkExistingUserBookRead(userBookID int, targetDate string) (*ExistingUserBookReadData, error) {
 	// Get current user to ensure we only query their data
 	currentUser, err := getCurrentUser()
 	if err != nil {
@@ -331,6 +327,7 @@ func checkExistingUserBookRead(userBookID int, date string) (*ExistingUserBookRe
 	  user_book_reads(where: { 
 		user_book_id: { _eq: $userBookId },
 		finished_at: { _is_null: true },
+		started_at: { _is_null: false },
 		user_book: { user: { username: { _eq: $username } } }
 	  }, order_by: { started_at: desc }, limit: 1) {
 		id
