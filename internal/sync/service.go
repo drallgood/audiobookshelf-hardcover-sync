@@ -317,6 +317,188 @@ func (s *Service) processLibrary(ctx context.Context, library *audiobookshelf.Au
 	return processed, nil
 }
 
+// isBookOwned checks if a book is already marked as owned in Hardcover by checking the user's "Owned" list
+func (s *Service) isBookOwned(ctx context.Context, bookID string) (bool, error) {
+	// Convert bookID to int for the query
+	bookIDInt, err := strconv.Atoi(bookID)
+	if err != nil {
+		return false, fmt.Errorf("invalid book ID format: %w", err)
+	}
+
+	// Get the current user's ID to use in the query
+	userID, err := s.hardcover.GetCurrentUserID(ctx)
+	if err != nil {
+		return false, fmt.Errorf("failed to get current user ID: %w", err)
+	}
+
+	s.log.Debug().
+		Int("book_id", bookIDInt).
+		Int("user_id", userID).
+		Msg("Checking if book is marked as owned in Hardcover")
+
+	// Query to check if the book is in the user's "Owned" list
+	query := `
+	query CheckBookOwnership($userId: Int!, $bookId: Int!) {
+	  lists(
+		where: {
+		  user_id: { _eq: $userId }
+		  name: { _eq: "Owned" }
+		  list_books: { book_id: { _eq: $bookId } }
+		}
+	  ) {
+		id
+		name
+		list_books(where: { book_id: { _eq: $bookId } }) {
+		  id
+		  book_id
+		  edition_id
+		}
+	  }
+	}`
+
+	// Define the response structure to match the actual API response
+	type ListBook struct {
+		ID        int  `json:"id"`
+		BookID    int  `json:"book_id"`
+		EditionID *int `json:"edition_id"`
+	}
+
+	type List struct {
+		ID        int         `json:"id"`
+		Name      string      `json:"name"`
+		ListBooks []*ListBook `json:"list_books"`
+	}
+
+	// The response is a direct array of lists (no data wrapper)
+	type ListResponse []struct {
+		ID        int `json:"id"`
+		Name      string `json:"name"`
+		ListBooks []struct {
+			ID        int `json:"id"`
+			BookID    int `json:"book_id"`
+			EditionID int `json:"edition_id"`
+		} `json:"list_books"`
+	}
+
+	// Execute the GraphQL query
+	var response ListResponse
+	err = s.hardcover.GraphQLQuery(ctx, query, map[string]interface{}{
+		"userId": userID,
+		"bookId": bookIDInt,
+	}, &response)
+
+	if err != nil {
+		s.log.Error().
+			Err(err).
+			Int("book_id", bookIDInt).
+			Int("user_id", userID).
+			Msg("GraphQL query failed when checking book ownership")
+		return false, fmt.Errorf("failed to check book ownership: %w", err)
+	}
+
+	// Debug log the response for troubleshooting
+	s.log.Debug().
+		Int("book_id", bookIDInt).
+		Int("user_id", userID).
+		Int("lists_count", len(response)).
+		Msg("Received response from Hardcover API")
+
+	// If we have a list with list_books, the book is owned
+	if len(response) > 0 && len(response[0].ListBooks) > 0 {
+		s.log.Debug().
+			Int("book_id", bookIDInt).
+			Int("user_id", userID).
+			Int("list_id", response[0].ID).
+			Int("list_books_count", len(response[0].ListBooks)).
+			Msg("Book is marked as owned in user's 'Owned' list")
+		return true, nil
+	}
+
+	s.log.Debug().
+		Int("book_id", bookIDInt).
+		Int("user_id", userID).
+		Msg("Book is not marked as owned in user's 'Owned' list")
+
+	return false, nil
+}
+
+// markBookAsOwned marks a book as owned in Hardcover using the edition_owned mutation
+// This works with edition IDs, not book IDs
+func (s *Service) markBookAsOwned(ctx context.Context, bookID, editionID string) error {
+	if editionID == "" {
+		return fmt.Errorf("edition ID is required for marking book as owned")
+	}
+
+	// Convert IDs to integers
+	editionIDInt, err := strconv.Atoi(editionID)
+	if err != nil {
+		return fmt.Errorf("invalid edition ID format: %w", err)
+	}
+
+	bookIDInt, err := strconv.Atoi(bookID)
+	if err != nil {
+		return fmt.Errorf("invalid book ID format: %w", err)
+	}
+
+	mutation := `
+	mutation EditionOwned($id: Int!) {
+	  ownership: edition_owned(id: $id) {
+		id
+		list_book {
+		  id
+		  book_id
+		  edition_id
+		}
+	  }
+	}`
+
+	variables := map[string]interface{}{
+		"id": editionIDInt,
+	}
+
+	// Log the ownership marking attempt
+	s.log.Debug().
+		Int("book_id", bookIDInt).
+		Int("edition_id", editionIDInt).
+		Msg("Attempting to mark book as owned in Hardcover")
+
+	var result struct {
+		Data struct {
+			Ownership struct {
+				ID       *int `json:"id"`
+				ListBook *struct {
+					ID        int `json:"id"`
+					BookID    int `json:"book_id"`
+					EditionID int `json:"edition_id"`
+				} `json:"list_book"`
+			} `json:"ownership"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+
+	err = s.hardcover.GraphQLMutation(ctx, mutation, variables, &result)
+	if err != nil {
+		return fmt.Errorf("failed to mark book as owned: %w", err)
+	}
+
+	if len(result.Errors) > 0 {
+		errMsgs := make([]string, 0, len(result.Errors))
+		for _, e := range result.Errors {
+			errMsgs = append(errMsgs, e.Message)
+		}
+		return fmt.Errorf("graphql errors: %v", strings.Join(errMsgs, "; "))
+	}
+
+	s.log.Debug().
+		Int("book_id", bookIDInt).
+		Int("edition_id", editionIDInt).
+		Msg("Successfully marked book as owned in Hardcover")
+
+	return nil
+}
+
 // processBook processes a single book and updates its status in Hardcover
 func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBook, userProgress *models.AudiobookshelfUserProgress) error {
 	// Create a logger with book context
@@ -593,10 +775,23 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	}
 
 	// Update ownership status if configured
-	// Note: Ownership status is not directly available in the HardcoverBook model
-	// We would need to fetch the user's library to check ownership
-	if s.config.App.SyncOwned {
-		bookLog.Debug().Msg("Ownership sync not yet implemented")
+	if s.config.App.SyncOwned && hcBook != nil && hcBook.ID != "" {
+		// Check if the book is already owned
+		isOwned, err := s.isBookOwned(ctx, hcBook.ID)
+		if err != nil {
+			bookLog.Error().Err(err).Msg("Failed to check book ownership")
+		} else if !isOwned {
+			// If not owned, mark it as owned
+			bookLog.Info().Str("book_id", hcBook.ID).Msg("Marking book as owned in Hardcover")
+			err = s.markBookAsOwned(ctx, hcBook.ID, hcBook.EditionID)
+			if err != nil {
+				bookLog.Error().Err(err).Msg("Failed to mark book as owned")
+			} else {
+				bookLog.Info().Msg("Successfully marked book as owned")
+			}
+		} else {
+			bookLog.Debug().Msg("Book is already marked as owned")
+		}
 	}
 
 	// Note: Cover images are not synced as they are handled during edition creation
@@ -1319,7 +1514,6 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, ed
 // findBookInHardcover finds a book in Hardcover by various identifiers in order: ASIN → ISBN → ISBN10 → title/author
 // It returns the book details along with the user's book ID if found.
 func (s *Service) findBookInHardcover(ctx context.Context, book models.AudiobookshelfBook) (*models.HardcoverBook, error) {
-	var bookResult *models.HardcoverBook
 	// Create a logger with book context
 	log := s.log.With().
 		Str("book_id", book.ID).
@@ -1344,90 +1538,7 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 	userID64 := int64(userID)
 	log.Debug().Int64("user_id", userID64).Msg("Successfully retrieved current user ID from Hardcover API")
 
-	// Helper function to get the user book ID for a given edition ID
-	getUserBookID := func(editionID string) (string, error) {
-		// Convert editionID to int for the GraphQL query
-		editionIDInt, err := strconv.ParseInt(editionID, 10, 64)
-		if err != nil {
-			log.Warn().Err(err).Str("edition_id", editionID).Msg("Failed to parse edition ID as integer")
-			return "", fmt.Errorf("invalid edition ID format: %w", err)
-		}
-
-		query := `
-		query GetUserBookID($editionID: Int!, $userID: Int!) {
-		  user_books(
-			where: {
-			  _and: [
-				{ edition_id: { _eq: $editionID } },
-				{ user_id: { _eq: $userID } }
-			  ]
-			}, 
-			limit: 1
-		  ) {
-			id
-			edition_id
-		  }
-		}`
-
-		var result struct {
-			UserBooks []struct {
-				ID        int64 `json:"id"`
-				EditionID int64 `json:"edition_id"`
-			} `json:"user_books"`
-		}
-
-		// Log the lookup with the correct types
-		log.Debug().
-			Int64("edition_id", editionIDInt).
-			Int64("user_id", userID64).
-			Msg("Looking up user book ID")
-
-		// Execute the GraphQL query with properly typed parameters
-		err = s.hardcover.GraphQLQuery(ctx, query, map[string]interface{}{
-			"editionID": editionIDInt,
-			"userID":    userID64, // Use userID64 which is int64
-		}, &result)
-		if err != nil {
-			log.Warn().Err(err).Str("edition_id", editionID).Msg("Failed to get user book ID")
-			return "", err
-		}
-
-		// If we found a user book, return its ID as a string
-		if len(result.UserBooks) > 0 {
-			return strconv.FormatInt(result.UserBooks[0].ID, 10), nil
-		}
-
-		// If not found, create a new one
-		mutation := `
-		mutation CreateUserBook($editionID: uuid!, $status: String!) {
-		  insert_user_books_one(object: {edition_id: $editionID, status: $status}) {
-			id
-		  }
-		}`
-
-		var createResult struct {
-			Data struct {
-				InsertUserBooksOne struct {
-					ID string `json:"id"`
-				} `json:"insert_user_books_one"`
-			} `json:"data"`
-		}
-
-		err = s.hardcover.GraphQLQuery(ctx, mutation, map[string]interface{}{
-			"editionID": editionID,
-			"status":    "to-read",
-		}, &createResult)
-		if err != nil {
-			log.Warn().Err(err).Str("edition_id", editionID).Msg("Failed to create user book")
-			return "", err
-		}
-
-		if createResult.Data.InsertUserBooksOne.ID == "" {
-			return "", fmt.Errorf("failed to create user book: empty ID returned")
-		}
-
-		return createResult.Data.InsertUserBooksOne.ID, nil
-	}
+	// Note: The findOrCreateUserBookID function is used instead of this inline function
 
 	// 1. Try to find by ASIN first (most reliable for audiobooks)
 	if book.Media.Metadata.ASIN != "" {
@@ -1495,8 +1606,10 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 			Editions     []Edition   `json:"editions"`
 		}
 
-		// The response is an array of books
-		var result []Book
+		// The response is a direct array of books (no data wrapper)
+		type Response []Book
+
+		var result Response
 
 		// Create variables map for the query
 		asin := book.Media.Metadata.ASIN
@@ -1736,27 +1849,33 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 		}
 
 		for _, isbnType := range isbnTypes {
-			// Create a parameterized query with proper variable definitions
+			// Define the GraphQL query with proper variable definitions
 			query := `
 			query BookByISBN($identifier: String!) {
-			  books(where: { 
-			    editions: { 
-			      _and: [
-			        { ` + isbnType.field + `: { _eq: $identifier } },
-			        { reading_format: { id: { _eq: 2 } } }
-			      ]
-			    } 
-			  }, limit: 1) {
+			  books(
+			    where: { 
+			      editions: { 
+			        _and: [
+			          { ` + isbnType.field + `: { _eq: $identifier } },
+			          { reading_format: { id: { _eq: 2 } } }
+			        ]
+			      } 
+			    },
+			    limit: 1
+			  ) {
 			    id
 			    title
 			    book_status_id
 			    canonical_id
-			    editions(where: { 
-			      _and: [
-			        { ` + isbnType.field + `: { _eq: $identifier } },
-			        { reading_format: { id: { _eq: 2 } } }
-			      ]
-			    }, limit: 1) {
+			    editions(
+			      where: { 
+			        _and: [
+			          { ` + isbnType.field + `: { _eq: $identifier } },
+			          { reading_format: { id: { _eq: 2 } } }
+			        ]
+			      },
+			      limit: 1
+			    ) {
 			      id
 			      asin
 			      isbn_13
@@ -1767,14 +1886,167 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 			  }
 			}`
 
-			// Create variables map for the query
-			variables := map[string]interface{}{
-				"identifier": isbnType.value,
+			// Define the response structure
+			type Response struct {
+				Data struct {
+					Books []struct {
+						ID           string `json:"id"`
+						Title        string `json:"title"`
+						BookStatusID int    `json:"book_status_id"`
+						CanonicalID  *int   `json:"canonical_id"`
+						Editions     []struct {
+							ID              string `json:"id"`
+							ASIN            string `json:"asin"`
+							ISBN13          string `json:"isbn_13"`
+							ISBN10          string `json:"isbn_10"`
+							ReadingFormatID *int   `json:"reading_format_id"`
+							AudioSeconds    *int   `json:"audio_seconds"`
+						} `json:"editions"`
+					} `json:"books"`
+				} `json:"data"`
 			}
 
-			var result struct {
+			var result Response
+
+			// Execute the GraphQL query
+			err := s.hardcover.GraphQLQuery(ctx, query, map[string]interface{}{
+				"identifier": isbnType.value,
+			}, &result)
+
+			if err != nil {
+				s.log.Warn().
+					Err(err).
+					Str("isbn_type", isbnType.field).
+					Msg(fmt.Sprintf("Search by %s failed, trying next method", isbnType.field))
+				continue
+			}
+
+			// Check if we got any results
+			if len(result.Data.Books) == 0 {
+				s.log.Debug().
+					Str("isbn_type", isbnType.field).
+					Str("identifier", isbnType.value).
+					Msg("No books found with the specified identifier")
+				continue
+			}
+
+			bookData := result.Data.Books[0]
+
+			// Skip if no editions found
+			if len(bookData.Editions) == 0 {
+				s.log.Warn().
+					Str("book_id", bookData.ID).
+					Msg("No editions found for book, skipping")
+				continue
+			}
+
+			edition := bookData.Editions[0]
+
+			hcBook := &models.HardcoverBook{
+				ID:           bookData.ID,
+				Title:        book.Media.Metadata.Title,
+				EditionID:    edition.ID,
+				BookStatusID: bookData.BookStatusID,
+				CanonicalID:  bookData.CanonicalID,
+			}
+
+			// Get or create user book ID for this edition
+			editionIDStr := edition.ID
+			progress := 0.0
+			isFinished := book.Progress.IsFinished
+			finishedAt := book.Progress.FinishedAt
+			if book.Media.Duration > 0 {
+				progress = book.Progress.CurrentTime / book.Media.Duration
+			}
+			status := s.determineBookStatus(progress, isFinished, finishedAt)
+			userBookID, err := s.findOrCreateUserBookID(editionIDStr, status)
+			if err != nil {
+				s.log.Warn().
+					Err(err).
+					Str("edition_id", editionIDStr).
+					Msg("Failed to get or create user book ID")
+			} else {
+				hcBook.UserBookID = strconv.FormatInt(userBookID, 10)
+			}
+
+			s.log.Info().
+				Str("search_method", "isbn").
+				Str("book_id", bookData.ID).
+				Str("edition_id", edition.ID).
+				Msg("Found book by ISBN")
+
+			// Set optional fields if they exist
+			if edition.ASIN != "" {
+				hcBook.EditionASIN = edition.ASIN
+			}
+			if edition.ISBN13 != "" {
+				hcBook.EditionISBN13 = edition.ISBN13
+			}
+			if edition.ISBN10 != "" {
+				hcBook.EditionISBN10 = edition.ISBN10
+			}
+
+			s.log.Info().
+				Str("hardcover_id", bookData.ID).
+				Str("edition_id", edition.ID).
+				Str("user_book_id", hcBook.UserBookID).
+				Str("isbn_type", isbnType.field).
+				Msg(fmt.Sprintf("Found book in Hardcover by %s", isbnType.field))
+
+			return hcBook, nil
+		}
+
+		errMsg := "failed to find book by ISBN/ASIN"
+		s.log.Error().
+			Str("book_id", book.ID).
+			Str("title", book.Media.Metadata.Title).
+			Str("author", book.Media.Metadata.AuthorName).
+			Str("isbn", book.Media.Metadata.ISBN).
+			Str("asin", book.Media.Metadata.ASIN).
+			Msg(errMsg)
+
+		return nil, fmt.Errorf(errMsg)
+	}
+
+	// 3. Try to find by title and author (least reliable, but better than nothing)
+	if book.Media.Metadata.Title != "" && book.Media.Metadata.AuthorName != " " {
+		s.log.Info().
+			Str("search_method", "title_author").
+			Str("title", book.Media.Metadata.Title).
+			Str("author", book.Media.Metadata.AuthorName).
+			Msg("Searching for book by title and author")
+
+		// Build the GraphQL query to find the book by title and author
+		query := `
+		query BookByTitleAuthor($title: String!, $author: String!) {
+		  books(where: { 
+		    _and: [
+		      { title: { _ilike: $title } },
+		      { authors: { name: { _ilike: $author } } },
+		      { editions: { reading_format: { id: { _eq: 2 } } } }
+		    ]
+		  }, limit: 1) {
+		    id
+		    title
+		    book_status_id
+		    canonical_id
+		    editions(where: { reading_format: { id: { _eq: 2 } } }, limit: 1) {
+		      id
+		      asin
+		      isbn_13
+		      isbn_10
+		      reading_format_id
+		      audio_seconds
+		    }
+		  }
+		}`
+
+		// Define the response structure
+		var result struct {
+			Data struct {
 				Books []struct {
 					ID           string `json:"id"`
+					Title        string `json:"title"`
 					BookStatusID int    `json:"book_status_id"`
 					CanonicalID  *int   `json:"canonical_id"`
 					Editions     []struct {
@@ -1786,19 +2058,30 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 						AudioSeconds    *int   `json:"audio_seconds"`
 					} `json:"editions"`
 				} `json:"books"`
-			}
+			} `json:"data"`
+		}
 
-			err := s.hardcover.GraphQLQuery(ctx, query, variables, &result)
-			if err != nil {
-				log.Warn().
-					Err(err).
-					Str("isbn_type", isbnType.field).
-					Msg(fmt.Sprintf("Search by %s failed, trying next method", isbnType.field))
-				continue
-			}
+		// Execute the GraphQL query
+		err := s.hardcover.GraphQLQuery(ctx, query, map[string]interface{}{
+			"title":  "%" + book.Media.Metadata.Title + "%",
+			"author": "%" + book.Media.Metadata.AuthorName + "%",
+		}, &result)
 
-			if len(result.Books) > 0 && len(result.Books[0].Editions) > 0 {
-				bookData := result.Books[0]
+		if err != nil {
+			s.log.Warn().
+				Err(err).
+				Str("title", book.Media.Metadata.Title).
+				Str("author", book.Media.Metadata.AuthorName).
+				Msg("Search by title and author failed")
+		} else if len(result.Data.Books) > 0 {
+			bookData := result.Data.Books[0]
+
+			// Skip if no editions found
+			if len(bookData.Editions) == 0 {
+				s.log.Warn().
+					Str("book_id", bookData.ID).
+					Msg("No editions found for book, skipping")
+			} else {
 				edition := bookData.Editions[0]
 
 				hcBook := &models.HardcoverBook{
@@ -1811,7 +2094,6 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 
 				// Get or create user book ID for this edition
 				editionIDStr := edition.ID
-				// Determine the book status based on progress and finished state
 				progress := 0.0
 				isFinished := book.Progress.IsFinished
 				finishedAt := book.Progress.FinishedAt
@@ -1821,19 +2103,13 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 				status := s.determineBookStatus(progress, isFinished, finishedAt)
 				userBookID, err := s.findOrCreateUserBookID(editionIDStr, status)
 				if err != nil {
-					log.Warn().
+					s.log.Warn().
 						Err(err).
 						Str("edition_id", editionIDStr).
 						Msg("Failed to get or create user book ID")
 				} else {
-					hcBook.UserBookID = strconv.FormatInt(userBookID, 10) // Convert int64 to string
+					hcBook.UserBookID = strconv.FormatInt(userBookID, 10)
 				}
-
-				log.Info().
-					Str("search_method", "isbn").
-					Str("book_id", bookData.ID).
-					Str("edition_id", edition.ID).
-					Msg("Found book by ISBN")
 
 				// Set optional fields if they exist
 				if edition.ASIN != "" {
@@ -1846,179 +2122,26 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 					hcBook.EditionISBN10 = edition.ISBN10
 				}
 
-				log.Info().
+				s.log.Info().
+					Str("search_method", "title_author").
 					Str("hardcover_id", bookData.ID).
 					Str("edition_id", edition.ID).
 					Str("user_book_id", hcBook.UserBookID).
-					Str("isbn_type", isbnType.field).
-					Msg(fmt.Sprintf("Found book in Hardcover by %s", isbnType.field))
+					Msg("Found book by title and author")
 
 				return hcBook, nil
 			}
 		}
 	}
-
-	// 4. Fall back to title/author search if no identifier-based search worked
-	if book.Media.Metadata.Title != "" && book.Media.Metadata.AuthorName != "" {
-		log.Info().
-			Str("search_method", "title_author").
-			Str("title", book.Media.Metadata.Title).
-			Str("author", book.Media.Metadata.AuthorName).
-			Msg("Searching for book by title and author")
-
-		// Search using title and author
-		query := strings.TrimSpace(fmt.Sprintf("%s %s", book.Media.Metadata.Title, book.Media.Metadata.AuthorName))
-		searchResults, err := s.hardcover.SearchBooks(ctx, query)
-		if err != nil {
-			log.Warn().
-				Err(err).
-				Str("search_method", "title_author").
-				Msg("Title/author search failed")
-		} else if len(searchResults) > 0 {
-			// Log all search results for debugging
-			for i, result := range searchResults {
-				log.Debug().
-					Int("result_index", i).
-					Str("result_id", result.ID).
-					Str("result_title", result.Title).
-					Str("result_type", result.Type).
-					Msg("Search result")
-
-				// If this is the first result, try to get more details
-				if i == 0 {
-					// Get book details by ID using GraphQL query
-					query := `
-					query GetBookDetails($bookId: uuid!) {
-						books_by_pk(id: $bookId) {
-							id
-							title
-							book_status_id
-							canonical_id
-							editions(limit: 1) {
-								id
-								asin
-								isbn_13
-								isbn_10
-								title
-								image_url
-							}
-						}
-					}`
-
-					var response struct {
-						Data struct {
-							BooksByPk *struct {
-								ID           string `json:"id"`
-								Title        string `json:"title"`
-								BookStatusID int    `json:"book_status_id"`
-								CanonicalID  *int   `json:"canonical_id"`
-								Editions     []struct {
-									ID       string `json:"id"`
-									ASIN     string `json:"asin"`
-									ISBN13   string `json:"isbn_13"`
-									ISBN10   string `json:"isbn_10"`
-									Title    string `json:"title"`
-									ImageURL string `json:"image_url"`
-								} `json:"editions"`
-							} `json:"books_by_pk"`
-						} `json:"data"`
-					}
-
-					// Create variables map for the query
-					variables := map[string]interface{}{
-						"bookId": result.ID,
-					}
-					err := s.hardcover.GraphQLQuery(ctx, query, variables, &response)
-					if err != nil {
-						log.Warn().
-							Err(err).
-							Str("book_id", result.ID).
-							Msg("Failed to get book details, skipping")
-						continue
-					}
-
-					if response.Data.BooksByPk == nil {
-						log.Warn().
-							Str("book_id", result.ID).
-							Msg("Book not found, skipping")
-						continue
-					}
-
-					bookDetails := response.Data.BooksByPk
-
-					// Skip if no editions found
-					if len(bookDetails.Editions) == 0 {
-						log.Warn().Msg("No editions found for book, skipping")
-						continue
-					}
-
-					// Use the first edition (or implement more sophisticated logic to choose the right one)
-					edition := bookDetails.Editions[0]
-
-					s.log.Info().
-						Str("search_method", "title_author").
-						Str("book_id", bookDetails.ID).
-						Str("edition_id", edition.ID).
-						Str("title", bookDetails.Title).
-						Msg("Found book by title and author")
-
-					// Get or create the user book ID
-					userBookID, err := getUserBookID(edition.ID)
-					if err != nil {
-						s.log.Warn().Err(err).Msg("Failed to get or create user book ID")
-					} else {
-						hardcoverBook := &models.HardcoverBook{
-							ID:         bookDetails.ID,
-							Title:      bookDetails.Title,
-							EditionID:  edition.ID,
-							UserBookID: userBookID,
-						}
-
-						// Set optional fields if they exist
-						if edition.ASIN != "" {
-							hardcoverBook.EditionASIN = edition.ASIN
-						}
-						if edition.ISBN13 != "" {
-							hardcoverBook.EditionISBN13 = edition.ISBN13
-						}
-						if edition.ISBN10 != "" {
-							hardcoverBook.EditionISBN10 = edition.ISBN10
-						}
-
-						bookResult = hardcoverBook
-						break // Use the first valid result
-					}
-				}
-			}
-		}
-
-		// If we found a book through any method, return it
-		if bookResult != nil {
-			s.log.Info().
-				Str("book_id", bookResult.ID).
-				Str("edition_id", bookResult.EditionID).
-				Str("title", bookResult.Title).
-				Msg("Successfully found book in Hardcover")
-			return bookResult, nil
-		}
-
-		// If we get here, no book was found through any search method
-		errMsg := "could not find book in Hardcover"
-		if book.Media.Metadata.Title == "" {
-			errMsg = "book title is empty, cannot search by title/author"
-		}
-
-		s.log.Error().
-			Str("book_id", book.ID).
-			Str("title", book.Media.Metadata.Title).
-			Str("author", book.Media.Metadata.AuthorName).
-			Str("isbn", book.Media.Metadata.ISBN).
-			Str("asin", book.Media.Metadata.ASIN).
-			Msg(errMsg)
-
-		return nil, fmt.Errorf(errMsg)
-	}
 	
-	// This should never be reached, but the compiler needs it
-	return nil, fmt.Errorf("unexpected end of function")
+	// If we get here, we couldn't find the book by any method
+	s.log.Warn().
+		Str("book_id", book.ID).
+		Str("title", book.Media.Metadata.Title).
+		Str("author", book.Media.Metadata.AuthorName).
+		Str("isbn", book.Media.Metadata.ISBN).
+		Str("asin", book.Media.Metadata.ASIN).
+		Msg("Book not found in Hardcover by any search method")
+
+	return nil, fmt.Errorf("book not found in Hardcover by any search method")
 }
