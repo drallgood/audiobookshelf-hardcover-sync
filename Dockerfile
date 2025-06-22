@@ -54,7 +54,7 @@ RUN mkdir -p /app/config /app/data \
     && chown -R app:app /app
 
 # Copy default config if it doesn't exist
-COPY --chown=app:app config/config.example.yaml /app/config/config.example.yaml
+COPY --chown=app:app config.example.yaml /app/config/config.example.yaml
 
 # Switch to non-root user
 USER app
