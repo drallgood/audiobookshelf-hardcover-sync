@@ -110,37 +110,48 @@ func NewRateLimiter(rate time.Duration, burst, maxConcurrent int, log *logger.Lo
 
 // Wait blocks until a token is available or the context is cancelled
 func (r *RateLimiter) Wait(ctx context.Context) error {
-	// Check if we're in a backoff period
-	if waitTime := r.checkBackoff(); waitTime > 0 {
+	// First check for backoff while holding a read lock
+	r.mu.RLock()
+	waitTime := r.checkBackoff()
+	if waitTime > 0 {
+		r.mu.RUnlock() // Release the read lock while waiting
+		
 		timer := time.NewTimer(waitTime)
 		select {
 		case <-ctx.Done():
 			if !timer.Stop() {
-				<-timer.C
+				select {
+				case <-timer.C:
+				default:
+				}
 			}
 			return ctx.Err()
 		case <-timer.C:
-			// Continue with normal rate limiting
+			// Reacquire the read lock for the rest of the function
+			r.mu.RLock()
+			defer r.mu.RUnlock()
 		}
+	} else {
+		defer r.mu.RUnlock()
 	}
 
 	// Enforce max concurrent requests if set
 	if r.maxConcurrent > 0 {
 		// Increment the counter and ensure we don't exceed max concurrent
-		current := atomic.AddInt32(&r.concurrentReqs, 1)
+		currentReqs := atomic.AddInt32(&r.concurrentReqs, 1)
 		defer atomic.AddInt32(&r.concurrentReqs, -1)
 
-		if current > r.maxConcurrent {
+		if currentReqs > r.maxConcurrent {
 			// Wait for a slot to open up
 			ticker := time.NewTicker(10 * time.Millisecond)
 			defer ticker.Stop()
 
-			for current > r.maxConcurrent {
+			for currentReqs > r.maxConcurrent {
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
 				case <-ticker.C:
-					current = atomic.LoadInt32(&r.concurrentReqs)
+					currentReqs = atomic.LoadInt32(&r.concurrentReqs)
 				}
 			}
 		}
@@ -247,26 +258,19 @@ func (r *RateLimiter) OnRateLimit(retryAfter time.Duration) time.Duration {
 	// Set backoff until time
 	r.backoffUntil = now.Add(backoff)
 
-	// Log rate limiting event with more detailed information
-	logEvent := r.logger.Warn().
+	// Log the rate limit event with detailed information
+	r.logger.Warn().
 		Str("component", "rate_limiter").
 		Dur("previous_rate", prevRate).
 		Dur("new_rate", r.rate).
-		Dur("min_rate", r.minRate).
-		Dur("max_rate", r.maxRate).
 		Dur("backoff", backoff).
 		Dur("backoff_until", r.backoffUntil.Sub(now)).
 		Float64("backoff_factor", r.backoffFactor).
 		Float64("jitter_factor", r.jitterFactor).
 		Int("current_tokens", r.tokens).
 		Int("max_tokens", r.maxTokens).
-		Int("concurrent_requests", int(atomic.LoadInt32(&r.concurrentReqs)))
-
-	if retryAfter > 0 {
-		logEvent = logEvent.Dur("retry_after", retryAfter)
-	}
-
-	logEvent.Msg("Rate limit encountered, backing off and increasing delay between requests")
+		Int("concurrent_requests", int(atomic.LoadInt32(&r.concurrentReqs))).
+		Msg("Rate limit encountered, backing off and increasing delay between requests")
 
 	// Return the backoff duration
 	return backoff
@@ -277,12 +281,11 @@ func (r *RateLimiter) ResetRate() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// Update the rate and backoff period
 	r.rate = r.minRate
-	r.lastRateDrop = time.Now()
 	r.backoffUntil = time.Time{}
+	r.lastRateDrop = time.Now()
 }
-
-// GetRate returns the current rate
 func (r *RateLimiter) GetRate() time.Duration {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -316,10 +319,8 @@ func (r *RateLimiter) SetJitterFactor(factor float64) {
 }
 
 // checkBackoff checks if we're in a backoff period and returns the remaining duration
+// Note: Caller must hold at least a read lock on r.mu
 func (r *RateLimiter) checkBackoff() time.Duration {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
 	if r.backoffUntil.IsZero() {
 		return 0
 	}
