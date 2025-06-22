@@ -48,6 +48,8 @@ type Config struct {
 		AudiobookMatchMode string        `yaml:"audiobook_match_mode"`
 		SyncWantToRead     bool          `yaml:"sync_want_to_read"`
 		SyncOwned          bool          `yaml:"sync_owned"`
+		// MismatchOutputDir is the directory where mismatch JSON files will be saved
+		MismatchOutputDir string `yaml:"mismatch_output_dir" env:"MISMATCH_OUTPUT_DIR"`
 		DryRun             bool          `yaml:"dry_run"`
 		TestBookFilter     string        `yaml:"test_book_filter"`
 		TestBookLimit      int           `yaml:"test_book_limit"`
@@ -316,6 +318,9 @@ func loadFromEnv(cfg *Config) {
 		if d, err := time.ParseDuration(syncInterval); err == nil {
 			cfg.App.SyncInterval = d
 		}
+	}
+	if mismatchDir := os.Getenv("MISMATCH_OUTPUT_DIR"); mismatchDir != "" {
+		cfg.App.MismatchOutputDir = mismatchDir
 	}
 	if minProgress := os.Getenv("MINIMUM_PROGRESS_THRESHOLD"); minProgress != "" {
 		if f, err := strconv.ParseFloat(minProgress, 64); err == nil {

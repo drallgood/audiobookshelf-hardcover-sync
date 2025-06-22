@@ -15,6 +15,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 )
 
 // parseDate parses a date string in either RFC3339 or YYYY-MM-DD format
@@ -686,9 +687,30 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	// Find the book in Hardcover
 	hcBook, err := s.findBookInHardcover(ctx, book)
 	if err != nil {
+		errMsg := "error finding book in Hardcover"
 		bookLog.Error().
 			Err(err).
 			Msg("Error finding book in Hardcover, skipping")
+		
+		// Record mismatch with error details
+		mismatch.AddWithMetadata(
+			mismatch.MediaMetadata{
+				Title:         book.Media.Metadata.Title,
+				Subtitle:      book.Media.Metadata.Subtitle,
+				AuthorName:    book.Media.Metadata.AuthorName,
+				NarratorName:  book.Media.Metadata.NarratorName,
+				Publisher:     book.Media.Metadata.Publisher,
+				PublishedYear: book.Media.Metadata.PublishedYear,
+				ISBN:          book.Media.Metadata.ISBN,
+				ASIN:          book.Media.Metadata.ASIN,
+				Duration:      book.Media.Duration,
+			},
+			"", // bookID
+			"", // editionID
+			fmt.Sprintf("%s: %v", errMsg, err),
+			book.Media.Duration,
+			book.ID,
+		)
 		return nil // Skip this book but continue with others
 	}
 
@@ -704,6 +726,26 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			Str("isbn", book.Media.Metadata.ISBN).
 			Str("asin", book.Media.Metadata.ASIN).
 			Msg(errMsg)
+		
+		// Record mismatch for book not found
+		mismatch.AddWithMetadata(
+			mismatch.MediaMetadata{
+				Title:         book.Media.Metadata.Title,
+				Subtitle:      book.Media.Metadata.Subtitle,
+				AuthorName:    book.Media.Metadata.AuthorName,
+				NarratorName:  book.Media.Metadata.NarratorName,
+				Publisher:     book.Media.Metadata.Publisher,
+				PublishedYear: book.Media.Metadata.PublishedYear,
+				ISBN:          book.Media.Metadata.ISBN,
+				ASIN:          book.Media.Metadata.ASIN,
+				Duration:      book.Media.Duration,
+			},
+			"", // bookID
+			"", // editionID
+			errMsg,
+			book.Media.Duration,
+			book.ID,
+		)
 		return nil
 	}
 
