@@ -1,58 +1,65 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
-# Binaries for programs and plugins
+# Go build outputs
+/bin/
+/dist/
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
 
-# Test binary, built with `go test -c`
+# Go test and coverage
+/coverage.txt
+/coverage.html
 *.test
-
-# Code coverage profiles and other test artifacts
-*.out
-coverage.*
+*.test.out
+*.cover
 *.coverprofile
 profile.cov
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
+# Dependency directories
+/vendor/
 
 # Go workspace file
 go.work
 go.work.sum
 
-# env file
+# Environment files
 .env
+.env.local
+.env.*.local
 
-# Editor/IDE
-# .idea/
-# .vscode/
-
-main
-test-main
-test-build
-audiobookshelf-hardcover-sync
-audiobookshelf-openapi.json
-hardcover-schema.graphql
-abs-hardcover-sync
-mismatches/
-
-# Personal book files and temporary test data
-*_personal.json
-test_*.json
-debug_*.json
-
-# Temporary files
-*.tmp
-*.temp
+# Editor directories and files
+.idea/
+.vscode/
+*.swp
+*.swo
 *~
 .DS_Store
 
-# Build artifacts
-sync-test
-test_build
-.vscode
-sync_state.json
+# Project specific
+/config.yaml
+/config/*.yaml
+/config/*.local.yaml
+/mismatches/
+/debug/
+
+# Logs
+*.log
+logs/
+
+# Test data and fixtures
+/test/fixtures/*.json
+!/test/fixtures/example_edition.json
+!/test/fixtures/sample_edition_ready_output.json
+
+# Build cache
+/.cache/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

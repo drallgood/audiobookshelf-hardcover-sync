@@ -1,0 +1,46 @@
+# Server configuration
+server:
+  address: ":8080"
+  debug: true
+
+# Logging configuration
+logging:
+  level: "debug"  # debug, info, warn, error, fatal, panic
+  format: "json"   # json or console
+  pretty: false    # only applies to json format
+
+# Audiobookshelf configuration
+audiobookshelf:
+  url: "https://your-audiobookshelf-instance.com"
+  token: "your-audiobookshelf-token"
+  timeout: "30s"
+
+# Hardcover configuration
+hardcover:
+  token: "your-hardcover-token"
+  timeout: "30s"
+
+# Sync configuration
+sync:
+  interval: "1h"
+  dry_run: true
+  test_book_filter: ""
+  test_book_limit: 5
+  minimum_progress: 0.99
+  audiobook_match_mode: "strict"
+  sync_want_to_read: true
+  sync_owned: true
+
+# Cache configuration
+cache:
+  enabled: true
+  ttl: "24h"
+  path: "./cache"
+
+# HTTP client configuration
+http:
+  timeout: "30s"
+  max_idle_conns: 10
+  idle_conn_timeout: "90s"
+  tls_handshake_timeout: "10s"
+  expect_continue_timeout: "1s"

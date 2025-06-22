@@ -1,28 +1,123 @@
+version: '3.8'
+
+# Common environment variables for all services
+x-common-env: &common-env
+  TZ: ${TZ:-UTC}
+  # Application settings
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  # Audiobookshelf settings
+  AUDIOBOOKSHELF_URL: ${AUDIOBOOKSHELF_URL:-}
+  AUDIOBOOKSHELF_TOKEN: ${AUDIOBOOKSHELF_TOKEN:-}
+  # Hardcover settings
+  HARDCOVER_TOKEN: ${HARDCOVER_TOKEN:-}
+  # Sync settings
+  SYNC_INTERVAL: ${SYNC_INTERVAL:-1h}
+  DRY_RUN: ${DRY_RUN:-false}
+
 services:
-  abs-hardcover-sync:
-    image: ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
-    container_name: abs-hardcover-sync
+  app:
+    build:
+      context: .
+      args:
+        - VERSION=${VERSION:-dev}
+    image: ghcr.io/drallgood/audiobookshelf-hardcover-sync:${VERSION:-latest}
+    container_name: audiobookshelf-hardcover-sync
     restart: unless-stopped
-    ports:
-      - "8080:8080"
-    env_file:
-      - .env
+    stop_grace_period: 10s
+    stop_signal: SIGTERM
+    init: true
     healthcheck:
-      test: ["CMD", "/app/main", "--health-check"]
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 5s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-    deploy:
-      resources:
-        limits:
-          cpus: '0.50'
-          memory: 256M
-        reservations:
-          cpus: '0.10'
-          memory: 64M
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data
+      # Uncomment for development with live reload
+      # - .:/src
+      # - /src/node_modules
+      # - /src/bin
+    environment:
+      <<: *common-env
+      # Uncomment to override default config path
+      # CONFIG_FILE: /app/config/custom-config.yaml
+    # Uncomment to run in development mode with live reload
+    # command: ["air", "-c", ".air.toml"]
+    # For production, you can specify the config file explicitly:
+    # command: ["--config", "/app/config/config.yaml"]
+    networks:
+      - abs-hc-network
+
+  # Redis cache (optional)
+  redis:
+    image: redis:7-alpine
+    container_name: abs-hc-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    environment:
+      <<: *common-env
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    networks:
+      - abs-hc-network
+
+  # Prometheus metrics exporter (optional)
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   container_name: abs-hc-prometheus
+  #   restart: unless-stopped
+  #   command:
+  #     - '--config.file=/etc/prometheus/prometheus.yml'
+  #     - '--storage.tsdb.path=/prometheus'
+  #     - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+  #     - '--web.console.templates=/usr/share/prometheus/consoles'
+  #   volumes:
+  #     - ./monitoring/prometheus:/etc/prometheus
+  #     - prometheus_data:/prometheus
+  #   ports:
+  #     - "9090:9090"
+  #   networks:
+  #     - abs-hc-network
+
+  # Grafana for metrics visualization (optional)
+  # grafana:
+  #   image: grafana/grafana:latest
+  #   container_name: abs-hc-grafana
+  #   restart: unless-stopped
+  #   volumes:
+  #     - grafana_data:/var/lib/grafana
+  #     - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+  #   environment:
+  #     - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+  #     - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+  #     - GF_USERS_ALLOW_SIGN_UP=false
+  #   ports:
+  #     - "3000:3000"
+  #   depends_on:
+  #     - prometheus
+  #   networks:
+  #     - abs-hc-network
+
+networks:
+  abs-hc-network:
+    driver: bridge
+    name: abs-hc-network
+
+volumes:
+  redis_data:
+    name: abs-hc-redis-data
+  # Uncomment if using Prometheus
+  # prometheus_data:
+  #   name: abs-hc-prometheus-data
+  # grafana_data:
+  #   name: abs-hc-grafana-data

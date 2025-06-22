@@ -1,15 +1,97 @@
-# .dockerignore
-# Ignore files and folders not needed in the container
+# Version control
 .git
 .gitignore
-README.md
-LICENSE
-*.md
+.gitattributes
+.github/
+
+# Binaries and build outputs
+/bin
+/dist
+/*.exe
+/*.exe~
+/*.dll
+/*.so
+/*.dylib
+
+# Test and coverage outputs
+/coverage
+/*.test
+/*.cover
+/coverage.txt
+profile.out
+
+# Dependency directories
+/vendor
+/node_modules
+
+# Environment and configuration (except example)
+.env
+.env.*
+!.env.example
+/config/*.yaml
+/config/*.yml
+/config/*.json
+/config/*.toml
+
+# Logs and debug files
 *.log
-test/
-*.test
+*.log.*
+*.tmp
+*.bak
 *.swp
-*.swo
+*~
+
+# IDE specific files
 .idea/
 .vscode/
-*.DS_Store
+*.swp
+*.swo
+*.swn
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Documentation and examples
+/docs
+/examples
+
+# Local development tools
+air.toml
+.dockerignore
+.hadolint.yaml
+
+# Build cache
+.cache/
+
+# Test data and fixtures
+/testdata/
+/fixtures/
+/test/fixtures/
+
+# Archive and backup files
+*.bak
+*.old
+*.orig
+*.rej
+*~
+
+# Temporary files
+*.tmp
+*.temp
+
+# Local development
+.air.toml
+
+# Ignore the config directory but allow config.example.yaml to be copied
+/config/*
+!/config/config.example.yaml
+
+# Ignore the scripts directory but allow entrypoint.sh to be copied
+/scripts/*
+!/scripts/entrypoint.sh

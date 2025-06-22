@@ -1,8 +1,41 @@
 # audiobookshelf-hardcover-sync
 
 [![Trivy Scan](https://github.com/drallgood/audiobookshelf-hardcover-sync/actions/workflows/trivy.yml/badge.svg)](https://github.com/drallgood/audiobookshelf-hardcover-sync/actions/workflows/trivy.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/drallgood/audiobookshelf-hardcover-sync)](https://goreportcard.com/report/github.com/drallgood/audiobookshelf-hardcover-sync)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Automatically syncs your Audiobookshelf library with Hardcover, including reading progress, book status, and ownership information.
+
+## Project Structure
+
+The project follows standard Go project layout:
+
+```
+.
+├── cmd/                          # Main application entry points
+│   └── audiobookshelf-hardcover-sync/  # Main application
+├── internal/                     # Private application code
+│   ├── api/                      # API clients
+│   │   ├── audiobookshelf/       # Audiobookshelf API client
+│   │   └── hardcover/            # Hardcover API client
+│   ├── config/                   # Configuration loading and validation
+│   ├── logger/                   # Structured logging
+│   ├── models/                   # Data structures
+│   ├── services/                 # Business logic
+│   ├── sync/                     # Sync logic
+│   └── utils/                    # Utility functions
+├── pkg/                          # Public libraries
+│   ├── cache/                    # Caching implementation
+│   ├── edition/                  # Edition creation logic
+│   └── mismatch/                 # Mismatch detection
+└── test/                         # Test files
+    ├── testdata/                 # Test data
+    ├── unit/                     # Unit tests
+    ├── integration/              # Integration tests
+    └── e2e/                      # End-to-end tests
+```
+
+## Development
 
 ## Features
 - 📚 **Full Library Sync**: Syncs your entire Audiobookshelf library with Hardcover
@@ -15,12 +48,44 @@ Automatically syncs your Audiobookshelf library with Hardcover, including readin
 - 🎛️ **Manual Sync**: HTTP endpoints for on-demand synchronization
 - 🏥 **Health Monitoring**: Built-in health check endpoint
 - 🐳 **Container Ready**: Multi-arch Docker images (amd64, arm64)
-- 🔍 **Debug Logging**: Comprehensive logging for troubleshooting
+- 🔍 **Configurable Logging**: JSON or console (human-readable) output with configurable log levels
 - 🔧 **Edition Creation Tools**: Interactive tools for creating missing audiobook editions
 - 🔍 **ID Lookup**: Search and verify author, narrator, and publisher IDs from Hardcover database
 - 🛡️ **Production Ready**: Secure, minimal, and battle-tested
 
 ## Quick Start
+
+### Prerequisites
+
+- Go 1.21 or later
+- Docker (optional, for containerized deployment)
+- Audiobookshelf instance with API access
+- Hardcover API token
+
+### Local Development
+
+1. Clone the repository:
+   ```sh
+   git clone https://github.com/drallgood/audiobookshelf-hardcover-sync.git
+   cd audiobookshelf-hardcover-sync
+   ```
+
+2. Install dependencies:
+   ```sh
+   make deps
+   ```
+
+3. Copy the example environment file and update with your settings:
+   ```sh
+   cp .env.example .env
+   # Edit .env with your configuration
+   ```
+
+4. Build and run the application:
+   ```sh
+   make build
+   ./bin/audiobookshelf-hardcover-sync
+   ```
 
 ### Using Docker Compose (Recommended)
 1. Create a `.env` file with your API tokens:
@@ -41,6 +106,7 @@ docker run -d \
   -e AUDIOBOOKSHELF_TOKEN=your_abs_token \
   -e HARDCOVER_TOKEN=your_hardcover_token \
   -e SYNC_INTERVAL=1h \
+  -e TEST_BOOK_LIMIT=10 \
   --name abs-hardcover-sync \
   ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
 ```
@@ -59,15 +125,20 @@ docker run -d \
 |----------|---------|-------------|
 | `SYNC_INTERVAL` | None | Periodic sync interval (e.g., `10m`, `1h`, `30s`) |
 | `SYNC_WANT_TO_READ` | `true` | Sync unstarted books (0% progress) as "Want to Read" |
+| `TEST_BOOK_LIMIT` | `0` (no limit) | Limit the number of books to process during sync (useful for testing) |
+| `DRY_RUN` | `false` | Enable dry-run mode (no changes will be made to Hardcover) |
+| `TEST_BOOK_FILTER` | None | Filter books by title/author (case-insensitive) |
+| `TEST_BOOK_LIMIT` | 0 | Limit number of books to process (0 for no limit) |
 | `SYNC_OWNED` | `true` | Mark synced books as "owned" in Hardcover |
 | `INCREMENTAL_SYNC_MODE` | `enabled` | Incremental sync mode: `enabled`, `disabled`, `auto` |
 | `MINIMUM_PROGRESS_THRESHOLD` | `0.01` | Minimum progress to sync (0.0-1.0, 0.01 = 1%) |
-| `HARDCOVER_SYNC_DELAY_MS` | `1500` | Delay between API calls to prevent rate limiting |
+| `HARDCOVER_RATE_LIMIT` | `10` | Maximum number of API requests per second (default: 10) |
 | `AUDIOBOOK_MATCH_MODE` | `continue` | ASIN lookup failure behavior: `continue`, `skip`, `fail` |
 | `SYNC_STATE_FILE` | `sync_state.json` | Path to incremental sync state file |
 | `FORCE_FULL_SYNC` | `false` | Force full sync on next run |
-| `DEBUG_MODE` | `false` | Enable verbose debug logging (`1` or `true`) |
-| `DRY_RUN` | `false` | Enable dry run mode for testing (`true`, `1`, or `yes`) |
+| `LOG_LEVEL` | `info` | Logging level (debug, info, warn, error, fatal, panic) |
+| `LOG_FORMAT` | `json` | Log format (`json` or `console`) |
+| `LOG_PRETTY` | `false` | Enable pretty-printed JSON logs (only applies when LOG_FORMAT=json) |
 | `MISMATCH_JSON_FILE` | None | Directory path for saving individual mismatch JSON files |
 | `TZ` | System default | Timezone for container logs (e.g., `Europe/Vienna`, `UTC`) |
 
@@ -391,14 +462,11 @@ services:
 The container automatically trusts custom CAs at runtime.
 
 ### Rate Limiting Configuration
-If you encounter `429 Too Many Requests` errors:
+The application includes built-in rate limiting to prevent API rate limits. By default, it allows up to 10 requests per second. If you encounter `429 Too Many Requests` errors, you can adjust the rate limit using the `HARDCOVER_RATE_LIMIT` environment variable:
 
 ```sh
-# Increase delay between API calls (default: 1500ms)
-export HARDCOVER_SYNC_DELAY_MS=3000
-
-# For very large libraries
-export HARDCOVER_SYNC_DELAY_MS=5000
+# Reduce the rate limit if needed (e.g., 5 requests per second)
+export HARDCOVER_RATE_LIMIT=5
 ```
 
 ### Troubleshooting

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **⚡ Rate Limiting Update**: Removed deprecated `sync_delay` configuration and `HARDCOVER_SYNC_DELAY_MS` environment variable
+  - **Reason**: Replaced with more efficient token bucket rate limiting in the Hardcover API client
+  - **Migration**: Use `HARDCOVER_RATE_LIMIT` environment variable to control rate limiting (default: 10 requests per second)
+  - **Impact**: More reliable rate limiting with better performance characteristics
+
+
 ## [1.6.1] - 2025-06-12
 
 ### Fixed

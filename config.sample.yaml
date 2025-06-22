@@ -1,0 +1,48 @@
+# Audiobookshelf-Hardcover Sync Configuration
+# Copy this file to config.yaml and update the values as needed
+
+# Server configuration
+server:
+  address: ":8080"  # Address to bind the HTTP server to
+  debug: false         # Enable debug mode
+
+# Logging configuration
+logging:
+  level: "info"      # Log level (debug, info, warn, error, fatal, panic)
+  pretty: true       # Enable pretty-printed logs
+
+# Audiobookshelf API configuration
+audiobookshelf:
+  url: "http://localhost:1337"  # Base URL of your Audiobookshelf server
+  token: ""                     # API token for authentication
+  timeout: "30s"                # Request timeout
+
+# Hardcover API configuration
+hardcover:
+  token: ""                     # API token for Hardcover
+  timeout: "30s"                # Request timeout
+
+# Sync configuration
+sync:
+  interval: "1h"               # How often to run the sync (e.g., "30m", "1h", "24h")
+  dry_run: false               # Enable dry-run mode (no changes will be made)
+  test_book_filter: ""         # Filter books by title/author (case-insensitive)
+  test_book_limit: 0            # Limit number of books to process (0 for no limit)
+  minimum_progress: 0.9         # Minimum progress (0.0-1.0) to consider a book as read
+  audiobook_match_mode: "strict" # How to match audiobooks (strict, loose)
+  sync_want_to_read: true       # Sync "want to read" status
+  sync_owned: true               # Sync "owned" status
+
+# Cache configuration
+cache:
+  enabled: true                 # Enable caching of API responses
+  ttl: "24h"                    # Time-to-live for cache entries
+  path: "./cache"               # Path to store cache files
+
+# HTTP client configuration
+http:
+  timeout: "30s"                # Default HTTP client timeout
+  max_idle_conns: 10            # Maximum number of idle connections
+  idle_conn_timeout: "90s"      # Idle connection timeout
+  tls_handshake_timeout: "10s"  # TLS handshake timeout
+  expect_continue_timeout: "1s"  # Expect-Continue header timeout

@@ -1,0 +1,31 @@
+# Server configuration
+server:
+  port: "8080"
+  shutdown_timeout: 10s
+
+# Audiobookshelf configuration
+audiobookshelf:
+  url: "http://localhost:13378"
+  token: "test-audiobookshelf-token"
+
+# Hardcover configuration
+hardcover:
+  token: "test-hardcover-token"
+
+# Application settings
+app:
+  debug: true
+  log_level: "debug"
+  sync_interval: 1h
+  minimum_progress: 0.01
+  audiobook_match_mode: "loose"
+  sync_want_to_read: true
+  sync_owned: true
+  dry_run: true
+  test_book_filter: ""
+  test_book_limit: 5
+
+# File paths
+paths:
+  mismatch_json_file: "./mismatched_books.json"
+  cache_dir: "./cache"
