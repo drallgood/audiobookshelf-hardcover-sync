@@ -107,10 +107,11 @@ func TestShouldPerformFullSync(t *testing.T) {
 				os.Setenv("FORCE_FULL_SYNC", tt.envValue)
 			}
 
-			// Create state with specified lastFullSync
+			// Create state with specified lastFullSync and set LastSyncSuccess to true for recent syncs
 			state := &SyncState{
-				LastFullSync: tt.lastFullSync,
-				Version:      StateVersion,
+				LastFullSync:    tt.lastFullSync,
+				Version:         StateVersion,
+				LastSyncSuccess: tt.name == "Recent full sync",
 			}
 
 			// Test shouldPerformFullSync
@@ -131,7 +132,10 @@ func TestGetStateFilePath(t *testing.T) {
 		{
 			name:     "Default state file",
 			envValue: "",
-			expected: DefaultStateFile,
+			expected: func() string {
+				configDir, _ := os.UserConfigDir()
+				return filepath.Join(configDir, "audiobookshelf-hardcover-sync", "sync_state.json")
+			}(),
 		},
 		{
 			name:     "Custom state file",

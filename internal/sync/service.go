@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -1307,9 +1308,37 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, ed
 		return err
 	}
 
-	// Convert progress from 0-100 to 0-1 range for consistency
-	progress := book.Progress.CurrentTime / 100.0
-	progressSeconds := int(book.Progress.CurrentTime * book.Media.Duration / 100) // Convert % to seconds
+	// Calculate progress percentage (0-1 range)
+	progress := 0.0
+	if book.Media.Duration > 0 {
+		progress = book.Progress.CurrentTime / book.Media.Duration
+	}
+
+	// Calculate progress in seconds
+	var progressSeconds int
+	if book.Progress.CurrentTime > 0 {
+		// Use CurrentTime directly as it's already in seconds
+		progressSeconds = int(math.Round(book.Progress.CurrentTime))
+	} else if book.Media.Duration > 0 && progress > 0 {
+		// Fall back to progress percentage * duration if current time not available
+		progressSeconds = int(math.Round(progress * book.Media.Duration))
+	} else {
+		// Fallback: use progress percentage * reasonable audiobook duration (10 hours)
+		fallbackDuration := 36000.0 // 10 hours in seconds
+		progressSeconds = int(math.Round(progress * fallbackDuration))
+	}
+
+	// Ensure we have at least 1 second of progress if there is any progress
+	if progressSeconds < 1 && progress > 0 {
+		progressSeconds = 1
+	}
+
+	log.Debug().
+		Float64("progress", progress).
+		Float64("current_time", book.Progress.CurrentTime).
+		Float64("duration", book.Media.Duration).
+		Int("progress_seconds", progressSeconds).
+		Msg("Calculated progress")
 
 	// Parse edition ID if available
 	editionIDInt := int64(0)
@@ -1324,7 +1353,6 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, ed
 
 	now := time.Now()
 	today := now.Format("2006-01-02")
-	nowStr := now.Format(time.RFC3339)
 
 	// Get all existing read entries for this book
 	existingReads, err := s.hardcover.GetUserBookReads(ctx, hardcover.GetUserBookReadsInput{
@@ -1373,16 +1401,12 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, ed
 	// Check if we should update based on progress
 	if updateExisting && existingRead != nil && existingRead.ProgressSeconds != nil {
 		existingProgress := *existingRead.ProgressSeconds
-		progressDiff := progressSeconds - existingProgress
-		if progressDiff < 0 {
-			progressDiff = -progressDiff // absolute difference
-		}
-
-		// Calculate progress threshold (30 seconds or 5% of duration, whichever is larger)
+		
+		// Calculate progress threshold (30 seconds or 1% of duration, whichever is larger)
 		progressThreshold := 30 // Minimum threshold in seconds
-		if progress > 0 {
-			// Use a percentage of the total duration, but cap it at 5 minutes
-			percentageThreshold := int(book.Media.Duration * 0.05) // 5% of total duration
+		if book.Media.Duration > 0 {
+			// Use 1% of total duration as threshold, with reasonable bounds
+			percentageThreshold := int(book.Media.Duration * 0.01)
 			if percentageThreshold < 30 {
 				progressThreshold = 30 // Minimum 30 seconds
 			} else if percentageThreshold > 300 {
@@ -1392,13 +1416,15 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, ed
 			}
 		}
 
-		// Only update if progress has changed significantly
+		// Calculate progress difference and check if it exceeds the threshold
+		progressDiff := int(math.Abs(float64(progressSeconds - existingProgress)))
 		if progressDiff < progressThreshold {
 			log.Debug().
 				Int("existing_progress", existingProgress).
+				Int("new_progress", progressSeconds).
 				Int("progress_diff", progressDiff).
 				Int("progress_threshold", progressThreshold).
-				Msg("No significant progress change - skipping update")
+				Msg("Progress change below threshold, skipping update")
 			return nil
 		}
 
@@ -1415,7 +1441,6 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, ed
 		// Update existing read entry with all preserved fields
 		updateObject := map[string]interface{}{
 			"progress_seconds": progressSeconds,
-			"updated_at":       nowStr,
 		}
 
 		// Preserve existing fields to prevent data loss

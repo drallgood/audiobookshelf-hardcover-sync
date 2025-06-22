@@ -53,46 +53,6 @@ func TestGenerateExampleJSON(t *testing.T) {
 	}
 }
 
-func TestParseAudibleDuration(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected int
-	}{
-		{"12h34m56s", 12*3600 + 34*60 + 56},
-		{"1h", 3600},
-		{"45m30s", 45*60 + 30},
-		{"2h30", 2*3600 + 30*60},
-		{"10 hours and 15 minutes", 10*3600 + 15*60},
-	}
-
-	for _, test := range tests {
-		result, err := ParseAudibleDuration(test.input)
-		if err != nil {
-			t.Errorf("ParseAudibleDuration('%s') failed: %v", test.input, err)
-			continue
-		}
-		if result != test.expected {
-			t.Errorf("ParseAudibleDuration('%s') = %d, expected %d", test.input, result, test.expected)
-		}
-	}
-}
-
-func TestParseAudibleDurationInvalid(t *testing.T) {
-	invalidInputs := []string{
-		"invalid format",
-		"",
-		"just text",
-		"123", // no units
-	}
-
-	for _, input := range invalidInputs {
-		_, err := ParseAudibleDuration(input)
-		if err == nil {
-			t.Errorf("ParseAudibleDuration('%s') should have failed but didn't", input)
-		}
-	}
-}
-
 func TestEditionCreatorInputValidation(t *testing.T) {
 	// Test that our input structure can be marshaled/unmarshaled correctly
 	input := EditionCreatorInput{

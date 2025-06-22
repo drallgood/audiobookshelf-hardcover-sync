@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
@@ -36,20 +35,44 @@ func TestSetup(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Reset global logger
-			globalLogger = nil
+			// Reset global state
 			zerolog.SetGlobalLevel(zerolog.NoLevel)
+			ResetForTesting()
+
+			// Create a buffer to capture output
+			var buf bytes.Buffer
+
+			// Debug: Print the test case info
+			t.Logf("Running test case: %s, level: %s, expected: %v (%d)", 
+				tt.name, tt.level, tt.expected, tt.expected)
 
 			// Setup logger with test config
-			Setup(Config{
+			config := Config{
 				Level:      tt.level,
-				Output:     os.Stdout,
+				Output:     &buf, // Use buffer instead of os.Stdout
 				TimeFormat: time.RFC3339,
-			})
+			}
 
-			// Verify the global level was set correctly
-			assert.Equal(t, tt.expected, zerolog.GlobalLevel())
-			assert.NotNil(t, Get())
+			Setup(config)
+
+
+			// Get the logger and verify its level
+			logger := Get()
+			assert.NotNil(t, logger, "Get() returned nil logger")
+
+			// Debug: Print the logger's level right after getting it
+			t.Logf("Logger type: %T, level field: %v", logger, logger.level)
+
+			// Debug logging to help diagnose the issue
+			actualLevel := logger.GetLevel()
+			t.Logf("Test case: %s, Expected level: %v (%d), Actual level: %v (%d)", 
+				tt.name, tt.expected, tt.expected, actualLevel, actualLevel)
+			
+			// Verify the level
+			if !assert.Equal(t, tt.expected, actualLevel, "logger level does not match expected") {
+				t.Logf("Logger output: %s", buf.String())
+				t.Logf("Logger struct: %+v", logger)
+			}
 		})
 	}
 }

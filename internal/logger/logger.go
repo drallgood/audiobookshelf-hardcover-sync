@@ -13,10 +13,15 @@ import (
 )
 
 var (
-	// globalLogger is the singleton logger instance
+	// globalLogger is the global logger instance
 	globalLogger *Logger
-	// once ensures the logger is only initialized once
+
+	// once ensures the global logger is only initialized once
 	once sync.Once
+
+	// testOnce is used to allow resetting the once variable in tests
+	testOnce = &once
+
 	// defaultConfig is the default logger configuration
 	defaultConfig = Config{
 		Level:      "info",
@@ -28,11 +33,18 @@ var (
 // Logger wraps zerolog.Logger to provide our own interface
 type Logger struct {
 	zerolog.Logger
+	level int // Track the log level explicitly as an int to match zerolog's internal representation
 }
 
-// GetLevel returns the current log level
+// GetLevel returns the current log level of the logger
 func (l *Logger) GetLevel() zerolog.Level {
-	return zerolog.GlobalLevel()
+	if l == nil {
+		return zerolog.NoLevel
+	}
+	// Return the stored level as a zerolog.Level
+	// Note: zerolog.Level is an int8 with these values:
+	// DebugLevel = 0, InfoLevel = 1, WarnLevel = 2, ErrorLevel = 3, FatalLevel = 4, PanicLevel = 5, NoLevel = 6, Disabled = -128, TraceLevel = -1
+	return zerolog.Level(l.level)
 }
 
 // LogFormat defines the available log formats
@@ -123,14 +135,27 @@ func Get() *Logger {
 	if globalLogger == nil {
 		// Initialize with default config if not already initialized
 		Setup(defaultConfig)
+		// If still nil, create a minimal logger to avoid nil pointer dereference
+		if globalLogger == nil {
+			zerolog.SetGlobalLevel(zerolog.InfoLevel)
+			logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
+			globalLogger = &Logger{Logger: logger}
+		}
 	}
 	return globalLogger
+}
+
+// ResetForTesting resets the global logger and sync.Once variable for testing purposes
+// This should only be used in tests
+func ResetForTesting() {
+	globalLogger = nil
+	testOnce = &sync.Once{}
 }
 
 // Setup initializes the global logger with the given configuration
 // Can only be called once - subsequent calls will be ignored
 func Setup(cfg Config) {
-	once.Do(func() {
+	testOnce.Do(func() {
 		// Set default values if not provided
 		if cfg.Level == "" {
 			cfg.Level = defaultConfig.Level
@@ -168,9 +193,8 @@ func Setup(cfg Config) {
 			level = zerolog.InfoLevel
 		}
 
-		// Set up the logger
-		zerolog.SetGlobalLevel(level)
-		zerolog.TimeFieldFormat = cfg.TimeFormat
+		// Debug: Print the level value before creating the logger
+		println("DEBUG: Creating logger with level:", level, "(int:", int(level), ")")
 
 		// Set up the output writer
 		output := cfg.Output
@@ -178,26 +202,51 @@ func Setup(cfg Config) {
 			output = os.Stdout
 		}
 
+		// Set the global logger level and format
+		zerolog.SetGlobalLevel(level)
+		zerolog.TimeFieldFormat = cfg.TimeFormat
+
+		// Debug: Print the current global level
+		println("DEBUG: Global level set to:", zerolog.GlobalLevel(), "(int:", int(zerolog.GlobalLevel()), ")")
+
 		// Configure the logger based on the format
-		var logger zerolog.Logger
-		switch cfg.Format {
-		case FormatConsole:
+		var baseLogger zerolog.Logger
+		if cfg.Format == FormatConsole {
 			// Use console writer for human-readable output
-			logger = zerolog.New(zerolog.ConsoleWriter{
+			baseLogger = zerolog.New(zerolog.ConsoleWriter{
 				Out:        output,
 				TimeFormat: cfg.TimeFormat,
 				NoColor:    false,
-			}).With().Timestamp().Logger()
-		default: // Default to JSON
-			logger = zerolog.New(output).With().Timestamp().Logger()
+			})
+		} else {
+			// Default to JSON
+			baseLogger = zerolog.New(output)
 		}
 
-		// Set the global logger
-		globalLogger = &Logger{logger}
+		// Debug: Print the base logger level before setting it
+		println("DEBUG: Base logger level before setting:", baseLogger.GetLevel(), "(int:", int(baseLogger.GetLevel()), ")")
 
-		// Log the logger setup
+		// Create the logger with the configured level and timestamp
+		logger := baseLogger.Level(level).With().Timestamp().Logger()
+		
+		// Debug: Print the logger level after setting it
+		println("DEBUG: Logger level after setting:", logger.GetLevel(), "(int:", int(logger.GetLevel()), ")")
+		
+		// Debug: Print the level value before storing it
+		println("DEBUG: Storing level in Logger struct as:", level, "(int:", int(level), ")")
+		
+		// Create our custom logger with the configured zerolog logger
+		globalLogger = &Logger{
+			Logger: logger,
+			level:  int(level), // Store the level as an int
+		}
+
+		// Debug: Verify the stored level
+		println("DEBUG: Stored level in globalLogger:", globalLogger.GetLevel(), "(int:", globalLogger.level, ")")
+
+		// Log the logger setup with the configured level
 		globalLogger.Info().
-			Str("level", cfg.Level).
+			Str("level", level.String()).
 			Str("format", string(cfg.Format)).
 			Str("time_format", cfg.TimeFormat).
 			Msg("Logger initialized")
@@ -207,6 +256,18 @@ func Setup(cfg Config) {
 // WithContext adds context to the logger
 func WithContext(fields map[string]interface{}) *Logger {
 	log := Get()
+	if log == nil {
+		// If no logger is set up, create a new one with default config
+		Setup(defaultConfig)
+		log = Get()
+		if log == nil {
+			// If still nil, create a minimal logger to avoid nil pointer dereference
+			zerolog.SetGlobalLevel(zerolog.InfoLevel)
+			logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
+			return &Logger{Logger: logger}
+		}
+	}
+
 	if fields == nil {
 		return log
 	}
@@ -215,7 +276,7 @@ func WithContext(fields map[string]interface{}) *Logger {
 	for k, v := range fields {
 		logger = logger.With().Interface(k, v).Logger()
 	}
-	return &Logger{logger}
+	return &Logger{Logger: logger}
 }
 
 // WithLogger adds a logger to the context
