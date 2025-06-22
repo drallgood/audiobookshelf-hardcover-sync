@@ -173,8 +173,8 @@ func DefaultClientConfig() *ClientConfig {
 		Timeout:    DefaultTimeout,
 		MaxRetries: DefaultMaxRetries,
 		RetryDelay: DefaultRetryDelay,
-		RateLimit:  100 * time.Millisecond, // 10 requests per second
-		Burst:      10,                    // Allow bursts of up to 10 requests
+		RateLimit:  2 * time.Second,       // 0.5 requests per second (more conservative)
+		Burst:      1,                     // Minimal burst size to prevent spikes
 	}
 }
 
@@ -207,8 +207,8 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 		Timeout: cfg.Timeout,
 	}
 
-	// Create rate limiter
-	rateLimiter := util.NewRateLimiter(cfg.RateLimit, cfg.Burst)
+	// Create rate limiter with max 5 concurrent requests
+	rateLimiter := util.NewRateLimiter(cfg.RateLimit, cfg.Burst, 5, log)
 
 	// Create logger if not provided
 	if log == nil {
@@ -1271,26 +1271,68 @@ func (c *Client) UpdateUserBookRead(ctx context.Context, input UpdateUserBookRea
 		return false, fmt.Errorf("failed to marshal update object: %w", err)
 	}
 
-	// Define the mutation
+	// Define the mutation to match the legacy implementation
 	mutation := `
-		mutation UpdateUserBookRead($id: Int!, $updates: jsonb!) {
-			update_user_book_read(
-				where: { id: { _eq: $id } },
-				_set: { object: $updates }
-			) {
-				returning {
-					id
-				}
+		mutation UpdateUserBookRead($id: Int!, $object: DatesReadInput!) {
+		  update_user_book_read(id: $id, object: $object) {
+			id
+			error
+			user_book_read {
+			  id
+			  progress_seconds
+			  started_at
+			  finished_at
 			}
-		}
-	`
+		  }
+		}`
+
+	// Convert the update object to a DatesReadInput to ensure only valid fields are included
+	var datesReadInput DatesReadInput
+	if err := json.Unmarshal(updateObj, &datesReadInput); err != nil {
+		c.logger.Error().Err(err).Msg("Failed to unmarshal update object to DatesReadInput")
+		return false, fmt.Errorf("failed to unmarshal update object: %w", err)
+	}
+	
+	// Convert back to a map to use in the GraphQL variables
+	updateObjMap := make(map[string]interface{})
+	if datesReadInput.Action != nil {
+		updateObjMap["action"] = datesReadInput.Action
+	}
+	if datesReadInput.EditionID != nil {
+		updateObjMap["edition_id"] = datesReadInput.EditionID
+	}
+	if datesReadInput.FinishedAt != nil {
+		updateObjMap["finished_at"] = datesReadInput.FinishedAt
+	}
+	if datesReadInput.ID != nil {
+		updateObjMap["id"] = datesReadInput.ID
+	}
+	if datesReadInput.StartedAt != nil {
+		updateObjMap["started_at"] = datesReadInput.StartedAt
+	}
+
+	// Add progress_seconds if it exists in the original input
+	if progressSeconds, ok := input.Object["progress_seconds"]; ok {
+		updateObjMap["progress_seconds"] = progressSeconds
+	}
 
 	// Define the result type
-	var result UpdateUserBookReadResponse
+	var result struct {
+		UpdateUserBookRead struct {
+			ID           int     `json:"id"`
+			Error        *string `json:"error"`
+			UserBookRead *struct {
+				ID              int     `json:"id"`
+				ProgressSeconds int     `json:"progress_seconds"`
+				StartedAt       string  `json:"started_at"`
+				FinishedAt      *string `json:"finished_at"`
+			} `json:"user_book_read"`
+		} `json:"update_user_book_read"`
+	}
 
 	vars := map[string]interface{}{
-		"id":      input.ID,
-		"updates": json.RawMessage(updateObj),
+		"id":     input.ID,
+		"object": updateObjMap,
 	}
 
 	err = c.executeGraphQLMutation(ctx, mutation, vars, &result)
@@ -1299,20 +1341,27 @@ func (c *Client) UpdateUserBookRead(ctx context.Context, input UpdateUserBookRea
 		return false, fmt.Errorf("failed to execute update mutation: %w", err)
 	}
 
-	// Check if any records were updated
-	if len(result.UpdateUserBookRead.Returning) == 0 {
-		c.logger.Warn().Int64("id", input.ID).Msg("No records were updated")
+	// Check for errors in the response
+	if result.UpdateUserBookRead.Error != nil {
+		errMsg := *result.UpdateUserBookRead.Error
+		c.logger.Error().
+			Str("error", errMsg).
+			Msg("Error in update_user_book_read response")
+		return false, fmt.Errorf("update error: %s", errMsg)
+	}
+
+	if result.UpdateUserBookRead.UserBookRead == nil {
+		c.logger.Warn().Int64("id", input.ID).Msg("No user_book_read in response")
 		return false, nil
 	}
 
-	updatedID := result.UpdateUserBookRead.Returning[0].ID
+	updatedID := result.UpdateUserBookRead.UserBookRead.ID
 	c.logger.Info().
-		Int64("updated_id", updatedID).
+		Int("updated_id", updatedID).
 		Msg("Successfully updated user book read entry")
 
 	return true, nil
 }
-
 type GetUserBookInput struct {
 	ID int `json:"id"`
 }

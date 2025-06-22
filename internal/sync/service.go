@@ -510,6 +510,20 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 
 	bookLog.Debug().Msg("Starting to process book")
 
+	// Apply test book filter if configured
+	if s.config.App.TestBookFilter != "" {
+		// Check if the book title contains the filter string (case-insensitive)
+		if !strings.Contains(strings.ToLower(book.Media.Metadata.Title), strings.ToLower(s.config.App.TestBookFilter)) {
+			bookLog.Debug().
+				Str("filter", s.config.App.TestBookFilter).
+				Msg("Skipping book as it doesn't match test book filter")
+			return nil
+		}
+		bookLog.Debug().
+			Str("filter", s.config.App.TestBookFilter).
+			Msg("Book matches test book filter, processing...")
+	}
+
 	// Enhance book data with user progress if available
 	if userProgress != nil {
 		// Try to find matching progress in mediaProgress (most accurate source)
