@@ -111,12 +111,17 @@ jobs:
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
           tags: |
-            ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
             ghcr.io/drallgood/audiobookshelf-hardcover-sync:${{ github.sha }}
             ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache,mode=max
+          
+      - name: Tag latest for releases only
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          # For releases, also tag as latest
+          docker buildx imagetools create -t ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest ghcr.io/drallgood/audiobookshelf-hardcover-sync:${{ github.ref#refs/tags/ }}
 
       - name: Tag beta for main branch (not a release)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
