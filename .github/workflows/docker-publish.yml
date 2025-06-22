@@ -37,7 +37,9 @@ jobs:
         run: go test -v ./...
 
       - name: Test version injection build
-        run: go build -ldflags="-X main.version=test-build-$(git rev-parse --short HEAD)" -o /tmp/test-main .
+        run: |
+          cd cmd/audiobookshelf-hardcover-sync
+          go build -ldflags="-X main.version=test-build-$(git rev-parse --short HEAD)" -o /tmp/test-main .
 
       - name: Verify version injection
         run: |
@@ -47,6 +49,7 @@ jobs:
             echo "✅ Version injection working correctly"
           else
             echo "❌ Version injection failed"
+            echo "Expected output to contain 'test-build-', but got: $VERSION"
             exit 1
           fi
 
