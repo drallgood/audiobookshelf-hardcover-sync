@@ -16,68 +16,113 @@ import (
 type Config struct {
 	// Server configuration
 	Server struct {
-		Port            string        `yaml:"port"`
-		ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
+		Port            string        `yaml:"port" env:"PORT"`
+		ShutdownTimeout time.Duration `yaml:"shutdown_timeout" env:"SHUTDOWN_TIMEOUT"`
 	} `yaml:"server"`
+
+	// Rate limiting configuration
+	RateLimit struct {
+		// Rate is the minimum time between requests (e.g., 2s for 1 request per 2 seconds)
+		Rate time.Duration `yaml:"rate" env:"RATE_LIMIT_RATE"`
+		// Burst is the maximum number of requests that can be made in a burst
+		Burst int `yaml:"burst" env:"RATE_LIMIT_BURST"`
+		// MaxConcurrent is the maximum number of concurrent requests
+		MaxConcurrent int `yaml:"max_concurrent" env:"RATE_LIMIT_MAX_CONCURRENT"`
+	} `yaml:"rate_limit"`
 
 	// Logging configuration
 	Logging struct {
-		Level  string `yaml:"level"`
-		Format string `yaml:"format"`
-		Pretty bool   `yaml:"pretty"`
+		// Level is the minimum log level (debug, info, warn, error, fatal, panic)
+		Level  string `yaml:"level" env:"LOG_LEVEL"`
+		// Format is the log format (json, console)
+		Format string `yaml:"format" env:"LOG_FORMAT"`
 	} `yaml:"logging"`
 
 	// Audiobookshelf configuration
 	Audiobookshelf struct {
-		URL   string `yaml:"url"`
-		Token string `yaml:"token"`
+		// URL is the base URL of the Audiobookshelf server
+		URL   string `yaml:"url" env:"AUDIOBOOKSHELF_URL"`
+		// Token is the API token for Audiobookshelf
+		Token string `yaml:"token" env:"AUDIOBOOKSHELF_TOKEN"`
 	} `yaml:"audiobookshelf"`
 
 	// Hardcover configuration
 	Hardcover struct {
-		Token string `yaml:"token"`
+		// Token is the API token for Hardcover
+		Token string `yaml:"token" env:"HARDCOVER_TOKEN"`
 	} `yaml:"hardcover"`
 
 	// Application settings
 	App struct {
-		Debug              bool          `yaml:"debug"`
-		LogLevel           string        `yaml:"log_level"`
-		LogFormat          string        `yaml:"log_format"`
-		SyncInterval       time.Duration `yaml:"sync_interval"`
-		MinimumProgress    float64       `yaml:"minimum_progress"`
-		AudiobookMatchMode string        `yaml:"audiobook_match_mode"`
-		SyncWantToRead     bool          `yaml:"sync_want_to_read"`
-		SyncOwned          bool          `yaml:"sync_owned"`
+		// Debug enables debug mode
+		Debug bool `yaml:"debug" env:"DEBUG"`
+		// SyncInterval is the interval between syncs
+		SyncInterval time.Duration `yaml:"sync_interval" env:"SYNC_INTERVAL"`
+		// MinimumProgress is the minimum progress threshold for syncing (0.0 to 1.0)
+		MinimumProgress float64 `yaml:"minimum_progress" env:"MINIMUM_PROGRESS"`
+		// AudiobookMatchMode is the mode for matching audiobooks (strict, title-author, title-only)
+		AudiobookMatchMode string `yaml:"audiobook_match_mode" env:"AUDIOBOOK_MATCH_MODE"`
+		// SyncWantToRead syncs books with 0% progress as "Want to Read"
+		SyncWantToRead bool `yaml:"sync_want_to_read" env:"SYNC_WANT_TO_READ"`
+		// SyncOwned marks synced books as owned in Hardcover
+		SyncOwned bool `yaml:"sync_owned" env:"SYNC_OWNED"`
 		// MismatchOutputDir is the directory where mismatch JSON files will be saved
 		MismatchOutputDir string `yaml:"mismatch_output_dir" env:"MISMATCH_OUTPUT_DIR"`
-		DryRun             bool          `yaml:"dry_run"`
-		TestBookFilter     string        `yaml:"test_book_filter"`
-		TestBookLimit      int           `yaml:"test_book_limit"`
+		// DryRun enables dry run mode (no changes will be made)
+		DryRun bool `yaml:"dry_run" env:"DRY_RUN"`
+		// TestBookFilter filters books by title for testing
+		TestBookFilter string `yaml:"test_book_filter" env:"TEST_BOOK_FILTER"`
+		// TestBookLimit limits the number of books to process for testing
+		TestBookLimit int `yaml:"test_book_limit" env:"TEST_BOOK_LIMIT"`
 	} `yaml:"app"`
+
 	// File paths
 	Paths struct {
-		MismatchJSONFile string `yaml:"mismatch_json_file"`
-		CacheDir         string `yaml:"cache_dir"`
+		// CacheDir is the directory for cache files
+		CacheDir string `yaml:"cache_dir" env:"CACHE_DIR"`
 	} `yaml:"paths"`
+}
+
+// DefaultConfig returns the default configuration
+func DefaultConfig() *Config {
+	cfg := &Config{}
+
+	// Set default values
+	cfg.Server.Port = "8080"
+	cfg.Server.ShutdownTimeout = 30 * time.Second
+
+	// Default rate limiting (1500ms between requests, burst of 2, max 3 concurrent)
+	cfg.RateLimit.Rate = 1500 * time.Millisecond
+	cfg.RateLimit.Burst = 2
+	cfg.RateLimit.MaxConcurrent = 3
+
+	// Default logging
+	cfg.Logging.Level = "info"
+	cfg.Logging.Format = "json"
+
+	// Default application settings
+	cfg.App.Debug = false
+	cfg.App.SyncInterval = 1 * time.Hour
+	cfg.App.MinimumProgress = 0.01 // 1% minimum progress threshold
+	cfg.App.AudiobookMatchMode = "strict"
+	cfg.App.SyncWantToRead = true
+	cfg.App.SyncOwned = true
+	cfg.App.MismatchOutputDir = "./mismatches"
+	cfg.App.DryRun = false
+	cfg.App.TestBookFilter = ""
+	cfg.App.TestBookLimit = 0
+
+	// Default paths
+	cfg.Paths.CacheDir = "./cache"
+
+	return cfg
 }
 
 // Load loads configuration from a file (if specified) and environment variables.
 // Configuration priority: 1) Command line flags, 2) Environment variables, 3) Config file, 4) Defaults
 func Load(configFile string) (*Config, error) {
 	fmt.Printf("Loading configuration from %s...\n", configFile)
-	cfg := &Config{}
-
-	// Set default values first
-	cfg.App.SyncInterval = 1 * time.Hour
-	cfg.App.MinimumProgress = 0.01
-	cfg.App.AudiobookMatchMode = "loose"
-	cfg.App.SyncWantToRead = true
-	cfg.App.SyncOwned = true
-	cfg.App.DryRun = false
-	cfg.Server.Port = "8080"
-	cfg.Server.ShutdownTimeout = 10 * time.Second
-	cfg.Paths.MismatchJSONFile = "./mismatched_books.json"
-	cfg.Paths.CacheDir = "./cache"
+	cfg := DefaultConfig()
 
 	// Load configuration from file first (if specified)
 	if configFile != "" {
@@ -138,7 +183,7 @@ func Load(configFile string) (*Config, error) {
 		cfg.App.Debug = strings.ToLower(debug) == "true"
 	}
 	if logLevel := getEnv("LOG_LEVEL", ""); logLevel != "" {
-		cfg.App.LogLevel = logLevel
+		cfg.Logging.Level = logLevel
 	}
 	if syncInterval := getDurationFromEnv("SYNC_INTERVAL", 0); syncInterval > 0 {
 		cfg.App.SyncInterval = syncInterval
@@ -165,6 +210,17 @@ func Load(configFile string) (*Config, error) {
 		cfg.App.TestBookLimit = testBookLimit
 	}
 
+	// Rate limiting configuration
+	if rate := getDurationFromEnv("RATE_LIMIT_RATE", 0); rate > 0 {
+		cfg.RateLimit.Rate = rate
+	}
+	if burst := getIntFromEnv("RATE_LIMIT_BURST", 0); burst > 0 {
+		cfg.RateLimit.Burst = burst
+	}
+	if maxConcurrent := getIntFromEnv("RATE_LIMIT_MAX_CONCURRENT", 0); maxConcurrent > 0 {
+		cfg.RateLimit.MaxConcurrent = maxConcurrent
+	}
+
 	// Log the final configuration (without sensitive data)
 	fmt.Println("Final configuration:")
 	fmt.Printf("  audiobookshelf_url: %s\n", cfg.Audiobookshelf.URL)
@@ -174,11 +230,12 @@ func Load(configFile string) (*Config, error) {
 	fmt.Printf("  dry_run: %t\n", cfg.App.DryRun)
 	fmt.Printf("  test_book_filter: %s\n", cfg.App.TestBookFilter)
 	fmt.Printf("  test_book_limit: %d\n", cfg.App.TestBookLimit)
+	fmt.Printf("  mismatch_output_dir: %s\n", cfg.App.MismatchOutputDir)
 
 	fmt.Println("Loaded application settings:")
 	fmt.Printf("  debug: %t\n", cfg.App.Debug)
-	fmt.Printf("  log_level: %s\n", cfg.App.LogLevel)
-	fmt.Printf("  log_format: %s\n", cfg.App.LogFormat)
+	fmt.Printf("  log_level: %s\n", cfg.Logging.Level)
+	fmt.Printf("  log_format: %s\n", cfg.Logging.Format)
 	fmt.Printf("  sync_interval: %v\n", cfg.App.SyncInterval)
 	fmt.Printf("  minimum_progress: %f\n", cfg.App.MinimumProgress)
 	fmt.Printf("  audiobook_match_mode: %s\n", cfg.App.AudiobookMatchMode)
@@ -186,14 +243,10 @@ func Load(configFile string) (*Config, error) {
 	fmt.Printf("  sync_owned: %t\n", cfg.App.SyncOwned)
 	fmt.Printf("  dry_run: %t\n", cfg.App.DryRun)
 	fmt.Printf("  test_book_filter: %s\n", cfg.App.TestBookFilter)
-	fmt.Printf("  test_book_limit: %d\n", cfg.App.TestBookLimit)
-
 	// File paths
-	cfg.Paths.MismatchJSONFile = getEnv("MISMATCH_JSON_FILE", "./mismatched_books.json")
 	cfg.Paths.CacheDir = getEnv("CACHE_DIR", "./cache")
 
 	fmt.Println("Loaded file paths:")
-	fmt.Printf("  mismatch_json_file: %s\n", cfg.Paths.MismatchJSONFile)
 	fmt.Printf("  cache_dir: %s\n", cfg.Paths.CacheDir)
 
 	// Validate required configuration
@@ -311,8 +364,9 @@ func loadFromEnv(cfg *Config) {
 			cfg.App.Debug = b
 		}
 	}
+	// Log level is now handled by the Logging.Level field
 	if logLevel := os.Getenv("LOG_LEVEL"); logLevel != "" {
-		cfg.App.LogLevel = logLevel
+		cfg.Logging.Level = logLevel
 	}
 	if syncInterval := os.Getenv("SYNC_INTERVAL"); syncInterval != "" {
 		if d, err := time.ParseDuration(syncInterval); err == nil {
@@ -355,11 +409,13 @@ func loadFromEnv(cfg *Config) {
 	}
 
 	// File paths
-	if mismatchFile := os.Getenv("MISMATCH_JSON_FILE"); mismatchFile != "" {
-		cfg.Paths.MismatchJSONFile = mismatchFile
-	}
 	if cacheDir := os.Getenv("CACHE_DIR"); cacheDir != "" {
 		cfg.Paths.CacheDir = cacheDir
+	}
+	
+	// Mismatch output directory
+	if mismatchDir := os.Getenv("MISMATCH_OUTPUT_DIR"); mismatchDir != "" {
+		cfg.App.MismatchOutputDir = mismatchDir
 	}
 }
 

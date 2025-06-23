@@ -1,46 +1,41 @@
 # Server configuration
 server:
-  address: ":8080"
-  debug: true
+  port: "8080"
+  shutdown_timeout: "10s"  # Graceful shutdown timeout
+
+# Rate limiting configuration
+rate_limit:
+  rate: "1500ms"        # Minimum time between requests (e.g., 1500ms for ~40 requests per minute)
+  burst: 2              # Maximum number of requests in a burst
+  max_concurrent: 3      # Maximum number of concurrent requests
 
 # Logging configuration
 logging:
-  level: "debug"  # debug, info, warn, error, fatal, panic
-  format: "json"   # json or console
-  pretty: false    # only applies to json format
+  level: "info"   # debug, info, warn, error, fatal, panic
+  format: "json"    # json or console
 
 # Audiobookshelf configuration
 audiobookshelf:
   url: "https://your-audiobookshelf-instance.com"
   token: "your-audiobookshelf-token"
-  timeout: "30s"
 
 # Hardcover configuration
 hardcover:
   token: "your-hardcover-token"
-  timeout: "30s"
 
-# Sync configuration
-sync:
-  interval: "1h"
-  dry_run: true
-  test_book_filter: ""
-  test_book_limit: 5
-  minimum_progress: 0.99
-  audiobook_match_mode: "strict"
-  sync_want_to_read: true
-  sync_owned: true
+# Application settings
+app:
+  debug: false
+  sync_interval: "1h"
+  minimum_progress: 0.01  # Minimum progress threshold (0.0 to 1.0)
+  audiobook_match_mode: "strict"  # strict, title-author, or title-only
+  sync_want_to_read: true  # Sync books with 0% progress as "Want to Read"
+  sync_owned: true        # Mark synced books as owned in Hardcover
+  mismatch_output_dir: "./mismatches"  # Directory to store mismatch JSON files
+  dry_run: false           # Enable dry run mode (no changes will be made)
+  test_book_filter: ""    # Filter books by title for testing
+  test_book_limit: 0       # Limit number of books to process for testing (0 = no limit)
 
-# Cache configuration
-cache:
-  enabled: true
-  ttl: "24h"
-  path: "./cache"
-
-# HTTP client configuration
-http:
-  timeout: "30s"
-  max_idle_conns: 10
-  idle_conn_timeout: "90s"
-  tls_handshake_timeout: "10s"
-  expect_continue_timeout: "1s"
+# Paths configuration
+paths:
+  cache_dir: "./cache"    # Directory for cache files

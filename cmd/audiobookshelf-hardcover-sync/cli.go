@@ -152,8 +152,8 @@ func RunOneTimeSync(flags *configFlags) {
 
 	// Log paths and cache settings
 	log.Info().
-		Str("cache_path", cfg.Paths.CacheDir).
-		Str("mismatch_json_file", cfg.Paths.MismatchJSONFile).
+		Str("cache_dir", cfg.Paths.CacheDir).
+		Str("mismatch_output_dir", cfg.App.MismatchOutputDir).
 		Msg("Paths Configuration")
 
 	log.Info().Msg("========================================")

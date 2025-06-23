@@ -17,6 +17,7 @@ import (
 	"github.com/hasura/go-graphql-client"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/cache"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/util"
@@ -67,10 +68,12 @@ type ClientConfig struct {
 	MaxRetries int
 	// RetryDelay specifies the delay between retries (default: DefaultRetryDelay)
 	RetryDelay time.Duration
-	// RateLimit specifies the minimum time between requests (default: DefaultRateLimit)
+	// RateLimit specifies the minimum time between requests (default: from config or DefaultRateLimit)
 	RateLimit time.Duration
-	// Burst specifies the burst size for rate limiting (default: DefaultBurst)
+	// Burst specifies the burst size for rate limiting (default: from config or DefaultBurst)
 	Burst int
+	// MaxConcurrent specifies the maximum number of concurrent requests (default: from config or 3)
+	MaxConcurrent int
 }
 
 // headerAddingTransport is an http.RoundTripper that adds the required headers
@@ -173,13 +176,17 @@ func isRetryableError(err error) bool {
 
 // DefaultClientConfig returns the default configuration for the client
 func DefaultClientConfig() *ClientConfig {
+	// Load the default config to get the rate limit settings
+	cfg := config.DefaultConfig()
+
 	return &ClientConfig{
-		BaseURL:    DefaultBaseURL,
-		Timeout:    DefaultTimeout,
-		MaxRetries: DefaultMaxRetries,
-		RetryDelay: DefaultRetryDelay,
-		RateLimit:  2 * time.Second,       // 0.5 requests per second (more conservative)
-		Burst:      1,                     // Minimal burst size to prevent spikes
+		BaseURL:      DefaultBaseURL,
+		Timeout:      DefaultTimeout,
+		MaxRetries:   DefaultMaxRetries,
+		RetryDelay:   DefaultRetryDelay,
+		RateLimit:    cfg.RateLimit.Rate,   // Use rate from config
+		Burst:        cfg.RateLimit.Burst,  // Use burst from config
+		MaxConcurrent: cfg.RateLimit.MaxConcurrent, // Use max concurrent from config
 	}
 }
 
@@ -212,8 +219,8 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 		Timeout: cfg.Timeout,
 	}
 
-	// Create rate limiter with max 5 concurrent requests
-	rateLimiter := util.NewRateLimiter(cfg.RateLimit, cfg.Burst, 5, log)
+	// Create rate limiter with max concurrent requests from config
+	rateLimiter := util.NewRateLimiter(cfg.RateLimit, cfg.Burst, cfg.MaxConcurrent, log)
 
 	// Create logger if not provided
 	if log == nil {

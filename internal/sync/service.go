@@ -1761,7 +1761,7 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 			Str("asin", asin)
 
 		// Only include the full response in debug mode to avoid log spam
-		if s.config.App.LogLevel == "debug" {
+		if s.config.Logging.Level == "debug" {
 			logEntry = logEntry.Interface("full_response", result)
 		}
 

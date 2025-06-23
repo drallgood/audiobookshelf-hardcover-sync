@@ -71,19 +71,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Determine log format from config or environment
-	logFormat := logger.ParseLogFormat(cfg.Logging.Format)
-
-	// Set log level from config
-	logLevel := cfg.Logging.Level
-	if logLevel == "" {
-		logLevel = "info"
-	}
-
-	// Initialize the logger once with the final configuration
+	// Initialize the logger with the configured settings
 	logger.Setup(logger.Config{
-		Level:      logLevel,
-		Format:     logFormat,
+		Level:      cfg.Logging.Level,
+		Format:     logger.ParseLogFormat(cfg.Logging.Format),
 		Output:     os.Stdout,
 		TimeFormat: time.RFC3339,
 	})
@@ -92,22 +83,16 @@ func main() {
 	log := logger.Get()
 	ctx := logger.NewContext(context.Background(), log)
 
-	// Log application startup - only once
+	// Log application startup
 	log.Info().
 		Str("version", version).
-		Str("log_level", logLevel).
-		Str("log_format", string(logFormat)).
-		Msg("Starting audiobookshelf-hardcover-sync")
-
-	log = logger.Get() // Get the reconfigured logger
-
-	log.Info().
-		Str("version", version).
+		Str("log_level", cfg.Logging.Level).
+		Str("log_format", cfg.Logging.Format).
 		Msg("Starting audiobookshelf-hardcover-sync")
 
 	// Log basic configuration info (without sensitive data)
 	log.Info().
-		Str("log_level", cfg.App.LogLevel).
+		Str("log_level", cfg.Logging.Level).
 		Bool("dry_run", cfg.App.DryRun).
 		Msg("Application configuration")
 
