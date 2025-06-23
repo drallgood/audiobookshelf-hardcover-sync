@@ -110,29 +110,23 @@ func NewRateLimiter(rate time.Duration, burst, maxConcurrent int, log *logger.Lo
 
 // Wait blocks until a token is available or the context is cancelled
 func (r *RateLimiter) Wait(ctx context.Context) error {
-	// First check for backoff while holding a read lock
+	// First check if we need to wait due to backoff
 	r.mu.RLock()
-	waitTime := r.checkBackoff()
-	if waitTime > 0 {
-		r.mu.RUnlock() // Release the read lock while waiting
+	backoffRemaining := r.checkBackoff()
+	if backoffRemaining > 0 {
+		r.mu.RUnlock()
 		
-		timer := time.NewTimer(waitTime)
+		timer := time.NewTimer(backoffRemaining)
+		defer timer.Stop()
+		
 		select {
 		case <-ctx.Done():
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
 			return ctx.Err()
 		case <-timer.C:
-			// Reacquire the read lock for the rest of the function
-			r.mu.RLock()
-			defer r.mu.RUnlock()
+			// Continue with normal rate limiting
 		}
 	} else {
-		defer r.mu.RUnlock()
+		r.mu.RUnlock()
 	}
 
 	// Enforce max concurrent requests if set
@@ -157,50 +151,55 @@ func (r *RateLimiter) Wait(ctx context.Context) error {
 		}
 	}
 
+	// Now acquire the write lock for rate limiting
 	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	// Update metrics
 	atomic.AddUint64(&r.metrics.Requests, 1)
 
 	now := time.Now()
 
-	// Add tokens based on time passed
+	// Add tokens based on time passed since last update
 	delta := now.Sub(r.last)
-	newTokens := int(float64(delta) / float64(r.rate))
-	if newTokens > 0 {
-		r.tokens += newTokens
-		if r.tokens > r.maxTokens {
-			r.tokens = r.maxTokens
+	if delta > 0 {
+		newTokens := int(float64(delta) / float64(r.rate))
+		if newTokens > 0 {
+			r.tokens += newTokens
+			if r.tokens > r.maxTokens {
+				r.tokens = r.maxTokens
+			}
+			r.last = now
 		}
-		r.last = now
 	}
 
 	// If we have tokens, use one and return immediately
 	if r.tokens > 0 {
 		r.tokens--
-		r.mu.Unlock()
 		return nil
 	}
 
 	// Calculate wait time with jitter
 	waitTime := r.rate + r.calculateJitter()
 	next := r.last.Add(waitTime)
+	r.last = next
+	r.tokens--
 
+	// Release the lock while we wait
 	r.mu.Unlock()
 
-	// Wait for the next token or context cancellation
+	// Create a new timer for the wait period
 	timer := time.NewTimer(time.Until(next))
 	defer timer.Stop()
 
 	select {
 	case <-ctx.Done():
-		r.mu.Lock() // Reacquire lock for consistency
 		return ctx.Err()
 	case <-timer.C:
+		// Reacquire the lock for consistency
 		r.mu.Lock()
-		r.last = next
-		r.tokens = 0
-		r.mu.Unlock()
+		// Update the last time to now to prevent rate limit violations
+		r.last = time.Now()
 		return nil
 	}
 }

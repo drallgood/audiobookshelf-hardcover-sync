@@ -58,7 +58,7 @@ func NewService(absClient *audiobookshelf.Client, hcClient *hardcover.Client, cf
 }
 
 // findOrCreateUserBookID finds or creates a user book ID for the given edition ID and status
-func (s *Service) findOrCreateUserBookID(editionID, status string) (int64, error) {
+func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status string) (int64, error) {
 	editionIDInt, err := strconv.ParseInt(editionID, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("invalid edition ID format: %w", err)
@@ -117,7 +117,7 @@ func (s *Service) findOrCreateUserBookID(editionID, status string) (int64, error
 	}
 
 	// Create a new user book with the specified status
-	newUserBookID, err := s.hardcover.CreateUserBook(editionID, status)
+	newUserBookID, err := s.hardcover.CreateUserBook(ctx, editionID, status)
 	if err != nil {
 		s.log.Error().
 			Err(err).
@@ -761,7 +761,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		Msg("Looking up or creating user book ID for edition")
 
 	// Find or create a user book ID for this edition with the determined status
-	userBookID, err := s.findOrCreateUserBookID(editionID, status)
+	userBookID, err := s.findOrCreateUserBookID(ctx, editionID, status)
 	if err != nil {
 		bookLog.Error().
 			Err(err).
@@ -920,12 +920,22 @@ func (s *Service) determineBookStatus(progress float64, isFinished bool, finishe
 }
 
 // handleFinishedBook handles the special case of a finished book, including re-reads
+// handleFinishedBook handles the special case of a finished book, including re-reads
+// stringValue safely dereferences a string pointer, returning an empty string if the pointer is nil
 // stringValue safely dereferences a string pointer, returning an empty string if the pointer is nil
 func stringValue(s *string) string {
-	if s == nil {
-		return ""
+	if s != nil {
+		return *s
 	}
-	return *s
+	return ""
+}
+
+// int64Value safely dereferences an int64 pointer, returning 0 if the pointer is nil
+func int64Value(i *int64) int64 {
+	if i != nil {
+		return *i
+	}
+	return 0
 }
 
 func (s *Service) handleFinishedBook(ctx context.Context, userBookID int64, editionID string, book models.AudiobookshelfBook) error {
@@ -1249,8 +1259,6 @@ func (s *Service) handleFinishedBook(ctx context.Context, userBookID int64, edit
 		}
 
 		finishedAt := nowStr
-		editionIDInt, _ := strconv.ParseInt(editionID, 10, 64)
-
 		log.Info().
 			Str("started_at", startedAtStr).
 			Msg("Creating new finished read entry")
@@ -1262,14 +1270,16 @@ func (s *Service) handleFinishedBook(ctx context.Context, userBookID int64, edit
 				Str("finished_at", finishedAt).
 				Msg("DRY RUN: Would create new finished read entry")
 		} else {
+			editionIDInt, _ := strconv.ParseInt(editionID, 10, 64)
+			userBookIDInt64 := userBookID // Convert to int64 if needed
+			datesRead := hardcover.DatesReadInput{
+				EditionID:  &editionIDInt,
+				StartedAt:  &startedAtStr,
+				FinishedAt: &finishedAt,
+			}
 			_, err = s.hardcover.InsertUserBookRead(ctx, hardcover.InsertUserBookReadInput{
-				UserBookID: userBookID,
-				DatesRead: hardcover.DatesReadInput{
-					Action:     nil, // No action needed for finished books
-					EditionID:  &editionIDInt,
-					StartedAt:  &startedAtStr,
-					FinishedAt: &finishedAt,
-				},
+				UserBookID: userBookIDInt64,
+				DatesRead:  datesRead,
 			})
 			if err != nil {
 				log.Error().
@@ -1312,7 +1322,7 @@ func (s *Service) handleFinishedBook(ctx context.Context, userBookID int64, edit
 func (s *Service) hasExistingFinishedRead(ctx context.Context, userBookID int64) (bool, error) {
 	// Use the more reliable CheckExistingFinishedRead function which checks for progress >= 0.99
 	result, err := s.hardcover.CheckExistingFinishedRead(ctx, hardcover.CheckExistingFinishedReadInput{
-		UserBookID: int(userBookID),
+		UserBookID: int(userBookID), // Convert to int since UserBookID is int in the input struct
 	})
 	if err != nil {
 		s.log.Error().
@@ -1322,14 +1332,17 @@ func (s *Service) hasExistingFinishedRead(ctx context.Context, userBookID int64)
 		return false, fmt.Errorf("failed to check for existing finished reads: %w", err)
 	}
 
+	// The result already has HasFinishedRead which is set based on the progress check
+	hasFinishedRead := result.HasFinishedRead
+
 	// Log the result for debugging
 	s.log.Debug().
 		Int64("user_book_id", userBookID).
-		Bool("has_finished_read", result.HasFinishedRead).
+		Bool("has_finished_read", hasFinishedRead).
 		Str("last_finished_at", stringValue(result.LastFinishedAt)).
 		Msg("Checked for existing finished reads")
 
-	return result.HasFinishedRead, nil
+	return hasFinishedRead, nil
 }
 
 func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, editionID string, book models.AudiobookshelfBook) error {
@@ -1687,8 +1700,22 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 			Editions     []Edition   `json:"editions"`
 		}
 
-		// The response is a direct array of books (no data wrapper)
-		type Response []Book
+		// Define the response structure to match the GraphQL response
+		// The GraphQL client returns an array of books directly
+		type Response []struct {
+			ID           json.Number `json:"id"`
+			Title        string      `json:"title"`
+			BookStatusID int         `json:"book_status_id"`
+			CanonicalID  *int        `json:"canonical_id"`
+			Editions     []struct {
+				ID              json.Number `json:"id"`
+				ASIN            string      `json:"asin"`
+				ISBN13          *string     `json:"isbn_13"`
+				ISBN10          *string     `json:"isbn_10"`
+				ReadingFormatID *int        `json:"reading_format_id"`
+				AudioSeconds    *int        `json:"audio_seconds"`
+			} `json:"editions"`
+		}
 
 		var result Response
 
@@ -1706,13 +1733,20 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 			Interface("variables", variables).
 			Msg("Executing GraphQL query to find book by ASIN")
 
-		err = s.hardcover.GraphQLQuery(ctx, query, variables, &result)
+		// Format the query by removing leading whitespace from each line
+		formattedQuery := strings.TrimSpace(query)
+		formattedQuery = strings.ReplaceAll(formattedQuery, "\n\t\t", " ")
+		formattedQuery = strings.ReplaceAll(formattedQuery, "\n\t", " ")
+		formattedQuery = strings.ReplaceAll(formattedQuery, "\n", " ")
+		formattedQuery = strings.Join(strings.Fields(formattedQuery), " ")
+
+		err = s.hardcover.GraphQLQuery(ctx, formattedQuery, variables, &result)
 
 		if err != nil {
 			s.log.Error().
 				Err(err).
-				Str("query", query).
-				Str("asin", asin).
+				Str("query", formattedQuery).
+				Interface("variables", variables).
 				Msg("Error executing GraphQL query for book by ASIN")
 			log.Warn().
 				Err(err).
@@ -1767,9 +1801,15 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 				editionLog := s.log.Debug().
 					Int("edition_index", i).
 					Str("edition_id", edition.ID.String()).
-					Str("edition_asin", edition.ASIN).
-					Str("isbn13", edition.ISBN13).
-					Str("isbn10", edition.ISBN10)
+					Str("edition_asin", edition.ASIN)
+
+				// Add ISBN fields if they are not nil
+				if edition.ISBN13 != nil {
+					editionLog = editionLog.Str("isbn13", *edition.ISBN13)
+				}
+				if edition.ISBN10 != nil {
+					editionLog = editionLog.Str("isbn10", *edition.ISBN10)
+				}
 
 				// Only add the int64 edition_id if conversion was successful
 				if err == nil {
@@ -1793,68 +1833,105 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 			}
 		}
 
-		// Check if we got any results
+		// Check if we found any books
 		if len(result) == 0 {
-			s.log.Warn().
+			s.log.Debug().
 				Str("search_method", "asin").
 				Str("asin", asin).
 				Msg("No books found with matching ASIN")
 			return nil, nil
 		}
 
-		// Get the first book (we only requested one)
-		bookData := result[0]
+		// Get the first book and its first edition
+		hcBook := result[0]
 
 		// Convert book ID to int64
-		// We already have bookID from the logging section, but we'll handle it again for clarity
-		bookID, err := bookData.ID.Int64()
+		bookID, err := hcBook.ID.Int64()
 		if err != nil {
 			s.log.Error().
 				Err(err).
-				Str("book_id", bookData.ID.String()).
-				Msg("Failed to convert book ID to integer")
-			return nil, fmt.Errorf("invalid book ID format: %s: %w", bookData.ID.String(), err)
+				Str("book_id", hcBook.ID.String()).
+				Msg("Failed to parse book ID")
+			return nil, fmt.Errorf("failed to parse book ID: %w", err)
 		}
 
-		// Log the book data for debugging
-		s.log.Info().
+		s.log.Debug().
 			Str("search_method", "asin").
+			Str("asin", asin).
 			Int64("book_id", bookID).
-			Str("title", bookData.Title).
-			Int("editions_count", len(bookData.Editions)).
-			Msg("Found matching book by ASIN")
+			Str("title", hcBook.Title).
+			Msg("Found book by ASIN")
 
-		// Check if we have any editions
-		if len(bookData.Editions) == 0 {
+		// Get the first edition (we only requested one with audio format)
+		if len(hcBook.Editions) == 0 {
 			s.log.Warn().
 				Str("search_method", "asin").
-				Int64("book_id", bookID).
-				Msg("Book found but has no editions")
+				Str("asin", asin).
+				Str("book_id", hcBook.ID.String()).
+				Msg("Book found but no audio editions available")
 			return nil, nil
 		}
 
-		// Get the first edition (we only requested one)
-		edition := bookData.Editions[0]
+		edition := hcBook.Editions[0]
 
-		// Convert edition ID to int
+		// Convert edition ID to int64
 		editionID, err := edition.ID.Int64()
 		if err != nil {
 			s.log.Error().
 				Err(err).
 				Str("edition_id", edition.ID.String()).
-				Msg("Failed to convert edition ID to integer")
-			return nil, fmt.Errorf("invalid edition ID format: %s: %w", edition.ID.String(), err)
+				Msg("Failed to parse edition ID")
+			return nil, fmt.Errorf("failed to parse edition ID: %w", err)
 		}
 
-		// Log the edition data for debugging
-		s.log.Info().
+		s.log.Debug().
 			Str("search_method", "asin").
+			Str("asin", asin).
 			Int64("book_id", bookID).
 			Int64("edition_id", editionID).
-			Str("asin", edition.ASIN).
-			Str("isbn13", edition.ISBN13).
-			Str("isbn10", edition.ISBN10).
-			Msg("Found matching edition")
+			Str("edition_asin", edition.ASIN)
+
+		// Add ISBN fields if they are not nil
+		if edition.ISBN13 != nil {
+			s.log.Debug().
+				Str("search_method", "asin").
+				Str("asin", asin).
+				Int64("book_id", bookID).
+				Int64("edition_id", editionID).
+				Str("isbn_13", *edition.ISBN13)
+		}
+		if edition.ISBN10 != nil {
+			s.log.Debug().
+				Str("search_method", "asin").
+				Str("asin", asin).
+				Int64("book_id", bookID).
+				Int64("edition_id", editionID).
+				Str("isbn_10", *edition.ISBN10)
+		}
+
+		// Create a log entry with common fields
+		editionLog := s.log.Debug().
+			Str("search_method", "asin").
+			Str("asin", asin).
+			Int64("book_id", bookID).
+			Int64("edition_id", editionID).
+			Str("edition_asin", edition.ASIN)
+
+		// Add optional fields if they are not nil
+		if edition.ISBN13 != nil {
+			editionLog = editionLog.Str("isbn_13", *edition.ISBN13)
+		}
+		if edition.ISBN10 != nil {
+			editionLog = editionLog.Str("isbn_10", *edition.ISBN10)
+		}
+		if edition.ReadingFormatID != nil {
+			editionLog = editionLog.Int("reading_format_id", *edition.ReadingFormatID)
+		}
+		if edition.AudioSeconds != nil {
+			editionLog = editionLog.Int("audio_seconds", *edition.AudioSeconds)
+		}
+
+		editionLog.Msg("Found audio edition for book")
 
 		// Get or create user book ID for this edition
 		editionIDStr := strconv.FormatInt(editionID, 10)
@@ -1868,7 +1945,7 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 			finishedAt = book.Progress.FinishedAt
 		}
 		status := s.determineBookStatus(progress, isFinished, finishedAt)
-		userBookID, err := s.findOrCreateUserBookID(editionIDStr, status)
+		userBookID, err := s.findOrCreateUserBookID(ctx, editionIDStr, status)
 		if err != nil {
 			s.log.Warn().
 				Err(err).
@@ -1885,15 +1962,15 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 
 		// Create the HardcoverBook instance
 		return &models.HardcoverBook{
-			ID:            bookData.ID.String(), // Convert json.Number to string
+			ID:            hcBook.ID.String(), // Convert json.Number to string
 			UserBookID:    strconv.FormatInt(userBookID, 10),
 			EditionID:     editionIDStr,
 			Title:         book.Media.Metadata.Title,
-			BookStatusID:  bookData.BookStatusID,
-			CanonicalID:   bookData.CanonicalID,
+			BookStatusID:  hcBook.BookStatusID,
+			CanonicalID:   hcBook.CanonicalID,
 			EditionASIN:   edition.ASIN,
-			EditionISBN13: edition.ISBN13,
-			EditionISBN10: edition.ISBN10,
+			EditionISBN13: stringValue(edition.ISBN13),
+			EditionISBN10: stringValue(edition.ISBN10),
 		}, nil
 	}
 
@@ -2040,7 +2117,7 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 				progress = book.Progress.CurrentTime / book.Media.Duration
 			}
 			status := s.determineBookStatus(progress, isFinished, finishedAt)
-			userBookID, err := s.findOrCreateUserBookID(editionIDStr, status)
+			userBookID, err := s.findOrCreateUserBookID(ctx, editionIDStr, status)
 			if err != nil {
 				s.log.Warn().
 					Err(err).
@@ -2182,7 +2259,7 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 					progress = book.Progress.CurrentTime / book.Media.Duration
 				}
 				status := s.determineBookStatus(progress, isFinished, finishedAt)
-				userBookID, err := s.findOrCreateUserBookID(editionIDStr, status)
+				userBookID, err := s.findOrCreateUserBookID(ctx, editionIDStr, status)
 				if err != nil {
 					s.log.Warn().
 						Err(err).

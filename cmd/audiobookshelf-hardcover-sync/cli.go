@@ -94,7 +94,8 @@ func initLogger() {
 }
 
 // runOneTimeSync performs a single sync operation and exits
-func runOneTimeSync(flags *configFlags) {
+// RunOneTimeSync performs a one-time sync operation with the given flags
+func RunOneTimeSync(flags *configFlags) {
 	// Initialize logger with debug level for one-time sync
 	logger.Setup(logger.Config{
 		Level:      "debug",
@@ -239,7 +240,8 @@ func runOneTimeSync(flags *configFlags) {
 }
 
 // startPeriodicSync starts the periodic sync service
-func startPeriodicSync(ctx context.Context, syncService *sync.Service, abortCh <-chan struct{}, interval time.Duration) {
+// StartPeriodicSync starts a periodic sync service with the specified interval
+func StartPeriodicSync(ctx context.Context, syncService *sync.Service, abortCh <-chan struct{}, interval time.Duration) {
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()

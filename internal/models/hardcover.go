@@ -53,3 +53,13 @@ type SearchResult struct {
 	Type  string `json:"type"` // "book", "author", etc.
 	Image string `json:"image,omitempty"`
 }
+
+// Edition represents a book edition in the Hardcover API
+type Edition struct {
+	ID     string `json:"id"`
+	BookID string `json:"book_id"`
+	Title  string `json:"title,omitempty"`
+	ISBN10 string `json:"isbn_10,omitempty"`
+	ISBN13 string `json:"isbn_13,omitempty"`
+	ASIN   string `json:"asin,omitempty"`
+}

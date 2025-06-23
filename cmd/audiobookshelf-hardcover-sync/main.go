@@ -131,7 +131,7 @@ func main() {
 	
 	// If one-time sync is requested, run it and exit
 	if flags.oneTimeSync {
-		runOneTimeSync(flags)
+		RunOneTimeSync(flags)
 		return
 	}
 
@@ -171,7 +171,7 @@ func main() {
 
 	// Start periodic sync if enabled and not in server-only mode
 	if !flags.serverOnly && cfg.App.SyncInterval > 0 {
-		startPeriodicSync(ctx, syncService, abortCh, cfg.App.SyncInterval)
+			StartPeriodicSync(ctx, syncService, abortCh, flags.syncInterval)
 	} else if !flags.serverOnly {
 		log.Info().Msg("Periodic sync is disabled (set SYNC_INTERVAL to enable)")
 	}
@@ -205,7 +205,7 @@ func main() {
 	log.Info().Msg("Shutdown completed")
 }
 
-// runOneTimeSync is defined in cli.go
+// RunOneTimeSync is defined in cli.go
 
 func showHelp() {
 	fmt.Println("Audiobookshelf to Hardcover Sync")
