@@ -185,15 +185,19 @@ func (r *RateLimiter) Wait(ctx context.Context) error {
 	r.last = next
 	r.tokens--
 
-	// Release the lock while we wait
-	r.mu.Unlock()
-
 	// Create a new timer for the wait period
 	timer := time.NewTimer(time.Until(next))
 	defer timer.Stop()
 
+	// Release the lock while we wait
+	r.mu.Unlock()
+
 	select {
 	case <-ctx.Done():
+		// Reacquire the lock before returning to maintain consistency
+		r.mu.Lock()
+		// Return the token since we didn't use it
+		r.tokens++
 		return ctx.Err()
 	case <-timer.C:
 		// Reacquire the lock for consistency
