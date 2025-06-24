@@ -128,7 +128,7 @@ func main() {
 	abortCh := make(chan struct{})
 	errCh := make(chan error, 1)
 
-	// Create HTTP server
+	// Create HTTP server with configured port
 	srv := server.New(fmt.Sprintf(":%s", cfg.Server.Port))
 
 	// Create API clients
@@ -179,10 +179,11 @@ func main() {
 	close(abortCh)
 
 
-	// Shutdown HTTP server
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Shutdown HTTP server with configured timeout
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 	defer cancel()
 
+	log.Info().Dur("timeout", cfg.Server.ShutdownTimeout).Msg("Initiating graceful shutdown...")
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Error().Err(err).Msg("Error during server shutdown")
 	}
