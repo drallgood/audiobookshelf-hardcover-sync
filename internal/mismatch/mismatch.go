@@ -1,7 +1,9 @@
 package mismatch
 
 import (
+	"context"
 	"encoding/json"
+	"regexp"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 )
@@ -39,44 +42,168 @@ func Add(book BookMismatch) {
 	// Log the mismatch
 	log := logger.Get()
 	if log != nil {
-		log.Info().
-			Str("title", book.Title).
-			Str("reason", book.Reason).
-			Msg("Mismatch recorded")
+		log.Info("Mismatch recorded", map[string]interface{}{
+			"title":  book.Title,
+			"reason": book.Reason,
+		})
 	}
 }
 
-// AddWithMetadata creates and adds a new book mismatch with enhanced metadata
-func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, duration float64, audiobookShelfID string) {
-	// Convert duration from seconds to hours for display
-	durationHours := duration / 3600.0
-	// Store duration in seconds as integer for JSON processing
-	durationSeconds := int(duration + 0.5) // Round to nearest second
+// RecordMismatch records a new book mismatch
+func RecordMismatch(book *BookMismatch) error {
+	mismatchLock.Lock()
+	defer mismatchLock.Unlock()
 
-	// Handle release date - prefer publishedDate, fallback to publishedYear with formatting
-	releaseDate := formatReleaseDate(metadata.PublishedDate, metadata.PublishedYear)
-
-	mismatch := BookMismatch{
-		Title:            metadata.Title,
-		Subtitle:         metadata.Subtitle,
-		Author:           metadata.AuthorName,
-		Narrator:         metadata.NarratorName,
-		Publisher:        metadata.Publisher,
-		PublishedYear:    metadata.PublishedYear,
-		ReleaseDate:      releaseDate,
-		Duration:         durationHours,
-		DurationSeconds:  durationSeconds,
-		ISBN:             metadata.ISBN,
-		ASIN:             metadata.ASIN,
-		BookID:           bookID,
-		EditionID:        editionID,
-		AudiobookShelfID: audiobookShelfID,
-		Reason:           reason,
-		Timestamp:        time.Now().Unix(),
-		Attempts:         1,
-		CreatedAt:        time.Now(),
+	// Check if we already have this mismatch
+	key := book.BookID
+	for i, existing := range mismatches {
+		if existing.BookID == key {
+			existing.Attempts++
+			existing.Timestamp = time.Now().Unix()
+			existing.Reason = book.Reason
+			mismatches[i] = existing
+			return nil
+		}
 	}
 
+	// Add timestamp and initialize attempts
+	book.Timestamp = time.Now().Unix()
+	book.CreatedAt = time.Now()
+	book.Attempts = 1
+
+	mismatches = append(mismatches, *book)
+	return nil
+}
+
+// AddWithMetadata creates and adds a new book mismatch with enhanced metadata
+// If hc is provided, it will be used to look up publisher and other metadata
+func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, duration float64, audiobookShelfID string, hc *hardcover.Client) {
+	// Create a logger
+	log := logger.Get()
+
+	// Extract book ID from reason if it's in the format "... for book 12345"
+	extractBookIDFromReason := func() string {
+		re := regexp.MustCompile(`(?:for book(?: ID)?\s+)(\d+)`)
+		matches := re.FindStringSubmatch(reason)
+		if len(matches) > 1 {
+			return matches[1]
+		}
+		return ""
+	}
+
+	// If we don't have a bookID but can extract one from the reason, use it
+	if bookID == "" || bookID == "0" {
+		if extractedID := extractBookIDFromReason(); extractedID != "" {
+			log.Debug("Extracted book ID from reason", map[string]interface{}{
+				"original_book_id": bookID,
+				"extracted_id":     extractedID,
+				"reason":           reason,
+			})
+			bookID = extractedID
+		}
+	}
+	// Log the mismatch being added
+	log.Debug("Adding mismatch with metadata", map[string]interface{}{
+		"book_id":           bookID,
+		"edition_id":        editionID,
+		"title":             metadata.Title,
+		"author":            metadata.AuthorName,
+		"reason":            reason,
+		"has_cover":         metadata.CoverURL != "",
+		"has_hardcover_api": hc != nil,
+	})
+
+	// Format release date - prefer publishedDate, fallback to publishedYear with formatting
+	releaseDate := ""
+	if metadata.PublishedDate != "" {
+		releaseDate = metadata.PublishedDate
+	} else if metadata.PublishedYear != "" {
+		releaseDate = metadata.PublishedYear + "-01-01" // Use Jan 1st if only year is known
+	}
+
+	// Extract ISBN10 and ISBN13 from metadata.ISBN if it's set
+	isbn10, isbn13 := "", ""
+	if metadata.ISBN != "" {
+		// Simple heuristic: ISBN10 is 10 chars, ISBN13 is 13 chars
+		if len(metadata.ISBN) == 10 {
+			isbn10 = metadata.ISBN
+		} else if len(metadata.ISBN) == 13 {
+			isbn13 = metadata.ISBN
+		}
+	}
+
+	// Default publisher values
+	publisherID := 1 // Default publisher ID
+	publisherName := metadata.Publisher
+
+	// If we have a Hardcover client and a publisher name, try to look up the publisher ID
+	if hc != nil && publisherName != "" {
+		// Create a context with timeout for the publisher lookup
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		// Look up the publisher ID
+		if id, err := LookupPublisherID(ctx, hc, publisherName); err == nil && id > 0 {
+			publisherID = id
+			logger.Get().Debug("Found publisher ID", map[string]interface{}{
+				"name": publisherName,
+				"id":   publisherID,
+			})
+		} else if err != nil {
+			logger.Get().Warn("Failed to look up publisher", map[string]interface{}{
+				"name":  publisherName,
+				"error": err.Error(),
+			})
+		} else {
+			logger.Get().Debug("Publisher not found, using default ID", map[string]interface{}{
+				"name": publisherName,
+			})
+		}
+	}
+
+	// Ensure we have a valid book ID - if not, use the audiobookShelfID as a fallback
+	if bookID == "" || bookID == "0" {
+		bookID = audiobookShelfID
+		log.Debug("Using audiobookShelfID as book ID", map[string]interface{}{
+			"audiobook_shelf_id": audiobookShelfID,
+		})
+	}
+
+	// Note: We no longer automatically use ASIN as bookID to prevent incorrect book identification
+	// ASIN is stored in its dedicated field below
+
+	// Create the mismatch
+	mismatch := BookMismatch{
+		BookID:          bookID,
+		Title:           metadata.Title,
+		Subtitle:        metadata.Subtitle,
+		Author:          metadata.AuthorName,
+		Narrator:        metadata.NarratorName,
+		PublishedYear:   metadata.PublishedYear,
+		ReleaseDate:     releaseDate,
+		DurationSeconds: int(duration + 0.5), // Round to nearest second
+		ISBN:            metadata.ISBN,     // Keep original ISBN for backward compatibility
+		ISBN10:          isbn10,
+		ISBN13:          isbn13,
+		ASIN:            metadata.ASIN,
+		CoverURL:        metadata.CoverURL,
+		ImageURL:        metadata.CoverURL, // Use CoverURL as ImageURL by default
+		
+		// Set default values for required fields
+		EditionFormat:   "Audiobook",
+		EditionInfo:     "Imported from Audiobookshelf: " + reason,
+		LanguageID:      1, // Default to English
+		CountryID:       1, // Default to US
+		PublisherID:     publisherID, // Use looked up or default publisher ID
+		
+		// Add publisher information if available
+		Publisher:       publisherName,
+		
+		// Tracking information
+		Reason:          reason,
+		Timestamp:       time.Now().Unix(),
+		CreatedAt:       time.Now(),
+	}
 
 	Add(mismatch)
 }
@@ -126,83 +253,119 @@ func ExportJSON() (string, error) {
 }
 
 // SaveToFile saves all mismatches as individual JSON files in the specified directory
-// If outputDir is empty, it will use the directory from the config
-func SaveToFile(outputDir string) error {
-	mismatchLock.Lock()
-	defer mismatchLock.Unlock()
-
+// in a format compatible with the edition import tool. If outputDir is empty, it will
+// use the directory from the provided config.
+// Note: This function should be called with a context that has a Hardcover client available
+// for proper author/narrator lookups.
+func SaveToFile(ctx context.Context, hc *hardcover.Client, outputDir string, cfg *config.Config) error {
+	// Get logger instance
 	log := logger.Get()
-	if log == nil {
-		return fmt.Errorf("logger not initialized")
-	}
 
-	// If no output directory is provided, try to get it from the config
+	// Determine the output directory
 	if outputDir == "" {
-		// Try to get config
-		cfg, err := config.Load("")
-		if err == nil && cfg != nil && cfg.App.MismatchOutputDir != "" {
-			outputDir = cfg.App.MismatchOutputDir
-		} else {
-			// Fall back to environment variable for backward compatibility
-			outputDir = os.Getenv("MISMATCH_JSON_FILE")
-			if outputDir == "" {
-				log.Info().Msg("No output directory specified for mismatch files")
-				return nil // No output directory specified
-			}
+		if cfg == nil || cfg.App.MismatchOutputDir == "" {
+			err := fmt.Errorf("no output directory specified and no default in config")
+			log.Error("Failed to determine output directory in mismatch.SaveToFile", map[string]interface{}{
+				"error": err.Error(),
+			})
+			return err
 		}
+		outputDir = cfg.App.MismatchOutputDir
 	}
 
 	// Create the output directory if it doesn't exist
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		log.Error().
-			Err(err).
-			Str("directory", outputDir).
-			Msg("Failed to create output directory")
-		return fmt.Errorf("failed to create output directory: %w", err)
+		err := fmt.Errorf("failed to create output directory: %w", err)
+		log.Error("Failed to create output directory in mismatch.SaveToFile", map[string]interface{}{
+			"directory": outputDir,
+			"error":     err.Error(),
+		})
+		return err
 	}
 
 	// Clean up old files first
 	if err := cleanupOldFiles(outputDir); err != nil {
-		log.Warn().
-			Err(err).
-			Str("directory", outputDir).
-			Msg("Failed to clean up old mismatch files")
+		log.Warn("Failed to clean up old mismatch files", map[string]interface{}{
+			"directory": outputDir,
+			"error":     err.Error(),
+		})
+		// Continue anyway, this isn't a fatal error
 	}
 
-	// Save each mismatch as a separate JSON file
-	for i, m := range mismatches {
-		// Generate a safe filename
-		safeTitle := SanitizeFilename(m.Title)
+	// Get all mismatches
+	mismatches := GetAll()
+	if len(mismatches) == 0 {
+		log.Info("No mismatches to save")
+		return nil
+	}
+
+	// Track errors
+	var saveErrors []error
+	successCount := 0
+
+	// Save each mismatch to a separate file
+	for i, mismatch := range mismatches {
+		// Generate a filename based on the book title
+		safeTitle := SanitizeFilename(mismatch.Title)
 		if safeTitle == "" {
-			safeTitle = "untitled"
+			safeTitle = fmt.Sprintf("untitled_%d", i+1)
 		}
 
-		// Add a number prefix for sorting
-		filename := fmt.Sprintf("%03d_%s.json", i+1, safeTitle)
+		// Create a filename with a sequence number and the book title
+		filename := fmt.Sprintf("edition_%03d_%s.json", i+1, safeTitle)
 		filePath := filepath.Join(outputDir, filename)
 
-		// Create the JSON data with indentation
-		jsonData, err := json.MarshalIndent(m, "", "  ")
+		// Convert to export format
+		// Use the provided context and Hardcover client for author/narrator lookups
+		export := mismatch.ToEditionExport(ctx, hc)
+
+		// Set edition information if not already set
+		if export.EditionInfo == "" {
+			export.EditionInfo = "Imported from Audiobookshelf"
+			if mismatch.Reason != "" {
+				export.EditionInfo += ". " + mismatch.Reason
+			}
+		}
+
+		// Convert to JSON with indentation for readability
+		jsonData, err := json.MarshalIndent(export, "", "  ")
 		if err != nil {
-			log.Error().
-				Err(err).
-				Str("title", m.Title).
-				Msg("Failed to marshal mismatch to JSON")
+			err = fmt.Errorf("failed to marshal edition export for '%s': %w", mismatch.Title, err)
+			log.Error("Failed to marshal edition export to JSON", map[string]interface{}{
+				"error": err.Error(),
+				"title":  mismatch.Title,
+			})
+			saveErrors = append(saveErrors, err)
 			continue
 		}
+
+		// Add trailing newline for better file handling
+		jsonData = append(jsonData, '\n')
 
 		// Write to file
 		if err := os.WriteFile(filePath, jsonData, 0644); err != nil {
-			log.Error().
-				Err(err).
-				Str("path", filePath).
-				Msg("Failed to write mismatch file")
+			err = fmt.Errorf("failed to write file '%s': %w", filePath, err)
+			log.Error("Failed to write mismatch file in mismatch.SaveToFile", map[string]interface{}{
+				"error": err.Error(),
+				"filePath": filePath,
+			})
+			saveErrors = append(saveErrors, err)
 			continue
 		}
 
-		log.Debug().
-			Str("path", filePath).
-			Msg("Saved mismatch to file")
+		successCount++
+	}
+
+	// Log results
+	if len(saveErrors) > 0 {
+		log.Warn("Some mismatch files failed to save in mismatch.SaveToFile", map[string]interface{}{
+			"successful": successCount,
+			"failed":    len(saveErrors),
+		})
+	} else {
+		log.Info("Successfully saved all mismatch files in mismatch.SaveToFile", map[string]interface{}{
+			"count": successCount,
+		})
 	}
 
 	return nil
@@ -216,10 +379,10 @@ func cleanupOldFiles(dirPath string) error {
 	files, err := os.ReadDir(dirPath)
 	if err != nil {
 		if log != nil {
-			log.Error().
-				Err(err).
-				Str("directory", dirPath).
-				Msg("Failed to read directory")
+			log.Error("Failed to read directory in mismatch.cleanupOldFiles", map[string]interface{}{
+				"error":    err.Error(),
+				"directory": dirPath,
+			})
 		}
 		return fmt.Errorf("failed to read directory: %w", err)
 	}
@@ -230,10 +393,10 @@ func cleanupOldFiles(dirPath string) error {
 			filePath := filepath.Join(dirPath, file.Name())
 			if err := os.Remove(filePath); err != nil {
 				if log != nil {
-					log.Error().
-						Err(err).
-						Str("file", filePath).
-						Msg("Failed to remove file")
+					log.Error("Failed to remove file in mismatch.cleanupOldFiles", map[string]interface{}{
+						"error": err.Error(),
+						"file":  filePath,
+					})
 				}
 				return fmt.Errorf("failed to remove file %s: %w", filePath, err)
 			}
@@ -281,16 +444,18 @@ func SanitizeFilename(s string) string {
 	return result
 }
 
-// MediaMetadata represents the metadata for an audiobook from Audiobookshelf
+// MediaMetadata contains metadata about an audiobook
+// that can be used to enhance mismatch reporting
 type MediaMetadata struct {
-	Title         string  `json:"title"`
-	Subtitle      string  `json:"subtitle,omitempty"`
-	AuthorName    string  `json:"authorName"`
-	NarratorName  string  `json:"narratorName,omitempty"`
-	Publisher     string  `json:"publisher,omitempty"`
-	PublishedYear string  `json:"publishedYear,omitempty"`
-	PublishedDate string  `json:"publishedDate,omitempty"`
-	ISBN          string  `json:"isbn,omitempty"`
-	ASIN          string  `json:"asin,omitempty"`
+	Title         string
+	Subtitle      string
+	AuthorName    string
+	NarratorName  string
+	Publisher     string
+	PublishedYear string
+	PublishedDate string // Full publication date in YYYY-MM-DD format
+	ISBN          string
+	ASIN          string
+	CoverURL      string // URL to the book cover image
 	Duration      float64 `json:"duration,omitempty"`
 }

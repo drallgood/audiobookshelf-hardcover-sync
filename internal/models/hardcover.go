@@ -63,3 +63,9 @@ type Edition struct {
 	ISBN13 string `json:"isbn_13,omitempty"`
 	ASIN   string `json:"asin,omitempty"`
 }
+
+// Publisher represents a publisher in the Hardcover API
+type Publisher struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}

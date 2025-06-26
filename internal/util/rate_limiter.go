@@ -86,12 +86,12 @@ func NewRateLimiter(rate time.Duration, burst, maxConcurrent int, log *logger.Lo
 	}
 
 	// Log rate limiter initialization
-	log.Info().
-		Str("component", "rate_limiter").
-		Dur("rate", rate).
-		Int("burst", burst).
-		Int("max_concurrent", maxConcurrent).
-		Msg("Initializing rate limiter")
+	log.Info("Initializing rate limiter", map[string]interface{}{
+		"component":    "rate_limiter",
+		"rate":         rate.String(),
+		"burst":        burst,
+		"maxConcurrent": maxConcurrent,
+	})
 
 	return &RateLimiter{
 		last:           time.Now(),
@@ -112,18 +112,34 @@ func NewRateLimiter(rate time.Duration, burst, maxConcurrent int, log *logger.Lo
 func (r *RateLimiter) Wait(ctx context.Context) error {
 	// First check if we need to wait due to backoff
 	r.mu.RLock()
-	backoffRemaining := r.checkBackoff()
-	if backoffRemaining > 0 {
-		r.mu.RUnlock()
-		
+	if backoffRemaining := r.checkBackoff(); backoffRemaining > 0 {
+		r.logger.Debug("Rate limited: in backoff period", map[string]interface{}{
+			"backoff_remaining": backoffRemaining.String(),
+			"backoff_until":    r.backoffUntil.Sub(time.Now()).String(),
+		})
+
+		// If we have a context with timeout, check if we can wait that long
+		if deadline, hasDeadline := ctx.Deadline(); hasDeadline {
+			if time.Until(deadline) < backoffRemaining {
+				r.logger.Debug("Context deadline too soon for backoff, failing", map[string]interface{}{
+					"deadline_in":        time.Until(deadline).String(),
+					"backoff_remaining": backoffRemaining.String(),
+				})
+				return ctx.Err()
+			}
+		}
+
 		timer := time.NewTimer(backoffRemaining)
 		defer timer.Stop()
-		
+
 		select {
 		case <-ctx.Done():
+			r.mu.Lock()
+			r.tokens++
+			r.mu.Unlock()
 			return ctx.Err()
 		case <-timer.C:
-			// Continue with normal rate limiting
+			// Continue with the request after backoff
 		}
 	} else {
 		r.mu.RUnlock()
@@ -249,9 +265,6 @@ func (r *RateLimiter) OnRateLimit(retryAfter time.Duration) time.Duration {
 		backoff = r.maxRate
 	}
 
-	// Store the previous rate for logging
-	prevRate := r.rate
-
 	// Update rate to the new backoff value
 	r.rate = backoff
 
@@ -262,18 +275,12 @@ func (r *RateLimiter) OnRateLimit(retryAfter time.Duration) time.Duration {
 	r.backoffUntil = now.Add(backoff)
 
 	// Log the rate limit event with detailed information
-	r.logger.Warn().
-		Str("component", "rate_limiter").
-		Dur("previous_rate", prevRate).
-		Dur("new_rate", r.rate).
-		Dur("backoff", backoff).
-		Dur("backoff_until", r.backoffUntil.Sub(now)).
-		Float64("backoff_factor", r.backoffFactor).
-		Float64("jitter_factor", r.jitterFactor).
-		Int("current_tokens", r.tokens).
-		Int("max_tokens", r.maxTokens).
-		Int("concurrent_requests", int(atomic.LoadInt32(&r.concurrentReqs))).
-		Msg("Rate limit encountered, backing off and increasing delay between requests")
+	r.logger.Warn("Rate limit backoff", map[string]interface{}{
+		"retryAfter":    retryAfter.String(),
+		"backoffFactor": r.backoffFactor,
+		"newRate":       backoff.String(),
+		"backoffUntil":  r.backoffUntil.Format(time.RFC3339),
+	})
 
 	// Return the backoff duration
 	return backoff
@@ -289,6 +296,7 @@ func (r *RateLimiter) ResetRate() {
 	r.backoffUntil = time.Time{}
 	r.lastRateDrop = time.Now()
 }
+
 func (r *RateLimiter) GetRate() time.Duration {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -359,11 +367,11 @@ func (r *RateLimiter) ensureRateLimit(resetDuration time.Duration) {
 	// If the current rate is more aggressive than our safe duration, slow down
 	if r.rate < safeDuration {
 		r.rate = safeDuration
-		r.logger.Info().
-			Str("component", "rate_limiter").
-			Dur("new_rate", r.rate).
-			Dur("reset_in", resetDuration).
-			Msg("Adjusted rate to respect rate limit reset")
+		r.logger.Debug("Adjusted rate to respect rate limit reset", map[string]interface{}{
+			"previousRate": r.rate.String(),
+			"newRate":      safeDuration.String(),
+			"resetIn":      resetDuration.String(),
+		})
 	}
 }
 
@@ -429,20 +437,29 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 
 	// Log the rate limit headers if any were found
 	if len(headers) > 0 {
-		r.logger.Debug().
-			Str("component", "rate_limiter").
-			Interface("rate_limit_headers", headers).
-			Msg("Processing rate limit headers")
+		r.logger.Debug("Processing rate limit headers", map[string]interface{}{
+			"component": "rate_limiter",
+			"rate_limit_headers": headers,
+		})
 	}
+
+	// Log the current rate limiting state
+	r.logger.Debug("Rate limiter state", map[string]interface{}{
+		"rate":         r.rate.String(),
+		"tokens":       fmt.Sprintf("%d/%d", r.tokens, r.maxTokens),
+		"last_request": r.last.Format(time.RFC3339),
+	})
 
 	// Check for Retry-After header (highest priority)
 	if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
 		duration, err := ParseRetryAfter(retryAfter)
 		if err == nil && duration > 0 {
-			r.logger.Info().
-				Str("component", "rate_limiter").
-				Dur("retry_after", duration).
-				Msg("Received Retry-After header, applying backoff")
+			r.logger.Warn("Rate limit error with retry-after header", map[string]interface{}{
+				"error":      err.Error(),
+				"retryAfter": retryAfter,
+				"status":     resp.Status,
+				"url":        resp.Request.URL.String(),
+			})
 			r.OnRateLimit(duration)
 			return
 		}
@@ -479,16 +496,25 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 
 				// If we're below 20% of our rate limit, start being more conservative
 				if remainingPct < 20.0 {
-					r.logger.Warn().
-						Str("component", "rate_limiter").
-						Str("remaining", remaining).
-						Str("limit", limit).
-						Float64("remaining_pct", remainingPct).
-						Msg("Approaching rate limit, being more conservative")
+					r.logger.Warn("Approaching rate limit, being more conservative", map[string]interface{}{
+						"component":    "rate_limiter",
+						"remaining":    remaining,
+						"limit":        limit,
+						"remaining_pct": remainingPct,
+					})
 
 					// Calculate a backoff based on how close we are to the limit
 					// The closer we are, the longer the backoff
 					backoff := time.Duration(float64(r.GetRate()) * (1.0 + (100.0-remainingPct)/10.0))
+					r.OnRateLimit(backoff)
+				} else {
+					// Otherwise use exponential backoff
+					backoff := r.GetRate() * 2
+					r.logger.Warn("Rate limit reached or nearly reached, backing off aggressively", map[string]interface{}{
+						"header":  resp.Header.Get("RateLimit-Reset"),
+						"backoff": backoff.String(),
+						"error":   err.Error(),
+					})
 					r.OnRateLimit(backoff)
 				}
 			}
@@ -509,12 +535,11 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 					backoff = r.GetRate() * 2
 				}
 
-				r.logger.Warn().
-					Str("component", "rate_limiter").
-					Str("limit", limit).
-					Str("remaining", remaining).
-					Dur("backoff", backoff).
-					Msg("Rate limit reached or nearly reached, backing off aggressively")
+				r.logger.Warn("Rate limit reached or nearly reached, backing off aggressively", map[string]interface{}{
+					"header":  resp.Header.Get("RateLimit-Reset"),
+					"backoff": backoff.String(),
+					"error":   err.Error(),
+				})
 
 				r.OnRateLimit(backoff)
 			}
@@ -529,11 +554,11 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 			now := time.Now()
 			if resetTime.After(now) {
 				resetDuration := resetTime.Sub(now)
-				r.logger.Info().
-					Str("component", "rate_limiter").
-					Time("reset_time", resetTime).
-					Dur("reset_in", resetDuration).
-					Msg("Rate limit will reset, scheduling next request")
+				r.logger.Info("Rate limit will reset, scheduling next request", map[string]interface{}{
+					"component": "rate_limiter",
+					"reset_time": resetTime.Format(time.RFC3339),
+					"reset_in":  resetDuration.String(),
+				})
 				// Don't back off, but ensure we don't exceed the rate limit
 				r.ensureRateLimit(resetDuration)
 			}

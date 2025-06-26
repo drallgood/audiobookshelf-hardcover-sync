@@ -12,7 +12,6 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
-	"github.com/rs/zerolog/log"
 )
 
 // configFlags holds the application configuration from command-line flags
@@ -80,7 +79,10 @@ func parseFlags() *configFlags {
 func setEnvFromFlag(value, envVar string) {
 	if value != "" {
 		if err := os.Setenv(envVar, value); err != nil {
-			log.Warn().Err(err).Str("var", envVar).Msg("Failed to set environment variable")
+			logger.Get().Warn("Failed to set environment variable", map[string]interface{}{
+				"error": err.Error(),
+				"var":    envVar,
+			})
 		}
 	}
 }
@@ -104,15 +106,20 @@ func RunOneTimeSync(flags *configFlags) {
 	})
 	log := logger.Get()
 
-	log.Info().Msg("========================================")
-	log.Info().Msg("STARTING ONE-TIME SYNC OPERATION")
-	log.Info().Msg("========================================")
+	log.Info("========================================", nil)
+	log.Info("STARTING ONE-TIME SYNC OPERATION")
+	log.Info("========================================")
 
 	// Load configuration from file if specified, otherwise from environment
-	log.Info().Str("config_file", flags.configFile).Msg("Loading configuration...")
+	log.Info("Loading configuration...", map[string]interface{}{
+		"config_file": flags.configFile,
+	})
 	cfg, err := config.Load(flags.configFile)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to load configuration")
+		log.Error("Failed to load configuration", map[string]interface{}{
+			"error": err.Error(),
+		})
+		os.Exit(1)
 	}
 
 	// Re-initialize logger with config from file
@@ -123,76 +130,76 @@ func RunOneTimeSync(flags *configFlags) {
 	})
 	log = logger.Get() // Get the reconfigured logger
 
-	log.Info().
-		Str("version", version).
-		Msg("Starting one-time sync with debug logging")
+	log.Info("Starting one-time sync with debug logging", map[string]interface{}{
+		"version": version,
+	})
 
 	// Log detailed configuration
-	log.Info().Msg("========================================")
-	log.Info().Msg("CONFIGURATION")
-	log.Info().Msg("========================================")
+	log.Info("========================================", nil)
+	log.Info("CONFIGURATION", nil)
+	log.Info("========================================", nil)
 
 	// Log API configuration
-	log.Info().
-		Str("audiobookshelf_url", cfg.Audiobookshelf.URL).
-		Bool("has_audiobookshelf_token", cfg.Audiobookshelf.Token != "").
-		Bool("has_hardcover_token", cfg.Hardcover.Token != "").
-		Msg("API Configuration")
+	log.Info("API Configuration", map[string]interface{}{
+		"audiobookshelf_url":       cfg.Audiobookshelf.URL,
+		"has_audiobookshelf_token": cfg.Audiobookshelf.Token != "",
+		"has_hardcover_token":      cfg.Hardcover.Token != "",
+	})
 
 	// Log sync settings
-	log.Info().
-		Float64("minimum_progress_threshold", cfg.App.MinimumProgress).
-		Str("audiobook_match_mode", cfg.App.AudiobookMatchMode).
-		Bool("sync_want_to_read", cfg.App.SyncWantToRead).
-		Bool("sync_owned", cfg.App.SyncOwned).
-		Bool("dry_run", cfg.App.DryRun).
-		Str("test_book_filter", cfg.App.TestBookFilter).
-		Int("test_book_limit", cfg.App.TestBookLimit).
-		Msg("Sync Settings")
+	log.Info("Sync Settings", map[string]interface{}{
+		"minimum_progress_threshold": cfg.App.MinimumProgress,
+		"audiobook_match_mode":       cfg.App.AudiobookMatchMode,
+		"sync_want_to_read":          cfg.App.SyncWantToRead,
+		"sync_owned":                 cfg.App.SyncOwned,
+		"dry_run":                    cfg.App.DryRun,
+		"test_book_filter":           cfg.App.TestBookFilter,
+		"test_book_limit":            cfg.App.TestBookLimit,
+	})
 
 	// Log paths and cache settings
-	log.Info().
-		Str("cache_dir", cfg.Paths.CacheDir).
-		Str("mismatch_output_dir", cfg.App.MismatchOutputDir).
-		Msg("Paths Configuration")
+	log.Info("Paths Configuration", map[string]interface{}{
+		"cache_dir":           cfg.Paths.CacheDir,
+		"mismatch_output_dir": cfg.App.MismatchOutputDir,
+	})
 
-	log.Info().Msg("========================================")
+	log.Info("========================================")
 
 	// Create API clients with detailed logging
-	log.Info().Msg("Initializing API clients...")
-	log.Debug().
-		Str("audiobookshelf_url", cfg.Audiobookshelf.URL).
-		Bool("has_audiobookshelf_token", cfg.Audiobookshelf.Token != "").
-		Bool("has_hardcover_token", cfg.Hardcover.Token != "").
-		Msg("Creating API clients")
+	log.Info("Initializing API clients...")
+	log.Debug("Creating API clients", map[string]interface{}{
+		"audiobookshelf_url":       cfg.Audiobookshelf.URL,
+		"has_audiobookshelf_token": cfg.Audiobookshelf.Token != "",
+		"has_hardcover_token":      cfg.Hardcover.Token != "",
+	})
 
 	audiobookshelfClient := audiobookshelf.NewClient(cfg.Audiobookshelf.URL, cfg.Audiobookshelf.Token)
 	// Get the global logger instance and pass it to the Hardcover client
 	logInstance := logger.Get()
 	hardcoverClient := hardcover.NewClient(cfg.Hardcover.Token, logInstance)
 
-	log.Debug().
-		Str("client_type", "audiobookshelf").
-		Str("base_url", cfg.Audiobookshelf.URL).
-		Msg("Created Audiobookshelf client")
+	log.Debug("Created Audiobookshelf client", map[string]interface{}{
+		"client_type": "audiobookshelf",
+		"base_url":   cfg.Audiobookshelf.URL,
+	})
 
-	log.Debug().
-		Str("client_type", "hardcover").
-		Bool("has_token", cfg.Hardcover.Token != "").
-		Msg("Created Hardcover client")
+	log.Debug("Created Hardcover client", map[string]interface{}{
+		"client_type": "hardcover",
+		"has_token":   cfg.Hardcover.Token != "",
+	})
 
 	// Create sync service with detailed logging
-	log.Info().Msg("Initializing sync service...")
+	log.Info("Initializing sync service...", nil)
 	syncService := sync.NewService(
 		audiobookshelfClient,
 		hardcoverClient,
 		cfg,
 	)
 
-	log.Debug().
-		Bool("dry_run", cfg.App.DryRun).
-		Str("match_mode", cfg.App.AudiobookMatchMode).
-		Msg("Initialized sync service")
+	log.Debug("Initialized sync service", map[string]interface{}{
+		"dry_run":     cfg.App.DryRun,
+		"match_mode": cfg.App.AudiobookMatchMode,
+	})
 
 	// Create a context with timeout and cancellation
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
@@ -202,60 +209,71 @@ func RunOneTimeSync(flags *configFlags) {
 	ctx = log.Logger.WithContext(ctx)
 
 	// Run the sync with detailed logging
-	log.Info().Msg("========================================")
-	log.Info().Msg("STARTING SYNC OPERATION")
-	log.Info().Msg("========================================")
+	log.Info("========================================", map[string]interface{}{})
+	log.Info("STARTING SYNC OPERATION", map[string]interface{}{})
+	log.Info("========================================", map[string]interface{}{})
 
-	log.Info().Msg("Sync configuration:")
-	log.Info().Str("Audiobookshelf URL", cfg.Audiobookshelf.URL).Msg("  -")
-	log.Info().Bool("Has Audiobookshelf Token", cfg.Audiobookshelf.Token != "").Msg("  -")
-	log.Info().Bool("Has Hardcover Token", cfg.Hardcover.Token != "").Msg("  -")
-	log.Info().Bool("Dry Run", cfg.App.DryRun).Msg("  -")
-	log.Info().Str("Audiobook Match Mode", cfg.App.AudiobookMatchMode).Msg("  -")
+	log.Info("Sync configuration:", map[string]interface{}{
+		"audiobookshelf_url":     cfg.Audiobookshelf.URL,
+		"has_audiobookshelf_token": cfg.Audiobookshelf.Token != "",
+		"has_hardcover_token":   cfg.Hardcover.Token != "",
+		"dry_run":               cfg.App.DryRun,
+		"audiobook_match_mode":   cfg.App.AudiobookMatchMode,
+	})
 
 	startTime := time.Now()
-	log.Info().Time("start_time", startTime).Msg("Starting sync operation...")
+	log.Info("Starting sync operation...", map[string]interface{}{
+		"start_time": startTime,
+	})
 
 	// Run the sync
-	log.Info().Msg("Initiating sync service...")
+	log.Info("Initiating sync service...", map[string]interface{}{
+		"client_type": "sync",
+	})
 	err = syncService.Sync(ctx)
 
 	// Log completion
 	duration := time.Since(startTime)
 	
 	if err != nil {
-		log.Error().
-			Err(err).
-			Dur("duration", duration).
-			Msg("Sync operation failed")
+		logger.Get().Error("Sync operation failed", map[string]interface{}{
+			"error":    err.Error(),
+			"duration": duration.String(),
+		})
 		os.Exit(1)
 	}
 
 	// Log success
-	log.Info().
-		Dur("duration", duration).
-		Float64("duration_seconds", duration.Seconds()).
-		Msg("Sync completed successfully")
-	log.Info().Msg("========================================")
+	logger.Get().Info("Sync completed successfully", map[string]interface{}{
+		"duration":          duration.String(),
+		"duration_seconds": duration.Seconds(),
+	})
+	log.Info("========================================")
 }
 
 // startPeriodicSync starts the periodic sync service
 // StartPeriodicSync starts a periodic sync service with the specified interval
 func StartPeriodicSync(ctx context.Context, syncService *sync.Service, abortCh <-chan struct{}, interval time.Duration) {
+	log := logger.Get()
+
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
 		// Initial sync
 		if err := syncService.Sync(ctx); err != nil {
-			log.Error().Err(err).Msg("Initial sync failed")
+			log.Error("Initial sync failed", map[string]interface{}{
+				"error": err.Error(),
+			})
 		}
 
 		for {
 			select {
 			case <-ticker.C:
 				if err := syncService.Sync(ctx); err != nil {
-					log.Error().Err(err).Msg("Periodic sync failed")
+					log.Error("Periodic sync failed", map[string]interface{}{
+						"error": err.Error(),
+					})
 				}
 			case <-abortCh:
 				return

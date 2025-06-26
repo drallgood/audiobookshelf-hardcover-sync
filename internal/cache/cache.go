@@ -59,10 +59,10 @@ func (c *memoryCache[K, V]) Set(key K, value V, ttl time.Duration) {
 		expiresAt: expiresAt,
 	}
 
-	c.log.Debug().
-		Interface("key", key).
-		Int("cache_size", len(c.items)).
-		Msg("Item added to cache")
+	c.log.Debug("Item added to cache", map[string]interface{}{
+		"key":        key,
+		"cache_size": len(c.items),
+	})
 }
 
 // Get retrieves a value from the cache and a boolean indicating if it was found
@@ -78,16 +78,16 @@ func (c *memoryCache[K, V]) Get(key K) (V, bool) {
 
 	// Check if the item has expired
 	if !item.expiresAt.IsZero() && time.Now().After(item.expiresAt) {
-		c.log.Debug().
-			Interface("key", key).
-			Msg("Cache item expired")
+		c.log.Debug("Cache item expired", map[string]interface{}{
+			"key": key,
+		})
 		var zero V
 		return zero, false
 	}
 
-	c.log.Debug().
-		Interface("key", key).
-		Msg("Cache hit")
+	c.log.Debug("Cache hit", map[string]interface{}{
+		"key": key,
+	})
 
 	return item.value, true
 }
@@ -99,10 +99,10 @@ func (c *memoryCache[K, V]) Delete(key K) {
 
 	delete(c.items, key)
 
-	c.log.Debug().
-		Interface("key", key).
-		Int("remaining_items", len(c.items)).
-		Msg("Item removed from cache")
+	c.log.Debug("Item removed from cache", map[string]interface{}{
+		"key":             key,
+		"remaining_items": len(c.items),
+	})
 }
 
 // Clear removes all values from the cache
@@ -112,8 +112,7 @@ func (c *memoryCache[K, V]) Clear() {
 
 	c.items = make(map[K]entry[V])
 
-	c.log.Info().
-		Msg("Cache cleared")
+	c.log.Info("Cache cleared", nil)
 }
 
 // WithTTL returns a wrapper that automatically applies a TTL to all Set operations

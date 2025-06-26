@@ -41,10 +41,14 @@ func (l *Logger) GetLevel() zerolog.Level {
 	if l == nil {
 		return zerolog.NoLevel
 	}
-	// Return the stored level as a zerolog.Level
-	// Note: zerolog.Level is an int8 with these values:
-	// DebugLevel = 0, InfoLevel = 1, WarnLevel = 2, ErrorLevel = 3, FatalLevel = 4, PanicLevel = 5, NoLevel = 6, Disabled = -128, TraceLevel = -1
-	return zerolog.Level(l.level)
+	// Return the level from our stored level field
+	// This ensures we're returning the level that was explicitly set
+	level := zerolog.Level(l.level)
+	// Handle the case where level is NoLevel (6) - default to InfoLevel
+	if level == zerolog.NoLevel {
+		return zerolog.InfoLevel
+	}
+	return level
 }
 
 // LogFormat defines the available log formats
@@ -98,7 +102,7 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 		// Process the request
 		next.ServeHTTP(rww, r)
 
-		// Log the request
+		// Calculate request duration
 		duration := time.Since(start)
 
 		// Get the client IP, checking X-Forwarded-For header first
@@ -107,15 +111,16 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 			ip = r.RemoteAddr
 		}
 
-		l.Info().
-			Str("method", r.Method).
-			Str("path", r.URL.Path).
-			Str("query", r.URL.RawQuery).
-			Str("ip", ip).
-			Str("user_agent", r.UserAgent()).
-			Int("status", rww.status).
-			Dur("duration", duration).
-			Msg("HTTP request")
+		// Log the request with all details
+		l.Info("HTTP request", map[string]interface{}{
+			"method":    r.Method,
+			"path":      r.URL.Path,
+			"query":     r.URL.RawQuery,
+			"ip":        ip,
+			"user_agent": r.UserAgent(),
+			"status":    rww.status,
+			"duration":  duration.String(),
+		})
 	})
 }
 
@@ -149,52 +154,31 @@ func Get() *Logger {
 // This should only be used in tests
 func ResetForTesting() {
 	globalLogger = nil
+	once = sync.Once{}
 	testOnce = &sync.Once{}
 }
 
 // Setup initializes the global logger with the given configuration
 // Can only be called once - subsequent calls will be ignored
 func Setup(cfg Config) {
-	testOnce.Do(func() {
-		// Set default values if not provided
-		if cfg.Level == "" {
-			cfg.Level = defaultConfig.Level
-		}
-		// Ensure format is valid
-		if cfg.Format == "" {
-			cfg.Format = defaultConfig.Format
-		} else {
-			// Convert string to LogFormat if needed
-			switch v := any(cfg.Format).(type) {
-			case string:
-				cfg.Format = ParseLogFormat(v)
+	once.Do(func() {
+		// Parse log level with default to InfoLevel if not specified
+		level := zerolog.InfoLevel
+		if cfg.Level != "" {
+			var err error
+			level, err = zerolog.ParseLevel(cfg.Level)
+			if err != nil {
+				level = zerolog.InfoLevel // Default to info level if invalid
 			}
 		}
+
+		// Set default values if not provided
+		if cfg.Format == "" {
+			cfg.Format = FormatJSON
+		}
 		if cfg.TimeFormat == "" {
-			cfg.TimeFormat = defaultConfig.TimeFormat
+			cfg.TimeFormat = time.RFC3339
 		}
-
-		// Parse log level
-		var level zerolog.Level
-		switch strings.ToLower(cfg.Level) {
-		case "debug":
-			level = zerolog.DebugLevel
-		case "info":
-			level = zerolog.InfoLevel
-		case "warn", "warning":
-			level = zerolog.WarnLevel
-		case "error":
-			level = zerolog.ErrorLevel
-		case "fatal":
-			level = zerolog.FatalLevel
-		case "panic":
-			level = zerolog.PanicLevel
-		default:
-			level = zerolog.InfoLevel
-		}
-
-		// Debug: Print the level value before creating the logger
-		println("DEBUG: Creating logger with level:", level, "(int:", int(level), ")")
 
 		// Set up the output writer
 		output := cfg.Output
@@ -202,40 +186,27 @@ func Setup(cfg Config) {
 			output = os.Stdout
 		}
 
-		// Set the global logger level and format
-		zerolog.SetGlobalLevel(level)
-		zerolog.TimeFieldFormat = cfg.TimeFormat
-
-		// Debug: Print the current global level
-		println("DEBUG: Global level set to:", zerolog.GlobalLevel(), "(int:", int(zerolog.GlobalLevel()), ")")
+		// Create the base logger with the specified level
+		var logger zerolog.Logger
 
 		// Configure the logger based on the format
-		var baseLogger zerolog.Logger
-		if cfg.Format == FormatConsole {
-			// Use console writer for human-readable output
-			baseLogger = zerolog.New(zerolog.ConsoleWriter{
+		switch cfg.Format {
+		case FormatConsole:
+			logger = zerolog.New(zerolog.ConsoleWriter{
 				Out:        output,
 				TimeFormat: cfg.TimeFormat,
-				NoColor:    false,
 			})
-		} else {
-			// Default to JSON
-			baseLogger = zerolog.New(output)
+		default: // Default to JSON
+			logger = zerolog.New(output)
 		}
 
-		// Debug: Print the base logger level before setting it
-		println("DEBUG: Base logger level before setting:", baseLogger.GetLevel(), "(int:", int(baseLogger.GetLevel()), ")")
+		// Configure the logger with the specified level and timestamp
+		logger = logger.Level(level).With().Timestamp().Logger()
+		
+		// Set the global log level to ensure consistency
+		zerolog.SetGlobalLevel(level)
 
-		// Create the logger with the configured level and timestamp
-		logger := baseLogger.Level(level).With().Timestamp().Logger()
-		
-		// Debug: Print the logger level after setting it
-		println("DEBUG: Logger level after setting:", logger.GetLevel(), "(int:", int(logger.GetLevel()), ")")
-		
-		// Debug: Print the level value before storing it
-		println("DEBUG: Storing level in Logger struct as:", level, "(int:", int(level), ")")
-		
-		// Create our custom logger with the configured zerolog logger
+		// Create our wrapper logger with the configured logger
 		globalLogger = &Logger{
 			Logger: logger,
 			level:  int(level), // Store the level as an int
@@ -245,11 +216,11 @@ func Setup(cfg Config) {
 		println("DEBUG: Stored level in globalLogger:", globalLogger.GetLevel(), "(int:", globalLogger.level, ")")
 
 		// Log the logger setup with the configured level
-		globalLogger.Info().
-			Str("level", level.String()).
-			Str("format", string(cfg.Format)).
-			Str("time_format", cfg.TimeFormat).
-			Msg("Logger initialized")
+		globalLogger.Info("Logger initialized", map[string]interface{}{
+			"level":       level.String(),
+			"format":      string(cfg.Format),
+			"time_format": cfg.TimeFormat,
+		})
 	})
 }
 
@@ -295,4 +266,133 @@ func FromContext(ctx context.Context) *Logger {
 		return l
 	}
 	return Get()
+}
+
+// WithFields adds the given fields to the logger and returns a new logger instance
+func (l *Logger) WithFields(fields map[string]interface{}) *Logger {
+	if l == nil {
+		return Get()
+	}
+
+	if len(fields) == 0 {
+		return l
+	}
+
+	logger := l.Logger
+	for k, v := range fields {
+		logger = logger.With().Interface(k, v).Logger()
+	}
+
+	return &Logger{
+		Logger: logger,
+		level:  l.level,
+	}
+}
+
+// Info logs a message at Info level with the given message and optional fields
+func (l *Logger) Info(msg string, fields ...map[string]interface{}) {
+	if l == nil {
+		return
+	}
+
+	if msg == "" {
+		msg = "" // Use empty string as default message if not provided
+	}
+
+	if len(fields) > 0 && fields[0] != nil && len(fields[0]) > 0 {
+		l.WithFields(fields[0]).Logger.Info().Msg(msg)
+	} else {
+		l.Logger.Info().Msg(msg)
+	}
+}
+
+// Infof logs a message at Info level with the given message
+func (l *Logger) Infof(format string, args ...interface{}) {
+	if l == nil {
+		return
+	}
+	l.Logger.Info().Msgf(format, args...)
+}
+
+// Warn logs a message at Warn level with the given message and optional fields
+func (l *Logger) Warn(msg string, fields ...map[string]interface{}) {
+	if l == nil {
+		return
+	}
+
+	if msg == "" {
+		msg = "" // Use empty string as default message if not provided
+	}
+
+	if len(fields) > 0 && fields[0] != nil && len(fields[0]) > 0 {
+		l.WithFields(fields[0]).Logger.Warn().Msg(msg)
+	} else {
+		l.Logger.Warn().Msg(msg)
+	}
+}
+
+// Warnf logs a message at Warn level with the given format and args
+func (l *Logger) Warnf(format string, args ...interface{}) {
+	if l == nil {
+		return
+	}
+	l.Logger.Warn().Msgf(format, args...)
+}
+
+// Debug logs a message at Debug level with the given message and optional fields
+func (l *Logger) Debug(msg string, fields ...map[string]interface{}) {
+	if l == nil {
+		return
+	}
+
+	if msg == "" {
+		msg = "" // Use empty string as default message if not provided
+	}
+
+	if len(fields) > 0 && fields[0] != nil && len(fields[0]) > 0 {
+		l.WithFields(fields[0]).Logger.Debug().Msg(msg)
+	} else {
+		l.Logger.Debug().Msg(msg)
+	}
+}
+
+// Debugf logs a message at Debug level with the given format and args
+func (l *Logger) Debugf(format string, args ...interface{}) {
+	if l == nil {
+		return
+	}
+	l.Logger.Debug().Msgf(format, args...)
+}
+
+// Error logs a message at Error level with the given message and optional fields
+func (l *Logger) Error(msg string, fields ...map[string]interface{}) {
+	if l == nil {
+		return
+	}
+
+	if msg == "" {
+		msg = "" // Use empty string as default message if not provided
+	}
+
+	if len(fields) > 0 && fields[0] != nil && len(fields[0]) > 0 {
+		l.WithFields(fields[0]).Logger.Error().Msg(msg)
+	} else {
+		l.Logger.Error().Msg(msg)
+	}
+}
+
+// Errorf logs a message at Error level with the given format and args
+func (l *Logger) Errorf(format string, args ...interface{}) {
+	if l == nil {
+		return
+	}
+	l.Logger.Error().Msgf(format, args...)
+}
+
+// With creates a child logger with the given fields
+func (l *Logger) With(fields map[string]interface{}) *Logger {
+	if l == nil {
+		return Get()
+	}
+	return l.WithFields(fields)
 }

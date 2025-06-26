@@ -84,17 +84,17 @@ func main() {
 	ctx := logger.NewContext(context.Background(), log)
 
 	// Log application startup
-	log.Info().
-		Str("version", version).
-		Str("log_level", cfg.Logging.Level).
-		Str("log_format", cfg.Logging.Format).
-		Msg("Starting audiobookshelf-hardcover-sync")
+	log.Info("Starting audiobookshelf-hardcover-sync", map[string]interface{}{
+		"version":   version,
+		"log_level": cfg.Logging.Level,
+		"log_format": cfg.Logging.Format,
+	})
 
 	// Log basic configuration info (without sensitive data)
-	log.Info().
-		Str("log_level", cfg.Logging.Level).
-		Bool("dry_run", cfg.App.DryRun).
-		Msg("Application configuration")
+	log.Info("Application configuration", map[string]interface{}{
+		"log_level": cfg.Logging.Level,
+		"dry_run":   cfg.App.DryRun,
+	})
 
 	// Set environment variables from flags if provided
 	setEnvFromFlag(flags.audiobookshelfURL, "AUDIOBOOKSHELF_URL")
@@ -147,7 +147,9 @@ func main() {
 	// Start the HTTP server
 	go func() {
 		addr := ":" + cfg.Server.Port
-		log.Info().Str("addr", addr).Msg("Starting HTTP server")
+		log.Info("Starting HTTP server", map[string]interface{}{
+			"addr": addr,
+		})
 		if err := srv.Start(); err != nil && err != http.ErrServerClosed {
 			errCh <- fmt.Errorf("failed to start HTTP server: %w", err)
 			return
@@ -158,19 +160,21 @@ func main() {
 	if !flags.serverOnly && cfg.App.SyncInterval > 0 {
 			StartPeriodicSync(ctx, syncService, abortCh, flags.syncInterval)
 	} else if !flags.serverOnly {
-		log.Info().Msg("Periodic sync is disabled (set SYNC_INTERVAL to enable)")
+		log.Info("Periodic sync is disabled (set SYNC_INTERVAL to enable)", nil)
 	}
 
 	// Wait for shutdown signal or error
 	select {
 	case <-ctx.Done():
-		log.Info().Msg("Shutdown signal received")
+		log.Info("Shutdown signal received", nil)
 	case err := <-errCh:
-		log.Error().Err(err).Msg("Fatal error occurred")
+		log.Error("Fatal error occurred", map[string]interface{}{
+			"error": err.Error(),
+		})
 	}
 
 	// Start graceful shutdown
-	log.Info().Msg("Initiating graceful shutdown...")
+	log.Info("Initiating graceful shutdown...", nil)
 
 	// Cancel any ongoing operations
 	stop()
@@ -178,17 +182,21 @@ func main() {
 	// Signal any background goroutines to stop
 	close(abortCh)
 
-
 	// Shutdown HTTP server with configured timeout
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 	defer cancel()
 
-	log.Info().Dur("timeout", cfg.Server.ShutdownTimeout).Msg("Initiating graceful shutdown...")
+	log.Info("Initiating graceful shutdown...", map[string]interface{}{
+		"timeout": cfg.Server.ShutdownTimeout.String(),
+	})
+
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Error().Err(err).Msg("Error during server shutdown")
+		log.Error("Error during server shutdown", map[string]interface{}{
+			"error": err.Error(),
+		})
 	}
 
-	log.Info().Msg("Shutdown completed")
+	log.Info("Shutdown completed", nil)
 }
 
 // RunOneTimeSync is defined in cli.go

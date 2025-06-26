@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+
 	"sort"
 	"strconv"
 	"strings"
@@ -205,15 +206,18 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 
 	// Log the client configuration
 	if log != nil {
-		log.Debug().
-			Str("base_url", cfg.BaseURL).
-			Dur("timeout", cfg.Timeout).
-			Int("max_retries", cfg.MaxRetries).
-			Dur("retry_delay", cfg.RetryDelay).
-			Msg("Creating new Hardcover client with config")
+		log.Debug("Creating new Hardcover client with config", map[string]interface{}{
+			"base_url":    cfg.BaseURL,
+			"timeout":     cfg.Timeout,
+			"max_retries": cfg.MaxRetries,
+			"retry_delay": cfg.RetryDelay,
+		})
 	} else {
-		// This should not happen as we set a default logger below
-		logger.Get().Warn().Msg("No logger provided to NewClientWithConfig")
+		// If no logger is provided, create a default one
+		log = logger.Get()
+		log = log.With(map[string]interface{}{
+			"component": "hardcover_client",
+		})
 	}
 
 	// Create HTTP client with timeout
@@ -230,16 +234,19 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 	}
 
 	// Log the logger configuration
-	log.Debug().
-		Str("log_level", log.GetLevel().String()).
-		Msg("Logger initialized for Hardcover client")
-
-	// Create a child logger with component info
-	childLogger := logger.WithContext(map[string]interface{}{
-		"component": "hardcover-client",
+	log.Info("Logger initialized for Hardcover client", map[string]interface{}{
+		"log_level": log.GetLevel().String(),
 	})
 
-	childLogger.Debug().Msg("Created child logger for Hardcover client")
+	// Create a child logger with context
+	childLogger := log
+	if log != nil {
+		childLogger = log.With(map[string]interface{}{
+			"component": "hardcover_client",
+		})
+	}
+
+	childLogger.Info("Created child logger for Hardcover client", nil)
 
 	// Create authenticated HTTP client with headers
 	authClient := &http.Client{
@@ -279,7 +286,7 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 	}
 
 	// Log client creation
-	childLogger.Debug().Msg("Created new Hardcover client")
+	childLogger.Debug("Created new Hardcover client", nil)
 
 	return client
 }
@@ -303,19 +310,19 @@ type loggingRoundTripper struct {
 // RoundTrip implements the http.RoundTripper interface
 func (l loggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Log the request with basic info
-	l.logger.Info().
-		Str("method", req.Method).
-		Str("url", req.URL.String()).
-		Msg("Sending request")
+	l.logger.Info("Sending request", map[string]interface{}{
+		"method": req.Method,
+		"url":    req.URL.String(),
+	})
 
 	// Make the request
 	resp, err := l.rt.RoundTrip(req)
 	if err != nil {
-		l.logger.Error().
-			Err(err).
-			Str("method", req.Method).
-			Str("url", req.URL.String()).
-			Msg("Request failed")
+		l.logger.Error("Request failed", map[string]interface{}{
+			"error":  err.Error(),
+			"method": req.Method,
+			"url":    req.URL.String(),
+		})
 		return nil, err
 	}
 
@@ -323,27 +330,27 @@ func (l loggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		l.logger.Error().
-			Err(err).
-			Str("method", req.Method).
-			Str("url", req.URL.String()).
-			Msg("Failed to read response body")
+		l.logger.Error("Failed to read response body", map[string]interface{}{
+			"error":  err.Error(),
+			"method": req.Method,
+			"url":    req.URL.String(),
+		})
 		return nil, err
 	}
 
-	// Create log event based on status code
-	logEvent := l.logger.Info()
-	if resp.StatusCode >= 400 {
-		logEvent = l.logger.Error()
+	// Log response with appropriate level
+	logFields := map[string]interface{}{
+		"status":         resp.StatusCode,
+		"status_text":    resp.Status,
+		"path":           req.URL.Path,
+		"response_length": len(body),
 	}
 
-	// Log response
-	logEvent.
-		Int("status", resp.StatusCode).
-		Str("status_text", resp.Status).
-		Str("path", req.URL.Path).
-		Int("response_length", len(body)).
-		Msg("Received response")
+	if resp.StatusCode >= 400 {
+		l.logger.Error("Received error response", logFields)
+	} else {
+		l.logger.Info("Received response", logFields)
+	}
 
 	// Create a new response with the body since we've already read it
 	resp.Body = io.NopCloser(bytes.NewReader(body))
@@ -432,22 +439,22 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		reqModifier(req)
 
 		// Log the request details
-		c.logger.Debug().
-			Str("method", req.Method).
-			Str("url", req.URL.String()).
-			Str("operation", string(op)).
-			Str("query", query).
-			Interface("variables", variables).
-			Msg("Executing GraphQL request")
+		c.logger.Debug("Executing GraphQL request", map[string]interface{}{
+			"method":    req.Method,
+			"url":       req.URL.String(),
+			"operation": string(op),
+			"query":     query,
+			"variables": variables,
+		})
 
 		// Execute the request
 		resp, err := httpClient.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("HTTP request failed: %w", err)
-			c.logger.Error().
-				Err(lastErr).
-				Int("attempt", attempt+1).
-				Msg("GraphQL request failed")
+			c.logger.Error("GraphQL request failed", map[string]interface{}{
+				"error":   lastErr.Error(),
+				"attempt": attempt + 1,
+			})
 			continue
 		}
 
@@ -456,19 +463,19 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			lastErr = fmt.Errorf("failed to read response body: %w", err)
-			c.logger.Error().
-				Err(lastErr).
-				Int("attempt", attempt+1).
-				Msg("Failed to read response body")
+			c.logger.Error("Failed to read response body", map[string]interface{}{
+				"error":   lastErr.Error(),
+				"attempt": attempt + 1,
+			})
 			continue
 		}
 
 		// Log the response
-		c.logger.Debug().
-			Int("status", resp.StatusCode).
-			Str("status_text", resp.Status).
-			Bytes("response", body).
-			Msg("Received GraphQL response")
+		c.logger.Debug("Received GraphQL response", map[string]interface{}{
+			"status":       resp.Status,
+			"status_code":  resp.StatusCode,
+			"content_length": resp.ContentLength,
+		})
 
 		// Check for HTTP errors
 		if resp.StatusCode >= 400 {
@@ -476,10 +483,10 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				StatusCode: resp.StatusCode,
 				Body:       body,
 			}
-			c.logger.Error().
-				Err(lastErr).
-				Int("attempt", attempt+1).
-				Msg("GraphQL request failed with HTTP error")
+			c.logger.Error("GraphQL request failed with HTTP error", map[string]interface{}{
+				"error":   lastErr.Error(),
+				"attempt": attempt + 1,
+			})
 			continue
 		}
 
@@ -493,22 +500,22 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 
 		if err := json.Unmarshal(body, &gqlResp); err != nil {
 			lastErr = fmt.Errorf("failed to unmarshal GraphQL response: %w", err)
-			c.logger.Error().
-				Err(lastErr).
-				Int("attempt", attempt+1).
-				Bytes("response", body).
-				Msg("Failed to unmarshal GraphQL response")
+			c.logger.Error("Failed to unmarshal GraphQL response", map[string]interface{}{
+				"error":    lastErr.Error(),
+				"attempt":  attempt + 1,
+				"response": string(body),
+			})
 			continue
 		}
 
 		// Check for GraphQL errors
 		if len(gqlResp.Errors) > 0 {
 			lastErr = fmt.Errorf("GraphQL error: %v", gqlResp.Errors[0].Message)
-			c.logger.Error().
-				Err(lastErr).
-				Int("attempt", attempt+1).
-				Interface("errors", gqlResp.Errors).
-				Msg("GraphQL operation failed")
+			c.logger.Error("GraphQL operation failed", map[string]interface{}{
+				"error":   lastErr.Error(),
+				"attempt": attempt + 1,
+				"errors":  gqlResp.Errors,
+			})
 			continue
 		}
 
@@ -520,11 +527,11 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		// Unmarshal the data into the result
 		if err := json.Unmarshal(gqlResp.Data, result); err != nil {
 			lastErr = fmt.Errorf("failed to unmarshal GraphQL data: %w", err)
-			c.logger.Error().
-				Err(lastErr).
-				Int("attempt", attempt+1).
-				Str("data", string(gqlResp.Data)).
-				Msg("Failed to unmarshal GraphQL data")
+			c.logger.Error("Failed to unmarshal GraphQL data", map[string]interface{}{
+				"error":   lastErr.Error(),
+				"attempt": attempt + 1,
+				"data":    string(gqlResp.Data),
+			})
 			continue
 		}
 
@@ -533,13 +540,13 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 
 	// If we get here, all retry attempts failed
 	if lastErr != nil {
-		c.logger.Error().
-			Err(lastErr).
-			Str("operation", string(op)).
-			Str("query", query).
-			Interface("variables", variables).
-			Int("max_retries", c.maxRetries).
-			Msg("GraphQL operation failed after all retries")
+		c.logger.Error("GraphQL operation failed after all retries", map[string]interface{}{
+			"error":      lastErr.Error(),
+			"operation":  string(op),
+			"query":      query,
+			"variables":  variables,
+			"max_retries": c.maxRetries,
+		})
 	}
 	return fmt.Errorf("failed after %d attempts: %w", c.maxRetries+1, lastErr)
 }
@@ -563,9 +570,9 @@ func (c *Client) GetCurrentUserID(ctx context.Context) (int, error) {
 	if c.currentUserID != 0 {
 		userID := c.currentUserID
 		c.currentUserMutex.RUnlock()
-		c.logger.Debug().
-			Int("user_id", userID).
-			Msg("Returning cached user ID")
+		c.logger.Debug("Returning cached user ID", map[string]interface{}{
+			"user_id": userID,
+		})
 		return userID, nil
 	}
 	c.currentUserMutex.RUnlock()
@@ -576,13 +583,13 @@ func (c *Client) GetCurrentUserID(ctx context.Context) (int, error) {
 
 	// Check again in case another goroutine updated the cache while we were waiting for the lock
 	if c.currentUserID != 0 {
-		c.logger.Debug().
-			Int("user_id", c.currentUserID).
-			Msg("Returning user ID from cache (after acquiring lock)")
+		c.logger.Debug("Returning user ID from cache (after acquiring lock)", map[string]interface{}{
+			"user_id": c.currentUserID,
+		})
 		return c.currentUserID, nil
 	}
 
-	c.logger.Debug().Msg("User ID not in cache, fetching from Hardcover API")
+	c.logger.Debug("User ID not in cache, fetching from Hardcover API", nil)
 
 	// Define the GraphQL query
 	query := `
@@ -619,9 +626,9 @@ func (c *Client) GetCurrentUserID(ctx context.Context) (int, error) {
 	// Cache the user ID
 	c.currentUserID = userID
 
-	c.logger.Debug().
-		Int("user_id", userID).
-		Msg("Successfully retrieved and cached current user ID from Hardcover")
+	c.logger.Debug("Successfully retrieved and cached current user ID from Hardcover", map[string]interface{}{
+		"user_id": userID,
+	})
 
 	return userID, nil
 }
@@ -642,10 +649,11 @@ func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.Har
 		return nil, fmt.Errorf("ASIN cannot be empty")
 	}
 
-	log := c.logger.With().
-		Str("asin", asin).
-		Str("method", "SearchBookByASIN").
-		Logger()
+	// Create logger with context
+	log := logger.WithContext(map[string]interface{}{
+		"asin":   asin,
+		"method": "SearchBookByASIN",
+	})
 
 	// Define the GraphQL query
 	const query = `
@@ -710,96 +718,87 @@ func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.Har
 	}, &rawResponse)
 
 	if err != nil {
-		log.Error().
-			Err(err).
-			Str("asin", asin).
-			Msg("Failed to search book by ASIN")
+		log.Error("Failed to search book by ASIN", map[string]interface{}{
+			"error": err.Error(),
+			"asin":  asin,
+		})
 		return nil, fmt.Errorf("failed to search book by ASIN: %w", err)
 	}
 
 	// Debug log the raw response
-	log.Debug().
-		Str("raw_response", fmt.Sprintf("%+v", rawResponse)).
-		Msg("Raw GraphQL response")
+	log.Debug("Raw GraphQL response", map[string]interface{}{
+		"raw_response": fmt.Sprintf("%+v", rawResponse),
+	})
 
-	// Debug log the raw response structure
-	log.Debug().
-		Str("response_type", fmt.Sprintf("%T", rawResponse)).
-		Msg("Raw response type")
-
-	// Try to extract the books from the response
 	var books []map[string]interface{}
-	
-	// First, try to get the data field as a map
+
+	// Extract data from response
 	data, ok := rawResponse["data"].(map[string]interface{})
 	if !ok {
 		// If that fails, try to see if rawResponse itself is the data
 		if _, isMap := rawResponse["books"]; isMap {
 			data = rawResponse
 		} else {
-			log.Warn().
-				Msg("No 'data' key found in response and response is not a direct data object")
+			log.Warn("No 'data' key found in response and response is not a direct data object", map[string]interface{}{})
 		}
 	}
 
 	if data != nil {
-		log.Debug().
-			Str("data_keys", fmt.Sprintf("%v", getMapKeys(data))).
-			Msg("Data keys in response")
+		log.Debug("Data keys in response", map[string]interface{}{
+			"data_keys": fmt.Sprintf("%v", getMapKeys(data)),
+		})
 
 		if booksData, ok := data["books"]; ok {
 			switch v := booksData.(type) {
 			case []interface{}:
-				log.Debug().
-					Int("books_count", len(v)).
-					Msg("Found books array in response")
+				log.Debug("Found books array in response", map[string]interface{}{
+					"books_count": len(v),
+				})
 
 				for i, b := range v {
 					if book, ok := b.(map[string]interface{}); ok {
 						books = append(books, book)
-						log.Debug().
-							Int("book_index", i).
-							Str("book_id", fmt.Sprintf("%v", book["id"])).
-							Str("title", fmt.Sprintf("%v", book["title"])).
-							Msg("Found book in response")
+						log.Debug("Found book in response", map[string]interface{}{
+							"book_index": i,
+							"book_id":    fmt.Sprintf("%v", book["id"]),
+							"title":     fmt.Sprintf("%v", book["title"]),
+						})
 					}
 				}
 			default:
-				log.Warn().
-					Str("books_type", fmt.Sprintf("%T", v)).
-					Msg("Unexpected type for books data")
+				log.Warn("Unexpected type for books data", map[string]interface{}{
+					"books_type": fmt.Sprintf("%T", v),
+				})
 			}
 		} else {
-			log.Warn().
-				Msg("No 'books' key found in data")
+			log.Warn("No 'books' key found in data", map[string]interface{}{})
 		}
 	}
 
-	log.Debug().
-		Int("books_count", len(books)).
-		Msg("Extracted books from response")
+	log.Debug("Extracted books from response", map[string]interface{}{
+		"books_count": len(books),
+	})
 
 	if err != nil {
-		log.Error().
-			Err(err).
-			Str("asin", asin).
-			Msg("Failed to search book by ASIN")
+		log.Error("Failed to search book by ASIN", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return nil, fmt.Errorf("failed to search book by ASIN: %w", err)
 	}
 
 	// Check if any books were found
 	if len(books) == 0 {
-		log.Debug().
-			Str("asin", asin).
-			Msg("No books found with the given ASIN")
+		log.Debug("No books found with the given ASIN", map[string]interface{}{
+			"asin": asin,
+		})
 		return nil, nil
 	}
 
 	// Process the first book
 	bookData := books[0]
-	log.Debug().
-		Str("book_data", fmt.Sprintf("%+v", bookData)).
-		Msg("Processing first book")
+	log.Debug("Processing first book", map[string]interface{}{
+		"book_data": fmt.Sprintf("%+v", bookData),
+	})
 
 	// Create a new HardcoverBook instance
 	hcBook := &models.HardcoverBook{}
@@ -836,9 +835,9 @@ func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.Har
 	// Handle editions
 	editions, _ := bookData["editions"].([]interface{})
 	if len(editions) == 0 {
-		log.Warn().
-			Str("book_id", hcBook.ID).
-			Msg("No editions found for book")
+		log.Warn("No editions found for book", map[string]interface{}{
+			"book_id": hcBook.ID,
+		})
 		return nil, nil
 	}
 
@@ -886,17 +885,10 @@ func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.Har
 	}
 	
 	// Debug log the book data
-	log.Debug().
-		Str("book_id", hcBook.ID).
-		Str("title", hcBook.Title).
-		Str("edition_id", hcBook.EditionID).
-		Msg("Successfully found book by ASIN")
-
-	log.Debug().
-		Str("book_id", hcBook.ID).
-		Str("edition_id", hcBook.EditionID).
-		Str("title", hcBook.Title).
-		Msg("Successfully found book by ASIN")
+	log.Debug("Successfully found book by ASIN", map[string]interface{}{
+		"book_id": hcBook.ID,
+		"title":   bookData["title"].(string),
+	})
 
 	return hcBook, nil
 }
@@ -907,11 +899,12 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
 		return nil, fmt.Errorf("ISBN cannot be empty")
 	}
 
-	log := c.logger.With().
-		Str("isbn", isbn).
-		Str("isbn_field", isbnField).
-		Str("method", "searchBookByISBN").
-		Logger()
+	// Create logger with context
+	log := c.logger.With(map[string]interface{}{
+		"isbn":       isbn,
+		"isbn_field": isbnField,
+		"method":     "searchBookByISBN",
+	})
 
 	// Normalize ISBN (remove dashes, spaces, etc.)
 	normalizedISBN := strings.ReplaceAll(isbn, "-", "")
@@ -984,16 +977,18 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
 	}, &result)
 
 	if err != nil {
-		log.Error().
-			Err(err).
-			Str("isbn", isbn).
-			Msg("Failed to search book by ISBN")
+		log.Error("Failed to search book by ISBN", map[string]interface{}{
+			"error": err.Error(),
+			"isbn":  isbn,
+		})
 		return nil, fmt.Errorf("failed to search book by ISBN: %w", err)
 	}
 
 	// Check if any books were found
 	if len(result.Data.Books) == 0 {
-		log.Debug().Msg("No books found with the given ISBN")
+		log.Debug("No books found with the given ISBN", map[string]interface{}{
+			"isbn": isbn,
+		})
 		return nil, nil
 	}
 
@@ -1001,9 +996,9 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
 
 	// Check if we have any editions
 	if len(bookData.Editions) == 0 {
-		log.Warn().
-			Str("book_id", bookData.ID.String()).
-			Msg("No editions found for book")
+		log.Warn("No editions found for book", map[string]interface{}{
+			"book_id": bookData.ID.String(),
+		})
 		return nil, nil
 	}
 
@@ -1022,10 +1017,14 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
 		if err == nil {
 			hcBook.CanonicalID = &canonicalID
 		} else {
-			log.Warn().
-				Err(err).
-				Str("canonical_id", *bookData.CanonicalID).
-				Msg("Failed to parse canonical_id as integer")
+			log.Error("Failed to search book by ISBN", map[string]interface{}{
+				"error": err.Error(),
+				"isbn":  isbn,
+			})
+			log.Warn("Failed to parse canonical_id as integer", map[string]interface{}{
+				"error":        err.Error(),
+				"canonical_id": *bookData.CanonicalID,
+			})
 		}
 	}
 
@@ -1040,96 +1039,130 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
 		hcBook.EditionISBN10 = *edition.ISBN10
 	}
 
-	log.Debug().
-		Str("book_id", hcBook.ID).
-		Str("edition_id", hcBook.EditionID).
-		Msg("Successfully found book by ISBN")
+	log.Debug("Successfully found book by ISBN", map[string]interface{}{
+		"book_id":    hcBook.ID,
+		"edition_id": hcBook.EditionID,
+	})
 
 	return hcBook, nil
 }
 
-// SearchBooks searches for books in the Hardcover database
-func (c *Client) SearchBooks(ctx context.Context, query string) ([]models.SearchResult, error) {
-	const endpoint = "/search/books"
-	log := c.logger.With().
-		Str("endpoint", endpoint).
-		Str("query", query).
-		Logger()
-
-	// Build URL with query parameters
-	url := fmt.Sprintf("%s%s?q=%s&limit=5", c.baseURL, endpoint, query)
-
-	// Create request
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to create request")
-		return nil, fmt.Errorf("failed to create request: %w", err)
+// SearchBooks searches for books in the Hardcover database using GraphQL
+func (c *Client) SearchBooks(ctx context.Context, query string, limit int) ([]models.SearchResult, error) {
+	// Ensure the logger is initialized
+	if c.logger == nil {
+		c.logger = logger.Get()
 	}
+	log := c.logger.With(map[string]interface{}{
+		"operation": "search_books",
+		"query":     query,
+	})
 
-	// Set headers
-	req.Header.Set("Authorization", c.getAuthHeader())
-	req.Header.Set("Accept", "application/json")
-
-	// Execute request
-	log.Debug().Msg("Searching for books")
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to search for books")
-		return nil, fmt.Errorf("failed to search for books: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Read response body for error handling
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to read response body")
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	// Check status code
-	if resp.StatusCode != http.StatusOK {
-		errMsg := fmt.Sprintf("unexpected status code: %d: %s", resp.StatusCode, resp.Status)
-		log.Error().
-			Int("status_code", resp.StatusCode).
-			Str("status", resp.Status).
-			Str("response", string(body)).
-			Str("request_url", req.URL.String()).
-			Str("request_method", req.Method).
-			Str("auth_header", req.Header.Get("Authorization")[:10]+"...").
-			Msg(errMsg)
-
-		// Try to parse error response if it's JSON
-		var errResp struct {
-			Error   string `json:"error"`
-			Message string `json:"message"`
-		}
-		if jsonErr := json.Unmarshal(body, &errResp); jsonErr == nil {
-			if errResp.Error != "" {
-				errMsg = fmt.Sprintf("%s: %s", errMsg, errResp.Error)
+	// Define the GraphQL query
+	searchQuery := `
+		query SearchBooks($query: String!, $perPage: Int) {
+			search(query: $query, per_page: $perPage) {
+				error
+				results
 			}
-			if errResp.Message != "" {
-				errMsg = fmt.Sprintf("%s: %s", errMsg, errResp.Message)
-			}
+		}`
+
+	// Set up variables for the query
+	variables := map[string]interface{}{
+		"query":   query,
+		"perPage": 5, // Limit to 5 results by default
+	}
+
+	// Define the response structure
+	var response struct {
+		Search struct {
+			Error   string          `json:"error"`
+			Results json.RawMessage `json:"results"`
+		} `json:"search"`
+	}
+
+	// Execute the GraphQL query
+	c.logger.Debug("Searching for books using GraphQL", map[string]interface{}{
+		"query": query,
+	})
+	err := c.GraphQLQuery(ctx, searchQuery, variables, &response)
+	if err != nil {
+		c.logger.Error("Failed to execute search query", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return nil, fmt.Errorf("failed to execute search query: %w", err)
+	}
+
+	// Check for API-level errors
+	if response.Search.Error != "" {
+		errMsg := fmt.Sprintf("search API error: %s", response.Search.Error)
+		c.logger.Error("Search API returned an error", map[string]interface{}{
+			"error": response.Search.Error,
+		})
+		return nil, errors.New(errMsg)
+	}
+
+	// Log the raw response for debugging
+	c.logger.Debug("Raw search response", map[string]interface{}{
+		"raw_response": string(response.Search.Results),
+	})
+
+	// Parse the results
+	var searchResults []models.SearchResult
+	if len(response.Search.Results) > 0 {
+		// Define the structure of the search results from the API
+		var apiResponse struct {
+			Hits []struct {
+				Document struct {
+					ID    string `json:"id"`
+					Title string `json:"title"`
+					Image struct {
+						URL string `json:"url"`
+					} `json:"image"`
+				} `json:"document"`
+			} `json:"hits"`
 		}
 
-		return nil, fmt.Errorf(errMsg)
+		// Try to unmarshal the API response
+		if err := json.Unmarshal(response.Search.Results, &apiResponse); err != nil {
+			log.Error("Failed to parse search results", map[string]interface{}{
+				"error": err.Error(),
+			})
+			return nil, fmt.Errorf("failed to parse search results: %w", err)
+		}
+
+		// Process the search results
+		for _, hit := range apiResponse.Hits {
+			searchResults = append(searchResults, models.SearchResult{
+				ID:    hit.Document.ID,
+				Title: hit.Document.Title,
+				Type:  "book",
+				Image: hit.Document.Image.URL,
+			})
+		}
 	}
 
-	// Parse response
-	var searchResp models.SearchResponse
-	if err := json.Unmarshal(body, &searchResp); err != nil {
-		log.Error().
-			Err(err).
-			Str("response", string(body)).
-			Msg("Failed to decode response")
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+	// Log the search results for debugging
+	resultIDs := make([]string, 0, len(searchResults))
+	for _, r := range searchResults {
+		resultIDs = append(resultIDs, fmt.Sprintf("%s (%s)", r.ID, r.Title))
 	}
 
-	log.Info().
-		Int("count", len(searchResp.Results)).
-		Msg("Successfully searched for books")
+	log.Info("Successfully searched for books", map[string]interface{}{
+		"count":   len(searchResults),
+		"results": resultIDs,
+	})
 
-	return searchResp.Results, nil
+	if len(searchResults) > 0 {
+		log.Debug("First search result details", map[string]interface{}{
+			"id":    searchResults[0].ID,
+			"title": searchResults[0].Title,
+			"type":  searchResults[0].Type,
+			"image": searchResults[0].Image,
+		})
+	}
+
+	return searchResults, nil
 }
 
 // UpdateReadingProgress updates the reading progress for a book in Hardcover
@@ -1141,13 +1174,13 @@ func (c *Client) UpdateReadingProgress(
 	markAsOwned bool,
 ) error {
 	const endpoint = "/reading/update-progress"
-	log := c.logger.With().
-		Str("endpoint", endpoint).
-		Str("book_id", bookID).
-		Float64("progress", progress).
-		Str("status", status).
-		Bool("mark_as_owned", markAsOwned).
-		Logger()
+	log := c.logger.With(map[string]interface{}{
+		"endpoint":       endpoint,
+		"book_id":        bookID,
+		"progress":       progress,
+		"status":         status,
+		"mark_as_owned":  markAsOwned,
+	})
 
 	// Prepare request body
 	reqBody := struct {
@@ -1164,7 +1197,9 @@ func (c *Client) UpdateReadingProgress(
 
 	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to marshal request body")
+		log.Error("Failed to marshal request body", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to marshal request body: %w", err)
 	}
 
@@ -1176,7 +1211,9 @@ func (c *Client) UpdateReadingProgress(
 		bytes.NewBuffer(jsonBody),
 	)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to create request")
+		log.Error("Failed to create request", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
@@ -1186,10 +1223,12 @@ func (c *Client) UpdateReadingProgress(
 	req.Header.Set("Accept", "application/json")
 
 	// Execute request
-	log.Debug().Msg("Updating reading progress")
+	log.Debug("Updating reading progress", nil)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to update reading progress")
+		log.Error("Failed to update reading progress", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to update reading progress: %w", err)
 	}
 	defer resp.Body.Close()
@@ -1197,16 +1236,18 @@ func (c *Client) UpdateReadingProgress(
 	// Read response body for error handling
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to read response body")
+		log.Error("Failed to read response body", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to read response body: %w", err)
 	}
 
 	// Check status code
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		log.Error().
-			Int("status", resp.StatusCode).
-			Str("response", string(body)).
-			Msg("Failed to update reading progress")
+		log.Error("Failed to update reading progress", map[string]interface{}{
+			"status":   resp.StatusCode,
+			"response": string(body),
+		})
 
 		if resp.StatusCode == http.StatusNotFound {
 			return ErrBookNotFound
@@ -1214,43 +1255,51 @@ func (c *Client) UpdateReadingProgress(
 		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	log.Info().Msg("Successfully updated reading progress")
+	log.Info("Successfully updated reading progress", nil)
 	return nil
 }
 
 // UploadCoverImage uploads a cover image to a book in Hardcover
 func (c *Client) UploadCoverImage(ctx context.Context, bookID, imageURL, description string) error {
 	const endpoint = "/covers/upload"
-	log := c.logger.With().
-		Str("endpoint", endpoint).
-		Str("book_id", bookID).
-		Str("image_url", imageURL).
-		Logger()
+	log := c.logger.With(map[string]interface{}{
+		"endpoint":  endpoint,
+		"book_id":   bookID,
+		"image_url": imageURL,
+	})
 
 	// Download the image
-	log.Debug().Msg("Downloading cover image")
+	log.Debug("Downloading cover image", nil)
 	imgReq, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to create download request")
+		log.Error("Failed to create download request", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to create download request: %w", err)
 	}
 
 	imgResp, err := c.httpClient.Do(imgReq)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to download cover image")
+		log.Error("Failed to download cover image", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to download cover image: %w", err)
 	}
 	defer imgResp.Body.Close()
 
 	if imgResp.StatusCode < 200 || imgResp.StatusCode >= 300 {
-		log.Error().Int("status", imgResp.StatusCode).Msg("Failed to download cover image")
+		log.Error("Failed to download cover image", map[string]interface{}{
+			"status": imgResp.StatusCode,
+		})
 		return fmt.Errorf("failed to download cover image: status %d", imgResp.StatusCode)
 	}
 
 	// Read image data
 	imgData, err := io.ReadAll(imgResp.Body)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to read image data")
+		log.Error("Failed to read image data", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to read image data: %w", err)
 	}
 
@@ -1260,14 +1309,18 @@ func (c *Client) UploadCoverImage(ctx context.Context, bookID, imageURL, descrip
 
 	// Add the book ID
 	if err := writer.WriteField("book_id", bookID); err != nil {
-		log.Error().Err(err).Msg("Failed to write book ID field")
+		log.Error("Failed to write book ID field", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to write book ID field: %w", err)
 	}
 
 	// Add the description if provided
 	if description != "" {
 		if err := writer.WriteField("description", description); err != nil {
-			log.Error().Err(err).Msg("Failed to write description field")
+			log.Error("Failed to write description field", map[string]interface{}{
+			"error": err.Error(),
+		})
 			return fmt.Errorf("failed to write description field: %w", err)
 		}
 	}
@@ -1275,18 +1328,24 @@ func (c *Client) UploadCoverImage(ctx context.Context, bookID, imageURL, descrip
 	// Add the image file
 	part, err := writer.CreateFormFile("file", "cover.jpg")
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to create form file")
+		log.Error("Failed to create form file", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to create form file: %w", err)
 	}
 
 	if _, err := part.Write(imgData); err != nil {
-		log.Error().Err(err).Msg("Failed to write image data to form")
+		log.Error("Failed to write image data to form", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to write image data to form: %w", err)
 	}
 
 	// Close the writer to finalize the multipart message
 	if err := writer.Close(); err != nil {
-		log.Error().Err(err).Msg("Failed to close multipart writer")
+		log.Error("Failed to close multipart writer", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to close multipart writer: %w", err)
 	}
 
@@ -1298,7 +1357,9 @@ func (c *Client) UploadCoverImage(ctx context.Context, bookID, imageURL, descrip
 		&requestBody,
 	)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to create upload request")
+		log.Error("Failed to create upload request", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to create upload request: %w", err)
 	}
 
@@ -1310,7 +1371,9 @@ func (c *Client) UploadCoverImage(ctx context.Context, bookID, imageURL, descrip
 	// Execute the request
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to upload cover image")
+		log.Error("Failed to upload cover image", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to upload cover image: %w", err)
 	}
 	defer resp.Body.Close()
@@ -1318,14 +1381,14 @@ func (c *Client) UploadCoverImage(ctx context.Context, bookID, imageURL, descrip
 	// Check response status
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
-		log.Error().
-			Int("status", resp.StatusCode).
-			Str("response", string(body)).
-			Msg("Failed to upload cover image")
+		log.Error("Failed to upload cover image", map[string]interface{}{
+			"status":   resp.StatusCode,
+			"response": string(body),
+		})
 		return fmt.Errorf("failed to upload cover image: status %d", resp.StatusCode)
 	}
 
-	log.Info().Msg("Successfully uploaded cover image")
+	log.Info("Successfully uploaded cover image", nil)
 	return nil
 }
 
@@ -1652,9 +1715,9 @@ func (c *Client) CheckExistingUserBookRead(ctx context.Context, input CheckExist
 	// Execute the query
 	err := c.executeGraphQLOperation(ctx, queryOperation, query, vars, &response)
 	if err != nil {
-		log.Error().
-			Err(err).
-			Msg("Failed to execute GraphQL query")
+		log.Error("Failed to execute GraphQL query", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return nil, fmt.Errorf("failed to check for existing user book read: %w", err)
 	}
 
@@ -1670,21 +1733,23 @@ func (c *Client) CheckExistingUserBookRead(ctx context.Context, input CheckExist
 		}, nil
 	}
 
-	log.Debug().Msg("No existing read entry found for today")
+	log.Debug("No existing read entry found for today", nil)
 	return nil, nil
 }
 
 // UpdateUserBookRead updates an existing user book read entry
 func (c *Client) UpdateUserBookRead(ctx context.Context, input UpdateUserBookReadInput) (bool, error) {
-	c.logger.Debug().
-		Int64("id", input.ID).
-		Interface("object", input.Object).
-		Msg("Updating user book read")
+	c.logger.Debug("Updating user book read", map[string]interface{}{
+		"id":     input.ID,
+		"object": input.Object,
+	})
 
 	// Convert the input to JSON for the mutation
 	updateObj, err := json.Marshal(input.Object)
 	if err != nil {
-		c.logger.Error().Err(err).Msg("Failed to marshal update object")
+		c.logger.Error("Failed to marshal update object", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return false, fmt.Errorf("failed to marshal update object: %w", err)
 	}
 
@@ -1706,7 +1771,9 @@ func (c *Client) UpdateUserBookRead(ctx context.Context, input UpdateUserBookRea
 	// Convert the update object to a DatesReadInput to ensure only valid fields are included
 	var datesReadInput DatesReadInput
 	if err := json.Unmarshal(updateObj, &datesReadInput); err != nil {
-		c.logger.Error().Err(err).Msg("Failed to unmarshal update object to DatesReadInput")
+		c.logger.Error("Failed to unmarshal update object to DatesReadInput", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return false, fmt.Errorf("failed to unmarshal update object: %w", err)
 	}
 
@@ -1752,32 +1819,34 @@ func (c *Client) UpdateUserBookRead(ctx context.Context, input UpdateUserBookRea
 
 	err = c.executeGraphQLMutation(ctx, mutation, vars, &result)
 	if err != nil {
-		c.logger.Error().Err(err).Msg("Failed to execute update mutation")
+		c.logger.Error("Failed to execute update mutation", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return false, fmt.Errorf("failed to execute update mutation: %w", err)
 	}
 
 	// Check for errors in the response
 	if result.UpdateUserBookRead.Error != nil {
 		errMsg := *result.UpdateUserBookRead.Error
-		c.logger.Error().
-			Str("error", errMsg).
-			Msg("Error in update_user_book_read response")
+		c.logger.Error("Error in update_user_book_read response", map[string]interface{}{
+			"error": errMsg,
+		})
 		return false, fmt.Errorf("update error: %s", errMsg)
 	}
 
 	// The API sometimes returns success with user_book_read: null
 	// In this case, we'll assume the update was successful
 	if result.UpdateUserBookRead.UserBookRead == nil {
-		c.logger.Info().
-			Int64("id", input.ID).
-			Msg("Successfully updated user book read (no user_book_read in response but no error)")
+		c.logger.Info("Successfully updated user book read (no user_book_read in response but no error)", map[string]interface{}{
+			"id": input.ID,
+		})
 		return true, nil
 	}
 
 	updatedID := result.UpdateUserBookRead.UserBookRead.ID
-	c.logger.Info().
-		Int("updated_id", updatedID).
-		Msg("Successfully updated user book read entry")
+	c.logger.Info("Successfully updated user book read entry", map[string]interface{}{
+		"updated_id": updatedID,
+	})
 
 	return true, nil
 }
@@ -1804,10 +1873,15 @@ type GetUserBookResult struct {
 
 // GetEdition retrieves edition details including book_id for a given edition_id
 func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edition, error) {
-	log := c.logger.With().
-		Str("edition_id", editionID).
-		Str("method", "GetEdition").
-		Logger()
+	// Ensure the logger is initialized
+	if c.logger == nil {
+		c.logger = logger.Get()
+	}
+
+	log := c.logger.With(map[string]interface{}{
+		"method":     "GetEdition",
+		"edition_id": editionID,
+	})
 
 	// Convert editionID to int since the API expects an integer
 	editionIDInt, err := strconv.Atoi(editionID)
@@ -1848,16 +1922,16 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 	editions := response.Editions
 
 	if err != nil {
-		log.Error().
-			Err(err).
-			Msg("Failed to execute GraphQL query")
+		log.Error("Failed to execute GraphQL query", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return nil, fmt.Errorf("failed to get edition: %w", err)
 	}
 
 	if len(editions) == 0 {
-		log.Debug().
-			Str("edition_id", editionID).
-			Msg("Edition not found in response")
+		log.Debug("Edition not found in response", map[string]interface{}{
+			"edition_id": editionID,
+		})
 		return nil, fmt.Errorf("edition not found: %s", editionID)
 	}
 
@@ -1865,14 +1939,14 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 	edition := editions[0]
 
 	// Log the raw edition data for debugging
-	log.Debug().
-		Int("id", edition.ID).
-		Int("book_id", edition.BookID).
-		Str("title", safeString(edition.Title)).
-		Str("isbn_10", safeString(edition.ISBN10)).
-		Str("isbn_13", safeString(edition.ISBN13)).
-		Str("asin", safeString(edition.ASIN)).
-		Msg("Retrieved edition details")
+	log.Debug("Retrieved edition details", map[string]interface{}{
+		"id":       edition.ID,
+		"book_id":  edition.BookID,
+		"title":    safeString(edition.Title),
+		"isbn_10":  safeString(edition.ISBN10),
+		"isbn_13":  safeString(edition.ISBN13),
+		"asin":     safeString(edition.ASIN),
+	})
 
 	// Create the edition model
 	editionModel := &models.Edition{
@@ -1894,35 +1968,256 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 		editionModel.ASIN = *edition.ASIN
 	}
 
-	log.Debug().
-		Str("book_id", editionModel.BookID).
-		Str("title", editionModel.Title).
-		Msg("Retrieved edition details")
+	log.Debug("Retrieved edition details", map[string]interface{}{
+		"book_id": editionModel.BookID,
+		"title":   editionModel.Title,
+	})
 
 	return editionModel, nil
 }
 
+// SearchPeople searches for people (authors or narrators) by name and type
+func (c *Client) SearchPeople(ctx context.Context, name, personType string, limit int) ([]models.Author, error) {
+	if c.logger == nil {
+		c.logger = logger.Get()
+	}
+	log := c.logger.With(map[string]interface{}{
+		"operation": "search_people",
+		"name":      name,
+		"type":      personType,
+	})
+
+	// Define the GraphQL query
+	query := `
+		query SearchPeople($query: String!, $queryType: String, $perPage: Int) {
+			search(
+				query: $query
+				query_type: $queryType
+				per_page: $perPage
+			) {
+				error
+				ids
+			}
+		}`
+
+	// Set up variables
+	variables := map[string]interface{}{
+		"query":     name,
+		"queryType": personType,
+		"perPage":   limit,
+	}
+
+	// Define the response structure
+	var response struct {
+		Search struct {
+			Error string          `json:"error"`
+			IDs   []json.Number   `json:"ids"`
+		} `json:"search"`
+	}
+
+	// Execute the query
+	log.Debug("Searching for people", map[string]interface{}{
+		"name": name,
+		"type": personType,
+	})
+
+	if err := c.GraphQLQuery(ctx, query, variables, &response); err != nil {
+		log.Error("Failed to search for people", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return nil, fmt.Errorf("failed to search for people: %w", err)
+	}
+
+	// Check for API-level errors
+	if response.Search.Error != "" {
+		errMsg := fmt.Sprintf("search API error: %s", response.Search.Error)
+		log.Error("Search API returned an error", map[string]interface{}{
+			"error": response.Search.Error,
+		})
+		return nil, errors.New(errMsg)
+	}
+
+	// Convert results to Author objects
+	authors := make([]models.Author, 0, len(response.Search.IDs))
+	for _, id := range response.Search.IDs {
+		authors = append(authors, models.Author{
+			ID:   id.String(),
+			Name: "", // Name will be fetched in GetPersonByID if needed
+		})
+	}
+
+	return authors, nil
+}
+
+// SearchAuthors searches for authors by name
+func (c *Client) SearchAuthors(ctx context.Context, name string, limit int) ([]models.Author, error) {
+	return c.SearchPeople(ctx, name, "author", limit)
+}
+
+// SearchNarrators searches for narrators by name
+func (c *Client) SearchNarrators(ctx context.Context, name string, limit int) ([]models.Author, error) {
+	return c.SearchPeople(ctx, name, "narrator", limit)
+}
+
+// SearchPublishers searches for publishers by name in the Hardcover database
+func (c *Client) SearchPublishers(ctx context.Context, name string, limit int) ([]models.Publisher, error) {
+	if c.logger == nil {
+		c.logger = logger.Get()
+	}
+	log := c.logger.With(map[string]interface{}{
+		"operation": "search_publishers",
+		"name":      name,
+		"limit":     limit,
+	})
+
+	// Enforce rate limiting
+	if err := c.enforceRateLimit(); err != nil {
+		return nil, fmt.Errorf("rate limit error: %w", err)
+	}
+
+	// Define the GraphQL query
+	// Note: Using _eq for exact match as _ilike is not supported by the API
+	query := `
+		query SearchPublishers($name: String!, $limit: Int!) {
+			publishers(where: {name: {_eq: $name}}, limit: $limit) {
+				id
+				name
+			}
+		}
+	`
+
+	// Set up variables for the query
+	variables := map[string]interface{}{
+		"name":  name, // Using exact match, no pattern matching
+		"limit": limit,
+	}
+
+	// Define a struct to hold the response
+	type publisherResponse struct {
+		Publishers []struct {
+			ID   int    `json:"id"`
+			Name string `json:"name"`
+		} `json:"publishers"`
+	}
+
+	// Execute the query
+	var resp publisherResponse
+	err := c.GraphQLQuery(ctx, query, variables, &resp)
+	if err != nil {
+		log.Error("Failed to search for publishers", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return nil, fmt.Errorf("failed to search for publishers: %w", err)
+	}
+
+	// Convert the result to the expected format
+	publishers := make([]models.Publisher, 0, len(resp.Publishers))
+	for _, p := range resp.Publishers {
+		publishers = append(publishers, models.Publisher{
+			ID:   strconv.Itoa(p.ID),
+			Name: p.Name,
+		})
+	}
+
+	log.Debug("Found publishers", map[string]interface{}{
+		"count": len(publishers),
+	})
+
+	return publishers, nil
+}
+
+// GetPersonByID retrieves a person (author or narrator) by ID
+func (c *Client) GetPersonByID(ctx context.Context, id string) (*models.Author, error) {
+	if c.logger == nil {
+		c.logger = logger.Get()
+	}
+	log := c.logger.With(map[string]interface{}{
+		"operation": "get_person",
+		"person_id": id,
+	})
+
+	// Convert ID to int for the query
+	personID, err := strconv.Atoi(id)
+	if err != nil {
+		log.Error("Invalid person ID", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return nil, fmt.Errorf("invalid person ID: %w", err)
+	}
+
+	// Define the GraphQL query
+	query := `
+		query GetPersonByID($id: Int!) {
+			authors(where: {id: {_eq: $id}}) {
+				id
+				name
+			}
+		}`
+
+	// Set up variables
+	variables := map[string]interface{}{
+		"id": personID,
+	}
+
+	// Define the response structure
+	var response struct {
+		Authors []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"authors"`
+	}
+
+	// Execute the query
+	log.Debug("Fetching person details", map[string]interface{}{
+		"id": id,
+	})
+
+	if err := c.GraphQLQuery(ctx, query, variables, &response); err != nil {
+		log.Error("Failed to fetch person details", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return nil, fmt.Errorf("failed to fetch person details: %w", err)
+	}
+
+	// Check if we got any results
+	if len(response.Authors) == 0 {
+		log.Warn("Person not found", map[string]interface{}{
+			"id": id,
+		})
+		return nil, fmt.Errorf("person not found with ID: %s", id)
+	}
+
+	// Return the first result
+	person := response.Authors[0]
+	return &models.Author{
+		ID:   person.ID,
+		Name: person.Name,
+	}, nil
+}
+
 // GetUserBookID retrieves the user book ID for a given edition ID with caching
 func (c *Client) GetUserBookID(ctx context.Context, editionID int) (int, error) {
-	log := c.logger.With().
-		Int("editionID", editionID).
-		Str("method", "GetUserBookID").
-		Logger()
+	log := c.logger.With(map[string]interface{}{
+		"editionID": editionID,
+		"method":    "GetUserBookID",
+	})
 
 	// Check cache first
 	if userBookID, exists := c.userBookIDCache.Get(editionID); exists {
-		log.Debug().
-			Int("userBookID", userBookID).
-			Msg("Found user book ID in cache")
+		log.Debug("Found user book ID in cache", map[string]interface{}{
+			"userBookID": userBookID,
+		})
 		return userBookID, nil
 	}
 
-	log.Debug().Msg("User book ID not found in cache, querying API")
+	log.Debug("User book ID not found in cache, querying API", nil)
 
 	// Get the current user ID to filter by the correct user
 	userID, userErr := c.GetCurrentUserID(ctx)
 	if userErr != nil {
-		log.Error().Err(userErr).Msg("Failed to get current user ID")
+		log.Error("Failed to get current user ID", map[string]interface{}{
+			"error": userErr.Error(),
+		})
 		return 0, fmt.Errorf("failed to get current user ID: %w", userErr)
 	}
 
@@ -1957,33 +2252,32 @@ func (c *Client) GetUserBookID(ctx context.Context, editionID int) (int, error) 
 	}, &response)
 
 	if err != nil {
-		log.Error().
-			Err(err).
-			Msg("Failed to query user books")
+		log.Error("Failed to query user books", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return 0, fmt.Errorf("failed to query user books: %w", err)
 	}
 
 	if len(response.UserBooks) == 0 {
-		log.Debug().Msg("No user book found for edition")
+		log.Debug("No user book found for edition", nil)
 		return 0, nil
 	}
 
 	userBook := response.UserBooks[0]
 	userBookID := userBook.ID
 
-	log.Debug().
-		Int("userBookID", userBookID).
-		Int("editionID", userBook.EditionID).
-		Msg("Found existing user book")
+	log.Debug("Found existing user book", map[string]interface{}{
+		"userBookID": userBookID,
+		"editionID":  userBook.EditionID,
+	})
 
 	// Cache the result with default TTL
 	c.userBookIDCache.Set(editionID, userBookID, UserBookIDCacheTTL)
 
-	log.Debug().
-		Int("editionID", editionID).
-		Int("userBookID", userBookID).
-		Dur("ttl", UserBookIDCacheTTL).
-		Msg("Cached user book ID")
+	log.Debug("Cached user book ID", map[string]interface{}{
+		"editionID":  editionID,
+		"userBookID": userBookID,
+	})
 
 	return userBookID, nil
 }
@@ -2001,10 +2295,10 @@ func (c *Client) CreateUserBook(ctx context.Context, editionID, status string) (
 	// First, get the edition to ensure it exists and get the book_id
 	edition, err := c.GetEdition(ctx, editionID)
 	if err != nil {
-		c.logger.Error().
-			Err(err).
-			Str("edition_id", editionID).
-			Msg("Failed to get edition details")
+		c.logger.Error("Failed to get edition details", map[string]interface{}{
+			"error":     err.Error(),
+			"editionID": editionID,
+		})
 		return "", fmt.Errorf("failed to get edition details: %w", err)
 	}
 
@@ -2017,20 +2311,20 @@ func (c *Client) CreateUserBook(ctx context.Context, editionID, status string) (
 	// Convert editionID to integer for the mutation
 	editionIDInt, err := strconv.Atoi(editionID)
 	if err != nil {
-		c.logger.Error().
-			Err(err).
-			Str("edition_id", editionID).
-			Msg("Invalid edition ID format")
+		c.logger.Error("Invalid edition ID format", map[string]interface{}{
+			"error":     err.Error(),
+			"editionID": editionID,
+		})
 		return "", fmt.Errorf("invalid edition ID format: %w", err)
 	}
 
 	// Convert bookID to integer for the mutation
 	editionBookID, err := strconv.Atoi(edition.BookID)
 	if err != nil {
-		c.logger.Error().
-			Err(err).
-			Str("book_id", edition.BookID).
-			Msg("Invalid book ID format")
+		c.logger.Error("Invalid book ID format", map[string]interface{}{
+			"error":   err.Error(),
+			"book_id": edition.BookID,
+		})
 		return "", fmt.Errorf("invalid book ID format: %w", err)
 	}
 
@@ -2070,12 +2364,12 @@ func (c *Client) CreateUserBook(ctx context.Context, editionID, status string) (
 
 	err = c.GraphQLMutation(ctx, mutation, input, &result)
 	if err != nil {
-		c.logger.Error().
-			Err(err).
-			Int("edition_id", editionIDInt).
-			Int("book_id", editionBookID).
-			Int("status_id", statusID).
-			Msg("Failed to create user book")
+		c.logger.Error("Failed to create user book", map[string]interface{}{
+			"error":     err.Error(),
+			"editionID": editionIDInt,
+			"bookID":    editionBookID,
+			"statusID":  statusID,
+		})
 		return "", fmt.Errorf("failed to create user book: %w", err)
 	}
 
@@ -2085,10 +2379,10 @@ func (c *Client) CreateUserBook(ctx context.Context, editionID, status string) (
 
 	userBookID := strconv.Itoa(result.InsertUserBook.UserBook.ID)
 
-	c.logger.Info().
-		Int("user_book_id", result.InsertUserBook.UserBook.ID).
-		Int("status_id", result.InsertUserBook.UserBook.StatusID).
-		Msg("Successfully created user book")
+	c.logger.Info("Successfully created user book", map[string]interface{}{
+		"userBookID": result.InsertUserBook.UserBook.ID,
+		"statusID":   result.InsertUserBook.UserBook.StatusID,
+	})
 
 	return userBookID, nil
 }
@@ -2183,11 +2477,11 @@ func (c *Client) CheckBookOwnership(ctx context.Context, bookID int) (bool, erro
 		return false, fmt.Errorf("failed to get current user ID: %w", err)
 	}
 
-	log := c.logger.With().
-		Int("book_id", bookID).
-		Int("user_id", userID).
-		Str("method", "CheckBookOwnership").
-		Logger()
+	log := c.logger.With(map[string]interface{}{
+		"bookID": bookID,
+		"userID": userID,
+		"method": "CheckBookOwnership",
+	})
 
 	query := `
 	query CheckBookOwnership($userId: Int!, $bookId: Int!) {
@@ -2215,26 +2509,28 @@ func (c *Client) CheckBookOwnership(ctx context.Context, bookID int) (bool, erro
 	}, &response)
 
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to execute GraphQL query")
+		log.Error("Failed to execute GraphQL query", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return false, fmt.Errorf("failed to check book ownership: %w", err)
 	}
 
 	// If we have a list with list_books, the book is owned
 	owned := len(response) > 0 && len(response[0].ListBooks) > 0
 
-	log.Debug().
-		Bool("is_owned", owned).
-		Msg("Checked book ownership status")
+	log.Debug("Checked book ownership status", map[string]interface{}{
+		"is_owned": owned,
+	})
 
 	return owned, nil
 }
 
 // SearchBookByISBN searches for a book by its ISBN
 func (c *Client) SearchBookByISBN(ctx context.Context, isbn string) (*models.HardcoverBook, error) {
-	log := c.logger.With().
-		Str("isbn", isbn).
-		Str("method", "SearchBookByISBN").
-		Logger()
+	log := c.logger.With(map[string]interface{}{
+		"isbn":   isbn,
+		"method": "SearchBookByISBN",
+	})
 
 	// Try with ISBN-13 first, then ISBN-10 if needed
 	isbnField := "isbn_13"
@@ -2284,12 +2580,14 @@ func (c *Client) SearchBookByISBN(ctx context.Context, isbn string) (*models.Har
 	}, &result)
 
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to search book by ISBN")
+		log.Error("Failed to search book by ISBN", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return nil, fmt.Errorf("failed to search book by ISBN: %w", err)
 	}
 
 	if len(result.Books) == 0 || len(result.Books[0].Editions) == 0 {
-		log.Debug().Msg("No book found with the specified ISBN")
+		log.Debug("No book found with the specified ISBN", map[string]interface{}{})
 		return nil, nil
 	}
 
@@ -2315,21 +2613,21 @@ func (c *Client) SearchBookByISBN(ctx context.Context, isbn string) (*models.Har
 		hcBook.EditionISBN10 = edition.ISBN10
 	}
 
-	log.Debug().
-		Str("book_id", bookData.ID).
-		Str("edition_id", edition.ID).
-		Msg("Successfully found book by ISBN")
+	log.Debug("Successfully found book by ISBN", map[string]interface{}{
+		"book_id":    bookData.ID,
+		"edition_id": edition.ID,
+	})
 
 	return hcBook, nil
 }
 
 // SearchBookByTitleAuthor searches for a book by its title and author
 func (c *Client) SearchBookByTitleAuthor(ctx context.Context, title, author string) (*models.HardcoverBook, error) {
-	log := c.logger.With().
-		Str("title", title).
-		Str("author", author).
-		Str("method", "SearchBookByTitleAuthor").
-		Logger()
+	log := c.logger.With(map[string]interface{}{
+		"title":  title,
+		"author": author,
+		"method": "SearchBookByTitleAuthor",
+	})
 
 	// Clean and prepare search terms
 	cleanTitle := strings.TrimSpace(title)
@@ -2338,6 +2636,10 @@ func (c *Client) SearchBookByTitleAuthor(ctx context.Context, title, author stri
 	if cleanTitle == "" {
 		return nil, fmt.Errorf("title cannot be empty")
 	}
+
+	// For exact matching, we need to ensure we're not using wildcards
+	cleanTitle = strings.Trim(cleanTitle, "%")
+	cleanAuthor = strings.Trim(cleanAuthor, "%")
 
 	// Build the query dynamically based on available search terms
 	query := `
@@ -2387,10 +2689,10 @@ func (c *Client) SearchBookByTitleAuthor(ctx context.Context, title, author stri
 	}
 
 	// Log the actual query being executed
-	log.Debug().
-		Str("query", query).
-		Interface("variables", variables).
-		Msg("Executing GraphQL query")
+	log.Debug("Executing GraphQL query", map[string]interface{}{
+		"query":    query,
+		"variables": variables,
+	})
 
 	// Execute the query
 	var response struct {
@@ -2411,28 +2713,28 @@ func (c *Client) SearchBookByTitleAuthor(ctx context.Context, title, author stri
 
 	err := c.GraphQLQuery(ctx, query, variables, &response)
 	if err != nil {
-		log.Error().
-			Err(err).
-			Str("query", query).
-			Interface("variables", variables).
-			Msg("Failed to execute GraphQL query")
+		log.Error("Failed to execute GraphQL query", map[string]interface{}{
+			"error":    err.Error(),
+			"query":    query,
+			"variables": variables,
+		})
 		return nil, fmt.Errorf("failed to search for book by title and author: %w", err)
 	}
 
 	if len(response.Books) == 0 {
-		log.Debug().
-			Str("title", cleanTitle).
-			Str("author", cleanAuthor).
-			Msg("No books found matching the criteria")
+		log.Debug("No books found matching the criteria", map[string]interface{}{
+			"title":  cleanTitle,
+			"author": cleanAuthor,
+		})
 		return nil, nil
 	}
 
 	// Get the first book and its first edition
 	bookData := response.Books[0]
 	if len(bookData.Editions) == 0 {
-		log.Warn().
-			Str("book_id", bookData.ID).
-			Msg("Book has no audio editions")
+		log.Warn("Book has no audio editions", map[string]interface{}{
+			"book_id": bookData.ID,
+		})
 		return nil, nil
 	}
 
@@ -2457,21 +2759,21 @@ func (c *Client) SearchBookByTitleAuthor(ctx context.Context, title, author stri
 		hcBook.EditionISBN10 = edition.ISBN10
 	}
 
-	log.Debug().
-		Str("book_id", bookData.ID).
-		Str("edition_id", edition.ID).
-		Str("title", bookData.Title).
-		Msg("Successfully found book by title and author")
+	log.Debug("Successfully found book by title and author", map[string]interface{}{
+		"book_id":    bookData.ID,
+		"edition_id": edition.ID,
+		"title":      bookData.Title,
+	})
 
 	return hcBook, nil
 }
 
 // MarkEditionAsOwned marks an edition as owned in the user's "Owned" list
 func (c *Client) MarkEditionAsOwned(ctx context.Context, editionID int) error {
-	log := c.logger.With().
-		Int("edition_id", editionID).
-		Str("method", "MarkEditionAsOwned").
-		Logger()
+	log := c.logger.With(map[string]interface{}{
+		"edition_id": editionID,
+		"method":     "MarkEditionAsOwned",
+	})
 
 	mutation := `
 	mutation EditionOwned($id: Int!) {
@@ -2489,7 +2791,9 @@ func (c *Client) MarkEditionAsOwned(ctx context.Context, editionID int) error {
 		"id": editionID,
 	}
 
-	log.Debug().Msg("Marking edition as owned in Hardcover")
+	log.Debug("Marking edition as owned in Hardcover", map[string]interface{}{
+		"edition_id": editionID,
+	})
 
 	var result struct {
 		Data struct {
@@ -2509,7 +2813,9 @@ func (c *Client) MarkEditionAsOwned(ctx context.Context, editionID int) error {
 
 	err := c.GraphQLMutation(ctx, mutation, variables, &result)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to execute GraphQL mutation")
+		log.Error("Failed to execute GraphQL mutation", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to mark edition as owned: %w", err)
 	}
 
@@ -2519,23 +2825,25 @@ func (c *Client) MarkEditionAsOwned(ctx context.Context, editionID int) error {
 			errMsgs = append(errMsgs, e.Message)
 		}
 		errMsg := fmt.Sprintf("graphql errors: %v", strings.Join(errMsgs, "; "))
-		log.Error().Msg(errMsg)
+		log.Error("GraphQL error marking edition as owned", map[string]interface{}{
+			"error": errMsg,
+		})
 		return errors.New(errMsg)
 	}
 
-	log.Debug().
-		Int("edition_id", editionID).
-		Msg("Successfully marked edition as owned in Hardcover")
+	log.Debug("Successfully marked edition as owned in Hardcover", map[string]interface{}{
+		"edition_id": editionID,
+	})
 
 	return nil
 }
 
 // GetUserBook retrieves a user book by ID
 func (c *Client) GetUserBook(ctx context.Context, id int64) (*GetUserBookResult, error) {
-	log := c.logger.With().
-		Int64("user_book_id", id).
-		Str("method", "GetUserBook").
-		Logger()
+	log := c.logger.With(map[string]interface{}{
+		"user_book_id": id,
+		"method":       "GetUserBook",
+	})
 
 	// Define the GraphQL query
 	const query = `
@@ -2563,12 +2871,14 @@ func (c *Client) GetUserBook(ctx context.Context, id int64) (*GetUserBookResult,
 		"id": id,
 	}, &response)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to execute GraphQL query")
+		log.Error("Failed to execute GraphQL query", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return nil, fmt.Errorf("failed to get user book: %w", err)
 	}
 
 	if len(response.UserBooks) == 0 {
-		log.Warn().Msg("User book not found")
+		log.Warn("User book not found", map[string]interface{}{})
 		return nil, ErrUserBookNotFound
 	}
 
@@ -2585,13 +2895,13 @@ func (c *Client) GetUserBook(ctx context.Context, id int64) (*GetUserBookResult,
 		status = "FINISHED"
 	}
 
-	log.Debug().
-		Int64("id", userBook.ID).
-		Int64("book_id", userBook.BookID).
-		Interface("edition_id", userBook.EditionID).
-		Int("status_id", userBook.StatusID).
-		Str("status", status).
-		Msg("Retrieved user book")
+	log.Debug("Retrieved user book", map[string]interface{}{
+		"id":         userBook.ID,
+		"book_id":    userBook.BookID,
+		"edition_id": userBook.EditionID,
+		"status_id":  userBook.StatusID,
+		"status":     status,
+	})
 
 	return &GetUserBookResult{
 		ID:        userBook.ID,
@@ -2603,11 +2913,11 @@ func (c *Client) GetUserBook(ctx context.Context, id int64) (*GetUserBookResult,
 
 // UpdateUserBook updates a user book
 func (c *Client) UpdateUserBook(ctx context.Context, input UpdateUserBookInput) error {
-	log := c.logger.With().
-		Str("method", "UpdateUserBook").
-		Int64("id", input.ID).
-		Interface("edition_id", input.EditionID).
-		Logger()
+	log := c.logger.With(map[string]interface{}{
+		"method":     "UpdateUserBook",
+		"id":         input.ID,
+		"edition_id": input.EditionID,
+	})
 
 	// Define the GraphQL mutation
 	const mutation = `
@@ -2642,29 +2952,31 @@ func (c *Client) UpdateUserBook(ctx context.Context, input UpdateUserBookInput) 
 
 	err := c.executeGraphQLMutation(ctx, mutation, vars, &result)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to execute GraphQL mutation")
+		log.Error("Failed to execute GraphQL mutation", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to update user book: %w", err)
 	}
 
 	if result.UpdateUserBookByPk == nil {
-		log.Warn().Msg("User book not found or not updated")
+		log.Warn("User book not found or not updated", map[string]interface{}{})
 		return ErrUserBookNotFound
 	}
 
-	log.Info().
-		Int("id", result.UpdateUserBookByPk.ID).
-		Interface("edition_id", result.UpdateUserBookByPk.EditionID).
-		Msg("Successfully updated user book")
+	log.Info("Successfully updated user book", map[string]interface{}{
+		"id":         result.UpdateUserBookByPk.ID,
+		"edition_id": result.UpdateUserBookByPk.EditionID,
+	})
 
 	return nil
 }
 
 // CheckExistingFinishedRead checks if a user book has any finished reads
 func (c *Client) CheckExistingFinishedRead(ctx context.Context, input CheckExistingFinishedReadInput) (CheckExistingFinishedReadResult, error) {
-	log := c.logger.With().
-		Str("method", "CheckExistingFinishedRead").
-		Int("user_book_id", input.UserBookID).
-		Logger()
+	log := c.logger.With(map[string]interface{}{
+		"method":       "CheckExistingFinishedRead",
+		"user_book_id": input.UserBookID,
+	})
 
 	// Define the GraphQL query
 	const query = `
@@ -2690,7 +3002,9 @@ func (c *Client) CheckExistingFinishedRead(ctx context.Context, input CheckExist
 	}, &result)
 
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to execute GraphQL query")
+		log.Error("Failed to execute GraphQL query", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return CheckExistingFinishedReadResult{}, fmt.Errorf("failed to execute GraphQL query: %w", err)
 	}
 
@@ -2701,10 +3015,10 @@ func (c *Client) CheckExistingFinishedRead(ctx context.Context, input CheckExist
 		lastFinishedAt = result.UserBookReads[0].FinishedAt
 	}
 
-	log.Debug().
-		Bool("has_finished_read", hasFinishedRead).
-		Str("last_finished_at", stringValue(lastFinishedAt)).
-		Msg("Checked for existing finished reads")
+	log.Debug("Checked for existing finished reads", map[string]interface{}{
+		"has_finished_read": hasFinishedRead,
+		"last_finished_at":  stringValue(lastFinishedAt),
+	})
 
 	return CheckExistingFinishedReadResult{
 		HasFinishedRead: hasFinishedRead,

@@ -40,9 +40,9 @@ func New(addr string) *Server {
 
 // Start starts the HTTP server
 func (s *Server) Start() error {
-	logger.Get().Info().
-		Str("addr", s.server.Addr).
-		Msg("Starting HTTP server")
+	logger.Get().Info("Starting HTTP server", map[string]interface{}{
+		"addr": s.server.Addr,
+	})
 
 	if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("failed to start server: %w", err)
@@ -52,7 +52,7 @@ func (s *Server) Start() error {
 
 // Shutdown gracefully shuts down the server
 func (s *Server) Shutdown(ctx context.Context) error {
-	logger.Get().Info().Msg("Shutting down HTTP server")
+	logger.Get().Info("Shutting down HTTP server", nil)
 	return s.server.Shutdown(ctx)
 }
 
@@ -80,3 +80,4 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 	fmt.Fprint(w, `{"status":"not implemented"}`)
 }
+ 
