@@ -498,7 +498,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 
 		// Parse the response
 		var gqlResp struct {
-			Data   map[string]json.RawMessage `json:"data"`
+			Data   json.RawMessage `json:"data"`
 			Errors []struct {
 				Message string `json:"message"`
 			} `json:"errors,omitempty"`
@@ -507,8 +507,8 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		if err := json.Unmarshal(body, &gqlResp); err != nil {
 			lastErr = fmt.Errorf("failed to unmarshal GraphQL response: %w", err)
 			c.logger.Error("Failed to unmarshal GraphQL response", map[string]interface{}{
-				"error":   lastErr.Error(),
-				"attempt": attempt + 1,
+				"error":    lastErr.Error(),
+				"attempt":  attempt + 1,
 				"response": string(body),
 			})
 			continue
@@ -542,40 +542,13 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 			return nil
 		}
 
-		// Extract the first data field (should be the mutation name like "insert_edition")
-		var data json.RawMessage
-		var dataKey string
-		for k, v := range gqlResp.Data {
-			data = v
-			dataKey = k
-			break
-		}
-
-		// Log the data we're about to unmarshal
-		c.logger.Debug("Unmarshaling GraphQL data", map[string]interface{}{
-			"dataKey": dataKey,
-			"data":    string(data),
-		})
-
-		// If no data was found, return an error
-		if len(data) == 0 || string(data) == "null" {
-			lastErr = fmt.Errorf("no data in GraphQL response")
-			c.logger.Error("No data in GraphQL response", map[string]interface{}{
-				"attempt": attempt + 1,
-				"data":    string(data),
-			})
-			continue
-		}
-
 		// Unmarshal the data into the result
-		if err := json.Unmarshal(data, result); err != nil {
+		if err := json.Unmarshal(gqlResp.Data, result); err != nil {
 			lastErr = fmt.Errorf("failed to unmarshal GraphQL data: %w", err)
-			dataBytes, _ := json.Marshal(gqlResp.Data)
 			c.logger.Error("Failed to unmarshal GraphQL data", map[string]interface{}{
 				"error":   lastErr.Error(),
 				"attempt": attempt + 1,
-				"data":    string(dataBytes),
-				"dataKey": dataKey,
+				"data":    string(gqlResp.Data),
 			})
 			continue
 		}
@@ -585,12 +558,11 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 
 	// If we get here, all retry attempts failed
 	if lastErr != nil {
-		varsJSON, _ := json.Marshal(variables)
 		c.logger.Error("GraphQL operation failed after all retries", map[string]interface{}{
 			"error":      lastErr.Error(),
 			"operation":  string(op),
 			"query":      query,
-			"variables":  string(varsJSON),
+			"variables":  variables,
 			"max_retries": c.maxRetries,
 		})
 	}
