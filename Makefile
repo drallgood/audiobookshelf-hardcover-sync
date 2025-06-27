@@ -14,6 +14,8 @@ COVERAGE_DIR := coverage
 
 # Output binary names
 BINARY := $(BIN_DIR)/$(PROJECT_NAME)
+TOOLS := edition image-tool lookup-tool
+TOOL_BINARIES := $(addprefix $(BIN_DIR)/,$(TOOLS))
 
 # Go parameters
 GO_FILES := $(shell find . -type f -name '*.go' -not -path "./vendor/*" -not -path "./test/*")
@@ -40,15 +42,15 @@ endif
 
 # Default target
 .PHONY: all
-all: test lint build
+all: test lint build build-tools
 
 # Help target
 .PHONY: help
 help:
 	@echo "Available targets:"
 	@echo "  all           - Run tests, linters and build (default)"
-	@echo "  build         - Build the binary"
-	@echo "  build-all     - Build binaries for all platforms"
+	@echo "  build         - Build the main binary and all tools"
+	@echo "  build-all     - Build main binary for all platforms"
 	@echo "  install       - Install the binary"
 	@echo "  test          - Run tests with race detection and coverage"
 	@echo "  test-verbose  - Run tests with verbose output"
@@ -64,7 +66,18 @@ help:
 
 # Build targets
 .PHONY: build
-build: $(BINARY)
+default: build-tools
+
+build: $(BINARY) build-tools
+
+.PHONY: build-tools
+build-tools: $(TOOL_BINARIES)
+
+# Build individual tools
+$(BIN_DIR)/%: cmd/%/main.go $(GO_FILES)
+	@echo "Building $@"
+	@mkdir -p $(@D)
+	go build -v -o $@ $(LDFLAGS) ./$<
 
 $(BINARY): $(GO_FILES)
 	@echo "Building $(BINARY) $(VERSION)"
@@ -177,11 +190,11 @@ release: $(GORELEASER)
 	@echo "Creating release $(VERSION)"
 	$(GORELEASER) release --rm-dist
 
-# Cleanup
+# Clean target
 .PHONY: clean
 clean:
-	@echo "Cleaning build artifacts..."
-	@rm -rf $(BIN_DIR) $(DIST_DIR) $(COVERAGE_DIR)
+	@echo "Cleaning..."
+	@rm -rf $(BIN_DIR) $(DIST_DIR) $(COVERAGE_DIR) $(TOOL_BINARIES)
 	@find . -name "coverage.out" -delete
 	@find . -name "coverage.html" -delete
 

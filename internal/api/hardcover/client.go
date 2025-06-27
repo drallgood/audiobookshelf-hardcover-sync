@@ -7,9 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
-
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +18,7 @@ import (
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/cache"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/edition"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/util"
@@ -132,8 +131,9 @@ type Client struct {
 	lastRequestTime  time.Time
 }
 
-// getAuthHeader returns the properly formatted Authorization header value
-func (c *Client) getAuthHeader() string {
+// GetAuthHeader returns the properly formatted Authorization header value
+// This is a public method that can be used by other packages to get the auth header
+func (c *Client) GetAuthHeader() string {
 	// Ensure the token has the Bearer prefix
 	authToken := strings.TrimSpace(c.authToken)
 	if authToken != "" && !strings.HasPrefix(authToken, "Bearer ") {
@@ -401,7 +401,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 
 	// Set the authorization header
 	reqModifier := func(r *http.Request) {
-		r.Header.Set("Authorization", c.getAuthHeader())
+		r.Header.Set("Authorization", c.GetAuthHeader())
 		r.Header.Set("Content-Type", "application/json")
 		r.Header.Set("Accept", "application/json")
 	}
@@ -447,6 +447,11 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 			"variables": variables,
 		})
 
+		// Log the raw request body for debugging
+		c.logger.Debug("GraphQL request body", map[string]interface{}{
+			"body": string(jsonBody),
+		})
+
 		// Execute the request
 		resp, err := httpClient.Do(req)
 		if err != nil {
@@ -470,11 +475,12 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 			continue
 		}
 
-		// Log the response
+		// Log the response with raw body for debugging
 		c.logger.Debug("Received GraphQL response", map[string]interface{}{
-			"status":       resp.Status,
-			"status_code":  resp.StatusCode,
+			"status":        resp.Status,
+			"status_code":   resp.StatusCode,
 			"content_length": resp.ContentLength,
+			"raw_response":  string(body),
 		})
 
 		// Check for HTTP errors
@@ -492,7 +498,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 
 		// Parse the response
 		var gqlResp struct {
-			Data   json.RawMessage `json:"data"`
+			Data   map[string]json.RawMessage `json:"data"`
 			Errors []struct {
 				Message string `json:"message"`
 			} `json:"errors,omitempty"`
@@ -501,12 +507,24 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		if err := json.Unmarshal(body, &gqlResp); err != nil {
 			lastErr = fmt.Errorf("failed to unmarshal GraphQL response: %w", err)
 			c.logger.Error("Failed to unmarshal GraphQL response", map[string]interface{}{
-				"error":    lastErr.Error(),
-				"attempt":  attempt + 1,
+				"error":   lastErr.Error(),
+				"attempt": attempt + 1,
 				"response": string(body),
 			})
 			continue
 		}
+
+		// Log the parsed response for debugging with more details
+		errorsJSON, _ := json.Marshal(gqlResp.Errors)
+		dataJSON, _ := json.Marshal(gqlResp.Data)
+		c.logger.Debug("Parsed GraphQL response", map[string]interface{}{
+			"hasData":         len(gqlResp.Data) > 0,
+			"data":            string(dataJSON),
+			"dataIsEmpty":     len(gqlResp.Data) == 0,
+			"hasErrors":       len(gqlResp.Errors) > 0,
+			"errors":          string(errorsJSON),
+			"rawRequestBody":  string(jsonBody),
+		})
 
 		// Check for GraphQL errors
 		if len(gqlResp.Errors) > 0 {
@@ -524,13 +542,40 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 			return nil
 		}
 
+		// Extract the first data field (should be the mutation name like "insert_edition")
+		var data json.RawMessage
+		var dataKey string
+		for k, v := range gqlResp.Data {
+			data = v
+			dataKey = k
+			break
+		}
+
+		// Log the data we're about to unmarshal
+		c.logger.Debug("Unmarshaling GraphQL data", map[string]interface{}{
+			"dataKey": dataKey,
+			"data":    string(data),
+		})
+
+		// If no data was found, return an error
+		if len(data) == 0 || string(data) == "null" {
+			lastErr = fmt.Errorf("no data in GraphQL response")
+			c.logger.Error("No data in GraphQL response", map[string]interface{}{
+				"attempt": attempt + 1,
+				"data":    string(data),
+			})
+			continue
+		}
+
 		// Unmarshal the data into the result
-		if err := json.Unmarshal(gqlResp.Data, result); err != nil {
+		if err := json.Unmarshal(data, result); err != nil {
 			lastErr = fmt.Errorf("failed to unmarshal GraphQL data: %w", err)
+			dataBytes, _ := json.Marshal(gqlResp.Data)
 			c.logger.Error("Failed to unmarshal GraphQL data", map[string]interface{}{
 				"error":   lastErr.Error(),
 				"attempt": attempt + 1,
-				"data":    string(gqlResp.Data),
+				"data":    string(dataBytes),
+				"dataKey": dataKey,
 			})
 			continue
 		}
@@ -540,11 +585,12 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 
 	// If we get here, all retry attempts failed
 	if lastErr != nil {
+		varsJSON, _ := json.Marshal(variables)
 		c.logger.Error("GraphQL operation failed after all retries", map[string]interface{}{
 			"error":      lastErr.Error(),
 			"operation":  string(op),
 			"query":      query,
-			"variables":  variables,
+			"variables":  string(varsJSON),
 			"max_retries": c.maxRetries,
 		})
 	}
@@ -634,7 +680,20 @@ func (c *Client) GetCurrentUserID(ctx context.Context) (int, error) {
 }
 
 // SearchBookByISBN13 searches for a book in the Hardcover database by ISBN-13
+// It's a convenience wrapper around searchBookByISBN with the correct field name
 func (c *Client) SearchBookByISBN13(ctx context.Context, isbn13 string) (*models.HardcoverBook, error) {
+	if isbn13 == "" {
+		return nil, fmt.Errorf("ISBN-13 cannot be empty")
+	}
+	// Ensure the logger is initialized
+	if c.logger == nil {
+		c.logger = logger.Get()
+	}
+	log := c.logger.With(map[string]interface{}{
+		"isbn13": isbn13,
+		"method": "SearchBookByISBN13",
+	})
+	log.Debug("Searching for book by ISBN-13")
 	return c.searchBookByISBN(ctx, "isbn_13", isbn13)
 }
 
@@ -1218,7 +1277,7 @@ func (c *Client) UpdateReadingProgress(
 	}
 
 	// Set headers
-	req.Header.Set("Authorization", c.getAuthHeader())
+	req.Header.Set("Authorization", c.GetAuthHeader())
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
@@ -1259,138 +1318,6 @@ func (c *Client) UpdateReadingProgress(
 	return nil
 }
 
-// UploadCoverImage uploads a cover image to a book in Hardcover
-func (c *Client) UploadCoverImage(ctx context.Context, bookID, imageURL, description string) error {
-	const endpoint = "/covers/upload"
-	log := c.logger.With(map[string]interface{}{
-		"endpoint":  endpoint,
-		"book_id":   bookID,
-		"image_url": imageURL,
-	})
-
-	// Download the image
-	log.Debug("Downloading cover image", nil)
-	imgReq, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
-	if err != nil {
-		log.Error("Failed to create download request", map[string]interface{}{
-			"error": err.Error(),
-		})
-		return fmt.Errorf("failed to create download request: %w", err)
-	}
-
-	imgResp, err := c.httpClient.Do(imgReq)
-	if err != nil {
-		log.Error("Failed to download cover image", map[string]interface{}{
-			"error": err.Error(),
-		})
-		return fmt.Errorf("failed to download cover image: %w", err)
-	}
-	defer imgResp.Body.Close()
-
-	if imgResp.StatusCode < 200 || imgResp.StatusCode >= 300 {
-		log.Error("Failed to download cover image", map[string]interface{}{
-			"status": imgResp.StatusCode,
-		})
-		return fmt.Errorf("failed to download cover image: status %d", imgResp.StatusCode)
-	}
-
-	// Read image data
-	imgData, err := io.ReadAll(imgResp.Body)
-	if err != nil {
-		log.Error("Failed to read image data", map[string]interface{}{
-			"error": err.Error(),
-		})
-		return fmt.Errorf("failed to read image data: %w", err)
-	}
-
-	// Create a buffer to store the multipart form data
-	var requestBody bytes.Buffer
-	writer := multipart.NewWriter(&requestBody)
-
-	// Add the book ID
-	if err := writer.WriteField("book_id", bookID); err != nil {
-		log.Error("Failed to write book ID field", map[string]interface{}{
-			"error": err.Error(),
-		})
-		return fmt.Errorf("failed to write book ID field: %w", err)
-	}
-
-	// Add the description if provided
-	if description != "" {
-		if err := writer.WriteField("description", description); err != nil {
-			log.Error("Failed to write description field", map[string]interface{}{
-			"error": err.Error(),
-		})
-			return fmt.Errorf("failed to write description field: %w", err)
-		}
-	}
-
-	// Add the image file
-	part, err := writer.CreateFormFile("file", "cover.jpg")
-	if err != nil {
-		log.Error("Failed to create form file", map[string]interface{}{
-			"error": err.Error(),
-		})
-		return fmt.Errorf("failed to create form file: %w", err)
-	}
-
-	if _, err := part.Write(imgData); err != nil {
-		log.Error("Failed to write image data to form", map[string]interface{}{
-			"error": err.Error(),
-		})
-		return fmt.Errorf("failed to write image data to form: %w", err)
-	}
-
-	// Close the writer to finalize the multipart message
-	if err := writer.Close(); err != nil {
-		log.Error("Failed to close multipart writer", map[string]interface{}{
-			"error": err.Error(),
-		})
-		return fmt.Errorf("failed to close multipart writer: %w", err)
-	}
-
-	// Create the upload request
-	req, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		c.baseURL+endpoint,
-		&requestBody,
-	)
-	if err != nil {
-		log.Error("Failed to create upload request", map[string]interface{}{
-			"error": err.Error(),
-		})
-		return fmt.Errorf("failed to create upload request: %w", err)
-	}
-
-	// Set headers
-	req.Header.Set("Authorization", c.getAuthHeader())
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("Accept", "application/json")
-
-	// Execute the request
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		log.Error("Failed to upload cover image", map[string]interface{}{
-			"error": err.Error(),
-		})
-		return fmt.Errorf("failed to upload cover image: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Check response status
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		log.Error("Failed to upload cover image", map[string]interface{}{
-			"status":   resp.StatusCode,
-			"response": string(body),
-		})
-		return fmt.Errorf("failed to upload cover image: status %d", resp.StatusCode)
-	}
-
-	log.Info("Successfully uploaded cover image", nil)
-	return nil
-}
 
 // DatesReadInput represents the input for date-related fields when creating or updating a user book read entry
 type DatesReadInput struct {
@@ -1871,6 +1798,48 @@ type GetUserBookResult struct {
 	Progress  *float64 `json:"progress,omitempty"`
 }
 
+// GetEditionByISBN13 retrieves an edition by its ISBN-13
+func (c *Client) GetEditionByISBN13(ctx context.Context, isbn13 string) (*models.Edition, error) {
+	// First try to find the book by ISBN-13
+	book, err := c.SearchBookByISBN13(ctx, isbn13)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find book by ISBN-13: %w", err)
+	}
+
+	if book == nil || book.ID == "" {
+		return nil, fmt.Errorf("no book found with ISBN-13: %s", isbn13)
+	}
+
+	// Then get the edition details
+	edition, err := c.GetEdition(ctx, book.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get edition: %w", err)
+	}
+
+	return edition, nil
+}
+
+// GetEditionByASIN retrieves an edition by its ASIN
+func (c *Client) GetEditionByASIN(ctx context.Context, asin string) (*models.Edition, error) {
+	// First try to find the book by ASIN
+	book, err := c.SearchBookByASIN(ctx, asin)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find book by ASIN: %w", err)
+	}
+
+	if book == nil || book.ID == "" {
+		return nil, fmt.Errorf("no book found with ASIN: %s", asin)
+	}
+
+	// Then get the edition details
+	edition, err := c.GetEdition(ctx, book.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get edition: %w", err)
+	}
+
+	return edition, nil
+}
+
 // GetEdition retrieves edition details including book_id for a given edition_id
 func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edition, error) {
 	// Ensure the logger is initialized
@@ -1904,14 +1873,16 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 
 	// Define the response structure that matches the GraphQL response
 	var response struct {
-		Editions []struct {
-			ID     int     `json:"id"`
-			BookID int     `json:"book_id"`
-			Title  *string `json:"title"`
-			ISBN10 *string `json:"isbn_10"`
-			ISBN13 *string `json:"isbn_13"`
-			ASIN   *string `json:"asin"`
-		} `json:"editions"`
+		Data struct {
+			Editions []struct {
+				ID     int     `json:"id"`
+				BookID int     `json:"book_id"`
+				Title  *string `json:"title"`
+				ISBN10 *string `json:"isbn_10"`
+				ISBN13 *string `json:"isbn_13"`
+				ASIN   *string `json:"asin"`
+			} `json:"editions"`
+		} `json:"data"`
 	}
 
 	// Execute the query
@@ -1919,7 +1890,7 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 		"editionId": editionIDInt,
 	}, &response)
 
-	editions := response.Editions
+	editions := response.Data.Editions
 
 	if err != nil {
 		log.Error("Failed to execute GraphQL query", map[string]interface{}{
@@ -2192,6 +2163,51 @@ func (c *Client) GetPersonByID(ctx context.Context, id string) (*models.Author, 
 	return &models.Author{
 		ID:   person.ID,
 		Name: person.Name,
+	}, nil
+}
+
+// GetGoogleUploadCredentials gets signed upload credentials for Google Cloud Storage
+func (c *Client) GetGoogleUploadCredentials(ctx context.Context, filename string, editionID int) (*edition.GoogleUploadInfo, error) {
+	const query = `
+	query GetGoogleUploadCredentials($input: GoogleUploadCredentialsInput!) {
+		getGoogleUploadCredentials(input: $input) {
+			url
+			fields
+		}
+	}`
+
+	// Prepare variables
+	variables := map[string]interface{}{
+		"input": map[string]interface{}{
+			"filename":    filename,
+			"editionId":   editionID,
+		},
+	}
+
+	// Execute the query
+	var response struct {
+		GetGoogleUploadCredentials struct {
+			URL    string            `json:"url"`
+			Fields map[string]string `json:"fields"`
+		} `json:"getGoogleUploadCredentials"`
+	}
+
+	if err := c.GraphQLQuery(ctx, query, variables, &response); err != nil {
+		return nil, fmt.Errorf("failed to get GCS upload credentials: %w", err)
+	}
+
+	// Construct the public URL where the file will be accessible
+	// This assumes the file will be available at a predictable URL pattern
+	// Adjust this based on your actual GCS bucket and path structure
+	fileURL := fmt.Sprintf("https://storage.googleapis.com/%s/%s", 
+		response.GetGoogleUploadCredentials.Fields["bucket"],
+		response.GetGoogleUploadCredentials.Fields["key"],
+	)
+
+	return &edition.GoogleUploadInfo{
+		URL:     response.GetGoogleUploadCredentials.URL,
+		Fields:  response.GetGoogleUploadCredentials.Fields,
+		FileURL: fileURL,
 	}, nil
 }
 
