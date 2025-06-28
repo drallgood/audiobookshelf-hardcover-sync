@@ -1944,7 +1944,7 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 	return editionModel, nil
 }
 
-// SearchPeople searches for people (authors or narrators) by name and type
+// SearchPeople searches for people (authors or narrators) by name
 func (c *Client) SearchPeople(ctx context.Context, name, personType string, limit int) ([]models.Author, error) {
 	if c.logger == nil {
 		c.logger = logger.Get()
@@ -1955,92 +1955,224 @@ func (c *Client) SearchPeople(ctx context.Context, name, personType string, limi
 		"type":      personType,
 	})
 
-	// Define the GraphQL query to get both IDs and names
-	query := `
-		query SearchPeople($query: String!, $queryType: String, $perPage: Int) {
-			search(
-				query: $query
-				query_type: $queryType
-				per_page: $perPage
-			) {
-				error
-				hits {
-					document {
-						... on Person {
-							id
-							name
-						}
-					}
-				}
-			}
-		}`
+	log.Debug("Searching for person", map[string]interface{}{
+		"name":  name,
+		"type":  personType,
+		"limit": limit,
+	})
 
+	// First, search for person IDs using the search API
+	searchQuery := `
+	query SearchPeople($query: String!, $queryType: String, $perPage: Int) {
+		search(
+			query: $query
+			query_type: $queryType
+			per_page: $perPage
+		) {
+			error
+			ids
+		}
+	}`
 
-	// Set up variables
+	// Set up variables for the search query
 	variables := map[string]interface{}{
 		"query":     name,
-		"queryType": personType,
+		"queryType": personType, // "author" or "narrator"
 		"perPage":   limit,
 	}
 
-	// Define the response structure
-	var response struct {
+	// Define the response structure for search
+	var searchResponse struct {
 		Search struct {
-			Error string `json:"error"`
-			Hits  []struct {
-				Document struct {
-					ID   string `json:"id"`
-					Name string `json:"name"`
-				} `json:"document"`
-			} `json:"hits"`
+			Error *string      `json:"error"`
+			IDs   []json.Number `json:"ids"`
 		} `json:"search"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors,omitempty"`
 	}
 
-	// Execute the query
-	log.Debug("Searching for people", map[string]interface{}{
-		"name": name,
-		"type": personType,
+	// Execute the search query
+	log.Debug("Executing search query for person IDs", map[string]interface{}{
+		"query": searchQuery,
+		"vars":  variables,
 	})
 
-
-	if err := c.GraphQLQuery(ctx, query, variables, &response); err != nil {
-		log.Error("Failed to search for people", map[string]interface{}{
+	if err := c.GraphQLQuery(ctx, searchQuery, variables, &searchResponse); err != nil {
+		log.Error("Failed to search for person IDs", map[string]interface{}{
 			"error": err.Error(),
 		})
-		return nil, fmt.Errorf("failed to search for people: %w", err)
+		return nil, fmt.Errorf("failed to search for person IDs: %w", err)
 	}
 
 	// Check for API-level errors
-	if response.Search.Error != "" {
-		errMsg := fmt.Sprintf("search API error: %s", response.Search.Error)
-		log.Error("Search API returned an error", map[string]interface{}{
-			"error": response.Search.Error,
+	if len(searchResponse.Errors) > 0 {
+		errMsg := fmt.Sprintf("GraphQL errors: %v", searchResponse.Errors)
+		log.Error("Search API returned GraphQL errors", map[string]interface{}{
+			"errors": searchResponse.Errors,
 		})
 		return nil, errors.New(errMsg)
 	}
 
-	// Convert results to Author objects, ensuring we don't have duplicates
-	uniqueAuthors := make(map[string]models.Author)
-	for _, hit := range response.Search.Hits {
-		doc := hit.Document
-		if doc.ID == "" || doc.Name == "" {
+	if searchResponse.Search.Error != nil {
+		errMsg := fmt.Sprintf("search API error: %s", *searchResponse.Search.Error)
+		log.Error("Search API returned an error", map[string]interface{}{
+			"error": *searchResponse.Search.Error,
+		})
+		return nil, errors.New(errMsg)
+	}
+
+	if len(searchResponse.Search.IDs) == 0 {
+		log.Debug("No person IDs found for search", map[string]interface{}{
+			"name": name,
+			"type": personType,
+		})
+		return []models.Author{}, nil
+	}
+
+	// Log the raw response and IDs for debugging
+	log.Debug("Raw search response", map[string]interface{}{
+		"response": fmt.Sprintf("%+v", searchResponse),
+	})
+	log.Debug("Raw person IDs from search", map[string]interface{}{
+		"ids":    searchResponse.Search.IDs,
+		"length": len(searchResponse.Search.IDs),
+	})
+
+	// Convert IDs to integers
+	var ids []int
+	for i, id := range searchResponse.Search.IDs {
+		// Log the raw ID and its type
+		log.Debug("Processing raw ID", map[string]interface{}{
+			"index": i,
+			"id":    id,
+			"type":  fmt.Sprintf("%T", id),
+		})
+
+		// Convert the ID to a string
+		idStr := fmt.Sprintf("%v", id)
+		log.Debug("Converted ID to string", map[string]interface{}{
+			"index": i,
+			"id":    idStr,
+		})
+
+		// Try converting from string to int
+		idInt, err := strconv.Atoi(idStr)
+		if err != nil {
+			log.Warn("Failed to convert person ID to integer, skipping", map[string]interface{}{
+				"index": i,
+				"id":    idStr,
+				"type":  fmt.Sprintf("%T", id),
+				"error": err.Error(),
+			})
 			continue
 		}
-		// Use ID as the key to deduplicate
-		uniqueAuthors[doc.ID] = models.Author{
-			ID:   doc.ID,
-			Name: doc.Name,
+
+		log.Debug("Successfully converted ID", map[string]interface{}{
+			"index":    i,
+			"original": id,
+			"converted": idInt,
+		})
+		ids = append(ids, idInt)
+	}
+
+	if len(ids) == 0 {
+		log.Debug("No valid person IDs found after conversion", map[string]interface{}{
+			"original_ids": searchResponse.Search.IDs,
+		})
+		return []models.Author{}, nil
+	}
+
+	log.Debug("Successfully converted person IDs", map[string]interface{}{
+		"original_ids": searchResponse.Search.IDs,
+		"converted_ids": ids,
+	})
+
+	log.Debug("Converted person IDs", map[string]interface{}{
+		"original_ids": searchResponse.Search.IDs,
+		"converted_ids": ids,
+	})
+
+	// Now fetch full details for all authors in a single batch
+	personQuery := `
+	query GetPeopleByIDs($ids: [Int!]!) {
+		authors(where: {id: {_in: $ids}}) {
+			id
+			name
+			books_count
+			canonical_id
 		}
+	}`
+
+	// Define the response structure for the authors query
+	type AuthorResponse struct {
+		Authors []struct {
+			ID           json.Number `json:"id"`
+			Name         string      `json:"name"`
+			BooksCount   int         `json:"books_count"`
+			CanonicalID  *string     `json:"canonical_id"`
+		} `json:"authors"`
 	}
 
-	// Convert the map values to a slice
-	authors := make([]models.Author, 0, len(uniqueAuthors))
-	for _, author := range uniqueAuthors {
-		authors = append(authors, author)
+	// Set up variables for the batch query
+	personVars := map[string]interface{}{
+		"ids": ids,
 	}
 
-	log.Debug("Found people", map[string]interface{}{
-		"count": len(authors),
+	log.Debug("Fetching person details in batch", map[string]interface{}{
+		"ids":          ids,
+		"query_string": personQuery,
+		"variables":    personVars,
+	})
+
+	var personResponse AuthorResponse
+	if err := c.GraphQLQuery(ctx, personQuery, personVars, &personResponse); err != nil {
+		log.Error("Failed to fetch person details", map[string]interface{}{
+			"error":   err.Error(),
+			"query":   personQuery,
+			"vars":    personVars,
+			"raw_resp": fmt.Sprintf("%+v", personResponse),
+		})
+		return nil, fmt.Errorf("failed to fetch person details: %w", err)
+	}
+
+	// Process the batch response
+	var authors []models.Author
+	for _, authorData := range personResponse.Authors {
+		if authorData.Name == "" {
+			// Skip invalid authors
+			log.Debug("Skipping author with empty name", map[string]interface{}{
+				"id": authorData.ID,
+			})
+			continue
+		}
+		
+		authorID := fmt.Sprintf("%v", authorData.ID)
+		authors = append(authors, models.Author{
+			ID:        authorID,
+			Name:      authorData.Name,
+			BookCount: authorData.BooksCount,
+		})
+
+		log.Debug("Processed author", map[string]interface{}{
+			"id":         authorID,
+			"name":       authorData.Name,
+			"book_count": authorData.BooksCount,
+		})
+	}
+
+	if len(authors) == 0 {
+		log.Debug("No valid authors found in response")
+		return []models.Author{}, nil
+	}
+
+	// Sort by book count (descending)
+	sort.Slice(authors, func(i, j int) bool {
+		return authors[i].BookCount > authors[j].BookCount
+	})
+
+	log.Debug("Search completed successfully", map[string]interface{}{
+		"result_count": len(authors),
 	})
 
 	return authors, nil

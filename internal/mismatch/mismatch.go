@@ -172,8 +172,9 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 	// Note: We no longer automatically use ASIN as bookID to prevent incorrect book identification
 	// ASIN is stored in its dedicated field below
 
-	// Create the mismatch
+	// Create the mismatch with all available metadata
 	mismatch := BookMismatch{
+		// Core book information
 		BookID:          bookID,
 		Title:           metadata.Title,
 		Subtitle:        metadata.Subtitle,
@@ -182,22 +183,30 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 		PublishedYear:   metadata.PublishedYear,
 		ReleaseDate:     releaseDate,
 		DurationSeconds: int(duration + 0.5), // Round to nearest second
+		
+		// Identifiers
 		ISBN:            metadata.ISBN,     // Keep original ISBN for backward compatibility
 		ISBN10:          isbn10,
 		ISBN13:          isbn13,
 		ASIN:            metadata.ASIN,
+		
+		// Media URLs
 		CoverURL:        metadata.CoverURL,
 		ImageURL:        metadata.CoverURL, // Use CoverURL as ImageURL by default
 		
-		// Set default values for required fields
+		// Edition information
 		EditionFormat:   "Audiobook",
 		EditionInfo:     "Imported from Audiobookshelf: " + reason,
 		LanguageID:      1, // Default to English
 		CountryID:       1, // Default to US
-		PublisherID:     publisherID, // Use looked up or default publisher ID
 		
-		// Add publisher information if available
+		// Publisher information
+		PublisherID:     publisherID, // Use looked up or default publisher ID
 		Publisher:       publisherName,
+		
+		// AudiobookShelf specific
+		LibraryID:       "", // Will be set later if available
+		FolderID:        "", // Will be set later if available
 		
 		// Tracking information
 		Reason:          reason,

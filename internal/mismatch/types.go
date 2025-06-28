@@ -99,37 +99,15 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc *hardcover.Client
 
 	// Prefer image_url over cover_url if both are available
 	imageURL := b.ImageURL
-	if imageURL == "" && b.CoverURL != "" {
+	if imageURL == "" {
 		imageURL = b.CoverURL
 	}
 
-	// Set EditionInfo with reason and ABS image URL if available
-	editionInfo := b.EditionInfo
-	logger.Debug(fmt.Sprintf("Initial EditionInfo - editionInfo: %s, reason: %s", editionInfo, b.Reason))
-	
-	// Add ABS image URL if available
-	switch {
-	case b.ImageURL != "":
-		editionInfo = fmt.Sprintf("%s\nABS Image URL: %s", editionInfo, b.ImageURL)
-	case b.CoverURL != "":
-		editionInfo = fmt.Sprintf("%s\nABS Image URL: %s", editionInfo, b.CoverURL)
+	// Set EditionInfo - keep it clean and simple
+	editionInfo := "Imported from Audiobookshelf"
+	if b.EditionInfo != "" {
+		editionInfo = b.EditionInfo
 	}
-
-	// Add reason if available
-	if b.Reason != "" {
-		editionInfo = fmt.Sprintf("%s\nReason: %s", editionInfo, b.Reason)
-	}
-
-	// Add import source if this is a new entry
-	if !strings.Contains(editionInfo, "Imported from Audiobookshelf") {
-		editionInfo = fmt.Sprintf("Imported from Audiobookshelf%s", 
-			func() string {
-				if editionInfo != "" { return ":\n" + editionInfo }
-				return ""
-			}())
-	}
-
-	logger.Debug(fmt.Sprintf("Final EditionInfo: %s", editionInfo))
 
 	// Look up author IDs if we have an author name and a Hardcover client
 	authorIDs := b.AuthorIDs
@@ -152,12 +130,21 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc *hardcover.Client
 	narratorIDs := b.NarratorIDs
 	if len(narratorIDs) == 0 && b.Narrator != "" {
 		if hc != nil {
-			// Try to look up narrator IDs from Hardcover
-			if ids, err := LookupNarratorIDs(ctx, hc, b.Narrator); err == nil && len(ids) > 0 {
+			// Split narrator string by commas and trim whitespace
+			narratorNames := strings.Split(b.Narrator, ",")
+			for i, name := range narratorNames {
+				narratorNames[i] = strings.TrimSpace(name)
+			}
+
+			// Try to look up narrator IDs from Hardcover for all names
+			if ids, err := LookupNarratorIDs(ctx, hc, narratorNames...); err == nil && len(ids) > 0 {
 				narratorIDs = ids
 				logger.Debug(fmt.Sprintf("Looked up narrator IDs: %v", narratorIDs))
 			} else if err != nil {
-				logger.Error("Failed to look up narrator IDs", map[string]interface{}{"error": err.Error()})
+				logger.Error("Failed to look up narrator IDs", map[string]interface{}{
+					"error": err.Error(),
+					"names": narratorNames,
+				})
 			}
 		} else {
 			// Default to empty slice if no client available
@@ -185,6 +172,7 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc *hardcover.Client
 
 	// Initialize all fields with zero values to ensure they appear in the JSON output
 	result := &EditionExport{
+		// Core book information (used for import)
 		BookID:         bookID,
 		Title:          b.Title,
 		Subtitle:       b.Subtitle,
@@ -201,6 +189,19 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc *hardcover.Client
 		EditionInfo:    editionInfo,
 		LanguageID:     languageID,
 		CountryID:      countryID,
+
+		// Additional informational fields (not used during import)
+		Info: &EditionExportInfo{
+			AuthorName:    b.Author,
+			NarratorName:  b.Narrator,
+			PublisherName: b.Publisher,
+			PublishedYear: b.PublishedYear,
+			CoverURL:      b.CoverURL,
+			Timestamp:     b.Timestamp,
+			CreatedAt:     b.CreatedAt.Format(time.RFC3339),
+			Reason:        b.Reason,
+			Attempts:      b.Attempts,
+		},
 	}
 
 	// Log final result for debugging
@@ -369,8 +370,28 @@ type BookMismatch struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// EditionExportInfo contains additional informational fields that are not used during import
+// but provide context about the book and the export process
+type EditionExportInfo struct {
+	// Original author/narrator/publisher names (from source)
+	AuthorName     string `json:"author,omitempty"`
+	NarratorName   string `json:"narrator,omitempty"`
+	PublisherName  string `json:"publisher,omitempty"`
+	
+	// Additional metadata from source
+	PublishedYear  string `json:"published_year,omitempty"`
+	CoverURL       string `json:"cover_url,omitempty"`
+	
+	// Export process metadata
+	Timestamp      int64  `json:"timestamp,omitempty"`
+	CreatedAt      string `json:"created_at,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	Attempts       int    `json:"attempts,omitempty"`
+}
+
 // EditionExport represents the format expected by the Hardcover edition import tool
 type EditionExport struct {
+	// Core book information (used for import)
 	BookID         int     `json:"book_id"`
 	Title          string  `json:"title"`
 	Subtitle       string  `json:"subtitle"`
@@ -387,4 +408,7 @@ type EditionExport struct {
 	EditionInfo    string  `json:"edition_information"`
 	LanguageID     int     `json:"language_id"`
 	CountryID      int     `json:"country_id"`
+
+	// Additional informational fields (not used during import)
+	Info           *EditionExportInfo `json:"info,omitempty"`
 }

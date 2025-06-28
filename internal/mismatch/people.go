@@ -24,8 +24,18 @@ func LookupAuthorIDs(ctx context.Context, hc *hardcover.Client, names ...string)
 	return lookupPeople(ctx, hc, "author", names...)
 }
 
-// LookupNarratorIDs looks up narrator IDs by name
+// LookupNarratorIDs looks up narrator IDs by name.
+// It can handle multiple names separated by commas in a single string.
 func LookupNarratorIDs(ctx context.Context, hc *hardcover.Client, names ...string) ([]int, error) {
+	// If we have exactly one name that contains commas, split it
+	if len(names) == 1 && strings.Contains(names[0], ",") {
+		splitNames := strings.Split(names[0], ",")
+		// Trim whitespace from each name
+		for i, name := range splitNames {
+			splitNames[i] = strings.TrimSpace(name)
+		}
+		return lookupPeople(ctx, hc, "narrator", splitNames...)
+	}
 	return lookupPeople(ctx, hc, "narrator", names...)
 }
 
@@ -41,6 +51,8 @@ func lookupPeople(ctx context.Context, hc *hardcover.Client, personType string, 
 		log = logger.Get()
 	}
 
+	// Use a map to deduplicate IDs
+	idMap := make(map[int]bool)
 	var ids []int
 
 	for _, name := range names {
@@ -51,7 +63,10 @@ func lookupPeople(ctx context.Context, hc *hardcover.Client, personType string, 
 		// Check cache first
 		cacheKey := fmt.Sprintf("%s:%s", personType, strings.ToLower(name))
 		if id, found := getFromCache(cacheKey); found {
-			ids = append(ids, id)
+			if !idMap[id] {
+				idMap[id] = true
+				ids = append(ids, id)
+			}
 			continue
 		}
 
@@ -76,7 +91,7 @@ func lookupPeople(ctx context.Context, hc *hardcover.Client, personType string, 
 			continue
 		}
 
-		// If we found matches, use the first one
+		// Take only the first result (already sorted by book count)
 		if len(people) > 0 {
 			person := people[0]
 			// Convert ID to int
@@ -86,20 +101,27 @@ func lookupPeople(ctx context.Context, hc *hardcover.Client, personType string, 
 					"id":    person.ID,
 					"error": err.Error(),
 				})
-				continue
+			} else if !idMap[personID] { // Skip duplicates
+				// Add to cache and results
+				addToCache(cacheKey, personID, person.Name)
+				idMap[personID] = true
+				ids = append(ids, personID)
+
+				log.Debug(fmt.Sprintf("Found %s ID (top result by book count)", personType), map[string]interface{}{
+					"name":       name,
+					"id":         personID,
+					"book_count": person.BookCount,
+				})
 			}
+		}
+	}
 
-			// Add to cache
-			addToCache(cacheKey, personID, person.Name)
-			ids = append(ids, personID)
-
-			log.Debug(fmt.Sprintf("Found %s ID", personType), map[string]interface{}{
-				"name": name,
-				"id":   personID,
-			})
-		} else {
+	// If we processed all names but didn't find any matches, log a warning for the last name
+	if len(ids) == 0 && len(names) > 0 {
+		lastName := names[len(names)-1]
+		if lastName != "" {
 			log.Warn(fmt.Sprintf("Could not find %s in Hardcover", personType), map[string]interface{}{
-				"name": name,
+				"name": lastName,
 			})
 		}
 	}

@@ -27,8 +27,9 @@ type HardcoverBook struct {
 
 // Author represents an author or narrator in the Hardcover API
 type Author struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	BookCount int    `json:"bookCount,omitempty"`
 }
 
 // ReadingProgress represents a user's reading progress in Hardcover
