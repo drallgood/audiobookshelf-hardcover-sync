@@ -64,3 +64,4 @@ logs/
 ehthumbs.db
 Thumbs.db
 cache
+coverage

@@ -281,11 +281,12 @@ func TestCacheConcurrentAccess(t *testing.T) {
 	// Wait for all goroutines to complete
 	wg.Wait()
 
-	// Verify cache integrity
+	// Verify all cache entries exist after concurrent operations
 	for i := 0; i < 10; i++ {
 		key := fmt.Sprintf("author%d", i)
-		if _, exists := cache.entries[GenerateCacheKey(key, "author")]; exists && i < 5 {
-			t.Errorf("Cache entry for %s should not exist", key)
+		_, found := cache.Get(key, "author")
+		if !found {
+			t.Errorf("Expected cache entry for %s to exist after concurrent operations", key)
 		}
 	}
 	

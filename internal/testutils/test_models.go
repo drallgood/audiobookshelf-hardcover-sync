@@ -297,26 +297,35 @@ func ParseAudibleDuration(durationStr string) (int, error) {
 
 // generateExampleJSON generates an example JSON file for testing
 func generateExampleJSON(filename string) error {
-	// This is a stub implementation for testing
-	example := PrepopulatedEditionInput{
+	// Create an example EditionCreatorInput with all required fields
+	example := EditionCreatorInput{
+		BookID:      12345,
 		Title:       "Example Book",
+		Subtitle:    "An Example Subtitle",
 		Authors:     []string{"John Doe"},
+		AuthorIDs:   []int{1},
+		NarratorIDs: []int{2},
 		Description: "This is an example book description.",
 		ImageURL:    "https://example.com/cover.jpg",
+		ASIN:        "B0A1B2C3D4",
+		ISBN10:      "1234567890",
 		ISBN13:      "9781234567890",
-		Publisher:   "Example Publisher",
+		PublisherID: 1,
 		ReleaseDate: "2023-01-01",
+		AudioLength: 3600, // 1 hour in seconds
 		EditionFormat: "Audiobook",
-		EditionInfo:   "First Edition",
-		LanguageID:    1,
-		CountryID:     1,
+		EditionInfo: "First Edition",
+		LanguageID:  1,
+		CountryID:   1,
 	}
 
+	// Marshal the example to JSON with indentation
 	data, err := json.MarshalIndent(example, "", "  ")
 	if err != nil {
 		return fmt.Errorf("error marshaling example JSON: %v", err)
 	}
 
+	// Write the JSON to a file
 	if err := os.WriteFile(filename, data, 0644); err != nil {
 		return fmt.Errorf("error writing example JSON file: %v", err)
 	}
