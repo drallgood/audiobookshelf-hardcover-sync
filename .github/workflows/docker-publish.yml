@@ -187,13 +187,13 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           platforms: linux/amd64,linux/arm64
           build-args: |
-            VERSION=${{ steps.version.outputs.version }}
-            BUILD_DATE=${{ steps.get-date.outputs.date }}
+            VERSION=${{ steps.env.outputs.version || 'dev' }}
+            BUILD_DATE=${{ steps.env.outputs.date || '' }}
             VCS_REF=${{ github.sha }}
             VCS_URL=${{ github.server_url }}/${{ github.repository }}
           tags: |
-            type=raw,value=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
-            type=raw,value=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA::8}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.env.outputs.version || 'dev' }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA::8}
             type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
