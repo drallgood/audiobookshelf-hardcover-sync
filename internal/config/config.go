@@ -309,18 +309,6 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-func getBoolFromEnv(key string, fallback bool) bool {
-	if value, exists := os.LookupEnv(key); exists {
-		b, err := strconv.ParseBool(value)
-		if err != nil {
-			fmt.Printf("Warning: Failed to parse bool from env var %s: %v\n", key, err)
-			return fallback
-		}
-		return b
-	}
-	return fallback
-}
-
 func getIntFromEnv(key string, fallback int) int {
 	if value, exists := os.LookupEnv(key); exists {
 		i, err := strconv.Atoi(value)

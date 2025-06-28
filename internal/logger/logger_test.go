@@ -12,12 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Define the context key type
-type contextKey string
-
-// Define the context key for IP
-const contextKeyIP contextKey = "ip"
-
 func TestSetup(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -89,7 +83,10 @@ func TestHTTPMiddleware(t *testing.T) {
 	// Create a test handler
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("test response"))
+		if _, err := w.Write([]byte("test response")); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	})
 
 	// Create a test request

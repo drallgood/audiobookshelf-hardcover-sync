@@ -79,14 +79,13 @@ func main() {
 		TimeFormat: time.RFC3339,
 	})
 
-	// Get the logger instance and create context
+	// Get the logger instance
 	log := logger.Get()
-	ctx := logger.NewContext(context.Background(), log)
 
 	// Log application startup
 	log.Info("Starting audiobookshelf-hardcover-sync", map[string]interface{}{
-		"version":   version,
-		"log_level": cfg.Logging.Level,
+		"version":    version,
+		"log_level":  cfg.Logging.Level,
 		"log_format": cfg.Logging.Format,
 	})
 

@@ -115,7 +115,7 @@ func (r *RateLimiter) Wait(ctx context.Context) error {
 	if backoffRemaining := r.checkBackoff(); backoffRemaining > 0 {
 		r.logger.Debug("Rate limited: in backoff period", map[string]interface{}{
 			"backoff_remaining": backoffRemaining.String(),
-			"backoff_until":    r.backoffUntil.Sub(time.Now()).String(),
+			"backoff_until":    time.Until(r.backoffUntil).String(),
 		})
 
 		// If we have a context with timeout, check if we can wait that long

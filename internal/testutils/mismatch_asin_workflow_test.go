@@ -55,9 +55,7 @@ func TestMismatchJSONFileCreationWithASINReference(t *testing.T) {
 	}
 
 	// Add test mismatches to the global collection
-	for _, mismatch := range testMismatches {
-		bookMismatches = append(bookMismatches, mismatch)
-	}
+	bookMismatches = append(bookMismatches, testMismatches...)
 
 	// Test the saveMismatchesJSONFile function (which creates edition-ready files)
 	err := saveMismatchesJSONFile(tempDir)

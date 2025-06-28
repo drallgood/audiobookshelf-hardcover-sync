@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -32,7 +33,7 @@ import (
 )
 
 func main() {
-		// Define global flags
+	// Define global flags
 	globalFlags := flag.NewFlagSet("global", flag.ExitOnError)
 	helpFlag := globalFlags.Bool("h", false, "Show help")
 	helpLongFlag := globalFlags.Bool("help", false, "Show help")
@@ -41,7 +42,9 @@ func main() {
 	limit := globalFlags.Int("limit", 5, "Maximum number of results to return")
 
 	// Parse global flags first
-	globalFlags.Parse(os.Args[1:])
+	if err := globalFlags.Parse(os.Args[1:]); err != nil {
+		log.Fatalf("Error parsing command line flags: %v", err)
+	}
 
 	// Show help if no args or help flag
 	if len(os.Args) < 2 || *helpFlag || *helpLongFlag {

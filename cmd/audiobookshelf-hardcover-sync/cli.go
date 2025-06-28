@@ -87,14 +87,6 @@ func setEnvFromFlag(value, envVar string) {
 	}
 }
 
-// initLogger initializes the logger with the appropriate configuration
-func initLogger() {
-	logger.Setup(logger.Config{
-		Level:  "info",
-		Output: os.Stdout,
-	})
-}
-
 // runOneTimeSync performs a single sync operation and exits
 // RunOneTimeSync performs a one-time sync operation with the given flags
 func RunOneTimeSync(flags *configFlags) {

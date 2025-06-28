@@ -53,19 +53,6 @@ type GoogleUploadInfo struct {
 	FileURL string            `json:"-"`       // The final public URL where the file will be accessible (not part of JSON)
 }
 
-// Helper function to get keys from a map
-func getMapKeys(m map[string]interface{}) []string {
-	if m == nil {
-		return []string{}
-	}
-	
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	return keys
-}
-
 // HardcoverClient defines the interface for the Hardcover client
 // that is used by the Creator
 //go:generate mockery --name=HardcoverClient --output=../mocks --case=underscore --with-expecter=true

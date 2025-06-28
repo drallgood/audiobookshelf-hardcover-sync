@@ -22,6 +22,12 @@ func TestEnhanceWithExternalDataPlaceholderFunctionNew(t *testing.T) {
 		}
 
 		// Verify the enhanced data has the expected fields
+		if enhanced == nil {
+			t.Error("enhanceWithExternalData returned nil")
+			return
+		}
+
+		// Now it's safe to access enhanced fields
 		if enhanced.BookID != input.BookID || enhanced.Title != input.Title {
 			t.Errorf("enhanceWithExternalData modified unexpected fields: got %+v, want %+v", enhanced, input)
 		}
@@ -40,6 +46,12 @@ func TestEnhanceWithExternalDataPlaceholderFunctionNew(t *testing.T) {
 		// Verify the input was not modified (since it's a placeholder)
 		if enhanced == nil {
 			t.Error("enhanceWithExternalData returned nil")
+		}
+
+		// Verify enhanced is not nil before accessing its fields
+		if enhanced == nil {
+			t.Error("enhanceWithExternalData returned nil")
+			return
 		}
 
 		// In the current implementation, the function doesn't modify the input

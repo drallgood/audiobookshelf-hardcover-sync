@@ -19,9 +19,6 @@ var (
 	// once ensures the global logger is only initialized once
 	once sync.Once
 
-	// testOnce is used to allow resetting the once variable in tests
-	testOnce = &once
-
 	// defaultConfig is the default logger configuration
 	defaultConfig = Config{
 		Level:      "info",
@@ -155,7 +152,6 @@ func Get() *Logger {
 func ResetForTesting() {
 	globalLogger = nil
 	once = sync.Once{}
-	testOnce = &sync.Once{}
 }
 
 // Setup initializes the global logger with the given configuration

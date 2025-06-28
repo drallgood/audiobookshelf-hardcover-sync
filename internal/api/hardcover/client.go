@@ -43,6 +43,22 @@ const (
 	mutationOperation graphqlOperation = "mutation"
 )
 
+// GetUserBookResult represents the result of getting a user book
+// This struct is used to return the result of GetUserBook method
+type GetUserBookResult struct {
+	ID        int64    `json:"id"`
+	BookID    int64    `json:"book_id"`
+	EditionID *int64   `json:"edition_id,omitempty"`
+	Status    string   `json:"status"`
+	Progress  *float64 `json:"progress,omitempty"`
+}
+
+// UpdateUserBookInput represents the input for updating a user book
+type UpdateUserBookInput struct {
+	ID        int64   `json:"id"`
+	EditionID *int64  `json:"edition_id,omitempty"`
+}
+
 // Common errors
 var (
 	ErrBookNotFound     = errors.New("book not found")
@@ -127,8 +143,6 @@ type Client struct {
 	retryDelay       time.Duration
 	userBookIDCache  cache.Cache[int, int]    // editionID -> userBookID
 	userCache        cache.Cache[string, any] // Generic cache for user-specific data
-	rateLimitMutex   sync.Mutex
-	lastRequestTime  time.Time
 }
 
 // GetAuthHeader returns the properly formatted Authorization header value
@@ -153,28 +167,6 @@ func safeString(s *string) string {
 // stringValue is a helper function to safely get a string value from a string pointer
 func stringValue(s *string) string {
 	return safeString(s)
-}
-
-// isRetryableError checks if an error is retryable
-func isRetryableError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	// Check for network errors
-	if _, ok := err.(interface{ Timeout() bool }); ok {
-		return true
-	}
-
-	// Check for HTTP 5xx errors
-	if httpErr, ok := err.(*HTTPError); ok {
-		return httpErr.StatusCode >= 500
-	}
-
-	// Check for connection refused/reset errors
-	return strings.Contains(err.Error(), "connection refused") ||
-		strings.Contains(err.Error(), "connection reset") ||
-		strings.Contains(err.Error(), "i/o timeout")
 }
 
 // DefaultClientConfig returns the default configuration for the client
@@ -750,22 +742,6 @@ func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.Har
 	}`
 
 	// Define the response structure to match the actual API response
-	type Edition struct {
-		ID              json.Number `json:"id"`
-		ASIN            *string     `json:"asin"`
-		ISBN13          *string     `json:"isbn_13"`
-		ISBN10          *string     `json:"isbn_10"`
-		ReadingFormatID *int        `json:"reading_format_id"`
-		AudioSeconds    *int        `json:"audio_seconds"`
-	}
-
-	type Book struct {
-		ID           json.Number `json:"id"`
-		Title        string      `json:"title"`
-		BookStatusID int         `json:"book_status_id"`
-		CanonicalID  *string     `json:"canonical_id"`
-		Editions     []*Edition  `json:"editions"`
-	}
 
 	// Use a flexible map to capture the raw response first
 	var rawResponse map[string]interface{}
@@ -835,13 +811,6 @@ func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.Har
 	log.Debug("Extracted books from response", map[string]interface{}{
 		"books_count": len(books),
 	})
-
-	if err != nil {
-		log.Error("Failed to search book by ASIN", map[string]interface{}{
-			"error": err.Error(),
-		})
-		return nil, fmt.Errorf("failed to search book by ASIN: %w", err)
-	}
 
 	// Check if any books were found
 	if len(books) == 0 {
@@ -1805,26 +1774,6 @@ func (c *Client) UpdateUserBookRead(ctx context.Context, input UpdateUserBookRea
 	return true, nil
 }
 
-type GetUserBookInput struct {
-	ID int `json:"id"`
-}
-
-// UpdateUserBookInput represents the input for updating a user book
-type UpdateUserBookInput struct {
-	ID        int64  `json:"id"`
-	EditionID *int64 `json:"edition_id,omitempty"`
-}
-
-// GetUserBookResult represents the result of getting a user book
-// GetUserBookResult represents the result of getting a user book
-type GetUserBookResult struct {
-	ID        int64    `json:"id"`
-	BookID    int64    `json:"book_id"`
-	EditionID *int64   `json:"edition_id"`
-	Status    string   `json:"status"`
-	Progress  *float64 `json:"progress,omitempty"`
-}
-
 // GetEditionByISBN13 retrieves an edition by its ISBN-13
 func (c *Client) GetEditionByISBN13(ctx context.Context, isbn13 string) (*models.Edition, error) {
 	// First try to find the book by ISBN-13
@@ -2124,8 +2073,6 @@ func (c *Client) SearchPeople(ctx context.Context, name, personType string, limi
 		"count": len(authors),
 		"type":  personType,
 	})
-
-	return authors, nil
 
 	// Return the authors we found
 	return authors, nil
@@ -2504,52 +2451,11 @@ func (c *Client) CreateUserBook(ctx context.Context, editionID, status string) (
 	return userBookID, nil
 }
 
-// CheckBookOwnershipInput represents the input for checking if a book is owned
-// by the current user in their "Owned" list
-type CheckBookOwnershipInput struct {
-	BookID int `json:"book_id"`
-}
 
-// ListBook represents a book in a user's list
-type ListBook struct {
-	ID        int  `json:"id"`
-	BookID    int  `json:"book_id"`
-	EditionID *int `json:"edition_id"`
-}
 
-// List represents a user's list with its books
-type List struct {
-	ID        int        `json:"id"`
-	Name      string     `json:"name"`
-	ListBooks []ListBook `json:"list_books"`
-}
 
-// CheckBookOwnershipResponse represents the response from the CheckBookOwnership query
-type CheckBookOwnershipResponse []struct {
-	ID        int    `json:"id"`
-	Name      string `json:"name"`
-	ListBooks []struct {
-		ID        int `json:"id"`
-		BookID    int `json:"book_id"`
-		EditionID int `json:"edition_id"`
-	} `json:"list_books"`
-}
 
-// SearchByASINResponse represents the response when searching for a book by ASIN
-type SearchByASINResponse struct {
-	Books []struct {
-		ID           string `json:"id"`
-		Title        string `json:"title"`
-		BookStatusID int    `json:"book_status_id"`
-		CanonicalID  *int   `json:"canonical_id"`
-		Editions     []struct {
-			ID     string `json:"id"`
-			ASIN   string `json:"asin"`
-			ISBN13 string `json:"isbn_13"`
-			ISBN10 string `json:"isbn_10"`
-		} `json:"editions"`
-	} `json:"books"`
-}
+
 
 // SearchByISBNResponse represents the response when searching for a book by ISBN
 type SearchByISBNResponse struct {
@@ -2585,6 +2491,17 @@ type SearchByTitleAuthorResponse struct {
 			AudioSeconds    *int   `json:"audio_seconds"`
 		} `json:"editions"`
 	} `json:"books"`
+}
+
+// CheckBookOwnershipResponse represents the response from checking if a book is in the user's "Owned" list
+type CheckBookOwnershipResponse []struct {
+	ID        int `json:"id"`
+	Name      string `json:"name"`
+	ListBooks []struct {
+		ID        int `json:"id"`
+		BookID    int `json:"book_id"`
+		EditionID *int `json:"edition_id"`
+	} `json:"list_books"`
 }
 
 // CheckBookOwnership checks if a book is in the user's "Owned" list

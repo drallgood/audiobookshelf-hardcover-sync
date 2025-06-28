@@ -206,37 +206,3 @@ func prepopulateEdition(c *cli.Context) error {
 	fmt.Printf("Prepopulated data written to %s\n", outputFile)
 	return nil
 }
-
-// generateExampleJSON generates an example JSON file for creating an edition
-func generateExampleJSON(filename string) error {
-	example := EditionCreatorInput{
-		BookID:        12345,
-		Title:         "Example Audiobook",
-		Subtitle:      "Unabridged",
-		ImageURL:      "https://example.com/cover.jpg",
-		ASIN:          "B00XXXYYZZ",
-		ISBN10:        "1234567890",
-		ISBN13:        "9781234567890",
-		AuthorIDs:     []int{1, 2, 3},
-		NarratorIDs:   []int{4, 5},
-		PublisherID:   10,
-		ReleaseDate:   time.Now().Format("2006-01-02"),
-		AudioLength:   3600, // 1 hour in seconds
-		EditionFormat: "Audible Audio",
-		EditionInfo:   "Special edition with bonus content",
-		LanguageID:    1, // English
-		CountryID:     1, // USA
-	}
-
-	data, err := json.MarshalIndent(example, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal example JSON: %w", err)
-	}
-
-	if err := os.WriteFile(filename, data, 0644); err != nil {
-		return fmt.Errorf("failed to write example file: %w", err)
-	}
-
-	fmt.Printf("Example JSON written to %s\n", filename)
-	return nil
-}

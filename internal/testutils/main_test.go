@@ -139,7 +139,9 @@ func TestSyncToHardcover_Finished_NoToken(t *testing.T) {
 
 func TestRunSync_NoPanic(t *testing.T) {
 	// Should not panic or crash even if env vars are missing
-	runSync()
+	if err := runSync(); err != nil {
+		t.Logf("runSync returned an error (expected in test environment): %v", err)
+	}
 }
 
 // Test the minimum progress threshold function

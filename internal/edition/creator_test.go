@@ -1,15 +1,12 @@
 package edition_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -85,49 +82,7 @@ func (m *MockHardcoverClient) GetGoogleUploadCredentials(ctx context.Context, fi
 	return args.Get(0).(*edition.GoogleUploadInfo), args.Error(1)
 }
 
-type roundTripFunc func(*http.Request) (*http.Response, error)
 
-// RoundTrip executes a single HTTP transaction, returning
-// a Response for the provided Request.
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	// If this is an image upload request, return a successful response
-	if strings.Contains(req.URL.String(), "https://storage.googleapis.com") {
-		// Create a response with the image ID
-		response := map[string]interface{}{
-			"id": 12345,
-		}
-		jsonData, _ := json.Marshal(response)
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(bytes.NewReader(jsonData)),
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-		}, nil
-	}
-
-	// For image download requests, return a dummy image
-	if strings.HasPrefix(req.URL.String(), "http") && (strings.HasSuffix(req.URL.Path, ".jpg") || strings.HasSuffix(req.URL.Path, ".png")) {
-		imgData := []byte("dummy image data")
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(bytes.NewReader(imgData)),
-			Header: http.Header{
-				"Content-Type":   []string{"image/jpeg"},
-				"Content-Length": []string{strconv.Itoa(len(imgData))},
-			},
-		}, nil
-	}
-
-	return &http.Response{
-		StatusCode: http.StatusNotFound,
-		Body:       io.NopCloser(strings.NewReader("Not Found")),
-	}, nil
-}
-
-func newTestHTTPClient(roundTripper http.RoundTripper) *http.Client {
-	return &http.Client{
-		Transport: roundTripper,
-	}
-}
 
 func newTestCreator(t *testing.T, mockClient *MockHardcoverClient) *edition.Creator {
 	t.Helper()
@@ -137,9 +92,12 @@ func newTestCreator(t *testing.T, mockClient *MockHardcoverClient) *edition.Crea
 		if r.Method == "POST" && strings.Contains(r.URL.Path, "/upload") {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			if err := json.NewEncoder(w).Encode(map[string]interface{}{
 				"id": "test-image-id",
-			})
+			}); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 			return
 		}
 

@@ -128,41 +128,49 @@ jobs:
             org.opencontainers.image.description=${{ github.event.repository.description }}
             org.opencontainers.image.url=https://github.com/${{ github.repository }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.version=${{ steps.version.outputs.version }}
-            org.opencontainers.image.created=${{ steps.get-date.outputs.date }}
+            org.opencontainers.image.version=${{ steps.env.outputs.version || 'dev' }}
+            org.opencontainers.image.created=${{ steps.env.outputs.date || '' }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.licenses=MIT
 
 
 
-      - name: Determine version and date
-        id: version
+      - name: Set up environment
+        id: env
         run: |
-          # Get current date in ISO 8601 format
-          DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-          echo "date=${DATE}" >> $GITHUB_OUTPUT
-          
-          # Determine version based on git ref
-          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/tags/v* ]]; then
-            # For tags, strip the 'v' prefix
-            VERSION="${GITHUB_REF#refs/tags/v}"
-            echo "version=${VERSION}" >> $GITHUB_OUTPUT
-            echo "version-type=release" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == 'refs/heads/main' ]]; then
-            # For main branch, use commit SHA with beta prefix
-            VERSION="beta-${GITHUB_SHA:0:7}"
-            echo "version=${VERSION}" >> $GITHUB_OUTPUT
-            echo "version-type=beta" >> $GITHUB_OUTPUT
-          else
-            # For other branches, use branch name with commit SHA
-            BRANCH_NAME="${GITHUB_REF#refs/heads/}"
-            VERSION="dev-${BRANCH_NAME//\//-}-${GITHUB_SHA:0:7}"
-            echo "version=${VERSION}" >> $GITHUB_OUTPUT
-            echo "version-type=dev" >> $GITHUB_OUTPUT
+          # Ensure jq is installed
+          if ! command -v jq &> /dev/null; then
+            echo "::error::jq is required but not installed. Please add it to your workflow."
+            exit 1
           fi
           
-          # Output version info for debugging
-          echo "Determined version: ${VERSION} (${VERSION_TYPE:-unknown})"
+          # Set default values
+          VERSION="dev"
+          IS_RELEASE="false"
+          
+          # Get the current date in ISO 8601 format
+          DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          
+          # Determine version from tag or use commit SHA
+          if [[ "${{ github.ref_name }}" == v* ]]; then
+            # For tags, use the tag name without the 'v' prefix
+            VERSION="${GITHUB_REF_NAME#v}"
+            IS_RELEASE="true"
+          else
+            # For branches, use the short SHA
+            VERSION="${{ github.sha }}"
+            IS_RELEASE="false"
+          fi
+          
+          # Output each value
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "is_release=$IS_RELEASE" >> $GITHUB_OUTPUT
+          echo "date=$DATE" >> $GITHUB_OUTPUT
+          
+          # Debug output
+          echo "Version: $VERSION"
+          echo "Is Release: $IS_RELEASE"
+          echo "Date: $DATE"
 
       - name: Set up Docker Buildx cache
         uses: actions/cache@v4
@@ -246,29 +254,31 @@ jobs:
           # Get the image digest from the build step
           DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA::8} | cut -d'@' -f2)
           
-          # Create release body
-          cat << EOF > body.md
+          # Create release body using a heredoc with proper escaping
+          cat << 'EOF' > body.md
           ### 🐳 Docker Image
           
           Pull the Docker image:
-          \`\`\`bash
+          ```bash
           docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.get-tag.outputs.tag_name }}
-          \`\`\`
+          ```
           
-          Or use the \`latest\` tag for the most recent release:
-          \`\`\`bash
+          Or use the `latest` tag for the most recent release:
+          ```bash
           docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-          \`\`\`
+          ```
           
           ### 🔍 Image Details
-          - **Digest:** \`${DIGEST}\`
+          - **Digest:** `%DIGEST%`
           - **Source:** [View on GitHub](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
           EOF
           
+          # Replace placeholder with actual digest
+          sed -i "s|%DIGEST%|${DIGEST}|g" body.md
+          
           # Output the body for the next step
-          RELEASE_BODY=$(cat body.md)
           echo "RELEASE_BODY<<EOF" >> $GITHUB_ENV
-          echo "$RELEASE_BODY" >> $GITHUB_ENV
+          cat body.md >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
           
       - name: Create Release
@@ -276,7 +286,21 @@ jobs:
         with:
           tag_name: ${{ steps.get-tag.outputs.tag_name }}
           name: Release ${{ steps.get-tag.outputs.tag_name }}
-          body: ${{ env.RELEASE_BODY }}
+          body: |
+            ### 🐳 Docker Image
+            
+            Pull the Docker image:
+            ```bash
+            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.get-tag.outputs.tag_name }}
+            ```
+            
+            Or use the `latest` tag for the most recent release:
+            ```bash
+            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ```
+            
+            ### 🔍 Image Details
+            - **Source:** [View on GitHub](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
           draft: false
           prerelease: false
           generate_release_notes: true

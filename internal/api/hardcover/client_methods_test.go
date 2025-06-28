@@ -7,8 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,12 +16,6 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/util"
 	"github.com/stretchr/testify/assert"
 )
-
-// testServerResponse is used to configure the test server's response
-type testServerResponse struct {
-	statusCode int
-	body       interface{}
-}
 
 // newTestClient creates a new test client with a test HTTP server
 func newTestClient(t *testing.T) (*Client, *httptest.Server) {
@@ -134,16 +126,6 @@ func newTestClient(t *testing.T) (*Client, *httptest.Server) {
 	}
 
 	return client, server
-}
-
-// readTestFile reads a test file from the testdata directory
-func readTestFile(t *testing.T, filename string) []byte {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join("testdata", filename))
-	if err != nil {
-		t.Fatalf("failed to read test file %s: %v", filename, err)
-	}
-	return data
 }
 
 func TestClient_GetEditionByISBN13(t *testing.T) {

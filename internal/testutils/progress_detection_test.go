@@ -117,10 +117,3 @@ func TestSuspiciousProgressTreatment(t *testing.T) {
 	}
 }
 
-// Helper function to calculate absolute difference
-func absFloat(x float64) float64 {
-	if x < 0 {
-		return -x
-	}
-	return x
-}

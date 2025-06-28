@@ -388,10 +388,11 @@ type MediaMetadata struct {
 }
 
 // addBookMismatchWithMetadata adds a book mismatch with additional metadata
-func addBookMismatchWithMetadata(book *Audiobook, reason string, metadata *MediaMetadata) {
-	// This is a stub implementation for testing
-	// In a real implementation, this would add the book to a list of mismatches
-}
+// UNUSED: Kept for future testing
+// func addBookMismatchWithMetadata(book *Audiobook, reason string, metadata *MediaMetadata) {
+// 	// This is a stub implementation for testing
+// 	// In a real implementation, this would add the book to a list of mismatches
+// }
 
 // bookMismatches is a slice of BookMismatch objects
 var bookMismatches []BookMismatch
@@ -415,24 +416,23 @@ func getAudiobookShelfURL() string {
 }
 
 // exportMismatchesJSON exports the list of book mismatches as JSON
-func exportMismatchesJSON() ([]byte, error) {
-	// This is a stub implementation for testing
-	return json.Marshal(bookMismatches)
-}
+// UNUSED: Kept for future testing
+// func exportMismatchesJSON() ([]byte, error) {
+// 	return json.MarshalIndent(bookMismatches, "", "  ")
+// }
 
 // sanitizeFilename sanitizes a string to be used as a filename
-func sanitizeFilename(name string) string {
-	// Remove invalid characters
-	invalidChars := regexp.MustCompile(`[^a-zA-Z0-9_.-]`)
-	sanitized := invalidChars.ReplaceAllString(name, "_")
+// UNUSED: Kept for future testing
+// func sanitizeFilename(name string) string {
+// 	// Replace invalid characters with underscores
+// 	re := regexp.MustCompile(`[^a-zA-Z0-9_.-]`)
+// 	sanitized := re.ReplaceAllString(name, "_")
 
-	// Limit length
-	if len(sanitized) > 100 {
-		sanitized = sanitized[:100]
-	}
+// 	// Remove any duplicate underscores
+// 	sanitized = regexp.MustCompile(`_+`).ReplaceAllString(sanitized, "_")
 
-	return sanitized
-}
+// 	return sanitized
+// }
 
 // createEditionReadyMismatchFiles creates files for editions that are ready to be created
 func createEditionReadyMismatchFiles() error {
@@ -441,9 +441,10 @@ func createEditionReadyMismatchFiles() error {
 }
 
 // debugAudiobookShelfAPI enables or disables debug mode for the Audiobookshelf API
-func debugAudiobookShelfAPI(enable bool) {
-	debugMode = enable
-}
+// UNUSED: Kept for future testing
+// func debugAudiobookShelfAPI(enable bool) {
+// 	// Implementation would go here
+// }
 
 // fetchAudiobookShelfStats fetches statistics from the Audiobookshelf server
 func fetchAudiobookShelfStats() (map[string]interface{}, error) {
@@ -527,10 +528,10 @@ func fetchUserProgress() (map[string]interface{}, error) {
 }
 
 // getHardcoverToken gets the Hardcover API token
-func getHardcoverToken() string {
-	// This is a stub implementation for testing
-	return "test-hardcover-token"
-}
+// UNUSED: Kept for future testing
+// func getHardcoverToken() string {
+// 	return os.Getenv("HARDCOVER_API_TOKEN")
+// }
 
 // uploadImageToHardcover uploads an image to Hardcover
 func uploadImageToHardcover(imageURL string, bookID int) (int, error) {
@@ -559,82 +560,95 @@ func executeEditionMutation(payload map[string]interface{}) (int, error) {
 }
 
 // createEditionCommand creates a new edition in Hardcover
-func createEditionCommand() error {
-	// This is a stub implementation for testing
-	return nil
-}
+// UNUSED: Kept for future testing
+// func createEditionCommand() error {
+// 	// Implementation would go here
+// 	return nil
+// }
 
 // createEditionWithPrepopulation creates a new edition with prepopulated data
-func createEditionWithPrepopulation() error {
-	// This is a stub implementation for testing
-	return nil
-}
+// UNUSED: Kept for future testing
+// func createEditionWithPrepopulation() error {
+// 	// Implementation would go here
+// 	return nil
+// }
 
 // createEditionFromJSON creates a new edition from a JSON file
-func createEditionFromJSON(filename string) error {
-	// This is a stub implementation for testing
-	return nil
-}
+// UNUSED: Kept for future testing
+// func createEditionFromJSON(filename string) error {
+// 	// Implementation would go here
+// 	return nil
+// }
 
 // generatePrepopulatedTemplate generates a prepopulated template for a new edition
-func generatePrepopulatedTemplate() error {
-	// This is a stub implementation for testing
-	return nil
-}
+// UNUSED: Kept for future testing
+// func generatePrepopulatedTemplate() error {
+// 	// Implementation would go here
+// 	return nil
+// }
 
 // enhanceExistingTemplate enhances an existing template with additional data
-func enhanceExistingTemplate() error {
-	// This is a stub implementation for testing
-	return nil
-}
+// UNUSED: Kept for future testing
+// func enhanceExistingTemplate() error {
+// 	// Implementation would go here
+// 	return nil
+// }
 
 // lookupAuthorIDCommand looks up an author ID by name
-func lookupAuthorIDCommand(name string) error {
-	// This is a stub implementation for testing
-	return nil
-}
+// UNUSED: Kept for future testing
+// func lookupAuthorIDCommand(name string) error {
+// 	// Implementation would go here
+// 	return nil
+// }
 
 // lookupNarratorIDCommand looks up a narrator ID by name
-func lookupNarratorIDCommand(name string) error {
-	// This is a stub implementation for testing
-	return nil
-}
+// UNUSED: Kept for future testing
+// func lookupNarratorIDCommand(name string) error {
+// 	// Implementation would go here
+// 	return nil
+// }
 
 // lookupPublisherIDCommand looks up a publisher ID by name
-func lookupPublisherIDCommand(name string) error {
-	// This is a stub implementation for testing
-	return nil
-}
+// UNUSED: Kept for future testing
+// func lookupPublisherIDCommand(name string) error {
+// 	// Implementation would go here
+// 	return nil
+// }
 
 // verifyIDCommand verifies an ID by type and value
-func verifyIDCommand(idType, id string) error {
-	// This is a stub implementation for testing
-	return nil
-}
+// UNUSED: Kept for future testing
+// func verifyIDCommand(idType, id string) error {
+// 	// Implementation would go here
+// 	return nil
+// }
 
 // bulkLookupAuthorsCommand performs a bulk lookup of authors
-func bulkLookupAuthorsCommand(filename string) error {
-	// This is a stub implementation for testing
-	return nil
-}
+// UNUSED: Kept for future testing
+// func bulkLookupAuthorsCommand(filename string) error {
+// 	// Implementation would go here
+// 	return nil
+// }
 
 // bulkLookupNarratorsCommand performs a bulk lookup of narrators
-func bulkLookupNarratorsCommand(filename string) error {
-	// This is a stub implementation for testing
-	return nil
-}
+// UNUSED: Kept for future testing
+// func bulkLookupNarratorsCommand(filename string) error {
+// 	// Implementation would go here
+// 	return nil
+// }
 
 // bulkLookupPublishersCommand performs a bulk lookup of publishers
-func bulkLookupPublishersCommand(filename string) error {
-	// This is a stub implementation for testing
-	return nil
-}
+// UNUSED: Kept for future testing
+// func bulkLookupPublishersCommand(filename string) error {
+// 	// Implementation would go here
+// 	return nil
+// }
 
 // uploadImageCommand handles the upload of an image
-func uploadImageCommand(imagePath string) error {
-	// This is a stub implementation for testing
-	return nil
-}
+// UNUSED: Kept for future testing
+// func uploadImageCommand(imagePath string) error {
+// 	// Implementation would go here
+// 	return nil
+// }
 
 // getSyncWantToRead gets the sync want to read setting
 // Returns whether to sync books with 0% progress as "Want to read"

@@ -28,7 +28,9 @@ func main() {
 
 	switch os.Args[1] {
 	case "create":
-		createCmd.Parse(os.Args[2:])
+		if err := createCmd.Parse(os.Args[2:]); err != nil {
+			logger.Fatal().Err(err).Msg("Error parsing command line arguments")
+		}
 		if *createInteractive {
 			// TODO: Implement interactive mode
 			logger.Info().Msg("Interactive edition creation")

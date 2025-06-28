@@ -165,21 +165,21 @@ func (c *Client) GetLibraryItems(ctx context.Context, libraryID string) ([]model
 
 	// Save the raw response to a file for inspection
 	logDir := "logs"
-	logFile := filepath.Join(logDir, "audiobookshelf_response.json")
 
 	// Ensure the logs directory exists
 	log.Info("Ensuring logs directory exists", map[string]interface{}{
 		"path": logDir,
 	})
 	if err := os.MkdirAll(logDir, 0755); err != nil {
-		log.Error("Failed to create logs directory", map[string]interface{}{
+		log.Error("Failed to create logs directory, falling back to current directory", map[string]interface{}{
 			"error": err.Error(),
 			"path":  logDir,
 		})
-		// Try current directory if logs directory fails
+		// Use current directory if logs directory fails
 		logDir = "."
-		logFile = "audiobookshelf_response.json"
 	}
+
+	logFile := filepath.Join(logDir, "audiobookshelf_response.json")
 
 	// Save the response to file
 	log.Info("Saving API response to file", map[string]interface{}{

@@ -22,23 +22,7 @@ var (
 	ErrSkippedBook = errors.New("book was skipped")
 )
 
-// parseDate parses a date string in either RFC3339 or YYYY-MM-DD format
-func parseDate(dateStr string) (time.Time, error) {
-	// Try parsing as RFC3339 first (with time)
-	t, err := time.Parse(time.RFC3339, dateStr)
-	if err == nil {
-		return t, nil
-	}
 
-	// Try parsing as YYYY-MM-DD
-	t, err = time.Parse("2006-01-02", dateStr)
-	if err == nil {
-		// Set to noon to avoid timezone issues
-		return time.Date(t.Year(), t.Month(), t.Day(), 12, 0, 0, 0, time.UTC), nil
-	}
-
-	return time.Time{}, fmt.Errorf("date string '%s' is not in a recognized format (RFC3339 or YYYY-MM-DD)", dateStr)
-}
 
 // Service handles the synchronization between Audiobookshelf and Hardcover
 type Service struct {
@@ -346,79 +330,7 @@ func (s *Service) processLibrary(ctx context.Context, library *audiobookshelf.Au
 	return processed, nil
 }
 
-// isBookOwned checks if a book is already marked as owned in Hardcover by checking the user's "Owned" list
-func (s *Service) isBookOwned(ctx context.Context, bookID string) (bool, error) {
-	// Convert bookID to int for the query
-	bookIDInt, err := strconv.Atoi(bookID)
-	if err != nil {
-		return false, fmt.Errorf("invalid book ID format: %w", err)
-	}
 
-	s.log.Debug("Checking if book is marked as owned in Hardcover", map[string]interface{}{
-		"book_id": bookIDInt,
-	})
-
-	// Use the hardcover client's CheckBookOwnership method
-	isOwned, err := s.hardcover.CheckBookOwnership(ctx, bookIDInt)
-	if err != nil {
-		s.log.Error("Failed to check book ownership", map[string]interface{}{
-			"error":   err,
-			"book_id": bookIDInt,
-		})
-		return false, fmt.Errorf("failed to check book ownership: %w", err)
-	}
-
-	s.log.Debug("Checked book ownership in Hardcover", map[string]interface{}{
-		"book_id":  bookIDInt,
-		"is_owned": isOwned,
-	})
-
-	return isOwned, nil
-}
-
-// markBookAsOwned marks a book as owned in Hardcover using the edition_owned mutation
-// This works with edition IDs, not book IDs
-func (s *Service) markBookAsOwned(ctx context.Context, bookID, editionID string) error {
-	if editionID == "" {
-		return fmt.Errorf("edition ID is required for marking book as owned")
-	}
-
-	// Convert edition ID to integer
-	editionIDInt, err := strconv.Atoi(editionID)
-	if err != nil {
-		return fmt.Errorf("invalid edition ID format: %w", err)
-	}
-
-	// Convert book ID to integer for logging
-	bookIDInt, err := strconv.Atoi(bookID)
-	if err != nil {
-		return fmt.Errorf("invalid book ID format: %w", err)
-	}
-
-	// Log the ownership marking attempt
-	s.log.Debug("Attempting to mark book as owned in Hardcover", map[string]interface{}{
-		"book_id":    bookIDInt,
-		"edition_id": editionIDInt,
-	})
-
-	// Use the hardcover client to mark the edition as owned
-	err = s.hardcover.MarkEditionAsOwned(ctx, editionIDInt)
-	if err != nil {
-		s.log.Error("Failed to mark book as owned", map[string]interface{}{
-			"error":      err,
-			"book_id":    bookIDInt,
-			"edition_id": editionIDInt,
-		})
-		return fmt.Errorf("failed to mark book as owned: %w", err)
-	}
-
-	s.log.Debug("Successfully marked book as owned in Hardcover", map[string]interface{}{
-		"book_id":    bookIDInt,
-		"edition_id": editionIDInt,
-	})
-
-	return nil
-}
 
 // processBook processes a single book and updates its status in Hardcover
 func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBook, userProgress *models.AudiobookshelfUserProgress) error {
@@ -847,24 +759,6 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	return nil
 }
 
-// stringValue safely dereferences a string pointer, returning an empty string if the pointer is nil
-func stringValue(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
-}
-
-// safeString is an alias for stringValue for backward compatibility
-func safeString(s *string) string {
-	return stringValue(s)
-}
-
-// stringPtr returns a pointer to the given string value
-func stringPtr(s string) *string {
-	return &s
-}
-
 // createFinishedBookLogger creates a logger with context for the handleFinishedBook function
 func (s *Service) createFinishedBookLogger(userBookID int64, editionID string, book models.AudiobookshelfBook) *logger.Logger {
 	fields := map[string]interface{}{
@@ -1159,166 +1053,30 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		}
 
 		// Update the read with the current progress
-		_, err = s.hardcover.UpdateUserBookRead(ctx, updateInput)
+		updated, err := s.hardcover.UpdateUserBookRead(ctx, updateInput)
+
 		if err != nil {
 			errCtx := make(map[string]interface{}, len(logCtx)+1)
 			for k, v := range logCtx {
 				errCtx[k] = v
 			}
 			errCtx["error"] = err.Error()
-			s.log.With(errCtx).Error("Failed to update progress")
+			log.With(errCtx).Error("Failed to update progress")
 			return fmt.Errorf("failed to update progress: %w", err)
 		}
 
-		// Log successful update
-		logCtx["updated"] = true
-		log = s.log.With(logCtx)
+		// Log successful update with updated status
+		logCtx["updated"] = updated
+		log = log.With(logCtx)
 		log.Info("Successfully updated reading progress in Hardcover", nil)
 	} else if needsUpdate {
-		log = s.log.With(logCtx)
+		log = log.With(logCtx)
 		log.Info("No read statuses available to update", nil)
 	} else {
-		log = s.log.With(logCtx)
+		log = log.With(logCtx)
 		log.Info("Skipped progress update - no significant change", nil)
 	}
 
-	return nil
-}
-
-// updateInProgressReads updates the in-progress reads
-func (s *Service) updateInProgressReads(ctx context.Context, log *logger.Logger, reads []hardcover.UserBookRead, now time.Time) error {
-	// Initialize logger with context if not provided
-	if log == nil {
-		log = s.log.With(map[string]interface{}{
-			"function": "updateInProgressReads",
-		})
-	}
-
-	// Add context about the operation
-	logCtx := map[string]interface{}{
-		"function":   "updateInProgressReads",
-		"read_count": len(reads),
-		"dry_run":    s.config.App.DryRun,
-	}
-
-	// Create a new logger with the combined context
-	log = s.log.With(logCtx)
-
-	if len(reads) == 0 {
-		log.Info("No reads to update", nil)
-		return nil
-	}
-
-	// Log the update operation with context
-	log.Info("Updating in-progress reads", nil)
-
-	// In dry-run mode, log what would be updated and return
-	if s.config.App.DryRun {
-		log.Info("Dry-run: would update reads", nil)
-		return nil
-	}
-
-	// Process each read
-	for i, read := range reads {
-		// Create a logger with read-specific context
-		readLogCtx := make(map[string]interface{}, len(logCtx)+3)
-		for k, v := range logCtx {
-			readLogCtx[k] = v
-		}
-		readLogCtx["read_index"] = i
-		readLogCtx["read_id"] = read.ID
-		readLogCtx["progress"] = read.Progress
-
-		readLog := log.With(readLogCtx)
-
-		// Log the read being processed
-		readLog.Info("Processing read", nil)
-
-		// Prepare the update input
-		updateInput := hardcover.UpdateUserBookReadInput{
-			ID: read.ID,
-			Object: map[string]interface{}{
-				"progress_seconds": read.ProgressSeconds,
-			},
-		}
-
-		// Only include started_at if it's not nil
-		if read.StartedAt != nil {
-			updateInput.Object["started_at"] = *read.StartedAt
-		}
-
-		// Only include finished_at if it's not nil
-		if read.FinishedAt != nil {
-			updateInput.Object["finished_at"] = *read.FinishedAt
-		}
-
-		// Update the read with the current progress
-		updated, err := s.hardcover.UpdateUserBookRead(ctx, updateInput)
-
-		if err != nil {
-			errCtx := make(map[string]interface{}, len(readLogCtx)+1)
-			for k, v := range readLogCtx {
-				errCtx[k] = v
-			}
-			errCtx["error"] = err.Error()
-			log.With(errCtx).Error("Failed to update read")
-			continue
-		}
-
-		// Log successful update with updated status
-		readLogCtx["updated"] = updated
-		readLog = log.With(readLogCtx)
-		readLog.Info("Successfully updated read", nil)
-	}
-
-	return nil
-}
-
-// updateBookStatus updates the status of a book
-func (s *Service) updateBookStatus(ctx context.Context, log *logger.Logger, userBookID int64, dryRun bool) error {
-	// Initialize context for the logger
-	logCtx := map[string]interface{}{
-		"function":     "updateBookStatus",
-		"user_book_id": userBookID,
-		"dry_run":      dryRun,
-		"status":       "FINISHED",
-	}
-
-	// Create or update logger with context
-	if log == nil {
-		log = s.log.With(logCtx)
-	} else {
-		// Create a new logger with combined context
-		log = log.With(logCtx)
-	}
-
-	// Log the status update
-	log.Info("Updating book status", nil)
-
-	// In dry-run mode, log what would be done and return
-	if dryRun {
-		log.Info("Dry-run: would update book status", nil)
-		return nil
-	}
-
-	// Update the book status to FINISHED
-	err := s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
-		ID:     userBookID,
-		Status: "FINISHED",
-	})
-
-	if err != nil {
-		// Log error with context
-		errCtx := make(map[string]interface{}, len(logCtx)+1)
-		for k, v := range logCtx {
-			errCtx[k] = v
-		}
-		errCtx["error"] = err.Error()
-		log.Error("Failed to update book status", errCtx)
-		return fmt.Errorf("failed to update book status: %w", err)
-	}
-
-	log.Info("Successfully updated book status", nil)
 	return nil
 }
 

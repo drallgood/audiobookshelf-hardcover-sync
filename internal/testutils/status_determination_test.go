@@ -121,8 +121,6 @@ func TestStatusDeterminationLogic(t *testing.T) {
 // Helper function to extract the status determination logic from sync.go
 // This simulates the logic we fixed in the sync function
 func determineTargetStatus(a Audiobook) int {
-	targetStatusId := 3 // default to read
-	
 	// Check if book is actually finished despite showing 0% progress
 	// This can happen when enhanced detection fails to properly identify finished books
 	isBookFinished := a.Progress >= 0.99
@@ -140,17 +138,18 @@ func determineTargetStatus(a Audiobook) int {
 	}
 	
 	// Set status based on actual finished state
+	var status int
 	if isBookFinished {
-		targetStatusId = 3 // read
+		status = 3 // read
 	} else if a.Progress > 0 || (a.CurrentTime > 0 && a.TotalDuration > 0) {
-		targetStatusId = 2 // currently reading
+		status = 2 // currently reading
 	} else {
 		// Only set to "want to read" if we're certain the book is not finished
 		// For testing purposes, assume getSyncWantToRead() returns true
-		targetStatusId = 1 // want to read
+		status = 1 // want to read
 	}
 	
-	return targetStatusId
+	return status
 }
 
 // Test specifically for the "If I Was Your Girl" case mentioned in the issue

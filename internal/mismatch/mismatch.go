@@ -415,17 +415,6 @@ func cleanupOldFiles(dirPath string) error {
 	return nil
 }
 
-// formatReleaseDate formats a release date from the given components
-func formatReleaseDate(date, year string) string {
-	if date != "" {
-		return date
-	}
-	if year != "" {
-		return year
-	}
-	return ""
-}
-
 // SanitizeFilename removes or replaces characters that are invalid in filenames
 func SanitizeFilename(s string) string {
 	// Replace invalid characters with spaces

@@ -1,6 +1,8 @@
 package testutils
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -225,16 +227,17 @@ func TestCacheKeyGeneration(t *testing.T) {
 		queryType string
 		expected  string
 	}{
-		{"John Doe", "author", "author:john doe"},
-		{"  Jane Smith  ", "narrator", "narrator:jane smith"},
+		{"J.K. Rowling", "author", "author:j.k. rowling"},
+		{"  J.R.R. Tolkien  ", "author", "author:j.r.r. tolkien"},
+		{"Stephen King", "narrator", "narrator:stephen king"},
 		{"PENGUIN BOOKS", "publisher", "publisher:penguin books"},
 		{"", "author", "author:"},
 	}
 	
 	for _, test := range tests {
-		result := generateCacheKey(test.name, test.queryType)
+		result := GenerateCacheKey(test.name, test.queryType)
 		if result != test.expected {
-			t.Errorf("generateCacheKey(%q, %q) = %q, expected %q", 
+			t.Errorf("GenerateCacheKey(%q, %q) = %q, expected %q", 
 				test.name, test.queryType, result, test.expected)
 		}
 	}
@@ -245,6 +248,45 @@ func TestCacheConcurrentAccess(t *testing.T) {
 	
 	testResults := []PersonSearchResult{
 		{ID: 1, Name: "John Doe"},
+	}
+
+	// Test concurrent writes
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			cache.Put(fmt.Sprintf("author%d", i), "author", testResults)
+		}(i)
+	}
+
+	// Test concurrent reads
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			cache.Get(fmt.Sprintf("author%d", i%5), "author")
+		}(i)
+	}
+
+	// Test concurrent cross-role lookups
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			cache.GetCrossRole(fmt.Sprintf("author%d", i%5), "narrator")
+		}(i)
+	}
+
+	// Wait for all goroutines to complete
+	wg.Wait()
+
+	// Verify cache integrity
+	for i := 0; i < 10; i++ {
+		key := fmt.Sprintf("author%d", i)
+		if _, exists := cache.entries[GenerateCacheKey(key, "author")]; exists && i < 5 {
+			t.Errorf("Cache entry for %s should not exist", key)
+		}
 	}
 	
 	// Test concurrent reads and writes
