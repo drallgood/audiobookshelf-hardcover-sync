@@ -80,7 +80,7 @@ func main() {
 	// Create context
 	ctx := context.Background()
 
-	// Create Hardcover client
+	// Create Hardcover client with logger cast to *logger.Logger
 	hc := hardcover.NewClient(cfg.Hardcover.Token, log)
 	if hc == nil {
 		log.Error("Failed to create Hardcover client")

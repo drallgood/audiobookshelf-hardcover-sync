@@ -77,7 +77,9 @@ jobs:
     needs: test
     if: github.event_name != 'pull_request'  # Skip for PRs, handled by test job
     runs-on: ubuntu-latest
-    environment: production
+    environment: 
+      name: production
+      url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
     permissions:
       contents: read
       packages: write
@@ -124,27 +126,28 @@ jobs:
           labels: |
             org.opencontainers.image.title=${{ github.event.repository.name }}
             org.opencontainers.image.description=${{ github.event.repository.description }}
-            org.opencontainers.image.url=${{ github.event.repository.html_url }}
-            org.opencontainers.image.source=${{ github.event.repository.html_url }}
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
             org.opencontainers.image.created=${{ steps.get-date.outputs.date }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.licenses=${{ github.event.repository.license.spdx_id }}
+            org.opencontainers.image.licenses=MIT
 
-      - name: Get current date
-        id: get-date
-        run: |
-          echo "date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
 
-      - name: Determine version
+
+      - name: Determine version and date
         id: version
         run: |
+          # Get current date in ISO 8601 format
+          DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          echo "date=${DATE}" >> $GITHUB_OUTPUT
+          
+          # Determine version based on git ref
           if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/tags/v* ]]; then
             # For tags, strip the 'v' prefix
             VERSION="${GITHUB_REF#refs/tags/v}"
             echo "version=${VERSION}" >> $GITHUB_OUTPUT
             echo "version-type=release" >> $GITHUB_OUTPUT
-            echo "::set-output name=is-release::true"
           elif [[ "${{ github.ref }}" == 'refs/heads/main' ]]; then
             # For main branch, use commit SHA with beta prefix
             VERSION="beta-${GITHUB_SHA:0:7}"
@@ -157,6 +160,8 @@ jobs:
             echo "version=${VERSION}" >> $GITHUB_OUTPUT
             echo "version-type=dev" >> $GITHUB_OUTPUT
           fi
+          
+          # Output version info for debugging
           echo "Determined version: ${VERSION} (${VERSION_TYPE:-unknown})"
 
       - name: Set up Docker Buildx cache
@@ -179,10 +184,14 @@ jobs:
             VCS_REF=${{ github.sha }}
             VCS_URL=${{ github.server_url }}/${{ github.repository }}
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
-            ${{ steps.meta.outputs.tags }}
-            ${{ startsWith(github.ref, 'refs/tags/v') && format('{0}/{1}:latest', env.REGISTRY, env.IMAGE_NAME) }}
-            ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && format('{0}/{1}:beta', env.REGISTRY, env.IMAGE_NAME) || '' }}
+            type=raw,value=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+            type=raw,value=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA::8}
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,enable=${{ startsWith(github.ref, 'refs/tags/v') }},value=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            type=raw,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }},value=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:beta
           labels: ${{ steps.meta.outputs.labels }}
           provenance: false  # Disable provenance for now as it requires Docker Buildx v0.11+
           cache-from: type=local,src=/tmp/.buildx-cache
@@ -193,8 +202,11 @@ jobs:
           rm -rf /tmp/.buildx-cache
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
-      - name: Image digest
-        run: echo ${{ steps.docker_build.outputs.digest }}
+      - name: Get image digest
+        id: image_digest
+        run: |
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA::8} | cut -d'@' -f2)
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
 
   # This job will only run for tags starting with 'v' (e.g., v1.0.0)
   create-release:
@@ -212,12 +224,10 @@ jobs:
 
       - name: Create Release
         id: create_release
-        uses: actions/create-release@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.get-tag.outputs.tag_name }}
-          release_name: ${{ steps.get-tag.outputs.release_name }}
+          name: ${{ steps.get-tag.outputs.release_name }}
           draft: false
           prerelease: false
           generate_release_notes: true
@@ -230,10 +240,43 @@ jobs:
             jq -r '.html_url')
           echo "release_url=${RELEASE_URL}" >> $GITHUB_OUTPUT
 
-      - name: Update Release with Docker info
+      - name: Prepare release body
+        id: prepare_release_body
         run: |
-          curl -X PATCH \
-            -H "Authorization: token ${{ secrets.GITHOTTK }}" \
-            -H "Content-Type: application/json" \
-            -d '{"body": "### 🐳 Docker Image\n\nPull the Docker image:\n```bash\ndocker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.get-tag.outputs.tag_name }}\n```\n\nOr use the `latest` tag for the most recent release:\n```bash\ndocker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest\n```"}' \
-            "https://api.github.com/repos/${{ github.repository }}/releases/${{ steps.create_release.outputs.id }}"
+          # Get the image digest from the build step
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA::8} | cut -d'@' -f2)
+          
+          # Create release body
+          cat << EOF > body.md
+          ### 🐳 Docker Image
+          
+          Pull the Docker image:
+          \`\`\`bash
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.get-tag.outputs.tag_name }}
+          \`\`\`
+          
+          Or use the \`latest\` tag for the most recent release:
+          \`\`\`bash
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          \`\`\`
+          
+          ### 🔍 Image Details
+          - **Digest:** \`${DIGEST}\`
+          - **Source:** [View on GitHub](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          EOF
+          
+          # Output the body for the next step
+          RELEASE_BODY=$(cat body.md)
+          echo "RELEASE_BODY<<EOF" >> $GITHUB_ENV
+          echo "$RELEASE_BODY" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.get-tag.outputs.tag_name }}
+          name: Release ${{ steps.get-tag.outputs.tag_name }}
+          body: ${{ env.RELEASE_BODY }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true

@@ -61,12 +61,14 @@ jobs:
         uses: aquasecurity/trivy-action@0.31.0
         with:
           scan-type: 'fs'
-          scan-ref: '--security-checks config,secret .'
+          scan-ref: '.'
           format: 'sarif'
           output: 'trivy-fs-results.sarif'
           severity: 'CRITICAL,HIGH'
           exit-code: 1
           ignore-unfixed: true
+          scanners: 'config,secret'  # Use scanners instead of security-checks
+          vuln-type: ''  # Explicitly disable vulnerability scanning for filesystem scan
 
       - name: Upload SARIF results
         uses: github/codeql-action/upload-sarif@v3
