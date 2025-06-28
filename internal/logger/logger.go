@@ -212,12 +212,8 @@ func Setup(cfg Config) {
 			level:  int(level), // Store the level as an int
 		}
 
-		// Debug: Verify the stored level
-		println("DEBUG: Stored level in globalLogger:", globalLogger.GetLevel(), "(int:", globalLogger.level, ")")
-
 		// Log the logger setup with the configured level
 		globalLogger.Info("Logger initialized", map[string]interface{}{
-			"level":       level.String(),
 			"format":      string(cfg.Format),
 			"time_format": cfg.TimeFormat,
 		})

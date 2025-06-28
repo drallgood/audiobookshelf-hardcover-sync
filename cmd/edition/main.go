@@ -16,6 +16,15 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
+// init initializes the logger with default values
+func init() {
+	logger.Setup(logger.Config{
+		Level:      "info",
+		Format:     logger.FormatJSON,
+		TimeFormat: time.RFC3339,
+	})
+}
+
 var (
 	version = "dev"
 	commit  = "none"
@@ -29,6 +38,7 @@ type EditionCreatorInput = edition.EditionInput
 type EditionCreatorResult = edition.EditionResult
 
 func main() {
+	// Initialize the logger via init() function
 	app := &cli.App{
 		Name:    "edition",
 		Usage:   "Create and manage audiobook editions in Hardcover",
@@ -81,24 +91,22 @@ func main() {
 	}
 
 	if err := app.Run(os.Args); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		// Use the logger to ensure consistent format
+		logger.Get().Error("Error running application", map[string]interface{}{
+			"error": err.Error(),
+		})
 		os.Exit(1)
 	}
 }
 
 func createEdition(c *cli.Context) error {
-	// Initialize configuration and logger
+	// Initialize configuration
 	cfg, err := config.LoadFromFile(c.String("config"))
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Setup logger
-	logger.Setup(logger.Config{
-		Level:      cfg.Logging.Level,
-		Format:     logger.ParseLogFormat(cfg.Logging.Format),
-		TimeFormat: time.RFC3339,
-	})
+	// Get the logger
 	log := logger.Get()
 
 	// Load input JSON
@@ -137,18 +145,13 @@ func createEdition(c *cli.Context) error {
 }
 
 func prepopulateEdition(c *cli.Context) error {
-	// Initialize configuration and logger
+	// Initialize configuration
 	cfg, err := config.LoadFromFile(c.String("config"))
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Setup logger
-	logger.Setup(logger.Config{
-		Level:      cfg.Logging.Level,
-		Format:     logger.ParseLogFormat(cfg.Logging.Format),
-		TimeFormat: time.RFC3339,
-	})
+	// Get the logger
 	log := logger.Get()
 
 	// Initialize Hardcover client and creator
