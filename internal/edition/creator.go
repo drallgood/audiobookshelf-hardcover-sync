@@ -18,6 +18,34 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 )
 
+// EditionInput represents the input data for creating or updating an edition
+type EditionInput struct {
+	BookID        int      `json:"book_id"`
+	Title         string   `json:"title"`
+	Subtitle      string   `json:"subtitle,omitempty"`
+	ImageURL      string   `json:"image_url,omitempty"`
+	ISBN10        string   `json:"isbn10,omitempty"`
+	ISBN13        string   `json:"isbn13,omitempty"`
+	ASIN          string   `json:"asin,omitempty"`
+	PublishedDate string   `json:"published_date,omitempty"`
+	PublisherID   int      `json:"publisher_id,omitempty"`
+	LanguageID    int      `json:"language_id,omitempty"`
+	CountryID     int      `json:"country_id,omitempty"`
+	AuthorIDs     []int    `json:"author_ids,omitempty"`
+	NarratorIDs   []int    `json:"narrator_ids,omitempty"`
+	AudioLength   int      `json:"audio_seconds,omitempty"`
+	ReleaseDate   string   `json:"release_date,omitempty"`
+	EditionInfo   string   `json:"edition_information,omitempty"`
+	EditionFormat string   `json:"edition_format,omitempty"`
+}
+
+// EditionResult represents the result of an edition creation or update
+type EditionResult struct {
+	Success   bool `json:"success"`
+	EditionID int  `json:"edition_id"`
+	ImageID   int  `json:"image_id"`
+}
+
 // GoogleUploadInfo contains the signed upload credentials for Google Cloud Storage
 type GoogleUploadInfo struct {
 	URL     string            `json:"url"`     // The base upload URL (e.g., https://storage.googleapis.com/hardcover/)
@@ -379,8 +407,14 @@ func (c *Creator) CreateImageRecord(ctx context.Context, editionID int, imageURL
 		},
 	}
 
-	// The response will be a simple map with just the ID field
-	var responseMap map[string]interface{}
+	// Define a proper response structure that matches the GraphQL response
+	type responseStruct struct {
+		InsertImage struct {
+			ID int `json:"id"`
+		} `json:"insert_image"`
+	}
+
+	var response responseStruct
 
 	// Debug: Log the raw GraphQL request
 	c.log.Debug("Sending GraphQL mutation", map[string]interface{}{
@@ -394,8 +428,8 @@ func (c *Creator) CreateImageRecord(ctx context.Context, editionID int, imageURL
 		},
 	})
 
-	// Execute the mutation and capture the raw response
-	err := c.client.GraphQLMutation(ctx, mutation, variables, &responseMap)
+	// Execute the mutation
+	err := c.client.GraphQLMutation(ctx, mutation, variables, &response)
 	if err != nil {
 		c.log.Error("GraphQL mutation failed", map[string]interface{}{
 			"edition_id": editionID,
@@ -404,24 +438,21 @@ func (c *Creator) CreateImageRecord(ctx context.Context, editionID int, imageURL
 		return 0, fmt.Errorf("graphql mutation failed: %w", err)
 	}
 
-	// Debug log the raw response
-	c.log.Debug("Raw GraphQL response", map[string]interface{}{
+	// Debug log the response
+	c.log.Debug("GraphQL response", map[string]interface{}{
 		"edition_id":  editionID,
-		"raw_response": responseMap,
+		"response":    response,
 	})
 
-	// Extract the ID from the response map
-	var imageID int
-	if id, ok := responseMap["id"].(float64); ok {
-		imageID = int(id)
-	}
+	// Get the image ID from the response
+	imageID := response.InsertImage.ID
 
 	if imageID == 0 {
-		c.log.Error("Failed to parse image ID from response", map[string]interface{}{
-			"edition_id":   editionID,
-			"raw_response": responseMap,
+		c.log.Error("Failed to get image ID from response", map[string]interface{}{
+			"edition_id": editionID,
+			"response":   response,
 		})
-		return 0, fmt.Errorf("failed to parse image ID from API response")
+		return 0, fmt.Errorf("API response did not contain a valid image ID")
 	}
 
 	c.log.Debug("Successfully parsed image ID from response", map[string]interface{}{
@@ -469,7 +500,6 @@ func (c *Creator) updateEditionImage(ctx context.Context, editionID, imageID int
 		return fmt.Errorf("invalid edition ID or image ID (edition: %d, image: %d)", editionID, imageID)
 	}
 
-	// Log the start of the operation
 	c.log.Debug("Starting edition image update", map[string]interface{}{
 		"edition_id": editionID,
 		"image_id":   imageID,
@@ -479,12 +509,13 @@ func (c *Creator) updateEditionImage(ctx context.Context, editionID, imageID int
 	mutation UpdateEdition($id: Int!, $edition: EditionInput!) {
   update_edition(id: $id, edition: $edition) {
     id
+    errors
   }
 }`
 
 	editionInput := map[string]interface{}{
 		"dto": map[string]interface{}{
-			"image_id": imageID, // Send as integer, not string
+			"image_id": imageID,
 		},
 	}
 
@@ -493,19 +524,22 @@ func (c *Creator) updateEditionImage(ctx context.Context, editionID, imageID int
 		"edition": editionInput,
 	}
 
-	// Log the mutation and variables
 	c.log.Debug("Executing update_edition mutation", map[string]interface{}{
 		"edition_id": editionID,
 		"image_id":   imageID,
 		"variables":  variables,
 	})
 
-	// Use a map to capture the raw response first
-	var responseMap map[string]interface{}
+	// Define the expected response structure
+	var response struct {
+		UpdateEdition struct {
+			ID     interface{} `json:"id"`
+			Errors []string    `json:"errors"`
+		} `json:"update_edition"`
+	}
 
-	// Execute the mutation to get the raw response
-	err := c.client.GraphQLMutation(ctx, mutation, variables, &responseMap)
-	if err != nil {
+	// Execute the mutation
+	if err := c.client.GraphQLMutation(ctx, mutation, variables, &response); err != nil {
 		c.log.Error("Failed to update edition with new image", map[string]interface{}{
 			"edition_id": editionID,
 			"image_id":   imageID,
@@ -514,52 +548,33 @@ func (c *Creator) updateEditionImage(ctx context.Context, editionID, imageID int
 		return fmt.Errorf("graphql mutation failed: %w", err)
 	}
 
-	// Log the raw response for debugging
-	c.log.Debug("Raw GraphQL response for update_edition", map[string]interface{}{
-		"edition_id":  editionID,
-		"image_id":    imageID,
-		"response":    responseMap,
-	})
-
-	// Check if we have a successful response
-	if data, ok := responseMap["data"].(map[string]interface{}); ok {
-		if update, ok := data["update_edition"].(map[string]interface{}); ok {
-			// Check if we got a valid edition ID back
-			if id, ok := update["id"].(float64); ok && int(id) == editionID {
-				c.log.Info("Successfully updated edition with new image", map[string]interface{}{
-					"edition_id": editionID,
-					"image_id":   imageID,
-				})
-				return nil
-			}
-			// If we have an ID but it doesn't match, log a warning but still consider it a success
-			// as the API might return a different ID format
-			if id, ok := update["id"]; ok {
-				c.log.Info("Updated edition with new image (ID format may differ)", map[string]interface{}{
-					"edition_id":     editionID,
-					"returned_id":    id,
-					"image_id":       imageID,
-				})
-				return nil
-			}
-		}
+	// Check for errors in the response
+	if len(response.UpdateEdition.Errors) > 0 {
+		errMsg := strings.Join(response.UpdateEdition.Errors, "; ")
+		c.log.Error("Edition update failed with errors", map[string]interface{}{
+			"edition_id": editionID,
+			"image_id":   imageID,
+			"errors":     response.UpdateEdition.Errors,
+		})
+		return fmt.Errorf("edition update failed: %s", errMsg)
 	}
 
-	// If we get here, the response didn't match our expected format exactly
-	// but we'll still check if the update was successful
-	c.log.Warn("Response format didn't match expectations, but update may have succeeded", map[string]interface{}{
+	// Verify the response contains a valid ID
+	if response.UpdateEdition.ID == nil {
+		c.log.Error("Missing edition ID in update response", map[string]interface{}{
+			"edition_id": editionID,
+			"image_id":   imageID,
+			"response":   response,
+		})
+		return fmt.Errorf("missing edition ID in update response")
+	}
+
+	// Log success
+	c.log.Info("Successfully updated edition with new image", map[string]interface{}{
 		"edition_id": editionID,
 		"image_id":   imageID,
-		"response":   responseMap,
 	})
 
-	// As a final check, try to get the book details to verify the image was updated
-	// Note: We can't directly get the image URL from the edition, so we'll log a success
-	// since the update_edition mutation didn't return an error
-	c.log.Info("Edition image update request completed successfully", map[string]interface{}{
-		"edition_id": editionID,
-		"image_id":   imageID,
-	})
 	return nil
 }
 
@@ -702,14 +717,12 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 		"edition": editionInput,
 	}
 
-	// Define the response structure to match the actual API response
+	// The client handles the top-level GraphQL response, we just need to define the data structure
 	var response struct {
-		Data struct {
-			InsertEdition struct {
-				ID     *int     `json:"id"`
-				Errors []string `json:"errors"`
-			} `json:"insert_edition"`
-		} `json:"data"`
+		InsertEdition struct {
+			ID     interface{} `json:"id"`
+			Errors []string    `json:"errors"`
+		} `json:"insert_edition"`
 	}
 
 	c.log.Debug("Executing GraphQL mutation", map[string]interface{}{
@@ -717,55 +730,16 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 		"variables": variables,
 	})
 
-	// Log the full request for debugging
-	requestBody, _ := json.Marshal(map[string]interface{}{
-		"query":     mutation,
-		"variables": variables,
-	})
-	c.log.Debug("Full GraphQL request", map[string]interface{}{
-		"body": string(requestBody),
-	})
-
-	// Execute the GraphQL mutation and get the raw response
-	var rawResponse struct {
-		Data json.RawMessage `json:"data"`
-	}
-
-	if err := c.client.GraphQLMutation(ctx, mutation, variables, &rawResponse); err != nil {
+	// Execute the GraphQL mutation
+	if err := c.client.GraphQLMutation(ctx, mutation, variables, &response); err != nil {
 		return 0, fmt.Errorf("GraphQL mutation failed: %w", err)
 	}
 
-	// Log the raw response for debugging
-	c.log.Debug("Raw GraphQL response", map[string]interface{}{
-		"data": string(rawResponse.Data),
-	})
-
-	// Unmarshal the response data into our structure
-	if err := json.Unmarshal(rawResponse.Data, &response); err != nil {
-		c.log.Error("Failed to unmarshal GraphQL response", map[string]interface{}{
-			"error": err.Error(),
-			"data":  string(rawResponse.Data),
-		})
-		return 0, fmt.Errorf("failed to unmarshal GraphQL response: %w", err)
-	}
-
-	// Log the parsed response
-	responseJSON, _ := json.Marshal(response)
-	c.log.Debug("Parsed GraphQL response", map[string]interface{}{
-		"response": string(responseJSON),
-	})
-
-	// Debug log the raw response for troubleshooting
-	c.log.Debug("Raw GraphQL response", map[string]interface{}{
-		"response": string(rawResponse.Data),
-	})
-
 	// Check for errors in the response
-	if len(response.Data.InsertEdition.Errors) > 0 {
-		// Handle duplicate edition error
-		errMsg := strings.Join(response.Data.InsertEdition.Errors, "; ")
+	if len(response.InsertEdition.Errors) > 0 {
+		errMsg := strings.Join(response.InsertEdition.Errors, "; ")
 		c.log.Error("Edition creation failed with errors", map[string]interface{}{
-			"errors": response.Data.InsertEdition.Errors,
+			"errors": response.InsertEdition.Errors,
 		})
 
 		// Check if this is a duplicate error and try to extract the existing edition ID
@@ -806,16 +780,41 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 		return 0, fmt.Errorf("edition creation failed: %s", errMsg)
 	}
 
-	// Check if we got a valid edition ID
-	if response.Data.InsertEdition.ID == nil {
-		return 0, fmt.Errorf("invalid response format: missing edition ID in response")
+	// Handle different ID types (int, float64, or string)
+	var editionID int
+	switch id := response.InsertEdition.ID.(type) {
+	case float64:
+		editionID = int(id)
+	case int:
+		editionID = id
+	case string:
+		// Try to parse string ID as int
+		parsedID, err := strconv.Atoi(id)
+		if err != nil {
+			c.log.Error("Failed to parse edition ID as int", map[string]interface{}{
+				"id":    id,
+				"error": err.Error(),
+			})
+			return 0, fmt.Errorf("invalid edition ID format: %v", id)
+		}
+		editionID = parsedID
+	case nil:
+		c.log.Error("Missing edition ID in response", map[string]interface{}{
+			"response": response,
+		})
+		return 0, fmt.Errorf("missing edition ID in response")
+	default:
+		c.log.Error("Unexpected ID type in response", map[string]interface{}{
+			"id":   response.InsertEdition.ID,
+			"type": fmt.Sprintf("%T", response.InsertEdition.ID),
+		})
+		return 0, fmt.Errorf("unexpected ID type in response: %T", response.InsertEdition.ID)
 	}
 
-	editionID := *response.Data.InsertEdition.ID
-	if editionID == 0 {
-		c.log.Error("Edition creation failed - invalid or null edition ID in response", map[string]interface{}{
-			"response": response,
-			"raw":      string(rawResponse.Data),
+	if editionID <= 0 {
+		c.log.Error("Invalid edition ID in response", map[string]interface{}{
+			"edition_id": editionID,
+			"response":   response,
 		})
 		return 0, fmt.Errorf("invalid edition ID in response: %d", editionID)
 	}
@@ -964,24 +963,7 @@ func (c *Creator) PrepopulateFromBook(ctx context.Context, bookID int) (*Edition
 }
 
 // EditionInput represents the input data for creating a new edition
-type EditionInput struct {
-	BookID        int      `json:"book_id"`
-	Title         string   `json:"title"`
-	Subtitle      string   `json:"subtitle,omitempty"`
-	ImageURL      string   `json:"image_url,omitempty"`
-	ASIN          string   `json:"asin,omitempty"`
-	ISBN10        string   `json:"isbn_10,omitempty"`
-	ISBN13        string   `json:"isbn_13,omitempty"`
-	AuthorIDs     []int    `json:"author_ids"`
-	NarratorIDs   []int    `json:"narrator_ids,omitempty"`
-	PublisherID   int      `json:"publisher_id,omitempty"`
-	ReleaseDate   string   `json:"release_date,omitempty"`
-	AudioLength   int      `json:"audio_seconds,omitempty"`
-	EditionFormat string   `json:"edition_format,omitempty"`
-	EditionInfo   string   `json:"edition_information,omitempty"`
-	LanguageID    int      `json:"language_id,omitempty"`
-	CountryID     int      `json:"country_id,omitempty"`
-}
+
 
 // Validate validates the edition input
 func (e *EditionInput) Validate() error {
@@ -1000,12 +982,4 @@ func (e *EditionInput) Validate() error {
 		}
 	}
 	return nil
-}
-
-// EditionResult represents the result of edition creation
-type EditionResult struct {
-	Success   bool   `json:"success"`
-	EditionID int    `json:"edition_id"`
-	ImageID   int    `json:"image_id"`
-	Error     string `json:"error,omitempty"`
 }

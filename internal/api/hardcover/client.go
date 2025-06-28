@@ -496,7 +496,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 			continue
 		}
 
-		// Parse the response
+		// First, try to parse as a standard GraphQL response with data/errors fields
 		var gqlResp struct {
 			Data   json.RawMessage `json:"data"`
 			Errors []struct {
@@ -504,17 +504,17 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 			} `json:"errors,omitempty"`
 		}
 
+		directUnmarshal := false
 		if err := json.Unmarshal(body, &gqlResp); err != nil {
-			lastErr = fmt.Errorf("failed to unmarshal GraphQL response: %w", err)
-			c.logger.Error("Failed to unmarshal GraphQL response", map[string]interface{}{
-				"error":    lastErr.Error(),
-				"attempt":  attempt + 1,
-				"response": string(body),
+			// If we can't unmarshal into the standard format, try direct unmarshal for mutations
+			c.logger.Debug("Failed to unmarshal as standard GraphQL response, trying direct unmarshal", map[string]interface{}{
+				"error":  err.Error(),
+				"body":   string(body),
 			})
-			continue
+			directUnmarshal = true
 		}
 
-		// Log the parsed response for debugging with more details
+		// Log the parsed response for debugging
 		errorsJSON, _ := json.Marshal(gqlResp.Errors)
 		dataJSON, _ := json.Marshal(gqlResp.Data)
 		c.logger.Debug("Parsed GraphQL response", map[string]interface{}{
@@ -523,11 +523,12 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 			"dataIsEmpty":     len(gqlResp.Data) == 0,
 			"hasErrors":       len(gqlResp.Errors) > 0,
 			"errors":          string(errorsJSON),
+			"directUnmarshal": directUnmarshal,
 			"rawRequestBody":  string(jsonBody),
 		})
 
 		// Check for GraphQL errors
-		if len(gqlResp.Errors) > 0 {
+		if !directUnmarshal && len(gqlResp.Errors) > 0 {
 			lastErr = fmt.Errorf("GraphQL error: %v", gqlResp.Errors[0].Message)
 			c.logger.Error("GraphQL operation failed", map[string]interface{}{
 				"error":   lastErr.Error(),
@@ -540,6 +541,30 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		// If no result is expected, we're done
 		if result == nil {
 			return nil
+		}
+
+		// Handle direct unmarshal for mutations that don't follow the standard format
+		if directUnmarshal {
+			if err := json.Unmarshal(body, result); err != nil {
+				lastErr = fmt.Errorf("failed to unmarshal direct GraphQL response: %w", err)
+				c.logger.Error("Failed to unmarshal direct GraphQL response", map[string]interface{}{
+					"error":   lastErr.Error(),
+					"attempt": attempt + 1,
+					"body":    string(body),
+				})
+				continue
+			}
+			return nil
+		}
+
+		// Handle standard GraphQL response with data field
+		if len(gqlResp.Data) == 0 {
+			lastErr = fmt.Errorf("empty data in GraphQL response")
+			c.logger.Error("Empty data in GraphQL response", map[string]interface{}{
+				"error":   lastErr.Error(),
+				"attempt": attempt + 1,
+			})
+			continue
 		}
 
 		// Unmarshal the data into the result
@@ -1930,7 +1955,7 @@ func (c *Client) SearchPeople(ctx context.Context, name, personType string, limi
 		"type":      personType,
 	})
 
-	// Define the GraphQL query
+	// Define the GraphQL query to get both IDs and names
 	query := `
 		query SearchPeople($query: String!, $queryType: String, $perPage: Int) {
 			search(
@@ -1939,9 +1964,17 @@ func (c *Client) SearchPeople(ctx context.Context, name, personType string, limi
 				per_page: $perPage
 			) {
 				error
-				ids
+				hits {
+					document {
+						... on Person {
+							id
+							name
+						}
+					}
+				}
 			}
 		}`
+
 
 	// Set up variables
 	variables := map[string]interface{}{
@@ -1953,8 +1986,13 @@ func (c *Client) SearchPeople(ctx context.Context, name, personType string, limi
 	// Define the response structure
 	var response struct {
 		Search struct {
-			Error string          `json:"error"`
-			IDs   []json.Number   `json:"ids"`
+			Error string `json:"error"`
+			Hits  []struct {
+				Document struct {
+					ID   string `json:"id"`
+					Name string `json:"name"`
+				} `json:"document"`
+			} `json:"hits"`
 		} `json:"search"`
 	}
 
@@ -1963,6 +2001,7 @@ func (c *Client) SearchPeople(ctx context.Context, name, personType string, limi
 		"name": name,
 		"type": personType,
 	})
+
 
 	if err := c.GraphQLQuery(ctx, query, variables, &response); err != nil {
 		log.Error("Failed to search for people", map[string]interface{}{
@@ -1980,14 +2019,29 @@ func (c *Client) SearchPeople(ctx context.Context, name, personType string, limi
 		return nil, errors.New(errMsg)
 	}
 
-	// Convert results to Author objects
-	authors := make([]models.Author, 0, len(response.Search.IDs))
-	for _, id := range response.Search.IDs {
-		authors = append(authors, models.Author{
-			ID:   id.String(),
-			Name: "", // Name will be fetched in GetPersonByID if needed
-		})
+	// Convert results to Author objects, ensuring we don't have duplicates
+	uniqueAuthors := make(map[string]models.Author)
+	for _, hit := range response.Search.Hits {
+		doc := hit.Document
+		if doc.ID == "" || doc.Name == "" {
+			continue
+		}
+		// Use ID as the key to deduplicate
+		uniqueAuthors[doc.ID] = models.Author{
+			ID:   doc.ID,
+			Name: doc.Name,
+		}
 	}
+
+	// Convert the map values to a slice
+	authors := make([]models.Author, 0, len(uniqueAuthors))
+	for _, author := range uniqueAuthors {
+		authors = append(authors, author)
+	}
+
+	log.Debug("Found people", map[string]interface{}{
+		"count": len(authors),
+	})
 
 	return authors, nil
 }
