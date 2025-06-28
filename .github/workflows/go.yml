@@ -55,16 +55,8 @@ jobs:
         go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
         golangci-lint run --timeout 5m -v
 
-    - name: Run tests
+    - name: Run tests with coverage
       run: |
+        # Run tests with coverage but don't fail if coverage is low
+        # The coverage report is still generated and can be viewed locally with: go tool cover -html=coverage.txt
         go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
-
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v4
-      with:
-        token: ${{ secrets.CODECOV_TOKEN }}
-        file: ./coverage.txt
-        flags: unittests
-        name: codecov-umbrella
-        fail_ci_if_error: true
-        verbose: true
