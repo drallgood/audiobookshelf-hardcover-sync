@@ -3,6 +3,58 @@
 ## Overview
 The system now saves each book mismatch as an individual JSON file when the `MISMATCH_JSON_FILE` environment variable is set to a directory path. This is particularly useful when dealing with many mismatches (e.g., 200+) for easier individual processing.
 
+## Usage
+
+### Basic Usage
+```bash
+# Run the sync process
+./audiobookshelf-hardcover-sync sync
+
+# Check for mismatch files
+ls -l mismatches/*.json
+```
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `MISMATCH_DIR` | Directory to store mismatch JSON files | `./mismatches` |
+| `LOG_FORMAT` | Log output format (`json` or `text`) | `json` |
+| `DEBUG` | Enable debug logging | `false` |
+
+### Example Workflow
+
+1. **Run the Sync**
+   ```bash
+   # Enable debug logging for detailed output
+   DEBUG=true LOG_FORMAT=text ./audiobookshelf-hardcover-sync sync
+   ```
+
+2. **Check for Mismatches**
+   ```bash
+   # List all mismatch files
+   find mismatches -name '*_mismatch.json' | xargs ls -l
+   
+   # View a specific mismatch
+   cat mismatches/1234567890_mismatch.json | jq .
+   ```
+
+3. **Process Mismatches**
+   - Review the JSON files for details
+   - Update book metadata in AudiobookShelf if needed
+   - Retry the sync for specific books
+
+4. **Automated Processing**
+   ```bash
+   # Example: Generate a report of all mismatches
+   echo "Mismatch Report - $(date)" > mismatch_report.txt
+   echo "================================" >> mismatch_report.txt
+   for f in mismatches/*_mismatch.json; do
+     echo "\n$(basename $f)" >> mismatch_report.txt
+     jq -r '"Title: \(.book.title)\nAuthor: \(.book.author)\nIssue: \(.issue)\n"' $f >> mismatch_report.txt
+   done
+   ```
+
 ## Configuration
 
 Set the environment variable to specify where individual JSON files should be saved:
@@ -59,24 +111,21 @@ Each file contains a complete `BookMismatch` object with all metadata:
 - **Individual Processing**: Each mismatch can be processed independently
 - **Numbered Sequence**: Files are numbered for easy sorting and reference
 
-## Usage Example
+## Implementation Details
+
+### Mismatch Detection
+Mismatches are detected during the sync process when:
+1. A book is not found in the Hardcover database
+2. The found book doesn't match expected criteria (e.g., wrong format, missing metadata)
+3. The sync process encounters an error processing the book
+
+### Logging Configuration
+
+Mismatch JSON files are generated regardless of the log format setting, but the application logs can be configured for different formats:
 
 ```bash
-# Set output directory
-export MISMATCH_JSON_FILE="./book_mismatches"
-
-# Run sync (mismatches will be saved to individual files)
-./audiobookshelf-hardcover-sync
-
-# Process individual files
-for file in ./book_mismatches/*.json; do
-    echo "Processing: $file"
-    # Your custom processing logic here
-    jq '.Title, .DurationSeconds, .Reason' "$file"
-done
-```
-
-## Benefits for Large Mismatch Sets
+# JSON format (default, recommended for production)
+export LOG_FORMAT=json
 
 1. **Easier Processing**: Handle one book at a time
 2. **Parallel Processing**: Process multiple files simultaneously

@@ -5,7 +5,67 @@ This tool helps create and manage audiobook editions in Hardcover. It provides t
 1. `prepopulate`: Generate a prepopulated JSON template from an existing book
 2. `create`: Create a new edition using a JSON input file
 
-## Installation
+## Running with Docker
+
+### Prerequisites
+- Docker installed on your system
+- Hardcover API token (set as `HARDCOVER_TOKEN` environment variable)
+
+### Basic Usage
+
+#### Build the Docker Image
+```bash
+docker build -t audiobookshelf-hardcover-sync .
+```
+
+#### Prepopulate a Template
+Generate a JSON template from an existing book:
+
+```bash
+docker run --rm \
+  -e HARDCOVER_TOKEN=your_token \
+  -v $(pwd):/app \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest \
+  edition-tool prepopulate --book-id 12345 --output /app/edition.json
+```
+
+#### Create a New Edition
+Create a new edition using a JSON input file:
+
+```bash
+docker run --rm \
+  -e HARDCOVER_TOKEN=your_token \
+  -v $(pwd):/app \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest \
+  edition-tool create --input /app/edition.json
+```
+
+### Advanced Options
+
+#### Dry Run Mode
+Test without making any changes:
+
+```bash
+docker run --rm \
+  -e HARDCOVER_TOKEN=your_token \
+  -v $(pwd):/app \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest \
+  edition-tool create --input /app/edition.json --dry-run
+```
+
+#### Interactive Mode
+Run in interactive mode to be prompted for input:
+
+```bash
+docker run -it --rm \
+  -e HARDCOVER_TOKEN=your_token \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest \
+  edition-tool create --interactive
+```
+
+## Local Development
+
+### Installation
 
 Build the tool using Go:
 
@@ -13,32 +73,18 @@ Build the tool using Go:
 go build -o edition cmd/edition/main.go
 ```
 
-## Usage
+### Usage
 
-### Prepopulate a Template
-
-To generate a prepopulated JSON template from an existing book:
+#### Prepopulate a Template
 
 ```bash
-./edition prepopulate --book-id 12345 --output edition.json
+HARDCOVER_TOKEN=your_token ./edition prepopulate --book-id 12345 --output edition.json
 ```
 
-This will create a JSON file with fields prepopulated from the specified book.
-
-### Create a New Edition
-
-To create a new edition using a JSON input file:
+#### Create a New Edition
 
 ```bash
-./edition create --input edition.json
-```
-
-### Dry Run Mode
-
-Use the `--dry-run` flag to test without making any changes:
-
-```bash
-./edition create --input edition.json --dry-run
+HARDCOVER_TOKEN=your_token ./edition create --input edition.json
 ```
 
 ## JSON Schema

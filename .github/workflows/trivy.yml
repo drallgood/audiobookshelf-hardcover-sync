@@ -1,13 +1,22 @@
-name: Trivy Container Scan
+name: Security Scan
 
 on:
   push:
     branches: [main]
+    tags:
+      - 'v*'
   pull_request:
     branches: [main]
+  schedule:
+    - cron: '0 0 * * 0' # Weekly scan
+
+permissions:
+  contents: read
+  security-events: write
 
 jobs:
-  trivy:
+  trivy-container-scan:
+    name: Container Scan
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -28,6 +37,38 @@ jobs:
         uses: aquasecurity/trivy-action@0.31.0
         with:
           image-ref: local/abs-hardcover-sync:trivy-scan
-          format: table
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
           exit-code: 1
           ignore-unfixed: true
+          vuln-type: 'os,library'
+          scanners: 'vuln,config,secret'
+
+      - name: Upload SARIF results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  trivy-fs-scan:
+    name: Filesystem Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy filesystem scanner
+        uses: aquasecurity/trivy-action@0.31.0
+        with:
+          scan-type: 'fs'
+          scan-ref: '--security-checks config,secret .'
+          format: 'sarif'
+          output: 'trivy-fs-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: 1
+          ignore-unfixed: true
+
+      - name: Upload SARIF results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-fs-results.sarif'

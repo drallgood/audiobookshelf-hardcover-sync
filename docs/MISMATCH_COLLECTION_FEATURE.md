@@ -65,7 +65,7 @@ Mismatches are collected in the following scenarios:
 ✅ No book matching issues found during sync
 ```
 
-### Issues Found
+### Issues Found (Text Format)
 ```
 ⚠️  MANUAL REVIEW NEEDED: Found 2 book(s) that may need verification
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -92,6 +92,58 @@ Mismatches are collected in the following scenarios:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
+### JSON Output Format (LOG_FORMAT=json)
+When running with `LOG_FORMAT=json`, the output is structured as JSON for easier parsing and integration with monitoring systems:
+
+```json
+{
+  "level": "warn",
+  "time": "2025-06-28T19:50:00+02:00",
+  "message": "Book matching issues found",
+  "mismatch_count": 2,
+  "mismatches": [
+    {
+      "title": "The Midnight Library",
+      "author": "Matt Haig",
+      "isbn": "9781786892720",
+      "asin": "B08FF8Z1XR",
+      "book_id": "123456",
+      "issue": "ASIN lookup failed for ASIN B08FF8Z1XR, using fallback book matching",
+      "time": "2025-06-02T18:30:15+02:00"
+    },
+    {
+      "title": "Atomic Habits",
+      "author": "James Clear",
+      "isbn": "9780735211292",
+      "book_id": "789012",
+      "issue": "No audiobook edition found using ISBN 9780735211292, using general book matching",
+      "time": "2025-06-02T18:30:22+02:00"
+    }
+  ],
+  "recommendations": [
+    "Check if the Hardcover Book ID corresponds to the correct audiobook edition",
+    "Verify progress syncing is working correctly for these books",
+    "Consider updating book metadata if ISBN/ASIN is missing or incorrect",
+    "Set AUDIOBOOK_MATCH_MODE=skip or AUDIOBOOK_MATCH_MODE=fail to change behavior"
+  ]
+}
+```
+
+### Logging Configuration
+
+The mismatch collection feature respects the global logging configuration:
+
+```bash
+# JSON format (default, recommended for production)
+export LOG_FORMAT=json
+
+# Text format (human-readable)
+export LOG_FORMAT=text
+
+# Enable debug logging for more detailed output
+export DEBUG=true
+```
+
 ## Benefits
 
 1. **Visibility**: Clear summary of all books that may need manual review
@@ -100,12 +152,44 @@ Mismatches are collected in the following scenarios:
 4. **Informative**: Includes book details, Hardcover IDs, and timestamps
 5. **User-Friendly**: Formatted output that's easy to read and act upon
 
-## Environment Variable Integration
+## Configuration
 
-The feature works with existing `AUDIOBOOK_MATCH_MODE` settings:
-- `continue` (default): Collects mismatches and continues syncing with fallback matching
-- `skip`: Books are skipped to avoid wrong editions, but mismatches are still collected for review
-- `fail`: Sync fails immediately on mismatch, no summary needed (process stops)
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `AUDIOBOOK_MATCH_MODE` | Controls how book matching issues are handled | `continue` |
+| `LOG_FORMAT` | Output format for logs (`json` or `text`) | `json` |
+| `DEBUG` | Enable debug logging | `false` |
+
+### AUDIOBOOK_MATCH_MODE Options
+
+- `continue` (default): 
+  - Collects mismatches in the background
+  - Continues syncing with fallback matching when possible
+  - Best for automated environments where some mismatches are acceptable
+
+- `skip`:
+  - Collects mismatches for review
+  - Skips books that can't be matched to correct audiobook editions
+  - Prevents syncing progress to potentially wrong editions
+  - Best for maintaining data quality
+
+- `fail`:
+  - Fails immediately on first mismatch
+  - No summary is generated
+  - Best for strict validation scenarios
+
+### Example Configuration
+
+```bash
+# Strict mode - fail on any mismatch
+export AUDIOBOOK_MATCH_MODE=fail
+
+# Debug mode with JSON output
+export DEBUG=true
+export LOG_FORMAT=json
+```
 
 ## Technical Details
 
@@ -113,6 +197,18 @@ The feature works with existing `AUDIOBOOK_MATCH_MODE` settings:
 - **Thread-Safe**: Collection is sequential during sync operations
 - **Memory Efficient**: Only stores essential information for each mismatch
 - **Debug Integration**: Maintains existing debug logging alongside collection
+- **Logging**: Integrates with the application's logging system
+  - Respects `LOG_FORMAT` environment variable
+  - Supports both structured (JSON) and human-readable output
+  - Includes timestamps and log levels for better traceability
+
+### Data Flow
+
+1. **Detection**: Mismatches are detected during sync operations
+2. **Collection**: Mismatch details are added to the global collection
+3. **Processing**: Collection is processed at the end of the sync
+4. **Output**: Results are formatted according to `LOG_FORMAT` setting
+5. **Cleanup**: Collection is cleared for the next sync operation
 
 ## Future Enhancements
 

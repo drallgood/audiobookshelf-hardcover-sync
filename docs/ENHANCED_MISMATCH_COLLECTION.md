@@ -44,9 +44,42 @@ Mismatch summaries now show comprehensive book information:
 
 ### Enhanced Data Flow
 
-1. **Metadata Preservation**: The `Audiobook` struct now includes a `Metadata` field containing the complete `MediaMetadata`
+1. **Metadata Preservation**: The `Audiobook` struct includes a `Metadata` field containing the complete `MediaMetadata`
 2. **Data Flow**: Full metadata flows from `fetchAudiobookShelfStats()` → `syncToHardcover()` → `addBookMismatchWithMetadata()`
 3. **Processing**: Duration conversion (seconds → hours) and release date handling (prefer date over year)
+4. **Logging**: Mismatch events are logged in the configured format (JSON or text)
+
+### Logging Configuration
+
+Mismatch collection supports configurable logging formats:
+
+```bash
+# JSON format (default, recommended for production)
+export LOG_FORMAT=json
+
+text format (more human-readable)
+export LOG_FORMAT=text
+```
+
+#### Example JSON Output
+```json
+{
+  "level": "warn",
+  "time": "2025-06-28T19:35:00+02:00",
+  "message": "Book mismatch detected",
+  "book": {
+    "title": "The Fellowship of the Ring",
+    "subtitle": "The Lord of the Rings, Book 1",
+    "author": "J.R.R. Tolkien",
+    "narrator": "Rob Inglis",
+    "isbn": "9780544003415",
+    "asin": "B007978NPG",
+    "book_id": "book123",
+    "edition_id": "edition456",
+    "issue": "ASIN lookup failed for ASIN B007978NPG - no audiobook edition found"
+  }
+}
+```
 
 ### New Functions
 
@@ -86,14 +119,18 @@ This enhanced system is particularly valuable for:
 - **No Breaking Changes**: Existing configurations and workflows continue to work unchanged
 - **Automatic Enhancement**: New metadata collection happens automatically for all new sync operations
 - **Gradual Adoption**: The enhanced display only shows additional fields when available
+- **Log Format**: Mismatch logging respects the global `LOG_FORMAT` setting (default: JSON)
 
 ## Future Enhancements
 
 The enhanced metadata foundation enables future improvements such as:
 
-- Export capabilities for mismatch reports
-- Automated suggestion systems for better matches
-- ASIN reference tracking for audiobook identification
-- Advanced filtering and search capabilities
+- **Export Capabilities**: Generate mismatch reports in various formats (CSV, JSON, HTML)
+- **Automated Suggestions**: Implement smart matching using additional metadata
+- **ASIN Reference Tracking**: Track and resolve ASIN mismatches over time
+- **Advanced Filtering**: Filter mismatches by type, date, or metadata fields
+- **Web Interface**: Visual dashboard for reviewing and resolving mismatches
+- **Integration**: Webhook support for real-time notifications
+- **Metrics**: Track mismatch patterns and resolution rates
 
 This feature represents a significant improvement in the user experience for managing and resolving sync issues in the audiobookshelf-hardcover-sync tool.

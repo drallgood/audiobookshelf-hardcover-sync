@@ -14,7 +14,7 @@ COVERAGE_DIR := coverage
 
 # Output binary names
 BINARY := $(BIN_DIR)/$(PROJECT_NAME)
-TOOLS := edition image-tool lookup-tool
+TOOLS := edition image-tool hardcover-lookup
 TOOL_BINARIES := $(addprefix $(BIN_DIR)/,$(TOOLS))
 
 # Go parameters

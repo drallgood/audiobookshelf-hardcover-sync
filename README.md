@@ -87,17 +87,558 @@ The project follows standard Go project layout:
    ./bin/audiobookshelf-hardcover-sync
    ```
 
-### Using Docker Compose (Recommended)
-1. Create a `.env` file with your API tokens:
-   ```sh
-   cp .env.example .env
-   # Edit .env with your AUDIOBOOKSHELF_URL, AUDIOBOOKSHELF_TOKEN, and HARDCOVER_TOKEN
+## Running with Docker
+
+### Prerequisites
+
+- [Docker](https://docs.docker.com/engine/install/) installed on your system
+- [Docker Compose](https://docs.docker.com/compose/install/) (recommended for the main sync service)
+- [Hardcover API token](#getting-started)
+- (Optional) [Audiobookshelf](https://www.audiobookshelf.org/) URL and token if using the sync service
+
+### Quick Start
+
+1. **Pull the latest image**:
+   ```bash
+   docker pull ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
    ```
 
-2. Start the service:
-   ```sh
+2. **Create a configuration directory**:
+   ```bash
+   mkdir -p ~/abs-hardcover-sync/config
+   cp .env.example ~/abs-hardcover-sync/config/.env
+   ```
+
+3. **Edit the configuration**:
+   ```bash
+   # Edit the environment file with your settings
+   nano ~/abs-hardcover-sync/config/.env
+   ```
+
+4. **Run the container**:
+   ```bash
+   docker run -d \
+     --name abs-hardcover-sync \
+     --restart unless-stopped \
+     -v ~/abs-hardcover-sync/config:/app/config \
+     -v ~/abs-hardcover-sync/data:/app/data \
+     -e CONFIG_FILE=/app/config/.env \
+     ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
+   ```
+
+5. **View logs**:
+   ```bash
+   docker logs -f abs-hardcover-sync
+   ```
+
+### Main Sync Service
+
+#### Using Docker Compose (Recommended)
+
+1. **Create a project directory** and navigate to it:
+   ```bash
+   mkdir -p ~/abs-hardcover-sync && cd ~/abs-hardcover-sync
+   ```
+
+2. **Create a docker-compose.yml** file:
+   ```yaml
+   version: '3.8'
+
+   services:
+     audiobookshelf-hardcover-sync:
+       image: ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
+       container_name: abs-hardcover-sync
+       restart: unless-stopped
+       env_file: .env
+       volumes:
+         - ./data:/app/data
+         - ./logs:/app/logs
+       environment:
+         - TZ=America/New_York  # Set your timezone
+         - LOG_LEVEL=info       # debug, info, warn, error
+         - LOG_FORMAT=json      # json or text
+       healthcheck:
+         test: ["CMD", "wget", "--spider", "http://localhost:8080/health"]
+         interval: 30s
+         timeout: 10s
+         retries: 3
+         start_period: 10s
+   ```
+
+3. **Create a .env file** with your configuration:
+   ```bash
+   # Required
+   HARDCOVER_TOKEN=your_hardcover_token
+   AUDIOBOOKSHELF_URL=https://your-audiobookshelf-server.com
+   AUDIOBOOKSHELF_TOKEN=your_audiobookshelf_token
+   
+   # Optional - adjust as needed
+   SYNC_INTERVAL=1h
+   LOG_LEVEL=info
+   LOG_FORMAT=json
+   DRY_RUN=false
+   ```
+
+4. **Start the service**:
+   ```bash
    docker compose up -d
    ```
+
+5. **View logs**:
+   ```bash
+   # Follow logs
+   docker compose logs -f
+   
+   # View recent logs (last 100 lines)
+   docker compose logs --tail=100
+   
+   # View logs for a specific time period
+   docker compose logs --since 1h
+   ```
+
+6. **Check container status**:
+   ```bash
+   # List all containers
+   docker compose ps
+   
+   # View resource usage
+   docker stats
+   
+   # View container details
+   docker inspect abs-hardcover-sync
+   ```
+
+7. **Common management commands**:
+   ```bash
+   # Stop the service
+   docker compose down
+   
+   # Restart the service
+   docker compose restart
+   
+   # Update to the latest version
+   docker compose pull
+   docker compose up -d --force-recreate
+   ```
+
+### Configuration Reference
+
+#### Core Environment Variables
+
+| Variable | Description | Required | Default | Example |
+|----------|-------------|:--------:|:-------:|---------|
+| `HARDCOVER_TOKEN` | Your Hardcover API token | Yes | - | `abc123...` |
+| `AUDIOBOOKSHELF_URL` | Your Audiobookshelf server URL | Yes* | - | `https://abs.example.com` |
+| `AUDIOBOOKSHELF_TOKEN` | Your Audiobookshelf API token | Yes* | - | `abc123...` |
+| `CONFIG_FILE` | Path to config file (if not using env vars) | No | - | `/app/config/.env` |
+
+#### Sync Configuration
+
+| Variable | Description | Default | Example |
+|----------|-------------|:-------:|---------|
+| `SYNC_INTERVAL` | Sync interval (0 to disable) | `1h` | `30m`, `2h`, `6h` |
+| `DRY_RUN` | Enable dry-run mode | `false` | `true`/`false` |
+| `AUDIOBOOK_MATCH_MODE` | Book matching behavior | `continue` | `skip`, `fail` |
+| `MAX_RETRIES` | Max retry attempts for failed operations | `3` | `5` |
+| `REQUEST_TIMEOUT` | HTTP request timeout | `30s` | `1m` |
+
+#### Logging Configuration
+
+| Variable | Description | Default | Example |
+|----------|-------------|:-------:|---------|
+| `LOG_LEVEL` | Logging level | `info` | `debug`, `warn`, `error` |
+| `LOG_FORMAT` | Log format | `json` | `text` |
+| `LOG_FILE` | Log file path (empty for stdout) | `` | `/app/logs/sync.log` |
+
+#### Volume Mounts
+
+| Container Path | Recommended Host Path | Description |
+|----------------|----------------------|-------------|
+| `/app/config` | `./config` | Configuration files |
+| `/app/data` | `./data` | Persistent data (cache, database) |
+| `/app/logs` | `./logs` | Application logs |
+| `/tmp` | - | Temporary file storage |
+
+#### Health Check Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Basic health status |
+| `/ready` | GET | Service readiness |
+| `/metrics` | GET | Prometheus metrics |
+
+#### Example .env File
+
+```ini
+# Required
+HARDCOVER_TOKEN=your_hardcover_token_here
+AUDIOBOOKSHELF_URL=https://your-audiobookshelf-server.com
+AUDIOBOOKSHELF_TOKEN=your_audiobookshelf_token_here
+
+# Optional - Sync Settings
+SYNC_INTERVAL=1h
+DRY_RUN=false
+AUDIOBOOK_MATCH_MODE=continue
+MAX_RETRIES=3
+
+# Optional - Logging
+LOG_LEVEL=info
+LOG_FORMAT=json
+LOG_FILE=/app/logs/sync.log
+
+# Optional - Advanced
+REQUEST_TIMEOUT=30s
+TZ=UTC
+```
+
+## Command Line Tools
+
+All command-line tools are available as subcommands of the main Docker image. These tools are designed to help manage your audiobook collection and troubleshoot issues.
+
+### Running Tools with Docker
+
+All tools follow this basic pattern:
+```bash
+docker run --rm \
+  -v $(pwd):/app \
+  -e HARDCOVER_TOKEN=your_token \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest [TOOL] [COMMAND] [ARGS]
+```
+
+### 1. Edition Tool
+
+Create and manage audiobook editions in Hardcover.
+
+#### Commands
+
+##### `create` - Create a new audiobook edition
+```bash
+# Interactive mode (guided prompts)
+docker run --rm \
+  -v $(pwd):/app \
+  -e HARDCOVER_TOKEN=your_token \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest edition-tool create --interactive
+
+# From JSON file
+docker run --rm \
+  -v $(pwd):/app \
+  -e HARDCOVER_TOKEN=your_token \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest edition-tool create --file /app/edition.json
+
+# With debug logging
+docker run --rm \
+  -v $(pwd):/app \
+  -e HARDCOVER_TOKEN=your_token \
+  -e LOG_LEVEL=debug \
+  -e LOG_FORMAT=text \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest edition-tool create --file /app/edition.json
+```
+
+##### `prepopulate` - Generate a template from an existing book
+```bash
+# Basic usage
+docker run --rm \
+  -v $(pwd):/app \
+  -e HARDCOVER_TOKEN=your_token \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest edition-tool prepopulate \
+    --book-id 12345 \
+    --output /app/edition.json
+
+# With additional metadata
+docker run --rm \
+  -v $(pwd):/app \
+  -e HARDCOVER_TOKEN=your_token \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest edition-tool prepopulate \
+    --book-id 12345 \
+    --asin B0ABCD1234 \
+    --isbn13 9781234567890 \
+    --output /app/edition.json
+```
+
+### 2. Hardcover Lookup Tool
+
+Look up authors, narrators, and publishers in the Hardcover database.
+
+#### Commands
+
+##### `author` - Look up authors
+```bash
+# Basic search
+docker run --rm \
+  -e HARDCOVER_TOKEN=your_token \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest hardcover-lookup author "Brandon Sanderson"
+
+# Search with filters
+docker run --rm \
+  -e HARDCOVER_TOKEN=your_token \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest hardcover-lookup author \
+    --limit 5 \
+    --sort name \
+    "Brandon"
+```
+
+##### `narrator` - Look up narrators
+```bash
+# Basic search
+docker run --rm \
+  -e HARDCOVER_TOKEN=your_token \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest hardcover-lookup narrator "Michael Kramer"
+
+# Verify narrator ID
+docker run --rm \
+  -e HARDCOVER_TOKEN=your_token \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest hardcover-lookup narrator --id 12345
+
+# Bulk lookup
+docker run --rm \
+  -e HARDCOVER_TOKEN=your_token \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest hardcover-lookup narrator \
+    --bulk "Michael Kramer, Kate Reading, Tim Gerard Reynolds"
+```
+
+##### `publisher` - Look up publishers
+```bash
+# Basic search
+docker run --rm \
+  -e HARDCOVER_TOKEN=your_token \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest hardcover-lookup publisher "Macmillan"
+
+# Search with filters
+docker run --rm \
+  -e HARDCOVER_TOKEN=your_token \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest hardcover-lookup publisher \
+    --limit 3 \
+    --sort name \
+    "Audio"
+```
+
+### Tips for Using the Tools
+
+1. **Persistent Configuration**: Create a shell alias or script to avoid typing the full command:
+   ```bash
+   # Add to your ~/.bashrc or ~/.zshrc
+   alias hc-tool="docker run --rm -v $(pwd):/app -e HARDCOVER_TOKEN=your_token ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest"
+   
+   # Then use like:
+   hc-tool edition-tool create --interactive
+   hc-tool hardcover-lookup author "Brandon Sanderson"
+   ```
+
+2. **Debugging**: Add these environment variables for troubleshooting:
+   ```bash
+   -e LOG_LEVEL=debug \
+   -e LOG_FORMAT=text \
+   ```
+
+3. **Rate Limiting**: Be mindful of API rate limits when running bulk operations. Consider adding delays between requests if needed.
+
+4. **Data Persistence**: Use volumes to persist data between container runs:
+   ```bash
+   -v ~/abs-tools/data:/app/data
+   ```
+
+5. **Configuration Files**: For complex configurations, use environment files:
+   ```bash
+   --env-file .env
+   ```
+
+### 3. Image Tool
+
+Upload, download, and manage cover images for audiobook editions in Hardcover.
+
+#### Commands
+
+##### `upload` - Upload a cover image
+```bash
+# Basic upload
+docker run --rm \
+  -v $(pwd):/app \
+  -e HARDCOVER_TOKEN=your_token \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest image-tool upload \
+    --edition-id 12345 \
+    --image /app/cover.jpg \
+    --type COVER_ART
+
+# Upload with additional options
+docker run --rm \
+  -v $(pwd):/app \
+  -e HARDCOVER_TOKEN=your_token \
+  -e LOG_LEVEL=debug \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest image-tool upload \
+    --edition-id 12345 \
+    --image /app/cover.jpg \
+    --type COVER_ART \
+    --primary \
+    --position 1 \
+    --credit "Cover Art by John Doe" \
+    --credit-url "https://example.com/artist/johndoe"
+```
+
+##### `download` - Download a cover image
+```bash
+# Basic download
+docker run --rm \
+  -v $(pwd):/app \
+  -e HARDCOVER_TOKEN=your_token \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest image-tool download \
+    --edition-id 12345 \
+    --output /app/cover.jpg
+
+# Download specific image by ID
+docker run --rm \
+  -v $(pwd):/app \
+  -e HARDCOVER_TOKEN=your_token \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest image-tool download \
+    --edition-id 12345 \
+    --image-id 67890 \
+    --output /app/cover.jpg
+
+# Download all images for an edition
+docker run --rm \
+  -v $(pwd)/covers:/app/covers \
+  -e HARDCOVER_TOKEN=your_token \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest image-tool download \
+    --edition-id 12345 \
+    --all \
+    --output-dir /app/covers
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest image-tool upload \
+  --book 12345 /app/covers/my-cover.jpg "Custom cover art"
+```
+
+## Advanced Configuration
+
+### Using Docker Compose for Tools
+
+For frequently used tools, you can create a `docker-compose.tools.yml`:
+
+```yaml
+version: '3.8'
+
+services:
+  edition-tool:
+    image: ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
+    entrypoint: ["edition-tool"]
+    environment:
+      - HARDCOVER_TOKEN=${HARDCOVER_TOKEN}
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+
+  hardcover-lookup:
+    image: ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
+    entrypoint: ["hardcover-lookup"]
+    environment:
+      - HARDCOVER_TOKEN=${HARDCOVER_TOKEN}
+
+  image-tool:
+    image: ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
+    entrypoint: ["image-tool"]
+    environment:
+      - HARDCOVER_TOKEN=${HARDCOVER_TOKEN}
+    volumes:
+      - ./covers:/app/covers
+```
+
+Then use it like this:
+```bash
+# Run edition tool
+docker compose -f docker-compose.tools.yml run --rm edition-tool create --interactive
+
+# Lookup an author
+docker compose -f docker-compose.tools.yml run --rm hardcover-lookup author "Brandon Sanderson"
+```
+
+### Custom Configuration File
+
+1. Create a `config/config.yaml` file:
+   ```yaml
+   hardcover:
+     token: your_hardcover_token
+     
+   logging:
+     level: debug
+     format: console
+     
+   server:
+     port: 8080
+     shutdown_timeout: 30s
+   ```
+
+2. Mount it when running the container:
+   ```bash
+   docker run --rm \
+     -v $(pwd)/config:/app/config \
+     ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
+   ```
+
+### Persistent Cache
+
+To persist the cache between container restarts:
+
+```bash
+docker run --rm \
+  -v abs_hardcover_data:/app/data \
+  -e HARDCOVER_TOKEN=your_token \
+  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
+```
+
+### Using Docker Secrets
+
+For enhanced security, use Docker secrets:
+
+1. Create secrets:
+   ```bash
+   echo "your_hardcover_token" | docker secret create hardcover_token -
+   echo "your_audiobookshelf_token" | docker secret create audiobookshelf_token -
+   ```
+
+2. Update your `docker-compose.yml`:
+   ```yaml
+   services:
+     audiobookshelf-hardcover-sync:
+       image: ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
+       environment:
+         - HARDCOVER_TOKEN_FILE=/run/secrets/hardcover_token
+         - AUDIOBOOKSHELF_TOKEN_FILE=/run/secrets/audiobookshelf_token
+       secrets:
+         - hardcover_token
+         - audiobookshelf_token
+   
+   secrets:
+     hardcover_token:
+       external: true
+     audiobookshelf_token:
+       external: true
+   ```
+
+## Troubleshooting
+
+### Viewing Logs
+
+```bash
+# Follow container logs
+docker compose logs -f
+
+# View logs from the last 5 minutes
+docker compose logs --since 5m
+
+# View logs with timestamps
+docker compose logs -t
+```
+
+### Debugging
+
+Run the container with a shell for debugging:
+
+```bash
+docker run -it --rm --entrypoint /bin/sh ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
+```
+
+### Common Issues
+
+- **Permission Denied**: Ensure the container has write access to mounted volumes
+- **Connection Issues**: Verify network connectivity and proxy settings
+- **Authentication Errors**: Double-check your API tokens and ensure they're properly escaped in the environment
 
 ### Using Docker
 ```sh
@@ -580,41 +1121,149 @@ For production use, consider:
 4. **Log Management**: Configure log rotation and shipping
 5. **Security**: Run as non-root user (images use `nobody:nobody`)
 
+### Docker Compose Example
+
+Here's a comprehensive `docker-compose.yml` example with all available options:
+
 ```yaml
-# docker-compose.yml
+version: '3.8'
+
 services:
-  abs-hardcover-sync:
+  audiobookshelf-hardcover-sync:
     image: ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
+    container_name: abs-hardcover-sync
     restart: unless-stopped
+    
     environment:
-      - AUDIOBOOKSHELF_URL=${AUDIOBOOKSHELF_URL}
-      - AUDIOBOOKSHELF_TOKEN=${AUDIOBOOKSHELF_TOKEN}
-      - HARDCOVER_TOKEN=${HARDCOVER_TOKEN}
-      - SYNC_INTERVAL=1h
-      - DRY_RUN=false                    # Enable dry run mode (true/1/yes)
-    deploy:
-      resources:
-        limits:
-          memory: 128M
-          cpus: '0.5'
+      # --- Required Configuration ---
+      - AUDIOBOOKSHELF_URL=https://your-abs-server.com  # Your Audiobookshelf server URL
+      - AUDIOBOOKSHELF_TOKEN=your_abs_token            # Your Audiobookshelf API token
+      - HARDCOVER_TOKEN=your_hardcover_token           # Your Hardcover API token
+      
+      # --- Sync Behavior ---
+      - SYNC_INTERVAL=1h                 # How often to sync (e.g., 10m, 1h, 6h)
+      - SYNC_WANT_TO_READ=true           # Sync unread books as "Want to Read"
+      - SYNC_OWNED=true                  # Mark synced books as owned
+      - AUDIOBOOK_MATCH_MODE=continue    # Action on ASIN lookup failure: continue/skip/fail
+      - INCREMENTAL_SYNC_MODE=enabled    # Enable/disable incremental sync
+      - MINIMUM_PROGRESS_THRESHOLD=0.01  # Minimum progress to sync (0.0-1.0)
+      - SYNC_STATE_FILE=/app/data/sync_state.json  # Path to sync state file
+      
+      # --- Rate Limiting ---
+      - HARDCOVER_RATE_LIMIT=10          # Max requests per second to Hardcover
+      - RATE_BURST=15                    # Max burst requests
+      
+      # --- Logging ---
+      - LOG_LEVEL=info                   # debug, info, warn, error, fatal
+      - LOG_FORMAT=json                  # json or console
+      - LOG_PRETTY=false                 # Pretty-print JSON logs
+      - TZ=UTC                           # Timezone for logs
+      
+      # --- Advanced ---
+      # - DRY_RUN=true                   # Enable dry-run mode (no changes made)
+      # - FORCE_FULL_SYNC=false          # Force full sync on next run
+      # - TEST_BOOK_LIMIT=10             # Limit number of books to process (testing)
+      # - TEST_BOOK_FILTER=keyword        # Filter books by title/author (testing)
+    
+    # Volume mounts
+    volumes:
+      # Mount config directory (for config.yaml)
+      - ./config:/app/config
+      
+      # Persistent data (cache, state, etc.)
+      - abs_hardcover_data:/app/data
+      
+      # Temporary storage for file uploads
+      - /tmp
+    
+    # Health check
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:8080/healthz"]
+      test: ["CMD", "wget", "--spider", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 10s
+    
+    # Resource limits (adjust based on your needs)
+    deploy:
+      resources:
+        limits:
+          cpus: '1'     # Adjust based on your system
+          memory: 512M  # Adjust based on your library size
+    
+    # Port mapping (only needed if accessing the HTTP API)
+    ports:
+      - "8080:8080"
+
+# Named volume for persistent data
+volumes:
+  abs_hardcover_data:
+    driver: local
+    
+# Optional: Network configuration
+# networks:
+#   default:
+#     driver: bridge
+#     ipam:
+#       config:
+#         - subnet: 172.20.0.0/16
+```
+
+### Configuration File Alternative
+
+Instead of environment variables, you can use a `config.yaml` file in the mounted `/app/config` directory:
+
+```yaml
+# config/config.yaml
+server:
+  port: 8080
+  timeout: 30s
+
+logging:
+  level: info
+  format: json
+  pretty: false
+
+audiobookshelf:
+  url: https://your-abs-server.com
+  token: your_abs_token
+
+hardcover:
+  token: your_hardcover_token
+  rate_limit: 10
+  rate_burst: 15
+
+sync:
+  interval: 1h
+  want_to_read: true
+  owned: true
+  match_mode: continue
+  incremental: enabled
+  min_progress: 0.01
+  state_file: /app/data/sync_state.json
+  dry_run: false
+  force_full_sync: false
+
+# For testing
+test:
+  book_limit: 0
+  book_filter: ""
 ```
 
 ## Recent Updates & Migration
 
 ### v1.5.0 (Latest)
-- 🔧 **Fixed**: RE-READ detection for manually finished books - eliminates false positive re-read scenarios
-- 📊 **Enhanced**: Progress detection using `/api/me` endpoint for accurate finished book status
-- 🛡️ **Conservative**: Skip logic for edge cases to prevent duplicate entries
-- 🔗 **URL Support**: Better reverse proxy handling with path prefix support
-- 🔧 **Fixed**: 1000x progress multiplication error with smart unit conversion
+- **Fixed**: RE-READ detection for manually finished books - eliminates false positive re-read scenarios
+- **Enhanced**: Progress detection using `/api/me` endpoint for accurate finished book status
+- **Conservative**: Skip logic for edge cases to prevent duplicate entries
+- **URL Support**: Better reverse proxy handling with path prefix support
+- **Fixed**: 1000x progress multiplication error with smart unit conversion
 
 ### v1.4.0
-- ✨ **New**: Owned books marking (`SYNC_OWNED=true` by default)
+- **New**: Owned books marking (`SYNC_OWNED=true` by default)
+- **Enhanced**: "Want to Read" sync now enabled by default
+- **Improved**: Better incremental sync performance
+- **Fixed**: Re-read scenario handling and duplicate prevention
 - 🎯 **Enhanced**: "Want to Read" sync now enabled by default
 - ⚡ **Improved**: Better incremental sync performance
 - 🔧 **Fixed**: Re-read scenario handling and duplicate prevention

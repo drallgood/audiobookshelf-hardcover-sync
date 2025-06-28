@@ -140,11 +140,43 @@ Cache statistics are logged at the start and end of each sync operation, providi
 - Breakdown by type (authors, narrators, publishers)
 - Cache effectiveness over time
 
-### Debug Logging
-Enable debug logging to see detailed cache hit/miss information:
+### Logging
+
+The caching system supports configurable log formats for better integration with monitoring systems:
+
+#### Environment Variables
+- `LOG_FORMAT`: Output format for logs (default: `json`, options: `json`, `text`)
+- `DEBUG`: Enable debug logging (default: `false`)
+
+#### Example Configuration
 ```bash
+# JSON format (default, recommended for production)
+export LOG_FORMAT=json
 export DEBUG=true
-./main
+
+# Or plain text format (more human-readable)
+export LOG_FORMAT=text
+export DEBUG=true
+```
+
+#### Example Debug Output
+
+**JSON Format**
+```json
+{
+  "level": "debug",
+  "time": "2025-06-28T19:25:00+02:00",
+  "message": "Cache hit",
+  "query": "John Smith",
+  "type": "author",
+  "results": 3,
+  "cache_size": 45
+}
+```
+
+**Text Format**
+```
+[DEBUG] 2025-06-28T19:25:00+02:00 Cache hit for 'John Smith' (author) - 3 results (cache size: 45)
 ```
 
 ## Future Enhancements

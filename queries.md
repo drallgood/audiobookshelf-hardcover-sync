@@ -207,9 +207,14 @@ query UserBookByASIN($asin: String!) {
 
 ```graphql
 query NarratorByName($name: String!) {
-  people(where: {name: {_eq: $name}}) {
-    id
+  authors(where: {state: {_eq: "active"}, name: {_eq: $name}}) {
     name
+    id
+    alias_id
+    alternate_names
+    books_count
+    slug
+    state
   }
 }
 ```

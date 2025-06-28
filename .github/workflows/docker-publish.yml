@@ -1,27 +1,45 @@
-name: Publish Docker image
+name: Build and Publish Docker Image
 
 on:
   push:
     branches:
       - main
-  release:
-    types: [published, prereleased]
+    tags:
+      - 'v*'  # Matches semantic version tags (e.g., v1.0.0)
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    # Allows manual trigger from GitHub UI
 
+# Set permissions for the workflow
 permissions:
   contents: read
   packages: write
+  # Required for GitHub Container Registry
+  id-token: write  # For OIDC auth with GitHub Actions
+
+# Environment variables for the workflow
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  DOCKER_BUILDKIT: 1  # Enable Docker BuildKit
 
 jobs:
+  # Lint and test the code before building the image
   test:
+    name: Test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Needed for version calculation
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+          cache: true
 
       - name: Cache Go modules
         uses: actions/cache@v4
@@ -34,7 +52,8 @@ jobs:
             ${{ runner.os }}-go-
 
       - name: Run tests
-        run: go test -v ./...
+        run: |
+          make test
 
       - name: Test version injection build
         run: |
@@ -54,24 +73,39 @@ jobs:
           fi
 
   build-and-push:
-    runs-on: ubuntu-latest
+    name: Build and Push
     needs: test
+    if: github.event_name != 'pull_request'  # Skip for PRs, handled by test job
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      packages: write
+      id-token: write  # For OIDC auth with GitHub Actions
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Needed for version calculation
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64,amd64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
+          driver: docker-container
+          driver-opts: network=host
           install: true
+          version: v0.11.0
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
@@ -79,9 +113,53 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/drallgood/audiobookshelf-hardcover-sync
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+            type=sha,prefix=sha-
+          labels: |
+            org.opencontainers.image.title=${{ github.event.repository.name }}
+            org.opencontainers.image.description=${{ github.event.repository.description }}
+            org.opencontainers.image.url=${{ github.event.repository.html_url }}
+            org.opencontainers.image.source=${{ github.event.repository.html_url }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.created=${{ steps.get-date.outputs.date }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=${{ github.event.repository.license.spdx_id }}
 
-      - name: Cache Docker layers
+      - name: Get current date
+        id: get-date
+        run: |
+          echo "date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/tags/v* ]]; then
+            # For tags, strip the 'v' prefix
+            VERSION="${GITHUB_REF#refs/tags/v}"
+            echo "version=${VERSION}" >> $GITHUB_OUTPUT
+            echo "version-type=release" >> $GITHUB_OUTPUT
+            echo "::set-output name=is-release::true"
+          elif [[ "${{ github.ref }}" == 'refs/heads/main' ]]; then
+            # For main branch, use commit SHA with beta prefix
+            VERSION="beta-${GITHUB_SHA:0:7}"
+            echo "version=${VERSION}" >> $GITHUB_OUTPUT
+            echo "version-type=beta" >> $GITHUB_OUTPUT
+          else
+            # For other branches, use branch name with commit SHA
+            BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+            VERSION="dev-${BRANCH_NAME//\//-}-${GITHUB_SHA:0:7}"
+            echo "version=${VERSION}" >> $GITHUB_OUTPUT
+            echo "version-type=dev" >> $GITHUB_OUTPUT
+          fi
+          echo "Determined version: ${VERSION} (${VERSION_TYPE:-unknown})"
+
+      - name: Set up Docker Buildx cache
         uses: actions/cache@v4
         with:
           path: /tmp/.buildx-cache
@@ -89,36 +167,73 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-buildx-
 
-      - name: Determine version
-        id: version
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            # For tags, use the tag name as version
-            VERSION=${GITHUB_REF#refs/tags/}
-          elif [[ "${GITHUB_REF}" == refs/heads/main ]]; then
-            # For main branch, use commit SHA with beta prefix
-            VERSION="beta-${GITHUB_SHA:0:7}"
-          else
-            # For other branches, use branch name with commit SHA
-            VERSION="dev-${GITHUB_REF#refs/heads/}-${GITHUB_SHA:0:7}"
-          fi
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "Determined version: ${VERSION}"
-
       - name: Build and push Docker image (multi-arch)
-        id: docker_build
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           platforms: linux/amd64,linux/arm64
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
+            BUILD_DATE=${{ steps.get-date.outputs.date }}
+            VCS_REF=${{ github.sha }}
+            VCS_URL=${{ github.server_url }}/${{ github.repository }}
           tags: |
-            ghcr.io/drallgood/audiobookshelf-hardcover-sync:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
             ${{ steps.meta.outputs.tags }}
-            ${{ startsWith(github.ref, 'refs/tags/v') && 'ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest' || '' }}
-            ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ghcr.io/drallgood/audiobookshelf-hardcover-sync:beta' || '' }}
+            ${{ startsWith(github.ref, 'refs/tags/v') && format('{0}/{1}:latest', env.REGISTRY, env.IMAGE_NAME) }}
+            ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && format('{0}/{1}:beta', env.REGISTRY, env.IMAGE_NAME) || '' }}
           labels: ${{ steps.meta.outputs.labels }}
+          provenance: false  # Disable provenance for now as it requires Docker Buildx v0.11+
           cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache,mode=max
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+      - name: Move cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+      - name: Image digest
+        run: echo ${{ steps.docker_build.outputs.digest }}
+
+  # This job will only run for tags starting with 'v' (e.g., v1.0.0)
+  create-release:
+    name: Create Release
+    needs: build-and-push
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get tag name
+        id: get-tag
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "release_name=Release ${TAG_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.get-tag.outputs.tag_name }}
+          release_name: ${{ steps.get-tag.outputs.release_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+
+      - name: Get release info
+        id: release_info
+        run: |
+          RELEASE_URL=$(curl -sH "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ steps.get-tag.outputs.tag_name }}" | \
+            jq -r '.html_url')
+          echo "release_url=${RELEASE_URL}" >> $GITHUB_OUTPUT
+
+      - name: Update Release with Docker info
+        run: |
+          curl -X PATCH \
+            -H "Authorization: token ${{ secrets.GITHOTTK }}" \
+            -H "Content-Type: application/json" \
+            -d '{"body": "### 🐳 Docker Image\n\nPull the Docker image:\n```bash\ndocker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.get-tag.outputs.tag_name }}\n```\n\nOr use the `latest` tag for the most recent release:\n```bash\ndocker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest\n```"}' \
+            "https://api.github.com/repos/${{ github.repository }}/releases/${{ steps.create_release.outputs.id }}"

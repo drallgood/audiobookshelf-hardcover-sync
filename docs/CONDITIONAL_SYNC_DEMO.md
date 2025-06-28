@@ -83,6 +83,54 @@ A book will be skipped if:
 - Environment variables and configuration unchanged
 - Same command-line interface
 
-## Testing
+## Logging and Debugging
 
-The implementation includes comprehensive debug logging to monitor the conditional sync behavior. Set `DEBUG_MODE=true` in your `.env` file to see detailed sync decisions.
+The implementation supports configurable logging to help monitor and debug the conditional sync behavior.
+
+### Environment Variables
+
+```bash
+# Enable debug logging (default: false)
+DEBUG=true
+
+# Set log format (default: json, options: json, text)
+LOG_FORMAT=text
+```
+
+### Example Debug Output
+
+#### JSON Format (LOG_FORMAT=json)
+```json
+{
+  "level": "debug",
+  "time": "2025-06-28T19:30:00+02:00",
+  "message": "Checking existing user book",
+  "book_id": "123456",
+  "book_title": "Example Book",
+  "user_book_id": 789,
+  "status_id": 2,
+  "progress_seconds": 1800,
+  "action": "update_existing"
+}
+```
+
+#### Text Format (LOG_FORMAT=text)
+```
+[DEBUG] 2025-06-28T19:30:00+02:00 Checking existing user book
+  book_id=123456
+  book_title="Example Book"
+  user_book_id=789
+  status_id=2
+  progress_seconds=1800
+  action=update_existing
+```
+
+### Debugging Tips
+
+1. **Enable Debug Mode**: Set `DEBUG=true` to see detailed sync decisions
+2. **Check Timestamps**: Verify if the last sync time is as expected
+3. **Review Progress**: Look for progress changes that might trigger updates
+4. **Check Status Changes**: Verify if status changes are being detected correctly
+5. **Monitor API Calls**: Use debug logs to track which API endpoints are being called
+
+## Testing
