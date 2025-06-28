@@ -16,14 +16,7 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-// init initializes the logger with default values
-func init() {
-	logger.Setup(logger.Config{
-		Level:      "info",
-		Format:     logger.FormatJSON,
-		TimeFormat: time.RFC3339,
-	})
-}
+// init is intentionally left empty to allow configuration to be loaded first
 
 var (
 	version = "dev"
@@ -38,7 +31,39 @@ type EditionCreatorInput = edition.EditionInput
 type EditionCreatorResult = edition.EditionResult
 
 func main() {
-	// Initialize the logger via init() function
+	// Parse command line args manually to get config path
+	configPath := "config.yaml"
+	args := os.Args[1:]
+	for i, arg := range args {
+		if (arg == "-c" || arg == "--config") && i+1 < len(args) {
+			configPath = args[i+1]
+			break
+		}
+	}
+
+	// Load configuration first
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		// If we can't load config, use default logger settings
+		logger.Setup(logger.Config{
+			Level:      "info",
+			Format:     logger.FormatJSON,
+			TimeFormat: time.RFC3339,
+		})
+		logger.Get().Error("Failed to load config, using default logger settings", map[string]interface{}{
+			"error": err.Error(),
+		})
+	} else {
+		// Initialize logger with config values
+		logger.Setup(logger.Config{
+			Level:      cfg.Logging.Level,
+			Format:     logger.ParseLogFormat(cfg.Logging.Format),
+			Output:     os.Stdout,
+			TimeFormat: time.RFC3339,
+		})
+	}
+
+	// Now create and run the CLI app
 	app := &cli.App{
 		Name:    "edition",
 		Usage:   "Create and manage audiobook editions in Hardcover",
