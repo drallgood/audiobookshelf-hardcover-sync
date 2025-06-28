@@ -193,7 +193,7 @@ jobs:
             VCS_URL=${{ github.server_url }}/${{ github.repository }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.env.outputs.version || 'dev' }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA::8}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
             type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
