@@ -103,11 +103,22 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc *hardcover.Client
 		imageURL = b.CoverURL
 	}
 
-	// Set EditionInfo - keep it clean and simple
+	// Set EditionInfo - ensure it's clean and properly formatted
 	editionInfo := "Imported from Audiobookshelf"
-	if b.EditionInfo != "" {
-		editionInfo = b.EditionInfo
+	if b.Reason != "" {
+		editionInfo = fmt.Sprintf("%s\n\nReason: %s", editionInfo, b.Reason)
 	}
+	if b.EditionInfo != "" {
+		// Clean the edition info by trimming whitespace and ensuring it ends with a period
+		cleanInfo := strings.TrimSpace(b.EditionInfo)
+		if cleanInfo != "" {
+			// Remove any trailing punctuation
+			cleanInfo = strings.TrimRight(cleanInfo, ".;:!?")
+			editionInfo = fmt.Sprintf("%s\n\n%s", editionInfo, cleanInfo)
+		}
+	}
+	// Ensure the final string ends with a period
+	editionInfo = strings.TrimRight(editionInfo, ".;:!?") + "."
 
 	// Look up author IDs if we have an author name and a Hardcover client
 	authorIDs := b.AuthorIDs

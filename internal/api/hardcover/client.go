@@ -525,6 +525,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 			"errors":          string(errorsJSON),
 			"directUnmarshal": directUnmarshal,
 			"rawRequestBody":  string(jsonBody),
+			"rawResponse":     string(body), // Log the raw response body
 		})
 
 		// Check for GraphQL errors
@@ -1021,16 +1022,45 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
 		Editions     []*Edition  `json:"editions"`
 	}
 
+	// The GraphQL response is already unwrapped by the client, so we expect just the books array
 	var result struct {
-		Data struct {
-			Books []*Book `json:"books"`
-		} `json:"data"`
+		Books []*Book `json:"books"`
 	}
 
 	// Execute the GraphQL query
 	err := c.GraphQLQuery(ctx, query, map[string]interface{}{
 		"isbn": normalizedISBN,
 	}, &result)
+
+	// Debug: Log the result after unmarshaling
+	resultJSON, _ := json.Marshal(result)
+	log.Debug("GraphQL query result", map[string]interface{}{
+		"result": string(resultJSON),
+		"books_count": len(result.Books),
+	})
+
+	if len(result.Books) > 0 {
+		book := result.Books[0]
+		editionsCount := 0
+		if book.Editions != nil {
+			editionsCount = len(book.Editions)
+		}
+		log.Debug("First book in result", map[string]interface{}{
+			"book_id":    book.ID,
+			"title":      book.Title,
+			"editions":   editionsCount,
+		})
+		if editionsCount > 0 {
+			edition := book.Editions[0]
+			log.Debug("First edition", map[string]interface{}{
+				"edition_id":  edition.ID,
+				"isbn_13":     edition.ISBN13,
+				"isbn_10":     edition.ISBN10,
+				"format_id":   edition.ReadingFormatID,
+				"audio_secs":  edition.AudioSeconds,
+			})
+		}
+	}
 
 	if err != nil {
 		log.Error("Failed to search book by ISBN", map[string]interface{}{
@@ -1041,14 +1071,14 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
 	}
 
 	// Check if any books were found
-	if len(result.Data.Books) == 0 {
+	if len(result.Books) == 0 {
 		log.Debug("No books found with the given ISBN", map[string]interface{}{
 			"isbn": isbn,
 		})
 		return nil, nil
 	}
 
-	bookData := result.Data.Books[0]
+	bookData := result.Books[0]
 
 	// Check if we have any editions
 	if len(bookData.Editions) == 0 {
@@ -1807,10 +1837,19 @@ func (c *Client) GetEditionByISBN13(ctx context.Context, isbn13 string) (*models
 		return nil, fmt.Errorf("no book found with ISBN-13: %s", isbn13)
 	}
 
-	// Then get the edition details
-	edition, err := c.GetEdition(ctx, book.ID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get edition: %w", err)
+	// Check if we have an edition ID
+	if book.EditionID == "" {
+		return nil, fmt.Errorf("no edition found for book with ID: %s", book.ID)
+	}
+
+	// Create an Edition from the embedded fields in HardcoverBook
+	edition := &models.Edition{
+		ID:     book.EditionID,
+		BookID: book.ID,
+		Title:  book.Title,
+		ASIN:   book.EditionASIN,
+		ISBN13: book.EditionISBN13,
+		ISBN10: book.EditionISBN10,
 	}
 
 	return edition, nil

@@ -95,7 +95,7 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 				AuthorIDs:      []int{}, // Empty slice when no authors found
 				AudioSeconds:   19800,
 				EditionFormat:  "Audiobook",
-				EditionInfo:    "Imported from Audiobookshelf:\n\nReason: test reason",
+				EditionInfo:    "Imported from Audiobookshelf\n\nReason: test reason.",
 				LanguageID:     1, // Default to English
 				CountryID:      1, // Default to US
 				PublisherID:    1, // Default publisher
@@ -141,7 +141,7 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 				ReleaseDate:    "2020-01-01",
 				AudioSeconds:   37800,
 				EditionFormat:  "Audiobook",
-				EditionInfo:    "Special Edition\nABS Image URL: https://example.com/image.jpg\nReason: test reason",
+				EditionInfo:    "Imported from Audiobookshelf\n\nReason: test reason\n\nSpecial Edition.",
 				LanguageID:     1,
 				CountryID:      1,
 			},
@@ -163,8 +163,13 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 			assert.Equal(t, tt.expected.ReleaseDate, result.ReleaseDate)
 			assert.Equal(t, tt.expected.AudioSeconds, result.AudioSeconds)
 			assert.Equal(t, tt.expected.EditionFormat, result.EditionFormat)
-			// For EditionInfo, we expect it to contain the expected parts
-			assert.Contains(t, result.EditionInfo, strings.TrimSpace(tt.expected.EditionInfo), "EditionInfo does not contain expected content")
+			// For EditionInfo, we expect it to contain the expected parts and end with a period
+			assert.True(t, strings.HasSuffix(result.EditionInfo, "."), "EditionInfo should end with a period")
+			// Check that the expected content is contained in the actual EditionInfo
+			expectedParts := strings.Split(tt.expected.EditionInfo, "\n\n")
+			for _, part := range expectedParts {
+				assert.Contains(t, result.EditionInfo, part, "EditionInfo is missing expected content")
+			}
 			assert.Equal(t, tt.expected.LanguageID, result.LanguageID)
 			assert.Equal(t, tt.expected.CountryID, result.CountryID)
 			assert.Equal(t, tt.expected.PublisherID, result.PublisherID)
