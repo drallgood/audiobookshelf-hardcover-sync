@@ -32,21 +32,19 @@ func TestClient_SearchPeople(t *testing.T) {
 			name:       "successful author search",
 			personType: "author",
 			handler: func(w http.ResponseWriter, r *http.Request) {
-				// Read and log the request body
+				// Read the request body
 				body, err := io.ReadAll(r.Body)
 				if err != nil {
 					http.Error(w, fmt.Sprintf("failed to read request body: %v", err), http.StatusBadRequest)
 					return
 				}
 
-				// Log the raw request body for debugging
-				fmt.Printf("Raw request body: %s\n", string(body))
-
-				// Parse the request to determine which query is being made
+				// Parse the request to get the query and variables
 				var reqBody struct {
 					Query     string `json:"query"`
 					Variables struct {
-						QueryType string `json:"queryType"`
+						Name  string `json:"name"`
+						Limit int    `json:"limit"`
 					} `json:"variables"`
 				}
 
@@ -55,64 +53,21 @@ func TestClient_SearchPeople(t *testing.T) {
 					return
 				}
 
-				// Log the parsed request
-				fmt.Printf("Parsed request - Query: %s, QueryType: %s\n", 
-					strings.TrimSpace(strings.SplitN(reqBody.Query, "{", 2)[0]),
-					reqBody.Variables.QueryType)
-
-				// Handle the search query
-				if strings.Contains(reqBody.Query, "query SearchPeople") {
-					// This is the search query - return person IDs
-					response := map[string]interface{}{
-						"data": map[string]interface{}{
-							"search": map[string]interface{}{
-								"error": nil,
-								"ids":   []string{"123"},
-							},
-						},
-					}
-					
-					// Log the response we're about to send
-					respBytes, _ := json.MarshalIndent(response, "", "  ")
-					fmt.Printf("Sending search response: %s\n", string(respBytes))
-					
-					w.Header().Set("Content-Type", "application/json")
-					if err := json.NewEncoder(w).Encode(response); err != nil {
-						http.Error(w, fmt.Sprintf("failed to encode response: %v", err), http.StatusInternalServerError)
-					}
-					return
-				}
-
-				// Handle the authors query
-				if strings.Contains(reqBody.Query, "query GetPeopleByIDs") {
-					personType := "author" // Default to author if not specified
-					if reqBody.Variables.QueryType != "" {
-						personType = reqBody.Variables.QueryType
-					}
-					
-					// Create a person based on the type
-					person := map[string]interface{}{
+				// Check if this is a search query
+				if strings.Contains(reqBody.Query, "query SearchPeopleDirect") {
+					// Return a test author
+					author := map[string]interface{}{
 						"id":           123,
-						"name":         "Test " + strings.Title(personType),
+						"name":         "Test Author",
 						"books_count":  10,
 						"canonical_id": nil,
 					}
 
-					// The field name in the response depends on the person type
-					fieldName := "authors"
-					if personType == "narrator" {
-						fieldName = "narrators"
-					}
-
 					response := map[string]interface{}{
 						"data": map[string]interface{}{
-							fieldName: []map[string]interface{}{person},
+							"authors": []map[string]interface{}{author},
 						},
 					}
-
-					// Log the response we're about to send
-					respBytes, _ := json.MarshalIndent(response, "", "  ")
-					fmt.Printf("Sending authors response: %s\n", string(respBytes))
 
 					w.Header().Set("Content-Type", "application/json")
 					if err := json.NewEncoder(w).Encode(response); err != nil {
@@ -123,7 +78,6 @@ func TestClient_SearchPeople(t *testing.T) {
 
 				// If we get here, it's an unexpected query
 				errMsg := fmt.Sprintf("unexpected query: %s", reqBody.Query)
-				fmt.Println(errMsg)
 				http.Error(w, errMsg, http.StatusBadRequest)
 			},
 			expectedName: "Test Author",
@@ -133,21 +87,19 @@ func TestClient_SearchPeople(t *testing.T) {
 			name:       "successful narrator search",
 			personType: "narrator",
 			handler: func(w http.ResponseWriter, r *http.Request) {
-				// Read and log the request body
+				// Read the request body
 				body, err := io.ReadAll(r.Body)
 				if err != nil {
 					http.Error(w, fmt.Sprintf("failed to read request body: %v", err), http.StatusBadRequest)
 					return
 				}
 
-				// Log the raw request body for debugging
-				fmt.Printf("Raw request body: %s\n", string(body))
-
-				// Parse the request to determine which query is being made
+				// Parse the request to get the query and variables
 				var reqBody struct {
 					Query     string `json:"query"`
 					Variables struct {
-						QueryType string `json:"queryType"`
+						Name  string `json:"name"`
+						Limit int    `json:"limit"`
 					} `json:"variables"`
 				}
 
@@ -156,57 +108,21 @@ func TestClient_SearchPeople(t *testing.T) {
 					return
 				}
 
-				// Log the parsed request
-				fmt.Printf("Parsed request - Query: %s, QueryType: %s\n", 
-					strings.TrimSpace(strings.SplitN(reqBody.Query, "{", 2)[0]),
-					reqBody.Variables.QueryType)
-
-				// Handle the search query
-				if strings.Contains(reqBody.Query, "query SearchPeople") {
-					// This is the search query - return person IDs
-					response := map[string]interface{}{
-						"data": map[string]interface{}{
-							"search": map[string]interface{}{
-								"error": nil,
-								"ids":   []string{"456"},
-							},
-						},
-					}
-					
-					// Log the response we're about to send
-					respBytes, _ := json.MarshalIndent(response, "", "  ")
-					fmt.Printf("Sending search response: %s\n", string(respBytes))
-					
-					w.Header().Set("Content-Type", "application/json")
-					if err := json.NewEncoder(w).Encode(response); err != nil {
-						http.Error(w, fmt.Sprintf("failed to encode response: %v", err), http.StatusInternalServerError)
-					}
-					return
-				}
-
-				// Handle the people query (works for both authors and narrators)
-				if strings.Contains(reqBody.Query, "query GetPeopleByIDs") {
-					// For the test, we'll return the same data structure for both authors and narrators
-					// The actual field name in the response doesn't matter as long as we return the expected data
-					person := map[string]interface{}{
+				// Check if this is a search query
+				if strings.Contains(reqBody.Query, "query SearchPeopleDirect") {
+					// Return a test narrator
+					narrator := map[string]interface{}{
 						"id":           456,
 						"name":         "Test Narrator",
 						"books_count":  5,
 						"canonical_id": nil,
 					}
 
-					// Return the person in both authors and narrators fields to ensure the test passes
-					// regardless of which field the client is checking
 					response := map[string]interface{}{
 						"data": map[string]interface{}{
-							"authors":   []map[string]interface{}{person},
-							"narrators": []map[string]interface{}{person},
+							"authors": []map[string]interface{}{narrator},
 						},
 					}
-
-					// Log the response we're about to send
-					respBytes, _ := json.MarshalIndent(response, "", "  ")
-					fmt.Printf("Sending narrators response: %s\n", string(respBytes))
 
 					w.Header().Set("Content-Type", "application/json")
 					if err := json.NewEncoder(w).Encode(response); err != nil {
@@ -217,7 +133,6 @@ func TestClient_SearchPeople(t *testing.T) {
 
 				// If we get here, it's an unexpected query
 				errMsg := fmt.Sprintf("unexpected query: %s", reqBody.Query)
-				fmt.Println(errMsg)
 				http.Error(w, errMsg, http.StatusBadRequest)
 			},
 			expectedName: "Test Narrator",
@@ -237,7 +152,7 @@ func TestClient_SearchPeople(t *testing.T) {
 				json.NewEncoder(w).Encode(response)
 			},
 			expectedErr: true,
-			errMessage: "failed to search for person",
+			errMessage: "direct person search failed",
 		},
 	}
 

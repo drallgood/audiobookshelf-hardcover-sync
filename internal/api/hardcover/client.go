@@ -1983,8 +1983,17 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 	return editionModel, nil
 }
 
-// SearchPeople searches for people (authors or narrators) by name
+// SearchPeople searches for people (authors or narrators) by name or ID
+// Implements the HardcoverClient interface
 func (c *Client) SearchPeople(ctx context.Context, name, personType string, limit int) ([]models.Author, error) {
+	// Check if the input is a numeric ID
+	if id, err := strconv.Atoi(name); err == nil {
+		// If it's a numeric ID, try to fetch the person directly
+		person, err := c.GetPersonByID(ctx, strconv.Itoa(id))
+		if err == nil && person != nil {
+			return []models.Author{*person}, nil
+		}
+	}
 	if c.logger == nil {
 		c.logger = logger.Get()
 	}
@@ -2000,142 +2009,17 @@ func (c *Client) SearchPeople(ctx context.Context, name, personType string, limi
 		"limit": limit,
 	})
 
-	// First, search for person IDs using the search API
-	searchQuery := `
-	query SearchPeople($query: String!, $queryType: String, $perPage: Int) {
-		search(
-			query: $query
-			query_type: $queryType
-			per_page: $perPage
+	// First, try a direct search by name using the authors query with exact match
+	directQuery := `
+	query SearchPeopleDirect($name: String!, $limit: Int) {
+		authors(
+			where: {
+				state: {_eq: "active"}, 
+				name: {_eq: $name}
+				${personType === 'narrator' ? 'contributions: {contribution: {_eq: "Narrator"}}' : ''}
+			}, 
+			limit: $limit
 		) {
-			error
-			ids
-		}
-	}`
-
-	// Set up variables for the search query
-	variables := map[string]interface{}{
-		"query":     name,
-		"queryType": personType, // "author" or "narrator"
-		"perPage":   limit,
-	}
-
-	// Define the response structure for search
-	var searchResponse struct {
-		Search struct {
-			Error *string      `json:"error"`
-			IDs   []json.Number `json:"ids"`
-		} `json:"search"`
-		Errors []struct {
-			Message string `json:"message"`
-		} `json:"errors,omitempty"`
-	}
-
-	// Execute the search query
-	log.Debug("Executing search query for person IDs", map[string]interface{}{
-		"query": searchQuery,
-		"vars":  variables,
-	})
-
-	if err := c.GraphQLQuery(ctx, searchQuery, variables, &searchResponse); err != nil {
-		log.Error("Failed to search for person IDs", map[string]interface{}{
-			"error": err.Error(),
-		})
-		return nil, fmt.Errorf("failed to search for person IDs: %w", err)
-	}
-
-	// Check for API-level errors
-	if len(searchResponse.Errors) > 0 {
-		errMsg := fmt.Sprintf("GraphQL errors: %v", searchResponse.Errors)
-		log.Error("Search API returned GraphQL errors", map[string]interface{}{
-			"errors": searchResponse.Errors,
-		})
-		return nil, errors.New(errMsg)
-	}
-
-	if searchResponse.Search.Error != nil {
-		errMsg := fmt.Sprintf("search API error: %s", *searchResponse.Search.Error)
-		log.Error("Search API returned an error", map[string]interface{}{
-			"error": *searchResponse.Search.Error,
-		})
-		return nil, errors.New(errMsg)
-	}
-
-	if len(searchResponse.Search.IDs) == 0 {
-		log.Debug("No person IDs found for search", map[string]interface{}{
-			"name": name,
-			"type": personType,
-		})
-		return []models.Author{}, nil
-	}
-
-	// Log the raw response and IDs for debugging
-	log.Debug("Raw search response", map[string]interface{}{
-		"response": fmt.Sprintf("%+v", searchResponse),
-	})
-	log.Debug("Raw person IDs from search", map[string]interface{}{
-		"ids":    searchResponse.Search.IDs,
-		"length": len(searchResponse.Search.IDs),
-	})
-
-	// Convert IDs to integers
-	var ids []int
-	for i, id := range searchResponse.Search.IDs {
-		// Log the raw ID and its type
-		log.Debug("Processing raw ID", map[string]interface{}{
-			"index": i,
-			"id":    id,
-			"type":  fmt.Sprintf("%T", id),
-		})
-
-		// Convert the ID to a string
-		idStr := fmt.Sprintf("%v", id)
-		log.Debug("Converted ID to string", map[string]interface{}{
-			"index": i,
-			"id":    idStr,
-		})
-
-		// Try converting from string to int
-		idInt, err := strconv.Atoi(idStr)
-		if err != nil {
-			log.Warn("Failed to convert person ID to integer, skipping", map[string]interface{}{
-				"index": i,
-				"id":    idStr,
-				"type":  fmt.Sprintf("%T", id),
-				"error": err.Error(),
-			})
-			continue
-		}
-
-		log.Debug("Successfully converted ID", map[string]interface{}{
-			"index":    i,
-			"original": id,
-			"converted": idInt,
-		})
-		ids = append(ids, idInt)
-	}
-
-	if len(ids) == 0 {
-		log.Debug("No valid person IDs found after conversion", map[string]interface{}{
-			"original_ids": searchResponse.Search.IDs,
-		})
-		return []models.Author{}, nil
-	}
-
-	log.Debug("Successfully converted person IDs", map[string]interface{}{
-		"original_ids": searchResponse.Search.IDs,
-		"converted_ids": ids,
-	})
-
-	log.Debug("Converted person IDs", map[string]interface{}{
-		"original_ids": searchResponse.Search.IDs,
-		"converted_ids": ids,
-	})
-
-	// Now fetch full details for all authors in a single batch
-	personQuery := `
-	query GetPeopleByIDs($ids: [Int!]!) {
-		authors(where: {id: {_in: $ids}}) {
 			id
 			name
 			books_count
@@ -2143,77 +2027,107 @@ func (c *Client) SearchPeople(ctx context.Context, name, personType string, limi
 		}
 	}`
 
-	// Define the response structure for the authors query
-	type AuthorResponse struct {
+	// Build the query based on person type
+	query := strings.ReplaceAll(directQuery, "${personType === 'narrator' ? 'contributions: {contribution: {_eq: \"Narrator\"}}' : ''}", "")
+	if personType == "narrator" {
+		query = strings.ReplaceAll(directQuery, "${personType === 'narrator' ? '", "")
+		query = strings.ReplaceAll(query, "' : ''}", "")
+	}
+
+	variables := map[string]interface{}{
+		"name":  name,
+		"limit": limit,
+	}
+
+	// Define the direct search response structure
+	var searchResponse struct {
 		Authors []struct {
-			ID           json.Number `json:"id"`
-			Name         string      `json:"name"`
-			BooksCount   int         `json:"books_count"`
-			CanonicalID  *string     `json:"canonical_id"`
+			ID          int     `json:"id"`
+			Name        string  `json:"name"`
+			BooksCount  int     `json:"books_count"`
+			CanonicalID *string `json:"canonical_id"`
 		} `json:"authors"`
 	}
 
-	// Set up variables for the batch query
-	personVars := map[string]interface{}{
-		"ids": ids,
-	}
-
-	log.Debug("Fetching person details in batch", map[string]interface{}{
-		"ids":          ids,
-		"query_string": personQuery,
-		"variables":    personVars,
+	// Log the search query for debugging
+	log.Debug("Executing person search query", map[string]interface{}{
+		"query":     query,
+		"variables": variables,
 	})
 
-	var personResponse AuthorResponse
-	if err := c.GraphQLQuery(ctx, personQuery, personVars, &personResponse); err != nil {
-		log.Error("Failed to fetch person details", map[string]interface{}{
-			"error":   err.Error(),
-			"query":   personQuery,
-			"vars":    personVars,
-			"raw_resp": fmt.Sprintf("%+v", personResponse),
+	// Execute the direct search query
+	if err := c.GraphQLQuery(ctx, query, variables, &searchResponse); err != nil {
+		log.Error("Failed to execute direct person search query", map[string]interface{}{
+			"error": err,
 		})
-		return nil, fmt.Errorf("failed to fetch person details: %w", err)
+		return nil, fmt.Errorf("direct person search failed: %w", err)
 	}
 
-	// Process the batch response
-	var authors []models.Author
-	for _, authorData := range personResponse.Authors {
-		if authorData.Name == "" {
-			// Skip invalid authors
-			log.Debug("Skipping author with empty name", map[string]interface{}{
-				"id": authorData.ID,
-			})
-			continue
+	// Log the search response for debugging
+	log.Debug("Received direct search response", map[string]interface{}{
+		"response": fmt.Sprintf("%+v", searchResponse),
+	})
+
+	// If no results, try a more specific narrator search
+	if len(searchResponse.Authors) == 0 && personType == "narrator" {
+		log.Debug("No results with direct search, trying narrator-specific search", nil)
+		// Try a more specific query for narrators if the first one fails
+	fallbackQuery := `
+	query SearchNarrators($name: String!, $limit: Int) {
+		authors(
+			where: {
+				state: {_eq: "active"}, 
+				name: {_eq: $name},
+				contributions: {contribution: {_eq: "Narrator"}}
+			}, 
+			limit: $limit
+		) {
+			id
+			name
+			books_count
+			canonical_id
 		}
-		
-		authorID := fmt.Sprintf("%v", authorData.ID)
-		authors = append(authors, models.Author{
-			ID:        authorID,
-			Name:      authorData.Name,
-			BookCount: authorData.BooksCount,
-		})
+	}`
 
-		log.Debug("Processed author", map[string]interface{}{
-			"id":         authorID,
-			"name":       authorData.Name,
-			"book_count": authorData.BooksCount,
+		if err := c.GraphQLQuery(ctx, fallbackQuery, variables, &searchResponse); err != nil {
+			log.Error("Failed to execute fallback person search query", map[string]interface{}{
+				"error": err,
+			})
+			return nil, fmt.Errorf("fallback person search failed: %w", err)
+		}
+
+		log.Debug("Received fallback search response", map[string]interface{}{
+			"response": fmt.Sprintf("%+v", searchResponse),
 		})
 	}
 
-	if len(authors) == 0 {
-		log.Debug("No valid authors found in response")
+	// If still no results, return empty slice
+	if len(searchResponse.Authors) == 0 {
+		log.Debug("No results found for person search", map[string]interface{}{
+			"name": name,
+			"type": personType,
+		})
 		return []models.Author{}, nil
 	}
 
-	// Sort by book count (descending)
-	sort.Slice(authors, func(i, j int) bool {
-		return authors[i].BookCount > authors[j].BookCount
+	// Convert to the expected format
+	authors := make([]models.Author, 0, len(searchResponse.Authors))
+	for _, author := range searchResponse.Authors {
+		authors = append(authors, models.Author{
+			ID:        strconv.Itoa(author.ID),
+			Name:      author.Name,
+			BookCount: author.BooksCount,
+		})
+	}
+
+	log.Debug("Found authors", map[string]interface{}{
+		"count": len(authors),
+		"type":  personType,
 	})
 
-	log.Debug("Search completed successfully", map[string]interface{}{
-		"result_count": len(authors),
-	})
+	return authors, nil
 
+	// Return the authors we found
 	return authors, nil
 }
 
@@ -2300,31 +2214,21 @@ func (c *Client) GetPersonByID(ctx context.Context, id string) (*models.Author, 
 		c.logger = logger.Get()
 	}
 	log := c.logger.With(map[string]interface{}{
-		"operation": "get_person",
-		"person_id": id,
+		"method": "GetPersonByID",
+		"id":     id,
 	})
 
-	// Convert ID to int for the query
-	personID, err := strconv.Atoi(id)
-	if err != nil {
-		log.Error("Invalid person ID", map[string]interface{}{
-			"error": err.Error(),
-		})
-		return nil, fmt.Errorf("invalid person ID: %w", err)
-	}
-
-	// Define the GraphQL query
 	query := `
-		query GetPersonByID($id: Int!) {
-			authors(where: {id: {_eq: $id}}) {
-				id
-				name
-			}
-		}`
+	query GetPerson($id: Int!) {
+		authors(where: {id: {_eq: $id}}) {
+			id
+			name
+		}
+	}`
 
 	// Set up variables
 	variables := map[string]interface{}{
-		"id": personID,
+		"id": id,
 	}
 
 	// Define the response structure
