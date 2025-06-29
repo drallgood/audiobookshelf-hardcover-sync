@@ -662,32 +662,37 @@ docker run -d \
 | `HARDCOVER_TOKEN` | API token for Hardcover (see setup instructions below) |
 
 ### Optional Environment Variables
+See the [Configuration Options](#configuration-options) section for a complete list of all available configuration options.
+
+### Configuration Options
+
+#### Paths
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `CACHE_DIR` | Directory for storing cache files | `/app/cache` |
+| `MISMATCH_OUTPUT_DIR` | Directory where mismatch JSON files will be saved | `/app/mismatches` |
+| `SYNC_STATE_FILE` | Path to incremental sync state file | `sync_state.json` |
+
+#### Sync Behavior
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SYNC_INTERVAL` | None | Periodic sync interval (e.g., `10m`, `1h`, `30s`) |
 | `SYNC_WANT_TO_READ` | `true` | Sync unstarted books (0% progress) as "Want to Read" |
-| `TEST_BOOK_LIMIT` | `0` (no limit) | Limit the number of books to process during sync (useful for testing) |
-| `DRY_RUN` | `false` | Enable dry-run mode (no changes will be made to Hardcover) |
-| `TEST_BOOK_FILTER` | None | Filter books by title/author (case-insensitive) |
-| `TEST_BOOK_LIMIT` | 0 | Limit number of books to process (0 for no limit) |
 | `SYNC_OWNED` | `true` | Mark synced books as "owned" in Hardcover |
-| `INCREMENTAL_SYNC_MODE` | `enabled` | Incremental sync mode: `enabled`, `disabled`, `auto` |
-| `MINIMUM_PROGRESS_THRESHOLD` | `0.01` | Minimum progress to sync (0.0-1.0, 0.01 = 1%) |
-| `HARDCOVER_RATE_LIMIT` | `10` | Maximum number of API requests per second (default: 10) |
-| `AUDIOBOOK_MATCH_MODE` | `continue` | ASIN lookup failure behavior: `continue`, `skip`, `fail` |
-| `SYNC_STATE_FILE` | `sync_state.json` | Path to incremental sync state file |
-| `FORCE_FULL_SYNC` | `false` | Force full sync on next run |
-| `LOG_LEVEL` | `info` | Logging level (debug, info, warn, error, fatal, panic) |
-| `LOG_FORMAT` | `json` | Log format (`json` or `console`) |
-| `LOG_PRETTY` | `false` | Enable pretty-printed JSON logs (only applies when LOG_FORMAT=json) |
-| `MISMATCH_JSON_FILE` | None | Directory path for saving individual mismatch JSON files |
-| `TZ` | System default | Timezone for container logs (e.g., `Europe/Vienna`, `UTC`) |
+| `MINIMUM_PROGRESS` | `0.01` | Minimum progress to sync (0.0-1.0, 0.01 = 1%) |
+| `AUDIOBOOK_MATCH_MODE` | `continue` | Book matching behavior: `continue`, `skip`, `fail` |
+| `TEST_BOOK_FILTER` | None | Filter books by title/author (case-insensitive) |
+| `TEST_BOOK_LIMIT` | `0` (no limit) | Limit number of books to process |
+| `DRY_RUN` | `false` | Enable dry-run mode (no changes will be made) |
 
-### Development & Testing Variables
+#### Logging
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TEST_BOOK_FILTER` | None | Filter books by title for development testing (case-insensitive) |
-| `TEST_BOOK_LIMIT` | None | Limit number of books to process for development testing |
+| `LOG_LEVEL` | `info` | Logging level: `debug`, `info`, `warn`, `error` |
+| `LOG_FORMAT` | `json` | Log format: `json` or `console` |
+| `TZ` | System default | Timezone for logs (e.g., `UTC`, `America/New_York`) |
+
+
 
 ## Setup Instructions
 

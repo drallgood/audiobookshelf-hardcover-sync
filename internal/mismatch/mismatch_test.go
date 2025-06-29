@@ -48,12 +48,10 @@ func newTestConfig(mismatchDir string) *config.Config {
 			AudiobookMatchMode string        `yaml:"audiobook_match_mode" env:"AUDIOBOOK_MATCH_MODE"`
 			SyncWantToRead    bool          `yaml:"sync_want_to_read" env:"SYNC_WANT_TO_READ"`
 			SyncOwned         bool          `yaml:"sync_owned" env:"SYNC_OWNED"`
-			MismatchOutputDir string        `yaml:"mismatch_output_dir" env:"MISMATCH_OUTPUT_DIR"`
 			DryRun            bool          `yaml:"dry_run" env:"DRY_RUN"`
 			TestBookFilter    string        `yaml:"test_book_filter" env:"TEST_BOOK_FILTER"`
 			TestBookLimit     int           `yaml:"test_book_limit" env:"TEST_BOOK_LIMIT"`
 		}{
-			MismatchOutputDir: mismatchDir,
 			// Set required fields to their zero values
 			Debug:             false,
 			SyncInterval:      0,
@@ -64,6 +62,12 @@ func newTestConfig(mismatchDir string) *config.Config {
 			DryRun:            false,
 			TestBookFilter:    "",
 			TestBookLimit:     0,
+		},
+		Paths: struct {
+			CacheDir string `yaml:"cache_dir" env:"CACHE_DIR"`
+			MismatchOutputDir string `yaml:"mismatch_output_dir" env:"MISMATCH_OUTPUT_DIR"`
+		}{
+			MismatchOutputDir: mismatchDir,
 		},
 	}
 }

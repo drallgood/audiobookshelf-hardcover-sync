@@ -272,14 +272,14 @@ func SaveToFile(ctx context.Context, hc *hardcover.Client, outputDir string, cfg
 
 	// Determine the output directory
 	if outputDir == "" {
-		if cfg == nil || cfg.App.MismatchOutputDir == "" {
+		if cfg == nil || cfg.Paths.MismatchOutputDir == "" {
 			err := fmt.Errorf("no output directory specified and no default in config")
 			log.Error("Failed to determine output directory in mismatch.SaveToFile", map[string]interface{}{
 				"error": err.Error(),
 			})
 			return err
 		}
-		outputDir = cfg.App.MismatchOutputDir
+		outputDir = cfg.Paths.MismatchOutputDir
 	}
 
 	// Create the output directory if it doesn't exist

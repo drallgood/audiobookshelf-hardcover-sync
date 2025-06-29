@@ -66,8 +66,6 @@ type Config struct {
 		SyncWantToRead bool `yaml:"sync_want_to_read" env:"SYNC_WANT_TO_READ"`
 		// SyncOwned marks synced books as owned in Hardcover
 		SyncOwned bool `yaml:"sync_owned" env:"SYNC_OWNED"`
-		// MismatchOutputDir is the directory where mismatch JSON files will be saved
-		MismatchOutputDir string `yaml:"mismatch_output_dir" env:"MISMATCH_OUTPUT_DIR"`
 		// DryRun enables dry run mode (no changes will be made)
 		DryRun bool `yaml:"dry_run" env:"DRY_RUN"`
 		// TestBookFilter filters books by title for testing
@@ -80,6 +78,8 @@ type Config struct {
 	Paths struct {
 		// CacheDir is the directory for cache files
 		CacheDir string `yaml:"cache_dir" env:"CACHE_DIR"`
+		// MismatchOutputDir is the directory where mismatch JSON files will be saved
+		MismatchOutputDir string `yaml:"mismatch_output_dir" env:"MISMATCH_OUTPUT_DIR"`
 	} `yaml:"paths"`
 }
 
@@ -107,13 +107,13 @@ func DefaultConfig() *Config {
 	cfg.App.AudiobookMatchMode = "strict"
 	cfg.App.SyncWantToRead = true
 	cfg.App.SyncOwned = true
-	cfg.App.MismatchOutputDir = "./mismatches"
 	cfg.App.DryRun = false
 	cfg.App.TestBookFilter = ""
 	cfg.App.TestBookLimit = 0
 
 	// Default paths
 	cfg.Paths.CacheDir = "./cache"
+	cfg.Paths.MismatchOutputDir = "./mismatches"
 
 	return cfg
 }
@@ -230,7 +230,6 @@ func Load(configFile string) (*Config, error) {
 	fmt.Printf("  dry_run: %t\n", cfg.App.DryRun)
 	fmt.Printf("  test_book_filter: %s\n", cfg.App.TestBookFilter)
 	fmt.Printf("  test_book_limit: %d\n", cfg.App.TestBookLimit)
-	fmt.Printf("  mismatch_output_dir: %s\n", cfg.App.MismatchOutputDir)
 
 	fmt.Println("Loaded application settings:")
 	fmt.Printf("  debug: %t\n", cfg.App.Debug)
@@ -243,8 +242,6 @@ func Load(configFile string) (*Config, error) {
 	fmt.Printf("  sync_owned: %t\n", cfg.App.SyncOwned)
 	fmt.Printf("  dry_run: %t\n", cfg.App.DryRun)
 	fmt.Printf("  test_book_filter: %s\n", cfg.App.TestBookFilter)
-	// File paths
-	cfg.Paths.CacheDir = getEnv("CACHE_DIR", "./cache")
 
 	fmt.Println("Loaded file paths:")
 	fmt.Printf("  cache_dir: %s\n", cfg.Paths.CacheDir)
@@ -362,7 +359,7 @@ func loadFromEnv(cfg *Config) {
 		}
 	}
 	if mismatchDir := os.Getenv("MISMATCH_OUTPUT_DIR"); mismatchDir != "" {
-		cfg.App.MismatchOutputDir = mismatchDir
+		cfg.Paths.MismatchOutputDir = mismatchDir
 	}
 	if minProgress := os.Getenv("MINIMUM_PROGRESS_THRESHOLD"); minProgress != "" {
 		if f, err := strconv.ParseFloat(minProgress, 64); err == nil {
@@ -397,14 +394,8 @@ func loadFromEnv(cfg *Config) {
 	}
 
 	// File paths
-	if cacheDir := os.Getenv("CACHE_DIR"); cacheDir != "" {
-		cfg.Paths.CacheDir = cacheDir
-	}
-	
-	// Mismatch output directory
-	if mismatchDir := os.Getenv("MISMATCH_OUTPUT_DIR"); mismatchDir != "" {
-		cfg.App.MismatchOutputDir = mismatchDir
-	}
+	cfg.Paths.CacheDir = getEnv("CACHE_DIR", cfg.Paths.CacheDir)
+	cfg.Paths.MismatchOutputDir = getEnv("MISMATCH_OUTPUT_DIR", cfg.Paths.MismatchOutputDir)
 }
 
 // mergeConfigs merges non-zero values from src into dst
