@@ -1513,6 +1513,42 @@ func (s *Service) processFoundBook(ctx context.Context, hcBook *models.Hardcover
 	}
 	log := s.log.With(logCtx)
 
+	// Mark book as owned if sync_owned is enabled
+	if s.config.App.SyncOwned && hcBook != nil && hcBook.EditionID != "" && hcBook.EditionID != "0" {
+		editionID, err := strconv.Atoi(hcBook.EditionID)
+		if err != nil {
+			log.Warn("Invalid edition ID format for marking as owned", map[string]interface{}{
+				"edition_id": hcBook.EditionID,
+				"error":      err.Error(),
+			})
+		} else {
+			// Check if book is already marked as owned
+			isOwned, err := s.hardcover.CheckBookOwnership(ctx, editionID)
+			if err != nil {
+				log.Warn("Failed to check book ownership status", map[string]interface{}{
+					"edition_id": editionID,
+					"error":      err.Error(),
+				})
+			} else if !isOwned {
+				err = s.hardcover.MarkEditionAsOwned(ctx, editionID)
+				if err != nil {
+					log.Warn("Failed to mark edition as owned", map[string]interface{}{
+						"edition_id": editionID,
+						"error":      err.Error(),
+					})
+				} else {
+					log.Info("Successfully marked edition as owned", map[string]interface{}{
+						"edition_id": editionID,
+					})
+				}
+			} else {
+				log.Debug("Book is already marked as owned", map[string]interface{}{
+					"edition_id": editionID,
+				})
+			}
+		}
+	}
+
 	// If we don't have an edition ID but have a book ID, try to get the first edition
 	if (hcBook.EditionID == "" || hcBook.EditionID == "0") && hcBook.ID != "" {
 		edition, err := s.hardcover.GetEdition(ctx, hcBook.ID)
