@@ -13,4 +13,5 @@ else
   export SSL_CERT_FILE="$CA_BUNDLE"
 fi
 
-exec /main "$@"
+# Execute the binary with any provided arguments
+exec /app/audiobookshelf-hardcover-sync "$@"
