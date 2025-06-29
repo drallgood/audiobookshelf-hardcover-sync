@@ -28,7 +28,6 @@ app:
   debug: false
   sync_interval: "1h"
   minimum_progress: 0.01  # Minimum progress threshold (0.0 to 1.0)
-  audiobook_match_mode: "strict"  # strict, title-author, or title-only
   sync_want_to_read: true  # Sync books with 0% progress as "Want to Read"
   sync_owned: true        # Mark synced books as owned in Hardcover
   mismatch_output_dir: "./mismatches"  # Directory to store mismatch JSON files

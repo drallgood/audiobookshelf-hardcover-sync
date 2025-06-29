@@ -28,7 +28,6 @@ app:
   debug: true
   sync_interval: "1h"
   minimum_progress: 0.01
-  audiobook_match_mode: "loose"  # Use loose matching for tests
   sync_want_to_read: true
   sync_owned: true
   mismatch_output_dir: "./mismatches"
