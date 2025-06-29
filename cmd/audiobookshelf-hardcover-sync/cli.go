@@ -141,12 +141,11 @@ func RunOneTimeSync(flags *configFlags) {
 	// Log sync settings
 	log.Info("Sync Settings", map[string]interface{}{
 		"minimum_progress_threshold": cfg.App.MinimumProgress,
-		"audiobook_match_mode":       cfg.App.AudiobookMatchMode,
-		"sync_want_to_read":          cfg.App.SyncWantToRead,
-		"sync_owned":                 cfg.App.SyncOwned,
-		"dry_run":                    cfg.App.DryRun,
-		"test_book_filter":           cfg.App.TestBookFilter,
-		"test_book_limit":            cfg.App.TestBookLimit,
+		"sync_want_to_read":         cfg.App.SyncWantToRead,
+		"sync_owned":                cfg.App.SyncOwned,
+		"dry_run":                   cfg.App.DryRun,
+		"test_book_filter":          cfg.App.TestBookFilter,
+		"test_book_limit":           cfg.App.TestBookLimit,
 	})
 
 	// Log paths and cache settings
@@ -189,8 +188,7 @@ func RunOneTimeSync(flags *configFlags) {
 	)
 
 	log.Debug("Initialized sync service", map[string]interface{}{
-		"dry_run":     cfg.App.DryRun,
-		"match_mode": cfg.App.AudiobookMatchMode,
+		"dry_run": cfg.App.DryRun,
 	})
 
 	// Create a context with timeout and cancellation
@@ -206,11 +204,10 @@ func RunOneTimeSync(flags *configFlags) {
 	log.Info("========================================", map[string]interface{}{})
 
 	log.Info("Sync configuration:", map[string]interface{}{
-		"audiobookshelf_url":     cfg.Audiobookshelf.URL,
+		"audiobookshelf_url":       cfg.Audiobookshelf.URL,
 		"has_audiobookshelf_token": cfg.Audiobookshelf.Token != "",
-		"has_hardcover_token":   cfg.Hardcover.Token != "",
-		"dry_run":               cfg.App.DryRun,
-		"audiobook_match_mode":   cfg.App.AudiobookMatchMode,
+		"has_hardcover_token":      cfg.Hardcover.Token != "",
+		"dry_run":                  cfg.App.DryRun,
 	})
 
 	startTime := time.Now()

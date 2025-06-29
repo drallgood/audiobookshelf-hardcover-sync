@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Migration**: Use `HARDCOVER_RATE_LIMIT` environment variable to control rate limiting (default: 10 requests per second)
   - **Impact**: More reliable rate limiting with better performance characteristics
 
+- **🔧 Configuration Cleanup**: Removed `audiobook_match_mode` configuration option
+  - **Reason**: Simplified configuration and removed unused functionality
+  - **Impact**: The `AudiobookMatchMode` field has been removed from the configuration. This was a legacy option that is no longer used in the codebase.
+
 
 ## [1.6.1] - 2025-06-12
 

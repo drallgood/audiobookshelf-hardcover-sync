@@ -60,8 +60,6 @@ type Config struct {
 		SyncInterval time.Duration `yaml:"sync_interval" env:"SYNC_INTERVAL"`
 		// MinimumProgress is the minimum progress threshold for syncing (0.0 to 1.0)
 		MinimumProgress float64 `yaml:"minimum_progress" env:"MINIMUM_PROGRESS"`
-		// AudiobookMatchMode is the mode for matching audiobooks (strict, title-author, title-only)
-		AudiobookMatchMode string `yaml:"audiobook_match_mode" env:"AUDIOBOOK_MATCH_MODE"`
 		// SyncWantToRead syncs books with 0% progress as "Want to Read"
 		SyncWantToRead bool `yaml:"sync_want_to_read" env:"SYNC_WANT_TO_READ"`
 		// SyncOwned marks synced books as owned in Hardcover
@@ -104,7 +102,6 @@ func DefaultConfig() *Config {
 	cfg.App.Debug = false
 	cfg.App.SyncInterval = 1 * time.Hour
 	cfg.App.MinimumProgress = 0.01 // 1% minimum progress threshold
-	cfg.App.AudiobookMatchMode = "strict"
 	cfg.App.SyncWantToRead = true
 	cfg.App.SyncOwned = true
 	cfg.App.DryRun = false
@@ -188,11 +185,8 @@ func Load(configFile string) (*Config, error) {
 	if syncInterval := getDurationFromEnv("SYNC_INTERVAL", 0); syncInterval > 0 {
 		cfg.App.SyncInterval = syncInterval
 	}
-	if minProgress := getFloat64FromEnv("MINIMUM_PROGRESS_THRESHOLD", 0); minProgress > 0 {
+	if minProgress := getFloat64FromEnv("MINIMUM_PROGRESS", 0); minProgress > 0 {
 		cfg.App.MinimumProgress = minProgress
-	}
-	if matchMode := getEnv("AUDIOBOOK_MATCH_MODE", ""); matchMode != "" {
-		cfg.App.AudiobookMatchMode = matchMode
 	}
 	if syncWantToRead, set := os.LookupEnv("SYNC_WANT_TO_READ"); set {
 		cfg.App.SyncWantToRead = strings.ToLower(syncWantToRead) == "true"
@@ -237,7 +231,6 @@ func Load(configFile string) (*Config, error) {
 	fmt.Printf("  log_format: %s\n", cfg.Logging.Format)
 	fmt.Printf("  sync_interval: %v\n", cfg.App.SyncInterval)
 	fmt.Printf("  minimum_progress: %f\n", cfg.App.MinimumProgress)
-	fmt.Printf("  audiobook_match_mode: %s\n", cfg.App.AudiobookMatchMode)
 	fmt.Printf("  sync_want_to_read: %t\n", cfg.App.SyncWantToRead)
 	fmt.Printf("  sync_owned: %t\n", cfg.App.SyncOwned)
 	fmt.Printf("  dry_run: %t\n", cfg.App.DryRun)
@@ -361,16 +354,13 @@ func loadFromEnv(cfg *Config) {
 	if mismatchDir := os.Getenv("MISMATCH_OUTPUT_DIR"); mismatchDir != "" {
 		cfg.Paths.MismatchOutputDir = mismatchDir
 	}
-	if minProgress := os.Getenv("MINIMUM_PROGRESS_THRESHOLD"); minProgress != "" {
+	if minProgress := os.Getenv("MINIMUM_PROGRESS"); minProgress != "" {
 		if f, err := strconv.ParseFloat(minProgress, 64); err == nil {
 			cfg.App.MinimumProgress = f
 		}
 	}
-	if matchMode := os.Getenv("AUDIOBOOK_MATCH_MODE"); matchMode != "" {
-		cfg.App.AudiobookMatchMode = matchMode
-	}
-	if wantToRead := os.Getenv("SYNC_WANT_TO_READ"); wantToRead != "" {
-		if b, err := strconv.ParseBool(wantToRead); err == nil {
+	if syncWantToRead := os.Getenv("SYNC_WANT_TO_READ"); syncWantToRead != "" {
+		if b, err := strconv.ParseBool(syncWantToRead); err == nil {
 			cfg.App.SyncWantToRead = b
 		}
 	}

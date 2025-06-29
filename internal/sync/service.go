@@ -163,10 +163,9 @@ func (s *Service) Sync(ctx context.Context) error {
 	})
 
 	s.log.Info("Sync Settings", map[string]interface{}{
-		"minimum_progress":     s.config.App.MinimumProgress,
-		"audiobook_match_mode": s.config.App.AudiobookMatchMode,
-		"sync_want_to_read":    s.config.App.SyncWantToRead,
-		"sync_owned":           s.config.App.SyncOwned,
+		"minimum_progress":  s.config.App.MinimumProgress,
+		"sync_want_to_read": s.config.App.SyncWantToRead,
+		"sync_owned":        s.config.App.SyncOwned,
 	})
 
 	s.log.Info("========================================", nil)

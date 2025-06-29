@@ -795,111 +795,143 @@ This helps you:
 - `POST /sync` — Trigger manual sync
 - `GET /sync` — Trigger manual sync (alternative)
 
-### Command Line
+## Command Line Tools
+
+The project provides several command-line tools for different purposes. Each tool has its own set of commands and options.
+
+### 1. Main Sync Service
+
+The main synchronization service that runs as a daemon to keep your Audiobookshelf and Hardcover libraries in sync.
+
 ```sh
-# Run once
-./main
+# Run the sync service with default settings
+./bin/audiobookshelf-hardcover-sync
+
+# Run a one-time sync and exit
+./bin/audiobookshelf-hardcover-sync --once
+
+# Run only the HTTP server without starting the sync service
+./bin/audiobookshelf-hardcover-sync --server-only
+
+# Show version information
+./bin/audiobookshelf-hardcover-sync --version
 
 # Enable debug logging
-./main -v
+./bin/audiobookshelf-hardcover-sync -v
 # or
-DEBUG_MODE=1 ./main
+DEBUG=1 ./bin/audiobookshelf-hardcover-sync
 
-# Show version
-./main --version
+# Run with a specific config file
+./bin/audiobookshelf-hardcover-sync --config /path/to/config.yaml
 
-# Health check
-./main --health-check
+# Test with a specific book (filter by title/author)
+./bin/audiobookshelf-hardcover-sync --test-book-filter "book title"
 
-# Edition creation commands
-./main --create-edition                           # Interactive edition creation
-./main --create-edition-prepopulated            # Interactive with prepopulation
-./main --generate-example filename.json         # Generate blank template
-./main --generate-prepopulated bookid:file.json # Generate prepopulated template
-./main --enhance-template file.json:bookid      # Enhance existing template
-./main --create-edition-json filename.json      # Create from JSON file
-
-# ID lookup commands for edition creation
-./main --lookup-author                           # Search for author IDs by name
-./main --lookup-narrator                         # Search for narrator IDs by name  
-./main --lookup-publisher                        # Search for publisher IDs by name
-./main --verify-author-id 12345                  # Verify author ID
-./main --verify-narrator-id 67890                # Verify narrator ID
-./main --verify-publisher-id 54321               # Verify publisher ID
+# Limit the number of books to process (for testing)
+./bin/audiobookshelf-hardcover-sync --test-book-limit 5
 ```
 
-#### ID Lookup Tools
-When creating editions, you need to find the correct Hardcover IDs for authors, narrators, and publishers. These lookup tools help you search the Hardcover database interactively:
+### 2. Edition Tool
+
+Manage audiobook editions in Hardcover.
 
 ```sh
-# Search for authors by name (fuzzy matching)
-./main --lookup-author
-# Interactive prompt: Enter author name to search: Stephen King
-# Shows results with IDs, book counts, and canonical vs alias status
+# Interactive edition creation
+./bin/edition create --interactive
 
-# Search for narrators by name
-./main --lookup-narrator  
-# Similar to author search but filters for people with narrator roles
-
-# Search for publishers by name
-./main --lookup-publisher
-# Shows publisher results with edition counts
-
-# Bulk lookup commands (comma-separated names)
-./main --bulk-lookup-authors "Stephen King,Brandon Sanderson"
-./main --bulk-lookup-narrators "Jim Dale,Kate Reading" 
-./main --bulk-lookup-publishers "Penguin,Macmillan"
-
-# Verify specific IDs
-./main --verify-author-id 123456      # Check author details
-./main --verify-narrator-id 789012    # Check narrator details  
-./main --verify-publisher-id 345678   # Check publisher details
-
-# Image upload utility
-./main --upload-image "https://example.com/image.jpg:Cover art description"
-```
-
-**Key Features:**
-- **Fuzzy search**: Partial name matching (e.g., "King" finds "Stephen King")
-- **Canonical detection**: Shows which entries are primary vs aliases
-- **Relevance sorting**: Results ordered by popularity (book/edition counts)
-- **Role filtering**: Narrator search only shows people who have narrated books
-- **ID verification**: Confirm IDs and see full details before using in JSON files
-- **Bulk lookup**: Search multiple names at once with comma-separated lists
-- **Image upload**: Upload cover images from URLs for use in editions
-
-### Edition Creation Tools
-This tool includes comprehensive functionality to create new audiobook editions in Hardcover when books are missing ASINs:
-
-```sh
-# Interactive edition creation (manual entry)
-./main --create-edition
-
-# Interactive edition creation with prepopulation
-./main --create-edition-prepopulated
-
-# Generate example JSON template
-./main --generate-example my_book.json
-
-# Generate prepopulated template from existing book
-./main --generate-prepopulated 123456:my_book.json
-
-# Enhance existing template with book data
-./main --enhance-template my_book.json:123456
+# Interactive edition creation with prepopulated data
+./bin/edition create --prepopulated
 
 # Create edition from JSON file
-./main --create-edition-json my_book.json
+./bin/edition create --file edition.json
+
+# Show help
+./bin/edition --help
 ```
 
-#### Interactive Edition Creation
-The `--create-edition` flag launches an interactive CLI that guides you through:
-- Entering book ID, title, ASIN, and image URL
-- Looking up and validating authors and narrators
-- Setting publisher, release date, and audio length
-- Confirming all details before creation
+### 3. Lookup Tool
 
-#### Prepopulated Edition Creation
-The `--create-edition-prepopulated` flag provides **automated data population** from existing Hardcover books:
+Look up authors, narrators, and publishers in the Hardcover database.
+
+```sh
+# Look up an author by name
+./bin/lookup-tool author search "Stephen King"
+
+# Verify an author by ID
+./bin/lookup-tool author verify 12345
+
+# Bulk lookup multiple authors
+./bin/lookup-tool author bulk "Stephen King, Brandon Sanderson"
+
+# Look up a narrator by name
+./bin/lookup-tool narrator search "Jim Dale"
+
+# Look up a publisher by name
+./bin/lookup-tool publisher search "Penguin"
+
+# Output results in JSON format
+./bin/lookup-tool --json author search "Stephen King"
+
+# Limit number of results
+./bin/lookup-tool --limit 3 author search "Stephen King"
+
+# Show help
+./bin/lookup-tool --help
+```
+
+### 4. Image Tool
+
+Upload and manage book and edition cover images.
+
+```sh
+# Upload an image to a book
+./bin/image-tool upload --url https://example.com/cover.jpg --book 12345 --description "Hardcover edition"
+
+# Upload an image to an edition
+./bin/image-tool upload --url https://example.com/edition.jpg --edition 67890 --description "Special edition cover"
+
+# Show help
+./bin/image-tool --help
+```
+
+## Common Options
+
+### Configuration
+
+All tools support the following configuration methods (in order of precedence):
+
+1. Command-line flags
+2. Environment variables
+3. Configuration file (`config.yaml` in current directory or `/etc/audiobookshelf-hardcover-sync/`)
+
+### Environment Variables
+
+- `AUDIOBOOKSHELF_URL`: URL of your Audiobookshelf server
+- `AUDIOBOOKSHELF_TOKEN`: API token for Audiobookshelf
+- `HARDCOVER_TOKEN`: API token for Hardcover
+- `LOG_LEVEL`: Log level (debug, info, warn, error, fatal, panic)
+- `LOG_FORMAT`: Log format (json, text)
+- `DRY_RUN`: Set to 1 to enable dry-run mode (no changes will be made)
+
+### Debugging
+
+To enable debug output, set the `DEBUG` environment variable:
+
+```sh
+DEBUG=1 ./bin/audiobookshelf-hardcover-sync
+# or
+DEBUG=1 ./bin/edition-tool create --interactive
+```
+
+Or use the `-v` flag where supported:
+
+```sh
+./bin/audiobookshelf-hardcover-sync -v
+```
+
+## Edition Templates
+
+You can create editions using JSON templates. Here's how:
 
 **Features:**
 - 🎯 **Auto-fills metadata** from existing Hardcover book data
@@ -921,19 +953,19 @@ For multiple editions, use JSON files with automated prepopulation:
 **Option 1: Generate prepopulated template**
 ```sh
 # Generate template with data from Hardcover book ID 123456
-./main --generate-prepopulated 123456:book1.json
+./bin/audiobookshelf-hardcover-sync --generate-prepopulated 123456:book1.json
 ```
 
 **Option 2: Enhance existing template**
 ```sh
 # Add book data to existing template
-./main --enhance-template book1.json:123456
+./bin/audiobookshelf-hardcover-sync --enhance-template book1.json:123456
 ```
 
 **Option 3: Manual template creation**
 ```sh
 # Generate blank template
-./main --generate-example book1.json
+./bin/audiobookshelf-hardcover-sync --generate-example book1.json
 ```
 
 **Example JSON with all configurable fields:**
@@ -978,7 +1010,7 @@ For multiple editions, use JSON files with automated prepopulation:
 
 **Then create the edition:**
 ```sh
-./main --create-edition-json book1.json
+./bin/audiobookshelf-hardcover-sync --create-edition-json book1.json
 ```
 
 #### Prepopulation Benefits
@@ -1023,7 +1055,7 @@ Enable debug logging to diagnose issues:
 export DEBUG_MODE=1
 
 # Via command line flag
-./main -v
+./bin/audiobookshelf-hardcover-sync -v
 ```
 
 Debug logs include:
@@ -1040,11 +1072,11 @@ Test image upload and edition creation without making actual API calls:
 export DRY_RUN=true   # or DRY_RUN=1, DRY_RUN=yes
 
 # Test image upload
-./main --upload-image "https://example.com/image.jpg" "Test Description"
+./bin/audiobookshelf-hardcover-sync --upload-image "https://example.com/image.jpg" "Test Description"
 # Returns fake ID: 999999
 
 # Test edition creation from JSON
-./main --create-edition-json my_book.json
+./bin/audiobookshelf-hardcover-sync --create-edition-json my_book.json
 # Returns fake Image ID: 888888, Edition ID: 777777
 ```
 
@@ -1068,7 +1100,7 @@ git clone https://github.com/drallgood/audiobookshelf-hardcover-sync.git
 cd audiobookshelf-hardcover-sync
 cp .env.example .env  # Edit with your tokens
 make build
-./main
+./bin/audiobookshelf-hardcover-sync
 ```
 
 ### Docker Development

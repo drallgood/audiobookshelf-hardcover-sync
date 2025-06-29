@@ -42,26 +42,24 @@ func newTestContext(t *testing.T) context.Context {
 func newTestConfig(mismatchDir string) *config.Config {
 	return &config.Config{
 		App: struct {
-			Debug             bool          `yaml:"debug" env:"DEBUG"`
-			SyncInterval      time.Duration `yaml:"sync_interval" env:"SYNC_INTERVAL"`
-			MinimumProgress   float64       `yaml:"minimum_progress" env:"MINIMUM_PROGRESS"`
-			AudiobookMatchMode string        `yaml:"audiobook_match_mode" env:"AUDIOBOOK_MATCH_MODE"`
-			SyncWantToRead    bool          `yaml:"sync_want_to_read" env:"SYNC_WANT_TO_READ"`
-			SyncOwned         bool          `yaml:"sync_owned" env:"SYNC_OWNED"`
-			DryRun            bool          `yaml:"dry_run" env:"DRY_RUN"`
-			TestBookFilter    string        `yaml:"test_book_filter" env:"TEST_BOOK_FILTER"`
-			TestBookLimit     int           `yaml:"test_book_limit" env:"TEST_BOOK_LIMIT"`
+			Debug           bool          `yaml:"debug" env:"DEBUG"`
+			SyncInterval    time.Duration `yaml:"sync_interval" env:"SYNC_INTERVAL"`
+			MinimumProgress float64       `yaml:"minimum_progress" env:"MINIMUM_PROGRESS"`
+			SyncWantToRead  bool          `yaml:"sync_want_to_read" env:"SYNC_WANT_TO_READ"`
+			SyncOwned       bool          `yaml:"sync_owned" env:"SYNC_OWNED"`
+			DryRun          bool          `yaml:"dry_run" env:"DRY_RUN"`
+			TestBookFilter  string        `yaml:"test_book_filter" env:"TEST_BOOK_FILTER"`
+			TestBookLimit   int           `yaml:"test_book_limit" env:"TEST_BOOK_LIMIT"`
 		}{
 			// Set required fields to their zero values
-			Debug:             false,
-			SyncInterval:      0,
-			MinimumProgress:   0,
-			AudiobookMatchMode: "",
-			SyncWantToRead:    false,
-			SyncOwned:         false,
-			DryRun:            false,
-			TestBookFilter:    "",
-			TestBookLimit:     0,
+			Debug:           false,
+			SyncInterval:    0,
+			MinimumProgress: 0,
+			SyncWantToRead:  false,
+			SyncOwned:       false,
+			DryRun:          false,
+			TestBookFilter:  "",
+			TestBookLimit:   0,
 		},
 		Paths: struct {
 			CacheDir string `yaml:"cache_dir" env:"CACHE_DIR"`
