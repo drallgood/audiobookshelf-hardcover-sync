@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **🔄 Incremental Sync**: Added support for incremental synchronization to only process changed books
+  - New state management system to track sync progress
+  - Configurable minimum change threshold for progress updates
+  - State persistence between syncs for efficient updates
+- **📊 Progress Tracking Improvements**: Enhanced progress update handling
+  - More reliable progress persistence in Hardcover
+  - Better handling of edge cases in progress updates
+  - Improved logging for progress-related operations
+- **⚙️ New Configuration Options**:
+  - `sync.incremental`: Enable/disable incremental sync (default: true)
+  - `sync.state_file`: Path to store sync state (default: "./data/sync_state.json")
+  - `sync.min_change_threshold`: Minimum progress change threshold in seconds (default: 60)
+
+### Changed
+- **🚀 Performance Improvements**:
+  - Reduced unnecessary API calls during sync
+  - Improved memory usage with optimized data structures
+  - Better handling of rate limiting and retries
+- **📝 Logging Enhancements**:
+  - More detailed progress update logs
+  - Better error context in logs
+  - Structured logging for easier analysis
+
+### Fixed
+- **🔧 Progress Persistence**: Fixed issues with progress not being saved in Hardcover
+- **🐛 Edge Case Handling**: Improved handling of various edge cases in sync logic
+- **📊 State Management**: Fixed issues with state persistence and recovery
+
 ### Removed
 - **⚡ Rate Limiting Update**: Removed deprecated `sync_delay` configuration and `HARDCOVER_SYNC_DELAY_MS` environment variable
   - **Reason**: Replaced with more efficient token bucket rate limiting in the Hardcover API client

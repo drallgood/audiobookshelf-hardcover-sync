@@ -41,7 +41,10 @@ The project follows standard Go project layout:
 - 📚 **Full Library Sync**: Syncs your entire Audiobookshelf library with Hardcover
 - 🎯 **Smart Status Management**: Automatically sets "Want to Read", "Currently Reading", and "Read" status based on progress
 - 🏠 **Ownership Tracking**: Marks synced books as "owned" to distinguish from wishlist items
-- ⚡ **Incremental Sync**: Efficient timestamp-based syncing to reduce API calls
+- 🔄 **Incremental Sync**: Efficient state-based syncing to only process changed books
+  - Tracks sync state between runs
+  - Configurable minimum change threshold
+  - Persistent state storage
 - 🚀 **Smart Caching**: Intelligent caching of author/narrator lookups with cross-role discovery
 - 📊 **Enhanced Progress Detection**: Uses `/api/me` endpoint for accurate finished book detection, preventing false re-read scenarios
 - 🔄 **Periodic Sync**: Configurable automatic syncing (e.g., every 10 minutes or 1 hour)
@@ -903,6 +906,18 @@ All tools support the following configuration methods (in order of precedence):
 1. Command-line flags
 2. Environment variables
 3. Configuration file (`config.yaml` in current directory or `/etc/audiobookshelf-hardcover-sync/`)
+
+### Sync Behavior
+
+- **Incremental Sync**: When enabled (default), the sync will only process books that have changed since the last sync. This significantly reduces API calls and improves performance.
+  ```yaml
+  sync:
+    incremental: true
+    state_file: "./data/sync_state.json"
+    min_change_threshold: 60  # seconds
+  ```
+
+- **Progress Updates**: The sync will only update progress in Hardcover if the change is greater than the minimum threshold (default: 60 seconds). This prevents excessive updates for minor progress changes.
 
 ### Environment Variables
 
