@@ -248,10 +248,11 @@ func Load(configFile string) (*Config, error) {
 	return cfg, nil
 }
 
-// Validate checks that all required configuration is present
+// Validate checks that all required configuration is present and valid
 func (c *Config) Validate() error {
 	var missing []string
 
+	// Check required fields
 	if c.Audiobookshelf.URL == "" {
 		missing = append(missing, "AUDIOBOOKSHELF_URL")
 	}
@@ -275,6 +276,13 @@ func (c *Config) Validate() error {
 			Field: strings.Join(missing, ", "),
 			Msg:   "required configuration values are missing",
 		}
+	}
+
+	// Validate sync interval is positive
+	if c.App.SyncInterval <= 0 {
+		// Set a default sync interval if invalid
+		c.App.SyncInterval = 1 * time.Hour
+		fmt.Printf("Warning: Invalid sync interval, using default: %s\n", c.App.SyncInterval)
 	}
 
 	fmt.Println("Configuration validation passed")

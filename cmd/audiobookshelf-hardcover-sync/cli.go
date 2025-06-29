@@ -34,12 +34,13 @@ type configFlags struct {
 func parseFlags() *configFlags {
 	var cfg configFlags
 
-	// Define flags
+	// Define flags with default values
+	// Use negative values for durations to detect if they were set
 	flag.StringVar(&cfg.configFile, "config", "", "Path to config file (YAML/JSON)")
 	flag.StringVar(&cfg.audiobookshelfURL, "audiobookshelf-url", "", "Audiobookshelf server URL")
 	flag.StringVar(&cfg.audiobookshelfToken, "audiobookshelf-token", "", "Audiobookshelf API token")
 	flag.StringVar(&cfg.hardcoverToken, "hardcover-token", "", "Hardcover API token")
-	flag.DurationVar(&cfg.syncInterval, "sync-interval", 0, "Sync interval (e.g., 10m, 1h)")
+	flag.DurationVar(&cfg.syncInterval, "sync-interval", -1, "Sync interval (e.g., 10m, 1h). Defaults to config value if not set")
 	flag.BoolVar(&cfg.dryRun, "dry-run", false, "Run in dry-run mode (no changes will be made)")
 	flag.StringVar(&cfg.testBookFilter, "test-book-filter", "", "Filter books by title/author (case-insensitive)")
 	flag.IntVar(&cfg.testBookLimit, "test-book-limit", 0, "Limit number of books to process (0 for no limit)")
@@ -56,7 +57,8 @@ func parseFlags() *configFlags {
 	setEnvFromFlag(cfg.audiobookshelfToken, "AUDIOBOOKSHELF_TOKEN")
 	setEnvFromFlag(cfg.hardcoverToken, "HARDCOVER_TOKEN")
 
-	if cfg.syncInterval > 0 {
+	// Only set SYNC_INTERVAL if it was explicitly provided via flags
+	if cfg.syncInterval >= 0 {
 		os.Setenv("SYNC_INTERVAL", cfg.syncInterval.String())
 	}
 
@@ -242,8 +244,13 @@ func RunOneTimeSync(flags *configFlags) {
 
 // startPeriodicSync starts the periodic sync service
 // StartPeriodicSync starts a periodic sync service with the specified interval
+// Note: The interval is assumed to be valid (positive) as it should have been validated by config
 func StartPeriodicSync(ctx context.Context, syncService *sync.Service, abortCh <-chan struct{}, interval time.Duration) {
 	log := logger.Get()
+
+	log.Info("Starting periodic sync service", map[string]interface{}{
+		"interval": interval.String(),
+	})
 
 	go func() {
 		ticker := time.NewTicker(interval)
@@ -265,6 +272,7 @@ func StartPeriodicSync(ctx context.Context, syncService *sync.Service, abortCh <
 					})
 				}
 			case <-abortCh:
+				log.Info("Received shutdown signal, stopping periodic sync", nil)
 				return
 			}
 		}

@@ -157,7 +157,12 @@ func main() {
 
 	// Start periodic sync if enabled and not in server-only mode
 	if !flags.serverOnly && cfg.App.SyncInterval > 0 {
-			StartPeriodicSync(ctx, syncService, abortCh, flags.syncInterval)
+		// Use the sync interval from config unless overridden by command line flag
+		syncInterval := cfg.App.SyncInterval
+		if flags.syncInterval >= 0 {
+			syncInterval = flags.syncInterval
+		}
+		StartPeriodicSync(ctx, syncService, abortCh, syncInterval)
 	} else if !flags.serverOnly {
 		log.Info("Periodic sync is disabled (set SYNC_INTERVAL to enable)", nil)
 	}
