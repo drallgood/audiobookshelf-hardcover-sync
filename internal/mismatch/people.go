@@ -15,7 +15,7 @@ import (
 // lookupCache caches person lookups to avoid duplicate API calls
 var (
 	personCache   = make(map[string]int) // name -> ID mapping
-	personIDCache = make(map[int]string)   // ID -> name mapping
+	personIDCache = make(map[int]string) // ID -> name mapping
 	cacheLock     sync.RWMutex
 )
 

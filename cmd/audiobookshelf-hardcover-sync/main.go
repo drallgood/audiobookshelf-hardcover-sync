@@ -104,15 +104,15 @@ func main() {
 	if flags.testBookLimit > 0 {
 		os.Setenv("TEST_BOOK_LIMIT", strconv.Itoa(flags.testBookLimit))
 	}
-	
+
 	if flags.syncInterval > 0 {
 		os.Setenv("SYNC_INTERVAL", flags.syncInterval.String())
 	}
-	
+
 	if flags.dryRun {
 		os.Setenv("DRY_RUN", "true")
 	}
-	
+
 	// If one-time sync is requested, run it and exit
 	if flags.oneTimeSync {
 		RunOneTimeSync(flags)
@@ -137,11 +137,17 @@ func main() {
 	hardcoverClient := hardcover.NewClient(cfg.Hardcover.Token, logInstance)
 
 	// Create sync service
-	syncService := sync.NewService(
+	syncService, err := sync.NewService(
 		audiobookshelfClient,
 		hardcoverClient,
 		cfg,
 	)
+	if err != nil {
+		log.Error("Failed to create sync service", map[string]interface{}{
+			"error": err.Error(),
+		})
+		os.Exit(1)
+	}
 
 	// Start the HTTP server
 	go func() {

@@ -55,7 +55,7 @@ func TestMismatchASINEnhancementActual(t *testing.T) {
 	if editionInput.Title == "" {
 		t.Error("Title should not be empty")
 	}
-	
+
 	if editionInput.AudioLength != mismatch.DurationSeconds {
 		t.Errorf("Audio length mismatch: expected %d, got %d", mismatch.DurationSeconds, editionInput.AudioLength)
 	}

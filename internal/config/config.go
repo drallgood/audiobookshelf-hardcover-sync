@@ -20,6 +20,16 @@ type Config struct {
 		ShutdownTimeout time.Duration `yaml:"shutdown_timeout" env:"SHUTDOWN_TIMEOUT"`
 	} `yaml:"server"`
 
+	// Sync configuration
+	Sync struct {
+		// Enable incremental sync (only process changed books)
+		Incremental bool `yaml:"incremental" env:"SYNC_INCREMENTAL"`
+		// Path to store sync state (default: ./data/sync_state.json)
+		StateFile string `yaml:"state_file" env:"SYNC_STATE_FILE"`
+		// Minimum change in progress (seconds) to trigger an update (default: 60)
+		MinChangeThreshold int `yaml:"min_change_threshold" env:"SYNC_MIN_CHANGE_THRESHOLD"`
+	} `yaml:"sync"`
+
 	// Rate limiting configuration
 	RateLimit struct {
 		// Rate is the minimum time between requests (e.g., 2s for 1 request per 2 seconds)
@@ -33,7 +43,7 @@ type Config struct {
 	// Logging configuration
 	Logging struct {
 		// Level is the minimum log level (debug, info, warn, error, fatal, panic)
-		Level  string `yaml:"level" env:"LOG_LEVEL"`
+		Level string `yaml:"level" env:"LOG_LEVEL"`
 		// Format is the log format (json, console)
 		Format string `yaml:"format" env:"LOG_FORMAT"`
 	} `yaml:"logging"`
@@ -41,7 +51,7 @@ type Config struct {
 	// Audiobookshelf configuration
 	Audiobookshelf struct {
 		// URL is the base URL of the Audiobookshelf server
-		URL   string `yaml:"url" env:"AUDIOBOOKSHELF_URL"`
+		URL string `yaml:"url" env:"AUDIOBOOKSHELF_URL"`
 		// Token is the API token for Audiobookshelf
 		Token string `yaml:"token" env:"AUDIOBOOKSHELF_TOKEN"`
 	} `yaml:"audiobookshelf"`
@@ -88,6 +98,11 @@ func DefaultConfig() *Config {
 	// Set default values
 	cfg.Server.Port = "8080"
 	cfg.Server.ShutdownTimeout = 30 * time.Second
+
+	// Default sync configuration
+	cfg.Sync.Incremental = false
+	cfg.Sync.StateFile = "./data/sync_state.json"
+	cfg.Sync.MinChangeThreshold = 60 // 60 seconds
 
 	// Default rate limiting (1500ms between requests, burst of 2, max 3 concurrent)
 	cfg.RateLimit.Rate = 1500 * time.Millisecond
@@ -147,7 +162,7 @@ func Load(configFile string) (*Config, error) {
 
 			// Create a temporary config to load the file into
 			fileCfg := &Config{}
-			
+
 			// Unmarshal the config file
 			if err := yaml.Unmarshal(data, fileCfg); err != nil {
 				fmt.Printf("Failed to parse config file: %v\n", err)
@@ -164,7 +179,6 @@ func Load(configFile string) (*Config, error) {
 
 	// Then load from environment variables (overrides config file)
 	loadFromEnv(cfg)
-
 
 	// Then load from individual environment variables (highest priority)
 	// Server configuration
@@ -265,7 +279,7 @@ func (c *Config) Validate() error {
 
 	if len(missing) > 0 {
 		fmt.Printf("Required configuration fields are missing: %s\n", strings.Join(missing, ", "))
-		
+
 		// Log the current configuration state (without sensitive data)
 		fmt.Printf("Current configuration state:\n")
 		fmt.Printf("  audiobookshelf_url: %s\n", c.Audiobookshelf.URL)

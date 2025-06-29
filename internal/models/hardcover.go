@@ -17,12 +17,12 @@ type HardcoverBook struct {
 	ISBN          string   `json:"isbn,omitempty"`
 	ASIN          string   `json:"asin,omitempty"`
 	// Additional fields from GraphQL response
-	BookStatusID  int     `json:"book_status_id"`
-	CanonicalID   *int    `json:"canonical_id,omitempty"`
+	BookStatusID int  `json:"book_status_id"`
+	CanonicalID  *int `json:"canonical_id,omitempty"`
 	// Fields for edition information
-	EditionASIN   string  `json:"edition_asin,omitempty"`
-	EditionISBN13 string  `json:"edition_isbn_13,omitempty"`
-	EditionISBN10 string  `json:"edition_isbn_10,omitempty"`
+	EditionASIN   string `json:"edition_asin,omitempty"`
+	EditionISBN13 string `json:"edition_isbn_13,omitempty"`
+	EditionISBN10 string `json:"edition_isbn_10,omitempty"`
 }
 
 // Author represents an author or narrator in the Hardcover API
@@ -36,7 +36,7 @@ type Author struct {
 type ReadingProgress struct {
 	BookID    string  `json:"bookId"`
 	Progress  float64 `json:"progress"` // 0.0 to 1.0
-	Status    string  `json:"status"`    // "WANT_TO_READ", "READING", "FINISHED"
+	Status    string  `json:"status"`   // "WANT_TO_READ", "READING", "FINISHED"
 	Owned     bool    `json:"owned"`
 	UpdatedAt string  `json:"updatedAt,omitempty"`
 }

@@ -72,18 +72,18 @@ func newTestClient(t *testing.T) (*Client, *httptest.Server) {
 				edition := map[string]interface{}{
 					"id":                "456",
 					"asin":              nil,
-					"isbn_13":          "9781234567890",
-					"isbn_10":          "1234567890",
+					"isbn_13":           "9781234567890",
+					"isbn_10":           "1234567890",
 					"reading_format_id": 2,
-					"audio_seconds":    &audioSeconds,
+					"audio_seconds":     &audioSeconds,
 				}
 
 				book := map[string]interface{}{
-					"id":            "123",
-					"title":         "Test Book",
+					"id":             "123",
+					"title":          "Test Book",
 					"book_status_id": 1,
-					"canonical_id":  nil,
-					"editions":      []map[string]interface{}{edition},
+					"canonical_id":   nil,
+					"editions":       []map[string]interface{}{edition},
 				}
 
 				// Update the response with the book data
@@ -219,7 +219,7 @@ func TestClient_SearchBookByISBN13(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create a buffer to capture log output
 			var logBuffer bytes.Buffer
-			
+
 			// Set up the logger to write to our buffer
 			logger.Setup(logger.Config{
 				Level:  "debug",
@@ -240,18 +240,18 @@ func TestClient_SearchBookByISBN13(t *testing.T) {
 			// Call the method being tested
 			ctx := context.Background()
 			got, err := client.SearchBookByISBN13(ctx, tt.isbn13)
-			
+
 			// Log the results and any errors
 			t.Logf("Test case: %s", tt.name)
 			t.Logf("SearchBookByISBN13 result: %+v, error: %v", got, err)
-			
+
 			// Output the captured logs
 			if logBuffer.Len() > 0 {
 				t.Log("=== Client Logs ===")
 				t.Log(logBuffer.String())
 				t.Log("==================")
 			}
-			
+
 			// If we expected an error, check that first
 			if tt.wantErr {
 				if err == nil {
@@ -259,25 +259,25 @@ func TestClient_SearchBookByISBN13(t *testing.T) {
 				}
 				return
 			}
-			
+
 			// If we didn't expect an error but got one, fail the test
 			if err != nil {
 				t.Errorf("Unexpected error: %v", err)
 				return
 			}
-			
+
 			// If we expected a nil result but got a non-nil result, fail the test
 			if tt.expected == nil && got != nil {
 				t.Error("Expected nil result but got non-nil")
 				return
 			}
-			
+
 			// If we expected a non-nil result but got nil, fail the test
 			if tt.expected != nil && got == nil {
 				t.Error("Expected non-nil result but got nil")
 				return
 			}
-			
+
 			// If both are nil, we're done
 			if tt.expected == nil && got == nil {
 				return

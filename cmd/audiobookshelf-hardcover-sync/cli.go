@@ -16,7 +16,7 @@ import (
 
 // configFlags holds the application configuration from command-line flags
 type configFlags struct {
-	configFile         string        // Path to config file
+	configFile          string        // Path to config file
 	audiobookshelfURL   string        // Audiobookshelf server URL
 	audiobookshelfToken string        // Audiobookshelf API token
 	hardcoverToken      string        // Hardcover API token
@@ -83,7 +83,7 @@ func setEnvFromFlag(value, envVar string) {
 		if err := os.Setenv(envVar, value); err != nil {
 			logger.Get().Warn("Failed to set environment variable", map[string]interface{}{
 				"error": err.Error(),
-				"var":    envVar,
+				"var":   envVar,
 			})
 		}
 	}
@@ -143,11 +143,11 @@ func RunOneTimeSync(flags *configFlags) {
 	// Log sync settings
 	log.Info("Sync Settings", map[string]interface{}{
 		"minimum_progress_threshold": cfg.App.MinimumProgress,
-		"sync_want_to_read":         cfg.App.SyncWantToRead,
-		"sync_owned":                cfg.App.SyncOwned,
-		"dry_run":                   cfg.App.DryRun,
-		"test_book_filter":          cfg.App.TestBookFilter,
-		"test_book_limit":           cfg.App.TestBookLimit,
+		"sync_want_to_read":          cfg.App.SyncWantToRead,
+		"sync_owned":                 cfg.App.SyncOwned,
+		"dry_run":                    cfg.App.DryRun,
+		"test_book_filter":           cfg.App.TestBookFilter,
+		"test_book_limit":            cfg.App.TestBookLimit,
 	})
 
 	// Log paths and cache settings
@@ -173,7 +173,7 @@ func RunOneTimeSync(flags *configFlags) {
 
 	log.Debug("Created Audiobookshelf client", map[string]interface{}{
 		"client_type": "audiobookshelf",
-		"base_url":   cfg.Audiobookshelf.URL,
+		"base_url":    cfg.Audiobookshelf.URL,
 	})
 
 	log.Debug("Created Hardcover client", map[string]interface{}{
@@ -183,11 +183,17 @@ func RunOneTimeSync(flags *configFlags) {
 
 	// Create sync service with detailed logging
 	log.Info("Initializing sync service...", nil)
-	syncService := sync.NewService(
+	syncService, err := sync.NewService(
 		audiobookshelfClient,
 		hardcoverClient,
 		cfg,
 	)
+	if err != nil {
+		log.Error("Failed to initialize sync service", map[string]interface{}{
+			"error": err.Error(),
+		})
+		os.Exit(1)
+	}
 
 	log.Debug("Initialized sync service", map[string]interface{}{
 		"dry_run": cfg.App.DryRun,
@@ -225,7 +231,7 @@ func RunOneTimeSync(flags *configFlags) {
 
 	// Log completion
 	duration := time.Since(startTime)
-	
+
 	if err != nil {
 		logger.Get().Error("Sync operation failed", map[string]interface{}{
 			"error":    err.Error(),
@@ -236,7 +242,7 @@ func RunOneTimeSync(flags *configFlags) {
 
 	// Log success
 	logger.Get().Info("Sync completed successfully", map[string]interface{}{
-		"duration":          duration.String(),
+		"duration":         duration.String(),
 		"duration_seconds": duration.Seconds(),
 	})
 	log.Info("========================================")

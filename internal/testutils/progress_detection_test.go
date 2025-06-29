@@ -62,11 +62,11 @@ func TestSuspiciousProgressDetection(t *testing.T) {
 // Test that suspicious progress on long books is treated as finished
 func TestSuspiciousProgressTreatment(t *testing.T) {
 	tests := []struct {
-		name                   string
-		progress               float64
-		duration               float64
-		expectedFinalProgress  float64
-		description            string
+		name                  string
+		progress              float64
+		duration              float64
+		expectedFinalProgress float64
+		description           string
 	}{
 		{
 			name:                  "Red Bounty scenario - tiny progress on long book should be treated as finished",
@@ -77,16 +77,16 @@ func TestSuspiciousProgressTreatment(t *testing.T) {
 		},
 		{
 			name:                  "Normal small progress on short book - keep original",
-			progress:              0.01,  // 1%
-			duration:              600,   // 10 minutes
-			expectedFinalProgress: 0.01,  // Should keep original
+			progress:              0.01, // 1%
+			duration:              600,  // 10 minutes
+			expectedFinalProgress: 0.01, // Should keep original
 			description:           "Normal progress on short book",
 		},
 		{
 			name:                  "Reasonable progress on long book - keep original",
-			progress:              0.05,   // 5%
-			duration:              32760,  // 9.1 hours
-			expectedFinalProgress: 0.05,   // Should keep original  
+			progress:              0.05,  // 5%
+			duration:              32760, // 9.1 hours
+			expectedFinalProgress: 0.05,  // Should keep original
 			description:           "Reasonable progress on long book",
 		},
 	}
@@ -94,7 +94,7 @@ func TestSuspiciousProgressTreatment(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			estimatedCurrentTime := tt.progress * tt.duration
-			
+
 			// Simulate the logic from the actual code
 			var finalProgress float64
 			if estimatedCurrentTime < 60 && tt.duration > 1800 { // Suspicious criteria
@@ -107,7 +107,7 @@ func TestSuspiciousProgressTreatment(t *testing.T) {
 			}
 
 			if finalProgress != tt.expectedFinalProgress {
-				t.Errorf("Expected final progress %.6f, got %.6f for %s", 
+				t.Errorf("Expected final progress %.6f, got %.6f for %s",
 					tt.expectedFinalProgress, finalProgress, tt.description)
 			}
 
@@ -116,4 +116,3 @@ func TestSuspiciousProgressTreatment(t *testing.T) {
 		})
 	}
 }
-

@@ -129,7 +129,7 @@ query BookByTitleAndAuthor($title: String!, $author: String!) {
 }
 ```
 
-## Reads by ASIB
+## Reads by ASIN
 
 ```graphql
 query GetUserBookReadsForASIN($asin: String) {
@@ -153,6 +153,33 @@ query GetUserBookReadsForASIN($asin: String) {
 ```json
 {
   "asin": "1250791456"
+}
+```
+
+## User Book Reads by user_book_id
+
+```graphql
+query GetUserBookReadsForUserBookID($user_book_id: Int!) {
+  user_book_reads(where: {user_book_id: {_eq: $user_book_id}}, order_by: { id: desc }) {
+    finished_at
+    paused_at
+    id
+    progress
+    progress_pages
+    progress_seconds
+    started_at
+    user_book_id
+    edition {
+      title
+      id
+    }
+  }
+}
+```
+
+```json
+{
+  "user_book_id": 1
 }
 ```
 

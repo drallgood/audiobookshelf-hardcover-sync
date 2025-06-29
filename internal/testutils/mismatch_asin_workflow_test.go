@@ -12,7 +12,7 @@ func TestMismatchJSONFileCreationWithASINReference(t *testing.T) {
 	t.Skip("Skipping TestMismatchJSONFileCreationWithASINReference as it's a test utility and not critical for main functionality")
 	// Save original environment variables
 	originalMismatchDir := os.Getenv("MISMATCH_JSON_FILE")
-	
+
 	// Restore environment variables after test
 	defer func() {
 		os.Setenv("MISMATCH_JSON_FILE", originalMismatchDir)
@@ -154,7 +154,7 @@ func TestASINReferenceInRealWorkflow(t *testing.T) {
 	// Save original environment variables
 	originalAPIEnabled := os.Getenv("AUDIBLE_API_ENABLED")
 	originalMismatchDir := os.Getenv("MISMATCH_JSON_FILE")
-	
+
 	defer func() {
 		os.Setenv("AUDIBLE_API_ENABLED", originalAPIEnabled)
 		os.Setenv("MISMATCH_JSON_FILE", originalMismatchDir)

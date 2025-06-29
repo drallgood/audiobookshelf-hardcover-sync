@@ -148,9 +148,9 @@ func (c *Client) GetLibraryItems(ctx context.Context, libraryID string) ([]model
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		log.Error("Unexpected status code", map[string]interface{}{
-"status":   resp.StatusCode,
-"response": string(body),
-})
+			"status":   resp.StatusCode,
+			"response": string(body),
+		})
 		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
@@ -259,7 +259,7 @@ func (c *Client) GetLibraryItems(ctx context.Context, libraryID string) ([]model
 	}
 	log.Debug("Raw API response sample from Audiobookshelf", map[string]interface{}{
 		"response_sample": string(body[:sampleSize]),
-		"total_bytes":    len(body),
+		"total_bytes":     len(body),
 	})
 
 	// First, unmarshal into a generic map to inspect the structure
@@ -316,8 +316,8 @@ func (c *Client) GetLibraryItems(ctx context.Context, libraryID string) ([]model
 	if len(books) > 0 {
 		firstBook := books[0]
 		log.Info("First book details from parsed response", map[string]interface{}{
-			"first_book_id":   firstBook.ID,
-			"first_book_title": firstBook.Media.Metadata.Title,
+			"first_book_id":     firstBook.ID,
+			"first_book_title":  firstBook.Media.Metadata.Title,
 			"first_book_author": firstBook.Media.Metadata.AuthorName,
 		})
 
@@ -343,11 +343,11 @@ func (c *Client) GetLibraryItems(ctx context.Context, libraryID string) ([]model
 	if len(result.Results) > 0 {
 		firstBook := result.Results[0]
 		log.Debug("First book details", map[string]interface{}{
-			"book_id":   firstBook.ID,
-			"title":     firstBook.Media.Metadata.Title,
-			"author":    firstBook.Media.Metadata.AuthorName,
-			"isbn":      firstBook.Media.Metadata.ISBN,
-			"asin":      firstBook.Media.Metadata.ASIN,
+			"book_id": firstBook.ID,
+			"title":   firstBook.Media.Metadata.Title,
+			"author":  firstBook.Media.Metadata.AuthorName,
+			"isbn":    firstBook.Media.Metadata.ISBN,
+			"asin":    firstBook.Media.Metadata.ASIN,
 		})
 	}
 
@@ -446,9 +446,9 @@ func (c *Client) GetListeningSessions(ctx context.Context, since time.Time) ([]m
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		log.Error("Unexpected status code", map[string]interface{}{
-"status":   resp.StatusCode,
-"response": string(body),
-})
+			"status":   resp.StatusCode,
+			"response": string(body),
+		})
 		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 

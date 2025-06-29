@@ -80,4 +80,3 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 	fmt.Fprint(w, `{"status":"not implemented"}`)
 }
- 

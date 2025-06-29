@@ -55,8 +55,8 @@ type GetUserBookResult struct {
 
 // UpdateUserBookInput represents the input for updating a user book
 type UpdateUserBookInput struct {
-	ID        int64   `json:"id"`
-	EditionID *int64  `json:"edition_id,omitempty"`
+	ID        int64  `json:"id"`
+	EditionID *int64 `json:"edition_id,omitempty"`
 }
 
 // Common errors
@@ -332,9 +332,9 @@ func (l loggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 
 	// Log response with appropriate level
 	logFields := map[string]interface{}{
-		"status":         resp.StatusCode,
-		"status_text":    resp.Status,
-		"path":           req.URL.Path,
+		"status":          resp.StatusCode,
+		"status_text":     resp.Status,
+		"path":            req.URL.Path,
 		"response_length": len(body),
 	}
 
@@ -469,10 +469,10 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 
 		// Log the response with raw body for debugging
 		c.logger.Debug("Received GraphQL response", map[string]interface{}{
-			"status":        resp.Status,
-			"status_code":   resp.StatusCode,
+			"status":         resp.Status,
+			"status_code":    resp.StatusCode,
 			"content_length": resp.ContentLength,
-			"raw_response":  string(body),
+			"raw_response":   string(body),
 		})
 
 		// Check for HTTP errors
@@ -500,8 +500,8 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		if err := json.Unmarshal(body, &gqlResp); err != nil {
 			// If we can't unmarshal into the standard format, try direct unmarshal for mutations
 			c.logger.Debug("Failed to unmarshal as standard GraphQL response, trying direct unmarshal", map[string]interface{}{
-				"error":  err.Error(),
-				"body":   string(body),
+				"error": err.Error(),
+				"body":  string(body),
 			})
 			directUnmarshal = true
 		}
@@ -577,10 +577,10 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 	// If we get here, all retry attempts failed
 	if lastErr != nil {
 		c.logger.Error("GraphQL operation failed after all retries", map[string]interface{}{
-			"error":      lastErr.Error(),
-			"operation":  string(op),
-			"query":      query,
-			"variables":  variables,
+			"error":       lastErr.Error(),
+			"operation":   string(op),
+			"query":       query,
+			"variables":   variables,
 			"max_retries": c.maxRetries,
 		})
 	}
@@ -794,7 +794,7 @@ func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.Har
 						log.Debug("Found book in response", map[string]interface{}{
 							"book_index": i,
 							"book_id":    fmt.Sprintf("%v", book["id"]),
-							"title":     fmt.Sprintf("%v", book["title"]),
+							"title":      fmt.Sprintf("%v", book["title"]),
 						})
 					}
 				}
@@ -869,7 +869,7 @@ func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.Har
 
 	// Process the first edition
 	edition, _ := editions[0].(map[string]interface{})
-	
+
 	// Set EditionID if available
 	if editionID, ok := edition["id"]; ok {
 		switch v := editionID.(type) {
@@ -909,7 +909,7 @@ func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.Har
 	if isbn10, ok := edition["isbn_10"].(string); ok && isbn10 != "" {
 		hcBook.EditionISBN10 = isbn10
 	}
-	
+
 	// Debug log the book data
 	log.Debug("Successfully found book by ASIN", map[string]interface{}{
 		"book_id": hcBook.ID,
@@ -1004,7 +1004,7 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
 	// Debug: Log the result after unmarshaling
 	resultJSON, _ := json.Marshal(result)
 	log.Debug("GraphQL query result", map[string]interface{}{
-		"result": string(resultJSON),
+		"result":      string(resultJSON),
 		"books_count": len(result.Books),
 	})
 
@@ -1015,18 +1015,18 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
 			editionsCount = len(book.Editions)
 		}
 		log.Debug("First book in result", map[string]interface{}{
-			"book_id":    book.ID,
-			"title":      book.Title,
-			"editions":   editionsCount,
+			"book_id":  book.ID,
+			"title":    book.Title,
+			"editions": editionsCount,
 		})
 		if editionsCount > 0 {
 			edition := book.Editions[0]
 			log.Debug("First edition", map[string]interface{}{
-				"edition_id":  edition.ID,
-				"isbn_13":     edition.ISBN13,
-				"isbn_10":     edition.ISBN10,
-				"format_id":   edition.ReadingFormatID,
-				"audio_secs":  edition.AudioSeconds,
+				"edition_id": edition.ID,
+				"isbn_13":    edition.ISBN13,
+				"isbn_10":    edition.ISBN10,
+				"format_id":  edition.ReadingFormatID,
+				"audio_secs": edition.AudioSeconds,
 			})
 		}
 	}
@@ -1230,11 +1230,11 @@ func (c *Client) UpdateReadingProgress(
 ) error {
 	const endpoint = "/reading/update-progress"
 	log := c.logger.With(map[string]interface{}{
-		"endpoint":       endpoint,
-		"book_id":        bookID,
-		"progress":       progress,
-		"status":         status,
-		"mark_as_owned":  markAsOwned,
+		"endpoint":      endpoint,
+		"book_id":       bookID,
+		"progress":      progress,
+		"status":        status,
+		"mark_as_owned": markAsOwned,
 	})
 
 	// Prepare request body
@@ -1314,14 +1314,13 @@ func (c *Client) UpdateReadingProgress(
 	return nil
 }
 
-
 // DatesReadInput represents the input for date-related fields when creating or updating a user book read entry
 type DatesReadInput struct {
-	Action         *string `json:"action,omitempty"`
-	EditionID      *int64  `json:"edition_id,omitempty"`
-	FinishedAt     *string `json:"finished_at,omitempty"`
-	ID             *int64  `json:"id,omitempty"`
-	StartedAt      *string `json:"started_at,omitempty"`
+	Action          *string `json:"action,omitempty"`
+	EditionID       *int64  `json:"edition_id,omitempty"`
+	FinishedAt      *string `json:"finished_at,omitempty"`
+	ID              *int64  `json:"id,omitempty"`
+	StartedAt       *string `json:"started_at,omitempty"`
 	ProgressSeconds *int    `json:"progress_seconds,omitempty"`
 }
 
@@ -1367,7 +1366,7 @@ func (c *Client) InsertUserBookRead(ctx context.Context, input InsertUserBookRea
 	}
 
 	variables := map[string]interface{}{
-		"user_book_id":  input.UserBookID,
+		"user_book_id":   input.UserBookID,
 		"user_book_read": userBookRead,
 	}
 
@@ -1896,12 +1895,12 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 
 	// Log the raw edition data for debugging
 	log.Debug("Retrieved edition details", map[string]interface{}{
-		"id":       edition.ID,
-		"book_id":  edition.BookID,
-		"title":    safeString(edition.Title),
-		"isbn_10":  safeString(edition.ISBN10),
-		"isbn_13":  safeString(edition.ISBN13),
-		"asin":     safeString(edition.ASIN),
+		"id":      edition.ID,
+		"book_id": edition.BookID,
+		"title":   safeString(edition.Title),
+		"isbn_10": safeString(edition.ISBN10),
+		"isbn_13": safeString(edition.ISBN13),
+		"asin":    safeString(edition.ASIN),
 	})
 
 	// Create the edition model
@@ -2021,7 +2020,7 @@ func (c *Client) SearchPeople(ctx context.Context, name, personType string, limi
 	if len(searchResponse.Authors) == 0 && personType == "narrator" {
 		log.Debug("No results with direct search, trying narrator-specific search", nil)
 		// Try a more specific query for narrators if the first one fails
-	fallbackQuery := `
+		fallbackQuery := `
 	query SearchNarrators($name: String!, $limit: Int) {
 		authors(
 			where: {
@@ -2227,8 +2226,8 @@ func (c *Client) GetGoogleUploadCredentials(ctx context.Context, filename string
 	// Prepare variables
 	variables := map[string]interface{}{
 		"input": map[string]interface{}{
-			"filename":    filename,
-			"editionId":   editionID,
+			"filename":  filename,
+			"editionId": editionID,
 		},
 	}
 
@@ -2247,7 +2246,7 @@ func (c *Client) GetGoogleUploadCredentials(ctx context.Context, filename string
 	// Construct the public URL where the file will be accessible
 	// This assumes the file will be available at a predictable URL pattern
 	// Adjust this based on your actual GCS bucket and path structure
-	fileURL := fmt.Sprintf("https://storage.googleapis.com/%s/%s", 
+	fileURL := fmt.Sprintf("https://storage.googleapis.com/%s/%s",
 		response.GetGoogleUploadCredentials.Fields["bucket"],
 		response.GetGoogleUploadCredentials.Fields["key"],
 	)
@@ -2451,12 +2450,6 @@ func (c *Client) CreateUserBook(ctx context.Context, editionID, status string) (
 	return userBookID, nil
 }
 
-
-
-
-
-
-
 // SearchByISBNResponse represents the response when searching for a book by ISBN
 type SearchByISBNResponse struct {
 	Books []struct {
@@ -2495,11 +2488,11 @@ type SearchByTitleAuthorResponse struct {
 
 // CheckBookOwnershipResponse represents the response from checking if a book is in the user's "Owned" list
 type CheckBookOwnershipResponse []struct {
-	ID        int `json:"id"`
+	ID        int    `json:"id"`
 	Name      string `json:"name"`
 	ListBooks []struct {
-		ID        int `json:"id"`
-		BookID    int `json:"book_id"`
+		ID        int  `json:"id"`
+		BookID    int  `json:"book_id"`
 		EditionID *int `json:"edition_id"`
 	} `json:"list_books"`
 }
@@ -2724,7 +2717,7 @@ func (c *Client) SearchBookByTitleAuthor(ctx context.Context, title, author stri
 
 	// Log the actual query being executed
 	log.Debug("Executing GraphQL query", map[string]interface{}{
-		"query":    query,
+		"query":     query,
 		"variables": variables,
 	})
 
@@ -2748,8 +2741,8 @@ func (c *Client) SearchBookByTitleAuthor(ctx context.Context, title, author stri
 	err := c.GraphQLQuery(ctx, query, variables, &response)
 	if err != nil {
 		log.Error("Failed to execute GraphQL query", map[string]interface{}{
-			"error":    err.Error(),
-			"query":    query,
+			"error":     err.Error(),
+			"query":     query,
 			"variables": variables,
 		})
 		return nil, fmt.Errorf("failed to search for book by title and author: %w", err)

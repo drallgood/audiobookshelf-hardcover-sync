@@ -15,33 +15,33 @@ import (
 // EditionCreatorInput represents the input format expected by the edition import tool
 type EditionCreatorInput struct {
 	// Core book information
-	BookID       int     `json:"book_id"`
-	Title        string  `json:"title"`
-	Subtitle     string  `json:"subtitle,omitempty"`
-	
+	BookID   int    `json:"book_id"`
+	Title    string `json:"title"`
+	Subtitle string `json:"subtitle,omitempty"`
+
 	// Identifiers
-	ASIN         string  `json:"asin,omitempty"`
-	ISBN10       string  `json:"isbn_10,omitempty"`
-	ISBN13       string  `json:"isbn_13,omitempty"`
-	
+	ASIN   string `json:"asin,omitempty"`
+	ISBN10 string `json:"isbn_10,omitempty"`
+	ISBN13 string `json:"isbn_13,omitempty"`
+
 	// Media information
-	ImageURL     string  `json:"image_url,omitempty"`
-	AudioLength  int     `json:"audio_length,omitempty"`
-	LanguageID   int     `json:"language_id,omitempty"`
-	
+	ImageURL    string `json:"image_url,omitempty"`
+	AudioLength int    `json:"audio_length,omitempty"`
+	LanguageID  int    `json:"language_id,omitempty"`
+
 	// Relationships
-	AuthorIDs    []int   `json:"author_ids,omitempty"`
-	NarratorIDs  []int   `json:"narrator_ids,omitempty"`
-	PublisherID  int     `json:"publisher_id,omitempty"`
-	CountryID    int     `json:"country_id,omitempty"`
-	
+	AuthorIDs   []int `json:"author_ids,omitempty"`
+	NarratorIDs []int `json:"narrator_ids,omitempty"`
+	PublisherID int   `json:"publisher_id,omitempty"`
+	CountryID   int   `json:"country_id,omitempty"`
+
 	// Edition information
-	ReleaseDate  string  `json:"release_date"`
+	ReleaseDate   string `json:"release_date"`
 	EditionFormat string `json:"edition_format,omitempty"`
-	EditionInfo  string  `json:"edition_information,omitempty"`
-	
+	EditionInfo   string `json:"edition_information,omitempty"`
+
 	// User notes (not imported, for reference only)
-	UserNotes    string  `json:"user_notes,omitempty"`
+	UserNotes string `json:"user_notes,omitempty"`
 }
 
 // ToEditionExport converts a BookMismatch to an EditionExport for the edition import tool
@@ -71,7 +71,7 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc *hardcover.Client
 	logger.Debug("Converting BookMismatch to EditionExport", map[string]interface{}{
 		"original_book_id": b.BookID,
 		"parsed_book_id":   bookID,
-		"title":           b.Title,
+		"title":            b.Title,
 	})
 
 	// Default to Audiobook format if not specified
@@ -162,7 +162,7 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc *hardcover.Client
 			narratorIDs = []int{}
 		}
 	}
-	
+
 	// Look up publisher ID if we have a publisher name and a Hardcover client
 	if b.PublisherID == 0 && b.Publisher != "" {
 		if hc != nil {
@@ -184,22 +184,22 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc *hardcover.Client
 	// Initialize all fields with zero values to ensure they appear in the JSON output
 	result := &EditionExport{
 		// Core book information (used for import)
-		BookID:         bookID,
-		Title:          b.Title,
-		Subtitle:       b.Subtitle,
-		ImageURL:       imageURL,
-		ASIN:           b.ASIN,
-		ISBN10:         b.ISBN10,
-		ISBN13:         b.ISBN13,
-		AuthorIDs:      authorIDs,
-		NarratorIDs:    narratorIDs,
-		PublisherID:    publisherID,
-		ReleaseDate:    b.ReleaseDate,
-		AudioSeconds:   b.DurationSeconds,
-		EditionFormat:  editionFormat,
-		EditionInfo:    editionInfo,
-		LanguageID:     languageID,
-		CountryID:      countryID,
+		BookID:        bookID,
+		Title:         b.Title,
+		Subtitle:      b.Subtitle,
+		ImageURL:      imageURL,
+		ASIN:          b.ASIN,
+		ISBN10:        b.ISBN10,
+		ISBN13:        b.ISBN13,
+		AuthorIDs:     authorIDs,
+		NarratorIDs:   narratorIDs,
+		PublisherID:   publisherID,
+		ReleaseDate:   b.ReleaseDate,
+		AudioSeconds:  b.DurationSeconds,
+		EditionFormat: editionFormat,
+		EditionInfo:   editionInfo,
+		LanguageID:    languageID,
+		CountryID:     countryID,
 
 		// Additional informational fields (not used during import)
 		Info: &EditionExportInfo{
@@ -305,33 +305,33 @@ func (b *BookMismatch) ToEditionInput(ctx context.Context, hc *hardcover.Client)
 	// Create the edition input
 	edition := EditionCreatorInput{
 		// Core book information
-		BookID:    bookID,
-		Title:     b.Title,
-		Subtitle:  b.Subtitle,
-		
+		BookID:   bookID,
+		Title:    b.Title,
+		Subtitle: b.Subtitle,
+
 		// Identifiers
-		ASIN:      b.ASIN,
-		ISBN10:    isbn10,
-		ISBN13:    isbn13,
-		
+		ASIN:   b.ASIN,
+		ISBN10: isbn10,
+		ISBN13: isbn13,
+
 		// Media information
-		ImageURL:   b.ImageURL, // Prefer ImageURL over CoverURL
+		ImageURL:    b.ImageURL, // Prefer ImageURL over CoverURL
 		AudioLength: b.DurationSeconds,
-		LanguageID: 1, // Default to English (would need to be looked up)
-		
+		LanguageID:  1, // Default to English (would need to be looked up)
+
 		// Relationships
 		AuthorIDs:   authorIDs,
 		NarratorIDs: narratorIDs,
 		PublisherID: 0, // Would need to be looked up
 		CountryID:   1, // Default to US (would need to be looked up)
-		
+
 		// Edition information
-		ReleaseDate:  releaseDate,
+		ReleaseDate:   releaseDate,
 		EditionFormat: "Audiobook",
 		EditionInfo:   "Imported from Audiobookshelf",
-		
+
 		// User notes
-		UserNotes:    strings.TrimSpace(userNotes),
+		UserNotes: strings.TrimSpace(userNotes),
 	}
 
 	return edition, nil
@@ -350,7 +350,7 @@ type BookMismatch struct {
 	AuthorIDs   []int  `json:"author_ids,omitempty"`
 	Narrator    string `json:"narrator,omitempty"`
 	NarratorIDs []int  `json:"narrator_ids,omitempty"`
-	
+
 	// Identifiers
 	ASIN      string `json:"asin,omitempty"`
 	ISBN      string `json:"isbn,omitempty"`
@@ -358,22 +358,22 @@ type BookMismatch struct {
 	ISBN13    string `json:"isbn_13,omitempty"`
 	LibraryID string `json:"library_id,omitempty"`
 	FolderID  string `json:"folder_id,omitempty"`
-	
+
 	// Metadata
 	ReleaseDate     string `json:"release_date,omitempty"`
 	PublishedYear   string `json:"published_year,omitempty"`
 	DurationSeconds int    `json:"duration_seconds"`
 	CoverURL        string `json:"cover_url,omitempty"`
 	ImageURL        string `json:"image_url,omitempty"`
-	
+
 	// Hardcover-specific fields
-	EditionFormat   string `json:"edition_format,omitempty"`
-	EditionInfo     string `json:"edition_information,omitempty"`
-	LanguageID      int    `json:"language_id,omitempty"`
-	CountryID       int    `json:"country_id,omitempty"`
-	PublisherID     int    `json:"publisher_id,omitempty"`
-	Publisher       string `json:"publisher,omitempty"`
-	
+	EditionFormat string `json:"edition_format,omitempty"`
+	EditionInfo   string `json:"edition_information,omitempty"`
+	LanguageID    int    `json:"language_id,omitempty"`
+	CountryID     int    `json:"country_id,omitempty"`
+	PublisherID   int    `json:"publisher_id,omitempty"`
+	Publisher     string `json:"publisher,omitempty"`
+
 	// Tracking
 	Reason    string    `json:"reason"`
 	Timestamp int64     `json:"timestamp"`
@@ -385,41 +385,41 @@ type BookMismatch struct {
 // but provide context about the book and the export process
 type EditionExportInfo struct {
 	// Original author/narrator/publisher names (from source)
-	AuthorName     string `json:"author,omitempty"`
-	NarratorName   string `json:"narrator,omitempty"`
-	PublisherName  string `json:"publisher,omitempty"`
-	
+	AuthorName    string `json:"author,omitempty"`
+	NarratorName  string `json:"narrator,omitempty"`
+	PublisherName string `json:"publisher,omitempty"`
+
 	// Additional metadata from source
-	PublishedYear  string `json:"published_year,omitempty"`
-	CoverURL       string `json:"cover_url,omitempty"`
-	
+	PublishedYear string `json:"published_year,omitempty"`
+	CoverURL      string `json:"cover_url,omitempty"`
+
 	// Export process metadata
-	Timestamp      int64  `json:"timestamp,omitempty"`
-	CreatedAt      string `json:"created_at,omitempty"`
-	Reason         string `json:"reason,omitempty"`
-	Attempts       int    `json:"attempts,omitempty"`
+	Timestamp int64  `json:"timestamp,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	Attempts  int    `json:"attempts,omitempty"`
 }
 
 // EditionExport represents the format expected by the Hardcover edition import tool
 type EditionExport struct {
 	// Core book information (used for import)
-	BookID         int     `json:"book_id"`
-	Title          string  `json:"title"`
-	Subtitle       string  `json:"subtitle"`
-	ImageURL       string  `json:"image_url"`
-	ASIN           string  `json:"asin"`
-	ISBN10         string  `json:"isbn_10"`
-	ISBN13         string  `json:"isbn_13"`
-	AuthorIDs      []int   `json:"author_ids"`
-	NarratorIDs    []int   `json:"narrator_ids"`
-	PublisherID    int     `json:"publisher_id"`
-	ReleaseDate    string  `json:"release_date"`
-	AudioSeconds   int     `json:"audio_seconds"`
-	EditionFormat  string  `json:"edition_format"`
-	EditionInfo    string  `json:"edition_information"`
-	LanguageID     int     `json:"language_id"`
-	CountryID      int     `json:"country_id"`
+	BookID        int    `json:"book_id"`
+	Title         string `json:"title"`
+	Subtitle      string `json:"subtitle"`
+	ImageURL      string `json:"image_url"`
+	ASIN          string `json:"asin"`
+	ISBN10        string `json:"isbn_10"`
+	ISBN13        string `json:"isbn_13"`
+	AuthorIDs     []int  `json:"author_ids"`
+	NarratorIDs   []int  `json:"narrator_ids"`
+	PublisherID   int    `json:"publisher_id"`
+	ReleaseDate   string `json:"release_date"`
+	AudioSeconds  int    `json:"audio_seconds"`
+	EditionFormat string `json:"edition_format"`
+	EditionInfo   string `json:"edition_information"`
+	LanguageID    int    `json:"language_id"`
+	CountryID     int    `json:"country_id"`
 
 	// Additional informational fields (not used during import)
-	Info           *EditionExportInfo `json:"info,omitempty"`
+	Info *EditionExportInfo `json:"info,omitempty"`
 }

@@ -22,10 +22,10 @@ import (
 func newTestContext(t *testing.T) context.Context {
 	// Reset the global logger for testing
 	logger.ResetForTesting()
-	
+
 	// Create a buffer to capture log output
 	var buf bytes.Buffer
-	
+
 	// Setup the logger with test configuration
 	logger.Setup(logger.Config{
 		Level:      "debug",
@@ -33,7 +33,7 @@ func newTestContext(t *testing.T) context.Context {
 		Output:     &buf,
 		TimeFormat: time.RFC3339,
 	})
-	
+
 	// Return a context with the logger
 	return logger.NewContext(context.Background(), logger.Get())
 }
@@ -62,7 +62,7 @@ func newTestConfig(mismatchDir string) *config.Config {
 			TestBookLimit:   0,
 		},
 		Paths: struct {
-			CacheDir string `yaml:"cache_dir" env:"CACHE_DIR"`
+			CacheDir          string `yaml:"cache_dir" env:"CACHE_DIR"`
 			MismatchOutputDir string `yaml:"mismatch_output_dir" env:"MISMATCH_OUTPUT_DIR"`
 		}{
 			MismatchOutputDir: mismatchDir,
@@ -92,15 +92,15 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 				CreatedAt:       time.Now(),
 			},
 			expected: EditionExport{
-				BookID:         123, // Parsed from BookID
-				Title:          "Test Book",
-				AuthorIDs:      []int{}, // Empty slice when no authors found
-				AudioSeconds:   19800,
-				EditionFormat:  "Audiobook",
-				EditionInfo:    "Imported from Audiobookshelf\n\nReason: test reason.",
-				LanguageID:     1, // Default to English
-				CountryID:      1, // Default to US
-				PublisherID:    1, // Default publisher
+				BookID:        123, // Parsed from BookID
+				Title:         "Test Book",
+				AuthorIDs:     []int{}, // Empty slice when no authors found
+				AudioSeconds:  19800,
+				EditionFormat: "Audiobook",
+				EditionInfo:   "Imported from Audiobookshelf\n\nReason: test reason.",
+				LanguageID:    1, // Default to English
+				CountryID:     1, // Default to US
+				PublisherID:   1, // Default publisher
 			},
 		},
 		{
@@ -130,22 +130,22 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 				CreatedAt:       time.Now(),
 			},
 			expected: EditionExport{
-				BookID:         456, // Parsed from BookID
-				Title:          "Test Book",
-				Subtitle:       "Test Subtitle",
-				ImageURL:       "https://example.com/image.jpg",
-				ASIN:           "B07GNTNXQW",
-				ISBN10:         "1234567890",
-				ISBN13:         "9781234567890",
-				AuthorIDs:      []int{},  // Empty slice when no authors found
-				NarratorIDs:    []int{},  // Empty slice when no narrators found
-				PublisherID:    2,
-				ReleaseDate:    "2020-01-01",
-				AudioSeconds:   37800,
-				EditionFormat:  "Audiobook",
-				EditionInfo:    "Imported from Audiobookshelf\n\nReason: test reason\n\nSpecial Edition.",
-				LanguageID:     1,
-				CountryID:      1,
+				BookID:        456, // Parsed from BookID
+				Title:         "Test Book",
+				Subtitle:      "Test Subtitle",
+				ImageURL:      "https://example.com/image.jpg",
+				ASIN:          "B07GNTNXQW",
+				ISBN10:        "1234567890",
+				ISBN13:        "9781234567890",
+				AuthorIDs:     []int{}, // Empty slice when no authors found
+				NarratorIDs:   []int{}, // Empty slice when no narrators found
+				PublisherID:   2,
+				ReleaseDate:   "2020-01-01",
+				AudioSeconds:  37800,
+				EditionFormat: "Audiobook",
+				EditionInfo:   "Imported from Audiobookshelf\n\nReason: test reason\n\nSpecial Edition.",
+				LanguageID:    1,
+				CountryID:     1,
 			},
 		},
 	}
@@ -153,7 +153,7 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := tt.book.ToEditionExport(ctx, tt.hc)
-			
+
 			// Check all fields that should be directly copied
 			assert.Equal(t, tt.expected.BookID, result.BookID)
 			assert.Equal(t, tt.expected.Title, result.Title)
@@ -268,14 +268,14 @@ func TestBookMismatchToEditionInput(t *testing.T) {
 				CreatedAt:       time.Now(),
 			},
 			expected: EditionCreatorInput{
-				Title:          "Test Book",
-				Subtitle:       "",
-				ASIN:           "",
-				ISBN10:         "",
-				ISBN13:         "",
-				AudioLength:    19800,
-				EditionFormat:  "Audiobook",
-				ImageURL:       "",
+				Title:         "Test Book",
+				Subtitle:      "",
+				ASIN:          "",
+				ISBN10:        "",
+				ISBN13:        "",
+				AudioLength:   19800,
+				EditionFormat: "Audiobook",
+				ImageURL:      "",
 			},
 			err: false,
 		},
@@ -306,14 +306,14 @@ func TestBookMismatchToEditionInput(t *testing.T) {
 				CreatedAt:       time.Now(),
 			},
 			expected: EditionCreatorInput{
-				Title:          "Test Book",
-				Subtitle:       "Test Subtitle",
-				ASIN:           "B07GNTNXQW",
-				ISBN10:         "1234567890",
-				ISBN13:         "9781234567890",
-				AudioLength:    37800,
-				EditionFormat:  "Audiobook",
-				ImageURL:       "https://example.com/image.jpg",
+				Title:         "Test Book",
+				Subtitle:      "Test Subtitle",
+				ASIN:          "B07GNTNXQW",
+				ISBN10:        "1234567890",
+				ISBN13:        "9781234567890",
+				AudioLength:   37800,
+				EditionFormat: "Audiobook",
+				ImageURL:      "https://example.com/image.jpg",
 			},
 			err: false,
 		},
@@ -376,28 +376,28 @@ func TestSaveMismatchesJSONFileIndividual(t *testing.T) {
 	now := time.Now()
 	mismatches := []BookMismatch{
 		{
-			BookID:     "test-book-1",
-			Title:      "Test Book 1",
-			Author:     "Author 1",
-			AuthorIDs:  []int{}, // Initialize empty slice
-			ISBN:       "1234567890",
-			ISBN10:     "1234567890", // Set ISBN10 explicitly
-			ISBN13:     "",
-			Reason:     "test reason 1",
-			Timestamp:  now.Unix(),
-			CreatedAt:  now,
+			BookID:    "test-book-1",
+			Title:     "Test Book 1",
+			Author:    "Author 1",
+			AuthorIDs: []int{}, // Initialize empty slice
+			ISBN:      "1234567890",
+			ISBN10:    "1234567890", // Set ISBN10 explicitly
+			ISBN13:    "",
+			Reason:    "test reason 1",
+			Timestamp: now.Unix(),
+			CreatedAt: now,
 		},
 		{
-			BookID:     "test-book-2",
-			Title:      "Test Book 2",
-			Author:     "Author 2",
-			AuthorIDs:  []int{}, // Initialize empty slice
-			ISBN:       "0987654321",
-			ISBN10:     "0987654321", // Set ISBN10 explicitly
-			ISBN13:     "",
-			Reason:     "test reason 2",
-			Timestamp:  now.Add(-time.Hour).Unix(),
-			CreatedAt:  now.Add(-time.Hour),
+			BookID:    "test-book-2",
+			Title:     "Test Book 2",
+			Author:    "Author 2",
+			AuthorIDs: []int{}, // Initialize empty slice
+			ISBN:      "0987654321",
+			ISBN10:    "0987654321", // Set ISBN10 explicitly
+			ISBN13:    "",
+			Reason:    "test reason 2",
+			Timestamp: now.Add(-time.Hour).Unix(),
+			CreatedAt: now.Add(-time.Hour),
 		},
 	}
 
@@ -447,12 +447,12 @@ func TestSaveMismatchesJSONFileIndividual(t *testing.T) {
 
 		// Create a map to store the expected values from our test data
 		expected := mismatches[i]
-		
+
 		// Verify the fields we care about in the saved JSON
 		if title, ok := result["title"].(string); ok && title != expected.Title {
 			t.Errorf("Mismatch in file %s: Title got %q, want %q", filePath, title, expected.Title)
 		}
-		
+
 		// Verify author_ids exists and is an empty array
 		authorIDs, ok := result["author_ids"].([]interface{})
 		if !ok {
@@ -486,17 +486,17 @@ func TestSaveMismatchesJSONFileIndividual(t *testing.T) {
 		} else if isbn13 != expectedISBN13 {
 			t.Errorf("Expected isbn_13 to be %q, got %q in file %s", expectedISBN13, isbn13, filePath)
 		}
-		
+
 		// Check the edition_information field for the reason
 		if editionInfo, ok := result["edition_information"].(string); ok && expected.Reason != "" {
 			if !strings.Contains(editionInfo, expected.Reason) {
-				t.Errorf("Mismatch in file %s: edition_information should contain reason %q but got %q", 
+				t.Errorf("Mismatch in file %s: edition_information should contain reason %q but got %q",
 					filePath, expected.Reason, editionInfo)
 			}
 		} else if expected.Reason != "" {
 			t.Errorf("Missing edition_information in file %s, expected to contain reason: %s", filePath, expected.Reason)
 		}
-		
+
 		// Verify the book_id matches the expected BookID if it's numeric
 		if expected.BookID != "" {
 			if id, err := strconv.Atoi(expected.BookID); err == nil {

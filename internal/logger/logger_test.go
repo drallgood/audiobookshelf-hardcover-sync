@@ -37,7 +37,7 @@ func TestSetup(t *testing.T) {
 			var buf bytes.Buffer
 
 			// Debug: Print the test case info
-			t.Logf("Running test case: %s, level: %s, expected: %v (%d)", 
+			t.Logf("Running test case: %s, level: %s, expected: %v (%d)",
 				tt.name, tt.level, tt.expected, tt.expected)
 
 			// Setup logger with test config
@@ -49,7 +49,6 @@ func TestSetup(t *testing.T) {
 
 			Setup(config)
 
-
 			// Get the logger and verify its level
 			logger := Get()
 			assert.NotNil(t, logger, "Get() returned nil logger")
@@ -59,9 +58,9 @@ func TestSetup(t *testing.T) {
 
 			// Debug logging to help diagnose the issue
 			actualLevel := logger.GetLevel()
-			t.Logf("Test case: %s, Expected level: %v (%d), Actual level: %v (%d)", 
+			t.Logf("Test case: %s, Expected level: %v (%d), Actual level: %v (%d)",
 				tt.name, tt.expected, tt.expected, actualLevel, actualLevel)
-			
+
 			// Verify the level
 			if !assert.Equal(t, tt.expected, actualLevel, "logger level does not match expected") {
 				t.Logf("Logger output: %s", buf.String())
@@ -74,7 +73,7 @@ func TestSetup(t *testing.T) {
 func TestHTTPMiddleware(t *testing.T) {
 	// Create a buffer to capture log output
 	var buf bytes.Buffer
-	
+
 	// Reset global logger with our test buffer
 	globalLogger = &Logger{
 		Logger: zerolog.New(&buf).With().Timestamp().Logger(),

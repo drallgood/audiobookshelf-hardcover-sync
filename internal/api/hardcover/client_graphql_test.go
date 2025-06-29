@@ -70,19 +70,19 @@ func TestGraphQLQuery_BookByASIN(t *testing.T) {
 	// Define the response structure
 	type BookEdition struct {
 		ID              int     `json:"id"`
-		ASIN           *string `json:"asin"`
-		ISBN13         *string `json:"isbn_13"`
-		ISBN10         *string `json:"isbn_10"`
+		ASIN            *string `json:"asin"`
+		ISBN13          *string `json:"isbn_13"`
+		ISBN10          *string `json:"isbn_10"`
 		ReadingFormatID int     `json:"reading_format_id"`
 		AudioSeconds    *int    `json:"audio_seconds"`
 	}
 
 	type Book struct {
-		ID            int            `json:"id"`
-		Title         string         `json:"title"`
-		BookStatusID  int            `json:"book_status_id"`
-		CanonicalID   int            `json:"canonical_id"`
-		Editions      []BookEdition  `json:"editions"`
+		ID           int           `json:"id"`
+		Title        string        `json:"title"`
+		BookStatusID int           `json:"book_status_id"`
+		CanonicalID  int           `json:"canonical_id"`
+		Editions     []BookEdition `json:"editions"`
 	}
 
 	type ResponseData struct {
@@ -106,7 +106,7 @@ func TestGraphQLQuery_BookByASIN(t *testing.T) {
 	book := response.Data.Books[0]
 	assert.NotEmpty(t, book.Title, "Book title should not be empty")
 	assert.NotEmpty(t, book.Editions, "Book should have at least one edition")
-	
+
 	edition := book.Editions[0]
 	assert.Equal(t, 2, edition.ReadingFormatID, "Reading format ID should be 2 (audiobook)")
 	assert.Equal(t, "B00I8OW9R2", *edition.ASIN, "ASIN should match the query parameter")

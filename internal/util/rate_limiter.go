@@ -46,21 +46,21 @@ var (
 
 // RateLimiter implements a token bucket rate limiter with dynamic rate adjustment
 type RateLimiter struct {
-	mu              sync.RWMutex
-	last            time.Time
-	rate            time.Duration
-	minRate         time.Duration
-	maxRate         time.Duration
-	tokens          int
-	maxTokens       int
-	lastRateDrop    time.Time
-	backoffUntil    time.Time
-	backoffFactor   float64
-	jitterFactor    float64
-	concurrentReqs  int32
-	maxConcurrent   int32
-	metrics         Metrics
-	logger          *logger.Logger
+	mu             sync.RWMutex
+	last           time.Time
+	rate           time.Duration
+	minRate        time.Duration
+	maxRate        time.Duration
+	tokens         int
+	maxTokens      int
+	lastRateDrop   time.Time
+	backoffUntil   time.Time
+	backoffFactor  float64
+	jitterFactor   float64
+	concurrentReqs int32
+	maxConcurrent  int32
+	metrics        Metrics
+	logger         *logger.Logger
 }
 
 // NewRateLimiter creates a new RateLimiter with the specified rate and burst size
@@ -87,24 +87,24 @@ func NewRateLimiter(rate time.Duration, burst, maxConcurrent int, log *logger.Lo
 
 	// Log rate limiter initialization
 	log.Info("Initializing rate limiter", map[string]interface{}{
-		"component":    "rate_limiter",
-		"rate":         rate.String(),
-		"burst":        burst,
+		"component":     "rate_limiter",
+		"rate":          rate.String(),
+		"burst":         burst,
 		"maxConcurrent": maxConcurrent,
 	})
 
 	return &RateLimiter{
-		last:           time.Now(),
-		rate:           rate,
-		minRate:        rate,
-		maxRate:        10 * time.Minute, // Maximum time between requests (increased from 10s to 10m)
-		tokens:         burst,
-		maxTokens:      burst,
-		lastRateDrop:   time.Now(),
-		backoffFactor:  DefaultBackoffFactor,
-		jitterFactor:   DefaultJitterFactor,
-		maxConcurrent:  int32(maxConcurrent),
-		logger:         log,
+		last:          time.Now(),
+		rate:          rate,
+		minRate:       rate,
+		maxRate:       10 * time.Minute, // Maximum time between requests (increased from 10s to 10m)
+		tokens:        burst,
+		maxTokens:     burst,
+		lastRateDrop:  time.Now(),
+		backoffFactor: DefaultBackoffFactor,
+		jitterFactor:  DefaultJitterFactor,
+		maxConcurrent: int32(maxConcurrent),
+		logger:        log,
 	}
 }
 
@@ -115,14 +115,14 @@ func (r *RateLimiter) Wait(ctx context.Context) error {
 	if backoffRemaining := r.checkBackoff(); backoffRemaining > 0 {
 		r.logger.Debug("Rate limited: in backoff period", map[string]interface{}{
 			"backoff_remaining": backoffRemaining.String(),
-			"backoff_until":    time.Until(r.backoffUntil).String(),
+			"backoff_until":     time.Until(r.backoffUntil).String(),
 		})
 
 		// If we have a context with timeout, check if we can wait that long
 		if deadline, hasDeadline := ctx.Deadline(); hasDeadline {
 			if time.Until(deadline) < backoffRemaining {
 				r.logger.Debug("Context deadline too soon for backoff, failing", map[string]interface{}{
-					"deadline_in":        time.Until(deadline).String(),
+					"deadline_in":       time.Until(deadline).String(),
 					"backoff_remaining": backoffRemaining.String(),
 				})
 				return ctx.Err()
@@ -347,7 +347,7 @@ func (r *RateLimiter) checkBackoff() time.Duration {
 
 // calculateJitter calculates a jitter duration based on the current rate
 func (r *RateLimiter) calculateJitter() time.Duration {
-	return time.Duration((rand.Float64()*2-1) * float64(r.rate) * r.jitterFactor)
+	return time.Duration((rand.Float64()*2 - 1) * float64(r.rate) * r.jitterFactor)
 }
 
 // ensureRateLimit adjusts the rate limiter to respect the given reset duration
@@ -438,7 +438,7 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 	// Log the rate limit headers if any were found
 	if len(headers) > 0 {
 		r.logger.Debug("Processing rate limit headers", map[string]interface{}{
-			"component": "rate_limiter",
+			"component":          "rate_limiter",
 			"rate_limit_headers": headers,
 		})
 	}
@@ -497,9 +497,9 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 				// If we're below 20% of our rate limit, start being more conservative
 				if remainingPct < 20.0 {
 					r.logger.Warn("Approaching rate limit, being more conservative", map[string]interface{}{
-						"component":    "rate_limiter",
-						"remaining":    remaining,
-						"limit":        limit,
+						"component":     "rate_limiter",
+						"remaining":     remaining,
+						"limit":         limit,
 						"remaining_pct": remainingPct,
 					})
 
@@ -555,9 +555,9 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 			if resetTime.After(now) {
 				resetDuration := resetTime.Sub(now)
 				r.logger.Info("Rate limit will reset, scheduling next request", map[string]interface{}{
-					"component": "rate_limiter",
+					"component":  "rate_limiter",
 					"reset_time": resetTime.Format(time.RFC3339),
-					"reset_in":  resetDuration.String(),
+					"reset_in":   resetDuration.String(),
 				})
 				// Don't back off, but ensure we don't exceed the rate limit
 				r.ensureRateLimit(resetDuration)

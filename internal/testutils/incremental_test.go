@@ -250,7 +250,7 @@ func TestTimestampThreshold(t *testing.T) {
 				minExpected := tt.expected - 100
 				maxExpected := tt.expected + 100
 				if threshold < minExpected || threshold > maxExpected {
-					t.Errorf("Expected threshold between %d and %d, got %d", 
+					t.Errorf("Expected threshold between %d and %d, got %d",
 						minExpected, maxExpected, threshold)
 				}
 			}

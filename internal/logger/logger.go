@@ -110,13 +110,13 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 
 		// Log the request with all details
 		l.Info("HTTP request", map[string]interface{}{
-			"method":    r.Method,
-			"path":      r.URL.Path,
-			"query":     r.URL.RawQuery,
-			"ip":        ip,
+			"method":     r.Method,
+			"path":       r.URL.Path,
+			"query":      r.URL.RawQuery,
+			"ip":         ip,
 			"user_agent": r.UserAgent(),
-			"status":    rww.status,
-			"duration":  duration.String(),
+			"status":     rww.status,
+			"duration":   duration.String(),
 		})
 	})
 }
@@ -198,7 +198,7 @@ func Setup(cfg Config) {
 
 		// Configure the logger with the specified level and timestamp
 		logger = logger.Level(level).With().Timestamp().Logger()
-		
+
 		// Set the global log level to ensure consistency
 		zerolog.SetGlobalLevel(level)
 

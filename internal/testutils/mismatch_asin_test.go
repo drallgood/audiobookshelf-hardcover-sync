@@ -10,7 +10,7 @@ func TestMismatchASINReferenceIntegration(t *testing.T) {
 	t.Skip("Skipping TestMismatchASINReferenceIntegration as it's a test utility and not critical for main functionality")
 	// Save original environment variables
 	originalDryRun := os.Getenv("DRY_RUN")
-	
+
 	// Restore environment variables after test
 	defer func() {
 		os.Setenv("DRY_RUN", originalDryRun)
@@ -72,7 +72,7 @@ func TestMismatchASINReferenceIntegration(t *testing.T) {
 				if editionInput.ASIN == "" {
 					t.Error("Expected ASIN to be preserved")
 				}
-				
+
 				// Check if ASIN reference info was added to EditionInfo
 				if tt.asin != "" && !contains(editionInput.EditionInfo, "ASIN:") {
 					t.Logf("EditionInfo: %s", editionInput.EditionInfo)
@@ -100,11 +100,11 @@ func TestMismatchASINReferenceIntegration(t *testing.T) {
 
 // Helper function to check if a string contains a substring
 func contains(str, substr string) bool {
-	return len(str) >= len(substr) && (str == substr || 
-		(len(str) > len(substr) && 
-			(str[:len(substr)] == substr || 
-			 str[len(str)-len(substr):] == substr ||
-			 containsInMiddle(str, substr))))
+	return len(str) >= len(substr) && (str == substr ||
+		(len(str) > len(substr) &&
+			(str[:len(substr)] == substr ||
+				str[len(str)-len(substr):] == substr ||
+				containsInMiddle(str, substr))))
 }
 
 func containsInMiddle(str, substr string) bool {

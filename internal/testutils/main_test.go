@@ -15,7 +15,7 @@ func TestFetchAudiobookShelfStats_NoEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	
+
 	// Verify the default stats are returned
 	if stats["libraries"] != 1 || stats["books"] != 10 || stats["authors"] != 5 {
 		t.Errorf("unexpected stats returned: %v", stats)
@@ -40,12 +40,12 @@ func TestFetchAudiobookShelfStats_MultipleLibrariesAndItems(t *testing.T) {
 	// This test is no longer applicable since fetchAudiobookShelfStats is a stub
 	// that doesn't make HTTP requests
 	// Keeping the test as a placeholder that verifies the stub implementation
-	
+
 	stats, err := fetchAudiobookShelfStats()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	
+
 	// Verify the default stats are returned
 	if stats["libraries"] != 1 || stats["books"] != 10 || stats["authors"] != 5 {
 		t.Errorf("unexpected stats returned: %v", stats)
@@ -82,7 +82,7 @@ func TestFetchLibraries_MalformedJSON(t *testing.T) {
 	// This test is no longer applicable since fetchLibraries is a stub
 	// that doesn't make HTTP requests or parse JSON
 	// Keeping the test as a placeholder that verifies the stub implementation
-	
+
 	libraries, err := fetchLibraries()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -108,7 +108,7 @@ func TestSyncToHardcover_NotFinished(t *testing.T) {
 
 	// Convert book to a slice of interfaces as expected by syncToHardcover
 	items := []interface{}{book}
-	
+
 	// Expect an error because the dummy token will fail the API call
 	err := syncToHardcover(items)
 	if err == nil {
@@ -130,7 +130,7 @@ func TestSyncToHardcover_Finished_NoToken(t *testing.T) {
 
 	// Convert book to a slice of interfaces as expected by syncToHardcover
 	items := []interface{}{book}
-	
+
 	err := syncToHardcover(items)
 	if err == nil {
 		t.Error("expected error when HARDCOVER_TOKEN is missing, got nil")
@@ -196,7 +196,7 @@ func TestFetchUserProgress_ListeningSessions(t *testing.T) {
 	// This test is no longer applicable since fetchUserProgress is a stub
 	// that doesn't make HTTP requests
 	// Keeping the test as a placeholder that verifies the stub implementation
-	
+
 	// Call the function
 	progress, err := fetchUserProgress()
 	if err != nil {
@@ -211,7 +211,7 @@ func TestFetchUserProgress_ListeningSessions(t *testing.T) {
 	// Test with error case - should still return empty slice without error
 	os.Setenv("AUDIOBOOKSHELF_URL", "")
 	os.Setenv("AUDIOBOOKSHELF_TOKEN", "")
-	
+
 	progress, err = fetchUserProgress()
 	if err != nil {
 		t.Fatalf("fetchUserProgress() with empty config should not return error, got %v", err)
@@ -225,7 +225,7 @@ func TestFetchUserProgress_MediaProgress(t *testing.T) {
 	// This test is no longer applicable since fetchUserProgress is a stub
 	// that doesn't make HTTP requests
 	// Keeping the test as a placeholder that verifies the stub implementation
-	
+
 	// Call the function
 	progress, err := fetchUserProgress()
 	if err != nil {
@@ -240,7 +240,7 @@ func TestFetchUserProgress_MediaProgress(t *testing.T) {
 	// Test with error case - should still return empty slice without error
 	os.Setenv("AUDIOBOOKSHELF_URL", "")
 	os.Setenv("AUDIOBOOKSHELF_TOKEN", "")
-	
+
 	progress, err = fetchUserProgress()
 	if err != nil {
 		t.Fatalf("fetchUserProgress() with empty config should not return error, got %v", err)
@@ -254,7 +254,7 @@ func TestIntegration_ManuallyFinishedBooks(t *testing.T) {
 	// This test is no longer applicable since fetchLibraryItems is a stub
 	// that doesn't make HTTP requests or integrate with /api/me
 	// Keeping the test as a placeholder that verifies the stub implementation
-	
+
 	// Call the function
 	items, err := fetchLibraryItems("lib_test123")
 	if err != nil {
@@ -269,7 +269,7 @@ func TestIntegration_ManuallyFinishedBooks(t *testing.T) {
 	// Test with error case - should still return empty slice without error
 	os.Setenv("AUDIOBOOKSHELF_URL", "")
 	os.Setenv("AUDIOBOOKSHELF_TOKEN", "")
-	
+
 	items, err = fetchLibraryItems("lib_test123")
 	if err != nil {
 		t.Fatalf("fetchLibraryItems() with empty config should not return error, got %v", err)
@@ -283,7 +283,7 @@ func TestCheckExistingUserBook_NoBook(t *testing.T) {
 	// This test is no longer applicable since checkExistingUserBook is a stub
 	// that doesn't make HTTP requests
 	// Keeping the test as a placeholder that verifies the stub implementation
-	
+
 	// Call the function
 	exists, err := checkExistingUserBook("test-user-id", "test-book-id")
 
@@ -306,27 +306,27 @@ func TestSyncToHardcover_ConditionalSync(t *testing.T) {
 	// This test is no longer applicable since syncToHardcover is a stub
 	// that doesn't make HTTP requests
 	// Keeping the test as a placeholder that verifies the stub implementation
-	
+
 	// Call the function with empty items
 	err := syncToHardcover([]interface{}{})
-	
+
 	// Verify results - stub should return nil error
 	if err != nil {
 		t.Fatalf("syncToHardcover() error = %v", err)
 	}
-	
+
 	// Test with a finished book (progress = 1.0)
 	err = syncToHardcover([]interface{}{
 		Audiobook{
 			ID:            "test-id",
 			Title:         "Test Book",
 			Author:        "Test Author",
-			Progress:       1.0,  // Changed from 0.5 to 1.0 to match syncToHardcover's expectations
-			CurrentTime:    3600, // Matches TotalDuration for a finished book
+			Progress:      1.0,  // Changed from 0.5 to 1.0 to match syncToHardcover's expectations
+			CurrentTime:   3600, // Matches TotalDuration for a finished book
 			TotalDuration: 3600,
 		},
 	})
-	
+
 	// Verify results - stub should still return nil error
 	if err != nil {
 		t.Fatalf("syncToHardcover() with items error = %v", err)
@@ -512,7 +512,7 @@ func TestUploadImageToHardcover_DryRun(t *testing.T) {
 	if err != nil {
 		t.Errorf("Expected no error from stub implementation, got: %v", err)
 	}
-	
+
 	// Should still return the fake ID
 	if id != 999999 {
 		t.Errorf("Expected fake ID 999999, got: %d", id)

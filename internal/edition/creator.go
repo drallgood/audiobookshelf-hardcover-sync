@@ -20,23 +20,23 @@ import (
 
 // EditionInput represents the input data for creating or updating an edition
 type EditionInput struct {
-	BookID        int      `json:"book_id"`
-	Title         string   `json:"title"`
-	Subtitle      string   `json:"subtitle,omitempty"`
-	ImageURL      string   `json:"image_url,omitempty"`
-	ISBN10        string   `json:"isbn10,omitempty"`
-	ISBN13        string   `json:"isbn13,omitempty"`
-	ASIN          string   `json:"asin,omitempty"`
-	PublishedDate string   `json:"published_date,omitempty"`
-	PublisherID   int      `json:"publisher_id,omitempty"`
-	LanguageID    int      `json:"language_id,omitempty"`
-	CountryID     int      `json:"country_id,omitempty"`
-	AuthorIDs     []int    `json:"author_ids,omitempty"`
-	NarratorIDs   []int    `json:"narrator_ids,omitempty"`
-	AudioLength   int      `json:"audio_seconds,omitempty"`
-	ReleaseDate   string   `json:"release_date,omitempty"`
-	EditionInfo   string   `json:"edition_information,omitempty"`
-	EditionFormat string   `json:"edition_format,omitempty"`
+	BookID        int    `json:"book_id"`
+	Title         string `json:"title"`
+	Subtitle      string `json:"subtitle,omitempty"`
+	ImageURL      string `json:"image_url,omitempty"`
+	ISBN10        string `json:"isbn10,omitempty"`
+	ISBN13        string `json:"isbn13,omitempty"`
+	ASIN          string `json:"asin,omitempty"`
+	PublishedDate string `json:"published_date,omitempty"`
+	PublisherID   int    `json:"publisher_id,omitempty"`
+	LanguageID    int    `json:"language_id,omitempty"`
+	CountryID     int    `json:"country_id,omitempty"`
+	AuthorIDs     []int  `json:"author_ids,omitempty"`
+	NarratorIDs   []int  `json:"narrator_ids,omitempty"`
+	AudioLength   int    `json:"audio_seconds,omitempty"`
+	ReleaseDate   string `json:"release_date,omitempty"`
+	EditionInfo   string `json:"edition_information,omitempty"`
+	EditionFormat string `json:"edition_format,omitempty"`
 }
 
 // EditionResult represents the result of an edition creation or update
@@ -48,13 +48,14 @@ type EditionResult struct {
 
 // GoogleUploadInfo contains the signed upload credentials for Google Cloud Storage
 type GoogleUploadInfo struct {
-	URL     string            `json:"url"`     // The base upload URL (e.g., https://storage.googleapis.com/hardcover/)
-	Fields  map[string]string `json:"fields"`  // The signed form fields
-	FileURL string            `json:"-"`       // The final public URL where the file will be accessible (not part of JSON)
+	URL     string            `json:"url"`    // The base upload URL (e.g., https://storage.googleapis.com/hardcover/)
+	Fields  map[string]string `json:"fields"` // The signed form fields
+	FileURL string            `json:"-"`      // The final public URL where the file will be accessible (not part of JSON)
 }
 
 // HardcoverClient defines the interface for the Hardcover client
 // that is used by the Creator
+//
 //go:generate mockery --name=HardcoverClient --output=../mocks --case=underscore --with-expecter=true
 type HardcoverClient interface {
 	// GetEdition gets an edition by ID
@@ -75,11 +76,11 @@ type HardcoverClient interface {
 
 // Creator handles the creation of audiobook editions in Hardcover
 type Creator struct {
-	client             HardcoverClient
-	log               *logger.Logger
-	dryRun            bool
-	audiobookshelfToken string // Token for authenticating with Audiobookshelf
-	httpClient        *http.Client // Custom HTTP client for testing
+	client              HardcoverClient
+	log                 *logger.Logger
+	dryRun              bool
+	audiobookshelfToken string       // Token for authenticating with Audiobookshelf
+	httpClient          *http.Client // Custom HTTP client for testing
 }
 
 // NewCreator creates a new instance of the edition creator
@@ -90,14 +91,14 @@ func NewCreator(client HardcoverClient, log *logger.Logger, dryRun bool, audiobo
 			InsecureSkipVerify: true, // Only for development, consider making this configurable
 		},
 		MaxIdleConns:           10,
-		MaxIdleConnsPerHost:     10,
-		IdleConnTimeout:         90 * time.Second,
-		TLSHandshakeTimeout:     10 * time.Second,
-		ResponseHeaderTimeout:   30 * time.Second,
-		ExpectContinueTimeout:   1 * time.Second,
-		DisableCompression:      false,
-		DisableKeepAlives:       false,
-		MaxResponseHeaderBytes:  10 * 1024 * 1024, // 10MB max header size
+		MaxIdleConnsPerHost:    10,
+		IdleConnTimeout:        90 * time.Second,
+		TLSHandshakeTimeout:    10 * time.Second,
+		ResponseHeaderTimeout:  30 * time.Second,
+		ExpectContinueTimeout:  1 * time.Second,
+		DisableCompression:     false,
+		DisableKeepAlives:      false,
+		MaxResponseHeaderBytes: 10 * 1024 * 1024, // 10MB max header size
 	}
 
 	httpClient := &http.Client{
@@ -115,11 +116,11 @@ func NewCreator(client HardcoverClient, log *logger.Logger, dryRun bool, audiobo
 	}
 
 	return &Creator{
-		client:             client,
-		log:               log,
-		dryRun:            dryRun,
+		client:              client,
+		log:                 log,
+		dryRun:              dryRun,
 		audiobookshelfToken: audiobookshelfToken,
-		httpClient:        httpClient,
+		httpClient:          httpClient,
 	}
 }
 
@@ -127,11 +128,11 @@ func NewCreator(client HardcoverClient, log *logger.Logger, dryRun bool, audiobo
 // This is primarily for testing purposes
 func NewCreatorWithHTTPClient(client HardcoverClient, log *logger.Logger, dryRun bool, audiobookshelfToken string, httpClient *http.Client) *Creator {
 	return &Creator{
-		client:             client,
-		log:               log,
-		dryRun:            dryRun,
+		client:              client,
+		log:                 log,
+		dryRun:              dryRun,
 		audiobookshelfToken: audiobookshelfToken,
-		httpClient:        httpClient,
+		httpClient:          httpClient,
 	}
 }
 
@@ -169,19 +170,19 @@ func (c *Creator) CreateEdition(ctx context.Context, input *EditionInput) (*Edit
 		// First upload the image to Google Cloud Storage
 		imageURL, uploadErr := c.uploadImageToGCS(ctx, editionID, input.ImageURL)
 		if uploadErr != nil {
-			c.log.Error("Failed to upload image to GCS, continuing without it", 
+			c.log.Error("Failed to upload image to GCS, continuing without it",
 				map[string]interface{}{"error": uploadErr.Error()})
 		} else {
 			// Then create the image record with the edition ID
 			imageID, err = c.CreateImageRecord(ctx, editionID, imageURL)
 			if err != nil {
-				c.log.Error("Failed to create image record, continuing without it", 
+				c.log.Error("Failed to create image record, continuing without it",
 					map[string]interface{}{"error": err.Error()})
 			} else {
 				// Finally, update the edition with the new image ID
 				updateErr := c.updateEditionImage(ctx, editionID, imageID)
 				if updateErr != nil {
-					c.log.Error("Failed to update edition with image ID, but continuing", 
+					c.log.Error("Failed to update edition with image ID, but continuing",
 						map[string]interface{}{"error": updateErr.Error()})
 				}
 			}
@@ -427,8 +428,8 @@ func (c *Creator) CreateImageRecord(ctx context.Context, editionID int, imageURL
 
 	// Debug log the response
 	c.log.Debug("GraphQL response", map[string]interface{}{
-		"edition_id":  editionID,
-		"response":    response,
+		"edition_id": editionID,
+		"response":   response,
 	})
 
 	// Get the image ID from the response
@@ -567,22 +568,22 @@ func (c *Creator) updateEditionImage(ctx context.Context, editionID, imageID int
 
 // CreateEditionInput represents the input for creating a new edition
 type CreateEditionInput struct {
-	BookID         int      `json:"bookId"`
-	Title          string   `json:"title"`
-	Subtitle       *string  `json:"subtitle,omitempty"`
-	ISBN10         *string  `json:"isbn10,omitempty"`
-	ISBN13         *string  `json:"isbn13,omitempty"`
-	ASIN           *string  `json:"asin,omitempty"`
-	AuthorIDs      []int    `json:"authorIds"`
-	NarratorIDs    []int    `json:"narratorIds,omitempty"`
-	PublisherID    *int     `json:"publisherId,omitempty"`
+	BookID          int      `json:"bookId"`
+	Title           string   `json:"title"`
+	Subtitle        *string  `json:"subtitle,omitempty"`
+	ISBN10          *string  `json:"isbn10,omitempty"`
+	ISBN13          *string  `json:"isbn13,omitempty"`
+	ASIN            *string  `json:"asin,omitempty"`
+	AuthorIDs       []int    `json:"authorIds"`
+	NarratorIDs     []int    `json:"narratorIds,omitempty"`
+	PublisherID     *int     `json:"publisherId,omitempty"`
 	PublicationDate *string  `json:"publicationDate,omitempty"`
-	EditionFormat  *string  `json:"editionFormat,omitempty"`
-	LanguageID     *int     `json:"languageId,omitempty"`
-	CountryID      *int     `json:"countryId,omitempty"`
-	ImageID        *int     `json:"imageId,omitempty"`
-	AudioLength    *int     `json:"audioLength,omitempty"`
-	Errors         []string `json:"errors,omitempty"`
+	EditionFormat   *string  `json:"editionFormat,omitempty"`
+	LanguageID      *int     `json:"languageId,omitempty"`
+	CountryID       *int     `json:"countryId,omitempty"`
+	ImageID         *int     `json:"imageId,omitempty"`
+	AudioLength     *int     `json:"audioLength,omitempty"`
+	Errors          []string `json:"errors,omitempty"`
 }
 
 // createEdition creates a new edition with the given metadata
@@ -713,7 +714,7 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 	}
 
 	c.log.Debug("Executing GraphQL mutation", map[string]interface{}{
-		"mutation": mutation,
+		"mutation":  mutation,
 		"variables": variables,
 	})
 
@@ -861,15 +862,15 @@ func (c *Creator) PrepopulateFromBook(ctx context.Context, bookID int) (*Edition
 
 	var response struct {
 		Book struct {
-			ID           int    `json:"id"`
-			Title        string `json:"title"`
-			Subtitle     string `json:"subtitle"`
+			ID            int    `json:"id"`
+			Title         string `json:"title"`
+			Subtitle      string `json:"subtitle"`
 			CoverImageURL string `json:"coverImageUrl"`
-			ISBN10       string `json:"isbn10"`
-			ISBN13       string `json:"isbn13"`
-			ASIN         string `json:"asin"`
+			ISBN10        string `json:"isbn10"`
+			ISBN13        string `json:"isbn13"`
+			ASIN          string `json:"asin"`
 			PublishedDate string `json:"publishedDate"`
-			Authors      []struct {
+			Authors       []struct {
 				ID   int    `json:"id"`
 				Name string `json:"name"`
 			} `json:"authors"`
@@ -950,7 +951,6 @@ func (c *Creator) PrepopulateFromBook(ctx context.Context, bookID int) (*Edition
 }
 
 // EditionInput represents the input data for creating a new edition
-
 
 // Validate validates the edition input
 func (e *EditionInput) Validate() error {

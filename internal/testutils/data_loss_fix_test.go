@@ -21,23 +21,23 @@ func TestDataLossFixImplementation(t *testing.T) {
 		if data.ID != 123 {
 			t.Errorf("Expected ID 123, got %d", data.ID)
 		}
-		
+
 		if data.ProgressSeconds == nil || *data.ProgressSeconds != 1800 {
 			t.Errorf("Expected ProgressSeconds 1800, got %v", data.ProgressSeconds)
 		}
-		
+
 		if data.StartedAt == nil || *data.StartedAt != "2025-06-12" {
 			t.Errorf("Expected StartedAt '2025-06-12', got %v", data.StartedAt)
 		}
-		
+
 		if data.FinishedAt == nil || *data.FinishedAt != "2025-06-12" {
 			t.Errorf("Expected FinishedAt '2025-06-12', got %v", data.FinishedAt)
 		}
-		
+
 		if data.EditionID == nil || *data.EditionID != 456 {
 			t.Errorf("Expected EditionID 456, got %v", data.EditionID)
 		}
-		
+
 		if data.ReadingFormatID == nil || *data.ReadingFormatID != 2 {
 			t.Errorf("Expected ReadingFormatID 2, got %v", data.ReadingFormatID)
 		}
@@ -49,10 +49,10 @@ func TestDataLossFixImplementation(t *testing.T) {
 		// This test verifies the function signature is correct
 		// In a real environment, this would query the GraphQL endpoint
 		// For now, we just verify the function exists with the correct signature
-		
+
 		// Function should exist and return (*ExistingUserBookReadData, error)
 		// This is verified at compile time
-		
+
 		t.Log("✅ checkExistingUserBookRead function signature updated to return comprehensive data")
 		t.Log("✅ Function now queries for edition_id and reading_format_id fields")
 		t.Log("✅ This prevents GraphQL from setting unmentioned fields to NULL")
@@ -108,10 +108,9 @@ func TestDataLossFixImplementation(t *testing.T) {
 		}
 
 		t.Log("✅ Update object preserves all existing fields to prevent GraphQL NULL overwrites")
-		t.Logf("✅ Update preserves: edition_id=%v, reading_format_id=%v, started_at=%v", 
-			updateObject["edition_id"], 
-			updateObject["reading_format_id"], 
+		t.Logf("✅ Update preserves: edition_id=%v, reading_format_id=%v, started_at=%v",
+			updateObject["edition_id"],
+			updateObject["reading_format_id"],
 			updateObject["started_at"])
 	})
 }
-

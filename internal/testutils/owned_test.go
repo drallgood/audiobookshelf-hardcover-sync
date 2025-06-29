@@ -21,8 +21,8 @@ func TestGetSyncOwned(t *testing.T) {
 		{"YES", "YES", true},
 		{"Yes", "Yes", true},
 		{"false", "false", false},
-		{"0", "0", false},  // '0' is explicitly handled as false in the implementation
-		{"no", "no", false},  // 'no' is explicitly handled as false in the implementation
+		{"0", "0", false},            // '0' is explicitly handled as false in the implementation
+		{"no", "no", false},          // 'no' is explicitly handled as false in the implementation
 		{"invalid", "invalid", true}, // defaults to true for unknown values
 	}
 

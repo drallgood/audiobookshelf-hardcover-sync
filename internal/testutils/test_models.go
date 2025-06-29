@@ -99,7 +99,7 @@ func calculateProgressWithConversion(currentTime, minProgress, totalDuration flo
 
 	// First, ensure we're working with the same units
 	// If currentTime is in milliseconds and totalDuration is in seconds, convert currentTime to seconds
-	if currentTime > totalDuration * 1000 {
+	if currentTime > totalDuration*1000 {
 		currentTime = currentTime / 1000.0
 	}
 
@@ -160,7 +160,7 @@ func CreateHardcoverEdition(input EditionCreatorInput) (*EditionCreationResponse
 			ImageID:   888888,
 		}, nil
 	}
-	
+
 	// Default return values for non-dry run
 	return &EditionCreationResponse{
 		Success:   true,
@@ -173,30 +173,30 @@ func CreateHardcoverEdition(input EditionCreatorInput) (*EditionCreationResponse
 // that can be used to create a new edition
 // This is a simplified version for testing purposes
 type PrepopulatedEditionInput struct {
-	BookID       int      `json:"book_id,omitempty"`
-	Title        string   `json:"title"`
-	Subtitle     string   `json:"subtitle,omitempty"`
-	Authors      []string `json:"authors"`
-	AuthorIDs    []int    `json:"author_ids,omitempty"`
-	Narrators    []string `json:"narrators,omitempty"`
-	NarratorIDs  []int    `json:"narrator_ids,omitempty"`
-	Description  string   `json:"description,omitempty"`
-	ImageURL     string   `json:"image_url,omitempty"`
-	ASIN         string   `json:"asin,omitempty"`
-	ISBN10       string   `json:"isbn10,omitempty"`
-	ISBN13       string   `json:"isbn13,omitempty"`
-	Publisher    string   `json:"publisher,omitempty"`
-	PublisherID  int      `json:"publisher_id,omitempty"`
-	ReleaseDate  string   `json:"release_date,omitempty"`
-	PageCount    int      `json:"page_count,omitempty"`
-	AudioSeconds int      `json:"audio_seconds,omitempty"`
-	Language     string   `json:"language,omitempty"`
-	LanguageID   int      `json:"language_id,omitempty"`
-	CountryID    int      `json:"country_id,omitempty"`
-	Series       string   `json:"series,omitempty"`
-	SeriesNumber int      `json:"series_number,omitempty"`
+	BookID        int      `json:"book_id,omitempty"`
+	Title         string   `json:"title"`
+	Subtitle      string   `json:"subtitle,omitempty"`
+	Authors       []string `json:"authors"`
+	AuthorIDs     []int    `json:"author_ids,omitempty"`
+	Narrators     []string `json:"narrators,omitempty"`
+	NarratorIDs   []int    `json:"narrator_ids,omitempty"`
+	Description   string   `json:"description,omitempty"`
+	ImageURL      string   `json:"image_url,omitempty"`
+	ASIN          string   `json:"asin,omitempty"`
+	ISBN10        string   `json:"isbn10,omitempty"`
+	ISBN13        string   `json:"isbn13,omitempty"`
+	Publisher     string   `json:"publisher,omitempty"`
+	PublisherID   int      `json:"publisher_id,omitempty"`
+	ReleaseDate   string   `json:"release_date,omitempty"`
+	PageCount     int      `json:"page_count,omitempty"`
+	AudioSeconds  int      `json:"audio_seconds,omitempty"`
+	Language      string   `json:"language,omitempty"`
+	LanguageID    int      `json:"language_id,omitempty"`
+	CountryID     int      `json:"country_id,omitempty"`
+	Series        string   `json:"series,omitempty"`
+	SeriesNumber  int      `json:"series_number,omitempty"`
 	EditionFormat string   `json:"edition_format,omitempty"`
-	EditionInfo  string   `json:"edition_info,omitempty"`
+	EditionInfo   string   `json:"edition_info,omitempty"`
 }
 
 // convertPrepopulatedToInput converts a PrepopulatedEditionInput to an EditionCreatorInput
@@ -299,24 +299,24 @@ func ParseAudibleDuration(durationStr string) (int, error) {
 func generateExampleJSON(filename string) error {
 	// Create an example EditionCreatorInput with all required fields
 	example := EditionCreatorInput{
-		BookID:      12345,
-		Title:       "Example Book",
-		Subtitle:    "An Example Subtitle",
-		Authors:     []string{"John Doe"},
-		AuthorIDs:   []int{1},
-		NarratorIDs: []int{2},
-		Description: "This is an example book description.",
-		ImageURL:    "https://example.com/cover.jpg",
-		ASIN:        "B0A1B2C3D4",
-		ISBN10:      "1234567890",
-		ISBN13:      "9781234567890",
-		PublisherID: 1,
-		ReleaseDate: "2023-01-01",
-		AudioLength: 3600, // 1 hour in seconds
+		BookID:        12345,
+		Title:         "Example Book",
+		Subtitle:      "An Example Subtitle",
+		Authors:       []string{"John Doe"},
+		AuthorIDs:     []int{1},
+		NarratorIDs:   []int{2},
+		Description:   "This is an example book description.",
+		ImageURL:      "https://example.com/cover.jpg",
+		ASIN:          "B0A1B2C3D4",
+		ISBN10:        "1234567890",
+		ISBN13:        "9781234567890",
+		PublisherID:   1,
+		ReleaseDate:   "2023-01-01",
+		AudioLength:   3600, // 1 hour in seconds
 		EditionFormat: "Audiobook",
-		EditionInfo: "First Edition",
-		LanguageID:  1,
-		CountryID:   1,
+		EditionInfo:   "First Edition",
+		LanguageID:    1,
+		CountryID:     1,
 	}
 
 	// Marshal the example to JSON with indentation
@@ -348,12 +348,12 @@ type Audiobook struct {
 
 // PersonSearchResult represents a person (author/narrator) search result
 type PersonSearchResult struct {
-	ID          int     `json:"id"`
-	Name        string  `json:"name"`
-	BooksCount  int     `json:"books_count"`
-	Bio         string  `json:"bio"`
-	IsCanonical bool    `json:"is_canonical"`
-	CanonicalID *int    `json:"canonical_id"`
+	ID          int    `json:"id"`
+	Name        string `json:"name"`
+	BooksCount  int    `json:"books_count"`
+	Bio         string `json:"bio"`
+	IsCanonical bool   `json:"is_canonical"`
+	CanonicalID *int   `json:"canonical_id"`
 }
 
 // CacheEntry represents a cached search result with metadata
@@ -362,7 +362,7 @@ type CacheEntry struct {
 	PublisherID   int                  `json:"publisher_id,omitempty"`
 	Timestamp     time.Time            `json:"timestamp"`
 	QueryType     string               `json:"query_type"` // "author", "narrator", or "publisher"
-	OriginalQuery string              `json:"original_query"`
+	OriginalQuery string               `json:"original_query"`
 }
 
 // PersonCache manages cached search results for authors and narrators
@@ -426,8 +426,6 @@ func (c *PersonCache) GetCrossRole(name, requestedRole string) ([]PersonSearchRe
 	}
 	return nil, "", false
 }
-
-
 
 // Stats returns cache statistics
 func (c *PersonCache) Stats() map[string]interface{} {

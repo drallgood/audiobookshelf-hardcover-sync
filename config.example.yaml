@@ -35,6 +35,12 @@ app:
   test_book_filter: ""    # Filter books by title for testing
   test_book_limit: 0       # Limit number of books to process for testing (0 = no limit)
 
+# Sync configuration
+sync:
+  incremental: true
+  state_file: "./data/sync_state.json"
+  min_change_threshold: 60
+
 # Paths configuration
 paths:
   cache_dir: "./cache"    # Directory for cache files

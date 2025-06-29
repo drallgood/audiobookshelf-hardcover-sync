@@ -8,10 +8,10 @@ import (
 
 func TestMismatchAudibleEnhancementMarker(t *testing.T) {
 	tests := []struct {
-		name                 string
-		prepopulationSource  string
-		expectedMarker       bool
-		expectedDescription  string
+		name                string
+		prepopulationSource string
+		expectedMarker      bool
+		expectedDescription string
 	}{
 		{
 			name:                "hardcover+audible should add enhancement marker",
@@ -20,7 +20,7 @@ func TestMismatchAudibleEnhancementMarker(t *testing.T) {
 			expectedDescription: "Should not add ENHANCED marker without successful API enhancement",
 		},
 		{
-			name:                "hardcover+external should add enhancement marker", 
+			name:                "hardcover+external should add enhancement marker",
 			prepopulationSource: "hardcover+external",
 			expectedMarker:      false, // Changed: No actual API enhancement occurs in test
 			expectedDescription: "Should not add ENHANCED marker without successful API enhancement",
@@ -53,7 +53,7 @@ func TestMismatchAudibleEnhancementMarker(t *testing.T) {
 				Timestamp: timestamp,
 				Attempts:  0,
 				// Optional fields can be set as needed
-				Metadata:   "test-id", // Using Metadata to store AudiobookShelfID
+				Metadata: "test-id", // Using Metadata to store AudiobookShelfID
 			}
 
 			// Convert to edition input (this simulates the enhancement process)
@@ -63,7 +63,7 @@ func TestMismatchAudibleEnhancementMarker(t *testing.T) {
 			hasEnhancementMarker := strings.Contains(editionInput.EditionInfo, "ENHANCED: Data enhanced with Audible API")
 
 			if hasEnhancementMarker != tt.expectedMarker {
-				t.Errorf("%s: expected enhancement marker = %v, got %v", 
+				t.Errorf("%s: expected enhancement marker = %v, got %v",
 					tt.expectedDescription, tt.expectedMarker, hasEnhancementMarker)
 				t.Logf("PrepopulationSource: %s", tt.prepopulationSource)
 				t.Logf("EditionInfo: %s", editionInput.EditionInfo)
@@ -84,8 +84,8 @@ func TestMismatchAudibleEnhancementLogic(t *testing.T) {
 	// Test the actual logic that was fixed
 	prepopulationSources := []string{
 		"hardcover+audible",
-		"hardcover+external", 
-		"mismatch+audible",  // This was the old expected value
+		"hardcover+external",
+		"mismatch+audible", // This was the old expected value
 		"mismatch",
 		"",
 	}
@@ -94,14 +94,14 @@ func TestMismatchAudibleEnhancementLogic(t *testing.T) {
 		t.Run("source_"+source, func(t *testing.T) {
 			// Test the fixed condition
 			shouldEnhance := strings.Contains(source, "+audible") || strings.Contains(source, "+external")
-			
+
 			// The old broken condition for reference
 			oldCondition := source == "mismatch+audible"
-			
+
 			t.Logf("Source: '%s'", source)
 			t.Logf("New condition (fixed): %v", shouldEnhance)
 			t.Logf("Old condition (broken): %v", oldCondition)
-			
+
 			// For audible/external sources, the new condition should be true
 			if strings.Contains(source, "+audible") || strings.Contains(source, "+external") {
 				if !shouldEnhance {

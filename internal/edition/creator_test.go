@@ -55,8 +55,6 @@ func (m *MockHardcoverClient) GetEditionByASIN(ctx context.Context, asin string)
 	return args.Get(0).(*models.Edition), args.Error(1)
 }
 
-
-
 // GraphQLQuery mocks the GraphQLQuery method
 func (m *MockHardcoverClient) GraphQLQuery(ctx context.Context, query string, variables map[string]interface{}, response interface{}) error {
 	args := m.Called(ctx, query, variables, response)
@@ -66,10 +64,10 @@ func (m *MockHardcoverClient) GraphQLQuery(ctx context.Context, query string, va
 // GraphQLMutation mocks the GraphQLMutation method
 func (m *MockHardcoverClient) GraphQLMutation(ctx context.Context, query string, variables map[string]interface{}, response interface{}) error {
 	args := m.Called(ctx, query, variables, response)
-	
+
 	// Handle the response in the Run function of the mock expectation
 	// The actual response handling is done in the test case's Run function
-	
+
 	return args.Error(0)
 }
 
@@ -81,8 +79,6 @@ func (m *MockHardcoverClient) GetGoogleUploadCredentials(ctx context.Context, fi
 	}
 	return args.Get(0).(*edition.GoogleUploadInfo), args.Error(1)
 }
-
-
 
 func newTestCreator(t *testing.T, mockClient *MockHardcoverClient) *edition.Creator {
 	t.Helper()
@@ -130,7 +126,7 @@ func TestEditionCreator_CreateEdition(t *testing.T) {
 		Level:  "debug",
 		Format: "json",
 	})
-	
+
 	// Common mock setup for all tests
 	setupCommonMocks := func(m *MockHardcoverClient) {
 		// Mock GetAuthHeader to be called multiple times
@@ -154,10 +150,10 @@ func TestEditionCreator_CreateEdition(t *testing.T) {
 			},
 			setupMock: func(t *testing.T, m *MockHardcoverClient) {
 				setupCommonMocks(m)
-				
+
 				// Setup expectations for the error case
 				expectedBookID := 999
-				
+
 				// Mock the GraphQL mutation to return an error
 				m.On("GraphQLMutation", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 					Return(assert.AnError).
@@ -207,12 +203,12 @@ func TestEditionCreator_CreateEdition(t *testing.T) {
 		{
 			name: "valid input without image",
 			input: &edition.EditionInput{
-				BookID:        123,
-				Title:         "Test Book",
-				AuthorIDs:     []int{1, 2},
-				NarratorIDs:   []int{3},
-				PublisherID:   1,
-				ReleaseDate:   "2020-01-01",
+				BookID:      123,
+				Title:       "Test Book",
+				AuthorIDs:   []int{1, 2},
+				NarratorIDs: []int{3},
+				PublisherID: 1,
+				ReleaseDate: "2020-01-01",
 			},
 			setupMock: func(t *testing.T, m *MockHardcoverClient) {
 				setupCommonMocks(m)
@@ -232,13 +228,13 @@ func TestEditionCreator_CreateEdition(t *testing.T) {
 						default:
 							assert.Fail(t, "Unexpected type for bookId: %T", v)
 						}
-						
+
 						editionInput := variables["edition"].(map[string]interface{})
 						dto := editionInput["dto"].(map[string]interface{})
-						
+
 						assert.Equal(t, "Test Book", dto["title"])
 						assert.Equal(t, "Audiobook", dto["edition_format"])
-						
+
 						// Handle both int and float64 for publisher_id
 						switch v := dto["publisher_id"].(type) {
 						case int:
@@ -248,10 +244,10 @@ func TestEditionCreator_CreateEdition(t *testing.T) {
 						default:
 							assert.Fail(t, "Unexpected type for publisher_id: %T", v)
 						}
-						
+
 						assert.Equal(t, "2020-01-01", dto["release_date"])
-						
-										// Verify the response is set with the edition ID
+
+						// Verify the response is set with the edition ID
 						response := args.Get(3).(*struct {
 							InsertEdition struct {
 								ID     interface{} `json:"id"`
@@ -270,9 +266,9 @@ func TestEditionCreator_CreateEdition(t *testing.T) {
 		{
 			name: "valid input with image",
 			input: &edition.EditionInput{
-				BookID:     456,
-				Title:      "Test Book with Image",
-				AuthorIDs:  []int{4, 5},
+				BookID:      456,
+				Title:       "Test Book with Image",
+				AuthorIDs:   []int{4, 5},
 				NarratorIDs: []int{6},
 				PublisherID: 2,
 				ReleaseDate: "2021-01-01",
@@ -296,7 +292,7 @@ func TestEditionCreator_CreateEdition(t *testing.T) {
 						default:
 							assert.Fail(t, "Unexpected type for bookId: %T", v)
 						}
-						
+
 						editionInput, ok := variables["edition"].(map[string]interface{})
 						if !ok {
 							t.Error("edition input is not a map")
@@ -310,14 +306,14 @@ func TestEditionCreator_CreateEdition(t *testing.T) {
 								Errors []string    `json:"errors"`
 							} `json:"insert_edition"`
 						})
-						
+
 						respPtr.InsertEdition.ID = 456
 						respPtr.InsertEdition.Errors = nil
 					}).Once()
 
 				// The actual implementation makes an HTTP request to get upload credentials
-			// We'll let this happen but mock the HTTP response
-			// The test will fail with a 404 since we're not setting up an HTTP mock server
+				// We'll let this happen but mock the HTTP response
+				// The test will fail with a 404 since we're not setting up an HTTP mock server
 			},
 			expectError:   false,
 			expectSuccess: true,
@@ -337,7 +333,6 @@ func TestEditionCreator_CreateEdition(t *testing.T) {
 			if tt.setupMock != nil {
 				tt.setupMock(t, mockClient)
 			}
-
 
 			// Execute the test
 			editionID, err := creator.CreateEdition(context.Background(), tt.input)
@@ -363,7 +358,7 @@ func TestEditionCreator_PrepopulateFromBook(t *testing.T) {
 		Format: "text",
 	})
 	log := logger.Get()
-	
+
 	// Create a new creator with the mock client
 	creator := edition.NewCreator(mockClient, log, false, "")
 
@@ -384,13 +379,47 @@ func TestEditionCreator_PrepopulateFromBook(t *testing.T) {
 				// Mock GraphQLQuery call
 				m.On("GraphQLQuery", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 					Return(nil).
-				Run(func(args mock.Arguments) {
-					// The response is a pointer to a struct that directly contains the Book field
-					respPtr := args.Get(3).(*struct {
-						Book struct {
-							ID           int    `json:"id"`
-							Title        string `json:"title"`
-							Subtitle     string `json:"subtitle"`
+					Run(func(args mock.Arguments) {
+						// The response is a pointer to a struct that directly contains the Book field
+						respPtr := args.Get(3).(*struct {
+							Book struct {
+								ID            int    `json:"id"`
+								Title         string `json:"title"`
+								Subtitle      string `json:"subtitle"`
+								CoverImageURL string `json:"coverImageUrl"`
+								ISBN10        string `json:"isbn10"`
+								ISBN13        string `json:"isbn13"`
+								ASIN          string `json:"asin"`
+								PublishedDate string `json:"publishedDate"`
+								Authors       []struct {
+									ID   int    `json:"id"`
+									Name string `json:"name"`
+								} `json:"authors"`
+								Narrators []struct {
+									ID   int    `json:"id"`
+									Name string `json:"name"`
+								} `json:"narrators"`
+								Publisher *struct {
+									ID   int    `json:"id"`
+									Name string `json:"name"`
+								} `json:"publisher"`
+								Language *struct {
+									ID   int    `json:"id"`
+									Name string `json:"name"`
+								} `json:"language"`
+								Country *struct {
+									ID   int    `json:"id"`
+									Name string `json:"name"`
+								} `json:"country"`
+							} `json:"book"`
+						})
+
+						// Set the response values
+						resp := *respPtr
+						resp.Book = struct {
+							ID            int    `json:"id"`
+							Title         string `json:"title"`
+							Subtitle      string `json:"subtitle"`
 							CoverImageURL string `json:"coverImageUrl"`
 							ISBN10        string `json:"isbn10"`
 							ISBN13        string `json:"isbn13"`
@@ -416,95 +445,61 @@ func TestEditionCreator_PrepopulateFromBook(t *testing.T) {
 								ID   int    `json:"id"`
 								Name string `json:"name"`
 							} `json:"country"`
-						} `json:"book"`
+						}{
+							ID:            123,
+							Title:         "Test Book",
+							Subtitle:      "A Test Subtitle",
+							CoverImageURL: "http://example.com/cover.jpg",
+							ISBN10:        "1234567890",
+							ISBN13:        "9781234567890",
+							ASIN:          "B00TEST123",
+							PublishedDate: "2023-01-01",
+							Authors: []struct {
+								ID   int    `json:"id"`
+								Name string `json:"name"`
+							}{
+								{ID: 1, Name: "Author One"},
+								{ID: 2, Name: "Author Two"},
+							},
+							Narrators: []struct {
+								ID   int    `json:"id"`
+								Name string `json:"name"`
+							}{
+								{ID: 3, Name: "Narrator One"},
+							},
+						}
+
+						// Set publisher, language, and country as pointers
+						publisher := &struct {
+							ID   int    `json:"id"`
+							Name string `json:"name"`
+						}{
+							ID:   1,
+							Name: "Test Publisher",
+						}
+						resp.Book.Publisher = publisher
+
+						language := &struct {
+							ID   int    `json:"id"`
+							Name string `json:"name"`
+						}{
+							ID:   1,
+							Name: "English",
+						}
+						resp.Book.Language = language
+
+						country := &struct {
+							ID   int    `json:"id"`
+							Name string `json:"name"`
+						}{
+							ID:   1,
+							Name: "United States",
+						}
+						resp.Book.Country = country
+
+						// Assign back to the response pointer
+						*respPtr = resp
 					})
-
-					// Set the response values
-					resp := *respPtr
-					resp.Book = struct {
-						ID           int    `json:"id"`
-						Title        string `json:"title"`
-						Subtitle     string `json:"subtitle"`
-						CoverImageURL string `json:"coverImageUrl"`
-						ISBN10        string `json:"isbn10"`
-						ISBN13        string `json:"isbn13"`
-						ASIN          string `json:"asin"`
-						PublishedDate string `json:"publishedDate"`
-						Authors       []struct {
-							ID   int    `json:"id"`
-							Name string `json:"name"`
-						} `json:"authors"`
-						Narrators []struct {
-							ID   int    `json:"id"`
-							Name string `json:"name"`
-						} `json:"narrators"`
-						Publisher *struct {
-							ID   int    `json:"id"`
-							Name string `json:"name"`
-						} `json:"publisher"`
-						Language *struct {
-							ID   int    `json:"id"`
-							Name string `json:"name"`
-						} `json:"language"`
-						Country *struct {
-							ID   int    `json:"id"`
-							Name string `json:"name"`
-						} `json:"country"`
-					}{
-						ID:           123,
-						Title:        "Test Book",
-						Subtitle:     "A Test Subtitle",
-						CoverImageURL: "http://example.com/cover.jpg",
-						ISBN10:        "1234567890",
-						ISBN13:        "9781234567890",
-						ASIN:          "B00TEST123",
-						PublishedDate: "2023-01-01",
-						Authors: []struct {
-							ID   int    `json:"id"`
-							Name string `json:"name"`
-						}{
-							{ID: 1, Name: "Author One"},
-							{ID: 2, Name: "Author Two"},
-						},
-						Narrators: []struct {
-							ID   int    `json:"id"`
-							Name string `json:"name"`
-						}{
-							{ID: 3, Name: "Narrator One"},
-						},
-					}
-
-					// Set publisher, language, and country as pointers
-					publisher := &struct {
-						ID   int    `json:"id"`
-						Name string `json:"name"`
-					}{
-						ID:   1,
-						Name: "Test Publisher",
-					}
-					resp.Book.Publisher = publisher
-
-					language := &struct {
-						ID   int    `json:"id"`
-						Name string `json:"name"`
-					}{
-						ID:   1,
-						Name: "English",
-					}
-					resp.Book.Language = language
-
-					country := &struct {
-						ID   int    `json:"id"`
-						Name string `json:"name"`
-					}{
-						ID:   1,
-						Name: "United States",
-					}
-					resp.Book.Country = country
-
-					// Assign back to the response pointer
-					*respPtr = resp
-				})
 			},
 			expectError: false,
 		},
@@ -599,10 +594,10 @@ func TestEditionInput_Validate(t *testing.T) {
 
 func TestEditionInput_JSON(t *testing.T) {
 	input := &edition.EditionInput{
-		BookID:     123,
-		Title:      "Test Book",
-		Subtitle:   "A Test Subtitle",
-		AuthorIDs:  []int{1, 2},
+		BookID:      123,
+		Title:       "Test Book",
+		Subtitle:    "A Test Subtitle",
+		AuthorIDs:   []int{1, 2},
 		NarratorIDs: []int{3, 4},
 		PublisherID: 5,
 	}

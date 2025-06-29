@@ -88,11 +88,11 @@ func formatReleaseDate(publishedDate, publishedYear string) string {
 		}
 
 		// Determine the output format based on the input format
-		hasDay := strings.Contains(layout, "2") && 
-			(strings.Contains(layout, "02") || 
-			 strings.Contains(layout, "2,") || 
-			 strings.HasPrefix(layout, "2 ") ||
-			 strings.Contains(layout, " 2 "))
+		hasDay := strings.Contains(layout, "2") &&
+			(strings.Contains(layout, "02") ||
+				strings.Contains(layout, "2,") ||
+				strings.HasPrefix(layout, "2 ") ||
+				strings.Contains(layout, " 2 "))
 
 		if hasDay {
 			// Full date with day
@@ -246,19 +246,19 @@ func convertMismatchToEditionInput(mismatch BookMismatch) EditionCreatorInput {
 	if mismatch.Author != "" {
 		authors = append(authors, mismatch.Author)
 	}
-	
+
 	// Safely handle nil CoverURL
 	imageURL := ""
 	if mismatch.CoverURL != nil {
 		imageURL = *mismatch.CoverURL
 	}
-	
+
 	return EditionCreatorInput{
-		Title:     mismatch.Title,
-		Authors:   authors,
-		ISBN10:    mismatch.ISBN,
-		ASIN:      mismatch.ASIN,
-		ImageURL:  imageURL,
+		Title:    mismatch.Title,
+		Authors:  authors,
+		ISBN10:   mismatch.ISBN,
+		ASIN:     mismatch.ASIN,
+		ImageURL: imageURL,
 	}
 }
 
@@ -314,7 +314,7 @@ type SearchAPIResponse struct {
 	Data struct {
 		Search struct {
 			IDs   []json.Number `json:"ids"`
-			Error *string      `json:"error"`
+			Error *string       `json:"error"`
 		} `json:"search"`
 	} `json:"data"`
 }
@@ -347,13 +347,13 @@ func isLocalAudiobookShelfURL(urlStr string) bool {
 
 // PublisherSearchResult represents a publisher search result
 type PublisherSearchResult struct {
-	ID             int    `json:"id"`
-	Name           string `json:"name"`
-	Description    string `json:"description,omitempty"`
-	BookCount      int    `json:"book_count,omitempty"`
-	Website        string `json:"website,omitempty"`
-	EditionsCount  int    `json:"editions_count,omitempty"`
-	IsCanonical    bool   `json:"is_canonical,omitempty"`
+	ID            int    `json:"id"`
+	Name          string `json:"name"`
+	Description   string `json:"description,omitempty"`
+	BookCount     int    `json:"book_count,omitempty"`
+	Website       string `json:"website,omitempty"`
+	EditionsCount int    `json:"editions_count,omitempty"`
+	IsCanonical   bool   `json:"is_canonical,omitempty"`
 }
 
 // BookMismatch represents a book that couldn't be matched in Hardcover
@@ -505,19 +505,19 @@ func getMinimumProgressThreshold() float64 {
 		// Default to 0.01 if not set
 		return 0.01
 	}
-	
+
 	// Parse the environment variable as a float64
 	threshold, err := strconv.ParseFloat(envVal, 64)
 	if err != nil {
 		// Return default on parse error
 		return 0.01
 	}
-	
+
 	// Return default if threshold is outside valid range [0.0, 1.0]
 	if threshold < 0.0 || threshold > 1.0 {
 		return 0.01
 	}
-	
+
 	return threshold
 }
 

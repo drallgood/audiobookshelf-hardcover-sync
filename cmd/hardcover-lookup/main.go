@@ -1,27 +1,30 @@
 // hardcover-lookup is a command-line tool for looking up authors, narrators, and publishers in Hardcover.
 //
 // Usage:
-//   hardcover-lookup [global-flags] <command> [command-flags]
+//
+//	hardcover-lookup [global-flags] <command> [command-flags]
 //
 // Commands:
-//   author     Look up or verify author information
-//   narrator   Look up or verify narrator information
-//   publisher  Look up or verify publisher information
-//   help       Show help for commands
+//
+//	author     Look up or verify author information
+//	narrator   Look up or verify narrator information
+//	publisher  Look up or verify publisher information
+//	help       Show help for commands
 //
 // Global Flags:
-//   -config string   Path to config file (default: ./config.yaml or environment variables)
-//   -json            Output results in JSON format
-//   -limit int       Maximum number of results to return (default 5)
-//   -h, --help       Show help
+//
+//	-config string   Path to config file (default: ./config.yaml or environment variables)
+//	-json            Output results in JSON format
+//	-limit int       Maximum number of results to return (default 5)
+//	-h, --help       Show help
 package main
 
 import (
 	"context"
-	"log"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"

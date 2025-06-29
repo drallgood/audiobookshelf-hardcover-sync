@@ -71,7 +71,7 @@ func TestMismatchAudibleEnhancementWithMockAPI(t *testing.T) {
 		t.Errorf("Expected ASIN to be 'B07KMH577G', got '%s'", result.ASIN)
 	}
 
-	// The API call will likely fail (since we don't have real credentials), 
+	// The API call will likely fail (since we don't have real credentials),
 	// so it should fall back to "hardcover+external" behavior
 	// But the important thing is that the enhancement logic doesn't crash
 

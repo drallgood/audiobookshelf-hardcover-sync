@@ -9,12 +9,12 @@ import (
 // to prevent the edition field from becoming null
 func TestEditionFieldFix(t *testing.T) {
 	tests := []struct {
-		name              string
-		progressSeconds   int
-		isFinished        bool
-		editionID         int
-		expectEditionID   bool
-		expectWarning     bool
+		name            string
+		progressSeconds int
+		isFinished      bool
+		editionID       int
+		expectEditionID bool
+		expectWarning   bool
 	}{
 		{
 			name:            "Insert with valid edition_id",

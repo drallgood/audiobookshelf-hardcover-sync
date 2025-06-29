@@ -81,7 +81,7 @@ func TestClient_SearchPeople(t *testing.T) {
 				http.Error(w, errMsg, http.StatusBadRequest)
 			},
 			expectedName: "Test Author",
-			expectedErr: false,
+			expectedErr:  false,
 		},
 		{
 			name:       "successful narrator search",
@@ -136,7 +136,7 @@ func TestClient_SearchPeople(t *testing.T) {
 				http.Error(w, errMsg, http.StatusBadRequest)
 			},
 			expectedName: "Test Narrator",
-			expectedErr: false,
+			expectedErr:  false,
 		},
 		{
 			name:       "search with GraphQL errors",
@@ -155,7 +155,7 @@ func TestClient_SearchPeople(t *testing.T) {
 				}
 			},
 			expectedErr: true,
-			errMessage: "direct person search failed",
+			errMessage:  "direct person search failed",
 		},
 	}
 
@@ -171,12 +171,12 @@ func TestClient_SearchPeople(t *testing.T) {
 
 			// Create a client with the test server URL and required dependencies
 			client := &Client{
-				baseURL:      ts.URL,
-				httpClient:   http.DefaultClient,
-				logger:       log,
-				rateLimiter:  util.NewRateLimiter(time.Second, 1, 10, log), // 1 request per second, burst of 1, max 10 concurrent
-				maxRetries:   3,
-				retryDelay:   time.Second,
+				baseURL:     ts.URL,
+				httpClient:  http.DefaultClient,
+				logger:      log,
+				rateLimiter: util.NewRateLimiter(time.Second, 1, 10, log), // 1 request per second, burst of 1, max 10 concurrent
+				maxRetries:  3,
+				retryDelay:  time.Second,
 			}
 
 			// Call the appropriate method based on person type

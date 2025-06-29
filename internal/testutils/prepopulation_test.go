@@ -81,11 +81,10 @@ func enhanceWithExternalData(input *PrepopulatedEditionInput) *PrepopulatedEditi
 
 	// Create a copy of the input to avoid modifying the original
 	enhanced := *input
-	
+
 	// In a real implementation, this is where you would fetch additional data
 	// from external sources (e.g., API calls to book metadata services)
 	// and enhance the input with that data
-	
+
 	return &enhanced
 }
-

@@ -3,10 +3,10 @@ package mismatch
 import (
 	"context"
 	"encoding/json"
-	"regexp"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -25,7 +25,7 @@ var (
 func Add(book BookMismatch) {
 	mismatchLock.Lock()
 	defer mismatchLock.Unlock()
-	
+
 	// Set timestamp if not already set
 	if book.Timestamp == 0 {
 		book.Timestamp = time.Now().Unix()
@@ -36,9 +36,9 @@ func Add(book BookMismatch) {
 	if book.CreatedAt.IsZero() {
 		book.CreatedAt = time.Now()
 	}
-	
+
 	mismatches = append(mismatches, book)
-	
+
 	// Log the mismatch
 	log := logger.Get()
 	if log != nil {
@@ -183,35 +183,35 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 		PublishedYear:   metadata.PublishedYear,
 		ReleaseDate:     releaseDate,
 		DurationSeconds: int(duration + 0.5), // Round to nearest second
-		
+
 		// Identifiers
-		ISBN:            metadata.ISBN,     // Keep original ISBN for backward compatibility
-		ISBN10:          isbn10,
-		ISBN13:          isbn13,
-		ASIN:            metadata.ASIN,
-		
+		ISBN:   metadata.ISBN, // Keep original ISBN for backward compatibility
+		ISBN10: isbn10,
+		ISBN13: isbn13,
+		ASIN:   metadata.ASIN,
+
 		// Media URLs
-		CoverURL:        metadata.CoverURL,
-		ImageURL:        metadata.CoverURL, // Use CoverURL as ImageURL by default
-		
+		CoverURL: metadata.CoverURL,
+		ImageURL: metadata.CoverURL, // Use CoverURL as ImageURL by default
+
 		// Edition information
-		EditionFormat:   "Audiobook",
-		EditionInfo:     "Imported from Audiobookshelf: " + reason,
-		LanguageID:      1, // Default to English
-		CountryID:       1, // Default to US
-		
+		EditionFormat: "Audiobook",
+		EditionInfo:   "Imported from Audiobookshelf: " + reason,
+		LanguageID:    1, // Default to English
+		CountryID:     1, // Default to US
+
 		// Publisher information
-		PublisherID:     publisherID, // Use looked up or default publisher ID
-		Publisher:       publisherName,
-		
+		PublisherID: publisherID, // Use looked up or default publisher ID
+		Publisher:   publisherName,
+
 		// AudiobookShelf specific
-		LibraryID:       "", // Will be set later if available
-		FolderID:        "", // Will be set later if available
-		
+		LibraryID: "", // Will be set later if available
+		FolderID:  "", // Will be set later if available
+
 		// Tracking information
-		Reason:          reason,
-		Timestamp:       time.Now().Unix(),
-		CreatedAt:       time.Now(),
+		Reason:    reason,
+		Timestamp: time.Now().Unix(),
+		CreatedAt: time.Now(),
 	}
 
 	Add(mismatch)
@@ -342,7 +342,7 @@ func SaveToFile(ctx context.Context, hc *hardcover.Client, outputDir string, cfg
 			err = fmt.Errorf("failed to marshal edition export for '%s': %w", mismatch.Title, err)
 			log.Error("Failed to marshal edition export to JSON", map[string]interface{}{
 				"error": err.Error(),
-				"title":  mismatch.Title,
+				"title": mismatch.Title,
 			})
 			saveErrors = append(saveErrors, err)
 			continue
@@ -355,7 +355,7 @@ func SaveToFile(ctx context.Context, hc *hardcover.Client, outputDir string, cfg
 		if err := os.WriteFile(filePath, jsonData, 0644); err != nil {
 			err = fmt.Errorf("failed to write file '%s': %w", filePath, err)
 			log.Error("Failed to write mismatch file in mismatch.SaveToFile", map[string]interface{}{
-				"error": err.Error(),
+				"error":    err.Error(),
 				"filePath": filePath,
 			})
 			saveErrors = append(saveErrors, err)
@@ -369,7 +369,7 @@ func SaveToFile(ctx context.Context, hc *hardcover.Client, outputDir string, cfg
 	if len(saveErrors) > 0 {
 		log.Warn("Some mismatch files failed to save in mismatch.SaveToFile", map[string]interface{}{
 			"successful": successCount,
-			"failed":    len(saveErrors),
+			"failed":     len(saveErrors),
 		})
 	} else {
 		log.Info("Successfully saved all mismatch files in mismatch.SaveToFile", map[string]interface{}{
@@ -389,7 +389,7 @@ func cleanupOldFiles(dirPath string) error {
 	if err != nil {
 		if log != nil {
 			log.Error("Failed to read directory in mismatch.cleanupOldFiles", map[string]interface{}{
-				"error":    err.Error(),
+				"error":     err.Error(),
 				"directory": dirPath,
 			})
 		}
@@ -454,6 +454,6 @@ type MediaMetadata struct {
 	PublishedDate string // Full publication date in YYYY-MM-DD format
 	ISBN          string
 	ASIN          string
-	CoverURL      string // URL to the book cover image
+	CoverURL      string  // URL to the book cover image
 	Duration      float64 `json:"duration,omitempty"`
 }

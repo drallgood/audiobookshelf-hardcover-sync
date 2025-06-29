@@ -23,7 +23,7 @@ type Cache[K comparable, V any] interface {
 
 // entry represents a cache entry with its expiration time
 type entry[V any] struct {
-	value    V
+	value     V
 	expiresAt time.Time
 }
 
@@ -55,7 +55,7 @@ func (c *memoryCache[K, V]) Set(key K, value V, ttl time.Duration) {
 	}
 
 	c.items[key] = entry[V]{
-		value:    value,
+		value:     value,
 		expiresAt: expiresAt,
 	}
 

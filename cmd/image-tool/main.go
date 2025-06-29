@@ -29,12 +29,12 @@ func main() {
 
 	// Define command-line flags
 	var (
-		imageURL      = flag.String("url", "", "URL of the image to upload (required)")
-		bookID        = flag.String("book", "", "Hardcover book ID to attach the image to (mutually exclusive with -edition)")
-		editionID     = flag.String("edition", "", "Hardcover edition ID to attach the image to (mutually exclusive with -book)")
-		descFlag      = flag.String("desc", "", "Optional description for the image (alias for -description)")
-		description   = flag.String("description", "", "Optional description for the image (alias for -desc)")
-		configFile    = flag.String("config", "", "Path to config file (default: config.yaml in current directory or /etc/audiobookshelf-hardcover-sync/)")
+		imageURL    = flag.String("url", "", "URL of the image to upload (required)")
+		bookID      = flag.String("book", "", "Hardcover book ID to attach the image to (mutually exclusive with -edition)")
+		editionID   = flag.String("edition", "", "Hardcover edition ID to attach the image to (mutually exclusive with -book)")
+		descFlag    = flag.String("desc", "", "Optional description for the image (alias for -description)")
+		description = flag.String("description", "", "Optional description for the image (alias for -desc)")
+		configFile  = flag.String("config", "", "Path to config file (default: config.yaml in current directory or /etc/audiobookshelf-hardcover-sync/)")
 	)
 
 	// Parse flags
@@ -194,7 +194,7 @@ func uploadBookImage(imageURL, bookID, description string, cfg *config.Config) {
 	}
 
 	log.Info("Successfully uploaded book cover image to Hardcover", map[string]interface{}{
-		"bookID":  bookID,
+		"bookID":   bookID,
 		"imageURL": imageURL,
 	})
 }

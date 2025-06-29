@@ -7,12 +7,12 @@ import (
 // Test the status determination logic, especially for finished books showing 0% progress
 func TestStatusDeterminationLogic(t *testing.T) {
 	tests := []struct {
-		name          string
-		progress      float64
-		currentTime   float64
-		totalDuration float64
+		name           string
+		progress       float64
+		currentTime    float64
+		totalDuration  float64
 		expectedStatus int
-		description   string
+		description    string
 	}{
 		{
 			name:           "Book with 100% progress",
@@ -124,7 +124,7 @@ func determineTargetStatus(a Audiobook) int {
 	// Check if book is actually finished despite showing 0% progress
 	// This can happen when enhanced detection fails to properly identify finished books
 	isBookFinished := a.Progress >= 0.99
-	
+
 	// Additional checks for finished status using enhanced detection
 	if !isBookFinished && a.Progress == 0 {
 		// Also check if book appears to be finished based on listening position
@@ -136,7 +136,7 @@ func determineTargetStatus(a Audiobook) int {
 			}
 		}
 	}
-	
+
 	// Set status based on actual finished state
 	var status int
 	if isBookFinished {
@@ -148,7 +148,7 @@ func determineTargetStatus(a Audiobook) int {
 		// For testing purposes, assume getSyncWantToRead() returns true
 		status = 1 // want to read
 	}
-	
+
 	return status
 }
 
@@ -158,13 +158,13 @@ func TestIfIWasYourGirlCase(t *testing.T) {
 	audiobook := Audiobook{
 		ID:            "test-id",
 		Title:         "If I Was Your Girl",
-		Progress:      0.0, // Shows 0% progress due to API detection issues
+		Progress:      0.0,   // Shows 0% progress due to API detection issues
 		CurrentTime:   25200, // 7 hours of listening time
 		TotalDuration: 25200, // 7-hour book
 	}
-	
+
 	status := determineTargetStatus(audiobook)
-	
+
 	if status != 3 { // Should be marked as "read"
 		t.Errorf("'If I Was Your Girl' case failed: expected status 3 (read), got %d", status)
 		t.Errorf("Book details: Progress=%.2f%%, CurrentTime=%.0fs, TotalDuration=%.0fs",
@@ -175,12 +175,12 @@ func TestIfIWasYourGirlCase(t *testing.T) {
 // Test edge cases for the finished book detection
 func TestFinishedBookEdgeCases(t *testing.T) {
 	tests := []struct {
-		name          string
-		progress      float64
-		currentTime   float64
-		totalDuration float64
+		name           string
+		progress       float64
+		currentTime    float64
+		totalDuration  float64
 		expectedStatus int
-		description   string
+		description    string
 	}{
 		{
 			name:           "Book finished exactly at end",
