@@ -77,7 +77,7 @@ func RecordMismatch(book *BookMismatch) error {
 
 // AddWithMetadata creates and adds a new book mismatch with enhanced metadata
 // If hc is provided, it will be used to look up publisher and other metadata
-func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, duration float64, audiobookShelfID string, hc *hardcover.Client) {
+func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, duration float64, audiobookShelfID string, hc hardcover.HardcoverClientInterface) {
 	// Create a logger
 	log := logger.Get()
 
@@ -266,7 +266,7 @@ func ExportJSON() (string, error) {
 // use the directory from the provided config.
 // Note: This function should be called with a context that has a Hardcover client available
 // for proper author/narrator lookups.
-func SaveToFile(ctx context.Context, hc *hardcover.Client, outputDir string, cfg *config.Config) error {
+func SaveToFile(ctx context.Context, hc hardcover.HardcoverClientInterface, outputDir string, cfg *config.Config) error {
 	// Get logger instance
 	log := logger.Get()
 

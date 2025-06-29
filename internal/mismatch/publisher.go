@@ -11,7 +11,7 @@ import (
 )
 
 // LookupPublisherID looks up a publisher ID by name in Hardcover
-func LookupPublisherID(ctx context.Context, hc *hardcover.Client, name string) (int, error) {
+func LookupPublisherID(ctx context.Context, hc hardcover.HardcoverClientInterface, name string) (int, error) {
 	if hc == nil || name == "" {
 		return 0, nil
 	}

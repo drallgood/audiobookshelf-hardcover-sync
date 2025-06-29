@@ -20,13 +20,13 @@ var (
 )
 
 // LookupAuthorIDs looks up author IDs by name
-func LookupAuthorIDs(ctx context.Context, hc *hardcover.Client, names ...string) ([]int, error) {
+func LookupAuthorIDs(ctx context.Context, hc hardcover.HardcoverClientInterface, names ...string) ([]int, error) {
 	return lookupPeople(ctx, hc, "author", names...)
 }
 
 // LookupNarratorIDs looks up narrator IDs by name.
 // It can handle multiple names separated by commas in a single string.
-func LookupNarratorIDs(ctx context.Context, hc *hardcover.Client, names ...string) ([]int, error) {
+func LookupNarratorIDs(ctx context.Context, hc hardcover.HardcoverClientInterface, names ...string) ([]int, error) {
 	// If we have exactly one name that contains commas, split it
 	if len(names) == 1 && strings.Contains(names[0], ",") {
 		splitNames := strings.Split(names[0], ",")
@@ -40,7 +40,7 @@ func LookupNarratorIDs(ctx context.Context, hc *hardcover.Client, names ...strin
 }
 
 // lookupPeople is a helper function to look up people (authors or narrators) by name
-func lookupPeople(ctx context.Context, hc *hardcover.Client, personType string, names ...string) ([]int, error) {
+func lookupPeople(ctx context.Context, hc hardcover.HardcoverClientInterface, personType string, names ...string) ([]int, error) {
 	if hc == nil {
 		return nil, fmt.Errorf("hardcover client is required")
 	}

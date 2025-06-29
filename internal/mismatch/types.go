@@ -46,7 +46,7 @@ type EditionCreatorInput struct {
 
 // ToEditionExport converts a BookMismatch to an EditionExport for the edition import tool
 // Note: This function should be called with a context that has a Hardcover client available
-func (b *BookMismatch) ToEditionExport(ctx context.Context, hc *hardcover.Client) *EditionExport {
+func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.HardcoverClientInterface) *EditionExport {
 	// Get logger from context
 	logger := logger.FromContext(ctx)
 
@@ -225,7 +225,7 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc *hardcover.Client
 // ToEditionInput converts a BookMismatch to an EditionCreatorInput
 // This creates a best-effort conversion to the format expected by the edition import tool
 // Note: This function should be called with a context that has a Hardcover client available
-func (b *BookMismatch) ToEditionInput(ctx context.Context, hc *hardcover.Client) (EditionCreatorInput, error) {
+func (b *BookMismatch) ToEditionInput(ctx context.Context, hc hardcover.HardcoverClientInterface) (EditionCreatorInput, error) {
 	// Get logger from context
 	logger := logger.FromContext(ctx)
 

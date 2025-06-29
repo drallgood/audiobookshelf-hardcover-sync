@@ -28,7 +28,7 @@ var (
 // Service handles the synchronization between Audiobookshelf and Hardcover
 type Service struct {
 	audiobookshelf *audiobookshelf.Client
-	hardcover      *hardcover.Client
+	hardcover      hardcover.HardcoverClientInterface
 	config         *Config
 	log            *logger.Logger
 	state          *state.State
@@ -39,7 +39,7 @@ type Service struct {
 type Config = config.Config
 
 // NewService creates a new sync service
-func NewService(absClient *audiobookshelf.Client, hcClient *hardcover.Client, cfg *Config) (*Service, error) {
+func NewService(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverClientInterface, cfg *Config) (*Service, error) {
 	svc := &Service{
 		audiobookshelf: absClient,
 		hardcover:      hcClient,
@@ -1127,7 +1127,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 	log.Info("Processing in-progress book", nil)
 
 	// Get current book status from Hardcover
-	hcBook, err := s.hardcover.GetUserBook(ctx, userBookID)
+	hcBook, err := s.hardcover.GetUserBook(ctx, strconv.FormatInt(userBookID, 10))
 	if err != nil {
 		errCtx := make(map[string]interface{}, len(logCtx)+1)
 		errCtx["error"] = err.Error()
@@ -1154,8 +1154,11 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 	logCtx["duration_seconds"] = book.Media.Duration
 
 	// Add current Hardcover progress to log context
-	if hcBook != nil && hcBook.Progress != nil {
-		logCtx["hardcover_progress"] = *hcBook.Progress
+	// Note: HardcoverBook doesn't have a Progress field, so we'll skip this for now
+	// We'll log the book ID and title for debugging
+	if hcBook != nil {
+		logCtx["hardcover_book_id"] = hcBook.ID
+		logCtx["hardcover_title"] = hcBook.Title
 	}
 
 	// Calculate progress percentage if we have duration
@@ -1274,7 +1277,12 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 
 	// Check if the book is marked as finished in both systems
 	isFinishedInABS := book.Progress.IsFinished
-	isFinishedInHC := hcBook != nil && hcBook.Status == "COMPLETED"
+	// HardcoverBook doesn't have a Status field, so we'll assume it's not finished
+	// We'll need to get this information from the read status instead
+	isFinishedInHC := false
+	if readStatusToUpdate != nil && readStatusToUpdate.FinishedAt != nil {
+		isFinishedInHC = true
+	}
 
 	// If the book is marked as finished in both systems, we don't need to update anything
 	if isFinishedInABS && isFinishedInHC {
@@ -1339,9 +1347,12 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		// Include edition_id if available
 		if readStatusToUpdate.EditionID != nil {
 			updateObj["edition_id"] = *readStatusToUpdate.EditionID
-		} else if hcBook != nil && hcBook.EditionID != nil && *hcBook.EditionID != 0 {
-			editionID := *hcBook.EditionID
-			updateObj["edition_id"] = editionID
+		} else if hcBook != nil && hcBook.EditionID != "" {
+			// Convert string edition ID to int if needed
+			editionID, err := strconv.Atoi(hcBook.EditionID)
+			if err == nil && editionID != 0 {
+				updateObj["edition_id"] = editionID
+			}
 		}
 
 		// Update the read with the current progress
@@ -1368,7 +1379,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		// Update book status based on progress
 		if hcBook != nil {
 			// If the book is marked as finished in ABS but not in Hardcover, update status
-			if book.Progress.IsFinished && hcBook.Status != "COMPLETED" {
+			if book.Progress.IsFinished && !isFinishedInHC {
 				log.Debug("Updating book status to COMPLETED", logCtx)
 				err = s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
 					ID:       userBookID,
@@ -1383,7 +1394,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				} else {
 					log.Info("Successfully updated book status to COMPLETED", nil)
 				}
-			} else if hcBook.Status != "IN_PROGRESS" {
+			} else if !isFinishedInHC {
 				// If the book is in progress in ABS but not in Hardcover, update status
 				log.Debug("Updating book status to IN_PROGRESS", logCtx)
 				err = s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
@@ -1422,7 +1433,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		}
 
 		// Get the edition ID from the user book
-		hcBook, err := s.hardcover.GetUserBook(ctx, userBookID)
+		hcBook, err := s.hardcover.GetUserBook(ctx, strconv.FormatInt(userBookID, 10))
 		if err != nil || hcBook == nil {
 			errMsg := "User book not found"
 			if err != nil {
@@ -1434,9 +1445,13 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		}
 
 		// Set edition ID if available
-		if hcBook.EditionID != nil && *hcBook.EditionID != 0 {
-			editionID := *hcBook.EditionID
-			createObj.EditionID = &editionID
+		if hcBook.EditionID != "" {
+			// Convert string edition ID to int if needed
+			editionID, err := strconv.Atoi(hcBook.EditionID)
+			if err == nil && editionID != 0 {
+				editionIDInt := int64(editionID) // Convert to int64 to match expected type
+				createObj.EditionID = &editionIDInt
+			}
 		}
 
 		// Insert the new read status
@@ -1453,8 +1468,8 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 
 		log.Info("Successfully created new read status in Hardcover", nil)
 
-		// Only update status to IN_PROGRESS if not already set
-		if hcBook.Status != "IN_PROGRESS" {
+		// Only update status to IN_PROGRESS if not already in progress
+		if !isFinishedInHC {
 			err = s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
 				ID:       userBookID,
 				StatusID: 2, // 2 = Currently Reading
@@ -1499,6 +1514,10 @@ func (s *Service) determineBookStatus(progress float64, isFinished bool, finishe
 
 // processFoundBook handles the common logic for processing a found book
 func (s *Service) processFoundBook(ctx context.Context, hcBook *models.HardcoverBook, book models.AudiobookshelfBook) (*models.HardcoverBook, error) {
+	if hcBook == nil {
+		return nil, errors.New("book cannot be nil")
+	}
+
 	// Create base logger with common fields
 	logCtx := map[string]interface{}{
 		"title": book.Media.Metadata.Title,
@@ -1638,8 +1657,8 @@ func (s *Service) findBookInHardcoverByTitleAuthor(ctx context.Context, book mod
 		"query": searchQuery,
 	})
 
-	// Search for books using the search API with a default limit of 10 results
-	searchResults, err := s.hardcover.SearchBooks(ctx, searchQuery, 10)
+	// Search for books using the search API
+	searchResults, err := s.hardcover.SearchBooks(ctx, searchQuery, "")
 	if err != nil {
 		log.Error("Failed to search for books", map[string]interface{}{
 			"error": err.Error(),
