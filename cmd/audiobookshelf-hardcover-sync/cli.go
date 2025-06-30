@@ -95,6 +95,7 @@ func RunOneTimeSync(flags *configFlags) {
 	// Initialize logger with debug level for one-time sync
 	logger.Setup(logger.Config{
 		Level:      "debug",
+		Format:     logger.FormatJSON, // Default to JSON format initially
 		Output:     os.Stdout,
 		TimeFormat: time.RFC3339,
 	})
@@ -119,6 +120,7 @@ func RunOneTimeSync(flags *configFlags) {
 	// Re-initialize logger with config from file
 	logger.Setup(logger.Config{
 		Level:      "debug",
+		Format:     logger.ParseLogFormat(cfg.Logging.Format),
 		Output:     os.Stdout,
 		TimeFormat: time.RFC3339,
 	})

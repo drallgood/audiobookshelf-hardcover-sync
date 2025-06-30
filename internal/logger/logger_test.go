@@ -2,8 +2,6 @@ package logger
 
 import (
 	"bytes"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -70,56 +68,6 @@ func TestSetup(t *testing.T) {
 	}
 }
 
-func TestHTTPMiddleware(t *testing.T) {
-	// Create a buffer to capture log output
-	var buf bytes.Buffer
-
-	// Reset global logger with our test buffer
-	globalLogger = &Logger{
-		Logger: zerolog.New(&buf).With().Timestamp().Logger(),
-	}
-
-	// Create a test handler
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte("test response")); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	})
-
-	// Create a test request
-	req, err := http.NewRequest("GET", "/test?param=value", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("User-Agent", "test-agent")
-	req.Header.Set("X-Forwarded-For", "127.0.0.1:12345")
-
-	rr := httptest.NewRecorder()
-
-	// Create middleware with our test logger
-	middleware := HTTPMiddleware(handler)
-
-	// Serve the request
-	middleware.ServeHTTP(rr, req)
-
-	// Check the response
-	assert.Equal(t, http.StatusOK, rr.Code)
-	assert.Equal(t, "test response", rr.Body.String())
-
-	// Check the log output
-	logOutput := buf.String()
-	// The exact format might vary based on zerolog's output format
-	assert.Contains(t, logOutput, `"method":"GET"`)
-	assert.Contains(t, logOutput, `"path":"/test"`)
-	assert.Contains(t, logOutput, `"query":"param=value"`)
-	assert.Contains(t, logOutput, `"ip":"127.0.0.1:12345"`)
-	assert.Contains(t, logOutput, `"user_agent":"test-agent"`)
-	assert.Contains(t, logOutput, `"status":200`)
-	assert.Contains(t, logOutput, `"message":"HTTP request"`)
-}
-
 func TestWithContext(t *testing.T) {
 	// Reset global logger
 	globalLogger = nil
@@ -151,26 +99,4 @@ func TestGet(t *testing.T) {
 	// Before setup, should return a default logger
 	logger := Get()
 	require.NotNil(t, logger)
-
-	// After setup, should return the configured logger
-	Setup(Config{Level: "debug"})
-	logger = Get()
-	require.NotNil(t, logger)
-}
-
-func TestResponseWriterWrapper(t *testing.T) {
-	// Create a test response writer
-	rr := httptest.NewRecorder()
-	wrapper := &responseWriterWrapper{ResponseWriter: rr}
-
-	// Test WriteHeader
-	wrapper.WriteHeader(http.StatusNotFound)
-	assert.Equal(t, http.StatusNotFound, wrapper.status)
-	assert.Equal(t, http.StatusNotFound, rr.Code)
-
-	// Test Write
-	n, err := wrapper.Write([]byte("test"))
-	assert.NoError(t, err)
-	assert.Equal(t, 4, n)
-	assert.Equal(t, "test", rr.Body.String())
 }

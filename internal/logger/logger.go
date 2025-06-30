@@ -108,8 +108,8 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 			ip = r.RemoteAddr
 		}
 
-		// Log the request with all details
-		l.Info("HTTP request", map[string]interface{}{
+		// Get the request ID from context if available
+		fields := map[string]interface{}{
 			"method":     r.Method,
 			"path":       r.URL.Path,
 			"query":      r.URL.RawQuery,
@@ -117,7 +117,15 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 			"user_agent": r.UserAgent(),
 			"status":     rww.status,
 			"duration":   duration.String(),
-		})
+		}
+
+		// Add request ID to log fields if available
+		if requestID, ok := r.Context().Value(ContextKeyRequestID).(string); ok && requestID != "" {
+			fields["request_id"] = requestID
+		}
+
+		// Log the request with all details
+		l.Info("HTTP request", fields)
 	})
 }
 
@@ -242,22 +250,44 @@ func WithContext(fields map[string]interface{}) *Logger {
 	return &Logger{Logger: logger}
 }
 
+// ContextKey is a type for context keys
+type ContextKey string
+
+// ContextKeyRequestID is the key used to store the request ID in the context
+const ContextKeyRequestID ContextKey = "request_id"
+
+// loggerKey is the key used to store the logger in the context
+// This is an unexported type to avoid collisions with other context keys
+type loggerKey struct{}
+
 // WithLogger adds a logger to the context
+// If logger is nil, the original context is returned unchanged
 func WithLogger(ctx context.Context, logger *Logger) context.Context {
-	return logger.Logger.WithContext(ctx)
+	if logger == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, loggerKey{}, logger)
 }
 
 // NewContext creates a new context with the logger
+// If logger is nil, the original context is returned unchanged
 func NewContext(ctx context.Context, logger *Logger) context.Context {
-	return logger.Logger.WithContext(ctx)
+	if logger == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, loggerKey{}, logger)
 }
 
 // FromContext returns the logger from the context
+// If the context is nil or doesn't contain a logger, it returns nil
 func FromContext(ctx context.Context) *Logger {
-	if l, ok := ctx.Value(zerolog.Logger{}).(*Logger); ok {
+	if ctx == nil {
+		return nil
+	}
+	if l, ok := ctx.Value(loggerKey{}).(*Logger); ok {
 		return l
 	}
-	return Get()
+	return nil
 }
 
 // WithFields adds the given fields to the logger and returns a new logger instance

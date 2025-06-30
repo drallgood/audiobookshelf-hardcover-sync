@@ -368,6 +368,10 @@ func loadFromEnv(cfg *Config) {
 	if logLevel := os.Getenv("LOG_LEVEL"); logLevel != "" {
 		cfg.Logging.Level = logLevel
 	}
+	// Handle log format (json or console)
+	if logFormat := os.Getenv("LOG_FORMAT"); logFormat != "" {
+		cfg.Logging.Format = logFormat
+	}
 	if syncInterval := os.Getenv("SYNC_INTERVAL"); syncInterval != "" {
 		if d, err := time.ParseDuration(syncInterval); err == nil {
 			cfg.App.SyncInterval = d

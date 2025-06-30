@@ -91,11 +91,8 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 		countryID = 1 // Default to US
 	}
 
-	// Set default publisher ID for test compatibility
+	// Use the provided publisher ID or default to 0
 	publisherID := b.PublisherID
-	if publisherID == 0 {
-		publisherID = 1 // Default publisher ID for tests
-	}
 
 	// Prefer image_url over cover_url if both are available
 	imageURL := b.ImageURL
@@ -121,8 +118,10 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 	editionInfo = strings.TrimRight(editionInfo, ".;:!?") + "."
 
 	// Look up author IDs if we have an author name and a Hardcover client
-	authorIDs := b.AuthorIDs
-	if len(authorIDs) == 0 && b.Author != "" {
+	authorIDs := []int{} // Initialize as empty slice
+	if len(b.AuthorIDs) > 0 {
+		authorIDs = b.AuthorIDs
+	} else if b.Author != "" {
 		if hc != nil {
 			// Try to look up author IDs from Hardcover
 			if ids, err := LookupAuthorIDs(ctx, hc, b.Author); err == nil && len(ids) > 0 {
@@ -131,15 +130,14 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 			} else if err != nil {
 				logger.Error("Failed to look up author IDs", map[string]interface{}{"error": err.Error()})
 			}
-		} else {
-			// Default to empty slice if no client available
-			authorIDs = []int{}
 		}
 	}
 
 	// Look up narrator IDs if we have a narrator name and a Hardcover client
-	narratorIDs := b.NarratorIDs
-	if len(narratorIDs) == 0 && b.Narrator != "" {
+	narratorIDs := []int{} // Initialize as empty slice
+	if len(b.NarratorIDs) > 0 {
+		narratorIDs = b.NarratorIDs
+	} else if b.Narrator != "" {
 		if hc != nil {
 			// Split narrator string by commas and trim whitespace
 			narratorNames := strings.Split(b.Narrator, ",")
@@ -157,9 +155,6 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 					"names": narratorNames,
 				})
 			}
-		} else {
-			// Default to empty slice if no client available
-			narratorIDs = []int{}
 		}
 	}
 

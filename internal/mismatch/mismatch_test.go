@@ -11,12 +11,31 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/edition"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
+
+// Import the models package to use the correct types
+// No local UserBook type needed as we'll use models.UserBook
+
+// CreateUserBookInput is a mock implementation of the hardcover.CreateUserBookInput type
+type CreateUserBookInput struct {
+	EditionID string `json:"editionId"`
+	Source    string `json:"source"`
+}
+
+// CreateUserBookResult is a mock implementation of the hardcover.CreateUserBookResult type
+type CreateUserBookResult struct {
+	ID int `json:"id"`
+}
+
+
 
 // newTestContext creates a context with a test logger
 func newTestContext(t *testing.T) context.Context {
@@ -70,6 +89,175 @@ func newTestConfig(mismatchDir string) *config.Config {
 	}
 }
 
+// MockHardcoverClient is a mock implementation of the HardcoverClientInterface for testing
+type MockHardcoverClient struct {
+	mock.Mock
+}
+
+// HardcoverClientInterfaceMock is a mock implementation of the HardcoverClientInterface
+// that embeds the mock.Mock type for testing
+
+func (m *MockHardcoverClient) SearchAuthors(ctx context.Context, query string, limit int) ([]models.Author, error) {
+	args := m.Called(ctx, query, limit)
+	return args.Get(0).([]models.Author), args.Error(1)
+}
+
+func (m *MockHardcoverClient) SearchNarrators(ctx context.Context, query string, limit int) ([]models.Author, error) {
+	args := m.Called(ctx, query, limit)
+	return args.Get(0).([]models.Author), args.Error(1)
+}
+
+// Add other required methods of the interface with empty implementations
+func (m *MockHardcoverClient) SearchPublishers(ctx context.Context, query string, limit int) ([]models.Publisher, error) {
+	return nil, nil
+}
+
+func (m *MockHardcoverClient) GetEditionByASIN(ctx context.Context, asin string) (*models.Edition, error) {
+	return nil, nil
+}
+
+func (m *MockHardcoverClient) GetEditionByISBN13(ctx context.Context, isbn13 string) (*models.Edition, error) {
+	return nil, nil
+}
+
+func (m *MockHardcoverClient) GetEditionByISBN10(ctx context.Context, isbn10 string) (*models.Edition, error) {
+	return nil, nil
+}
+
+func (m *MockHardcoverClient) GetEdition(ctx context.Context, id string) (*models.Edition, error) {
+	return nil, nil
+}
+
+func (m *MockHardcoverClient) GetUserBookID(ctx context.Context, editionID int) (int, error) {
+	return 0, nil
+}
+
+func (m *MockHardcoverClient) GetUserBook(ctx context.Context, userBookID string) (*models.HardcoverBook, error) {
+	args := m.Called(ctx, userBookID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.HardcoverBook), args.Error(1)
+}
+
+// SearchBooks is a mock implementation for the HardcoverClientInterface
+func (m *MockHardcoverClient) SearchBooks(ctx context.Context, title, author string) ([]models.HardcoverBook, error) {
+	args := m.Called(ctx, title, author)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]models.HardcoverBook), args.Error(1)
+}
+
+func (m *MockHardcoverClient) SearchBookByASIN(ctx context.Context, asin string) (*models.HardcoverBook, error) {
+	args := m.Called(ctx, asin)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.HardcoverBook), args.Error(1)
+}
+
+func (m *MockHardcoverClient) SearchBookByISBN10(ctx context.Context, isbn10 string) (*models.HardcoverBook, error) {
+	args := m.Called(ctx, isbn10)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.HardcoverBook), args.Error(1)
+}
+
+func (m *MockHardcoverClient) SearchBookByISBN13(ctx context.Context, isbn13 string) (*models.HardcoverBook, error) {
+	args := m.Called(ctx, isbn13)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.HardcoverBook), args.Error(1)
+}
+
+func (m *MockHardcoverClient) AddWithMetadata(metadata string, bookID interface{}, extraData map[string]interface{}) error {
+	args := m.Called(metadata, bookID, extraData)
+	return args.Error(0)
+}
+
+func (m *MockHardcoverClient) SaveToFile(filename string) error {
+	args := m.Called(filename)
+	return args.Error(0)
+}
+
+// GetAuthHeader is a mock implementation for the HardcoverClientInterface
+func (m *MockHardcoverClient) GetAuthHeader() string {
+	args := m.Called()
+	return args.String(0)
+}
+
+// CheckBookOwnership is a mock implementation for the HardcoverClientInterface
+func (m *MockHardcoverClient) CheckBookOwnership(ctx context.Context, bookID int) (bool, error) {
+	args := m.Called(ctx, bookID)
+	return args.Bool(0), args.Error(1)
+}
+
+// CheckExistingUserBookRead is a mock implementation for the HardcoverClientInterface
+func (m *MockHardcoverClient) CheckExistingUserBookRead(ctx context.Context, input hardcover.CheckExistingUserBookReadInput) (*hardcover.CheckExistingUserBookReadResult, error) {
+	args := m.Called(ctx, input)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*hardcover.CheckExistingUserBookReadResult), args.Error(1)
+}
+
+// CreateUserBook is a mock implementation for the HardcoverClientInterface
+func (m *MockHardcoverClient) CreateUserBook(ctx context.Context, editionID, status string) (string, error) {
+	args := m.Called(ctx, editionID, status)
+	return args.String(0), args.Error(1)
+}
+
+// GetUserBookReads gets the reading progress for a user book
+func (m *MockHardcoverClient) GetUserBookReads(ctx context.Context, input hardcover.GetUserBookReadsInput) ([]hardcover.UserBookRead, error) {
+	args := m.Called(ctx, input)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]hardcover.UserBookRead), args.Error(1)
+}
+
+// InsertUserBookRead creates a new reading progress entry for a user book
+func (m *MockHardcoverClient) InsertUserBookRead(ctx context.Context, input hardcover.InsertUserBookReadInput) (int, error) {
+	args := m.Called(ctx, input)
+	return args.Int(0), args.Error(1)
+}
+
+// MarkEditionAsOwned adds a book to the user's "Owned" list
+func (m *MockHardcoverClient) MarkEditionAsOwned(ctx context.Context, editionID int) error {
+	args := m.Called(ctx, editionID)
+	return args.Error(0)
+}
+
+// UpdateReadingProgress is a mock implementation for the HardcoverClientInterface
+func (m *MockHardcoverClient) UpdateReadingProgress(ctx context.Context, bookID string, progress float64, status string, markAsOwned bool) error {
+	args := m.Called(ctx, bookID, progress, status, markAsOwned)
+	return args.Error(0)
+}
+
+// UpdateUserBookRead updates the reading progress for a user book
+func (m *MockHardcoverClient) UpdateUserBookRead(ctx context.Context, input hardcover.UpdateUserBookReadInput) (bool, error) {
+	args := m.Called(ctx, input)
+	return args.Bool(0), args.Error(1)
+}
+
+// UpdateUserBookStatus updates the status of a user book
+func (m *MockHardcoverClient) UpdateUserBookStatus(ctx context.Context, input hardcover.UpdateUserBookStatusInput) error {
+	args := m.Called(ctx, input)
+	return args.Error(0)
+}
+
+// GetGoogleUploadCredentials is a mock implementation for the HardcoverClientInterface
+func (m *MockHardcoverClient) GetGoogleUploadCredentials(ctx context.Context, filename string, fileSize int) (*edition.GoogleUploadInfo, error) {
+	args := m.Called(ctx, filename, fileSize)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*edition.GoogleUploadInfo), args.Error(1)
+}
+
 func TestBookMismatchToEditionExport(t *testing.T) {
 	// Create a test context with logger
 	ctx := newTestContext(t)
@@ -77,7 +265,7 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 	tests := []struct {
 		name     string
 		book     BookMismatch
-		hc       *hardcover.Client // Mocked Hardcover client
+		setupMocks func(*MockHardcoverClient)
 		expected EditionExport
 	}{
 		{
@@ -91,6 +279,11 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 				Timestamp:       time.Now().Unix(),
 				CreatedAt:       time.Now(),
 			},
+			setupMocks: func(mockHC *MockHardcoverClient) {
+				// Expect a call to SearchAuthors with the test author name
+				mockHC.On("SearchAuthors", mock.Anything, "Test Author", 5).
+					Return([]models.Author{}, nil) // Return empty slice to simulate author not found
+			},
 			expected: EditionExport{
 				BookID:        123, // Parsed from BookID
 				Title:         "Test Book",
@@ -98,9 +291,9 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 				AudioSeconds:  19800,
 				EditionFormat: "Audiobook",
 				EditionInfo:   "Imported from Audiobookshelf\n\nReason: test reason.",
-				LanguageID:    1, // Default to English
-				CountryID:     1, // Default to US
-				PublisherID:   1, // Default publisher
+				LanguageID:    1, // Default values
+				CountryID:     1, // Default values
+				PublisherID:   0, // Default values
 			},
 		},
 		{
@@ -129,6 +322,23 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 				Timestamp:       time.Now().Unix(),
 				CreatedAt:       time.Now(),
 			},
+			setupMocks: func(mockHC *MockHardcoverClient) {
+				// Set up mock expectations for SearchAuthors
+				mockHC.On("SearchAuthors", mock.Anything, "Test Author", 5).
+					Return([]models.Author{{
+						ID:        "1",
+						Name:      "Test Author",
+						BookCount: 10,
+					}}, nil).Once()
+				
+				// Set up mock expectations for SearchNarrators
+				mockHC.On("SearchNarrators", mock.Anything, "Test Narrator", 5).
+					Return([]models.Author{{
+						ID:        "2",
+						Name:      "Test Narrator",
+						BookCount: 5,
+					}}, nil).Once()
+			},
 			expected: EditionExport{
 				BookID:        456, // Parsed from BookID
 				Title:         "Test Book",
@@ -137,8 +347,8 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 				ASIN:          "B07GNTNXQW",
 				ISBN10:        "1234567890",
 				ISBN13:        "9781234567890",
-				AuthorIDs:     []int{}, // Empty slice when no authors found
-				NarratorIDs:   []int{}, // Empty slice when no narrators found
+				AuthorIDs:     []int{1}, // Expected author ID from mock
+				NarratorIDs:   []int{2}, // Expected narrator ID from mock
 				PublisherID:   2,
 				ReleaseDate:   "2020-01-01",
 				AudioSeconds:  37800,
@@ -152,9 +362,22 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := tt.book.ToEditionExport(ctx, tt.hc)
+			// Create a new mock client for this test case
+			mockHC := &MockHardcoverClient{}
+			
+			// Default mock expectations will be set up in each test case
+			
+			// Set up mock expectations if provided
+			if tt.setupMocks != nil {
+				tt.setupMocks(mockHC)
+			}
+			
+			result := tt.book.ToEditionExport(ctx, mockHC)
 
 			// Check all fields that should be directly copied
+			// Verify all mock expectations were met
+			mockHC.AssertExpectations(t)
+			
 			assert.Equal(t, tt.expected.BookID, result.BookID)
 			assert.Equal(t, tt.expected.Title, result.Title)
 			assert.Equal(t, tt.expected.Subtitle, result.Subtitle)
