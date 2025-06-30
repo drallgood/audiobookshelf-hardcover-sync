@@ -162,6 +162,11 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 
 // Sync performs a full synchronization between Audiobookshelf and Hardcover
 func (s *Service) Sync(ctx context.Context) error {
+	// Clear any existing mismatches at the start of each sync cycle
+	// This prevents accumulation of resolved mismatches in continuous sync mode
+	mismatch.Clear()
+	s.log.Info("Cleared previous mismatches at start of sync cycle", nil)
+
 	// Log the start of the sync
 	s.log.Info("========================================", map[string]interface{}{
 		"dry_run":          s.config.App.DryRun,
