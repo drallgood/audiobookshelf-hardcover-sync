@@ -50,7 +50,10 @@ func TestHTTPMiddleware(t *testing.T) {
 			path: "/test",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte("test response"))
+				if _, err := w.Write([]byte("test response")); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 			},
 			expectedStatus: http.StatusOK,
 			expectedLogs: []string{

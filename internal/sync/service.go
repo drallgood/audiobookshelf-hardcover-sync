@@ -1225,38 +1225,54 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		}
 	}
 
-	// If no unfinished read status found, use the most recent one if it exists
-	if readStatusToUpdate == nil && mostRecentRead != nil {
-		readStatusToUpdate = mostRecentRead
-		logCtx["using_most_recent_read"] = true
-	}
-
-	// Log which read status we're using
-	if readStatusToUpdate != nil {
-		logCtx["read_status_id"] = readStatusToUpdate.ID
-		logCtx["current_progress"] = readStatusToUpdate.Progress
-		if readStatusToUpdate.FinishedAt != nil {
-			logCtx["read_status_finished_at"] = *readStatusToUpdate.FinishedAt
+	// If no read status found at all, we'll create a new one
+	if readStatusToUpdate == nil && mostRecentRead == nil {
+		log.Info("No existing read status found, will create a new one", logCtx)
+	} else {
+		// Use the most recent read status if we didn't find an unfinished one
+		if readStatusToUpdate == nil && mostRecentRead != nil {
+			readStatusToUpdate = mostRecentRead
+			logCtx["using_most_recent_read"] = true
 		}
 
-		// Check if we have a significant progress difference
-		progressDiff := math.Abs(float64(book.Progress.CurrentTime - readStatusToUpdate.Progress))
-		minDiff := 30.0 // 30 second minimum difference to trigger an update
+		// Log which read status we're using
+		if readStatusToUpdate != nil {
+			logCtx["read_status_id"] = readStatusToUpdate.ID
+			logCtx["existing_progress_seconds"] = readStatusToUpdate.Progress
+			if readStatusToUpdate.FinishedAt != nil {
+				logCtx["read_status_finished_at"] = *readStatusToUpdate.FinishedAt
+			}
 
-		// If progress is very small, be more lenient
-		if readStatusToUpdate.Progress < 60 || book.Progress.CurrentTime < 60 {
-			minDiff = 10.0 // 10 second threshold for new/small progress
+			// Calculate progress difference in both absolute seconds and percentage
+			progressDiff := math.Abs(float64(book.Progress.CurrentTime - readStatusToUpdate.Progress))
+			minDiff := 30.0 // 30 second minimum difference to trigger an update
+
+			// Calculate progress percentage difference if we have duration
+			var progressPctDiff float64
+			if book.Media.Duration > 0 {
+				hcProgressPct := (float64(readStatusToUpdate.Progress) / book.Media.Duration) * 100
+				absProgressPct := (book.Progress.CurrentTime / book.Media.Duration) * 100
+				progressPctDiff = math.Abs(hcProgressPct - absProgressPct)
+				logCtx["existing_progress_pct"] = fmt.Sprintf("%.1f%%", hcProgressPct)
+				logCtx["progress_pct_diff"] = fmt.Sprintf("%.1f%%", progressPctDiff)
+			}
+
+			// If progress is very small, be more lenient
+			if readStatusToUpdate.Progress < 60 || book.Progress.CurrentTime < 60 {
+				minDiff = 10.0 // 10 second threshold for new/small progress
+			}
+
+			logCtx["progress_diff_seconds"] = fmt.Sprintf("%.2f", progressDiff)
+			logCtx["min_diff_seconds"] = minDiff
+
+			// Skip update if progress difference is below threshold
+			if progressDiff < minDiff {
+				log.Info("Progress difference below threshold, skipping update", logCtx)
+				return nil
+			}
+
+			log.Info("Significant progress difference detected, will update", logCtx)
 		}
-
-		logCtx["progress_diff"] = progressDiff
-		logCtx["min_diff"] = minDiff
-
-		if progressDiff < minDiff {
-			log.Info(fmt.Sprintf("Progress difference (%.2f) < min threshold (%.2f), skipping update", progressDiff, minDiff), logCtx)
-			return nil
-		}
-
-		log.Info(fmt.Sprintf("Progress difference (%.2f) >= min threshold (%.2f), will update", progressDiff, minDiff), logCtx)
 	}
 
 	// Prepare the update object with progress and format

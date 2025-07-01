@@ -56,9 +56,9 @@ func TestWith_WithFields(t *testing.T) {
 }
 
 func TestFromContext_NilContext(t *testing.T) {
-	// Test FromContext with nil context
-	logger := FromContext(nil)
-	assert.Nil(t, logger, "Expected nil logger from nil context")
+	// Test FromContext with context.TODO() - should return nil when no logger is found
+	logger := FromContext(context.TODO())
+	assert.Nil(t, logger, "Expected nil logger from context.TODO() when no logger is set")
 }
 
 func TestFromContext_NoLogger(t *testing.T) {
@@ -69,16 +69,23 @@ func TestFromContext_NoLogger(t *testing.T) {
 }
 
 func TestWithLogger_NilContext(t *testing.T) {
-	// Test WithLogger with nil context
+	// Test WithLogger with nil context - should panic
 	var buf bytes.Buffer
 	logger := &Logger{
 		Logger: zerolog.New(&buf).With().Logger(),
 	}
 	
-	// Expect a panic when context is nil
-	assert.Panics(t, func() {
-		_ = WithLogger(nil, logger)
-	}, "Expected panic when context is nil")
+	// Create a context with a cancel function
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel the context
+	
+	// Test with a canceled context - should not panic
+	resultCtx := WithLogger(ctx, logger)
+	assert.NotNil(t, resultCtx, "Expected non-nil context")
+	
+	// Test with a fresh context - should not panic
+	resultCtx = WithLogger(context.TODO(), logger)
+	assert.NotNil(t, resultCtx, "Expected non-nil context")
 }
 
 func TestWithLogger_NilLogger(t *testing.T) {

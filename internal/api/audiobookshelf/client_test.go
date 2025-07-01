@@ -44,7 +44,10 @@ func TestGetLibraries(t *testing.T) {
 						},
 					}
 					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(response)
+					if err := json.NewEncoder(w).Encode(response); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 				})
 				return httptest.NewServer(handler)
 			},
@@ -116,7 +119,10 @@ func TestGetLibraryItems(t *testing.T) {
 					"total": 1,
 				}
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(response)
+				if err := json.NewEncoder(w).Encode(response); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 			})
 			return httptest.NewServer(handler)
 		},
@@ -227,7 +233,10 @@ func TestGetUserProgress(t *testing.T) {
 					}
 
 					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(progress)
+					if err := json.NewEncoder(w).Encode(progress); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 				})
 				return httptest.NewServer(handler)
 			},
@@ -287,7 +296,10 @@ func TestGetListeningSessions(t *testing.T) {
 						},
 					}
 					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(sessions)
+					if err := json.NewEncoder(w).Encode(sessions); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
 				})
 				return httptest.NewServer(handler)
 			},

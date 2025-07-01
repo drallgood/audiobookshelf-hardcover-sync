@@ -59,20 +59,17 @@ func TestSemaphore(t *testing.T) {
 			t.Logf("Goroutine %d: attempting to acquire semaphore", id)
 
 			// Try to acquire semaphore
-			select {
-			case <-sem:
-				// Acquired semaphore
-				atomic.AddInt32(&active, 1)
-				t.Logf("Goroutine %d: acquired semaphore (active: %d)", id, atomic.LoadInt32(&active))
+			<-sem // Acquire semaphore
+			atomic.AddInt32(&active, 1)
+			t.Logf("Goroutine %d: acquired semaphore (active: %d)", id, atomic.LoadInt32(&active))
 
-				// Simulate work
-				time.Sleep(100 * time.Millisecond)
+			// Simulate work
+			time.Sleep(100 * time.Millisecond)
 
-				// Release semaphore
-				sem <- struct{}{}
-				atomic.AddInt32(&active, -1)
-				t.Logf("Goroutine %d: released semaphore (active: %d)", id, atomic.LoadInt32(&active))
-			}
+			// Release semaphore and update active count
+			atomic.AddInt32(&active, -1)
+			sem <- struct{}{}
+			t.Logf("Goroutine %d: released semaphore (active: %d)", id, atomic.LoadInt32(&active))
 		}(i)
 	}
 
