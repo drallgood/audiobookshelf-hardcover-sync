@@ -1320,8 +1320,8 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			// Warn about extremely large progress differences (> 1 hour)
 			if progressDiff > 3600 {
 				logCtx["progress_diff_hours"] = fmt.Sprintf("%.2f", progressDiff/3600)
-				logCtx["abs_progress_time"] = fmt.Sprintf("%s", time.Duration(int64(book.Progress.CurrentTime)*int64(time.Second)))
-				logCtx["hc_progress_time"] = fmt.Sprintf("%s", time.Duration(int64(hcProgressSeconds)*int64(time.Second)))
+				logCtx["abs_progress_time"] = time.Duration(int64(book.Progress.CurrentTime)*int64(time.Second)).String()
+				logCtx["hc_progress_time"] = time.Duration(int64(hcProgressSeconds)*int64(time.Second)).String()
 				log.Warn("Extremely large progress difference detected. Possible book mapping or sync issue.", logCtx)
 			}
 
