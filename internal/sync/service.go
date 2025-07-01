@@ -7,6 +7,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
@@ -25,6 +26,12 @@ var (
 
 
 
+// progressUpdateInfo stores information about the last progress update for a book
+type progressUpdateInfo struct {
+	timestamp time.Time
+	progress  float64
+}
+
 // Service handles the synchronization between Audiobookshelf and Hardcover
 type Service struct {
 	audiobookshelf *audiobookshelf.Client
@@ -33,6 +40,8 @@ type Service struct {
 	log            *logger.Logger
 	state          *state.State
 	statePath      string
+	lastProgressUpdates map[string]progressUpdateInfo // Cache of last progress updates
+	lastProgressMutex sync.RWMutex                  // Mutex to protect the cache
 }
 
 // Config is the configuration type for the sync service
@@ -46,6 +55,7 @@ func NewService(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverCl
 		config:         cfg,
 		log:            logger.Get(),
 		statePath:      cfg.Sync.StateFile,
+		lastProgressUpdates: make(map[string]progressUpdateInfo),
 	}
 
 	// Migrate old state file if it exists
@@ -1200,6 +1210,25 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		return nil
 	}
 
+	// Check if we've recently updated this book's progress
+	bookCacheKey := fmt.Sprintf("%s:%d", book.ID, userBookID)
+	s.lastProgressMutex.RLock()
+	lastUpdate, exists := s.lastProgressUpdates[bookCacheKey]
+	s.lastProgressMutex.RUnlock()
+
+	// If we've updated this book in the last 5 minutes and the progress is very similar (within 5 seconds),
+	// skip the update to prevent unnecessary API calls
+	if exists && time.Since(lastUpdate.timestamp) < 5*time.Minute {
+		progressDiff := math.Abs(book.Progress.CurrentTime - lastUpdate.progress)
+		if progressDiff < 5.0 {
+			logCtx["last_update_time"] = lastUpdate.timestamp
+			logCtx["last_progress"] = lastUpdate.progress
+			logCtx["progress_diff"] = progressDiff
+			log.Info("Skipping update - recently updated with similar progress", logCtx)
+			return nil
+		}
+	}
+
 	// Find the most appropriate read status to update
 	var readStatusToUpdate *hardcover.UserBookRead
 	var mostRecentRead *hardcover.UserBookRead
@@ -1238,19 +1267,29 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		// Log which read status we're using
 		if readStatusToUpdate != nil {
 			logCtx["read_status_id"] = readStatusToUpdate.ID
-			logCtx["existing_progress_seconds"] = readStatusToUpdate.Progress
+			// Use ProgressSeconds if available, otherwise fall back to Progress field
+			var hcProgressSeconds float64
+			if readStatusToUpdate.ProgressSeconds != nil {
+				hcProgressSeconds = float64(*readStatusToUpdate.ProgressSeconds)
+				logCtx["existing_progress_seconds"] = hcProgressSeconds
+				logCtx["progress_source"] = "progress_seconds"
+			} else {
+				hcProgressSeconds = readStatusToUpdate.Progress
+				logCtx["existing_progress_seconds"] = hcProgressSeconds
+				logCtx["progress_source"] = "progress"
+			}
 			if readStatusToUpdate.FinishedAt != nil {
 				logCtx["read_status_finished_at"] = *readStatusToUpdate.FinishedAt
 			}
 
 			// Calculate progress difference in both absolute seconds and percentage
-			progressDiff := math.Abs(float64(book.Progress.CurrentTime - readStatusToUpdate.Progress))
-			minDiff := 30.0 // 30 second minimum difference to trigger an update
+			progressDiff := math.Abs(float64(book.Progress.CurrentTime - hcProgressSeconds))
+			minDiff := 60.0 // 60 second minimum difference to trigger an update (increased from 30s)
 
 			// Calculate progress percentage difference if we have duration
 			var progressPctDiff float64
 			if book.Media.Duration > 0 {
-				hcProgressPct := (float64(readStatusToUpdate.Progress) / book.Media.Duration) * 100
+				hcProgressPct := (hcProgressSeconds / book.Media.Duration) * 100
 				absProgressPct := (book.Progress.CurrentTime / book.Media.Duration) * 100
 				progressPctDiff = math.Abs(hcProgressPct - absProgressPct)
 				logCtx["existing_progress_pct"] = fmt.Sprintf("%.1f%%", hcProgressPct)
@@ -1258,8 +1297,15 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			}
 
 			// If progress is very small, be more lenient
-			if readStatusToUpdate.Progress < 60 || book.Progress.CurrentTime < 60 {
+			if hcProgressSeconds < 60 || book.Progress.CurrentTime < 60 {
 				minDiff = 10.0 // 10 second threshold for new/small progress
+			}
+
+			// If progress is nearly the same (within 1 second), skip update regardless of threshold
+			if progressDiff < 1.0 {
+				logCtx["progress_diff_seconds"] = fmt.Sprintf("%.2f", progressDiff)
+				log.Info("Progress is identical or nearly identical, skipping update", logCtx)
+				return nil
 			}
 
 			logCtx["progress_diff_seconds"] = fmt.Sprintf("%.2f", progressDiff)
@@ -1270,6 +1316,24 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				log.Info("Progress difference below threshold, skipping update", logCtx)
 				return nil
 			}
+			
+			// Warn about extremely large progress differences (> 1 hour)
+			if progressDiff > 3600 {
+				logCtx["progress_diff_hours"] = fmt.Sprintf("%.2f", progressDiff/3600)
+				logCtx["abs_progress_time"] = fmt.Sprintf("%s", time.Duration(int64(book.Progress.CurrentTime)*int64(time.Second)))
+				logCtx["hc_progress_time"] = fmt.Sprintf("%s", time.Duration(int64(hcProgressSeconds)*int64(time.Second)))
+				log.Warn("Extremely large progress difference detected. Possible book mapping or sync issue.", logCtx)
+			}
+
+			// Store the last update time and progress for this book to prevent frequent updates
+			// This is a memory-only cache that will be reset when the service restarts
+			bookCacheKey := fmt.Sprintf("%s:%d", book.ID, userBookID)
+			s.lastProgressMutex.Lock()
+			s.lastProgressUpdates[bookCacheKey] = progressUpdateInfo{
+				timestamp: time.Now(),
+				progress:  book.Progress.CurrentTime,
+			}
+			s.lastProgressMutex.Unlock()
 
 			log.Info("Significant progress difference detected, will update", logCtx)
 		}
@@ -1314,7 +1378,16 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 	// If we have a read status to update, update it
 	if readStatusToUpdate != nil {
 		logCtx["existing_read_status_id"] = readStatusToUpdate.ID
-		logCtx["existing_progress"] = readStatusToUpdate.Progress
+		
+		// Use ProgressSeconds if available, otherwise fall back to Progress field
+		var hcProgressSeconds float64
+		if readStatusToUpdate.ProgressSeconds != nil {
+			hcProgressSeconds = float64(*readStatusToUpdate.ProgressSeconds)
+		} else {
+			hcProgressSeconds = readStatusToUpdate.Progress
+		}
+		logCtx["existing_progress"] = hcProgressSeconds
+		
 		if readStatusToUpdate.FinishedAt != nil {
 			logCtx["existing_finished_at"] = *readStatusToUpdate.FinishedAt
 		}
@@ -1345,24 +1418,11 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				return nil
 			}
 		} else {
-			// For in-progress updates, only update if there's a significant progress difference
-			progressDiff := math.Abs(float64(book.Progress.CurrentTime - readStatusToUpdate.Progress))
-			minDiff := 30.0 // 30 second minimum difference to trigger an update
-
-			// If progress is very small, be more lenient
-			if readStatusToUpdate.Progress < 60 || book.Progress.CurrentTime < 60 {
-				minDiff = 10.0 // 10 second threshold for new/small progress
-			}
-
-			logCtx["progress_diff"] = progressDiff
-			logCtx["min_diff"] = minDiff
-
-			if progressDiff < minDiff {
-				log.Info(fmt.Sprintf("Skipping update - progress difference (%.2f) < min threshold (%.2f)", progressDiff, minDiff), logCtx)
-				return nil
-			}
-
-			log.Info(fmt.Sprintf("Updating existing read status - progress difference (%.2f) >= min threshold (%.2f)", progressDiff, minDiff), logCtx)
+			// Progress difference was already checked above, so we can proceed with the update
+			// Get the values from the log context to avoid undefined variables
+			pDiff, _ := logCtx["progress_diff_seconds"].(string)
+			mDiff, _ := logCtx["min_diff_seconds"].(float64)
+			log.Info(fmt.Sprintf("Updating existing read status - progress difference (%s) >= min threshold (%.2f)", pDiff, mDiff), logCtx)
 		}
 
 		// Include edition_id if available
