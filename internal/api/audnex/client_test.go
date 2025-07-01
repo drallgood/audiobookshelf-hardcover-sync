@@ -20,7 +20,7 @@ func TestGetBookByASIN(t *testing.T) {
 		// Return a mock response
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{
+		_, err := w.Write([]byte(`{
 			"asin": "B0BXJF2LW5",
 			"title": "Test Book",
 			"authors": ["Test Author"],
@@ -32,6 +32,9 @@ func TestGetBookByASIN(t *testing.T) {
 			"language": "English",
 			"runtimeLengthMin": 480
 		}`))
+		if err != nil {
+			t.Errorf("Failed to write response: %v", err)
+		}
 	}))
 	defer server.Close()
 
