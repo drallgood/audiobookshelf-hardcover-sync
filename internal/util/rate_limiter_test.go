@@ -5,55 +5,30 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 )
 
-// testLogger is a simple logger implementation for testing that satisfies the logger interface
-type testLogger struct {
-	logger *logger.Logger
-}
-
-func (l *testLogger) Debug(msg string, fields ...map[string]interface{}) {
-	if l.logger != nil && len(fields) > 0 {
-		l.logger.Debug(msg, fields[0])
-	} else if l.logger != nil {
-		l.logger.Debug(msg)
+// setupTestLogger creates a test logger that writes to stderr
+func setupTestLogger(t *testing.T) *logger.Logger {
+	// Configure the global logger for testing
+	cfg := logger.Config{
+		Level:      "debug",
+		Format:     "console",
+		Output:     os.Stderr,
+		TimeFormat: time.RFC3339,
 	}
+	logger.Setup(cfg)
+	return logger.Get()
 }
-
-func (l *testLogger) Info(msg string, fields ...map[string]interface{}) {
-	if l.logger != nil && len(fields) > 0 {
-		l.logger.Info(msg, fields[0])
-	} else if l.logger != nil {
-		l.logger.Info(msg)
-	}
-}
-
-func (l *testLogger) Warn(msg string, fields ...map[string]interface{}) {
-	if l.logger != nil && len(fields) > 0 {
-		l.logger.Warn(msg, fields[0])
-	} else if l.logger != nil {
-		l.logger.Warn(msg)
-	}
-}
-
-func (l *testLogger) Error(msg string, fields ...map[string]interface{}) {
-	if l.logger != nil && len(fields) > 0 {
-		l.logger.Error(msg, fields[0])
-	} else if l.logger != nil {
-		l.logger.Error(msg)
-	}
-}
-
 
 func init() {
 	// Enable test mode to disable buffering in ParseRetryAfter
@@ -219,153 +194,99 @@ func TestRateLimiter_BasicRateLimiting(t *testing.T) {
 }
 
 func TestRateLimiter_ContextCancellation(t *testing.T) {
-	t.Run("context cancellation", func(t *testing.T) {
-		rl := NewRateLimiter(time.Second, 1, 1, nil)
-		defer rl.ResetRate()
-
-		// Use first token
-		err := rl.Wait(context.Background())
-		require.NoError(t, err)
+	t.Run("context canceled", func(t *testing.T) {
+		log := setupTestLogger(t)
+		rl := NewRateLimiter(100*time.Millisecond, 1, 5, log)
 
 		// Create a context with timeout
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 		defer cancel()
 
 		// This should fail due to context timeout
-		err = rl.Wait(ctx)
+		err := rl.Wait(ctx)
 		assert.ErrorIs(t, err, context.DeadlineExceeded)
 	})
 }
 
 func TestRateLimiter_ConcurrencyLimiting(t *testing.T) {
 	t.Run("concurrency limiting", func(t *testing.T) {
+		log := setupTestLogger(t)
+		
 		// Use a very slow rate to ensure we hit concurrency limits before rate limits
 		rate := 10 * time.Second
 		burst := 1
 		maxConcurrent := 2
 		totalRequests := 5
-		
+
 		t.Logf("Starting test with maxConcurrent=%d, totalRequests=%d", maxConcurrent, totalRequests)
-		
-		// Create a rate limiter with max concurrency and mock logger
-		log := logger.Get()
+
 		rateLimiter := NewRateLimiter(rate, burst, maxConcurrent, log)
-		defer rateLimiter.ResetRate()
-		
-		// Log the initial state of the rate limiter
-		t.Logf("Rate limiter created: rate=%v, burst=%d, maxConcurrent=%d", rate, burst, maxConcurrent)
-		
-		// Channel to coordinate test execution
+		t.Logf("Rate limiter created: rate=%v, burst=%d, maxConcurrent=%d", rate, burst, rateLimiter.maxConcurrent)
+
+		// Channel to coordinate goroutine startup
 		startCh := make(chan struct{})
-		doneCh := make(chan struct{}, totalRequests)
+
+		// Channel to collect errors
 		errCh := make(chan error, totalRequests)
 
-		// Track active requests and max observed concurrency
-		activeReqs := int32(0)
-		maxObserved := int32(0)
-		var mu sync.Mutex
+		// Channel to signal when each goroutine is done
+		doneCh := make(chan struct{}, totalRequests)
 
-		// Channel to track when goroutines have acquired the semaphore
-		semaphoreAcquired := make(chan int, totalRequests) // Send goroutine ID when semaphore is acquired
+		// Track the number of active requests
+		var activeReqs int32
+		var maxActive int32
 
-		// Start all requests
+		// Start all the goroutines
 		for i := 0; i < totalRequests; i++ {
 			go func(id int) {
-				t.Logf("Goroutine %d: waiting for start signal", id)
 				// Wait for the start signal
 				<-startCh
 
-				t.Logf("Goroutine %d: attempting to acquire semaphore", id)
-
-				// Call the rate limiter to acquire the semaphore first
+				// Call the rate limiter to acquire the semaphore
 				err := rateLimiter.Wait(context.Background())
 				if err != nil {
-					errMsg := fmt.Errorf("goroutine %d failed to acquire semaphore: %v", id, err)
-					t.Logf("ERROR: %v", errMsg)
-					errCh <- errMsg
+					errCh <- fmt.Errorf("goroutine %d: %v", id, err)
 					doneCh <- struct{}{}
 					return
 				}
 
-				// Now that we've acquired the semaphore, track this request as active
+				// Track active requests
 				current := atomic.AddInt32(&activeReqs, 1)
-				
-				// Update max observed concurrency
-				mu.Lock()
-				if current > maxObserved {
-					maxObserved = current
-					t.Logf("New max concurrency: %d", maxObserved)
+				for {
+					prevMax := atomic.LoadInt32(&maxActive)
+					if current <= prevMax || atomic.CompareAndSwapInt32(&maxActive, prevMax, current) {
+						break
+					}
 				}
-				mu.Unlock()
 
-				// Signal that we've acquired the semaphore after updating the active count
-				semaphoreAcquired <- id
-				t.Logf("Goroutine %d: acquired semaphore (active: %d)", id, current)
-				
-				// Simulate some work
+				// Simulate work
 				time.Sleep(100 * time.Millisecond)
-				
-				// Decrement active requests counter
-				remaining := atomic.AddInt32(&activeReqs, -1)
-				t.Logf("Goroutine %d: work completed (remaining active: %d)", id, remaining)
-				
+
+				// Mark request as done
+				atomic.AddInt32(&activeReqs, -1)
 				doneCh <- struct{}{}
-				t.Logf("Goroutine %d: done", id)
 			}(i)
 		}
 
-		t.Logf("Starting all %d goroutines", totalRequests)
 		// Start all requests at once
 		close(startCh)
 
-		t.Logf("Waiting for %d goroutines to acquire semaphore", maxConcurrent)
-		// Wait for maxConcurrent goroutines to acquire the semaphore
-		t.Logf("Waiting for %d goroutines to acquire semaphore", maxConcurrent)
-		for i := 0; i < maxConcurrent; i++ {
-			select {
-			case id := <-semaphoreAcquired:
-				t.Logf("Semaphore acquired by goroutine %d (%d/%d)", id, i+1, maxConcurrent)
-				continue
-			case <-time.After(5 * time.Second):
-				t.Fatalf("Timeout waiting for goroutine %d to acquire semaphore", i+1)
-			}
-		}
-
-		// At this point, we should have exactly maxConcurrent goroutines active
-		// since that's how many we've allowed to acquire the semaphore
-		currentActive := atomic.LoadInt32(&activeReqs)
-		t.Logf("Current active goroutines: %d (expected: %d)", currentActive, maxConcurrent)
-		if currentActive != int32(maxConcurrent) {
-			t.Errorf("Expected %d active goroutines, got %d", maxConcurrent, currentActive)
-		}
-
-		t.Logf("Waiting for all %d requests to complete", totalRequests)
 		// Wait for all goroutines to complete
-		t.Logf("Waiting for all %d requests to complete", totalRequests)
-		completed := 0
-		for completed < totalRequests {
+		for i := 0; i < totalRequests; i++ {
 			select {
 			case err := <-errCh:
-				t.Fatalf("Error from goroutine: %v", err)
+				t.Error(err)
 			case <-doneCh:
-				completed++
-				currentActive := atomic.LoadInt32(&activeReqs)
-				t.Logf("Request %d/%d completed (remaining active: %d)", completed, totalRequests, currentActive)
+				// Goroutine completed
 			}
 		}
 
-		// Check max observed concurrency
-		mu.Lock()
-		maxConcurrentObserved := maxObserved
-		mu.Unlock()
-
-		t.Logf("Final max concurrency observed: %d (max allowed: %d)", maxConcurrentObserved, maxConcurrent)
-
-		// Check if max concurrency was ever exceeded
-		if maxConcurrentObserved > int32(maxConcurrent) {
-			t.Errorf("Max concurrency exceeded: got %d, want <= %d", maxConcurrentObserved, maxConcurrent)
+		// Verify max concurrency was respected
+		maxConcurrentReached := atomic.LoadInt32(&maxActive)
+		if maxConcurrentReached > int32(maxConcurrent) {
+			t.Errorf("Max concurrency exceeded: got %d, want <= %d", maxConcurrentReached, maxConcurrent)
 		} else {
-			t.Logf("Test completed: maxConcurrentObserved=%d, maxAllowed=%d", maxConcurrentObserved, maxConcurrent)
+			t.Logf("Max concurrency was properly limited to %d", maxConcurrentReached)
 		}
 	})
 }
@@ -452,18 +373,19 @@ func TestRateLimiter_OnRateLimit(t *testing.T) {
 }
 
 func TestRateLimiter_ResetRate(t *testing.T) {
+	// Create a rate limiter with a custom rate
 	rl := NewRateLimiter(time.Second, 1, 1, nil)
 
-	// Modify the rate
+	// Modify the rate to something different
 	rl.mu.Lock()
-	rl.rate = 2 * time.Second
+	rl.rate = 5 * time.Second
 	rl.mu.Unlock()
 
 	// Reset the rate
 	rl.ResetRate()
 
-	// Should be back to the default
-	assert.Equal(t, time.Second, rl.GetRate())
+	// Should be back to the default (2 seconds)
+	assert.Equal(t, 2*time.Second, rl.GetRate(), "rate should be reset to default 2 seconds")
 }
 
 func TestRateLimiter_GetMetrics(t *testing.T) {

@@ -116,8 +116,12 @@ func NewRateLimiter(rate time.Duration, burst, maxConcurrent int, log *logger.Lo
 		logger:        log,
 	}
 
-	// Pre-fill the semaphore with maxConcurrent tokens
-	for i := 0; i < maxConcurrent; i++ {
+	// Initialize the semaphore with maxConcurrent tokens
+	// Each token is represented by sending a value to the channel.
+	// To acquire a token, receive from the channel.
+	// To release a token, send to the channel.
+	rl.semaphore = make(chan struct{}, rl.maxConcurrent)
+	for i := 0; i < int(rl.maxConcurrent); i++ {
 		rl.semaphore <- struct{}{}
 	}
 
@@ -126,27 +130,27 @@ func NewRateLimiter(rate time.Duration, burst, maxConcurrent int, log *logger.Lo
 
 // Wait blocks until a token is available or the context is cancelled
 func (r *RateLimiter) Wait(ctx context.Context) error {
-	// First check if we need to wait due to backoff
+	// Check if we're in a backoff period first
 	r.mu.RLock()
 	backoffRemaining := r.checkBackoff()
-	backoffUntil := r.backoffUntil
 	r.mu.RUnlock()
 
 	if backoffRemaining > 0 {
-		r.logger.Debug("Rate limited: in backoff period", map[string]interface{}{
+		r.logger.Debug("Rate limiter in backoff period", map[string]interface{}{
 			"backoff_remaining": backoffRemaining.String(),
-			"backoff_until":     time.Until(backoffUntil).String(),
 		})
 
-		// If we have a context with timeout, check if we can wait that long
-		if deadline, hasDeadline := ctx.Deadline(); hasDeadline {
-			if time.Until(deadline) < backoffRemaining {
-				r.logger.Debug("Context deadline too soon for backoff, failing", map[string]interface{}{
-					"deadline_in":       time.Until(deadline).String(),
-					"backoff_remaining": backoffRemaining.String(),
-				})
-				return ctx.Err()
+		// If we have a context with deadline, check if we can wait that long
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < backoffRemaining {
+			r.logger.Debug("Context deadline too soon for backoff", map[string]interface{}{
+				"deadline":           deadline,
+				"backoff_remaining": backoffRemaining,
+			})
+			// Return the context error to ensure proper error wrapping
+			if ctx.Err() == nil {
+				return context.DeadlineExceeded
 			}
+			return ctx.Err()
 		}
 
 		// Wait for the backoff period or context cancellation
@@ -161,121 +165,66 @@ func (r *RateLimiter) Wait(ctx context.Context) error {
 		}
 	}
 
-	// Enforce max concurrent requests if set
+	// First handle concurrency limiting if enabled
 	if r.maxConcurrent > 0 {
-		r.logger.Debug("Attempting to acquire semaphore token", map[string]interface{}{
-			"max_concurrent":     r.maxConcurrent,
-			"semaphore_available": len(r.semaphore),
-			"semaphore_cap":      cap(r.semaphore),
-		})
-
-		// Try to acquire a token from the semaphore
+		// Try to acquire a token from the semaphore channel (will block if empty)
 		select {
 		case <-r.semaphore:
-			// Successfully acquired a token
-			r.logger.Debug("Acquired semaphore token", map[string]interface{}{
-				"max_concurrent":     r.maxConcurrent,
-				"semaphore_remaining": len(r.semaphore),
-				"semaphore_cap":      cap(r.semaphore),
-			})
-
-			// Return the token to the semaphore when done
+			// Successfully acquired a token, make sure to release it when done
 			defer func() {
-				// Add a small delay before releasing the semaphore to help with testing
-				time.Sleep(100 * time.Millisecond)
-				r.logger.Debug("Releasing semaphore token", map[string]interface{}{
-					"max_concurrent":     r.maxConcurrent,
-					"semaphore_available_before": len(r.semaphore),
-				})
+				// Release the token by sending it back to the channel
 				r.semaphore <- struct{}{}
-				r.logger.Debug("Released semaphore token", map[string]interface{}{
-					"max_concurrent":     r.maxConcurrent,
-					"semaphore_available_after": len(r.semaphore) + 1,
-				})
 			}()
-			return nil
-			
 		case <-ctx.Done():
-			r.logger.Debug("Context done while waiting for semaphore", map[string]interface{}{
-				"error": ctx.Err(),
-			})
 			return ctx.Err()
 		}
 	}
 
-	return nil
-
-	// Now acquire the write lock for rate limiting
+	// Now handle rate limiting
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	// Update metrics
 	atomic.AddUint64(&r.metrics.Requests, 1)
 
 	now := time.Now()
 
-	// Add tokens based on time passed since last update
+	// Calculate time since last request
 	timeSinceLast := now.Sub(r.last)
-	if timeSinceLast > 0 {
-		tokensToAdd := int(float64(timeSinceLast) / float64(r.rate))
-		if tokensToAdd > 0 {
-			r.tokens += tokensToAdd
-			if r.tokens > r.maxTokens {
-				r.tokens = r.maxTokens
-			}
-			r.last = now
-		}
-	}
 
-	// If we have tokens, use one and proceed
-	if r.tokens > 0 {
-		r.tokens--
-		r.last = now
-		return nil
-	}
+	// If we haven't waited long enough since the last request, wait the remaining time
+	if timeSinceLast < r.rate {
+		waitTime := r.rate - timeSinceLast
+		
+		// Update the last request time before releasing the lock
+		// This ensures proper rate limiting even if we get preempted
+		r.last = r.last.Add(waitTime)
 
-	// Calculate how long to wait for the next token
-	nextTokenIn := r.rate - timeSinceLast
-	if nextTokenIn < 0 {
-		nextTokenIn = 0
-	}
+		// Release the lock while we wait
+		r.mu.Unlock()
 
-	// Add jitter to prevent thundering herd
-	nextTokenIn += r.calculateJitter()
+		// Wait for the required time or context cancellation
+		timer := time.NewTimer(waitTime)
+		defer timer.Stop()
 
-	// If we have a context with timeout, check if we can wait that long
-	if deadline, hasDeadline := ctx.Deadline(); hasDeadline {
-		if time.Until(deadline) < nextTokenIn {
-			r.logger.Debug("Context deadline too soon for rate limit, failing", map[string]interface{}{
-				"deadline_in":   time.Until(deadline).String(),
-				"next_token_in": nextTokenIn.String(),
-			})
+		select {
+		case <-ctx.Done():
+			// If context is canceled, we need to re-acquire the lock to update state
+			r.mu.Lock()
+			// Update the last request time to now to prevent other goroutines from
+			// immediately proceeding if they were waiting on this one
+			r.last = time.Now()
+			r.mu.Unlock()
 			return ctx.Err()
+		case <-timer.C:
+			// No need to update state here since we already did it before waiting
+			return nil
 		}
 	}
 
-	// Calculate when the next token will be available
-	next := now.Add(nextTokenIn)
-
-	// Create a new timer for the wait period
-	timer := time.NewTimer(time.Until(next))
-	defer timer.Stop()
-
-	// Release the lock while we wait
+	// If we get here, we don't need to wait
+	r.last = now
 	r.mu.Unlock()
-
-	select {
-	case <-ctx.Done():
-		// Reacquire the lock before returning to maintain consistency
-		r.mu.Lock()
-		return ctx.Err()
-	case <-timer.C:
-		// Reacquire the lock for consistency
-		r.mu.Lock()
-		// Update the last time to now to prevent rate limit violations
-		r.last = time.Now()
-		return nil
-	}
+	return nil
 }
 
 // OnRateLimit is called when a rate limit is encountered

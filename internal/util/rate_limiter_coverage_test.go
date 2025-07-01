@@ -2,6 +2,7 @@ package util
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -18,7 +19,8 @@ import (
 
 // testLogRecorder captures log messages for testing
 type testLogRecorder struct {
-	msgs []string
+	msgs  []string
+	mutex sync.Mutex
 }
 
 // testLogWriter is an io.Writer that captures log messages
@@ -33,6 +35,8 @@ func (w *testLogWriter) Write(p []byte) (n int, err error) {
 	if len(msg) > 0 && msg[len(msg)-1] == '\n' {
 		msg = msg[:len(msg)-1]
 	}
+	w.recorder.mutex.Lock()
+	defer w.recorder.mutex.Unlock()
 	w.recorder.msgs = append(w.recorder.msgs, msg)
 	return len(p), nil
 }
@@ -65,16 +69,18 @@ func newTestLogger() (*logger.Logger, *testLogRecorder) {
 
 // hasMessage checks if a message with the given level and content was logged
 func (r *testLogRecorder) hasMessage(level, msg string) bool {
-	// For JSON logs, we need to look for the level and message in the JSON structure
-	targetLevel := "\"level\":\"" + level + "\""
-	targetMsg := "\"message\":\"" + msg + "\""
-	
-	fmt.Printf("Checking for level: %s and message: %s\n", targetLevel, targetMsg)
-	fmt.Printf("Available messages: %v\n", r.msgs)
-	
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+
 	for _, m := range r.msgs {
-		// Check if both level and message are present in the log entry
-		if strings.Contains(m, targetLevel) && strings.Contains(m, targetMsg) {
+		// Parse the JSON log message
+		var logEntry map[string]interface{}
+		if err := json.Unmarshal([]byte(m), &logEntry); err != nil {
+			continue
+		}
+
+		// Check if the level and message match
+		if logEntry["level"] == level && strings.Contains(logEntry["message"].(string), msg) {
 			fmt.Printf("Found matching message: %s\n", m)
 			return true
 		}
