@@ -57,12 +57,13 @@ type SearchResult struct {
 
 // Edition represents a book edition in the Hardcover API
 type Edition struct {
-	ID     string `json:"id"`
-	BookID string `json:"book_id"`
-	Title  string `json:"title,omitempty"`
-	ISBN10 string `json:"isbn_10,omitempty"`
-	ISBN13 string `json:"isbn_13,omitempty"`
-	ASIN   string `json:"asin,omitempty"`
+	ID          string `json:"id"`
+	BookID      string `json:"book_id"`
+	Title       string `json:"title,omitempty"`
+	ISBN10      string `json:"isbn_10,omitempty"`
+	ISBN13      string `json:"isbn_13,omitempty"`
+	ASIN        string `json:"asin,omitempty"`
+	ReleaseDate string `json:"release_date,omitempty"`
 }
 
 // Publisher represents a publisher in the Hardcover API

@@ -1905,6 +1905,7 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 				isbn_10
 				isbn_13
 				asin
+				release_date
 			}
 		}`
 
@@ -1912,12 +1913,13 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 	var response struct {
 		Data struct {
 			Editions []struct {
-				ID     int     `json:"id"`
-				BookID int     `json:"book_id"`
-				Title  *string `json:"title"`
-				ISBN10 *string `json:"isbn_10"`
-				ISBN13 *string `json:"isbn_13"`
-				ASIN   *string `json:"asin"`
+				ID          int     `json:"id"`
+				BookID      int     `json:"book_id"`
+				Title       *string `json:"title"`
+				ISBN10      *string `json:"isbn_10"`
+				ISBN13      *string `json:"isbn_13"`
+				ASIN        *string `json:"asin"`
+				ReleaseDate *string `json:"release_date"`
 			} `json:"editions"`
 		} `json:"data"`
 	}
@@ -1948,12 +1950,13 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 
 	// Log the raw edition data for debugging
 	log.Debug("Retrieved edition details", map[string]interface{}{
-		"id":      edition.ID,
-		"book_id": edition.BookID,
-		"title":   safeString(edition.Title),
-		"isbn_10": safeString(edition.ISBN10),
-		"isbn_13": safeString(edition.ISBN13),
-		"asin":    safeString(edition.ASIN),
+		"id":           edition.ID,
+		"book_id":      edition.BookID,
+		"title":        safeString(edition.Title),
+		"isbn_10":      safeString(edition.ISBN10),
+		"isbn_13":      safeString(edition.ISBN13),
+		"asin":         safeString(edition.ASIN),
+		"release_date": safeString(edition.ReleaseDate),
 	})
 
 	// Create the edition model
@@ -1974,6 +1977,9 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 	}
 	if edition.ASIN != nil {
 		editionModel.ASIN = *edition.ASIN
+	}
+	if edition.ReleaseDate != nil {
+		editionModel.ReleaseDate = *edition.ReleaseDate
 	}
 
 	log.Debug("Retrieved edition details", map[string]interface{}{

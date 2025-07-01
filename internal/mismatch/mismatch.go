@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audnex"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
@@ -113,9 +114,47 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 		"has_hardcover_api": hc != nil,
 	})
 
-	// Format release date - prefer publishedDate, fallback to publishedYear with formatting
+	// Enhanced release date lookup - try to get accurate date from Audnex API for ASIN
 	releaseDate := ""
-	if metadata.PublishedDate != "" {
+	audnexReleaseDate := ""
+	
+	// If we have an ASIN, try to look up the book details from Audnex API
+	if metadata.ASIN != "" {
+		// Create a context with timeout for the ASIN lookup
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		
+		// Create Audnex client
+		audnexClient := audnex.NewClient(logger.Get())
+		
+		log.Debug("Looking up book details by ASIN from Audnex API", map[string]interface{}{
+			"asin": metadata.ASIN,
+		})
+		
+		// Try to get book details from Audnex API
+		book, err := audnexClient.GetBookByASIN(ctx, metadata.ASIN, "")
+		if err == nil && book != nil {
+			// Successfully retrieved book details from Audnex
+			if book.ReleaseDate != "" {
+				audnexReleaseDate = book.ReleaseDate
+				log.Debug("Retrieved release date from Audnex API", map[string]interface{}{
+					"asin":         metadata.ASIN,
+					"release_date": audnexReleaseDate,
+					"title":        book.Title,
+				})
+			}
+		} else if err != nil {
+			log.Debug("Failed to lookup book by ASIN from Audnex API", map[string]interface{}{
+				"asin":  metadata.ASIN,
+				"error": err.Error(),
+			})
+		}
+	}
+	
+	// Format release date - prefer Audnex API date, then publishedDate, fallback to publishedYear
+	if audnexReleaseDate != "" {
+		releaseDate = audnexReleaseDate
+	} else if metadata.PublishedDate != "" {
 		releaseDate = metadata.PublishedDate
 	} else if metadata.PublishedYear != "" {
 		releaseDate = metadata.PublishedYear + "-01-01" // Use Jan 1st if only year is known
