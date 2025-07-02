@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
@@ -23,26 +24,31 @@ func TestHandleFinishedBook(t *testing.T) {
 
 	// Setup test cases
 	testCases := []struct {
-		name                string
-		userBookID          int // Changed from int64 to int to match interface expectation
-		editionID           string
-		book                *TestAudiobookshelfBook
-		readStatuses        []hardcover.UserBookRead
-		expectUpdateCall    bool
-		expectInsertCall    bool
-		mockUpdateError     error
-		mockInsertError     error
-		mockGetReadsError   error
-		expectedError       bool
-		expectedErrorString string
+		name                    string
+		userBookID              int // Changed from int64 to int to match interface expectation
+		editionID               string
+		book                    *TestAudiobookshelfBook
+		readStatuses            []hardcover.UserBookRead
+		expectUpdateCall        bool
+		expectInsertCall        bool
+		expectStatusUpdateCall  bool // Added for status update testing
+		mockUpdateError         error
+		mockInsertError         error
+		mockGetReadsError       error
+		mockStatusUpdateError   error // Added for status update errors
+		expectedError           bool
+		expectedErrorString     string
+		mockUserBook            *models.HardcoverBook // Added to mock GetUserBook response
+		mockGetUserBookError    error // Added for GetUserBook errors
 	}{
 		{
-			name:             "Update existing unfinished read",
-			userBookID:       123,
-			editionID:        "456",
-			expectUpdateCall: true,
-			expectInsertCall: false,
-			book:             createTestFinishedBook("abs-book-1", "Test Book", "Test Author", "B123456789", "9781234567890"),
+			name:                   "Update existing unfinished read",
+			userBookID:             123,
+			editionID:              "456",
+			expectUpdateCall:       true,
+			expectInsertCall:       false,
+			expectStatusUpdateCall: true, // Should update status to FINISHED
+			book:                   createTestFinishedBook("abs-book-1", "Test Book", "Test Author", "B123456789", "9781234567890"),
 			readStatuses: []hardcover.UserBookRead{
 				{
 					ID:              int64(1),
@@ -53,14 +59,21 @@ func TestHandleFinishedBook(t *testing.T) {
 					ProgressSeconds: intPointer(1800),
 				},
 			},
+			// Mock a book with status ID 2 (READING)
+			mockUserBook: &models.HardcoverBook{
+				ID:           "book-123",
+				UserBookID:   "123",
+				BookStatusID: 2, // READING status
+			},
 		},
 		{
-			name:             "Already has finished read",
-			userBookID:       456,
-			editionID:        "789",
-			expectUpdateCall: false,
-			expectInsertCall: false,
-			book:             createTestFinishedBook("abs-book-2", "Another Book", "Another Author", "B987654321", "9789876543210"),
+			name:                   "Already has finished read",
+			userBookID:             456,
+			editionID:              "789",
+			expectUpdateCall:       false,
+			expectInsertCall:       false,
+			expectStatusUpdateCall: false, // Should not update status as it's already FINISHED
+			book:                   createTestFinishedBook("abs-book-2", "Another Book", "Another Author", "B987654321", "9789876543210"),
 			readStatuses: []hardcover.UserBookRead{
 				{
 					ID:              int64(2),
@@ -71,33 +84,53 @@ func TestHandleFinishedBook(t *testing.T) {
 					ProgressSeconds: intPointer(7200),
 				},
 			},
+			// Mock a book with status ID 3 (FINISHED/READ)
+			mockUserBook: &models.HardcoverBook{
+				ID:           "book-456",
+				UserBookID:   "456",
+				BookStatusID: 3, // FINISHED/READ status
+			},
 		},
 		{
-			name:             "No read statuses, create new read",
-			userBookID:       789,
-			editionID:        "012",
-			expectUpdateCall: false,
-			expectInsertCall: true,
-			book:             createTestFinishedBook("abs-book-3", "New Book", "New Author", "B111222333", "9781112223330"),
-			readStatuses:     []hardcover.UserBookRead{},
+			name:                   "No read statuses, create new read",
+			userBookID:             789,
+			editionID:              "012",
+			expectUpdateCall:       false,
+			expectInsertCall:       true,
+			expectStatusUpdateCall: true, // Should update status to FINISHED
+			book:                   createTestFinishedBook("abs-book-3", "New Book", "New Author", "B111222333", "9781112223330"),
+			readStatuses:           []hardcover.UserBookRead{},
+			// Mock a book with status ID 1 (WANT_TO_READ)
+			mockUserBook: &models.HardcoverBook{
+				ID:           "book-789",
+				UserBookID:   "789",
+				BookStatusID: 1, // WANT_TO_READ status
+			},
 		},
 		{
-			name:                "Error getting read statuses",
-			userBookID:          999,
-			editionID:           "999",
-			expectUpdateCall:    false,
-			expectInsertCall:    false,
-			book:                createTestFinishedBook("abs-book-4", "Error Book", "Error Author", "B999999999", "9789999999990"),
-			readStatuses:        []hardcover.UserBookRead{},
-			mockGetReadsError:   fmt.Errorf("API error"),
-			expectedError:       true,
-			expectedErrorString: "error getting read statuses",
+			name:                   "Error getting read statuses",
+			userBookID:             999,
+			editionID:              "999",
+			expectUpdateCall:       false,
+			expectInsertCall:       false,
+			expectStatusUpdateCall: true, // Should try to update status
+			book:                   createTestFinishedBook("abs-book-4", "Error Book", "Error Author", "B999999999", "9789999999990"),
+			readStatuses:           []hardcover.UserBookRead{},
+			mockGetReadsError:      fmt.Errorf("API error"),
+			expectedError:          true,
+			expectedErrorString:    "error getting read statuses",
+			// Mock a book with status ID 2 (READING)
+			mockUserBook: &models.HardcoverBook{
+				ID:           "book-999",
+				UserBookID:   "999",
+				BookStatusID: 2, // READING status
+			},
 		},
 		{
-			name:                "Error updating read status",
-			userBookID:          123,
-			editionID:           "456",
-			book:                createTestFinishedBook("abs-book-5", "Update Error Book", "Update Error Author", "B555555555", "9785555555550"),
+			name:                   "Error updating read status",
+			userBookID:             123,
+			editionID:              "456",
+			book:                   createTestFinishedBook("abs-book-5", "Update Error Book", "Update Error Author", "B555555555", "9785555555550"),
 			readStatuses: []hardcover.UserBookRead{
 				{
 					ID:              int64(3),
@@ -108,23 +141,37 @@ func TestHandleFinishedBook(t *testing.T) {
 					ProgressSeconds: intPointer(1800),
 				},
 			},
-			expectUpdateCall:    true,
-			expectInsertCall:    false,
-			mockUpdateError:     fmt.Errorf("API error"),
-			expectedError:       true,
-			expectedErrorString: "error updating read status",
+			expectUpdateCall:       true,
+			expectInsertCall:       false,
+			expectStatusUpdateCall: true, // Should update status to FINISHED
+			mockUpdateError:        fmt.Errorf("API error"),
+			expectedError:          true,
+			expectedErrorString:    "error updating read status",
+			// Mock a book with status ID 2 (READING)
+			mockUserBook: &models.HardcoverBook{
+				ID:           "book-123-error",
+				UserBookID:   "123",
+				BookStatusID: 2, // READING status
+			},
 		},
 		{
-			name:                "Error inserting read status",
-			userBookID:          123,
-			editionID:           "456",
-			book:                createTestFinishedBook("abs-book-6", "Insert Error Book", "Insert Error Author", "B666666666", "9786666666660"),
-			readStatuses:        []hardcover.UserBookRead{},
-			expectUpdateCall:    false,
-			expectInsertCall:    true,
-			mockInsertError:     fmt.Errorf("API error"),
-			expectedError:       true,
-			expectedErrorString: "error creating new read record",
+			name:                   "Error inserting read status",
+			userBookID:             123,
+			editionID:              "456",
+			book:                   createTestFinishedBook("abs-book-6", "Insert Error Book", "Insert Error Author", "B666666666", "9786666666660"),
+			readStatuses:           []hardcover.UserBookRead{},
+			expectUpdateCall:       false,
+			expectInsertCall:       true,
+			expectStatusUpdateCall: true, // Should update status to FINISHED
+			mockInsertError:        fmt.Errorf("API error"),
+			expectedError:          true,
+			expectedErrorString:    "error creating new read record",
+			// Mock a book with status ID 2 (READING)
+			mockUserBook: &models.HardcoverBook{
+				ID:           "book-123-insert-error",
+				UserBookID:   "123",
+				BookStatusID: 2, // READING status
+			},
 		},
 	}
 
@@ -139,6 +186,12 @@ func TestHandleFinishedBook(t *testing.T) {
 			
 			// Set up mock expectations
 			ctx := context.Background()
+			
+			// Mock GetUserBook to return the book with the appropriate status
+			userBookIDStr := strconv.FormatInt(int64(tc.userBookID), 10)
+			mockClient.On("GetUserBook", mock.Anything, userBookIDStr).Return(tc.mockUserBook, tc.mockGetUserBookError)
+			
+			// Mock GetUserBookReads
 			mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 				UserBookID: int64(tc.userBookID),
 			}).Return(tc.readStatuses, tc.mockGetReadsError)
@@ -157,6 +210,14 @@ func TestHandleFinishedBook(t *testing.T) {
 					// Verify the ID matches the read status we expect to update
 					return input.ID == tc.readStatuses[0].ID
 				})).Return(false, tc.mockUpdateError)
+			}
+			
+			// Set up status update expectation if needed
+			if tc.expectStatusUpdateCall {
+				mockClient.On("UpdateUserBookStatus", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookStatusInput) bool {
+					// Verify the ID matches and status is FINISHED
+					return input.ID == int64(tc.userBookID) && input.Status == "FINISHED"
+				})).Return(tc.mockStatusUpdateError)
 			}
 
 			// Convert test book to models.AudiobookshelfBook

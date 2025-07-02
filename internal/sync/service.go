@@ -867,6 +867,72 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 	// Create a logger with context
 	log := s.createFinishedBookLogger(userBookID, editionID, book)
 	log.Info("Handling finished book", nil)
+	
+	// First, check the current status of the book and update to FINISHED if needed
+	log.Info("Checking current book status", map[string]interface{}{
+		"user_book_id": userBookID,
+	})
+	
+	// Convert userBookID to string for GetUserBook
+	userBookIDStr := strconv.FormatInt(userBookID, 10)
+	
+	// Get the current user book to check its status
+	userBook, getUserBookErr := s.hardcover.GetUserBook(ctx, userBookIDStr)
+	if getUserBookErr != nil {
+		log.Warn("Failed to get current book status, will attempt to update anyway", map[string]interface{}{
+			"error": getUserBookErr,
+		})
+		// Continue with update even if we couldn't get the current status
+	} else if userBook != nil {
+		// Check if the book is already marked as FINISHED (status ID 3)
+		log.Debug("Current book status", map[string]interface{}{
+			"book_status_id": userBook.BookStatusID,
+		})
+		
+		// Only update if not already FINISHED (status ID 3 = READ/FINISHED)
+		if userBook.BookStatusID != 3 {
+			log.Info("Updating book status to FINISHED", map[string]interface{}{
+				"user_book_id": userBookID,
+				"current_status_id": userBook.BookStatusID,
+			})
+			
+			statusErr := s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
+				ID:     userBookID,
+				Status: "FINISHED",
+			})
+			
+			if statusErr != nil {
+				log.Error("Failed to update book status to FINISHED", map[string]interface{}{
+					"error": statusErr,
+				})
+				// Continue processing even if this fails - we'll still try to update the read status
+			} else {
+				log.Info("Successfully updated book status to FINISHED", nil)
+			}
+		} else {
+			log.Info("Book already has FINISHED status, skipping status update", map[string]interface{}{
+				"user_book_id": userBookID,
+				"book_status_id": userBook.BookStatusID,
+			})
+		}
+	} else {
+		// If we got nil without an error, something is wrong
+		log.Warn("Got nil user book without error, will attempt to update status anyway", nil)
+		
+		statusErr := s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
+			ID:     userBookID,
+			Status: "FINISHED",
+		})
+		
+		if statusErr != nil {
+			log.Error("Failed to update book status to FINISHED", map[string]interface{}{
+				"error": statusErr,
+			})
+			// Continue processing even if this fails - we'll still try to update the read status
+		} else {
+			log.Info("Successfully updated book status to FINISHED", nil)
+		}
+	}
 
 	// Look for the most recent unfinished read and check for existing finished reads
 	log.Info("Fetching read statuses from Hardcover", map[string]interface{}{
