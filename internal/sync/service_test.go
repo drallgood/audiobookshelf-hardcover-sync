@@ -175,7 +175,18 @@ func (m *MockHardcoverClient) GetUserBook(ctx context.Context, userBookID string
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	testBook := args.Get(0).(*TestHardcoverBook)
+	
+	// Check if the returned value is already a *models.HardcoverBook
+	if book, ok := args.Get(0).(*models.HardcoverBook); ok {
+		return book, args.Error(1)
+	}
+	
+	// Otherwise, try to convert from *TestHardcoverBook
+	testBook, ok := args.Get(0).(*TestHardcoverBook)
+	if !ok {
+		panic("GetUserBook mock return value must be either *models.HardcoverBook or *TestHardcoverBook")
+	}
+	
 	// Convert TestHardcoverBook to models.HardcoverBook
 	return &models.HardcoverBook{
 		ID:            testBook.ID,
@@ -561,6 +572,7 @@ func createTestService() (*Service, *MockHardcoverClient) {
 		hardcover: mockClient,
 		config:    cfg,
 		log:       logger.Get(),
+		lastProgressUpdates: make(map[string]progressUpdateInfo),
 	}
 
 	return svc, mockClient

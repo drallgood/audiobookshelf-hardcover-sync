@@ -802,7 +802,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			"status":   status,
 			"progress": progress,
 		})
-		if err := s.handleFinishedBook(ctx, userBookID, editionID, book); err != nil {
+		if err := s.HandleFinishedBook(ctx, book, editionID, userBookID); err != nil {
 			bookLog.Error("Failed to handle finished book", map[string]interface{}{
 				"error": err,
 			})
@@ -862,8 +862,8 @@ func (s *Service) createFinishedBookLogger(userBookID int64, editionID string, b
 	return s.log.With(fields)
 }
 
-// handleFinishedBook processes a book that has been marked as finished
-func (s *Service) handleFinishedBook(ctx context.Context, userBookID int64, editionID string, book models.AudiobookshelfBook) error {
+// HandleFinishedBook processes a book that has been marked as finished
+func (s *Service) HandleFinishedBook(ctx context.Context, book models.AudiobookshelfBook, editionID string, userBookID int64) error {
 	// Create a logger with context
 	log := s.createFinishedBookLogger(userBookID, editionID, book)
 	log.Info("Handling finished book", nil)

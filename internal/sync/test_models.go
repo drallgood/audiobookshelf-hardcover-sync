@@ -290,6 +290,17 @@ func createTestBook(id, title, author, asin, isbn string) *TestAudiobookshelfBoo
 	}
 }
 
+// createTestFinishedBook creates a new test book that is marked as finished
+func createTestFinishedBook(id, title, author, asin, isbn string) *TestAudiobookshelfBook {
+	book := createTestBook(id, title, author, asin, isbn)
+	book.Progress.IsFinished = true
+	book.Progress.FinishedAt = time.Now().Unix()
+	book.Progress.CurrentTime = book.Media.Duration // Set current time to duration (100% complete)
+	return book
+}
+
+
+
 // TestLibrary implements a simple library interface for testing
 type TestLibrary struct {
 	ID   string
