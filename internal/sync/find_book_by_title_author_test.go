@@ -30,7 +30,7 @@ func TestFindBookInHardcoverByTitleAuthor(t *testing.T) {
 		errorSubstring string
 	}{
 		{
-			name: "Success - Book found with edition",
+			name: "Success - Book found with title/author search",
 			book: &TestAudiobookshelfBook{
 				ID: "abs-book-1",
 				Media: struct {
@@ -52,6 +52,7 @@ func TestFindBookInHardcoverByTitleAuthor(t *testing.T) {
 					Title: "Test Book",
 				},
 			},
+			// No longer used in new implementation
 			edition: &models.Edition{
 				ID:     "edition-1",
 				ASIN:   "B12345",
@@ -59,12 +60,13 @@ func TestFindBookInHardcoverByTitleAuthor(t *testing.T) {
 				ISBN10: "1234567890",
 			},
 			expectedBook: &models.HardcoverBook{
-				ID:           "hc-book-1",
-				Title:        "Test Book",
-				EditionID:    "edition-1",
-				EditionASIN:  "B12345",
-				EditionISBN13: "9781234567890",
-				EditionISBN10: "1234567890",
+				ID:    "hc-book-1",
+				Title: "Test Book",
+				// No longer set in new implementation
+				// EditionID:    "edition-1",
+				// EditionASIN:  "B12345",
+				// EditionISBN13: "9781234567890",
+				// EditionISBN10: "1234567890",
 			},
 			expectedError: false,
 		},
@@ -111,7 +113,7 @@ func TestFindBookInHardcoverByTitleAuthor(t *testing.T) {
 			errorSubstring: "no books found matching search query",
 		},
 		{
-			name: "Error - Edition API error",
+			name: "Success - Book formerly with edition error",
 			book: &TestAudiobookshelfBook{
 				ID: "abs-book-4",
 				Media: struct {
@@ -133,12 +135,17 @@ func TestFindBookInHardcoverByTitleAuthor(t *testing.T) {
 					Title: "Edition Error Book",
 				},
 			},
+			// No longer used in new implementation
 			editionError:   errors.New("edition API error"),
-			expectedError:  true,
-			errorSubstring: "edition not found for book",
+			expectedBook: &models.HardcoverBook{
+				ID:    "hc-book-4",
+				Title: "Edition Error Book",
+			},
+			expectedError:  false, // No longer fails in new implementation
+			// errorSubstring: "edition not found for book", // No longer relevant
 		},
 		{
-			name: "Error - Empty edition ID",
+			name: "Success - Book formerly with empty edition ID",
 			book: &TestAudiobookshelfBook{
 				ID: "abs-book-5",
 				Media: struct {
@@ -160,14 +167,19 @@ func TestFindBookInHardcoverByTitleAuthor(t *testing.T) {
 					Title: "Empty Edition Book",
 				},
 			},
+			// No longer used in new implementation
 			edition: &models.Edition{
 				ID:     "", // Empty edition ID
 				ASIN:   "B67890",
 				ISBN13: "9786789012345",
 				ISBN10: "6789012345",
 			},
-			expectedError:  true,
-			errorSubstring: "edition ID is empty",
+			expectedBook: &models.HardcoverBook{
+				ID:    "hc-book-5",
+				Title: "Empty Edition Book",
+			},
+			expectedError:  false, // No longer fails in new implementation
+			// errorSubstring: "edition ID is empty", // No longer relevant
 		},
 		{
 			name: "Success - No author",
@@ -209,7 +221,7 @@ func TestFindBookInHardcoverByTitleAuthor(t *testing.T) {
 			expectedError: false,
 		},
 		{
-			name: "Success - Nil edition",
+			name: "Success - Book formerly with nil edition",
 			book: &TestAudiobookshelfBook{
 				ID: "abs-book-7",
 				Media: struct {
@@ -231,7 +243,7 @@ func TestFindBookInHardcoverByTitleAuthor(t *testing.T) {
 					Title: "Nil Edition Book",
 				},
 			},
-			edition: nil, // Nil edition
+			edition: nil, // Nil edition - no longer used in new implementation
 			expectedBook: &models.HardcoverBook{
 				ID:    "hc-book-7",
 				Title: "Nil Edition Book",
@@ -252,14 +264,8 @@ func TestFindBookInHardcoverByTitleAuthor(t *testing.T) {
 				mockClient.On("SearchBooks", mock.Anything, mock.Anything, mock.Anything).Return(tt.searchResults, nil)
 			}
 
-			// Set up expectations for GetEdition
-			if len(tt.searchResults) > 0 {
-				if tt.editionError != nil {
-					mockClient.On("GetEdition", mock.Anything, tt.searchResults[0].ID).Return(nil, tt.editionError)
-				} else {
-					mockClient.On("GetEdition", mock.Anything, tt.searchResults[0].ID).Return(tt.edition, nil)
-				}
-			}
+			// We no longer call GetEdition with book ID in the new implementation
+			// No need to set up expectations for GetEdition
 
 			// Create service with mock client
 			service := &Service{
@@ -285,10 +291,6 @@ func TestFindBookInHardcoverByTitleAuthor(t *testing.T) {
 				assert.NotNil(t, result)
 				assert.Equal(t, tt.expectedBook.ID, result.ID)
 				assert.Equal(t, tt.expectedBook.Title, result.Title)
-				assert.Equal(t, tt.expectedBook.EditionID, result.EditionID)
-				assert.Equal(t, tt.expectedBook.EditionASIN, result.EditionASIN)
-				assert.Equal(t, tt.expectedBook.EditionISBN13, result.EditionISBN13)
-				assert.Equal(t, tt.expectedBook.EditionISBN10, result.EditionISBN10)
 			}
 
 			// Verify all expectations were met

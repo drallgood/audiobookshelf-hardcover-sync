@@ -1911,54 +1911,18 @@ func (s *Service) findBookInHardcoverByTitleAuthor(ctx context.Context, book mod
 		"title": hcBook.Title,
 	})
 
-	// Try to get the first audio edition
-	edition, err := s.hardcover.GetEdition(ctx, firstResult.ID)
-	if err != nil {
-		log.Warn("Failed to get edition details, treating as mismatch", map[string]interface{}{
-			"error":      err.Error(),
-			"book_id":    hcBook.ID,
-			"book_title": hcBook.Title,
-		})
-		// If we can't get edition details, we should treat this as a mismatch
-		return nil, fmt.Errorf("edition not found for book %s (%s)", hcBook.ID, hcBook.Title)
-	}
-
-	if edition != nil {
-		hcBook.EditionID = edition.ID
-		hcBook.EditionASIN = edition.ASIN
-		hcBook.EditionISBN13 = edition.ISBN13
-		hcBook.EditionISBN10 = edition.ISBN10
-
-		log.Debug("Updated HardcoverBook with edition details", map[string]interface{}{
-			"book_id":        hcBook.ID,
-			"edition_id":     hcBook.EditionID,
-			"edition_asin":   hcBook.EditionASIN,
-			"edition_isbn10": hcBook.EditionISBN10,
-			"edition_isbn13": hcBook.EditionISBN13,
-		})
-
-		// We must have a valid edition ID to proceed with user book creation
-		if hcBook.EditionID == "" {
-			log.Warn("Cannot create user book: edition ID is empty", map[string]interface{}{
-				"book_id": hcBook.ID,
-				"title":   hcBook.Title,
-			})
-			return nil, fmt.Errorf("edition ID is empty for book %s (%s)", hcBook.ID, hcBook.Title)
-		}
-
-		log.Info("Successfully found book by title and author with edition details", map[string]interface{}{
-			"book_id":      hcBook.ID,
-			"edition_id":   hcBook.EditionID,
-			"user_book_id": hcBook.UserBookID,
-			"title":        hcBook.Title,
-		})
-	} else {
-		log.Info("No edition details available for book", map[string]interface{}{
-			"book_id": hcBook.ID,
-			"title":   hcBook.Title,
-		})
-	}
-
+	// We need to search for editions associated with this book ID instead of directly calling GetEdition with a book ID
+	// GetEdition expects an edition ID, not a book ID, so calling it with a book ID would always fail
+	
+	// Create a minimal HardcoverBook with just the book ID and title
+	log.Info("Book found by title/author, but no edition details yet", map[string]interface{}{
+		"book_id":    hcBook.ID,
+		"book_title": hcBook.Title,
+	})
+	
+	// For a real implementation, we would need an API method to get editions by book ID
+	// For now, return the book data we have without edition details
+	// The caller can decide whether to handle this as a mismatch
 	return hcBook, nil
 }
 

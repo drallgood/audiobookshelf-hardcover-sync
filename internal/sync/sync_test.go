@@ -784,16 +784,8 @@ func TestFindBookInHardcover(t *testing.T) {
 		// Setup mock expectations for title/author search
 		mockHC.On("SearchBooks", mock.Anything, "Test Book 3 Test Author 3", "").Return([]models.HardcoverBook{*testHardcoverBook}, nil).Once()
 		
-		// Create test edition to return from GetEdition
-		testEdition := &models.Edition{
-			ID:     "456",
-			ASIN:   "B9876",
-			ISBN10: "0123456789",
-			ISBN13: "9780123456789",
-		}
-		
-		// Add mock expectation for GetEdition
-		mockHC.On("GetEdition", mock.Anything, "hc123").Return(testEdition, nil).Once()
+		// We no longer call GetEdition with book ID in the new implementation
+		// Note: The testEdition and mockHC.On("GetEdition") expectations have been removed
 		
 		// Allow any number of calls to CheckBookOwnership (omit .Once() for unlimited calls)
 		mockHC.On("CheckBookOwnership", mock.Anything, 456).Return(true, nil)
