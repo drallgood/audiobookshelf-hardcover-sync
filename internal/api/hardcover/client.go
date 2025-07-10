@@ -1971,18 +1971,18 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 		}`
 
 	// Define the response structure that matches the GraphQL response
+	// Note: The GraphQL client already parses out the 'data' field, so our struct
+	// should match what's inside the data field
 	var response struct {
-		Data struct {
-			Editions []struct {
-				ID          int     `json:"id"`
-				BookID      int     `json:"book_id"`
-				Title       *string `json:"title"`
-				ISBN10      *string `json:"isbn_10"`
-				ISBN13      *string `json:"isbn_13"`
-				ASIN        *string `json:"asin"`
-				ReleaseDate *string `json:"release_date"`
-			} `json:"editions"`
-		} `json:"data"`
+		Editions []struct {
+			ID          int     `json:"id"`
+			BookID      int     `json:"book_id"`
+			Title       *string `json:"title"`
+			ISBN10      *string `json:"isbn_10"`
+			ISBN13      *string `json:"isbn_13"`
+			ASIN        *string `json:"asin"`
+			ReleaseDate *string `json:"release_date"`
+		} `json:"editions"`
 	}
 
 	// Execute the query
@@ -2001,11 +2001,11 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 	editionBytes, _ := json.Marshal(response)
 	log.Debug("Raw response from GetEdition", map[string]interface{}{
 		"response": string(editionBytes),
-		"data_present": response.Data.Editions != nil,
-		"editions_count": len(response.Data.Editions),
+		"data_present": response.Editions != nil,
+		"editions_count": len(response.Editions),
 	})
 
-	editions := response.Data.Editions
+	editions := response.Editions
 
 	if len(editions) == 0 {
 		log.Debug("Edition not found in response", map[string]interface{}{
