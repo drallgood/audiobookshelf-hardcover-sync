@@ -360,10 +360,20 @@ func (s *Service) processLibrary(ctx context.Context, library *audiobookshelf.Au
 		// Process the item
 		err := s.processBook(ctx, book, userProgress)
 		if err != nil {
-			libraryLog.Error("Failed to process item", map[string]interface{}{
-				"error":   err,
-				"item_id": book.ID,
-			})
+			// Check if this is ErrSkippedBook - which we still count as processed
+			// since we've recorded a mismatch and updated state for these books
+			if err == ErrSkippedBook {
+				libraryLog.Debug("Book was skipped but counted as processed", map[string]interface{}{
+					"item_id": book.ID,
+				})
+				processed++
+			} else {
+				// For other errors, log and skip without incrementing processed count
+				libraryLog.Error("Failed to process item", map[string]interface{}{
+					"error":   err,
+					"item_id": book.ID,
+				})
+			}
 			continue
 		}
 
@@ -664,7 +674,49 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			book.ID,
 			s.hardcover, // Pass the Hardcover client for publisher lookup
 		)
-		return nil // Skip this book but continue with others
+		s.state.UpdateBook(book.ID, 0, "error") // Mark with zero progress and error status
+		return ErrSkippedBook // Skip this book but continue with others
+	}
+
+	// Check if book was found but has no edition ID
+	if hcBook != nil && hcBook.EditionID == "" {
+		errMsg := "book found by title/author search but no edition ID available"
+		bookLog.Warn(errMsg, map[string]interface{}{
+			"book_id": hcBook.ID,
+			"title":   hcBook.Title,
+		})
+		
+		// Build cover URL if cover path is available
+		coverURL := ""
+		if book.Media.CoverPath != "" {
+			coverURL = fmt.Sprintf("%s/api/items/%s/cover", s.config.Audiobookshelf.URL, book.ID)
+		}
+		
+		// Record mismatch for book without edition
+		mismatch.AddWithMetadata(
+			mismatch.MediaMetadata{
+				Title:         book.Media.Metadata.Title,
+				Subtitle:      book.Media.Metadata.Subtitle,
+				AuthorName:    book.Media.Metadata.AuthorName,
+				NarratorName:  book.Media.Metadata.NarratorName,
+				Publisher:     book.Media.Metadata.Publisher,
+				PublishedYear: book.Media.Metadata.PublishedYear,
+				ISBN:          book.Media.Metadata.ISBN,
+				ASIN:          book.Media.Metadata.ASIN,
+				CoverURL:      coverURL,
+				Duration:      book.Media.Duration,
+			},
+			hcBook.ID,  // Use the book ID we found
+			"",      // No edition ID
+			errMsg,
+			book.Media.Duration,
+			book.ID,
+			s.hardcover, // Pass the Hardcover client for publisher lookup
+		)
+		
+		// Update the state to track this book
+		s.state.UpdateBook(book.ID, 0, "error") // Mark with zero progress and error status
+		return ErrSkippedBook
 	}
 
 	if hcBook == nil {
