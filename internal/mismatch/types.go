@@ -100,22 +100,21 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 		imageURL = b.CoverURL
 	}
 
-	// Set EditionInfo - ensure it's clean and properly formatted
-	editionInfo := "Imported from Audiobookshelf"
-	if b.Reason != "" {
-		editionInfo = fmt.Sprintf("%s\n\nReason: %s", editionInfo, b.Reason)
+	// Set EditionInfo - only include platform information, no debug/error details
+	editionInfo := "Audiobookshelf"
+	
+	// If EditionInfo is already set in the mismatch, use it instead
+	// but only if it doesn't contain debug info
+	if b.EditionInfo != "" && !strings.Contains(b.EditionInfo, "error") && 
+	   !strings.Contains(b.EditionInfo, "Reason:") && !strings.Contains(b.EditionInfo, "mismatch") {
+		editionInfo = strings.TrimSpace(b.EditionInfo)
 	}
-	if b.EditionInfo != "" {
-		// Clean the edition info by trimming whitespace and ensuring it ends with a period
-		cleanInfo := strings.TrimSpace(b.EditionInfo)
-		if cleanInfo != "" {
-			// Remove any trailing punctuation
-			cleanInfo = strings.TrimRight(cleanInfo, ".;:!?")
-			editionInfo = fmt.Sprintf("%s\n\n%s", editionInfo, cleanInfo)
-		}
+	
+	// Ensure the final string has proper formatting
+	editionInfo = strings.TrimRight(editionInfo, ".;:!?")
+	if !strings.HasSuffix(editionInfo, ".") {
+		editionInfo += "."
 	}
-	// Ensure the final string ends with a period
-	editionInfo = strings.TrimRight(editionInfo, ".;:!?") + "."
 
 	// Look up author IDs if we have an author name and a Hardcover client
 	authorIDs := []int{} // Initialize as empty slice

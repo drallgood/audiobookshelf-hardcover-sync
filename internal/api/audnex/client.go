@@ -17,13 +17,19 @@ type Client struct {
 	logger     *logger.Logger
 }
 
+// Author represents an author from the Audnex API
+type Author struct {
+	Name string `json:"name,omitempty"`
+	// Add other author fields as they become known
+}
+
 // Book represents a book from the Audnex API
 type Book struct {
 	ASIN         string    `json:"asin"`
 	Title        string    `json:"title"`
 	Subtitle     string    `json:"subtitle,omitempty"`
-	Authors      []string  `json:"authors,omitempty"`
-	Narrators    []string  `json:"narrators,omitempty"`
+	Authors      interface{}  `json:"authors,omitempty"` // Accept any type to handle both array and object
+	Narrators    interface{}  `json:"narrators,omitempty"` // Accept any type to handle both array and object
 	PublisherName string   `json:"publisherName,omitempty"`
 	Summary      string    `json:"summary,omitempty"`
 	ReleaseDate  string    `json:"releaseDate,omitempty"`
@@ -32,6 +38,66 @@ type Book struct {
 	Language     string    `json:"language,omitempty"`
 	RuntimeLengthMin int   `json:"runtimeLengthMin,omitempty"`
 	FormatType   string    `json:"formatType,omitempty"`
+}
+
+// GetAuthorsAsStrings returns a slice of author names regardless of the format they were provided in
+func (b *Book) GetAuthorsAsStrings() []string {
+	var authors []string
+	
+	switch v := b.Authors.(type) {
+	case []interface{}:
+		// Handle array of objects or strings
+		for _, author := range v {
+			switch a := author.(type) {
+			case string:
+				authors = append(authors, a)
+			case map[string]interface{}:
+				if name, ok := a["name"].(string); ok {
+					authors = append(authors, name)
+				}
+			}
+		}
+	case map[string]interface{}:
+		// Handle single object
+		if name, ok := v["name"].(string); ok {
+			authors = append(authors, name)
+		}
+	case string:
+		// Handle single string
+		authors = append(authors, v)
+	}
+	
+	return authors
+}
+
+// GetNarratorsAsStrings returns a slice of narrator names regardless of the format they were provided in
+func (b *Book) GetNarratorsAsStrings() []string {
+	var narrators []string
+	
+	switch v := b.Narrators.(type) {
+	case []interface{}:
+		// Handle array of objects or strings
+		for _, narrator := range v {
+			switch n := narrator.(type) {
+			case string:
+				narrators = append(narrators, n)
+			case map[string]interface{}:
+				if name, ok := n["name"].(string); ok {
+					narrators = append(narrators, name)
+				}
+			}
+		}
+	case map[string]interface{}:
+		// Handle single object
+		if name, ok := v["name"].(string); ok {
+			narrators = append(narrators, name)
+		}
+	case string:
+		// Handle single string
+		narrators = append(narrators, v)
+	}
+	
+	return narrators
 }
 
 // NewClient creates a new Audnex API client

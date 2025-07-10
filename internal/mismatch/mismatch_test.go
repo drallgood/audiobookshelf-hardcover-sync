@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -290,7 +289,7 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 				AuthorIDs:     []int{}, // Empty slice when no authors found
 				AudioSeconds:  19800,
 				EditionFormat: "Audiobook",
-				EditionInfo:   "Imported from Audiobookshelf\n\nReason: test reason.",
+				EditionInfo:   "Audiobookshelf.",
 				LanguageID:    1, // Default values
 				CountryID:     1, // Default values
 				PublisherID:   0, // Default values
@@ -353,7 +352,7 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 				ReleaseDate:   "2020-01-01",
 				AudioSeconds:  37800,
 				EditionFormat: "Audiobook",
-				EditionInfo:   "Imported from Audiobookshelf\n\nReason: test reason\n\nSpecial Edition.",
+				EditionInfo:   "Special Edition.",
 				LanguageID:    1,
 				CountryID:     1,
 			},
@@ -388,13 +387,8 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 			assert.Equal(t, tt.expected.ReleaseDate, result.ReleaseDate)
 			assert.Equal(t, tt.expected.AudioSeconds, result.AudioSeconds)
 			assert.Equal(t, tt.expected.EditionFormat, result.EditionFormat)
-			// For EditionInfo, we expect it to contain the expected parts and end with a period
-			assert.True(t, strings.HasSuffix(result.EditionInfo, "."), "EditionInfo should end with a period")
-			// Check that the expected content is contained in the actual EditionInfo
-			expectedParts := strings.Split(tt.expected.EditionInfo, "\n\n")
-			for _, part := range expectedParts {
-				assert.Contains(t, result.EditionInfo, part, "EditionInfo is missing expected content")
-			}
+			// For EditionInfo, we now expect it to be exactly equal to the expected value
+			assert.Equal(t, tt.expected.EditionInfo, result.EditionInfo, "EditionInfo should match expected value")
 			assert.Equal(t, tt.expected.LanguageID, result.LanguageID)
 			assert.Equal(t, tt.expected.CountryID, result.CountryID)
 			assert.Equal(t, tt.expected.PublisherID, result.PublisherID)
@@ -459,10 +453,10 @@ func TestAddWithMetadata(t *testing.T) {
 	assert.Equal(t, "https://example.com/cover.jpg", mismatch.CoverURL)
 	assert.Equal(t, "https://example.com/cover.jpg", mismatch.ImageURL) // Should match CoverURL
 	assert.Equal(t, 3600, mismatch.DurationSeconds)
-	assert.Equal(t, "2020-01-15", mismatch.ReleaseDate) // Should use PublishedDate
+	assert.Equal(t, "2018-10-02", mismatch.ReleaseDate) // Uses the date from Audnex API response
 	assert.Equal(t, "2020", mismatch.PublishedYear)
 	assert.Equal(t, "Audiobook", mismatch.EditionFormat)
-	assert.Equal(t, "Imported from Audiobookshelf: test reason", mismatch.EditionInfo)
+	assert.Equal(t, "Audiobookshelf", mismatch.EditionInfo) // Only contains platform name
 	assert.Equal(t, 1, mismatch.LanguageID)  // Default to English
 	assert.Equal(t, 1, mismatch.CountryID)   // Default to US
 	assert.Equal(t, 1, mismatch.PublisherID) // Default publisher
@@ -710,14 +704,18 @@ func TestSaveMismatchesJSONFileIndividual(t *testing.T) {
 			t.Errorf("Expected isbn_13 to be %q, got %q in file %s", expectedISBN13, isbn13, filePath)
 		}
 
-		// Check the edition_information field for the reason
-		if editionInfo, ok := result["edition_information"].(string); ok && expected.Reason != "" {
-			if !strings.Contains(editionInfo, expected.Reason) {
-				t.Errorf("Mismatch in file %s: edition_information should contain reason %q but got %q",
-					filePath, expected.Reason, editionInfo)
+		// Check the edition_information field - should be platform name only
+		if editionInfo, ok := result["edition_information"].(string); ok {
+			expectedEditionInfo := "Audiobookshelf."
+			if expected.EditionInfo != "" {
+				expectedEditionInfo = expected.EditionInfo
 			}
-		} else if expected.Reason != "" {
-			t.Errorf("Missing edition_information in file %s, expected to contain reason: %s", filePath, expected.Reason)
+			if editionInfo != expectedEditionInfo {
+				t.Errorf("Mismatch in file %s: edition_information should be %q but got %q",
+					filePath, expectedEditionInfo, editionInfo)
+			}
+		} else {
+			t.Errorf("Missing edition_information in file %s", filePath)
 		}
 
 		// Verify the book_id matches the expected BookID if it's numeric

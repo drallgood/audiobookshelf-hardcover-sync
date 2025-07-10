@@ -796,10 +796,12 @@ func TestFindBookInHardcover(t *testing.T) {
 		// Call findBookInHardcover
 		result, err := svc.findBookInHardcover(context.Background(), testBookWithTitleAuthor)
 		
-		// Verify results
-		assert.NoError(t, err)
+		// Verify results - we now expect an error for title/author matches
+		// but the result should still be returned for mismatch enrichment
+		assert.Error(t, err)
 		assert.NotNil(t, result)
 		assert.Equal(t, "hc123", result.ID)
+		assert.Contains(t, err.Error(), "found by title/author only")
 		
 		// Verify mock expectations
 		mockHC.AssertExpectations(t)

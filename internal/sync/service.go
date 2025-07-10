@@ -2132,21 +2132,23 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 			return nil, fmt.Errorf("book found but edition not available: %w", err)
 		}
 
-		log.Info("Found book by title/author with valid edition", map[string]interface{}{
-			"search_method": "title_author",
-			"book_id":       hcBook.ID,
-			"edition_id":    hcBook.EditionID,
-			"user_book_id":  hcBook.UserBookID,
-			"title":         hcBook.Title,
-			"author":        book.Media.Metadata.AuthorName,
+		// IMPORTANT: Books found by title/author should always trigger mismatch logic
+		// This is because we only want ASIN/ISBN matches to be considered valid matches
+		// Even if we found a book and it has all the details, it's still a mismatch
+		log.Info("Found book by title/author but treating as mismatch per requirements", map[string]interface{}{
+			"search_method":  "title_author",
+			"book_id":        hcBook.ID,
+			"edition_id":     hcBook.EditionID,
+			"title":          hcBook.Title,
+			"asin_match":     false,
+			"isbn_match":     false,
+			"forcing_mismatch": true,
 		})
 
-		// Log the complete state of the book before returning
-		log.Debug("Returning HardcoverBook from title/author search", map[string]interface{}{
-			"book": fmt.Sprintf("%+v", *hcBook),
-		})
-
-		return hcBook, nil
+		// Return both the book and an error to indicate this is a mismatch
+		// The error will trigger the mismatch logic in processBook
+		// but the book details can still be used for enrichment
+		return hcBook, fmt.Errorf("found by title/author only (not ASIN/ISBN): forcing mismatch")
 	}
 
 	log.Warn("Book not found in Hardcover by any search method", map[string]interface{}{

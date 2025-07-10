@@ -120,44 +120,135 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 	
 	// If we have an ASIN, try to look up the book details from Audnex API
 	if metadata.ASIN != "" {
+		log.Info("Attempting Audnex enrichment for mismatch with ASIN", map[string]interface{}{
+			"asin":     metadata.ASIN,
+			"title":    metadata.Title,
+			"book_id":  bookID,
+			"mismatch": true,
+		})
+		
 		// Create a context with timeout for the ASIN lookup
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		
-		// Create Audnex client
+		// Create Audnex client and log the creation
 		audnexClient := audnex.NewClient(logger.Get())
+		log.Debug("Created Audnex client for ASIN lookup", map[string]interface{}{
+			"asin":       metadata.ASIN,
+			"client_nil": audnexClient == nil,
+		})
 		
-		log.Debug("Looking up book details by ASIN from Audnex API", map[string]interface{}{
-			"asin": metadata.ASIN,
+		// Log details just before the API call
+		log.Info("Calling Audnex API for book details by ASIN", map[string]interface{}{
+			"asin":    metadata.ASIN,
+			"title":   metadata.Title,
+			"context": "mismatch_enrichment",
 		})
 		
 		// Try to get book details from Audnex API
 		book, err := audnexClient.GetBookByASIN(ctx, metadata.ASIN, "")
+		
+		// Enhanced logging based on response
 		if err == nil && book != nil {
 			// Successfully retrieved book details from Audnex
+			log.Info("Audnex API lookup succeeded", map[string]interface{}{
+				"asin":           metadata.ASIN,
+				"audnex_title":   book.Title,
+				"has_release":    book.ReleaseDate != "",
+				"authors_type":   fmt.Sprintf("%T", book.Authors),
+				"narrators_type": fmt.Sprintf("%T", book.Narrators),
+			})
+			
+			// Get authors and narrators as strings for logging
+			authors := book.GetAuthorsAsStrings()
+			narrators := book.GetNarratorsAsStrings()
+			
+			log.Debug("Audnex parsed author/narrator data", map[string]interface{}{
+				"asin":                metadata.ASIN,
+				"authors_count":       len(authors),
+				"narrators_count":     len(narrators),
+				"authors_as_strings":  strings.Join(authors, ", "),
+				"narrators_as_string": strings.Join(narrators, ", "),
+			})
+			
 			if book.ReleaseDate != "" {
 				audnexReleaseDate = book.ReleaseDate
-				log.Debug("Retrieved release date from Audnex API", map[string]interface{}{
+				log.Info("Using release date from Audnex API for mismatch enrichment", map[string]interface{}{
 					"asin":         metadata.ASIN,
 					"release_date": audnexReleaseDate,
 					"title":        book.Title,
 				})
 			}
 		} else if err != nil {
-			log.Debug("Failed to lookup book by ASIN from Audnex API", map[string]interface{}{
+			log.Warn("Failed to lookup book by ASIN from Audnex API", map[string]interface{}{
 				"asin":  metadata.ASIN,
 				"error": err.Error(),
 			})
+		} else {
+			log.Warn("Audnex API returned nil book without error", map[string]interface{}{
+				"asin": metadata.ASIN,
+			})
 		}
+	} else {
+		log.Debug("Skipping Audnex enrichment, no ASIN available", nil)
 	}
 	
 	// Format release date - prefer Audnex API date, then publishedDate, fallback to publishedYear
+	// Always ensure the date is in YYYY-MM-DD format without time component
+	formatDateToYYYYMMDD := func(dateStr string) string {
+		// If empty, return empty
+		if dateStr == "" {
+			return ""
+		}
+		
+		// Check if it's already in YYYY-MM-DD format
+		if len(dateStr) == 10 && dateStr[4] == '-' && dateStr[7] == '-' {
+			return dateStr
+		}
+		
+		// Try to parse ISO-8601 format (including with time component)
+		// RFC3339 ("2006-01-02T15:04:05Z07:00") and variations
+		formats := []string{
+			"2006-01-02T15:04:05Z07:00", // RFC3339
+			"2006-01-02T15:04:05.000Z07:00", // RFC3339 with milliseconds
+			"2006-01-02", // Just the date part
+			"2006-01-02 15:04:05", // MySQL datetime format
+			"2006/01/02", // Slash format
+			"01/02/2006", // US format
+			"02/01/2006", // EU format
+			"Jan 2, 2006", // Month name format
+			"2 Jan 2006", // Day first format
+		}
+		
+		for _, format := range formats {
+			if parsed, err := time.Parse(format, dateStr); err == nil {
+				return parsed.Format("2006-01-02") // Return in YYYY-MM-DD format
+			}
+		}
+		
+		// If it's just a year, append -01-01
+		if len(dateStr) == 4 && regexp.MustCompile(`^\d{4}$`).MatchString(dateStr) {
+			return dateStr + "-01-01" // Use Jan 1st if only year is known
+		}
+		
+		// Could not parse, return as is
+		log.Warn("Could not parse date format", map[string]interface{}{
+			"date": dateStr,
+		})
+		return dateStr
+	}
+	
+	// Process and format the release date
 	if audnexReleaseDate != "" {
-		releaseDate = audnexReleaseDate
+		releaseDate = formatDateToYYYYMMDD(audnexReleaseDate)
+		log.Debug("Formatted Audnex release date", map[string]interface{}{
+			"original": audnexReleaseDate,
+			"formatted": releaseDate,
+		})
 	} else if metadata.PublishedDate != "" {
-		releaseDate = metadata.PublishedDate
+		releaseDate = formatDateToYYYYMMDD(metadata.PublishedDate)
 	} else if metadata.PublishedYear != "" {
-		releaseDate = metadata.PublishedYear + "-01-01" // Use Jan 1st if only year is known
+		releaseDate = formatDateToYYYYMMDD(metadata.PublishedYear)
 	}
 
 	// Extract ISBN10 and ISBN13 from metadata.ISBN if it's set
@@ -235,7 +326,7 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 
 		// Edition information
 		EditionFormat: "Audiobook",
-		EditionInfo:   "Imported from Audiobookshelf: " + reason,
+		EditionInfo:   "Audiobookshelf", // Only include platform info, no debug/error details
 		LanguageID:    1, // Default to English
 		CountryID:     1, // Default to US
 
@@ -367,12 +458,9 @@ func SaveToFile(ctx context.Context, hc hardcover.HardcoverClientInterface, outp
 		// Use the provided context and Hardcover client for author/narrator lookups
 		export := mismatch.ToEditionExport(ctx, hc)
 
-		// Set edition information if not already set
+		// Set edition information if not already set - only include platform info, not debug/error details
 		if export.EditionInfo == "" {
-			export.EditionInfo = "Imported from Audiobookshelf"
-			if mismatch.Reason != "" {
-				export.EditionInfo += ". " + mismatch.Reason
-			}
+			export.EditionInfo = "Audiobookshelf"
 		}
 
 		// Convert to JSON with indentation for readability
