@@ -1851,6 +1851,13 @@ func (s *Service) processFoundBook(ctx context.Context, hcBook *models.Hardcover
 
 // findBookInHardcoverByTitleAuthor searches for a book in Hardcover by title and author
 // This should only be used for mismatch handling when a book can't be found by ASIN/ISBN
+// Note: This function intentionally does not call GetEdition with the book ID after finding a match.
+// While we have the capability to get edition details, we deliberately avoid it here because:
+// 1. GetEdition expects an edition ID, not a book ID
+// 2. Using a book ID with GetEdition would always fail or return incorrect data
+// 3. For our sync purposes, minimal book data is sufficient when no edition is found
+// If a caller truly needs edition details, they should handle that separately after receiving
+// the book information returned by this function.
 func (s *Service) findBookInHardcoverByTitleAuthor(ctx context.Context, book models.AudiobookshelfBook) (*models.HardcoverBook, error) {
 	// Normalize title and author for better matching
 	title := strings.TrimSpace(book.Media.Metadata.Title)
@@ -1911,8 +1918,9 @@ func (s *Service) findBookInHardcoverByTitleAuthor(ctx context.Context, book mod
 		"title": hcBook.Title,
 	})
 
-	// We need to search for editions associated with this book ID instead of directly calling GetEdition with a book ID
-	// GetEdition expects an edition ID, not a book ID, so calling it with a book ID would always fail
+	// IMPORTANT: We deliberately do not attempt to get edition details here.
+	// While the API exists, calling GetEdition with a book ID instead of an edition ID would fail.
+	// For our sync purposes, having just the book ID and title is sufficient.
 	
 	// Create a minimal HardcoverBook with just the book ID and title
 	log.Info("Book found by title/author, but no edition details yet", map[string]interface{}{
