@@ -1022,7 +1022,7 @@ func TestEditionCreator_uploadImageToGCS(t *testing.T) {
 			name:         "successful_upload",
 			editionID:    123,
 			imageURLPath: "/test.jpg",
-			expectedURL:  "https://storage.googleapis.com/hardcover/uploads/covers/test-key.jpg",
+			expectedURL:  "https://assets.hardcover.app/uploads/covers/test-key.jpg",
 			expectError:  false,
 		},
 		{

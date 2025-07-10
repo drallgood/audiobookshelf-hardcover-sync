@@ -265,7 +265,7 @@ func (c *Creator) uploadImageToGCS(ctx context.Context, editionID int, imageURL 
 	url := "https://hardcover.app/api/upload/google"
 
 	// Create the request with query parameters
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil) // Use POST method as per docs
 	if err != nil {
 		log.Error("Failed to create request", map[string]interface{}{"error": err.Error()})
 		return "", fmt.Errorf("failed to create request: %w", err)
@@ -278,10 +278,13 @@ func (c *Creator) uploadImageToGCS(ctx context.Context, editionID int, imageURL 
 	req.URL.RawQuery = q.Encode()
 
 	// Set headers
+	req.Header.Set("Content-Length", "0") // Important for POST with empty body
 	req.Header.Set("Authorization", c.client.GetAuthHeader())
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Origin", "https://hardcover.app")
 	req.Header.Set("Referer", "https://hardcover.app/")
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
 
 	// Send the request
 	respCreds, err := c.httpClient.Do(req)
@@ -370,7 +373,8 @@ func (c *Creator) uploadImageToGCS(ctx context.Context, editionID int, imageURL 
 	}
 
 	// Return the public URL of the uploaded image
-	uploadedImageURL := fmt.Sprintf("https://storage.googleapis.com/hardcover/%s", filePath)
+	// Use the assets.hardcover.app URL format as shown in the documentation
+	uploadedImageURL := fmt.Sprintf("https://assets.hardcover.app/%s", filePath)
 	log.Info("Successfully uploaded image to GCS", map[string]interface{}{
 		"url": uploadedImageURL,
 	})
