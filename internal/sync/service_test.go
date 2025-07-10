@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"testing"
 	"time"
@@ -217,29 +218,40 @@ func (m *MockHardcoverClient) SearchBookByISBN13(ctx context.Context, isbn13 str
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	testBook := args.Get(0).(*TestHardcoverBook)
-	// Convert TestHardcoverBook to models.HardcoverBook
-	return &models.HardcoverBook{
-		ID:            testBook.ID,
-		UserBookID:    testBook.UserBookID,
-		EditionID:     testBook.EditionID,
-		Title:         testBook.Title,
-		Subtitle:      testBook.Subtitle,
-		Authors:       testBook.Authors,
-		Narrators:     testBook.Narrators,
-		CoverImageURL: testBook.CoverImageURL,
-		Description:   testBook.Description,
-		PageCount:     testBook.PageCount,
-		ReleaseDate:   testBook.ReleaseDate,
-		Publisher:     testBook.Publisher,
-		ISBN:          testBook.ISBN,
-		ASIN:          testBook.ASIN,
-		BookStatusID:  testBook.BookStatusID,
-		CanonicalID:   testBook.CanonicalID,
-		EditionASIN:   testBook.EditionASIN,
-		EditionISBN10: testBook.EditionISBN10,
-		EditionISBN13: testBook.EditionISBN13,
-	}, args.Error(1)
+	
+	// Handle both TestHardcoverBook and models.HardcoverBook types
+	var result models.HardcoverBook
+	
+	// Check which type we're dealing with
+	switch book := args.Get(0).(type) {
+	case *TestHardcoverBook:
+		result = models.HardcoverBook{
+			ID:            book.ID,
+			UserBookID:    book.UserBookID,
+			EditionID:     book.EditionID,
+			Title:         book.Title,
+			Subtitle:      book.Subtitle,
+			Authors:       book.Authors,
+			Narrators:     book.Narrators,
+			CoverImageURL: book.CoverImageURL,
+			Description:   book.Description,
+			PageCount:     book.PageCount,
+			ReleaseDate:   book.ReleaseDate,
+			Publisher:     book.Publisher,
+			ISBN:          book.ISBN,
+			ASIN:          book.ASIN,
+			BookStatusID:  book.BookStatusID,
+			CanonicalID:   book.CanonicalID,
+			EditionASIN:   book.EditionASIN,
+			EditionISBN10: book.EditionISBN10,
+			EditionISBN13: book.EditionISBN13,
+		}
+	case *models.HardcoverBook:
+		// Already the correct type, just copy it
+		result = *book
+	}
+	
+	return &result, args.Error(1)
 }
 
 // SearchBookByASIN mocks the SearchBookByASIN method
@@ -248,29 +260,40 @@ func (m *MockHardcoverClient) SearchBookByASIN(ctx context.Context, asin string)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	testBook := args.Get(0).(*TestHardcoverBook)
-	// Convert TestHardcoverBook to models.HardcoverBook
-	return &models.HardcoverBook{
-		ID:            testBook.ID,
-		UserBookID:    testBook.UserBookID,
-		EditionID:     testBook.EditionID,
-		Title:         testBook.Title,
-		Subtitle:      testBook.Subtitle,
-		Authors:       testBook.Authors,
-		Narrators:     testBook.Narrators,
-		CoverImageURL: testBook.CoverImageURL,
-		Description:   testBook.Description,
-		PageCount:     testBook.PageCount,
-		ReleaseDate:   testBook.ReleaseDate,
-		Publisher:     testBook.Publisher,
-		ISBN:          testBook.ISBN,
-		ASIN:          testBook.ASIN,
-		BookStatusID:  testBook.BookStatusID,
-		CanonicalID:   testBook.CanonicalID,
-		EditionASIN:   testBook.EditionASIN,
-		EditionISBN10: testBook.EditionISBN10,
-		EditionISBN13: testBook.EditionISBN13,
-	}, args.Error(1)
+	
+	// Handle both TestHardcoverBook and models.HardcoverBook types
+	var result models.HardcoverBook
+	
+	// Check which type we're dealing with
+	switch book := args.Get(0).(type) {
+	case *TestHardcoverBook:
+		result = models.HardcoverBook{
+			ID:            book.ID,
+			UserBookID:    book.UserBookID,
+			EditionID:     book.EditionID,
+			Title:         book.Title,
+			Subtitle:      book.Subtitle,
+			Authors:       book.Authors,
+			Narrators:     book.Narrators,
+			CoverImageURL: book.CoverImageURL,
+			Description:   book.Description,
+			PageCount:     book.PageCount,
+			ReleaseDate:   book.ReleaseDate,
+			Publisher:     book.Publisher,
+			ISBN:          book.ISBN,
+			ASIN:          book.ASIN,
+			BookStatusID:  book.BookStatusID,
+			CanonicalID:   book.CanonicalID,
+			EditionASIN:   book.EditionASIN,
+			EditionISBN10: book.EditionISBN10,
+			EditionISBN13: book.EditionISBN13,
+		}
+	case *models.HardcoverBook:
+		// Already the correct type, just copy it
+		result = *book
+	}
+	
+	return &result, args.Error(1)
 }
 
 // SearchBookByISBN10 mocks the SearchBookByISBN10 method
@@ -310,15 +333,30 @@ func (m *MockHardcoverClient) SearchBooks(ctx context.Context, title, author str
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	// Convert []*TestHardcoverBook to []models.HardcoverBook
-	testBooks := args.Get(0).([]*TestHardcoverBook)
-	books := make([]models.HardcoverBook, len(testBooks))
-	for i, book := range testBooks {
-		// Convert TestHardcoverBook to models.HardcoverBook using the helper function
-		hcBook := toHardcoverBook(book)
-		books[i] = *hcBook
+	
+	// Handle both []models.HardcoverBook and []*TestHardcoverBook types
+	switch books := args.Get(0).(type) {
+	case []models.HardcoverBook:
+		// Already the correct type, return as is
+		return books, args.Error(1)
+		
+	case []*TestHardcoverBook:
+		// Convert []*TestHardcoverBook to []models.HardcoverBook
+		result := make([]models.HardcoverBook, len(books))
+		for i, book := range books {
+			// Convert TestHardcoverBook to models.HardcoverBook using the helper function
+			hcBook := toHardcoverBook(book)
+			result[i] = *hcBook
+		}
+		return result, args.Error(1)
+		
+	case *models.HardcoverBook:
+		// Single book provided, return as a slice with one element
+		return []models.HardcoverBook{*books}, args.Error(1)
 	}
-	return books, args.Error(1)
+	
+	return nil, fmt.Errorf("unsupported type for SearchBooks mock")
+
 }
 
 // createTestConfig creates a test configuration

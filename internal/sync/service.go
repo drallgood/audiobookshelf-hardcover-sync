@@ -34,7 +34,7 @@ type progressUpdateInfo struct {
 
 // Service handles the synchronization between Audiobookshelf and Hardcover
 type Service struct {
-	audiobookshelf *audiobookshelf.Client
+	audiobookshelf audiobookshelf.AudiobookshelfClientInterface
 	hardcover      hardcover.HardcoverClientInterface
 	config         *Config
 	log            *logger.Logger
@@ -1295,19 +1295,53 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		}
 	}
 
-	// Find the most appropriate read status to update
+	// Find the most appropriate read status to update and identify any duplicates
 	var readStatusToUpdate *hardcover.UserBookRead
 	var mostRecentRead *hardcover.UserBookRead
 	var mostRecentTime time.Time
-
-	// First, try to find an existing read status that matches our criteria
+	var duplicateUnfinishedReads []*hardcover.UserBookRead
+	
+	// First pass: identify all unfinished reads and find the one with most progress
 	for i := range readStatuses {
 		read := &readStatuses[i]
 		
-		// If we find an unfinished read status, use that
+		// Track all unfinished reads
 		if read.FinishedAt == nil {
-			readStatusToUpdate = read
-			break
+			if readStatusToUpdate == nil {
+				// First unfinished read we find becomes our primary
+				readStatusToUpdate = read
+			} else {
+				// Any additional unfinished reads are duplicates
+				// Compare progress and use the one with the highest progress as primary
+				var currentProgress, newProgress float64
+				
+				if readStatusToUpdate.ProgressSeconds != nil {
+					currentProgress = float64(*readStatusToUpdate.ProgressSeconds)
+				} else {
+					currentProgress = readStatusToUpdate.Progress
+				}
+				
+				if read.ProgressSeconds != nil {
+					newProgress = float64(*read.ProgressSeconds)
+				} else {
+					newProgress = read.Progress
+				}
+				
+				log.Warn("Found duplicate unfinished read entry", map[string]interface{}{
+					"current_read_id": readStatusToUpdate.ID,
+					"current_progress": currentProgress,
+					"duplicate_read_id": read.ID,
+					"duplicate_progress": newProgress,
+				})
+				
+				// If the new one has higher progress, swap them
+				if newProgress > currentProgress {
+					duplicateUnfinishedReads = append(duplicateUnfinishedReads, readStatusToUpdate)
+					readStatusToUpdate = read
+				} else {
+					duplicateUnfinishedReads = append(duplicateUnfinishedReads, read)
+				}
+			}
 		}
 		
 		// Track the most recent read status as a fallback
@@ -1316,6 +1350,45 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			if err == nil && (mostRecentRead == nil || finishedTime.After(mostRecentTime)) {
 				mostRecentTime = finishedTime
 				mostRecentRead = read
+			}
+		}
+	}
+	
+	// If we found duplicates, clean them up
+	if len(duplicateUnfinishedReads) > 0 {
+		log.Warn(fmt.Sprintf("Found %d duplicate unfinished read entries, will clean up", len(duplicateUnfinishedReads)), nil)
+		
+		// We'll only delete the duplicates if we're not in dry-run mode
+		if !s.config.App.DryRun {
+			for _, duplicateRead := range duplicateUnfinishedReads {
+				log.Info("Marking duplicate read entry as deleted", map[string]interface{}{
+					"read_id": duplicateRead.ID,
+				})
+				
+				// Mark the duplicate as deleted by setting finished_at to today and progress to 0
+				// (We do this instead of deleting to preserve history)
+				today := time.Now().Format("2006-01-02")
+				updateObj := map[string]interface{}{
+					"finished_at": today,
+					"progress_seconds": 0,
+					"progress": 0,
+				}
+				
+				_, err := s.hardcover.UpdateUserBookRead(ctx, hardcover.UpdateUserBookReadInput{
+					ID:     duplicateRead.ID,
+					Object: updateObj,
+				})
+				
+				if err != nil {
+					log.Error("Failed to mark duplicate read as deleted", map[string]interface{}{
+						"read_id": duplicateRead.ID,
+						"error": err.Error(),
+					})
+				} else {
+					log.Info("Successfully marked duplicate read as deleted", map[string]interface{}{
+						"read_id": duplicateRead.ID,
+					})
+				}
 			}
 		}
 	}

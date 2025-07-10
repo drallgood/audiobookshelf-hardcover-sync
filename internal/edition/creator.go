@@ -255,56 +255,62 @@ func (c *Creator) uploadImageToGCS(ctx context.Context, editionID int, imageURL 
 	// Generate a unique filename
 	filename := fmt.Sprintf("cover-%d.%s", time.Now().Unix(), extension)
 
-	// Step 2: Get upload token from Hardcover API
-	tokenURL := "https://hardcover.app/api/upload/google"
-	tokenReq, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, nil)
+	// Step 2: Get upload token directly from Hardcover API
+	log.Debug("Getting upload credentials from Hardcover", map[string]interface{}{
+		"filename":   filename,
+		"edition_id": editionID,
+	})
+
+	// Construct the API URL for getting upload credentials
+	url := "https://hardcover.app/api/upload/google"
+
+	// Create the request with query parameters
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to create token request: %w", err)
-	}
-
-	// Set headers
-	tokenReq.Header.Set("Accept", "*/*")
-	tokenReq.Header.Set("Origin", "https://hardcover.app")
-	tokenReq.Header.Set("Referer", "https://hardcover.app/")
-
-	// Add auth header if available
-	if authHeader := c.client.GetAuthHeader(); authHeader != "" {
-		tokenReq.Header.Set("Authorization", authHeader)
+		log.Error("Failed to create request", map[string]interface{}{"error": err.Error()})
+		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
 	// Add query parameters
-	q := tokenReq.URL.Query()
+	q := req.URL.Query()
 	q.Add("file", filename)
 	q.Add("path", fmt.Sprintf("editions/%d", editionID))
-	tokenReq.URL.RawQuery = q.Encode()
+	req.URL.RawQuery = q.Encode()
 
-	log.Debug("Requesting upload token", map[string]interface{}{
-		"url": tokenReq.URL.String(),
-	})
+	// Set headers
+	req.Header.Set("Authorization", c.client.GetAuthHeader())
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Origin", "https://hardcover.app")
+	req.Header.Set("Referer", "https://hardcover.app/")
 
-	tokenResp, err := c.httpClient.Do(tokenReq)
+	// Send the request
+	respCreds, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to get upload token: %w", err)
+		log.Error("Failed to send request", map[string]interface{}{"error": err.Error()})
+		return "", fmt.Errorf("failed to send request: %w", err)
 	}
-	defer tokenResp.Body.Close()
+	defer respCreds.Body.Close()
 
-	if tokenResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(tokenResp.Body)
-		return "", fmt.Errorf("failed to get upload token: HTTP %d: %s", tokenResp.StatusCode, string(body))
-	}
-
-	// Parse the upload info
-	var uploadInfo struct {
-		URL    string            `json:"url"`
-		Fields map[string]string `json:"fields"`
-	}
-	if err := json.NewDecoder(tokenResp.Body).Decode(&uploadInfo); err != nil {
-		return "", fmt.Errorf("failed to parse upload info: %w", err)
+	// Check the response
+	if respCreds.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(respCreds.Body)
+		log.Error("Failed to get upload credentials", map[string]interface{}{
+			"status": respCreds.StatusCode,
+			"body":   string(body),
+		})
+		return "", fmt.Errorf("failed to get upload credentials: HTTP %d: %s", respCreds.StatusCode, string(body))
 	}
 
-	log.Debug("Got upload info", map[string]interface{}{
+	// Parse the response
+	var uploadInfo GoogleUploadInfo
+	if err := json.NewDecoder(respCreds.Body).Decode(&uploadInfo); err != nil {
+		log.Error("Failed to parse upload credentials", map[string]interface{}{"error": err.Error()})
+		return "", fmt.Errorf("failed to parse upload credentials: %w", err)
+	}
+
+	log.Debug("Got upload credentials", map[string]interface{}{
 		"url":    uploadInfo.URL,
-		"fields": uploadInfo.Fields,
+		"fields":  uploadInfo.Fields,
 	})
 
 	// Step 3: Upload to Google Cloud Storage
@@ -418,6 +424,7 @@ func (c *Creator) CreateImageRecord(ctx context.Context, editionID int, imageURL
 
 	// Execute the mutation
 	err := c.client.GraphQLMutation(ctx, mutation, variables, &response)
+
 	if err != nil {
 		c.log.Error("GraphQL mutation failed", map[string]interface{}{
 			"edition_id": editionID,
@@ -434,7 +441,7 @@ func (c *Creator) CreateImageRecord(ctx context.Context, editionID int, imageURL
 
 	// Get the image ID from the response
 	imageID := response.InsertImage.ID
-
+	
 	if imageID == 0 {
 		c.log.Error("Failed to get image ID from response", map[string]interface{}{
 			"edition_id": editionID,
@@ -732,8 +739,18 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 
 		// Check if this is a duplicate error and try to extract the existing edition ID
 		if strings.Contains(errMsg, "already exists") {
+			// Extract dto map from editionInput
+			dtoMap, ok := editionData["dto"].(map[string]interface{})
+			if !ok {
+				// This shouldn't happen but just in case
+				return 0, fmt.Errorf("edition already exists but could not find dto data: %s", errMsg)
+			}
+
 			// Check if we already have an edition with this ISBN-13
-			if isbn13, ok := editionInput["isbn_13"].(string); ok && isbn13 != "" {
+			if isbn13, ok := dtoMap["isbn_13"].(string); ok && isbn13 != "" {
+				c.log.Debug("Looking up existing edition by ISBN-13", map[string]interface{}{
+					"isbn13": isbn13,
+				})
 				edition, err := c.client.GetEditionByISBN13(ctx, isbn13)
 				if err == nil && edition != nil && edition.ID != "" {
 					// Found an existing edition with this ISBN-13
@@ -747,7 +764,10 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 			}
 
 			// Check if we already have an edition with this ASIN
-			if asin, ok := editionInput["asin"].(string); ok && asin != "" {
+			if asin, ok := dtoMap["asin"].(string); ok && asin != "" {
+				c.log.Debug("Looking up existing edition by ASIN", map[string]interface{}{
+					"asin": asin,
+				})
 				edition, err := c.client.GetEditionByASIN(ctx, asin)
 				if err == nil && edition != nil && edition.ID != "" {
 					// Found an existing edition with this ASIN

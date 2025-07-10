@@ -3,7 +3,6 @@ package hardcover
 import (
 	"context"
 
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/edition"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 )
 
@@ -51,17 +50,8 @@ type HardcoverClientInterface interface {
 	// GetEditionByISBN13 gets an edition by its ISBN-13
 	GetEditionByISBN13(ctx context.Context, isbn13 string) (*models.Edition, error)
 
-	// GetGoogleUploadCredentials gets upload credentials for Google Cloud Storage
-	GetGoogleUploadCredentials(ctx context.Context, filename string, editionID int) (*edition.GoogleUploadInfo, error)
+	// NOTE: GetGoogleUploadCredentials was removed as it's now handled directly in edition.Creator.uploadImageToGCS
 
-	// UpdateReadingProgress updates the reading progress for a book
-	UpdateReadingProgress(
-		ctx context.Context,
-		bookID string,
-		progress float64,
-		status string,
-		markAsOwned bool,
-	) error
 
 	// GetUserBook gets user book information by ID
 	GetUserBook(ctx context.Context, userBookID string) (*models.HardcoverBook, error)

@@ -43,6 +43,23 @@ func newTestClient(t *testing.T) (*Client, *httptest.Server) {
 		t.Logf("Received request with query: %s", reqBody.Query)
 		t.Logf("Request variables: %+v", reqBody.Variables)
 
+		// Handle GetCurrentUserID query if present
+		if strings.Contains(reqBody.Query, "GetCurrentUserID") {
+			t.Log("Handling GetCurrentUserID query")
+			response := map[string]interface{}{
+				"data": map[string]interface{}{
+					"me": []map[string]interface{}{
+						{"id": 1001}, // Mock user ID
+					},
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(response); err != nil {
+				t.Fatalf("Failed to encode response: %v", err)
+			}
+			return
+		}
+		
 		// Prepare the response based on the query
 		// Always initialize response with an empty books array by default
 		response := map[string]interface{}{
@@ -117,13 +134,11 @@ func newTestClient(t *testing.T) (*Client, *httptest.Server) {
 	})
 
 	// Create a client that points to our test server
-	client := &Client{
-		baseURL:     server.URL, // Use the test server's URL
-		authToken:   "test-token",
-		httpClient:  server.Client(),
-		logger:      testLogger,
-		rateLimiter: rateLimiter,
-	}
+	client := CreateTestClient(server)
+	// Override the logger with our test logger
+	client.logger = testLogger
+	// Override the rate limiter with our custom one for this test
+	client.rateLimiter = rateLimiter
 
 	return client, server
 }
@@ -185,6 +200,41 @@ func TestClient_GetEditionByISBN13(t *testing.T) {
 			assert.Equal(t, tt.expected, got)
 		})
 	}
+}
+
+func TestClient_SaveToFile(t *testing.T) {
+	// Create a client for testing
+	client, server := newTestClient(t)
+	defer server.Close()
+
+	// Test with temporary filepath
+	filepath := "/tmp/test_hardcover_client.json"
+
+	// Call the method being tested
+	err := client.SaveToFile(filepath)
+
+	// No error should occur as the method is a no-op that returns nil
+	assert.NoError(t, err)
+}
+
+func TestClient_AddWithMetadata(t *testing.T) {
+	// Create a client for testing
+	client, server := newTestClient(t)
+	defer server.Close()
+
+	// Test data
+	key := "test-key"
+	value := "test-value"
+	metadata := map[string]interface{}{
+		"source": "audiobookshelf",
+		"timestamp": time.Now().Unix(),
+	}
+
+	// Call the method being tested
+	err := client.AddWithMetadata(key, value, metadata)
+
+	// No error should occur as the method is a no-op that returns nil
+	assert.NoError(t, err)
 }
 
 func TestClient_SearchBookByISBN13(t *testing.T) {

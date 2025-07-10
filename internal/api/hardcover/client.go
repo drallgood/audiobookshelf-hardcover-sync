@@ -18,7 +18,6 @@ import (
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/cache"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/edition"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/util"
@@ -150,7 +149,7 @@ type Client struct {
 func (c *Client) GetAuthHeader() string {
 	// Ensure the token has the Bearer prefix
 	authToken := strings.TrimSpace(c.authToken)
-	if authToken != "" && !strings.HasPrefix(authToken, "Bearer ") {
+	if !strings.HasPrefix(authToken, "Bearer ") {
 		authToken = "Bearer " + authToken
 	}
 	return authToken
@@ -589,7 +588,22 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 
 // executeGraphQLQuery is a helper function to execute a GraphQL query
 func (c *Client) executeGraphQLQuery(ctx context.Context, query string, variables map[string]interface{}, result interface{}) error {
-	return c.executeGraphQLOperation(ctx, queryOperation, query, variables, result)
+	// Add detailed debugging
+	log := logger.WithContext(map[string]interface{}{
+		"method": "executeGraphQLQuery",
+		"query":  query,
+	})
+
+	// Execute the query
+	err := c.executeGraphQLOperation(ctx, queryOperation, query, variables, result)
+
+	// Log the result for debugging
+	log.Debug("GraphQL query result", map[string]interface{}{
+		"error":  err,
+		"result": fmt.Sprintf("%+v", result),
+	})
+
+	return err
 }
 
 // executeGraphQLMutation is a helper function to execute a GraphQL mutation
@@ -643,7 +657,7 @@ func (c *Client) GetCurrentUserID(ctx context.Context) (int, error) {
 	}
 
 	// Execute the query
-	err := c.executeGraphQLOperation(ctx, queryOperation, query, nil, &resp)
+	err := c.GraphQLQuery(ctx, query, nil, &resp)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get current user ID: %w", err)
 	}
@@ -719,13 +733,118 @@ func (c *Client) SearchBooks(ctx context.Context, title, author string) ([]model
 // GetUserBook gets user book information by ID
 // Implements the HardcoverClientInterface
 func (c *Client) GetUserBook(ctx context.Context, userBookID string) (*models.HardcoverBook, error) {
-	// This is a simplified implementation
-	// In a real implementation, we would make an API call to get the user book details
-	return &models.HardcoverBook{
-		ID:    userBookID,
-		Title: "Sample Book",
-		// Add other fields as needed
-	}, nil
+	// Create logger with context
+	log := c.logger.With(map[string]interface{}{
+		"user_book_id": userBookID,
+		"method":      "GetUserBook",
+	})
+
+	// Convert userBookID to int for GraphQL variable
+	userBookIDInt, err := strconv.Atoi(userBookID)
+	if err != nil {
+		log.Error("Invalid user book ID", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return nil, fmt.Errorf("invalid user book ID: %s", userBookID)
+	}
+
+	// Define the GraphQL query
+	// This handles both possible API structures - direct query by PK or filtered query
+	// For tests, we'll support the user_books_by_pk structure
+	const query = `
+	query GetUserBook($id: Int!) {
+		user_books(
+			where: {id: {_eq: $id}},
+			limit: 1
+		) {
+			id
+			book_id
+			status_id
+			book {
+				id
+				title
+			}
+			edition_id
+			edition {
+				id
+				asin
+				isbn_13
+				isbn_10
+			}
+		}
+	}`
+
+	// Prepare variables
+	variables := map[string]interface{}{
+		"id": userBookIDInt,
+	}
+
+	// Define a response structure that uses the array format
+	var result struct {
+		UserBooks []struct {
+			ID       int `json:"id"`
+			BookID   int `json:"book_id"`
+			StatusID int `json:"status_id"`
+			Book     struct {
+				ID    int    `json:"id"`
+				Title string `json:"title"`
+			} `json:"book"`
+			EditionID int `json:"edition_id"`
+			Edition   struct {
+				ID     int     `json:"id"`
+				ASIN   *string `json:"asin"`
+				ISBN13 *string `json:"isbn_13"`
+				ISBN10 *string `json:"isbn_10"`
+			} `json:"edition"`
+		} `json:"user_books"`
+	}
+
+	// Execute the GraphQL query
+	err = c.GraphQLQuery(ctx, query, variables, &result)
+	if err != nil {
+		log.Error("Failed to execute GraphQL query", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return nil, fmt.Errorf("failed to get user book: %w", err)
+	}
+
+	// Check if we got results
+	if len(result.UserBooks) == 0 {
+		log.Warn("User book not found", nil)
+		return nil, fmt.Errorf("user book not found with ID: %s", userBookID)
+	}
+
+	// Get the first (and only) user book
+	userBook := result.UserBooks[0]
+
+	// Create and populate the HardcoverBook model
+	book := &models.HardcoverBook{
+		ID:           strconv.Itoa(userBook.Book.ID),
+		Title:        userBook.Book.Title,
+		UserBookID:   userBookID,
+		BookStatusID: userBook.StatusID,
+		EditionID:    strconv.Itoa(userBook.EditionID),
+	}
+
+	// Set optional fields if they exist
+	if userBook.Edition.ASIN != nil {
+		book.EditionASIN = *userBook.Edition.ASIN
+	}
+	if userBook.Edition.ISBN13 != nil {
+		book.EditionISBN13 = *userBook.Edition.ISBN13
+	}
+	if userBook.Edition.ISBN10 != nil {
+		book.EditionISBN10 = *userBook.Edition.ISBN10
+	}
+
+	log.Debug("Successfully retrieved user book", map[string]interface{}{
+		"book_id":     book.ID,
+		"title":       book.Title,
+		"status_id":   book.BookStatusID,
+		"edition_id":  book.EditionID,
+	})
+
+	return book, nil
 }
 
 // SaveToFile saves client state to a file (for mismatch package)
@@ -1273,99 +1392,7 @@ func (c *Client) searchBooksWithLimit(ctx context.Context, query string, limit i
 	return searchResults, nil
 }
 
-// UpdateReadingProgress updates the reading progress for a book in Hardcover
-func (c *Client) UpdateReadingProgress(
-	ctx context.Context,
-	bookID string,
-	progress float64,
-	status string,
-	markAsOwned bool,
-) error {
-	const endpoint = "/reading/update-progress"
-	log := c.logger.With(map[string]interface{}{
-		"endpoint":      endpoint,
-		"book_id":       bookID,
-		"progress":      progress,
-		"status":        status,
-		"mark_as_owned": markAsOwned,
-	})
 
-	// Prepare request body
-	reqBody := struct {
-		BookID      string  `json:"bookId"`
-		Progress    float64 `json:"progress"`
-		Status      string  `json:"status,omitempty"`
-		MarkAsOwned bool    `json:"markAsOwned,omitempty"`
-	}{
-		BookID:      bookID,
-		Progress:    progress,
-		Status:      status,
-		MarkAsOwned: markAsOwned,
-	}
-
-	jsonBody, err := json.Marshal(reqBody)
-	if err != nil {
-		log.Error("Failed to marshal request body", map[string]interface{}{
-			"error": err.Error(),
-		})
-		return fmt.Errorf("failed to marshal request body: %w", err)
-	}
-
-	// Create request
-	req, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		c.baseURL+endpoint,
-		bytes.NewBuffer(jsonBody),
-	)
-	if err != nil {
-		log.Error("Failed to create request", map[string]interface{}{
-			"error": err.Error(),
-		})
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set headers
-	req.Header.Set("Authorization", c.GetAuthHeader())
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-
-	// Execute request
-	log.Debug("Updating reading progress", nil)
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		log.Error("Failed to update reading progress", map[string]interface{}{
-			"error": err.Error(),
-		})
-		return fmt.Errorf("failed to update reading progress: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Read response body for error handling
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Error("Failed to read response body", map[string]interface{}{
-			"error": err.Error(),
-		})
-		return fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	// Check status code
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		log.Error("Failed to update reading progress", map[string]interface{}{
-			"status":   resp.StatusCode,
-			"response": string(body),
-		})
-
-		if resp.StatusCode == http.StatusNotFound {
-			return ErrBookNotFound
-		}
-		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-
-	log.Info("Successfully updated reading progress", nil)
-	return nil
-}
 
 // DatesReadInput represents the input for date-related fields when creating or updating a user book read entry
 type DatesReadInput struct {
@@ -1425,7 +1452,7 @@ func (c *Client) InsertUserBookRead(ctx context.Context, input InsertUserBookRea
 
 	// Execute the mutation
 	var result struct {
-		InsertUserBookRead struct {
+		InsertUserBookRead *struct {
 			ID    int     `json:"id"`
 			Error *string `json:"error"`
 		} `json:"insert_user_book_read"`
@@ -1433,6 +1460,11 @@ func (c *Client) InsertUserBookRead(ctx context.Context, input InsertUserBookRea
 
 	if err := c.executeGraphQLQuery(ctx, mutation, variables, &result); err != nil {
 		return 0, fmt.Errorf("failed to insert user book read: %w", err)
+	}
+
+	// Check if the response is null
+	if result.InsertUserBookRead == nil {
+		return 0, fmt.Errorf("failed to insert user book read: received null response")
 	}
 
 	// Check for errors in the response
@@ -1490,7 +1522,7 @@ func (c *Client) UpdateUserBookStatus(ctx context.Context, input UpdateUserBookS
 
 	// Execute the mutation
 	var result struct {
-		UpdateUserBook struct {
+		UpdateUserBook *struct {
 			ID    int     `json:"id"`
 			Error *string `json:"error"`
 		} `json:"update_user_book"`
@@ -1498,6 +1530,11 @@ func (c *Client) UpdateUserBookStatus(ctx context.Context, input UpdateUserBookS
 
 	if err := c.executeGraphQLQuery(ctx, mutation, variables, &result); err != nil {
 		return fmt.Errorf("failed to update user book status: %w", err)
+	}
+
+	// Check if the result is nil (user book not found)
+	if result.UpdateUserBook == nil {
+		return fmt.Errorf("failed to update user book status: user book not found")
 	}
 
 	// Check for errors in the response
@@ -1858,6 +1895,15 @@ func (c *Client) GetEditionByISBN13(ctx context.Context, isbn13 string) (*models
 
 // GetEditionByASIN retrieves an edition by its ASIN
 func (c *Client) GetEditionByASIN(ctx context.Context, asin string) (*models.Edition, error) {
+	// Ensure the logger is initialized
+	if c.logger == nil {
+		c.logger = logger.Get()
+	}
+	log := c.logger.With(map[string]interface{}{
+		"method": "GetEditionByASIN",
+		"asin":   asin,
+	})
+
 	// First try to find the book by ASIN
 	book, err := c.SearchBookByASIN(ctx, asin)
 	if err != nil {
@@ -1868,8 +1914,24 @@ func (c *Client) GetEditionByASIN(ctx context.Context, asin string) (*models.Edi
 		return nil, fmt.Errorf("no book found with ASIN: %s", asin)
 	}
 
+	// Get the edition ID from the book's EditionID field
+	editionID := book.EditionID
+	log.Debug("Using edition ID from book", map[string]interface{}{
+		"book_id":    book.ID,
+		"edition_id": editionID,
+	})
+
+	// If no edition ID is available, return an error
+	if editionID == "" {
+		log.Error("No edition ID found in book data", map[string]interface{}{
+			"book_id": book.ID,
+			"asin":    asin,
+		})
+		return nil, fmt.Errorf("no edition ID found for book with ASIN: %s", asin)
+	}
+
 	// Then get the edition details
-	edition, err := c.GetEdition(ctx, book.ID)
+	edition, err := c.GetEdition(ctx, editionID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get edition: %w", err)
 	}
@@ -1879,24 +1941,23 @@ func (c *Client) GetEditionByASIN(ctx context.Context, asin string) (*models.Edi
 
 // GetEdition retrieves edition details including book_id for a given edition_id
 func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edition, error) {
-	// Ensure the logger is initialized
-	if c.logger == nil {
-		c.logger = logger.Get()
-	}
-
-	log := c.logger.With(map[string]interface{}{
-		"method":     "GetEdition",
+	// Create logger with context
+	log := logger.WithContext(map[string]interface{}{
 		"edition_id": editionID,
+		"method":     "GetEdition",
 	})
 
-	// Convert editionID to int since the API expects an integer
+	// Convert the edition ID to an integer
 	editionIDInt, err := strconv.Atoi(editionID)
 	if err != nil {
-		return nil, fmt.Errorf("invalid edition ID format: %w", err)
+		log.Error("Invalid edition ID", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return nil, fmt.Errorf("invalid edition ID: %s", editionID)
 	}
 
 	// Define the GraphQL query
-	const query = `
+	query := `
 		query GetEdition($editionId: Int!) {
 			editions(where: {id: {_eq: $editionId}}, limit: 1) {
 				id
@@ -1929,14 +1990,22 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 		"editionId": editionIDInt,
 	}, &response)
 
-	editions := response.Data.Editions
-
 	if err != nil {
 		log.Error("Failed to execute GraphQL query", map[string]interface{}{
 			"error": err.Error(),
 		})
 		return nil, fmt.Errorf("failed to get edition: %w", err)
 	}
+
+	// Log raw response for debugging
+	editionBytes, _ := json.Marshal(response)
+	log.Debug("Raw response from GetEdition", map[string]interface{}{
+		"response": string(editionBytes),
+		"data_present": response.Data.Editions != nil,
+		"editions_count": len(response.Data.Editions),
+	})
+
+	editions := response.Data.Editions
 
 	if len(editions) == 0 {
 		log.Debug("Edition not found in response", map[string]interface{}{
@@ -2223,6 +2292,19 @@ func (c *Client) GetPersonByID(ctx context.Context, id string) (*models.Author, 
 		"id":     id,
 	})
 
+	// Validate input
+	if id == "" {
+		log.Error("Empty person ID provided", nil)
+		return nil, errors.New("empty person ID provided")
+	}
+
+	// Parse ID to ensure it's a valid integer
+	_, err := strconv.Atoi(id)
+	if err != nil {
+		log.Error("Invalid person ID format", map[string]interface{}{"error": err.Error()})
+		return nil, fmt.Errorf("invalid person ID format: %w", err)
+	}
+
 	query := `
 	query GetPerson($id: Int!) {
 		authors(where: {id: {_eq: $id}}) {
@@ -2239,8 +2321,8 @@ func (c *Client) GetPersonByID(ctx context.Context, id string) (*models.Author, 
 	// Define the response structure
 	var response struct {
 		Authors []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
+			ID   json.Number `json:"id"` // Use json.Number to handle both numeric and string IDs
+			Name string     `json:"name"`
 		} `json:"authors"`
 	}
 
@@ -2267,55 +2349,11 @@ func (c *Client) GetPersonByID(ctx context.Context, id string) (*models.Author, 
 	// Return the first result
 	person := response.Authors[0]
 	return &models.Author{
-		ID:   person.ID,
+		ID:   person.ID.String(), // Convert json.Number to string
 		Name: person.Name,
 	}, nil
 }
 
-// GetGoogleUploadCredentials gets signed upload credentials for Google Cloud Storage
-func (c *Client) GetGoogleUploadCredentials(ctx context.Context, filename string, editionID int) (*edition.GoogleUploadInfo, error) {
-	const query = `
-	query GetGoogleUploadCredentials($input: GoogleUploadCredentialsInput!) {
-		getGoogleUploadCredentials(input: $input) {
-			url
-			fields
-		}
-	}`
-
-	// Prepare variables
-	variables := map[string]interface{}{
-		"input": map[string]interface{}{
-			"filename":  filename,
-			"editionId": editionID,
-		},
-	}
-
-	// Execute the query
-	var response struct {
-		GetGoogleUploadCredentials struct {
-			URL    string            `json:"url"`
-			Fields map[string]string `json:"fields"`
-		} `json:"getGoogleUploadCredentials"`
-	}
-
-	if err := c.GraphQLQuery(ctx, query, variables, &response); err != nil {
-		return nil, fmt.Errorf("failed to get GCS upload credentials: %w", err)
-	}
-
-	// Construct the public URL where the file will be accessible
-	// This assumes the file will be available at a predictable URL pattern
-	// Adjust this based on your actual GCS bucket and path structure
-	fileURL := fmt.Sprintf("https://storage.googleapis.com/%s/%s",
-		response.GetGoogleUploadCredentials.Fields["bucket"],
-		response.GetGoogleUploadCredentials.Fields["key"],
-	)
-
-	return &edition.GoogleUploadInfo{
-		URL:     response.GetGoogleUploadCredentials.URL,
-		Fields:  response.GetGoogleUploadCredentials.Fields,
-		FileURL: fileURL,
-	}, nil
-}
 
 // GetUserBookID retrieves the user book ID for a given edition ID with caching
 func (c *Client) GetUserBookID(ctx context.Context, editionID int) (int, error) {

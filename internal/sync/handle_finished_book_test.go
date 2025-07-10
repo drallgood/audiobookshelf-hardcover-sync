@@ -245,16 +245,8 @@ func stringPointer(s string) *string {
 	return &s
 }
 
-func int64Pointer(i int64) *int64 {
-	return &i
-}
-
 func intPointer(i int) *int {
 	return &i
-}
-
-func floatPointer(f float64) *float64 {
-	return &f
 }
 
 // Helper function to convert TestAudiobookshelfBook to models.AudiobookshelfBook
