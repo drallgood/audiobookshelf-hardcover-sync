@@ -20,7 +20,17 @@ var (
 )
 
 // LookupAuthorIDs looks up author IDs by name
+// It can handle multiple names separated by commas in a single string.
 func LookupAuthorIDs(ctx context.Context, hc hardcover.HardcoverClientInterface, names ...string) ([]int, error) {
+	// If we have exactly one name that contains commas, split it
+	if len(names) == 1 && strings.Contains(names[0], ",") {
+		splitNames := strings.Split(names[0], ",")
+		// Trim whitespace from each name
+		for i, name := range splitNames {
+			splitNames[i] = strings.TrimSpace(name)
+		}
+		return lookupPeople(ctx, hc, "author", splitNames...)
+	}
 	return lookupPeople(ctx, hc, "author", names...)
 }
 
