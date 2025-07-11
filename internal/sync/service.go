@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
@@ -1901,6 +1902,87 @@ func (s *Service) processFoundBook(ctx context.Context, hcBook *models.Hardcover
 	return hcBook, nil
 }
 
+// calculateTitleSimilarity returns a similarity score between two titles
+// The score ranges from 0 (completely different) to 1 (exact match)
+// It uses a combination of techniques to calculate similarity
+func calculateTitleSimilarity(title1, title2 string) float64 {
+	// Normalize both titles to lowercase
+	title1 = strings.ToLower(title1)
+	title2 = strings.ToLower(title2)
+	
+	// Remove common punctuation and normalize spaces
+	title1 = normalizeTitle(title1)
+	title2 = normalizeTitle(title2)
+	
+	// Check for exact match after normalization
+	if title1 == title2 {
+		return 1.0
+	}
+	
+	// If one title is fully contained in the other, that's a strong signal
+	if strings.Contains(title1, title2) || strings.Contains(title2, title1) {
+		// Calculate length ratio to prefer closer length matches
+		len1 := float64(len(title1))
+		len2 := float64(len(title2))
+		lenRatio := math.Min(len1, len2) / math.Max(len1, len2)
+		
+		// Return high score (0.8-0.9) based on length ratio
+		return 0.8 + (0.1 * lenRatio)
+	}
+	
+	// Split into words for word-based comparison
+	words1 := strings.Fields(title1)
+	words2 := strings.Fields(title2)
+	
+	// Count matching words
+	matchCount := 0
+	for _, word1 := range words1 {
+		for _, word2 := range words2 {
+			if word1 == word2 && len(word1) > 2 { // Only count matches for words longer than 2 chars
+				matchCount++
+				break
+			}
+		}
+	}
+	
+	// Calculate word match ratio
+	totalUniqueWords := len(getUniqueWords(append(words1, words2...)))
+	wordMatchRatio := float64(matchCount) / float64(totalUniqueWords)
+	
+	// Return a score that considers word matches
+	return math.Min(0.7, wordMatchRatio) // Cap at 0.7 to ensure exact/contained matches rank higher
+}
+
+// normalizeTitle removes punctuation and normalizes spaces in a title
+func normalizeTitle(title string) string {
+	// Remove punctuation
+	var sb strings.Builder
+	for _, r := range title {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsSpace(r) {
+			sb.WriteRune(r)
+		}
+	}
+	
+	// Normalize spaces
+	normalized := strings.Join(strings.Fields(sb.String()), " ")
+	return normalized
+}
+
+// getUniqueWords returns a slice of unique words from the input words
+func getUniqueWords(words []string) []string {
+	wordSet := make(map[string]struct{})
+	for _, word := range words {
+		wordSet[word] = struct{}{}
+	}
+	
+	unique := make([]string, 0, len(wordSet))
+	for word := range wordSet {
+		unique = append(unique, word)
+	}
+	
+	return unique
+}
+
 // findBookInHardcoverByTitleAuthor searches for a book in Hardcover by title and author
 // This should only be used for mismatch handling when a book can't be found by ASIN/ISBN
 // Note: This function intentionally does not call GetEdition with the book ID after finding a match.
@@ -1950,40 +2032,98 @@ func (s *Service) findBookInHardcoverByTitleAuthor(ctx context.Context, book mod
 		return nil, fmt.Errorf("no books found matching search query: %s", searchQuery)
 	}
 
-	// Get the first result (most relevant)
-	firstResult := searchResults[0]
+	// Check if the original title contains "summary" to avoid filtering in that case
+	titleHasSummary := strings.Contains(strings.ToLower(title), "summary")
 
-	// Add book ID to logger
-	log = log.With(map[string]interface{}{
-		"book_id": firstResult.ID,
+	// Get the best result based on filtering and similarity scoring
+	var bestMatch *models.HardcoverBook
+	var highestScore float64
+	var matchDetails []string
+
+	// Log number of results found
+	log.Info("Search returned multiple results, will apply filtering and scoring", map[string]interface{}{
+		"result_count": len(searchResults),
 	})
 
-	// Create a new HardcoverBook from the search result
-	hcBook := &models.HardcoverBook{
-		ID:           firstResult.ID,
-		Title:        firstResult.Title,
-		BookStatusID: 0, // Will be set when we get the full book details
+	// Calculate scores for each result and find the best match
+	for _, result := range searchResults {
+		resultTitle := result.Title
+		resultLower := strings.ToLower(resultTitle)
+
+		// Skip results that contain "Summary" if original doesn't (summary books are less relevant)
+		if !titleHasSummary && (strings.Contains(resultLower, "summary of") || 
+			strings.Contains(resultLower, "summary:") || 
+			strings.HasPrefix(resultLower, "summary ")) {
+			log.Debug("Skipping summary book", map[string]interface{}{
+				"title": resultTitle,
+				"id":    result.ID,
+			})
+			continue
+		}
+
+		// Calculate similarity score
+		score := calculateTitleSimilarity(title, resultTitle)
+
+		// Boost score if author matches
+		if author != "" && strings.Contains(strings.ToLower(resultTitle), strings.ToLower(author)) {
+			score += 0.1 // Boost score for author match in title
+			if score > 1.0 {
+				score = 1.0 // Cap at 1.0
+			}
+		}
+
+		// Track match details for logging
+		matchDetails = append(matchDetails, fmt.Sprintf("%s (ID: %s, Score: %.2f)", 
+			resultTitle, result.ID, score))
+
+		// Update best match if score is higher
+		if score > highestScore {
+			highestScore = score
+			bestMatch = &models.HardcoverBook{
+				ID:           result.ID,
+				Title:        resultTitle,
+				BookStatusID: 0, // Will be set when we get the full book details
+			}
+		}
 	}
 
-	log.Debug("Created HardcoverBook from search result", map[string]interface{}{
-		"id":    hcBook.ID,
-		"title": hcBook.Title,
+	// Log all match details for debugging
+	log.Debug("Match scores for all results", map[string]interface{}{
+		"matches": matchDetails,
+	})
+
+	// If no match found after filtering, fall back to first result
+	if bestMatch == nil {
+		log.Warn("No best match found after filtering, falling back to first result", nil)
+		firstResult := searchResults[0]
+		bestMatch = &models.HardcoverBook{
+			ID:           firstResult.ID,
+			Title:        firstResult.Title,
+			BookStatusID: 0,
+		}
+	}
+
+	// Add best match details to logger
+	log = log.With(map[string]interface{}{
+		"book_id":    bestMatch.ID,
+		"book_title": bestMatch.Title,
+		"score":      highestScore,
+	})
+
+	log.Info("Selected best matching book based on title similarity", map[string]interface{}{
+		"original_title": title,
+		"match_title":    bestMatch.Title,
+		"match_score":    highestScore,
 	})
 
 	// IMPORTANT: We deliberately do not attempt to get edition details here.
 	// While the API exists, calling GetEdition with a book ID instead of an edition ID would fail.
 	// For our sync purposes, having just the book ID and title is sufficient.
 	
-	// Create a minimal HardcoverBook with just the book ID and title
-	log.Info("Book found by title/author, but no edition details yet", map[string]interface{}{
-		"book_id":    hcBook.ID,
-		"book_title": hcBook.Title,
-	})
-	
 	// For a real implementation, we would need an API method to get editions by book ID
 	// For now, return the book data we have without edition details
 	// The caller can decide whether to handle this as a mismatch
-	return hcBook, nil
+	return bestMatch, nil
 }
 
 // findBookInHardcover finds a book in Hardcover by various methods
