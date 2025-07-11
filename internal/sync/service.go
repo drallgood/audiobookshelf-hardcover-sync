@@ -552,6 +552,15 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		progress = book.Progress.CurrentTime / book.Media.Duration
 	}
 
+	// Update logger with progress information
+	bookLog = bookLog.With(map[string]interface{}{
+		"progress":       progress,
+		"current_time":   book.Progress.CurrentTime,
+		"total_duration": book.Media.Duration,
+		"is_finished":    book.Progress.IsFinished,
+		"finished_at":    book.Progress.FinishedAt,
+	})
+
 	bookLog.Debug("Calculated book progress", nil)
 
 	// Skip books below minimum progress threshold
