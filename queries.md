@@ -40,9 +40,9 @@ query BookByASIN($asin: String!) {
 ```
 
 ```json
-{
-  "asin": "B007W4Z6TW"
-}
+  {
+    "asin": "B007W4Z6TW"
+  }
 ```
 
 ## Book by ID
