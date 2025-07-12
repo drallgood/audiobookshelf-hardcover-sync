@@ -214,6 +214,8 @@ jobs:
     needs: build-and-push
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Required for creating releases
     steps:
       - name: Get tag name
         id: get-tag
