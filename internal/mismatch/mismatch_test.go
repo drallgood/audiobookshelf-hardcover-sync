@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/edition"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/edition"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/stretchr/testify/assert"
@@ -33,8 +33,6 @@ type CreateUserBookInput struct {
 type CreateUserBookResult struct {
 	ID int `json:"id"`
 }
-
-
 
 // newTestContext creates a context with a test logger
 func newTestContext(t *testing.T) context.Context {
@@ -262,10 +260,10 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 	ctx := newTestContext(t)
 
 	tests := []struct {
-		name     string
-		book     BookMismatch
+		name       string
+		book       BookMismatch
 		setupMocks func(*MockHardcoverClient)
-		expected EditionExport
+		expected   EditionExport
 	}{
 		{
 			name: "basic book with minimum fields",
@@ -288,11 +286,11 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 				Title:         "Test Book",
 				AuthorIDs:     []int{}, // Empty slice when no authors found
 				AudioSeconds:  19800,
-				EditionFormat: "Audiobook",
-				EditionInfo:   "Audiobookshelf.",
-				LanguageID:    1, // Default values
-				CountryID:     1, // Default values
-				PublisherID:   0, // Default values
+				EditionFormat: "Audible Audio", // Updated to match new default
+				EditionInfo:   "Unabridged",    // Updated to match new default
+				LanguageID:    1,               // Default values
+				CountryID:     1,               // Default values
+				PublisherID:   0,               // Default values
 			},
 		},
 		{
@@ -329,7 +327,7 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 						Name:      "Test Author",
 						BookCount: 10,
 					}}, nil).Once()
-				
+
 				// Set up mock expectations for SearchNarrators
 				mockHC.On("SearchNarrators", mock.Anything, "Test Narrator", 5).
 					Return([]models.Author{{
@@ -351,8 +349,8 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 				PublisherID:   2,
 				ReleaseDate:   "2020-01-01",
 				AudioSeconds:  37800,
-				EditionFormat: "Audiobook",
-				EditionInfo:   "Special Edition.",
+				EditionFormat: "Audible Audio",   // Updated to match new default
+				EditionInfo:   "Special Edition", // Updated to remove the period at the end
 				LanguageID:    1,
 				CountryID:     1,
 			},
@@ -363,20 +361,20 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create a new mock client for this test case
 			mockHC := &MockHardcoverClient{}
-			
+
 			// Default mock expectations will be set up in each test case
-			
+
 			// Set up mock expectations if provided
 			if tt.setupMocks != nil {
 				tt.setupMocks(mockHC)
 			}
-			
+
 			result := tt.book.ToEditionExport(ctx, mockHC)
 
 			// Check all fields that should be directly copied
 			// Verify all mock expectations were met
 			mockHC.AssertExpectations(t)
-			
+
 			assert.Equal(t, tt.expected.BookID, result.BookID)
 			assert.Equal(t, tt.expected.Title, result.Title)
 			assert.Equal(t, tt.expected.Subtitle, result.Subtitle)
@@ -457,9 +455,9 @@ func TestAddWithMetadata(t *testing.T) {
 	assert.Equal(t, "2020", mismatch.PublishedYear)
 	assert.Equal(t, "Audiobook", mismatch.EditionFormat)
 	assert.Equal(t, "Audiobookshelf", mismatch.EditionInfo) // Only contains platform name
-	assert.Equal(t, 1, mismatch.LanguageID)  // Default to English
-	assert.Equal(t, 1, mismatch.CountryID)   // Default to US
-	assert.Equal(t, 1, mismatch.PublisherID) // Default publisher
+	assert.Equal(t, 1, mismatch.LanguageID)                 // Default to English
+	assert.Equal(t, 1, mismatch.CountryID)                  // Default to US
+	assert.Equal(t, 1, mismatch.PublisherID)                // Default publisher
 }
 
 func TestBookMismatchToEditionInput(t *testing.T) {
@@ -704,9 +702,9 @@ func TestSaveMismatchesJSONFileIndividual(t *testing.T) {
 			t.Errorf("Expected isbn_13 to be %q, got %q in file %s", expectedISBN13, isbn13, filePath)
 		}
 
-		// Check the edition_information field - should be platform name only
+		// Check the edition_information field - should now default to "Unabridged" for audiobooks
 		if editionInfo, ok := result["edition_information"].(string); ok {
-			expectedEditionInfo := "Audiobookshelf."
+			expectedEditionInfo := "Unabridged"
 			if expected.EditionInfo != "" {
 				expectedEditionInfo = expected.EditionInfo
 			}

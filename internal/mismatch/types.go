@@ -74,10 +74,30 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 		"title":            b.Title,
 	})
 
-	// Default to Audiobook format if not specified
+	// Set edition format based on publisher if possible
 	editionFormat := b.EditionFormat
-	if editionFormat == "" {
-		editionFormat = "Audiobook"
+	if editionFormat == "" || editionFormat == "Audiobook" {
+		// Try to determine a more specific format based on publisher
+		if b.Publisher != "" {
+			publisher := strings.ToLower(b.Publisher)
+			
+			switch {
+			case strings.Contains(publisher, "audible") || 
+			     strings.Contains(publisher, "brilliance") || 
+			     strings.Contains(publisher, "amazon"):
+				editionFormat = "Audible Audio"
+			case strings.Contains(publisher, "libro"):
+				editionFormat = "libro.fm"
+			case strings.Contains(publisher, "audiobook"):
+				editionFormat = "Audiobook"
+			default:
+				// If we can't determine, use "Audible Audio" as default for audiobooks
+				editionFormat = "Audible Audio"
+			}
+		} else {
+			// Default to Audible Audio if no publisher info
+			editionFormat = "Audible Audio"
+		}
 	}
 
 	// Set default language and country if not specified
@@ -100,20 +120,21 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 		imageURL = b.CoverURL
 	}
 
-	// Set EditionInfo - only include platform information, no debug/error details
-	editionInfo := "Audiobookshelf"
+	// Set edition information to describe the edition (e.g., "Unabridged")
+	// Default to empty string if we don't know
+	editionInfo := ""
 	
-	// If EditionInfo is already set in the mismatch, use it instead
-	// but only if it doesn't contain debug info
-	if b.EditionInfo != "" && !strings.Contains(b.EditionInfo, "error") && 
-	   !strings.Contains(b.EditionInfo, "Reason:") && !strings.Contains(b.EditionInfo, "mismatch") {
+	// If EditionInfo is already set in the mismatch, check if it's valid
+	if b.EditionInfo != "" && 
+	   !strings.Contains(b.EditionInfo, "error") && 
+	   !strings.Contains(b.EditionInfo, "Reason:") && 
+	   !strings.Contains(b.EditionInfo, "mismatch") && 
+	   !strings.Contains(b.EditionInfo, "Audiobookshelf") {
+		// Use existing value if it appears valid
 		editionInfo = strings.TrimSpace(b.EditionInfo)
-	}
-	
-	// Ensure the final string has proper formatting
-	editionInfo = strings.TrimRight(editionInfo, ".;:!?")
-	if !strings.HasSuffix(editionInfo, ".") {
-		editionInfo += "."
+	} else {
+		// Otherwise, use "Unabridged" for audiobooks as a reasonable default
+		editionInfo = "Unabridged"
 	}
 
 	// Look up author IDs if we have an author name and a Hardcover client
