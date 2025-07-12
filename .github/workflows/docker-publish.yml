@@ -223,16 +223,12 @@ jobs:
           TAG_NAME=${GITHUB_REF#refs/tags/}
           echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
           echo "release_name=Release ${TAG_NAME}" >> $GITHUB_OUTPUT
-
-      - name: Create Release
-        id: create_release
-        uses: softprops/action-gh-release@v2
+          
+      # Checkout the code to access CHANGELOG.md
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          tag_name: ${{ steps.get-tag.outputs.tag_name }}
-          name: ${{ steps.get-tag.outputs.release_name }}
-          draft: false
-          prerelease: false
-          generate_release_notes: true
+          fetch-depth: 0  # Needed for version calculation
 
       - name: Get release info
         id: release_info
@@ -280,21 +276,7 @@ jobs:
         with:
           tag_name: ${{ steps.get-tag.outputs.tag_name }}
           name: Release ${{ steps.get-tag.outputs.tag_name }}
-          body: |
-            ### 🐳 Docker Image
-            
-            Pull the Docker image:
-            ```bash
-            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.get-tag.outputs.tag_name }}
-            ```
-            
-            Or use the `latest` tag for the most recent release:
-            ```bash
-            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-            ```
-            
-            ### 🔍 Image Details
-            - **Source:** [View on GitHub](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          body_path: CHANGELOG.md  # Use our detailed CHANGELOG.md content
           draft: false
           prerelease: false
-          generate_release_notes: true
+          # We won't generate additional notes since our CHANGELOG is comprehensive
