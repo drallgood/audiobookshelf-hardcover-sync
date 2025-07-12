@@ -5,47 +5,98 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased] - Major Rewrite
 
-### Added
-- **🔄 Incremental Sync**: Added support for incremental synchronization to only process changed books
-  - New state management system to track sync progress
-  - Configurable minimum change threshold for progress updates
-  - State persistence between syncs for efficient updates
-- **📊 Progress Tracking Improvements**: Enhanced progress update handling
-  - More reliable progress persistence in Hardcover
-  - Better handling of edge cases in progress updates
-  - Improved logging for progress-related operations
-- **⚙️ New Configuration Options**:
-  - `sync.incremental`: Enable/disable incremental sync (default: true)
-  - `sync.state_file`: Path to store sync state (default: "./data/sync_state.json")
-  - `sync.min_change_threshold`: Minimum progress change threshold in seconds (default: 60)
+> **MAJOR UPDATE**: This release represents a comprehensive rewrite of the application with significant architectural changes, performance improvements, and new features. Users should review the migration guide for important upgrade information.
 
-### Changed
-- **🚀 Performance Improvements**:
-  - Reduced unnecessary API calls during sync
-  - Improved memory usage with optimized data structures
-  - Better handling of rate limiting and retries
-- **📝 Logging Enhancements**:
-  - More detailed progress update logs
-  - Better error context in logs
-  - Structured logging for easier analysis
+### Architecture Overhaul
+- **🌐 Complete GraphQL Client Rewrite**: Entirely rebuilt the Hardcover client using GraphQL for more efficient and precise API interactions
+- **💾 State Management**: Introduced a robust state management system for tracking sync progress and book status across sessions
+- **🔒 Rate Limiting**: Implemented token bucket rate limiting with improved concurrency control and deadlock prevention
+- **📈 Memory Optimization**: Drastically reduced memory usage with optimized data structures and garbage collection
+- **🔄 Concurrency Model**: Redesigned concurrency approach with proper context handling and cancellation support
 
-### Fixed
-- **🔧 Progress Persistence**: Fixed issues with progress not being saved in Hardcover
-- **🐛 Edge Case Handling**: Improved handling of various edge cases in sync logic
-- **📊 State Management**: Fixed issues with state persistence and recovery
+### Major New Features
+- **🔄 Incremental Sync Engine**: Built a sophisticated incremental synchronization system that only processes changed books
+  - New state persistence layer between syncs for tracking changes
+  - Smart detection of relevant changes to minimize unnecessary API calls
+  - Configurable change thresholds for fine-tuning sync behavior
+- **🏷️ Edition Management**: Complete rewrite of edition handling with new tools and improved matching
+  - Better book matching algorithms that prioritize relevant results and filter out summaries
+  - Enhanced edition information extraction and normalization
+  - Improved mismatch detection and resolution
+- **📦 Docker Support**: Comprehensive Docker implementation with optimized container builds
+  - Multi-arch support for various platforms
+  - Environment-based configuration with sensible defaults
+  - Volume mounting for persistent data
+- **📊 Advanced Progress Tracking**: Completely rebuilt progress tracking system
+  - More accurate progress calculation and persistence
+  - Support for both percentage and seconds-based progress tracking
+  - Better handling of finished status and completion events
+- **🔍 Ownership Sync**: Added support for syncing ownership status between platforms
 
-### Removed
-- **⚡ Rate Limiting Update**: Removed deprecated `sync_delay` configuration and `HARDCOVER_SYNC_DELAY_MS` environment variable
-  - **Reason**: Replaced with more efficient token bucket rate limiting in the Hardcover API client
-  - **Migration**: Use `HARDCOVER_RATE_LIMIT` environment variable to control rate limiting (default: 10 requests per second)
-  - **Impact**: More reliable rate limiting with better performance characteristics
+### Configuration & Logging
+- **⚙️ Configuration System**: Completely redesigned configuration with improved validation
+  - More sensible defaults and clearer documentation
+  - Better environment variable support and overriding
+  - Hierarchical configuration with proper merging of options
+- **📝 Logging Framework**: Rebuilt logging system with structured logging
+  - Request ID tracking across operations
+  - Configurable log levels and formats (JSON/text)
+  - Improved context in log messages
+  - Better error reporting and debug information
 
-- **🔧 Configuration Cleanup**: Removed `audiobook_match_mode` configuration option
-  - **Reason**: Simplified configuration and removed unused functionality
-  - **Impact**: The `AudiobookMatchMode` field has been removed from the configuration. This was a legacy option that is no longer used in the codebase.
+### Tools & Utilities
+- **📱 New CLI Tools**: Added suite of command-line tools for advanced operations
+  - Edition management tools for creating and updating editions
+  - Image tools for managing cover images
+  - Hardcover lookup utilities for data verification
+  - Mismatch handling and resolution tools
+- **🐛 Error Handling**: Introduced BookError type and comprehensive error handling
+  - Detailed error classification and reporting
+  - Better recovery from transient failures
+  - More informative user feedback
 
+### Critical Fixes & Improvements
+- **🚨 Data Integrity**:
+  - Prevented data loss in user_book_read updates
+  - Fixed race conditions in concurrent operations
+  - Improved transaction handling and atomicity
+  - Better handling of API response failures
+- **🔧 Progress & Status**:
+  - Fixed progress_seconds handling for accurate time tracking
+  - Enhanced finished status detection and updates
+  - Prevented duplicate read statuses in Hardcover
+  - Improved progress update logic with better error handling
+- **🔍 Mismatch Handling**:
+  - Improved edition information and format handling
+  - Removed "Audiobookshelf." prefix from edition information
+  - Set more meaningful edition formats based on publisher (e.g., "Audible Audio", "libro.fm")
+  - Better detection and recording of book mismatches
+- **🚀 Performance**:
+  - Optimized API request batching and caching
+  - Reduced memory allocations in hot paths
+  - Improved concurrency control and resource usage
+  - Enhanced rate limiting with token bucket algorithm
+
+### Removed & Deprecated
+- **⚡ Legacy Components**: Removed several deprecated components and systems:
+  - Removed old rate limiting system using delays (`sync_delay` and `HARDCOVER_SYNC_DELAY_MS`)
+  - Eliminated legacy matching modes and configuration options
+  - Removed outdated mismatch handling code and fixed-path configurations
+  - Deprecated non-GraphQL API endpoints usage
+
+### Developer Experience
+- **🛠️ CI/CD**: Enhanced CI/CD pipeline with improved workflows
+  - Better Docker image building and tagging
+  - Comprehensive test coverage with race detection
+  - Automated release processes
+  - Improved build artifacts and versioning
+- **📝 Documentation**: Completely rewrote documentation
+  - Better API documentation and examples
+  - More comprehensive configuration guides
+  - Improved troubleshooting information
+  - Migration guides for upgrading from previous versions
 
 ## [1.6.1] - 2025-06-12
 
