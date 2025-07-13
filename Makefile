@@ -184,10 +184,29 @@ docker-push: docker-build
 	@echo "Pushing Docker image $(DOCKER_IMAGE):$(DOCKER_TAG)"
 	docker push $(DOCKER_IMAGE):$(DOCKER_TAG)
 
-# Release
-.PHONY: release
+# Release targets
+.PHONY: prepare-release release
+
+# Prepare a release by updating the changelog from "Unreleased" to the version number
+prepare-release:
+	@echo "Preparing release $(VERSION)..."
+	@if [ "$(VERSION)" = "dev" ]; then \
+		echo "Error: Cannot prepare release with VERSION=dev. Use VERSION=vX.Y.Z"; \
+		exit 1; \
+	fi
+	@echo "Updating CHANGELOG.md for $(VERSION)..."
+	@sed -i '' "s/## \[Unreleased\]/## [$(VERSION)] - $(shell date +%Y-%m-%d)/" CHANGELOG.md
+	@echo "Changelog updated. Review changes, commit, and create a tag:"
+	@echo "  git add CHANGELOG.md"
+	@echo "  git commit -m 'Release $(VERSION)'"
+	@echo "  git tag -a $(VERSION) -m 'Release $(VERSION)'"
+	@echo "  git push origin main $(VERSION)"
+
+# Create a release using GoReleaser (not typically used - GitHub Actions handles this)
+# See RELEASE.md for the recommended release process
 release: $(GORELEASER)
-	@echo "Creating release $(VERSION)"
+	@echo "Creating release $(VERSION) with GoReleaser (only for local testing)"
+	@echo "NOTE: GitHub Actions should handle the actual release process"
 	$(GORELEASER) release --rm-dist
 
 # Clean target
