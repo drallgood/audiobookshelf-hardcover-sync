@@ -5,7 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - Major Rewrite
+## [v2.0.1] - 2025-07-15
+
+### Configuration & Logging
+- **⚙️ Configuration System**: Added support for CONFIG_PATH environment variable for Docker deployments
+  - Fixed issue where application wasn't reading CONFIG_PATH for Docker configuration
+  - Improved documentation in help output
+
+## [v2.0.0] - Major Rewrite
 
 > **MAJOR UPDATE**: This release represents a comprehensive rewrite of the application with significant architectural changes, performance improvements, and new features. Users should review the migration guide for important upgrade information.
 
@@ -40,7 +47,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - More sensible defaults and clearer documentation
   - Better environment variable support and overriding
   - Hierarchical configuration with proper merging of options
-  - Added support for CONFIG_PATH environment variable for Docker deployments
 - **📝 Logging Framework**: Rebuilt logging system with structured logging
   - Request ID tracking across operations
   - Configurable log levels and formats (JSON/text)
