@@ -52,6 +52,11 @@ func parseFlags() *configFlags {
 	// Parse flags
 	flag.Parse()
 
+	// Check for CONFIG_PATH environment variable if no config file was specified via flags
+	if cfg.configFile == "" {
+		cfg.configFile = os.Getenv("CONFIG_PATH")
+	}
+
 	// Set environment variables from flags if they're provided
 	setEnvFromFlag(cfg.audiobookshelfURL, "AUDIOBOOKSHELF_URL")
 	setEnvFromFlag(cfg.audiobookshelfToken, "AUDIOBOOKSHELF_TOKEN")

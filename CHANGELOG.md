@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - More sensible defaults and clearer documentation
   - Better environment variable support and overriding
   - Hierarchical configuration with proper merging of options
+  - Added support for CONFIG_PATH environment variable for Docker deployments
 - **📝 Logging Framework**: Rebuilt logging system with structured logging
   - Request ID tracking across operations
   - Configurable log levels and formats (JSON/text)

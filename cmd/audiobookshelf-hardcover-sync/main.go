@@ -230,6 +230,10 @@ func showHelp() {
 	fmt.Println("  \tEnvironment: HARDCOVER_TOKEN")
 
 	fmt.Println("\nOptional Configuration:")
+	fmt.Println("  --config FILE")
+	fmt.Println("  \tPath to config file (YAML/JSON)")
+	fmt.Println("  \tEnvironment: CONFIG_PATH")
+
 	fmt.Println("  --sync-interval DURATION")
 	fmt.Println("  \tInterval between syncs (e.g., 1h, 30m, 0 to disable)")
 	fmt.Println("  \tEnvironment: SYNC_INTERVAL (duration string, e.g., 1h30m)")
