@@ -223,7 +223,7 @@ sync:
   want_to_read: true # sync "Want to Read" status
   owned: true        # mark books as owned
   match_mode: continue # book matching behavior (continue, skip, fail)
-  incremental: enabled # sync strategy (enabled, disabled)
+  incremental: true # incremental sync strategy enabled (true, false)
   min_progress: 0.01   # minimum progress change to sync (0.01 = 1%)
   state_file: /app/data/sync_state.json # state storage location
   dry_run: false     # simulation mode without making changes
