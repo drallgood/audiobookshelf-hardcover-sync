@@ -141,7 +141,7 @@ export LOG_FORMAT=json
 export LOG_FORMAT=text
 
 # Enable debug logging for more detailed output
-export DEBUG=true
+export LOG_LEVEL=debug
 ```
 
 ## Benefits
@@ -160,7 +160,7 @@ export DEBUG=true
 |----------|-------------|---------|
 | `AUDIOBOOK_MATCH_MODE` | Controls how book matching issues are handled | `continue` |
 | `LOG_FORMAT` | Output format for logs (`json` or `text`) | `json` |
-| `DEBUG` | Enable debug logging | `false` |
+| `LOG_LEVEL` | Log level (`debug`, `info`, `warn`, `error`) | `info` |
 
 ### AUDIOBOOK_MATCH_MODE Options
 
@@ -186,8 +186,8 @@ export DEBUG=true
 # Strict mode - fail on any mismatch
 export AUDIOBOOK_MATCH_MODE=fail
 
-# Debug mode with JSON output
-export DEBUG=true
+# Enable debug logging with JSON format
+export LOG_LEVEL=debug
 export LOG_FORMAT=json
 ```
 

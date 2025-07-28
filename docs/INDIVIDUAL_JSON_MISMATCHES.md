@@ -20,14 +20,14 @@ ls -l mismatches/*.json
 |----------|-------------|---------|
 | `MISMATCH_DIR` | Directory to store mismatch JSON files | `./mismatches` |
 | `LOG_FORMAT` | Log output format (`json` or `text`) | `json` |
-| `DEBUG` | Enable debug logging | `false` |
+| `LOG_LEVEL` | Log level (`debug`, `info`, `warn`, `error`) | `info` |
 
 ### Example Workflow
 
 1. **Run the Sync**
    ```bash
    # Enable debug logging for detailed output
-   DEBUG=true LOG_FORMAT=text ./audiobookshelf-hardcover-sync sync
+   LOG_LEVEL=debug LOG_FORMAT=text ./audiobookshelf-hardcover-sync sync
    ```
 
 2. **Check for Mismatches**

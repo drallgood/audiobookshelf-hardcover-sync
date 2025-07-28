@@ -64,8 +64,6 @@ type Config struct {
 
 	// Application settings
 	App struct {
-		// Debug enables debug mode
-		Debug bool `yaml:"debug" env:"DEBUG"`
 		// SyncInterval is the interval between syncs
 		SyncInterval time.Duration `yaml:"sync_interval" env:"SYNC_INTERVAL"`
 		// MinimumProgress is the minimum progress threshold for syncing (0.0 to 1.0)
@@ -114,7 +112,6 @@ func DefaultConfig() *Config {
 	cfg.Logging.Format = "json"
 
 	// Default application settings
-	cfg.App.Debug = false
 	cfg.App.SyncInterval = 1 * time.Hour
 	cfg.App.MinimumProgress = 0.01 // 1% minimum progress threshold
 	cfg.App.SyncWantToRead = true
@@ -190,9 +187,6 @@ func Load(configFile string) (*Config, error) {
 	}
 
 	// Application settings
-	if debug, set := os.LookupEnv("DEBUG"); set {
-		cfg.App.Debug = strings.ToLower(debug) == "true"
-	}
 	if logLevel := getEnv("LOG_LEVEL", ""); logLevel != "" {
 		cfg.Logging.Level = logLevel
 	}
@@ -240,7 +234,6 @@ func Load(configFile string) (*Config, error) {
 	fmt.Printf("  test_book_limit: %d\n", cfg.App.TestBookLimit)
 
 	fmt.Println("Loaded application settings:")
-	fmt.Printf("  debug: %t\n", cfg.App.Debug)
 	fmt.Printf("  log_level: %s\n", cfg.Logging.Level)
 	fmt.Printf("  log_format: %s\n", cfg.Logging.Format)
 	fmt.Printf("  sync_interval: %v\n", cfg.App.SyncInterval)
@@ -358,13 +351,7 @@ func loadFromEnv(cfg *Config) {
 		}
 	}
 
-	// Application settings
-	if debug := os.Getenv("DEBUG"); debug != "" {
-		if b, err := strconv.ParseBool(debug); err == nil {
-			cfg.App.Debug = b
-		}
-	}
-	// Log level is now handled by the Logging.Level field
+	// Application settings - Log level is handled by the Logging.Level field
 	if logLevel := os.Getenv("LOG_LEVEL"); logLevel != "" {
 		cfg.Logging.Level = logLevel
 	}

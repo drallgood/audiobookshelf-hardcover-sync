@@ -25,7 +25,6 @@ hardcover:
 
 # Application settings
 app:
-  debug: false
   sync_interval: "1h"
   minimum_progress: 0.01  # Minimum progress threshold (0.0 to 1.0)
   sync_want_to_read: true  # Sync books with 0% progress as "Want to Read"

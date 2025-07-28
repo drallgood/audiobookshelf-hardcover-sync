@@ -86,7 +86,6 @@ func TestSync(t *testing.T) {
 	// Create test config
 	testConfig := &config.Config{
 		App: struct {
-		Debug           bool          `yaml:"debug" env:"DEBUG"`
 		SyncInterval    time.Duration `yaml:"sync_interval" env:"SYNC_INTERVAL"`
 		MinimumProgress float64       `yaml:"minimum_progress" env:"MINIMUM_PROGRESS"`
 		SyncWantToRead  bool          `yaml:"sync_want_to_read" env:"SYNC_WANT_TO_READ"`
@@ -228,7 +227,6 @@ func TestProcessLibrary(t *testing.T) {
 	// Create test config
 	testConfig := &config.Config{
 		App: struct {
-		Debug           bool          `yaml:"debug" env:"DEBUG"`
 		SyncInterval    time.Duration `yaml:"sync_interval" env:"SYNC_INTERVAL"`
 		MinimumProgress float64       `yaml:"minimum_progress" env:"MINIMUM_PROGRESS"`
 		SyncWantToRead  bool          `yaml:"sync_want_to_read" env:"SYNC_WANT_TO_READ"`
@@ -451,7 +449,6 @@ func TestProcessBook(t *testing.T) {
 	// Create test config
 	testConfig := &config.Config{
 		App: struct {
-		Debug           bool          `yaml:"debug" env:"DEBUG"`
 		SyncInterval    time.Duration `yaml:"sync_interval" env:"SYNC_INTERVAL"`
 		MinimumProgress float64       `yaml:"minimum_progress" env:"MINIMUM_PROGRESS"`
 		SyncWantToRead  bool          `yaml:"sync_want_to_read" env:"SYNC_WANT_TO_READ"`
@@ -626,7 +623,6 @@ func TestFindBookInHardcover(t *testing.T) {
 	// Create test config
 	testConfig := &config.Config{
 		App: struct {
-		Debug           bool          `yaml:"debug" env:"DEBUG"`
 		SyncInterval    time.Duration `yaml:"sync_interval" env:"SYNC_INTERVAL"`
 		MinimumProgress float64       `yaml:"minimum_progress" env:"MINIMUM_PROGRESS"`
 		SyncWantToRead  bool          `yaml:"sync_want_to_read" env:"SYNC_WANT_TO_READ"`

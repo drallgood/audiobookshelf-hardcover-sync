@@ -146,17 +146,17 @@ The caching system supports configurable log formats for better integration with
 
 #### Environment Variables
 - `LOG_FORMAT`: Output format for logs (default: `json`, options: `json`, `text`)
-- `DEBUG`: Enable debug logging (default: `false`)
+- `LOG_LEVEL`: Log level (default: `info`, options: `debug`, `info`, `warn`, `error`)
 
 #### Example Configuration
 ```bash
-# JSON format (default, recommended for production)
+# JSON format with debug logging (recommended for troubleshooting)
 export LOG_FORMAT=json
-export DEBUG=true
+export LOG_LEVEL=debug
 
-# Or plain text format (more human-readable)
+# Plain text format with info level (human-readable for development)
 export LOG_FORMAT=text
-export DEBUG=true
+export LOG_LEVEL=info
 ```
 
 #### Example Debug Output

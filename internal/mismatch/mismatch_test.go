@@ -58,7 +58,6 @@ func newTestContext(t *testing.T) context.Context {
 func newTestConfig(mismatchDir string) *config.Config {
 	return &config.Config{
 		App: struct {
-			Debug           bool          `yaml:"debug" env:"DEBUG"`
 			SyncInterval    time.Duration `yaml:"sync_interval" env:"SYNC_INTERVAL"`
 			MinimumProgress float64       `yaml:"minimum_progress" env:"MINIMUM_PROGRESS"`
 			SyncWantToRead  bool          `yaml:"sync_want_to_read" env:"SYNC_WANT_TO_READ"`
@@ -68,7 +67,6 @@ func newTestConfig(mismatchDir string) *config.Config {
 			TestBookLimit   int           `yaml:"test_book_limit" env:"TEST_BOOK_LIMIT"`
 		}{
 			// Set required fields to their zero values
-			Debug:           false,
 			SyncInterval:    0,
 			MinimumProgress: 0,
 			SyncWantToRead:  false,

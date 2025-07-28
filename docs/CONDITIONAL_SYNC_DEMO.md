@@ -90,8 +90,8 @@ The implementation supports configurable logging to help monitor and debug the c
 ### Environment Variables
 
 ```bash
-# Enable debug logging (default: false)
-DEBUG=true
+# Set log level (default: info, options: debug, info, warn, error)
+LOG_LEVEL=debug
 
 # Set log format (default: json, options: json, text)
 LOG_FORMAT=text
@@ -127,7 +127,7 @@ LOG_FORMAT=text
 
 ### Debugging Tips
 
-1. **Enable Debug Mode**: Set `DEBUG=true` to see detailed sync decisions
+1. **Set Log Level**: Set `LOG_LEVEL=debug` to see detailed sync decisions
 2. **Check Timestamps**: Verify if the last sync time is as expected
 3. **Review Progress**: Look for progress changes that might trigger updates
 4. **Check Status Changes**: Verify if status changes are being detected correctly

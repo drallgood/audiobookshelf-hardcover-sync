@@ -46,11 +46,11 @@ The enhanced progress detection is automatically used when:
 ### Environment Variables
 
 ```bash
-# Enable debug logging (default: false)
-DEBUG=true
-
 # Set log format (default: json, options: json, text)
 LOG_FORMAT=text
+
+# Set log level (default: info, options: debug, info, warn, error)
+LOG_LEVEL=debug
 ```
 
 ### Example Debug Output
@@ -93,8 +93,8 @@ Debug output includes:
 - `AUDIOBOOKSHELF_TOKEN`: Valid API token with access to `/api/me` endpoint
 
 ### Optional Settings
-- `DEBUG_MODE`: Enable to see detailed progress detection logs
-- `MINIMUM_PROGRESS_THRESHOLD`: Still applies to non-finished books
+- `LOG_LEVEL`: Set to `debug` to enable detailed progress detection logs (e.g., `export LOG_LEVEL=debug`)
+- `MINIMUM_PROGRESS_THRESHOLD`: Applies to non-finished books
 
 ## Benefits
 
@@ -128,7 +128,7 @@ Debug output includes:
 
 4. **Enable Debug Logging**:
    ```bash
-   export DEBUG=true
+   export LOG_LEVEL=debug
    export LOG_FORMAT=text  # or json for structured output
    ```
    - Look for detailed error messages in the logs
@@ -160,7 +160,7 @@ If you're still seeing false re-read detections:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `LOG_FORMAT` | Output format: `json` or `text` | `json` |
-| `DEBUG` | Enable debug logging | `false` |
+| `LOG_LEVEL` | Log level: `debug`, `info`, `warn`, `error` | `info` |
 | `AUDIOBOOKSHELF_URL` | Base URL for AudiobookShelf | Required |
 | `AUDIOBOOKSHELF_TOKEN` | API token with proper permissions | Required |
 
@@ -171,11 +171,11 @@ If you're still seeing false re-read detections:
 AUDIOBOOKSHELF_URL=https://your-audiobookshelf-server.com
 AUDIOBOOKSHELF_TOKEN=your_api_token_here
 
-# Optional - enable debug logging
-DEBUG=true
-
 # Optional - set log format (json or text)
 LOG_FORMAT=json
+
+# Optional - set log level (debug, info, warn, error)
+LOG_LEVEL=debug
 ```
 
 ### API Changes
