@@ -2370,16 +2370,156 @@ func (c *Client) GetUserBookID(ctx context.Context, editionID int) (int, error) 
 		return userBookID, nil
 	}
 
-	log.Debug("User book ID not found in cache, querying API", nil)
-
 	// Get the current user ID to filter by the correct user
-	userID, userErr := c.GetCurrentUserID(ctx)
-	if userErr != nil {
+	userID, err := c.GetCurrentUserID(ctx)
+	if err != nil {
 		log.Error("Failed to get current user ID", map[string]interface{}{
-			"error": userErr.Error(),
+			"error":     err.Error(),
+			"editionID": editionID,
 		})
-		return 0, fmt.Errorf("failed to get current user ID: %w", userErr)
+		return 0, fmt.Errorf("failed to get current user ID: %w", err)
 	}
+
+	// Get the edition to find the book ID
+	edition, err := c.GetEdition(ctx, strconv.Itoa(editionID))
+	if err != nil {
+		log.Error("Failed to get edition details", map[string]interface{}{
+			"error":     err.Error(),
+			"editionID": editionID,
+		})
+		return 0, fmt.Errorf("failed to get edition details: %w", err)
+	}
+
+	// Convert book ID to int
+	bookID, err := strconv.Atoi(edition.BookID)
+	if err != nil {
+		log.Error("Invalid book ID format", map[string]interface{}{
+			"error":   err.Error(),
+			"book_id": edition.BookID,
+		})
+		return 0, fmt.Errorf("invalid book ID format: %w", err)
+	}
+
+	// First try to find by book ID (preferred method)
+	userBookID, err := c.lookupUserBookByBookID(ctx, bookID, userID)
+	if err != nil {
+		log.Warn("Failed to lookup user book by book ID", map[string]interface{}{
+			"bookID": bookID,
+			"userID": userID,
+			"error":  err.Error(),
+		})
+		return 0, fmt.Errorf("failed to lookup user book by book ID: %w", err)
+	}
+
+	// If not found by book ID, fall back to edition ID (for backward compatibility)
+	if userBookID == 0 {
+		userBookID, err = c.lookupUserBookByEdition(ctx, editionID, userID)
+		if err != nil {
+			log.Warn("Failed to lookup user book by edition ID", map[string]interface{}{
+				"editionID": editionID,
+				"userID":    userID,
+				"error":     err.Error(),
+			})
+			return 0, fmt.Errorf("failed to lookup user book by edition ID: %w", err)
+		}
+
+		if userBookID > 0 {
+			log.Debug("Found user book by edition ID", map[string]interface{}{
+				"editionID":  editionID,
+				"userBookID": userBookID,
+			})
+		}
+	} else {
+		log.Debug("Found user book by book ID", map[string]interface{}{
+			"bookID":     bookID,
+			"userBookID": userBookID,
+		})
+	}
+
+	// Cache the result with default TTL if we found a user book
+	if userBookID > 0 {
+		c.userBookIDCache.Set(editionID, userBookID, UserBookIDCacheTTL)
+	}
+
+	return userBookID, nil
+}
+
+// lookupUserBookByBookID performs a single lookup of a user book by book ID
+func (c *Client) lookupUserBookByBookID(ctx context.Context, bookID, userID int) (int, error) {
+	log := c.logger.With(map[string]interface{}{
+		"bookID": bookID,
+		"userID": userID,
+		"method": "lookupUserBookByBookID",
+	})
+
+	// Define the GraphQL query
+	const query = `
+	query GetUserBookByBook($bookId: Int!, $userId: Int!) {
+	  user_books(
+		where: {
+		  book_id: {_eq: $bookId},
+		  user_id: {_eq: $userId}
+		}, 
+		limit: 1
+	  ) {
+		id
+		book_id
+	  }
+	}`
+
+	// Define the response structure
+	var response struct {
+		UserBooks []struct {
+			ID     int `json:"id"`
+			BookID int `json:"book_id"`
+		} `json:"user_books"`
+	}
+
+	// Execute the query
+	err := c.GraphQLQuery(ctx, query, map[string]interface{}{
+		"bookId": bookID,
+		"userId": userID,
+	}, &response)
+
+	if err != nil {
+		errMsg := fmt.Sprintf("failed to query user books by book ID: %v", err)
+		log.Error(errMsg, map[string]interface{}{
+			"error":  err.Error(),
+			"bookID": bookID,
+			"userID": userID,
+		})
+		return 0, fmt.Errorf(errMsg)
+	}
+
+	// Log the response
+	log.Debug("User book lookup by book ID response", map[string]interface{}{
+		"bookID":      bookID,
+		"userID":      userID,
+		"resultCount": len(response.UserBooks),
+	})
+
+	if len(response.UserBooks) == 0 {
+		return 0, nil
+	}
+
+	userBook := response.UserBooks[0]
+	userBookID := userBook.ID
+
+	log.Debug("Found user book by book ID", map[string]interface{}{
+		"userBookID": userBookID,
+		"bookID":     userBook.BookID,
+	})
+
+	return userBookID, nil
+}
+
+// lookupUserBookByEdition performs a single lookup of a user book by edition ID
+func (c *Client) lookupUserBookByEdition(ctx context.Context, editionID, userID int) (int, error) {
+	log := c.logger.With(map[string]interface{}{
+		"editionID": editionID,
+		"userID":    userID,
+		"method":    "lookupUserBookByEdition",
+	})
 
 	// Define the GraphQL query
 	const query = `
@@ -2396,8 +2536,7 @@ func (c *Client) GetUserBookID(ctx context.Context, editionID int) (int, error) 
 	  }
 	}`
 
-	// Define the response structure to match the actual GraphQL response
-	// The response is an object with a user_books array at the top level
+	// Define the response structure
 	var response struct {
 		UserBooks []struct {
 			ID        int `json:"id"`
@@ -2412,31 +2551,33 @@ func (c *Client) GetUserBookID(ctx context.Context, editionID int) (int, error) 
 	}, &response)
 
 	if err != nil {
-		log.Error("Failed to query user books", map[string]interface{}{
-			"error": err.Error(),
+		errMsg := fmt.Sprintf("failed to query user books: %v", err)
+		log.Error(errMsg, map[string]interface{}{
+			"error":     err.Error(),
+			"editionID": editionID,
+			"userID":    userID,
 		})
-		return 0, fmt.Errorf("failed to query user books: %w", err)
+		return 0, fmt.Errorf(errMsg)
 	}
 
+	// Log the response
+	log.Debug("User book lookup response", map[string]interface{}{
+		"editionID":    editionID,
+		"userID":       userID,
+		"resultCount":  len(response.UserBooks),
+		"hasUserBooks": len(response.UserBooks) > 0,
+	})
+
 	if len(response.UserBooks) == 0 {
-		log.Debug("No user book found for edition", nil)
 		return 0, nil
 	}
 
 	userBook := response.UserBooks[0]
 	userBookID := userBook.ID
 
-	log.Debug("Found existing user book", map[string]interface{}{
+	log.Debug("Found user book", map[string]interface{}{
 		"userBookID": userBookID,
 		"editionID":  userBook.EditionID,
-	})
-
-	// Cache the result with default TTL
-	c.userBookIDCache.Set(editionID, userBookID, UserBookIDCacheTTL)
-
-	log.Debug("Cached user book ID", map[string]interface{}{
-		"editionID":  editionID,
-		"userBookID": userBookID,
 	})
 
 	return userBookID, nil
@@ -2453,6 +2594,10 @@ var statusNameToID = map[string]int{
 // CreateUserBook creates a new user book entry for the given edition ID and status
 func (c *Client) CreateUserBook(ctx context.Context, editionID, status string) (string, error) {
 	// First, get the edition to ensure it exists and get the book_id
+	c.logger.Debug("Getting edition details for user book creation", map[string]interface{}{
+		"editionID": editionID,
+	})
+
 	edition, err := c.GetEdition(ctx, editionID)
 	if err != nil {
 		c.logger.Error("Failed to get edition details", map[string]interface{}{
@@ -2461,6 +2606,11 @@ func (c *Client) CreateUserBook(ctx context.Context, editionID, status string) (
 		})
 		return "", fmt.Errorf("failed to get edition details: %w", err)
 	}
+
+	c.logger.Debug("Retrieved edition details", map[string]interface{}{
+		"editionID": editionID,
+		"bookID":    edition.BookID,
+	})
 
 	// Get status ID based on status string
 	statusID, ok := statusNameToID[status]
@@ -2524,24 +2674,38 @@ func (c *Client) CreateUserBook(ctx context.Context, editionID, status string) (
 
 	err = c.GraphQLMutation(ctx, mutation, input, &result)
 	if err != nil {
-		c.logger.Error("Failed to create user book", map[string]interface{}{
+		errMsg := fmt.Sprintf("failed to create user book: %v", err)
+		c.logger.Error(errMsg, map[string]interface{}{
 			"error":     err.Error(),
 			"editionID": editionIDInt,
 			"bookID":    editionBookID,
 			"statusID":  statusID,
 		})
-		return "", fmt.Errorf("failed to create user book: %w", err)
+		return "", fmt.Errorf(errMsg)
 	}
 
 	if result.InsertUserBook.Error != nil {
-		return "", fmt.Errorf("failed to create user book: %s", *result.InsertUserBook.Error)
+		errMsg := fmt.Sprintf("failed to create user book: %s", *result.InsertUserBook.Error)
+		c.logger.Error(errMsg, map[string]interface{}{
+			"editionID": editionIDInt,
+			"bookID":    editionBookID,
+			"statusID":  statusID,
+			"error":     *result.InsertUserBook.Error,
+		})
+		return "", fmt.Errorf(errMsg)
 	}
 
 	userBookID := strconv.Itoa(result.InsertUserBook.UserBook.ID)
 
 	c.logger.Info("Successfully created user book", map[string]interface{}{
-		"userBookID": result.InsertUserBook.UserBook.ID,
-		"statusID":   result.InsertUserBook.UserBook.StatusID,
+		"userBookID":    result.InsertUserBook.UserBook.ID,
+		"statusID":      result.InsertUserBook.UserBook.StatusID,
+		"editionID":     editionIDInt,
+		"bookID":        editionBookID,
+		"status":        status,
+		"statusName":    status,
+		"statusNameID":  statusID,
+		"mutationInput": input,
 	})
 
 	return userBookID, nil

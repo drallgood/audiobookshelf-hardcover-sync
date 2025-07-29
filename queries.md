@@ -183,6 +183,8 @@ query GetUserBookReadsForUserBookID($user_book_id: Int!) {
 }
 ```
 
+A single ASIN always has a single edition ID, so that's not it
+
 ## User Book by ASIN
 
 ```graphql
@@ -228,6 +230,27 @@ query UserBookByASIN($asin: String!) {
 {
   "asin": "1250791456"
 }
+```
+
+## User Book By Edition
+
+```graphql
+query GetUserBookByEdition($editionId: Int!, $userId: Int!) {
+  user_books(
+    where: {
+      edition_id: {_eq: $editionId},
+      user_id: {_eq: $userId}
+    }, 
+    limit: 1
+  ) {
+    id
+    edition_id
+  }
+}
+```
+
+```json
+{"editionId":30803183,"userId":36307}
 ```
 
 ## Narrator by Name

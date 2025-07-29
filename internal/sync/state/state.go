@@ -3,8 +3,11 @@ package state
 import (
 	"encoding/json"
 	"fmt"
+	"log"
+	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -35,7 +38,7 @@ type Library struct {
 type Book struct {
 	LastProgress float64 `json:"lastProgress"`
 	LastUpdated  int64   `json:"lastUpdated"`
-	Status       string  `json:"status,omitempty"` // e.g., "TO_READ", "IN_PROGRESS", "FINISHED"
+	Status       string  `json:"status,omitempty"` // e.g., "WANT_TO_READ", "IN_PROGRESS", "FINISHED"
 }
 
 // NewState creates a new empty state with current version
@@ -155,18 +158,63 @@ func (s *State) Save(path string) error {
 	return nil
 }
 
-// UpdateBook updates the state for a book
-func (s *State) UpdateBook(bookID string, progress float64, status string) {
+// UpdateBook updates the state for a book if there are actual changes
+// Returns true if the state was updated, false if no changes were needed
+// bookID should be in the format "bookID:editionID" to handle multiple editions
+func (s *State) UpdateBook(bookID string, progress float64, status string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := time.Now().Unix()
-	s.Books[bookID] = Book{
-		LastProgress: progress,
-		LastUpdated:  now,
-		Status:       status,
+	debugLog := false
+	
+	// Check if we already have state for this book
+	if existing, exists := s.Books[bookID]; exists {
+		// Calculate if progress has changed significantly (more than 0.1%)
+		progressDiff := math.Abs(existing.LastProgress - progress)
+		progressChanged := progressDiff > 0.001
+		statusChanged := existing.Status != status
+		
+		// Debug logging for Scrum book
+		if strings.Contains(strings.ToLower(bookID), "scrum") {
+			debugLog = true
+			log.Printf("DEBUG - UpdateBook for Scrum - ID: %s, Progress: %.4f -> %.4f (diff: %.4f), Status: %s -> %s",
+				bookID, existing.LastProgress, progress, progressDiff, existing.Status, status)
+		}
+		
+		// Only update if something has changed
+		if !progressChanged && !statusChanged {
+			if debugLog {
+				log.Printf("DEBUG - No update needed for book %s - no significant changes", bookID)
+			}
+			return false
+		}
+		
+		// Update only the changed fields
+		s.Books[bookID] = Book{
+			LastProgress: progress,
+			LastUpdated:  now,
+			Status:       status,
+		}
+		
+		if debugLog {
+			log.Printf("DEBUG - Updated book %s state - progress: %.4f, status: %s", bookID, progress, status)
+		}
+	} else {
+		// New book, always update
+		s.Books[bookID] = Book{
+			LastProgress: progress,
+			LastUpdated:  now,
+			Status:       status,
+		}
+		
+		if strings.Contains(strings.ToLower(bookID), "scrum") {
+			log.Printf("DEBUG - Created new state for Scrum book %s - progress: %.4f, status: %s", bookID, progress, status)
+		}
 	}
+	
 	s.LastSync = now
+	return true
 }
 
 // UpdateLibrary updates the state for a library
