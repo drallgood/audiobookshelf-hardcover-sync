@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **🔧 Sync State Handling**: Fixed issues with sync state tracking and test initialization
+  - Fixed nil pointer dereference in test service by properly initializing the state field
+  - Improved sync state updates to prevent books from being stuck in "error" state
+  - Ensured accurate progress tracking for all book statuses (IN_PROGRESS, SKIPPED, etc.)
+  - Updated test cases to verify proper state management
+
 ### Removed
 - **🔧 Removed Debug Configuration**: Removed the `debug` configuration option and `DEBUG` environment variable
   - Logging verbosity should now be controlled using the `LOG_LEVEL` environment variable
