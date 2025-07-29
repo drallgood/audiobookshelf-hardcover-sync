@@ -13,6 +13,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/edition"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -605,11 +606,15 @@ func createTestService() (*Service, *MockHardcoverClient) {
 	// Create a mock client
 	mockClient := &MockHardcoverClient{}
 
+	// Create a test state
+	state := state.NewState()
+
 	// Create and return a test service with the mock client
 	svc := &Service{
 		hardcover: mockClient,
 		config:    cfg,
 		log:       logger.Get(),
+		state:     state,
 		lastProgressUpdates: make(map[string]progressUpdateInfo),
 	}
 

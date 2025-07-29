@@ -675,7 +675,13 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			book.ID,
 			s.hardcover, // Pass the Hardcover client for publisher lookup
 		)
-		s.state.UpdateBook(book.ID, 0, "error") // Mark with zero progress and error status
+		
+		// Calculate progress percentage if we have duration
+		progressPct := 0.0
+		if book.Media.Duration > 0 && book.Progress.CurrentTime > 0 {
+			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
+		}
+		s.state.UpdateBook(book.ID, progressPct, "SKIPPED") // Mark as skipped with current progress
 		return ErrSkippedBook // Skip this book but continue with others
 	}
 
@@ -715,8 +721,12 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			s.hardcover, // Pass the Hardcover client for publisher lookup
 		)
 		
-		// Update the state to track this book
-		s.state.UpdateBook(book.ID, 0, "error") // Mark with zero progress and error status
+		// Update the state to track this book with current progress
+		progressPct := 0.0
+		if book.Media.Duration > 0 && book.Progress.CurrentTime > 0 {
+			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
+		}
+		s.state.UpdateBook(book.ID, progressPct, "NO_EDITION") // Mark as missing edition but with current progress
 		return ErrSkippedBook
 	}
 
@@ -764,6 +774,13 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			book.ID,
 			s.hardcover, // Pass the Hardcover client for publisher lookup
 		)
+		
+		// Update state with current progress before returning
+		progressPct := 0.0
+		if book.Media.Duration > 0 && book.Progress.CurrentTime > 0 {
+			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
+		}
+		s.state.UpdateBook(book.ID, progressPct, "NOT_FOUND")
 		return nil
 	}
 
@@ -1446,6 +1463,17 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		}
 	}
 
+	// Update state with current progress before proceeding
+	progressPct := 0.0
+	if book.Media.Duration > 0 {
+		progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
+	}
+	status := "IN_PROGRESS"
+	if book.Progress.IsFinished {
+		status = "FINISHED"
+	}
+	s.state.UpdateBook(book.ID, progressPct, status)
+
 	// If no read status found at all, we'll create a new one
 	if readStatusToUpdate == nil && mostRecentRead == nil {
 		log.Info("No existing read status found, will create a new one", logCtx)
@@ -1526,6 +1554,17 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				progress:  book.Progress.CurrentTime,
 			}
 			s.lastProgressMutex.Unlock()
+
+			// Update the state with current progress and status
+			status := "IN_PROGRESS"
+			if book.Progress.IsFinished {
+				status = "FINISHED"
+			}
+			progressPct := 0.0
+			if book.Media.Duration > 0 {
+				progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
+			}
+			s.state.UpdateBook(book.ID, progressPct, status)
 
 			log.Info("Significant progress difference detected, will update", logCtx)
 		}
