@@ -51,7 +51,7 @@ func TestDetermineBookStatus(t *testing.T) {
 			progress:   0.0,
 			isFinished: false,
 			finishedAt: 0,
-			expected:   "TO_READ",
+			expected:   "WANT_TO_READ",
 		},
 		{
 			name:       "finished but no timestamp",

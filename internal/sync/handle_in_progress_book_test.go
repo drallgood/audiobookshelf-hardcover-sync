@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -35,7 +36,8 @@ func TestHandleInProgressBook_NoProgress(t *testing.T) {
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
 	// Call the function
-	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook)
+	stateKey := fmt.Sprintf("%s:test-edition", audiobook.ID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
 	// Verify results
 	assert.NoError(t, err, "Should not return an error when there's no progress")
@@ -68,7 +70,8 @@ func TestHandleInProgressBook_DryRun(t *testing.T) {
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
 	// Call the function
-	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook)
+	stateKey := fmt.Sprintf("%s:test-edition", audiobook.ID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
 	// Verify results
 	assert.NoError(t, err, "Should not return an error in dry-run mode")
@@ -91,7 +94,8 @@ func TestHandleInProgressBook_GetUserBookError(t *testing.T) {
 	mockClient.On("GetUserBook", mock.Anything, "123").Return((*models.HardcoverBook)(nil), expectedErr).Once()
 
 	// Call the function
-	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook)
+	stateKey := fmt.Sprintf("%s:test-edition", audiobook.ID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
 	// Verify results
 	assert.Error(t, err, "Should return an error when GetUserBook fails")
@@ -135,7 +139,8 @@ func TestHandleInProgressBook_RecentUpdate(t *testing.T) {
 	}
 
 	// Call the function
-	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook)
+	stateKey := fmt.Sprintf("%s:test-edition", audiobook.ID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
 	// Verify results
 	assert.NoError(t, err, "Should not return an error when skipping due to recent update")
@@ -193,7 +198,8 @@ func TestHandleInProgressBook_UpdateExistingRead(t *testing.T) {
 	}).Return(nil).Once()
 
 	// Call the function
-	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook)
+	stateKey := fmt.Sprintf("%s:test-edition", audiobook.ID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
 	// Verify results
 	assert.NoError(t, err, "Should not return an error when updating existing read")
@@ -235,7 +241,8 @@ func TestHandleInProgressBook_SmallProgressDifference(t *testing.T) {
 	}, nil).Once()
 
 	// Call the function
-	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook)
+	stateKey := fmt.Sprintf("%s:test-edition", audiobook.ID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
 	// Verify results
 	assert.NoError(t, err, "Should not return an error when progress difference is small")
@@ -293,7 +300,8 @@ func TestHandleInProgressBook_CreateNewRead(t *testing.T) {
 	}).Return(nil).Once()
 
 	// Call the function
-	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook)
+	stateKey := fmt.Sprintf("%s:test-edition", audiobook.ID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
 	// Verify results
 	assert.NoError(t, err, "Should not return an error when creating new read")
@@ -345,7 +353,8 @@ func TestHandleInProgressBook_UpdateReadError(t *testing.T) {
 	})).Return(false, expectedErr).Once()
 
 	// Call the function
-	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook)
+	stateKey := fmt.Sprintf("%s:test-edition", audiobook.ID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
 	// Verify results
 	assert.Error(t, err, "Should return an error when UpdateUserBookRead fails")
@@ -400,7 +409,8 @@ func TestHandleInProgressBook_GetUserBookReadsError(t *testing.T) {
 	}).Return(nil).Once()
 
 	// Call the function
-	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook)
+	stateKey := fmt.Sprintf("%s:test-edition", audiobook.ID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
 	// Verify results - the function should continue despite the GetUserBookReads error
 	assert.NoError(t, err, "Should not return an error when GetUserBookReads fails but we can create a new read")
@@ -460,7 +470,8 @@ func TestHandleInProgressBook_FinishedBook(t *testing.T) {
 	}).Return(nil).Once()
 
 	// Call the function
-	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook)
+	stateKey := fmt.Sprintf("%s:test-edition", audiobook.ID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
 	// Verify results
 	assert.NoError(t, err, "Should not return an error when updating finished book")

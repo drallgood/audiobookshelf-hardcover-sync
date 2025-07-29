@@ -17,7 +17,7 @@ func TestFindOrCreateUserBookID_InvalidEditionID(t *testing.T) {
 	svc, mockClient := createTestService()
 
 	// Call the function with an invalid edition ID
-	userBookID, err := svc.findOrCreateUserBookID(context.Background(), "invalid", "TO_READ")
+	userBookID, err := svc.findOrCreateUserBookID(context.Background(), "invalid", "WANT_TO_READ")
 
 	// Verify results
 	assert.Error(t, err, "Should return an error when edition ID is invalid")
@@ -37,7 +37,7 @@ func TestFindOrCreateUserBookID_ExistingUserBook(t *testing.T) {
 	mockClient.On("GetUserBookID", mock.Anything, 456).Return(expectedUserBookID, nil).Once()
 
 	// Call the function
-	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "TO_READ")
+	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "WANT_TO_READ")
 
 	// Verify results
 	assert.NoError(t, err, "Should not return an error when user book exists")
@@ -56,7 +56,7 @@ func TestFindOrCreateUserBookID_GetUserBookIDError(t *testing.T) {
 	mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, expectedErr).Once()
 
 	// Call the function
-	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "TO_READ")
+	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "WANT_TO_READ")
 
 	// Verify results
 	assert.Error(t, err, "Should return an error when GetUserBookID fails")
@@ -77,7 +77,7 @@ func TestFindOrCreateUserBookID_DryRun(t *testing.T) {
 	mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, nil).Once()
 
 	// Call the function
-	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "TO_READ")
+	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "WANT_TO_READ")
 
 	// Verify results
 	assert.NoError(t, err, "Should not return an error in dry-run mode")
@@ -99,7 +99,7 @@ func TestFindOrCreateUserBookID_SecondCheckFindsUserBook(t *testing.T) {
 	mockClient.On("GetUserBookID", mock.Anything, 456).Return(expectedUserBookID, nil).Once()
 
 	// Call the function
-	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "TO_READ")
+	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "WANT_TO_READ")
 
 	// Verify results
 	assert.NoError(t, err, "Should not return an error when second check finds user book")
@@ -121,7 +121,7 @@ func TestFindOrCreateUserBookID_SecondCheckError(t *testing.T) {
 	mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, expectedErr).Once()
 
 	// Call the function
-	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "TO_READ")
+	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "WANT_TO_READ")
 
 	// Verify results
 	assert.Error(t, err, "Should return an error when second check fails")
@@ -144,10 +144,10 @@ func TestFindOrCreateUserBookID_CreateUserBookError(t *testing.T) {
 
 	// Mock the CreateUserBook call to return an error
 	expectedErr := errors.New("API error")
-	mockClient.On("CreateUserBook", mock.Anything, editionID, "TO_READ").Return("", expectedErr).Once()
+	mockClient.On("CreateUserBook", mock.Anything, editionID, "WANT_TO_READ").Return("", expectedErr).Once()
 
 	// Call the function
-	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "TO_READ")
+	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "WANT_TO_READ")
 
 	// Verify results
 	assert.Error(t, err, "Should return an error when CreateUserBook fails")
@@ -169,10 +169,10 @@ func TestFindOrCreateUserBookID_InvalidUserBookIDFormat(t *testing.T) {
 	mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, nil).Once()
 
 	// Mock the CreateUserBook call to return an invalid user book ID
-	mockClient.On("CreateUserBook", mock.Anything, editionID, "TO_READ").Return("invalid", nil).Once()
+	mockClient.On("CreateUserBook", mock.Anything, editionID, "WANT_TO_READ").Return("invalid", nil).Once()
 
 	// Call the function
-	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "TO_READ")
+	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "WANT_TO_READ")
 
 	// Verify results
 	assert.Error(t, err, "Should return an error when new user book ID has invalid format")
@@ -195,10 +195,10 @@ func TestFindOrCreateUserBookID_Success(t *testing.T) {
 
 	// Mock the CreateUserBook call to return a valid user book ID
 	expectedUserBookID := "789"
-	mockClient.On("CreateUserBook", mock.Anything, editionID, "TO_READ").Return(expectedUserBookID, nil).Once()
+	mockClient.On("CreateUserBook", mock.Anything, editionID, "WANT_TO_READ").Return(expectedUserBookID, nil).Once()
 
 	// Call the function
-	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "TO_READ")
+	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "WANT_TO_READ")
 
 	// Verify results
 	assert.NoError(t, err, "Should not return an error when creating user book succeeds")

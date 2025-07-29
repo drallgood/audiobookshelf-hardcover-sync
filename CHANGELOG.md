@@ -8,11 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
-- **🔧 Sync State Handling**: Fixed issues with sync state tracking and test initialization
-  - Fixed nil pointer dereference in test service by properly initializing the state field
-  - Improved sync state updates to prevent books from being stuck in "error" state
-  - Ensured accurate progress tracking for all book statuses (IN_PROGRESS, SKIPPED, etc.)
-  - Updated test cases to verify proper state management
+- **🔧 User Book Lookup & Creation**: Improved user book management and test structure (#19)
+  - Fixed user book lookup to properly handle book ID and edition ID lookups
+  - Improved error handling and logging in user book creation
+  - Removed unused `editionInfo` variable in `service.go`
+  - Fixed test structure in `user_book_management_test.go`
+  - Standardized status values from "TO_READ" to "WANT_TO_READ"
+  - Enhanced title similarity calculation for better book matching
+  - Added detailed logging for user book operations
+  - Improved error messages and validation in GraphQL operations
+  - Fixed variable scoping issues in test files
+  - Ensured all tests pass with the updated implementation
 
 ### Removed
 - **🔧 Removed Debug Configuration**: Removed the `debug` configuration option and `DEBUG` environment variable
