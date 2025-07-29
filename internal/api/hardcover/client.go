@@ -2488,7 +2488,7 @@ func (c *Client) lookupUserBookByBookID(ctx context.Context, bookID, userID int)
 			"bookID": bookID,
 			"userID": userID,
 		})
-		return 0, fmt.Errorf(errMsg)
+		return 0, errors.New(errMsg)
 	}
 
 	// Log the response
@@ -2557,7 +2557,7 @@ func (c *Client) lookupUserBookByEdition(ctx context.Context, editionID, userID 
 			"editionID": editionID,
 			"userID":    userID,
 		})
-		return 0, fmt.Errorf(errMsg)
+		return 0, errors.New(errMsg)
 	}
 
 	// Log the response
@@ -2604,7 +2604,7 @@ func (c *Client) CreateUserBook(ctx context.Context, editionID, status string) (
 			"error":     err.Error(),
 			"editionID": editionID,
 		})
-		return "", fmt.Errorf("failed to get edition details: %w", err)
+		return "", errors.New("failed to get edition details")
 	}
 
 	c.logger.Debug("Retrieved edition details", map[string]interface{}{
@@ -2615,7 +2615,7 @@ func (c *Client) CreateUserBook(ctx context.Context, editionID, status string) (
 	// Get status ID based on status string
 	statusID, ok := statusNameToID[status]
 	if !ok {
-		return "", fmt.Errorf("invalid status: %s", status)
+		return "", errors.New("invalid status: " + status)
 	}
 
 	// Convert editionID to integer for the mutation
@@ -2625,7 +2625,7 @@ func (c *Client) CreateUserBook(ctx context.Context, editionID, status string) (
 			"error":     err.Error(),
 			"editionID": editionID,
 		})
-		return "", fmt.Errorf("invalid edition ID format: %w", err)
+		return "", errors.New("invalid edition ID format")
 	}
 
 	// Convert bookID to integer for the mutation
@@ -2635,7 +2635,7 @@ func (c *Client) CreateUserBook(ctx context.Context, editionID, status string) (
 			"error":   err.Error(),
 			"book_id": edition.BookID,
 		})
-		return "", fmt.Errorf("invalid book ID format: %w", err)
+		return "", errors.New("invalid book ID format")
 	}
 
 	// Mutation to create a new user book with the required book_id field
@@ -2681,7 +2681,7 @@ func (c *Client) CreateUserBook(ctx context.Context, editionID, status string) (
 			"bookID":    editionBookID,
 			"statusID":  statusID,
 		})
-		return "", fmt.Errorf(errMsg)
+		return "", errors.New(errMsg)
 	}
 
 	if result.InsertUserBook.Error != nil {
@@ -2692,7 +2692,7 @@ func (c *Client) CreateUserBook(ctx context.Context, editionID, status string) (
 			"statusID":  statusID,
 			"error":     *result.InsertUserBook.Error,
 		})
-		return "", fmt.Errorf(errMsg)
+		return "", errors.New(errMsg)
 	}
 
 	userBookID := strconv.Itoa(result.InsertUserBook.UserBook.ID)

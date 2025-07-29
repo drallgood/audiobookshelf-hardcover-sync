@@ -14,14 +14,6 @@ import (
 "github.com/stretchr/testify/assert"
 )
 
-// Status ID mapping for tests
-var testStatusNameToID = map[string]int{
-	"WANT_TO_READ":      1,
-	"CURRENTLY_READING": 2,
-	"READ":              3,
-	"FINISHED":          3,
-}
-
 // TestGetCurrentUserID tests the GetCurrentUserID function
 func TestGetCurrentUserID(t *testing.T) {
 	tests := []struct {
