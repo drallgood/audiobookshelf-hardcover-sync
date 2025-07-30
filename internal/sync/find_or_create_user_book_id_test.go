@@ -7,6 +7,7 @@ import (
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -211,12 +212,22 @@ func createTestServiceWithConfig(cfg *config.Config) (*Service, *MockHardcoverCl
 	// Create a mock client
 	mockClient := new(MockHardcoverClient)
 	
+	// Create and initialize caches
+	persistentCache := NewPersistentASINCache("/tmp/test-cache")
+	persistentCache.Load() // Load cache (will create empty if doesn't exist)
+	
+	userBookCache := NewPersistentUserBookCache("/tmp/test-cache")
+	userBookCache.Load() // Load cache (will create empty if doesn't exist)
+	
 	// Create and return a test service with the mock client
 	svc := &Service{
 		hardcover:          mockClient,
 		config:             cfg,
 		log:                logger.Get(),
 		lastProgressUpdates: make(map[string]progressUpdateInfo),
+		asinCache:           make(map[string]*models.HardcoverBook),
+		persistentCache:     persistentCache,
+		userBookCache:       userBookCache,
 	}
 	
 	return svc, mockClient

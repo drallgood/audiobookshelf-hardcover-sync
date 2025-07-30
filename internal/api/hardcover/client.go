@@ -142,6 +142,7 @@ type Client struct {
 	retryDelay       time.Duration
 	userBookIDCache  cache.Cache[int, int]    // editionID -> userBookID
 	userCache        cache.Cache[string, any] // Generic cache for user-specific data
+	editionCache     cache.Cache[int, *models.Edition] // editionID -> Edition
 }
 
 // GetAuthHeader returns the properly formatted Authorization header value
@@ -262,6 +263,12 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 		DefaultCacheTTL,
 	)
 
+	// Create edition cache with 7-day TTL (editions change rarely)
+	editionCache := cache.WithTTL[int, *models.Edition](
+		cache.NewMemoryCache[int, *models.Edition](childLogger),
+		7*24*time.Hour, // 7 days TTL
+	)
+
 	// Create and return the client
 	client := &Client{
 		baseURL:         strings.TrimRight(cfg.BaseURL, "/"),
@@ -274,6 +281,7 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 		retryDelay:      cfg.RetryDelay,
 		userBookIDCache: userBookIDCache,
 		userCache:       userCache,
+		editionCache:    editionCache,
 	}
 
 	// Log client creation
@@ -1956,6 +1964,16 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 		return nil, fmt.Errorf("invalid edition ID: %s", editionID)
 	}
 
+	// Check cache first
+	if cachedEdition, found := c.editionCache.Get(editionIDInt); found {
+		log.Debug("Edition found in cache", map[string]interface{}{
+			"edition_id": editionID,
+			"book_id":    cachedEdition.BookID,
+			"title":      cachedEdition.Title,
+		})
+		return cachedEdition, nil
+	}
+
 	// Define the GraphQL query
 	query := `
 		query GetEdition($editionId: Int!) {
@@ -2054,6 +2072,14 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 	log.Debug("Retrieved edition details", map[string]interface{}{
 		"book_id": editionModel.BookID,
 		"title":   editionModel.Title,
+	})
+
+	// Store in cache for future requests
+	c.editionCache.Set(editionIDInt, editionModel, 0) // Use default TTL (7 days)
+	log.Debug("Edition cached", map[string]interface{}{
+		"edition_id": editionID,
+		"book_id":    editionModel.BookID,
+		"title":      editionModel.Title,
 	})
 
 	return editionModel, nil

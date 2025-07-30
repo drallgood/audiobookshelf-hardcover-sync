@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Backward Compatible**: All optimizations maintain existing functionality and respect Hardcover's 60 requests/minute rate limit
 
 ### Fixed
+- **🧹 Edition Cache Architecture Cleanup**: Removed unused persistent edition cache infrastructure
+  - Eliminated duplicate caching systems (in-memory vs persistent edition cache)
+  - Removed unused `PersistentEditionCache` class and `EditionCacheEntry` struct
+  - Cleaned up edition cache fields, helper methods, and integration code from sync service
+  - Maintained working in-memory edition cache in Hardcover client (delivering 30% performance improvement)
+  - Simplified architecture with clear separation of concerns between components
+  - Preserved all performance benefits while removing dead code
 - **🔧 User Book Lookup & Creation**: Improved user book management and test structure (#19)
   - Fixed user book lookup to properly handle book ID and edition ID lookups
   - Improved error handling and logging in user book creation

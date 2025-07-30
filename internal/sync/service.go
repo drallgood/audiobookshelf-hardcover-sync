@@ -44,7 +44,6 @@ type Service struct {
 	asinCache           map[string]*models.HardcoverBook // Cache for ASIN lookups (in-memory)
 	asinCacheMutex      sync.RWMutex                     // Mutex to protect ASIN cache
 	persistentCache     *PersistentASINCache             // Persistent ASIN cache across runs
-	editionCache        *PersistentEditionCache          // Persistent edition cache
 	userBookCache       *PersistentUserBookCache         // Persistent user book cache
 }
 
@@ -62,7 +61,6 @@ func NewService(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverCl
 		lastProgressUpdates: make(map[string]progressUpdateInfo),
 		asinCache:           make(map[string]*models.HardcoverBook),
 		persistentCache:     NewPersistentASINCache(cfg.Paths.CacheDir),
-		editionCache:        NewPersistentEditionCache(cfg.Paths.CacheDir),
 		userBookCache:       NewPersistentUserBookCache(cfg.Paths.CacheDir),
 	}
 
@@ -95,19 +93,7 @@ func NewService(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverCl
 		})
 	}
 
-	// Load persistent edition cache
-	if err := svc.editionCache.Load(); err != nil {
-		svc.log.Warn("Failed to load persistent edition cache, starting with empty cache", map[string]interface{}{
-			"error": err.Error(),
-		})
-	} else {
-		total, successful, failed := svc.editionCache.Stats()
-		svc.log.Info("Loaded persistent edition cache", map[string]interface{}{
-			"total_entries":      total,
-			"successful_lookups": successful,
-			"failed_lookups":     failed,
-		})
-	}
+
 
 	// Load persistent user book cache
 	if err := svc.userBookCache.Load(); err != nil {
@@ -197,15 +183,7 @@ func (s *Service) logASINCacheStats() {
 	})
 }
 
-// getEditionFromCache retrieves a cached edition lookup result
-func (s *Service) getEditionFromCache(editionID int) (*models.Edition, bool) {
-	return s.editionCache.Get(editionID)
-}
 
-// setEditionInCache stores an edition lookup result in cache
-func (s *Service) setEditionInCache(editionID int, edition *models.Edition) {
-	s.editionCache.Set(editionID, edition)
-}
 
 // getUserBookFromCache retrieves a cached user book by user_book_id
 func (s *Service) getUserBookFromCache(userBookID int) (*models.HardcoverBook, bool) {
@@ -242,9 +220,6 @@ func (s *Service) logCacheStats() {
 	// ASIN cache stats
 	asinTotal, asinSuccessful, asinFailed := s.persistentCache.Stats()
 	
-	// Edition cache stats
-	editionTotal, editionSuccessful, editionFailed := s.editionCache.Stats()
-	
 	// User book cache stats
 	userBookTotal, userBookSuccessful, userBookFailed := s.userBookCache.Stats()
 	
@@ -252,13 +227,10 @@ func (s *Service) logCacheStats() {
 		"asin_cache_total":         asinTotal,
 		"asin_cache_successful":    asinSuccessful,
 		"asin_cache_failed":        asinFailed,
-		"edition_cache_total":      editionTotal,
-		"edition_cache_successful": editionSuccessful,
-		"edition_cache_failed":     editionFailed,
 		"user_book_cache_total":    userBookTotal,
 		"user_book_cache_successful": userBookSuccessful,
 		"user_book_cache_failed":   userBookFailed,
-		"total_cache_entries":      asinTotal + editionTotal + userBookTotal,
+		"total_cache_entries":      asinTotal + userBookTotal,
 	})
 }
 
@@ -555,14 +527,7 @@ func (s *Service) Sync(ctx context.Context) error {
 		s.log.Debug("Saved persistent ASIN cache", nil)
 	}
 
-	// Save persistent edition cache
-	if err := s.editionCache.Save(); err != nil {
-		s.log.Warn("Failed to save persistent edition cache", map[string]interface{}{
-			"error": err.Error(),
-		})
-	} else {
-		s.log.Debug("Saved persistent edition cache", nil)
-	}
+
 
 	// Save persistent user book cache
 	if err := s.userBookCache.Save(); err != nil {
@@ -1290,7 +1255,26 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 	userBookIDStr := strconv.FormatInt(userBookID, 10)
 
 	// Get the current user book to check its status
-	userBook, getUserBookErr := s.hardcover.GetUserBook(ctx, userBookIDStr)
+	// Try cache first
+	var userBook *models.HardcoverBook
+	var getUserBookErr error
+	
+	if cachedUserBook, found := s.getUserBookFromCache(int(userBookID)); found {
+		log.Debug("User book found in cache", map[string]interface{}{
+			"user_book_id": userBookID,
+		})
+		userBook = cachedUserBook
+	} else {
+		// Not in cache, fetch from API
+		userBook, getUserBookErr = s.hardcover.GetUserBook(ctx, userBookIDStr)
+		if getUserBookErr == nil && userBook != nil {
+			// Cache the result
+			s.setUserBookInCache(int(userBookID), userBook)
+			log.Debug("User book cached", map[string]interface{}{
+				"user_book_id": userBookID,
+			})
+		}
+	}
 	if getUserBookErr != nil {
 		log.Warn("Failed to get current book status, will attempt to update anyway", map[string]interface{}{
 			"error": getUserBookErr,
@@ -1633,7 +1617,26 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 	log.Info("Processing in-progress book", nil)
 
 	// Get current book status from Hardcover
-	hcBook, err := s.hardcover.GetUserBook(ctx, strconv.FormatInt(userBookID, 10))
+	// Try cache first
+	var hcBook *models.HardcoverBook
+	var err error
+	
+	if cachedUserBook, found := s.getUserBookFromCache(int(userBookID)); found {
+		log.Debug("User book found in cache", map[string]interface{}{
+			"user_book_id": userBookID,
+		})
+		hcBook = cachedUserBook
+	} else {
+		// Not in cache, fetch from API
+		hcBook, err = s.hardcover.GetUserBook(ctx, strconv.FormatInt(userBookID, 10))
+		if err == nil && hcBook != nil {
+			// Cache the result
+			s.setUserBookInCache(int(userBookID), hcBook)
+			log.Debug("User book cached", map[string]interface{}{
+				"user_book_id": userBookID,
+			})
+		}
+	}
 	if err != nil {
 		errCtx := make(map[string]interface{}, len(logCtx)+1)
 		errCtx["error"] = err.Error()
@@ -2121,7 +2124,26 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		}
 
 		// Get the edition ID from the user book
-		hcBook, err := s.hardcover.GetUserBook(ctx, strconv.FormatInt(userBookID, 10))
+		// Try cache first
+		var hcBook *models.HardcoverBook
+		var err error
+		
+		if cachedUserBook, found := s.getUserBookFromCache(int(userBookID)); found {
+			log.Debug("User book found in cache for read status creation", map[string]interface{}{
+				"user_book_id": userBookID,
+			})
+			hcBook = cachedUserBook
+		} else {
+			// Not in cache, fetch from API
+			hcBook, err = s.hardcover.GetUserBook(ctx, strconv.FormatInt(userBookID, 10))
+			if err == nil && hcBook != nil {
+				// Cache the result
+				s.setUserBookInCache(int(userBookID), hcBook)
+				log.Debug("User book cached for read status creation", map[string]interface{}{
+					"user_book_id": userBookID,
+				})
+			}
+		}
 		if err != nil || hcBook == nil {
 			errMsg := "User book not found"
 			if err != nil {
@@ -2258,7 +2280,9 @@ func (s *Service) processFoundBook(ctx context.Context, hcBook *models.Hardcover
 
 	// If we don't have an edition ID but have a book ID, try to get the first edition
 	if (hcBook.EditionID == "" || hcBook.EditionID == "0") && hcBook.ID != "" {
+		// Get edition details (caching is handled in the Hardcover client)
 		edition, err := s.hardcover.GetEdition(ctx, hcBook.ID)
+		
 		if err != nil {
 			log.Warn("Failed to get edition details, will try to continue with basic info", map[string]interface{}{
 				"error": err.Error(),
