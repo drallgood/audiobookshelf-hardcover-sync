@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/cache"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/util"
@@ -152,6 +153,11 @@ func TestClient_GetEdition(t *testing.T) {
 				logger: log,
 				// Initialize rate limiter for tests
 				rateLimiter: util.NewRateLimiter(10*time.Millisecond, 1, 1, log),
+				// Initialize edition cache to prevent nil pointer dereference
+				editionCache: cache.WithTTL[int, *models.Edition](
+					cache.NewMemoryCache[int, *models.Edition](log),
+					7*24*time.Hour, // 7 days TTL
+				),
 			}
 			
 			// Create our test client with mock edition data
