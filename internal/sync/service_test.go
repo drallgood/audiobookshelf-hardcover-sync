@@ -611,10 +611,10 @@ func createTestService() (*Service, *MockHardcoverClient) {
 
 	// Create and initialize caches
 	persistentCache := NewPersistentASINCache("/tmp/test-cache")
-	persistentCache.Load() // Load cache (will create empty if doesn't exist)
+	_ = persistentCache.Load() // Load cache (will create empty if doesn't exist)
 	
 	userBookCache := NewPersistentUserBookCache("/tmp/test-cache")
-	userBookCache.Load() // Load cache (will create empty if doesn't exist)
+	_ = userBookCache.Load() // Load cache (will create empty if doesn't exist)
 
 	// Create and return a test service with the mock client
 	svc := &Service{

@@ -184,54 +184,14 @@ func (s *Service) logASINCacheStats() {
 }
 
 
-
 // getUserBookFromCache retrieves a cached user book by user_book_id
 func (s *Service) getUserBookFromCache(userBookID int) (*models.HardcoverBook, bool) {
 	return s.userBookCache.GetByUserBook(userBookID)
 }
 
-// getUserBookByBookAndUserFromCache retrieves a cached user book by book_id and user_id
-func (s *Service) getUserBookByBookAndUserFromCache(bookID, userID int) (*models.HardcoverBook, bool) {
-	return s.userBookCache.GetByBookAndUser(bookID, userID)
-}
-
-// getUserBookByEditionAndUserFromCache retrieves a cached user book by edition_id and user_id
-func (s *Service) getUserBookByEditionAndUserFromCache(editionID, userID int) (*models.HardcoverBook, bool) {
-	return s.userBookCache.GetByEditionAndUser(editionID, userID)
-}
-
-// setUserBookInCache stores a user book in cache by user_book_id
-func (s *Service) setUserBookInCache(userBookID int, userBook *models.HardcoverBook) {
+// setUserBookByUserBookInCache stores a cached user book by user_book_id
+func (s *Service) setUserBookByUserBookInCache(userBookID int, userBook *models.HardcoverBook) {
 	s.userBookCache.SetByUserBook(userBookID, userBook)
-}
-
-// setUserBookByBookAndUserInCache stores a user book in cache by book_id and user_id
-func (s *Service) setUserBookByBookAndUserInCache(bookID, userID int, userBook *models.HardcoverBook) {
-	s.userBookCache.SetByBookAndUser(bookID, userID, userBook)
-}
-
-// setUserBookByEditionAndUserInCache stores a user book in cache by edition_id and user_id
-func (s *Service) setUserBookByEditionAndUserInCache(editionID, userID int, userBook *models.HardcoverBook) {
-	s.userBookCache.SetByEditionAndUser(editionID, userID, userBook)
-}
-
-// logCacheStats logs comprehensive cache performance statistics
-func (s *Service) logCacheStats() {
-	// ASIN cache stats
-	asinTotal, asinSuccessful, asinFailed := s.persistentCache.Stats()
-	
-	// User book cache stats
-	userBookTotal, userBookSuccessful, userBookFailed := s.userBookCache.Stats()
-	
-	s.log.Info("Comprehensive Cache Performance Statistics", map[string]interface{}{
-		"asin_cache_total":         asinTotal,
-		"asin_cache_successful":    asinSuccessful,
-		"asin_cache_failed":        asinFailed,
-		"user_book_cache_total":    userBookTotal,
-		"user_book_cache_successful": userBookSuccessful,
-		"user_book_cache_failed":   userBookFailed,
-		"total_cache_entries":      asinTotal + userBookTotal,
-	})
 }
 
 // findOrCreateUserBookID finds or creates a user book ID for the given edition ID and status
@@ -1269,7 +1229,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 		userBook, getUserBookErr = s.hardcover.GetUserBook(ctx, userBookIDStr)
 		if getUserBookErr == nil && userBook != nil {
 			// Cache the result
-			s.setUserBookInCache(int(userBookID), userBook)
+			s.setUserBookByUserBookInCache(int(userBookID), userBook)
 			log.Debug("User book cached", map[string]interface{}{
 				"user_book_id": userBookID,
 			})
@@ -1631,7 +1591,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		hcBook, err = s.hardcover.GetUserBook(ctx, strconv.FormatInt(userBookID, 10))
 		if err == nil && hcBook != nil {
 			// Cache the result
-			s.setUserBookInCache(int(userBookID), hcBook)
+			s.setUserBookByUserBookInCache(int(userBookID), hcBook)
 			log.Debug("User book cached", map[string]interface{}{
 				"user_book_id": userBookID,
 			})
@@ -2138,7 +2098,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			hcBook, err = s.hardcover.GetUserBook(ctx, strconv.FormatInt(userBookID, 10))
 			if err == nil && hcBook != nil {
 				// Cache the result
-				s.setUserBookInCache(int(userBookID), hcBook)
+				s.setUserBookByUserBookInCache(int(userBookID), hcBook)
 				log.Debug("User book cached for read status creation", map[string]interface{}{
 					"user_book_id": userBookID,
 				})
