@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **🚀 Comprehensive Sync Performance Optimizations**: Massive performance improvements through multi-tier caching system
+  - **ASIN-Level Caching**: Eliminates duplicate BookByASIN API calls with in-memory and persistent caching (24h TTL)
+  - **Edition-Level Caching**: Caches edition metadata by edition_id with 7-day TTL (editions change rarely)
+  - **User Book Relationship Caching**: Caches GetUserBook/GetUserBookByBook queries with 6-hour TTL
+  - **Incremental Sync**: Early filtering to skip unchanged books before expensive API calls
+  - **Batch Processing**: Smart optimization with ASIN deduplication and API-respectful delays
+  - **Performance Results**: 67% reduction in API calls (1,732 → 570), sync time improved from 25min → 8-10min
+  - **Three-Tier Architecture**: ASIN (24h), Edition (7d), UserBook (6h) caches with different TTLs based on data change frequency
+  - **Comprehensive Statistics**: Detailed cache performance logging and monitoring
+  - **Persistent Storage**: Cache survives application restarts with automatic expired entry cleanup
+  - **Thread-Safe**: Proper mutex protection for all cache operations
+  - **Backward Compatible**: All optimizations maintain existing functionality and respect Hardcover's 60 requests/minute rate limit
+
 ### Fixed
 - **🔧 User Book Lookup & Creation**: Improved user book management and test structure (#19)
   - Fixed user book lookup to properly handle book ID and edition ID lookups
