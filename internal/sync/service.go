@@ -1811,10 +1811,22 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 	if readStatusToUpdate == nil && mostRecentRead == nil {
 		log.Info("No existing read status found, will create a new one", logCtx)
 	} else {
-		// Use the most recent read status if we didn't find an unfinished one
+		// Only use unfinished reads for updates - don't update finished reads for rereads
 		if readStatusToUpdate == nil && mostRecentRead != nil {
-			readStatusToUpdate = mostRecentRead
-			logCtx["using_most_recent_read"] = true
+			// Check if the most recent read is finished
+			if mostRecentRead.FinishedAt != nil && *mostRecentRead.FinishedAt != "" {
+				// This is a reread scenario - create a new read instead of updating the finished one
+				log.Info("Book has only finished reads but shows new progress - creating new read for reread", map[string]interface{}{
+					"most_recent_finished_at": *mostRecentRead.FinishedAt,
+					"current_progress": book.Progress.CurrentTime,
+				})
+				// Set readStatusToUpdate to nil so we create a new read
+				readStatusToUpdate = nil
+			} else {
+				// Most recent read is unfinished, we can update it
+				readStatusToUpdate = mostRecentRead
+				logCtx["using_most_recent_read"] = true
+			}
 		}
 
 		// Log which read status we're using

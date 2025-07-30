@@ -131,6 +131,9 @@ func TestSync(t *testing.T) {
 		state:          testState,
 		statePath:      "",
 		lastProgressUpdates: make(map[string]progressUpdateInfo),
+		asinCache:           make(map[string]*models.HardcoverBook),
+		persistentCache:     NewPersistentASINCache("/tmp"),
+		userBookCache:       NewPersistentUserBookCache("/tmp"),
 	}
 
 	// We need to use a reflection trick to inject our mock into the service
@@ -272,6 +275,9 @@ func TestProcessLibrary(t *testing.T) {
 		state:          testState,
 		statePath:      "",
 		lastProgressUpdates: make(map[string]progressUpdateInfo),
+		asinCache:           make(map[string]*models.HardcoverBook),
+		persistentCache:     NewPersistentASINCache("/tmp"),
+		userBookCache:       NewPersistentUserBookCache("/tmp"),
 	}
 	
 	// Create test library
@@ -494,6 +500,9 @@ func TestProcessBook(t *testing.T) {
 		state:          testState,
 		statePath:      "",
 		lastProgressUpdates: make(map[string]progressUpdateInfo),
+		asinCache:           make(map[string]*models.HardcoverBook),
+		persistentCache:     NewPersistentASINCache("/tmp"),
+		userBookCache:       NewPersistentUserBookCache("/tmp"),
 	}
 	
 	// Create test user progress
@@ -668,6 +677,9 @@ func TestFindBookInHardcover(t *testing.T) {
 		state:          testState,
 		statePath:      "",
 		lastProgressUpdates: make(map[string]progressUpdateInfo),
+		asinCache:           make(map[string]*models.HardcoverBook),
+		persistentCache:     NewPersistentASINCache("/tmp"),
+		userBookCache:       NewPersistentUserBookCache("/tmp"),
 	}
 	
 	// Create test book with ASIN

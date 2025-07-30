@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Backward Compatible**: All optimizations maintain existing functionality and respect Hardcover's 60 requests/minute rate limit
 
 ### Fixed
+- **📚 Reread Tracking Bug**: Fixed critical issue where book rereads were not properly tracked (#21)
+  - Previously, when users reread books, the system would overwrite existing finished read records instead of creating new ones
+  - This caused loss of reading history - only the most recent read was preserved
+  - Root cause: `handleInProgressBook` incorrectly updated finished read records when detecting new progress on previously finished books
+  - Solution: Modified logic to create new unfinished read records for rereads instead of updating finished ones
+  - Now preserves complete reading history while preventing duplicate unfinished reads
+  - Each reread is tracked as a separate reading event in Hardcover
 - **🧹 Edition Cache Architecture Cleanup**: Removed unused persistent edition cache infrastructure
   - Eliminated duplicate caching systems (in-memory vs persistent edition cache)
   - Removed unused `PersistentEditionCache` class and `EditionCacheEntry` struct
