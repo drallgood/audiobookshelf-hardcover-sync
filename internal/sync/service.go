@@ -44,6 +44,8 @@ type Service struct {
 	asinCache           map[string]*models.HardcoverBook // Cache for ASIN lookups (in-memory)
 	asinCacheMutex      sync.RWMutex                     // Mutex to protect ASIN cache
 	persistentCache     *PersistentASINCache             // Persistent ASIN cache across runs
+	editionCache        *PersistentEditionCache          // Persistent edition cache
+	userBookCache       *PersistentUserBookCache         // Persistent user book cache
 }
 
 // Config is the configuration type for the sync service
@@ -60,6 +62,8 @@ func NewService(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverCl
 		lastProgressUpdates: make(map[string]progressUpdateInfo),
 		asinCache:           make(map[string]*models.HardcoverBook),
 		persistentCache:     NewPersistentASINCache(cfg.Paths.CacheDir),
+		editionCache:        NewPersistentEditionCache(cfg.Paths.CacheDir),
+		userBookCache:       NewPersistentUserBookCache(cfg.Paths.CacheDir),
 	}
 
 	// Migrate old state file if it exists
@@ -85,6 +89,34 @@ func NewService(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverCl
 	} else {
 		total, successful, failed := svc.persistentCache.Stats()
 		svc.log.Info("Loaded persistent ASIN cache", map[string]interface{}{
+			"total_entries":      total,
+			"successful_lookups": successful,
+			"failed_lookups":     failed,
+		})
+	}
+
+	// Load persistent edition cache
+	if err := svc.editionCache.Load(); err != nil {
+		svc.log.Warn("Failed to load persistent edition cache, starting with empty cache", map[string]interface{}{
+			"error": err.Error(),
+		})
+	} else {
+		total, successful, failed := svc.editionCache.Stats()
+		svc.log.Info("Loaded persistent edition cache", map[string]interface{}{
+			"total_entries":      total,
+			"successful_lookups": successful,
+			"failed_lookups":     failed,
+		})
+	}
+
+	// Load persistent user book cache
+	if err := svc.userBookCache.Load(); err != nil {
+		svc.log.Warn("Failed to load persistent user book cache, starting with empty cache", map[string]interface{}{
+			"error": err.Error(),
+		})
+	} else {
+		total, successful, failed := svc.userBookCache.Stats()
+		svc.log.Info("Loaded persistent user book cache", map[string]interface{}{
 			"total_entries":      total,
 			"successful_lookups": successful,
 			"failed_lookups":     failed,
@@ -145,25 +177,88 @@ func (s *Service) clearASINCache() {
 // logASINCacheStats logs ASIN cache performance statistics
 func (s *Service) logASINCacheStats() {
 	s.asinCacheMutex.RLock()
-	defer s.asinCacheMutex.RUnlock()
-	
-	totalEntries := len(s.asinCache)
-	successfulLookups := 0
-	failedLookups := 0
-	
+	// Get persistent cache stats
+	total, successful, failed := s.persistentCache.Stats()
+
+	// Calculate potential API call savings
+	potentialSavings := 0
 	for _, book := range s.asinCache {
 		if book != nil {
-			successfulLookups++
-		} else {
-			failedLookups++
+			potentialSavings++
 		}
 	}
-	
+	s.asinCacheMutex.RUnlock()
+
 	s.log.Info("ASIN Cache Performance Statistics", map[string]interface{}{
-		"total_cached_asins":    totalEntries,
-		"successful_lookups":    successfulLookups,
-		"failed_lookups":        failedLookups,
-		"cache_hit_potential":   fmt.Sprintf("Avoided up to %d duplicate API calls", totalEntries),
+		"total_cached_asins":    total,
+		"successful_lookups":    successful,
+		"failed_lookups":        failed,
+		"cache_hit_potential":   fmt.Sprintf("Avoided up to %d duplicate API calls", potentialSavings),
+	})
+}
+
+// getEditionFromCache retrieves a cached edition lookup result
+func (s *Service) getEditionFromCache(editionID int) (*models.Edition, bool) {
+	return s.editionCache.Get(editionID)
+}
+
+// setEditionInCache stores an edition lookup result in cache
+func (s *Service) setEditionInCache(editionID int, edition *models.Edition) {
+	s.editionCache.Set(editionID, edition)
+}
+
+// getUserBookFromCache retrieves a cached user book by user_book_id
+func (s *Service) getUserBookFromCache(userBookID int) (*models.HardcoverBook, bool) {
+	return s.userBookCache.GetByUserBook(userBookID)
+}
+
+// getUserBookByBookAndUserFromCache retrieves a cached user book by book_id and user_id
+func (s *Service) getUserBookByBookAndUserFromCache(bookID, userID int) (*models.HardcoverBook, bool) {
+	return s.userBookCache.GetByBookAndUser(bookID, userID)
+}
+
+// getUserBookByEditionAndUserFromCache retrieves a cached user book by edition_id and user_id
+func (s *Service) getUserBookByEditionAndUserFromCache(editionID, userID int) (*models.HardcoverBook, bool) {
+	return s.userBookCache.GetByEditionAndUser(editionID, userID)
+}
+
+// setUserBookInCache stores a user book in cache by user_book_id
+func (s *Service) setUserBookInCache(userBookID int, userBook *models.HardcoverBook) {
+	s.userBookCache.SetByUserBook(userBookID, userBook)
+}
+
+// setUserBookByBookAndUserInCache stores a user book in cache by book_id and user_id
+func (s *Service) setUserBookByBookAndUserInCache(bookID, userID int, userBook *models.HardcoverBook) {
+	s.userBookCache.SetByBookAndUser(bookID, userID, userBook)
+}
+
+// setUserBookByEditionAndUserInCache stores a user book in cache by edition_id and user_id
+func (s *Service) setUserBookByEditionAndUserInCache(editionID, userID int, userBook *models.HardcoverBook) {
+	s.userBookCache.SetByEditionAndUser(editionID, userID, userBook)
+}
+
+// logCacheStats logs comprehensive cache performance statistics
+func (s *Service) logCacheStats() {
+	// ASIN cache stats
+	asinTotal, asinSuccessful, asinFailed := s.persistentCache.Stats()
+	
+	// Edition cache stats
+	editionTotal, editionSuccessful, editionFailed := s.editionCache.Stats()
+	
+	// User book cache stats
+	userBookTotal, userBookSuccessful, userBookFailed := s.userBookCache.Stats()
+	
+	s.log.Info("Comprehensive Cache Performance Statistics", map[string]interface{}{
+		"asin_cache_total":         asinTotal,
+		"asin_cache_successful":    asinSuccessful,
+		"asin_cache_failed":        asinFailed,
+		"edition_cache_total":      editionTotal,
+		"edition_cache_successful": editionSuccessful,
+		"edition_cache_failed":     editionFailed,
+		"user_book_cache_total":    userBookTotal,
+		"user_book_cache_successful": userBookSuccessful,
+		"user_book_cache_failed":   userBookFailed,
+		"total_cache_entries":      asinTotal + editionTotal + userBookTotal,
 	})
 }
 
@@ -458,6 +553,24 @@ func (s *Service) Sync(ctx context.Context) error {
 		})
 	} else {
 		s.log.Debug("Saved persistent ASIN cache", nil)
+	}
+
+	// Save persistent edition cache
+	if err := s.editionCache.Save(); err != nil {
+		s.log.Warn("Failed to save persistent edition cache", map[string]interface{}{
+			"error": err.Error(),
+		})
+	} else {
+		s.log.Debug("Saved persistent edition cache", nil)
+	}
+
+	// Save persistent user book cache
+	if err := s.userBookCache.Save(); err != nil {
+		s.log.Warn("Failed to save persistent user book cache", map[string]interface{}{
+			"error": err.Error(),
+		})
+	} else {
+		s.log.Debug("Saved persistent user book cache", nil)
 	}
 
 	s.log.Info("Sync completed successfully", nil)
