@@ -260,8 +260,7 @@ func TestHandleInProgressBook_CreateNewRead(t *testing.T) {
 	testAudiobook.Media.Duration = 1000     // Total duration
 	audiobook := toAudiobookshelfBook(testAudiobook)
 
-	// Mock the GetUserBook call - will be called twice
-	// First call at the beginning of handleInProgressBook
+	// Mock the GetUserBook call - only called once due to caching
 	userBookID := int64(123)
 	mockClient.On("GetUserBook", mock.Anything, "123").Return(&models.HardcoverBook{
 		ID:        "book-123",
@@ -269,12 +268,7 @@ func TestHandleInProgressBook_CreateNewRead(t *testing.T) {
 		EditionID: "456",
 	}, nil).Once()
 
-	// Second call when creating a new read status
-	mockClient.On("GetUserBook", mock.Anything, "123").Return(&models.HardcoverBook{
-		ID:        "book-123",
-		Title:     "Test Book",
-		EditionID: "456",
-	}, nil).Once()
+	// Note: Second GetUserBook call is now served from cache, so no additional mock needed
 
 	// Mock the GetUserBookReads call to return no existing read status
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
@@ -387,12 +381,7 @@ func TestHandleInProgressBook_GetUserBookReadsError(t *testing.T) {
 		UserBookID: userBookID,
 	}).Return(nil, expectedErr).Once()
 
-	// Mock the second GetUserBook call when creating a new read status
-	mockClient.On("GetUserBook", mock.Anything, "123").Return(&models.HardcoverBook{
-		ID:        "book-123",
-		Title:     "Test Book",
-		EditionID: "456",
-	}, nil).Once()
+	// Note: Second GetUserBook call is now served from cache, so no additional mock needed
 
 	// Mock the InsertUserBookRead call
 	progressSeconds := 100
