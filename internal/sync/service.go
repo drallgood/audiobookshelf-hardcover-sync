@@ -41,6 +41,9 @@ type Service struct {
 	statePath           string
 	lastProgressUpdates map[string]progressUpdateInfo // Cache of last progress updates
 	lastProgressMutex   sync.RWMutex                  // Mutex to protect the cache
+	asinCache           map[string]*models.HardcoverBook // Cache for ASIN lookups (in-memory)
+	asinCacheMutex      sync.RWMutex                     // Mutex to protect ASIN cache
+	persistentCache     *PersistentASINCache             // Persistent ASIN cache across runs
 }
 
 // Config is the configuration type for the sync service
@@ -55,6 +58,8 @@ func NewService(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverCl
 		log:                 logger.Get(),
 		statePath:           cfg.Sync.StateFile,
 		lastProgressUpdates: make(map[string]progressUpdateInfo),
+		asinCache:           make(map[string]*models.HardcoverBook),
+		persistentCache:     NewPersistentASINCache(cfg.Paths.CacheDir),
 	}
 
 	// Migrate old state file if it exists
@@ -72,7 +77,94 @@ func NewService(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverCl
 		return nil, fmt.Errorf("failed to load state: %w", err)
 	}
 
+	// Load persistent ASIN cache
+	if err := svc.persistentCache.Load(); err != nil {
+		svc.log.Warn("Failed to load persistent ASIN cache, starting with empty cache", map[string]interface{}{
+			"error": err.Error(),
+		})
+	} else {
+		total, successful, failed := svc.persistentCache.Stats()
+		svc.log.Info("Loaded persistent ASIN cache", map[string]interface{}{
+			"total_entries":      total,
+			"successful_lookups": successful,
+			"failed_lookups":     failed,
+		})
+	}
+
 	return svc, nil
+}
+
+// getASINFromCache retrieves a cached ASIN lookup result
+// Checks in-memory cache first, then persistent cache
+func (s *Service) getASINFromCache(asin string) (*models.HardcoverBook, bool) {
+	// Check in-memory cache first (fastest)
+	s.asinCacheMutex.RLock()
+	book, exists := s.asinCache[asin]
+	s.asinCacheMutex.RUnlock()
+	
+	if exists {
+		return book, true
+	}
+	
+	// Check persistent cache
+	book, exists = s.persistentCache.Get(asin)
+	if exists {
+		// Promote to in-memory cache for faster access
+		s.asinCacheMutex.Lock()
+		s.asinCache[asin] = book
+		s.asinCacheMutex.Unlock()
+		
+		s.log.Debug("Promoted ASIN from persistent to in-memory cache", map[string]interface{}{
+			"asin": asin,
+		})
+	}
+	
+	return book, exists
+}
+
+// setASINInCache stores an ASIN lookup result in both caches
+func (s *Service) setASINInCache(asin string, book *models.HardcoverBook) {
+	// Store in in-memory cache
+	s.asinCacheMutex.Lock()
+	s.asinCache[asin] = book
+	s.asinCacheMutex.Unlock()
+	
+	// Store in persistent cache
+	s.persistentCache.Set(asin, book)
+}
+
+// clearASINCache clears only the in-memory ASIN cache (persistent cache remains)
+func (s *Service) clearASINCache() {
+	s.asinCacheMutex.Lock()
+	defer s.asinCacheMutex.Unlock()
+	
+	s.asinCache = make(map[string]*models.HardcoverBook)
+	s.log.Debug("Cleared in-memory ASIN cache for new sync (persistent cache preserved)", nil)
+}
+
+// logASINCacheStats logs ASIN cache performance statistics
+func (s *Service) logASINCacheStats() {
+	s.asinCacheMutex.RLock()
+	defer s.asinCacheMutex.RUnlock()
+	
+	totalEntries := len(s.asinCache)
+	successfulLookups := 0
+	failedLookups := 0
+	
+	for _, book := range s.asinCache {
+		if book != nil {
+			successfulLookups++
+		} else {
+			failedLookups++
+		}
+	}
+	
+	s.log.Info("ASIN Cache Performance Statistics", map[string]interface{}{
+		"total_cached_asins":    totalEntries,
+		"successful_lookups":    successfulLookups,
+		"failed_lookups":        failedLookups,
+		"cache_hit_potential":   fmt.Sprintf("Avoided up to %d duplicate API calls", totalEntries),
+	})
 }
 
 // findOrCreateUserBookID finds or creates a user book ID for the given edition ID and status
@@ -210,6 +302,9 @@ func (s *Service) Sync(ctx context.Context) error {
 	// This prevents accumulation of resolved mismatches in continuous sync mode
 	mismatch.Clear()
 	s.log.Info("Cleared previous mismatches at start of sync cycle", nil)
+	
+	// Clear ASIN cache to ensure fresh lookups for this sync run
+	s.clearASINCache()
 
 	// Log the start of the sync
 	s.log.Info("========================================", map[string]interface{}{
@@ -353,6 +448,18 @@ func (s *Service) Sync(ctx context.Context) error {
 		// Don't return the error here as the sync itself was successful
 	}
 
+	// Log ASIN cache performance statistics
+	s.logASINCacheStats()
+
+	// Save persistent ASIN cache
+	if err := s.persistentCache.Save(); err != nil {
+		s.log.Warn("Failed to save persistent ASIN cache", map[string]interface{}{
+			"error": err.Error(),
+		})
+	} else {
+		s.log.Debug("Saved persistent ASIN cache", nil)
+	}
+
 	s.log.Info("Sync completed successfully", nil)
 	return nil
 }
@@ -441,6 +548,35 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			return nil
 		}
 		bookLog.Debugf("Book matches test book filter, processing: %s", s.config.App.TestBookFilter)
+	}
+
+	// Early filtering for incremental sync - check if book needs syncing
+	if s.config.Sync.Incremental {
+		// Calculate current progress and status
+		currentProgress := 0.0
+		if book.Media.Duration > 0 {
+			currentProgress = book.Progress.CurrentTime / book.Media.Duration
+		}
+		currentStatus := s.determineBookStatus(currentProgress, book.Progress.IsFinished, book.Progress.FinishedAt)
+		
+		// Create preliminary state key (we'll update it with edition ID later if found)
+		preliminaryStateKey := book.ID
+		
+		// Check if this book needs syncing based on changes
+		minChangeThreshold := float64(s.config.Sync.MinChangeThreshold) / book.Media.Duration // Convert seconds to progress ratio
+		if !s.state.NeedsSync(preliminaryStateKey, currentProgress, currentStatus, minChangeThreshold) {
+			bookLog.Debug("Skipping book - no significant changes since last sync", map[string]interface{}{
+				"current_progress": currentProgress,
+				"current_status":   currentStatus,
+				"change_threshold": minChangeThreshold,
+			})
+			return nil
+		}
+		
+		bookLog.Debug("Book needs syncing - changes detected", map[string]interface{}{
+			"current_progress": currentProgress,
+			"current_status":   currentStatus,
+		})
 	}
 
 	// Declare variables at the top of the function to avoid redeclaration
@@ -2315,6 +2451,60 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 
 	// 1. First try to find by ASIN if available
 	if book.Media.Metadata.ASIN != "" {
+		// Check ASIN cache first
+		if cachedBook, exists := s.getASINFromCache(book.Media.Metadata.ASIN); exists {
+			if cachedBook == nil {
+				// This ASIN was previously looked up and failed
+				log.Debug("Found negative ASIN cache result, skipping API call", map[string]interface{}{
+					"asin": book.Media.Metadata.ASIN,
+				})
+				// Continue to ISBN lookup
+			} else {
+				log.Debug("Found book in ASIN cache", map[string]interface{}{
+					"asin":       book.Media.Metadata.ASIN,
+					"book_id":    cachedBook.ID,
+					"edition_id": cachedBook.EditionID,
+				})
+			
+			// Create a copy of the cached book to avoid modifying the cached version
+			hcBook := &models.HardcoverBook{
+				ID:        cachedBook.ID,
+				Title:     cachedBook.Title,
+				EditionID: cachedBook.EditionID,
+				// Copy other fields as needed
+			}
+			
+			// Still need to get/create user book ID for this specific book
+			editionIDStr := hcBook.EditionID
+			progress := 0.0
+			isFinished := book.Progress.IsFinished
+			finishedAt := book.Progress.FinishedAt
+			if book.Media.Duration > 0 {
+				progress = book.Progress.CurrentTime / book.Media.Duration
+			}
+			
+			// Determine the status based on progress and isFinished flag
+			status := s.determineBookStatus(progress, isFinished, finishedAt)
+			userBookID, err := s.findOrCreateUserBookID(ctx, editionIDStr, status)
+			if err != nil {
+				s.log.Warn("Failed to get or create user book ID for cached edition", map[string]interface{}{
+					"edition_id": editionIDStr,
+					"error":      err.Error(),
+				})
+			} else {
+				hcBook.UserBookID = strconv.FormatInt(userBookID, 10)
+			}
+			
+			s.log.Info("Using cached book by ASIN", map[string]interface{}{
+				"book_id":      hcBook.ID,
+				"edition_id":   hcBook.EditionID,
+				"user_book_id": hcBook.UserBookID,
+			})
+			
+			return hcBook, nil
+			}
+		}
+		
 		log.Info(fmt.Sprintf("Searching for book by ASIN: %s", book.Media.Metadata.ASIN), nil)
 
 		hcBook, err := s.hardcover.SearchBookByASIN(ctx, book.Media.Metadata.ASIN)
@@ -2331,8 +2521,21 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 					ID: bookErr.BookID,
 				}, nil
 			}
+			// Cache the negative result to avoid repeated failed lookups
+			s.setASINInCache(book.Media.Metadata.ASIN, nil)
+			log.Debug("Cached negative ASIN lookup result", map[string]interface{}{
+				"asin": book.Media.Metadata.ASIN,
+			})
 			log.Warn(fmt.Sprintf("Search by ASIN failed, will try other methods: %v", err), nil)
 		} else if hcBook != nil {
+			// Cache the ASIN lookup result for future use
+			s.setASINInCache(book.Media.Metadata.ASIN, hcBook)
+			log.Debug("Cached ASIN lookup result", map[string]interface{}{
+				"asin":       book.Media.Metadata.ASIN,
+				"book_id":    hcBook.ID,
+				"edition_id": hcBook.EditionID,
+			})
+			
 			// Get or create user book ID for this edition
 			editionIDStr := hcBook.EditionID
 			progress := 0.0

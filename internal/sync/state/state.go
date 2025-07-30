@@ -233,8 +233,61 @@ func (s *State) UpdateLibrary(libraryID string) {
 func (s *State) SetFullSync() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
+	
 	s.LastFullSync = time.Now().Unix()
+}
+
+// NeedsSync checks if a book needs syncing based on changes since last sync
+// Returns true if the book should be processed, false if it can be skipped
+func (s *State) NeedsSync(bookID string, currentProgress float64, currentStatus string, minChangeThreshold float64) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	
+	lastBook, exists := s.Books[bookID]
+	if !exists {
+		// New book, needs sync
+		return true
+	}
+	
+	// Check if status changed
+	if lastBook.Status != currentStatus {
+		return true
+	}
+	
+	// Check if progress changed significantly
+	progressDiff := math.Abs(currentProgress - lastBook.LastProgress)
+	if progressDiff >= minChangeThreshold {
+		return true
+	}
+	
+	// No significant changes
+	return false
+}
+
+// GetBookState returns the last known state of a book
+func (s *State) GetBookState(bookID string) (Book, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	
+	book, exists := s.Books[bookID]
+	return book, exists
+}
+
+// GetStaleBooks returns books that haven't been updated in a while and might need refresh
+func (s *State) GetStaleBooks(maxAge time.Duration) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	
+	cutoff := time.Now().Add(-maxAge).Unix()
+	var staleBooks []string
+	
+	for bookID, book := range s.Books {
+		if book.LastUpdated < cutoff {
+			staleBooks = append(staleBooks, bookID)
+		}
+	}
+	
+	return staleBooks
 }
 
 // v1State represents the version 1.0 state format
