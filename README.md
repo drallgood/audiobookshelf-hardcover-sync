@@ -228,6 +228,9 @@ sync:
   state_file: /app/data/sync_state.json # state storage location
   dry_run: false     # simulation mode without making changes
   force_full_sync: false # force full sync regardless of state
+  libraries:         # library filtering (optional)
+    include: ["Audiobooks", "Fiction"] # only sync these libraries (by name or ID)
+    exclude: ["Magazines", "Podcasts"] # exclude these libraries (include takes precedence)
 ```
 
 #### Environment Variables
@@ -248,6 +251,8 @@ Legacy variables (config file takes precedence):
 | `AUDIOBOOKSHELF_TOKEN` | AudiobookShelf API token | `audiobookshelf.token` |
 | `HARDCOVER_TOKEN` | Hardcover API token | `hardcover.token` |
 | `SYNC_INTERVAL` | Time between automatic syncs | `sync.interval` |
+| `SYNC_LIBRARIES_INCLUDE` | Comma-separated list of libraries to include | `sync.libraries.include` |
+| `SYNC_LIBRARIES_EXCLUDE` | Comma-separated list of libraries to exclude | `sync.libraries.exclude` |
 
 #### Volume Mounts
 
@@ -265,6 +270,63 @@ Legacy variables (config file takes precedence):
 | `/health` | GET | Basic health status |
 | `/ready` | GET | Service readiness |
 | `/metrics` | GET | Prometheus metrics |
+
+## Library Filtering
+
+The sync service supports filtering which AudioBookShelf libraries to sync. This is useful when you have multiple libraries (e.g., Audiobooks, Podcasts, Magazines) but only want to sync specific ones to Hardcover.
+
+### Configuration Examples
+
+#### Include Only Specific Libraries
+Sync only "Audiobooks" and "Fiction" libraries:
+
+```yaml
+sync:
+  libraries:
+    include: ["Audiobooks", "Fiction"]
+```
+
+#### Exclude Specific Libraries
+Sync all libraries except "Magazines" and "Podcasts":
+
+```yaml
+sync:
+  libraries:
+    exclude: ["Magazines", "Podcasts"]
+```
+
+#### Using Library IDs
+You can also use library IDs instead of names:
+
+```yaml
+sync:
+  libraries:
+    include: ["lib_abc123", "lib_def456"]
+```
+
+### Environment Variable Examples
+
+#### Include Only Audiobooks
+```bash
+SYNC_LIBRARIES_INCLUDE="Audiobooks"
+```
+
+#### Exclude Multiple Libraries
+```bash
+SYNC_LIBRARIES_EXCLUDE="Magazines,Podcasts,Children's Books"
+```
+
+### Important Notes
+
+- **Include takes precedence**: If both `include` and `exclude` are specified, only the `include` list is used
+- **Case-insensitive matching**: Library names are matched case-insensitively
+- **ID matching**: You can use either library names or library IDs
+- **Comma-separated**: When using environment variables, separate multiple libraries with commas
+- **Default behavior**: If no filtering is configured, all libraries are synced
+
+### Finding Your Library Names
+
+To find your library names, check your AudioBookShelf web interface or look at the sync logs when filtering is disabled. The service will log all discovered libraries at the start of each sync.
 
 ## Recent Updates & Migration
 

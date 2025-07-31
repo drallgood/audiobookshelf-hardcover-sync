@@ -105,6 +105,10 @@ func TestSync(t *testing.T) {
 		Incremental       bool   `yaml:"incremental" env:"SYNC_INCREMENTAL"`
 		StateFile         string `yaml:"state_file" env:"SYNC_STATE_FILE"`
 		MinChangeThreshold int    `yaml:"min_change_threshold" env:"SYNC_MIN_CHANGE_THRESHOLD"`
+		Libraries struct {
+			Include []string `yaml:"include" env:"SYNC_LIBRARIES_INCLUDE"`
+			Exclude []string `yaml:"exclude" env:"SYNC_LIBRARIES_EXCLUDE"`
+		} `yaml:"libraries"`
 	}{
 			Incremental: false,
 		},
@@ -249,6 +253,10 @@ func TestProcessLibrary(t *testing.T) {
 		Incremental       bool   `yaml:"incremental" env:"SYNC_INCREMENTAL"`
 		StateFile         string `yaml:"state_file" env:"SYNC_STATE_FILE"`
 		MinChangeThreshold int    `yaml:"min_change_threshold" env:"SYNC_MIN_CHANGE_THRESHOLD"`
+		Libraries struct {
+			Include []string `yaml:"include" env:"SYNC_LIBRARIES_INCLUDE"`
+			Exclude []string `yaml:"exclude" env:"SYNC_LIBRARIES_EXCLUDE"`
+		} `yaml:"libraries"`
 	}{
 			Incremental: false,
 		},
@@ -474,6 +482,10 @@ func TestProcessBook(t *testing.T) {
 		Incremental       bool   `yaml:"incremental" env:"SYNC_INCREMENTAL"`
 		StateFile         string `yaml:"state_file" env:"SYNC_STATE_FILE"`
 		MinChangeThreshold int    `yaml:"min_change_threshold" env:"SYNC_MIN_CHANGE_THRESHOLD"`
+		Libraries struct {
+			Include []string `yaml:"include" env:"SYNC_LIBRARIES_INCLUDE"`
+			Exclude []string `yaml:"exclude" env:"SYNC_LIBRARIES_EXCLUDE"`
+		} `yaml:"libraries"`
 	}{
 			Incremental: false,
 		},
@@ -651,6 +663,10 @@ func TestFindBookInHardcover(t *testing.T) {
 		Incremental       bool   `yaml:"incremental" env:"SYNC_INCREMENTAL"`
 		StateFile         string `yaml:"state_file" env:"SYNC_STATE_FILE"`
 		MinChangeThreshold int    `yaml:"min_change_threshold" env:"SYNC_MIN_CHANGE_THRESHOLD"`
+		Libraries struct {
+			Include []string `yaml:"include" env:"SYNC_LIBRARIES_INCLUDE"`
+			Exclude []string `yaml:"exclude" env:"SYNC_LIBRARIES_EXCLUDE"`
+		} `yaml:"libraries"`
 	}{
 			Incremental: false,
 		},

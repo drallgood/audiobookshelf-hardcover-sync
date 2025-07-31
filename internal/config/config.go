@@ -28,6 +28,13 @@ type Config struct {
 		StateFile string `yaml:"state_file" env:"SYNC_STATE_FILE"`
 		// Minimum change in progress (seconds) to trigger an update (default: 60)
 		MinChangeThreshold int `yaml:"min_change_threshold" env:"SYNC_MIN_CHANGE_THRESHOLD"`
+		// Library filtering configuration
+		Libraries struct {
+			// Include only these libraries (by name or ID). If specified, only these libraries will be synced.
+			Include []string `yaml:"include" env:"SYNC_LIBRARIES_INCLUDE"`
+			// Exclude these libraries (by name or ID) from sync. Include takes precedence over exclude.
+			Exclude []string `yaml:"exclude" env:"SYNC_LIBRARIES_EXCLUDE"`
+		} `yaml:"libraries"`
 	} `yaml:"sync"`
 
 	// Rate limiting configuration
@@ -314,6 +321,22 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
+// parseCommaSeparatedList parses a comma-separated string into a slice of trimmed strings
+func parseCommaSeparatedList(value string) []string {
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
 func getIntFromEnv(key string, fallback int) int {
 	if value, exists := os.LookupEnv(key); exists {
 		i, err := strconv.Atoi(value)
@@ -394,6 +417,28 @@ func loadFromEnv(cfg *Config) {
 		if i, err := strconv.Atoi(testBookLimit); err == nil {
 			cfg.App.TestBookLimit = i
 		}
+	}
+
+	// Sync configuration
+	if syncIncremental := os.Getenv("SYNC_INCREMENTAL"); syncIncremental != "" {
+		if b, err := strconv.ParseBool(syncIncremental); err == nil {
+			cfg.Sync.Incremental = b
+		}
+	}
+	if syncStateFile := os.Getenv("SYNC_STATE_FILE"); syncStateFile != "" {
+		cfg.Sync.StateFile = syncStateFile
+	}
+	if syncMinChangeThreshold := os.Getenv("SYNC_MIN_CHANGE_THRESHOLD"); syncMinChangeThreshold != "" {
+		if i, err := strconv.Atoi(syncMinChangeThreshold); err == nil {
+			cfg.Sync.MinChangeThreshold = i
+		}
+	}
+	// Library filtering from environment variables
+	if librariesInclude := os.Getenv("SYNC_LIBRARIES_INCLUDE"); librariesInclude != "" {
+		cfg.Sync.Libraries.Include = parseCommaSeparatedList(librariesInclude)
+	}
+	if librariesExclude := os.Getenv("SYNC_LIBRARIES_EXCLUDE"); librariesExclude != "" {
+		cfg.Sync.Libraries.Exclude = parseCommaSeparatedList(librariesExclude)
 	}
 
 	// File paths

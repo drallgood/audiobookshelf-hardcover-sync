@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Three-Tier Architecture**: ASIN (24h), Edition (7d), UserBook (6h) caches with different TTLs based on data change frequency
   - **Comprehensive Statistics**: Detailed cache performance logging and monitoring
   - **Persistent Storage**: Cache survives application restarts with automatic expired entry cleanup
+- **📚 Library Filtering**: Selective sync support for AudioBookShelf libraries (Issue #17)
+  - **Include/Exclude Lists**: Configure which libraries to sync via `sync.libraries.include` and `sync.libraries.exclude`
+  - **Flexible Matching**: Support for both library names (case-insensitive) and library IDs
+  - **Environment Variables**: `SYNC_LIBRARIES_INCLUDE` and `SYNC_LIBRARIES_EXCLUDE` for comma-separated lists
+  - **Smart Precedence**: Include list takes precedence over exclude list when both are specified
+  - **Comprehensive Logging**: Detailed filtering results and skipped libraries in sync logs
+  - **Default Behavior**: All libraries synced when no filtering is configured
   - **Thread-Safe**: Proper mutex protection for all cache operations
   - **Backward Compatible**: All optimizations maintain existing functionality and respect Hardcover's 60 requests/minute rate limit
 

@@ -406,6 +406,36 @@ func (s *Service) Sync(ctx context.Context) error {
 		"libraries_count": len(libraries),
 	})
 
+	// Filter libraries based on configuration
+	filteredLibraries := make([]audiobookshelf.AudiobookshelfLibrary, 0, len(libraries))
+	skippedLibraries := make([]string, 0)
+	for _, library := range libraries {
+		if s.shouldSyncLibrary(&library) {
+			filteredLibraries = append(filteredLibraries, library)
+		} else {
+			skippedLibraries = append(skippedLibraries, library.Name)
+		}
+	}
+
+	// Log library filtering results
+	if len(s.config.Sync.Libraries.Include) > 0 || len(s.config.Sync.Libraries.Exclude) > 0 {
+		s.log.Info("Library filtering applied", map[string]interface{}{
+			"total_libraries":    len(libraries),
+			"filtered_libraries": len(filteredLibraries),
+			"skipped_libraries":  len(skippedLibraries),
+			"include_filter":     s.config.Sync.Libraries.Include,
+			"exclude_filter":     s.config.Sync.Libraries.Exclude,
+		})
+		if len(skippedLibraries) > 0 {
+			s.log.Info("Skipped libraries", map[string]interface{}{
+				"skipped_library_names": skippedLibraries,
+			})
+		}
+	} else {
+		s.log.Info("No library filtering configured, processing all libraries", nil)
+		filteredLibraries = libraries
+	}
+
 	// Track total books processed across all libraries
 	totalBooksProcessed := 0
 
@@ -416,8 +446,8 @@ func (s *Service) Sync(ctx context.Context) error {
 		})
 	}
 
-	// Process each library
-	for i := range libraries {
+	// Process each filtered library
+	for i := range filteredLibraries {
 		// Skip processing if we've reached the limit
 		if totalBooksLimit > 0 && totalBooksProcessed >= totalBooksLimit {
 			s.log.Info("Reached test book limit before processing library", map[string]interface{}{
@@ -428,11 +458,11 @@ func (s *Service) Sync(ctx context.Context) error {
 		}
 
 		// Process the library and get the number of books processed
-		processed, err := s.processLibrary(ctx, &libraries[i], totalBooksLimit-totalBooksProcessed, userProgress)
+		processed, err := s.processLibrary(ctx, &filteredLibraries[i], totalBooksLimit-totalBooksProcessed, userProgress)
 		if err != nil {
 			s.log.Error("Failed to process library", map[string]interface{}{
 				"error":      err,
-				"library_id": libraries[i].ID,
+				"library_id": filteredLibraries[i].ID,
 			})
 			continue
 		}
@@ -500,6 +530,34 @@ func (s *Service) Sync(ctx context.Context) error {
 
 	s.log.Info("Sync completed successfully", nil)
 	return nil
+}
+
+// shouldSyncLibrary determines if a library should be synced based on configuration
+func (s *Service) shouldSyncLibrary(library *audiobookshelf.AudiobookshelfLibrary) bool {
+	// If include list is specified, only sync libraries in the include list
+	if len(s.config.Sync.Libraries.Include) > 0 {
+		for _, included := range s.config.Sync.Libraries.Include {
+			// Match by name (case-insensitive) or ID
+			if strings.EqualFold(included, library.Name) || included == library.ID {
+				return true
+			}
+		}
+		// If include list is specified but library is not in it, don't sync
+		return false
+	}
+
+	// If exclude list is specified, don't sync libraries in the exclude list
+	if len(s.config.Sync.Libraries.Exclude) > 0 {
+		for _, excluded := range s.config.Sync.Libraries.Exclude {
+			// Match by name (case-insensitive) or ID
+			if strings.EqualFold(excluded, library.Name) || excluded == library.ID {
+				return false
+			}
+		}
+	}
+
+	// Default: sync all libraries if no filtering is configured
+	return true
 }
 
 // processLibrary processes a library and returns the number of books processed
