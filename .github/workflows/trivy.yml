@@ -43,7 +43,7 @@ jobs:
           exit-code: 1
           ignore-unfixed: true
           vuln-type: 'os,library'
-          scanners: 'vuln,config,secret'
+          scanners: 'vuln,misconfig,secret'
 
       - name: Upload SARIF results
         uses: github/codeql-action/upload-sarif@v3
@@ -67,7 +67,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: 1
           ignore-unfixed: true
-          scanners: 'config,secret'  # Use scanners instead of security-checks
+          scanners: 'misconfig,secret'  # Use misconfig instead of deprecated config
           vuln-type: ''  # Explicitly disable vulnerability scanning for filesystem scan
 
       - name: Upload SARIF results
