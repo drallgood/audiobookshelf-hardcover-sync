@@ -1,0 +1,163 @@
+name: Publish Helm Chart
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'helm/**'
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
+# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  publish-helm-chart:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "$GITHUB_ACTOR"
+          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Add Helm repos
+        run: |
+          helm repo add stable https://charts.helm.sh/stable
+          helm repo update
+
+      - name: Lint Helm Chart
+        run: |
+          helm lint helm/audiobookshelf-hardcover-sync
+
+      - name: Package Helm Chart
+        run: |
+          mkdir -p .cr-release-packages
+          helm package helm/audiobookshelf-hardcover-sync --destination .cr-release-packages
+
+      - name: Create Chart Repository Index
+        run: |
+          mkdir -p gh-pages
+          
+          # Copy packaged charts
+          cp .cr-release-packages/*.tgz gh-pages/
+          
+          # Create or update index.yaml
+          if [ -f gh-pages/index.yaml ]; then
+            helm repo index gh-pages --merge gh-pages/index.yaml --url https://drallgood.github.io/audiobookshelf-hardcover-sync
+          else
+            helm repo index gh-pages --url https://drallgood.github.io/audiobookshelf-hardcover-sync
+          fi
+
+      - name: Create README for Chart Repository
+        run: |
+          cat > gh-pages/README.md << 'EOF'
+          # Audiobookshelf-Hardcover Sync Helm Chart Repository
+          
+          This repository hosts the official Helm chart for [Audiobookshelf-Hardcover Sync](https://github.com/drallgood/audiobookshelf-hardcover-sync).
+          
+          ## Usage
+          
+          Add this Helm repository:
+          
+          ```bash
+          helm repo add audiobookshelf-hardcover-sync https://drallgood.github.io/audiobookshelf-hardcover-sync
+          helm repo update
+          ```
+          
+          Install the chart:
+          
+          ```bash
+          # Create a values file with your configuration
+          cat > my-values.yaml << 'YAML'
+          secrets:
+            audiobookshelf:
+              url: "https://your-audiobookshelf-instance.com"
+              token: "your-audiobookshelf-token"
+            hardcover:
+              token: "your-hardcover-token"
+          YAML
+          
+          # Install the chart
+          helm install my-sync audiobookshelf-hardcover-sync/audiobookshelf-hardcover-sync -f my-values.yaml
+          ```
+          
+          ## Configuration
+          
+          For detailed configuration options, see the [chart documentation](https://github.com/drallgood/audiobookshelf-hardcover-sync/tree/main/helm/audiobookshelf-hardcover-sync).
+          
+          ## Charts
+          
+          | Chart | Version | App Version | Description |
+          |-------|---------|-------------|-------------|
+          | audiobookshelf-hardcover-sync | Latest | Latest | Sync your reading progress between Audiobookshelf and Hardcover |
+          
+          ## Support
+          
+          For issues and support, please visit the [main repository](https://github.com/drallgood/audiobookshelf-hardcover-sync/issues).
+          EOF
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './gh-pages'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  test-chart-install:
+    runs-on: ubuntu-latest
+    needs: publish-helm-chart
+    if: github.event_name != 'release'
+    steps:
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Test Chart Installation
+        run: |
+          # Wait a bit for GitHub Pages to be available
+          sleep 30
+          
+          # Add the repository
+          helm repo add audiobookshelf-hardcover-sync https://drallgood.github.io/audiobookshelf-hardcover-sync
+          helm repo update
+          
+          # Search for the chart
+          helm search repo audiobookshelf-hardcover-sync
+          
+          # Test template rendering
+          helm template test audiobookshelf-hardcover-sync/audiobookshelf-hardcover-sync \
+            --set secrets.audiobookshelf.url="https://test.example.com" \
+            --set secrets.audiobookshelf.token="test-token" \
+            --set secrets.hardcover.token="test-token" \
+            > /tmp/test-output.yaml
+          
+          echo "✅ Chart installation test passed!"

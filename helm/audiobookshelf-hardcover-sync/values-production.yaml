@@ -1,0 +1,102 @@
+# Production values for audiobookshelf-hardcover-sync
+# This file contains recommended settings for production deployments
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/drallgood/audiobookshelf-hardcover-sync
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+# Enable persistence for production
+persistence:
+  enabled: true
+  storageClass: ""  # Use default storage class
+  accessMode: ReadWriteOnce
+  size: 2Gi
+
+# Production resource limits
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Production logging configuration
+config:
+  logging:
+    level: "info"
+    format: "json"
+  
+  # Recommended production sync settings
+  app:
+    syncInterval: "2h"  # Less frequent syncs for production
+    minimumProgress: 0.01
+    syncWantToRead: true
+    syncOwned: true
+    dryRun: false
+  
+  # Enable incremental sync for better performance
+  sync:
+    incremental: true
+    minChangeThreshold: 60
+
+# Security settings
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: true
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+
+# Health checks
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 60
+  periodSeconds: 60
+  timeoutSeconds: 10
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Example ingress configuration (uncomment and modify as needed)
+# ingress:
+#   enabled: true
+#   className: "nginx"
+#   annotations:
+#     cert-manager.io/cluster-issuer: "letsencrypt-prod"
+#     nginx.ingress.kubernetes.io/ssl-redirect: "true"
+#   hosts:
+#     - host: audiobookshelf-sync.yourdomain.com
+#       paths:
+#         - path: /
+#           pathType: Prefix
+#   tls:
+#     - secretName: audiobookshelf-sync-tls
+#       hosts:
+#         - audiobookshelf-sync.yourdomain.com
+
+# REQUIRED: Configure your API credentials
+secrets:
+  audiobookshelf:
+    url: ""  # Set to your Audiobookshelf instance URL
+    token: ""  # Set to your Audiobookshelf API token
+  hardcover:
+    token: ""  # Set to your Hardcover API token

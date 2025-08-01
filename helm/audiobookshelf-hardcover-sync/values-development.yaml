@@ -1,0 +1,74 @@
+# Development values for audiobookshelf-hardcover-sync
+# This file contains settings optimized for development and testing
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/drallgood/audiobookshelf-hardcover-sync
+  pullPolicy: Always  # Always pull for development
+  tag: "latest"
+
+# Disable persistence for development (faster pod restarts)
+persistence:
+  enabled: false
+
+# Development resource settings (minimal)
+resources:
+  limits:
+    cpu: 200m
+    memory: 256Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+# Development logging configuration (more verbose)
+config:
+  logging:
+    level: "debug"
+    format: "console"  # More readable for development
+  
+  # Development sync settings
+  app:
+    syncInterval: "5m"  # More frequent syncs for testing
+    minimumProgress: 0.01
+    syncWantToRead: true
+    syncOwned: true
+    dryRun: true  # Enable dry run by default for safety
+    testBookLimit: 10  # Limit books for faster testing
+  
+  # Sync configuration for development
+  sync:
+    incremental: true
+    minChangeThreshold: 30  # Lower threshold for testing
+
+# Faster health checks for development
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 15
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+# Development service configuration
+service:
+  type: NodePort  # Easier access for development
+
+# Example development secrets (replace with actual values)
+secrets:
+  audiobookshelf:
+    url: "http://localhost:13378"  # Common Audiobookshelf development port
+    token: "dev-token-here"
+  hardcover:
+    token: "dev-hardcover-token-here"
+
+# Additional environment variables for development
+env:
+  - name: DEBUG
+    value: "true"

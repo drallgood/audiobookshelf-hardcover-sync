@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "audiobookshelf-hardcover-sync.fullname" . }}
+  labels:
+    {{- include "audiobookshelf-hardcover-sync.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    # Server configuration
+    server:
+      port: {{ .Values.config.server.port | quote }}
+      shutdown_timeout: {{ .Values.config.server.shutdownTimeout | quote }}
+
+    # Rate limiting configuration
+    rate_limit:
+      rate: {{ .Values.config.rateLimit.rate | quote }}
+      burst: {{ .Values.config.rateLimit.burst }}
+      max_concurrent: {{ .Values.config.rateLimit.maxConcurrent }}
+
+    # Logging configuration
+    logging:
+      level: {{ .Values.config.logging.level | quote }}
+      format: {{ .Values.config.logging.format | quote }}
+
+    # Application settings
+    app:
+      sync_interval: {{ .Values.config.app.syncInterval | quote }}
+      minimum_progress: {{ .Values.config.app.minimumProgress }}
+      sync_want_to_read: {{ .Values.config.app.syncWantToRead }}
+      sync_owned: {{ .Values.config.app.syncOwned }}
+      dry_run: {{ .Values.config.app.dryRun }}
+      {{- if .Values.config.app.testBookFilter }}
+      test_book_filter: {{ .Values.config.app.testBookFilter | quote }}
+      {{- end }}
+      {{- if .Values.config.app.testBookLimit }}
+      test_book_limit: {{ .Values.config.app.testBookLimit }}
+      {{- end }}
+
+    # Sync configuration
+    sync:
+      incremental: {{ .Values.config.sync.incremental }}
+      state_file: {{ .Values.config.sync.stateFile | quote }}
+      min_change_threshold: {{ .Values.config.sync.minChangeThreshold }}
+      {{- if or .Values.config.sync.libraries.include .Values.config.sync.libraries.exclude }}
+      libraries:
+        {{- if .Values.config.sync.libraries.include }}
+        include:
+          {{- range .Values.config.sync.libraries.include }}
+          - {{ . | quote }}
+          {{- end }}
+        {{- end }}
+        {{- if .Values.config.sync.libraries.exclude }}
+        exclude:
+          {{- range .Values.config.sync.libraries.exclude }}
+          - {{ . | quote }}
+          {{- end }}
+        {{- end }}
+      {{- end }}
+
+    # Paths configuration
+    paths:
+      cache_dir: {{ .Values.config.paths.cacheDir | quote }}
+      mismatch_output_dir: {{ .Values.config.paths.mismatchOutputDir | quote }}

@@ -27,6 +27,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Default Behavior**: All libraries synced when no filtering is configured
   - **Thread-Safe**: Proper mutex protection for all cache operations
   - **Backward Compatible**: All optimizations maintain existing functionality and respect Hardcover's 60 requests/minute rate limit
+- **☸️ Official Helm Chart**: Production-ready Kubernetes deployment with automated publishing
+  - **GitHub Pages Repository**: Public Helm chart repository at `https://drallgood.github.io/audiobookshelf-hardcover-sync`
+  - **Standard Installation**: `helm repo add audiobookshelf-hardcover-sync https://drallgood.github.io/audiobookshelf-hardcover-sync`
+  - **Complete Kubernetes Manifests**: Deployment, Service, Secret, ConfigMap, Ingress, PVC, HPA, ServiceAccount
+  - **Security Hardened**: Non-root user, read-only filesystem, dropped capabilities, proper RBAC
+  - **Production & Development**: Separate value files optimized for different environments
+  - **Full Configuration Support**: All application settings mapped to Helm values with environment variable support
+  - **Persistent Storage**: Optional PVC for sync state and cache persistence across pod restarts
+  - **Health Monitoring**: Kubernetes-native health checks, resource limits, and auto-scaling support
+  - **Automated Publishing**: GitHub Actions workflow for automatic chart packaging and deployment
+  - **Comprehensive Documentation**: Installation guides, configuration examples, and troubleshooting
 
 ### Fixed
 - **📚 Reread Tracking Bug**: Fixed critical issue where book rereads were not properly tracked (#21)

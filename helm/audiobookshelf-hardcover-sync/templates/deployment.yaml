@@ -1,0 +1,167 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "audiobookshelf-hardcover-sync.fullname" . }}
+  labels:
+    {{- include "audiobookshelf-hardcover-sync.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "audiobookshelf-hardcover-sync.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "audiobookshelf-hardcover-sync.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "audiobookshelf-hardcover-sync.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.config.server.port }}
+              protocol: TCP
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          env:
+            # Server configuration
+            - name: PORT
+              value: {{ .Values.config.server.port | quote }}
+            - name: SHUTDOWN_TIMEOUT
+              value: {{ .Values.config.server.shutdownTimeout | quote }}
+            
+            # Rate limiting configuration
+            - name: RATE_LIMIT_RATE
+              value: {{ .Values.config.rateLimit.rate | quote }}
+            - name: RATE_LIMIT_BURST
+              value: {{ .Values.config.rateLimit.burst | quote }}
+            - name: RATE_LIMIT_MAX_CONCURRENT
+              value: {{ .Values.config.rateLimit.maxConcurrent | quote }}
+            
+            # Logging configuration
+            - name: LOG_LEVEL
+              value: {{ .Values.config.logging.level | quote }}
+            - name: LOG_FORMAT
+              value: {{ .Values.config.logging.format | quote }}
+            
+            # Application settings
+            - name: SYNC_INTERVAL
+              value: {{ .Values.config.app.syncInterval | quote }}
+            - name: MINIMUM_PROGRESS
+              value: {{ .Values.config.app.minimumProgress | quote }}
+            - name: SYNC_WANT_TO_READ
+              value: {{ .Values.config.app.syncWantToRead | quote }}
+            - name: SYNC_OWNED
+              value: {{ .Values.config.app.syncOwned | quote }}
+            - name: DRY_RUN
+              value: {{ .Values.config.app.dryRun | quote }}
+            {{- if .Values.config.app.testBookFilter }}
+            - name: TEST_BOOK_FILTER
+              value: {{ .Values.config.app.testBookFilter | quote }}
+            {{- end }}
+            {{- if .Values.config.app.testBookLimit }}
+            - name: TEST_BOOK_LIMIT
+              value: {{ .Values.config.app.testBookLimit | quote }}
+            {{- end }}
+            
+            # Sync configuration
+            - name: SYNC_INCREMENTAL
+              value: {{ .Values.config.sync.incremental | quote }}
+            - name: SYNC_STATE_FILE
+              value: {{ .Values.config.sync.stateFile | quote }}
+            - name: SYNC_MIN_CHANGE_THRESHOLD
+              value: {{ .Values.config.sync.minChangeThreshold | quote }}
+            {{- if .Values.config.sync.libraries.include }}
+            - name: SYNC_LIBRARIES_INCLUDE
+              value: {{ join "," .Values.config.sync.libraries.include | quote }}
+            {{- end }}
+            {{- if .Values.config.sync.libraries.exclude }}
+            - name: SYNC_LIBRARIES_EXCLUDE
+              value: {{ join "," .Values.config.sync.libraries.exclude | quote }}
+            {{- end }}
+            
+            # Paths configuration
+            - name: CACHE_DIR
+              value: {{ .Values.config.paths.cacheDir | quote }}
+            - name: MISMATCH_OUTPUT_DIR
+              value: {{ .Values.config.paths.mismatchOutputDir | quote }}
+            
+            # Secrets
+            - name: AUDIOBOOKSHELF_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "audiobookshelf-hardcover-sync.fullname" . }}
+                  key: audiobookshelf-url
+            - name: AUDIOBOOKSHELF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "audiobookshelf-hardcover-sync.fullname" . }}
+                  key: audiobookshelf-token
+            - name: HARDCOVER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "audiobookshelf-hardcover-sync.fullname" . }}
+                  key: hardcover-token
+            
+            # Additional environment variables
+            {{- with .Values.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- with .Values.volumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- if .Values.persistence.enabled }}
+            - name: data-persistent
+              mountPath: /app/data
+            {{- end }}
+      volumes:
+        {{- with .Values.volumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.persistence.enabled }}
+        - name: data-persistent
+          persistentVolumeClaim:
+            claimName: {{ include "audiobookshelf-hardcover-sync.fullname" . }}-data
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

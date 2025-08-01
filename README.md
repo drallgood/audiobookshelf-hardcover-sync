@@ -192,6 +192,59 @@ The project follows standard Go project layout:
    docker compose up -d --force-recreate
    ```
 
+#### Using Helm (Kubernetes)
+
+For Kubernetes deployments, use the official Helm chart:
+
+1. **Add the Helm repository**:
+   ```bash
+   helm repo add audiobookshelf-hardcover-sync https://drallgood.github.io/audiobookshelf-hardcover-sync
+   helm repo update
+   ```
+
+2. **Create a values file** with your configuration:
+   ```yaml
+   # my-values.yaml
+   secrets:
+     audiobookshelf:
+       url: "https://your-audiobookshelf-instance.com"
+       token: "your-audiobookshelf-token"
+     hardcover:
+       token: "your-hardcover-token"
+   
+   # Optional: Enable persistence
+   persistence:
+     enabled: true
+     size: 2Gi
+   
+   # Optional: Configure resources
+   resources:
+     limits:
+       cpu: 500m
+       memory: 512Mi
+     requests:
+       cpu: 100m
+       memory: 128Mi
+   ```
+
+3. **Install the chart**:
+   ```bash
+   helm install my-sync audiobookshelf-hardcover-sync/audiobookshelf-hardcover-sync -f my-values.yaml
+   ```
+
+4. **Check the deployment**:
+   ```bash
+   kubectl get pods -l app.kubernetes.io/name=audiobookshelf-hardcover-sync
+   kubectl logs -l app.kubernetes.io/name=audiobookshelf-hardcover-sync -f
+   ```
+
+5. **Upgrade the deployment**:
+   ```bash
+   helm upgrade my-sync audiobookshelf-hardcover-sync/audiobookshelf-hardcover-sync -f my-values.yaml
+   ```
+
+For detailed Helm chart configuration options, see the [Helm Chart Documentation](docs/helm-chart-publishing.md).
+
 ### Configuration Reference
 
 #### Configuration File (Recommended)

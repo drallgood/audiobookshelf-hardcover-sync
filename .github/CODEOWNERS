@@ -1,0 +1,7 @@
+# Global owners for the repository
+* @drallgood
+
+# Helm chart specific ownership
+/helm/ @drallgood
+/docs/helm-chart-publishing.md @drallgood
+/.github/workflows/helm-publish.yml @drallgood

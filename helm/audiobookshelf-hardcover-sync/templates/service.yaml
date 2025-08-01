@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "audiobookshelf-hardcover-sync.fullname" . }}
+  labels:
+    {{- include "audiobookshelf-hardcover-sync.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "audiobookshelf-hardcover-sync.selectorLabels" . | nindent 4 }}
