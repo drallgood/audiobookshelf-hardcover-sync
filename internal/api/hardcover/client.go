@@ -2773,8 +2773,8 @@ type SearchByTitleAuthorResponse struct {
 	} `json:"books"`
 }
 
-// CheckBookOwnershipResponse represents the response from checking if a book is in the user's "Owned" list
-type CheckBookOwnershipResponse []struct {
+// CheckBookOwnershipData represents the lists data from the GraphQL response
+type CheckBookOwnershipData struct {
 	ID        int    `json:"id"`
 	Name      string `json:"name"`
 	ListBooks []struct {
@@ -2782,6 +2782,11 @@ type CheckBookOwnershipResponse []struct {
 		BookID    int  `json:"book_id"`
 		EditionID *int `json:"edition_id"`
 	} `json:"list_books"`
+}
+
+// CheckBookOwnershipResponse represents the response from checking if a book is in the user's "Owned" list
+type CheckBookOwnershipResponse struct {
+	Lists []CheckBookOwnershipData `json:"lists"`
 }
 
 // CheckBookOwnership checks if a book is in the user's "Owned" list
@@ -2830,7 +2835,7 @@ func (c *Client) CheckBookOwnership(ctx context.Context, bookID int) (bool, erro
 	}
 
 	// If we have a list with list_books, the book is owned
-	owned := len(response) > 0 && len(response[0].ListBooks) > 0
+	owned := len(response.Lists) > 0 && len(response.Lists[0].ListBooks) > 0
 
 	log.Debug("Checked book ownership status", map[string]interface{}{
 		"is_owned": owned,

@@ -1178,6 +1178,53 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		return fmt.Errorf("failed to get or create user book ID: %w", err)
 	}
 
+	// Mark book as owned if sync_owned is enabled
+	if s.config.App.SyncOwned && hcBook != nil && hcBook.EditionID != "" && hcBook.EditionID != "0" {
+		editionIDInt, err := strconv.Atoi(hcBook.EditionID)
+		if err != nil {
+			bookLog.Warn("Invalid edition ID format for marking as owned", map[string]interface{}{
+				"edition_id": hcBook.EditionID,
+				"error":      err.Error(),
+			})
+		} else {
+			// Check if book is already marked as owned using book ID (not edition ID)
+			bookIDInt, err := strconv.Atoi(hcBook.ID)
+			if err != nil {
+				bookLog.Warn("Invalid book ID format for ownership check", map[string]interface{}{
+					"book_id": hcBook.ID,
+					"error":   err.Error(),
+				})
+			} else {
+				isOwned, err := s.hardcover.CheckBookOwnership(ctx, bookIDInt)
+				if err != nil {
+					bookLog.Warn("Failed to check book ownership status", map[string]interface{}{
+						"book_id":    bookIDInt,
+						"edition_id": editionIDInt,
+						"error":      err.Error(),
+					})
+				} else if !isOwned {
+					err = s.hardcover.MarkEditionAsOwned(ctx, editionIDInt)
+					if err != nil {
+						bookLog.Warn("Failed to mark edition as owned", map[string]interface{}{
+							"edition_id": editionIDInt,
+							"error":      err.Error(),
+						})
+					} else {
+						bookLog.Info("Successfully marked edition as owned", map[string]interface{}{
+							"book_id":    bookIDInt,
+							"edition_id": editionIDInt,
+						})
+					}
+				} else {
+					bookLog.Debug("Book is already marked as owned", map[string]interface{}{
+						"book_id":    bookIDInt,
+						"edition_id": editionIDInt,
+					})
+				}
+			}
+		}
+	}
+
 	// Log the book we're processing
 	editionIDStr := editionID // Keep original string for logging
 	bookLog = bookLog.With(map[string]interface{}{
