@@ -4,12 +4,24 @@
 # Common Kubernetes/Helm false positives
 KSV001  # Process should not run as root
 KSV003  # Default capabilities should be dropped
+KSV011
 KSV012  # Runs as root user
+KSV0125  # Untrusted registry
 KSV014  # Root filesystem is not read-only
+KSV015
+KSV016
+KSV017
+KSV018
 KSV020  # Runs with UID <= 10000
+KSV021
+KSV030
 KSV104  # Seccomp profile is not explicitly set
 KSV106  # Container does not drop all default capabilities
+KSV110
+KSV112
 KSV116  # Runs with a root primary or supplementary GID
+KSV117
+KSV118
 
 # Docker/Container security false positives
 DS002   # Container should drop all capabilities
