@@ -6,6 +6,9 @@ on:
       - main
     paths:
       - 'helm/**'
+      - '.github/workflows/helm-publish.yml'
+    tags:
+      - 'v*'
   release:
     types: [published]
   workflow_dispatch:
@@ -47,6 +50,34 @@ jobs:
         run: |
           helm repo add stable https://charts.helm.sh/stable
           helm repo update
+
+      - name: Extract Version from Git Tag
+        id: version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            # Extract version from tag (e.g., v1.2.3 -> 1.2.3)
+            VERSION=${GITHUB_REF#refs/tags/v}
+            echo "chart_version=$VERSION" >> $GITHUB_OUTPUT
+            echo "app_version=$VERSION" >> $GITHUB_OUTPUT
+            echo "🏷️ Release tag detected: v$VERSION"
+          else
+            # Use default versions for non-tag builds
+            CHART_VERSION=$(grep '^version:' helm/audiobookshelf-hardcover-sync/Chart.yaml | cut -d' ' -f2)
+            APP_VERSION=$(grep '^appVersion:' helm/audiobookshelf-hardcover-sync/Chart.yaml | cut -d'"' -f2)
+            echo "chart_version=$CHART_VERSION" >> $GITHUB_OUTPUT
+            echo "app_version=$APP_VERSION" >> $GITHUB_OUTPUT
+            echo "📦 Using existing chart version: $CHART_VERSION, app version: $APP_VERSION"
+          fi
+
+      - name: Update Chart Version (for releases)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          echo "🔄 Updating Chart.yaml with release version: ${{ steps.version.outputs.chart_version }}"
+          sed -i "s/^version:.*/version: ${{ steps.version.outputs.chart_version }}/" helm/audiobookshelf-hardcover-sync/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${{ steps.version.outputs.app_version }}\"/" helm/audiobookshelf-hardcover-sync/Chart.yaml
+          
+          echo "📋 Updated Chart.yaml:"
+          grep -E '^(version|appVersion):' helm/audiobookshelf-hardcover-sync/Chart.yaml
 
       - name: Lint Helm Chart
         run: |

@@ -38,6 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Health Monitoring**: Kubernetes-native health checks, resource limits, and auto-scaling support
   - **Automated Publishing**: GitHub Actions workflow for automatic chart packaging and deployment
   - **Comprehensive Documentation**: Installation guides, configuration examples, and troubleshooting
+  - **🔄 Version Synchronization**: Helm chart versions automatically sync with Git release tags
+    - **Tag-Based Versioning**: Release tags like `v1.2.3` automatically update chart and app versions
+    - **Integrated Workflow**: Single release process updates Docker images, GitHub releases, and Helm charts
+    - **Smart Version Handling**: Automatic version extraction from Git tags with fallback to existing versions
+    - **Consistent Versioning**: All release artifacts (Docker, Helm, GitHub) use identical version numbers
 
 ### Fixed
 - **📚 Reread Tracking Bug**: Fixed critical issue where book rereads were not properly tracked (#21)
