@@ -57,21 +57,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Run Trivy filesystem scanner (debug mode)
-        uses: aquasecurity/trivy-action@0.32.0
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'table'
-          severity: 'CRITICAL,HIGH'
-          exit-code: 0
-          ignore-unfixed: true
-          scanners: 'misconfig,secret'
-          skip-files: '**/*.md,**/*.txt,**/*.json,**/go.sum,**/go.mod'
-          skip-dirs: '.git,.github/workflows'
-          trivyignores: '.trivyignore'
-
-      - name: Run Trivy filesystem scanner (SARIF)
+      - name: Run Trivy filesystem scanner
         uses: aquasecurity/trivy-action@0.32.0
         with:
           scan-type: 'fs'
@@ -79,7 +65,7 @@ jobs:
           format: 'sarif'
           output: 'trivy-fs-results.sarif'
           severity: 'CRITICAL,HIGH'
-          exit-code: 0
+          exit-code: 1
           ignore-unfixed: true
           scanners: 'misconfig,secret'
           skip-files: '**/*.md,**/*.txt,**/*.json,**/go.sum,**/go.mod'
