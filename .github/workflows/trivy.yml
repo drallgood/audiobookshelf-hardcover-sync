@@ -57,20 +57,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Run Trivy filesystem scanner (debug output)
-        uses: aquasecurity/trivy-action@0.32.0
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'table'
-          output: ''
-          severity: 'CRITICAL,HIGH'
-          exit-code: 0
-          ignore-unfixed: true
-          scanners: 'misconfig,secret'  # Use misconfig instead of deprecated config
-          vuln-type: ''  # Explicitly disable vulnerability scanning for filesystem scan
-
-      - name: Run Trivy filesystem scanner (SARIF output)
+      - name: Run Trivy filesystem scanner
         uses: aquasecurity/trivy-action@0.32.0
         with:
           scan-type: 'fs'
@@ -80,8 +67,10 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: 1
           ignore-unfixed: true
-          scanners: 'misconfig,secret'  # Use misconfig instead of deprecated config
-          vuln-type: ''  # Explicitly disable vulnerability scanning for filesystem scan
+          scanners: 'misconfig,secret'
+          skip-files: '**/*.md,**/*.txt,**/*.json,**/go.sum,**/go.mod'
+          skip-dirs: '.git,.github/workflows'
+          trivyignores: '.trivyignore'
 
       - name: Upload SARIF results
         uses: github/codeql-action/upload-sarif@v3
