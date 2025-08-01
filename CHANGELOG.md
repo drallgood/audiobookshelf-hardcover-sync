@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v2.1.0] - 2025-08-01
+
 ### Added
 - **🚀 Comprehensive Sync Performance Optimizations**: Massive performance improvements through multi-tier caching system
   - **ASIN-Level Caching**: Eliminates duplicate BookByASIN API calls with in-memory and persistent caching (24h TTL)
