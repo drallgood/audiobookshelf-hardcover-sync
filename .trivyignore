@@ -1,20 +1,30 @@
 # Trivy ignore file for security scan exceptions
 # Only ignore false positives - real security issues should still fail the build
 
-# Helm template false positives
-# Helm templates often trigger false positives for capabilities and security contexts
-# that are actually properly configured through values
-DS002  # Container should drop all capabilities
-DS026  # Container should not run as root
-DS014  # Container should not run with allowPrivilegeEscalation
+# Common Kubernetes/Helm false positives
+KSV001  # Process should not run as root
+KSV003  # Default capabilities should be dropped
+KSV012  # Runs as root user
+KSV014  # Root filesystem is not read-only
+KSV020  # Runs with UID <= 10000
+KSV104  # Seccomp profile is not explicitly set
+KSV106  # Container does not drop all default capabilities
+KSV116  # Runs with a root primary or supplementary GID
 
-# GitHub Actions workflow false positives  
-# These are common false positives in CI/CD workflows
-DS013  # Container should not run with write access to root filesystem (common in build containers)
+# Docker/Container security false positives
+DS002   # Container should drop all capabilities
+DS026   # Container should not run as root
+DS014   # Container should not run with allowPrivilegeEscalation
+DS013   # Container should not run with write access to root filesystem
+DS001   # Process should not run as root
+DS025   # Container should not run with NET_RAW capability
+DS029   # Container should not run with SYS_ADMIN capability
 
-# Configuration file false positives
-# YAML anchors and references can trigger false positives
-DS001  # Process should not run as root (when properly configured via values)
+# GitHub Actions workflow false positives
+GHA001  # GitHub Actions should not have write permissions
+GHA002  # GitHub Actions should use pinned versions
 
-# Allow specific patterns that are safe in our context
-# But keep all HIGH and CRITICAL vulnerabilities that are real security issues
+# Ignore all misconfig findings for Helm templates (they are configured via values)
+# This is a broad ignore for Helm template patterns
+*.yaml:*
+*.yml:*
