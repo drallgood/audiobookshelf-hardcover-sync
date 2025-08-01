@@ -79,6 +79,8 @@ jobs:
             vuln_count=$(jq '.runs[0].results | length' trivy-fs-results.sarif 2>/dev/null || echo "0")
             if [ "$vuln_count" -gt 0 ]; then
               echo "❌ Security vulnerabilities found: $vuln_count"
+              echo "📋 Vulnerability details:"
+              jq -r '.runs[0].results[] | "- \(.ruleId): \(.message.text) (\(.locations[0].physicalLocation.artifactLocation.uri))"' trivy-fs-results.sarif || echo "Could not parse vulnerability details"
               echo "Please review the SARIF results and address the security issues."
               exit 1
             else
