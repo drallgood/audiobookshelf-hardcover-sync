@@ -196,8 +196,12 @@ func TestClient_CheckBookOwnership(t *testing.T) {
 						var responseJSON []byte
 						var err error
 						
-						// The CheckBookOwnership function expects a direct slice, not nested under data.lists
-						responseWrapper := map[string]interface{}{"data": tt.mockResponse}
+						// The CheckBookOwnership function expects data.lists structure
+						responseWrapper := map[string]interface{}{
+							"data": map[string]interface{}{
+								"lists": tt.mockResponse,
+							},
+						}
 						
 						responseJSON, err = json.Marshal(responseWrapper)
 						if err != nil {
