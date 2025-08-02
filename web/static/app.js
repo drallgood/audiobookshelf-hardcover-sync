@@ -368,9 +368,25 @@ class MultiUserApp {
 
     showEditModal() {
         const user = this.currentEditUser;
+        const config = user.sync_config || {};
+        
+        // Basic user fields
         document.getElementById('edit-user-id').value = user.user.id;
         document.getElementById('edit-user-name').value = user.user.name;
         document.getElementById('edit-abs-url').value = user.audiobookshelf_url;
+        
+        // Sync configuration fields
+        document.getElementById('edit-incremental').checked = config.incremental || false;
+        document.getElementById('edit-sync-interval').value = config.sync_interval || '6h';
+        document.getElementById('edit-minimum-progress').value = config.minimum_progress || 0.01;
+        document.getElementById('edit-sync-want-to-read').checked = config.sync_want_to_read !== false; // default true
+        document.getElementById('edit-sync-owned').checked = config.sync_owned !== false; // default true
+        
+        // Library filters
+        const libraries = config.libraries || {};
+        document.getElementById('edit-include-libraries').value = (libraries.include || []).join(', ');
+        document.getElementById('edit-exclude-libraries').value = (libraries.exclude || []).join(', ');
+        
         document.getElementById('edit-user-modal').style.display = 'block';
     }
 
@@ -388,12 +404,27 @@ class MultiUserApp {
             name: formData.get('name')
         };
 
-        // Update user config if tokens are provided
+        // Update user config with form data
         const configUpdateData = {
             audiobookshelf_url: formData.get('audiobookshelf_url'),
             audiobookshelf_token: formData.get('audiobookshelf_token') || this.currentEditUser.audiobookshelf_token,
             hardcover_token: formData.get('hardcover_token') || this.currentEditUser.hardcover_token,
-            sync_config: this.currentEditUser.sync_config
+            sync_config: {
+                incremental: formData.get('incremental') === 'on',
+                state_file: `./data/${userId}_sync_state.json`,
+                min_change_threshold: 60,
+                libraries: {
+                    include: this.parseCommaSeparated(formData.get('include_libraries')),
+                    exclude: this.parseCommaSeparated(formData.get('exclude_libraries'))
+                },
+                sync_interval: formData.get('sync_interval'),
+                minimum_progress: parseFloat(formData.get('minimum_progress')),
+                sync_want_to_read: formData.get('sync_want_to_read') === 'on',
+                sync_owned: formData.get('sync_owned') === 'on',
+                dry_run: false,
+                test_book_filter: '',
+                test_book_limit: 0
+            }
         };
 
         try {
