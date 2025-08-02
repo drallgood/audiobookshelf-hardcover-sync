@@ -481,13 +481,17 @@ header p {
 
 .modal-content {
     background-color: white;
-    margin: 5% auto;
+    margin: 2% auto;
     padding: 0;
     border-radius: 10px;
     width: 90%;
     max-width: 600px;
+    max-height: 95vh;
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
     animation: modalSlideIn 0.3s ease;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
 }
 
 @keyframes modalSlideIn {
@@ -533,6 +537,9 @@ header p {
 .modal .user-form {
     padding: 30px;
     max-width: none;
+    overflow-y: auto;
+    flex: 1;
+    max-height: calc(95vh - 80px); /* Account for header height */
 }
 
 /* Loading Overlay */
