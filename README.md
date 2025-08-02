@@ -6,6 +6,76 @@
 
 Automatically syncs your Audiobookshelf library with Hardcover, including reading progress, book status, and ownership information.
 
+## 🎉 Multi-User Support (v3.0.0+)
+
+**audiobookshelf-hardcover-sync** now supports multiple users with a modern web interface and secure token management!
+
+### Key Features
+
+- **🌐 Web Management Interface**: Modern, responsive web UI at `http://localhost:8080`
+- **👥 Multiple Users**: Each user can have individual Audiobookshelf and Hardcover tokens
+- **🔒 Secure Storage**: All API tokens encrypted at rest with AES-256-GCM
+- **🔄 Concurrent Syncing**: Multiple users can sync simultaneously
+- **📊 Real-Time Monitoring**: Live sync status with auto-refresh
+- **🔧 REST API**: Complete programmatic control via RESTful endpoints
+- **⬆️ Automatic Migration**: Seamless upgrade from single-user setups
+- **🔙 Backwards Compatible**: All existing functionality preserved
+
+### Quick Start (Multi-User)
+
+1. **Start the application**:
+   ```bash
+   ./audiobookshelf-hardcover-sync --server-only
+   ```
+
+2. **Access the web interface**: Open `http://localhost:8080` in your browser
+
+3. **Add users**: Use the "Add User" tab to create users with their individual tokens
+
+4. **Monitor syncs**: View real-time sync status and control operations
+
+### Migration from Single-User
+
+Existing single-user setups are **automatically migrated** on first startup:
+
+- Your existing `config.yaml` is detected and backed up
+- A "Default User" is created with your current configuration
+- All functionality continues to work as before
+- Access the new web interface at `http://localhost:8080`
+
+### REST API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/` | Web management interface |
+| `GET` | `/api/users` | List all users |
+| `POST` | `/api/users` | Create new user |
+| `GET` | `/api/users/{id}` | Get user details |
+| `PUT` | `/api/users/{id}` | Update user |
+| `DELETE` | `/api/users/{id}` | Delete user |
+| `PUT` | `/api/users/{id}/config` | Update user configuration |
+| `GET` | `/api/users/{id}/status` | Get sync status |
+| `POST` | `/api/users/{id}/sync` | Start sync |
+| `DELETE` | `/api/users/{id}/sync` | Cancel sync |
+| `GET` | `/api/status` | All user statuses |
+
+### Environment Variables (Multi-User)
+
+| Variable | Description | Default |
+|----------|-------------|:-------:|
+| `ENCRYPTION_KEY` | Base64-encoded 32-byte encryption key (auto-generated if not set) | Auto-generated |
+| `DATA_DIR` | Directory for database and encryption files | `./data` |
+
+### Security Features
+
+- **Token Encryption**: All API tokens encrypted at rest
+- **User Isolation**: Complete separation of user data
+- **Secure Key Management**: Auto-generated encryption keys
+- **Token Masking**: Sensitive data masked in API responses
+- **Directory Protection**: Static file serving with traversal protection
+
+---
+
 ## Project Structure
 
 The project follows standard Go project layout:
@@ -38,23 +108,39 @@ The project follows standard Go project layout:
 ## Development
 
 ## Features
-- 📚 **Full Library Sync**: Syncs your entire Audiobookshelf library with Hardcover
-- 🎯 **Smart Status Management**: Automatically sets "Want to Read", "Currently Reading", and "Read" status based on progress
-- 🏠 **Ownership Tracking**: Marks synced books as "owned" to distinguish from wishlist items
-- 🔄 **Incremental Sync**: Efficient state-based syncing to only process changed books
+
+### 🎉 Multi-User Support (v3.0.0+)
+- **👥 Multiple Users**: Individual Audiobookshelf and Hardcover tokens per user
+- **🌐 Web Interface**: Modern, responsive management dashboard at `http://localhost:8080`
+- **🔒 Secure Storage**: AES-256-GCM encrypted token storage
+- **🔄 Concurrent Syncing**: Multiple users can sync simultaneously
+- **📊 Real-Time Monitoring**: Live sync status with auto-refresh
+- **🔧 REST API**: Complete programmatic control via RESTful endpoints
+- **⬆️ Automatic Migration**: Seamless upgrade from single-user setups
+- **🔙 Backwards Compatible**: All existing functionality preserved
+
+### 📚 Core Sync Features
+- **Full Library Sync**: Syncs your entire Audiobookshelf library with Hardcover
+- **Smart Status Management**: Automatically sets "Want to Read", "Currently Reading", and "Read" status based on progress
+- **Ownership Tracking**: Marks synced books as "owned" to distinguish from wishlist items
+- **Incremental Sync**: Efficient state-based syncing to only process changed books
   - Tracks sync state between runs
   - Configurable minimum change threshold
   - Persistent state storage
-- 🚀 **Smart Caching**: Intelligent caching of author/narrator lookups with cross-role discovery
-- 📊 **Enhanced Progress Detection**: Uses `/api/me` endpoint for accurate finished book detection, preventing false re-read scenarios
-- 🔄 **Periodic Sync**: Configurable automatic syncing (e.g., every 10 minutes or 1 hour)
-- 🎛️ **Manual Sync**: HTTP endpoints for on-demand synchronization
-- 🏥 **Health Monitoring**: Built-in health check endpoint
-- 🐳 **Container Ready**: Multi-arch Docker images (amd64, arm64)
-- 🔍 **Configurable Logging**: JSON or console (human-readable) output with configurable log levels
-- 🔧 **Edition Creation Tools**: Interactive tools for creating missing audiobook editions
-- 🔍 **ID Lookup**: Search and verify author, narrator, and publisher IDs from Hardcover database
-- 🛡️ **Production Ready**: Secure, minimal, and battle-tested
+- **Smart Caching**: Intelligent caching of author/narrator lookups with cross-role discovery
+- **Enhanced Progress Detection**: Uses `/api/me` endpoint for accurate finished book detection, preventing false re-read scenarios
+
+### 🔧 Operations & Management
+- **Periodic Sync**: Configurable automatic syncing (e.g., every 10 minutes or 1 hour)
+- **Manual Sync**: HTTP endpoints for on-demand synchronization
+- **Health Monitoring**: Built-in health check endpoint
+- **Configurable Logging**: JSON or console (human-readable) output with configurable log levels
+
+### 🛠️ Developer Tools
+- **Edition Creation Tools**: Interactive tools for creating missing audiobook editions
+- **ID Lookup**: Search and verify author, narrator, and publisher IDs from Hardcover database
+- **Container Ready**: Multi-arch Docker images (amd64, arm64)
+- **Production Ready**: Secure, minimal, and battle-tested
 
 ## Quick Start
 
@@ -288,24 +374,28 @@ sync:
 
 #### Environment Variables
 
-Primary configuration variables:
+**Multi-User Mode (v3.0.0+)** - Recommended:
 
 | Variable | Description | Default | Example |
 |----------|-------------|:-------:|---------|
-| `CONFIG_PATH` | Path to config file | `./config.yaml` | `/app/config/config.yaml` |
+| `ENCRYPTION_KEY` | Base64-encoded 32-byte encryption key | Auto-generated | `base64-encoded-key` |
+| `DATA_DIR` | Directory for database and encryption files | `./data` | `/app/data` |
 | `LOG_LEVEL` | Logging level | `info` | `debug`, `warn`, `error` |
 | `LOG_FORMAT` | Log output format | `json` | `json`, `text` |
 
-Legacy variables (config file takes precedence):
+**Single-User Mode (Legacy)** - For backwards compatibility:
 
-| Variable | Description | Maps to config |
-|----------|-------------|----------------|
-| `AUDIOBOOKSHELF_URL` | URL of your AudiobookShelf instance | `audiobookshelf.url` |
-| `AUDIOBOOKSHELF_TOKEN` | AudiobookShelf API token | `audiobookshelf.token` |
-| `HARDCOVER_TOKEN` | Hardcover API token | `hardcover.token` |
-| `SYNC_INTERVAL` | Time between automatic syncs | `sync.interval` |
-| `SYNC_LIBRARIES_INCLUDE` | Comma-separated list of libraries to include | `sync.libraries.include` |
-| `SYNC_LIBRARIES_EXCLUDE` | Comma-separated list of libraries to exclude | `sync.libraries.exclude` |
+| Variable | Description | Maps to config | Notes |
+|----------|-------------|----------------|-------|
+| `CONFIG_PATH` | Path to config file | - | `./config.yaml` |
+| `AUDIOBOOKSHELF_URL` | URL of your AudiobookShelf instance | `audiobookshelf.url` | Legacy mode only |
+| `AUDIOBOOKSHELF_TOKEN` | AudiobookShelf API token | `audiobookshelf.token` | Legacy mode only |
+| `HARDCOVER_TOKEN` | Hardcover API token | `hardcover.token` | Legacy mode only |
+| `SYNC_INTERVAL` | Time between automatic syncs | `sync.interval` | Legacy mode only |
+| `SYNC_LIBRARIES_INCLUDE` | Comma-separated list of libraries to include | `sync.libraries.include` | Legacy mode only |
+| `SYNC_LIBRARIES_EXCLUDE` | Comma-separated list of libraries to exclude | `sync.libraries.exclude` | Legacy mode only |
+
+> **💡 Tip**: For new installations, use the multi-user web interface instead of environment variables. Legacy environment variables are automatically migrated to the multi-user database on first startup.
 
 #### Volume Mounts
 

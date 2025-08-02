@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v3.0.0] - 2025-08-02
+
+### Added
+- **🎉 MAJOR: Multi-User Support**: Complete multi-user system with web interface and secure token management
+  - **Multi-User Database**: SQLite backend with encrypted token storage using AES-256-GCM encryption
+  - **Web Management Interface**: Modern, responsive web UI accessible at `http://localhost:8080`
+    - **Multi-Tab Interface**: Users, Sync Status, and Add User tabs for comprehensive management
+    - **Real-Time Monitoring**: Live sync status updates with auto-refresh every 5 seconds
+    - **User Management**: Create, edit, and delete users with individual configurations
+    - **Professional UI**: Modern design with toast notifications, modal dialogs, and responsive layout
+  - **REST API**: Complete RESTful API for programmatic user and sync management
+    - `GET /api/users` - List all users
+    - `POST /api/users` - Create new user
+    - `GET /api/users/{id}` - Get user details
+    - `PUT /api/users/{id}` - Update user information
+    - `DELETE /api/users/{id}` - Delete user
+    - `PUT /api/users/{id}/config` - Update user configuration
+    - `GET /api/users/{id}/status` - Get sync status
+    - `POST /api/users/{id}/sync` - Start sync operation
+    - `DELETE /api/users/{id}/sync` - Cancel sync operation
+    - `GET /api/status` - Get all user statuses
+  - **Security Features**:
+    - **Token Encryption**: All API tokens encrypted at rest with AES-256-GCM
+    - **User Isolation**: Complete separation of user data and sync states
+    - **Secure Key Management**: Auto-generated encryption keys with optional override via `ENCRYPTION_KEY`
+    - **Token Masking**: API responses mask sensitive tokens for security
+  - **Automatic Migration**: Seamless upgrade from single-user to multi-user configuration
+    - **Config Detection**: Automatically detects existing `config.yaml` files
+    - **Default User Creation**: Creates "Default User" from existing configuration
+    - **Backup Creation**: Original config backed up with timestamp
+    - **Zero Downtime**: Migration happens automatically on first startup
+  - **Concurrent Sync Support**: Multiple users can sync simultaneously with isolated progress tracking
+  - **Enhanced Environment Variables**:
+    - `ENCRYPTION_KEY` - Optional base64-encoded 32-byte encryption key
+    - `DATA_DIR` - Directory for database and encryption key files (default: `./data`)
+  - **Backwards Compatibility**: All existing single-user functionality preserved
+    - Legacy `/sync` endpoint maintained for existing integrations
+    - Environment variable configuration still supported
+    - Existing workflows continue to work unchanged
+
+### Changed
+- **📚 Enhanced Documentation**: Updated environment variables and endpoints documentation
+  - Legacy environment variables now clearly marked for single-user mode
+  - Complete API endpoint reference added to application help
+  - Multi-user setup and migration instructions
+- **🔧 Server Architecture**: Extended HTTP server to support both legacy and multi-user endpoints
+  - Static file serving for web UI with security protections
+  - Directory traversal protection for static assets
+  - Integrated API routing with proper HTTP method handling
+
+### Dependencies
+- **Added**: `gorm.io/gorm` v1.25.12 - ORM for database operations
+- **Added**: `gorm.io/driver/sqlite` v1.5.6 - SQLite driver for GORM
+
+### Migration Notes
+- **Automatic Migration**: Existing single-user setups will be automatically migrated to multi-user database on first startup
+- **Backup Safety**: Original `config.yaml` files are backed up before migration
+- **No Action Required**: Migration is completely automatic and maintains all existing functionality
+- **Web Interface**: After migration, access the new web interface at `http://localhost:8080`
+
 ## [v2.1.0] - 2025-08-01
 
 ### Added
