@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audiobookshelf-Hardcover Sync - Multi-User Management</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📚 Audiobookshelf-Hardcover Sync</h1>
+            <p>Multi-User Management Dashboard</p>
+        </header>
+
+        <nav class="tabs">
+            <button class="tab-button active" onclick="showTab('users')">Users</button>
+            <button class="tab-button" onclick="showTab('sync')">Sync Status</button>
+            <button class="tab-button" onclick="showTab('add-user')">Add User</button>
+        </nav>
+
+        <!-- Users Tab -->
+        <div id="users-tab" class="tab-content active">
+            <div class="section-header">
+                <h2>Manage Users</h2>
+                <button class="btn btn-primary" onclick="refreshUsers()">🔄 Refresh</button>
+            </div>
+            
+            <div id="users-list" class="users-grid">
+                <!-- Users will be loaded here -->
+            </div>
+        </div>
+
+        <!-- Sync Status Tab -->
+        <div id="sync-tab" class="tab-content">
+            <div class="section-header">
+                <h2>Sync Status</h2>
+                <button class="btn btn-primary" onclick="refreshStatus()">🔄 Refresh</button>
+            </div>
+            
+            <div id="sync-status" class="status-grid">
+                <!-- Sync statuses will be loaded here -->
+            </div>
+        </div>
+
+        <!-- Add User Tab -->
+        <div id="add-user-tab" class="tab-content">
+            <div class="section-header">
+                <h2>Add New User</h2>
+            </div>
+            
+            <form id="add-user-form" class="user-form">
+                <div class="form-group">
+                    <label for="user-id">User ID:</label>
+                    <input type="text" id="user-id" name="id" required placeholder="unique-user-id">
+                    <small>Must be unique and contain only letters, numbers, hyphens, and underscores</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="user-name">Display Name:</label>
+                    <input type="text" id="user-name" name="name" required placeholder="John Doe">
+                </div>
+
+                <div class="form-group">
+                    <label for="abs-url">Audiobookshelf URL:</label>
+                    <input type="url" id="abs-url" name="audiobookshelf_url" required placeholder="https://your-audiobookshelf.com">
+                </div>
+
+                <div class="form-group">
+                    <label for="abs-token">Audiobookshelf Token:</label>
+                    <input type="password" id="abs-token" name="audiobookshelf_token" required placeholder="Your ABS API token">
+                    <button type="button" class="btn-toggle-password" onclick="togglePassword('abs-token')">👁️</button>
+                </div>
+
+                <div class="form-group">
+                    <label for="hc-token">Hardcover Token:</label>
+                    <input type="password" id="hc-token" name="hardcover_token" required placeholder="Your Hardcover API token">
+                    <button type="button" class="btn-toggle-password" onclick="togglePassword('hc-token')">👁️</button>
+                </div>
+
+                <div class="form-section">
+                    <h3>Sync Configuration</h3>
+                    
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="incremental" name="incremental" checked>
+                            Enable Incremental Sync
+                        </label>
+                        <small>Only sync books that have changed since last sync</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="sync-interval">Sync Interval:</label>
+                        <select id="sync-interval" name="sync_interval">
+                            <option value="1h">1 Hour</option>
+                            <option value="2h">2 Hours</option>
+                            <option value="6h">6 Hours</option>
+                            <option value="12h">12 Hours</option>
+                            <option value="24h">24 Hours</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="minimum-progress">Minimum Progress (0.0-1.0):</label>
+                        <input type="number" id="minimum-progress" name="minimum_progress" min="0" max="1" step="0.01" value="0.01">
+                        <small>Minimum progress threshold to sync a book</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="sync-want-to-read" name="sync_want_to_read" checked>
+                            Sync "Want to Read" books (0% progress)
+                        </label>
+                    </div>
+
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="sync-owned" name="sync_owned" checked>
+                            Mark synced books as owned in Hardcover
+                        </label>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="include-libraries">Include Libraries (comma-separated):</label>
+                        <input type="text" id="include-libraries" name="include_libraries" placeholder="Audiobooks, Fiction">
+                        <small>Leave empty to include all libraries</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="exclude-libraries">Exclude Libraries (comma-separated):</label>
+                        <input type="text" id="exclude-libraries" name="exclude_libraries" placeholder="Podcasts, Magazines">
+                        <small>Libraries to exclude from sync</small>
+                    </div>
+                </div>
+
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">Create User</button>
+                    <button type="reset" class="btn btn-secondary">Reset Form</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- User Edit Modal -->
+    <div id="edit-user-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Edit User</h3>
+                <button class="modal-close" onclick="closeEditModal()">&times;</button>
+            </div>
+            <form id="edit-user-form" class="user-form">
+                <input type="hidden" id="edit-user-id" name="id">
+                
+                <div class="form-group">
+                    <label for="edit-user-name">Display Name:</label>
+                    <input type="text" id="edit-user-name" name="name" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="edit-abs-url">Audiobookshelf URL:</label>
+                    <input type="url" id="edit-abs-url" name="audiobookshelf_url" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="edit-abs-token">Audiobookshelf Token:</label>
+                    <input type="password" id="edit-abs-token" name="audiobookshelf_token" placeholder="Leave empty to keep current token">
+                    <button type="button" class="btn-toggle-password" onclick="togglePassword('edit-abs-token')">👁️</button>
+                </div>
+
+                <div class="form-group">
+                    <label for="edit-hc-token">Hardcover Token:</label>
+                    <input type="password" id="edit-hc-token" name="hardcover_token" placeholder="Leave empty to keep current token">
+                    <button type="button" class="btn-toggle-password" onclick="togglePassword('edit-hc-token')">👁️</button>
+                </div>
+
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">Update User</button>
+                    <button type="button" class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="loading-overlay">
+        <div class="loading-spinner"></div>
+        <p>Loading...</p>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <script src="app.js"></script>
+</body>
+</html>

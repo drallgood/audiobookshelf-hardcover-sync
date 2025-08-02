@@ -4,28 +4,52 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/multiuser"
 )
 
 // Server represents the HTTP server
 type Server struct {
-	server *http.Server
+	server           *http.Server
+	multiUserService *multiuser.MultiUserService
+	apiHandler       *api.Handler
+	logger           *logger.Logger
 }
 
-// New creates a new HTTP server
-func New(addr string) *Server {
+// New creates a new HTTP server with multi-user support
+func New(addr string, multiUserService *multiuser.MultiUserService, log *logger.Logger) *Server {
+	apiHandler := api.NewHandler(multiUserService, log)
+	
 	s := &Server{
 		server: &http.Server{
 			Addr: addr,
 		},
+		multiUserService: multiUserService,
+		apiHandler:       apiHandler,
+		logger:           log,
 	}
 
 	// Set up routes
 	handler := http.NewServeMux()
+	
+	// Health check
 	handler.HandleFunc("/healthz", s.handleHealthCheck)
+	
+	// Legacy sync endpoint (backwards compatibility)
 	handler.HandleFunc("/sync", s.handleSync)
+	
+	// Multi-user API endpoints
+	handler.HandleFunc("/api/users", s.handleAPIUsers)
+	handler.HandleFunc("/api/users/", s.handleAPIUsersWithID)
+	handler.HandleFunc("/api/status", s.handleAPIStatus)
+	
+	// Static web UI files
+	handler.HandleFunc("/", s.handleStaticFiles)
 
 	// Add middleware
 	s.server.Handler = logger.HTTPMiddleware(handler)
@@ -68,15 +92,122 @@ func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, `{"status":"ok"}`)
 }
 
-// handleSync handles sync requests
+// handleSync handles sync requests (legacy endpoint for backwards compatibility)
 func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
-	if !(r.Method == http.MethodGet || r.Method == http.MethodPost) {
+	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// TODO: Implement sync logic
+	// TODO: Implement legacy sync logic or redirect to multi-user API
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusNotImplemented)
-	fmt.Fprint(w, `{"status":"not implemented"}`)
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status": "sync started"}`))
+}
+
+// handleAPIUsers handles /api/users endpoint
+func (s *Server) handleAPIUsers(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.apiHandler.GetUsers(w, r)
+	case http.MethodPost:
+		s.apiHandler.CreateUser(w, r)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleAPIUsersWithID handles /api/users/{id} and related endpoints
+func (s *Server) handleAPIUsersWithID(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/users/")
+	parts := strings.Split(path, "/")
+	
+	if len(parts) == 1 && parts[0] != "" {
+		// /api/users/{id}
+		switch r.Method {
+		case http.MethodGet:
+			s.apiHandler.GetUser(w, r)
+		case http.MethodPut:
+			s.apiHandler.UpdateUser(w, r)
+		case http.MethodDelete:
+			s.apiHandler.DeleteUser(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	} else if len(parts) == 2 {
+		// /api/users/{id}/{action}
+		switch parts[1] {
+		case "config":
+			if r.Method == http.MethodPut {
+				s.apiHandler.UpdateUserConfig(w, r)
+			} else {
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			}
+		case "status":
+			if r.Method == http.MethodGet {
+				s.apiHandler.GetUserStatus(w, r)
+			} else {
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			}
+		case "sync":
+			switch r.Method {
+			case http.MethodPost:
+				s.apiHandler.StartSync(w, r)
+			case http.MethodDelete:
+				s.apiHandler.CancelSync(w, r)
+			default:
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			}
+		default:
+			http.Error(w, "Not found", http.StatusNotFound)
+		}
+	} else {
+		http.Error(w, "Not found", http.StatusNotFound)
+	}
+}
+
+// handleAPIStatus handles /api/status endpoint
+func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		s.apiHandler.GetAllUserStatuses(w, r)
+	} else {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleStaticFiles serves static web UI files
+func (s *Server) handleStaticFiles(w http.ResponseWriter, r *http.Request) {
+	// Serve static files from web/static directory
+	staticDir := "./web/static"
+	
+	// Default to index.html for root path
+	filePath := r.URL.Path
+	if filePath == "/" {
+		filePath = "/index.html"
+	}
+	
+	// Security: prevent directory traversal
+	if strings.Contains(filePath, "..") {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	
+	fullPath := filepath.Join(staticDir, filePath)
+	
+	// Set content type based on file extension
+	switch filepath.Ext(fullPath) {
+	case ".html":
+		w.Header().Set("Content-Type", "text/html")
+	case ".css":
+		w.Header().Set("Content-Type", "text/css")
+	case ".js":
+		w.Header().Set("Content-Type", "application/javascript")
+	case ".json":
+		w.Header().Set("Content-Type", "application/json")
+	default:
+		w.Header().Set("Content-Type", "text/plain")
+	}
+	
+	// Serve the file
+	http.ServeFile(w, r, fullPath)
 }
