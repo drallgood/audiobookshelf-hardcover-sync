@@ -5,15 +5,112 @@ class MultiUserApp {
         this.statuses = {};
         this.currentEditUser = null;
         this.refreshInterval = null;
+        this.currentUser = null;
+        this.authEnabled = false;
         
         this.init();
     }
 
-    init() {
+    async init() {
+        await this.checkAuthStatus();
         this.setupEventListeners();
         this.loadUsers();
         this.loadStatuses();
         this.startAutoRefresh();
+    }
+
+    async checkAuthStatus() {
+        try {
+            // Check if authentication is enabled by trying to access a protected endpoint
+            const response = await fetch('/api/status', {
+                method: 'GET',
+                credentials: 'include'
+            });
+            
+            if (response.status === 401) {
+                // Authentication is enabled and user is not authenticated
+                this.authEnabled = true;
+                this.redirectToLogin();
+                return;
+            } else if (response.ok) {
+                // Either auth is disabled or user is authenticated
+                this.authEnabled = response.headers.get('X-Auth-Enabled') === 'true';
+                if (this.authEnabled) {
+                    await this.loadCurrentUser();
+                }
+            }
+        } catch (error) {
+            console.error('Error checking auth status:', error);
+        }
+        
+        this.updateUserInfo();
+    }
+
+    async loadCurrentUser() {
+        try {
+            const response = await fetch('/api/auth/me', {
+                method: 'GET',
+                credentials: 'include'
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    this.currentUser = data.data;
+                }
+            } else if (response.status === 401) {
+                // User is not authenticated
+                this.currentUser = null;
+                this.redirectToLogin();
+            }
+        } catch (error) {
+            console.error('Error loading current user:', error);
+            this.currentUser = null;
+        }
+    }
+
+    redirectToLogin() {
+        const currentPath = window.location.pathname + window.location.search;
+        window.location.href = `/auth/login?redirect=${encodeURIComponent(currentPath)}`;
+    }
+
+    updateUserInfo() {
+        const userInfoElement = document.getElementById('user-info');
+        if (!userInfoElement) return;
+
+        if (this.authEnabled && this.currentUser) {
+            userInfoElement.innerHTML = `
+                <div class="user-info">
+                    <div class="user-avatar">${this.currentUser.username.charAt(0).toUpperCase()}</div>
+                    <span>${this.currentUser.username}</span>
+                </div>
+                <button class="logout-btn" onclick="app.logout()">Logout</button>
+            `;
+        } else if (this.authEnabled) {
+            userInfoElement.innerHTML = `
+                <button class="logout-btn" onclick="app.redirectToLogin()">Login</button>
+            `;
+        } else {
+            userInfoElement.innerHTML = '';
+        }
+    }
+
+    async logout() {
+        try {
+            const response = await fetch('/auth/logout', {
+                method: 'POST',
+                credentials: 'include'
+            });
+            
+            if (response.ok) {
+                window.location.href = '/auth/login';
+            } else {
+                this.showToast('Logout failed', 'error');
+            }
+        } catch (error) {
+            console.error('Logout error:', error);
+            this.showToast('Logout failed', 'error');
+        }
     }
 
     setupEventListeners() {

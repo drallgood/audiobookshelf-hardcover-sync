@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/auth"
 	appLogger "github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 )
 
@@ -83,6 +84,9 @@ func (d *Database) migrate() error {
 		&User{},
 		&UserConfig{},
 		&SyncState{},
+		&auth.AuthUser{},
+		&auth.AuthSession{},
+		&auth.AuthProvider{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to auto-migrate: %w", err)

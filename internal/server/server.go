@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/auth"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/multiuser"
 )
@@ -18,12 +19,19 @@ type Server struct {
 	server           *http.Server
 	multiUserService *multiuser.MultiUserService
 	apiHandler       *api.Handler
+	authService      *auth.AuthService
+	authHandlers     *auth.AuthHandlers
+	authMiddleware   *auth.AuthMiddleware
 	logger           *logger.Logger
 }
 
-// New creates a new HTTP server with multi-user support
-func New(addr string, multiUserService *multiuser.MultiUserService, log *logger.Logger) *Server {
+// New creates a new HTTP server with multi-user and authentication support
+func New(addr string, multiUserService *multiuser.MultiUserService, authService *auth.AuthService, log *logger.Logger) *Server {
 	apiHandler := api.NewHandler(multiUserService, log)
+	
+	// Initialize authentication handlers and middleware
+	authHandlers := auth.NewAuthHandlers(authService, log)
+	authMiddleware := authService.GetMiddleware()
 	
 	s := &Server{
 		server: &http.Server{
@@ -31,28 +39,41 @@ func New(addr string, multiUserService *multiuser.MultiUserService, log *logger.
 		},
 		multiUserService: multiUserService,
 		apiHandler:       apiHandler,
+		authService:      authService,
+		authHandlers:     authHandlers,
+		authMiddleware:   authMiddleware,
 		logger:           log,
 	}
 
 	// Set up routes
 	handler := http.NewServeMux()
 	
-	// Health check
+	// Health check (no auth required)
 	handler.HandleFunc("/healthz", s.handleHealthCheck)
 	
-	// Legacy sync endpoint (backwards compatibility)
+	// Authentication endpoints (no auth required for login)
+	handler.HandleFunc("/auth/login", s.authHandlers.HandleLogin)
+	handler.HandleFunc("/auth/logout", s.authHandlers.HandleLogout)
+	handler.HandleFunc("/auth/callback/", s.authHandlers.HandleOAuthCallback)
+	handler.HandleFunc("/auth/oauth/", s.authHandlers.HandleOAuthLogin)
+	
+	// Legacy sync endpoint (backwards compatibility, no auth for now)
 	handler.HandleFunc("/sync", s.handleSync)
 	
-	// Multi-user API endpoints
-	handler.HandleFunc("/api/users", s.handleAPIUsers)
-	handler.HandleFunc("/api/users/", s.handleAPIUsersWithID)
-	handler.HandleFunc("/api/status", s.handleAPIStatus)
+	// Protected Multi-user API endpoints
+	handler.Handle("/api/users", s.authMiddleware.RequireAuth(http.HandlerFunc(s.handleAPIUsers)))
+	handler.Handle("/api/users/", s.authMiddleware.RequireAuth(http.HandlerFunc(s.handleAPIUsersWithID)))
+	handler.Handle("/api/status", s.authMiddleware.RequireAuth(http.HandlerFunc(s.handleAPIStatus)))
+	handler.Handle("/api/auth/me", s.authMiddleware.RequireAuth(http.HandlerFunc(s.apiHandler.HandleCurrentUser)))
 	
-	// Static web UI files
-	handler.HandleFunc("/", s.handleStaticFiles)
+	// Protected static web UI files
+	handler.Handle("/", s.authMiddleware.OptionalAuth(http.HandlerFunc(s.handleStaticFiles)))
 
-	// Add middleware
-	s.server.Handler = logger.HTTPMiddleware(handler)
+	// Add middleware chain: CORS -> Auth -> Logger
+	var finalHandler http.Handler = handler
+	finalHandler = s.authMiddleware.CORSMiddleware(finalHandler)
+	finalHandler = logger.HTTPMiddleware(finalHandler)
+	s.server.Handler = finalHandler
 
 	// Set timeouts
 	s.server.ReadTimeout = 10 * time.Second

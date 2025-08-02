@@ -85,12 +85,34 @@ The project follows standard Go project layout:
 ├── cmd/                          # Main application entry points
 │   └── audiobookshelf-hardcover-sync/  # Main application
 ├── internal/                     # Private application code
-│   ├── api/                      # API clients
+│   ├── api/                      # Multi-user API handlers
 │   │   ├── audiobookshelf/       # Audiobookshelf API client
-│   │   └── hardcover/            # Hardcover API client
+│   │   ├── hardcover/            # Hardcover API client
+│   │   └── handlers.go           # REST API endpoints
+│   ├── auth/                     # Authentication system
+│   │   ├── handlers.go           # Auth HTTP handlers (login/logout)
+│   │   ├── local.go              # Local username/password provider
+│   │   ├── middleware.go         # Auth middleware and RBAC
+│   │   ├── models.go             # User, session, provider models
+│   │   ├── oidc.go               # Keycloak/OIDC provider
+│   │   ├── provider.go           # Auth provider interface
+│   │   ├── repository.go         # Database operations
+│   │   ├── service.go            # Auth service orchestration
+│   │   └── session.go            # Session management
 │   ├── config/                   # Configuration loading and validation
+│   ├── crypto/                   # Encryption utilities
+│   │   └── encryption.go         # AES-256-GCM token encryption
+│   ├── database/                 # Database layer
+│   │   ├── database.go           # Connection management
+│   │   ├── migration.go          # Single-user to multi-user migration
+│   │   ├── models.go             # User, config, sync state models
+│   │   └── repository.go         # CRUD operations
 │   ├── logger/                   # Structured logging
 │   ├── models/                   # Data structures
+│   ├── multiuser/                # Multi-user service
+│   │   └── service.go            # User management and sync orchestration
+│   ├── server/                   # HTTP server
+│   │   └── server.go             # Routing and middleware setup
 │   ├── services/                 # Business logic
 │   ├── sync/                     # Sync logic
 │   └── utils/                    # Utility functions
@@ -98,6 +120,17 @@ The project follows standard Go project layout:
 │   ├── cache/                    # Caching implementation
 │   ├── edition/                  # Edition creation logic
 │   └── mismatch/                 # Mismatch detection
+├── web/                          # Web UI assets
+│   └── static/                   # Static files
+│       ├── app.js                # Multi-user management JavaScript
+│       ├── index.html            # Web dashboard
+│       ├── login.html            # Authentication login page
+│       └── styles.css            # Modern responsive styling
+├── docs/                         # Documentation
+│   ├── AUTHENTICATION.md        # Authentication setup guide
+│   └── helm-chart-publishing.md  # Helm deployment guide
+├── helm/                         # Kubernetes Helm chart
+│   └── audiobookshelf-hardcover-sync/
 └── test/                         # Test files
     ├── testdata/                 # Test data
     ├── unit/                     # Unit tests
@@ -330,6 +363,68 @@ For Kubernetes deployments, use the official Helm chart:
    ```
 
 For detailed Helm chart configuration options, see the [Helm Chart Documentation](docs/helm-chart-publishing.md).
+
+## Authentication
+
+Version 3.0.0 introduces optional authentication support for securing the web UI and API endpoints.
+
+### Quick Start
+
+To enable authentication with a default admin user:
+
+```bash
+# Enable authentication
+export AUTH_ENABLED=true
+
+# Set session secret (required)
+export AUTH_SESSION_SECRET="your-secure-random-secret-key-here"
+
+# Optional: Configure default admin user
+export AUTH_DEFAULT_ADMIN_USERNAME="admin"
+export AUTH_DEFAULT_ADMIN_EMAIL="admin@localhost"
+export AUTH_DEFAULT_ADMIN_PASSWORD="changeme"
+```
+
+After enabling authentication:
+1. Access the web UI at `http://localhost:8080`
+2. Login with the default admin credentials
+3. **Important**: Change the default password immediately!
+
+### Authentication Providers
+
+#### Local Authentication
+- Username/password with bcrypt hashing
+- Secure session management
+- Role-based access control
+
+#### Keycloak/OIDC Integration
+- OpenID Connect support
+- Automatic user provisioning
+- Role mapping from JWT claims
+
+```bash
+# Keycloak configuration
+export KEYCLOAK_ISSUER="https://your-keycloak.example.com/realms/your-realm"
+export KEYCLOAK_CLIENT_ID="audiobookshelf-hardcover-sync"
+export KEYCLOAK_CLIENT_SECRET="your-client-secret"
+export KEYCLOAK_REDIRECT_URI="https://your-app.example.com/auth/callback/oidc"
+```
+
+### User Roles
+
+- **Admin**: Full access, user management, system configuration
+- **User**: Sync functionality, personal configurations
+- **Viewer**: Read-only access to sync status
+
+### Security Features
+
+- HTTP-only secure cookies
+- CSRF protection
+- Session expiration and cleanup
+- Password strength validation
+- Token encryption at rest
+
+For detailed authentication setup and configuration, see the [Authentication Guide](docs/AUTHENTICATION.md).
 
 ### Configuration Reference
 

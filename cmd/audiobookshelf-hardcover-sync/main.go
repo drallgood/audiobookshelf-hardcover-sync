@@ -14,6 +14,7 @@ import (
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/auth"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/crypto"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
@@ -178,8 +179,35 @@ func main() {
 	// Create multi-user service
 	multiUserService := multiuser.NewMultiUserService(repo, cfg, log)
 	
-	// Create HTTP server with multi-user support
-	srv := server.New(fmt.Sprintf(":%s", cfg.Server.Port), multiUserService, log)
+	// Initialize authentication system
+	log.Info("Initializing authentication system", nil)
+	authConfig := auth.LoadConfigFromEnv()
+	authService, err := auth.NewAuthService(db.GetDB(), authConfig)
+	if err != nil {
+		log.Error("Failed to initialize authentication service", map[string]interface{}{
+			"error": err.Error(),
+		})
+		os.Exit(1)
+	}
+	
+	// Initialize default admin user if authentication is enabled and no users exist
+	if authConfig.Enabled {
+		if err := authService.InitializeDefaultUser(ctx); err != nil {
+			log.Error("Failed to initialize default admin user", map[string]interface{}{
+				"error": err.Error(),
+			})
+			// Don't exit - this is not critical
+		}
+		log.Info("Authentication system initialized", map[string]interface{}{
+			"enabled": authConfig.Enabled,
+			"providers": len(authConfig.Providers),
+		})
+	} else {
+		log.Info("Authentication system disabled", nil)
+	}
+	
+	// Create HTTP server with multi-user and authentication support
+	srv := server.New(fmt.Sprintf(":%s", cfg.Server.Port), multiUserService, authService, log)
 	
 	// For backwards compatibility, create legacy sync service if in single-user mode
 	var syncService *sync.Service

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/auth"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/multiuser"
@@ -401,4 +402,36 @@ func (h *Handler) extractUserIDFromSyncPath(path string) string {
 		return parts[2]
 	}
 	return ""
+}
+
+// HandleCurrentUser returns information about the currently authenticated user
+func (h *Handler) HandleCurrentUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		h.writeErrorResponse(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	// Get user from context (set by auth middleware)
+	user, ok := auth.GetUserFromRequest(r)
+	if !ok {
+		h.writeErrorResponse(w, http.StatusUnauthorized, "User not authenticated")
+		return
+	}
+
+	// Return user info (without sensitive data)
+	userInfo := map[string]interface{}{
+		"id":       user.ID,
+		"username": user.Username,
+		"email":    user.Email,
+		"role":     user.Role,
+		"provider": user.Provider,
+		"active":   user.Active,
+	}
+
+	response := APIResponse{
+		Success: true,
+		Data:    userInfo,
+	}
+
+	h.writeJSONResponse(w, http.StatusOK, response)
 }
