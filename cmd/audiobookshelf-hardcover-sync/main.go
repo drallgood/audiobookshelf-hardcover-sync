@@ -15,7 +15,10 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/crypto"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/multiuser"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/server"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 )
@@ -25,9 +28,9 @@ import (
 // reading progress, book status, and ownership information.
 //
 // Environment Variables:
-//   AUDIOBOOKSHELF_URL      URL to your AudiobookShelf server
-//   AUDIOBOOKSHELF_TOKEN    API token for AudiobookShelf
-//   HARDCOVER_TOKEN         API token for Hardcover
+//   AUDIOBOOKSHELF_URL      URL to your AudiobookShelf server (legacy single-user mode)
+//   AUDIOBOOKSHELF_TOKEN    API token for AudiobookShelf (legacy single-user mode)
+//   HARDCOVER_TOKEN         API token for Hardcover (legacy single-user mode)
 //   SYNC_INTERVAL           (optional) Go duration string for periodic sync (e.g., "10m", "1h")
 //   LOG_LEVEL               (optional) Log level (debug, info, warn, error, fatal, panic)
 //   DRY_RUN                 (optional) If set to true, no changes will be made to Hardcover
@@ -35,10 +38,20 @@ import (
 //   SYNC_OWNED              (optional) Mark synced books as owned in Hardcover (default: true)
 //   MINIMUM_PROGRESS_THRESHOLD (optional) Minimum progress threshold for syncing (0.0 to 1.0, default: 0.01)
 //   HARDCOVER_RATE_LIMIT    (optional) Maximum number of API requests per second (default: 10)
+//   ENCRYPTION_KEY          (optional) Base64-encoded 32-byte key for token encryption (auto-generated if not set)
+//   DATA_DIR                (optional) Directory for database and encryption key files (default: ./data)
 //
 // Endpoints:
 //   GET /healthz           # Health check
-//   POST/GET /sync         # Trigger a sync
+//   POST/GET /sync         # Trigger a sync (legacy single-user mode)
+//   GET /                  # Multi-user web interface
+//   GET /api/users         # List all users
+//   POST /api/users        # Create a new user
+//   PUT /api/users/:id     # Update user configuration
+//   DELETE /api/users/:id  # Delete a user
+//   POST /api/users/:id/sync/start  # Start sync for a user
+//   POST /api/users/:id/sync/cancel # Cancel sync for a user
+//   GET /api/users/:id/sync/status  # Get sync status for a user
 
 var (
 	version = "dev" // Set during build
@@ -127,26 +140,67 @@ func main() {
 	abortCh := make(chan struct{})
 	errCh := make(chan error, 1)
 
-	// Create HTTP server with configured port
-	srv := server.New(fmt.Sprintf(":%s", cfg.Server.Port))
-
-	// Create API clients
-	audiobookshelfClient := audiobookshelf.NewClient(cfg.Audiobookshelf.URL, cfg.Audiobookshelf.Token)
-	// Get the global logger instance and pass it to the Hardcover client
-	logInstance := logger.Get()
-	hardcoverClient := hardcover.NewClient(cfg.Hardcover.Token, logInstance)
-
-	// Create sync service
-	syncService, err := sync.NewService(
-		audiobookshelfClient,
-		hardcoverClient,
-		cfg,
-	)
+	// Initialize multi-user system
+	log.Info("Initializing multi-user system", nil)
+	
+	// Set up database
+	dbPath := database.GetDefaultDatabasePath()
+	db, err := database.NewDatabase(dbPath, log)
 	if err != nil {
-		log.Error("Failed to create sync service", map[string]interface{}{
+		log.Error("Failed to initialize database", map[string]interface{}{
 			"error": err.Error(),
 		})
 		os.Exit(1)
+	}
+	defer db.Close()
+	
+	// Set up encryption
+	encryptor, err := crypto.NewEncryptionManager(log)
+	if err != nil {
+		log.Error("Failed to initialize encryption", map[string]interface{}{
+			"error": err.Error(),
+		})
+		os.Exit(1)
+	}
+	
+	// Set up repository
+	repo := database.NewRepository(db, encryptor, log)
+	
+	// Perform automatic migration from single-user config if needed
+	configPath := database.GetDefaultConfigPath()
+	if err := database.AutoMigrate(dbPath, configPath, log); err != nil {
+		log.Error("Failed to perform migration", map[string]interface{}{
+			"error": err.Error(),
+		})
+		os.Exit(1)
+	}
+	
+	// Create multi-user service
+	multiUserService := multiuser.NewMultiUserService(repo, cfg, log)
+	
+	// Create HTTP server with multi-user support
+	srv := server.New(fmt.Sprintf(":%s", cfg.Server.Port), multiUserService, log)
+	
+	// For backwards compatibility, create legacy sync service if in single-user mode
+	var syncService *sync.Service
+	if !flags.serverOnly {
+		// Create API clients for legacy sync
+		audiobookshelfClient := audiobookshelf.NewClient(cfg.Audiobookshelf.URL, cfg.Audiobookshelf.Token)
+		hardcoverClient := hardcover.NewClient(cfg.Hardcover.Token, log)
+		
+		// Create sync service for backwards compatibility
+		syncService, err = sync.NewService(
+			audiobookshelfClient,
+			hardcoverClient,
+			cfg,
+		)
+		if err != nil {
+			log.Error("Failed to create legacy sync service", map[string]interface{}{
+				"error": err.Error(),
+			})
+			// Don't exit - multi-user system can still work
+			log.Warn("Legacy sync disabled, multi-user system available via web UI", nil)
+		}
 	}
 
 	// Start the HTTP server
@@ -162,15 +216,22 @@ func main() {
 	}()
 
 	// Start periodic sync if enabled and not in server-only mode
-	if !flags.serverOnly && cfg.App.SyncInterval > 0 {
+	if !flags.serverOnly && cfg.App.SyncInterval > 0 && syncService != nil {
 		// Use the sync interval from config unless overridden by command line flag
 		syncInterval := cfg.App.SyncInterval
 		if flags.syncInterval >= 0 {
 			syncInterval = flags.syncInterval
 		}
+		log.Info("Starting legacy periodic sync (consider using multi-user web UI)", map[string]interface{}{
+			"interval": syncInterval.String(),
+		})
 		StartPeriodicSync(ctx, syncService, abortCh, syncInterval)
 	} else if !flags.serverOnly {
-		log.Info("Periodic sync is disabled (set SYNC_INTERVAL to enable)", nil)
+		if syncService == nil {
+			log.Info("Legacy sync unavailable - use multi-user web UI for sync operations", nil)
+		} else {
+			log.Info("Periodic sync is disabled (set SYNC_INTERVAL to enable)", nil)
+		}
 	}
 
 	// Wait for shutdown signal or error

@@ -3,16 +3,15 @@ package multiuser
 import (
 	"context"
 	"fmt"
-	"sync"
+	stdSync "sync"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/crypto"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/service"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 )
 
 // UserSyncStatus represents the sync status for a user
@@ -33,9 +32,9 @@ type MultiUserService struct {
 	logger        *logger.Logger
 	globalConfig  *config.Config
 	userStatuses  map[string]*UserSyncStatus
-	statusMutex   sync.RWMutex
+	statusMutex   stdSync.RWMutex
 	activeSyncs   map[string]context.CancelFunc
-	syncMutex     sync.RWMutex
+	syncMutex     stdSync.RWMutex
 }
 
 // NewMultiUserService creates a new multi-user service
@@ -229,11 +228,11 @@ func (s *MultiUserService) performSync(ctx context.Context, userID string, userC
 	userSpecificConfig := s.createUserSpecificConfig(userConfig)
 	
 	// Create clients
-	absClient := audiobookshelf.NewClient(userConfig.AudiobookshelfURL, userConfig.AudiobookshelfToken, s.logger)
+	absClient := audiobookshelf.NewClient(userConfig.AudiobookshelfURL, userConfig.AudiobookshelfToken)
 	hcClient := hardcover.NewClient(userConfig.HardcoverToken, s.logger)
 	
 	// Create sync service
-	syncService, err := service.NewService(userSpecificConfig, absClient, hcClient, s.logger)
+	syncService, err := sync.NewService(absClient, hcClient, userSpecificConfig)
 	if err != nil {
 		s.updateUserStatus(userID, &UserSyncStatus{
 			UserID: userID,
