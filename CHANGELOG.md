@@ -46,6 +46,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Legacy `/sync` endpoint maintained for existing integrations
     - Environment variable configuration still supported
     - Existing workflows continue to work unchanged
+- **🔐 MAJOR: Authentication & Authorization System**: Comprehensive security framework with multi-provider support
+  - **Authentication Providers**:
+    - **Local Authentication**: Username/password with bcrypt hashing and secure session management
+    - **Keycloak/OIDC Integration**: Full OpenID Connect support with automatic user provisioning
+    - **Multi-Provider Support**: Mix local and external authentication seamlessly
+  - **Role-Based Access Control**: Three-tier permission system
+    - **Admin**: Full access, user management, system configuration
+    - **User**: Sync functionality, personal configurations, status monitoring
+    - **Viewer**: Read-only access to sync status and logs
+  - **Security Infrastructure**:
+    - **Session Management**: HTTP-only secure cookies with CSRF protection
+    - **Token Encryption**: AES-256-GCM encryption for sensitive data at rest
+    - **Password Security**: Bcrypt hashing with proper salt rounds
+    - **Session Validation**: Client IP and User-Agent tracking with expiration
+  - **Authentication Endpoints**:
+    - `GET /auth/login` - Login page with provider selection
+    - `POST /auth/login` - Local username/password authentication
+    - `GET /auth/oauth/oidc` - Initiate OIDC authentication flow
+    - `GET /auth/callback/oidc` - OIDC callback handler with role mapping
+    - `POST /auth/logout` - Secure logout with session cleanup
+    - `GET /api/auth/me` - Current authenticated user information
+  - **Web UI Integration**:
+    - **Authentication-Aware Interface**: Dynamic user info display and login/logout flows
+    - **Session Management**: Automatic authentication checks and login redirects
+    - **Modern Login Page**: Responsive design with provider selection and error handling
+    - **User Context**: Header displays current user with avatar and logout button
+  - **Configuration**:
+    - **Environment Variables**: Complete auth configuration via environment variables
+    - **Default Admin User**: Automatic admin user creation when no users exist
+    - **Keycloak Setup**: Full integration guide with client configuration and role mapping
+    - **Optional Authentication**: Disabled by default, enable with `AUTH_ENABLED=true`
+  - **Database Schema**: Extended multi-user database with authentication models
+    - **Users Table**: User accounts with roles, providers, and activity tracking
+    - **Sessions Table**: Secure session storage with expiration and cleanup
+    - **Auth Providers Table**: External authentication provider configurations
+  - **Production Ready**: Enterprise-grade security with comprehensive documentation
+    - **Security Checklist**: Production deployment guidelines and best practices
+    - **Troubleshooting Guide**: Common issues and debugging instructions
+    - **API Documentation**: Complete authentication API reference
 
 ### Changed
 - **📚 Enhanced Documentation**: Updated environment variables and endpoints documentation
@@ -60,6 +99,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Dependencies
 - **Added**: `gorm.io/gorm` v1.25.12 - ORM for database operations
 - **Added**: `gorm.io/driver/sqlite` v1.5.6 - SQLite driver for GORM
+- **Added**: `golang.org/x/crypto/bcrypt` - Secure password hashing for local authentication
+- **Added**: `github.com/golang-jwt/jwt/v5` - JWT parsing and validation for OIDC integration
 
 ### Migration Notes
 - **Automatic Migration**: Existing single-user setups will be automatically migrated to multi-user database on first startup
