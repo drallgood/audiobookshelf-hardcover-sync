@@ -128,14 +128,59 @@ tolerations: []
 
 affinity: {}
 
+# Database Configuration
+# Supports SQLite (default), PostgreSQL, MySQL/MariaDB with automatic fallback
+database:
+  # Database type: sqlite, postgresql, mysql, mariadb
+  type: sqlite
+  
+  # SQLite configuration (default)
+  sqlite:
+    # Custom path for SQLite database file (optional)
+    # If not specified, uses default: /app/data/database.db
+    path: ""
+  
+  # PostgreSQL configuration
+  postgresql:
+    host: "localhost"
+    port: 5432
+    database: "audiobookshelf_sync"
+    username: "sync_user"
+    # Password should be set via existingSecret or password field
+    password: ""
+    sslMode: "prefer"  # disable, allow, prefer, require, verify-ca, verify-full
+    
+  # MySQL/MariaDB configuration  
+  mysql:
+    host: "localhost"
+    port: 3306
+    database: "audiobookshelf_sync"
+    username: "sync_user"
+    # Password should be set via existingSecret or password field
+    password: ""
+    
+  # Connection pool settings (for PostgreSQL and MySQL)
+  connectionPool:
+    maxOpenConns: 25
+    maxIdleConns: 5
+    connMaxLifetime: 60  # minutes
+    
+  # Use existing secret for database credentials
+  # Secret should contain keys: DATABASE_PASSWORD
+  # For PostgreSQL/MySQL: DATABASE_USER, DATABASE_PASSWORD
+  existingSecret: ""
+  
+  # Create a secret with database credentials (not recommended for production)
+  createSecret: false
+
 # Persistence configuration
 persistence:
-  enabled: false
-  # existingClaim: ""
-  storageClass: ""
+  enabled: true
+  # storageClass: "-"
   accessMode: ReadWriteOnce
   size: 1Gi
-  annotations: {}
+  # existingClaim: ""
+  # annotations: {}
 
 # Application configuration
 config:

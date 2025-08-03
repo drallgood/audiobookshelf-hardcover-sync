@@ -4,11 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/auth"
 	appLogger "github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
@@ -17,45 +14,27 @@ import (
 // Database wraps the GORM database connection
 type Database struct {
 	db     *gorm.DB
+	config *DatabaseConfig
 	logger *appLogger.Logger
 }
 
-// NewDatabase creates a new database connection
-func NewDatabase(dbPath string, log *appLogger.Logger) (*Database, error) {
-	// Ensure the directory exists
-	dir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create database directory: %w", err)
+// NewDatabase creates a new database connection using the provided configuration
+func NewDatabase(config *DatabaseConfig, log *appLogger.Logger) (*Database, error) {
+	if config == nil {
+		// Use environment-based configuration with SQLite fallback
+		config = GetDatabaseConfigFromEnv()
 	}
 
-	// Configure GORM logger
-	gormLogger := logger.Default
-	if log != nil {
-		// Set GORM log level based on our logger level
-		gormLogger = logger.Default.LogMode(logger.Silent) // We'll handle logging ourselves
-	}
-
-	// Open database connection
-	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{
-		Logger: gormLogger,
-	})
+	// Connect with fallback to SQLite
+	db, actualConfig, err := ConnectWithFallback(config, log)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	// Configure connection pool
-	sqlDB, err := db.DB()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get underlying sql.DB: %w", err)
-	}
-
-	// SQLite specific settings
-	sqlDB.SetMaxOpenConns(1) // SQLite only supports one writer at a time
-	sqlDB.SetMaxIdleConns(1)
-	sqlDB.SetConnMaxLifetime(time.Hour)
-
+	// Create database instance
 	database := &Database{
 		db:     db,
+		config: actualConfig,
 		logger: log,
 	}
 
@@ -66,7 +45,9 @@ func NewDatabase(dbPath string, log *appLogger.Logger) (*Database, error) {
 
 	if log != nil {
 		log.Info("Database connection established", map[string]interface{}{
-			"path": dbPath,
+			"type": actualConfig.Type,
+			"path": actualConfig.Path,
+			"host": actualConfig.Host,
 		})
 	}
 

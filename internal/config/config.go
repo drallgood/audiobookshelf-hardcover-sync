@@ -87,6 +87,35 @@ type Config struct {
 		TestBookLimit int `yaml:"test_book_limit" env:"TEST_BOOK_LIMIT"`
 	} `yaml:"app"`
 
+	// Database configuration
+	Database struct {
+		// Type specifies the database type (sqlite, postgresql, mysql, mariadb)
+		Type string `yaml:"type" env:"DATABASE_TYPE"`
+		// Host is the database server hostname (for non-SQLite databases)
+		Host string `yaml:"host" env:"DATABASE_HOST"`
+		// Port is the database server port (for non-SQLite databases)
+		Port int `yaml:"port" env:"DATABASE_PORT"`
+		// Name is the database name (for non-SQLite databases)
+		Name string `yaml:"name" env:"DATABASE_NAME"`
+		// User is the database username (for non-SQLite databases)
+		User string `yaml:"user" env:"DATABASE_USER"`
+		// Password is the database password (for non-SQLite databases)
+		Password string `yaml:"password" env:"DATABASE_PASSWORD"`
+		// Path is the SQLite database file path (for SQLite only)
+		Path string `yaml:"path" env:"DATABASE_PATH"`
+		// SSLMode specifies the SSL mode for PostgreSQL connections
+		SSLMode string `yaml:"ssl_mode" env:"DATABASE_SSL_MODE"`
+		// Connection pool settings (for non-SQLite databases)
+		ConnectionPool struct {
+			// MaxOpenConns is the maximum number of open connections
+			MaxOpenConns int `yaml:"max_open_conns" env:"DATABASE_MAX_OPEN_CONNS"`
+			// MaxIdleConns is the maximum number of idle connections
+			MaxIdleConns int `yaml:"max_idle_conns" env:"DATABASE_MAX_IDLE_CONNS"`
+			// ConnMaxLifetime is the connection lifetime in minutes
+			ConnMaxLifetime int `yaml:"conn_max_lifetime" env:"DATABASE_CONN_MAX_LIFETIME"`
+		} `yaml:"connection_pool"`
+	} `yaml:"database"`
+
 	// File paths
 	Paths struct {
 		// CacheDir is the directory for cache files
@@ -126,6 +155,19 @@ func DefaultConfig() *Config {
 	cfg.App.DryRun = false
 	cfg.App.TestBookFilter = ""
 	cfg.App.TestBookLimit = 0
+
+	// Default database configuration (SQLite)
+	cfg.Database.Type = "sqlite"
+	cfg.Database.Path = "" // Will use GetDefaultDatabasePath() if empty
+	cfg.Database.Host = "localhost"
+	cfg.Database.Port = 5432 // Default PostgreSQL port
+	cfg.Database.Name = "audiobookshelf_sync"
+	cfg.Database.User = "sync_user"
+	cfg.Database.Password = ""
+	cfg.Database.SSLMode = "prefer"
+	cfg.Database.ConnectionPool.MaxOpenConns = 25
+	cfg.Database.ConnectionPool.MaxIdleConns = 5
+	cfg.Database.ConnectionPool.ConnMaxLifetime = 60 // minutes
 
 	// Default paths
 	cfg.Paths.CacheDir = "./cache"

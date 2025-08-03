@@ -34,6 +34,36 @@ app:
   test_book_filter: ""    # Filter books by title for testing
   test_book_limit: 0       # Limit number of books to process for testing (0 = no limit)
 
+# Database configuration
+# Supports SQLite (default), PostgreSQL, MySQL/MariaDB with automatic fallback
+database:
+  # Database type: sqlite, postgresql, mysql, mariadb
+  type: "sqlite"
+  
+  # SQLite configuration (default)
+  path: ""  # Uses default path if empty: ./data/database.db
+  
+  # PostgreSQL configuration (uncomment and configure for PostgreSQL)
+  # host: "localhost"
+  # port: 5432
+  # name: "audiobookshelf_sync"
+  # user: "sync_user"
+  # password: ""  # Use environment variable DATABASE_PASSWORD for security
+  # ssl_mode: "prefer"  # disable, allow, prefer, require, verify-ca, verify-full
+  
+  # MySQL/MariaDB configuration (uncomment and configure for MySQL)
+  # host: "localhost"
+  # port: 3306
+  # name: "audiobookshelf_sync"
+  # user: "sync_user"
+  # password: ""  # Use environment variable DATABASE_PASSWORD for security
+  
+  # Connection pool settings (for PostgreSQL and MySQL)
+  connection_pool:
+    max_open_conns: 25      # Maximum number of open connections
+    max_idle_conns: 5       # Maximum number of idle connections
+    conn_max_lifetime: 60   # Connection lifetime in minutes
+
 # Sync configuration
 sync:
   incremental: true

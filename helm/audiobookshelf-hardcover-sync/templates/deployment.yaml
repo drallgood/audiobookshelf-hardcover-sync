@@ -185,6 +185,72 @@ spec:
             {{- end }}
             {{- end }}
             
+            # Database configuration (v3.1.0+)
+            {{- if .Values.database.type }}
+            - name: DATABASE_TYPE
+              value: {{ .Values.database.type | quote }}
+            {{- end }}
+            
+            {{- if eq .Values.database.type "sqlite" }}
+            {{- if .Values.database.sqlite.path }}
+            - name: DATABASE_PATH
+              value: {{ .Values.database.sqlite.path | quote }}
+            {{- end }}
+            {{- end }}
+            
+            {{- if eq .Values.database.type "postgresql" }}
+            - name: DATABASE_HOST
+              value: {{ .Values.database.postgresql.host | quote }}
+            - name: DATABASE_PORT
+              value: {{ .Values.database.postgresql.port | quote }}
+            - name: DATABASE_NAME
+              value: {{ .Values.database.postgresql.database | quote }}
+            - name: DATABASE_USER
+              value: {{ .Values.database.postgresql.username | quote }}
+            {{- if .Values.database.postgresql.password }}
+            - name: DATABASE_PASSWORD
+              value: {{ .Values.database.postgresql.password | quote }}
+            {{- else if .Values.database.existingSecret }}
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: DATABASE_PASSWORD
+            {{- end }}
+            - name: DATABASE_SSL_MODE
+              value: {{ .Values.database.postgresql.sslMode | quote }}
+            {{- end }}
+            
+            {{- if or (eq .Values.database.type "mysql") (eq .Values.database.type "mariadb") }}
+            - name: DATABASE_HOST
+              value: {{ .Values.database.mysql.host | quote }}
+            - name: DATABASE_PORT
+              value: {{ .Values.database.mysql.port | quote }}
+            - name: DATABASE_NAME
+              value: {{ .Values.database.mysql.database | quote }}
+            - name: DATABASE_USER
+              value: {{ .Values.database.mysql.username | quote }}
+            {{- if .Values.database.mysql.password }}
+            - name: DATABASE_PASSWORD
+              value: {{ .Values.database.mysql.password | quote }}
+            {{- else if .Values.database.existingSecret }}
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: DATABASE_PASSWORD
+            {{- end }}
+            {{- end }}
+            
+            {{- if and .Values.database.connectionPool (ne .Values.database.type "sqlite") }}
+            - name: DATABASE_MAX_OPEN_CONNS
+              value: {{ .Values.database.connectionPool.maxOpenConns | quote }}
+            - name: DATABASE_MAX_IDLE_CONNS
+              value: {{ .Values.database.connectionPool.maxIdleConns | quote }}
+            - name: DATABASE_CONN_MAX_LIFETIME
+              value: {{ .Values.database.connectionPool.connMaxLifetime | quote }}
+            {{- end }}
+            
             # Additional environment variables
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}

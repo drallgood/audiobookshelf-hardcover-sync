@@ -136,8 +136,14 @@ func (m *MigrationManager) CheckMigrationNeeded(configPath string) (bool, error)
 
 // AutoMigrate performs automatic migration if needed
 func AutoMigrate(dbPath, configPath string, log *logger.Logger) error {
+	// Create database configuration for SQLite (backward compatibility)
+	config := &DatabaseConfig{
+		Type: DatabaseTypeSQLite,
+		Path: dbPath,
+	}
+	
 	// Create database connection
-	db, err := NewDatabase(dbPath, log)
+	db, err := NewDatabase(config, log)
 	if err != nil {
 		return fmt.Errorf("failed to create database connection: %w", err)
 	}

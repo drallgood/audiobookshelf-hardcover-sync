@@ -144,9 +144,24 @@ func main() {
 	// Initialize multi-user system
 	log.Info("Initializing multi-user system", nil)
 	
-	// Set up database
-	dbPath := database.GetDefaultDatabasePath()
-	db, err := database.NewDatabase(dbPath, log)
+	// Set up database with config.yaml and environment-based configuration
+	// Create database config from config.yaml with environment variable override
+	configDB := &database.ConfigDatabase{
+		Type:           cfg.Database.Type,
+		Host:           cfg.Database.Host,
+		Port:           cfg.Database.Port,
+		Name:           cfg.Database.Name,
+		User:           cfg.Database.User,
+		Password:       cfg.Database.Password,
+		Path:           cfg.Database.Path,
+		SSLMode:        cfg.Database.SSLMode,
+	}
+	configDB.ConnectionPool.MaxOpenConns = cfg.Database.ConnectionPool.MaxOpenConns
+	configDB.ConnectionPool.MaxIdleConns = cfg.Database.ConnectionPool.MaxIdleConns
+	configDB.ConnectionPool.ConnMaxLifetime = cfg.Database.ConnectionPool.ConnMaxLifetime
+	
+	dbConfig := database.NewDatabaseConfigFromConfig(configDB)
+	db, err := database.NewDatabase(dbConfig, log)
 	if err != nil {
 		log.Error("Failed to initialize database", map[string]interface{}{
 			"error": err.Error(),
@@ -169,6 +184,7 @@ func main() {
 	
 	// Perform automatic migration from single-user config if needed
 	configPath := database.GetDefaultConfigPath()
+	dbPath := database.GetDefaultDatabasePath() // Get default SQLite path for migration
 	if err := database.AutoMigrate(dbPath, configPath, log); err != nil {
 		log.Error("Failed to perform migration", map[string]interface{}{
 			"error": err.Error(),
