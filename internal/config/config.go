@@ -165,6 +165,8 @@ type Config struct {
 
 	// File paths
 	Paths struct {
+		// DataDir is the base directory for all application data (database, encryption keys, etc.)
+		DataDir string `yaml:"data_dir" env:"DATA_DIR"`
 		// CacheDir is the directory for cache files
 		CacheDir string `yaml:"cache_dir" env:"CACHE_DIR"`
 		// MismatchOutputDir is the directory where mismatch JSON files will be saved
@@ -236,6 +238,7 @@ func DefaultConfig() *Config {
 	cfg.Authentication.Keycloak.RoleClaim = "realm_access.roles"
 
 	// Default paths
+	cfg.Paths.DataDir = "./data"
 	cfg.Paths.CacheDir = "./cache"
 	cfg.Paths.MismatchOutputDir = "./mismatches"
 

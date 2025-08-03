@@ -76,6 +76,7 @@ func newTestConfig(mismatchDir string) *config.Config {
 			TestBookLimit:   0,
 		},
 		Paths: struct {
+			DataDir           string `yaml:"data_dir" env:"DATA_DIR"`
 			CacheDir          string `yaml:"cache_dir" env:"CACHE_DIR"`
 			MismatchOutputDir string `yaml:"mismatch_output_dir" env:"MISMATCH_OUTPUT_DIR"`
 		}{

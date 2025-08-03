@@ -137,6 +137,11 @@ func (em *EncryptionManager) Decrypt(ciphertext string) (string, error) {
 
 // getOrCreateEncryptionKey gets the encryption key from environment or creates a new one
 func getOrCreateEncryptionKey() ([]byte, error) {
+	return getOrCreateEncryptionKeyWithDataDir("")
+}
+
+// getOrCreateEncryptionKeyWithDataDir gets the encryption key using configurable data directory
+func getOrCreateEncryptionKeyWithDataDir(dataDir string) ([]byte, error) {
 	// First, try to get key from environment variable
 	if keyStr := os.Getenv("ENCRYPTION_KEY"); keyStr != "" {
 		key, err := base64.StdEncoding.DecodeString(keyStr)
@@ -149,8 +154,13 @@ func getOrCreateEncryptionKey() ([]byte, error) {
 		return key, nil
 	}
 
-	// Try to load from file
-	keyPath := getKeyFilePath()
+	// Try to load from file using config or fallback
+	var keyPath string
+	if dataDir != "" {
+		keyPath = getKeyFilePathFromConfig(dataDir)
+	} else {
+		keyPath = getKeyFilePath()
+	}
 	if data, err := os.ReadFile(keyPath); err == nil {
 		key, err := base64.StdEncoding.DecodeString(string(data))
 		if err != nil {
@@ -178,10 +188,39 @@ func getOrCreateEncryptionKey() ([]byte, error) {
 }
 
 // getKeyFilePath returns the path to the encryption key file
+// This function will be updated to use config when available
 func getKeyFilePath() string {
 	dataDir := os.Getenv("DATA_DIR")
 	if dataDir == "" {
-		dataDir = "./data"
+		// Use absolute path for Docker compatibility
+		// Check if we're likely in a Docker container
+		if _, err := os.Stat("/data"); err == nil {
+			dataDir = "/data"
+		} else if _, err := os.Stat("/app/data"); err == nil {
+			dataDir = "/app/data"
+		} else {
+			// Fallback to relative path for local development
+			dataDir = "./data"
+		}
+	}
+	
+	// Ensure data directory exists
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		// Log error but continue - we'll handle file creation errors later
+		logger.Get().Warn("Failed to create data directory", map[string]interface{}{
+			"dir": dataDir,
+			"error": err,
+		})
+	}
+	
+	return fmt.Sprintf("%s/encryption.key", dataDir)
+}
+
+// getKeyFilePathFromConfig returns the path to the encryption key file using config
+func getKeyFilePathFromConfig(dataDir string) string {
+	if dataDir == "" {
+		// Fallback to environment variable or auto-detection
+		return getKeyFilePath()
 	}
 	
 	// Ensure data directory exists

@@ -122,4 +122,6 @@ sync:
 
 # Paths configuration
 paths:
+  data_dir: "./data"      # Base directory for application data (database, encryption keys, etc.)
   cache_dir: "./cache"    # Directory for cache files
+  mismatch_output_dir: "./mismatches"  # Directory for mismatch reports
