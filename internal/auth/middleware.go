@@ -5,7 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 )
+
+// contextKey is a custom type for context keys to avoid collisions
+type contextKey string
+
+const userContextKey contextKey = "user"
 
 // AuthMiddleware provides authentication middleware for HTTP handlers
 type AuthMiddleware struct {
@@ -39,7 +46,7 @@ func (am *AuthMiddleware) RequireAuth(next http.Handler) http.Handler {
 		}
 
 		// Add user to request context
-		ctx := context.WithValue(r.Context(), "user", user)
+		ctx := context.WithValue(r.Context(), userContextKey, user)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -67,7 +74,7 @@ func (am *AuthMiddleware) RequireRole(role UserRole) func(http.Handler) http.Han
 			}
 
 			// Add user to request context
-			ctx := context.WithValue(r.Context(), "user", user)
+			ctx := context.WithValue(r.Context(), userContextKey, user)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -88,7 +95,7 @@ func (am *AuthMiddleware) OptionalAuth(next http.Handler) http.Handler {
 
 		user, _ := am.authenticateRequest(r)
 		if user != nil {
-			ctx := context.WithValue(r.Context(), "user", user)
+			ctx := context.WithValue(r.Context(), userContextKey, user)
 			r = r.WithContext(ctx)
 		}
 
@@ -172,12 +179,17 @@ func (am *AuthMiddleware) writeJSONError(w http.ResponseWriter, status int, code
 		},
 	}
 	
-	json.NewEncoder(w).Encode(response)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		// Log error but can't do much else at this point
+		logger.Get().Error("Failed to encode middleware error response", map[string]interface{}{
+			"error": err,
+		})
+	}
 }
 
 // GetUserFromContext extracts the authenticated user from request context
 func GetUserFromContext(ctx context.Context) (*AuthUser, bool) {
-	user, ok := ctx.Value("user").(*AuthUser)
+	user, ok := ctx.Value(userContextKey).(*AuthUser)
 	return user, ok
 }
 

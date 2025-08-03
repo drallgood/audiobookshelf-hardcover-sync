@@ -10,6 +10,15 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 )
 
+// simpleTitle provides a simple title case conversion
+// This replaces the deprecated strings.Title function
+func simpleTitle(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + strings.ToLower(s[1:])
+}
+
 // AuthHandlers provides HTTP handlers for authentication
 type AuthHandlers struct {
 	service *AuthService
@@ -479,7 +488,7 @@ func (h *AuthHandlers) serveLoginHTML(w http.ResponseWriter, r *http.Request, pr
 	oauthLinks := ""
 	
 	for name, provider := range providers {
-		providerOptions += fmt.Sprintf(`<option value="%s">%s</option>`, name, strings.Title(name))
+		providerOptions += fmt.Sprintf(`<option value="%s">%s</option>`, name, simpleTitle(name))
 		
 		if provider.GetType() != "local" {
 			redirectURL := r.URL.Query().Get("redirect")
@@ -487,7 +496,7 @@ func (h *AuthHandlers) serveLoginHTML(w http.ResponseWriter, r *http.Request, pr
 				redirectURL = "/"
 			}
 			oauthURL := fmt.Sprintf("/auth/oauth/%s?redirect=%s", name, url.QueryEscape(redirectURL))
-			oauthLinks += fmt.Sprintf(`<a href="%s" class="oauth-btn">Login with %s</a>`, oauthURL, strings.Title(name))
+			oauthLinks += fmt.Sprintf(`<a href="%s" class="oauth-btn">Login with %s</a>`, oauthURL, simpleTitle(name))
 		}
 	}
 
@@ -496,18 +505,30 @@ func (h *AuthHandlers) serveLoginHTML(w http.ResponseWriter, r *http.Request, pr
 		redirectURL = "/"
 	}
 
-	// Render HTML
-	finalHTML := fmt.Sprintf(html, errorMsg, redirectURL, providerOptions, oauthLinks)
+	// Render HTML by replacing placeholders
+	finalHTML := html
+	finalHTML = strings.Replace(finalHTML, "%s", errorMsg, 1)
+	finalHTML = strings.Replace(finalHTML, "%s", redirectURL, 1)
+	finalHTML = strings.Replace(finalHTML, "%s", providerOptions, 1)
+	finalHTML = strings.Replace(finalHTML, "%s", oauthLinks, 1)
 	
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(finalHTML))
+	if _, err := w.Write([]byte(finalHTML)); err != nil {
+		h.logger.Error("Failed to write HTML response", map[string]interface{}{
+			"error": err,
+		})
+	}
 }
 
 // writeJSON writes a JSON response
 func (h *AuthHandlers) writeJSON(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(data)
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		h.logger.Error("Failed to encode JSON response", map[string]interface{}{
+			"error": err,
+		})
+	}
 }
 
 // writeError writes an error response
@@ -522,5 +543,9 @@ func (h *AuthHandlers) writeError(w http.ResponseWriter, status int, code, messa
 		},
 	}
 	
-	json.NewEncoder(w).Encode(response)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		h.logger.Error("Failed to encode error response", map[string]interface{}{
+			"error": err,
+		})
+	}
 }

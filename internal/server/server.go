@@ -123,7 +123,11 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	// TODO: Implement legacy sync logic or redirect to multi-user API
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status": "sync started"}`))
+	if _, err := w.Write([]byte(`{"status": "sync started"}`)); err != nil {
+		s.logger.Error("Failed to write sync response", map[string]interface{}{
+			"error": err,
+		})
+	}
 }
 
 // handleAPIUsers handles /api/users endpoint

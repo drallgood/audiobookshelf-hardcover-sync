@@ -185,7 +185,13 @@ func getKeyFilePath() string {
 	}
 	
 	// Ensure data directory exists
-	os.MkdirAll(dataDir, 0755)
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		// Log error but continue - we'll handle file creation errors later
+		logger.Get().Warn("Failed to create data directory", map[string]interface{}{
+			"dir": dataDir,
+			"error": err,
+		})
+	}
 	
 	return fmt.Sprintf("%s/encryption.key", dataDir)
 }

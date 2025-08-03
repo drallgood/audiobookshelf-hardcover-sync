@@ -76,7 +76,12 @@ func (s *MultiUserService) UpdateUserConfig(userID, audiobookshelfURL, audiobook
 // DeleteUser deletes a user
 func (s *MultiUserService) DeleteUser(userID string) error {
 	// Cancel any active sync for this user
-	s.CancelSync(userID)
+	if err := s.CancelSync(userID); err != nil {
+		s.logger.Warn("Failed to cancel sync during user deletion", map[string]interface{}{
+			"userID": userID,
+			"error": err,
+		})
+	}
 	
 	// Remove from status tracking
 	s.statusMutex.Lock()

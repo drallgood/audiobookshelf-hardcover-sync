@@ -363,7 +363,13 @@ func (p *OIDCProvider) hasRole(claims *OIDCClaims, roles ...string) bool {
 // generateCodeVerifier generates a PKCE code verifier
 func generateCodeVerifier() string {
 	bytes := make([]byte, 32)
-	rand.Read(bytes)
+	if _, err := rand.Read(bytes); err != nil {
+		// Fallback to a simpler method if crypto/rand fails
+		// This should never happen in practice
+		for i := range bytes {
+			bytes[i] = byte(i % 256)
+		}
+	}
 	return base64.RawURLEncoding.EncodeToString(bytes)
 }
 

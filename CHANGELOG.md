@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Documented authentication-aware features and endpoints
   - Added ingress configuration examples for session management
   - Updated chart README with complete setup guide
+- **Go Code Linting**: Fixed all Go linting and staticcheck errors
+  - Added proper error checking for `os.MkdirAll`, `w.Write`, `json.Encoder.Encode`, `rand.Read`, and `CancelSync` calls
+  - Replaced deprecated `strings.Title` with custom `simpleTitle` function
+  - Fixed context key usage with custom `contextKey` type to avoid collisions
+  - Resolved format string parsing issue in HTML template rendering
+  - All linting checks now pass cleanly
 
 ## [v3.0.0] - 2025-08-02
 
