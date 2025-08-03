@@ -15,6 +15,33 @@ import (
 	appLogger "github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 )
 
+// getDataDirForFallback returns the data directory for fallback database connections
+// Uses smart detection logic similar to encryption key path detection
+func getDataDirForFallback() string {
+	dataDir := os.Getenv("DATA_DIR")
+	if dataDir == "" {
+		// Use absolute path for Docker compatibility
+		// Check if we're likely in a Docker container
+		if _, err := os.Stat("/data"); err == nil {
+			dataDir = "/data"
+		} else if _, err := os.Stat("/app/data"); err == nil {
+			dataDir = "/app/data"
+		} else {
+			// Fallback to relative path for local development
+			dataDir = "./data"
+		}
+	}
+
+	// Ensure data directory exists
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		// Log error but continue - we'll handle file creation errors later
+		// Note: We can't use logger here as it might not be initialized yet
+		fmt.Printf("Warning: Failed to create data directory %s: %v\n", dataDir, err)
+	}
+
+	return dataDir
+}
+
 // DatabaseDriver interface defines the contract for database drivers
 type DatabaseDriver interface {
 	Connect(config *DatabaseConfig, log *appLogger.Logger) (*gorm.DB, error)
@@ -234,9 +261,13 @@ func ConnectWithFallback(config *DatabaseConfig, log *appLogger.Logger) (*gorm.D
 
 // connectSQLiteFallback creates a fallback SQLite connection (legacy CGO-based)
 func connectSQLiteFallback(log *appLogger.Logger) (*gorm.DB, *DatabaseConfig, error) {
+	// Use smart data directory detection
+	dataDir := getDataDirForFallback()
+	fallbackPath := fmt.Sprintf("%s/audiobookshelf-hardcover-sync.db", dataDir)
+	
 	fallbackConfig := &DatabaseConfig{
 		Type: DatabaseTypeSQLite,
-		Path: "/app/data/audiobookshelf-hardcover-sync.db",
+		Path: fallbackPath,
 	}
 
 	driver := &SQLiteDriver{}
@@ -256,9 +287,13 @@ func connectSQLiteFallback(log *appLogger.Logger) (*gorm.DB, *DatabaseConfig, er
 
 // connectPureSQLiteFallback creates a fallback SQLite connection using pure Go driver
 func connectPureSQLiteFallback(log *appLogger.Logger) (*gorm.DB, *DatabaseConfig, error) {
+	// Use smart data directory detection
+	dataDir := getDataDirForFallback()
+	fallbackPath := fmt.Sprintf("%s/audiobookshelf-hardcover-sync.db", dataDir)
+	
 	fallbackConfig := &DatabaseConfig{
 		Type: DatabaseTypeSQLite,
-		Path: "/app/data/audiobookshelf-hardcover-sync.db",
+		Path: fallbackPath,
 	}
 
 	driver := &PureSQLiteDriver{}
