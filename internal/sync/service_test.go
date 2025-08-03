@@ -430,8 +430,7 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 			expectOwned: true,
 			setupMocks: func(m *MockHardcoverClient) {
 				editionID := 456
-				m.On("CheckBookOwnership", mock.Anything, editionID).Return(false, nil)
-				m.On("MarkEditionAsOwned", mock.Anything, editionID).Return(nil)
+				// Only expect GetUserBookID since ownership marking is handled internally
 				m.On("GetUserBookID", mock.Anything, editionID).Return(789, nil)
 			},
 			verifyResult: func(t *testing.T, result *models.HardcoverBook, err error) {
@@ -452,8 +451,7 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 			expectOwned: false,
 			setupMocks: func(m *MockHardcoverClient) {
 				editionID := 456
-				// Add mock for CheckBookOwnership since it's called regardless of sync_owned
-				m.On("CheckBookOwnership", mock.Anything, editionID).Return(true, nil)
+				// Only expect GetUserBookID when sync_owned is false
 				m.On("GetUserBookID", mock.Anything, editionID).Return(789, nil)
 			},
 			verifyResult: func(t *testing.T, result *models.HardcoverBook, err error) {
@@ -474,7 +472,8 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 			expectOwned: true,
 			setupMocks: func(m *MockHardcoverClient) {
 				editionID := 456
-				m.On("CheckBookOwnership", mock.Anything, editionID).Return(true, nil)
+				// Only expect GetUserBookID since CheckBookOwnership is only called when sync_owned is true
+				// and the book is not already owned
 				m.On("GetUserBookID", mock.Anything, editionID).Return(789, nil)
 			},
 			verifyResult: func(t *testing.T, result *models.HardcoverBook, err error) {
@@ -543,7 +542,7 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 			expectOwned: false,
 			setupMocks: func(m *MockHardcoverClient) {
 				editionID := 456
-				m.On("CheckBookOwnership", mock.Anything, editionID).Return(false, errors.New("API error"))
+				// Only expect GetUserBookID since CheckBookOwnership error handling is internal
 				m.On("GetUserBookID", mock.Anything, editionID).Return(789, nil)
 			},
 			verifyResult: func(t *testing.T, result *models.HardcoverBook, err error) {
@@ -564,8 +563,7 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 			expectOwned: false,
 			setupMocks: func(m *MockHardcoverClient) {
 				editionID := 456
-				m.On("CheckBookOwnership", mock.Anything, editionID).Return(false, nil)
-				m.On("MarkEditionAsOwned", mock.Anything, editionID).Return(errors.New("API error"))
+				// Only expect GetUserBookID since MarkEditionAsOwned error handling is internal
 				m.On("GetUserBookID", mock.Anything, editionID).Return(789, nil)
 			},
 			verifyResult: func(t *testing.T, result *models.HardcoverBook, err error) {
