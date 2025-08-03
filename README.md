@@ -3,6 +3,9 @@
 [![Trivy Scan](https://github.com/drallgood/audiobookshelf-hardcover-sync/actions/workflows/trivy.yml/badge.svg)](https://github.com/drallgood/audiobookshelf-hardcover-sync/actions/workflows/trivy.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/drallgood/audiobookshelf-hardcover-sync)](https://goreportcard.com/report/github.com/drallgood/audiobookshelf-hardcover-sync)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![GitHub release (latest by date)](https://img.shields.io/github/v/release/drallgood/audiobookshelf-hardcover-sync?label=latest%20release)](https://github.com/drallgood/audiobookshelf-hardcover-sync/releases/latest)
+
+> **Note:** This README reflects the latest development version. For documentation specific to the latest stable release, please check the [latest release](https://github.com/drallgood/audiobookshelf-hardcover-sync/releases/latest) on GitHub.
 
 Automatically syncs your Audiobookshelf library with Hardcover, including reading progress, book status, and ownership information.
 
