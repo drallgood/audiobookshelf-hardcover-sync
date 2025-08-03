@@ -1,14 +1,18 @@
 # Build stage
 FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS builder
 
-# Install build dependencies
-RUN apk add --no-cache git
+# Install build dependencies (including SQLite dependencies)
+RUN apk add --no-cache \
+    git \
+    gcc \
+    musl-dev \
+    sqlite-dev
 
 # Set the working directory
 WORKDIR /src
 
-# Enable Go modules
-ENV CGO_ENABLED=0 \
+# Enable Go modules and CGO for SQLite support
+ENV CGO_ENABLED=1 \
     GO111MODULE=on \
     GOPROXY=https://proxy.golang.org,direct
 
@@ -32,10 +36,11 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # Final stage
 FROM alpine:3.18
 
-# Install runtime dependencies
+# Install runtime dependencies (including SQLite)
 RUN apk add --no-cache \
     ca-certificates \
     tzdata \
+    sqlite \
     && addgroup -S app \
     && adduser -S -G app app
 
