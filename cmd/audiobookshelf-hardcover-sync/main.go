@@ -12,8 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/auth"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/crypto"
@@ -21,7 +19,6 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/multiuser"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/server"
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 )
 
 // Package main is the entry point for the Audiobookshelf to Hardcover sync service.
@@ -271,61 +268,103 @@ func main() {
 	} else {
 		log.Info("Authentication system disabled", nil)
 	}
-	
 	// Create HTTP server with multi-user and authentication support
 	srv := server.New(fmt.Sprintf(":%s", cfg.Server.Port), multiUserService, authService, log)
-	
-	// For backwards compatibility, create legacy sync service if in single-user mode
-	var syncService *sync.Service
-	if !flags.serverOnly {
-		// Create API clients for legacy sync
-		audiobookshelfClient := audiobookshelf.NewClient(cfg.Audiobookshelf.URL, cfg.Audiobookshelf.Token)
-		hardcoverClient := hardcover.NewClient(cfg.Hardcover.Token, log)
-		
-		// Create sync service for backwards compatibility
-		syncService, err = sync.NewService(
-			audiobookshelfClient,
-			hardcoverClient,
-			cfg,
-		)
-		if err != nil {
-			log.Error("Failed to create legacy sync service", map[string]interface{}{
-				"error": err.Error(),
-			})
-			// Don't exit - multi-user system can still work
-			log.Warn("Legacy sync disabled, multi-user system available via web UI", nil)
-		}
-	}
 
 	// Start the HTTP server
 	go func() {
-		addr := ":" + cfg.Server.Port
 		log.Info("Starting HTTP server", map[string]interface{}{
-			"addr": addr,
+			"port": cfg.Server.Port,
 		})
+
+		// Start the server
 		if err := srv.Start(); err != nil && err != http.ErrServerClosed {
-			errCh <- fmt.Errorf("failed to start HTTP server: %w", err)
-			return
+			errCh <- fmt.Errorf("failed to start server: %w", err)
 		}
 	}()
 
-	// Start periodic sync if enabled and not in server-only mode
-	if !flags.serverOnly && cfg.App.SyncInterval > 0 && syncService != nil {
-		// Use the sync interval from config unless overridden by command line flag
+	// Start periodic sync for all users if enabled
+	if !flags.serverOnly && cfg.App.SyncInterval > 0 {
 		syncInterval := cfg.App.SyncInterval
-		if flags.syncInterval >= 0 {
+		if flags.syncInterval > 0 {
 			syncInterval = flags.syncInterval
 		}
-		log.Info("Starting legacy periodic sync (consider using multi-user web UI)", map[string]interface{}{
+
+		log.Info("Starting periodic sync for all users", map[string]interface{}{
 			"interval": syncInterval.String(),
 		})
-		StartPeriodicSync(ctx, syncService, abortCh, syncInterval)
+
+		// Start a ticker for periodic sync
+		ticker := time.NewTicker(syncInterval)
+		defer ticker.Stop()
+
+		// Start the first sync after a short delay to avoid immediate sync on startup
+		// This allows the application to fully initialize before starting the first sync
+		initialSyncTicker := time.NewTicker(5 * time.Second)
+		defer initialSyncTicker.Stop()
+
+		// Periodic sync
+		go func() {
+			// Initial sync after delay
+			<-initialSyncTicker.C
+			users, err := repo.ListUsers()
+			if err != nil {
+				log.Error("Failed to list users for initial sync", map[string]interface{}{
+					"error": err.Error(),
+				})
+			} else {
+				for _, user := range users {
+					log.Info("Starting initial sync for user", map[string]interface{}{
+						"user_id": user.ID,
+					})
+					go func(userID string) {
+						log.Info("Starting initial sync for user", map[string]interface{}{
+							"user_id": userID,
+						})
+						if err := multiUserService.StartSync(userID); err != nil {
+							log.Error("Failed to start sync for user", map[string]interface{}{
+								"user_id": userID,
+								"error":   err.Error(),
+							})
+						}
+					}(user.ID)
+				}
+			}
+			initialSyncTicker.Stop()
+
+			// Regular periodic syncs
+			for {
+				select {
+				case <-ticker.C:
+					users, err := repo.ListUsers()
+					if err != nil {
+						log.Error("Failed to list users for periodic sync", map[string]interface{}{
+							"error": err.Error(),
+						})
+						continue
+					}
+
+					for _, user := range users {
+						// Skip if user is already syncing
+						if multiUserService.IsUserSyncing(user.ID) {
+							log.Debug("Sync already in progress for user, skipping", map[string]interface{}{
+								"user_id": user.ID,
+							})
+							continue
+						}
+						log.Info("Starting periodic sync for user", map[string]interface{}{
+							"user_id": user.ID,
+						})
+						go multiUserService.StartSync(user.ID)
+					}
+
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
 	} else if !flags.serverOnly {
-		if syncService == nil {
-			log.Info("Legacy sync unavailable - use multi-user web UI for sync operations", nil)
-		} else {
-			log.Info("Periodic sync is disabled (set SYNC_INTERVAL to enable)", nil)
-		}
+		log.Info("Periodic sync is disabled (set SYNC_INTERVAL to enable)", nil)
 	}
 
 	// Wait for shutdown signal or error
