@@ -322,27 +322,27 @@ func main() {
 		go func() {
 			// Initial sync after delay
 			<-initialSyncTicker.C
-			users, err := repo.ListUsers()
+			profiles, err := multiUserService.ListProfiles()
 			if err != nil {
-				log.Error("Failed to list users for initial sync", map[string]interface{}{
+				log.Error("Failed to list profiles for initial sync", map[string]interface{}{
 					"error": err.Error(),
 				})
 			} else {
-				for _, user := range users {
-					log.Info("Starting initial sync for user", map[string]interface{}{
-						"user_id": user.ID,
+				for _, profile := range profiles {
+					log.Info("Starting initial sync for profile", map[string]interface{}{
+						"profile_id": profile.ID,
 					})
-					go func(userID string) {
-						log.Info("Starting initial sync for user", map[string]interface{}{
-							"user_id": userID,
+					go func(profileID string) {
+						log.Info("Starting initial sync for profile", map[string]interface{}{
+							"profile_id": profileID,
 						})
-						if err := multiUserService.StartSync(userID); err != nil {
-							log.Error("Failed to start sync for user", map[string]interface{}{
-								"user_id": userID,
-								"error":   err.Error(),
+						if err := multiUserService.StartSync(profileID); err != nil {
+							log.Error("Failed to start sync for profile", map[string]interface{}{
+								"profile_id": profileID,
+								"error":     err.Error(),
 							})
 						}
-					}(user.ID)
+					}(profile.ID)
 				}
 			}
 			initialSyncTicker.Stop()
@@ -351,33 +351,35 @@ func main() {
 			for {
 				select {
 				case <-ticker.C:
-					users, err := repo.ListUsers()
+					profiles, err := multiUserService.ListProfiles()
 					if err != nil {
-						log.Error("Failed to list users for periodic sync", map[string]interface{}{
+						log.Error("Failed to list profiles for periodic sync", map[string]interface{}{
 							"error": err.Error(),
 						})
 						continue
 					}
 
-					for _, user := range users {
-						// Skip if user is already syncing
-						if multiUserService.IsUserSyncing(user.ID) {
-							log.Debug("Sync already in progress for user, skipping", map[string]interface{}{
-								"user_id": user.ID,
+					for _, profile := range profiles {
+						// Skip if profile is already syncing
+						if multiUserService.IsProfileSyncing(profile.ID) {
+							log.Debug("Sync already in progress for profile, skipping", map[string]interface{}{
+								"profile_id": profile.ID,
 							})
 							continue
 						}
-						log.Info("Starting periodic sync for user", map[string]interface{}{
-							"user_id": user.ID,
+
+						log.Info("Starting periodic sync for profile", map[string]interface{}{
+							"profile_id": profile.ID,
 						})
-						go func(userID string) {
-							if err := multiUserService.StartSync(userID); err != nil {
-								log.Error("Failed to start sync for user", map[string]interface{}{
-									"user_id": userID,
-									"error":   err.Error(),
+
+						go func(profileID string) {
+							if err := multiUserService.StartSync(profileID); err != nil {
+								log.Error("Failed to start sync for profile", map[string]interface{}{
+									"profile_id": profileID,
+									"error":     err.Error(),
 								})
 							}
-						}(user.ID)
+						}(profile.ID)
 					}
 
 				case <-ctx.Done():

@@ -14,10 +14,10 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 )
 
-// UserSyncStatus represents the sync status for a user
-type UserSyncStatus struct {
-	UserID      string     `json:"user_id"`
-	UserName    string     `json:"user_name"`
+// SyncProfileStatus represents the sync status for a profile
+type SyncProfileStatus struct {
+	ProfileID   string     `json:"profile_id"`
+	ProfileName string     `json:"profile_name"`
 	Status      string     `json:"status"` // "idle", "syncing", "error", "completed"
 	LastSync    *time.Time `json:"last_sync"`
 	Error       string     `json:"error,omitempty"`
@@ -31,333 +31,302 @@ type MultiUserService struct {
 	repository    *database.Repository
 	logger        *logger.Logger
 	globalConfig  *config.Config
-	userStatuses  map[string]*UserSyncStatus
-	statusMutex   stdSync.RWMutex
-	activeSyncs   map[string]context.CancelFunc
-	syncMutex     stdSync.RWMutex
+	profileStatuses map[string]*SyncProfileStatus
+	statusMutex    stdSync.RWMutex
+	activeSyncs    map[string]context.CancelFunc
+	syncMutex      stdSync.RWMutex
 }
 
 // NewMultiUserService creates a new multi-user service
 func NewMultiUserService(repo *database.Repository, globalConfig *config.Config, log *logger.Logger) *MultiUserService {
 	return &MultiUserService{
-		repository:   repo,
-		logger:       log,
-		globalConfig: globalConfig,
-		userStatuses: make(map[string]*UserSyncStatus),
-		activeSyncs:  make(map[string]context.CancelFunc),
+		repository:     repo,
+		logger:         log,
+		globalConfig:   globalConfig,
+		profileStatuses: make(map[string]*SyncProfileStatus),
+		activeSyncs:    make(map[string]context.CancelFunc),
 	}
 }
 
-// GetUsers returns all active users
-func (s *MultiUserService) GetUsers() ([]database.User, error) {
-	return s.repository.ListUsers()
+// ListProfiles returns all active sync profiles
+func (s *MultiUserService) ListProfiles() ([]database.SyncProfile, error) {
+	return s.repository.ListProfiles()
 }
 
-// GetUser returns a specific user with decrypted tokens
-func (s *MultiUserService) GetUser(userID string) (*database.UserWithTokens, error) {
-	return s.repository.GetUser(userID)
+// GetProfile returns a specific profile with decrypted tokens
+func (s *MultiUserService) GetProfile(profileID string) (*database.ProfileWithTokens, error) {
+	return s.repository.GetProfile(profileID)
 }
 
-// CreateUser creates a new user
-func (s *MultiUserService) CreateUser(userID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig database.SyncConfigData) error {
-	return s.repository.CreateUser(userID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig)
+// CreateProfile creates a new sync profile
+func (s *MultiUserService) CreateProfile(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig database.SyncConfigData) error {
+	return s.repository.CreateProfile(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig)
 }
 
-// UpdateUser updates user information
-func (s *MultiUserService) UpdateUser(userID, name string) error {
-	return s.repository.UpdateUser(userID, name)
+// UpdateProfile updates profile information
+func (s *MultiUserService) UpdateProfile(profileID, name string) error {
+	return s.repository.UpdateProfile(profileID, name)
 }
 
-// UpdateUserConfig updates user configuration
-func (s *MultiUserService) UpdateUserConfig(userID, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig database.SyncConfigData) error {
-	return s.repository.UpdateUserConfig(userID, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig)
+// UpdateProfileConfig updates profile configuration
+func (s *MultiUserService) UpdateProfileConfig(profileID, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig database.SyncConfigData) error {
+	return s.repository.UpdateUserConfig(profileID, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig)
 }
 
-// DeleteUser deletes a user
-func (s *MultiUserService) DeleteUser(userID string) error {
-	// Cancel any active sync for this user
-	if err := s.CancelSync(userID); err != nil {
-		s.logger.Warn("Failed to cancel sync during user deletion", map[string]interface{}{
-			"userID": userID,
-			"error": err,
+// DeleteProfile deletes a sync profile
+func (s *MultiUserService) DeleteProfile(profileID string) error {
+	// Cancel any active sync for this profile
+	if err := s.CancelSync(profileID); err != nil {
+		s.logger.Warn("Failed to cancel sync during profile deletion", map[string]interface{}{
+			"profileID": profileID,
+			"error":     err,
 		})
 	}
 	
 	// Remove from status tracking
 	s.statusMutex.Lock()
-	delete(s.userStatuses, userID)
+	delete(s.profileStatuses, profileID)
 	s.statusMutex.Unlock()
 	
-	return s.repository.DeleteUser(userID)
+	return s.repository.DeleteProfile(profileID)
 }
 
-// GetUserStatus returns the sync status for a user
-func (s *MultiUserService) GetUserStatus(userID string) *UserSyncStatus {
+// GetAllProfileStatuses returns the sync status for all profiles
+func (s *MultiUserService) GetAllProfileStatuses() ([]*SyncProfileStatus, error) {
+	profiles, err := s.repository.ListProfiles()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list profiles: %w", err)
+	}
+
+	statuses := make([]*SyncProfileStatus, 0, len(profiles))
+	
+	s.statusMutex.RLock()
+	defer s.statusMutex.RUnlock()
+
+	for _, profile := range profiles {
+		status, exists := s.profileStatuses[profile.ID]
+		if !exists {
+			// Create default status for profile
+			status = &SyncProfileStatus{
+				ProfileID:   profile.ID,
+				ProfileName: profile.Name,
+				Status:      "idle",
+				LastSync:    nil,
+			}
+		}
+		statuses = append(statuses, status)
+	}
+
+	return statuses, nil
+}
+
+// GetProfileStatus returns the sync status for a profile
+func (s *MultiUserService) GetProfileStatus(profileID string) *SyncProfileStatus {
 	s.statusMutex.RLock()
 	defer s.statusMutex.RUnlock()
 	
-	status, exists := s.userStatuses[userID]
+	status, exists := s.profileStatuses[profileID]
 	if !exists {
-		// Initialize status if it doesn't exist
-		user, err := s.repository.GetUser(userID)
+		// Check if profile exists in database
+		profile, err := s.GetProfile(profileID)
 		if err != nil {
-			return &UserSyncStatus{
-				UserID: userID,
-				Status: "error",
-				Error:  err.Error(),
+			return &SyncProfileStatus{
+				ProfileID:   profileID,
+				Status:      "error",
+				Error:       "Profile not found",
+				LastSync:    nil,
 			}
 		}
 		
-		syncState, _ := s.repository.GetSyncState(userID)
-		
-		status = &UserSyncStatus{
-			UserID:   userID,
-			UserName: user.User.Name,
-			Status:   "idle",
+		// Create default status for existing profile
+		status = &SyncProfileStatus{
+			ProfileID:   profileID,
+			ProfileName: profile.Profile.Name,
+			Status:      "idle",
+			LastSync:    nil,
 		}
-		
-		if syncState != nil && syncState.LastSync != nil {
-			status.LastSync = syncState.LastSync
-		}
-		
-		s.userStatuses[userID] = status
 	}
 	
-	// Return a copy to prevent external modification
-	statusCopy := *status
-	return &statusCopy
+	return status
 }
 
-// GetAllUserStatuses returns sync status for all users
-func (s *MultiUserService) GetAllUserStatuses() map[string]*UserSyncStatus {
-	users, err := s.repository.ListUsers()
-	if err != nil {
-		s.logger.Error("Failed to list users for status", map[string]interface{}{
-			"error": err.Error(),
-		})
-		return make(map[string]*UserSyncStatus)
-	}
-	
-	s.statusMutex.RLock()
-	defer s.statusMutex.RUnlock()
-	
-	statuses := make(map[string]*UserSyncStatus)
-	for _, user := range users {
-		status := s.GetUserStatus(user.ID)
-		statuses[user.ID] = status
-	}
-	
-	return statuses
-}
-
-// StartSync starts a sync operation for a specific user
-func (s *MultiUserService) StartSync(userID string) error {
-	// Check if sync is already running
-	s.syncMutex.RLock()
-	if _, exists := s.activeSyncs[userID]; exists {
-		s.syncMutex.RUnlock()
-		return fmt.Errorf("sync already running for user: %s", userID)
-	}
-	s.syncMutex.RUnlock()
-	
-	// Get user configuration
-	userConfig, err := s.repository.GetUser(userID)
-	if err != nil {
-		return fmt.Errorf("failed to get user config: %w", err)
-	}
-	
-	// Update status to syncing
-	s.updateUserStatus(userID, &UserSyncStatus{
-		UserID:   userID,
-		UserName: userConfig.User.Name,
-		Status:   "syncing",
-		Progress: "Starting sync...",
-	})
-	
-	// Create context for cancellation
-	ctx, cancel := context.WithCancel(context.Background())
-	
-	// Store cancel function
-	s.syncMutex.Lock()
-	s.activeSyncs[userID] = cancel
-	s.syncMutex.Unlock()
-	
-	// Start sync in goroutine
-	go s.performSync(ctx, userID, userConfig)
-	
-	return nil
-}
-
-// CancelSync cancels a running sync operation for a user
-func (s *MultiUserService) CancelSync(userID string) error {
+// StartSync starts a sync operation for a specific profile
+func (s *MultiUserService) StartSync(profileID string) error {
 	s.syncMutex.Lock()
 	defer s.syncMutex.Unlock()
 	
-	cancel, exists := s.activeSyncs[userID]
-	if !exists {
-		return fmt.Errorf("no active sync for user: %s", userID)
+	// Check if already syncing
+	if _, exists := s.activeSyncs[profileID]; exists {
+		return fmt.Errorf("sync already in progress for profile %s", profileID)
 	}
 	
-	cancel()
-	delete(s.activeSyncs, userID)
+	// Get profile config
+	profileConfig, err := s.GetProfile(profileID)
+	if err != nil {
+		return fmt.Errorf("failed to get profile config: %w", err)
+	}
+	
+	// Create a cancellable context
+	ctx, cancel := context.WithCancel(context.Background())
+	s.activeSyncs[profileID] = cancel
 	
 	// Update status
-	s.updateUserStatus(userID, &UserSyncStatus{
-		UserID: userID,
-		Status: "idle",
-		Error:  "Sync cancelled by user",
+	s.updateProfileStatus(profileID, &SyncProfileStatus{
+		ProfileID:   profileID,
+		ProfileName: profileConfig.Profile.Name,
+		Status:      "syncing",
+		LastSync:    nil,
 	})
 	
-	s.logger.Info("Cancelled sync for user", map[string]interface{}{
-		"user_id": userID,
+	// Start sync in a goroutine
+	go s.performSync(ctx, profileID, profileConfig)
+	
+	return nil
+}
+
+// CancelSync cancels a running sync operation for a profile
+func (s *MultiUserService) CancelSync(profileID string) error {
+	s.syncMutex.Lock()
+	defer s.syncMutex.Unlock()
+	
+	cancel, exists := s.activeSyncs[profileID]
+	if !exists {
+		return fmt.Errorf("no active sync for profile %s", profileID)
+	}
+	
+	// Cancel the context
+	cancel()
+	
+	// Remove from active syncs
+	delete(s.activeSyncs, profileID)
+	
+	// Update status
+	s.updateProfileStatus(profileID, &SyncProfileStatus{
+		ProfileID: profileID,
+		Status:    "idle",
+		LastSync:  timePtr(time.Now()),
 	})
 	
 	return nil
 }
 
-// performSync performs the actual sync operation for a user
-func (s *MultiUserService) performSync(ctx context.Context, userID string, userConfig *database.UserWithTokens) {
+// performSync performs the actual sync operation for a profile
+func (s *MultiUserService) performSync(ctx context.Context, profileID string, profileConfig *database.ProfileWithTokens) {
 	defer func() {
-		// Clean up active sync tracking
 		s.syncMutex.Lock()
-		delete(s.activeSyncs, userID)
+		delete(s.activeSyncs, profileID)
 		s.syncMutex.Unlock()
 	}()
 	
-	s.logger.Info("Starting sync for user", map[string]interface{}{
-		"user_id":   userID,
-		"user_name": userConfig.User.Name,
-	})
+	// Create profile-specific config
+	config := s.createProfileSpecificConfig(profileConfig)
 	
-	// Create user-specific config
-	userSpecificConfig := s.createUserSpecificConfig(userConfig)
+	// Create ABS client
+	audiobookshelfClient := audiobookshelf.NewClient(profileConfig.AudiobookshelfURL, profileConfig.AudiobookshelfToken)
 	
-	// Create clients
-	absClient := audiobookshelf.NewClient(userConfig.AudiobookshelfURL, userConfig.AudiobookshelfToken)
-	hcClient := hardcover.NewClient(userConfig.HardcoverToken, s.logger)
-	
+	// Create Hardcover client
+	hardcoverClient := hardcover.NewClient(profileConfig.HardcoverToken, s.logger)
+
 	// Create sync service
-	syncService, err := sync.NewService(absClient, hcClient, userSpecificConfig)
+	syncService, err := sync.NewService(audiobookshelfClient, hardcoverClient, config)
 	if err != nil {
-		s.updateUserStatus(userID, &UserSyncStatus{
-			UserID: userID,
-			Status: "error",
-			Error:  fmt.Sprintf("Failed to create sync service: %v", err),
+		s.updateProfileStatus(profileID, &SyncProfileStatus{
+			ProfileID:   profileID,
+			ProfileName: profileConfig.Profile.Name,
+			Status:      "error",
+			Error:       fmt.Sprintf("Failed to create sync service: %v", err),
 		})
 		return
 	}
 	
-	// Update status
-	s.updateUserStatus(userID, &UserSyncStatus{
-		UserID:   userID,
-		UserName: userConfig.User.Name,
-		Status:   "syncing",
-		Progress: "Fetching books...",
+	// Update status to show sync started
+	s.updateProfileStatus(profileID, &SyncProfileStatus{
+		ProfileID:   profileID,
+		ProfileName: profileConfig.Profile.Name,
+		Status:      "syncing",
+		Progress:    "Starting sync...",
 	})
 	
-	// Perform sync
+	// Run sync
 	err = syncService.Sync(ctx)
+	
+	// Update final status
+	status := &SyncProfileStatus{
+		ProfileID:   profileID,
+		ProfileName: profileConfig.Profile.Name,
+		LastSync:    timePtr(time.Now()),
+	}
+	
 	if err != nil {
-		if ctx.Err() == context.Canceled {
-			s.updateUserStatus(userID, &UserSyncStatus{
-				UserID: userID,
-				Status: "idle",
-				Error:  "Sync cancelled",
-			})
-		} else {
-			s.updateUserStatus(userID, &UserSyncStatus{
-				UserID: userID,
-				Status: "error",
-				Error:  err.Error(),
-			})
-		}
-		s.logger.Error("Sync failed for user", map[string]interface{}{
-			"user_id": userID,
-			"error":   err.Error(),
+		status.Status = "error"
+		status.Error = err.Error()
+		s.logger.Error("Sync failed", map[string]interface{}{
+			"profileID": profileID,
+			"error":     err,
 		})
-		return
-	}
-	
-	// Update status to completed
-	now := time.Now()
-	s.updateUserStatus(userID, &UserSyncStatus{
-		UserID:   userID,
-		UserName: userConfig.User.Name,
-		Status:   "completed",
-		LastSync: &now,
-	})
-	
-	// Update sync state in database
-	if err := s.repository.UpdateSyncState(userID, "{}"); err != nil {
-		s.logger.Error("Failed to update sync state", map[string]interface{}{
-			"user_id": userID,
-			"error":   err.Error(),
-		})
-	}
-	
-	s.logger.Info("Sync completed for user", map[string]interface{}{
-		"user_id":   userID,
-		"user_name": userConfig.User.Name,
-	})
-}
-
-// createUserSpecificConfig creates a config.Config instance for a specific user
-func (s *MultiUserService) createUserSpecificConfig(userConfig *database.UserWithTokens) *config.Config {
-	cfg := &config.Config{
-		Server:    s.globalConfig.Server,
-		RateLimit: s.globalConfig.RateLimit,
-		Logging:   s.globalConfig.Logging,
-		Paths:     s.globalConfig.Paths,
-	}
-	
-	// Set user-specific configuration
-	cfg.Audiobookshelf.URL = userConfig.AudiobookshelfURL
-	cfg.Audiobookshelf.Token = userConfig.AudiobookshelfToken
-	cfg.Hardcover.Token = userConfig.HardcoverToken
-	
-	// Parse sync interval
-	if syncInterval, err := time.ParseDuration(userConfig.SyncConfig.SyncInterval); err == nil {
-		cfg.App.SyncInterval = syncInterval
 	} else {
-		cfg.App.SyncInterval = s.globalConfig.App.SyncInterval
+		status.Status = "completed"
+		status.Progress = "Sync completed successfully"
 	}
 	
-	// Set sync configuration
-	cfg.Sync.Incremental = userConfig.SyncConfig.Incremental
-	cfg.Sync.StateFile = userConfig.SyncConfig.StateFile
-	cfg.Sync.MinChangeThreshold = userConfig.SyncConfig.MinChangeThreshold
-	cfg.Sync.Libraries.Include = userConfig.SyncConfig.Libraries.Include
-	cfg.Sync.Libraries.Exclude = userConfig.SyncConfig.Libraries.Exclude
-	
-	// Set app configuration
-	cfg.App.MinimumProgress = userConfig.SyncConfig.MinimumProgress
-	cfg.App.SyncWantToRead = userConfig.SyncConfig.SyncWantToRead
-	cfg.App.SyncOwned = userConfig.SyncConfig.SyncOwned
-	cfg.App.DryRun = userConfig.SyncConfig.DryRun
-	cfg.App.TestBookFilter = userConfig.SyncConfig.TestBookFilter
-	cfg.App.TestBookLimit = userConfig.SyncConfig.TestBookLimit
-	
-	// Ensure user-specific state file path
-	if cfg.Sync.StateFile == "" || cfg.Sync.StateFile == "./data/sync_state.json" {
-		cfg.Sync.StateFile = fmt.Sprintf("./data/%s_sync_state.json", userConfig.User.ID)
-	}
-	
-	return cfg
+	s.updateProfileStatus(profileID, status)
 }
 
-// updateUserStatus updates the status for a user
-func (s *MultiUserService) updateUserStatus(userID string, status *UserSyncStatus) {
+// createProfileSpecificConfig creates a config.Config instance for a specific profile
+func (s *MultiUserService) createProfileSpecificConfig(profileConfig *database.ProfileWithTokens) *config.Config {
+	// Create a copy of the global config
+	config := *s.globalConfig
+	
+	// Override with profile-specific settings
+	config.Audiobookshelf.URL = profileConfig.AudiobookshelfURL
+	config.Audiobookshelf.Token = profileConfig.AudiobookshelfToken
+	config.Hardcover.Token = profileConfig.HardcoverToken
+	
+	// Apply sync config from profile if available
+	syncConfig := profileConfig.SyncConfig
+	if syncConfig.SyncInterval != "" { // Check if sync config has been set
+		duration, err := time.ParseDuration(syncConfig.SyncInterval)
+		if err != nil {
+			s.logger.Warn("Invalid sync interval, using default", map[string]interface{}{
+				"profileID": profileConfig.Profile.ID,
+				"interval":  syncConfig.SyncInterval,
+				"error":     err,
+			})
+			duration = 1 * time.Hour // Default to 1 hour if invalid
+		}
+		
+		config.Sync.Incremental = syncConfig.Incremental
+		config.Sync.StateFile = syncConfig.StateFile
+		config.Sync.MinChangeThreshold = syncConfig.MinChangeThreshold
+		config.Sync.Libraries.Include = syncConfig.Libraries.Include
+		config.Sync.Libraries.Exclude = syncConfig.Libraries.Exclude
+		config.Sync.SyncInterval = duration
+		config.Sync.MinimumProgress = syncConfig.MinimumProgress
+		config.Sync.SyncWantToRead = syncConfig.SyncWantToRead
+		config.Sync.SyncOwned = syncConfig.SyncOwned
+		config.Sync.DryRun = syncConfig.DryRun
+	}
+	
+	return &config
+}
+
+// updateProfileStatus updates the status for a profile
+func (s *MultiUserService) updateProfileStatus(profileID string, status *SyncProfileStatus) {
 	s.statusMutex.Lock()
 	defer s.statusMutex.Unlock()
-	
-	s.userStatuses[userID] = status
+	s.profileStatuses[profileID] = status
 }
 
-// IsUserSyncing checks if a user is currently syncing
-func (s *MultiUserService) IsUserSyncing(userID string) bool {
+// timePtr returns a pointer to a time.Time value
+func timePtr(t time.Time) *time.Time {
+	return &t
+}
+
+// IsProfileSyncing checks if a profile is currently syncing
+func (s *MultiUserService) IsProfileSyncing(profileID string) bool {
 	s.syncMutex.RLock()
 	defer s.syncMutex.RUnlock()
 	
-	_, exists := s.activeSyncs[userID]
+	_, exists := s.activeSyncs[profileID]
 	return exists
 }

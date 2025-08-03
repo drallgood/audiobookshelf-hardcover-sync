@@ -6,8 +6,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// User represents a user in the multi-user system
-type User struct {
+// SyncProfile represents a sync profile in the system
+type SyncProfile struct {
 	ID        string    `gorm:"primaryKey" json:"id"`
 	Name      string    `gorm:"not null" json:"name"`
 	CreatedAt time.Time `json:"created_at"`
@@ -15,13 +15,13 @@ type User struct {
 	Active    bool      `gorm:"default:true" json:"active"`
 
 	// Relationships
-	Config    *UserConfig `gorm:"foreignKey:UserID" json:"config,omitempty"`
-	SyncState *SyncState  `gorm:"foreignKey:UserID" json:"sync_state,omitempty"`
+	Config    *SyncProfileConfig `gorm:"foreignKey:ProfileID" json:"config,omitempty"`
+	SyncState *ProfileSyncState  `gorm:"foreignKey:ProfileID" json:"sync_state,omitempty"`
 }
 
-// UserConfig holds the configuration for a specific user
-type UserConfig struct {
-	UserID                     string `gorm:"primaryKey" json:"user_id"`
+// SyncProfileConfig holds the configuration for a specific sync profile
+type SyncProfileConfig struct {
+	ProfileID                  string `gorm:"primaryKey;column:profile_id" json:"profile_id"`
 	AudiobookshelfURL          string `json:"audiobookshelf_url"`
 	AudiobookshelfTokenEncrypted string `json:"-"` // Hidden from JSON serialization
 	HardcoverTokenEncrypted    string `json:"-"` // Hidden from JSON serialization
@@ -30,19 +30,19 @@ type UserConfig struct {
 	UpdatedAt                  time.Time `json:"updated_at"`
 
 	// Relationship
-	User User `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	Profile SyncProfile `gorm:"foreignKey:ProfileID" json:"profile,omitempty"`
 }
 
-// SyncState holds the sync state for a specific user
-type SyncState struct {
-	UserID    string     `gorm:"primaryKey" json:"user_id"`
+// ProfileSyncState holds the sync state for a specific profile
+type ProfileSyncState struct {
+	ProfileID string     `gorm:"primaryKey;column:profile_id" json:"profile_id"`
 	StateData string     `gorm:"type:text" json:"state_data"` // JSON string
 	LastSync  *time.Time `json:"last_sync"`
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
 
 	// Relationship
-	User User `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	Profile SyncProfile `gorm:"foreignKey:ProfileID" json:"profile,omitempty"`
 }
 
 // SyncConfigData represents the structure of sync configuration
@@ -63,53 +63,72 @@ type SyncConfigData struct {
 	TestBookLimit   int     `json:"test_book_limit"`
 }
 
-// BeforeCreate hook for User
-func (u *User) BeforeCreate(tx *gorm.DB) error {
-	if u.CreatedAt.IsZero() {
-		u.CreatedAt = time.Now()
+// IsEmpty checks if the SyncConfigData is empty (all fields at their zero values)
+func (s SyncConfigData) IsEmpty() bool {
+	return !s.Incremental &&
+		s.StateFile == "" &&
+		s.MinChangeThreshold == 0 &&
+		len(s.Libraries.Include) == 0 &&
+		len(s.Libraries.Exclude) == 0 &&
+		s.SyncInterval == "" &&
+		s.MinimumProgress == 0 &&
+		!s.SyncWantToRead &&
+		!s.SyncOwned &&
+		!s.DryRun &&
+		s.TestBookFilter == "" &&
+		s.TestBookLimit == 0
+}
+
+// BeforeCreate hook for SyncProfile
+func (p *SyncProfile) BeforeCreate(tx *gorm.DB) error {
+	now := time.Now()
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = now
 	}
-	if u.UpdatedAt.IsZero() {
-		u.UpdatedAt = time.Now()
+	if p.UpdatedAt.IsZero() {
+		p.UpdatedAt = now
 	}
 	return nil
 }
 
-// BeforeUpdate hook for User
-func (u *User) BeforeUpdate(tx *gorm.DB) error {
-	u.UpdatedAt = time.Now()
+// BeforeUpdate hook for SyncProfile
+func (p *SyncProfile) BeforeUpdate(tx *gorm.DB) error {
+	p.UpdatedAt = time.Now()
 	return nil
 }
 
-// BeforeCreate hook for UserConfig
-func (uc *UserConfig) BeforeCreate(tx *gorm.DB) error {
-	if uc.CreatedAt.IsZero() {
-		uc.CreatedAt = time.Now()
+// BeforeCreate hook for SyncProfileConfig
+func (c *SyncProfileConfig) BeforeCreate(tx *gorm.DB) error {
+	now := time.Now()
+	if c.CreatedAt.IsZero() {
+		c.CreatedAt = now
 	}
-	if uc.UpdatedAt.IsZero() {
-		uc.UpdatedAt = time.Now()
-	}
-	return nil
-}
-
-// BeforeUpdate hook for UserConfig
-func (uc *UserConfig) BeforeUpdate(tx *gorm.DB) error {
-	uc.UpdatedAt = time.Now()
-	return nil
-}
-
-// BeforeCreate hook for SyncState
-func (ss *SyncState) BeforeCreate(tx *gorm.DB) error {
-	if ss.CreatedAt.IsZero() {
-		ss.CreatedAt = time.Now()
-	}
-	if ss.UpdatedAt.IsZero() {
-		ss.UpdatedAt = time.Now()
+	if c.UpdatedAt.IsZero() {
+		c.UpdatedAt = now
 	}
 	return nil
 }
 
-// BeforeUpdate hook for SyncState
-func (ss *SyncState) BeforeUpdate(tx *gorm.DB) error {
-	ss.UpdatedAt = time.Now()
+// BeforeUpdate hook for SyncProfileConfig
+func (c *SyncProfileConfig) BeforeUpdate(tx *gorm.DB) error {
+	c.UpdatedAt = time.Now()
+	return nil
+}
+
+// BeforeCreate hook for ProfileSyncState
+func (s *ProfileSyncState) BeforeCreate(tx *gorm.DB) error {
+	now := time.Now()
+	if s.CreatedAt.IsZero() {
+		s.CreatedAt = now
+	}
+	if s.UpdatedAt.IsZero() {
+		s.UpdatedAt = now
+	}
+	return nil
+}
+
+// BeforeUpdate hook for ProfileSyncState
+func (s *ProfileSyncState) BeforeUpdate(tx *gorm.DB) error {
+	s.UpdatedAt = time.Now()
 	return nil
 }

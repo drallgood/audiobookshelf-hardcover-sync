@@ -49,25 +49,35 @@ func New(addr string, multiUserService *multiuser.MultiUserService, authService 
 	handler := http.NewServeMux()
 	
 	// Health check (no auth required)
-	handler.HandleFunc("/healthz", s.handleHealthCheck)
+	handler.HandleFunc("GET /health", s.handleHealthCheck)
 	
 	// Authentication endpoints (no auth required for login)
-	handler.HandleFunc("/auth/login", s.authHandlers.HandleLogin)
-	handler.HandleFunc("/auth/logout", s.authHandlers.HandleLogout)
-	handler.HandleFunc("/auth/callback/", s.authHandlers.HandleOAuthCallback)
-	handler.HandleFunc("/auth/oauth/", s.authHandlers.HandleOAuthLogin)
+	handler.HandleFunc("POST /auth/login", s.authHandlers.HandleLogin)
+	handler.HandleFunc("GET /auth/callback", s.authHandlers.HandleOAuthCallback)
+	handler.HandleFunc("POST /auth/logout", s.authHandlers.HandleLogout)
+	handler.HandleFunc("GET /auth/me", s.handleAPICurrentUser)
 	
 	// Legacy sync endpoint (backwards compatibility, no auth for now)
-	handler.HandleFunc("/sync", s.handleSync)
+	handler.HandleFunc("POST /sync", s.handleSync)
+
+	// API v1 routes with authentication
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("GET /profiles", s.handleAPIProfiles)
+	apiMux.HandleFunc("POST /profiles", s.handleAPIProfiles)
+	apiMux.HandleFunc("GET /profiles/{id}", s.handleAPIProfilesWithID)
+	apiMux.HandleFunc("PUT /profiles/{id}", s.handleAPIProfilesWithID)
+	apiMux.HandleFunc("DELETE /profiles/{id}", s.handleAPIProfilesWithID)
+	apiMux.HandleFunc("PUT /profiles/{id}/config", s.handleAPIProfilesWithID)
+	apiMux.HandleFunc("GET /profiles/{id}/status", s.handleAPIProfilesWithID)
+	apiMux.HandleFunc("POST /profiles/{id}/sync", s.handleAPIProfilesWithID)
+	apiMux.HandleFunc("DELETE /profiles/{id}/sync", s.handleAPIProfilesWithID)
+	apiMux.HandleFunc("GET /status", s.handleAPIStatus)
+
+	// Mount API routes under /api with auth middleware
+	handler.Handle("/api/", s.authMiddleware.RequireAuth(http.StripPrefix("/api", apiMux)))
 	
-	// Protected Multi-user API endpoints
-	handler.Handle("/api/users", s.authMiddleware.RequireAuth(http.HandlerFunc(s.handleAPIUsers)))
-	handler.Handle("/api/users/", s.authMiddleware.RequireAuth(http.HandlerFunc(s.handleAPIUsersWithID)))
-	handler.Handle("/api/status", s.authMiddleware.RequireAuth(http.HandlerFunc(s.handleAPIStatus)))
-	handler.Handle("/api/auth/me", s.authMiddleware.RequireAuth(http.HandlerFunc(s.apiHandler.HandleCurrentUser)))
-	
-	// Protected static web UI files
-	handler.Handle("/", s.authMiddleware.OptionalAuth(http.HandlerFunc(s.handleStaticFiles)))
+	// Static web UI files (no auth required)
+	handler.Handle("/", http.HandlerFunc(s.handleStaticFiles))
 
 	// Add middleware chain: CORS -> Auth -> Logger
 	var finalHandler http.Handler = handler
@@ -130,47 +140,55 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleAPIUsers handles /api/users endpoint
-func (s *Server) handleAPIUsers(w http.ResponseWriter, r *http.Request) {
+// handleAPIStatus handles /api/status endpoint
+func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.apiHandler.GetAllProfileStatuses(w, r)
+}
+
+// handleAPIProfiles handles /api/profiles endpoint
+func (s *Server) handleAPIProfiles(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		s.apiHandler.GetUsers(w, r)
+		s.apiHandler.GetProfiles(w, r)
 	case http.MethodPost:
-		s.apiHandler.CreateUser(w, r)
+		s.apiHandler.CreateProfile(w, r)
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
-// handleAPIUsersWithID handles /api/users/{id} and related endpoints
-func (s *Server) handleAPIUsersWithID(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/api/users/")
-	parts := strings.Split(path, "/")
-	
-	if len(parts) == 1 && parts[0] != "" {
-		// /api/users/{id}
-		switch r.Method {
-		case http.MethodGet:
-			s.apiHandler.GetUser(w, r)
-		case http.MethodPut:
-			s.apiHandler.UpdateUser(w, r)
-		case http.MethodDelete:
-			s.apiHandler.DeleteUser(w, r)
-		default:
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		}
-	} else if len(parts) == 2 {
-		// /api/users/{id}/{action}
-		switch parts[1] {
+// handleAPIProfilesWithID handles /api/profiles/{id} and related endpoints
+func (s *Server) handleAPIProfilesWithID(w http.ResponseWriter, r *http.Request) {
+	// Extract profile ID from URL path
+	pathParts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(pathParts) < 3 {
+		http.Error(w, "Invalid profile ID", http.StatusBadRequest)
+		return
+	}
+
+	profileID := pathParts[2]
+	if profileID == "" {
+		http.Error(w, "Profile ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Handle different resource types under /profiles/{id}
+	if len(pathParts) > 3 {
+		// Handle nested resources like /profiles/{id}/config, /profiles/{id}/status, etc.
+		switch pathParts[3] {
 		case "config":
 			if r.Method == http.MethodPut {
-				s.apiHandler.UpdateUserConfig(w, r)
+				s.apiHandler.UpdateProfileConfig(w, r)
 			} else {
 				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			}
 		case "status":
 			if r.Method == http.MethodGet {
-				s.apiHandler.GetUserStatus(w, r)
+				s.apiHandler.GetProfileStatus(w, r)
 			} else {
 				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			}
@@ -186,17 +204,36 @@ func (s *Server) handleAPIUsersWithID(w http.ResponseWriter, r *http.Request) {
 		default:
 			http.Error(w, "Not found", http.StatusNotFound)
 		}
-	} else {
-		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+
+	// Handle direct profile access (/profiles/{id})
+	switch r.Method {
+	case http.MethodGet:
+		s.apiHandler.GetProfile(w, r)
+	case http.MethodPut:
+		s.apiHandler.UpdateProfile(w, r)
+	case http.MethodDelete:
+		s.apiHandler.DeleteProfile(w, r)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
-// handleAPIStatus handles /api/status endpoint
-func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		s.apiHandler.GetAllUserStatuses(w, r)
-	} else {
+// handleAPICurrentUser handles /auth/me endpoint
+func (s *Server) handleAPICurrentUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	// Return a placeholder response for now
+	// TODO: Implement proper user context handling
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write([]byte(`{"id":"system","name":"System User","email":""}`)); err != nil {
+		s.logger.Errorf("Failed to write response: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
 }
 

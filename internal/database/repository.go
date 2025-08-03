@@ -2,6 +2,7 @@ package database
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -27,23 +28,23 @@ func NewRepository(db *Database, encryptor *crypto.EncryptionManager, log *logge
 	}
 }
 
-// UserWithTokens represents a user with decrypted tokens
-type UserWithTokens struct {
-	User                User   `json:"user"`
-	AudiobookshelfURL   string `json:"audiobookshelf_url"`
-	AudiobookshelfToken string `json:"audiobookshelf_token"`
-	HardcoverToken      string `json:"hardcover_token"`
+// ProfileWithTokens represents a sync profile with decrypted tokens
+type ProfileWithTokens struct {
+	Profile             SyncProfile `json:"profile"`
+	AudiobookshelfURL   string      `json:"audiobookshelf_url"`
+	AudiobookshelfToken string      `json:"audiobookshelf_token"`
+	HardcoverToken      string      `json:"hardcover_token"`
 	SyncConfig          SyncConfigData `json:"sync_config"`
 }
 
-// CreateUser creates a new user with encrypted configuration
-func (r *Repository) CreateUser(userID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig SyncConfigData) error {
+// CreateProfile creates a new sync profile with encrypted configuration
+func (r *Repository) CreateProfile(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig SyncConfigData) error {
 	// Encrypt tokens
 	encryptedABSToken, err := r.encryptor.Encrypt(audiobookshelfToken)
 	if err != nil {
 		r.logger.Error("Failed to encrypt Audiobookshelf token", map[string]interface{}{
-			"user_id": userID,
-			"error":   err.Error(),
+			"profile_id": profileID,
+			"error":      err.Error(),
 		})
 		return fmt.Errorf("failed to encrypt Audiobookshelf token: %w", err)
 	}
@@ -51,8 +52,8 @@ func (r *Repository) CreateUser(userID, name, audiobookshelfURL, audiobookshelfT
 	encryptedHCToken, err := r.encryptor.Encrypt(hardcoverToken)
 	if err != nil {
 		r.logger.Error("Failed to encrypt Hardcover token", map[string]interface{}{
-			"user_id": userID,
-			"error":   err.Error(),
+			"profile_id": profileID,
+			"error":      err.Error(),
 		})
 		return fmt.Errorf("failed to encrypt Hardcover token: %w", err)
 	}
@@ -61,39 +62,39 @@ func (r *Repository) CreateUser(userID, name, audiobookshelfURL, audiobookshelfT
 	syncConfigJSON, err := json.Marshal(syncConfig)
 	if err != nil {
 		r.logger.Error("Failed to marshal sync config", map[string]interface{}{
-			"user_id": userID,
-			"error":   err.Error(),
+			"profile_id": profileID,
+			"error":      err.Error(),
 		})
 		return fmt.Errorf("failed to marshal sync config: %w", err)
 	}
 
-	// Create user and config in a transaction
+	// Create profile and config in a transaction
 	return r.db.GetDB().Transaction(func(tx *gorm.DB) error {
-		// Create user
-		user := User{
-			ID:     userID,
+		// Create profile
+		profile := SyncProfile{
+			ID:     profileID,
 			Name:   name,
 			Active: true,
 		}
-		if err := tx.Create(&user).Error; err != nil {
-			return fmt.Errorf("failed to create user: %w", err)
+		if err := tx.Create(&profile).Error; err != nil {
+			return fmt.Errorf("failed to create sync profile: %w", err)
 		}
 
-		// Create user config
-		config := UserConfig{
-			UserID:                       userID,
-			AudiobookshelfURL:            audiobookshelfURL,
+		// Create profile config
+		config := SyncProfileConfig{
+			ProfileID:                  profileID,
+			AudiobookshelfURL:          audiobookshelfURL,
 			AudiobookshelfTokenEncrypted: encryptedABSToken,
-			HardcoverTokenEncrypted:      encryptedHCToken,
-			SyncConfig:                   string(syncConfigJSON),
+			HardcoverTokenEncrypted:    encryptedHCToken,
+			SyncConfig:                 string(syncConfigJSON),
 		}
 		if err := tx.Create(&config).Error; err != nil {
-			return fmt.Errorf("failed to create user config: %w", err)
+			return fmt.Errorf("failed to create sync profile config: %w", err)
 		}
 
 		// Create empty sync state
-		syncState := SyncState{
-			UserID:    userID,
+		syncState := ProfileSyncState{
+			ProfileID: profileID,
 			StateData: "{}",
 		}
 		if err := tx.Create(&syncState).Error; err != nil {
@@ -101,7 +102,7 @@ func (r *Repository) CreateUser(userID, name, audiobookshelfURL, audiobookshelfT
 		}
 
 		r.logger.Info("Created new user", map[string]interface{}{
-			"user_id": userID,
+			"user_id": profileID,
 			"name":    name,
 		})
 
@@ -109,100 +110,92 @@ func (r *Repository) CreateUser(userID, name, audiobookshelfURL, audiobookshelfT
 	})
 }
 
-// GetUser retrieves a user by ID with decrypted tokens
-func (r *Repository) GetUser(userID string) (*UserWithTokens, error) {
-	var user User
-	var config UserConfig
-
-	// Get user with config
-	if err := r.db.GetDB().Where("id = ? AND active = ?", userID, true).First(&user).Error; err != nil {
+// GetProfile retrieves a sync profile by ID with decrypted tokens
+func (r *Repository) GetProfile(profileID string) (*ProfileWithTokens, error) {
+	// Get profile with config
+	var profile SyncProfile
+	if err := r.db.GetDB().Preload("Config").First(&profile, "id = ? AND active = ?", profileID, true).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("user not found: %s", userID)
+			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to get user: %w", err)
+		return nil, fmt.Errorf("failed to get sync profile: %w", err)
 	}
 
-	if err := r.db.GetDB().Where("user_id = ?", userID).First(&config).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("user config not found: %s", userID)
-		}
-		return nil, fmt.Errorf("failed to get user config: %w", err)
+	if profile.Config == nil {
+		return nil, fmt.Errorf("sync profile config not found")
 	}
 
 	// Decrypt tokens
-	audiobookshelfToken, err := r.encryptor.Decrypt(config.AudiobookshelfTokenEncrypted)
+	audiobookshelfToken, err := r.encryptor.Decrypt(profile.Config.AudiobookshelfTokenEncrypted)
 	if err != nil {
 		r.logger.Error("Failed to decrypt Audiobookshelf token", map[string]interface{}{
-			"user_id": userID,
-			"error":   err.Error(),
+			"profile_id": profileID,
+			"error":      err.Error(),
 		})
 		return nil, fmt.Errorf("failed to decrypt Audiobookshelf token: %w", err)
 	}
 
-	hardcoverToken, err := r.encryptor.Decrypt(config.HardcoverTokenEncrypted)
+	hardcoverToken, err := r.encryptor.Decrypt(profile.Config.HardcoverTokenEncrypted)
 	if err != nil {
 		r.logger.Error("Failed to decrypt Hardcover token", map[string]interface{}{
-			"user_id": userID,
-			"error":   err.Error(),
+			"profile_id": profileID,
+			"error":      err.Error(),
 		})
 		return nil, fmt.Errorf("failed to decrypt Hardcover token: %w", err)
 	}
 
 	// Parse sync config
 	var syncConfig SyncConfigData
-	if err := json.Unmarshal([]byte(config.SyncConfig), &syncConfig); err != nil {
-		r.logger.Error("Failed to unmarshal sync config", map[string]interface{}{
-			"user_id": userID,
-			"error":   err.Error(),
-		})
-		return nil, fmt.Errorf("failed to unmarshal sync config: %w", err)
+	if profile.Config.SyncConfig != "" {
+		if err := json.Unmarshal([]byte(profile.Config.SyncConfig), &syncConfig); err != nil {
+			r.logger.Error("Failed to parse sync config", map[string]interface{}{
+				"profile_id": profileID,
+				"error":      err.Error(),
+			})
+			return nil, fmt.Errorf("failed to parse sync config: %w", err)
+		}
 	}
 
-	return &UserWithTokens{
-		User:                user,
-		AudiobookshelfURL:   config.AudiobookshelfURL,
+	return &ProfileWithTokens{
+		Profile:             profile,
+		AudiobookshelfURL:   profile.Config.AudiobookshelfURL,
 		AudiobookshelfToken: audiobookshelfToken,
 		HardcoverToken:      hardcoverToken,
 		SyncConfig:          syncConfig,
 	}, nil
 }
 
-// ListUsers retrieves all active users
-func (r *Repository) ListUsers() ([]User, error) {
-	var users []User
-	if err := r.db.GetDB().Where("active = ?", true).Find(&users).Error; err != nil {
-		return nil, fmt.Errorf("failed to list users: %w", err)
+// ListProfiles retrieves all active sync profiles
+func (r *Repository) ListProfiles() ([]SyncProfile, error) {
+	var profiles []SyncProfile
+	if err := r.db.GetDB().Where("active = ?", true).Find(&profiles).Error; err != nil {
+		return nil, fmt.Errorf("failed to list sync profiles: %w", err)
 	}
-	return users, nil
+	return profiles, nil
 }
 
-// UpdateUser updates user information
-func (r *Repository) UpdateUser(userID, name string) error {
-	result := r.db.GetDB().Model(&User{}).Where("id = ?", userID).Updates(User{
-		Name:      name,
-		UpdatedAt: time.Now(),
-	})
-	if result.Error != nil {
-		return fmt.Errorf("failed to update user: %w", result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return fmt.Errorf("user not found: %s", userID)
-	}
+// UpdateProfile updates sync profile information
+func (r *Repository) UpdateProfile(profileID, name string) error {
+	result := r.db.GetDB().Model(&SyncProfile{}).
+		Where("id = ? AND active = ?", profileID, true).
+		Updates(map[string]interface{}{
+			"name":       name,
+			"updated_at": time.Now(),
+		})
 
-	r.logger.Info("Updated user", map[string]interface{}{
-		"user_id": userID,
-		"name":    name,
-	})
+	if result.Error != nil {
+		return fmt.Errorf("failed to update sync profile: %w", result.Error)
+	}
 
 	return nil
 }
 
 // UpdateUserConfig updates user configuration with encrypted tokens
 // If audiobookshelfToken or hardcoverToken are empty, the existing tokens will be preserved
-func (r *Repository) UpdateUserConfig(userID, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig SyncConfigData) error {
+func (r *Repository) UpdateUserConfig(profileID, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig SyncConfigData) error {
 	// Get existing config to preserve tokens if not provided
-	var existingConfig UserConfig
-	if err := r.db.GetDB().Where("user_id = ?", userID).First(&existingConfig).Error; err != nil {
+	var existingConfig SyncProfileConfig
+	if err := r.db.GetDB().Where("profile_id = ?", profileID).First(&existingConfig).Error; err != nil {
 		return fmt.Errorf("failed to get existing user config: %w", err)
 	}
 
@@ -244,78 +237,105 @@ func (r *Repository) UpdateUserConfig(userID, audiobookshelfURL, audiobookshelfT
 	}
 
 	// Only include fields that have values to avoid overwriting with zero values
-	result := r.db.GetDB().Model(&UserConfig{}).Where("user_id = ?", userID).Updates(updates)
+	result := r.db.GetDB().Model(&SyncProfileConfig{}).Where("profile_id = ?", profileID).Updates(updates)
 
 	if result.Error != nil {
 		return fmt.Errorf("failed to update user config: %w", result.Error)
 	}
 	if result.RowsAffected == 0 {
-		return fmt.Errorf("user config not found: %s", userID)
+		return fmt.Errorf("user config not found: %s", profileID)
 	}
 
 	r.logger.Info("Updated user config", map[string]interface{}{
-		"user_id": userID,
+		"profile_id": profileID,
 	})
 
 	return nil
 }
 
-// DeleteUser soft deletes a user by setting active to false
-func (r *Repository) DeleteUser(userID string) error {
-	result := r.db.GetDB().Model(&User{}).Where("id = ?", userID).Update("active", false)
+// DeleteProfile soft deletes a sync profile by setting active to false
+func (r *Repository) DeleteProfile(profileID string) error {
+	result := r.db.GetDB().Model(&SyncProfile{}).Where("id = ?", profileID).Update("active", false)
 	if result.Error != nil {
-		return fmt.Errorf("failed to delete user: %w", result.Error)
+		return fmt.Errorf("failed to delete sync profile: %w", result.Error)
 	}
 	if result.RowsAffected == 0 {
-		return fmt.Errorf("user not found: %s", userID)
+		return fmt.Errorf("sync profile not found: %s", profileID)
 	}
 
-	r.logger.Info("Deleted user", map[string]interface{}{
-		"user_id": userID,
+	r.logger.Info("Deleted sync profile", map[string]interface{}{
+		"profile_id": profileID,
 	})
 
 	return nil
 }
 
-// GetSyncState retrieves sync state for a user
-func (r *Repository) GetSyncState(userID string) (*SyncState, error) {
-	var syncState SyncState
-	if err := r.db.GetDB().Where("user_id = ?", userID).First(&syncState).Error; err != nil {
+// GetSyncState retrieves the sync state for a sync profile
+func (r *Repository) GetSyncState(profileID string) (*ProfileSyncState, error) {
+	var state ProfileSyncState
+	if err := r.db.GetDB().Where("profile_id = ?", profileID).First(&state).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("sync state not found: %s", userID)
+			// Return default state if not found
+			now := time.Now()
+			return &ProfileSyncState{
+				ProfileID: profileID,
+				StateData: "{}",
+				CreatedAt: now,
+				UpdatedAt: now,
+			}, nil
 		}
 		return nil, fmt.Errorf("failed to get sync state: %w", err)
 	}
-	return &syncState, nil
+	return &state, nil
 }
 
-// UpdateSyncState updates sync state for a user
-func (r *Repository) UpdateSyncState(userID, stateData string) error {
-	now := time.Now()
-	result := r.db.GetDB().Model(&SyncState{}).Where("user_id = ?", userID).Updates(SyncState{
-		StateData: stateData,
-		LastSync:  &now,
-		UpdatedAt: now,
-	})
-	if result.Error != nil {
-		return fmt.Errorf("failed to update sync state: %w", result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return fmt.Errorf("sync state not found: %s", userID)
+// UpdateSyncState updates the sync state for a sync profile
+func (r *Repository) UpdateSyncState(state *ProfileSyncState) error {
+	state.UpdatedAt = time.Now()
+
+	// Check if state exists
+	var existingState ProfileSyncState
+	result := r.db.GetDB().Where("profile_id = ?", state.ProfileID).First(&existingState)
+
+	if result.Error == nil {
+		// Update existing state - use the existing CreatedAt
+		state.CreatedAt = existingState.CreatedAt
+
+		// Update the existing record
+		if err := r.db.GetDB().Model(&existingState).Updates(state).Error; err != nil {
+			r.logger.Error("Failed to update sync state", map[string]interface{}{
+				"profile_id": state.ProfileID,
+				"error":      err.Error(),
+			})
+			return fmt.Errorf("failed to update sync state: %w", err)
+		}
+	} else if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		// Create new state
+		state.CreatedAt = time.Now()
+
+		if err := r.db.GetDB().Create(state).Error; err != nil {
+			r.logger.Error("Failed to create sync state", map[string]interface{}{
+				"profile_id": state.ProfileID,
+				"error":      err.Error(),
+			})
+			return fmt.Errorf("failed to create sync state: %w", err)
+		}
+	} else {
+		return fmt.Errorf("failed to check for existing sync state: %w", result.Error)
 	}
 
-	r.logger.Debug("Updated sync state", map[string]interface{}{
-		"user_id": userID,
+	r.logger.Info("Updated sync state", map[string]interface{}{
+		"profile_id": state.ProfileID,
 	})
 
 	return nil
 }
 
-// UserExists checks if a user exists and is active
-func (r *Repository) UserExists(userID string) (bool, error) {
+// UserExists checks if a sync profile exists and is active
+func (r *Repository) UserExists(profileID string) (bool, error) {
 	var count int64
-	if err := r.db.GetDB().Model(&User{}).Where("id = ? AND active = ?", userID, true).Count(&count).Error; err != nil {
-		return false, fmt.Errorf("failed to check user existence: %w", err)
+	if err := r.db.GetDB().Model(&SyncProfile{}).Where("id = ? AND active = ?", profileID, true).Count(&count).Error; err != nil {
+		return false, fmt.Errorf("failed to check profile existence: %w", err)
 	}
 	return count > 0, nil
 }

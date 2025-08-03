@@ -1,0 +1,470 @@
+openapi: 3.0.3
+info:
+  title: Audiobookshelf-Hardcover Sync API
+  description: |
+    This API allows you to manage sync profiles for synchronizing audiobooks between Audiobookshelf and Hardcover.
+    
+    ## Authentication
+    
+    The API uses JWT authentication. Include the JWT token in the `Authorization` header:
+    
+    ```
+    Authorization: Bearer <token>
+    ```
+    
+    ## Rate Limiting
+    
+    The API is rate limited to 100 requests per minute per IP address.
+  version: 1.0.0
+  contact:
+    name: API Support
+    url: https://github.com/drallgood/audiobookshelf-hardcover-sync
+servers:
+  - url: http://localhost:8080/api
+    description: Development server
+  - url: https://api.example.com/v1
+    description: Production server
+
+tags:
+  - name: Profiles
+    description: Manage sync profiles
+  - name: Sync
+    description: Control sync operations
+  - name: Status
+    description: Check sync status
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          example: "Profile not found"
+    
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          description: Response data
+    
+    Profile:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "profile-123"
+        name:
+          type: string
+          example: "My Audiobooks"
+        active:
+          type: boolean
+          example: true
+        createdAt:
+          type: string
+          format: date-time
+          example: "2023-01-01T00:00:00Z"
+        updatedAt:
+          type: string
+          format: date-time
+          example: "2023-01-01T00:00:00Z"
+    
+    ProfileConfig:
+      type: object
+      properties:
+        audiobookshelfUrl:
+          type: string
+          example: "https://audiobooks.example.com"
+        syncConfig:
+          type: object
+          properties:
+            libraryId:
+              type: string
+              example: "lib1"
+            includeTags:
+              type: array
+              items:
+                type: string
+              example: ["hardcover"]
+            excludeTags:
+              type: array
+              items:
+                type: string
+              example: ["exclusive"]
+            dryRun:
+              type: boolean
+              example: false
+    
+    ProfileWithConfig:
+      allOf:
+        - $ref: '#/components/schemas/Profile'
+        - type: object
+          properties:
+            config:
+              $ref: '#/components/schemas/ProfileConfig'
+    
+    SyncStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [idle, syncing, completed, error]
+          example: "idle"
+        lastSync:
+          type: string
+          format: date-time
+          nullable: true
+          example: "2023-01-01T00:00:00Z"
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+          example: 0
+        error:
+          type: string
+          nullable: true
+          example: "Connection failed"
+
+security:
+  - BearerAuth: []
+
+paths:
+  /profiles:
+    get:
+      tags: [Profiles]
+      summary: List all sync profiles
+      responses:
+        '200':
+          description: List of sync profiles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Profile'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    
+    post:
+      tags: [Profiles]
+      summary: Create a new sync profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, name, audiobookshelfUrl, audiobookshelfToken, hardcoverToken]
+              properties:
+                id:
+                  type: string
+                  example: "profile-123"
+                name:
+                  type: string
+                  example: "My Audiobooks"
+                audiobookshelfUrl:
+                  type: string
+                  example: "https://audiobooks.example.com"
+                audiobookshelfToken:
+                  type: string
+                  example: "abs-token-123"
+                hardcoverToken:
+                  type: string
+                  example: "hc-token-456"
+                syncConfig:
+                  $ref: '#/components/schemas/ProfileConfig/syncConfig'
+      responses:
+        '201':
+          description: Profile created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/ProfileWithConfig'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  
+  /profiles/{profileId}:
+    get:
+      tags: [Profiles]
+      summary: Get a sync profile by ID
+      parameters:
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "profile-123"
+      responses:
+        '200':
+          description: Profile details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/ProfileWithConfig'
+        '404':
+          description: Profile not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    
+    put:
+      tags: [Profiles]
+      summary: Update a sync profile
+      parameters:
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "profile-123"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  example: "Updated Profile Name"
+      responses:
+        '200':
+          description: Profile updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '404':
+          description: Profile not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    
+    delete:
+      tags: [Profiles]
+      summary: Delete a sync profile
+      parameters:
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "profile-123"
+      responses:
+        '200':
+          description: Profile deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '404':
+          description: Profile not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  
+  /profiles/{profileId}/config:
+    put:
+      tags: [Profiles]
+      summary: Update a profile's configuration
+      parameters:
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "profile-123"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                audiobookshelfUrl:
+                  type: string
+                  example: "https://new-audiobooks.example.com"
+                audiobookshelfToken:
+                  type: string
+                  example: "new-abs-token-123"
+                hardcoverToken:
+                  type: string
+                  example: "new-hc-token-456"
+                syncConfig:
+                  $ref: '#/components/schemas/ProfileConfig/syncConfig'
+      responses:
+        '200':
+          description: Configuration updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '404':
+          description: Profile not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  
+  /profiles/{profileId}/status:
+    get:
+      tags: [Status]
+      summary: Get sync status for a profile
+      parameters:
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "profile-123"
+      responses:
+        '200':
+          description: Current sync status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/SyncStatus'
+        '404':
+          description: Profile not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  
+  /status:
+    get:
+      tags: [Status]
+      summary: Get sync status for all profiles
+      responses:
+        '200':
+          description: Sync status for all profiles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        profileId:
+                          type: string
+                          example: "profile-123"
+                        profileName:
+                          type: string
+                          example: "My Audiobooks"
+                        status:
+                          $ref: '#/components/schemas/SyncStatus'
+  
+  /profiles/{profileId}/sync:
+    post:
+      tags: [Sync]
+      summary: Start a sync for a profile
+      parameters:
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "profile-123"
+      responses:
+        '202':
+          description: Sync started successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '404':
+          description: Profile not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Sync already in progress
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    
+    delete:
+      tags: [Sync]
+      summary: Cancel an in-progress sync for a profile
+      parameters:
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "profile-123"
+      responses:
+        '200':
+          description: Sync cancelled successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '404':
+          description: Profile not found or no sync in progress
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'

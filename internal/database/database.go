@@ -62,9 +62,9 @@ func (d *Database) migrate() error {
 
 	// Auto-migrate the schema
 	err := d.db.AutoMigrate(
-		&User{},
-		&UserConfig{},
-		&SyncState{},
+		&SyncProfile{},
+		&SyncProfileConfig{},
+		&ProfileSyncState{},
 		&auth.AuthUser{},
 		&auth.AuthSession{},
 		&auth.AuthProvider{},
