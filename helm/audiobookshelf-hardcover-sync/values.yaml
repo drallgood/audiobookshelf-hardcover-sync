@@ -180,7 +180,53 @@ persistence:
   accessMode: ReadWriteOnce
   size: 1Gi
   # existingClaim: ""
-  # annotations: {}
+
+# Authentication configuration
+authentication:
+  # Enable authentication system
+  enabled: false
+  
+  # Session configuration
+  session:
+    # Secret for signing cookies (will be auto-generated if empty)
+    # For production, set this via secret or environment variable
+    secret: ""
+    # Cookie name for sessions
+    cookieName: "audiobookshelf-sync-session"
+    # Session max age in seconds (24 hours)
+    maxAge: 86400
+    # Secure cookie (set to true for HTTPS)
+    secure: false
+    # HTTP only cookie
+    httpOnly: true
+    # SameSite cookie policy
+    sameSite: "Lax"
+  
+  # Default admin user configuration
+  defaultAdmin:
+    # Default admin username
+    username: "admin"
+    # Default admin email
+    email: "admin@localhost"
+    # Default admin password (use secret for production)
+    password: ""
+  
+  # Keycloak/OIDC configuration
+  keycloak:
+    # Enable Keycloak authentication
+    enabled: false
+    # OIDC issuer URL
+    issuer: ""
+    # OIDC client ID
+    clientId: ""
+    # OIDC client secret (use secret for production)
+    clientSecret: ""
+    # Redirect URI
+    redirectUri: ""
+    # OIDC scopes
+    scopes: "openid profile email"
+    # Role claim name
+    roleClaim: "realm_access.roles"
 
 # Application configuration
 config:
@@ -238,35 +284,7 @@ secrets:
     # API token for Hardcover
     token: ""
 
-# Authentication configuration (v3.0.0+)
-authentication:
-  # Enable authentication system
-  enabled: false
-  # Session secret for signing cookies (required if enabled)
-  sessionSecret: ""
-  # Session cookie name
-  cookieName: "abs-hc-sync-session"
-  
-  # Default admin user (created if no users exist)
-  defaultAdmin:
-    username: "admin"
-    email: "admin@localhost"
-    password: "changeme"
-  
-  # Keycloak/OIDC configuration
-  keycloak:
-    # OIDC issuer URL
-    issuer: ""
-    # Client ID for OIDC
-    clientId: ""
-    # Client secret for OIDC
-    clientSecret: ""
-    # Redirect URI for OIDC callbacks
-    redirectUri: ""
-    # Scopes for OIDC authentication
-    scopes: "openid profile email"
-    # JWT claim path for roles
-    roleClaim: "realm_access.roles"
+
 
 # Environment variables (will override config values)
 env: []

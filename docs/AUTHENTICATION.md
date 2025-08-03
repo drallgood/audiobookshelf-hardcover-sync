@@ -13,9 +13,68 @@ The authentication system provides:
 
 ## Quick Start
 
-### Enable Authentication
+### Configuration Methods
 
-Set the following environment variable to enable authentication:
+Authentication can be configured using multiple methods with the following priority:
+
+1. **Environment Variables** (highest priority)
+2. **config.yaml** (medium priority)
+3. **Default values** (lowest priority)
+
+### Method 1: config.yaml Configuration
+
+The easiest way to configure authentication is through the `config.yaml` file:
+
+```yaml
+authentication:
+  # Enable authentication system
+  enabled: true
+  
+  # Session configuration
+  session:
+    # Secret for signing cookies (auto-generated if empty)
+    secret: "your-secret-key-here"
+    # Cookie name for sessions
+    cookie_name: "audiobookshelf-sync-session"
+    # Session max age in seconds (24 hours)
+    max_age: 86400
+    # Secure cookie (set to true for HTTPS)
+    secure: false
+    # HTTP only cookie (prevents JavaScript access)
+    http_only: true
+    # SameSite cookie policy (Strict, Lax, None)
+    same_site: "Lax"
+  
+  # Default admin user (created automatically if auth is enabled)
+  default_admin:
+    # Default admin username
+    username: "admin"
+    # Default admin email
+    email: "admin@localhost"
+    # Default admin password (REQUIRED if auth is enabled)
+    password: "your-secure-password"
+  
+  # Keycloak/OIDC authentication (optional)
+  keycloak:
+    # Enable Keycloak/OIDC provider
+    enabled: false
+    # OIDC issuer URL
+    issuer: "https://keycloak.example.com/realms/myrealm"
+    # OIDC client ID
+    client_id: "audiobookshelf-sync"
+    # OIDC client secret
+    client_secret: "your-client-secret"
+    # Redirect URI (must match Keycloak client config)
+    redirect_uri: "http://localhost:8080/auth/callback"
+    # OIDC scopes to request
+    scopes: "openid profile email"
+    # JWT claim containing user roles
+    role_claim: "realm_access.roles"
+```
+
+### Method 2: Environment Variables
+
+Environment variables override config.yaml settings and are recommended for production deployments: to enable authentication:
 
 ```bash
 export AUTH_ENABLED=true

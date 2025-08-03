@@ -95,6 +95,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - **Default Admin User**: Automatic admin user creation when no users exist
     - **Keycloak Setup**: Full integration guide with client configuration and role mapping
     - **Optional Authentication**: Disabled by default, enable with `AUTH_ENABLED=true`
+    - **Authentication Configuration**: Support for authentication configuration via `config.yaml`
   - **Database Schema**: Extended multi-user database with authentication models
     - **Users Table**: User accounts with roles, providers, and activity tracking
     - **Sessions Table**: Secure session storage with expiration and cleanup
@@ -226,10 +227,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Enhanced edition information extraction and normalization
   - Improved mismatch detection and resolution
 - **📦 Docker Support**: Comprehensive Docker implementation with optimized container builds
-  - Multi-arch support for various platforms
-  - Environment-based configuration with sensible defaults
-  - Volume mounting for persistent data
-- **📊 Advanced Progress Tracking**: Completely rebuilt progress tracking system
+  - Multi-database support (SQLite, PostgreSQL, MySQL/MariaDB) with automatic fallback to SQLite
+  - Database configuration via config.yaml with environment variable overrides
+  - Authentication configuration via config.yaml with environment variable overrides
+  - Comprehensive database and authentication documentation and examples
+  - **📊 Advanced Progress Tracking**: Completely rebuilt progress tracking system
   - More accurate progress calculation and persistence
   - Support for both percentage and seconds-based progress tracking
   - Better handling of finished status and completion events

@@ -197,7 +197,52 @@ func main() {
 	
 	// Initialize authentication system
 	log.Info("Initializing authentication system", nil)
-	authConfig := auth.LoadConfigFromEnv()
+	// Convert config.yaml auth config to internal auth config with env overrides
+	configAuth := &auth.ConfigAuth{
+		Enabled: cfg.Authentication.Enabled,
+		Session: struct {
+			Secret     string `yaml:"secret"`
+			CookieName string `yaml:"cookie_name"`
+			MaxAge     int    `yaml:"max_age"`
+			Secure     bool   `yaml:"secure"`
+			HttpOnly   bool   `yaml:"http_only"`
+			SameSite   string `yaml:"same_site"`
+		}{
+			Secret:     cfg.Authentication.Session.Secret,
+			CookieName: cfg.Authentication.Session.CookieName,
+			MaxAge:     cfg.Authentication.Session.MaxAge,
+			Secure:     cfg.Authentication.Session.Secure,
+			HttpOnly:   cfg.Authentication.Session.HttpOnly,
+			SameSite:   cfg.Authentication.Session.SameSite,
+		},
+		DefaultAdmin: struct {
+			Username string `yaml:"username"`
+			Email    string `yaml:"email"`
+			Password string `yaml:"password"`
+		}{
+			Username: cfg.Authentication.DefaultAdmin.Username,
+			Email:    cfg.Authentication.DefaultAdmin.Email,
+			Password: cfg.Authentication.DefaultAdmin.Password,
+		},
+		Keycloak: struct {
+			Enabled      bool   `yaml:"enabled"`
+			Issuer       string `yaml:"issuer"`
+			ClientID     string `yaml:"client_id"`
+			ClientSecret string `yaml:"client_secret"`
+			RedirectURI  string `yaml:"redirect_uri"`
+			Scopes       string `yaml:"scopes"`
+			RoleClaim    string `yaml:"role_claim"`
+		}{
+			Enabled:      cfg.Authentication.Keycloak.Enabled,
+			Issuer:       cfg.Authentication.Keycloak.Issuer,
+			ClientID:     cfg.Authentication.Keycloak.ClientID,
+			ClientSecret: cfg.Authentication.Keycloak.ClientSecret,
+			RedirectURI:  cfg.Authentication.Keycloak.RedirectURI,
+			Scopes:       cfg.Authentication.Keycloak.Scopes,
+			RoleClaim:    cfg.Authentication.Keycloak.RoleClaim,
+		},
+	}
+	authConfig := auth.NewAuthConfigFromConfig(configAuth)
 	authService, err := auth.NewAuthService(db.GetDB(), authConfig)
 	if err != nil {
 		log.Error("Failed to initialize authentication service", map[string]interface{}{

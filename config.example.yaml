@@ -64,6 +64,56 @@ database:
     max_idle_conns: 5       # Maximum number of idle connections
     conn_max_lifetime: 60   # Connection lifetime in minutes
 
+# Authentication Configuration
+# Configure web UI authentication and user management
+authentication:
+  # Enable authentication system (default: false)
+  # When disabled, web UI is accessible without login
+  enabled: false
+  
+  # Session configuration
+  session:
+    # Secret for signing cookies (auto-generated if empty)
+    # Use a strong, random secret for production
+    secret: ""
+    # Cookie name for sessions
+    cookie_name: "audiobookshelf-sync-session"
+    # Session max age in seconds (default: 86400 = 24 hours)
+    max_age: 86400
+    # Secure cookie - set to true for HTTPS deployments
+    secure: false
+    # HTTP only cookie (prevents JavaScript access)
+    http_only: true
+    # SameSite cookie policy (Strict, Lax, None)
+    same_site: "Lax"
+  
+  # Default admin user (created automatically if auth is enabled)
+  default_admin:
+    # Default admin username
+    username: "admin"
+    # Default admin email
+    email: "admin@localhost"
+    # Default admin password (REQUIRED if auth is enabled)
+    # Use environment variable AUTH_DEFAULT_ADMIN_PASSWORD for security
+    password: ""
+  
+  # Keycloak/OIDC authentication (optional)
+  keycloak:
+    # Enable Keycloak/OIDC provider
+    enabled: false
+    # OIDC issuer URL (e.g., https://keycloak.example.com/realms/myrealm)
+    issuer: ""
+    # OIDC client ID
+    client_id: ""
+    # OIDC client secret (use environment variable for security)
+    client_secret: ""
+    # Redirect URI (must match Keycloak client config)
+    redirect_uri: "http://localhost:8080/auth/callback"
+    # OIDC scopes to request
+    scopes: "openid profile email"
+    # JWT claim containing user roles
+    role_claim: "realm_access.roles"
+
 # Sync configuration
 sync:
   incremental: true

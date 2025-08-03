@@ -116,6 +116,53 @@ type Config struct {
 		} `yaml:"connection_pool"`
 	} `yaml:"database"`
 
+	// Authentication configuration
+	Authentication struct {
+		// Enable authentication system
+		Enabled bool `yaml:"enabled" env:"AUTH_ENABLED"`
+		// Session configuration
+		Session struct {
+			// Secret for signing cookies (auto-generated if empty)
+			Secret string `yaml:"secret" env:"AUTH_SESSION_SECRET"`
+			// Cookie name for sessions
+			CookieName string `yaml:"cookie_name" env:"AUTH_COOKIE_NAME"`
+			// Session max age in seconds
+			MaxAge int `yaml:"max_age" env:"AUTH_SESSION_MAX_AGE"`
+			// Secure cookie (HTTPS only)
+			Secure bool `yaml:"secure" env:"AUTH_SESSION_SECURE"`
+			// HTTP only cookie (no JavaScript access)
+			HttpOnly bool `yaml:"http_only" env:"AUTH_SESSION_HTTP_ONLY"`
+			// SameSite cookie policy
+			SameSite string `yaml:"same_site" env:"AUTH_SESSION_SAME_SITE"`
+		} `yaml:"session"`
+		// Default admin user configuration
+		DefaultAdmin struct {
+			// Default admin username
+			Username string `yaml:"username" env:"AUTH_DEFAULT_ADMIN_USERNAME"`
+			// Default admin email
+			Email string `yaml:"email" env:"AUTH_DEFAULT_ADMIN_EMAIL"`
+			// Default admin password
+			Password string `yaml:"password" env:"AUTH_DEFAULT_ADMIN_PASSWORD"`
+		} `yaml:"default_admin"`
+		// Keycloak/OIDC configuration
+		Keycloak struct {
+			// Enable Keycloak/OIDC authentication
+			Enabled bool `yaml:"enabled" env:"KEYCLOAK_ENABLED"`
+			// OIDC issuer URL
+			Issuer string `yaml:"issuer" env:"KEYCLOAK_ISSUER"`
+			// OIDC client ID
+			ClientID string `yaml:"client_id" env:"KEYCLOAK_CLIENT_ID"`
+			// OIDC client secret
+			ClientSecret string `yaml:"client_secret" env:"KEYCLOAK_CLIENT_SECRET"`
+			// OIDC redirect URI
+			RedirectURI string `yaml:"redirect_uri" env:"KEYCLOAK_REDIRECT_URI"`
+			// OIDC scopes
+			Scopes string `yaml:"scopes" env:"KEYCLOAK_SCOPES"`
+			// Role claim name
+			RoleClaim string `yaml:"role_claim" env:"KEYCLOAK_ROLE_CLAIM"`
+		} `yaml:"keycloak"`
+	} `yaml:"authentication"`
+
 	// File paths
 	Paths struct {
 		// CacheDir is the directory for cache files
@@ -168,6 +215,25 @@ func DefaultConfig() *Config {
 	cfg.Database.ConnectionPool.MaxOpenConns = 25
 	cfg.Database.ConnectionPool.MaxIdleConns = 5
 	cfg.Database.ConnectionPool.ConnMaxLifetime = 60 // minutes
+
+	// Default authentication configuration
+	cfg.Authentication.Enabled = false
+	cfg.Authentication.Session.Secret = "" // Auto-generated if empty
+	cfg.Authentication.Session.CookieName = "audiobookshelf-sync-session"
+	cfg.Authentication.Session.MaxAge = 86400 // 24 hours
+	cfg.Authentication.Session.Secure = false // Set to true for HTTPS
+	cfg.Authentication.Session.HttpOnly = true
+	cfg.Authentication.Session.SameSite = "Lax"
+	cfg.Authentication.DefaultAdmin.Username = "admin"
+	cfg.Authentication.DefaultAdmin.Email = "admin@localhost"
+	cfg.Authentication.DefaultAdmin.Password = "" // Must be set if auth is enabled
+	cfg.Authentication.Keycloak.Enabled = false
+	cfg.Authentication.Keycloak.Issuer = ""
+	cfg.Authentication.Keycloak.ClientID = ""
+	cfg.Authentication.Keycloak.ClientSecret = ""
+	cfg.Authentication.Keycloak.RedirectURI = ""
+	cfg.Authentication.Keycloak.Scopes = "openid profile email"
+	cfg.Authentication.Keycloak.RoleClaim = "realm_access.roles"
 
 	// Default paths
 	cfg.Paths.CacheDir = "./cache"
