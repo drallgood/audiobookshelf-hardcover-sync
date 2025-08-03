@@ -36,6 +36,7 @@ FROM alpine:3.18
 RUN apk add --no-cache \
     ca-certificates \
     tzdata \
+    su-exec \
     && addgroup -S app \
     && adduser -S -G app app
 
@@ -56,8 +57,9 @@ RUN mkdir -p /app/config /app/data \
 # Copy default config if it doesn't exist
 COPY --chown=app:app config.example.yaml /app/config/config.example.yaml
 
-# Switch to non-root user
-USER app
+# Start as root to allow entrypoint script to set up permissions
+# The entrypoint script will switch to the app user
+# USER app  # Commented out - entrypoint handles user switching
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

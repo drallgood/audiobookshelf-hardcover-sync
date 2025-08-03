@@ -236,7 +236,7 @@ func ConnectWithFallback(config *DatabaseConfig, log *appLogger.Logger) (*gorm.D
 func connectSQLiteFallback(log *appLogger.Logger) (*gorm.DB, *DatabaseConfig, error) {
 	fallbackConfig := &DatabaseConfig{
 		Type: DatabaseTypeSQLite,
-		Path: "./data/audiobookshelf-hardcover-sync.db",
+		Path: "/app/data/audiobookshelf-hardcover-sync.db",
 	}
 
 	driver := &SQLiteDriver{}
@@ -258,7 +258,7 @@ func connectSQLiteFallback(log *appLogger.Logger) (*gorm.DB, *DatabaseConfig, er
 func connectPureSQLiteFallback(log *appLogger.Logger) (*gorm.DB, *DatabaseConfig, error) {
 	fallbackConfig := &DatabaseConfig{
 		Type: DatabaseTypeSQLite,
-		Path: "./data/audiobookshelf-hardcover-sync.db",
+		Path: "/app/data/audiobookshelf-hardcover-sync.db",
 	}
 
 	driver := &PureSQLiteDriver{}
