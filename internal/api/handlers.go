@@ -230,12 +230,34 @@ func (h *Handler) UpdateUserConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate required fields
-	if req.AudiobookshelfURL == "" || req.AudiobookshelfToken == "" || req.HardcoverToken == "" {
-		h.writeErrorResponse(w, http.StatusBadRequest, "Missing required fields")
+	if req.AudiobookshelfURL == "" {
+		h.writeErrorResponse(w, http.StatusBadRequest, "Audiobookshelf URL is required")
 		return
 	}
 
-	err := h.multiUserService.UpdateUserConfig(userID, req.AudiobookshelfURL, req.AudiobookshelfToken, req.HardcoverToken, req.SyncConfig)
+	// Get existing user to check if we have tokens if they're not provided
+	existingUser, err := h.multiUserService.GetUser(userID)
+	if err != nil {
+		h.logger.Error("Failed to get existing user", map[string]interface{}{
+			"user_id": userID,
+			"error":   err.Error(),
+		})
+		h.writeErrorResponse(w, http.StatusNotFound, "User not found")
+		return
+	}
+
+	// Use existing tokens if not provided in the request
+	audiobookshelfToken := req.AudiobookshelfToken
+	if audiobookshelfToken == "" {
+		audiobookshelfToken = existingUser.AudiobookshelfToken
+	}
+
+	hardcoverToken := req.HardcoverToken
+	if hardcoverToken == "" {
+		hardcoverToken = existingUser.HardcoverToken
+	}
+
+	err = h.multiUserService.UpdateUserConfig(userID, req.AudiobookshelfURL, audiobookshelfToken, hardcoverToken, req.SyncConfig)
 	if err != nil {
 		h.logger.Error("Failed to update user config", map[string]interface{}{
 			"user_id": userID,

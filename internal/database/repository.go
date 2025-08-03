@@ -198,16 +198,34 @@ func (r *Repository) UpdateUser(userID, name string) error {
 }
 
 // UpdateUserConfig updates user configuration with encrypted tokens
+// If audiobookshelfToken or hardcoverToken are empty, the existing tokens will be preserved
 func (r *Repository) UpdateUserConfig(userID, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig SyncConfigData) error {
-	// Encrypt tokens
-	encryptedABSToken, err := r.encryptor.Encrypt(audiobookshelfToken)
-	if err != nil {
-		return fmt.Errorf("failed to encrypt Audiobookshelf token: %w", err)
+	// Get existing config to preserve tokens if not provided
+	var existingConfig UserConfig
+	if err := r.db.GetDB().Where("user_id = ?", userID).First(&existingConfig).Error; err != nil {
+		return fmt.Errorf("failed to get existing user config: %w", err)
 	}
 
-	encryptedHCToken, err := r.encryptor.Encrypt(hardcoverToken)
-	if err != nil {
-		return fmt.Errorf("failed to encrypt Hardcover token: %w", err)
+	// Use existing tokens if new ones are empty
+	var encryptedABSToken, encryptedHCToken string
+	var err error
+
+	if audiobookshelfToken != "" {
+		encryptedABSToken, err = r.encryptor.Encrypt(audiobookshelfToken)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt Audiobookshelf token: %w", err)
+		}
+	} else {
+		encryptedABSToken = existingConfig.AudiobookshelfTokenEncrypted
+	}
+
+	if hardcoverToken != "" {
+		encryptedHCToken, err = r.encryptor.Encrypt(hardcoverToken)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt Hardcover token: %w", err)
+		}
+	} else {
+		encryptedHCToken = existingConfig.HardcoverTokenEncrypted
 	}
 
 	// Serialize sync config
@@ -216,13 +234,18 @@ func (r *Repository) UpdateUserConfig(userID, audiobookshelfURL, audiobookshelfT
 		return fmt.Errorf("failed to marshal sync config: %w", err)
 	}
 
-	result := r.db.GetDB().Model(&UserConfig{}).Where("user_id = ?", userID).Updates(UserConfig{
-		AudiobookshelfURL:            audiobookshelfURL,
-		AudiobookshelfTokenEncrypted: encryptedABSToken,
-		HardcoverTokenEncrypted:      encryptedHCToken,
-		SyncConfig:                   string(syncConfigJSON),
-		UpdatedAt:                    time.Now(),
-	})
+	// Update config
+	updates := map[string]interface{}{
+		"AudiobookshelfURL":            audiobookshelfURL,
+		"AudiobookshelfTokenEncrypted": encryptedABSToken,
+		"HardcoverTokenEncrypted":      encryptedHCToken,
+		"SyncConfig":                   string(syncConfigJSON),
+		"UpdatedAt":                    time.Now(),
+	}
+
+	// Only include fields that have values to avoid overwriting with zero values
+	result := r.db.GetDB().Model(&UserConfig{}).Where("user_id = ?", userID).Updates(updates)
+
 	if result.Error != nil {
 		return fmt.Errorf("failed to update user config: %w", result.Error)
 	}
