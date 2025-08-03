@@ -174,7 +174,7 @@ func (d *MySQLDriver) GetMigrationOptions() *gorm.Config {
 func GetDatabaseDriver(dbType DatabaseType) (DatabaseDriver, error) {
 	switch dbType {
 	case DatabaseTypeSQLite:
-		return &SQLiteDriver{}, nil
+		return &PureSQLiteDriver{}, nil // Use pure Go SQLite driver
 	case DatabaseTypePostgreSQL:
 		return &PostgreSQLDriver{}, nil
 	case DatabaseTypeMySQL, DatabaseTypeMariaDB:
@@ -207,7 +207,7 @@ func ConnectWithFallback(config *DatabaseConfig, log *appLogger.Logger) (*gorm.D
 				"type":  config.Type,
 			})
 		}
-		return connectSQLiteFallback(log)
+		return connectPureSQLiteFallback(log)
 	}
 
 	db, err := driver.Connect(config, log)
@@ -219,7 +219,7 @@ func ConnectWithFallback(config *DatabaseConfig, log *appLogger.Logger) (*gorm.D
 				"host":  config.Host,
 			})
 		}
-		return connectSQLiteFallback(log)
+		return connectPureSQLiteFallback(log)
 	}
 
 	if log != nil {
@@ -232,11 +232,11 @@ func ConnectWithFallback(config *DatabaseConfig, log *appLogger.Logger) (*gorm.D
 	return db, config, nil
 }
 
-// connectSQLiteFallback creates a fallback SQLite connection
+// connectSQLiteFallback creates a fallback SQLite connection (legacy CGO-based)
 func connectSQLiteFallback(log *appLogger.Logger) (*gorm.DB, *DatabaseConfig, error) {
 	fallbackConfig := &DatabaseConfig{
 		Type: DatabaseTypeSQLite,
-		Path: GetDefaultDatabasePath(),
+		Path: "./data/audiobookshelf-hardcover-sync.db",
 	}
 
 	driver := &SQLiteDriver{}
@@ -246,7 +246,29 @@ func connectSQLiteFallback(log *appLogger.Logger) (*gorm.DB, *DatabaseConfig, er
 	}
 
 	if log != nil {
-		log.Info("Connected to fallback SQLite database", map[string]interface{}{
+		log.Info("Successfully connected to fallback SQLite database", map[string]interface{}{
+			"path": fallbackConfig.Path,
+		})
+	}
+
+	return db, fallbackConfig, nil
+}
+
+// connectPureSQLiteFallback creates a fallback SQLite connection using pure Go driver
+func connectPureSQLiteFallback(log *appLogger.Logger) (*gorm.DB, *DatabaseConfig, error) {
+	fallbackConfig := &DatabaseConfig{
+		Type: DatabaseTypeSQLite,
+		Path: "./data/audiobookshelf-hardcover-sync.db",
+	}
+
+	driver := &PureSQLiteDriver{}
+	db, err := driver.Connect(fallbackConfig, log)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to connect to fallback SQLite database: %w", err)
+	}
+
+	if log != nil {
+		log.Info("Successfully connected to fallback SQLite database (pure Go)", map[string]interface{}{
 			"path": fallbackConfig.Path,
 		})
 	}

@@ -1,20 +1,18 @@
 # Build stage
 FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS builder
 
-# Install build dependencies (including SQLite dependencies)
-RUN apk add --no-cache \
-    git \
-    gcc \
-    musl-dev \
-    sqlite-dev
+# Install build dependencies
+RUN apk add --no-cache git
 
 # Set the working directory
 WORKDIR /src
 
-# Enable Go modules and CGO for SQLite support
-ENV CGO_ENABLED=1 \
-    GO111MODULE=on \
-    GOPROXY=https://proxy.golang.org,direct
+# Enable Go modules
+ARG TARGETOS TARGETARCH
+ENV GO111MODULE=on \
+    GOPROXY=https://proxy.golang.org,direct \
+    GOOS=$TARGETOS \
+    GOARCH=$TARGETARCH
 
 # Copy module files
 COPY go.mod go.sum ./
@@ -25,22 +23,19 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the application
-ARG TARGETOS TARGETARCH
+# Build the application (CGO disabled for cross-platform compatibility)
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg \
-    GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-w -s -X 'main.version=${VERSION:-dev}'" \
+    CGO_ENABLED=0 go build -trimpath -ldflags="-w -s -X 'main.version=${VERSION:-dev}'" \
     -o /app/audiobookshelf-hardcover-sync ./cmd/audiobookshelf-hardcover-sync
 
 # Final stage
 FROM alpine:3.18
 
-# Install runtime dependencies (including SQLite)
+# Install runtime dependencies
 RUN apk add --no-cache \
     ca-certificates \
     tzdata \
-    sqlite \
     && addgroup -S app \
     && adduser -S -G app app
 

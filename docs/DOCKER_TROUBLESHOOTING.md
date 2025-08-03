@@ -15,27 +15,24 @@ Failed to initialize database: failed to connect to fallback SQLite database
 The application was compiled with `CGO_ENABLED=0`, which disables CGO (C bindings). However, the SQLite driver (`go-sqlite3`) requires CGO to work because it uses C libraries under the hood.
 
 ### Solution
-The Dockerfile has been updated to:
+The application has been updated to use a **pure Go SQLite driver** (`modernc.org/sqlite`) instead of the CGO-based driver. This eliminates the need for CGO and resolves cross-compilation issues.
 
-1. **Enable CGO**: Set `CGO_ENABLED=1` in the build environment
-2. **Add Build Dependencies**: Install `gcc`, `musl-dev`, and `sqlite-dev` for compilation
-3. **Add Runtime Dependencies**: Install `sqlite` in the final image
+**Key Changes:**
+1. **Pure Go SQLite Driver**: Switched from `github.com/mattn/go-sqlite3` to `modernc.org/sqlite`
+2. **No CGO Required**: `CGO_ENABLED=0` works perfectly for cross-platform builds
+3. **Simplified Docker Build**: No need for build toolchains or SQLite runtime dependencies
+4. **Multi-Architecture Support**: ARM64 and AMD64 builds work without cross-compilation issues
 
-### Updated Dockerfile Changes
+### Updated Dockerfile
 ```dockerfile
-# Build stage - Enable CGO and add SQLite dependencies
-ENV CGO_ENABLED=1
-RUN apk add --no-cache \
-    git \
-    gcc \
-    musl-dev \
-    sqlite-dev
+# Build stage - Simple, no CGO required
+FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS builder
+RUN apk add --no-cache git
+ENV CGO_ENABLED=0
 
-# Runtime stage - Add SQLite runtime
-RUN apk add --no-cache \
-    ca-certificates \
-    tzdata \
-    sqlite
+# Runtime stage - Minimal dependencies
+FROM alpine:3.18
+RUN apk add --no-cache ca-certificates tzdata
 ```
 
 ### Verification
