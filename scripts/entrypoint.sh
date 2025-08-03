@@ -1,18 +1,15 @@
 #!/bin/sh
 set -e
 
-# Ensure necessary directories exist with proper permissions
-# Note: These should already exist from Dockerfile, but ensure they're accessible
+# Handle user switching if running as root
 if [ "$(id -u)" = "0" ]; then
-    # Running as root, ensure directories exist and have proper ownership
-    mkdir -p /app/data /app/cache /app/mismatches
-    chown -R app:app /app/data /app/cache /app/mismatches
+    # Running as root, ensure proper ownership and switch to app user
+    chown -R app:app /app/data /app/cache /app/mismatches 2>/dev/null || true
     # Switch to app user for the main process
     exec su-exec app "$0" "$@"
-else
-    # Already running as app user, just ensure directories exist
-    mkdir -p /app/data /app/cache /app/mismatches
 fi
+
+# If we reach here, we're running as the app user
 
 # Default CA bundle location
 CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt

@@ -50,12 +50,15 @@ COPY --from=builder --chown=app:app /app/audiobookshelf-hardcover-sync /app/
 COPY --chown=app:app scripts/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-# Create necessary directories
-RUN mkdir -p /app/config /app/data \
+# Create necessary directories (including cache and mismatches)
+RUN mkdir -p /app/config /app/data /app/cache /app/mismatches \
     && chown -R app:app /app
 
 # Copy default config if it doesn't exist
 COPY --chown=app:app config.example.yaml /app/config/config.example.yaml
+
+# Define volume for persistent data (matches docker-compose: ./data:/app/data)
+VOLUME ["/app/data"]
 
 # Start as root to allow entrypoint script to set up permissions
 # The entrypoint script will switch to the app user
