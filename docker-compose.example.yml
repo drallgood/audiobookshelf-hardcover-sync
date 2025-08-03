@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  audiobookshelf-hardcover-sync:
+    image: ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest
+    container_name: abs-hardcover-sync
+    restart: unless-stopped
+    
+    # Environment variables for configuration
+    environment:
+      # Required API tokens
+      - AUDIOBOOKSHELF_URL=http://your-audiobookshelf-server:13378
+      - AUDIOBOOKSHELF_TOKEN=your_audiobookshelf_token
+      - HARDCOVER_TOKEN=your_hardcover_token
+      
+      # Optional: Sync configuration
+      - SYNC_INTERVAL=1h
+      - SYNC_INCREMENTAL=true
+      - SYNC_MIN_CHANGE_THRESHOLD=60
+      
+      # Optional: Rate limiting (respect Hardcover API limits)
+      - RATE_LIMIT_RATE=1500ms
+      - RATE_LIMIT_BURST=2
+      - RATE_LIMIT_MAX_CONCURRENT=3
+      
+      # Optional: Library filtering
+      # - SYNC_LIBRARIES_INCLUDE=Audiobooks,Books
+      # - SYNC_LIBRARIES_EXCLUDE=Comics,Podcasts
+      
+      # Optional: Logging
+      - LOG_LEVEL=info
+      - LOG_FORMAT=json
+      
+      # Optional: Database configuration (defaults to SQLite)
+      # - DATABASE_TYPE=sqlite
+      # - DATABASE_PATH=/data/db/audiobookshelf-hardcover-sync.db
+      
+      # Optional: Path configuration (all paths can be customized)
+      # Default: cache_dir="./cache", mismatch_output_dir="./mismatches"
+      - CACHE_DIR=/data/cache
+      - MISMATCH_OUTPUT_DIR=/data/mismatches
+      - SYNC_STATE_FILE=/data/sync_state.json
+      
+      # Optional: Authentication (for multi-user web UI)
+      # - AUTH_ENABLED=true
+      # - AUTH_SESSION_SECRET=your_random_secret_here
+      # - AUTH_DEFAULT_ADMIN_USERNAME=admin
+      # - AUTH_DEFAULT_ADMIN_PASSWORD=your_secure_password
+    
+    # Volume mounts for persistent data
+    volumes:
+      # OPTION 1: Single volume approach (recommended for new deployments)
+      # All data under /data - configure paths with environment variables above
+      - ./data:/data
+      
+      # OPTION 2: Legacy approach (backward compatibility)
+      # Uncomment this and comment out /data volume above if you already use /app/data:
+      # - ./data:/app/data
+      # Note: With legacy approach, use default paths or set:
+      # - DATABASE_PATH=/app/data/audiobookshelf-hardcover-sync.db
+      # - CACHE_DIR=/app/data/cache
+      # - MISMATCH_OUTPUT_DIR=/app/data/mismatches
+      # - SYNC_STATE_FILE=/app/data/sync_state.json
+      
+      # OPTION 3: Separate volumes (if you prefer granular control)
+      # Uncomment these and comment out the single volume above:
+      # - ./data/db:/data/db           # Database files
+      # - ./data/cache:/data/cache     # Performance caches
+      # - ./data/mismatches:/data/mismatches  # Mismatch reports
+      
+      # OPTIONAL: Custom configuration file
+      # - ./config.yaml:/app/config/config.yaml:ro
+    
+    # Expose web UI port (if using multi-user features)
+    ports:
+      - "8080:8080"
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 5s
+      retries: 3
+    
+    # Resource limits (optional)
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+# Optional: External network for connecting to other services
+# networks:
+#   default:
+#     external: true
+#     name: your_network_name

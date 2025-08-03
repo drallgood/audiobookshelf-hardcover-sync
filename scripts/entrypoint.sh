@@ -4,7 +4,8 @@ set -e
 # Handle user switching if running as root
 if [ "$(id -u)" = "0" ]; then
     # Running as root, ensure proper ownership and switch to app user
-    chown -R app:app /app/data /app/cache /app/mismatches 2>/dev/null || true
+    # Support both /data and /app/data volume approaches
+    chown -R app:app /data /app/data 2>/dev/null || true
     # Switch to app user for the main process
     exec su-exec app "$0" "$@"
 fi

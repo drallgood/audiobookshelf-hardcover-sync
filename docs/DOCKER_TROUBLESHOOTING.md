@@ -84,6 +84,81 @@ export DATABASE_PASSWORD=secure_password
 export DATABASE_NAME=audiobookshelf_sync
 ```
 
+## Volume and Data Persistence
+
+### Flexible Path Configuration
+All application paths are configurable via environment variables or config.yaml. The Docker image supports multiple volume approaches for maximum flexibility.
+
+#### Option 1: Single Volume Approach (Recommended for New Deployments)
+```yaml
+volumes:
+  - ./data:/data
+
+environment:
+  # Configure all paths under /data
+  - DATABASE_PATH=/data/db/audiobookshelf-hardcover-sync.db
+  - CACHE_DIR=/data/cache
+  - MISMATCH_OUTPUT_DIR=/data/mismatches
+  - SYNC_STATE_FILE=/data/sync_state.json
+```
+
+#### Option 2: Legacy Volume Approach (Backward Compatibility)
+```yaml
+volumes:
+  - ./data:/app/data
+
+# Optional: Configure paths under /app/data (or use defaults)
+environment:
+  - DATABASE_PATH=/app/data/audiobookshelf-hardcover-sync.db
+  - CACHE_DIR=/app/data/cache
+  - MISMATCH_OUTPUT_DIR=/app/data/mismatches
+  - SYNC_STATE_FILE=/app/data/sync_state.json
+```
+
+#### Option 3: Separate Volumes Approach (Granular Control)
+```yaml
+volumes:
+  - ./data/db:/data/db
+  - ./data/cache:/data/cache
+  - ./data/mismatches:/data/mismatches
+
+environment:
+  - DATABASE_PATH=/data/db/audiobookshelf-hardcover-sync.db
+  - CACHE_DIR=/data/cache
+  - MISMATCH_OUTPUT_DIR=/data/mismatches
+```
+
+#### Data Types and Purposes:
+
+**Database Files (Critical)**
+- SQLite database files
+- Multi-user data and authentication
+- **⚠️ Essential**: Losing this means losing all user data and sync history
+
+**Cache Files (Performance)**
+- ASIN cache (24h TTL) - Hardcover book lookups
+- User book cache (6h TTL) - User book data
+- **🚀 Benefits**: Dramatically improves sync speed and reduces API calls
+- **💰 Cost**: Respects Hardcover's 60 requests/minute rate limit
+
+**Sync State (Tracking)**
+- Tracks sync progress and book states
+- **📈 Purpose**: Enables incremental sync and change detection
+
+**Mismatch Reports (Debugging)**
+- Books that couldn't be matched between ABS and Hardcover
+- **🔍 Purpose**: Essential for troubleshooting sync issues
+- **📊 Analytics**: Helps identify books needing manual attention
+
+### Environment Variables for Path Configuration
+
+| Variable | Default | Purpose |
+|----------|---------|----------|
+| `DATABASE_PATH` | `./data/audiobookshelf-sync.db` | SQLite database file location |
+| `CACHE_DIR` | `./cache` | Directory for API caches |
+| `MISMATCH_OUTPUT_DIR` | `./mismatches` | Directory for mismatch reports |
+| `SYNC_STATE_FILE` | `./data/sync_state.json` | Sync state tracking file |
+
 ## Docker Compose Example
 
 For development with external database:
