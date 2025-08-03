@@ -276,13 +276,27 @@ func convertTestBookToModel(testBook *TestAudiobookshelfBook) models.Audiobooksh
 	return book
 }
 
-// createTestConfigForTests creates a test configuration for the tests
+// createTestConfigForTests creates a test configuration with the specified sync ownership setting
+// and other default test values.
 func createTestConfigForTests(syncOwned bool) *config.Config {
+	// Start with default config
 	cfg := config.DefaultConfig()
+	
+	// Configure sync settings - all sync-related settings are now consolidated under Sync
 	cfg.Sync.Incremental = false
 	cfg.Sync.StateFile = "/tmp/sync_state_test.json"
-	cfg.Sync.MinChangeThreshold = 60
-	cfg.App.SyncOwned = syncOwned // Fixed: SyncOwned is in App, not Sync
+	cfg.Sync.MinChangeThreshold = 60 // 60 seconds
+	cfg.Sync.SyncInterval = 1 * time.Hour
+	cfg.Sync.MinimumProgress = 0.01
+	cfg.Sync.SyncWantToRead = true
+	cfg.Sync.SyncOwned = syncOwned
+	cfg.Sync.DryRun = false
+	
+	// Initialize libraries include/exclude
+	cfg.Sync.Libraries.Include = []string{}
+	cfg.Sync.Libraries.Exclude = []string{}
+	
+	// Other configuration
 	cfg.RateLimit.Rate = 100 * time.Millisecond
 	cfg.RateLimit.Burst = 10
 	cfg.RateLimit.MaxConcurrent = 5
@@ -290,6 +304,7 @@ func createTestConfigForTests(syncOwned bool) *config.Config {
 	cfg.Logging.Format = "console"
 	cfg.Server.Port = "8080"
 	cfg.Server.ShutdownTimeout = 30 * time.Second
+	
 	return cfg
 }
 

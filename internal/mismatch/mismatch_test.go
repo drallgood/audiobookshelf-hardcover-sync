@@ -54,35 +54,33 @@ func newTestContext(t *testing.T) context.Context {
 	return logger.NewContext(context.Background(), logger.Get())
 }
 
-// newTestConfig creates a minimal valid config for testing
+// newTestConfig creates a minimal valid config for testing with the new structure
 func newTestConfig(mismatchDir string) *config.Config {
-	return &config.Config{
-		App: struct {
-			SyncInterval    time.Duration `yaml:"sync_interval" env:"SYNC_INTERVAL"`
-			MinimumProgress float64       `yaml:"minimum_progress" env:"MINIMUM_PROGRESS"`
-			SyncWantToRead  bool          `yaml:"sync_want_to_read" env:"SYNC_WANT_TO_READ"`
-			SyncOwned       bool          `yaml:"sync_owned" env:"SYNC_OWNED"`
-			DryRun          bool          `yaml:"dry_run" env:"DRY_RUN"`
-			TestBookFilter  string        `yaml:"test_book_filter" env:"TEST_BOOK_FILTER"`
-			TestBookLimit   int           `yaml:"test_book_limit" env:"TEST_BOOK_LIMIT"`
-		}{
-			// Set required fields to their zero values
-			SyncInterval:    0,
-			MinimumProgress: 0,
-			SyncWantToRead:  false,
-			SyncOwned:       false,
-			DryRun:          false,
-			TestBookFilter:  "",
-			TestBookLimit:   0,
-		},
-		Paths: struct {
-			DataDir           string `yaml:"data_dir" env:"DATA_DIR"`
-			CacheDir          string `yaml:"cache_dir" env:"CACHE_DIR"`
-			MismatchOutputDir string `yaml:"mismatch_output_dir" env:"MISMATCH_OUTPUT_DIR"`
-		}{
-			MismatchOutputDir: mismatchDir,
-		},
-	}
+	// Start with default config
+	cfg := config.DefaultConfig()
+
+	// Configure sync settings - all sync-related settings are now consolidated under Sync
+	cfg.Sync.Incremental = false
+	cfg.Sync.StateFile = ""
+	cfg.Sync.MinChangeThreshold = 0
+	cfg.Sync.SyncInterval = 0
+	cfg.Sync.MinimumProgress = 0
+	cfg.Sync.SyncWantToRead = false
+	cfg.Sync.SyncOwned = false
+	cfg.Sync.DryRun = false
+
+	// Initialize libraries include/exclude
+	cfg.Sync.Libraries.Include = []string{}
+	cfg.Sync.Libraries.Exclude = []string{}
+
+	// Set test-specific app settings
+	cfg.App.TestBookFilter = ""
+	cfg.App.TestBookLimit = 0
+
+	// Set the mismatch output directory
+	cfg.Paths.MismatchOutputDir = mismatchDir
+
+	return cfg
 }
 
 // MockHardcoverClient is a mock implementation of the HardcoverClientInterface for testing

@@ -35,6 +35,16 @@ type Config struct {
 			// Exclude these libraries (by name or ID) from sync. Include takes precedence over exclude.
 			Exclude []string `yaml:"exclude" env:"SYNC_LIBRARIES_EXCLUDE"`
 		} `yaml:"libraries"`
+		// SyncInterval is the interval between syncs (e.g., "1h", "30m")
+		SyncInterval time.Duration `yaml:"sync_interval" env:"SYNC_INTERVAL"`
+		// MinimumProgress is the minimum progress threshold for syncing (0.0 to 1.0)
+		MinimumProgress float64 `yaml:"minimum_progress" env:"MINIMUM_PROGRESS"`
+		// SyncWantToRead syncs books with 0% progress as "Want to Read"
+		SyncWantToRead bool `yaml:"sync_want_to_read" env:"SYNC_WANT_TO_READ"`
+		// SyncOwned marks synced books as owned in Hardcover
+		SyncOwned bool `yaml:"sync_owned" env:"SYNC_OWNED"`
+		// DryRun enables dry run mode (no changes will be made)
+		DryRun bool `yaml:"dry_run" env:"DRY_RUN"`
 	} `yaml:"sync"`
 
 	// Rate limiting configuration
@@ -71,20 +81,21 @@ type Config struct {
 
 	// Application settings
 	App struct {
-		// SyncInterval is the interval between syncs
-		SyncInterval time.Duration `yaml:"sync_interval" env:"SYNC_INTERVAL"`
-		// MinimumProgress is the minimum progress threshold for syncing (0.0 to 1.0)
-		MinimumProgress float64 `yaml:"minimum_progress" env:"MINIMUM_PROGRESS"`
-		// SyncWantToRead syncs books with 0% progress as "Want to Read"
-		SyncWantToRead bool `yaml:"sync_want_to_read" env:"SYNC_WANT_TO_READ"`
-		// SyncOwned marks synced books as owned in Hardcover
-		SyncOwned bool `yaml:"sync_owned" env:"SYNC_OWNED"`
-		// DryRun enables dry run mode (no changes will be made)
-		DryRun bool `yaml:"dry_run" env:"DRY_RUN"`
 		// TestBookFilter filters books by title for testing
 		TestBookFilter string `yaml:"test_book_filter" env:"TEST_BOOK_FILTER"`
 		// TestBookLimit limits the number of books to process for testing
 		TestBookLimit int `yaml:"test_book_limit" env:"TEST_BOOK_LIMIT"`
+		
+		// Deprecated: Moved to Sync section
+		SyncInterval time.Duration `yaml:"sync_interval,omitempty" env:"-"`
+		// Deprecated: Moved to Sync section
+		MinimumProgress float64 `yaml:"minimum_progress,omitempty" env:"-"`
+		// Deprecated: Moved to Sync section
+		SyncWantToRead bool `yaml:"sync_want_to_read,omitempty" env:"-"`
+		// Deprecated: Moved to Sync section
+		SyncOwned bool `yaml:"sync_owned,omitempty" env:"-"`
+		// Deprecated: Moved to Sync section
+		DryRun bool `yaml:"dry_run,omitempty" env:"-"`
 	} `yaml:"app"`
 
 	// Database configuration
@@ -197,11 +208,6 @@ func DefaultConfig() *Config {
 	cfg.Logging.Format = "json"
 
 	// Default application settings
-	cfg.App.SyncInterval = 1 * time.Hour
-	cfg.App.MinimumProgress = 0.01 // 1% minimum progress threshold
-	cfg.App.SyncWantToRead = true
-	cfg.App.SyncOwned = true
-	cfg.App.DryRun = false
 	cfg.App.TestBookFilter = ""
 	cfg.App.TestBookLimit = 0
 

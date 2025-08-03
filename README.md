@@ -433,38 +433,99 @@ For detailed authentication setup and configuration, see the [Authentication Gui
 Version 2.0.0 introduces a YAML configuration file as the primary way to configure the application:
 
 ```yaml
+# Server configuration
 server:
-  port: 8080
-  timeout: 30s
+  port: "8080"
+  shutdown_timeout: "10s"  # Graceful shutdown timeout
 
+# Rate limiting configuration
+rate_limit:
+  rate: "1500ms"        # Minimum time between requests (e.g., 1500ms for ~40 requests per minute)
+  burst: 2              # Maximum number of requests in a burst
+  max_concurrent: 3     # Maximum number of concurrent requests
+
+# Logging configuration
 logging:
-  level: info        # debug, info, warn, error
-  format: json       # json or text for improved readability during development
-  pretty: false      # human-readable formatting for logs
-  file: /app/logs/sync.log  # optional log file path
+  level: "info"   # debug, info, warn, error, fatal, panic
+  format: "json"  # json or console
 
+# Audiobookshelf configuration
 audiobookshelf:
-  url: https://your-abs-server.com
-  token: your_abs_token
+  url: "https://your-audiobookshelf-instance.com"
+  token: "your-audiobookshelf-token"
 
+# Hardcover configuration
 hardcover:
-  token: your_hardcover_token
-  rate_limit: 10     # requests per second
-  rate_burst: 15     # burst capacity
+  token: "your-hardcover-token"
 
+# Application settings
+app:
+  sync_interval: "1h"
+  minimum_progress: 0.01  # Minimum progress threshold (0.0 to 1.0)
+  sync_want_to_read: true  # Sync books with 0% progress as "Want to Read"
+  sync_owned: true        # Mark synced books as owned in Hardcover
+  mismatch_output_dir: "./mismatches"  # Directory to store mismatch JSON files
+  dry_run: false           # Enable dry run mode (no changes will be made)
+  test_book_filter: ""    # Filter books by title for testing
+  test_book_limit: 0       # Limit number of books to process for testing (0 = no limit)
+
+# Database configuration
+database:
+  # Database type: sqlite, postgresql, mysql, mariadb
+  type: "sqlite"
+  
+  # SQLite configuration (default)
+  path: ""  # Uses default path if empty: ./data/database.db
+  
+  # Connection pool settings
+  connection_pool:
+    max_open_conns: 25      # Maximum number of open connections
+    max_idle_conns: 5       # Maximum number of idle connections
+    conn_max_lifetime: 60   # Connection lifetime in minutes
+
+# Authentication Configuration
+authentication:
+  enabled: false
+  
+  # Session configuration
+  session:
+    secret: ""  # Auto-generated if empty
+    cookie_name: "audiobookshelf-sync-session"
+    max_age: 86400  # Session max age in seconds (24 hours)
+    secure: false   # Set to true for HTTPS
+    http_only: true
+    same_site: "Lax"
+  
+  # Default admin user (created if auth is enabled)
+  default_admin:
+    username: "admin"
+    email: "admin@localhost"
+    password: ""  # Set via AUTH_DEFAULT_ADMIN_PASSWORD env var
+  
+  # Keycloak/OIDC authentication (optional)
+  keycloak:
+    enabled: false
+    issuer: ""
+    client_id: ""
+    client_secret: ""  # Set via environment variable
+    redirect_uri: "http://localhost:8080/auth/callback"
+    scopes: "openid profile email"
+    role_claim: "realm_access.roles"
+
+# Sync configuration
 sync:
-  interval: 1h       # sync frequency (10m, 30m, 1h, etc)
-  want_to_read: true # sync "Want to Read" status
-  owned: true        # mark books as owned
-  match_mode: continue # book matching behavior (continue, skip, fail)
-  incremental: true # incremental sync strategy enabled (true, false)
-  min_progress: 0.01   # minimum progress change to sync (0.01 = 1%)
-  state_file: /app/data/sync_state.json # state storage location
-  dry_run: false     # simulation mode without making changes
-  force_full_sync: false # force full sync regardless of state
-  libraries:         # library filtering (optional)
-    include: ["Audiobooks", "Fiction"] # only sync these libraries (by name or ID)
-    exclude: ["Magazines", "Podcasts"] # exclude these libraries (include takes precedence)
+  incremental: true
+  state_file: "./data/sync_state.json"
+  min_change_threshold: 60  # seconds
+  libraries:  # Optional library filtering
+    include: ["Audiobooks"]  # Only sync these libraries
+    exclude: ["Podcasts"]    # Exclude these libraries (include takes precedence)
+
+# Paths configuration
+paths:
+  data_dir: "./data"      # Base directory for application data
+  cache_dir: "./cache"    # Directory for cache files
+  mismatch_output_dir: "./mismatches"  # Directory for mismatch reports
 ```
 
 #### Environment Variables
@@ -486,7 +547,7 @@ sync:
 | `AUDIOBOOKSHELF_URL` | URL of your AudiobookShelf instance | `audiobookshelf.url` | Legacy mode only |
 | `AUDIOBOOKSHELF_TOKEN` | AudiobookShelf API token | `audiobookshelf.token` | Legacy mode only |
 | `HARDCOVER_TOKEN` | Hardcover API token | `hardcover.token` | Legacy mode only |
-| `SYNC_INTERVAL` | Time between automatic syncs | `sync.interval` | Legacy mode only |
+| `SYNC_INTERVAL` | Time between automatic syncs | `sync.sync_interval` | Legacy mode only |
 | `SYNC_LIBRARIES_INCLUDE` | Comma-separated list of libraries to include | `sync.libraries.include` | Legacy mode only |
 | `SYNC_LIBRARIES_EXCLUDE` | Comma-separated list of libraries to exclude | `sync.libraries.exclude` | Legacy mode only |
 
