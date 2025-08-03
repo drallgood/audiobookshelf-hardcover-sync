@@ -158,10 +158,22 @@ func main() {
 	configDB.ConnectionPool.ConnMaxLifetime = cfg.Database.ConnectionPool.ConnMaxLifetime
 	
 	dbConfig := database.NewDatabaseConfigFromConfig(configDB)
+
+	// Log the database configuration being used
+	log.Info("Database configuration", map[string]interface{}{
+		"type":     dbConfig.Type,
+		"host":     dbConfig.Host,
+		"port":     dbConfig.Port,
+		"database": dbConfig.Database,
+		"path":     dbConfig.Path,
+	})
+
 	db, err := database.NewDatabase(dbConfig, log)
 	if err != nil {
 		log.Error("Failed to initialize database", map[string]interface{}{
 			"error": err.Error(),
+			"type":  dbConfig.Type,
+			"path":  dbConfig.Path,
 		})
 		os.Exit(1)
 	}
@@ -182,12 +194,15 @@ func main() {
 	// Perform automatic migration from single-user config if needed
 	// Use the actual config path that was loaded, not default search paths
 	configPath := flags.configFile
-	dbPath := database.GetDefaultDatabasePath() // Get default SQLite path for migration
+	
+	// Log the migration attempt with the actual database path being used
 	log.Info("Checking migration from config", map[string]interface{}{
 		"config_path": configPath,
-		"db_path": dbPath,
+		"db_path":     dbConfig.Path, // Use the same path as the main database
 	})
-	if err := database.AutoMigrate(dbPath, configPath, log); err != nil {
+	
+	// Pass empty string as dbPath to let AutoMigrate use the config-based path
+	if err := database.AutoMigrate("", configPath, log); err != nil {
 		log.Error("Failed to perform migration", map[string]interface{}{
 			"error": err.Error(),
 		})
@@ -355,7 +370,14 @@ func main() {
 						log.Info("Starting periodic sync for user", map[string]interface{}{
 							"user_id": user.ID,
 						})
-						go multiUserService.StartSync(user.ID)
+						go func(userID string) {
+							if err := multiUserService.StartSync(userID); err != nil {
+								log.Error("Failed to start sync for user", map[string]interface{}{
+									"user_id": userID,
+									"error":   err.Error(),
+								})
+							}
+						}(user.ID)
 					}
 
 				case <-ctx.Done():
