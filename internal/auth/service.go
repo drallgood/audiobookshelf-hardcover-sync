@@ -24,11 +24,25 @@ type AuthService struct {
 
 // NewAuthService creates a new authentication service
 func NewAuthService(db *gorm.DB, config AuthConfig, log *logger.Logger) (*AuthService, error) {
+	if log != nil {
+		log.Info("Starting authentication service initialization", map[string]interface{}{
+			"enabled":         config.Enabled,
+			"provider_count":  len(config.Providers),
+			"session_enabled": config.Session.Secret != "",
+		})
+	}
+	
 	// Create repository
 	repository := NewAuthRepository(db)
+	if log != nil {
+		log.Debug("Created auth repository", nil)
+	}
 	
 	// Create session manager
 	sessionManager := NewSessionManager(db, config.Session)
+	if log != nil {
+		log.Debug("Created session manager", nil)
+	}
 	
 	// Initialize providers
 	providers := make(map[string]IAuthProvider)
@@ -39,6 +53,16 @@ func NewAuthService(db *gorm.DB, config AuthConfig, log *logger.Logger) (*AuthSe
 			"provider_count":  len(config.Providers),
 			"session_enabled": config.Session.Secret != "",
 		})
+		
+		// Log each provider config for debugging
+		for i, provider := range config.Providers {
+			log.Debug("Provider configuration", map[string]interface{}{
+				"index":   i,
+				"type":    provider.Type,
+				"name":    provider.Name,
+				"enabled": provider.Enabled,
+			})
+		}
 	}
 
 	service := &AuthService{
@@ -56,32 +80,108 @@ func NewAuthService(db *gorm.DB, config AuthConfig, log *logger.Logger) (*AuthSe
 		return nil, fmt.Errorf("failed to initialize providers: %w", err)
 	}
 	
+	// Initialize default admin user if needed
+	if err := service.InitializeDefaultUser(context.Background()); err != nil {
+		if log != nil {
+			log.Warn("Failed to initialize default admin user", map[string]interface{}{
+				"error": err.Error(),
+			})
+		}
+	}
+	
 	return service, nil
 }
 
 // initializeProviders initializes authentication providers based on configuration
 func (s *AuthService) initializeProviders() error {
-	for _, providerConfig := range s.config.Providers {
+	if s.logger != nil {
+		s.logger.Info("Starting provider initialization", map[string]interface{}{
+			"total_providers": len(s.config.Providers),
+		})
+	}
+	
+	for i, providerConfig := range s.config.Providers {
+		if s.logger != nil {
+			s.logger.Debug("Processing provider", map[string]interface{}{
+				"index":   i,
+				"type":    providerConfig.Type,
+				"name":    providerConfig.Name,
+				"enabled": providerConfig.Enabled,
+			})
+		}
+		
 		if !providerConfig.Enabled {
+			if s.logger != nil {
+				s.logger.Debug("Skipping disabled provider", map[string]interface{}{
+					"name": providerConfig.Name,
+					"type": providerConfig.Type,
+				})
+			}
 			continue
 		}
 		
 		var provider IAuthProvider
 		var err error
 		
+		if s.logger != nil {
+			s.logger.Info("Creating enabled provider", map[string]interface{}{
+				"name": providerConfig.Name,
+				"type": providerConfig.Type,
+			})
+		}
+		
 		switch providerConfig.Type {
 		case "local":
 			provider = NewLocalAuthProvider(providerConfig.Name, providerConfig.Config, s.logger, s.repository)
+			if s.logger != nil {
+				s.logger.Info("Local provider created successfully", map[string]interface{}{
+					"name": providerConfig.Name,
+				})
+			}
 		case "oidc":
+			if s.logger != nil {
+				s.logger.Info("Creating OIDC provider", map[string]interface{}{
+					"name": providerConfig.Name,
+				})
+			}
 			provider, err = NewOIDCProvider(providerConfig.Name, providerConfig.Config, s.logger)
 			if err != nil {
+				if s.logger != nil {
+					s.logger.Error("Failed to create OIDC provider", map[string]interface{}{
+						"name":  providerConfig.Name,
+						"error": err.Error(),
+					})
+				}
 				return fmt.Errorf("failed to create OIDC provider %s: %w", providerConfig.Name, err)
 			}
+			if s.logger != nil {
+				s.logger.Info("OIDC provider created successfully", map[string]interface{}{
+					"name": providerConfig.Name,
+				})
+			}
 		default:
+			if s.logger != nil {
+				s.logger.Error("Unsupported provider type", map[string]interface{}{
+					"type": providerConfig.Type,
+					"name": providerConfig.Name,
+				})
+			}
 			return fmt.Errorf("unsupported provider type: %s", providerConfig.Type)
 		}
 		
 		s.providers[providerConfig.Name] = provider
+		if s.logger != nil {
+			s.logger.Debug("Provider added to service", map[string]interface{}{
+				"name": providerConfig.Name,
+				"type": providerConfig.Type,
+			})
+		}
+	}
+	
+	if s.logger != nil {
+		s.logger.Info("Provider initialization completed", map[string]interface{}{
+			"active_providers": len(s.providers),
+		})
 	}
 	
 	return nil
@@ -422,25 +522,79 @@ func (s *AuthService) InitializeDefaultUser(ctx context.Context) error {
 	if count > 0 {
 		return nil // Users already exist
 	}
-	
-	// Get default admin credentials from environment
+
+	// Try to get credentials from local provider config first
+	var localProvider *AuthProviderConfig
+	for _, p := range s.config.Providers {
+		if p.Type == "local" && p.Enabled {
+			localProvider = &p
+			break
+		}
+	}
+
+	// Get default admin credentials from config or environment
 	username := os.Getenv("AUTH_DEFAULT_ADMIN_USERNAME")
 	if username == "" {
-		username = "admin"
+		// Try top-level config first
+		if s.config.DefaultAdmin.Username != "" {
+			username = s.config.DefaultAdmin.Username
+		} else if localProvider != nil && localProvider.Config["default_admin_username"] != "" {
+			username = localProvider.Config["default_admin_username"]
+		}
 	}
 	
 	email := os.Getenv("AUTH_DEFAULT_ADMIN_EMAIL")
 	if email == "" {
-		email = "admin@localhost"
+		// Try top-level config first
+		if s.config.DefaultAdmin.Email != "" {
+			email = s.config.DefaultAdmin.Email
+		} else if localProvider != nil && localProvider.Config["default_admin_email"] != "" {
+			email = localProvider.Config["default_admin_email"]
+		}
 	}
 	
 	password := os.Getenv("AUTH_DEFAULT_ADMIN_PASSWORD")
 	if password == "" {
+		// Try top-level config first
+		if s.config.DefaultAdmin.Password != "" {
+			password = s.config.DefaultAdmin.Password
+		} else if localProvider != nil && localProvider.Config["default_admin_password"] != "" {
+			password = localProvider.Config["default_admin_password"]
+		}
+	}
+	
+	// Set defaults if still empty
+	if username == "" {
+		username = "admin"
+	}
+	if email == "" {
+		email = "admin@localhost"
+	}
+	if password == "" {
 		password = "admin" // This should be changed in production
 	}
 	
+	if s.logger != nil {
+		s.logger.Info("Creating default admin user", map[string]interface{}{
+			"username": username,
+			"email":    email,
+		})
+	}
+	
 	// Create default admin user
-	return s.repository.CreateDefaultAdminUser(ctx, username, email, password)
+	err = s.repository.CreateDefaultAdminUser(ctx, username, email, password)
+	if err != nil {
+		return fmt.Errorf("failed to create default admin user: %w", err)
+	}
+	
+	if s.logger != nil {
+		s.logger.Info("Default admin user created successfully", map[string]interface{}{
+			"username": username,
+			"email":    email,
+		})
+	}
+	
+	return nil
 }
 
 // GetMiddleware returns authentication middleware

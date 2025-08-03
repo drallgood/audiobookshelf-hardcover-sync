@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v3.0.0] - Unreleased
+
 ### Fixed
+- **Authentication**: Fixed default admin user creation to properly read credentials from local provider config
 - **Helm Chart YAML Syntax**: Fixed critical YAML syntax errors in Helm templates
   - Fixed authentication configuration structure in `values.yaml`
   - Corrected secret template with proper Helm conditionals
@@ -24,8 +27,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Fixed context key usage with custom `contextKey` type to avoid collisions
   - Resolved format string parsing issue in HTML template rendering
   - All linting checks now pass cleanly
-
-## [v3.0.0] - 2025-08-02
 
 ### Added
 - **🎉 MAJOR: Multi-User Support**: Complete multi-user system with web interface and secure token management

@@ -33,11 +33,9 @@ class MultiUserApp {
                 this.redirectToLogin();
                 return;
             } else if (response.ok) {
-                // Either auth is disabled or user is authenticated
-                this.authEnabled = response.headers.get('X-Auth-Enabled') === 'true';
-                if (this.authEnabled) {
-                    await this.loadCurrentUser();
-                }
+                // If we get a 200 response, authentication is enabled and user is authenticated
+                this.authEnabled = true;
+                await this.loadCurrentUser();
             }
         } catch (error) {
             console.error('Error checking auth status:', error);

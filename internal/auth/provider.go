@@ -62,9 +62,10 @@ type SessionManager interface {
 
 // AuthConfig represents authentication configuration
 type AuthConfig struct {
-	Enabled   bool                       `yaml:"enabled" json:"enabled"`
-	Providers []AuthProviderConfig       `yaml:"providers" json:"providers"`
-	Session   SessionConfig              `yaml:"session" json:"session"`
+	Enabled      bool                       `yaml:"enabled" json:"enabled"`
+	Providers    []AuthProviderConfig       `yaml:"providers" json:"providers"`
+	Session      SessionConfig              `yaml:"session" json:"session"`
+	DefaultAdmin DefaultAdminConfig         `yaml:"default_admin" json:"default_admin"`
 }
 
 // AuthProviderConfig represents a provider configuration
@@ -83,6 +84,13 @@ type SessionConfig struct {
 	Secure     bool   `yaml:"secure" json:"secure"`
 	HttpOnly   bool   `yaml:"http_only" json:"http_only"`
 	SameSite   string `yaml:"same_site" json:"same_site"`
+}
+
+// DefaultAdminConfig represents default admin user configuration
+type DefaultAdminConfig struct {
+	Username string `yaml:"username" json:"username"`
+	Email    string `yaml:"email" json:"email"`
+	Password string `yaml:"password" json:"-"` // Don't expose password in JSON
 }
 
 // DefaultAuthConfig returns default authentication configuration
@@ -104,6 +112,11 @@ func DefaultAuthConfig() AuthConfig {
 			Secure:     true,
 			HttpOnly:   true,
 			SameSite:   "Lax",
+		},
+		DefaultAdmin: DefaultAdminConfig{
+			Username: "admin",
+			Email:    "admin@localhost",
+			Password: "admin",
 		},
 	}
 }

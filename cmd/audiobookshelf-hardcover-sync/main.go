@@ -183,8 +183,13 @@ func main() {
 	repo := database.NewRepository(db, encryptor, log)
 	
 	// Perform automatic migration from single-user config if needed
-	configPath := database.GetDefaultConfigPath()
+	// Use the actual config path that was loaded, not default search paths
+	configPath := flags.configFile
 	dbPath := database.GetDefaultDatabasePath() // Get default SQLite path for migration
+	log.Info("Checking migration from config", map[string]interface{}{
+		"config_path": configPath,
+		"db_path": dbPath,
+	})
 	if err := database.AutoMigrate(dbPath, configPath, log); err != nil {
 		log.Error("Failed to perform migration", map[string]interface{}{
 			"error": err.Error(),

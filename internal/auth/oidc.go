@@ -59,27 +59,11 @@ type OIDCClaims struct {
 
 // NewOIDCProvider creates a new OIDC authentication provider using coreos/go-oidc
 func NewOIDCProvider(name string, config map[string]string, log *logger.Logger) (*OIDCProvider, error) {
-	enabled := config["enabled"] == "true"
-	
 	if log != nil {
 		log.Debug("Creating OIDC provider", map[string]interface{}{
 			"provider": name,
-			"enabled":  enabled,
+			"enabled":  true, // Provider is only created if enabled in initializeProviders
 		})
-	}
-	
-	if !enabled {
-		if log != nil {
-			log.Debug("OIDC provider disabled", map[string]interface{}{
-				"provider": name,
-			})
-		}
-		return &OIDCProvider{
-			name:    name,
-			enabled: false,
-			config:  config,
-			logger:  log,
-		}, nil
 	}
 
 	// Validate required configuration

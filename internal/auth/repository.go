@@ -299,7 +299,19 @@ func (r *AuthRepository) CreateDefaultAdminUser(ctx context.Context, username, e
 	}
 	
 	if count > 0 {
-		return fmt.Errorf("users already exist, cannot create default admin")
+		// If admin user exists, update its password to match config
+		var existingUser AuthUser
+		err := r.db.WithContext(ctx).Where("username = ? AND role = ?", username, "admin").First(&existingUser).Error
+		if err == nil {
+			// Admin user exists, update password
+			user, err := CreateLocalUser(username, email, password, RoleAdmin)
+			if err != nil {
+				return fmt.Errorf("failed to create updated admin user: %w", err)
+			}
+			existingUser.PasswordHash = user.PasswordHash
+			return r.db.WithContext(ctx).Save(&existingUser).Error
+		}
+		return nil // Users exist but no admin found
 	}
 	
 	// Create default admin user

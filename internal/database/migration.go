@@ -41,18 +41,43 @@ func (m *MigrationManager) MigrateFromSingleUserConfig(configPath string) error 
 		return fmt.Errorf("failed to load existing config: %w", err)
 	}
 
-	// Check if we already have users in the database
+	// Check if we already have sync users in the database (not auth users)
 	users, err := m.repository.ListUsers()
 	if err != nil {
-		return fmt.Errorf("failed to check existing users: %w", err)
+		return fmt.Errorf("failed to check existing sync users: %w", err)
 	}
 
+	// Check if users have complete configurations (both user and config)
 	if len(users) > 0 {
-		m.logger.Info("Users already exist in database, skipping migration", map[string]interface{}{
-			"user_count": len(users),
+		// Verify that users have proper configurations
+		for _, user := range users {
+			userWithTokens, err := m.repository.GetUser(user.ID)
+			if err != nil || userWithTokens.AudiobookshelfURL == "" {
+				m.logger.Warn("Found user without complete configuration, will recreate", map[string]interface{}{
+					"user_id": user.ID,
+					"error": err,
+				})
+				// Delete incomplete user and continue with migration
+				if deleteErr := m.repository.DeleteUser(user.ID); deleteErr != nil {
+					m.logger.Error("Failed to delete incomplete user", map[string]interface{}{
+						"user_id": user.ID,
+						"error": deleteErr.Error(),
+					})
+				}
+				break // Continue with migration
+			}
+		}
+		
+		// If we get here, all users have complete configurations
+		m.logger.Info("Sync users with complete configurations already exist, skipping migration", map[string]interface{}{
+			"sync_user_count": len(users),
 		})
 		return nil
 	}
+
+	m.logger.Info("Creating default sync user from config.yaml", map[string]interface{}{
+		"config_path": configPath,
+	})
 
 	// Create default user from single-user config
 	userID := "default"
@@ -124,13 +149,14 @@ func (m *MigrationManager) CheckMigrationNeeded(configPath string) (bool, error)
 		return false, nil
 	}
 
-	// Check if we already have users in the database
+	// Check if we already have sync users in the database (not auth users)
 	users, err := m.repository.ListUsers()
 	if err != nil {
-		return false, fmt.Errorf("failed to check existing users: %w", err)
+		return false, fmt.Errorf("failed to check existing sync users: %w", err)
 	}
 
-	// Migration needed if config file exists but no users in database
+	// Migration needed if config file exists but no sync users in database
+	// (auth users are separate from sync users)
 	return len(users) == 0, nil
 }
 
