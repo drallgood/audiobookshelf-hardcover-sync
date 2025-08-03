@@ -44,17 +44,34 @@ service:
   type: ClusterIP
   port: 8080
 
+# Web UI Configuration
+# The application includes a modern web interface for multi-user management
+# Access the web UI at: http://<service-url>:<port>/
+# Features include:
+# - Multi-user management (create, edit, delete users)
+# - Authentication (login/logout with local or Keycloak/OIDC)
+# - Real-time sync status monitoring
+# - Individual user sync control
+# - Sync configuration management per user
 ingress:
   enabled: false
   className: ""
   annotations: {}
     # kubernetes.io/ingress.class: nginx
     # kubernetes.io/tls-acme: "true"
+    # For authentication-enabled deployments, consider:
+    # nginx.ingress.kubernetes.io/session-cookie-name: "abs-hc-sync-session"
+    # nginx.ingress.kubernetes.io/session-cookie-max-age: "86400"
   hosts:
     - host: audiobookshelf-hardcover-sync.local
       paths:
         - path: /
           pathType: Prefix
+          # Serves the web UI and API endpoints:
+          # / - Main web interface
+          # /api/users - User management API
+          # /api/sync - Sync control API
+          # /auth/* - Authentication endpoints (if enabled)
   tls: []
   #  - secretName: audiobookshelf-hardcover-sync-tls
   #    hosts:
@@ -175,6 +192,36 @@ secrets:
   hardcover:
     # API token for Hardcover
     token: ""
+
+# Authentication configuration (v3.0.0+)
+authentication:
+  # Enable authentication system
+  enabled: false
+  # Session secret for signing cookies (required if enabled)
+  sessionSecret: ""
+  # Session cookie name
+  cookieName: "abs-hc-sync-session"
+  
+  # Default admin user (created if no users exist)
+  defaultAdmin:
+    username: "admin"
+    email: "admin@localhost"
+    password: "changeme"
+  
+  # Keycloak/OIDC configuration
+  keycloak:
+    # OIDC issuer URL
+    issuer: ""
+    # Client ID for OIDC
+    clientId: ""
+    # Client secret for OIDC
+    clientSecret: ""
+    # Redirect URI for OIDC callbacks
+    redirectUri: ""
+    # Scopes for OIDC authentication
+    scopes: "openid profile email"
+    # JWT claim path for roles
+    roleClaim: "realm_access.roles"
 
 # Environment variables (will override config values)
 env: []

@@ -30,6 +30,62 @@ helm delete my-sync
 
 The command removes all the Kubernetes components associated with the chart and deletes the release.
 
+## Web UI Access
+
+The application includes a modern web interface for multi-user management and monitoring. Once deployed, you can access the web UI at:
+
+```
+http://<service-url>:<port>/
+```
+
+### Web UI Features
+
+- **Multi-User Management**: Create, edit, and delete users with individual sync configurations
+- **Authentication Support**: Local username/password or Keycloak/OIDC integration
+- **Real-Time Monitoring**: Live sync status updates and progress tracking
+- **Individual Sync Control**: Start/stop sync operations per user
+- **Configuration Management**: Edit sync settings, API tokens, and preferences per user
+
+### Accessing the Web UI
+
+#### Without Ingress (Port Forward)
+```bash
+kubectl port-forward service/my-sync-audiobookshelf-hardcover-sync 8080:8080
+# Access at: http://localhost:8080
+```
+
+#### With Ingress Enabled
+```yaml
+ingress:
+  enabled: true
+  className: "nginx"
+  hosts:
+    - host: sync.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  # For authentication-enabled deployments:
+  annotations:
+    nginx.ingress.kubernetes.io/session-cookie-name: "abs-hc-sync-session"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "86400"
+```
+
+### Authentication Configuration
+
+To enable the authentication system in the web UI:
+
+```yaml
+authentication:
+  enabled: true
+  sessionSecret: "your-secure-session-secret"
+  defaultAdmin:
+    username: "admin"
+    email: "admin@example.com"
+    password: "secure-password"
+```
+
+See the [Authentication Guide](../../docs/AUTHENTICATION.md) for detailed setup instructions.
+
 ## Parameters
 
 ### Global parameters

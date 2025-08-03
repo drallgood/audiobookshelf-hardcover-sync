@@ -126,6 +126,65 @@ spec:
                   name: {{ include "audiobookshelf-hardcover-sync.fullname" . }}
                   key: hardcover-token
             
+            # Authentication configuration (v3.0.0+)
+            {{- if .Values.authentication.enabled }}
+            - name: AUTH_ENABLED
+              value: {{ .Values.authentication.enabled | quote }}
+            {{- if .Values.authentication.sessionSecret }}
+            - name: AUTH_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "audiobookshelf-hardcover-sync.fullname" . }}
+                  key: auth-session-secret
+            {{- end }}
+            {{- if .Values.authentication.cookieName }}
+            - name: AUTH_COOKIE_NAME
+              value: {{ .Values.authentication.cookieName | quote }}
+            {{- end }}
+            {{- if .Values.authentication.defaultAdmin.username }}
+            - name: AUTH_DEFAULT_ADMIN_USERNAME
+              value: {{ .Values.authentication.defaultAdmin.username | quote }}
+            {{- end }}
+            {{- if .Values.authentication.defaultAdmin.email }}
+            - name: AUTH_DEFAULT_ADMIN_EMAIL
+              value: {{ .Values.authentication.defaultAdmin.email | quote }}
+            {{- end }}
+            {{- if .Values.authentication.defaultAdmin.password }}
+            - name: AUTH_DEFAULT_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "audiobookshelf-hardcover-sync.fullname" . }}
+                  key: auth-default-admin-password
+            {{- end }}
+            {{- if .Values.authentication.keycloak.issuer }}
+            - name: KEYCLOAK_ISSUER
+              value: {{ .Values.authentication.keycloak.issuer | quote }}
+            {{- end }}
+            {{- if .Values.authentication.keycloak.clientId }}
+            - name: KEYCLOAK_CLIENT_ID
+              value: {{ .Values.authentication.keycloak.clientId | quote }}
+            {{- end }}
+            {{- if .Values.authentication.keycloak.clientSecret }}
+            - name: KEYCLOAK_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "audiobookshelf-hardcover-sync.fullname" . }}
+                  key: keycloak-client-secret
+            {{- end }}
+            {{- if .Values.authentication.keycloak.redirectUri }}
+            - name: KEYCLOAK_REDIRECT_URI
+              value: {{ .Values.authentication.keycloak.redirectUri | quote }}
+            {{- end }}
+            {{- if .Values.authentication.keycloak.scopes }}
+            - name: KEYCLOAK_SCOPES
+              value: {{ .Values.authentication.keycloak.scopes | quote }}
+            {{- end }}
+            {{- if .Values.authentication.keycloak.roleClaim }}
+            - name: KEYCLOAK_ROLE_CLAIM
+              value: {{ .Values.authentication.keycloak.roleClaim | quote }}
+            {{- end }}
+            {{- end }}
+            
             # Additional environment variables
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}

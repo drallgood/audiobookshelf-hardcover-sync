@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Helm Chart YAML Syntax**: Fixed critical YAML syntax errors in Helm templates
+  - Fixed authentication configuration structure in `values.yaml`
+  - Corrected secret template with proper Helm conditionals
+  - Fixed deployment template environment variable references
+  - All Helm lint validations now pass successfully
+- **Helm Chart Documentation**: Enhanced web UI configuration and documentation
+  - Added comprehensive web UI access instructions
+  - Documented authentication-aware features and endpoints
+  - Added ingress configuration examples for session management
+  - Updated chart README with complete setup guide
+
 ## [v3.0.0] - 2025-08-02
 
 ### Added
