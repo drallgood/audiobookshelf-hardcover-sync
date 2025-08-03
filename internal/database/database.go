@@ -119,9 +119,30 @@ func (d *Database) Health() error {
 
 // GetDefaultDatabasePath returns the default path for the database file
 func GetDefaultDatabasePath() string {
+	// First check for explicit database path
+	if dbPath := os.Getenv("DATABASE_PATH"); dbPath != "" {
+		return dbPath
+	}
+
+	// Then use DATA_DIR or fallback directories
 	dataDir := os.Getenv("DATA_DIR")
 	if dataDir == "" {
-		dataDir = "./data"
+		// Use the same directory detection as getDataDirForFallback
+		if _, err := os.Stat("/data"); err == nil {
+			dataDir = "/data"
+		} else if _, err := os.Stat("/app/data"); err == nil {
+			dataDir = "/app/data"
+		} else {
+			dataDir = "./data"
+		}
 	}
-	return filepath.Join(dataDir, "audiobookshelf-sync.db")
+
+	// Ensure the db subdirectory exists
+	dbDir := filepath.Join(dataDir, "db")
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		// If we can't create the directory, just use dataDir directly
+		return filepath.Join(dataDir, "audiobookshelf-hardcover-sync.db")
+	}
+
+	return filepath.Join(dbDir, "audiobookshelf-hardcover-sync.db")
 }

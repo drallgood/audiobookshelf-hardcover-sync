@@ -16,29 +16,33 @@ import (
 )
 
 // getDataDirForFallback returns the data directory for fallback database connections
-// Uses smart detection logic similar to encryption key path detection
+// This now uses the same logic as GetDefaultDatabasePath to ensure consistency
 func getDataDirForFallback() string {
+	// First check for explicit database path
+	if dbPath := os.Getenv("DATABASE_PATH"); dbPath != "" {
+		return filepath.Dir(dbPath)
+	}
+
+	// Then use DATA_DIR or fallback directories
 	dataDir := os.Getenv("DATA_DIR")
 	if dataDir == "" {
-		// Use absolute path for Docker compatibility
-		// Check if we're likely in a Docker container
+		// Check common container paths first
 		if _, err := os.Stat("/data"); err == nil {
 			dataDir = "/data"
 		} else if _, err := os.Stat("/app/data"); err == nil {
 			dataDir = "/app/data"
 		} else {
-			// Fallback to relative path for local development
 			dataDir = "./data"
 		}
 	}
 
-	// Ensure data directory exists
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		// Log error but continue - we'll handle file creation errors later
-		// Note: We can't use logger here as it might not be initialized yet
-		fmt.Printf("Warning: Failed to create data directory %s: %v\n", dataDir, err)
+	// Use the db subdirectory if it exists or can be created
+	dbDir := filepath.Join(dataDir, "db")
+	if err := os.MkdirAll(dbDir, 0755); err == nil {
+		return dbDir
 	}
 
+	// Fall back to dataDir if we can't create the db subdirectory
 	return dataDir
 }
 
@@ -287,9 +291,8 @@ func connectSQLiteFallback(log *appLogger.Logger) (*gorm.DB, *DatabaseConfig, er
 
 // connectPureSQLiteFallback creates a fallback SQLite connection using pure Go driver
 func connectPureSQLiteFallback(log *appLogger.Logger) (*gorm.DB, *DatabaseConfig, error) {
-	// Use smart data directory detection
-	dataDir := getDataDirForFallback()
-	fallbackPath := fmt.Sprintf("%s/audiobookshelf-hardcover-sync.db", dataDir)
+	// Use the same path resolution as GetDefaultDatabasePath for consistency
+	fallbackPath := GetDefaultDatabasePath()
 	
 	fallbackConfig := &DatabaseConfig{
 		Type: DatabaseTypeSQLite,
