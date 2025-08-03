@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"gorm.io/gorm"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 )
 
 // AuthService provides high-level authentication operations
@@ -18,10 +19,11 @@ type AuthService struct {
 	providers      map[string]IAuthProvider
 	config         AuthConfig
 	enabled        bool
+	logger         *logger.Logger
 }
 
 // NewAuthService creates a new authentication service
-func NewAuthService(db *gorm.DB, config AuthConfig) (*AuthService, error) {
+func NewAuthService(db *gorm.DB, config AuthConfig, log *logger.Logger) (*AuthService, error) {
 	// Create repository
 	repository := NewAuthRepository(db)
 	
@@ -31,6 +33,14 @@ func NewAuthService(db *gorm.DB, config AuthConfig) (*AuthService, error) {
 	// Initialize providers
 	providers := make(map[string]IAuthProvider)
 	
+	if log != nil {
+		log.Debug("Creating authentication service", map[string]interface{}{
+			"enabled":         config.Enabled,
+			"provider_count":  len(config.Providers),
+			"session_enabled": config.Session.Secret != "",
+		})
+	}
+
 	service := &AuthService{
 		db:             db,
 		repository:     repository,
@@ -38,6 +48,7 @@ func NewAuthService(db *gorm.DB, config AuthConfig) (*AuthService, error) {
 		providers:      providers,
 		config:         config,
 		enabled:        config.Enabled,
+		logger:         log,
 	}
 	
 	// Initialize providers
@@ -60,9 +71,9 @@ func (s *AuthService) initializeProviders() error {
 		
 		switch providerConfig.Type {
 		case "local":
-			provider = NewLocalAuthProvider(providerConfig.Name, providerConfig.Config)
+			provider = NewLocalAuthProvider(providerConfig.Name, providerConfig.Config, s.logger, s.repository)
 		case "oidc":
-			provider, err = NewOIDCProvider(providerConfig.Name, providerConfig.Config)
+			provider, err = NewOIDCProvider(providerConfig.Name, providerConfig.Config, s.logger)
 			if err != nil {
 				return fmt.Errorf("failed to create OIDC provider %s: %w", providerConfig.Name, err)
 			}
@@ -83,16 +94,45 @@ func (s *AuthService) IsEnabled() bool {
 
 // Login authenticates a user with the specified provider
 func (s *AuthService) Login(ctx context.Context, providerName string, credentials map[string]string, r *http.Request) (*AuthResult, error) {
+	if s.logger != nil {
+		s.logger.Debug("Starting authentication login", map[string]interface{}{
+			"provider": providerName,
+			"username": credentials["username"], // Safe to log username
+			"enabled":  s.enabled,
+		})
+	}
+
 	if !s.enabled {
+		if s.logger != nil {
+			s.logger.Warn("Authentication login attempted but service is disabled", map[string]interface{}{
+				"provider": providerName,
+			})
+		}
 		return nil, fmt.Errorf("authentication is disabled")
 	}
 	
 	provider, exists := s.providers[providerName]
 	if !exists {
+		if s.logger != nil {
+			availableProviders := make([]string, 0, len(s.providers))
+			for name := range s.providers {
+				availableProviders = append(availableProviders, name)
+			}
+			s.logger.Error("Authentication login failed: provider not found", map[string]interface{}{
+				"provider":           providerName,
+				"available_providers": availableProviders,
+			})
+		}
 		return nil, fmt.Errorf("provider %s not found", providerName)
 	}
 	
 	if !provider.IsEnabled() {
+		if s.logger != nil {
+			s.logger.Warn("Authentication login failed: provider disabled", map[string]interface{}{
+				"provider": providerName,
+				"type":     provider.GetType(),
+			})
+		}
 		return nil, fmt.Errorf("provider %s is disabled", providerName)
 	}
 	

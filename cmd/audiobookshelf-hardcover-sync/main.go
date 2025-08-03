@@ -243,7 +243,7 @@ func main() {
 		},
 	}
 	authConfig := auth.NewAuthConfigFromConfig(configAuth)
-	authService, err := auth.NewAuthService(db.GetDB(), authConfig)
+	authService, err := auth.NewAuthService(db.GetDB(), authConfig, log)
 	if err != nil {
 		log.Error("Failed to initialize authentication service", map[string]interface{}{
 			"error": err.Error(),

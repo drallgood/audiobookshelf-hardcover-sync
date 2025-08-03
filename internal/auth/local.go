@@ -4,24 +4,39 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 )
 
 // LocalAuthProvider implements local username/password authentication
 type LocalAuthProvider struct {
-	name    string
-	enabled bool
-	config  map[string]string
+	name       string
+	enabled    bool
+	config     map[string]string
+	logger     *logger.Logger
+	repository *AuthRepository
 }
 
 // NewLocalAuthProvider creates a new local authentication provider
-func NewLocalAuthProvider(name string, config map[string]string) *LocalAuthProvider {
-	return &LocalAuthProvider{
-		name:    name,
-		enabled: true,
-		config:  config,
+func NewLocalAuthProvider(name string, config map[string]string, log *logger.Logger, repository *AuthRepository) *LocalAuthProvider {
+	provider := &LocalAuthProvider{
+		name:       name,
+		enabled:    true,
+		config:     config,
+		logger:     log,
+		repository: repository,
 	}
+	
+	if log != nil {
+		log.Info("Local authentication provider initialized", map[string]interface{}{
+			"provider": name,
+			"enabled":  true,
+		})
+	}
+	
+	return provider
 }
 
 // GetName returns the provider name
@@ -41,20 +56,116 @@ func (p *LocalAuthProvider) IsEnabled() bool {
 
 // Authenticate authenticates a user with username and password
 func (p *LocalAuthProvider) Authenticate(ctx context.Context, credentials map[string]string) (*AuthUser, error) {
+	if p.logger != nil {
+		p.logger.Debug("Starting local authentication", map[string]interface{}{
+			"provider": p.name,
+			"username": credentials["username"], // Safe to log username
+		})
+	}
+
 	username, ok := credentials["username"]
 	if !ok || username == "" {
+		if p.logger != nil {
+			p.logger.Warn("Local authentication failed: missing username", map[string]interface{}{
+				"provider": p.name,
+			})
+		}
 		return nil, fmt.Errorf("username is required")
 	}
 
 	password, ok := credentials["password"]
 	if !ok || password == "" {
+		if p.logger != nil {
+			p.logger.Warn("Local authentication failed: missing password", map[string]interface{}{
+				"provider": p.name,
+				"username": username,
+			})
+		}
 		return nil, fmt.Errorf("password is required")
 	}
 
-	// This would typically query the database to find the user
-	// For now, we'll return an error indicating this needs to be implemented
-	// with the actual database integration
-	return nil, fmt.Errorf("local authentication requires database integration")
+	if p.logger != nil {
+		p.logger.Debug("Credentials validated, attempting database lookup", map[string]interface{}{
+			"provider": p.name,
+			"username": username,
+		})
+	}
+
+	// Look up user in database
+	user, err := p.repository.GetUserByUsername(ctx, username)
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Warn("Local authentication failed: user not found", map[string]interface{}{
+				"provider": p.name,
+				"username": username,
+				"error":    err.Error(),
+			})
+		}
+		return nil, fmt.Errorf("invalid username or password")
+	}
+
+	// Check if user is active
+	if !user.Active {
+		if p.logger != nil {
+			p.logger.Warn("Local authentication failed: user inactive", map[string]interface{}{
+				"provider": p.name,
+				"username": username,
+				"user_id":  user.ID,
+			})
+		}
+		return nil, fmt.Errorf("user account is inactive")
+	}
+
+	// Check if user is from local provider
+	if user.Provider != "local" {
+		if p.logger != nil {
+			p.logger.Warn("Local authentication failed: user from different provider", map[string]interface{}{
+				"provider":      p.name,
+				"username":      username,
+				"user_id":       user.ID,
+				"user_provider": user.Provider,
+			})
+		}
+		return nil, fmt.Errorf("user is not configured for local authentication")
+	}
+
+	// Verify password
+	if err := VerifyPassword(password, user.PasswordHash); err != nil {
+		if p.logger != nil {
+			p.logger.Warn("Local authentication failed: invalid password", map[string]interface{}{
+				"provider": p.name,
+				"username": username,
+				"user_id":  user.ID,
+			})
+		}
+		return nil, fmt.Errorf("invalid username or password")
+	}
+
+	// Update last login time
+	now := time.Now()
+	user.LastLoginAt = &now
+	if err := p.repository.UpdateUser(ctx, user); err != nil {
+		if p.logger != nil {
+			p.logger.Warn("Failed to update last login time", map[string]interface{}{
+				"provider": p.name,
+				"username": username,
+				"user_id":  user.ID,
+				"error":    err.Error(),
+			})
+		}
+		// Don't fail authentication just because we couldn't update login time
+	}
+
+	if p.logger != nil {
+		p.logger.Info("Local authentication successful", map[string]interface{}{
+			"provider": p.name,
+			"username": username,
+			"user_id":  user.ID,
+			"role":     user.Role,
+		})
+	}
+
+	return user, nil
 }
 
 // HandleCallback is not applicable for local authentication
