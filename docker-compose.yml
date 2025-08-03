@@ -35,14 +35,34 @@ services:
     ports:
       - "${APP_PORT:-8080}:8080"
     volumes:
+      # Configuration
       - ./config:/app/config
-      - ./data:/app/data
+      
+      # OPTION 1: Single volume approach (recommended for new deployments)
+      # All data under /data - configure paths with environment variables below
+      - ./data:/data
+      
+      # OPTION 2: Legacy approach (backward compatibility)
+      # Uncomment this and comment out /data volume above if you already use /app/data:
+      # - ./data:/app/data
+      
+      # OPTION 3: Separate volumes (if you prefer granular control)
+      # Uncomment these and comment out the single volume above:
+      # - ./data/db:/data/db           # Database files
+      # - ./data/cache:/data/cache     # Performance caches
+      # - ./data/mismatches:/data/mismatches  # Mismatch reports
+      
       # Uncomment for development with live reload
       # - .:/src
       # - /src/node_modules
       # - /src/bin
     environment:
       <<: *common-env
+      # Path configuration (customize as needed)
+      DATABASE_PATH: /data/db/audiobookshelf-hardcover-sync.db
+      CACHE_DIR: /data/cache
+      MISMATCH_OUTPUT_DIR: /data/mismatches
+      SYNC_STATE_FILE: /data/sync_state.json
       # Uncomment to override default config path
       # CONFIG_FILE: /app/config/custom-config.yaml
     # Uncomment to run in development mode with live reload
