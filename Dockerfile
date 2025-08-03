@@ -58,6 +58,9 @@ RUN mkdir -p /app/config /app/data /data \
 # Copy default config if it doesn't exist
 COPY --chown=app:app config.example.yaml /app/config/config.example.yaml
 
+# Copy web UI files for multi-user interface
+COPY --chown=app:app web/static /app/web/static
+
 # Define volumes for persistent data
 # Supports both legacy (/app/data) and new (/data) volume mappings
 # Paths are configurable via environment variables or config.yaml
