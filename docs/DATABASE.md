@@ -333,7 +333,7 @@ The application will log detailed information about:
 ### Health Checks
 
 The application provides database health check endpoints:
-- `/health`: Overall application health including database
+- `/healthz`: Overall application health including database
 - Database connection status is included in health responses
 
 ## Examples

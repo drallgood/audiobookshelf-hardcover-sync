@@ -27,7 +27,7 @@ services:
     stop_signal: SIGTERM
     init: true
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/healthz || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

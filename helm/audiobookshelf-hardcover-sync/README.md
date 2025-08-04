@@ -261,4 +261,4 @@ kubectl get secret my-sync-audiobookshelf-hardcover-sync -o yaml
 
 ### Health check
 
-The application provides a health endpoint at `/health` that you can use to verify the service is running correctly.
+The application provides a health endpoint at `/healthz` that you can use to verify the service is running correctly.

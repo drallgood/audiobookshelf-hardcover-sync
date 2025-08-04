@@ -249,7 +249,7 @@ The project follows standard Go project layout:
          - CONFIG_PATH=/app/config/config.yaml
          - LOG_LEVEL=info
        healthcheck:
-         test: ["CMD", "wget", "--spider", "http://localhost:8080/health"]
+         test: ["CMD", "wget", "--spider", "http://localhost:8080/healthz"]
          interval: 30s
          timeout: 10s
          retries: 3
@@ -569,7 +569,7 @@ paths:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/health` | GET | Basic health status |
+| `/healthz` | GET | Basic health status |
 | `/ready` | GET | Service readiness |
 | `/metrics` | GET | Prometheus metrics |
 

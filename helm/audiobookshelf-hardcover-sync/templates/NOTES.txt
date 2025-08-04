@@ -25,7 +25,7 @@
    kubectl logs --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "audiobookshelf-hardcover-sync.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -f
 
 3. Health check endpoint:
-   The application provides a health check endpoint at /health
+   The application provides a health check endpoint at /healthz
 
 4. Configuration:
    {{- if not .Values.secrets.audiobookshelf.url }}

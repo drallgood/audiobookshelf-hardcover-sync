@@ -60,7 +60,7 @@ securityContext:
 # Health checks
 livenessProbe:
   httpGet:
-    path: /health
+    path: /healthz
     port: http
   initialDelaySeconds: 60
   periodSeconds: 60
@@ -69,7 +69,7 @@ livenessProbe:
 
 readinessProbe:
   httpGet:
-    path: /health
+    path: /healthz
     port: http
   initialDelaySeconds: 10
   periodSeconds: 30
