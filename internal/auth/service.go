@@ -602,6 +602,11 @@ func (s *AuthService) GetMiddleware() *AuthMiddleware {
 	return NewAuthMiddleware(s.sessionManager, s.config)
 }
 
+// GetSessionManager returns the session manager for direct session operations
+func (s *AuthService) GetSessionManager() SessionManager {
+	return s.sessionManager
+}
+
 // LoadConfigFromEnv loads authentication configuration from environment variables
 func LoadConfigFromEnv() AuthConfig {
 	config := DefaultAuthConfig()

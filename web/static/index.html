@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Audiobookshelf-Hardcover Sync - Multi-User Management</title>
+    <title>Audiobookshelf-Hardcover Sync - Sync Profile Management</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,7 +12,7 @@
             <div class="header-content">
                 <div class="header-left">
                     <h1>📚 Audiobookshelf-Hardcover Sync</h1>
-                    <p>Multi-User Management Dashboard</p>
+                    <p>Sync Profile Management Dashboard</p>
                 </div>
                 <div class="header-right" id="user-info">
                     <!-- User info will be loaded here -->
@@ -21,15 +21,15 @@
         </header>
 
         <nav class="tabs">
-            <button class="tab-button active" onclick="showTab('users')">Users</button>
+            <button class="tab-button active" onclick="showTab('users')">Profiles</button>
             <button class="tab-button" onclick="showTab('sync')">Sync Status</button>
-            <button class="tab-button" onclick="showTab('add-user')">Add User</button>
+            <button class="tab-button" onclick="showTab('add-user')">Add Profile</button>
         </nav>
 
         <!-- Users Tab -->
         <div id="users-tab" class="tab-content active">
             <div class="section-header">
-                <h2>Manage Users</h2>
+                <h2>Manage Sync Profiles</h2>
                 <button class="btn btn-primary" onclick="refreshUsers()">🔄 Refresh</button>
             </div>
             
@@ -53,7 +53,7 @@
         <!-- Add User Tab -->
         <div id="add-user-tab" class="tab-content">
             <div class="section-header">
-                <h2>Add New User</h2>
+                <h2>Add New Sync Profile</h2>
             </div>
             
             <form id="add-user-form" class="user-form">
@@ -148,12 +148,12 @@
         </div>
     </div>
 
-    <!-- User Edit Modal -->
+    <!-- Sync Profile Edit Modal -->
     <div id="edit-user-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h3>Edit User</h3>
-                <button class="modal-close" onclick="closeEditModal()">&times;</button>
+                <h3>Edit Sync Profile</h3>
+                <button type="button" class="modal-close" onclick="closeEditModal()">&times;</button>
             </div>
             <form id="edit-user-form" class="user-form">
                 <input type="hidden" id="edit-user-id" name="id">

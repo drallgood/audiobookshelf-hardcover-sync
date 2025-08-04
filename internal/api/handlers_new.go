@@ -98,7 +98,15 @@ func (h *Handler) GetProfiles(w http.ResponseWriter, r *http.Request) {
 // GetProfile handles GET /api/profiles/{id}
 func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	profileID := h.extractProfileID(r.URL.Path)
+	h.logger.Debug("GetProfile request", map[string]interface{}{
+		"url_path":   r.URL.Path,
+		"profile_id": profileID,
+	})
+	
 	if profileID == "" {
+		h.logger.Error("Profile ID extraction failed", map[string]interface{}{
+			"url_path": r.URL.Path,
+		})
 		h.writeErrorResponse(w, http.StatusBadRequest, "Profile ID is required")
 		return
 	}
@@ -114,10 +122,17 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if profile == nil {
+		h.logger.Error("Profile not found in database", map[string]interface{}{
+			"profile_id": profileID,
+		})
 		h.writeErrorResponse(w, http.StatusNotFound, "Sync profile not found")
 		return
 	}
 
+	h.logger.Debug("Profile retrieved successfully", map[string]interface{}{
+		"profile_id":   profile.Profile.ID,
+		"profile_name": profile.Profile.Name,
+	})
 	h.writeSuccessResponse(w, profile)
 }
 

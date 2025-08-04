@@ -1,5 +1,5 @@
-// Multi-User Management App
-class MultiUserApp {
+// Sync Profile Management App
+class SyncProfileApp {
     constructor() {
         this.users = [];
         this.statuses = {};
@@ -7,107 +7,261 @@ class MultiUserApp {
         this.refreshInterval = null;
         this.currentUser = null;
         this.authEnabled = false;
+        this.hasRedirectedToLogin = false;
         
         this.init();
     }
 
     async init() {
-        await this.checkAuthStatus();
-        this.setupEventListeners();
-        this.loadUsers();
-        this.loadStatuses();
-        this.startAutoRefresh();
+        try {
+            // Set up event listeners first so UI is responsive
+            this.setupEventListeners();
+            
+            // Check authentication status
+            const isAuthenticated = await this.checkAuthStatus();
+            
+            // If auth is enabled but user is not authenticated, we'll be redirected to login
+            if (this.authEnabled && !isAuthenticated) {
+                // Don't load any data, just show the login UI
+                this.updateUserInfo();
+                return;
+            }
+            
+            // If we get here, either auth is disabled or user is authenticated
+            try {
+                // Load data in parallel for better performance
+                await Promise.all([
+                    this.loadProfiles(),
+                    this.loadStatuses()
+                ]);
+                
+                // Start auto-refresh only if we have data to refresh
+                if (this.users.length > 0) {
+                    this.startAutoRefresh();
+                }
+            } catch (error) {
+                console.error('Error loading data:', error);
+                this.showToast('Failed to load data', 'error');
+            }
+            
+            // Ensure UI is up to date
+            this.updateUserInfo();
+            
+        } catch (error) {
+            console.error('Error initializing app:', error);
+            this.showToast('Failed to initialize application', 'error');
+            
+            // Make sure we show appropriate UI even if there's an error
+            this.updateUserInfo();
+        }
     }
 
     async checkAuthStatus() {
         try {
-            // Check if authentication is enabled by trying to access a protected endpoint
-            const response = await fetch('/api/status', {
-                method: 'GET',
-                credentials: 'include'
-            });
-            
-            if (response.status === 401) {
-                // Authentication is enabled and user is not authenticated
+            // Prevent login loops by checking if we're already on login page
+            if (window.location.pathname.endsWith('/login')) {
+                // We're on login page, don't do auth checks that might redirect
                 this.authEnabled = true;
-                this.redirectToLogin();
-                return;
-            } else if (response.ok) {
-                // If we get a 200 response, authentication is enabled and user is authenticated
-                this.authEnabled = true;
-                await this.loadCurrentUser();
+                this.currentUser = null;
+                this.updateUserInfo();
+                return false;
             }
+            
+            // Load current user to determine auth status
+            const userLoaded = await this.loadCurrentUser();
+            
+            if (userLoaded) {
+                // User is authenticated
+                this.updateUserInfo();
+                return true;
+            }
+            
+            // No user loaded - check if we need to redirect to login
+            if (this.authEnabled && !this.hasRedirectedToLogin) {
+                console.log('Auth enabled but no user, redirecting to login');
+                this.hasRedirectedToLogin = true;
+                this.redirectToLogin();
+                return false;
+            }
+            
+            // Update UI and return status
+            this.updateUserInfo();
+            return false;
         } catch (error) {
             console.error('Error checking auth status:', error);
+            this.authEnabled = false;
+            this.currentUser = null;
+            this.updateUserInfo();
+            return false;
         }
-        
-        this.updateUserInfo();
     }
 
     async loadCurrentUser() {
         try {
             const response = await fetch('/api/auth/me', {
                 method: 'GET',
-                credentials: 'include'
+                credentials: 'include',
+                headers: {
+                    'Accept': 'application/json',
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache'
+                }
             });
             
             if (response.ok) {
                 const data = await response.json();
-                if (data.success) {
-                    this.currentUser = data.data;
+                
+                // Handle new authentication response format
+                this.authEnabled = data.auth_enabled !== false; // Default to true if not specified
+                
+                if (data.authenticated && data.user) {
+                    this.currentUser = data.user;
+                    console.log('User authenticated:', this.currentUser);
+                    return true;
+                } else {
+                    // Not authenticated but auth is enabled
+                    this.currentUser = null;
+                    console.log('User not authenticated, auth enabled:', this.authEnabled);
+                    return false;
                 }
-            } else if (response.status === 401) {
-                // User is not authenticated
+            } else {
+                // If we get an error, assume auth is enabled but user not authenticated
                 this.currentUser = null;
-                this.redirectToLogin();
+                this.authEnabled = true;
+                console.log('Auth error, assuming auth enabled');
+                return false;
             }
         } catch (error) {
             console.error('Error loading current user:', error);
+            // On error, assume auth is disabled
             this.currentUser = null;
+            this.authEnabled = false;
+            return false;
         }
     }
 
     redirectToLogin() {
-        const currentPath = window.location.pathname + window.location.search;
-        window.location.href = `/auth/login?redirect=${encodeURIComponent(currentPath)}`;
+        // Only redirect if we're not already on the login page
+        if (!window.location.pathname.endsWith('/login')) {
+            const currentPath = window.location.pathname + window.location.search;
+            window.location.href = `/login?redirect=${encodeURIComponent(currentPath)}`;
+        }
     }
 
     updateUserInfo() {
-        const userInfoElement = document.getElementById('user-info');
-        if (!userInfoElement) return;
+        try {
+            const userInfoElement = document.getElementById('user-info');
+            if (!userInfoElement) {
+                console.warn('User info element not found');
+                return;
+            }
 
-        if (this.authEnabled && this.currentUser) {
-            userInfoElement.innerHTML = `
-                <div class="user-info">
-                    <div class="user-avatar">${this.currentUser.username.charAt(0).toUpperCase()}</div>
-                    <span>${this.currentUser.username}</span>
-                </div>
-                <button class="logout-btn" onclick="app.logout()">Logout</button>
-            `;
-        } else if (this.authEnabled) {
-            userInfoElement.innerHTML = `
-                <button class="logout-btn" onclick="app.redirectToLogin()">Login</button>
-            `;
-        } else {
-            userInfoElement.innerHTML = '';
+            // Debug logging - show full user object for troubleshooting
+            console.log('Current user object:', this.currentUser);
+            console.log('Updating user info:', { 
+                authEnabled: this.authEnabled, 
+                currentUser: this.currentUser || 'No user',
+                path: window.location.pathname
+            });
+
+            if (this.authEnabled && this.currentUser) {
+                // User is authenticated - show user info and logout button
+                // Keycloak might provide different user properties, so we'll check multiple possibilities
+                const username = this.currentUser.preferred_username || 
+                               this.currentUser.name || 
+                               this.currentUser.email || 
+                               this.currentUser.username || 
+                               'User';
+                const userInitial = username.charAt(0).toUpperCase();
+                
+                userInfoElement.innerHTML = `
+                    <div class="user-info">
+                        <div class="user-avatar">${userInitial}</div>
+                        <span>${this.escapeHtml(username)}</span>
+                    </div>
+                    <button class="logout-btn" onclick="app.logout()">
+                        <span class="btn-icon">🚪</span> Logout
+                    </button>
+                `;
+                
+                // Make sure the user is on the right page
+                if (window.location.pathname.endsWith('/login')) {
+                    window.location.href = '/';
+                }
+            } else if (this.authEnabled) {
+                // Auth is enabled but no user - show login button
+                userInfoElement.innerHTML = `
+                    <button class="login-btn" onclick="app.redirectToLogin()">
+                        <span class="btn-icon">🔑</span> Login
+                    </button>
+                `;
+                
+                // If we're not on the login page and auth is required, redirect
+                if (!window.location.pathname.endsWith('/login')) {
+                    this.redirectToLogin();
+                }
+            } else {
+                // Auth is not enabled - clear the user info area
+                userInfoElement.innerHTML = '';
+            }
+            
+            // Trigger a reflow to ensure UI updates
+            userInfoElement.offsetHeight;
+            
+        } catch (error) {
+            console.error('Error updating user info:', error);
         }
     }
 
     async logout() {
         try {
-            const response = await fetch('/auth/logout', {
+            // Clear local state first to update UI immediately
+            this.currentUser = null;
+            this.authEnabled = true;
+            this.updateUserInfo();
+            
+            // Show loading state
+            this.showLoading();
+            
+            // Call the logout API
+            const response = await fetch('/api/auth/logout', {
                 method: 'POST',
-                credentials: 'include'
+                credentials: 'include',
+                headers: {
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache'
+                }
             });
             
+            // Hide loading state
+            this.hideLoading();
+            
+            // Handle response
             if (response.ok) {
-                window.location.href = '/auth/login';
+                // Clear any remaining data
+                this.users = [];
+                this.statuses = {};
+                
+                // Stop any auto-refresh
+                this.stopAutoRefresh();
+                
+                // Redirect to login page
+                window.location.href = '/login';
             } else {
-                this.showToast('Logout failed', 'error');
+                const errorData = await response.json().catch(() => ({}));
+                console.error('Logout failed:', response.status, errorData);
+                this.showToast('Logout failed. Please try again.', 'error');
+                
+                // Still redirect to login page even if API call fails
+                window.location.href = '/login';
             }
         } catch (error) {
             console.error('Logout error:', error);
-            this.showToast('Logout failed', 'error');
+            this.hideLoading();
+            this.showToast('Logout failed. Please try again.', 'error');
+            
+            // Still redirect to login page on error
+            window.location.href = '/login';
         }
     }
 
@@ -120,16 +274,16 @@ class MultiUserApp {
             });
         });
 
-        // Add user form
+        // Add profile form
         document.getElementById('add-user-form').addEventListener('submit', (e) => {
             e.preventDefault();
-            this.handleAddUser(e);
+            this.handleAddProfile(e);
         });
 
-        // Edit user form
+        // Edit profile form
         document.getElementById('edit-user-form').addEventListener('submit', (e) => {
             e.preventDefault();
-            this.handleEditUser(e);
+            this.handleEditProfile(e);
         });
 
         // Modal close on background click
@@ -151,26 +305,54 @@ class MultiUserApp {
 
         // Refresh data when switching to relevant tabs
         if (tabName === 'users') {
-            this.loadUsers();
+            this.loadProfiles();
         } else if (tabName === 'sync') {
             this.loadStatuses();
         }
     }
 
-    async loadUsers() {
+    async loadProfiles() {
         try {
             this.showLoading();
-            const response = await fetch('/api/users');
+            
+            // Check authentication status first
+            if (this.authEnabled && !this.currentUser) {
+                this.showToast('Please log in to view profiles', 'error');
+                this.redirectToLogin();
+                return;
+            }
+            
+            const response = await fetch('/api/profiles', {
+                method: 'GET',
+                credentials: 'include', // Include session cookies
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            // Handle authentication errors specifically
+            if (response.status === 401 || response.status === 403) {
+                this.showToast('Authentication required. Please log in.', 'error');
+                this.redirectToLogin();
+                return;
+            }
+            
             const data = await response.json();
 
-            if (data.success) {
+            if (response.ok && data.success) {
                 this.users = data.data;
-                this.renderUsers();
+                this.renderProfiles();
             } else {
-                this.showToast('Failed to load users: ' + data.error, 'error');
+                // Handle different types of errors
+                if (data.error && data.error.code === 'authentication_required') {
+                    this.showToast('Authentication required. Please log in.', 'error');
+                    this.redirectToLogin();
+                } else {
+                    this.showToast('Failed to load sync profiles: ' + (data.error?.message || data.error || 'Unknown error'), 'error');
+                }
             }
         } catch (error) {
-            this.showToast('Error loading users: ' + error.message, 'error');
+            this.showToast('Error loading sync profiles: ' + error.message, 'error');
         } finally {
             this.hideLoading();
         }
@@ -192,15 +374,15 @@ class MultiUserApp {
         }
     }
 
-    renderUsers() {
+    renderProfiles() {
         const container = document.getElementById('users-list');
         
         if (this.users.length === 0) {
             container.innerHTML = `
                 <div class="text-center" style="grid-column: 1 / -1; padding: 40px;">
-                    <h3>No users found</h3>
-                    <p>Add your first user to get started with multi-user sync.</p>
-                    <button class="btn btn-primary" onclick="app.showTab('add-user')">Add User</button>
+                    <h3>No sync profiles found</h3>
+                    <p>Add your first sync profile to get started with Audiobookshelf-Hardcover sync.</p>
+                    <button class="btn btn-primary" onclick="app.showTab('add-user')">Add Sync Profile</button>
                 </div>
             `;
             return;
@@ -218,24 +400,16 @@ class MultiUserApp {
                             <strong>Created:</strong>
                             <span>${new Date(user.created_at).toLocaleDateString()}</span>
                         </div>
-                        <div class="user-info-item">
-                            <strong>Status:</strong>
-                            <span class="status-badge ${user.active ? 'completed' : 'error'}">
-                                ${user.active ? 'Active' : 'Inactive'}
-                            </span>
                         </div>
                     </div>
-                </div>
-                <div class="user-card-actions">
-                    <button class="btn btn-primary btn-small" onclick="app.editUser('${user.id}')">
-                        ✏️ Edit
-                    </button>
-                    <button class="btn btn-success btn-small" onclick="app.startSync('${user.id}')">
-                        ▶️ Sync
-                    </button>
-                    <button class="btn btn-danger btn-small" onclick="app.deleteUser('${user.id}')">
-                        🗑️ Delete
-                    </button>
+                    <div class="user-actions">
+                        <button class="btn btn-primary btn-small" onclick="app.editProfile('${user.id}')">
+                            ✏️ Edit
+                        </button>
+                        <button class="btn btn-danger btn-small" onclick="app.deleteProfile('${user.id}')">
+                            🗑️ Delete
+                        </button>
+                    </div>
                 </div>
             </div>
         `).join('');
@@ -248,16 +422,22 @@ class MultiUserApp {
             container.innerHTML = `
                 <div class="text-center" style="grid-column: 1 / -1; padding: 40px;">
                     <h3>No sync statuses available</h3>
-                    <p>Add users and start syncing to see status information.</p>
+                    <p>Add a new sync profile and start syncing to see status information.</p>
                 </div>
             `;
             return;
         }
 
-        container.innerHTML = Object.values(this.statuses).map(status => `
+        // Debug: Log status data to console for troubleshooting
+        console.log('Status data:', this.statuses);
+
+        // Handle both array and object formats
+        const statusArray = Array.isArray(this.statuses) ? this.statuses : Object.values(this.statuses);
+        
+        container.innerHTML = statusArray.map(status => `
             <div class="status-card ${status.status}">
                 <div class="status-header">
-                    <h3>${this.escapeHtml(status.user_name)}</h3>
+                    <h3>${this.escapeHtml(status.profile_name)}</h3>
                     <span class="status-badge ${status.status}">${status.status}</span>
                 </div>
                 <div class="status-info">
@@ -273,28 +453,24 @@ class MultiUserApp {
                             <div class="progress-fill" style="width: ${(status.books_synced / status.books_total) * 100}%"></div>
                         </div>
                     ` : ''}
-                    ${status.error ? `
-                        <div style="color: #dc3545;"><strong>Error:</strong> ${this.escapeHtml(status.error)}</div>
-                    ` : ''}
                 </div>
                 <div class="status-actions">
                     ${status.status === 'syncing' ? `
-                        <button class="btn btn-warning btn-small" onclick="app.cancelSync('${status.user_id}')">
-                            ⏹️ Cancel
-                        </button>
+                        <button class="btn btn-warning" onclick="app.cancelSync('${status.profile_id}')">Cancel Sync</button>
+                    ` : status.status === 'error' ? `
+                        <button class="btn btn-danger" onclick="app.startSync('${status.profile_id}')">Retry Sync</button>
                     ` : `
-                        <button class="btn btn-success btn-small" onclick="app.startSync('${status.user_id}')">
-                            ▶️ Start Sync
-                        </button>
+                        <button class="btn btn-primary" onclick="app.startSync('${status.profile_id}')">Start Sync</button>
                     `}
                 </div>
             </div>
         `).join('');
     }
 
-    async handleAddUser(event) {
+// ...
+    async handleAddProfile(event) {
         const formData = new FormData(event.target);
-        const userData = {
+        const profileData = {
             id: formData.get('id'),
             name: formData.get('name'),
             audiobookshelf_url: formData.get('audiobookshelf_url'),
@@ -320,45 +496,75 @@ class MultiUserApp {
 
         try {
             this.showLoading();
-            const response = await fetch('/api/users', {
+            const response = await fetch('/api/profiles', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify(userData)
+                body: JSON.stringify(profileData)
             });
 
             const data = await response.json();
 
             if (data.success) {
-                this.showToast('User created successfully!', 'success');
+                this.showToast('Profile created successfully!', 'success');
                 event.target.reset();
-                this.loadUsers();
-                this.showTab('users');
+                this.loadProfiles();
+                this.showTab('profiles');
             } else {
-                this.showToast('Failed to create user: ' + data.error, 'error');
+                this.showToast('Failed to create profile: ' + data.error, 'error');
             }
         } catch (error) {
-            this.showToast('Error creating user: ' + error.message, 'error');
+            this.showToast('Error creating profile: ' + error.message, 'error');
         } finally {
             this.hideLoading();
         }
     }
 
-    async editUser(userId) {
+    async editProfile(profileId) {
         try {
             this.showLoading();
-            const response = await fetch(`/api/users/${userId}`);
+            
+            // Check authentication status first
+            if (this.authEnabled && !this.currentUser) {
+                this.showToast('Please log in to edit profiles', 'error');
+                this.redirectToLogin();
+                return;
+            }
+            
+            const response = await fetch(`/api/profiles/${profileId}`, {
+                method: 'GET',
+                credentials: 'include', // Include session cookies
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            // Handle authentication errors specifically
+            if (response.status === 401 || response.status === 403) {
+                this.showToast('Authentication required. Please log in.', 'error');
+                this.redirectToLogin();
+                return;
+            }
+            
             const data = await response.json();
 
-            if (data.success) {
+            if (response.ok && data.success) {
                 this.currentEditUser = data.data;
                 this.showEditModal();
             } else {
-                this.showToast('Failed to load user data: ' + data.error, 'error');
+                // Handle different types of errors
+                if (data.error && data.error.code === 'authentication_required') {
+                    this.showToast('Authentication required. Please log in.', 'error');
+                    this.redirectToLogin();
+                } else if (response.status === 400) {
+                    this.showToast('Invalid profile ID: ' + profileId, 'error');
+                } else {
+                    this.showToast('Failed to load profile data: ' + (data.error?.message || data.error || 'Unknown error'), 'error');
+                }
             }
         } catch (error) {
-            this.showToast('Error loading user data: ' + error.message, 'error');
+            this.showToast('Error loading profile data: ' + error.message, 'error');
         } finally {
             this.hideLoading();
         }
@@ -368,9 +574,9 @@ class MultiUserApp {
         const user = this.currentEditUser;
         const config = user.sync_config || {};
         
-        // Basic user fields
-        document.getElementById('edit-user-id').value = user.user.id;
-        document.getElementById('edit-user-name').value = user.user.name;
+        // Basic user fields - use correct data structure from ProfileWithTokens
+        document.getElementById('edit-user-id').value = user.profile.id;
+        document.getElementById('edit-user-name').value = user.profile.name;
         document.getElementById('edit-abs-url').value = user.audiobookshelf_url;
         
         // Sync configuration fields
@@ -393,7 +599,7 @@ class MultiUserApp {
         this.currentEditUser = null;
     }
 
-    async handleEditUser(event) {
+    async handleEditProfile(event) {
         const formData = new FormData(event.target);
         const userId = formData.get('id');
         
@@ -429,7 +635,7 @@ class MultiUserApp {
             this.showLoading();
             
             // Update user
-            const userResponse = await fetch(`/api/users/${userId}`, {
+            const userResponse = await fetch(`/api/profiles/${userId}`, {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json'
@@ -443,7 +649,7 @@ class MultiUserApp {
             }
 
             // Update config
-            const configResponse = await fetch(`/api/users/${userId}/config`, {
+            const configResponse = await fetch(`/api/profiles/${userId}/config`, {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json'
@@ -456,38 +662,38 @@ class MultiUserApp {
                 throw new Error(configData.error);
             }
 
-            this.showToast('User updated successfully!', 'success');
+            this.showToast('Profile updated successfully!', 'success');
             this.closeEditModal();
-            this.loadUsers();
+            this.loadProfiles();
         } catch (error) {
-            this.showToast('Error updating user: ' + error.message, 'error');
+            this.showToast('Error updating profile: ' + error.message, 'error');
         } finally {
             this.hideLoading();
         }
     }
 
-    async deleteUser(userId) {
-        if (!confirm('Are you sure you want to delete this user? This action cannot be undone.')) {
+    async deleteProfile(profileId) {
+        if (!confirm('Are you sure you want to delete this sync profile? This action cannot be undone.')) {
             return;
         }
 
         try {
             this.showLoading();
-            const response = await fetch(`/api/users/${userId}`, {
+            const response = await fetch(`/api/profiles/${profileId}`, {
                 method: 'DELETE'
             });
 
             const data = await response.json();
 
             if (data.success) {
-                this.showToast('User deleted successfully!', 'success');
-                this.loadUsers();
+                this.showToast('Profile deleted successfully!', 'success');
+                this.loadProfiles();
                 this.loadStatuses();
             } else {
-                this.showToast('Failed to delete user: ' + data.error, 'error');
+                this.showToast('Failed to delete profile: ' + (data.error || 'Unknown error'), 'error');
             }
         } catch (error) {
-            this.showToast('Error deleting user: ' + error.message, 'error');
+            this.showToast('Error deleting profile: ' + error.message, 'error');
         } finally {
             this.hideLoading();
         }
@@ -496,7 +702,7 @@ class MultiUserApp {
     async startSync(userId) {
         try {
             this.showLoading();
-            const response = await fetch(`/api/users/${userId}/sync`, {
+            const response = await fetch(`/api/profiles/${userId}/sync`, {
                 method: 'POST'
             });
 
@@ -522,7 +728,7 @@ class MultiUserApp {
 
         try {
             this.showLoading();
-            const response = await fetch(`/api/users/${userId}/sync`, {
+            const response = await fetch(`/api/profiles/${userId}/sync`, {
                 method: 'DELETE'
             });
 
@@ -604,7 +810,7 @@ function showTab(tabName) {
 }
 
 function refreshUsers() {
-    app.loadUsers();
+    app.loadProfiles();
 }
 
 function refreshStatus() {
@@ -631,7 +837,7 @@ function closeEditModal() {
 // Initialize the app when the page loads
 let app;
 document.addEventListener('DOMContentLoaded', () => {
-    app = new MultiUserApp();
+    app = new SyncProfileApp();
 });
 
 // Clean up on page unload

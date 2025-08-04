@@ -72,17 +72,9 @@ func (h *AuthHandlers) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	// Get available providers
 	providers := h.service.GetProviders()
 	
-	// Check if user is already authenticated
-	if user, _ := h.getCurrentUser(r); user != nil {
-		redirectURL := r.URL.Query().Get("redirect")
-		if redirectURL == "" {
-			redirectURL = "/"
-		}
-		http.Redirect(w, r, redirectURL, http.StatusFound)
-		return
-	}
-
-	// Serve login page HTML
+	// Always serve login page - don't check authentication status here
+	// The frontend will handle redirects after successful authentication
+	h.logger.Debug("Serving login page", nil)
 	h.serveLoginHTML(w, r, providers)
 }
 
@@ -298,17 +290,6 @@ func (h *AuthHandlers) HandleOAuthLogin(w http.ResponseWriter, r *http.Request) 
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
-// getCurrentUser gets the current authenticated user
-func (h *AuthHandlers) getCurrentUser(r *http.Request) (*AuthUser, error) {
-	sessionManager := h.service.sessionManager.(*DefaultSessionManager)
-	token := sessionManager.GetSessionFromRequest(r)
-	if token == "" {
-		return nil, fmt.Errorf("no session token")
-	}
-
-	return h.service.ValidateSession(r.Context(), token)
-}
-
 // serveLoginHTML serves the login page HTML
 func (h *AuthHandlers) serveLoginHTML(w http.ResponseWriter, r *http.Request, providers map[string]IAuthProvider) {
 	// Simple login page HTML
@@ -423,7 +404,7 @@ func (h *AuthHandlers) serveLoginHTML(w http.ResponseWriter, r *http.Request, pr
         
         %s
         
-        <form method="post" action="/auth/login">
+        <form method="post" action="/api/auth/login">
             <input type="hidden" name="redirect" value="%s">
             
             <div class="form-group">

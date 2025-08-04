@@ -33,17 +33,38 @@ func NewAuthMiddleware(sessionManager SessionManager, config AuthConfig) *AuthMi
 // RequireAuth middleware that requires authentication
 func (am *AuthMiddleware) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Debug logging
+		logger.Get().Debug("RequireAuth middleware processing request", map[string]interface{}{
+			"path":         r.URL.Path,
+			"method":       r.Method,
+			"auth_enabled": am.enabled,
+			"has_cookies":  len(r.Cookies()) > 0,
+		})
+
 		if !am.enabled {
 			// Authentication disabled, allow all requests
+			logger.Get().Debug("Authentication disabled, allowing request", map[string]interface{}{
+				"path": r.URL.Path,
+			})
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		user, err := am.authenticateRequest(r)
 		if err != nil {
+			logger.Get().Debug("Authentication failed", map[string]interface{}{
+				"path":  r.URL.Path,
+				"error": err.Error(),
+			})
 			am.handleAuthError(w, r, err)
 			return
 		}
+
+		logger.Get().Debug("Authentication successful", map[string]interface{}{
+			"path":     r.URL.Path,
+			"user_id":  user.ID,
+			"username": user.Username,
+		})
 
 		// Add user to request context
 		ctx := context.WithValue(r.Context(), userContextKey, user)
@@ -141,11 +162,18 @@ func (am *AuthMiddleware) getTokenFromRequest(r *http.Request) string {
 func (am *AuthMiddleware) handleAuthError(w http.ResponseWriter, r *http.Request, err error) {
 	// Check if this is an API request
 	if am.isAPIRequest(r) {
+		logger.Get().Debug("Returning 401 Unauthorized for API request", map[string]interface{}{
+			"path":  r.URL.Path,
+			"error": err.Error(),
+		})
 		am.writeJSONError(w, http.StatusUnauthorized, "authentication_required", err.Error())
 		return
 	}
 
 	// For web requests, redirect to login
+	logger.Get().Debug("Redirecting to login for web request", map[string]interface{}{
+		"path": r.URL.Path,
+	})
 	http.Redirect(w, r, "/auth/login?redirect="+r.URL.Path, http.StatusFound)
 }
 

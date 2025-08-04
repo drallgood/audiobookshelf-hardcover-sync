@@ -161,43 +161,10 @@ func (m *MigrationManager) CheckMigrationNeeded(configPath string) (bool, error)
 }
 
 // AutoMigrate performs automatic migration if needed
-func AutoMigrate(dbPath, configPath string, log *logger.Logger) error {
-	// Create database configuration using environment variables by default
-	dbConfig := GetDatabaseConfigFromEnv()
-
-	// Try to load the config file to override with any database settings
-	cfg, err := config.Load(configPath)
-	if err == nil && cfg != nil {
-		// Override with config file settings if available
-		if cfg.Database.Type != "" {
-			dbConfig.Type = DatabaseType(cfg.Database.Type)
-		}
-		if cfg.Database.Host != "" {
-			dbConfig.Host = cfg.Database.Host
-		}
-		if cfg.Database.Port != 0 {
-			dbConfig.Port = cfg.Database.Port
-		}
-		if cfg.Database.Name != "" {
-			dbConfig.Database = cfg.Database.Name
-		}
-		if cfg.Database.User != "" {
-			dbConfig.Username = cfg.Database.User
-		}
-		if cfg.Database.Password != "" {
-			dbConfig.Password = cfg.Database.Password
-		}
-		if cfg.Database.Path != "" {
-			dbConfig.Path = cfg.Database.Path
-		}
-		if cfg.Database.SSLMode != "" {
-			dbConfig.SSLMode = cfg.Database.SSLMode
-		}
-	}
-
-	// If a specific dbPath was provided, use it (for backward compatibility)
-	if dbPath != "" {
-		dbConfig.Path = dbPath
+// Uses the provided database configuration to ensure consistency with main application
+func AutoMigrate(dbConfig *DatabaseConfig, configPath string, log *logger.Logger) error {
+	if dbConfig == nil {
+		return fmt.Errorf("database configuration is required for migration")
 	}
 
 	log.Info("Using database for migration", map[string]interface{}{

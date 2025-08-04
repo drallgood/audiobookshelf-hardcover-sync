@@ -23,6 +23,7 @@ Automatically syncs your Audiobookshelf library with Hardcover, including readin
 - **🔧 REST API**: Complete programmatic control via RESTful endpoints
 - **⬆️ Automatic Migration**: Seamless upgrade from single-user setups
 - **🔙 Backwards Compatible**: All existing functionality preserved
+- **🚀 Cache Busting**: Automatic cache invalidation ensures users always get the latest UI updates
 
 ### Quick Start (Multi-User)
 
