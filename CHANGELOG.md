@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Sync Configuration**: Fixed `sync_want_to_read` flag not being respected for books with 0% progress
+  - Now properly skips syncing "Want to Read" books when `sync_want_to_read` is disabled
+  - Added comprehensive test coverage for all sync scenarios
+  - Improved test reliability by properly initializing service configuration
+
 ## [v3.0.0] - Unreleased
 
 ### Fixed

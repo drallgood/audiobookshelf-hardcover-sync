@@ -2295,8 +2295,13 @@ func (s *Service) determineBookStatus(progress float64, isFinished bool, finishe
 		return "IN_PROGRESS"
 	}
 
-	// Default to "WANT_TO_READ" if no progress and not finished
-	return "WANT_TO_READ"
+	// Only return WANT_TO_READ if sync_want_to_read is enabled
+	if s.config.Sync.SyncWantToRead {
+		return "WANT_TO_READ"
+	}
+
+	// If sync_want_to_read is disabled, return empty string for 0% progress books
+	return ""
 }
 
 // processFoundBook handles the common logic for processing a found book
