@@ -18,6 +18,8 @@ type Config struct {
 	Server struct {
 		Port            string        `yaml:"port" env:"PORT"`
 		ShutdownTimeout time.Duration `yaml:"shutdown_timeout" env:"SHUTDOWN_TIMEOUT"`
+		// EnableWebUI enables the web UI for multi-user mode (default: false)
+		EnableWebUI bool `yaml:"enable_web_ui" env:"ENABLE_WEB_UI"`
 	} `yaml:"server"`
 
 	// Sync configuration
@@ -28,23 +30,33 @@ type Config struct {
 		StateFile string `yaml:"state_file" env:"SYNC_STATE_FILE"`
 		// Minimum change in progress (seconds) to trigger an update (default: 60)
 		MinChangeThreshold int `yaml:"min_change_threshold" env:"SYNC_MIN_CHANGE_THRESHOLD"`
+		// Sync interval (default: 1h)
+		SyncInterval time.Duration `yaml:"sync_interval" env:"SYNC_SYNC_INTERVAL"`
+		// Minimum progress threshold (0.0-1.0) to sync a book (default: 0.0)
+		MinimumProgress float64 `yaml:"minimum_progress" env:"SYNC_MINIMUM_PROGRESS"`
+		// Sync books with 0% progress as "Want to Read" in Hardcover
+		SyncWantToRead bool `yaml:"sync_want_to_read" env:"SYNC_WANT_TO_READ"`
+		// Process unread books (0% progress) for mismatches and "want to read" status
+		ProcessUnreadBooks bool `yaml:"process_unread_books" env:"PROCESS_UNREAD_BOOKS"`
+		// Mark synced books as owned in Hardcover
+		SyncOwned bool `yaml:"sync_owned" env:"SYNC_OWNED"`
+		// Dry run mode - log actions without making changes
+		DryRun bool `yaml:"dry_run" env:"DRY_RUN"`
+		// Single-user mode - only sync books for the specified user
+		SingleUserMode bool `yaml:"single_user_mode" env:"SYNC_SINGLE_USER_MODE"`
+		// Single-user mode username
+		SingleUserUsername string `yaml:"single_user_username" env:"SYNC_SINGLE_USER_USERNAME"`
+		// Test book filter for debugging (regex pattern)
+		TestBookFilter string `yaml:"test_book_filter" env:"TEST_BOOK_FILTER"`
+		// Test book limit for debugging (0 = no limit)
+		TestBookLimit int `yaml:"test_book_limit" env:"TEST_BOOK_LIMIT"`
 		// Library filtering configuration
 		Libraries struct {
-			// Include only these libraries (by name or ID). If specified, only these libraries will be synced.
+			// Include only these libraries (empty = all)
 			Include []string `yaml:"include" env:"SYNC_LIBRARIES_INCLUDE"`
-			// Exclude these libraries (by name or ID) from sync. Include takes precedence over exclude.
+			// Exclude these libraries (empty = none)
 			Exclude []string `yaml:"exclude" env:"SYNC_LIBRARIES_EXCLUDE"`
 		} `yaml:"libraries"`
-		// SyncInterval is the interval between syncs (e.g., "1h", "30m")
-		SyncInterval time.Duration `yaml:"sync_interval" env:"SYNC_INTERVAL"`
-		// MinimumProgress is the minimum progress threshold for syncing (0.0 to 1.0)
-		MinimumProgress float64 `yaml:"minimum_progress" env:"MINIMUM_PROGRESS"`
-		// SyncWantToRead syncs books with 0% progress as "Want to Read"
-		SyncWantToRead bool `yaml:"sync_want_to_read" env:"SYNC_WANT_TO_READ"`
-		// SyncOwned marks synced books as owned in Hardcover
-		SyncOwned bool `yaml:"sync_owned" env:"SYNC_OWNED"`
-		// DryRun enables dry run mode (no changes will be made)
-		DryRun bool `yaml:"dry_run" env:"DRY_RUN"`
 	} `yaml:"sync"`
 
 	// Rate limiting configuration
@@ -192,11 +204,18 @@ func DefaultConfig() *Config {
 	// Set default values
 	cfg.Server.Port = "8080"
 	cfg.Server.ShutdownTimeout = 30 * time.Second
+	cfg.Server.EnableWebUI = false // Web UI is disabled by default for backward compatibility
 
 	// Default sync configuration
-	cfg.Sync.Incremental = false
+	cfg.Sync.Incremental = true
 	cfg.Sync.StateFile = "./data/sync_state.json"
-	cfg.Sync.MinChangeThreshold = 60 // 60 seconds
+	cfg.Sync.MinChangeThreshold = 60 // 1 minute
+	cfg.Sync.SyncInterval = 1 * time.Hour
+	cfg.Sync.MinimumProgress = 0.0
+	cfg.Sync.SyncWantToRead = true
+	cfg.Sync.ProcessUnreadBooks = false // Default to false for backward compatibility
+	cfg.Sync.SyncOwned = true
+	cfg.Sync.DryRun = false
 
 	// Default rate limiting (1500ms between requests, burst of 2, max 3 concurrent)
 	cfg.RateLimit.Rate = 1500 * time.Millisecond
@@ -383,29 +402,55 @@ func Load(configFile string) (*Config, error) {
 func (c *Config) Validate() error {
 	var missing []string
 
-	// Check required fields
-	if c.Audiobookshelf.URL == "" {
-		missing = append(missing, "AUDIOBOOKSHELF_URL")
-	}
-	if c.Audiobookshelf.Token == "" {
-		missing = append(missing, "AUDIOBOOKSHELF_TOKEN")
-	}
-	if c.Hardcover.Token == "" {
-		missing = append(missing, "HARDCOVER_TOKEN")
-	}
+	// When web UI is disabled (single-user mode), require tokens
+	// When web UI is enabled, tokens can be configured via the web UI
+	if !c.Server.EnableWebUI {
+		// Single-user mode - require tokens
+		if c.Audiobookshelf.URL == "" {
+			missing = append(missing, "AUDIOBOOKSHELF_URL")
+		}
+		if c.Audiobookshelf.Token == "" {
+			missing = append(missing, "AUDIOBOOKSHELF_TOKEN")
+		}
+		if c.Hardcover.Token == "" {
+			missing = append(missing, "HARDCOVER_TOKEN")
+		}
 
-	if len(missing) > 0 {
-		fmt.Printf("Required configuration fields are missing: %s\n", strings.Join(missing, ", "))
+		if len(missing) > 0 {
+			fmt.Printf("Required configuration fields are missing for single-user mode: %s\n", strings.Join(missing, ", "))
 
-		// Log the current configuration state (without sensitive data)
-		fmt.Printf("Current configuration state:\n")
-		fmt.Printf("  audiobookshelf_url: %s\n", c.Audiobookshelf.URL)
-		fmt.Printf("  has_audiobookshelf_token: %t\n", c.Audiobookshelf.Token != "")
-		fmt.Printf("  has_hardcover_token: %t\n", c.Hardcover.Token != "")
+			// Log the current configuration state (without sensitive data)
+			fmt.Printf("Current configuration state:\n")
+			fmt.Printf("  audiobookshelf_url: %s\n", c.Audiobookshelf.URL)
+			fmt.Printf("  has_audiobookshelf_token: %t\n", c.Audiobookshelf.Token != "")
+			fmt.Printf("  has_hardcover_token: %t\n", c.Hardcover.Token != "")
+			fmt.Printf("  web_ui_enabled: %t\n", c.Server.EnableWebUI)
 
-		return &ConfigError{
-			Field: strings.Join(missing, ", "),
-			Msg:   "required configuration values are missing",
+			return &ConfigError{
+				Field: strings.Join(missing, ", "),
+				Msg:   "required configuration values are missing for single-user mode",
+			}
+		}
+	} else {
+		// Web UI mode - only require URL, tokens can be configured via web UI
+		if c.Audiobookshelf.URL == "" {
+			missing = append(missing, "AUDIOBOOKSHELF_URL")
+		}
+
+		if len(missing) > 0 {
+			fmt.Printf("Required configuration fields are missing for web UI mode: %s\n", strings.Join(missing, ", "))
+
+			// Log the current configuration state (without sensitive data)
+			fmt.Printf("Current configuration state:\n")
+			fmt.Printf("  audiobookshelf_url: %s\n", c.Audiobookshelf.URL)
+			fmt.Printf("  has_audiobookshelf_token: %t\n", c.Audiobookshelf.Token != "")
+			fmt.Printf("  has_hardcover_token: %t\n", c.Hardcover.Token != "")
+			fmt.Printf("  web_ui_enabled: %t\n", c.Server.EnableWebUI)
+
+			return &ConfigError{
+				Field: strings.Join(missing, ", "),
+				Msg:   "required configuration values are missing for web UI mode",
+			}
 		}
 	}
 
@@ -490,6 +535,9 @@ func loadFromEnv(cfg *Config) {
 			cfg.Server.ShutdownTimeout = d
 		}
 	}
+	if enableWebUI := os.Getenv("ENABLE_WEB_UI"); enableWebUI != "" {
+		cfg.Server.EnableWebUI = strings.ToLower(enableWebUI) == "true"
+	}
 
 	// Application settings - Log level is handled by the Logging.Level field
 	if logLevel := os.Getenv("LOG_LEVEL"); logLevel != "" {
@@ -512,9 +560,14 @@ func loadFromEnv(cfg *Config) {
 			cfg.App.MinimumProgress = f
 		}
 	}
-	if syncWantToRead := os.Getenv("SYNC_WANT_TO_READ"); syncWantToRead != "" {
-		if b, err := strconv.ParseBool(syncWantToRead); err == nil {
+	if val := getEnv("SYNC_WANT_TO_READ", ""); val != "" {
+		if b, err := strconv.ParseBool(val); err == nil {
 			cfg.App.SyncWantToRead = b
+		}
+	}
+	if val := getEnv("PROCESS_UNREAD_BOOKS", ""); val != "" {
+		if b, err := strconv.ParseBool(val); err == nil {
+			cfg.Sync.ProcessUnreadBooks = b
 		}
 	}
 	if syncOwned := os.Getenv("SYNC_OWNED"); syncOwned != "" {

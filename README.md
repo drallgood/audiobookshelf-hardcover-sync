@@ -27,8 +27,13 @@ Automatically syncs your Audiobookshelf library with Hardcover, including readin
 
 ### Quick Start (Multi-User)
 
-1. **Start the application**:
+1. **Start the application with web UI enabled**:
    ```bash
+   # Using environment variable
+   ENABLE_WEB_UI=true ./audiobookshelf-hardcover-sync --server-only
+   
+   # Using config file (recommended)
+   # Set enable_web_ui: true in your config.yaml
    ./audiobookshelf-hardcover-sync --server-only
    ```
 
@@ -468,6 +473,7 @@ app:
   minimum_progress: 0.01  # Minimum progress threshold (0.0 to 1.0)
   sync_want_to_read: true  # Sync books with 0% progress as "Want to Read"
   sync_owned: true        # Mark synced books as owned in Hardcover
+  process_unread_books: false  # Process books with 0% progress for mismatches and want-to-read status
   mismatch_output_dir: "./mismatches"  # Directory to store mismatch JSON files
   dry_run: false           # Enable dry run mode (no changes will be made)
   test_book_filter: ""    # Filter books by title for testing
@@ -543,7 +549,48 @@ paths:
 | `LOG_LEVEL` | Logging level | `info` | `debug`, `warn`, `error` |
 | `LOG_FORMAT` | Log output format | `json` | `json`, `text` |
 
-**Single-User Mode (Legacy)** - For backwards compatibility:
+**Single-User Mode (Legacy)** - For backwards compatibility (web UI disabled):
+
+### Configuration Modes
+
+The application supports two distinct operating modes controlled by the `enable_web_ui` configuration option:
+
+#### Web UI Mode (Multi-User) - `enable_web_ui: true`
+- **Modern web interface** at `http://localhost:8080`
+- **Multi-user support** with individual token management
+- **REST API** for programmatic access
+- **Real-time monitoring** and control
+- **No token requirements** at startup (tokens configured via web UI)
+
+#### Single-User Mode (Legacy) - `enable_web_ui: false` (default)
+- **Backward compatible** with existing setups
+- **Environment variable/configuration file** based token management
+- **No web interface** - runs as a service only
+- **Requires tokens** at startup via environment variables or config file
+
+### Configuration Options
+
+#### Environment Variables
+- `ENABLE_WEB_UI`: Enable/disable web UI (`true`/`false`, default: `false`)
+- `AUDIOBOOKSHELF_URL`: Audiobookshelf server URL (required)
+- `AUDIOBOOKSHELF_TOKEN`: Audiobookshelf API token (required for single-user mode)
+- `HARDCOVER_TOKEN`: Hardcover API token (required for single-user mode)
+
+#### Config File
+```yaml
+server:
+  port: 8080
+  enable_web_ui: true  # Enable web UI for multi-user mode
+  shutdown_timeout: 30s
+
+# Single-user mode (when enable_web_ui: false)
+audiobookshelf:
+  url: "https://audiobookshelf.example.com"
+  token: "your-audiobookshelf-token"
+
+hardcover:
+  token: "your-hardcover-token"
+```
 
 | Variable | Description | Maps to config | Notes |
 |----------|-------------|----------------|-------|

@@ -2,6 +2,7 @@
 server:
   port: "8080"
   shutdown_timeout: "10s"  # Graceful shutdown timeout
+  enable_web_ui: false  # Enable web UI for multi-user mode (default: false)
 
 # Rate limiting configuration
 rate_limit:
@@ -116,6 +117,7 @@ sync:
   sync_interval: "1h"
   minimum_progress: 0.01  # Minimum progress threshold (0.0 to 1.0)
   sync_want_to_read: true  # Sync books with 0% progress as "Want to Read"
+  process_unread_books: false  # Process unread books (0% progress) for mismatches and "want to read" status
   sync_owned: true        # Mark synced books as owned in Hardcover
   dry_run: false           # Enable dry run mode (no changes will be made)
 

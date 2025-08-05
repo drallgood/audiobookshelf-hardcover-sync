@@ -283,20 +283,30 @@ func main() {
 	} else {
 		log.Info("Authentication system disabled", nil)
 	}
-	// Create HTTP server with multi-user and authentication support
-	srv := server.New(fmt.Sprintf(":%s", cfg.Server.Port), multiUserService, authService, log)
+	// Conditionally launch web UI based on configuration
+	var srv *server.Server
+	if cfg.Server.EnableWebUI {
+		// Create HTTP server with multi-user and authentication support
+		srv = server.New(fmt.Sprintf(":%s", cfg.Server.Port), multiUserService, authService, log)
 
-	// Start the HTTP server
-	go func() {
-		log.Info("Starting HTTP server", map[string]interface{}{
-			"port": cfg.Server.Port,
+		// Start the HTTP server
+		go func() {
+			log.Info("Starting HTTP server with web UI", map[string]interface{}{
+				"port": cfg.Server.Port,
+				"web_ui": true,
+			})
+
+			// Start the server
+			if err := srv.Start(); err != nil && err != http.ErrServerClosed {
+				errCh <- fmt.Errorf("failed to start server: %w", err)
+			}
+		}()
+	} else {
+		// Web UI disabled - log informational message
+		log.Info("Web UI disabled - running in single-user mode", map[string]interface{}{
+			"web_ui": false,
 		})
-
-		// Start the server
-		if err := srv.Start(); err != nil && err != http.ErrServerClosed {
-			errCh <- fmt.Errorf("failed to start server: %w", err)
-		}
-	}()
+	}
 
 	// Start periodic sync for all users if enabled
 	if !flags.serverOnly && cfg.App.SyncInterval > 0 {
@@ -410,18 +420,22 @@ func main() {
 	// Signal any background goroutines to stop
 	close(abortCh)
 
-	// Shutdown HTTP server with configured timeout
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
-	defer cancel()
+	// Shutdown HTTP server with configured timeout (only if web UI is enabled)
+	if cfg.Server.EnableWebUI && srv != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
+		defer cancel()
 
-	log.Info("Initiating graceful shutdown...", map[string]interface{}{
-		"timeout": cfg.Server.ShutdownTimeout.String(),
-	})
-
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Error("Error during server shutdown", map[string]interface{}{
-			"error": err.Error(),
+		log.Info("Initiating graceful shutdown...", map[string]interface{}{
+			"timeout": cfg.Server.ShutdownTimeout.String(),
 		})
+
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Error("Error during server shutdown", map[string]interface{}{
+				"error": err.Error(),
+			})
+		}
+	} else {
+		log.Info("Web UI disabled - no HTTP server to shutdown", nil)
 	}
 
 	log.Info("Shutdown completed", nil)

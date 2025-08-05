@@ -487,6 +487,7 @@ class SyncProfileApp {
                 sync_interval: formData.get('sync_interval'),
                 minimum_progress: parseFloat(formData.get('minimum_progress')),
                 sync_want_to_read: formData.get('sync_want_to_read') === 'on',
+                process_unread_books: formData.get('process_unread_books') === 'on',
                 sync_owned: formData.get('sync_owned') === 'on',
                 dry_run: false,
                 test_book_filter: '',
@@ -584,6 +585,7 @@ class SyncProfileApp {
         document.getElementById('edit-sync-interval').value = config.sync_interval || '6h';
         document.getElementById('edit-minimum-progress').value = config.minimum_progress || 0.01;
         document.getElementById('edit-sync-want-to-read').checked = config.sync_want_to_read !== false; // default true
+        document.getElementById('edit-process-unread-books').checked = config.process_unread_books === true; // default false
         document.getElementById('edit-sync-owned').checked = config.sync_owned !== false; // default true
         
         // Library filters

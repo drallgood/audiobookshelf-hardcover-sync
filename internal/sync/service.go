@@ -852,9 +852,9 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		}
 	}
 
-	// Skip books that haven't been started
-	if book.Progress.CurrentTime <= 0 {
-		bookLog.Info("Skipping unstarted book", map[string]interface{}{
+	// Skip books that haven't been started unless ProcessUnreadBooks is true
+	if book.Progress.CurrentTime <= 0 && !s.config.Sync.ProcessUnreadBooks {
+		bookLog.Debug("Skipping unstarted book (ProcessUnreadBooks is false)", map[string]interface{}{
 			"current_time": book.Progress.CurrentTime,
 		})
 		return nil
