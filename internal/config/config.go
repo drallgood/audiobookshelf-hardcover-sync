@@ -368,26 +368,91 @@ func Load(configFile string) (*Config, error) {
 
 	// Log the final configuration (without sensitive data)
 	fmt.Println("Final configuration:")
-	fmt.Printf("  audiobookshelf_url: %s\n", cfg.Audiobookshelf.URL)
-	fmt.Printf("  has_audiobookshelf_token: %t\n", cfg.Audiobookshelf.Token != "")
-	fmt.Printf("  has_hardcover_token: %t\n", cfg.Hardcover.Token != "")
-	fmt.Printf("  sync_interval: %v\n", cfg.App.SyncInterval)
-	fmt.Printf("  dry_run: %t\n", cfg.App.DryRun)
-	fmt.Printf("  test_book_filter: %s\n", cfg.App.TestBookFilter)
-	fmt.Printf("  test_book_limit: %d\n", cfg.App.TestBookLimit)
-
-	fmt.Println("Loaded application settings:")
-	fmt.Printf("  log_level: %s\n", cfg.Logging.Level)
-	fmt.Printf("  log_format: %s\n", cfg.Logging.Format)
-	fmt.Printf("  sync_interval: %v\n", cfg.App.SyncInterval)
-	fmt.Printf("  minimum_progress: %f\n", cfg.App.MinimumProgress)
-	fmt.Printf("  sync_want_to_read: %t\n", cfg.App.SyncWantToRead)
-	fmt.Printf("  sync_owned: %t\n", cfg.App.SyncOwned)
-	fmt.Printf("  dry_run: %t\n", cfg.App.DryRun)
-	fmt.Printf("  test_book_filter: %s\n", cfg.App.TestBookFilter)
-
-	fmt.Println("Loaded file paths:")
+	
+	fmt.Println("Server:")
+	fmt.Printf("  port: %s\n", cfg.Server.Port)
+	fmt.Printf("  shutdown_timeout: %v\n", cfg.Server.ShutdownTimeout)
+	fmt.Printf("  enable_web_ui: %t\n", cfg.Server.EnableWebUI)
+	
+	fmt.Println("Audiobookshelf:")
+	fmt.Printf("  url: %s\n", cfg.Audiobookshelf.URL)
+	fmt.Printf("  has_token: %t\n", cfg.Audiobookshelf.Token != "")
+	
+	fmt.Println("Hardcover:")
+	fmt.Printf("  has_token: %t\n", cfg.Hardcover.Token != "")
+	
+	fmt.Println("Sync:")
+	fmt.Printf("  incremental: %t\n", cfg.Sync.Incremental)
+	fmt.Printf("  state_file: %s\n", cfg.Sync.StateFile)
+	fmt.Printf("  min_change_threshold: %d\n", cfg.Sync.MinChangeThreshold)
+	fmt.Printf("  sync_interval: %v\n", cfg.Sync.SyncInterval)
+	fmt.Printf("  minimum_progress: %f\n", cfg.Sync.MinimumProgress)
+	fmt.Printf("  sync_want_to_read: %t\n", cfg.Sync.SyncWantToRead)
+	fmt.Printf("  process_unread_books: %t\n", cfg.Sync.ProcessUnreadBooks)
+	fmt.Printf("  sync_owned: %t\n", cfg.Sync.SyncOwned)
+	fmt.Printf("  dry_run: %t\n", cfg.Sync.DryRun)
+	fmt.Printf("  single_user_mode: %t\n", cfg.Sync.SingleUserMode)
+	fmt.Printf("  single_user_username: %s\n", cfg.Sync.SingleUserUsername)
+	fmt.Printf("  test_book_filter: %s\n", cfg.Sync.TestBookFilter)
+	fmt.Printf("  test_book_limit: %d\n", cfg.Sync.TestBookLimit)
+	if len(cfg.Sync.Libraries.Include) > 0 {
+		fmt.Printf("  libraries_include: %v\n", cfg.Sync.Libraries.Include)
+	}
+	if len(cfg.Sync.Libraries.Exclude) > 0 {
+		fmt.Printf("  libraries_exclude: %v\n", cfg.Sync.Libraries.Exclude)
+	}
+	
+	fmt.Println("Rate Limiting:")
+	fmt.Printf("  rate: %v\n", cfg.RateLimit.Rate)
+	fmt.Printf("  burst: %d\n", cfg.RateLimit.Burst)
+	fmt.Printf("  max_concurrent: %d\n", cfg.RateLimit.MaxConcurrent)
+	
+	fmt.Println("Logging:")
+	fmt.Printf("  level: %s\n", cfg.Logging.Level)
+	fmt.Printf("  format: %s\n", cfg.Logging.Format)
+	
+	fmt.Println("Database:")
+	fmt.Printf("  type: %s\n", cfg.Database.Type)
+	if cfg.Database.Type == "sqlite" {
+		fmt.Printf("  path: %s\n", cfg.Database.Path)
+	} else {
+		fmt.Printf("  host: %s\n", cfg.Database.Host)
+		fmt.Printf("  port: %d\n", cfg.Database.Port)
+		fmt.Printf("  name: %s\n", cfg.Database.Name)
+		fmt.Printf("  user: %s\n", cfg.Database.User)
+		fmt.Printf("  has_password: %t\n", cfg.Database.Password != "")
+		fmt.Printf("  ssl_mode: %s\n", cfg.Database.SSLMode)
+		fmt.Printf("  max_open_conns: %d\n", cfg.Database.ConnectionPool.MaxOpenConns)
+		fmt.Printf("  max_idle_conns: %d\n", cfg.Database.ConnectionPool.MaxIdleConns)
+		fmt.Printf("  conn_max_lifetime: %d\n", cfg.Database.ConnectionPool.ConnMaxLifetime)
+	}
+	
+	fmt.Println("Authentication:")
+	fmt.Printf("  enabled: %t\n", cfg.Authentication.Enabled)
+	if cfg.Authentication.Enabled {
+		fmt.Printf("  session_cookie_name: %s\n", cfg.Authentication.Session.CookieName)
+		fmt.Printf("  session_max_age: %d\n", cfg.Authentication.Session.MaxAge)
+		fmt.Printf("  session_secure: %t\n", cfg.Authentication.Session.Secure)
+		fmt.Printf("  session_http_only: %t\n", cfg.Authentication.Session.HttpOnly)
+		fmt.Printf("  session_same_site: %s\n", cfg.Authentication.Session.SameSite)
+		fmt.Printf("  default_admin_username: %s\n", cfg.Authentication.DefaultAdmin.Username)
+		fmt.Printf("  default_admin_email: %s\n", cfg.Authentication.DefaultAdmin.Email)
+		fmt.Printf("  has_default_admin_password: %t\n", cfg.Authentication.DefaultAdmin.Password != "")
+		fmt.Printf("  keycloak_enabled: %t\n", cfg.Authentication.Keycloak.Enabled)
+		if cfg.Authentication.Keycloak.Enabled {
+			fmt.Printf("  keycloak_issuer: %s\n", cfg.Authentication.Keycloak.Issuer)
+			fmt.Printf("  keycloak_client_id: %s\n", cfg.Authentication.Keycloak.ClientID)
+			fmt.Printf("  has_keycloak_client_secret: %t\n", cfg.Authentication.Keycloak.ClientSecret != "")
+			fmt.Printf("  keycloak_redirect_uri: %s\n", cfg.Authentication.Keycloak.RedirectURI)
+			fmt.Printf("  keycloak_scopes: %s\n", cfg.Authentication.Keycloak.Scopes)
+			fmt.Printf("  keycloak_role_claim: %s\n", cfg.Authentication.Keycloak.RoleClaim)
+		}
+	}
+	
+	fmt.Println("Paths:")
+	fmt.Printf("  data_dir: %s\n", cfg.Paths.DataDir)
 	fmt.Printf("  cache_dir: %s\n", cfg.Paths.CacheDir)
+	fmt.Printf("  mismatch_output_dir: %s\n", cfg.Paths.MismatchOutputDir)
 
 	// Validate required configuration
 	if err := cfg.Validate(); err != nil {
