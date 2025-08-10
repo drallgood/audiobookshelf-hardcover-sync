@@ -64,7 +64,7 @@ services:
       MISMATCH_OUTPUT_DIR: /data/mismatches
       SYNC_STATE_FILE: /data/sync_state.json
       # Uncomment to override default config path
-      # CONFIG_FILE: /app/config/custom-config.yaml
+      # CONFIG_PATH: /app/config/custom-config.yaml
     # Uncomment to run in development mode with live reload
     # command: ["air", "-c", ".air.toml"]
     # For production, you can specify the config file explicitly:
