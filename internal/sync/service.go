@@ -1709,9 +1709,10 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		return fmt.Errorf("failed to get current book status: %w", err)
 	}
 
-	// Get the current read status to check progress
+	// Get the current read status to check progress - only get unfinished reads
 	readStatuses, err := s.hardcover.GetUserBookReads(ctx, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
+		Status:     "unfinished",
 	})
 	if err != nil {
 		errCtx := make(map[string]interface{}, len(logCtx)+1)
@@ -1835,15 +1836,35 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 					duplicateUnfinishedReads = append(duplicateUnfinishedReads, read)
 				}
 			}
-		}
-
-		// Track the most recent read status as a fallback
-		if read.FinishedAt != nil {
+		} else {
+			// Track the most recent finished read as a fallback for potential re-reads
 			finishedTime, err := time.Parse("2006-01-02", *read.FinishedAt)
 			if err == nil && (mostRecentRead == nil || finishedTime.After(mostRecentTime)) {
 				mostRecentTime = finishedTime
 				mostRecentRead = read
 			}
+		}
+	}
+
+	// If we don't have an unfinished read but have a finished one, and the book is being read again
+	if readStatusToUpdate == nil && mostRecentRead != nil && book.Progress.CurrentTime > 0 {
+		// Check if the progress is significantly different from the last read
+		lastProgress := 0.0
+		if mostRecentRead.ProgressSeconds != nil {
+			lastProgress = float64(*mostRecentRead.ProgressSeconds)
+		} else {
+			lastProgress = mostRecentRead.Progress
+		}
+
+		// If current progress is significantly less than the last read's progress,
+		// it's likely a re-read, so we'll create a new read status
+		if book.Progress.CurrentTime < (lastProgress * 0.9) {
+			log.Info("Detected possible re-read of a finished book, will create new read status", map[string]interface{}{
+				"previous_read_id":  mostRecentRead.ID,
+				"previous_progress": lastProgress,
+				"current_progress":  book.Progress.CurrentTime,
+			})
+			// We'll let the code below create a new read status
 		}
 	}
 

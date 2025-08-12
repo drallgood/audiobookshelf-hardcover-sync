@@ -33,6 +33,7 @@ func TestHandleInProgressBook_NoProgress(t *testing.T) {
 	// Mock the GetUserBookReads call
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
+		Status:     "unfinished",
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
 	// Call the function
@@ -67,6 +68,7 @@ func TestHandleInProgressBook_DryRun(t *testing.T) {
 	// Mock the GetUserBookReads call
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
+		Status:     "unfinished",
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
 	// Call the function
@@ -124,6 +126,7 @@ func TestHandleInProgressBook_RecentUpdate(t *testing.T) {
 	// Mock the GetUserBookReads call
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
+		Status:     "unfinished",
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
 	// Initialize the lastProgressUpdates map if it doesn't exist
@@ -174,6 +177,7 @@ func TestHandleInProgressBook_UpdateExistingRead(t *testing.T) {
 	// Mock the GetUserBookReads call to return an existing read status
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
+		Status:     "unfinished",
 	}).Return([]hardcover.UserBookRead{
 		{
 			ID:              readID,
@@ -232,6 +236,7 @@ func TestHandleInProgressBook_SmallProgressDifference(t *testing.T) {
 	// Mock the GetUserBookReads call to return an existing read status
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
+		Status:     "unfinished",
 	}).Return([]hardcover.UserBookRead{
 		{
 			ID:              readID,
@@ -273,6 +278,7 @@ func TestHandleInProgressBook_CreateNewRead(t *testing.T) {
 	// Mock the GetUserBookReads call to return no existing read status
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
+		Status:     "unfinished",
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
 	// Mock the InsertUserBookRead call
@@ -329,6 +335,7 @@ func TestHandleInProgressBook_UpdateReadError(t *testing.T) {
 	// Mock the GetUserBookReads call to return an existing read status
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
+		Status:     "unfinished",
 	}).Return([]hardcover.UserBookRead{
 		{
 			ID:              readID,
@@ -379,6 +386,7 @@ func TestHandleInProgressBook_GetUserBookReadsError(t *testing.T) {
 	expectedErr := errors.New("API error")
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
+		Status:     "unfinished",
 	}).Return(nil, expectedErr).Once()
 
 	// Note: Second GetUserBook call is now served from cache, so no additional mock needed
@@ -435,6 +443,7 @@ func TestHandleInProgressBook_FinishedBook(t *testing.T) {
 	// Mock the GetUserBookReads call to return an existing read status
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
+		Status:     "unfinished",
 	}).Return([]hardcover.UserBookRead{
 		{
 			ID:              readID,

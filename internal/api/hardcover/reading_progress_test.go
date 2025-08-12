@@ -441,6 +441,52 @@ func TestClient_GetUserBookReads(t *testing.T) {
 			expectedReadIDs: []int{456, 457},
 		},
 		{
+			name: "filter unfinished reads",
+			input: GetUserBookReadsInput{
+				UserBookID: 123,
+				Status:     "unfinished",
+			},
+			mockResponse: map[string]interface{}{
+				"data": map[string]interface{}{
+					"user_book_reads": []map[string]interface{}{
+						{
+							"id":           456,
+							"user_book_id": 123,
+							"progress":     0.5,
+							"started_at":   "2023-01-01T00:00:00Z",
+							"finished_at":  nil,
+						},
+					},
+				},
+			},
+			expectError:     false,
+			expectedCount:   1,
+			expectedReadIDs: []int{456},
+		},
+		{
+			name: "filter finished reads",
+			input: GetUserBookReadsInput{
+				UserBookID: 123,
+				Status:     "finished",
+			},
+			mockResponse: map[string]interface{}{
+				"data": map[string]interface{}{
+					"user_book_reads": []map[string]interface{}{
+						{
+							"id":           457,
+							"user_book_id": 123,
+							"progress":     1.0,
+							"started_at":   "2023-01-01T00:00:00Z",
+							"finished_at":  "2023-01-02T00:00:00Z",
+						},
+					},
+				},
+			},
+			expectError:     false,
+			expectedCount:   1,
+			expectedReadIDs: []int{457},
+		},
+		{
 			name: "empty result",
 			input: GetUserBookReadsInput{
 				UserBookID: 456,

@@ -1556,7 +1556,7 @@ func (c *Client) UpdateUserBookStatus(ctx context.Context, input UpdateUserBookS
 // GetUserBookReadsInput represents the input for querying user book reads
 type GetUserBookReadsInput struct {
 	UserBookID int64  `json:"user_book_id"`
-	Status     string `json:"status,omitempty"` // e.g., "READ"
+	Status     string `json:"status,omitempty"` // "unfinished" or "finished"
 }
 
 // UserBookRead represents a user's reading progress for a book
@@ -1572,10 +1572,13 @@ type UserBookRead struct {
 
 // GetUserBookReads retrieves the reading progress for a user book
 func (c *Client) GetUserBookReads(ctx context.Context, input GetUserBookReadsInput) ([]UserBookRead, error) {
-	const query = `
-	query GetUserBookReads($user_book_id: Int!) {
+	query := `
+	query GetUserBookReads($user_book_id: Int!, $is_unfinished: Boolean) {
 	  user_book_reads(
-		where: { user_book_id: { _eq: $user_book_id } },
+		where: { 
+		  user_book_id: { _eq: $user_book_id },
+		  finished_at: { _is_null: $is_unfinished }
+		},
 		order_by: { id: desc }
 	  ) {
 		id
@@ -1593,9 +1596,13 @@ func (c *Client) GetUserBookReads(ctx context.Context, input GetUserBookReadsInp
 		return nil, fmt.Errorf("%w: user_book_id is required", ErrInvalidInput)
 	}
 
+	// Determine if we're filtering for unfinished reads
+	isUnfinished := input.Status == "unfinished"
+
 	// Prepare variables
 	variables := map[string]interface{}{
-		"user_book_id": input.UserBookID,
+		"user_book_id":  input.UserBookID,
+		"is_unfinished": isUnfinished,
 	}
 
 	// Execute the query

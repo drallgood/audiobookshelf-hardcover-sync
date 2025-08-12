@@ -9,21 +9,21 @@
 
 Automatically syncs your Audiobookshelf library with Hardcover, including reading progress, book status, and ownership information.
 
-## 🎉 Multi-User Support (v3.0.0+)
+## 🎉 Multi-Profile Sync Support (v3.0.0+)
 
-**audiobookshelf-hardcover-sync** now supports multiple users with a modern web interface and secure token management!
+**audiobookshelf-hardcover-sync** now supports multiple sync profiles with a modern web interface and secure token management!
 
 ### Key Features
 
 - **🌐 Web Management Interface**: Modern, responsive web UI at `http://localhost:8080`
-- **👥 Multiple Users**: Each user can have individual Audiobookshelf and Hardcover tokens
+- **👥 Multiple Sync Profiles**: Each profile can have individual Audiobookshelf and Hardcover tokens
 - **🔒 Secure Storage**: All API tokens encrypted at rest with AES-256-GCM
-- **🔄 Concurrent Syncing**: Multiple users can sync simultaneously
+- **🔄 Concurrent Syncing**: Multiple profiles can sync simultaneously
 - **📊 Real-Time Monitoring**: Live sync status with auto-refresh
 - **🔧 REST API**: Complete programmatic control via RESTful endpoints
-- **⬆️ Automatic Migration**: Seamless upgrade from single-user setups
+- **⬆️ Automatic Migration**: Seamless upgrade from single-profile setups
 - **🔙 Backwards Compatible**: All existing functionality preserved
-- **🚀 Cache Busting**: Automatic cache invalidation ensures users always get the latest UI updates
+- **🚀 Cache Busting**: Automatic cache invalidation ensures profiles always get the latest UI updates
 
 ### Quick Start (Multi-User)
 
@@ -39,16 +39,16 @@ Automatically syncs your Audiobookshelf library with Hardcover, including readin
 
 2. **Access the web interface**: Open `http://localhost:8080` in your browser
 
-3. **Add users**: Use the "Add User" tab to create users with their individual tokens
+3. **Add Sync Profiles**: Use the "Add Profile" tab to create profiles with individual tokens
 
 4. **Monitor syncs**: View real-time sync status and control operations
 
-### Migration from Single-User
+### Migration from Single-Profile
 
-Existing single-user setups are **automatically migrated** on first startup:
+Existing single-profile setups are **automatically migrated** on first startup:
 
 - Your existing `config.yaml` is detected and backed up
-- A "Default User" is created with your current configuration
+- A "Default Profile" is created with your current configuration
 - All functionality continues to work as before
 - Access the new web interface at `http://localhost:8080`
 
@@ -57,18 +57,18 @@ Existing single-user setups are **automatically migrated** on first startup:
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/` | Web management interface |
-| `GET` | `/api/users` | List all users |
-| `POST` | `/api/users` | Create new user |
-| `GET` | `/api/users/{id}` | Get user details |
-| `PUT` | `/api/users/{id}` | Update user |
-| `DELETE` | `/api/users/{id}` | Delete user |
-| `PUT` | `/api/users/{id}/config` | Update user configuration |
-| `GET` | `/api/users/{id}/status` | Get sync status |
-| `POST` | `/api/users/{id}/sync` | Start sync |
-| `DELETE` | `/api/users/{id}/sync` | Cancel sync |
-| `GET` | `/api/status` | All user statuses |
+| `GET` | `/api/profiles` | List all sync profiles |
+| `POST` | `/api/profiles` | Create new sync profile |
+| `GET` | `/api/profiles/{id}` | Get profile details |
+| `PUT` | `/api/profiles/{id}` | Update profile |
+| `DELETE` | `/api/profiles/{id}` | Delete profile |
+| `PUT` | `/api/profiles/{id}/config` | Update profile configuration |
+| `GET` | `/api/profiles/{id}/status` | Get sync status |
+| `POST` | `/api/profiles/{id}/sync` | Start sync |
+| `DELETE` | `/api/profiles/{id}/sync` | Cancel sync |
+| `GET` | `/api/status` | All profile statuses |
 
-### Environment Variables (Multi-User)
+### Environment Variables (Multi-Profile)
 
 | Variable | Description | Default |
 |----------|-------------|:-------:|
@@ -78,7 +78,7 @@ Existing single-user setups are **automatically migrated** on first startup:
 ### Security Features
 
 - **Token Encryption**: All API tokens encrypted at rest
-- **User Isolation**: Complete separation of user data
+- **Profile Management**: Full CRUD operations for sync profiles data
 - **Secure Key Management**: Auto-generated encryption keys
 - **Token Masking**: Sensitive data masked in API responses
 - **Directory Protection**: Static file serving with traversal protection
@@ -151,8 +151,8 @@ The project follows standard Go project layout:
 
 ## Features
 
-### 🎉 Multi-User Support (v3.0.0+)
-- **👥 Multiple Users**: Individual Audiobookshelf and Hardcover tokens per user
+### 🎉 Multi-Profile Sync Support (v3.0.0+)
+- **👥 Multiple Sync Profiles**: Individual Audiobookshelf and Hardcover tokens per profile
 - **🌐 Web Interface**: Modern, responsive management dashboard at `http://localhost:8080`
 - **🔒 Secure Storage**: AES-256-GCM encrypted token storage
 - **🔄 Concurrent Syncing**: Multiple users can sync simultaneously
