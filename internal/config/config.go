@@ -583,7 +583,7 @@ func loadFromEnv(cfg *Config) {
 	}
 	if val := getEnv("SYNC_WANT_TO_READ", ""); val != "" {
 		if b, err := strconv.ParseBool(val); err == nil {
-			cfg.App.SyncWantToRead = b
+			cfg.Sync.SyncWantToRead = b
 		}
 	}
 	if val := getEnv("PROCESS_UNREAD_BOOKS", ""); val != "" {
@@ -593,7 +593,7 @@ func loadFromEnv(cfg *Config) {
 	}
 	if syncOwned := os.Getenv("SYNC_OWNED"); syncOwned != "" {
 		if b, err := strconv.ParseBool(syncOwned); err == nil {
-			cfg.App.SyncOwned = b
+			cfg.Sync.SyncOwned = b
 		}
 	}
 	if dryRun := os.Getenv("DRY_RUN"); dryRun != "" {
