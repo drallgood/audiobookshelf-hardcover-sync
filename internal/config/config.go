@@ -570,7 +570,7 @@ func loadFromEnv(cfg *Config) {
 	}
 	if syncInterval := os.Getenv("SYNC_INTERVAL"); syncInterval != "" {
 		if d, err := time.ParseDuration(syncInterval); err == nil {
-			cfg.App.SyncInterval = d
+			cfg.Sync.SyncInterval = d
 		}
 	}
 	if mismatchDir := os.Getenv("MISMATCH_OUTPUT_DIR"); mismatchDir != "" {
@@ -578,7 +578,7 @@ func loadFromEnv(cfg *Config) {
 	}
 	if minProgress := os.Getenv("MINIMUM_PROGRESS"); minProgress != "" {
 		if f, err := strconv.ParseFloat(minProgress, 64); err == nil {
-			cfg.App.MinimumProgress = f
+			cfg.Sync.MinimumProgress = f
 		}
 	}
 	if val := getEnv("SYNC_WANT_TO_READ", ""); val != "" {
