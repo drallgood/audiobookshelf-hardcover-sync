@@ -175,3 +175,80 @@ func TestSetFullSync(t *testing.T) {
 	state.SetFullSync()
 	assert.GreaterOrEqual(t, state.LastFullSync, now)
 }
+
+func TestCustomStatePathAndPermissions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		setup       func(t *testing.T) (string, func())
+		expectError bool
+	}{
+		{
+			name: "custom directory with permissions",
+			setup: func(t *testing.T) (string, func()) {
+				tempDir := t.TempDir()
+				customDir := filepath.Join(tempDir, "custom_state_dir")
+				statePath := filepath.Join(customDir, "sync_state.json")
+				return statePath, func() {}
+			},
+			expectError: false,
+		},
+		{
+			name: "nested directories",
+			setup: func(t *testing.T) (string, func()) {
+				tempDir := t.TempDir()
+				nestedDir := filepath.Join(tempDir, "nested", "dir", "for", "state")
+				statePath := filepath.Join(nestedDir, "sync_state.json")
+				return statePath, func() {}
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			statePath, cleanup := tc.setup(t)
+			defer cleanup()
+
+			// Test saving state
+			state := NewState()
+			err := state.Save(statePath)
+			if tc.expectError {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+
+			// Verify file exists and has correct permissions
+			info, err := os.Stat(statePath)
+			require.NoError(t, err)
+			require.False(t, info.IsDir())
+			require.Equal(t, os.FileMode(0644), info.Mode().Perm())
+
+			// Test loading state
+			loadedState, err := LoadState(statePath)
+			require.NoError(t, err)
+			require.NotNil(t, loadedState)
+			require.Equal(t, CurrentVersion, loadedState.Version)
+
+			// Verify the directory has correct permissions
+			dirInfo, err := os.Stat(filepath.Dir(statePath))
+			require.NoError(t, err)
+			require.True(t, dirInfo.IsDir())
+			require.Equal(t, os.FileMode(0755), dirInfo.Mode().Perm())
+
+			// Test updating and saving again
+			loadedState.UpdateBook("test:123", 0.5, "IN_PROGRESS")
+			require.NoError(t, loadedState.Save(statePath))
+
+			// Verify the file still exists and has correct permissions
+			info, err = os.Stat(statePath)
+			require.NoError(t, err)
+			require.False(t, info.IsDir())
+			require.Equal(t, os.FileMode(0644), info.Mode().Perm())
+		})
+	}
+}

@@ -647,7 +647,7 @@ hardcover:
 | Container Path | Recommended Host Path | Description |
 |----------------|----------------------|-------------|
 | `/app/config` | `./config` | Configuration files |
-| `/app/data` | `./data` | Persistent data (cache, database) |
+| `/app/data` | `./data` | Persistent data (cache, database, sync state) |
 | `/app/logs` | `./logs` | Application logs |
 | `/tmp` | - | Temporary file storage |
 

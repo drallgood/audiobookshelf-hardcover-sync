@@ -58,9 +58,11 @@ func LoadState(path string) (*State, error) {
 		path = DefaultStateFile
 	}
 
-	// Ensure directory exists
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return nil, fmt.Errorf("failed to create state directory: %w", err)
+	targetDir := filepath.Dir(path)
+
+	// Ensure directory exists with proper permissions
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create state directory %q: %w", targetDir, err)
 	}
 
 	// Read file if it exists
@@ -68,9 +70,14 @@ func LoadState(path string) (*State, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			// Return new state if file doesn't exist
-			return NewState(), nil
+			state := NewState()
+			// Save the new state file to ensure the directory is writable
+			if err := state.Save(path); err != nil {
+				return nil, fmt.Errorf("failed to initialize new state file at %q: %w", path, err)
+			}
+			return state, nil
 		}
-		return nil, fmt.Errorf("failed to read state file: %w", err)
+		return nil, fmt.Errorf("failed to read state file at %q: %w", path, err)
 	}
 
 	// Try to detect version
@@ -122,37 +129,59 @@ func (s *State) Save(path string) error {
 		path = DefaultStateFile
 	}
 
-	// Ensure directory exists
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return fmt.Errorf("failed to create state directory: %w", err)
+	targetDir := filepath.Dir(path)
+
+	// Ensure directory exists with proper permissions
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return fmt.Errorf("failed to create state directory %q: %w", targetDir, err)
 	}
 
-	// Create temp file
-	tmpPath := path + ".tmp"
-	file, err := os.Create(tmpPath)
+	// Create temp file in the same directory as the target file
+	tmpFile, err := os.CreateTemp(targetDir, filepath.Base(path)+".tmp.*")
 	if err != nil {
-		return fmt.Errorf("failed to create temp file: %w", err)
+		return fmt.Errorf("failed to create temp file in %q: %w", targetDir, err)
 	}
-	defer file.Close()
+	tmpPath := tmpFile.Name()
+	defer func() {
+		tmpFile.Close()
+		if _, err := os.Stat(tmpPath); err == nil {
+			os.Remove(tmpPath)
+		}
+	}()
 
 	// Write JSON with indentation
-	encoder := json.NewEncoder(file)
+	encoder := json.NewEncoder(tmpFile)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(s); err != nil {
-		os.Remove(tmpPath)
 		return fmt.Errorf("failed to encode state: %w", err)
 	}
 
 	// Ensure data is written to disk
-	if err := file.Sync(); err != nil {
-		os.Remove(tmpPath)
+	if err := tmpFile.Sync(); err != nil {
 		return fmt.Errorf("failed to sync state file: %w", err)
+	}
+
+	// Close the file before renaming (required on Windows)
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temp file: %w", err)
+	}
+
+	// On Windows, we need to make sure the target file doesn't exist before renaming
+	if _, err := os.Stat(path); err == nil {
+		// File exists, remove it first
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("failed to remove existing state file: %w", err)
+		}
 	}
 
 	// Rename temp file to final path
 	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("failed to rename temp file: %w", err)
+		return fmt.Errorf("failed to rename temp file to %q: %w", path, err)
+	}
+
+	// Ensure the file has the correct permissions
+	if err := os.Chmod(path, 0644); err != nil {
+		return fmt.Errorf("failed to set permissions on state file: %w", err)
 	}
 
 	return nil
