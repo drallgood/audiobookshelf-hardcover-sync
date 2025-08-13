@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"gopkg.in/yaml.v3"
 )
 
@@ -273,9 +274,8 @@ func DefaultConfig() *Config {
 // Load loads configuration from a file (if specified) and environment variables.
 // Configuration priority: 1) Command line flags, 2) Environment variables, 3) Config file, 4) Defaults
 func Load(configFile string) (*Config, error) {
-	fmt.Printf("Loading configuration from %s...\n", configFile)
 	cfg := DefaultConfig()
-
+	
 	// Load configuration from file first (if specified)
 	if configFile != "" {
 		fmt.Printf("Loading configuration from file: %s\n", configFile)
@@ -290,8 +290,7 @@ func Load(configFile string) (*Config, error) {
 
 		// Check if file exists
 		if _, err := os.Stat(configFile); os.IsNotExist(err) {
-			fmt.Println("No config file specified, using default configuration")
-			return &Config{}, nil
+			fmt.Println("Config file does not exist, using environment variables and defaults")
 		} else {
 			// Read the config file
 			data, err := os.ReadFile(configFile)
@@ -320,144 +319,45 @@ func Load(configFile string) (*Config, error) {
 	// Then load from environment variables (overrides config file)
 	loadFromEnv(cfg)
 
-	// Then load from individual environment variables (highest priority)
-	// Server configuration
-	if port := getEnv("PORT", ""); port != "" {
-		cfg.Server.Port = port
-	}
-	if timeout := getDurationFromEnv("SHUTDOWN_TIMEOUT", 0); timeout > 0 {
-		cfg.Server.ShutdownTimeout = timeout
-	}
-
-	// Application settings
-	if logLevel := getEnv("LOG_LEVEL", ""); logLevel != "" {
-		cfg.Logging.Level = logLevel
-	}
-	if syncInterval := getDurationFromEnv("SYNC_INTERVAL", 0); syncInterval > 0 {
-		cfg.App.SyncInterval = syncInterval
-	}
-	if minProgress := getFloat64FromEnv("MINIMUM_PROGRESS", 0); minProgress > 0 {
-		cfg.App.MinimumProgress = minProgress
-	}
-	if syncWantToRead, set := os.LookupEnv("SYNC_WANT_TO_READ"); set {
-		cfg.App.SyncWantToRead = strings.ToLower(syncWantToRead) == "true"
-	}
-	if syncOwned, set := os.LookupEnv("SYNC_OWNED"); set {
-		cfg.App.SyncOwned = strings.ToLower(syncOwned) == "true"
-	}
-	if dryRun, set := os.LookupEnv("DRY_RUN"); set {
-		cfg.App.DryRun = strings.ToLower(dryRun) == "true"
-	}
-	if testBookFilter := getEnv("TEST_BOOK_FILTER", ""); testBookFilter != "" {
-		cfg.App.TestBookFilter = testBookFilter
-	}
-	if testBookLimit := getIntFromEnv("TEST_BOOK_LIMIT", 0); testBookLimit > 0 {
-		cfg.App.TestBookLimit = testBookLimit
-	}
-
-	// Rate limiting configuration
-	if rate := getDurationFromEnv("RATE_LIMIT_RATE", 0); rate > 0 {
-		cfg.RateLimit.Rate = rate
-	}
-	if burst := getIntFromEnv("RATE_LIMIT_BURST", 0); burst > 0 {
-		cfg.RateLimit.Burst = burst
-	}
-	if maxConcurrent := getIntFromEnv("RATE_LIMIT_MAX_CONCURRENT", 0); maxConcurrent > 0 {
-		cfg.RateLimit.MaxConcurrent = maxConcurrent
-	}
-
-	// Log the final configuration (without sensitive data)
-	fmt.Println("Final configuration:")
-	
-	fmt.Println("Server:")
-	fmt.Printf("  port: %s\n", cfg.Server.Port)
-	fmt.Printf("  shutdown_timeout: %v\n", cfg.Server.ShutdownTimeout)
-	fmt.Printf("  enable_web_ui: %t\n", cfg.Server.EnableWebUI)
-	
-	fmt.Println("Audiobookshelf:")
-	fmt.Printf("  url: %s\n", cfg.Audiobookshelf.URL)
-	fmt.Printf("  has_token: %t\n", cfg.Audiobookshelf.Token != "")
-	
-	fmt.Println("Hardcover:")
-	fmt.Printf("  has_token: %t\n", cfg.Hardcover.Token != "")
-	
-	fmt.Println("Sync:")
-	fmt.Printf("  incremental: %t\n", cfg.Sync.Incremental)
-	fmt.Printf("  state_file: %s\n", cfg.Sync.StateFile)
-	fmt.Printf("  min_change_threshold: %d\n", cfg.Sync.MinChangeThreshold)
-	fmt.Printf("  sync_interval: %v\n", cfg.Sync.SyncInterval)
-	fmt.Printf("  minimum_progress: %f\n", cfg.Sync.MinimumProgress)
-	fmt.Printf("  sync_want_to_read: %t\n", cfg.Sync.SyncWantToRead)
-	fmt.Printf("  process_unread_books: %t\n", cfg.Sync.ProcessUnreadBooks)
-	fmt.Printf("  sync_owned: %t\n", cfg.Sync.SyncOwned)
-	fmt.Printf("  dry_run: %t\n", cfg.Sync.DryRun)
-	fmt.Printf("  single_user_mode: %t\n", cfg.Sync.SingleUserMode)
-	fmt.Printf("  single_user_username: %s\n", cfg.Sync.SingleUserUsername)
-	fmt.Printf("  test_book_filter: %s\n", cfg.Sync.TestBookFilter)
-	fmt.Printf("  test_book_limit: %d\n", cfg.Sync.TestBookLimit)
-	if len(cfg.Sync.Libraries.Include) > 0 {
-		fmt.Printf("  libraries_include: %v\n", cfg.Sync.Libraries.Include)
-	}
-	if len(cfg.Sync.Libraries.Exclude) > 0 {
-		fmt.Printf("  libraries_exclude: %v\n", cfg.Sync.Libraries.Exclude)
-	}
-	
-	fmt.Println("Rate Limiting:")
-	fmt.Printf("  rate: %v\n", cfg.RateLimit.Rate)
-	fmt.Printf("  burst: %d\n", cfg.RateLimit.Burst)
-	fmt.Printf("  max_concurrent: %d\n", cfg.RateLimit.MaxConcurrent)
-	
-	fmt.Println("Logging:")
-	fmt.Printf("  level: %s\n", cfg.Logging.Level)
-	fmt.Printf("  format: %s\n", cfg.Logging.Format)
-	
-	fmt.Println("Database:")
-	fmt.Printf("  type: %s\n", cfg.Database.Type)
-	if cfg.Database.Type == "sqlite" {
-		fmt.Printf("  path: %s\n", cfg.Database.Path)
-	} else {
-		fmt.Printf("  host: %s\n", cfg.Database.Host)
-		fmt.Printf("  port: %d\n", cfg.Database.Port)
-		fmt.Printf("  name: %s\n", cfg.Database.Name)
-		fmt.Printf("  user: %s\n", cfg.Database.User)
-		fmt.Printf("  has_password: %t\n", cfg.Database.Password != "")
-		fmt.Printf("  ssl_mode: %s\n", cfg.Database.SSLMode)
-		fmt.Printf("  max_open_conns: %d\n", cfg.Database.ConnectionPool.MaxOpenConns)
-		fmt.Printf("  max_idle_conns: %d\n", cfg.Database.ConnectionPool.MaxIdleConns)
-		fmt.Printf("  conn_max_lifetime: %d\n", cfg.Database.ConnectionPool.ConnMaxLifetime)
-	}
-	
-	fmt.Println("Authentication:")
-	fmt.Printf("  enabled: %t\n", cfg.Authentication.Enabled)
-	if cfg.Authentication.Enabled {
-		fmt.Printf("  session_cookie_name: %s\n", cfg.Authentication.Session.CookieName)
-		fmt.Printf("  session_max_age: %d\n", cfg.Authentication.Session.MaxAge)
-		fmt.Printf("  session_secure: %t\n", cfg.Authentication.Session.Secure)
-		fmt.Printf("  session_http_only: %t\n", cfg.Authentication.Session.HttpOnly)
-		fmt.Printf("  session_same_site: %s\n", cfg.Authentication.Session.SameSite)
-		fmt.Printf("  default_admin_username: %s\n", cfg.Authentication.DefaultAdmin.Username)
-		fmt.Printf("  default_admin_email: %s\n", cfg.Authentication.DefaultAdmin.Email)
-		fmt.Printf("  has_default_admin_password: %t\n", cfg.Authentication.DefaultAdmin.Password != "")
-		fmt.Printf("  keycloak_enabled: %t\n", cfg.Authentication.Keycloak.Enabled)
-		if cfg.Authentication.Keycloak.Enabled {
-			fmt.Printf("  keycloak_issuer: %s\n", cfg.Authentication.Keycloak.Issuer)
-			fmt.Printf("  keycloak_client_id: %s\n", cfg.Authentication.Keycloak.ClientID)
-			fmt.Printf("  has_keycloak_client_secret: %t\n", cfg.Authentication.Keycloak.ClientSecret != "")
-			fmt.Printf("  keycloak_redirect_uri: %s\n", cfg.Authentication.Keycloak.RedirectURI)
-			fmt.Printf("  keycloak_scopes: %s\n", cfg.Authentication.Keycloak.Scopes)
-			fmt.Printf("  keycloak_role_claim: %s\n", cfg.Authentication.Keycloak.RoleClaim)
-		}
-	}
-	
-	fmt.Println("Paths:")
-	fmt.Printf("  data_dir: %s\n", cfg.Paths.DataDir)
-	fmt.Printf("  cache_dir: %s\n", cfg.Paths.CacheDir)
-	fmt.Printf("  mismatch_output_dir: %s\n", cfg.Paths.MismatchOutputDir)
-
-	// Validate required configuration
+	// Validate the configuration (this will also migrate deprecated fields)
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+
+	// Log the final configuration
+	fmt.Println("Final configuration after validation and migration:")
+	fmt.Printf("Server:\n  port: %s\n  shutdown_timeout: %s\n  enable_web_ui: %v\n", 
+		cfg.Server.Port, cfg.Server.ShutdownTimeout, cfg.Server.EnableWebUI)
+	fmt.Printf("Audiobookshelf:\n  url: %s\n  has_token: %v\n", 
+		cfg.Audiobookshelf.URL, cfg.Audiobookshelf.Token != "")
+	fmt.Printf("Hardcover:\n  has_token: %v\n", cfg.Hardcover.Token != "")
+	fmt.Printf("Sync:\n  incremental: %v\n  state_file: %s\n  min_change_threshold: %d\n  sync_interval: %s\n  minimum_progress: %f\n  sync_want_to_read: %v\n  process_unread_books: %v\n  sync_owned: %v\n  dry_run: %v\n  single_user_mode: %v\n  single_user_username: %s\n  test_book_filter: %s\n  test_book_limit: %d\n",
+		cfg.Sync.Incremental, cfg.Sync.StateFile, cfg.Sync.MinChangeThreshold, 
+		cfg.Sync.SyncInterval, cfg.Sync.MinimumProgress, cfg.Sync.SyncWantToRead,
+		cfg.Sync.ProcessUnreadBooks, cfg.Sync.SyncOwned, cfg.Sync.DryRun,
+		cfg.Sync.SingleUserMode, cfg.Sync.SingleUserUsername, cfg.Sync.TestBookFilter,
+		cfg.Sync.TestBookLimit)
+	fmt.Printf("Rate Limiting:\n  rate: %s\n  burst: %d\n  max_concurrent: %d\n",
+		cfg.RateLimit.Rate, cfg.RateLimit.Burst, cfg.RateLimit.MaxConcurrent)
+	fmt.Printf("Logging:\n  level: %s\n  format: %s\n", 
+		cfg.Logging.Level, cfg.Logging.Format)
+	fmt.Printf("Database:\n  type: %s\n  path: %s\n", 
+		cfg.Database.Type, cfg.Database.Path)
+	fmt.Printf("Authentication:\n  enabled: %v\n  session_cookie_name: %s\n  session_max_age: %d\n  session_secure: %v\n  session_http_only: %v\n  session_same_site: %s\n  default_admin_username: %s\n  default_admin_email: %s\n  has_default_admin_password: %v\n  keycloak_enabled: %v\n  keycloak_issuer: %s\n  keycloak_client_id: %s\n",
+		cfg.Authentication.Enabled, 
+		cfg.Authentication.Session.CookieName,
+		cfg.Authentication.Session.MaxAge,
+		cfg.Authentication.Session.Secure,
+		cfg.Authentication.Session.HttpOnly,
+		cfg.Authentication.Session.SameSite,
+		cfg.Authentication.DefaultAdmin.Username,
+		cfg.Authentication.DefaultAdmin.Email,
+		cfg.Authentication.DefaultAdmin.Password != "",
+		cfg.Authentication.Keycloak.Enabled,
+		cfg.Authentication.Keycloak.Issuer,
+		cfg.Authentication.Keycloak.ClientID)
+	fmt.Printf("Paths:\n  data_dir: %s\n  cache_dir: %s\n  mismatch_output_dir: %s\n",
+		cfg.Paths.DataDir, cfg.Paths.CacheDir, cfg.Paths.MismatchOutputDir)
 
 	fmt.Println("Configuration loaded successfully")
 	return cfg, nil
@@ -532,40 +432,77 @@ func (c *Config) Validate() error {
 		fmt.Printf("Warning: Invalid minimum progress, using default: %.2f\n", c.Sync.MinimumProgress)
 	}
 
-	// Check for deprecated app-level settings and log warnings
+	// Get the logger
+	log := logger.Get()
+
+	// Check for deprecated app-level settings, migrate them to sync section, and log warnings
 	var deprecatedFields []string
+	
+	// Check if any app.* fields are set and need migration
+	appFieldsSet := false
+
+	// SyncInterval
 	if c.App.SyncInterval > 0 {
 		deprecatedFields = append(deprecatedFields, "app.sync_interval (use sync.sync_interval)")
+		c.Sync.SyncInterval = c.App.SyncInterval
+		appFieldsSet = true
 	}
+
+	// MinimumProgress
 	if c.App.MinimumProgress > 0 {
 		deprecatedFields = append(deprecatedFields, "app.minimum_progress (use sync.minimum_progress)")
+		c.Sync.MinimumProgress = c.App.MinimumProgress
+		appFieldsSet = true
 	}
-	if c.App.SyncWantToRead {
+
+	// SyncWantToRead - always migrate the value, regardless of true/false
+	if c.App.SyncWantToRead != c.Sync.SyncWantToRead {
 		deprecatedFields = append(deprecatedFields, "app.sync_want_to_read (use sync.sync_want_to_read)")
+		c.Sync.SyncWantToRead = c.App.SyncWantToRead
+		appFieldsSet = true
 	}
-	if c.App.SyncOwned {
+
+	// SyncOwned - always migrate the value, regardless of true/false
+	if c.App.SyncOwned != c.Sync.SyncOwned {
 		deprecatedFields = append(deprecatedFields, "app.sync_owned (use sync.sync_owned)")
+		c.Sync.SyncOwned = c.App.SyncOwned
+		appFieldsSet = true
 	}
-	if c.App.DryRun {
+
+	// DryRun - always migrate the value, regardless of true/false
+	if c.App.DryRun != c.Sync.DryRun {
 		deprecatedFields = append(deprecatedFields, "app.dry_run (use sync.dry_run)")
+		c.Sync.DryRun = c.App.DryRun
+		appFieldsSet = true
+	}
+
+	// Log deprecation warning if any app.* fields were set
+	if appFieldsSet {
+		log.Warn("The 'app.*' configuration section is deprecated and will be removed in a future version. Please use the 'sync' section instead.", 
+			map[string]interface{}{
+				"deprecated_fields": deprecatedFields,
+				"migration_note": "These settings have been migrated to their new locations in the sync section",
+			})
 	}
 
 	if len(deprecatedFields) > 0 {
-		fmt.Println("Warning: The following configuration settings are deprecated and will be removed in a future version:")
-		for _, field := range deprecatedFields {
-			fmt.Printf("  - %s\n", field)
-		}
+		log.Warn("The following configuration settings are deprecated and will be removed in a future version", 
+			map[string]interface{}{
+				"deprecated_fields": deprecatedFields,
+				"migration_note": "These settings have been migrated to their new locations in the sync section",
+			})
 	}
 
 	// Log the final sync configuration
-	fmt.Println("Sync configuration:")
-	fmt.Printf("  - Sync interval: %s\n", c.Sync.SyncInterval)
-	fmt.Printf("  - Minimum progress: %.2f\n", c.Sync.MinimumProgress)
-	fmt.Printf("  - Sync want to read: %t\n", c.Sync.SyncWantToRead)
-	fmt.Printf("  - Sync owned: %t\n", c.Sync.SyncOwned)
-	fmt.Printf("  - Dry run: %t\n", c.Sync.DryRun)
+	log.Info("Sync configuration", map[string]interface{}{
+		"sync_interval":      c.Sync.SyncInterval.String(),
+		"minimum_progress":   c.Sync.MinimumProgress,
+		"sync_want_to_read":  c.Sync.SyncWantToRead,
+		"sync_owned":         c.Sync.SyncOwned,
+		"dry_run":            c.Sync.DryRun,
+	})
 
-	fmt.Println("Configuration validation passed")
+	log.Info("Configuration validation passed")
 	return nil
 }
 
@@ -681,7 +618,7 @@ func loadFromEnv(cfg *Config) {
 	}
 	if dryRun := os.Getenv("DRY_RUN"); dryRun != "" {
 		if b, err := strconv.ParseBool(dryRun); err == nil {
-			cfg.App.DryRun = b
+			cfg.Sync.DryRun = b
 		}
 	}
 	if testBookFilter := os.Getenv("TEST_BOOK_FILTER"); testBookFilter != "" {

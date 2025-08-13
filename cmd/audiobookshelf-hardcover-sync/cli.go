@@ -164,10 +164,6 @@ func RunOneTimeSync(flags *configFlags) {
 	if cfg.App.SyncOwned {
 		log.Warn("DEPRECATED: 'app.sync_owned' is deprecated. Please use 'sync.sync_owned' instead.", nil)
 	}
-	if cfg.App.DryRun {
-		log.Warn("DEPRECATED: 'app.dry_run' is deprecated. Please use 'sync.dry_run' instead.", nil)
-	}
-
 	// Log paths and cache settings
 	log.Info("Paths Configuration", map[string]interface{}{
 		"cache_dir":           cfg.Paths.CacheDir,
@@ -214,7 +210,7 @@ func RunOneTimeSync(flags *configFlags) {
 	}
 
 	log.Debug("Initialized sync service", map[string]interface{}{
-		"dry_run": cfg.App.DryRun,
+		"dry_run": cfg.Sync.DryRun,
 	})
 
 	// Create a context with timeout and cancellation
@@ -233,7 +229,7 @@ func RunOneTimeSync(flags *configFlags) {
 		"audiobookshelf_url":       cfg.Audiobookshelf.URL,
 		"has_audiobookshelf_token": cfg.Audiobookshelf.Token != "",
 		"has_hardcover_token":      cfg.Hardcover.Token != "",
-		"dry_run":                  cfg.App.DryRun,
+		"dry_run":                  cfg.Sync.DryRun,
 	})
 
 	startTime := time.Now()

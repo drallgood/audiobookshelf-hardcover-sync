@@ -50,7 +50,7 @@ func TestHandleInProgressBook_DryRun(t *testing.T) {
 	// Create test service with dry-run enabled
 	svc, mockClient := createTestService()
 	// Set dry-run mode
-	svc.config.App.DryRun = true
+	svc.config.Sync.DryRun = true
 
 	// Create a test book with progress
 	testAudiobook := createTestBook("test-book-1", "Test Book", "Test Author", "B08N5KWB9H", "9781234567890")

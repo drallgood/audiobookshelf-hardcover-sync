@@ -70,7 +70,7 @@ func TestFindOrCreateUserBookID_GetUserBookIDError(t *testing.T) {
 func TestFindOrCreateUserBookID_DryRun(t *testing.T) {
 	// Create test service and mock client with dry-run enabled
 	cfg := createTestConfig(false)
-	cfg.App.DryRun = true
+	cfg.Sync.DryRun = true
 	svc, mockClient := createTestServiceWithConfig(cfg)
 
 	// Mock the GetUserBookID call to return no existing user book ID

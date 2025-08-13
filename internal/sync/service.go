@@ -248,7 +248,7 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 	})
 
 	// If dry-run mode is enabled, log and return early without creating
-	if s.config.App.DryRun {
+	if s.config.Sync.DryRun {
 		dryRunMsg := fmt.Sprintf("[DRY-RUN] Would create new user book with status: %s", status)
 		logCtx.Info(dryRunMsg, map[string]interface{}{
 			"status": status,
@@ -335,7 +335,7 @@ func (s *Service) Sync(ctx context.Context) error {
 
 	// Log the start of the sync
 	s.log.Info("========================================", map[string]interface{}{
-		"dry_run":          s.config.App.DryRun,
+		"dry_run":          s.config.Sync.DryRun,
 		"test_book_filter": s.config.App.TestBookFilter,
 		"test_book_limit":  s.config.App.TestBookLimit,
 	})
@@ -643,7 +643,10 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			bookLog.Debugf("Skipping book as it doesn't match test book filter: %s", s.config.App.TestBookFilter)
 			return nil
 		}
-		bookLog.Debugf("Book matches test book filter, processing: %s", s.config.App.TestBookFilter)
+		bookLog.Debugf("Book matches test book filter, processing: %s", map[string]interface{}{
+			"filter":  s.config.App.TestBookFilter,
+			"dry_run": s.config.Sync.DryRun,
+		})
 	}
 
 	// Early filtering for incremental sync - check if book needs syncing
@@ -718,7 +721,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 
 		// Get the last sync state for this book using the composite key
 		bookState, exists := s.state.Books[stateKey]
-		if exists && !s.config.App.DryRun {
+		if exists && !s.config.Sync.DryRun {
 			// Check if progress has changed significantly (more than 1%)
 			progressChanged := math.Abs(currentProgress-bookState.LastProgress) > 0.01
 
@@ -1283,7 +1286,7 @@ func (s *Service) createFinishedBookLogger(userBookID int64, editionID string, b
 		"user_book_id": userBookID,
 		"edition_id":   editionID,
 		"book_id":      book.ID,
-		"dry_run":      s.config.App.DryRun,
+		"dry_run":      s.config.Sync.DryRun,
 	}
 
 	// Add title from metadata if available
@@ -1746,7 +1749,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 	log = s.log.With(logCtx)
 
 	// In dry-run mode, log that we're in dry-run and continue with checks
-	if s.config.App.DryRun {
+	if s.config.Sync.DryRun {
 		logCtx["action"] = "dry_run_skipped"
 		logCtx["reason"] = "dry-run mode is enabled"
 		s.log.With(logCtx).Info("Dry-run mode: skipping update", nil)
@@ -1873,7 +1876,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		log.Warn(fmt.Sprintf("Found %d duplicate unfinished read entries, will clean up", len(duplicateUnfinishedReads)), nil)
 
 		// We'll only delete the duplicates if we're not in dry-run mode
-		if !s.config.App.DryRun {
+		if !s.config.Sync.DryRun {
 			for _, duplicateRead := range duplicateUnfinishedReads {
 				log.Info("Marking duplicate read entry as deleted", map[string]interface{}{
 					"read_id": duplicateRead.ID,

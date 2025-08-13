@@ -24,6 +24,16 @@ audiobookshelf:
 hardcover:
   token: "your-hardcover-token"
 
+# DEPRECATED: App configuration (use sync.* instead)
+# The following app.* settings are deprecated and will be removed in a future version.
+# Please migrate to the sync.* settings below.
+# app:
+#   sync_interval: "1h"           # Use sync.sync_interval
+#   minimum_progress: 0.01        # Use sync.minimum_progress
+#   sync_want_to_read: true       # Use sync.sync_want_to_read
+#   sync_owned: false             # Use sync.sync_owned
+#   dry_run: false                # Use sync.dry_run
+
 # Sync configuration
 sync:
   # Enable incremental sync (only process changed books)

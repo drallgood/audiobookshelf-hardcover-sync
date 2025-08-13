@@ -103,7 +103,7 @@ func main() {
 	// Log basic configuration info (without sensitive data)
 	log.Info("Application configuration", map[string]interface{}{
 		"log_level": cfg.Logging.Level,
-		"dry_run":   cfg.App.DryRun,
+		"dry_run":   cfg.Sync.DryRun,
 	})
 
 	// Set environment variables from flags if provided

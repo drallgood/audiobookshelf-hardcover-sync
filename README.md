@@ -206,11 +206,42 @@ The project follows standard Go project layout:
    make deps
    ```
 
-3. Create a config file:
-   ```sh
-   cp config.example.yaml config.yaml
-   # Edit config.yaml with your settings
-   ```
+3.### Configuration
+
+Create a `config.yaml` file based on the example:
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+Edit the configuration to match your environment. See [Configuration Reference](#configuration-reference) for all available options.
+
+#### Important Configuration Changes
+
+> **Deprecation Notice**: The `app` section in the configuration is now deprecated and will be removed in a future version. Please migrate to the new `sync` section.
+
+**Migrating from old configuration (app.*) to new configuration (sync.*):**
+
+```yaml
+# Old deprecated format (app.*):
+# app:
+#   sync_interval: "1h"
+#   minimum_progress: 0.01
+#   sync_want_to_read: true
+#   sync_owned: false
+#   dry_run: false
+
+# New format (sync.*):
+sync:
+  sync_interval: "1h"
+  minimum_progress: 0.01
+  sync_want_to_read: true
+  sync_owned: false
+  dry_run: false
+  # Other sync settings...
+```
+
+The application will automatically migrate settings from the old `app` section to the new `sync` section and log a warning if any deprecated settings are found.
 
 4. Build and run the application:
    ```sh
