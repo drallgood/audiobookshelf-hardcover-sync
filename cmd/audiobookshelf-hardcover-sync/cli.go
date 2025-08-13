@@ -149,13 +149,24 @@ func RunOneTimeSync(flags *configFlags) {
 
 	// Log sync settings
 	log.Info("Sync Settings", map[string]interface{}{
-		"minimum_progress_threshold": cfg.App.MinimumProgress,
-		"sync_want_to_read":          cfg.App.SyncWantToRead,
-		"sync_owned":                 cfg.App.SyncOwned,
-		"dry_run":                    cfg.App.DryRun,
-		"test_book_filter":           cfg.App.TestBookFilter,
-		"test_book_limit":            cfg.App.TestBookLimit,
+		"minimum_progress_threshold": cfg.Sync.MinimumProgress,
+		"sync_want_to_read":          cfg.Sync.SyncWantToRead,
+		"sync_owned":                 cfg.Sync.SyncOwned,
+		"dry_run":                    cfg.Sync.DryRun,
+		"test_book_filter":           cfg.Sync.TestBookFilter,
+		"test_book_limit":            cfg.Sync.TestBookLimit,
 	})
+
+	// Check for deprecated config values and log warnings
+	if cfg.App.SyncWantToRead {
+		log.Warn("DEPRECATED: 'app.sync_want_to_read' is deprecated. Please use 'sync.sync_want_to_read' instead.", nil)
+	}
+	if cfg.App.SyncOwned {
+		log.Warn("DEPRECATED: 'app.sync_owned' is deprecated. Please use 'sync.sync_owned' instead.", nil)
+	}
+	if cfg.App.DryRun {
+		log.Warn("DEPRECATED: 'app.dry_run' is deprecated. Please use 'sync.dry_run' instead.", nil)
+	}
 
 	// Log paths and cache settings
 	log.Info("Paths Configuration", map[string]interface{}{

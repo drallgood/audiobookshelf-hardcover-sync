@@ -467,8 +467,8 @@ audiobookshelf:
 hardcover:
   token: "your-hardcover-token"
 
-# Application settings
-app:
+# Sync settings
+sync:
   sync_interval: "1h"
   minimum_progress: 0.01  # Minimum progress threshold (0.0 to 1.0)
   sync_want_to_read: true  # Sync books with 0% progress as "Want to Read"
@@ -478,6 +478,13 @@ app:
   dry_run: false           # Enable dry run mode (no changes will be made)
   test_book_filter: ""    # Filter books by title for testing
   test_book_limit: 0       # Limit number of books to process for testing (0 = no limit)
+
+# Application settings (deprecated - use sync section above)
+app:
+  # Deprecated: These settings are moved to the 'sync' section and will be removed in a future version
+  sync_want_to_read: true  # Deprecated: Use sync.sync_want_to_read
+  sync_owned: true        # Deprecated: Use sync.sync_owned
+  dry_run: false          # Deprecated: Use sync.dry_run
 
 # Database configuration
 database:

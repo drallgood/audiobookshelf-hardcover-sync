@@ -24,10 +24,60 @@ audiobookshelf:
 hardcover:
   token: "your-hardcover-token"
 
-# Application settings
+# Sync configuration
+sync:
+  # Enable incremental sync (only process changed books)
+  incremental: true
+  
+  # Path to store sync state (default: ./data/sync_state.json)
+  state_file: "./data/sync_state.json"
+  
+  # Minimum change in progress (seconds) to trigger an update (default: 60)
+  min_change_threshold: 60
+  
+  # Sync interval (default: 1h)
+  sync_interval: "1h"
+  
+  # Minimum progress threshold (0.0 to 1.0) - books with less progress will be skipped
+  minimum_progress: 0.01
+  
+  # Sync books with 0% progress as "Want to Read" in Hardcover
+  sync_want_to_read: true
+  
+  # Process books with 0% progress for mismatches and "want to read" status
+  process_unread_books: false
+  
+  # Mark synced books as owned in Hardcover
+  sync_owned: true
+  
+  # Enable dry run mode (no changes will be made)
+  dry_run: false
+  
+  # Filter books by title for testing (regex pattern)
+  test_book_filter: ""
+  
+  # Limit number of books to process for testing (0 = no limit)
+  test_book_limit: 0
+  
+  # Library filtering configuration
+  libraries:
+    # Include only these libraries (empty = all)
+    include: []
+    # Exclude these libraries (empty = none)
+    exclude: []
+
+# Application settings (deprecated - use 'sync' section above)
 app:
-  test_book_filter: ""    # Filter books by title for testing
-  test_book_limit: 0       # Limit number of books to process for testing (0 = no limit)
+  # Deprecated: These settings are moved to the 'sync' section and will be removed in a future version
+  sync_want_to_read: true  # Deprecated: Use sync.sync_want_to_read
+  sync_owned: true        # Deprecated: Use sync.sync_owned
+  dry_run: false          # Deprecated: Use sync.dry_run
+  
+  # Filter books by title for testing (deprecated - use sync.test_book_filter)
+  test_book_filter: ""
+  
+  # Limit number of books to process for testing (deprecated - use sync.test_book_limit)
+  test_book_limit: 0
 
 # Database configuration
 # Supports SQLite (default), PostgreSQL, MySQL/MariaDB with automatic fallback
@@ -109,17 +159,7 @@ authentication:
     # JWT claim containing user roles
     role_claim: "realm_access.roles"
 
-# Sync configuration
-sync:
-  incremental: true
-  state_file: "./data/sync_state.json"
-  min_change_threshold: 60
-  sync_interval: "1h"
-  minimum_progress: 0.01  # Minimum progress threshold (0.0 to 1.0)
-  sync_want_to_read: true  # Sync books with 0% progress as "Want to Read"
-  process_unread_books: false  # Process unread books (0% progress) for mismatches and "want to read" status
-  sync_owned: true        # Mark synced books as owned in Hardcover
-  dry_run: false           # Enable dry run mode (no changes will be made)
+
 
 # Paths configuration
 paths:

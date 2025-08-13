@@ -519,12 +519,51 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// Validate sync interval is positive
-	if c.App.SyncInterval <= 0 {
+	// Validate sync settings
+	if c.Sync.SyncInterval <= 0 {
 		// Set a default sync interval if invalid
-		c.App.SyncInterval = 1 * time.Hour
-		fmt.Printf("Warning: Invalid sync interval, using default: %s\n", c.App.SyncInterval)
+		c.Sync.SyncInterval = 1 * time.Hour
+		fmt.Printf("Warning: Invalid sync interval, using default: %s\n", c.Sync.SyncInterval)
 	}
+
+	// Validate minimum progress is between 0 and 1
+	if c.Sync.MinimumProgress < 0 || c.Sync.MinimumProgress > 1 {
+		c.Sync.MinimumProgress = 0.0
+		fmt.Printf("Warning: Invalid minimum progress, using default: %.2f\n", c.Sync.MinimumProgress)
+	}
+
+	// Check for deprecated app-level settings and log warnings
+	var deprecatedFields []string
+	if c.App.SyncInterval > 0 {
+		deprecatedFields = append(deprecatedFields, "app.sync_interval (use sync.sync_interval)")
+	}
+	if c.App.MinimumProgress > 0 {
+		deprecatedFields = append(deprecatedFields, "app.minimum_progress (use sync.minimum_progress)")
+	}
+	if c.App.SyncWantToRead {
+		deprecatedFields = append(deprecatedFields, "app.sync_want_to_read (use sync.sync_want_to_read)")
+	}
+	if c.App.SyncOwned {
+		deprecatedFields = append(deprecatedFields, "app.sync_owned (use sync.sync_owned)")
+	}
+	if c.App.DryRun {
+		deprecatedFields = append(deprecatedFields, "app.dry_run (use sync.dry_run)")
+	}
+
+	if len(deprecatedFields) > 0 {
+		fmt.Println("Warning: The following configuration settings are deprecated and will be removed in a future version:")
+		for _, field := range deprecatedFields {
+			fmt.Printf("  - %s\n", field)
+		}
+	}
+
+	// Log the final sync configuration
+	fmt.Println("Sync configuration:")
+	fmt.Printf("  - Sync interval: %s\n", c.Sync.SyncInterval)
+	fmt.Printf("  - Minimum progress: %.2f\n", c.Sync.MinimumProgress)
+	fmt.Printf("  - Sync want to read: %t\n", c.Sync.SyncWantToRead)
+	fmt.Printf("  - Sync owned: %t\n", c.Sync.SyncOwned)
+	fmt.Printf("  - Dry run: %t\n", c.Sync.DryRun)
 
 	fmt.Println("Configuration validation passed")
 	return nil
