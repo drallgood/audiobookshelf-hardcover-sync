@@ -516,14 +516,6 @@ func (e *ConfigError) Error() string {
 	return "config error: " + e.Field + " " + e.Msg
 }
 
-// Helper functions for environment variable parsing
-func getEnv(key, fallback string) string {
-	if value, exists := os.LookupEnv(key); exists {
-		return value
-	}
-	return fallback
-}
-
 // parseCommaSeparatedList parses a comma-separated string into a slice of trimmed strings
 func parseCommaSeparatedList(value string) []string {
 	if value == "" {
@@ -538,18 +530,6 @@ func parseCommaSeparatedList(value string) []string {
 		}
 	}
 	return result
-}
-
-func getIntFromEnv(key string, fallback int) int {
-	if value, exists := os.LookupEnv(key); exists {
-		i, err := strconv.Atoi(value)
-		if err != nil {
-			fmt.Printf("Warning: Failed to parse int from env var %s: %v\n", key, err)
-			return fallback
-		}
-		return i
-	}
-	return fallback
 }
 
 // loadFromEnv loads configuration from environment variables
@@ -772,28 +752,10 @@ func mergeNestedConfigs(dst, src interface{}) {
 	}
 }
 
-// getDurationFromEnv reads a duration from an environment variable or returns a default value
-func getDurationFromEnv(key string, fallback time.Duration) time.Duration {
+// getEnv returns the value of an environment variable or a default value
+func getEnv(key, fallback string) string {
 	if value, exists := os.LookupEnv(key); exists {
-		d, err := time.ParseDuration(value)
-		if err != nil {
-			fmt.Printf("Warning: Failed to parse duration from env var %s: %v\n", key, err)
-			return fallback
-		}
-		return d
-	}
-	return fallback
-}
-
-// getFloat64FromEnv reads a float64 from an environment variable or returns a default value
-func getFloat64FromEnv(key string, fallback float64) float64 {
-	if value, exists := os.LookupEnv(key); exists {
-		f, err := strconv.ParseFloat(value, 64)
-		if err != nil {
-			fmt.Printf("Warning: Failed to parse float64 from env var %s: %v\n", key, err)
-			return fallback
-		}
-		return f
+		return value
 	}
 	return fallback
 }
