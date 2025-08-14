@@ -62,13 +62,13 @@ func main() {
 	flags := parseFlags()
 
 	// Show help if requested
-	if flags.help {
+	if flags.help.value {
 		showHelp()
 		return
 	}
 
 	// Show version if requested
-	if flags.version {
+	if flags.version.value {
 		showVersion()
 		return
 	}
@@ -120,12 +120,12 @@ func main() {
 		os.Setenv("SYNC_INTERVAL", flags.syncInterval.String())
 	}
 
-	if flags.dryRun {
+	if flags.dryRun.value {
 		os.Setenv("DRY_RUN", "true")
 	}
 
-	// If one-time sync is requested, run it and exit
-	if flags.oneTimeSync {
+	// Run one-time sync if requested
+	if flags.oneTimeSync.value {
 		RunOneTimeSync(flags)
 		return
 	}
@@ -309,8 +309,8 @@ func main() {
 	}
 
 	// Start periodic sync for all users if enabled
-	if !flags.serverOnly && cfg.App.SyncInterval > 0 {
-		syncInterval := cfg.App.SyncInterval
+	if !flags.serverOnly.value && cfg.Sync.SyncInterval > 0 {
+		syncInterval := cfg.Sync.SyncInterval
 		if flags.syncInterval > 0 {
 			syncInterval = flags.syncInterval
 		}
@@ -397,7 +397,7 @@ func main() {
 				}
 			}
 		}()
-	} else if !flags.serverOnly {
+	} else if !flags.serverOnly.value {
 		log.Info("Periodic sync is disabled (set SYNC_INTERVAL to enable)", nil)
 	}
 

@@ -9,8 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"gopkg.in/yaml.v3"
+
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 )
 
 // Config holds all configuration for the application
@@ -211,40 +212,30 @@ func DefaultConfig() *Config {
 	cfg.Sync.Incremental = true
 	cfg.Sync.StateFile = "./data/sync_state.json"
 	cfg.Sync.MinChangeThreshold = 60 // 1 minute
-	cfg.Sync.SyncInterval = 1 * time.Hour
+	cfg.Sync.SyncInterval = time.Hour
 	cfg.Sync.MinimumProgress = 0.0
 	cfg.Sync.SyncWantToRead = true
-	cfg.Sync.ProcessUnreadBooks = false // Default to false for backward compatibility
-	cfg.Sync.SyncOwned = true
+	cfg.Sync.ProcessUnreadBooks = true
+	cfg.Sync.SyncOwned = false
 	cfg.Sync.DryRun = false
+	cfg.Sync.SingleUserMode = false
+	cfg.Sync.TestBookFilter = ""
+	cfg.Sync.TestBookLimit = 0
 
-	// Default rate limiting (1500ms between requests, burst of 2, max 3 concurrent)
-	cfg.RateLimit.Rate = 1500 * time.Millisecond
-	cfg.RateLimit.Burst = 2
-	cfg.RateLimit.MaxConcurrent = 3
-
-	// Default logging
-	cfg.Logging.Level = "info"
-	cfg.Logging.Format = "json"
-
-	// Default application settings
-	cfg.App.TestBookFilter = ""
-	cfg.App.TestBookLimit = 0
-
-	// Default database configuration (SQLite)
+	// Database defaults
 	cfg.Database.Type = "sqlite"
-	cfg.Database.Path = "" // Will use GetDefaultDatabasePath() if empty
 	cfg.Database.Host = "localhost"
-	cfg.Database.Port = 5432 // Default PostgreSQL port
-	cfg.Database.Name = "audiobookshelf_sync"
-	cfg.Database.User = "sync_user"
+	cfg.Database.Port = 5432
+	cfg.Database.Name = "audiobookshelf_hardcover_sync"
+	cfg.Database.User = "postgres"
 	cfg.Database.Password = ""
-	cfg.Database.SSLMode = "prefer"
-	cfg.Database.ConnectionPool.MaxOpenConns = 25
+	cfg.Database.Path = "./data/audiobookshelf-hardcover-sync.db"
+	cfg.Database.SSLMode = "disable"
+	cfg.Database.ConnectionPool.MaxOpenConns = 10
 	cfg.Database.ConnectionPool.MaxIdleConns = 5
-	cfg.Database.ConnectionPool.ConnMaxLifetime = 60 // minutes
+	cfg.Database.ConnectionPool.ConnMaxLifetime = 30 // minutes
 
-	// Default authentication configuration
+	// Authentication defaults
 	cfg.Authentication.Enabled = false
 	cfg.Authentication.Session.Secret = "" // Auto-generated if empty
 	cfg.Authentication.Session.CookieName = "audiobookshelf-sync-session"
@@ -271,31 +262,38 @@ func DefaultConfig() *Config {
 	return cfg
 }
 
-// Load loads configuration from a file (if specified) and environment variables.
-// Configuration priority: 1) Command line flags, 2) Environment variables, 3) Config file, 4) Defaults
-func Load(configFile string) (*Config, error) {
+func Load(configPath string) (*Config, error) {
+	// Start with default configuration
 	cfg := DefaultConfig()
+
+	// Log default values with more context
+	logger.Get().Debug("Default config values", map[string]interface{}{
+		"sync.dry_run":           cfg.Sync.DryRun,
+		"sync.sync_want_to_read": cfg.Sync.SyncWantToRead,
+		"sync.sync_owned":        cfg.Sync.SyncOwned,
+		"config_source":          "defaults",
+	})
 	
-	// Load configuration from file first (if specified)
-	if configFile != "" {
-		fmt.Printf("Loading configuration from file: %s\n", configFile)
+	// Debug: Log the current working directory and config path
+	if wd, err := os.Getwd(); err == nil {
+		logger.Get().Debug("Current working directory and config path", map[string]interface{}{
+			"working_directory": wd,
+			"config_path":      configPath,
+			"abs_config_path":  filepath.Join(wd, configPath),
+		})
+	}
 
-		// Get absolute path to config file
-		absConfigFile, err := filepath.Abs(configFile)
-		if err != nil {
-			fmt.Printf("Warning: Failed to get absolute path for config file %s: %v\n", configFile, err)
-		} else {
-			configFile = absConfigFile
-		}
-
+	// Load from file if path is provided
+	if configPath != "" {
 		// Check if file exists
-		if _, err := os.Stat(configFile); os.IsNotExist(err) {
-			fmt.Println("Config file does not exist, using environment variables and defaults")
+		if _, err := os.Stat(configPath); os.IsNotExist(err) {
+			logger.Get().Debug("Config file does not exist, using defaults", map[string]interface{}{
+				"path": configPath,
+			})
 		} else {
 			// Read the config file
-			data, err := os.ReadFile(configFile)
+			data, err := os.ReadFile(configPath)
 			if err != nil {
-				fmt.Printf("Failed to read config file: %v\n", err)
 				return nil, fmt.Errorf("failed to read config file: %w", err)
 			}
 
@@ -304,24 +302,20 @@ func Load(configFile string) (*Config, error) {
 
 			// Unmarshal the config file
 			if err := yaml.Unmarshal(data, fileCfg); err != nil {
-				fmt.Printf("Failed to parse config file: %v\n", err)
 				return nil, fmt.Errorf("failed to parse config file: %w", err)
 			}
 
-			// Merge the config from file into our config (only non-zero values)
+			// Merge the config from file into our config
 			mergeConfigs(cfg, fileCfg)
-			fmt.Println("Successfully loaded configuration from file")
 		}
-	} else {
-		fmt.Println("No config file specified, using environment variables and defaults")
 	}
 
-	// Then load from environment variables (overrides config file)
+	// Load from environment variables
 	loadFromEnv(cfg)
 
-	// Validate the configuration (this will also migrate deprecated fields)
+	// Validate the configuration
 	if err := cfg.Validate(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 
 	// Log the final configuration
@@ -455,25 +449,44 @@ func (c *Config) Validate() error {
 		appFieldsSet = true
 	}
 
-	// SyncWantToRead - always migrate the value, regardless of true/false
-	if c.App.SyncWantToRead != c.Sync.SyncWantToRead {
-		deprecatedFields = append(deprecatedFields, "app.sync_want_to_read (use sync.sync_want_to_read)")
-		c.Sync.SyncWantToRead = c.App.SyncWantToRead
-		appFieldsSet = true
-	}
+	// Migration logic for deprecated app.* fields to sync.* fields
+	// We migrate deprecated values if they appear to be set in the config file
+	// This provides backward compatibility for users still using the old app section
+	
+	// For non-zero values (durations, floats), we can detect if they were set
+	// For boolean values, we use a simpler approach: if any app boolean is set to true,
+	// or if the entire app section has values, we migrate all app booleans
+	
+	// Check if any app values are set (indicating the app section is being used)
+	appSectionInUse := (c.App.SyncInterval > 0 || c.App.MinimumProgress > 0 || 
+		c.App.SyncWantToRead || c.App.SyncOwned || c.App.DryRun ||
+		c.App.TestBookFilter != "" || c.App.TestBookLimit > 0)
 
-	// SyncOwned - always migrate the value, regardless of true/false
-	if c.App.SyncOwned != c.Sync.SyncOwned {
-		deprecatedFields = append(deprecatedFields, "app.sync_owned (use sync.sync_owned)")
-		c.Sync.SyncOwned = c.App.SyncOwned
-		appFieldsSet = true
-	}
+	// Migrate boolean fields if the app section appears to be in use
+	if appSectionInUse {
+		// SyncWantToRead
+		if c.App.SyncWantToRead || c.App.SyncOwned || c.App.DryRun {
+			if c.App.SyncWantToRead {
+				deprecatedFields = append(deprecatedFields, "app.sync_want_to_read (use sync.sync_want_to_read)")
+				c.Sync.SyncWantToRead = c.App.SyncWantToRead
+			}
+		}
 
-	// DryRun - always migrate the value, regardless of true/false
-	if c.App.DryRun != c.Sync.DryRun {
-		deprecatedFields = append(deprecatedFields, "app.dry_run (use sync.dry_run)")
-		c.Sync.DryRun = c.App.DryRun
-		appFieldsSet = true
+		// SyncOwned
+		if c.App.SyncOwned {
+			deprecatedFields = append(deprecatedFields, "app.sync_owned (use sync.sync_owned)")
+			c.Sync.SyncOwned = c.App.SyncOwned
+		}
+
+		// DryRun
+		if c.App.DryRun {
+			deprecatedFields = append(deprecatedFields, "app.dry_run (use sync.dry_run)")
+			c.Sync.DryRun = c.App.DryRun
+		}
+
+		if len(deprecatedFields) > 0 {
+			appFieldsSet = true
+		}
 	}
 
 	// Log deprecation warning if any app.* fields were set
@@ -534,6 +547,48 @@ func parseCommaSeparatedList(value string) []string {
 
 // loadFromEnv loads configuration from environment variables
 func loadFromEnv(cfg *Config) {
+	// Debug: Log all environment variables that might affect config
+	logger.Get().Debug("Environment variables before loading config", map[string]interface{}{
+		"DRY_RUN":             os.Getenv("DRY_RUN"),
+		"SYNC_DRY_RUN":        os.Getenv("SYNC_DRY_RUN"),
+		"SYNC_SYNC_WANT_READ": os.Getenv("SYNC_SYNC_WANT_READ"),
+		"SYNC_WANT_TO_READ":   os.Getenv("SYNC_WANT_TO_READ"),
+		"SYNC_OWNED":          os.Getenv("SYNC_OWNED"),
+	})
+	
+	// Log initial config values before loading from env
+	logger.Get().Debug("Config before loading from environment", map[string]interface{}{
+		"sync.dry_run":           cfg.Sync.DryRun,
+		"sync.sync_want_to_read": cfg.Sync.SyncWantToRead,
+		"sync.sync_owned":        cfg.Sync.SyncOwned,
+		"config_source":          "before_env_loading",
+	})
+	
+	// Track if values were explicitly set via environment variables
+	dryRunSet := false
+	
+	// Load sync settings from environment variables - only if not already set in config
+	if val := os.Getenv("DRY_RUN"); val != "" {
+		if dryRun, err := strconv.ParseBool(val); err == nil {
+			logger.Get().Debug("Setting dry_run from DRY_RUN environment variable", map[string]interface{}{
+				"value": dryRun,
+				"source": "DRY_RUN",
+			})
+			cfg.Sync.DryRun = dryRun
+			dryRunSet = true
+		}
+	}
+	
+	// Only override with SYNC_DRY_RUN if DRY_RUN wasn't set
+	if val := os.Getenv("SYNC_DRY_RUN"); val != "" && !dryRunSet {
+		if dryRun, err := strconv.ParseBool(val); err == nil {
+			logger.Get().Debug("Setting dry_run from SYNC_DRY_RUN environment variable", map[string]interface{}{
+				"value": dryRun,
+				"source": "SYNC_DRY_RUN",
+			})
+			cfg.Sync.DryRun = dryRun
+		}
+	}
 	// Audiobookshelf configuration
 	if url := os.Getenv("AUDIOBOOKSHELF_URL"); url != "" {
 		cfg.Audiobookshelf.URL = strings.TrimSuffix(url, "/")
@@ -602,11 +657,11 @@ func loadFromEnv(cfg *Config) {
 		}
 	}
 	if testBookFilter := os.Getenv("TEST_BOOK_FILTER"); testBookFilter != "" {
-		cfg.App.TestBookFilter = testBookFilter
+		cfg.Sync.TestBookFilter = testBookFilter
 	}
 	if testBookLimit := os.Getenv("TEST_BOOK_LIMIT"); testBookLimit != "" {
 		if i, err := strconv.Atoi(testBookLimit); err == nil {
-			cfg.App.TestBookLimit = i
+			cfg.Sync.TestBookLimit = i
 		}
 	}
 
@@ -645,6 +700,7 @@ func mergeConfigs(dst, src *Config) {
 	for i := 0; i < dstVal.NumField(); i++ {
 		dstField := dstVal.Field(i)
 		srcField := srcVal.Field(i)
+		fieldName := dstVal.Type().Field(i).Name
 
 		// Skip unexported fields
 		if !dstField.CanSet() {
@@ -657,6 +713,8 @@ func mergeConfigs(dst, src *Config) {
 			for j := 0; j < dstField.NumField(); j++ {
 				dstFieldField := dstField.Field(j)
 				srcFieldField := srcField.Field(j)
+				fieldType := dstField.Type().Field(j)
+				nestedFieldName := fmt.Sprintf("%s.%s", fieldName, fieldType.Name)
 
 				if !dstFieldField.CanSet() {
 					continue
@@ -665,26 +723,53 @@ func mergeConfigs(dst, src *Config) {
 				switch dstFieldField.Kind() {
 				case reflect.String:
 					if srcFieldField.String() != "" {
+						logger.Get().Debug("Merging string field", map[string]interface{}{
+							"field": nestedFieldName,
+							"value": srcFieldField.String(),
+						})
 						dstFieldField.SetString(srcFieldField.String())
 					}
 				case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 					if srcFieldField.Int() != 0 {
+						logger.Get().Debug("Merging int field", map[string]interface{}{
+							"field": nestedFieldName,
+							"value": srcFieldField.Int(),
+						})
 						dstFieldField.SetInt(srcFieldField.Int())
+					}
+				case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+					if srcFieldField.Uint() != 0 {
+						logger.Get().Debug("Merging uint field", map[string]interface{}{
+							"field": nestedFieldName,
+							"value": srcFieldField.Uint(),
+						})
+						dstFieldField.SetUint(srcFieldField.Uint())
 					}
 				case reflect.Float32, reflect.Float64:
 					if srcFieldField.Float() != 0 {
+						logger.Get().Debug("Merging float field", map[string]interface{}{
+							"field": nestedFieldName,
+							"value": srcFieldField.Float(),
+						})
 						dstFieldField.SetFloat(srcFieldField.Float())
 					}
 				case reflect.Bool:
-					if srcFieldField.Bool() {
-						dstFieldField.SetBool(true)
+					// Check if the field is explicitly set in the source config
+					// by looking for the 'yaml' tag and checking if it's present in the source
+					fieldTag := fieldType.Tag.Get("yaml")
+					if fieldTag == "-" {
+						continue // Skip fields marked with yaml:"-"
 					}
-				case reflect.Struct:
-					// Handle nested structs recursively
-					if dstFieldField.CanAddr() && srcFieldField.CanAddr() {
-						dstNested := dstFieldField.Addr().Interface()
-						srcNested := srcFieldField.Addr().Interface()
-						mergeNestedConfigs(dstNested, srcNested)
+
+					// Always set boolean values from config file, whether true or false
+					// but only if the field is present in the source config
+					if srcFieldField.IsValid() && srcFieldField.CanInterface() {
+						logger.Get().Debug("Merging bool field", map[string]interface{}{
+							"field":   nestedFieldName,
+							"value":   srcFieldField.Bool(),
+							"yamlTag": fieldTag,
+						})
+						dstFieldField.SetBool(srcFieldField.Bool())
 					}
 				}
 			}
@@ -704,53 +789,15 @@ func mergeConfigs(dst, src *Config) {
 				dstField.SetFloat(srcField.Float())
 			}
 		case reflect.Bool:
-			// Only overwrite if source is true
-			if srcField.Bool() {
-				dstField.SetBool(true)
+			// Always set boolean values from config file, whether true or false
+			if srcField.IsValid() && srcField.CanInterface() {
+				dstField.SetBool(srcField.Bool())
 			}
 		}
 	}
 }
 
-// mergeNestedConfigs merges nested config structs
-func mergeNestedConfigs(dst, src interface{}) {
-	dstVal := reflect.ValueOf(dst).Elem()
-	srcVal := reflect.ValueOf(src).Elem()
 
-	for i := 0; i < dstVal.NumField(); i++ {
-		dstField := dstVal.Field(i)
-		srcField := srcVal.Field(i)
-
-		if !dstField.CanSet() {
-			continue
-		}
-
-		switch dstField.Kind() {
-		case reflect.String:
-			if srcField.String() != "" {
-				dstField.SetString(srcField.String())
-			}
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			if srcField.Int() != 0 {
-				dstField.SetInt(srcField.Int())
-			}
-		case reflect.Float32, reflect.Float64:
-			if srcField.Float() != 0 {
-				dstField.SetFloat(srcField.Float())
-			}
-		case reflect.Bool:
-			if srcField.Bool() {
-				dstField.SetBool(true)
-			}
-		case reflect.Struct:
-			if dstField.CanAddr() && srcField.CanAddr() {
-				dstNested := dstField.Addr().Interface()
-				srcNested := srcField.Addr().Interface()
-				mergeNestedConfigs(dstNested, srcNested)
-			}
-		}
-	}
-}
 
 // getEnv returns the value of an environment variable or a default value
 func getEnv(key, fallback string) string {
