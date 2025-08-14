@@ -128,6 +128,45 @@ query BookByTitleAndAuthor($title: String!, $author: String!) {
   }
 }
 ```
+## Book by Title
+
+```graphql
+query BookByTitle($title: String!) {
+  books(where: {editions: {title: {_eq: $title}, reading_format: {id: {_eq: 2}}}}, limit: 1) {
+    id
+    title
+    audio_seconds
+    book_status_id
+    canonical_id
+    editions(where: {title: {_eq: $title}, reading_format: {id: {_eq: 2}}}, limit: 1) {
+      id
+      asin
+      isbn_13: isbn_13
+      isbn_10: isbn_10
+      title
+      edition_format
+      reading_format {
+        id
+      }
+      audio_seconds
+      cached_image(path: "url")
+      publisher {
+        id
+        name
+      }
+      language {
+        id
+        language
+      }
+      image {
+        id
+        url
+      }
+    }
+  }
+}
+```
+
 
 ## Reads by ASIN
 

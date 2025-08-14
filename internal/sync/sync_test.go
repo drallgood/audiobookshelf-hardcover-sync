@@ -263,6 +263,7 @@ func TestProcessLibrary(t *testing.T) {
 		asinCache:           make(map[string]*models.HardcoverBook),
 		persistentCache:     NewPersistentASINCache("/tmp"),
 		userBookCache:       NewPersistentUserBookCache("/tmp"),
+		summary:             &SyncSummary{},
 	}
 	
 	// Create test library

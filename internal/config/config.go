@@ -513,12 +513,36 @@ func parseCommaSeparatedList(value string) []string {
 func loadFromEnv(cfg *Config) {
 	// Debug logging removed to prevent early logger initialization
 	
-	// Config debug logging removed to prevent early logger initialization
-	
 	// Track if values were explicitly set via environment variables
 	dryRunSet := false
 	
+	// Handle deprecated app.* environment variables first
+	if val := os.Getenv("TEST_BOOK_FILTER"); val != "" && cfg.Sync.TestBookFilter == "" {
+		// Only set from deprecated env var if not already set in sync section
+		cfg.Sync.TestBookFilter = val
+		fmt.Printf("WARNING: 'TEST_BOOK_FILTER' environment variable is deprecated. Use 'SYNC_TEST_BOOK_FILTER' instead.\n")
+	}
+	
+	if val := os.Getenv("TEST_BOOK_LIMIT"); val != "" && cfg.Sync.TestBookLimit == 0 {
+		if limit, err := strconv.Atoi(val); err == nil && limit > 0 {
+			// Only set from deprecated env var if not already set in sync section
+			cfg.Sync.TestBookLimit = limit
+			fmt.Printf("WARNING: 'TEST_BOOK_LIMIT' environment variable is deprecated. Use 'SYNC_TEST_BOOK_LIMIT' instead.\n")
+		}
+	}
+	
 	// Load sync settings from environment variables - only if not already set in config
+	if val := os.Getenv("SYNC_TEST_BOOK_FILTER"); val != "" {
+		cfg.Sync.TestBookFilter = val
+	}
+	
+	if val := os.Getenv("SYNC_TEST_BOOK_LIMIT"); val != "" {
+		if limit, err := strconv.Atoi(val); err == nil && limit > 0 {
+			cfg.Sync.TestBookLimit = limit
+		}
+	}
+	
+	// Handle dry run from environment variables
 	if val := os.Getenv("DRY_RUN"); val != "" {
 		if dryRun, err := strconv.ParseBool(val); err == nil {
 			// Setting dry_run from DRY_RUN environment variable
@@ -642,10 +666,21 @@ func mergeConfigs(dst, src *Config) {
 	dstVal := reflect.ValueOf(dst).Elem()
 	srcVal := reflect.ValueOf(src).Elem()
 
+	// Handle deprecated app.* fields first
+	if src.App.TestBookFilter != "" && dst.Sync.TestBookFilter == "" {
+		dst.Sync.TestBookFilter = src.App.TestBookFilter
+		// Log deprecation warning
+		fmt.Printf("WARNING: 'app.test_book_filter' is deprecated and will be removed in a future version. Use 'sync.test_book_filter' instead.\n")
+	}
+	if src.App.TestBookLimit != 0 && dst.Sync.TestBookLimit == 0 {
+		dst.Sync.TestBookLimit = src.App.TestBookLimit
+		// Log deprecation warning
+		fmt.Printf("WARNING: 'app.test_book_limit' is deprecated and will be removed in a future version. Use 'sync.test_book_limit' instead.\n")
+	}
+
 	for i := 0; i < dstVal.NumField(); i++ {
 		dstField := dstVal.Field(i)
 		srcField := srcVal.Field(i)
-		// fieldName removed as it's no longer used for debug logging
 
 		// Skip unexported fields
 		if !dstField.CanSet() {
@@ -659,7 +694,6 @@ func mergeConfigs(dst, src *Config) {
 				dstFieldField := dstField.Field(j)
 				srcFieldField := srcField.Field(j)
 				fieldType := dstField.Type().Field(j)
-				// nestedFieldName removed as it's no longer used for debug logging
 
 				if !dstFieldField.CanSet() {
 					continue
