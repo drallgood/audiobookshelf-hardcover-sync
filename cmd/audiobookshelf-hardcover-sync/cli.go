@@ -14,6 +14,33 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 )
 
+// boolFlag is a custom flag type that tracks if a boolean flag was explicitly set
+type boolFlag struct {
+	value bool
+	set   bool
+}
+
+// String implements the flag.Value interface
+func (b *boolFlag) String() string {
+	return strconv.FormatBool(b.value)
+}
+
+// Set implements the flag.Value interface
+func (b *boolFlag) Set(s string) error {
+	v, err := strconv.ParseBool(s)
+	if err != nil {
+		return err
+	}
+	b.value = v
+	b.set = true
+	return nil
+}
+
+// IsBoolFlag makes the flag a boolean flag
+func (b *boolFlag) IsBoolFlag() bool {
+	return true
+}
+
 // configFlags holds the application configuration from command-line flags
 type configFlags struct {
 	configFile          string        // Path to config file
@@ -21,62 +48,106 @@ type configFlags struct {
 	audiobookshelfToken string        // Audiobookshelf API token
 	hardcoverToken      string        // Hardcover API token
 	syncInterval        time.Duration // Sync interval duration
-	dryRun              bool          // Enable dry-run mode
+	dryRun              *boolFlag     // Enable dry-run mode
 	testBookFilter      string        // Filter books by title/author (case-insensitive)
 	testBookLimit       int           // Limit number of books to process
-	help                bool          // Show help
-	version             bool          // Show version
-	oneTimeSync         bool          // Run sync once and exit
-	serverOnly          bool          // Only run the HTTP server, don't start sync service
+	help                *boolFlag     // Show help
+	version             *boolFlag     // Show version
+	oneTimeSync         *boolFlag     // Run sync once and exit
+	serverOnly          *boolFlag     // Only run the HTTP server, don't start sync service
 }
 
 // parseFlags parses command-line flags and returns the configuration
 func parseFlags() *configFlags {
-	var cfg configFlags
+	cfg := configFlags{
+		dryRun:      &boolFlag{value: false, set: false},
+		help:        &boolFlag{value: false, set: false},
+		version:     &boolFlag{value: false, set: false},
+		oneTimeSync: &boolFlag{value: false, set: false},
+		serverOnly:  &boolFlag{value: false, set: false},
+	}
 
-	// Define flags with default values
-	// Use negative values for durations to detect if they were set
-	flag.StringVar(&cfg.configFile, "config", "", "Path to config file (YAML/JSON)")
-	flag.StringVar(&cfg.audiobookshelfURL, "audiobookshelf-url", "", "Audiobookshelf server URL")
-	flag.StringVar(&cfg.audiobookshelfToken, "audiobookshelf-token", "", "Audiobookshelf API token")
-	flag.StringVar(&cfg.hardcoverToken, "hardcover-token", "", "Hardcover API token")
-	flag.DurationVar(&cfg.syncInterval, "sync-interval", -1, "Sync interval (e.g., 10m, 1h). Defaults to config value if not set")
-	flag.BoolVar(&cfg.dryRun, "dry-run", false, "Run in dry-run mode (no changes will be made)")
-	flag.StringVar(&cfg.testBookFilter, "test-book-filter", "", "Filter books by title/author (case-insensitive)")
-	flag.IntVar(&cfg.testBookLimit, "test-book-limit", 0, "Limit number of books to process (0 for no limit)")
-	flag.BoolVar(&cfg.help, "help", false, "Show help")
-	flag.BoolVar(&cfg.version, "version", false, "Show version")
-	flag.BoolVar(&cfg.oneTimeSync, "once", false, "Run sync once and exit")
-	flag.BoolVar(&cfg.serverOnly, "server-only", false, "Only run the HTTP server, don't start sync service")
+	// Define flags with our custom boolFlag type
+	flag.Var(cfg.dryRun, "dry-run", "Run in dry-run mode (no changes will be made)")
+	flag.Var(cfg.help, "help", "Show help")
+	flag.Var(cfg.version, "version", "Show version")
+	flag.Var(cfg.oneTimeSync, "once", "Run sync once and exit")
+	flag.Var(cfg.serverOnly, "server-only", "Only run the HTTP server, don't start sync service")
+
+	// String flags need to be pointers to detect if they were set
+	configFile := flag.String("config", "", "Path to config file (YAML/JSON)")
+	audiobookshelfURL := flag.String("audiobookshelf-url", "", "Audiobookshelf server URL")
+	audiobookshelfToken := flag.String("audiobookshelf-token", "", "Audiobookshelf API token")
+	hardcoverToken := flag.String("hardcover-token", "", "Hardcover API token")
+	syncInterval := flag.Duration("sync-interval", -1, "Sync interval (e.g., 10m, 1h). Defaults to config value if not set")
+	testBookFilter := flag.String("test-book-filter", "", "Filter books by title/author (case-insensitive)")
+	testBookLimit := flag.Int("test-book-limit", -1, "Limit number of books to process (-1 for no limit)")
 
 	// Parse flags
 	flag.Parse()
 
-	// Check for CONFIG_PATH environment variable if no config file was specified via flags
-	if cfg.configFile == "" {
+	// Set environment variables from boolean flags if they were explicitly set
+	if cfg.dryRun.set {
+		// Use the environment variable name that matches the config struct tag (DRY_RUN)
+		os.Setenv("DRY_RUN", strconv.FormatBool(cfg.dryRun.value))
+	}
+	if cfg.help.set {
+		os.Setenv("HELP", strconv.FormatBool(cfg.help.value))
+	}
+	if cfg.version.set {
+		os.Setenv("VERSION", strconv.FormatBool(cfg.version.value))
+	}
+	if cfg.oneTimeSync.set {
+		os.Setenv("ONCE", strconv.FormatBool(cfg.oneTimeSync.value))
+	}
+	if cfg.serverOnly.set {
+		os.Setenv("SERVER_ONLY", strconv.FormatBool(cfg.serverOnly.value))
+	}
+
+	// Environment variables for non-boolean flags
+
+	// Only set string values if they were explicitly provided
+	if *configFile != "" {
+		cfg.configFile = *configFile
+	} else {
+		// Check for CONFIG_PATH environment variable if no config file was specified via flags
 		cfg.configFile = os.Getenv("CONFIG_PATH")
 	}
 
-	// Set environment variables from flags if they're provided
-	setEnvFromFlag(cfg.audiobookshelfURL, "AUDIOBOOKSHELF_URL")
-	setEnvFromFlag(cfg.audiobookshelfToken, "AUDIOBOOKSHELF_TOKEN")
-	setEnvFromFlag(cfg.hardcoverToken, "HARDCOVER_TOKEN")
+	// Only set environment variables from flags if provided
+	setEnvFromFlag(*audiobookshelfURL, "AUDIOBOOKSHELF_URL")
+	setEnvFromFlag(*audiobookshelfToken, "AUDIOBOOKSHELF_TOKEN")
+	setEnvFromFlag(*hardcoverToken, "HARDCOVER_TOKEN")
 
-	// Only set SYNC_INTERVAL if it was explicitly provided via flags
-	if cfg.syncInterval >= 0 {
-		os.Setenv("SYNC_INTERVAL", cfg.syncInterval.String())
+	// Explicitly set DRY_RUN environment variable if the flag was set
+	if cfg.dryRun.set {
+		os.Setenv("DRY_RUN", strconv.FormatBool(cfg.dryRun.value))
+		logger.Get().Debug("Set DRY_RUN from CLI flag", map[string]interface{}{
+			"dry_run": cfg.dryRun.value,
+		})
 	}
 
-	if cfg.dryRun {
-		os.Setenv("DRY_RUN", "true")
+	if *hardcoverToken != "" {
+		cfg.hardcoverToken = *hardcoverToken
+		os.Setenv("HARDCOVER_TOKEN", *hardcoverToken)
 	}
 
-	if cfg.testBookFilter != "" {
-		os.Setenv("TEST_BOOK_FILTER", cfg.testBookFilter)
+	// Only set sync interval if it was explicitly provided
+	if *syncInterval >= 0 {
+		cfg.syncInterval = *syncInterval
+		os.Setenv("SYNC_INTERVAL", syncInterval.String())
 	}
 
-	if cfg.testBookLimit > 0 {
-		os.Setenv("TEST_BOOK_LIMIT", strconv.Itoa(cfg.testBookLimit))
+	// Only set test book filter if it was explicitly provided
+	if *testBookFilter != "" {
+		cfg.testBookFilter = *testBookFilter
+		os.Setenv("TEST_BOOK_FILTER", *testBookFilter)
+	}
+
+	// Only set test book limit if it was explicitly provided
+	if *testBookLimit >= 0 {
+		cfg.testBookLimit = *testBookLimit
+		os.Setenv("TEST_BOOK_LIMIT", strconv.Itoa(*testBookLimit))
 	}
 
 	return &cfg
