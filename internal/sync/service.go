@@ -451,7 +451,7 @@ func (s *Service) Sync(ctx context.Context) error {
 	s.log.Info("========================================", map[string]interface{}{
 		"dry_run":          s.config.Sync.DryRun,
 		"test_book_filter": s.config.Sync.TestBookFilter,
-		"test_book_limit":  s.config.App.TestBookLimit,
+		"test_book_limit":  s.config.Sync.TestBookLimit,
 	})
 	s.log.Info("STARTING FULL SYNCHRONIZATION", nil)
 	s.log.Info("========================================", nil)
@@ -472,9 +472,9 @@ func (s *Service) Sync(ctx context.Context) error {
 	})
 
 	s.log.Info("Sync Settings", map[string]interface{}{
-		"minimum_progress":  s.config.App.MinimumProgress,
-		"sync_want_to_read": s.config.App.SyncWantToRead,
-		"sync_owned":        s.config.App.SyncOwned,
+		"minimum_progress":  s.config.Sync.MinimumProgress,
+		"sync_want_to_read": s.config.Sync.SyncWantToRead,
+		"sync_owned":        s.config.Sync.SyncOwned,
 	})
 
 	s.log.Info("========================================", nil)
@@ -487,8 +487,8 @@ func (s *Service) Sync(ctx context.Context) error {
 		"audiobookshelf_url":       s.config.Audiobookshelf.URL,
 		"has_audiobookshelf_token": s.config.Audiobookshelf.Token != "",
 		"has_hardcover_token":      s.config.Hardcover.Token != "",
-		"minimum_progress":         s.config.App.MinimumProgress,
-		"sync_want_to_read":        s.config.App.SyncWantToRead,
+		"minimum_progress":         s.config.Sync.MinimumProgress,
+		"sync_want_to_read":        s.config.Sync.SyncWantToRead,
 		"test_book_limit":          s.config.Sync.TestBookLimit,
 	})
 
@@ -1019,10 +1019,10 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	bookLog.Debug("Calculated book progress", nil)
 
 	// Skip books below minimum progress threshold
-	if progress < s.config.App.MinimumProgress && progress > 0 {
-		bookLog.Info("Skipping book below minimum progress threshold", map[string]interface{}{
-			"progress":         progress,
-			"minimum_progress": s.config.App.MinimumProgress,
+	if progress < s.config.Sync.MinimumProgress && progress > 0 {
+		bookLog.Debug("Progress below minimum threshold, skipping update", map[string]interface{}{
+			"progress":        progress,
+			"minimum_progress": s.config.Sync.MinimumProgress,
 		})
 		return nil
 	}
@@ -1038,7 +1038,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	case "IN_PROGRESS":
 		action = "update reading progress"
 	case "WANT_TO_READ":
-		if s.config.App.SyncWantToRead {
+		if s.config.Sync.SyncWantToRead {
 			action = "mark as WANT_TO_READ"
 		} else {
 			action = "skip (WANT_TO_READ sync disabled)"
@@ -1320,7 +1320,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	}
 
 	// Mark book as owned if sync_owned is enabled
-	if s.config.App.SyncOwned && hcBook != nil && hcBook.EditionID != "" && hcBook.EditionID != "0" {
+	if s.config.Sync.SyncOwned && hcBook != nil && hcBook.EditionID != "" && hcBook.EditionID != "0" {
 		editionIDInt, err := strconv.Atoi(hcBook.EditionID)
 		if err != nil {
 			bookLog.Warn("Invalid edition ID format for marking as owned", map[string]interface{}{
@@ -2487,7 +2487,7 @@ func (s *Service) processFoundBook(ctx context.Context, hcBook *models.Hardcover
 	log := s.log.With(logCtx)
 
 	// Mark book as owned if sync_owned is enabled
-	if s.config.App.SyncOwned && hcBook != nil && hcBook.EditionID != "" && hcBook.EditionID != "0" {
+	if s.config.Sync.SyncOwned && hcBook != nil && hcBook.EditionID != "" && hcBook.EditionID != "0" {
 		editionID, err := strconv.Atoi(hcBook.EditionID)
 		if err != nil {
 			log.Warn("Invalid edition ID format for marking as owned", map[string]interface{}{

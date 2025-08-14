@@ -384,7 +384,7 @@ func TestProcessLibrary(t *testing.T) {
 		svc.hardcover = mockHC
 		
 		// Set a limit of 1 book
-		testConfig.App.TestBookLimit = 1
+		testConfig.Sync.TestBookLimit = 1
 		
 		// Call processLibrary
 		processed, err := svc.processLibrary(context.Background(), testLibrary, 0, testUserProgress)
