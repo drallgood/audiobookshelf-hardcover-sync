@@ -205,7 +205,18 @@ func (s *Service) recordBookNotFound(book models.AudiobookshelfBook, err error) 
 func (s *Service) recordMismatch(m mismatch.BookMismatch) {
 	s.summary.Lock()
 	defer s.summary.Unlock()
-
+	
+	// Check if this book is already in BooksNotFound
+	for i, book := range s.summary.BooksNotFound {
+		if book.BookID == m.BookID {
+			// Update the existing entry with mismatch details
+			s.summary.BooksNotFound[i].Error = m.Reason
+			// Don't add to Mismatches to avoid duplication
+			return
+		}
+	}
+	
+	// If not found in BooksNotFound, add to Mismatches
 	s.summary.Mismatches = append(s.summary.Mismatches, m)
 }
 
