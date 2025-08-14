@@ -711,7 +711,7 @@ func TestClient_CheckExistingFinishedRead(t *testing.T) {
 				authToken:   "test-token",
 				httpClient:  server.Client(),
 				logger:      log,
-				rateLimiter: util.NewRateLimiter(time.Second, 1, 10, log),
+				rateLimiter: util.NewRateLimiter(10*time.Millisecond, 1, 10, log), // Fast rate limiting for tests
 				maxRetries:  3,
 				retryDelay:  time.Millisecond,
 			}
@@ -868,7 +868,7 @@ func TestClient_GetGoogleUploadCredentials(t *testing.T) {
 				authToken:   "test-token",
 				httpClient:  server.Client(),
 				logger:      log,
-				rateLimiter: util.NewRateLimiter(time.Second, 1, 10, log),
+				rateLimiter: util.NewRateLimiter(10*time.Millisecond, 1, 10, log), // Fast rate limiting for tests
 				maxRetries:  3,
 				retryDelay:  time.Millisecond,
 			}

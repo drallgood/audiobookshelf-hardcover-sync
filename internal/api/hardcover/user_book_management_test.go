@@ -80,7 +80,7 @@ Format: "json",
 				authToken:       "test-token",
 				httpClient:      server.Client(),
 				logger:          log,
-				rateLimiter:     util.NewRateLimiter(time.Second, 1, 10, log),
+				rateLimiter:     util.NewRateLimiter(10*time.Millisecond, 1, 10, log), // Fast rate limiting for tests
 				userBookIDCache: cache.NewMemoryCache[int, int](log),
 				userCache:       cache.NewMemoryCache[string, any](log),
 			}

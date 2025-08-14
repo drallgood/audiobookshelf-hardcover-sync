@@ -174,9 +174,9 @@ func TestClient_SearchPeople(t *testing.T) {
 				baseURL:     ts.URL,
 				httpClient:  http.DefaultClient,
 				logger:      log,
-				rateLimiter: util.NewRateLimiter(time.Second, 1, 10, log), // 1 request per second, burst of 1, max 10 concurrent
+				rateLimiter: util.NewRateLimiter(10*time.Millisecond, 1, 10, log), // Fast rate limiting for tests
 				maxRetries:  3,
-				retryDelay:  time.Second,
+				retryDelay:  time.Millisecond, // Fast retry for tests
 			}
 
 			// Call the appropriate method based on person type

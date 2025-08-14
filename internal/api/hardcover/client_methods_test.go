@@ -118,7 +118,7 @@ func newTestClient(t *testing.T) (*Client, *httptest.Server) {
 	}))
 
 	// Create a no-op rate limiter for testing
-	rateLimiter := util.NewRateLimiter(1*time.Second, 10, 10, logger.Get())
+	rateLimiter := util.NewRateLimiter(10*time.Millisecond, 10, 10, logger.Get()) // Fast rate limiting for tests
 
 	// Create a test logger that writes to a buffer
 	var buf bytes.Buffer

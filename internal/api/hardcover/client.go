@@ -17,7 +17,6 @@ import (
 	"github.com/hasura/go-graphql-client"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/cache"
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/util"
@@ -78,10 +77,12 @@ const (
 
 // Default rate limiting configuration
 const (
-	// DefaultRateLimit is the default minimum time between requests (100ms = 10 requests/sec)
-	DefaultRateLimit = 100 * time.Millisecond
+	// DefaultRateLimit is the default minimum time between requests (1.5s to match Hardcover's rate limits)
+	DefaultRateLimit = 1500 * time.Millisecond
 	// DefaultBurst is the default burst size for rate limiting
-	DefaultBurst = 10
+	DefaultBurst = 2
+	// DefaultMaxConcurrent is the default maximum concurrent requests
+	DefaultMaxConcurrent = 3
 )
 
 // ClientConfig holds configuration for the Hardcover client
@@ -171,17 +172,14 @@ func stringValue(s *string) string {
 
 // DefaultClientConfig returns the default configuration for the client
 func DefaultClientConfig() *ClientConfig {
-	// Load the default config to get the rate limit settings
-	cfg := config.DefaultConfig()
-
 	return &ClientConfig{
 		BaseURL:       DefaultBaseURL,
 		Timeout:       DefaultTimeout,
 		MaxRetries:    DefaultMaxRetries,
 		RetryDelay:    DefaultRetryDelay,
-		RateLimit:     cfg.RateLimit.Rate,          // Use rate from config
-		Burst:         cfg.RateLimit.Burst,         // Use burst from config
-		MaxConcurrent: cfg.RateLimit.MaxConcurrent, // Use max concurrent from config
+		RateLimit:     DefaultRateLimit,     // Use hardcoded default
+		Burst:         DefaultBurst,         // Use hardcoded default
+		MaxConcurrent: DefaultMaxConcurrent, // Use hardcoded default
 	}
 }
 
