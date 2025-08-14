@@ -450,7 +450,7 @@ func (s *Service) Sync(ctx context.Context) error {
 	// Log the start of the sync
 	s.log.Info("========================================", map[string]interface{}{
 		"dry_run":          s.config.Sync.DryRun,
-		"test_book_filter": s.config.App.TestBookFilter,
+		"test_book_filter": s.config.Sync.TestBookFilter,
 		"test_book_limit":  s.config.App.TestBookLimit,
 	})
 	s.log.Info("STARTING FULL SYNCHRONIZATION", nil)
@@ -770,14 +770,14 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	// Track if we found the book in Hardcover
 
 	// Apply test book filter if configured - do this before any expensive lookups
-	if s.config.App.TestBookFilter != "" {
+	if s.config.Sync.TestBookFilter != "" {
 		// Check if the book title contains the filter string (case-insensitive)
-		if !strings.Contains(strings.ToLower(bookTitle), strings.ToLower(s.config.App.TestBookFilter)) {
-			bookLog.Debugf("Skipping book as it doesn't match test book filter: %s", s.config.App.TestBookFilter)
+		if !strings.Contains(strings.ToLower(bookTitle), strings.ToLower(s.config.Sync.TestBookFilter)) {
+			bookLog.Debugf("Skipping book as it doesn't match test book filter: %s", s.config.Sync.TestBookFilter)
 			return nil
 		}
 		bookLog.Debugf("Book matches test book filter, processing: %s", map[string]interface{}{
-			"filter":  s.config.App.TestBookFilter,
+			"filter":  s.config.Sync.TestBookFilter,
 			"dry_run": s.config.Sync.DryRun,
 		})
 	}
