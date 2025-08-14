@@ -5,21 +5,30 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/types"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/multiuser"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 )
 
 // Handler provides HTTP handlers for the sync profile API
 type Handler struct {
 	multiUserService *multiuser.MultiUserService
 	logger           *logger.Logger
+	syncService syncService // Interface for sync service to allow for testing
+}
+
+// syncService defines the interface for the sync service
+type syncService interface {
+	GetSummary() *sync.SyncSummary
 }
 
 // NewHandler creates a new API handler
-func NewHandler(multiUserService *multiuser.MultiUserService, log *logger.Logger) *Handler {
+func NewHandler(multiUserService *multiuser.MultiUserService, syncSvc syncService, log *logger.Logger) *Handler {
 	return &Handler{
 		multiUserService: multiUserService,
+		syncService:      syncSvc,
 		logger:           log,
 	}
 }
@@ -439,6 +448,36 @@ func (h *Handler) extractProfileIDFromSyncPath(path string) string {
 // HandleCurrentUser returns information about the current sync profile
 // This is a placeholder for future authentication integration
 func (h *Handler) HandleCurrentUser(w http.ResponseWriter, r *http.Request) {
-	// For now, return an error indicating authentication is not implemented
-	h.writeErrorResponse(w, http.StatusNotImplemented, "Authentication is not yet implemented")
+	h.writeSuccessResponse(w, map[string]interface{}{
+		"id":   "current-user",
+		"name": "Current User",
+	})
+}
+
+// GetSyncSummary handles GET /api/summary
+func (h *Handler) GetSyncSummary(w http.ResponseWriter, r *http.Request) {
+	if h.syncService == nil {
+		h.writeErrorResponse(w, http.StatusNotImplemented, "Sync service not available")
+		return
+	}
+
+	summary := h.syncService.GetSummary()
+	if summary == nil {
+		h.writeErrorResponse(w, http.StatusNotFound, "No sync summary available")
+		return
+	}
+
+	// Convert to API response format
+	response := types.SyncSummaryResponse{
+		TotalBooksProcessed: summary.TotalBooksProcessed,
+		BooksNotFound:       make([]types.BookNotFoundInfo, len(summary.BooksNotFound)),
+		Mismatches:          summary.Mismatches,
+	}
+
+	// Copy books not found
+	for i, book := range summary.BooksNotFound {
+		response.BooksNotFound[i] = types.BookNotFoundInfo(book)
+	}
+
+	h.writeSuccessResponse(w, response)
 }

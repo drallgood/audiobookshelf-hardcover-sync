@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/auth"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/crypto"
@@ -19,6 +21,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/multiuser"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/server"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 )
 
 // Package main is the entry point for the Audiobookshelf to Hardcover sync service.
@@ -285,11 +288,34 @@ func main() {
 	} else {
 		log.Info("Authentication system disabled", nil)
 	}
+	// In Web UI mode, the sync service is managed per-profile through the multiUserService
+	// In simple mode, we'll create a one-off sync service
+	var syncService *sync.Service
+	
+	if !cfg.Server.EnableWebUI {
+		// Simple mode: Create clients from config
+		audiobookshelfClient := audiobookshelf.NewClient(cfg.Audiobookshelf.URL, cfg.Audiobookshelf.Token)
+		hardcoverClient := hardcover.NewClient(cfg.Hardcover.Token, log)
+		
+		// Create sync service with config
+		syncService, err = sync.NewService(audiobookshelfClient, hardcoverClient, cfg)
+		if err != nil {
+			log.Error("Failed to create sync service", map[string]interface{}{
+				"error": err.Error(),
+			})
+			os.Exit(1)
+		}
+	} else {
+		// Web UI mode: The sync service will be created per-profile by multiUserService
+		// We still need a dummy sync service for the API handler
+		syncService = &sync.Service{}
+	}
+
 	// Conditionally launch web UI based on configuration
 	var srv *server.Server
 	if cfg.Server.EnableWebUI {
 		// Create HTTP server with multi-user and authentication support
-		srv = server.New(fmt.Sprintf(":%s", cfg.Server.Port), multiUserService, authService, log)
+		srv = server.New(fmt.Sprintf(":%s", cfg.Server.Port), multiUserService, authService, syncService, log)
 
 		// Start the HTTP server
 		go func() {

@@ -23,12 +23,13 @@ type Server struct {
 	authService      *auth.AuthService
 	authHandlers     *auth.AuthHandlers
 	authMiddleware   *auth.AuthMiddleware
+	syncService      api.SyncService
 	logger           *logger.Logger
 }
 
 // New creates a new HTTP server with multi-user and authentication support
-func New(addr string, multiUserService *multiuser.MultiUserService, authService *auth.AuthService, log *logger.Logger) *Server {
-	apiHandler := api.NewHandler(multiUserService, log)
+func New(addr string, multiUserService *multiuser.MultiUserService, authService *auth.AuthService, syncService api.SyncService, log *logger.Logger) *Server {
+	apiHandler := api.NewHandler(multiUserService, syncService, log)
 	
 	// Initialize authentication handlers and middleware
 	authHandlers := auth.NewAuthHandlers(authService, log)
@@ -43,6 +44,7 @@ func New(addr string, multiUserService *multiuser.MultiUserService, authService 
 		authService:      authService,
 		authHandlers:     authHandlers,
 		authMiddleware:   authMiddleware,
+		syncService:      syncService,
 		logger:           log,
 	}
 

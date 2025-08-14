@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -31,6 +32,24 @@ type progressUpdateInfo struct {
 	progress  float64
 }
 
+// SyncSummary tracks the results of a sync operation
+type SyncSummary struct {
+	TotalBooksProcessed int32
+	BooksNotFound       []BookNotFoundInfo
+	Mismatches          []mismatch.BookMismatch
+	sync.Mutex
+}
+
+// BookNotFoundInfo contains information about a book that couldn't be found in Hardcover
+type BookNotFoundInfo struct {
+	BookID   string
+	Title    string
+	Author   string
+	ASIN     string
+	ISBN     string
+	Error    string
+}
+
 // Service handles the synchronization between Audiobookshelf and Hardcover
 type Service struct {
 	audiobookshelf      audiobookshelf.AudiobookshelfClientInterface
@@ -45,6 +64,7 @@ type Service struct {
 	asinCacheMutex      sync.RWMutex                     // Mutex to protect ASIN cache
 	persistentCache     *PersistentASINCache             // Persistent ASIN cache across runs
 	userBookCache       *PersistentUserBookCache         // Persistent user book cache
+	summary             *SyncSummary                     // Tracks sync operation results
 }
 
 // Config is the configuration type for the sync service
@@ -62,6 +82,10 @@ func NewService(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverCl
 		asinCache:           make(map[string]*models.HardcoverBook),
 		persistentCache:     NewPersistentASINCache(cfg.Paths.CacheDir),
 		userBookCache:       NewPersistentUserBookCache(cfg.Paths.CacheDir),
+		summary: &SyncSummary{
+			BooksNotFound: make([]BookNotFoundInfo, 0),
+			Mismatches:    make([]mismatch.BookMismatch, 0),
+		},
 	}
 
 	// Migrate old state file if it exists
@@ -158,6 +182,96 @@ func (s *Service) clearASINCache() {
 	
 	s.asinCache = make(map[string]*models.HardcoverBook)
 	s.log.Debug("Cleared in-memory ASIN cache for new sync (persistent cache preserved)", nil)
+}
+
+// recordBookNotFound records a book that couldn't be found in Hardcover
+func (s *Service) recordBookNotFound(book models.AudiobookshelfBook, err error) {
+	s.summary.Lock()
+	defer s.summary.Unlock()
+
+	bookInfo := BookNotFoundInfo{
+		BookID: book.ID,
+		Title:  book.Media.Metadata.Title,
+		Author: book.Media.Metadata.AuthorName,
+		ASIN:   book.Media.Metadata.ASIN,
+		ISBN:   book.Media.Metadata.ISBN,
+		Error:  err.Error(),
+	}
+
+	s.summary.BooksNotFound = append(s.summary.BooksNotFound, bookInfo)
+}
+
+// recordMismatch records a book mismatch
+func (s *Service) recordMismatch(m mismatch.BookMismatch) {
+	s.summary.Lock()
+	defer s.summary.Unlock()
+
+	s.summary.Mismatches = append(s.summary.Mismatches, m)
+}
+
+// GetSummary returns the current sync summary
+func (s *Service) GetSummary() *SyncSummary {
+	s.summary.Lock()
+	defer s.summary.Unlock()
+
+	// Return a copy to avoid race conditions
+	summaryCopy := &SyncSummary{
+		TotalBooksProcessed: s.summary.TotalBooksProcessed,
+		BooksNotFound:       make([]BookNotFoundInfo, len(s.summary.BooksNotFound)),
+		Mismatches:          make([]mismatch.BookMismatch, len(s.summary.Mismatches)),
+	}
+
+	copy(summaryCopy.BooksNotFound, s.summary.BooksNotFound)
+	copy(summaryCopy.Mismatches, s.summary.Mismatches)
+
+	return summaryCopy
+}
+
+// logSyncSummary logs a summary of the sync operation
+func (s *Service) logSyncSummary() {
+	s.summary.Lock()
+	defer s.summary.Unlock()
+
+	// Log summary header
+	s.log.Info("========================================", nil)
+	s.log.Info("SYNC SUMMARY", nil)
+	s.log.Info("========================================", nil)
+
+	// Log total books processed
+	s.log.Info(fmt.Sprintf("Total books processed: %d", s.summary.TotalBooksProcessed), nil)
+
+	// Log books not found
+	if len(s.summary.BooksNotFound) > 0 {
+		s.log.Warn(fmt.Sprintf("Books not found in Hardcover: %d", len(s.summary.BooksNotFound)), nil)
+		for i, book := range s.summary.BooksNotFound {
+			s.log.Warn(fmt.Sprintf("  %d. %s by %s", i+1, book.Title, book.Author), map[string]interface{}{
+				"book_id": book.BookID,
+				"asin":    book.ASIN,
+				"isbn":    book.ISBN,
+				"error":   book.Error,
+			})
+		}
+		s.log.Info("Note: Check the mismatches directory for detailed information about books that couldn't be found.", nil)
+	}
+
+	// Log mismatches
+	if len(s.summary.Mismatches) > 0 {
+		s.log.Warn(fmt.Sprintf("Book mismatches found: %d", len(s.summary.Mismatches)), nil)
+		for i, m := range s.summary.Mismatches {
+			s.log.Warn(fmt.Sprintf("  %d. %s by %s", i+1, m.Title, m.Author), map[string]interface{}{
+				"book_id": m.BookID,
+				"reason":  m.Reason,
+			})
+		}
+		s.log.Info("Note: Check the mismatches directory for detailed information about mismatched books.", nil)
+	}
+
+	// Log summary footer
+	if len(s.summary.BooksNotFound) == 0 && len(s.summary.Mismatches) == 0 {
+		s.log.Info("All books were successfully processed with no issues.", nil)
+	}
+
+	s.log.Info("========================================", nil)
 }
 
 // logASINCacheStats logs ASIN cache performance statistics
@@ -494,6 +608,12 @@ func (s *Service) Sync(ctx context.Context) error {
 		// Don't return error here as the sync itself completed successfully
 	}
 
+	// Record any mismatches in the summary
+	mismatches := mismatch.GetAll()
+	for _, m := range mismatches {
+		s.recordMismatch(m)
+	}
+
 	// Update the last sync time
 	s.state.SetFullSync()
 
@@ -527,6 +647,9 @@ func (s *Service) Sync(ctx context.Context) error {
 	} else {
 		s.log.Debug("Saved persistent user book cache", nil)
 	}
+
+	// Log the sync summary
+	s.logSyncSummary()
 
 	s.log.Info("Sync completed successfully", nil)
 	return nil
@@ -628,13 +751,23 @@ func (s *Service) processLibrary(ctx context.Context, library *audiobookshelf.Au
 
 // processBook processes a single book and updates its status in Hardcover
 func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBook, userProgress *models.AudiobookshelfUserProgress) error {
+	// Update total books processed
+	atomic.AddInt32(&s.summary.TotalBooksProcessed, 1)
+
 	// Create a logger with book context
 	bookTitle := book.Media.Metadata.Title
+	authorName := ""
+	if book.Media.Metadata.AuthorName != "" {
+		authorName = book.Media.Metadata.AuthorName
+	}
+
 	bookLog := s.log.WithFields(map[string]interface{}{
 		"book_id": book.ID,
 		"title":   bookTitle,
-		"author":  book.Media.Metadata.AuthorName,
+		"author":  authorName,
 	})
+
+	// Track if we found the book in Hardcover
 
 	// Apply test book filter if configured - do this before any expensive lookups
 	if s.config.App.TestBookFilter != "" {
@@ -688,7 +821,12 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 
 	// Find the book in Hardcover to get the edition ID
 	hcBook, findErr = s.findBookInHardcover(ctx, book)
-	if findErr == nil && hcBook != nil && hcBook.EditionID != "" {
+	if findErr != nil {
+		s.recordBookNotFound(book, findErr)
+		bookLog.Warn("Book not found in Hardcover", map[string]interface{}{
+			"error": findErr.Error(),
+		})
+	} else if hcBook != nil && hcBook.EditionID != "" {
 		editionID = hcBook.EditionID
 	}
 
