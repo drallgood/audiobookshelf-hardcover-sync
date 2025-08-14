@@ -83,7 +83,9 @@ func main() {
 	}
 
 	// Initialize the logger with the configured settings
-	logger.Setup(logger.Config{
+	// Use ForceSetup to ensure the logger is re-initialized with the correct format
+	// even if it was previously initialized during config loading
+	logger.ForceSetup(logger.Config{
 		Level:      cfg.Logging.Level,
 		Format:     logger.ParseLogFormat(cfg.Logging.Format),
 		Output:     os.Stdout,

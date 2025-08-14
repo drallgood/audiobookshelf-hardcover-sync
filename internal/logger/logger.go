@@ -12,6 +12,13 @@ import (
 	"github.com/rs/zerolog"
 )
 
+func init() {
+	// Disable zerolog's global logger to prevent early initialization
+	zerolog.TimeFieldFormat = time.RFC3339Nano
+	zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	zerolog.DefaultContextLogger = &zerolog.Logger{}
+}
+
 var (
 	// globalLogger is the global logger instance
 	globalLogger *Logger
@@ -20,9 +27,10 @@ var (
 	once sync.Once
 
 	// defaultConfig is the default logger configuration
+	// Use console format as default to match user expectations
 	defaultConfig = Config{
 		Level:      "info",
-		Format:     FormatJSON,
+		Format:     FormatConsole,
 		TimeFormat: time.RFC3339,
 	}
 )
@@ -142,16 +150,12 @@ func (r *responseWriterWrapper) WriteHeader(status int) {
 
 // Get returns the global logger instance
 func Get() *Logger {
-	if globalLogger == nil {
-		// Initialize with default config if not already initialized
-		Setup(defaultConfig)
-		// If still nil, create a minimal logger to avoid nil pointer dereference
+	once.Do(func() {
 		if globalLogger == nil {
-			zerolog.SetGlobalLevel(zerolog.InfoLevel)
-			logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
-			globalLogger = &Logger{Logger: logger}
+			// Initialize with our default configuration
+			setupLogger(defaultConfig)
 		}
-	}
+	})
 	return globalLogger
 }
 
@@ -166,61 +170,80 @@ func ResetForTesting() {
 // Can only be called once - subsequent calls will be ignored
 func Setup(cfg Config) {
 	once.Do(func() {
-		// Parse log level with default to InfoLevel if not specified
-		level := zerolog.InfoLevel
-		if cfg.Level != "" {
-			var err error
-			level, err = zerolog.ParseLevel(cfg.Level)
-			if err != nil {
-				level = zerolog.InfoLevel // Default to info level if invalid
-			}
-		}
+		setupLogger(cfg)
+	})
+}
 
-		// Set default values if not provided
-		if cfg.Format == "" {
-			cfg.Format = FormatJSON
-		}
-		if cfg.TimeFormat == "" {
-			cfg.TimeFormat = time.RFC3339
-		}
-
-		// Set up the output writer
-		output := cfg.Output
-		if output == nil {
-			output = os.Stdout
-		}
-
-		// Create the base logger with the specified level
-		var logger zerolog.Logger
-
-		// Configure the logger based on the format
-		switch cfg.Format {
-		case FormatConsole:
-			logger = zerolog.New(zerolog.ConsoleWriter{
-				Out:        output,
-				TimeFormat: cfg.TimeFormat,
-			})
-		default: // Default to JSON
-			logger = zerolog.New(output)
-		}
-
-		// Configure the logger with the specified level and timestamp
-		logger = logger.Level(level).With().Timestamp().Logger()
-
-		// Set the global log level to ensure consistency
-		zerolog.SetGlobalLevel(level)
-
-		// Create our wrapper logger with the configured logger
-		globalLogger = &Logger{
-			Logger: logger,
-			level:  int(level), // Store the level as an int
-		}
-
-		// Log the logger setup with the configured level
-		globalLogger.Info("Logger initialized", map[string]interface{}{
+// ForceSetup forces re-initialization of the global logger with the given configuration
+// This bypasses the once.Do() protection and should be used carefully
+func ForceSetup(cfg Config) {
+	setupLogger(cfg)
+	// Log a re-initialization message with the new format
+	if globalLogger != nil {
+		globalLogger.Info("Logger re-initialized with new configuration", map[string]interface{}{
 			"format":      string(cfg.Format),
 			"time_format": cfg.TimeFormat,
 		})
+	}
+}
+
+// setupLogger is the internal function that actually sets up the logger
+func setupLogger(cfg Config) {
+	// Parse log level with default to InfoLevel if not specified
+	level := zerolog.InfoLevel
+	if cfg.Level != "" {
+		var err error
+		level, err = zerolog.ParseLevel(cfg.Level)
+		if err != nil {
+			level = zerolog.InfoLevel // Default to info level if invalid
+		}
+	}
+
+	// Set default values if not provided
+	if cfg.Format == "" {
+		cfg.Format = FormatJSON
+	}
+	if cfg.TimeFormat == "" {
+		cfg.TimeFormat = time.RFC3339
+	}
+
+	// Set up the output writer
+	output := cfg.Output
+	if output == nil {
+		output = os.Stdout
+	}
+
+	// Create the base logger with the specified level
+	var logger zerolog.Logger
+
+	// Configure the logger based on the format
+	switch cfg.Format {
+	case FormatConsole:
+		logger = zerolog.New(zerolog.ConsoleWriter{
+			Out:        output,
+			TimeFormat: cfg.TimeFormat,
+		})
+	default: // Default to JSON
+		logger = zerolog.New(output)
+	}
+
+	// Configure the logger with the specified level and timestamp
+	logger = logger.Level(level).With().Timestamp().Logger()
+
+	// Set the global log level to ensure consistency
+	zerolog.SetGlobalLevel(level)
+
+	// Create our wrapper logger with the configured logger
+	globalLogger = &Logger{
+		Logger: logger,
+		level:  int(level), // Store the level as an int
+	}
+
+	// Log the logger setup with the configured level
+	// Note: This message will use the newly configured format
+	globalLogger.Info("Logger initialized", map[string]interface{}{
+		"format":      string(cfg.Format),
+		"time_format": cfg.TimeFormat,
 	})
 }
 

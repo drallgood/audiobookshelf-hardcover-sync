@@ -13,7 +13,7 @@ rate_limit:
 # Logging configuration
 logging:
   level: "info"   # debug, info, warn, error, fatal, panic
-  format: "json"    # json or console
+  format: "console" # json or console (console is more readable for development)
 
 # Audiobookshelf configuration
 audiobookshelf:
