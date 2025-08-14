@@ -480,7 +480,7 @@ func (s *Service) Sync(ctx context.Context) error {
 	s.log.Info("========================================", nil)
 
 	// Initialize the total books limit from config
-	totalBooksLimit := s.config.App.TestBookLimit
+	totalBooksLimit := s.config.Sync.TestBookLimit
 
 	// Log configuration for debugging
 	s.log.Debug("Configuration for debugging", map[string]interface{}{
@@ -489,7 +489,7 @@ func (s *Service) Sync(ctx context.Context) error {
 		"has_hardcover_token":      s.config.Hardcover.Token != "",
 		"minimum_progress":         s.config.App.MinimumProgress,
 		"sync_want_to_read":        s.config.App.SyncWantToRead,
-		"test_book_limit":          totalBooksLimit,
+		"test_book_limit":          s.config.Sync.TestBookLimit,
 	})
 
 	// Fetch user progress data from Audiobookshelf
