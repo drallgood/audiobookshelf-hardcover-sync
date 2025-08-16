@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -34,10 +33,12 @@ type progressUpdateInfo struct {
 
 // SyncSummary tracks the results of a sync operation
 type SyncSummary struct {
-	TotalBooksProcessed int32
-	BooksNotFound       []BookNotFoundInfo
-	Mismatches          []mismatch.BookMismatch
-	sync.Mutex
+	UserID              string                   `json:"user_id,omitempty"`
+	TotalBooksProcessed int32                    `json:"total_books_processed"`
+	BooksNotFound       []BookNotFoundInfo       `json:"books_not_found,omitempty"`
+	Mismatches          []mismatch.BookMismatch `json:"mismatches,omitempty"`
+	BooksSynced         int32                    `json:"books_synced,omitempty"`
+	sync.RWMutex         `json:"-"`
 }
 
 // BookNotFoundInfo contains information about a book that couldn't be found in Hardcover
@@ -222,12 +223,34 @@ func (s *Service) recordMismatch(m mismatch.BookMismatch) {
 
 // GetSummary returns the current sync summary
 func (s *Service) GetSummary() *SyncSummary {
+	// If summary is nil, return a new empty summary
+	if s.summary == nil {
+		s.log.Debug("GetSummary: summary is nil, returning empty summary")
+		return &SyncSummary{
+			UserID:              "",
+			TotalBooksProcessed: 0,
+			BooksNotFound:       []BookNotFoundInfo{},
+			Mismatches:          []mismatch.BookMismatch{},
+		}
+	}
+
 	s.summary.Lock()
 	defer s.summary.Unlock()
 
+	// Log current values for debugging
+	s.log.Debug("GetSummary: current values", map[string]interface{}{
+		"UserID":              s.summary.UserID,
+		"TotalBooksProcessed": s.summary.TotalBooksProcessed,
+		"BooksSynced":         s.summary.BooksSynced,
+		"BooksNotFoundCount":  len(s.summary.BooksNotFound),
+		"MismatchesCount":     len(s.summary.Mismatches),
+	})
+
 	// Return a copy to avoid race conditions
 	summaryCopy := &SyncSummary{
+		UserID:              s.summary.UserID,
 		TotalBooksProcessed: s.summary.TotalBooksProcessed,
+		BooksSynced:         s.summary.BooksSynced,
 		BooksNotFound:       make([]BookNotFoundInfo, len(s.summary.BooksNotFound)),
 		Mismatches:          make([]mismatch.BookMismatch, len(s.summary.Mismatches)),
 	}
@@ -235,13 +258,30 @@ func (s *Service) GetSummary() *SyncSummary {
 	copy(summaryCopy.BooksNotFound, s.summary.BooksNotFound)
 	copy(summaryCopy.Mismatches, s.summary.Mismatches)
 
+	// Log the copy values for debugging
+	s.log.Debug("GetSummary: returning copy", map[string]interface{}{
+		"UserID":              summaryCopy.UserID,
+		"TotalBooksProcessed": summaryCopy.TotalBooksProcessed,
+		"BooksSynced":         summaryCopy.BooksSynced,
+		"BooksNotFoundCount":  len(summaryCopy.BooksNotFound),
+		"MismatchesCount":     len(summaryCopy.Mismatches),
+	})
+
 	return summaryCopy
 }
 
 // logSyncSummary logs a summary of the sync operation
 func (s *Service) logSyncSummary() {
-	s.summary.Lock()
-	defer s.summary.Unlock()
+	s.summary.RLock()
+	defer s.summary.RUnlock()
+
+	// Make local copies of the data we need
+	totalBooksProcessed := s.summary.TotalBooksProcessed
+	booksSynced := s.summary.BooksSynced
+	booksNotFound := make([]BookNotFoundInfo, len(s.summary.BooksNotFound))
+	copy(booksNotFound, s.summary.BooksNotFound)
+	mismatches := make([]mismatch.BookMismatch, len(s.summary.Mismatches))
+	copy(mismatches, s.summary.Mismatches)
 
 	// Log summary header
 	s.log.Info("========================================", nil)
@@ -249,12 +289,13 @@ func (s *Service) logSyncSummary() {
 	s.log.Info("========================================", nil)
 
 	// Log total books processed
-	s.log.Info(fmt.Sprintf("Total books processed: %d", s.summary.TotalBooksProcessed), nil)
+	s.log.Info(fmt.Sprintf("Total books processed: %d", totalBooksProcessed), nil)
+	s.log.Info(fmt.Sprintf("Books synced: %d", booksSynced), nil)
 
 	// Log books not found
-	if len(s.summary.BooksNotFound) > 0 {
-		s.log.Warn(fmt.Sprintf("Books not found in Hardcover: %d", len(s.summary.BooksNotFound)), nil)
-		for i, book := range s.summary.BooksNotFound {
+	if len(booksNotFound) > 0 {
+		s.log.Warn(fmt.Sprintf("Books not found in Hardcover: %d", len(booksNotFound)), nil)
+		for i, book := range booksNotFound {
 			s.log.Warn(fmt.Sprintf("  %d. %s by %s", i+1, book.Title, book.Author), map[string]interface{}{
 				"book_id": book.BookID,
 				"asin":    book.ASIN,
@@ -266,9 +307,9 @@ func (s *Service) logSyncSummary() {
 	}
 
 	// Log mismatches
-	if len(s.summary.Mismatches) > 0 {
-		s.log.Warn(fmt.Sprintf("Book mismatches found: %d", len(s.summary.Mismatches)), nil)
-		for i, m := range s.summary.Mismatches {
+	if len(mismatches) > 0 {
+		s.log.Warn(fmt.Sprintf("Book mismatches found: %d", len(mismatches)), nil)
+		for i, m := range mismatches {
 			s.log.Warn(fmt.Sprintf("  %d. %s by %s", i+1, m.Title, m.Author), map[string]interface{}{
 				"book_id": m.BookID,
 				"reason":  m.Reason,
@@ -278,7 +319,7 @@ func (s *Service) logSyncSummary() {
 	}
 
 	// Log summary footer
-	if len(s.summary.BooksNotFound) == 0 && len(s.summary.Mismatches) == 0 {
+	if len(booksNotFound) == 0 && len(mismatches) == 0 {
 		s.log.Info("All books were successfully processed with no issues.", nil)
 	}
 
@@ -348,7 +389,7 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 		"editionIDInt": editionIDInt,
 	})
 
-	userBookID, err := s.hardcover.GetUserBookID(context.Background(), int(editionIDInt))
+	userBookID, err := s.hardcover.GetUserBookID(ctx, int(editionIDInt))
 	if err != nil {
 		errMsg := fmt.Sprintf("Error checking for existing user book ID: %v", err)
 		logCtx.Error(errMsg, map[string]interface{}{
@@ -393,7 +434,7 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 	// Double-check if the user book exists to prevent race conditions
 	logCtx.Debug("Performing second check for existing user book ID to prevent race conditions", nil)
 	
-	userBookID, err = s.hardcover.GetUserBookID(context.Background(), int(editionIDInt))
+	userBookID, err = s.hardcover.GetUserBookID(ctx, int(editionIDInt))
 	if err != nil {
 		errMsg := fmt.Sprintf("Error in second check for existing user book ID: %v", err)
 		logCtx.Error(errMsg, map[string]interface{}{
@@ -457,6 +498,18 @@ func (s *Service) Sync(ctx context.Context) error {
 	
 	// Clear ASIN cache to ensure fresh lookups for this sync run
 	s.clearASINCache()
+	
+	// Reset only the counters, not the entire summary
+	s.summary.Lock()
+	s.summary.TotalBooksProcessed = 0
+	s.summary.BooksSynced = 0
+	s.summary.Unlock()
+	
+	// Keep BooksNotFound and Mismatches as they are for historical tracking
+	s.log.Info("Reset sync summary counters for new sync run", map[string]interface{}{
+		"previous_total_books_processed": s.summary.TotalBooksProcessed,
+		"previous_books_synced":         s.summary.BooksSynced,
+	})
 
 	// Log the start of the sync
 	s.log.Info("========================================", map[string]interface{}{
@@ -762,10 +815,7 @@ func (s *Service) processLibrary(ctx context.Context, library *audiobookshelf.Au
 
 // processBook processes a single book and updates its status in Hardcover
 func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBook, userProgress *models.AudiobookshelfUserProgress) error {
-	// Update total books processed
-	atomic.AddInt32(&s.summary.TotalBooksProcessed, 1)
-
-	// Create a logger with book context
+	// Create a logger with book context at the start of the function
 	bookTitle := book.Media.Metadata.Title
 	authorName := ""
 	if book.Media.Metadata.AuthorName != "" {
@@ -778,6 +828,36 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		"author":  authorName,
 	})
 
+	// Track if the book was successfully processed
+	// Start with false, will be set to true when processing completes successfully
+	var bookProcessed bool
+	defer func() {
+		// Use the mutex to safely update the counters
+		s.summary.Lock()
+		defer s.summary.Unlock()
+		
+		// Always increment TotalBooksProcessed for every book that enters this function
+		s.summary.TotalBooksProcessed++
+		
+		if bookProcessed {
+			// Only increment BooksSynced if the book was successfully processed
+			s.summary.BooksSynced++
+			bookLog.Debug("Book processing completed successfully", map[string]interface{}{
+				"total_books_processed": s.summary.TotalBooksProcessed,
+				"books_synced":         s.summary.BooksSynced,
+			})
+		} else {
+			bookLog.Debug("Book was not processed (skipped or failed)", map[string]interface{}{
+				"total_books_processed": s.summary.TotalBooksProcessed,
+				"books_synced":         s.summary.BooksSynced,
+			})
+		}
+	}()
+
+	bookLog.Debug("Starting book processing")
+	// Mark as processed by default, will be set to false if there's an error
+	bookProcessed = true
+
 	// Track if we found the book in Hardcover
 
 	// Apply test book filter if configured - do this before any expensive lookups
@@ -785,6 +865,8 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		// Check if the book title contains the filter string (case-insensitive)
 		if !strings.Contains(strings.ToLower(bookTitle), strings.ToLower(s.config.Sync.TestBookFilter)) {
 			bookLog.Debugf("Skipping book as it doesn't match test book filter: %s", s.config.Sync.TestBookFilter)
+			bookProcessed = false // Explicitly mark as not processed when skipping due to filter
+			// Don't return here, let the deferred function handle the counter
 			return nil
 		}
 		bookLog.Debugf("Book matches test book filter, processing: %s", map[string]interface{}{
@@ -797,7 +879,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	if s.config.Sync.Incremental {
 		// Calculate current progress and status
 		currentProgress := 0.0
-		if book.Media.Duration > 0 {
+		if book.Media.Duration > 0 { // Ensure duration is not zero to avoid division by zero
 			currentProgress = book.Progress.CurrentTime / book.Media.Duration
 		}
 		currentStatus := s.determineBookStatus(currentProgress, book.Progress.IsFinished, book.Progress.FinishedAt)
@@ -806,19 +888,26 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		preliminaryStateKey := book.ID
 		
 		// Check if this book needs syncing based on changes
-		minChangeThreshold := float64(s.config.Sync.MinChangeThreshold) / book.Media.Duration // Convert seconds to progress ratio
+		minChangeThreshold := 0.0
+		if book.Media.Duration > 0 {
+			// Convert seconds to progress ratio only if duration is valid
+			minChangeThreshold = float64(s.config.Sync.MinChangeThreshold) / book.Media.Duration
+		}
+		
 		if !s.state.NeedsSync(preliminaryStateKey, currentProgress, currentStatus, minChangeThreshold) {
 			bookLog.Debug("Skipping book - no significant changes since last sync", map[string]interface{}{
 				"current_progress": currentProgress,
 				"current_status":   currentStatus,
 				"change_threshold": minChangeThreshold,
 			})
+			bookProcessed = false // Explicitly mark as not processed when skipping due to no changes
 			return nil
 		}
 		
 		bookLog.Debug("Book needs syncing - changes detected", map[string]interface{}{
 			"current_progress": currentProgress,
 			"current_status":   currentStatus,
+			"change_threshold": minChangeThreshold,
 		})
 	}
 
@@ -833,12 +922,181 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	// Find the book in Hardcover to get the edition ID
 	hcBook, findErr = s.findBookInHardcover(ctx, book)
 	if findErr != nil {
-		s.recordBookNotFound(book, findErr)
-		bookLog.Warn("Book not found in Hardcover", map[string]interface{}{
-			"error": findErr.Error(),
-		})
-	} else if hcBook != nil && hcBook.EditionID != "" {
-		editionID = hcBook.EditionID
+		// Handle mismatch case (found by title/author)
+		if strings.Contains(findErr.Error(), "found by title/author only") {
+			// Try to find the book by title/author to get the Hardcover book details
+			hcBook, _ = s.findBookInHardcoverByTitleAuthor(ctx, book)
+			foundByTitleAuthor := hcBook != nil
+
+			// Build cover URL if cover path is available
+			coverURL := ""
+			if book.Media.CoverPath != "" {
+				coverURL = fmt.Sprintf("%s/api/items/%s/cover", s.config.Audiobookshelf.URL, book.ID)
+			}
+
+			// Create mismatch with both Audiobookshelf and Hardcover details
+			mismatchData := mismatch.BookMismatch{
+				BookID:          book.ID,
+				Title:           book.Media.Metadata.Title,
+				Subtitle:        book.Media.Metadata.Subtitle,
+				Author:          book.Media.Metadata.AuthorName,
+				Narrator:        book.Media.Metadata.NarratorName,
+				ASIN:            book.Media.Metadata.ASIN,
+				ISBN:            book.Media.Metadata.ISBN,
+				LibraryID:       book.LibraryID,
+				PublishedYear:   book.Media.Metadata.PublishedYear,
+				DurationSeconds: int(book.Media.Duration),
+				CoverURL:        coverURL,
+				Publisher:       book.Media.Metadata.Publisher,
+				Reason:          "Found by title/author only - manual verification required",
+				Timestamp:       time.Now().Unix(),
+				CreatedAt:       time.Now(),
+			}
+
+			// Add Hardcover book details if available
+			if foundByTitleAuthor && hcBook != nil {
+				// Hydrate Hardcover book with full details (including slug) before recording mismatch
+				if hcBook.ID != "" {
+					if enriched, err := s.hardcover.GetBookByID(ctx, hcBook.ID); err == nil && enriched != nil {
+						bookLog.Debugf("Hydrated Hardcover book details via GetBookByID: id=%s, title=%s, slug=%s", enriched.ID, enriched.Title, enriched.Slug)
+						hcBook = enriched
+					} else if err != nil {
+						bookLog.Debugf("Failed to hydrate Hardcover book via GetBookByID: id=%s, error=%v", hcBook.ID, err)
+					}
+				}
+				// Map Hardcover book fields to the mismatch
+				mismatchData.HardcoverBookID = hcBook.ID
+				mismatchData.HardcoverTitle = hcBook.Title
+				
+				// Handle authors (join multiple authors with commas if present)
+				if len(hcBook.Authors) > 0 {
+					authors := make([]string, 0, len(hcBook.Authors))
+					for _, author := range hcBook.Authors {
+						authors = append(authors, author.Name)
+					}
+					authorString := strings.Join(authors, ", ")
+					mismatchData.HardcoverAuthor = authorString
+					bookLog.Infof("Setting hardcover_author to: %s", authorString)
+				}
+				
+				// Extract year from release date if available
+				if hcBook.ReleaseDate != "" {
+					if year, err := time.Parse("2006-01-02", hcBook.ReleaseDate); err == nil {
+						yearStr := year.Format("2006")
+						mismatchData.HardcoverPublishedYear = yearStr
+						bookLog.Infof("Setting hardcover_published_year to: %s", yearStr)
+					}
+				}
+				
+				if hcBook.CoverImageURL != "" {
+					mismatchData.HardcoverCoverURL = hcBook.CoverImageURL
+					bookLog.Infof("Setting hardcover_cover_url to: %s", hcBook.CoverImageURL)
+				}
+
+				// Slug
+				if hcBook.Slug != "" {
+					mismatchData.HardcoverSlug = hcBook.Slug
+					bookLog.Infof("Setting hardcover_slug to: %s", hcBook.Slug)
+				}
+				
+				// Only set Hardcover publisher when we have a confirmed edition match via identifiers (ASIN/ISBN)
+				if hcBook.Publisher != "" {
+					asinMatch := hcBook.EditionASIN != "" && mismatchData.ASIN != "" && strings.EqualFold(hcBook.EditionASIN, mismatchData.ASIN)
+					isbnMatch := (hcBook.EditionISBN13 != "" && mismatchData.ISBN13 != "" && strings.EqualFold(hcBook.EditionISBN13, mismatchData.ISBN13)) ||
+						(hcBook.EditionISBN10 != "" && mismatchData.ISBN10 != "" && strings.EqualFold(hcBook.EditionISBN10, mismatchData.ISBN10)) ||
+						(hcBook.EditionISBN13 != "" && mismatchData.ISBN != "" && strings.EqualFold(hcBook.EditionISBN13, mismatchData.ISBN)) ||
+						(hcBook.EditionISBN10 != "" && mismatchData.ISBN != "" && strings.EqualFold(hcBook.EditionISBN10, mismatchData.ISBN))
+					if asinMatch || isbnMatch {
+						mismatchData.HardcoverPublisher = hcBook.Publisher
+						bookLog.Infof("Setting hardcover_publisher to: %s (confirmed by identifiers)", hcBook.Publisher)
+					} else {
+						bookLog.Debug("Skipping hardcover_publisher: no confirmed edition identifier match", map[string]interface{}{
+							"hc_edition_asin":   hcBook.EditionASIN,
+							"hc_isbn13":         hcBook.EditionISBN13,
+							"hc_isbn10":         hcBook.EditionISBN10,
+							"abs_asin":          mismatchData.ASIN,
+							"abs_isbn":          mismatchData.ISBN,
+							"abs_isbn13":        mismatchData.ISBN13,
+							"abs_isbn10":        mismatchData.ISBN10,
+						})
+					}
+				}
+				
+				// Add any available identifiers
+				if hcBook.ASIN != "" {
+					mismatchData.HardcoverASIN = hcBook.ASIN
+					bookLog.Infof("Setting hardcover_asin to: %s", hcBook.ASIN)
+				}
+				
+				// Prefer ISBN13, fall back to ISBN10
+				if hcBook.EditionISBN13 != "" {
+					mismatchData.HardcoverISBN = hcBook.EditionISBN13
+					bookLog.Infof("Setting hardcover_isbn to: %s (ISBN-13)", hcBook.EditionISBN13)
+				} else if hcBook.EditionISBN10 != "" {
+					mismatchData.HardcoverISBN = hcBook.EditionISBN10
+					bookLog.Infof("Setting hardcover_isbn to: %s (ISBN-10)", hcBook.EditionISBN10)
+				}
+				
+				bookLog.Infof("Including Hardcover book details in mismatch: book_id=%s, title=%s, author=%s", 
+					hcBook.ID, hcBook.Title, mismatchData.HardcoverAuthor)
+			} else {
+				bookLog.Warnf("No Hardcover book details available for mismatch")
+			}
+
+			// Log the complete mismatch data before recording
+			bookLog.Infof("Recording mismatch with data: %+v", mismatchData)
+			
+			// Determine editionID from Hardcover result if available to improve enrichment accuracy
+			edID := ""
+			if hcBook != nil && hcBook.EditionID != "" {
+				edID = hcBook.EditionID
+			}
+
+			// Record the mismatch via global collector so SaveToFile and Audnex enrichment run
+			mismatch.AddWithMetadata(
+				mismatch.MediaMetadata{
+					Title:         book.Media.Metadata.Title,
+					Subtitle:      book.Media.Metadata.Subtitle,
+					AuthorName:    book.Media.Metadata.AuthorName,
+					NarratorName:  book.Media.Metadata.NarratorName,
+					Publisher:     book.Media.Metadata.Publisher,
+					PublishedYear: book.Media.Metadata.PublishedYear,
+					PublishedDate: "",
+					ISBN:          book.Media.Metadata.ISBN,
+					ASIN:          book.Media.Metadata.ASIN,
+					CoverURL:      coverURL,
+					LibraryID:     book.LibraryID,
+					FolderID:      "",
+				},
+				book.ID,
+				edID,
+				"Found by title/author only - manual verification required",
+				book.Media.Duration,
+				book.ID,
+				s.hardcover,
+			)
+			bookLog.Info("Book found by title/author - recorded as mismatch (with enrichment)")
+			
+			// Set the book as processed
+			bookProcessed = true
+			
+			// Return early as we don't need to process this book further
+			return nil
+		} else {
+			// Record as not found
+			s.recordBookNotFound(book, findErr)
+			bookLog.Warn("Book not found in Hardcover", map[string]interface{}{
+				"error": findErr.Error(),
+			})
+			bookProcessed = true // Still count as processed even if not found
+			return nil
+		}
+	} else if hcBook != nil {
+		// Book was found successfully
+		bookProcessed = true
+		if hcBook.EditionID != "" {
+			editionID = hcBook.EditionID
+		}
 	}
 
 	// Create a composite key for state tracking: bookID:editionID
@@ -896,6 +1154,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 					"last_status":      bookState.Status,
 					"current_status":   currentStatus,
 				})
+				bookProcessed = false // Explicitly mark as not processed when skipping due to no changes
 				return nil
 			}
 
@@ -1009,6 +1268,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		bookLog.Debug("Skipping unstarted book (ProcessUnreadBooks is false)", map[string]interface{}{
 			"current_time": book.Progress.CurrentTime,
 		})
+		bookProcessed = true // Count as processed since we made a decision to skip
 		return nil
 	}
 
@@ -1035,6 +1295,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			"progress":        progress,
 			"minimum_progress": s.config.Sync.MinimumProgress,
 		})
+		bookProcessed = true // Count as processed since we made a decision to skip
 		return nil
 	}
 
@@ -1133,6 +1394,8 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				ASIN:          book.Media.Metadata.ASIN,
 				CoverURL:      coverURL,
 				Duration:      book.Media.Duration,
+                LibraryID:    book.LibraryID,
+                FolderID:     "",
 			},
 			bookID,    // Use the book ID if available
 			editionID, // Use the edition ID if available
@@ -1182,6 +1445,8 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				ASIN:          book.Media.Metadata.ASIN,
 				CoverURL:      coverURL,
 				Duration:      book.Media.Duration,
+                LibraryID:    book.LibraryID,
+                FolderID:     "",
 			},
 			hcBook.ID, // Use the book ID we found
 			"",        // No edition ID
@@ -1240,6 +1505,8 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				ASIN:          book.Media.Metadata.ASIN,
 				CoverURL:      coverURL,
 				Duration:      book.Media.Duration,
+                LibraryID:    book.LibraryID,
+                FolderID:     "",
 			},
 			bookID,    // Use the book ID if available
 			editionID, // Use the edition ID if available
@@ -1259,6 +1526,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				"progress": progressPct,
 			})
 		}
+		bookProcessed = true // Count as processed since we recorded a not-found state
 		return nil
 	}
 
@@ -1304,6 +1572,8 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				ASIN:          book.Media.Metadata.ASIN,
 				CoverURL:      coverURL,
 				Duration:      book.Media.Duration,
+                LibraryID:    book.LibraryID,
+                FolderID:     "",
 			},
 			bookID,    // Use the book ID from BookError if available
 			editionID, // Empty since we don't have an edition ID
@@ -1312,6 +1582,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			book.ID,
 			s.hardcover, // Pass the Hardcover client for publisher lookup
 		)
+		bookProcessed = true // Count as processed since we recorded a mismatch
 		return nil
 	}
 
@@ -1403,6 +1674,8 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			})
 			return fmt.Errorf("error handling finished book: %w", err)
 		}
+		bookProcessed = true
+		bookLog.Info("Successfully processed finished book")
 
 	case "IN_PROGRESS", "READING":
 		// Handle in-progress book
@@ -1418,10 +1691,14 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			})
 			return fmt.Errorf("error handling in-progress book: %w", err)
 		}
+		bookLog.Info("Successfully processed in-progress book")
+		bookProcessed = true
 		return nil
 
 	default:
-		bookLog.Info("No specific handling for book status", map[string]interface{}{
+		// For any other status, we still consider it processed successfully
+		bookProcessed = true
+		bookLog.Info("Successfully processed book with status", map[string]interface{}{
 			"status": status,
 		})
 	}
@@ -2774,9 +3051,17 @@ func (s *Service) findBookInHardcoverByTitleAuthor(ctx context.Context, book mod
 		if score > highestScore {
 			highestScore = score
 			bestMatch = &models.HardcoverBook{
-				ID:           result.ID,
-				Title:        resultTitle,
-				BookStatusID: 0, // Will be set when we get the full book details
+				ID:            result.ID,
+				Title:         resultTitle,
+				BookStatusID:  0, // Will be set when we get the full book details
+				// Include additional details from search result
+				Authors:       result.Authors,
+				Publisher:     result.Publisher,
+				ReleaseDate:   result.ReleaseDate,
+				CoverImageURL: result.CoverImageURL,
+				ASIN:          result.ASIN,
+				EditionISBN13: result.EditionISBN13,
+				EditionISBN10: result.EditionISBN10,
 			}
 		}
 	}
@@ -2787,17 +3072,30 @@ func (s *Service) findBookInHardcoverByTitleAuthor(ctx context.Context, book mod
 	})
 
 	// If no match found after filtering, fall back to first result
-	if bestMatch == nil {
+	if bestMatch == nil && len(searchResults) > 0 {
 		log.Warn("No best match found after filtering, falling back to first result", nil)
 		firstResult := searchResults[0]
 		bestMatch = &models.HardcoverBook{
-			ID:           firstResult.ID,
-			Title:        firstResult.Title,
-			BookStatusID: 0,
+			ID:            firstResult.ID,
+			Title:         firstResult.Title,
+			BookStatusID:  0,
+			// Include additional details from search result
+			Authors:       firstResult.Authors,
+			Publisher:     firstResult.Publisher,
+			ReleaseDate:   firstResult.ReleaseDate,
+			CoverImageURL: firstResult.CoverImageURL,
+			ASIN:          firstResult.ASIN,
+			EditionISBN13: firstResult.EditionISBN13,
+			EditionISBN10: firstResult.EditionISBN10,
 		}
 	}
 
 	// Add best match details to logger
+	// Safety check before dereferencing bestMatch to satisfy staticcheck
+	if bestMatch == nil {
+		return nil, fmt.Errorf("no matching books found")
+	}
+
 	log = log.With(map[string]interface{}{
 		"book_id":    bestMatch.ID,
 		"book_title": bestMatch.Title,
@@ -2810,14 +3108,44 @@ func (s *Service) findBookInHardcoverByTitleAuthor(ctx context.Context, book mod
 		"match_score":    highestScore,
 	})
 
-	// IMPORTANT: We deliberately do not attempt to get edition details here.
-	// While the API exists, calling GetEdition with a book ID instead of an edition ID would fail.
-	// For our sync purposes, having just the book ID and title is sufficient.
+	// Log the best match details
+	log.Info("Found best matching book by title/author", map[string]interface{}{
+		"book_id":    bestMatch.ID,
+		"title":      bestMatch.Title,
+		"author":     bestMatch.Authors,
+		"similarity": highestScore,
+	})
 
-	// For a real implementation, we would need an API method to get editions by book ID
-	// For now, return the book data we have without edition details
-	// The caller can decide whether to handle this as a mismatch
-	return bestMatch, nil
+	// Attempt to enrich with full book details (especially authors) via GetBookByID
+	// This does NOT change the mismatch semantics; we still return an error below
+	if bestMatch.ID != "" {
+		if fullBook, err := s.hardcover.GetBookByID(ctx, bestMatch.ID); err == nil && fullBook != nil {
+			// Only overwrite or supplement fields that are safe and helpful for display
+			if len(fullBook.Authors) > 0 {
+				bestMatch.Authors = fullBook.Authors
+			}
+			if bestMatch.CoverImageURL == "" && fullBook.CoverImageURL != "" {
+				bestMatch.CoverImageURL = fullBook.CoverImageURL
+			}
+			// Prefer a concrete publisher/release date if search lacked them
+			if bestMatch.Publisher == "" && fullBook.Publisher != "" {
+				bestMatch.Publisher = fullBook.Publisher
+			}
+			if bestMatch.ReleaseDate == "" && fullBook.ReleaseDate != "" {
+				bestMatch.ReleaseDate = fullBook.ReleaseDate
+			}
+			log.Debug("Enriched title/author search result with GetBookByID", map[string]interface{}{
+				"enriched_authors": len(bestMatch.Authors),
+			})
+		} else if err != nil {
+			log.Debug("GetBookByID enrichment failed (continuing with search data)", map[string]interface{}{
+				"error": err.Error(),
+			})
+		}
+	}
+
+	// Return the book data we have from search results
+	return bestMatch, fmt.Errorf("found by title/author only")
 }
 
 // findBookInHardcover finds a book in Hardcover by various methods
@@ -3032,24 +3360,15 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 			// Return the error to be handled as a mismatch
 			return nil, fmt.Errorf("book found but edition not available: %w", err)
 		}
-
-		// IMPORTANT: Books found by title/author should always trigger mismatch logic
-		// This is because we only want ASIN/ISBN matches to be considered valid matches
-		// Even if we found a book and it has all the details, it's still a mismatch
-		log.Info("Found book by title/author but treating as mismatch per requirements", map[string]interface{}{
-			"search_method":    "title_author",
-			"book_id":          hcBook.ID,
-			"edition_id":       hcBook.EditionID,
-			"title":            hcBook.Title,
-			"asin_match":       false,
-			"isbn_match":       false,
-			"forcing_mismatch": true,
+		
+		// If we get here, we found a book by title/author - this is a mismatch case
+		log.Info("Book found by title/author search - will be treated as mismatch", map[string]interface{}{
+			"book_id": hcBook.ID,
+			"title":   hcBook.Title,
 		})
+		return hcBook, fmt.Errorf("found by title/author only")
 
-		// Return both the book and an error to indicate this is a mismatch
-		// The error will trigger the mismatch logic in processBook
-		// but the book details can still be used for enrichment
-		return hcBook, fmt.Errorf("found by title/author only (not ASIN/ISBN): forcing mismatch")
+		// Unreachable code removed; mismatch is already indicated by the return above
 	}
 
 	log.Warn("Book not found in Hardcover by any search method", map[string]interface{}{

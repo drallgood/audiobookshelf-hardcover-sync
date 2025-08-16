@@ -7,6 +7,7 @@ import (
 // SyncSummaryResponse represents the sync summary data returned by the API
 type SyncSummaryResponse struct {
 	TotalBooksProcessed int32                `json:"total_books_processed"`
+	BooksSynced         int32                `json:"books_synced"`
 	BooksNotFound       []BookNotFoundInfo   `json:"books_not_found"`
 	Mismatches          []mismatch.BookMismatch `json:"mismatches"`
 }

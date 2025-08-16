@@ -6,6 +6,7 @@ type HardcoverBook struct {
 	UserBookID    string   `json:"userBookId,omitempty"`
 	EditionID     string   `json:"editionId,omitempty"`
 	Title         string   `json:"title"`
+	Slug          string   `json:"slug,omitempty"`
 	Subtitle      string   `json:"subtitle,omitempty"`
 	Authors       []Author `json:"authors,omitempty"`
 	Narrators     []Author `json:"narrators,omitempty"`
@@ -52,6 +53,7 @@ type SearchResult struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
 	Type  string `json:"type"` // "book", "author", etc.
+	Slug  string `json:"slug,omitempty"`
 	Image string `json:"image,omitempty"`
 }
 

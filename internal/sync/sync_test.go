@@ -378,6 +378,10 @@ func TestProcessLibrary(t *testing.T) {
 			ASIN: "B123456789",
 		}
 		mockHC.On("SearchBookByASIN", mock.Anything, "B123456789").Return(testBook, nil).Once()
+		// Some code paths attempt an ISBN13 lookup during enrichment; stub it to return no result
+		mockHC.On("SearchBookByISBN13", mock.Anything, "9781234567890").Return((*models.HardcoverBook)(nil), nil).Maybe()
+		// Enrichment may fall back to a title/author search; stub it as returning no results
+		mockHC.On("SearchBooks", mock.Anything, "Test Book 1", "Test Author 1").Return([]*TestHardcoverBook{}, nil).Maybe()
 		
 		// Replace the clients in the service with our mocks
 		svc.audiobookshelf = mockABS

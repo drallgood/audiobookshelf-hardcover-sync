@@ -1,6 +1,7 @@
 package hardcover
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -148,14 +149,14 @@ func TestClient_enforceRateLimit(t *testing.T) {
 	client := NewClientWithConfig(cfg, "test-token", log)
 
 	// Test that rate limiting doesn't error
-	err1 := client.enforceRateLimit()
+	err1 := client.enforceRateLimit(context.Background())
 	assert.NoError(t, err1)
 
 	// Test multiple rapid calls
 	start := time.Now()
-	err2 := client.enforceRateLimit()
+	err2 := client.enforceRateLimit(context.Background())
 	assert.NoError(t, err2)
-	err3 := client.enforceRateLimit()
+	err3 := client.enforceRateLimit(context.Background())
 	assert.NoError(t, err3)
 	duration := time.Since(start)
 

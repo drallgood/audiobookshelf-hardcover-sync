@@ -142,6 +142,14 @@ func (s *Service) BatchProcessBooks(ctx context.Context, books []models.Audioboo
 		
 		// Process each book in the batch
 		for _, book := range batchBooks {
+			// Respect context cancellation
+			select {
+			case <-ctx.Done():
+				s.log.Warn("Batch processing canceled by context", nil)
+				return ctx.Err()
+			default:
+			}
+
 			if err := s.processBook(ctx, book, userProgress); err != nil {
 				batch.AddError(book.ID, err)
 				s.log.Warn("Failed to process book in batch", map[string]interface{}{
@@ -156,7 +164,13 @@ func (s *Service) BatchProcessBooks(ctx context.Context, books []models.Audioboo
 		
 		// Add a small delay between batches to be respectful to the API
 		if end < len(booksToProcess) {
-			time.Sleep(100 * time.Millisecond)
+			// Context-aware delay
+			select {
+			case <-ctx.Done():
+				s.log.Warn("Batch delay canceled by context", nil)
+				return ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
 		}
 	}
 

@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Audiobookshelf-Hardcover Sync - Sync Profile Management</title>
-    <link rel="stylesheet" href="styles.css">
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
+    <link rel="stylesheet" href="styles.css?v=20240815-3">
 </head>
 <body>
     <div class="container">
@@ -47,6 +48,16 @@
             
             <div id="sync-status" class="status-grid">
                 <!-- Sync statuses will be loaded here -->
+            </div>
+            
+            <div id="sync-summary-container" style="margin-top: 2rem; display: none;">
+                <h3>Sync Summary</h3>
+                <div id="sync-summary-tabs" class="tabs" style="margin: 0 0 1rem 0;">
+                    <!-- Profile tabs will be added here -->
+                </div>
+                <div id="sync-summary-content">
+                    <!-- Summary content will be loaded here -->
+                </div>
             </div>
         </div>
 
@@ -252,7 +263,7 @@
                 </div>
 
                 <div class="form-actions">
-                    <button type="submit" class="btn btn-primary">Update User</button>
+                    <button type="submit" class="btn btn-primary">Update Profile</button>
                     <button type="button" class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
                 </div>
             </form>
@@ -268,6 +279,6 @@
     <!-- Toast Notifications -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="app.js"></script>
+    <script src="app.js?v=20250816-010544"></script>
 </body>
 </html>

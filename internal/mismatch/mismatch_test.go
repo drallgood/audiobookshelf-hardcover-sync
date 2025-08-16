@@ -167,6 +167,15 @@ func (m *MockHardcoverClient) SearchBookByISBN13(ctx context.Context, isbn13 str
 	return args.Get(0).(*models.HardcoverBook), args.Error(1)
 }
 
+// GetBookByID mocks fetching a Hardcover book by its book ID
+func (m *MockHardcoverClient) GetBookByID(ctx context.Context, bookID string) (*models.HardcoverBook, error) {
+	args := m.Called(ctx, bookID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.HardcoverBook), args.Error(1)
+}
+
 func (m *MockHardcoverClient) AddWithMetadata(metadata string, bookID interface{}, extraData map[string]interface{}) error {
 	args := m.Called(metadata, bookID, extraData)
 	return args.Error(0)

@@ -77,6 +77,7 @@ func New(addr string, multiUserService *multiuser.MultiUserService, authService 
 	apiMux.HandleFunc("GET /profiles/{id}/status", s.handleAPIProfilesWithID)
 	apiMux.HandleFunc("POST /profiles/{id}/sync", s.handleAPIProfilesWithID)
 	apiMux.HandleFunc("DELETE /profiles/{id}/sync", s.handleAPIProfilesWithID)
+	apiMux.HandleFunc("GET /profiles/{id}/summary", s.handleAPISummary)  // Add summary endpoint
 
 	// Mount API routes under /api with auth middleware
 	handler.Handle("/api/", s.authMiddleware.RequireAuth(http.StripPrefix("/api", apiMux)))
@@ -346,6 +347,12 @@ func (s *Server) handleAPICurrentUser(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleAPISummary handles GET /api/profiles/{id}/summary
+func (s *Server) handleAPISummary(w http.ResponseWriter, r *http.Request) {
+	// Get the sync summary using the API handler
+	s.apiHandler.GetSyncSummary(w, r)
+}
+
 // handleStaticFiles serves static web UI files
 func (s *Server) handleStaticFiles(w http.ResponseWriter, r *http.Request) {
 	// Skip if this is an API route
@@ -369,29 +376,50 @@ func (s *Server) handleStaticFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	fullPath := filepath.Join(staticDir, filePath)
-	
+	// Ensure we join a relative path so staticDir isn't ignored
+    relPath := strings.TrimPrefix(filePath, "/")
+    fullPath := filepath.Join(staticDir, relPath)
+
 	// Set content type and cache control headers based on file extension
 	switch filepath.Ext(fullPath) {
 	case ".html":
-		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		// HTML files should not be cached to ensure updates are seen immediately
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		w.Header().Set("Pragma", "no-cache")
 		w.Header().Set("Expires", "0")
 	case ".css":
-		w.Header().Set("Content-Type", "text/css")
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
 		// CSS files should not be cached during development
 		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 	case ".js":
-		w.Header().Set("Content-Type", "application/javascript")
+		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 		// JavaScript files should not be cached during development
 		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 	case ".json":
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+	case ".svg":
+		w.Header().Set("Content-Type", "image/svg+xml")
+		w.Header().Set("Cache-Control", "public, max-age=86400, immutable")
+	case ".png":
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Cache-Control", "public, max-age=86400, immutable")
+	case ".jpg", ".jpeg":
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Header().Set("Cache-Control", "public, max-age=86400, immutable")
+	case ".webp":
+		w.Header().Set("Content-Type", "image/webp")
+		w.Header().Set("Cache-Control", "public, max-age=86400, immutable")
+	case ".gif":
+		w.Header().Set("Content-Type", "image/gif")
+		w.Header().Set("Cache-Control", "public, max-age=86400, immutable")
+	case ".ico":
+		w.Header().Set("Content-Type", "image/x-icon")
+		w.Header().Set("Cache-Control", "public, max-age=86400, immutable")
 	default:
-		w.Header().Set("Content-Type", "text/plain")
+		// Fallback for other static assets
+		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 	}
 	

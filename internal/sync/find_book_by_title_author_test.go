@@ -52,23 +52,12 @@ func TestFindBookInHardcoverByTitleAuthor(t *testing.T) {
 					Title: "Test Book",
 				},
 			},
-			// No longer used in new implementation
-			edition: &models.Edition{
-				ID:     "edition-1",
-				ASIN:   "B12345",
-				ISBN13: "9781234567890",
-				ISBN10: "1234567890",
-			},
 			expectedBook: &models.HardcoverBook{
 				ID:    "hc-book-1",
 				Title: "Test Book",
-				// No longer set in new implementation
-				// EditionID:    "edition-1",
-				// EditionASIN:  "B12345",
-				// EditionISBN13: "9781234567890",
-				// EditionISBN10: "1234567890",
 			},
-			expectedError: false,
+			expectedError:  true,
+			errorSubstring: "found by title/author only",
 		},
 		{
 			name: "Error - Search API error",
@@ -135,14 +124,12 @@ func TestFindBookInHardcoverByTitleAuthor(t *testing.T) {
 					Title: "Edition Error Book",
 				},
 			},
-			// No longer used in new implementation
-			editionError:   errors.New("edition API error"),
 			expectedBook: &models.HardcoverBook{
 				ID:    "hc-book-4",
 				Title: "Edition Error Book",
 			},
-			expectedError:  false, // No longer fails in new implementation
-			// errorSubstring: "edition not found for book", // No longer relevant
+			expectedError:  true,
+			errorSubstring: "found by title/author only",
 		},
 		{
 			name: "Success - Book formerly with empty edition ID",
@@ -167,19 +154,12 @@ func TestFindBookInHardcoverByTitleAuthor(t *testing.T) {
 					Title: "Empty Edition Book",
 				},
 			},
-			// No longer used in new implementation
-			edition: &models.Edition{
-				ID:     "", // Empty edition ID
-				ASIN:   "B67890",
-				ISBN13: "9786789012345",
-				ISBN10: "6789012345",
-			},
 			expectedBook: &models.HardcoverBook{
 				ID:    "hc-book-5",
 				Title: "Empty Edition Book",
 			},
-			expectedError:  false, // No longer fails in new implementation
-			// errorSubstring: "edition ID is empty", // No longer relevant
+			expectedError:  true,
+			errorSubstring: "found by title/author only",
 		},
 		{
 			name: "Success - No author",
@@ -218,7 +198,8 @@ func TestFindBookInHardcoverByTitleAuthor(t *testing.T) {
 				EditionISBN13: "9786789012345",
 				EditionISBN10: "6789012345",
 			},
-			expectedError: false,
+			expectedError:  true,
+			errorSubstring: "found by title/author only",
 		},
 		{
 			name: "Success - Book formerly with nil edition",
@@ -248,7 +229,8 @@ func TestFindBookInHardcoverByTitleAuthor(t *testing.T) {
 				ID:    "hc-book-7",
 				Title: "Nil Edition Book",
 			},
-			expectedError: false,
+			expectedError:  true,
+			errorSubstring: "found by title/author only",
 		},
 	}
 
@@ -262,6 +244,14 @@ func TestFindBookInHardcoverByTitleAuthor(t *testing.T) {
 				mockClient.On("SearchBooks", mock.Anything, mock.Anything, mock.Anything).Return(nil, tt.searchError)
 			} else {
 				mockClient.On("SearchBooks", mock.Anything, mock.Anything, mock.Anything).Return(tt.searchResults, nil)
+			}
+
+			// Enrichment: when search returns at least one result, the service now calls GetBookByID
+			// Return a minimal full book; tests only assert ID/Title, so that's sufficient
+			if tt.searchError == nil && len(tt.searchResults) > 0 {
+				first := tt.searchResults[0]
+				mockClient.On("GetBookByID", mock.Anything, first.ID).
+					Return(&models.HardcoverBook{ID: first.ID, Title: first.Title}, nil)
 			}
 
 			// We no longer call GetEdition with book ID in the new implementation
@@ -285,6 +275,14 @@ func TestFindBookInHardcoverByTitleAuthor(t *testing.T) {
 				assert.Error(t, err)
 				if tt.errorSubstring != "" {
 					assert.Contains(t, err.Error(), tt.errorSubstring)
+				}
+				// Only the "found by title/author only" path returns a best-match book alongside the error
+				if tt.errorSubstring == "found by title/author only" {
+					assert.NotNil(t, result)
+					assert.Equal(t, tt.expectedBook.ID, result.ID)
+					assert.Equal(t, tt.expectedBook.Title, result.Title)
+				} else {
+					assert.Nil(t, result)
 				}
 			} else {
 				assert.NoError(t, err)

@@ -2,12 +2,14 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/types"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/multiuser"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 )
@@ -15,8 +17,8 @@ import (
 // Handler provides HTTP handlers for the sync profile API
 type Handler struct {
 	multiUserService *multiuser.MultiUserService
-	logger           *logger.Logger
 	syncService syncService // Interface for sync service to allow for testing
+	log        logger.Logger
 }
 
 // syncService defines the interface for the sync service
@@ -26,11 +28,20 @@ type syncService interface {
 
 // NewHandler creates a new API handler
 func NewHandler(multiUserService *multiuser.MultiUserService, syncSvc syncService, log *logger.Logger) *Handler {
-	return &Handler{
+	h := &Handler{
 		multiUserService: multiUserService,
 		syncService:      syncSvc,
-		logger:           log,
 	}
+	
+	// Initialize logger if provided
+	if log != nil {
+		h.log = *log
+	} else {
+		// Create a basic logger if none provided
+		h.log = logger.Logger{} // Assuming logger.Logger has a zero-value that's usable
+	}
+	
+	return h
 }
 
 // CreateProfileRequest represents the request body for creating a sync profile
@@ -67,8 +78,23 @@ type APIResponse struct {
 func (h *Handler) writeJSONResponse(w http.ResponseWriter, statusCode int, response APIResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		h.logger.Error("Failed to encode JSON response", map[string]interface{}{
+	
+	// Log the response before sending
+	jsonBytes, err := json.Marshal(response)
+	if err != nil {
+		h.log.Error("Failed to marshal response to JSON", map[string]interface{}{
+			"error": err.Error(),
+		})
+	} else {
+		h.log.Debug("Sending JSON response", map[string]interface{}{
+			"status_code": statusCode,
+			"response":    string(jsonBytes),
+		})
+	}
+	
+	// Write the response
+	if _, err := w.Write(jsonBytes); err != nil {
+		h.log.Error("Failed to write JSON response", map[string]interface{}{
 			"error": err.Error(),
 		})
 	}
@@ -94,9 +120,7 @@ func (h *Handler) writeSuccessResponse(w http.ResponseWriter, data interface{}) 
 func (h *Handler) GetProfiles(w http.ResponseWriter, r *http.Request) {
 	profiles, err := h.multiUserService.ListProfiles()
 	if err != nil {
-		h.logger.Error("Failed to list sync profiles", map[string]interface{}{
-			"error": err.Error(),
-		})
+		h.log.Error("Failed to list sync profiles: " + err.Error())
 		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to retrieve sync profiles")
 		return
 	}
@@ -107,41 +131,28 @@ func (h *Handler) GetProfiles(w http.ResponseWriter, r *http.Request) {
 // GetProfile handles GET /api/profiles/{id}
 func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	profileID := h.extractProfileID(r.URL.Path)
-	h.logger.Debug("GetProfile request", map[string]interface{}{
-		"url_path":   r.URL.Path,
-		"profile_id": profileID,
-	})
+	h.log.Debug(fmt.Sprintf("GetProfile request for profileID: %s", profileID))
 	
 	if profileID == "" {
-		h.logger.Error("Profile ID extraction failed", map[string]interface{}{
-			"url_path": r.URL.Path,
-		})
+		h.log.Error("Profile ID extraction failed: Invalid profile ID")
 		h.writeErrorResponse(w, http.StatusBadRequest, "Profile ID is required")
 		return
 	}
 
 	profile, err := h.multiUserService.GetProfile(profileID)
 	if err != nil {
-		h.logger.Error("Failed to get sync profile", map[string]interface{}{
-			"profile_id": profileID,
-			"error":      err.Error(),
-		})
+		h.log.Error("Failed to get sync profile: " + err.Error())
 		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to retrieve sync profile")
 		return
 	}
 
 	if profile == nil {
-		h.logger.Error("Profile not found in database", map[string]interface{}{
-			"profile_id": profileID,
-		})
+		h.log.Error(fmt.Sprintf("Profile not found in database: %s", profileID))
 		h.writeErrorResponse(w, http.StatusNotFound, "Sync profile not found")
 		return
 	}
 
-	h.logger.Debug("Profile retrieved successfully", map[string]interface{}{
-		"profile_id":   profile.Profile.ID,
-		"profile_name": profile.Profile.Name,
-	})
+	h.log.Debug(fmt.Sprintf("Profile retrieved successfully: %s", profile.Profile.ID))
 	h.writeSuccessResponse(w, profile)
 }
 
@@ -167,9 +178,7 @@ func (h *Handler) CreateProfile(w http.ResponseWriter, r *http.Request) {
 		req.SyncConfig,
 	)
 	if err != nil {
-		h.logger.Error("Failed to create sync profile", map[string]interface{}{
-			"error": err.Error(),
-		})
+		h.log.Error("Failed to create sync profile: " + err.Error())
 		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to create sync profile")
 		return
 	}
@@ -178,9 +187,7 @@ func (h *Handler) CreateProfile(w http.ResponseWriter, r *http.Request) {
 	profile, err := h.multiUserService.GetProfile(req.ID)
 
 	if err != nil {
-		h.logger.Error("Failed to create sync profile", map[string]interface{}{
-			"error": err.Error(),
-		})
+		h.log.Error("Failed to create sync profile: " + err.Error())
 		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to create sync profile")
 		return
 	}
@@ -205,10 +212,7 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	// Update profile name if provided
 	if req.Name != "" {
 		if err := h.multiUserService.UpdateProfile(profileID, req.Name); err != nil {
-			h.logger.Error("Failed to update sync profile", map[string]interface{}{
-				"profile_id": profileID,
-				"error":      err.Error(),
-			})
+			h.log.Error("Failed to update sync profile: " + err.Error())
 			h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to update sync profile")
 			return
 		}
@@ -217,10 +221,7 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	// Get updated profile
 	profile, err := h.multiUserService.GetProfile(profileID)
 	if err != nil {
-		h.logger.Error("Failed to get updated sync profile", map[string]interface{}{
-			"profile_id": profileID,
-			"error":      err.Error(),
-		})
+		h.log.Error("Failed to get updated sync profile: " + err.Error())
 		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to retrieve updated sync profile")
 		return
 	}
@@ -251,10 +252,7 @@ func (h *Handler) UpdateProfileConfig(w http.ResponseWriter, r *http.Request) {
 	// Get existing profile to preserve tokens if not provided
 	existingProfile, err := h.multiUserService.GetProfile(profileID)
 	if err != nil || existingProfile == nil {
-		h.logger.Error("Failed to get existing sync profile", map[string]interface{}{
-			"profile_id": profileID,
-			"error":      err,
-		})
+		h.log.Error(fmt.Sprintf("Failed to get existing sync profile %s: %s", profileID, err.Error()))
 		h.writeErrorResponse(w, http.StatusNotFound, "Sync profile not found")
 		return
 	}
@@ -278,10 +276,7 @@ func (h *Handler) UpdateProfileConfig(w http.ResponseWriter, r *http.Request) {
 		hardcoverToken,
 		req.SyncConfig,
 	); err != nil {
-		h.logger.Error("Failed to update sync profile config", map[string]interface{}{
-			"profile_id": profileID,
-			"error":      err.Error(),
-		})
+		h.log.Error(fmt.Sprintf("Failed to update sync profile config %s: %s", profileID, err.Error()))
 		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to update sync profile configuration")
 		return
 	}
@@ -289,10 +284,7 @@ func (h *Handler) UpdateProfileConfig(w http.ResponseWriter, r *http.Request) {
 	// Get updated profile
 	profile, err := h.multiUserService.GetProfile(profileID)
 	if err != nil {
-		h.logger.Error("Failed to get updated sync profile", map[string]interface{}{
-			"profile_id": profileID,
-			"error":      err.Error(),
-		})
+		h.log.Error("Failed to get updated sync profile: " + err.Error())
 		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to retrieve updated sync profile")
 		return
 	}
@@ -311,20 +303,14 @@ func (h *Handler) DeleteProfile(w http.ResponseWriter, r *http.Request) {
 	// Check if profile exists
 	_, err := h.multiUserService.GetProfile(profileID)
 	if err != nil {
-		h.logger.Error("Failed to find sync profile for deletion", map[string]interface{}{
-			"profile_id": profileID,
-			"error":      err.Error(),
-		})
+		h.log.Error(fmt.Sprintf("Failed to find sync profile %s for deletion: %s", profileID, err.Error()))
 		h.writeErrorResponse(w, http.StatusNotFound, "Sync profile not found")
 		return
 	}
 
 	// Delete profile
 	if err := h.multiUserService.DeleteProfile(profileID); err != nil {
-		h.logger.Error("Failed to delete sync profile", map[string]interface{}{
-			"profile_id": profileID,
-			"error":      err.Error(),
-		})
+		h.log.Error(fmt.Sprintf("Failed to delete sync profile %s: %s", profileID, err.Error()))
 		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to delete sync profile")
 		return
 	}
@@ -348,9 +334,7 @@ func (h *Handler) GetProfileStatus(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetAllProfileStatuses(w http.ResponseWriter, r *http.Request) {
 	statuses, err := h.multiUserService.GetAllProfileStatuses()
 	if err != nil {
-		h.logger.Error("Failed to get all sync profile statuses", map[string]interface{}{
-			"error": err.Error(),
-		})
+		h.log.Error("Failed to get all sync profile statuses: " + err.Error())
 		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to retrieve sync profile statuses")
 		return
 	}
@@ -369,10 +353,7 @@ func (h *Handler) StartSync(w http.ResponseWriter, r *http.Request) {
 	// Start sync in a goroutine
 	go func() {
 		if err := h.multiUserService.StartSync(profileID); err != nil {
-			h.logger.Error("Failed to start sync", map[string]interface{}{
-				"profile_id": profileID,
-				"error":      err.Error(),
-			})
+			h.log.Error(fmt.Sprintf("Failed to start sync for profile %s: %s", profileID, err.Error()))
 		}
 	}()
 
@@ -390,10 +371,7 @@ func (h *Handler) CancelSync(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.multiUserService.CancelSync(profileID); err != nil {
-		h.logger.Error("Failed to cancel sync", map[string]interface{}{
-			"profile_id": profileID,
-			"error":      err.Error(),
-		})
+		h.log.Error(fmt.Sprintf("Failed to cancel sync for profile %s: %s", profileID, err.Error()))
 		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to cancel sync")
 		return
 	}
@@ -454,29 +432,133 @@ func (h *Handler) HandleCurrentUser(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GetSyncSummary handles GET /api/summary
+// GetSyncSummary handles GET /api/profiles/{id}/summary
 func (h *Handler) GetSyncSummary(w http.ResponseWriter, r *http.Request) {
-	if h.syncService == nil {
-		h.writeErrorResponse(w, http.StatusNotImplemented, "Sync service not available")
+	// Extract profile ID from URL
+	profileID := h.extractProfileID(r.URL.Path)
+	if profileID == "" {
+		h.writeErrorResponse(w, http.StatusBadRequest, "Profile ID is required")
 		return
 	}
 
-	summary := h.syncService.GetSummary()
+	var summary *sync.SyncSummary
+
+	// First try to get the sync service for this profile
+	syncSvc, exists := h.multiUserService.GetSyncService(profileID)
+	if exists && syncSvc != nil {
+		// Get the sync summary from the active sync service
+		summary = syncSvc.GetSummary()
+	} else {
+		// If no active sync service, try to get the last sync status
+		status := h.multiUserService.GetProfileStatus(profileID)
+		if status != nil && status.LastSync != nil {
+			// Create a summary from the last sync status
+			summary = &sync.SyncSummary{
+				TotalBooksProcessed: int32(status.BooksTotal),
+				BooksSynced:         int32(status.BooksSynced),
+				BooksNotFound:       status.BooksNotFound,
+				Mismatches:          status.Mismatches,
+			}
+			h.log.Debug("Created summary from profile status", map[string]interface{}{
+				"total_books_processed": summary.TotalBooksProcessed,
+				"books_synced":         summary.BooksSynced,
+				"books_not_found_count": len(summary.BooksNotFound),
+				"mismatches_count":     len(summary.Mismatches),
+			})
+		}
+	}
+
+	// If still no summary, return a default empty one
 	if summary == nil {
-		h.writeErrorResponse(w, http.StatusNotFound, "No sync summary available")
-		return
+		summary = &sync.SyncSummary{
+			TotalBooksProcessed: 0,
+			BooksSynced:         0,
+			BooksNotFound:       []sync.BookNotFoundInfo{},
+			Mismatches:          []mismatch.BookMismatch{},
+		}
 	}
 
-	// Convert to API response format
-	response := types.SyncSummaryResponse{
-		TotalBooksProcessed: summary.TotalBooksProcessed,
-		BooksNotFound:       make([]types.BookNotFoundInfo, len(summary.BooksNotFound)),
-		Mismatches:          summary.Mismatches,
+	h.log.Debug("Sync summary from service", map[string]interface{}{
+		"total_books_processed": summary.TotalBooksProcessed,
+		"books_synced":         summary.BooksSynced,
+		"books_not_found_count": len(summary.BooksNotFound),
+		"mismatches_count":     len(summary.Mismatches),
+	})
+
+	// Log the summary we received from the service
+	h.log.Debug("Processing sync summary from service", map[string]interface{}{
+		"total_books_processed": summary.TotalBooksProcessed,
+		"books_synced":         summary.BooksSynced,
+		"books_not_found_count": len(summary.BooksNotFound),
+		"mismatches_count":     len(summary.Mismatches),
+	})
+
+	// Convert to API response
+	syncSummary := types.SyncSummaryResponse{
+		TotalBooksProcessed: summary.TotalBooksProcessed, // Direct access is safe due to mutex in GetSummary()
+		BooksSynced:         summary.BooksSynced,         // Direct access is safe due to mutex in GetSummary()
+		BooksNotFound:       make([]types.BookNotFoundInfo, 0, len(summary.BooksNotFound)),
+		Mismatches:          make([]mismatch.BookMismatch, 0, len(summary.Mismatches)),
 	}
 
-	// Copy books not found
-	for i, book := range summary.BooksNotFound {
-		response.BooksNotFound[i] = types.BookNotFoundInfo(book)
+	h.log.Debug("Created response struct", map[string]interface{}{
+		"total_books_processed": syncSummary.TotalBooksProcessed,
+		"books_synced":         syncSummary.BooksSynced,
+		"books_not_found_count": len(syncSummary.BooksNotFound),
+		"mismatches_count":     len(syncSummary.Mismatches),
+	})
+
+	// Copy BooksNotFound
+	for _, book := range summary.BooksNotFound {
+		syncSummary.BooksNotFound = append(syncSummary.BooksNotFound, types.BookNotFoundInfo{
+			Title:  book.Title,
+			Author: book.Author,
+		})
+	}
+
+	h.log.Debug("Copied BooksNotFound", map[string]interface{}{
+		"count": len(syncSummary.BooksNotFound),
+	})
+
+	// Copy Mismatches
+	h.log.Debug("Copying mismatches", map[string]interface{}{
+		"source_mismatches_count": len(summary.Mismatches),
+	})
+	// Always copy mismatches, even if the slice is empty
+	syncSummary.Mismatches = make([]mismatch.BookMismatch, len(summary.Mismatches))
+	copy(syncSummary.Mismatches, summary.Mismatches)
+
+	h.log.Debug("Copied Mismatches", map[string]interface{}{
+		"count": len(syncSummary.Mismatches),
+	})
+
+	// Create the final response with user_id and total_books_processed at the top level
+	// Always include mismatches in the response, even if empty
+	response := map[string]interface{}{
+		"user_id":              "default",
+		"total_books_processed": syncSummary.TotalBooksProcessed,
+		"books_synced":         syncSummary.BooksSynced,
+		"books_not_found":      syncSummary.BooksNotFound,
+		"mismatches":           syncSummary.Mismatches,
+	}
+
+	// Log the final response before sending
+	h.log.Debug("Sending sync summary response", map[string]interface{}{
+		"user_id":              "default",
+		"total_books_processed": syncSummary.TotalBooksProcessed,
+		"books_synced":         syncSummary.BooksSynced,
+		"books_not_found_count": len(syncSummary.BooksNotFound),
+		"mismatches_count":     len(syncSummary.Mismatches),
+	})
+
+	// Log the raw JSON response for debugging
+	jsonData, err := json.MarshalIndent(response, "", "  ")
+	if err != nil {
+		h.log.Error("Failed to marshal response to JSON", map[string]interface{}{
+			"error": err.Error(),
+		})
+	} else {
+		h.log.Debug("Raw JSON response:\n" + string(jsonData))
 	}
 
 	h.writeSuccessResponse(w, response)

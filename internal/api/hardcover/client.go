@@ -289,13 +289,13 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 }
 
 // enforceRateLimit ensures we don't exceed the API rate limits
-func (c *Client) enforceRateLimit() error {
+func (c *Client) enforceRateLimit(ctx context.Context) error {
 	// Simply use the rate limiter which already handles:
 	// - Token bucket algorithm
 	// - Jitter
 	// - Context cancellation
 	// - Dynamic rate adjustment
-	return c.rateLimiter.Wait(context.Background())
+	return c.rateLimiter.Wait(ctx)
 }
 
 // loggingRoundTripper is a custom http.RoundTripper that logs requests and responses
@@ -407,7 +407,12 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 	var lastErr error
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if attempt > 0 {
-			time.Sleep(c.retryDelay * time.Duration(attempt))
+			// Context-aware backoff delay
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("retry canceled: %w", ctx.Err())
+			case <-time.After(c.retryDelay * time.Duration(attempt)):
+			}
 		}
 
 		// Apply rate limiting
@@ -715,26 +720,239 @@ func (c *Client) SearchBookByISBN10(ctx context.Context, isbn10 string) (*models
 // SearchBooks searches for books by title and author
 // Implements the HardcoverClientInterface
 func (c *Client) SearchBooks(ctx context.Context, title, author string) ([]models.HardcoverBook, error) {
-	// Use the existing SearchBooks method that takes a query string and limit
-	results, err := c.searchBooksWithLimit(ctx, title, 10) // Default to 10 results
-	if err != nil {
-		return nil, err
-	}
-	
-	// Convert SearchResult to HardcoverBook
-	var books []models.HardcoverBook
-	for _, r := range results {
-		book := models.HardcoverBook{
-			ID:    r.ID,
-			Title: r.Title,
-			// Add other fields as needed
-		}
-		books = append(books, book)
-	}
-	
-	return books, nil
+    // Use the existing SearchBooks method that takes a query string and limit
+    results, err := c.searchBooksWithLimit(ctx, title, 10) // Default to 10 results
+    if err != nil {
+        return nil, err
+    }
+
+    log := c.logger.With(map[string]interface{}{
+        "method": "SearchBooks",
+        "title":  title,
+        "author": author,
+    })
+
+    // Convert SearchResult to HardcoverBook, carrying slug through
+    var books []models.HardcoverBook
+    for _, r := range results {
+        book := models.HardcoverBook{
+            ID:            r.ID,
+            Title:         r.Title,
+            Slug:          r.Slug,
+            CoverImageURL: r.Image, // Populate cover from search response (document.image.url)
+        }
+        if r.Slug != "" {
+            log.Debug("Mapped slug from search result to book", map[string]interface{}{"book_id": r.ID, "slug": r.Slug})
+        }
+        books = append(books, book)
+    }
+
+    return books, nil
 }
 
+// GetBookByID retrieves a book and basic related details by its Hardcover book ID
+// Implements the HardcoverClientInterface
+func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.HardcoverBook, error) {
+    if strings.TrimSpace(bookID) == "" {
+        return nil, fmt.Errorf("bookID cannot be empty")
+    }
+
+    // Create logger with context
+    log := c.logger.With(map[string]interface{}{
+        "book_id": bookID,
+        "method":  "GetBookByID",
+    })
+
+    // Convert to integer for GraphQL variable
+    idInt, err := strconv.Atoi(bookID)
+    if err != nil {
+        log.Error("Invalid book ID format", map[string]interface{}{"error": err.Error()})
+        return nil, fmt.Errorf("invalid book ID: %s", bookID)
+    }
+
+    const query = `
+    query GetBookByID($id: Int!) {
+      books(where: { id: { _eq: $id } }, limit: 1) {
+        id
+        title
+        slug
+        book_status_id
+        canonical_id
+        image { url }
+        contributions(limit: 50) { contribution author { id name } }
+        editions(limit: 10) {
+          id
+          asin
+          isbn_13
+          isbn_10
+          reading_format_id
+          audio_seconds
+          release_date
+          publisher { name }
+        }
+      }
+    }`
+
+    // Use a flexible raw map to be resilient to schema variations
+    var raw map[string]interface{}
+    if err := c.GraphQLQuery(ctx, query, map[string]interface{}{"id": idInt}, &raw); err != nil {
+        log.Error("Failed to fetch book by ID", map[string]interface{}{"error": err.Error()})
+        return nil, fmt.Errorf("failed to fetch book by ID: %w", err)
+    }
+
+    // Extract data section if present
+    data, ok := raw["data"].(map[string]interface{})
+    if !ok {
+        data = raw
+    }
+
+    // Extract books array
+    var booksArr []interface{}
+    if v, ok := data["books"]; ok {
+        if arr, ok := v.([]interface{}); ok {
+            booksArr = arr
+        }
+    }
+
+    if len(booksArr) == 0 {
+        log.Warn("No book found for ID", nil)
+        return nil, nil
+    }
+
+    bookObj, _ := booksArr[0].(map[string]interface{})
+    if bookObj == nil {
+        return nil, nil
+    }
+
+    hcBook := &models.HardcoverBook{}
+
+    // ID
+    switch v := bookObj["id"].(type) {
+    case json.Number:
+        hcBook.ID = v.String()
+    case float64:
+        hcBook.ID = strconv.FormatFloat(v, 'f', 0, 64)
+    case int64:
+        hcBook.ID = strconv.FormatInt(v, 10)
+    case string:
+        hcBook.ID = v
+    }
+
+    // Title
+    if s, ok := bookObj["title"].(string); ok {
+        hcBook.Title = s
+    }
+
+    // Slug
+    if s, ok := bookObj["slug"].(string); ok {
+        hcBook.Slug = s
+        log.Debug("Parsed slug from GraphQL book", map[string]interface{}{"slug": hcBook.Slug})
+    }
+
+    // Book status
+    switch v := bookObj["book_status_id"].(type) {
+    case json.Number:
+        if n, err := v.Int64(); err == nil { hcBook.BookStatusID = int(n) }
+    case float64:
+        hcBook.BookStatusID = int(v)
+    }
+
+    // Cover image (books.image.url)
+    if img, ok := bookObj["image"].(map[string]interface{}); ok && img != nil {
+        if s, ok := img["url"].(string); ok && s != "" {
+            hcBook.CoverImageURL = s
+        }
+    }
+
+    // Release date
+    if s, ok := bookObj["release_date"].(string); ok {
+        hcBook.ReleaseDate = s
+    }
+
+    // Publisher name (nested object)
+    if pub, ok := bookObj["publisher"].(map[string]interface{}); ok {
+        if name, ok := pub["name"].(string); ok {
+            hcBook.Publisher = name
+        }
+    }
+
+    // Contributors: derive authors/narrators from contributions.contribution
+    if rel, ok := bookObj["contributions"].([]interface{}); ok {
+        for _, item := range rel {
+            m, _ := item.(map[string]interface{})
+            if m == nil { continue }
+            role, _ := m["contribution"].(string)
+            var a map[string]interface{}
+            if v, ok := m["author"].(map[string]interface{}); ok { a = v }
+            if a == nil { continue }
+            name, _ := a["name"].(string)
+            if name == "" { continue }
+            idStr := ""
+            switch idv := a["id"].(type) {
+            case json.Number:
+                idStr = idv.String()
+            case float64:
+                idStr = strconv.FormatFloat(idv, 'f', 0, 64)
+            case int64:
+                idStr = strconv.FormatInt(idv, 10)
+            case string:
+                idStr = idv
+            }
+            // Classify by role (case-insensitive contains match)
+            r := strings.ToLower(role)
+            if strings.Contains(r, "author") {
+                hcBook.Authors = append(hcBook.Authors, models.Author{ID: idStr, Name: name})
+            } else if strings.Contains(r, "narrator") {
+                hcBook.Narrators = append(hcBook.Narrators, models.Author{ID: idStr, Name: name})
+            }
+        }
+    }
+
+    // Editions - prefer audiobook if available
+    var editions []interface{}
+    if v, ok := bookObj["editions"].([]interface{}); ok {
+        editions = v
+    }
+    var chosen map[string]interface{}
+    for _, e := range editions {
+        if em, ok := e.(map[string]interface{}); ok {
+            if rf, ok := em["reading_format_id"].(float64); ok && int(rf) == 2 {
+                chosen = em
+                break
+            }
+            if chosen == nil { chosen = em }
+        }
+    }
+    if chosen != nil {
+        switch v := chosen["id"].(type) {
+        case json.Number:
+            hcBook.EditionID = v.String()
+        case float64:
+            hcBook.EditionID = strconv.FormatFloat(v, 'f', 0, 64)
+        case int64:
+            hcBook.EditionID = strconv.FormatInt(v, 10)
+        case string:
+            hcBook.EditionID = v
+        }
+        if s, ok := chosen["asin"].(string); ok { hcBook.EditionASIN = s }
+        if s, ok := chosen["isbn_13"].(string); ok { hcBook.EditionISBN13 = s }
+        if s, ok := chosen["isbn_10"].(string); ok { hcBook.EditionISBN10 = s }
+        if s, ok := chosen["release_date"].(string); ok { hcBook.ReleaseDate = s }
+        if pub, ok := chosen["publisher"].(map[string]interface{}); ok {
+            if name, ok := pub["name"].(string); ok { hcBook.Publisher = name }
+        }
+    }
+
+    log.Debug("Fetched book by ID", map[string]interface{}{
+        "resolved_book_id": hcBook.ID,
+        "title":            hcBook.Title,
+        "slug":             hcBook.Slug,
+        "edition_id":       hcBook.EditionID,
+        "has_cover":        hcBook.CoverImageURL != "",
+    })
+
+    return hcBook, nil
+}
 
 // GetUserBook gets user book information by ID
 // Implements the HardcoverClientInterface
@@ -920,7 +1138,7 @@ func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.Har
 
 	// Define the response structure to match the actual API response
 
-	// Use a flexible map to capture the raw response first
+	// Use a flexible raw map to be resilient to schema variations
 	var rawResponse map[string]interface{}
 
 	err := c.GraphQLQuery(ctx, query, map[string]interface{}{
@@ -1303,7 +1521,7 @@ func (c *Client) searchBooksWithLimit(ctx context.Context, query string, limit i
 	// Set up variables for the query
 	variables := map[string]interface{}{
 		"query":   query,
-		"perPage": 5, // Limit to 5 results by default
+		"perPage": limit, // Honor requested limit
 	}
 
 	// Define the response structure
@@ -1349,6 +1567,7 @@ func (c *Client) searchBooksWithLimit(ctx context.Context, query string, limit i
 				Document struct {
 					ID    string `json:"id"`
 					Title string `json:"title"`
+					Slug  string `json:"slug"`
 					Image struct {
 						URL string `json:"url"`
 					} `json:"image"`
@@ -1366,12 +1585,17 @@ func (c *Client) searchBooksWithLimit(ctx context.Context, query string, limit i
 
 		// Process the search results
 		for _, hit := range apiResponse.Hits {
-			searchResults = append(searchResults, models.SearchResult{
+			res := models.SearchResult{
 				ID:    hit.Document.ID,
 				Title: hit.Document.Title,
 				Type:  "book",
 				Image: hit.Document.Image.URL,
-			})
+				Slug:  hit.Document.Slug,
+			}
+			if res.Slug != "" {
+				log.Debug("Parsed slug from search result", map[string]interface{}{"book_id": res.ID, "slug": res.Slug})
+			}
+			searchResults = append(searchResults, res)
 		}
 	}
 
@@ -1964,8 +2188,8 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 	editionIDInt, err := strconv.Atoi(editionID)
 	if err != nil {
 		log.Error("Invalid edition ID", map[string]interface{}{
-			"error": err.Error(),
-		})
+		"error": err.Error(),
+	})
 		return nil, fmt.Errorf("invalid edition ID: %s", editionID)
 	}
 
@@ -2258,7 +2482,7 @@ func (c *Client) SearchPublishers(ctx context.Context, name string, limit int) (
 	})
 
 	// Enforce rate limiting
-	if err := c.enforceRateLimit(); err != nil {
+	if err := c.enforceRateLimit(ctx); err != nil {
 		return nil, fmt.Errorf("rate limit error: %w", err)
 	}
 

@@ -14,6 +14,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audnex"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 )
 
@@ -334,14 +335,260 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 		PublisherID: publisherID, // Use looked up or default publisher ID
 		Publisher:   publisherName,
 
-		// AudiobookShelf specific
-		LibraryID: "", // Will be set later if available
-		FolderID:  "", // Will be set later if available
+
+		// Audiobookshelf-specific context
+		LibraryID: metadata.LibraryID,
+		FolderID:  metadata.FolderID,
 
 		// Tracking information
 		Reason:    reason,
 		Timestamp: time.Now().Unix(),
 		CreatedAt: time.Now(),
+	}
+
+	// If we have a Hardcover client, try to enrich with Hardcover-side details
+	if hc != nil {
+		log.Debug("Attempting Hardcover enrichment for mismatch", map[string]interface{}{
+			"book_id":    bookID,
+			"edition_id": editionID,
+			"asin":       metadata.ASIN,
+			"isbn":       metadata.ISBN,
+			"title":      metadata.Title,
+			"author":     metadata.AuthorName,
+		})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		// Helper to apply Hardcover book details to mismatch
+		applyHC := func(hcBook *models.HardcoverBook) {
+			if hcBook == nil {
+				return
+			}
+			// Prefer setting HC fields only if we actually have them
+			if mismatch.HardcoverBookID == "" && hcBook.ID != "" {
+				mismatch.HardcoverBookID = hcBook.ID
+			}
+			if mismatch.HardcoverTitle == "" && hcBook.Title != "" {
+				mismatch.HardcoverTitle = hcBook.Title
+			}
+			if mismatch.HardcoverSlug == "" && hcBook.Slug != "" {
+				mismatch.HardcoverSlug = hcBook.Slug
+				log.Debug("Applied Hardcover slug to mismatch", map[string]interface{}{
+					"slug": hcBook.Slug,
+				})
+			} else if mismatch.HardcoverSlug != "" {
+				log.Debug("Skipped slug apply: mismatch already has slug", map[string]interface{}{
+					"existing_slug": mismatch.HardcoverSlug,
+				})
+			} else if hcBook.Slug == "" {
+				log.Debug("Skipped slug apply: Hardcover book has empty slug", nil)
+			}
+			if mismatch.HardcoverCoverURL == "" && hcBook.CoverImageURL != "" {
+				mismatch.HardcoverCoverURL = hcBook.CoverImageURL
+			}
+            // Only apply publisher when we have a confirmed edition match via identifiers (ASIN/ISBN)
+            if mismatch.HardcoverPublisher == "" && hcBook.Publisher != "" {
+                asinMatch := hcBook.EditionASIN != "" && mismatch.ASIN != "" && strings.EqualFold(hcBook.EditionASIN, mismatch.ASIN)
+                isbnMatch := (hcBook.EditionISBN13 != "" && mismatch.ISBN13 != "" && strings.EqualFold(hcBook.EditionISBN13, mismatch.ISBN13)) ||
+                    (hcBook.EditionISBN10 != "" && mismatch.ISBN10 != "" && strings.EqualFold(hcBook.EditionISBN10, mismatch.ISBN10)) ||
+                    (hcBook.EditionISBN13 != "" && mismatch.ISBN != "" && strings.EqualFold(hcBook.EditionISBN13, mismatch.ISBN)) ||
+                    (hcBook.EditionISBN10 != "" && mismatch.ISBN != "" && strings.EqualFold(hcBook.EditionISBN10, mismatch.ISBN))
+                if asinMatch || isbnMatch {
+                    mismatch.HardcoverPublisher = hcBook.Publisher
+                } else {
+                    log.Debug("Skipped publisher apply: no confirmed edition identifier match", map[string]interface{}{
+                        "hc_edition_asin": hcBook.EditionASIN,
+                        "hc_isbn13":       hcBook.EditionISBN13,
+                        "hc_isbn10":       hcBook.EditionISBN10,
+                        "abs_asin":        mismatch.ASIN,
+                        "abs_isbn":        mismatch.ISBN,
+                        "abs_isbn13":      mismatch.ISBN13,
+                        "abs_isbn10":      mismatch.ISBN10,
+                    })
+                }
+            }
+			// Only set Hardcover identifiers when they match ABS identifiers to avoid random IDs
+			if mismatch.HardcoverASIN == "" && mismatch.ASIN != "" {
+				if hcBook.EditionASIN != "" && strings.EqualFold(hcBook.EditionASIN, mismatch.ASIN) {
+					mismatch.HardcoverASIN = hcBook.EditionASIN
+				} else if hcBook.ASIN != "" && strings.EqualFold(hcBook.ASIN, mismatch.ASIN) {
+					mismatch.HardcoverASIN = hcBook.ASIN
+				}
+			}
+			if mismatch.HardcoverISBN == "" && (mismatch.ISBN != "" || mismatch.ISBN13 != "" || mismatch.ISBN10 != "") {
+				if hcBook.EditionISBN13 != "" && (strings.EqualFold(hcBook.EditionISBN13, mismatch.ISBN13) || strings.EqualFold(hcBook.EditionISBN13, mismatch.ISBN)) {
+					mismatch.HardcoverISBN = hcBook.EditionISBN13
+				} else if hcBook.EditionISBN10 != "" && (strings.EqualFold(hcBook.EditionISBN10, mismatch.ISBN10) || strings.EqualFold(hcBook.EditionISBN10, mismatch.ISBN)) {
+					mismatch.HardcoverISBN = hcBook.EditionISBN10
+				} else if hcBook.ISBN != "" && (strings.EqualFold(hcBook.ISBN, mismatch.ISBN) || strings.EqualFold(hcBook.ISBN, mismatch.ISBN13) || strings.EqualFold(hcBook.ISBN, mismatch.ISBN10)) {
+					mismatch.HardcoverISBN = hcBook.ISBN
+				}
+			}
+			// Authors
+			if mismatch.HardcoverAuthor == "" && len(hcBook.Authors) > 0 {
+				authors := make([]string, 0, len(hcBook.Authors))
+				for _, a := range hcBook.Authors {
+					name := strings.TrimSpace(a.Name)
+					if name != "" {
+						authors = append(authors, name)
+					}
+				}
+				if len(authors) > 0 {
+					mismatch.HardcoverAuthor = strings.Join(authors, ", ")
+				}
+			}
+			// Published year from release date (YYYY or YYYY-MM-DD)
+			if mismatch.HardcoverPublishedYear == "" && hcBook.ReleaseDate != "" {
+				year := hcBook.ReleaseDate
+				if len(year) >= 4 {
+					year = year[:4]
+				}
+				if regexp.MustCompile(`^\d{4}$`).MatchString(year) {
+					mismatch.HardcoverPublishedYear = year
+				}
+			}
+		}
+
+		// If we already know a HardcoverBookID, we keep it for linking in the UI.
+		// The interface does not support fetching by book ID directly.
+
+		        // Try to use editionID first to discover book context and identifiers
+        if editionID != "" {
+            if ed, err := hc.GetEdition(ctx, editionID); err == nil && ed != nil {
+                if ed.BookID != "" && mismatch.HardcoverBookID == "" {
+                    mismatch.HardcoverBookID = ed.BookID
+                }
+                // If we now know the HardcoverBookID, fetch richer book metadata
+                if mismatch.HardcoverBookID != "" {
+                    if b, err := hc.GetBookByID(ctx, mismatch.HardcoverBookID); err == nil && b != nil {
+                        applyHC(b)
+                    } else if err != nil {
+                        log.Debug("GetBookByID failed during edition enrichment", map[string]interface{}{
+                            "book_id": mismatch.HardcoverBookID,
+                            "error":   err.Error(),
+                        })
+                    }
+                }
+                // If edition provides identifiers, try to resolve full book to get authors
+                if ed.ISBN13 != "" {
+                    if b, err := hc.SearchBookByISBN13(ctx, ed.ISBN13); err == nil && b != nil {
+                        applyHC(b)
+                    }
+				} else if ed.ISBN10 != "" {
+					if b, err := hc.SearchBookByISBN10(ctx, ed.ISBN10); err == nil && b != nil {
+						applyHC(b)
+					}
+				} else if ed.ASIN != "" {
+					if b, err := hc.SearchBookByASIN(ctx, ed.ASIN); err == nil && b != nil {
+						applyHC(b)
+					}
+				}
+			}
+		}
+
+		        // If we were given a HardcoverBookID directly, prefer fetching it now
+        if mismatch.HardcoverBookID != "" {
+            if b, err := hc.GetBookByID(ctx, mismatch.HardcoverBookID); err == nil && b != nil {
+                applyHC(b)
+            } else if err != nil {
+                log.Debug("GetBookByID failed using provided HardcoverBookID", map[string]interface{}{
+                    "book_id": mismatch.HardcoverBookID,
+                    "error":   err.Error(),
+                })
+            }
+        }
+
+        // Fall back to provided identifiers
+        if mismatch.HardcoverAuthor == "" {
+            if isbn13 != "" {
+                if b, err := hc.SearchBookByISBN13(ctx, isbn13); err == nil && b != nil {
+                    applyHC(b)
+                }
+			} else if isbn10 != "" {
+				if b, err := hc.SearchBookByISBN10(ctx, isbn10); err == nil && b != nil {
+					applyHC(b)
+				}
+			} else if metadata.ASIN != "" {
+				if b, err := hc.SearchBookByASIN(ctx, metadata.ASIN); err == nil && b != nil {
+					applyHC(b)
+				}
+			}
+		}
+
+		// Final fallback: search by title/author with best-match selection
+        if mismatch.HardcoverAuthor == "" && metadata.Title != "" {
+            if results, err := hc.SearchBooks(ctx, metadata.Title, metadata.AuthorName); err == nil && len(results) > 0 {
+                // Normalize helper: lower-case, trim, remove punctuation-like chars and collapse spaces
+                normalize := func(s string) string {
+                    s = strings.ToLower(strings.TrimSpace(s))
+                    replacer := strings.NewReplacer(
+                        ",", " ", ".", " ", ":", " ", ";", " ", "-", " ", "_", " ",
+                        "(" , " ", ")", " ", "[", " ", "]", " ", "{", " ", "}", " ",
+                        "'", " ", "\"", " ", "&", " and ", "/", " ", "\\", " ",
+                    )
+                    s = replacer.Replace(s)
+                    for strings.Contains(s, "  ") { s = strings.ReplaceAll(s, "  ", " ") }
+                    return strings.TrimSpace(s)
+                }
+
+                nt := normalize(metadata.Title)
+                na := normalize(metadata.AuthorName)
+
+                bestIdx := 0
+                bestScore := -1
+                // Cap detailed lookups to first 5 to respect rate limits
+                maxCheck := len(results)
+                if maxCheck > 5 { maxCheck = 5 }
+                for i := 0; i < maxCheck; i++ {
+                    rt := normalize(results[i].Title)
+                    score := 0
+                    if rt == nt { score += 3 }
+                    if rt != nt && (strings.Contains(rt, nt) || strings.Contains(nt, rt)) { score += 1 }
+
+                    // If author provided, fetch detailed book to compare authors
+                    if na != "" {
+                        if detailed, derr := hc.GetBookByID(ctx, results[i].ID); derr == nil && detailed != nil {
+                            // Combine author names
+                            names := make([]string, 0, len(detailed.Authors))
+                            for _, a := range detailed.Authors { names = append(names, a.Name) }
+                            ra := normalize(strings.Join(names, " "))
+                            if ra == na { score += 3 }
+                            if ra != na && (strings.Contains(ra, na) || strings.Contains(na, ra)) { score += 1 }
+                            // Prefer candidates that have a cover image
+                            if detailed.CoverImageURL != "" { score += 1 }
+                            // Replace lightweight result with detailed one for final apply if chosen best
+                            if score > bestScore {
+                                bestScore = score
+                                bestIdx = i
+                                // Update results[i] with more complete info
+                                results[i] = *detailed
+                            }
+                            continue
+                        }
+                    }
+
+                    if results[i].CoverImageURL != "" { score += 1 }
+                    if score > bestScore { bestScore = score; bestIdx = i }
+                }
+                applyHC(&results[bestIdx])
+            }
+        }
+
+		// Final note: we cannot fetch by HardcoverBookID with current client interface; rely on
+		// edition lookups and searches above to fill details.
+
+		        log.Debug("Hardcover enrichment result", map[string]interface{}{
+            "hc_book_id":    mismatch.HardcoverBookID,
+            "hc_author":     mismatch.HardcoverAuthor,
+            "hc_title":      mismatch.HardcoverTitle,
+            "hc_slug":       mismatch.HardcoverSlug,
+            "hc_publisher":  mismatch.HardcoverPublisher,
+            "hc_asin":       mismatch.HardcoverASIN,
+            "hc_isbn":       mismatch.HardcoverISBN,
+            "hc_cover":      mismatch.HardcoverCoverURL != "",
+            "hc_year":       mismatch.HardcoverPublishedYear,
+        })
 	}
 
 	Add(mismatch)
@@ -583,4 +830,6 @@ type MediaMetadata struct {
 	ASIN          string
 	CoverURL      string  // URL to the book cover image
 	Duration      float64 `json:"duration,omitempty"`
+	LibraryID     string  // Audiobookshelf library ID
+	FolderID      string  // Source folder ID (if available)
 }

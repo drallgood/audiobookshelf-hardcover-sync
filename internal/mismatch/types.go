@@ -114,11 +114,15 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 	// Use the provided publisher ID or default to 0
 	publisherID := b.PublisherID
 
-	// Prefer image_url over cover_url if both are available
-	imageURL := b.ImageURL
-	if imageURL == "" {
-		imageURL = b.CoverURL
-	}
+    // Prefer Hardcover cover if available for the exported image_url,
+    // then fall back to explicit ImageURL, then CoverURL
+    imageURL := b.HardcoverCoverURL
+    if imageURL == "" {
+        imageURL = b.ImageURL
+    }
+    if imageURL == "" {
+        imageURL = b.CoverURL
+    }
 
 	// Set edition information to describe the edition (e.g., "Unabridged")
 	// Default to empty string if we don't know
@@ -221,14 +225,20 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 			AuthorName:    b.Author,
 			NarratorName:  b.Narrator,
 			PublisherName: b.Publisher,
-			PublishedYear: b.PublishedYear,
-			CoverURL:      b.CoverURL,
+			PublishedYear:    b.PublishedYear,
+			CoverURL:         b.CoverURL,
+            HardcoverCoverURL: b.HardcoverCoverURL,
 			Timestamp:     b.Timestamp,
 			CreatedAt:     b.CreatedAt.Format(time.RFC3339),
 			Reason:        b.Reason,
 			Attempts:      b.Attempts,
 		},
 	}
+
+    // If info.cover_url duplicates the main image_url, drop it to reduce redundancy
+    if result.Info != nil && result.Info.CoverURL == result.ImageURL {
+        result.Info.CoverURL = ""
+    }
 
 	// Log final result for debugging
 	logger.Debug(fmt.Sprintf("Final EditionExport - BookID: %d, Title: %s, EditionInfo: %s, AuthorIDs: %v, PublisherID: %d",
@@ -389,6 +399,17 @@ type BookMismatch struct {
 	PublisherID   int    `json:"publisher_id,omitempty"`
 	Publisher     string `json:"publisher,omitempty"`
 
+	// Hardcover book details (for mismatch comparison)
+	HardcoverBookID        string `json:"hardcover_book_id,omitempty"`
+	HardcoverTitle         string `json:"hardcover_title,omitempty"`
+	HardcoverAuthor        string `json:"hardcover_author,omitempty"`
+	HardcoverPublishedYear string `json:"hardcover_published_year,omitempty"`
+	HardcoverCoverURL      string `json:"hardcover_cover_url"`
+	HardcoverPublisher     string `json:"hardcover_publisher,omitempty"`
+	HardcoverASIN          string `json:"hardcover_asin,omitempty"`
+	HardcoverISBN          string `json:"hardcover_isbn,omitempty"`
+	HardcoverSlug          string `json:"hardcover_slug,omitempty"`
+
 	// Tracking
 	Reason    string    `json:"reason"`
 	Timestamp int64     `json:"timestamp"`
@@ -405,8 +426,9 @@ type EditionExportInfo struct {
 	PublisherName string `json:"publisher,omitempty"`
 
 	// Additional metadata from source
-	PublishedYear string `json:"published_year,omitempty"`
-	CoverURL      string `json:"cover_url,omitempty"`
+	PublishedYear    string `json:"published_year,omitempty"`
+	CoverURL         string `json:"cover_url,omitempty"`
+	HardcoverCoverURL string `json:"hardcover_cover_url,omitempty"`
 
 	// Export process metadata
 	Timestamp int64  `json:"timestamp,omitempty"`

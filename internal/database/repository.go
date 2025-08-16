@@ -168,7 +168,7 @@ func (r *Repository) GetProfile(profileID string) (*ProfileWithTokens, error) {
 // ListProfiles retrieves all active sync profiles
 func (r *Repository) ListProfiles() ([]SyncProfile, error) {
 	var profiles []SyncProfile
-	if err := r.db.GetDB().Where("active = ?", true).Find(&profiles).Error; err != nil {
+	if err := r.db.GetDB().Preload("Config").Where("active = ?", true).Find(&profiles).Error; err != nil {
 		return nil, fmt.Errorf("failed to list sync profiles: %w", err)
 	}
 	return profiles, nil

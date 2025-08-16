@@ -79,4 +79,7 @@ type HardcoverClientInterface interface {
 
 	// CreateUserBook creates a new user book entry
 	CreateUserBook(ctx context.Context, editionID, status string) (string, error)
+
+    // GetBookByID retrieves a book and basic related details by its Hardcover book ID
+    GetBookByID(ctx context.Context, bookID string) (*models.HardcoverBook, error)
 }

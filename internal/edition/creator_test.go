@@ -68,6 +68,15 @@ func (m *MockHardcoverClient) GetEditionByASIN(ctx context.Context, asin string)
 	return args.Get(0).(*models.Edition), args.Error(1)
 }
 
+// GetBookByID mocks the GetBookByID method
+func (m *MockHardcoverClient) GetBookByID(ctx context.Context, bookID string) (*models.HardcoverBook, error) {
+	args := m.Called(ctx, bookID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.HardcoverBook), args.Error(1)
+}
+
 // GraphQLQuery mocks the GraphQLQuery method
 func (m *MockHardcoverClient) GraphQLQuery(ctx context.Context, query string, variables map[string]interface{}, response interface{}) error {
 	args := m.Called(ctx, query, variables, response)

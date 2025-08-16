@@ -54,13 +54,14 @@ type SyncConfigData struct {
 		Include []string `json:"include"`
 		Exclude []string `json:"exclude"`
 	} `json:"libraries"`
-	SyncInterval    string  `json:"sync_interval"`
-	MinimumProgress float64 `json:"minimum_progress"`
-	SyncWantToRead  bool    `json:"sync_want_to_read"`
-	SyncOwned       bool    `json:"sync_owned"`
-	DryRun          bool    `json:"dry_run"`
-	TestBookFilter  string  `json:"test_book_filter"`
-	TestBookLimit   int     `json:"test_book_limit"`
+	SyncInterval       string  `json:"sync_interval"`
+	MinimumProgress    float64 `json:"minimum_progress"`
+	SyncWantToRead     bool    `json:"sync_want_to_read"`
+	ProcessUnreadBooks bool    `json:"process_unread_books"`
+	SyncOwned          bool    `json:"sync_owned"`
+	DryRun             bool    `json:"dry_run"`
+	TestBookFilter     string  `json:"test_book_filter"`
+	TestBookLimit      int     `json:"test_book_limit"`
 }
 
 // IsEmpty checks if the SyncConfigData is empty (all fields at their zero values)
@@ -73,6 +74,7 @@ func (s SyncConfigData) IsEmpty() bool {
 		s.SyncInterval == "" &&
 		s.MinimumProgress == 0 &&
 		!s.SyncWantToRead &&
+		!s.ProcessUnreadBooks &&
 		!s.SyncOwned &&
 		!s.DryRun &&
 		s.TestBookFilter == "" &&
