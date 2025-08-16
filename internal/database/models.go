@@ -25,12 +25,12 @@ type SyncProfileConfig struct {
 	AudiobookshelfURL          string `json:"audiobookshelf_url"`
 	AudiobookshelfTokenEncrypted string `json:"-"` // Hidden from JSON serialization
 	HardcoverTokenEncrypted    string `json:"-"` // Hidden from JSON serialization
-	SyncConfig                 string `gorm:"type:text" json:"sync_config"` // JSON string
+	SyncConfig                 string `gorm:"type:text" json:"-"` // JSON string (hidden from API responses)
 	CreatedAt                  time.Time `json:"created_at"`
 	UpdatedAt                  time.Time `json:"updated_at"`
 
 	// Relationship
-	Profile SyncProfile `gorm:"foreignKey:ProfileID" json:"profile,omitempty"`
+	Profile SyncProfile `gorm:"foreignKey:ProfileID" json:"-"`
 }
 
 // ProfileSyncState holds the sync state for a specific profile

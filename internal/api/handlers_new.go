@@ -116,16 +116,59 @@ func (h *Handler) writeSuccessResponse(w http.ResponseWriter, data interface{}) 
 	})
 }
 
+// buildProfileResponse converts a database.ProfileWithTokens into a clean API response
+func (h *Handler) buildProfileResponse(p *database.ProfileWithTokens) map[string]interface{} {
+	if p == nil {
+		return map[string]interface{}{}
+	}
+	prof := p.Profile
+	return map[string]interface{}{
+		"profile": map[string]interface{}{
+			"id":         prof.ID,
+			"name":       prof.Name,
+			"created_at": prof.CreatedAt,
+			"updated_at": prof.UpdatedAt,
+			"active":     prof.Active,
+		},
+		"audiobookshelf_url":   p.AudiobookshelfURL,
+		"audiobookshelf_token": p.AudiobookshelfToken,
+		"hardcover_token":      p.HardcoverToken,
+		"sync_config":          p.SyncConfig,
+	}
+}
+
 // GetProfiles handles GET /api/profiles
 func (h *Handler) GetProfiles(w http.ResponseWriter, r *http.Request) {
-	profiles, err := h.multiUserService.ListProfiles()
-	if err != nil {
-		h.log.Error("Failed to list sync profiles: " + err.Error())
-		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to retrieve sync profiles")
-		return
-	}
+    profiles, err := h.multiUserService.ListProfiles()
+    if err != nil {
+        h.log.Error("Failed to list sync profiles: " + err.Error())
+        h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to retrieve sync profiles")
+        return
+    }
 
-	h.writeSuccessResponse(w, profiles)
+    // Transform to include a top-level last_sync expected by the web UI
+    // Prefer the in-memory status' LastSync (reflects most recent sync),
+    // fall back to DB SyncState if present, else nil.
+    resp := make([]map[string]interface{}, 0, len(profiles))
+    for _, p := range profiles {
+        item := map[string]interface{}{
+            "id":         p.ID,
+            "name":       p.Name,
+            "active":     p.Active,
+            "created_at": p.CreatedAt,
+            "updated_at": p.UpdatedAt,
+        }
+        var lastSync interface{} = nil
+        if status := h.multiUserService.GetProfileStatus(p.ID); status != nil && status.LastSync != nil {
+            lastSync = status.LastSync
+        } else if p.SyncState != nil && p.SyncState.LastSync != nil {
+            lastSync = p.SyncState.LastSync
+        }
+        item["last_sync"] = lastSync
+        resp = append(resp, item)
+    }
+
+    h.writeSuccessResponse(w, resp)
 }
 
 // GetProfile handles GET /api/profiles/{id}
@@ -153,7 +196,7 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.log.Debug(fmt.Sprintf("Profile retrieved successfully: %s", profile.Profile.ID))
-	h.writeSuccessResponse(w, profile)
+	h.writeSuccessResponse(w, h.buildProfileResponse(profile))
 }
 
 // CreateProfile handles POST /api/profiles
@@ -192,7 +235,7 @@ func (h *Handler) CreateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeSuccessResponse(w, profile)
+	h.writeSuccessResponse(w, h.buildProfileResponse(profile))
 }
 
 // UpdateProfile handles PUT /api/profiles/{id}
@@ -226,7 +269,7 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeSuccessResponse(w, profile)
+	h.writeSuccessResponse(w, h.buildProfileResponse(profile))
 }
 
 // UpdateProfileConfig handles PUT /api/profiles/{id}/config
@@ -289,7 +332,7 @@ func (h *Handler) UpdateProfileConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeSuccessResponse(w, profile)
+	h.writeSuccessResponse(w, h.buildProfileResponse(profile))
 }
 
 // DeleteProfile handles DELETE /api/profiles/{id}

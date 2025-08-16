@@ -606,6 +606,19 @@ header p {
     color: #333;
 }
 
+.modal-content {
+    background: #ffffff;
+    margin: 60px auto; /* center vertically with some top space */
+    border-radius: 10px;
+    width: 95%;
+    max-width: 740px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden; /* keep rounded corners when inner scrolls */
+    animation: modalSlideIn 0.2s ease-out;
+}
+
 .modal .user-form {
     padding: 30px;
     max-width: none;

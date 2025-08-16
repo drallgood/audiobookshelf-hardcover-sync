@@ -37,6 +37,21 @@ class SyncProfileApp {
         this.init();
     }
 
+    // Coerce various representations to boolean with a sensible default
+    toBool(value, defaultValue = true) {
+        if (value === true || value === false) return value;
+        if (typeof value === 'string') {
+            const v = value.trim().toLowerCase();
+            if (v === 'true') return true;
+            if (v === 'false') return false;
+            if (v === '1') return true;
+            if (v === '0') return false;
+        }
+        if (value === 1) return true;
+        if (value === 0) return false;
+        return !!defaultValue;
+    }
+
     // Format a timestamp to relative time (e.g., "5 minutes ago") with fallback
     formatRelativeTime(ts) {
         try {
@@ -1915,12 +1930,12 @@ class SyncProfileApp {
         document.getElementById('edit-abs-url').value = user.audiobookshelf_url;
         
         // Sync configuration fields
-        document.getElementById('edit-incremental').checked = config.incremental || false;
+        document.getElementById('edit-incremental').checked = this.toBool(config.incremental, false);
         document.getElementById('edit-sync-interval').value = config.sync_interval || '6h';
         document.getElementById('edit-minimum-progress').value = config.minimum_progress || 0.01;
-        document.getElementById('edit-sync-want-to-read').checked = config.sync_want_to_read !== false; // default true
-        document.getElementById('edit-process-unread-books').checked = config.process_unread_books === true; // default false
-        document.getElementById('edit-sync-owned').checked = config.sync_owned !== false; // default true
+        document.getElementById('edit-sync-want-to-read').checked = this.toBool(config.sync_want_to_read, true);
+        document.getElementById('edit-process-unread-books').checked = this.toBool(config.process_unread_books, true);
+        document.getElementById('edit-sync-owned').checked = this.toBool(config.sync_owned, true);
         
         // Library filters
         const libraries = config.libraries || {};
@@ -1965,6 +1980,7 @@ class SyncProfileApp {
                 sync_interval: formData.get('sync_interval'),
                 minimum_progress: parseFloat(formData.get('minimum_progress')),
                 sync_want_to_read: formData.get('sync_want_to_read') === 'on',
+                process_unread_books: formData.get('process_unread_books') === 'on',
                 sync_owned: formData.get('sync_owned') === 'on',
                 dry_run: false,
                 test_book_filter: '',
