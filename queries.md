@@ -224,6 +224,63 @@ query GetUserBookReadsForUserBookID($user_book_id: Int!) {
 
 A single ASIN always has a single edition ID, so that's not it
 
+## User Book Reads by title
+
+```graphql
+query GetUserBookReadsForTitle($title: String!) {
+  user_book_reads(where: {edition: {title: {_eq: $title}}}, order_by: { id: desc }) {
+    finished_at
+    paused_at
+    id
+    progress
+    progress_pages
+    progress_seconds
+    started_at
+    user_book_id
+    edition {
+      title
+      id
+    }
+  }
+}
+```
+
+```json
+{
+  "title": "The Name of the Wind"
+}
+```
+## User Book Reads by book id
+
+```graphql
+query GetUserBookReadsForBookID($book_id: Int!) {
+  user_book_reads(
+    where: {user_book: {book_id: {_eq: $book_id}}}
+    order_by: {id: desc}
+  ) {
+    finished_at
+    paused_at
+    id
+    progress
+    progress_pages
+    progress_seconds
+    started_at
+    user_book_id
+    edition {
+      title
+      id
+    }
+  }
+}
+
+```
+
+```json
+{
+  "book_id": 1
+}
+```
+
 ## User Book by ASIN
 
 ```graphql

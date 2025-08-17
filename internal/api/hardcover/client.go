@@ -1794,49 +1794,82 @@ type UserBookRead struct {
 
 // GetUserBookReads retrieves the reading progress for a user book
 func (c *Client) GetUserBookReads(ctx context.Context, input GetUserBookReadsInput) ([]UserBookRead, error) {
-	query := `
-	query GetUserBookReads($user_book_id: Int!, $is_unfinished: Boolean) {
-	  user_book_reads(
-		where: { 
-		  user_book_id: { _eq: $user_book_id },
-		  finished_at: { _is_null: $is_unfinished }
-		},
-		order_by: { id: desc }
-	  ) {
-		id
-		user_book_id
-		progress
-		progress_seconds
-		started_at
-		finished_at
-		edition_id
-	  }
-	}`
+    // Validate input
+    if input.UserBookID == 0 {
+        return nil, fmt.Errorf("%w: user_book_id is required", ErrInvalidInput)
+    }
 
-	// Validate input
-	if input.UserBookID == 0 {
-		return nil, fmt.Errorf("%w: user_book_id is required", ErrInvalidInput)
-	}
+    // If Status is empty, fetch all reads without filtering on finished_at
+    if input.Status == "" {
+        queryAll := `
+        query GetUserBookReadsAll($user_book_id: Int!) {
+          user_book_reads(
+            where: { 
+              user_book_id: { _eq: $user_book_id }
+            },
+            order_by: { id: desc }
+          ) {
+            id
+            user_book_id
+            progress
+            progress_seconds
+            started_at
+            finished_at
+            edition_id
+          }
+        }`
 
-	// Determine if we're filtering for unfinished reads
-	isUnfinished := input.Status == "unfinished"
+        variables := map[string]interface{}{
+            "user_book_id": input.UserBookID,
+        }
 
-	// Prepare variables
-	variables := map[string]interface{}{
-		"user_book_id":  input.UserBookID,
-		"is_unfinished": isUnfinished,
-	}
+        var result struct {
+            UserBookReads []UserBookRead `json:"user_book_reads"`
+        }
 
-	// Execute the query
-	var result struct {
-		UserBookReads []UserBookRead `json:"user_book_reads"`
-	}
+        if err := c.executeGraphQLQuery(ctx, queryAll, variables, &result); err != nil {
+            return nil, fmt.Errorf("failed to get user book reads: %w", err)
+        }
+        return result.UserBookReads, nil
+    }
 
-	if err := c.executeGraphQLQuery(ctx, query, variables, &result); err != nil {
-		return nil, fmt.Errorf("failed to get user book reads: %w", err)
-	}
+    // Otherwise, preserve existing behavior and filter by unfinished when requested
+    queryFiltered := `
+    query GetUserBookReads($user_book_id: Int!, $is_unfinished: Boolean) {
+      user_book_reads(
+        where: { 
+          user_book_id: { _eq: $user_book_id },
+          finished_at: { _is_null: $is_unfinished }
+        },
+        order_by: { id: desc }
+      ) {
+        id
+        user_book_id
+        progress
+        progress_seconds
+        started_at
+        finished_at
+        edition_id
+      }
+    }`
 
-	return result.UserBookReads, nil
+    // Determine if we're filtering for unfinished reads
+    isUnfinished := input.Status == "unfinished"
+
+    variables := map[string]interface{}{
+        "user_book_id":  input.UserBookID,
+        "is_unfinished": isUnfinished,
+    }
+
+    var result struct {
+        UserBookReads []UserBookRead `json:"user_book_reads"`
+    }
+
+    if err := c.executeGraphQLQuery(ctx, queryFiltered, variables, &result); err != nil {
+        return nil, fmt.Errorf("failed to get user book reads: %w", err)
+    }
+
+    return result.UserBookReads, nil
 }
 
 // GetCurrentUserIDResponse represents the response from the me query

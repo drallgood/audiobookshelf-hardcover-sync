@@ -281,6 +281,11 @@ func TestHandleInProgressBook_CreateNewRead(t *testing.T) {
 		Status:     "unfinished",
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
+	// Second-chance read fetch (no status filter) should also return no reads, allowing creation
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{}, nil).Twice()
+
 	// Mock the InsertUserBookRead call
 	editionID := int64(456)
 	progressSeconds := 300
@@ -345,6 +350,8 @@ func TestHandleInProgressBook_UpdateReadError(t *testing.T) {
 		},
 	}, nil).Once()
 
+	// No second-chance fetch expected in update path
+
 	// Mock the UpdateUserBookRead call to return an error
 	expectedErr := errors.New("API error")
 	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
@@ -390,6 +397,11 @@ func TestHandleInProgressBook_GetUserBookReadsError(t *testing.T) {
 	}).Return(nil, expectedErr).Once()
 
 	// Note: Second GetUserBook call is now served from cache, so no additional mock needed
+
+	// Second-chance read fetch (no status filter) is performed twice: once after initial failure and once pre-insert
+    mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+        UserBookID: userBookID,
+    }).Return([]hardcover.UserBookRead{}, nil).Twice()
 
 	// Mock the InsertUserBookRead call
 	progressSeconds := 100

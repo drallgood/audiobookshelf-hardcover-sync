@@ -277,6 +277,12 @@ func (s *MultiUserService) CancelSync(profileID string) error {
 
 // performSync performs the actual sync operation for a profile
 func (s *MultiUserService) performSync(ctx context.Context, profileID string, profileConfig *database.ProfileWithTokens) {
+    // Ensure the active sync marker is cleared when this sync finishes
+    defer func() {
+        s.syncMutex.Lock()
+        delete(s.activeSyncs, profileID)
+        s.syncMutex.Unlock()
+    }()
     // Create profile-specific config
     config := s.createProfileSpecificConfig(profileConfig)
 
