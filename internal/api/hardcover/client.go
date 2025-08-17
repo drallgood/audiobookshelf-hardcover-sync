@@ -2875,6 +2875,9 @@ func (c *Client) lookupUserBookByEdition(ctx context.Context, editionID, userID 
 var statusNameToID = map[string]int{
 	"WANT_TO_READ":      1,
 	"CURRENTLY_READING": 2,
+	// Aliases for in-progress reading status
+	"IN_PROGRESS":       2,
+	"READING":           2,
 	"READ":              3,
 	"FINISHED":          3, // FINISHED is an alias for READ in the API
 }
