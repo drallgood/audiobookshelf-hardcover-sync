@@ -114,7 +114,7 @@ func (r *Repository) CreateProfile(profileID, name, audiobookshelfURL, audiobook
 func (r *Repository) GetProfile(profileID string) (*ProfileWithTokens, error) {
 	// Get profile with config
 	var profile SyncProfile
-	if err := r.db.GetDB().Preload("Config").First(&profile, "id = ? AND active = ?", profileID, true).Error; err != nil {
+	if err := r.db.GetDB().Preload("Config").Preload("SyncState").First(&profile, "id = ? AND active = ?", profileID, true).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return nil, nil
 		}
@@ -168,7 +168,7 @@ func (r *Repository) GetProfile(profileID string) (*ProfileWithTokens, error) {
 // ListProfiles retrieves all active sync profiles
 func (r *Repository) ListProfiles() ([]SyncProfile, error) {
 	var profiles []SyncProfile
-	if err := r.db.GetDB().Preload("Config").Where("active = ?", true).Find(&profiles).Error; err != nil {
+	if err := r.db.GetDB().Preload("Config").Preload("SyncState").Where("active = ?", true).Find(&profiles).Error; err != nil {
 		return nil, fmt.Errorf("failed to list sync profiles: %w", err)
 	}
 	return profiles, nil

@@ -465,8 +465,8 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 				editionID := 456
 				// Expect GetUserBookID and CheckBookOwnership since sync_owned is true
 				m.On("GetUserBookID", mock.Anything, editionID).Return(789, nil)
-				// CheckBookOwnership uses EDITION ID (456)
-				m.On("CheckBookOwnership", mock.Anything, editionID).Return(false, nil)
+				// CheckBookOwnership uses BOOK ID (123)
+				m.On("CheckBookOwnership", mock.Anything, 123).Return(false, nil)
 				m.On("MarkEditionAsOwned", mock.Anything, editionID).Return(nil)
 			},
 			verifyResult: func(t *testing.T, result *models.HardcoverBook, err error) {
@@ -510,8 +510,8 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 				editionID := 456
 				// Expect GetUserBookID and CheckBookOwnership since sync_owned is true
 				m.On("GetUserBookID", mock.Anything, editionID).Return(789, nil)
-				// Return true to indicate the edition is already owned (EDITION ID)
-				m.On("CheckBookOwnership", mock.Anything, editionID).Return(true, nil)
+				// Return true to indicate the book is already owned (BOOK ID)
+				m.On("CheckBookOwnership", mock.Anything, 123).Return(true, nil)
 			},
 			verifyResult: func(t *testing.T, result *models.HardcoverBook, err error) {
 				assert.NoError(t, err)
@@ -581,8 +581,8 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 				editionID := 456
 				// Expect GetUserBookID and CheckBookOwnership with error
 				m.On("GetUserBookID", mock.Anything, editionID).Return(789, nil)
-				// EDITION ID is used for ownership check
-				m.On("CheckBookOwnership", mock.Anything, editionID).Return(false, errors.New("ownership check failed"))
+				// BOOK ID is used for ownership check
+				m.On("CheckBookOwnership", mock.Anything, 123).Return(false, errors.New("ownership check failed"))
 			},
 			verifyResult: func(t *testing.T, result *models.HardcoverBook, err error) {
 				assert.NoError(t, err)
@@ -604,8 +604,8 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 				editionID := 456
 				// Expect GetUserBookID, CheckBookOwnership, and MarkEditionAsOwned with error
 				m.On("GetUserBookID", mock.Anything, editionID).Return(789, nil)
-				// Use EDITION ID for ownership check
-				m.On("CheckBookOwnership", mock.Anything, editionID).Return(false, nil)
+				// Use BOOK ID for ownership check
+				m.On("CheckBookOwnership", mock.Anything, 123).Return(false, nil)
 				m.On("MarkEditionAsOwned", mock.Anything, editionID).Return(errors.New("failed to mark as owned"))
 			},
 			verifyResult: func(t *testing.T, result *models.HardcoverBook, err error) {
@@ -826,8 +826,8 @@ func TestProcessFoundBook_NoEditionFound(t *testing.T) {
 	// Make this expectation optional since processFoundBook might not call GetEdition if edition ID is already set
 	mockClient.On("GetEdition", mock.Anything, editionID).Return(nilEdition, editionErr).Maybe()
 
-	// Mock the CheckBookOwnership call to return false (not owned) using EDITION ID
-	mockClient.On("CheckBookOwnership", mock.Anything, editionIDInt).Return(false, nil).Maybe()
+	// Mock the CheckBookOwnership call to return false (not owned) using BOOK ID
+	mockClient.On("CheckBookOwnership", mock.Anything, 123).Return(false, nil).Maybe()
 
 	// Mock the MarkEditionAsOwned call since the book is not owned and sync_owned is true
 	mockClient.On("MarkEditionAsOwned", mock.Anything, editionIDInt).Return(nil).Maybe()
@@ -847,4 +847,37 @@ func TestProcessFoundBook_NoEditionFound(t *testing.T) {
 	
 	// Use mock.Anything for the context parameter to make the test more flexible
 	mockClient.AssertExpectations(t)
+}
+
+func TestProcessFoundBook_OwnershipSync_DryRun(t *testing.T) {
+    // Config: SyncOwned enabled, DryRun enabled
+    cfg := createTestConfig(true)
+    cfg.Sync.DryRun = true
+
+    // Mock client and service
+    mockClient := new(MockHardcoverClient)
+    svc := &Service{
+        hardcover: mockClient,
+        config:    cfg,
+        log:       logger.Get(),
+    }
+
+    // Test data
+    testHc := &TestHardcoverBook{ID: "123", EditionID: "456"}
+    hcBook := toHardcoverBook(testHc)
+    testAbs := createTestBook("test-book-1", "Test Book", "Test Author", "", "")
+    absBook := toAudiobookshelfBook(testAbs)
+
+    // Expectations: ownership checked by BOOK ID, but MarkEditionAsOwned must NOT be called due to DryRun
+    mockClient.On("GetUserBookID", mock.Anything, 456).Return(789, nil).Once()
+    mockClient.On("CheckBookOwnership", mock.Anything, 123).Return(false, nil).Once()
+
+    // Execute
+    result, err := svc.processFoundBook(context.Background(), hcBook, *absBook)
+
+    // Verify
+    assert.NoError(t, err)
+    assert.NotNil(t, result)
+    mockClient.AssertNotCalled(t, "MarkEditionAsOwned", mock.Anything, mock.AnythingOfType("int"))
+    mockClient.AssertExpectations(t)
 }

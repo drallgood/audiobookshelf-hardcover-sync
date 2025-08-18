@@ -180,6 +180,13 @@ func (s *MultiUserService) GetProfileStatus(profileID string) *SyncProfileStatus
 		}
 	}
 	
+	// If we do not have an in-memory LastSync (e.g., after restart), hydrate from DB
+	if status.LastSync == nil {
+		if state, err := s.repository.GetSyncState(profileID); err == nil && state != nil && state.LastSync != nil {
+			status.LastSync = state.LastSync
+		}
+	}
+	
 	// If there's an active sync service, get the latest status from it
 	s.servicesMutex.RLock()
 	defer s.servicesMutex.RUnlock()
@@ -266,12 +273,22 @@ func (s *MultiUserService) CancelSync(profileID string) error {
     cancel()
     delete(s.activeSyncs, profileID)
 
-    s.updateProfileStatus(profileID, &SyncProfileStatus{
+    finalStatus := &SyncProfileStatus{
         ProfileID: profileID,
         Status:    "idle",
         LastSync:  timePtr(time.Now()),
         Progress:  "Sync canceled",
-    })
+    }
+    // Persist last_sync to DB so UI can show it across restarts
+    if state, err := s.repository.GetSyncState(profileID); err == nil {
+        if state == nil {
+            state = &database.ProfileSyncState{ProfileID: profileID, StateData: "{}"}
+        }
+        state.LastSync = finalStatus.LastSync
+        _ = s.repository.UpdateSyncState(state)
+    }
+
+    s.updateProfileStatus(profileID, finalStatus)
     return nil
 }
 
@@ -359,6 +376,15 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
             "books_not_found": len(summary.BooksNotFound),
             "mismatches":      len(summary.Mismatches),
         })
+    }
+
+    // Persist last_sync to DB so it's available across restarts
+    if state, err := s.repository.GetSyncState(profileID); err == nil {
+        if state == nil {
+            state = &database.ProfileSyncState{ProfileID: profileID, StateData: "{}"}
+        }
+        state.LastSync = status.LastSync
+        _ = s.repository.UpdateSyncState(state)
     }
 
     // Update final status atomically
