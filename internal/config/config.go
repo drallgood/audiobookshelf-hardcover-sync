@@ -90,6 +90,8 @@ type Config struct {
 	Hardcover struct {
 		// Token is the API token for Hardcover
 		Token string `yaml:"token" env:"HARDCOVER_TOKEN"`
+		// BaseURL is the base URL for the Hardcover GraphQL API
+		BaseURL string `yaml:"base_url" env:"HARDCOVER_BASE_URL"`
 	} `yaml:"hardcover"`
 
 	// Application settings
@@ -200,7 +202,7 @@ type Config struct {
 
 // DefaultConfig returns the default configuration
 func DefaultConfig() *Config {
-	cfg := &Config{}
+    cfg := &Config{}
 
 	// Set default values
 	cfg.Server.Port = "8080"
@@ -258,7 +260,11 @@ func DefaultConfig() *Config {
 	cfg.Paths.CacheDir = "./cache"
 	cfg.Paths.MismatchOutputDir = "./mismatches"
 
-	return cfg
+	// Default Hardcover settings
+	// Official GraphQL endpoint, can be overridden via HARDCOVER_BASE_URL or config
+	cfg.Hardcover.BaseURL = "https://api.hardcover.app/v1/graphql"
+
+    return cfg
 }
 
 func Load(configPath string) (*Config, error) {
@@ -309,7 +315,7 @@ func Load(configPath string) (*Config, error) {
 		cfg.Server.Port, cfg.Server.ShutdownTimeout, cfg.Server.EnableWebUI)
 	fmt.Printf("Audiobookshelf:\n  url: %s\n  has_token: %v\n", 
 		cfg.Audiobookshelf.URL, cfg.Audiobookshelf.Token != "")
-	fmt.Printf("Hardcover:\n  has_token: %v\n", cfg.Hardcover.Token != "")
+	fmt.Printf("Hardcover:\n  has_token: %v\n  base_url: %s\n", cfg.Hardcover.Token != "", cfg.Hardcover.BaseURL)
 	fmt.Printf("Sync:\n  incremental: %v\n  state_file: %s\n  min_change_threshold: %d\n  sync_interval: %s\n  minimum_progress: %f\n  sync_want_to_read: %v\n  process_unread_books: %v\n  sync_owned: %v\n  dry_run: %v\n  single_user_mode: %v\n  single_user_username: %s\n  test_book_filter: %s\n  test_book_limit: %d\n",
 		cfg.Sync.Incremental, cfg.Sync.StateFile, cfg.Sync.MinChangeThreshold, 
 		cfg.Sync.SyncInterval, cfg.Sync.MinimumProgress, cfg.Sync.SyncWantToRead,
@@ -569,6 +575,9 @@ func loadFromEnv(cfg *Config) {
 	// Hardcover configuration
 	if token := os.Getenv("HARDCOVER_TOKEN"); token != "" {
 		cfg.Hardcover.Token = token
+	}
+	if baseURL := os.Getenv("HARDCOVER_BASE_URL"); baseURL != "" {
+		cfg.Hardcover.BaseURL = strings.TrimSuffix(baseURL, "/")
 	}
 
 	// Server configuration

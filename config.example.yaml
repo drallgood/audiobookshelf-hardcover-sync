@@ -22,6 +22,10 @@ audiobookshelf:
 
 # Hardcover configuration
 hardcover:
+  # Base URL for the Hardcover GraphQL API
+  # Defaults to the official endpoint: https://api.hardcover.app/v1/graphql
+  # Override via HARDCOVER_BASE_URL or this setting if self-hosting becomes available
+  base_url: ""
   token: "your-hardcover-token"
 
 # DEPRECATED: App configuration (use sync.* instead)

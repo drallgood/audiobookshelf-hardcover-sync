@@ -295,7 +295,30 @@ func main() {
 	if !cfg.Server.EnableWebUI {
 		// Simple mode: Create clients from config
 		audiobookshelfClient := audiobookshelf.NewClient(cfg.Audiobookshelf.URL, cfg.Audiobookshelf.Token)
-		hardcoverClient := hardcover.NewClient(cfg.Hardcover.Token, log)
+
+		// Build Hardcover client config from global settings
+		hcCfg := hardcover.DefaultClientConfig()
+		if cfg.Hardcover.BaseURL != "" {
+			hcCfg.BaseURL = cfg.Hardcover.BaseURL
+		}
+		if cfg.RateLimit.Rate > 0 {
+			hcCfg.RateLimit = cfg.RateLimit.Rate
+		}
+		if cfg.RateLimit.Burst > 0 {
+			hcCfg.Burst = cfg.RateLimit.Burst
+		}
+		if cfg.RateLimit.MaxConcurrent > 0 {
+			hcCfg.MaxConcurrent = cfg.RateLimit.MaxConcurrent
+		}
+
+		log.Debug("Initializing Hardcover client (single-user)", map[string]interface{}{
+			"base_url":       hcCfg.BaseURL,
+			"rate_limit":     hcCfg.RateLimit.String(),
+			"burst":          hcCfg.Burst,
+			"max_concurrent": hcCfg.MaxConcurrent,
+		})
+
+		hardcoverClient := hardcover.NewClientWithConfig(hcCfg, cfg.Hardcover.Token, log)
 		
 		// Create sync service with config
 		syncService, err = sync.NewService(audiobookshelfClient, hardcoverClient, cfg)

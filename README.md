@@ -496,6 +496,10 @@ audiobookshelf:
 
 # Hardcover configuration
 hardcover:
+  # Base URL for the Hardcover GraphQL API. Defaults to the official endpoint
+  # https://api.hardcover.app/v1/graphql. Override if/when self-hosting is supported.
+  # Can also be set via HARDCOVER_BASE_URL environment variable.
+  base_url: ""
   token: "your-hardcover-token"
 
 # Sync settings
@@ -586,6 +590,10 @@ paths:
 | `DATA_DIR` | Directory for database and encryption files | `./data` | `/app/data` |
 | `LOG_LEVEL` | Logging level | `info` | `debug`, `warn`, `error` |
 | `LOG_FORMAT` | Log output format | `json` | `json`, `text` |
+| `HARDCOVER_BASE_URL` | Hardcover GraphQL API base URL | `https://api.hardcover.app/v1/graphql` | `https://api.hardcover.app/v1/graphql` |
+| `RATE_LIMIT_RATE` | Minimum time between Hardcover API requests | unset | `1500ms`, `2s` |
+| `RATE_LIMIT_BURST` | Max burst size for requests | unset | `2` |
+| `RATE_LIMIT_MAX_CONCURRENT` | Max concurrent requests | unset | `3` |
 
 **Single-User Mode (Legacy)** - For backwards compatibility (web UI disabled):
 
@@ -605,6 +613,8 @@ The application supports two distinct operating modes controlled by the `enable_
 - **Environment variable/configuration file** based token management
 - **No web interface** - runs as a service only
 - **Requires tokens** at startup via environment variables or config file
+
+> Note: In both single-user and multi-user modes, the Hardcover client is created with a unified configuration (NewClientWithConfig), honoring `hardcover.base_url` and `rate_limit.*` settings.
 
 ### Configuration Options
 
@@ -636,6 +646,10 @@ hardcover:
 | `AUDIOBOOKSHELF_URL` | URL of your AudiobookShelf instance | `audiobookshelf.url` | Legacy mode only |
 | `AUDIOBOOKSHELF_TOKEN` | AudiobookShelf API token | `audiobookshelf.token` | Legacy mode only |
 | `HARDCOVER_TOKEN` | Hardcover API token | `hardcover.token` | Legacy mode only |
+| `HARDCOVER_BASE_URL` | Hardcover API base URL | `hardcover.base_url` | Override default endpoint |
+| `RATE_LIMIT_RATE` | Min time between requests | `rate_limit.rate` | e.g. `1500ms` (≈40 rpm) |
+| `RATE_LIMIT_BURST` | Burst size | `rate_limit.burst` | e.g. `2` |
+| `RATE_LIMIT_MAX_CONCURRENT` | Max concurrent requests | `rate_limit.max_concurrent` | e.g. `3` |
 | `SYNC_INTERVAL` | Time between automatic syncs | `sync.sync_interval` | Legacy mode only |
 | `SYNC_LIBRARIES_INCLUDE` | Comma-separated list of libraries to include | `sync.libraries.include` | Legacy mode only |
 | `SYNC_LIBRARIES_EXCLUDE` | Comma-separated list of libraries to exclude | `sync.libraries.exclude` | Legacy mode only |

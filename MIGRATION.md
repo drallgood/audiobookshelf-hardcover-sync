@@ -46,7 +46,10 @@ If you previously used environment variables for configuration, you will need to
 
 ### New Environment Variables (Optional)
 
-- **`HARDCOVER_RATE_LIMIT`**: Controls requests per second to Hardcover API (default: 10)
+- **`HARDCOVER_BASE_URL`**: Override the Hardcover GraphQL API base URL (default: https://api.hardcover.app/v1/graphql)
+- **`RATE_LIMIT_RATE`**: Minimum time between Hardcover API requests (e.g., `1500ms`, `2s`)
+- **`RATE_LIMIT_BURST`**: Maximum burst size for requests (e.g., `2`)
+- **`RATE_LIMIT_MAX_CONCURRENT`**: Maximum number of concurrent requests (e.g., `3`)
 - **`CONFIG_FILE`**: Path to the configuration file (default: "./config.yaml")
 
 ### New Configuration Options
@@ -58,6 +61,8 @@ If you previously used environment variables for configuration, you will need to
 - **`paths.cache_dir`**: Directory for cache files (default: "./cache")
 - **`app.mismatch_output_dir`**: Directory to store mismatch files (default: "./mismatches")
 - **`rate_limit`**: Configuration section for rate limiting
+
+Note: The Hardcover client now uses a unified configuration builder in both single-user and multi-user modes. It honors `hardcover.base_url` (defaulting to the official endpoint) and all `rate_limit.*` settings.
 
 ### Data Storage Changes
 - **State File**: The application now maintains state between runs in a JSON file

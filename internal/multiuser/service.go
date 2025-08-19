@@ -305,7 +305,33 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
 
     // Create clients
     absClient := audiobookshelf.NewClient(profileConfig.AudiobookshelfURL, profileConfig.AudiobookshelfToken)
-    hcClient := hardcover.NewClient(profileConfig.HardcoverToken, s.logger)
+
+    // Build Hardcover client config using global settings (rate limits/base URL)
+    hcCfg := hardcover.DefaultClientConfig()
+    if s.globalConfig != nil {
+        if s.globalConfig.Hardcover.BaseURL != "" {
+            hcCfg.BaseURL = s.globalConfig.Hardcover.BaseURL
+        }
+        if s.globalConfig.RateLimit.Rate > 0 {
+            hcCfg.RateLimit = s.globalConfig.RateLimit.Rate
+        }
+        if s.globalConfig.RateLimit.Burst > 0 {
+            hcCfg.Burst = s.globalConfig.RateLimit.Burst
+        }
+        if s.globalConfig.RateLimit.MaxConcurrent > 0 {
+            hcCfg.MaxConcurrent = s.globalConfig.RateLimit.MaxConcurrent
+        }
+    }
+
+    s.logger.Debug("Initializing Hardcover client (multi-user)", map[string]interface{}{
+        "profile_id":     profileID,
+        "base_url":       hcCfg.BaseURL,
+        "rate_limit":     hcCfg.RateLimit.String(),
+        "burst":          hcCfg.Burst,
+        "max_concurrent": hcCfg.MaxConcurrent,
+    })
+
+    hcClient := hardcover.NewClientWithConfig(hcCfg, profileConfig.HardcoverToken, s.logger)
 
     // Create sync service
     syncService, err := sync.NewService(absClient, hcClient, config)
