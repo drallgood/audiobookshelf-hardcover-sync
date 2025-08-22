@@ -357,9 +357,15 @@ For Kubernetes deployments, use the official Helm chart:
 
 1. **Add the Helm repository**:
    ```bash
-   helm repo add audiobookshelf-hardcover-sync https://drallgood.github.io/audiobookshelf-hardcover-sync
-   helm repo update
-   ```
+# Stable releases (from main)
+helm repo add audiobookshelf-hardcover-sync \
+  https://drallgood.github.io/audiobookshelf-hardcover-sync/stable
+
+# Dev channel (from develop)
+helm repo add audiobookshelf-hardcover-sync-dev \
+  https://drallgood.github.io/audiobookshelf-hardcover-sync/dev
+helm repo update
+```
 
 2. **Create a values file** with your configuration:
    ```yaml
@@ -386,10 +392,16 @@ For Kubernetes deployments, use the official Helm chart:
        memory: 128Mi
    ```
 
-3. **Install the chart**:
+3. **Install the chart (stable)**:
    ```bash
-   helm install my-sync audiobookshelf-hardcover-sync/audiobookshelf-hardcover-sync -f my-values.yaml
-   ```
+helm install my-sync audiobookshelf-hardcover-sync/audiobookshelf-hardcover-sync -f my-values.yaml
+```
+
+3b. **Install the chart (dev)**:
+
+```bash
+helm install my-sync-dev audiobookshelf-hardcover-sync-dev/audiobookshelf-hardcover-sync -f my-values.yaml
+```
 
 4. **Check the deployment**:
    ```bash
