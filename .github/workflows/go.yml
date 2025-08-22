@@ -2,7 +2,7 @@ name: Go
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop ]
     paths-ignore:
       - '**/*.md'
       - '**/*.txt'
@@ -10,7 +10,7 @@ on:
       - '**/*.yml'
       - '**/Dockerfile'
   pull_request:
-    branches: [ main ]
+    branches: [ main, develop ]
     paths-ignore:
       - '**/*.md'
       - '**/*.txt'

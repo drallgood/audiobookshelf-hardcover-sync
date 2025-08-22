@@ -10,8 +10,8 @@ This document describes the process for creating and publishing new releases of 
 
 ## Release Steps
 
-1. **Update Code and Documentation**
-   - Ensure all intended features and bugfixes are committed to `main`
+1. **Prepare on `develop`**
+   - Ensure all intended features and bugfixes are merged into `develop`
    - Make sure tests are passing (`make test`)
    - Update documentation as needed
    - Update `MIGRATION.md` if there are breaking changes
@@ -30,19 +30,23 @@ This document describes the process for creating and publishing new releases of 
      ```
    - This will replace `## [Unreleased]` with `## [vX.Y.Z] - YYYY-MM-DD`
 
-4. **Commit the Changes**
+4. **Merge `develop` into `main`**
+   - Open a PR from `develop` to `main` and merge after approvals, or fast-forward if appropriate.
+   - Ensure the merge is clean and CI is green.
+
+5. **Commit the Changelog Update (if needed)**
    ```bash
    git add CHANGELOG.md
    git commit -m 'Release vX.Y.Z'
    ```
 
-5. **Create and Push Git Tag**
+6. **Create and Push Git Tag (on `main`)**
    ```bash
    git tag -a vX.Y.Z -m 'Release vX.Y.Z'
    git push origin main vX.Y.Z
    ```
 
-6. **Monitor GitHub Actions Workflow**
+7. **Monitor GitHub Actions Workflow**
    - Pushing the tag will automatically trigger the release workflow
    - Visit the Actions tab in the GitHub repository to monitor progress
    - The workflow will:
@@ -50,7 +54,7 @@ This document describes the process for creating and publishing new releases of 
      - Build and publish Docker images
      - Create a GitHub Release with notes from CHANGELOG.md
 
-7. **Verify Release**
+8. **Verify Release**
    - Check that the GitHub Release was created correctly
    - Verify Docker images are available at ghcr.io/drallgood/audiobookshelf-hardcover-sync
 
@@ -74,11 +78,20 @@ If the automated release process fails:
 
 ## Post-Release
 
-1. **Update Documentation**
-   - Add a new `## [Unreleased]` section at the top of CHANGELOG.md
+1. **Back-merge into `develop`**
+   - Ensure `main` is merged back into `develop` to keep branches in sync:
+     ```bash
+     git checkout develop
+     git pull --ff-only
+     git merge --ff-only origin/main || git merge origin/main
+     git push origin develop
+     ```
+
+2. **Update Documentation**
+   - Add a new `## [Unreleased]` section at the top of CHANGELOG.md on `develop`
    - Commit and push this change
 
-2. **Announce the Release**
+3. **Announce the Release**
    - Inform users through appropriate channels
 
 ## Docker Images
