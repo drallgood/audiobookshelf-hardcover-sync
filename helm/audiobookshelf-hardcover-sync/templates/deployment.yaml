@@ -94,6 +94,8 @@ spec:
               value: {{ .Values.config.sync.stateFile | quote }}
             - name: SYNC_MIN_CHANGE_THRESHOLD
               value: {{ .Values.config.sync.minChangeThreshold | quote }}
+            - name: SYNC_INCLUDE_EBOOKS
+              value: {{ .Values.config.sync.includeEbooks | quote }}
             {{- if .Values.config.sync.libraries.include }}
             - name: SYNC_LIBRARIES_INCLUDE
               value: {{ join "," .Values.config.sync.libraries.include | quote }}
