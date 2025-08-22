@@ -2,18 +2,30 @@
 
 This document explains how the Helm chart for audiobookshelf-hardcover-sync is published and how users can install it.
 
-## 📦 Chart Repository
+## 📦 Chart Repositories (Channels)
 
-The Helm chart is automatically published to GitHub Pages and available at:
-- **Repository URL**: `https://drallgood.github.io/audiobookshelf-hardcover-sync`
-- **Chart Name**: `audiobookshelf-hardcover-sync`
+The Helm chart is published to GitHub Pages in two channels:
+
+- **Stable (main branch and tags)**
+  - Repository URL: `https://drallgood.github.io/audiobookshelf-hardcover-sync/stable`
+  - Helm repo name (suggested): `audiobookshelf-hardcover-sync`
+  - Legacy URL (mirrors stable for backward compatibility): `https://drallgood.github.io/audiobookshelf-hardcover-sync`
+- **Dev (develop branch)**
+  - Repository URL: `https://drallgood.github.io/audiobookshelf-hardcover-sync/dev`
+  - Helm repo name (suggested): `audiobookshelf-hardcover-sync-dev`
 
 ## 🚀 Installation
 
-### Add the Helm Repository
+### Add the Helm Repositories
 
 ```bash
-helm repo add audiobookshelf-hardcover-sync https://drallgood.github.io/audiobookshelf-hardcover-sync
+# Stable releases (from main)
+helm repo add audiobookshelf-hardcover-sync \
+  https://drallgood.github.io/audiobookshelf-hardcover-sync/stable
+
+# Dev channel (from develop)
+helm repo add audiobookshelf-hardcover-sync-dev \
+  https://drallgood.github.io/audiobookshelf-hardcover-sync/dev
 helm repo update
 ```
 
@@ -21,6 +33,7 @@ helm repo update
 
 ```bash
 helm search repo audiobookshelf-hardcover-sync
+helm search repo audiobookshelf-hardcover-sync-dev
 ```
 
 ### Install the Chart
@@ -54,7 +67,11 @@ resources:
 2. **Install the chart:**
 
 ```bash
+# Stable
 helm install my-sync audiobookshelf-hardcover-sync/audiobookshelf-hardcover-sync -f my-values.yaml
+
+# Dev
+helm install my-sync-dev audiobookshelf-hardcover-sync-dev/audiobookshelf-hardcover-sync -f my-values.yaml
 ```
 
 ### Upgrade an Existing Installation
@@ -73,8 +90,8 @@ helm uninstall my-sync
 
 The Helm chart is automatically published when:
 
-1. **Changes to Helm chart files** (`helm/**`) are pushed to the `main` branch
-2. **New releases** are created on GitHub
+1. **Changes to Helm chart files** (`helm/**`) are pushed to the `main` or `develop` branches
+2. **New releases** are created on GitHub (published to stable)
 3. **Manual trigger** via GitHub Actions workflow dispatch
 
 ### Publishing Workflow
