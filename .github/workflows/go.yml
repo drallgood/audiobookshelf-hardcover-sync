@@ -6,16 +6,12 @@ on:
     paths-ignore:
       - '**/*.md'
       - '**/*.txt'
-      - '**/*.yaml'
-      - '**/*.yml'
       - '**/Dockerfile'
   pull_request:
     branches: [ main, develop ]
     paths-ignore:
       - '**/*.md'
       - '**/*.txt'
-      - '**/*.yaml'
-      - '**/*.yml'
       - '**/Dockerfile'
 
 permissions:
