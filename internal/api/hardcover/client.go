@@ -1131,8 +1131,7 @@ func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.Har
 			formatID = 2
 		}
 	}
-	var query string
-	query = `
+	query := `
 query BookByASIN($asin: String!, $format_id: Int!) {
   books(
     where: { 
@@ -1376,8 +1375,7 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
 			formatID = 2
 		}
 	}
-	var query string
-	query = fmt.Sprintf(`
+	query := fmt.Sprintf(`
     query BookByISBN($isbn: String!, $format_id: Int!) {
       books(
         where: { 
