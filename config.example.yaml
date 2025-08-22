@@ -73,6 +73,10 @@ sync:
   # Limit number of books to process for testing (0 = no limit)
   test_book_limit: 0
   
+  # Include ebooks in sync (default: false)
+  # When false, items with mediaType "ebook" are skipped
+  include_ebooks: false
+  
   # Library filtering configuration
   libraries:
     # Include only these libraries (empty = all)

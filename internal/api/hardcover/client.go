@@ -22,6 +22,27 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/util"
 )
 
+// Context key for passing desired reading format (e.g., "audiobook", "ebook")
+type ctxKey string
+
+const ctxKeyReadingFormat ctxKey = "hardcover_reading_format"
+
+// WithReadingFormat returns a context that carries the desired reading format string.
+// Accepted values typically include "audiobook" and "ebook". Case-insensitive.
+// When absent, client defaults to audiobook-only behavior for compatibility.
+func WithReadingFormat(ctx context.Context, format string) context.Context {
+	return context.WithValue(ctx, ctxKeyReadingFormat, strings.ToLower(strings.TrimSpace(format)))
+}
+
+// getReadingFormatFromCtx extracts a normalized reading format string from context, if present.
+func getReadingFormatFromCtx(ctx context.Context) (string, bool) {
+	v := ctx.Value(ctxKeyReadingFormat)
+	if s, ok := v.(string); ok && s != "" {
+		return strings.ToLower(strings.TrimSpace(s)), true
+	}
+	return "", false
+}
+
 // getMapKeys returns a sorted list of keys from a map
 func getMapKeys(m map[string]interface{}) []string {
 	keys := make([]string, 0, len(m))
@@ -720,238 +741,238 @@ func (c *Client) SearchBookByISBN10(ctx context.Context, isbn10 string) (*models
 // SearchBooks searches for books by title and author
 // Implements the HardcoverClientInterface
 func (c *Client) SearchBooks(ctx context.Context, title, author string) ([]models.HardcoverBook, error) {
-    // Use the existing SearchBooks method that takes a query string and limit
-    results, err := c.searchBooksWithLimit(ctx, title, 10) // Default to 10 results
-    if err != nil {
-        return nil, err
-    }
+	// Use the existing SearchBooks method that takes a query string and limit
+	results, err := c.searchBooksWithLimit(ctx, title, 10) // Default to 10 results
+	if err != nil {
+		return nil, err
+	}
 
-    log := c.logger.With(map[string]interface{}{
-        "method": "SearchBooks",
-        "title":  title,
-        "author": author,
-    })
+	log := c.logger.With(map[string]interface{}{
+		"method": "SearchBooks",
+		"title":  title,
+		"author": author,
+	})
 
-    // Convert SearchResult to HardcoverBook, carrying slug through
-    var books []models.HardcoverBook
-    for _, r := range results {
-        book := models.HardcoverBook{
-            ID:            r.ID,
-            Title:         r.Title,
-            Slug:          r.Slug,
-            CoverImageURL: r.Image, // Populate cover from search response (document.image.url)
-        }
-        if r.Slug != "" {
-            log.Debug("Mapped slug from search result to book", map[string]interface{}{"book_id": r.ID, "slug": r.Slug})
-        }
-        books = append(books, book)
-    }
+	// Convert SearchResult to HardcoverBook, carrying slug through
+	var books []models.HardcoverBook
+	for _, r := range results {
+		book := models.HardcoverBook{
+			ID:            r.ID,
+			Title:         r.Title,
+			Slug:          r.Slug,
+			CoverImageURL: r.Image, // Populate cover from search response (document.image.url)
+		}
+		if r.Slug != "" {
+			log.Debug("Mapped slug from search result to book", map[string]interface{}{"book_id": r.ID, "slug": r.Slug})
+		}
+		books = append(books, book)
+	}
 
-    return books, nil
+	return books, nil
 }
 
 // GetBookByID retrieves a book and basic related details by its Hardcover book ID
 // Implements the HardcoverClientInterface
 func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.HardcoverBook, error) {
-    if strings.TrimSpace(bookID) == "" {
-        return nil, fmt.Errorf("bookID cannot be empty")
-    }
+	if strings.TrimSpace(bookID) == "" {
+		return nil, fmt.Errorf("bookID cannot be empty")
+	}
 
-    // Create logger with context
-    log := c.logger.With(map[string]interface{}{
-        "book_id": bookID,
-        "method":  "GetBookByID",
-    })
+	// Create logger with context
+	log := c.logger.With(map[string]interface{}{
+		"book_id": bookID,
+		"method":  "GetBookByID",
+	})
 
-    // Convert to integer for GraphQL variable
-    idInt, err := strconv.Atoi(bookID)
-    if err != nil {
-        log.Error("Invalid book ID format", map[string]interface{}{"error": err.Error()})
-        return nil, fmt.Errorf("invalid book ID: %s", bookID)
-    }
+	// Convert to integer for GraphQL variable
+	idInt, err := strconv.Atoi(bookID)
+	if err != nil {
+		log.Error("Invalid book ID format", map[string]interface{}{"error": err.Error()})
+		return nil, fmt.Errorf("invalid book ID: %s", bookID)
+	}
 
-    const query = `
-    query GetBookByID($id: Int!) {
-      books(where: { id: { _eq: $id } }, limit: 1) {
-        id
-        title
-        slug
-        book_status_id
-        canonical_id
-        image { url }
-        contributions(limit: 50) { contribution author { id name } }
-        editions(limit: 10) {
-          id
-          asin
-          isbn_13
-          isbn_10
-          reading_format_id
-          audio_seconds
-          release_date
-          publisher { name }
-        }
-      }
-    }`
+	const query = `
+	query GetBookByID($id: Int!) {
+	  books(where: { id: { _eq: $id } }, limit: 1) {
+	    id
+	    title
+	    slug
+	    book_status_id
+	    canonical_id
+	    image { url }
+	    publisher { name }
+	    contributions(limit: 50) { contribution author { id name } }
+	    editions(limit: 10) {
+	      id
+	      asin
+	      isbn_13
+	      isbn_10
+	      reading_format_id
+	      audio_seconds
+	      publisher { name }
+	    }
+	  }
+	}`
 
-    // Use a flexible raw map to be resilient to schema variations
-    var raw map[string]interface{}
-    if err := c.GraphQLQuery(ctx, query, map[string]interface{}{"id": idInt}, &raw); err != nil {
-        log.Error("Failed to fetch book by ID", map[string]interface{}{"error": err.Error()})
-        return nil, fmt.Errorf("failed to fetch book by ID: %w", err)
-    }
+	// Use a flexible raw map to be resilient to schema variations
+	var raw map[string]interface{}
+	if err := c.GraphQLQuery(ctx, query, map[string]interface{}{"id": idInt}, &raw); err != nil {
+		log.Error("Failed to fetch book by ID", map[string]interface{}{"error": err.Error()})
+		return nil, fmt.Errorf("failed to fetch book by ID: %w", err)
+	}
 
-    // Extract data section if present
-    data, ok := raw["data"].(map[string]interface{})
-    if !ok {
-        data = raw
-    }
+	// Extract data section if present
+	data, ok := raw["data"].(map[string]interface{})
+	if !ok {
+		data = raw
+	}
 
-    // Extract books array
-    var booksArr []interface{}
-    if v, ok := data["books"]; ok {
-        if arr, ok := v.([]interface{}); ok {
-            booksArr = arr
-        }
-    }
+	// Extract books array
+	var booksArr []interface{}
+	if v, ok := data["books"]; ok {
+		if arr, ok := v.([]interface{}); ok {
+			booksArr = arr
+		}
+	}
 
-    if len(booksArr) == 0 {
-        log.Warn("No book found for ID", nil)
-        return nil, nil
-    }
+	if len(booksArr) == 0 {
+		log.Warn("No book found for ID", nil)
+		return nil, nil
+	}
 
-    bookObj, _ := booksArr[0].(map[string]interface{})
-    if bookObj == nil {
-        return nil, nil
-    }
+	bookObj, _ := booksArr[0].(map[string]interface{})
+	if bookObj == nil {
+		return nil, nil
+	}
 
-    hcBook := &models.HardcoverBook{}
+	hcBook := &models.HardcoverBook{}
 
-    // ID
-    switch v := bookObj["id"].(type) {
-    case json.Number:
-        hcBook.ID = v.String()
-    case float64:
-        hcBook.ID = strconv.FormatFloat(v, 'f', 0, 64)
-    case int64:
-        hcBook.ID = strconv.FormatInt(v, 10)
-    case string:
-        hcBook.ID = v
-    }
+	// ID
+	switch v := bookObj["id"].(type) {
+	case json.Number:
+		hcBook.ID = v.String()
+	case float64:
+		hcBook.ID = strconv.FormatFloat(v, 'f', 0, 64)
+	case int64:
+		hcBook.ID = strconv.FormatInt(v, 10)
+	case string:
+		hcBook.ID = v
+	}
 
-    // Title
-    if s, ok := bookObj["title"].(string); ok {
-        hcBook.Title = s
-    }
+	// Title
+	if s, ok := bookObj["title"].(string); ok {
+		hcBook.Title = s
+	}
 
-    // Slug
-    if s, ok := bookObj["slug"].(string); ok {
-        hcBook.Slug = s
-        log.Debug("Parsed slug from GraphQL book", map[string]interface{}{"slug": hcBook.Slug})
-    }
+	// Slug
+	if s, ok := bookObj["slug"].(string); ok {
+		hcBook.Slug = s
+		log.Debug("Parsed slug from GraphQL book", map[string]interface{}{"slug": hcBook.Slug})
+	}
 
-    // Book status
-    switch v := bookObj["book_status_id"].(type) {
-    case json.Number:
-        if n, err := v.Int64(); err == nil { hcBook.BookStatusID = int(n) }
-    case float64:
-        hcBook.BookStatusID = int(v)
-    }
+	// Book status
+	switch v := bookObj["book_status_id"].(type) {
+	case json.Number:
+		if n, err := v.Int64(); err == nil { hcBook.BookStatusID = int(n) }
+	case float64:
+		hcBook.BookStatusID = int(v)
+	}
 
-    // Cover image (books.image.url)
-    if img, ok := bookObj["image"].(map[string]interface{}); ok && img != nil {
-        if s, ok := img["url"].(string); ok && s != "" {
-            hcBook.CoverImageURL = s
-        }
-    }
+	// Cover image (books.image.url)
+	if img, ok := bookObj["image"].(map[string]interface{}); ok && img != nil {
+		if s, ok := img["url"].(string); ok && s != "" {
+			hcBook.CoverImageURL = s
+		}
+	}
 
-    // Release date
-    if s, ok := bookObj["release_date"].(string); ok {
-        hcBook.ReleaseDate = s
-    }
+	// Release date
+	if s, ok := bookObj["release_date"].(string); ok {
+		hcBook.ReleaseDate = s
+	}
 
-    // Publisher name (nested object)
-    if pub, ok := bookObj["publisher"].(map[string]interface{}); ok {
-        if name, ok := pub["name"].(string); ok {
-            hcBook.Publisher = name
-        }
-    }
+	// Publisher name (nested object)
+	if pub, ok := bookObj["publisher"].(map[string]interface{}); ok {
+		if name, ok := pub["name"].(string); ok {
+			hcBook.Publisher = name
+		}
+	}
 
-    // Contributors: derive authors/narrators from contributions.contribution
-    if rel, ok := bookObj["contributions"].([]interface{}); ok {
-        for _, item := range rel {
-            m, _ := item.(map[string]interface{})
-            if m == nil { continue }
-            role, _ := m["contribution"].(string)
-            var a map[string]interface{}
-            if v, ok := m["author"].(map[string]interface{}); ok { a = v }
-            if a == nil { continue }
-            name, _ := a["name"].(string)
-            if name == "" { continue }
-            idStr := ""
-            switch idv := a["id"].(type) {
-            case json.Number:
-                idStr = idv.String()
-            case float64:
-                idStr = strconv.FormatFloat(idv, 'f', 0, 64)
-            case int64:
-                idStr = strconv.FormatInt(idv, 10)
-            case string:
-                idStr = idv
-            }
-            // Classify by role (case-insensitive contains match)
-            r := strings.ToLower(role)
-            if strings.Contains(r, "author") {
-                hcBook.Authors = append(hcBook.Authors, models.Author{ID: idStr, Name: name})
-            } else if strings.Contains(r, "narrator") {
-                hcBook.Narrators = append(hcBook.Narrators, models.Author{ID: idStr, Name: name})
-            }
-        }
-    }
+	// Contributors: derive authors/narrators from contributions.contribution
+	if rel, ok := bookObj["contributions"].([]interface{}); ok {
+		for _, item := range rel {
+			m, _ := item.(map[string]interface{})
+			if m == nil { continue }
+			role, _ := m["contribution"].(string)
+			var a map[string]interface{}
+			if v, ok := m["author"].(map[string]interface{}); ok { a = v }
+			if a == nil { continue }
+			name, _ := a["name"].(string)
+			if name == "" { continue }
+			idStr := ""
+			switch idv := a["id"].(type) {
+			case json.Number:
+				idStr = idv.String()
+			case float64:
+				idStr = strconv.FormatFloat(idv, 'f', 0, 64)
+			case int64:
+				idStr = strconv.FormatInt(idv, 10)
+			case string:
+				idStr = idv
+			}
+			// Classify by role (case-insensitive contains match)
+			r := strings.ToLower(role)
+			if strings.Contains(r, "author") {
+				hcBook.Authors = append(hcBook.Authors, models.Author{ID: idStr, Name: name})
+			} else if strings.Contains(r, "narrator") {
+				hcBook.Narrators = append(hcBook.Narrators, models.Author{ID: idStr, Name: name})
+			}
+		}
+	}
 
-    // Editions - prefer audiobook if available
-    var editions []interface{}
-    if v, ok := bookObj["editions"].([]interface{}); ok {
-        editions = v
-    }
-    var chosen map[string]interface{}
-    for _, e := range editions {
-        if em, ok := e.(map[string]interface{}); ok {
-            if rf, ok := em["reading_format_id"].(float64); ok && int(rf) == 2 {
-                chosen = em
-                break
-            }
-            if chosen == nil { chosen = em }
-        }
-    }
-    if chosen != nil {
-        switch v := chosen["id"].(type) {
-        case json.Number:
-            hcBook.EditionID = v.String()
-        case float64:
-            hcBook.EditionID = strconv.FormatFloat(v, 'f', 0, 64)
-        case int64:
-            hcBook.EditionID = strconv.FormatInt(v, 10)
-        case string:
-            hcBook.EditionID = v
-        }
-        if s, ok := chosen["asin"].(string); ok { hcBook.EditionASIN = s }
-        if s, ok := chosen["isbn_13"].(string); ok { hcBook.EditionISBN13 = s }
-        if s, ok := chosen["isbn_10"].(string); ok { hcBook.EditionISBN10 = s }
-        if s, ok := chosen["release_date"].(string); ok { hcBook.ReleaseDate = s }
-        if pub, ok := chosen["publisher"].(map[string]interface{}); ok {
-            if name, ok := pub["name"].(string); ok { hcBook.Publisher = name }
-        }
-    }
+	// Editions - prefer audiobook if available
+	var editions []interface{}
+	if v, ok := bookObj["editions"].([]interface{}); ok {
+		editions = v
+	}
+	var chosen map[string]interface{}
+	for _, e := range editions {
+		if em, ok := e.(map[string]interface{}); ok {
+			if rf, ok := em["reading_format_id"].(float64); ok && int(rf) == 2 {
+				chosen = em
+				break
+			}
+			if chosen == nil { chosen = em }
+		}
+	}
+	if chosen != nil {
+		switch v := chosen["id"].(type) {
+		case json.Number:
+			hcBook.EditionID = v.String()
+		case float64:
+			hcBook.EditionID = strconv.FormatFloat(v, 'f', 0, 64)
+		case int64:
+			hcBook.EditionID = strconv.FormatInt(v, 10)
+		case string:
+			hcBook.EditionID = v
+		}
+		if s, ok := chosen["asin"].(string); ok { hcBook.EditionASIN = s }
+		if s, ok := chosen["isbn_13"].(string); ok { hcBook.EditionISBN13 = s }
+		if s, ok := chosen["isbn_10"].(string); ok { hcBook.EditionISBN10 = s }
+		if s, ok := chosen["release_date"].(string); ok { hcBook.ReleaseDate = s }
+		if pub, ok := chosen["publisher"].(map[string]interface{}); ok {
+			if name, ok := pub["name"].(string); ok { hcBook.Publisher = name }
+		}
+	}
 
-    log.Debug("Fetched book by ID", map[string]interface{}{
-        "resolved_book_id": hcBook.ID,
-        "title":            hcBook.Title,
-        "slug":             hcBook.Slug,
-        "edition_id":       hcBook.EditionID,
-        "has_cover":        hcBook.CoverImageURL != "",
-    })
+	log.Debug("Fetched book by ID", map[string]interface{}{
+		"resolved_book_id": hcBook.ID,
+		"title":            hcBook.Title,
+		"slug":             hcBook.Slug,
+		"edition_id":       hcBook.EditionID,
+		"has_cover":        hcBook.CoverImageURL != "",
+	})
 
-    return hcBook, nil
+	return hcBook, nil
 }
 
 // GetUserBook gets user book information by ID
@@ -1023,7 +1044,7 @@ func (c *Client) GetUserBook(ctx context.Context, userBookID string) (*models.Ha
 		} `json:"user_books"`
 	}
 
-	// Execute the GraphQL query
+	// Execute the query
 	err = c.GraphQLQuery(ctx, query, variables, &result)
 	if err != nil {
 		log.Error("Failed to execute GraphQL query", map[string]interface{}{
@@ -1094,56 +1115,69 @@ func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.Har
 	}
 
 	// Create logger with context
-	log := logger.WithContext(map[string]interface{}{
+	log := c.logger.With(map[string]interface{}{
 		"asin":   asin,
 		"method": "SearchBookByASIN",
 	})
 
-	// Define the GraphQL query
-	const query = `
-	query BookByASIN($asin: String!) {
-	  books(
-	    where: { 
-	      editions: { 
-	        _and: [
-	          { asin: { _eq: $asin } }, 
-	          { reading_format: { id: { _eq: 2 } } }
-	        ]
-	      } 
-	    },
-	    limit: 1
-	  ) {
-	    id
-	    title
-	    book_status_id
-	    canonical_id
-	    editions(
-	      where: { 
-	        _and: [
-	          { asin: { _eq: $asin } },
-	          { reading_format: { id: { _eq: 2 } } }
-	        ]
-	      },
-	      limit: 1
-	    ) {
-	      id
-	      asin
-	      isbn_13
-	      isbn_10
-	      reading_format_id
-	      audio_seconds
-	    }
-	  }
-	}`
+	// Define the GraphQL query: always format-aware via numeric format_id, default to audiobook (2)
+	formatStr, hasFormat := getReadingFormatFromCtx(ctx)
+	formatID := 2
+	if hasFormat {
+		switch formatStr {
+		case "ebook":
+			formatID = 4
+		case "audiobook":
+			formatID = 2
+		}
+	}
+	var query string
+	query = `
+query BookByASIN($asin: String!, $format_id: Int!) {
+  books(
+    where: { 
+      editions: { 
+        _and: [
+          { asin: { _eq: $asin } }, 
+          { reading_format: { id: { _eq: $format_id } } }
+        ]
+      } 
+    },
+    limit: 1
+  ) {
+    id
+    title
+    book_status_id
+    canonical_id
+    editions(
+      where: { 
+        _and: [
+          { asin: { _eq: $asin }},
+          { reading_format: { id: { _eq: $format_id } } }
+        ]
+      },
+      limit: 1
+    ) {
+      id
+      asin
+      isbn_13
+      isbn_10
+      reading_format_id
+      audio_seconds
+    }
+  }
+}`
 
 	// Define the response structure to match the actual API response
 
 	// Use a flexible raw map to be resilient to schema variations
 	var rawResponse map[string]interface{}
 
-	err := c.GraphQLQuery(ctx, query, map[string]interface{}{
-		"asin": asin,
-	}, &rawResponse)
+	vars := map[string]interface{}{
+		"asin":      asin,
+		"format_id": formatID,
+	}
+	err := c.GraphQLQuery(ctx, query, vars, &rawResponse)
 
 	if err != nil {
 		log.Error("Failed to search book by ASIN", map[string]interface{}{
@@ -1305,10 +1339,10 @@ func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.Har
 		hcBook.EditionISBN10 = isbn10
 	}
 
-	// Debug log the book data
 	log.Debug("Successfully found book by ASIN", map[string]interface{}{
-		"book_id": hcBook.ID,
-		"title":   bookData["title"].(string),
+		"book_id":    hcBook.ID,
+		"title":      bookData["title"].(string),
+		"edition_id": hcBook.EditionID,
 	})
 
 	return hcBook, nil
@@ -1331,42 +1365,53 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
 	normalizedISBN := strings.ReplaceAll(isbn, "-", "")
 	normalizedISBN = strings.ReplaceAll(normalizedISBN, " ", "")
 
-	// Define the GraphQL query
-	query := fmt.Sprintf(`
-	query BookByISBN($isbn: String!) {
-	  books(
-	    where: { 
-	      editions: { 
-	        _and: [
-	          {%s: {_eq: $isbn}}, 
-	          {reading_format: {id: {_eq: 2}}}
-	        ]
-	      } 
-	    },
-	    limit: 1
-	  ) {
-	    id
-	    title
-	    book_status_id
-	    canonical_id
-	    editions(
-	      where: { 
-	        _and: [
-	          {%s: {_eq: $isbn}},
-	          {reading_format: {id: {_eq: 2}}}
-	        ]
-	      },
-	      limit: 1
-	    ) {
-	      id
-	      asin
-	      isbn_13
-	      isbn_10
-	      reading_format_id
-	      audio_seconds
-	    }
-	  }
-	}`, isbnField, isbnField)
+	// Define the GraphQL query (always format-aware via numeric format_id, default to audiobook id=2)
+	formatStr, hasFormat := getReadingFormatFromCtx(ctx)
+	formatID := 2
+	if hasFormat {
+		switch formatStr {
+		case "ebook":
+			formatID = 4
+		case "audiobook":
+			formatID = 2
+		}
+	}
+	var query string
+	query = fmt.Sprintf(`
+    query BookByISBN($isbn: String!, $format_id: Int!) {
+      books(
+        where: { 
+          editions: { 
+            _and: [
+              {%s: {_eq: $isbn}}, 
+              {reading_format: {id: {_eq: $format_id}}}
+            ]
+          } 
+        },
+        limit: 1
+      ) {
+        id
+        title
+        book_status_id
+        canonical_id
+        editions(
+          where: { 
+            _and: [
+              {%s: {_eq: $isbn}},
+              {reading_format: {id: {_eq: $format_id}}}
+            ]
+          },
+          limit: 1
+        ) {
+          id
+          asin
+          isbn_13
+          isbn_10
+          reading_format_id
+          audio_seconds
+        }
+      }
+    }`, isbnField, isbnField)
 
 	// Define the response structure to match the actual API response
 	type Edition struct {
@@ -1392,9 +1437,11 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
 	}
 
 	// Execute the GraphQL query
-	err := c.GraphQLQuery(ctx, query, map[string]interface{}{
-		"isbn": normalizedISBN,
-	}, &result)
+	vars := map[string]interface{}{
+		"isbn":      normalizedISBN,
+		"format_id": formatID,
+	}
+	err := c.GraphQLQuery(ctx, query, vars, &result)
 
 	// Debug: Log the result after unmarshaling
 	resultJSON, _ := json.Marshal(result)

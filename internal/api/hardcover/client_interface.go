@@ -32,17 +32,18 @@ type HardcoverClientInterface interface {
 	// GetUserBookID retrieves the user book ID for a given edition ID
 	GetUserBookID(ctx context.Context, editionID int) (int, error)
 
-	// SearchBookByISBN13 searches for a book by ISBN-13
-	SearchBookByISBN13(ctx context.Context, isbn13 string) (*models.HardcoverBook, error)
+    // SearchBookByISBN13 searches for a book by ISBN-13
+    SearchBookByISBN13(ctx context.Context, isbn13 string) (*models.HardcoverBook, error)
 
-	// SearchBookByASIN searches for a book by ASIN
-	SearchBookByASIN(ctx context.Context, asin string) (*models.HardcoverBook, error)
+    // SearchBookByASIN searches for a book by ASIN
+    SearchBookByASIN(ctx context.Context, asin string) (*models.HardcoverBook, error)
 
-	// SearchBookByISBN10 searches for a book by ISBN-10
-	SearchBookByISBN10(ctx context.Context, isbn10 string) (*models.HardcoverBook, error)
+    // SearchBookByISBN10 searches for a book by ISBN-10
+    SearchBookByISBN10(ctx context.Context, isbn10 string) (*models.HardcoverBook, error)
 
-	// SearchBooks searches for books by title and author
-	SearchBooks(ctx context.Context, title, author string) ([]models.HardcoverBook, error)
+    // SearchBooks searches for books by title and author
+    SearchBooks(ctx context.Context, title, author string) ([]models.HardcoverBook, error)
+
 
 	// GetEditionByASIN gets an edition by its ASIN
 	GetEditionByASIN(ctx context.Context, asin string) (*models.Edition, error)

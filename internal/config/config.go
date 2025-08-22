@@ -58,6 +58,8 @@ type Config struct {
 			// Exclude these libraries (empty = none)
 			Exclude []string `yaml:"exclude" env:"SYNC_LIBRARIES_EXCLUDE"`
 		} `yaml:"libraries"`
+		// IncludeEbooks controls whether items with mediaType "ebook" are included in sync (default: false)
+		IncludeEbooks bool `yaml:"include_ebooks" env:"SYNC_INCLUDE_EBOOKS"`
 	} `yaml:"sync"`
 
 	// Rate limiting configuration
@@ -222,6 +224,7 @@ func DefaultConfig() *Config {
 	cfg.Sync.SingleUserMode = false
 	cfg.Sync.TestBookFilter = ""
 	cfg.Sync.TestBookLimit = 0
+	cfg.Sync.IncludeEbooks = false
 
 	// Database defaults
 	cfg.Database.Type = "sqlite"
@@ -316,12 +319,12 @@ func Load(configPath string) (*Config, error) {
 	fmt.Printf("Audiobookshelf:\n  url: %s\n  has_token: %v\n", 
 		cfg.Audiobookshelf.URL, cfg.Audiobookshelf.Token != "")
 	fmt.Printf("Hardcover:\n  has_token: %v\n  base_url: %s\n", cfg.Hardcover.Token != "", cfg.Hardcover.BaseURL)
-	fmt.Printf("Sync:\n  incremental: %v\n  state_file: %s\n  min_change_threshold: %d\n  sync_interval: %s\n  minimum_progress: %f\n  sync_want_to_read: %v\n  process_unread_books: %v\n  sync_owned: %v\n  dry_run: %v\n  single_user_mode: %v\n  single_user_username: %s\n  test_book_filter: %s\n  test_book_limit: %d\n",
+	fmt.Printf("Sync:\n  incremental: %v\n  state_file: %s\n  min_change_threshold: %d\n  sync_interval: %s\n  minimum_progress: %f\n  sync_want_to_read: %v\n  process_unread_books: %v\n  sync_owned: %v\n  dry_run: %v\n  single_user_mode: %v\n  single_user_username: %s\n  test_book_filter: %s\n  test_book_limit: %d\n  include_ebooks: %v\n",
 		cfg.Sync.Incremental, cfg.Sync.StateFile, cfg.Sync.MinChangeThreshold, 
 		cfg.Sync.SyncInterval, cfg.Sync.MinimumProgress, cfg.Sync.SyncWantToRead,
 		cfg.Sync.ProcessUnreadBooks, cfg.Sync.SyncOwned, cfg.Sync.DryRun,
 		cfg.Sync.SingleUserMode, cfg.Sync.SingleUserUsername, cfg.Sync.TestBookFilter,
-		cfg.Sync.TestBookLimit)
+		cfg.Sync.TestBookLimit, cfg.Sync.IncludeEbooks)
 	fmt.Printf("Rate Limiting:\n  rate: %s\n  burst: %d\n  max_concurrent: %d\n",
 		cfg.RateLimit.Rate, cfg.RateLimit.Burst, cfg.RateLimit.MaxConcurrent)
 	fmt.Printf("Logging:\n  level: %s\n  format: %s\n", 
@@ -655,6 +658,12 @@ func loadFromEnv(cfg *Config) {
 	if syncMinChangeThreshold := os.Getenv("SYNC_MIN_CHANGE_THRESHOLD"); syncMinChangeThreshold != "" {
 		if i, err := strconv.Atoi(syncMinChangeThreshold); err == nil {
 			cfg.Sync.MinChangeThreshold = i
+		}
+	}
+	// Include ebooks option
+	if includeEbooks := os.Getenv("SYNC_INCLUDE_EBOOKS"); includeEbooks != "" {
+		if b, err := strconv.ParseBool(includeEbooks); err == nil {
+			cfg.Sync.IncludeEbooks = b
 		}
 	}
 	// Library filtering from environment variables
