@@ -4,11 +4,19 @@ on:
   push:
     branches:
       - main
+      - develop
     paths:
       - 'helm/**'
       - '.github/workflows/helm-publish.yml'
     tags:
       - 'v*'
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'helm/**'
+      - '.github/workflows/helm-publish.yml'
   release:
     types: [published]
   workflow_dispatch:
@@ -27,14 +35,23 @@ concurrency:
 jobs:
   publish-helm-chart:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      - name: Determine Channel
+        id: channel
+        run: |
+          CHANNEL=stable
+          if [[ "${GITHUB_REF}" == "refs/heads/develop" ]]; then
+            CHANNEL=dev
+          fi
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            CHANNEL=stable
+          fi
+          echo "channel=${CHANNEL}" >> $GITHUB_OUTPUT
 
       - name: Configure Git
         run: |
@@ -88,21 +105,41 @@ jobs:
           mkdir -p .cr-release-packages
           helm package helm/audiobookshelf-hardcover-sync --destination .cr-release-packages
 
-      - name: Create Chart Repository Index
+      - name: Create Chart Repository Index (per channel)
+        if: github.event_name != 'pull_request'
         run: |
-          mkdir -p gh-pages
-          
-          # Copy packaged charts
-          cp .cr-release-packages/*.tgz gh-pages/
-          
-          # Create or update index.yaml
-          if [ -f gh-pages/index.yaml ]; then
-            helm repo index gh-pages --merge gh-pages/index.yaml --url https://drallgood.github.io/audiobookshelf-hardcover-sync
+          CHANNEL=${{ steps.channel.outputs.channel }}
+          TARGET_DIR="gh-pages/${CHANNEL}"
+          REPO_URL="https://drallgood.github.io/audiobookshelf-hardcover-sync/${CHANNEL}"
+          mkdir -p "${TARGET_DIR}"
+
+          # Copy packaged charts into channel directory
+          cp .cr-release-packages/*.tgz "${TARGET_DIR}/"
+
+          # Create or update channel-specific index.yaml
+          if [ -f "${TARGET_DIR}/index.yaml" ]; then
+            helm repo index "${TARGET_DIR}" --merge "${TARGET_DIR}/index.yaml" --url "${REPO_URL}"
           else
-            helm repo index gh-pages --url https://drallgood.github.io/audiobookshelf-hardcover-sync
+            helm repo index "${TARGET_DIR}" --url "${REPO_URL}"
+          fi
+
+          # Additionally mirror stable to root for backward compatibility
+          if [ "$CHANNEL" = "stable" ]; then
+            ROOT_DIR="gh-pages"
+            ROOT_URL="https://drallgood.github.io/audiobookshelf-hardcover-sync"
+            mkdir -p "${ROOT_DIR}"
+            # Copy packaged charts to root as well
+            cp .cr-release-packages/*.tgz "${ROOT_DIR}/"
+            # Merge or create root index.yaml
+            if [ -f "${ROOT_DIR}/index.yaml" ]; then
+              helm repo index "${ROOT_DIR}" --merge "${ROOT_DIR}/index.yaml" --url "${ROOT_URL}"
+            else
+              helm repo index "${ROOT_DIR}" --url "${ROOT_URL}"
+            fi
           fi
 
       - name: Create README for Chart Repository
+        if: github.event_name != 'pull_request'
         run: |
           cat > gh-pages/README.md << 'EOF'
           # Audiobookshelf-Hardcover Sync Helm Chart Repository
@@ -111,28 +148,29 @@ jobs:
           
           ## Usage
           
-          Add this Helm repository:
+          Add one of these Helm repositories:
           
           ```bash
-          helm repo add audiobookshelf-hardcover-sync https://drallgood.github.io/audiobookshelf-hardcover-sync
+          # Stable releases (from main)
+          helm repo add audiobookshelf-hardcover-sync https://drallgood.github.io/audiobookshelf-hardcover-sync/stable
+          # Legacy (backward compatible): root mirrors stable
+          # helm repo add audiobookshelf-hardcover-sync https://drallgood.github.io/audiobookshelf-hardcover-sync
+          
+          # Dev channel (from develop)
+          helm repo add audiobookshelf-hardcover-sync-dev https://drallgood.github.io/audiobookshelf-hardcover-sync/dev
           helm repo update
           ```
           
-          Install the chart:
+          Install the chart (stable):
           
           ```bash
-          # Create a values file with your configuration
-          cat > my-values.yaml << 'YAML'
-          secrets:
-            audiobookshelf:
-              url: "https://your-audiobookshelf-instance.com"
-              token: "your-audiobookshelf-token"
-            hardcover:
-              token: "your-hardcover-token"
-          YAML
-          
-          # Install the chart
           helm install my-sync audiobookshelf-hardcover-sync/audiobookshelf-hardcover-sync -f my-values.yaml
+          ```
+
+          Install the chart (dev):
+
+          ```bash
+          helm install my-sync-dev audiobookshelf-hardcover-sync-dev/audiobookshelf-hardcover-sync -f my-values.yaml
           ```
           
           ## Configuration
@@ -151,22 +189,37 @@ jobs:
           EOF
 
       - name: Setup Pages
+        if: github.event_name != 'pull_request'
         uses: actions/configure-pages@v5
 
       - name: Upload artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
         with:
           path: './gh-pages'
 
       - name: Deploy to GitHub Pages
+        if: github.event_name != 'pull_request'
         id: deployment
         uses: actions/deploy-pages@v4
 
   test-chart-install:
     runs-on: ubuntu-latest
     needs: publish-helm-chart
-    if: github.event_name != 'release'
+    if: github.event_name == 'push'
     steps:
+      - name: Determine Channel
+        id: channel
+        run: |
+          CHANNEL=stable
+          if [[ "${GITHUB_REF}" == "refs/heads/develop" ]]; then
+            CHANNEL=dev
+          fi
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            CHANNEL=stable
+          fi
+          echo "channel=${CHANNEL}" >> $GITHUB_OUTPUT
+
       - name: Install Helm
         uses: azure/setup-helm@v4
         with:
@@ -177,15 +230,24 @@ jobs:
           # Wait a bit for GitHub Pages to be available
           sleep 30
           
-          # Add the repository
-          helm repo add audiobookshelf-hardcover-sync https://drallgood.github.io/audiobookshelf-hardcover-sync
+          # Add the repository for the correct channel
+          CHANNEL="${{ steps.channel.outputs.channel }}"
+          if [ "$CHANNEL" = "dev" ]; then
+            REPO_URL="https://drallgood.github.io/audiobookshelf-hardcover-sync/dev"
+            REPO_NAME="audiobookshelf-hardcover-sync-dev"
+          else
+            REPO_URL="https://drallgood.github.io/audiobookshelf-hardcover-sync/stable"
+            REPO_NAME="audiobookshelf-hardcover-sync"
+          fi
+
+          helm repo add "$REPO_NAME" "$REPO_URL"
           helm repo update
           
           # Search for the chart
-          helm search repo audiobookshelf-hardcover-sync
+          helm search repo "$REPO_NAME"
           
           # Test template rendering
-          helm template test audiobookshelf-hardcover-sync/audiobookshelf-hardcover-sync \
+          helm template test "$REPO_NAME/audiobookshelf-hardcover-sync" \
             --set secrets.audiobookshelf.url="https://test.example.com" \
             --set secrets.audiobookshelf.token="test-token" \
             --set secrets.hardcover.token="test-token" \
