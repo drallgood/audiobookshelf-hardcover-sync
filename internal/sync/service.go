@@ -545,6 +545,7 @@ func (s *Service) Sync(ctx context.Context) error {
 		"minimum_progress":  s.config.Sync.MinimumProgress,
 		"sync_want_to_read": s.config.Sync.SyncWantToRead,
 		"sync_owned":        s.config.Sync.SyncOwned,
+		"include_ebooks":    s.config.Sync.IncludeEbooks,
 	})
 
 	s.log.Info("========================================", nil)
@@ -862,6 +863,17 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	bookLog.Debug("Starting book processing")
 	// Mark as processed by default, will be set to false if there's an error
 	bookProcessed = true
+
+	// Media type filtering: skip ebooks unless explicitly enabled
+	mediaType := strings.ToLower(book.MediaType)
+	if mediaType == "ebook" && !s.config.Sync.IncludeEbooks {
+		bookLog.Info("Skipping ebook because include_ebooks is disabled", map[string]interface{}{
+			"media_type":     book.MediaType,
+			"include_ebooks": s.config.Sync.IncludeEbooks,
+		})
+		bookProcessed = false // not counted as synced
+		return ErrSkippedBook
+	}
 
 	// Track if we found the book in Hardcover
 
@@ -3295,6 +3307,14 @@ func (s *Service) findBookInHardcoverByTitleAuthor(ctx context.Context, book mod
 // It first tries ASIN, then ISBN-13, then ISBN-10
 // Title/author search is only used for mismatches and should be called separately
 func (s *Service) findBookInHardcover(ctx context.Context, book models.AudiobookshelfBook) (*models.HardcoverBook, error) {
+    // Derive desired reading format from source media type
+    mediaType := strings.ToLower(strings.TrimSpace(book.MediaType))
+    desiredFormat := "audiobook"
+    if mediaType == "ebook" {
+        desiredFormat = "ebook"
+    }
+    // Attach to context for client to respect
+    ctx = hardcover.WithReadingFormat(ctx, desiredFormat)
 	// Create a logger with book context
 	logCtx := map[string]interface{}{
 		"book_id": book.ID,
