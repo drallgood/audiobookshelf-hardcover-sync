@@ -261,6 +261,7 @@ config:
     incremental: true
     stateFile: "/app/data/sync_state.json"
     minChangeThreshold: 60
+    includeEbooks: false
     libraries:
       include: []         # List of library names/IDs to sync (if specified, only these will be synced)
       exclude: []         # List of library names/IDs to exclude from sync
