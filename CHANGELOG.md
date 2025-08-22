@@ -7,21 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- **Process Unread Books Configuration**: New `process_unread_books` configuration option
-  - **Configurable Behavior**: Control whether books with 0% progress are processed for mismatches and "want to read" status
-  - **Backward Compatible**: Default value `false` maintains existing behavior (skip unread books)
-  - **Environment Variable**: Support via `PROCESS_UNREAD_BOOKS=true/false`
-  - **Configuration File**: Support via `sync.process_unread_books: true/false` in YAML config
-  - **Enhanced Debugging**: Added debug logging to indicate when unread books are being processed
+- Nothing yet.
 
-### Fixed
-- **Sync Configuration**: Fixed `sync_want_to_read` flag not being respected for books with 0% progress
-  - Now properly skips syncing "Want to Read" books when `sync_want_to_read` is disabled
-  - Added comprehensive test coverage for all sync scenarios
-  - Improved test reliability by properly initializing service configuration
-
-## [v3.0.0] - Unreleased
+## [v3.0.0] - 2025-08-22
 
 ### Fixed
 - **Authentication**: Fixed default admin user creation to properly read credentials from local provider config
@@ -41,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Fixed context key usage with custom `contextKey` type to avoid collisions
   - Resolved format string parsing issue in HTML template rendering
   - All linting checks now pass cleanly
+
+- **Sync Configuration**: Fixed `sync_want_to_read` flag not being respected for books with 0% progress
+  - Now properly skips syncing "Want to Read" books when `sync_want_to_read` is disabled
+  - Added comprehensive test coverage for all sync scenarios
+  - Improved test reliability by properly initializing service configuration
 
 ### Added
 - **🎉 MAJOR: Multi-User Support**: Complete multi-user system with web interface and secure token management
@@ -119,6 +112,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - **Security Checklist**: Production deployment guidelines and best practices
     - **Troubleshooting Guide**: Common issues and debugging instructions
     - **API Documentation**: Complete authentication API reference
+
+ - **Process Unread Books Configuration**: New `process_unread_books` configuration option
+   - **Configurable Behavior**: Control whether books with 0% progress are processed for mismatches and "want to read" status
+   - **Backward Compatible**: Default value `false` maintains existing behavior (skip unread books)
+   - **Environment Variable**: Support via `PROCESS_UNREAD_BOOKS=true/false`
+   - **Configuration File**: Support via `sync.process_unread_books: true/false` in YAML config
+   - **Enhanced Debugging**: Added debug logging to indicate when unread books are being processed
 
 ### Changed
 - **📚 Enhanced Documentation**: Updated environment variables and endpoints documentation

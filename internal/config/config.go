@@ -672,8 +672,8 @@ func loadFromEnv(cfg *Config) {
 
 // mergeConfigs merges non-zero values from src into dst
 func mergeConfigs(dst, src *Config) {
-	dstVal := reflect.ValueOf(dst).Elem()
-	srcVal := reflect.ValueOf(src).Elem()
+    dstVal := reflect.ValueOf(dst).Elem()
+    srcVal := reflect.ValueOf(src).Elem()
 
 	// Handle deprecated app.* fields first
 	if src.App.TestBookFilter != "" && dst.Sync.TestBookFilter == "" {
@@ -687,89 +687,59 @@ func mergeConfigs(dst, src *Config) {
 		fmt.Printf("WARNING: 'app.test_book_limit' is deprecated and will be removed in a future version. Use 'sync.test_book_limit' instead.\n")
 	}
 
-	for i := 0; i < dstVal.NumField(); i++ {
-		dstField := dstVal.Field(i)
-		srcField := srcVal.Field(i)
+    for i := 0; i < dstVal.NumField(); i++ {
+        dstField := dstVal.Field(i)
+        srcField := srcVal.Field(i)
 
-		// Skip unexported fields
-		if !dstField.CanSet() {
-			continue
-		}
+        // Skip unexported fields
+        if !dstField.CanSet() {
+            continue
+        }
 
-		switch dstField.Kind() {
-		case reflect.Struct:
-			// For nested structs, recursively merge each field
-			for j := 0; j < dstField.NumField(); j++ {
-				dstFieldField := dstField.Field(j)
-				srcFieldField := srcField.Field(j)
-				fieldType := dstField.Type().Field(j)
-
-				if !dstFieldField.CanSet() {
-					continue
-				}
-
-				switch dstFieldField.Kind() {
-				case reflect.String:
-					if srcFieldField.String() != "" {
-						// Merging string field
-						dstFieldField.SetString(srcFieldField.String())
-					}
-				case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-					if srcFieldField.Int() != 0 {
-						// Merging int field
-						dstFieldField.SetInt(srcFieldField.Int())
-					}
-				case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-					if srcFieldField.Uint() != 0 {
-						// Merging uint field
-						dstFieldField.SetUint(srcFieldField.Uint())
-					}
-				case reflect.Float32, reflect.Float64:
-					if srcFieldField.Float() != 0 {
-						// Merging float field
-						dstFieldField.SetFloat(srcFieldField.Float())
-					}
-				case reflect.Bool:
-					// Check if the field is explicitly set in the source config
-					// by looking for the 'yaml' tag and checking if it's present in the source
-					fieldTag := fieldType.Tag.Get("yaml")
-					if fieldTag == "-" {
-						continue // Skip fields marked with yaml:"-"
-					}
-
-					// Always set boolean values from config file, whether true or false
-					// but only if the field is present in the source config
-					if srcFieldField.IsValid() && srcFieldField.CanInterface() {
-						// Merging bool field
-						dstFieldField.SetBool(srcFieldField.Bool())
-					}
-				}
-			}
-		case reflect.String:
-			// Only overwrite if source has a non-zero value
-			if srcField.String() != "" {
-				dstField.SetString(srcField.String())
-			}
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			// Only overwrite if source has a non-zero value
-			if srcField.Int() != 0 {
-				dstField.SetInt(srcField.Int())
-			}
-		case reflect.Float32, reflect.Float64:
-			// Only overwrite if source has a non-zero value
-			if srcField.Float() != 0 {
-				dstField.SetFloat(srcField.Float())
-			}
-		case reflect.Bool:
-			// Always set boolean values from config file, whether true or false
-			if srcField.IsValid() && srcField.CanInterface() {
-				dstField.SetBool(srcField.Bool())
-			}
-		}
-	}
+        mergeValues(dstField, srcField)
+    }
 }
 
+// mergeValues recursively merges src into dst following these rules:
+// - Strings/Floats/Ints: copy only when src is non-zero
+// - Bools: always copy (false is a valid explicit value in config)
+// - Structs: recurse into fields
+func mergeValues(dst, src reflect.Value) {
+    if !dst.CanSet() {
+        return
+    }
 
+    switch dst.Kind() {
+    case reflect.Struct:
+        for j := 0; j < dst.NumField(); j++ {
+            d := dst.Field(j)
+            s := src.Field(j)
+            if !d.CanSet() {
+                continue
+            }
+            mergeValues(d, s)
+        }
+    case reflect.String:
+        if src.String() != "" {
+            dst.SetString(src.String())
+        }
+    case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+        if src.Int() != 0 {
+            dst.SetInt(src.Int())
+        }
+    case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+        if src.Uint() != 0 {
+            dst.SetUint(src.Uint())
+        }
+    case reflect.Float32, reflect.Float64:
+        if src.Float() != 0 {
+            dst.SetFloat(src.Float())
+        }
+    case reflect.Bool:
+        // Always set boolean values from config (explicit false is valid)
+        dst.SetBool(src.Bool())
+    }
+}
 
 // getEnv returns the value of an environment variable or a default value
 func getEnv(key, fallback string) string {

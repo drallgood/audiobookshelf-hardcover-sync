@@ -507,7 +507,6 @@ func (s *AuthService) GetProviders() map[string]IAuthProvider {
 	return enabled
 }
 
-// InitializeDefaultUser creates a default admin user if no users exist
 func (s *AuthService) InitializeDefaultUser(ctx context.Context) error {
 	if !s.enabled {
 		return nil
@@ -518,10 +517,9 @@ func (s *AuthService) InitializeDefaultUser(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to check user count: %w", err)
 	}
-	
-	if count > 0 {
-		return nil // Users already exist
-	}
+	// Note: Even if users exist, we still proceed to ensure the default admin
+	// user exists and is updated with the configured password. The repository
+	// method handles both create and update (upsert-like) behavior.
 
 	// Try to get credentials from local provider config first
 	var localProvider *AuthProviderConfig
@@ -575,7 +573,12 @@ func (s *AuthService) InitializeDefaultUser(ctx context.Context) error {
 	}
 	
 	if s.logger != nil {
-		s.logger.Info("Creating default admin user", map[string]interface{}{
+		action := "creating"
+		if count > 0 {
+			action = "ensuring/updating"
+		}
+		s.logger.Info("Upserting default admin user", map[string]interface{}{
+			"action":   action,
 			"username": username,
 			"email":    email,
 		})
@@ -588,7 +591,7 @@ func (s *AuthService) InitializeDefaultUser(ctx context.Context) error {
 	}
 	
 	if s.logger != nil {
-		s.logger.Info("Default admin user created successfully", map[string]interface{}{
+		s.logger.Info("Default admin user ensured successfully", map[string]interface{}{
 			"username": username,
 			"email":    email,
 		})
@@ -597,14 +600,14 @@ func (s *AuthService) InitializeDefaultUser(ctx context.Context) error {
 	return nil
 }
 
-// GetMiddleware returns authentication middleware
-func (s *AuthService) GetMiddleware() *AuthMiddleware {
-	return NewAuthMiddleware(s.sessionManager, s.config)
-}
-
 // GetSessionManager returns the session manager for direct session operations
 func (s *AuthService) GetSessionManager() SessionManager {
-	return s.sessionManager
+    return s.sessionManager
+}
+
+// GetMiddleware constructs an AuthMiddleware tied to this service's session manager and config
+func (s *AuthService) GetMiddleware() *AuthMiddleware {
+    return NewAuthMiddleware(s.sessionManager, s.config)
 }
 
 // LoadConfigFromEnv loads authentication configuration from environment variables

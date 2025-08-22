@@ -292,33 +292,44 @@ func (r *AuthRepository) GetUserCount(ctx context.Context) (int64, error) {
 
 // CreateDefaultAdminUser creates a default admin user if no users exist
 func (r *AuthRepository) CreateDefaultAdminUser(ctx context.Context, username, email, password string) error {
-	// Check if any users exist
-	count, err := r.GetUserCount(ctx)
-	if err != nil {
-		return err
-	}
-	
-	if count > 0 {
-		// If admin user exists, update its password to match config
-		var existingUser AuthUser
-		err := r.db.WithContext(ctx).Where("username = ? AND role = ?", username, "admin").First(&existingUser).Error
-		if err == nil {
-			// Admin user exists, update password
-			user, err := CreateLocalUser(username, email, password, RoleAdmin)
-			if err != nil {
-				return fmt.Errorf("failed to create updated admin user: %w", err)
-			}
-			existingUser.PasswordHash = user.PasswordHash
-			return r.db.WithContext(ctx).Save(&existingUser).Error
-		}
-		return nil // Users exist but no admin found
-	}
-	
-	// Create default admin user
-	user, err := CreateLocalUser(username, email, password, RoleAdmin)
-	if err != nil {
-		return fmt.Errorf("failed to create default admin user: %w", err)
-	}
-	
-	return r.CreateUser(ctx, user)
+    // Check if any users exist
+    count, err := r.GetUserCount(ctx)
+    if err != nil {
+        return err
+    }
+    
+    if count > 0 {
+        // Users exist: ensure an admin with the configured username is present
+        var existingUser AuthUser
+        err := r.db.WithContext(ctx).Where("username = ? AND role = ?", username, "admin").First(&existingUser).Error
+        if err == nil {
+            // Admin user exists, update password hash to match config
+            user, err := CreateLocalUser(username, email, password, RoleAdmin)
+            if err != nil {
+                return fmt.Errorf("failed to create updated admin user: %w", err)
+            }
+            existingUser.PasswordHash = user.PasswordHash
+            if err := r.db.WithContext(ctx).Save(&existingUser).Error; err != nil {
+                return fmt.Errorf("failed to update admin user: %w", err)
+            }
+            return nil
+        }
+        // No admin found: create one now to honor config
+        user, err := CreateLocalUser(username, email, password, RoleAdmin)
+        if err != nil {
+            return fmt.Errorf("failed to create default admin user: %w", err)
+        }
+        if err := r.db.WithContext(ctx).Create(user).Error; err != nil {
+            return fmt.Errorf("failed to save default admin user: %w", err)
+        }
+        return nil
+    }
+    
+    // Create default admin user
+    user, err := CreateLocalUser(username, email, password, RoleAdmin)
+    if err != nil {
+        return fmt.Errorf("failed to create default admin user: %w", err)
+    }
+    
+    return r.CreateUser(ctx, user)
 }

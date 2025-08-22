@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
@@ -174,7 +175,7 @@ func (am *AuthMiddleware) handleAuthError(w http.ResponseWriter, r *http.Request
 	logger.Get().Debug("Redirecting to login for web request", map[string]interface{}{
 		"path": r.URL.Path,
 	})
-	http.Redirect(w, r, "/auth/login?redirect="+r.URL.Path, http.StatusFound)
+	http.Redirect(w, r, "/login?redirect="+url.QueryEscape(r.URL.Path), http.StatusFound)
 }
 
 // handleForbidden handles authorization errors

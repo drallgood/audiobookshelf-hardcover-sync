@@ -92,41 +92,41 @@ func NewAuthConfigFromConfig(configAuth *ConfigAuth) AuthConfig {
 		config.Providers = append(config.Providers, keycloakProvider)
 	}
 
-	// Override with environment variables if they exist (env takes precedence)
-	if isEnvSet("AUTH_ENABLED") {
+	// Override with environment variables if they are non-empty (env takes precedence)
+	if isEnvNonEmpty("AUTH_ENABLED") {
 		envConfig := getAuthConfigFromEnv()
 		config.Enabled = envConfig.Enabled
 	}
-	if isEnvSet("AUTH_SESSION_SECRET") {
+	if isEnvNonEmpty("AUTH_SESSION_SECRET") {
 		config.Session.Secret = os.Getenv("AUTH_SESSION_SECRET")
 	}
-	if isEnvSet("AUTH_COOKIE_NAME") {
+	if isEnvNonEmpty("AUTH_COOKIE_NAME") {
 		config.Session.CookieName = os.Getenv("AUTH_COOKIE_NAME")
 	}
-	if isEnvSet("AUTH_SESSION_MAX_AGE") {
+	if isEnvNonEmpty("AUTH_SESSION_MAX_AGE") {
 		if maxAge := getIntFromEnv("AUTH_SESSION_MAX_AGE", 0); maxAge > 0 {
 			config.Session.MaxAge = maxAge
 		}
 	}
-	if isEnvSet("AUTH_SESSION_SECURE") {
+	if isEnvNonEmpty("AUTH_SESSION_SECURE") {
 		config.Session.Secure = getBoolFromEnv("AUTH_SESSION_SECURE", false)
 	}
-	if isEnvSet("AUTH_SESSION_HTTP_ONLY") {
+	if isEnvNonEmpty("AUTH_SESSION_HTTP_ONLY") {
 		config.Session.HttpOnly = getBoolFromEnv("AUTH_SESSION_HTTP_ONLY", true)
 	}
-	if isEnvSet("AUTH_SESSION_SAME_SITE") {
+	if isEnvNonEmpty("AUTH_SESSION_SAME_SITE") {
 		config.Session.SameSite = os.Getenv("AUTH_SESSION_SAME_SITE")
 	}
 
 	// Override default admin settings from environment
 	if len(config.Providers) > 0 && config.Providers[0].Type == "local" {
-		if isEnvSet("AUTH_DEFAULT_ADMIN_USERNAME") {
+		if isEnvNonEmpty("AUTH_DEFAULT_ADMIN_USERNAME") {
 			config.Providers[0].Config["default_admin_username"] = os.Getenv("AUTH_DEFAULT_ADMIN_USERNAME")
 		}
-		if isEnvSet("AUTH_DEFAULT_ADMIN_EMAIL") {
+		if isEnvNonEmpty("AUTH_DEFAULT_ADMIN_EMAIL") {
 			config.Providers[0].Config["default_admin_email"] = os.Getenv("AUTH_DEFAULT_ADMIN_EMAIL")
 		}
-		if isEnvSet("AUTH_DEFAULT_ADMIN_PASSWORD") {
+		if isEnvNonEmpty("AUTH_DEFAULT_ADMIN_PASSWORD") {
 			config.Providers[0].Config["default_admin_password"] = os.Getenv("AUTH_DEFAULT_ADMIN_PASSWORD")
 		}
 	}
@@ -134,25 +134,25 @@ func NewAuthConfigFromConfig(configAuth *ConfigAuth) AuthConfig {
 	// Override Keycloak settings from environment
 	for i, provider := range config.Providers {
 		if provider.Type == "oidc" && provider.Name == "keycloak" {
-			if isEnvSet("KEYCLOAK_ENABLED") {
+			if isEnvNonEmpty("KEYCLOAK_ENABLED") {
 				config.Providers[i].Enabled = getBoolFromEnv("KEYCLOAK_ENABLED", false)
 			}
-			if isEnvSet("KEYCLOAK_ISSUER") {
+			if isEnvNonEmpty("KEYCLOAK_ISSUER") {
 				config.Providers[i].Config["issuer"] = os.Getenv("KEYCLOAK_ISSUER")
 			}
-			if isEnvSet("KEYCLOAK_CLIENT_ID") {
+			if isEnvNonEmpty("KEYCLOAK_CLIENT_ID") {
 				config.Providers[i].Config["client_id"] = os.Getenv("KEYCLOAK_CLIENT_ID")
 			}
-			if isEnvSet("KEYCLOAK_CLIENT_SECRET") {
+			if isEnvNonEmpty("KEYCLOAK_CLIENT_SECRET") {
 				config.Providers[i].Config["client_secret"] = os.Getenv("KEYCLOAK_CLIENT_SECRET")
 			}
-			if isEnvSet("KEYCLOAK_REDIRECT_URI") {
+			if isEnvNonEmpty("KEYCLOAK_REDIRECT_URI") {
 				config.Providers[i].Config["redirect_uri"] = os.Getenv("KEYCLOAK_REDIRECT_URI")
 			}
-			if isEnvSet("KEYCLOAK_SCOPES") {
+			if isEnvNonEmpty("KEYCLOAK_SCOPES") {
 				config.Providers[i].Config["scopes"] = os.Getenv("KEYCLOAK_SCOPES")
 			}
-			if isEnvSet("KEYCLOAK_ROLE_CLAIM") {
+			if isEnvNonEmpty("KEYCLOAK_ROLE_CLAIM") {
 				config.Providers[i].Config["role_claim"] = os.Getenv("KEYCLOAK_ROLE_CLAIM")
 			}
 		}
@@ -165,7 +165,7 @@ func NewAuthConfigFromConfig(configAuth *ConfigAuth) AuthConfig {
 func getAuthConfigFromEnv() AuthConfig {
 	config := DefaultAuthConfig()
 	
-	if isEnvSet("AUTH_ENABLED") {
+	if isEnvNonEmpty("AUTH_ENABLED") {
 		config.Enabled = getBoolFromEnv("AUTH_ENABLED", false)
 	}
 	
@@ -192,9 +192,12 @@ func getBoolWithFallback(value, fallback bool) bool {
 	return value
 }
 
-func isEnvSet(key string) bool {
-	_, exists := os.LookupEnv(key)
-	return exists
+// isEnvNonEmpty returns true only if the environment variable is set and non-empty
+func isEnvNonEmpty(key string) bool {
+	if val, exists := os.LookupEnv(key); exists {
+		return val != ""
+	}
+	return false
 }
 
 func getIntFromEnv(key string, fallback int) int {

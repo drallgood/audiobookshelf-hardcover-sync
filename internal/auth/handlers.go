@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"net/url"
 	"strings"
@@ -84,15 +85,25 @@ func (h *AuthHandlers) handleLoginSubmit(w http.ResponseWriter, r *http.Request)
 	
 	// Parse request based on content type
 	contentType := r.Header.Get("Content-Type")
-	if strings.Contains(contentType, "application/json") {
+	isJSONRequest := strings.Contains(contentType, "application/json")
+	if isJSONRequest {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			h.writeError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON request")
+			// For API clients, return JSON; for browser forms, redirect with error
+			if strings.Contains(r.Header.Get("Accept"), "application/json") || isJSONRequest {
+				h.writeError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON request")
+				return
+			}
+			http.Redirect(w, r, "/login?error=invalid_request", http.StatusFound)
 			return
 		}
 	} else {
 		// Parse form data
 		if err := r.ParseForm(); err != nil {
-			h.writeError(w, http.StatusBadRequest, "invalid_request", "Invalid form data")
+			if strings.Contains(r.Header.Get("Accept"), "application/json") {
+				h.writeError(w, http.StatusBadRequest, "invalid_request", "Invalid form data")
+				return
+			}
+			http.Redirect(w, r, "/login?error=invalid_request", http.StatusFound)
 			return
 		}
 		
@@ -107,9 +118,18 @@ func (h *AuthHandlers) handleLoginSubmit(w http.ResponseWriter, r *http.Request)
 		req.Credentials["password"] = req.Password
 	}
 
+	// Default to local provider if username/password are supplied without explicit provider
+	if req.Provider == "" && (req.Username != "" || req.Password != "") {
+		req.Provider = "local"
+	}
 	// Validate request
 	if req.Provider == "" {
-		h.writeError(w, http.StatusBadRequest, "missing_provider", "Provider is required")
+		if strings.Contains(r.Header.Get("Accept"), "application/json") || isJSONRequest {
+			h.writeError(w, http.StatusBadRequest, "missing_provider", "Provider is required")
+			return
+		}
+		// Redirect back to login page with friendly error message
+		http.Redirect(w, r, "/login?error=missing_provider", http.StatusFound)
 		return
 	}
 
@@ -121,12 +141,30 @@ func (h *AuthHandlers) handleLoginSubmit(w http.ResponseWriter, r *http.Request)
 			"username": req.Username,
 			"error":    err.Error(),
 		})
-		h.writeError(w, http.StatusInternalServerError, "login_failed", "Login failed")
+		if strings.Contains(r.Header.Get("Accept"), "application/json") || isJSONRequest {
+			h.writeError(w, http.StatusInternalServerError, "login_failed", "Login failed")
+			return
+		}
+		// Redirect back with generic error
+		redirect := r.FormValue("redirect")
+		if redirect == "" {
+			redirect = "/"
+		}
+		http.Redirect(w, r, "/login?error=login_failed&redirect="+url.QueryEscape(redirect), http.StatusFound)
 		return
 	}
 
 	if !result.Success {
-		h.writeError(w, http.StatusUnauthorized, "authentication_failed", result.Error)
+		if strings.Contains(r.Header.Get("Accept"), "application/json") || isJSONRequest {
+			h.writeError(w, http.StatusUnauthorized, "authentication_failed", result.Error)
+			return
+		}
+		// Redirect back with auth_failed for a friendly UI message
+		redirect := r.FormValue("redirect")
+		if redirect == "" {
+			redirect = "/"
+		}
+		http.Redirect(w, r, "/login?error=auth_failed&redirect="+url.QueryEscape(redirect), http.StatusFound)
 		return
 	}
 
@@ -142,7 +180,7 @@ func (h *AuthHandlers) handleLoginSubmit(w http.ResponseWriter, r *http.Request)
 	})
 
 	// Handle response based on content type
-	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+	if strings.Contains(r.Header.Get("Accept"), "application/json") || isJSONRequest {
 		response := LoginResponse{
 			Success: true,
 			User:    result.User,
@@ -186,7 +224,7 @@ func (h *AuthHandlers) HandleLogout(w http.ResponseWriter, r *http.Request) {
 	if strings.Contains(r.Header.Get("Accept"), "application/json") {
 		h.writeJSON(w, map[string]interface{}{"success": true})
 	} else {
-		http.Redirect(w, r, "/auth/login", http.StatusFound)
+		http.Redirect(w, r, "/login", http.StatusFound)
 	}
 }
 
@@ -213,7 +251,7 @@ func (h *AuthHandlers) HandleOAuthCallback(w http.ResponseWriter, r *http.Reques
 			"provider": providerName,
 			"error":    err.Error(),
 		})
-		http.Redirect(w, r, "/auth/login?error=callback_failed", http.StatusFound)
+		http.Redirect(w, r, "/login?error=callback_failed", http.StatusFound)
 		return
 	}
 
@@ -222,7 +260,7 @@ func (h *AuthHandlers) HandleOAuthCallback(w http.ResponseWriter, r *http.Reques
 			"provider": providerName,
 			"error":    result.Error,
 		})
-		http.Redirect(w, r, "/auth/login?error=auth_failed", http.StatusFound)
+		http.Redirect(w, r, "/login?error=auth_failed", http.StatusFound)
 		return
 	}
 
@@ -292,8 +330,17 @@ func (h *AuthHandlers) HandleOAuthLogin(w http.ResponseWriter, r *http.Request) 
 
 // serveLoginHTML serves the login page HTML
 func (h *AuthHandlers) serveLoginHTML(w http.ResponseWriter, r *http.Request, providers map[string]IAuthProvider) {
-	// Simple login page HTML
-	html := `<!DOCTYPE html>
+    // Build dynamic sections based on available providers
+    hasLocal := false
+    for _, p := range providers {
+        if p.GetType() == "local" && p.IsEnabled() {
+            hasLocal = true
+            break
+        }
+    }
+
+    // Simple login page HTML (no provider dropdown; local form + separate OAuth buttons)
+    pageHTML := `<!DOCTYPE html>
 <html>
 <head>
     <title>Login - Audiobookshelf Hardcover Sync</title>
@@ -404,30 +451,7 @@ func (h *AuthHandlers) serveLoginHTML(w http.ResponseWriter, r *http.Request, pr
         
         %s
         
-        <form method="post" action="/api/auth/login">
-            <input type="hidden" name="redirect" value="%s">
-            
-            <div class="form-group">
-                <label for="provider">Authentication Provider:</label>
-                <select name="provider" id="provider" required>
-                    %s
-                </select>
-            </div>
-            
-            <div id="local-fields">
-                <div class="form-group">
-                    <label for="username">Username:</label>
-                    <input type="text" name="username" id="username" required>
-                </div>
-                
-                <div class="form-group">
-                    <label for="password">Password:</label>
-                    <input type="password" name="password" id="password" required>
-                </div>
-            </div>
-            
-            <button type="submit" class="btn">Login</button>
-        </form>
+        %s
         
         <div class="oauth-providers">
             %s
@@ -435,68 +459,83 @@ func (h *AuthHandlers) serveLoginHTML(w http.ResponseWriter, r *http.Request, pr
     </div>
     
     <script>
-        // Show/hide local fields based on provider selection
-        document.getElementById('provider').addEventListener('change', function() {
-            const localFields = document.getElementById('local-fields');
-            if (this.value === 'local') {
-                localFields.style.display = 'block';
-            } else {
-                localFields.style.display = 'none';
-            }
-        });
-        
-        // Initial state
-        document.getElementById('provider').dispatchEvent(new Event('change'));
+        // No provider dropdown; local form is shown when available.
     </script>
 </body>
 </html>`
 
-	// Build error message
-	errorMsg := ""
+    // Build error message
+    errorMsg := ""
 	if errorParam := r.URL.Query().Get("error"); errorParam != "" {
 		switch errorParam {
 		case "callback_failed":
 			errorMsg = `<div class="error">OAuth callback failed. Please try again.</div>`
 		case "auth_failed":
 			errorMsg = `<div class="error">Authentication failed. Please check your credentials.</div>`
+		case "invalid_request":
+			errorMsg = `<div class="error">Invalid request. Please try again.</div>`
+		case "missing_provider":
+			errorMsg = `<div class="error">Login provider missing. Please try again.</div>`
+		case "login_failed":
+			errorMsg = `<div class="error">Login failed due to a server error. Please try again.</div>`
 		default:
 			errorMsg = `<div class="error">Login failed. Please try again.</div>`
 		}
 	}
 
-	// Build provider options
-	providerOptions := ""
-	oauthLinks := ""
-	
-	for name, provider := range providers {
-		providerOptions += fmt.Sprintf(`<option value="%s">%s</option>`, name, simpleTitle(name))
-		
-		if provider.GetType() != "local" {
-			redirectURL := r.URL.Query().Get("redirect")
-			if redirectURL == "" {
-				redirectURL = "/"
-			}
-			oauthURL := fmt.Sprintf("/auth/oauth/%s?redirect=%s", name, url.QueryEscape(redirectURL))
-			oauthLinks += fmt.Sprintf(`<a href="%s" class="oauth-btn">Login with %s</a>`, oauthURL, simpleTitle(name))
-		}
-	}
+	// Keep error message as HTML (safe because it's static text we control)
+
+	    oauthLinks := ""
+    
+    for name, provider := range providers {
+        if provider.GetType() != "local" {
+            redirectURL := r.URL.Query().Get("redirect")
+            if redirectURL == "" {
+                redirectURL = "/"
+            }
+            oauthURL := fmt.Sprintf("/auth/oauth/%s?redirect=%s", name, url.QueryEscape(redirectURL))
+            oauthLinks += fmt.Sprintf(`<a href="%s" class="oauth-btn">Login with %s</a>`, oauthURL, simpleTitle(name))
+        }
+    }
 
 	redirectURL := r.URL.Query().Get("redirect")
 	if redirectURL == "" {
 		redirectURL = "/"
 	}
 
-	// Render HTML by replacing placeholders
-	finalHTML := html
-	finalHTML = strings.Replace(finalHTML, "%s", errorMsg, 1)
-	finalHTML = strings.Replace(finalHTML, "%s", redirectURL, 1)
-	finalHTML = strings.Replace(finalHTML, "%s", providerOptions, 1)
-	finalHTML = strings.Replace(finalHTML, "%s", oauthLinks, 1)
-	
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write([]byte(finalHTML)); err != nil {
-		h.logger.Error("Failed to write HTML response", map[string]interface{}{
+	// Escape redirect value for safe HTML embedding
+	escapedRedirect := html.EscapeString(redirectURL)
+
+	    // Build local form (only if local provider is available)
+    localForm := ""
+    if hasLocal {
+        localForm = fmt.Sprintf(`
+        <form method="post" action="/api/auth/login">
+            <input type="hidden" name="redirect" value="%s">
+            <input type="hidden" name="provider" value="local">
+            <div class="form-group">
+                <label for="username">Username:</label>
+                <input type="text" name="username" id="username" required>
+            </div>
+            <div class="form-group">
+                <label for="password">Password:</label>
+                <input type="password" name="password" id="password" required>
+            </div>
+            <button type="submit" class="btn">Login</button>
+        </form>
+        `, escapedRedirect)
+    }
+
+    // Render HTML by replacing placeholders (error, localForm, oauthLinks)
+    finalHTML := pageHTML
+    finalHTML = strings.Replace(finalHTML, "%s", errorMsg, 1)
+    finalHTML = strings.Replace(finalHTML, "%s", localForm, 1)
+    finalHTML = strings.Replace(finalHTML, "%s", oauthLinks, 1)
+    
+    w.Header().Set("Content-Type", "text/html; charset=utf-8")
+    w.WriteHeader(http.StatusOK)
+    if _, err := w.Write([]byte(finalHTML)); err != nil {
+        h.logger.Error("Failed to write HTML response", map[string]interface{}{
 			"error": err,
 		})
 	}
