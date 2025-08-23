@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- Nothing yet.
+### Added
+- **Include Ebooks Configuration**: New option to include items with media type "ebook" in sync
+  - Web UI: Add/Edit Profile checkbox "Include Ebooks"
+  - Backend: Config field `include_ebooks` persisted in `SyncConfigData`
+  - Migration: Carries `IncludeEbooks` from single-user config to multi-profile DB
+  - Environment: `SYNC_INCLUDE_EBOOKS=true/false` supported for legacy single-user mode
 
 ## [v3.0.0] - 2025-08-22
 
