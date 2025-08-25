@@ -8,7 +8,7 @@ require (
 	github.com/coreos/go-oidc/v3 v3.15.0
 	github.com/hasura/go-graphql-client v0.14.4
 	github.com/rs/zerolog v1.34.0
-	github.com/stretchr/testify v1.10.0
+	github.com/stretchr/testify v1.11.0
 	github.com/urfave/cli/v2 v2.27.7
 	golang.org/x/crypto v0.41.0
 	golang.org/x/oauth2 v0.30.0
