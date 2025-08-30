@@ -4,7 +4,20 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Raise pull requests for version updates
+    # to go against the `develop` branch
+    target-branch: "develop"
+    # Labels on pull requests for version updates only
+    labels:
+      - "go dependencies"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    # Raise pull requests for version updates
+    # to github-actions against the `develop` branch
+    target-branch: "develop"
+    # Labels on pull requests for version updates only
+    labels:
+      - "github-action dependencies"
+
