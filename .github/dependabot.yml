@@ -9,7 +9,8 @@ updates:
     target-branch: "develop"
     # Labels on pull requests for version updates only
     labels:
-      - "go dependencies"
+      - "dependencies"
+      - "go"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -19,5 +20,6 @@ updates:
     target-branch: "develop"
     # Labels on pull requests for version updates only
     labels:
-      - "github-action dependencies"
+      - "github_actions" 
+      - "dependencies"
 
