@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Migration: Carries `IncludeEbooks` from single-user config to multi-profile DB
   - Environment: `SYNC_INCLUDE_EBOOKS=true/false` supported for legacy single-user mode
 
+### Fixed
+- **Hardcover Schema Compatibility**: Updated `GetBookByID` GraphQL query to request `publisher` only from editions, matching the current Hardcover schema.
+- **Mismatch Export Safety**: Improved mismatch JSON export so `book_id` now uses the Hardcover book ID only when known, and stays empty/zero otherwise, preventing wrong imports when no canonical Hardcover ID exists.
+
 ## [v3.0.0] - 2025-08-22
 
 ### Fixed

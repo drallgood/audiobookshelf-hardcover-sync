@@ -162,8 +162,8 @@ type Client struct {
 	rateLimiter      *util.RateLimiter
 	maxRetries       int
 	retryDelay       time.Duration
-	userBookIDCache  cache.Cache[int, int]    // editionID -> userBookID
-	userCache        cache.Cache[string, any] // Generic cache for user-specific data
+	userBookIDCache  cache.Cache[int, int]             // editionID -> userBookID
+	userCache        cache.Cache[string, any]          // Generic cache for user-specific data
 	editionCache     cache.Cache[int, *models.Edition] // editionID -> Edition
 }
 
@@ -800,7 +800,6 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 	    book_status_id
 	    canonical_id
 	    image { url }
-	    publisher { name }
 	    contributions(limit: 50) { contribution author { id name } }
 	    editions(limit: 10) {
 	      id
@@ -873,7 +872,9 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 	// Book status
 	switch v := bookObj["book_status_id"].(type) {
 	case json.Number:
-		if n, err := v.Int64(); err == nil { hcBook.BookStatusID = int(n) }
+		if n, err := v.Int64(); err == nil {
+			hcBook.BookStatusID = int(n)
+		}
 	case float64:
 		hcBook.BookStatusID = int(v)
 	}
@@ -901,13 +902,21 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 	if rel, ok := bookObj["contributions"].([]interface{}); ok {
 		for _, item := range rel {
 			m, _ := item.(map[string]interface{})
-			if m == nil { continue }
+			if m == nil {
+				continue
+			}
 			role, _ := m["contribution"].(string)
 			var a map[string]interface{}
-			if v, ok := m["author"].(map[string]interface{}); ok { a = v }
-			if a == nil { continue }
+			if v, ok := m["author"].(map[string]interface{}); ok {
+				a = v
+			}
+			if a == nil {
+				continue
+			}
 			name, _ := a["name"].(string)
-			if name == "" { continue }
+			if name == "" {
+				continue
+			}
 			idStr := ""
 			switch idv := a["id"].(type) {
 			case json.Number:
@@ -941,7 +950,9 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 				chosen = em
 				break
 			}
-			if chosen == nil { chosen = em }
+			if chosen == nil {
+				chosen = em
+			}
 		}
 	}
 	if chosen != nil {
@@ -955,12 +966,22 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 		case string:
 			hcBook.EditionID = v
 		}
-		if s, ok := chosen["asin"].(string); ok { hcBook.EditionASIN = s }
-		if s, ok := chosen["isbn_13"].(string); ok { hcBook.EditionISBN13 = s }
-		if s, ok := chosen["isbn_10"].(string); ok { hcBook.EditionISBN10 = s }
-		if s, ok := chosen["release_date"].(string); ok { hcBook.ReleaseDate = s }
+		if s, ok := chosen["asin"].(string); ok {
+			hcBook.EditionASIN = s
+		}
+		if s, ok := chosen["isbn_13"].(string); ok {
+			hcBook.EditionISBN13 = s
+		}
+		if s, ok := chosen["isbn_10"].(string); ok {
+			hcBook.EditionISBN10 = s
+		}
+		if s, ok := chosen["release_date"].(string); ok {
+			hcBook.ReleaseDate = s
+		}
 		if pub, ok := chosen["publisher"].(map[string]interface{}); ok {
-			if name, ok := pub["name"].(string); ok { hcBook.Publisher = name }
+			if name, ok := pub["name"].(string); ok {
+				hcBook.Publisher = name
+			}
 		}
 	}
 
@@ -981,7 +1002,7 @@ func (c *Client) GetUserBook(ctx context.Context, userBookID string) (*models.Ha
 	// Create logger with context
 	log := c.logger.With(map[string]interface{}{
 		"user_book_id": userBookID,
-		"method":      "GetUserBook",
+		"method":       "GetUserBook",
 	})
 
 	// Convert userBookID to int for GraphQL variable
@@ -1083,10 +1104,10 @@ func (c *Client) GetUserBook(ctx context.Context, userBookID string) (*models.Ha
 	}
 
 	log.Debug("Successfully retrieved user book", map[string]interface{}{
-		"book_id":     book.ID,
-		"title":       book.Title,
-		"status_id":   book.BookStatusID,
-		"edition_id":  book.EditionID,
+		"book_id":    book.ID,
+		"title":      book.Title,
+		"status_id":  book.BookStatusID,
+		"edition_id": book.EditionID,
 	})
 
 	return book, nil
@@ -1667,8 +1688,6 @@ func (c *Client) searchBooksWithLimit(ctx context.Context, query string, limit i
 	return searchResults, nil
 }
 
-
-
 // DatesReadInput represents the input for date-related fields when creating or updating a user book read entry
 type DatesReadInput struct {
 	Action          *string `json:"action,omitempty"`
@@ -1839,14 +1858,14 @@ type UserBookRead struct {
 
 // GetUserBookReads retrieves the reading progress for a user book
 func (c *Client) GetUserBookReads(ctx context.Context, input GetUserBookReadsInput) ([]UserBookRead, error) {
-    // Validate input
-    if input.UserBookID == 0 {
-        return nil, fmt.Errorf("%w: user_book_id is required", ErrInvalidInput)
-    }
+	// Validate input
+	if input.UserBookID == 0 {
+		return nil, fmt.Errorf("%w: user_book_id is required", ErrInvalidInput)
+	}
 
-    // If Status is empty, fetch all reads without filtering on finished_at
-    if input.Status == "" {
-        queryAll := `
+	// If Status is empty, fetch all reads without filtering on finished_at
+	if input.Status == "" {
+		queryAll := `
         query GetUserBookReadsAll($user_book_id: Int!) {
           user_book_reads(
             where: { 
@@ -1864,22 +1883,22 @@ func (c *Client) GetUserBookReads(ctx context.Context, input GetUserBookReadsInp
           }
         }`
 
-        variables := map[string]interface{}{
-            "user_book_id": input.UserBookID,
-        }
+		variables := map[string]interface{}{
+			"user_book_id": input.UserBookID,
+		}
 
-        var result struct {
-            UserBookReads []UserBookRead `json:"user_book_reads"`
-        }
+		var result struct {
+			UserBookReads []UserBookRead `json:"user_book_reads"`
+		}
 
-        if err := c.executeGraphQLQuery(ctx, queryAll, variables, &result); err != nil {
-            return nil, fmt.Errorf("failed to get user book reads: %w", err)
-        }
-        return result.UserBookReads, nil
-    }
+		if err := c.executeGraphQLQuery(ctx, queryAll, variables, &result); err != nil {
+			return nil, fmt.Errorf("failed to get user book reads: %w", err)
+		}
+		return result.UserBookReads, nil
+	}
 
-    // Otherwise, preserve existing behavior and filter by unfinished when requested
-    queryFiltered := `
+	// Otherwise, preserve existing behavior and filter by unfinished when requested
+	queryFiltered := `
     query GetUserBookReads($user_book_id: Int!, $is_unfinished: Boolean) {
       user_book_reads(
         where: { 
@@ -1898,23 +1917,23 @@ func (c *Client) GetUserBookReads(ctx context.Context, input GetUserBookReadsInp
       }
     }`
 
-    // Determine if we're filtering for unfinished reads
-    isUnfinished := input.Status == "unfinished"
+	// Determine if we're filtering for unfinished reads
+	isUnfinished := input.Status == "unfinished"
 
-    variables := map[string]interface{}{
-        "user_book_id":  input.UserBookID,
-        "is_unfinished": isUnfinished,
-    }
+	variables := map[string]interface{}{
+		"user_book_id":  input.UserBookID,
+		"is_unfinished": isUnfinished,
+	}
 
-    var result struct {
-        UserBookReads []UserBookRead `json:"user_book_reads"`
-    }
+	var result struct {
+		UserBookReads []UserBookRead `json:"user_book_reads"`
+	}
 
-    if err := c.executeGraphQLQuery(ctx, queryFiltered, variables, &result); err != nil {
-        return nil, fmt.Errorf("failed to get user book reads: %w", err)
-    }
+	if err := c.executeGraphQLQuery(ctx, queryFiltered, variables, &result); err != nil {
+		return nil, fmt.Errorf("failed to get user book reads: %w", err)
+	}
 
-    return result.UserBookReads, nil
+	return result.UserBookReads, nil
 }
 
 // GetCurrentUserIDResponse represents the response from the me query
@@ -2266,8 +2285,8 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 	editionIDInt, err := strconv.Atoi(editionID)
 	if err != nil {
 		log.Error("Invalid edition ID", map[string]interface{}{
-		"error": err.Error(),
-	})
+			"error": err.Error(),
+		})
 		return nil, fmt.Errorf("invalid edition ID: %s", editionID)
 	}
 
@@ -2325,8 +2344,8 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 	// Log raw response for debugging
 	editionBytes, _ := json.Marshal(response)
 	log.Debug("Raw response from GetEdition", map[string]interface{}{
-		"response": string(editionBytes),
-		"data_present": response.Editions != nil,
+		"response":       string(editionBytes),
+		"data_present":   response.Editions != nil,
 		"editions_count": len(response.Editions),
 	})
 
@@ -2655,7 +2674,7 @@ func (c *Client) GetPersonByID(ctx context.Context, id string) (*models.Author, 
 	var response struct {
 		Authors []struct {
 			ID   json.Number `json:"id"` // Use json.Number to handle both numeric and string IDs
-			Name string     `json:"name"`
+			Name string      `json:"name"`
 		} `json:"authors"`
 	}
 
@@ -2686,7 +2705,6 @@ func (c *Client) GetPersonByID(ctx context.Context, id string) (*models.Author, 
 		Name: person.Name,
 	}, nil
 }
-
 
 // GetUserBookID retrieves the user book ID for a given edition ID with caching
 func (c *Client) GetUserBookID(ctx context.Context, editionID int) (int, error) {
@@ -2921,10 +2939,10 @@ var statusNameToID = map[string]int{
 	"WANT_TO_READ":      1,
 	"CURRENTLY_READING": 2,
 	// Aliases for in-progress reading status
-	"IN_PROGRESS":       2,
-	"READING":           2,
-	"READ":              3,
-	"FINISHED":          3, // FINISHED is an alias for READ in the API
+	"IN_PROGRESS": 2,
+	"READING":     2,
+	"READ":        3,
+	"FINISHED":    3, // FINISHED is an alias for READ in the API
 }
 
 // CreateUserBook creates a new user book entry for the given edition ID and status
