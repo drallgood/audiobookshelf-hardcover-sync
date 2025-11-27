@@ -108,14 +108,15 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 	// Use the provided publisher ID or default to 0
 	publisherID := b.PublisherID
 
-	// Prefer Hardcover cover if available for the exported image_url,
-	// then fall back to explicit ImageURL, then CoverURL
-	imageURL := b.HardcoverCoverURL
-	if imageURL == "" {
-		imageURL = b.ImageURL
-	}
+	// Prefer Audiobookshelf cover (ImageURL/CoverURL) for image_url so the
+	// edition tool can fetch from ABS, and only fall back to Hardcover cover
+	// if no ABS image is available.
+	imageURL := b.ImageURL
 	if imageURL == "" {
 		imageURL = b.CoverURL
+	}
+	if imageURL == "" {
+		imageURL = b.HardcoverCoverURL
 	}
 
 	// Set edition information to describe the edition (e.g., "Unabridged")
