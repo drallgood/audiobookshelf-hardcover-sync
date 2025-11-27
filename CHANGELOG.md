@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **Hardcover Schema Compatibility**: Updated `GetBookByID` GraphQL query to request `publisher` only from editions, matching the current Hardcover schema.
 - **Mismatch Export Safety**: Improved mismatch JSON export so `book_id` now uses the Hardcover book ID only when known, and stays empty/zero otherwise, preventing wrong imports when no canonical Hardcover ID exists.
+- **Mismatch Edition Export Fields**: Fixed mismatch edition JSON so `isbn_13` is correctly consumed by the edition import tool and `image_url` now prefers Audiobookshelf cover URLs, only falling back to Hardcover covers when no ABS image is available.
 
 ## [v3.0.0] - 2025-08-22
 
