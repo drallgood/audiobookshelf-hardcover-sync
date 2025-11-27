@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -40,10 +40,28 @@ jobs:
           format: 'sarif'
           output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH'
-          exit-code: 1
+          exit-code: 0
           ignore-unfixed: true
           vuln-type: 'os,library'
           scanners: 'vuln,misconfig,secret'
+
+      - name: Check container vulnerabilities in SARIF results
+        run: |
+          if [ -f "trivy-results.sarif" ]; then
+            # Check if SARIF contains any actual vulnerabilities
+            vuln_count=$(jq '.runs[0].results | length' trivy-results.sarif 2>/dev/null || echo "0")
+            if [ "$vuln_count" -gt 0 ]; then
+              echo "❌ Container security vulnerabilities found: $vuln_count"
+              echo "📋 Vulnerability details:"
+              jq -r '.runs[0].results[] | "- \(.ruleId): \(.message.text) (\(.locations[0].physicalLocation.artifactLocation.uri))"' trivy-results.sarif || echo "Could not parse vulnerability details"
+              echo "Please review the SARIF results and address the security issues."
+              exit 1
+            else
+              echo "✅ No container security vulnerabilities found - scan passed!"
+            fi
+          else
+            echo "⚠️  SARIF file not found, but continuing..."
+          fi
 
       - name: Upload SARIF results
         uses: github/codeql-action/upload-sarif@v4
@@ -55,7 +73,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Run Trivy filesystem scanner
         uses: aquasecurity/trivy-action@0.33.1

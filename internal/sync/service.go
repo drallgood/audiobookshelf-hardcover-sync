@@ -43,12 +43,12 @@ type SyncSummary struct {
 
 // BookNotFoundInfo contains information about a book that couldn't be found in Hardcover
 type BookNotFoundInfo struct {
-	BookID   string
-	Title    string
-	Author   string
-	ASIN     string
-	ISBN     string
-	Error    string
+	BookID string `json:"book_id"`
+	Title  string `json:"title"`
+	Author string `json:"author"`
+	ASIN   string `json:"asin"`
+	ISBN   string `json:"isbn"`
+	Error  string `json:"error"`
 }
 
 // Service handles the synchronization between Audiobookshelf and Hardcover
@@ -3494,14 +3494,13 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 			return s.processFoundBook(ctx, hcBook, book)
 		}
 
-		log.Error("Failed to find book by ISBN", map[string]interface{}{
+		log.Warn("Failed to find book by ISBN, will try other methods", map[string]interface{}{
 			"title":  book.Media.Metadata.Title,
 			"author": book.Media.Metadata.AuthorName,
 			"isbn":   book.Media.Metadata.ISBN,
 			"asin":   book.Media.Metadata.ASIN,
 		})
-
-		return nil, fmt.Errorf("failed to find book by ISBN")
+		// Don't return here - fall through to try ASIN or title/author search
 	}
 
 	// 3. If we get here, we couldn't find the book by ASIN or ISBN, try title/author search
