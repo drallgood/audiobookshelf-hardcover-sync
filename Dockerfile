@@ -30,7 +30,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     -o /app/audiobookshelf-hardcover-sync ./cmd/audiobookshelf-hardcover-sync
 
 # Final stage
-FROM alpine:3.18
+FROM alpine:3.20
 
 # Install runtime dependencies
 RUN apk add --no-cache \
