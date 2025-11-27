@@ -1,5 +1,5 @@
 # Build stage
-FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git
@@ -32,11 +32,12 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # Final stage
 FROM alpine:3.20
 
-# Install runtime dependencies
+# Install runtime dependencies and ensure busybox-related packages are upgraded
 RUN apk add --no-cache \
     ca-certificates \
     tzdata \
     su-exec \
+    && apk upgrade --no-cache busybox busybox-binsh ssl_client \
     && addgroup -S app \
     && adduser -S -G app app
 
