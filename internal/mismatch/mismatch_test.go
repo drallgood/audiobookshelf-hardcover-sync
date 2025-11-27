@@ -260,7 +260,6 @@ func (m *MockHardcoverClient) GetGoogleUploadCredentials(ctx context.Context, fi
 	}
 	return args.Get(0).(*edition.GoogleUploadInfo), args.Error(1)
 }
-
 func TestBookMismatchToEditionExport(t *testing.T) {
 	// Create a test context with logger
 	ctx := newTestContext(t)
@@ -275,6 +274,7 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 			name: "basic book with minimum fields",
 			book: BookMismatch{
 				BookID:          "123",
+				HardcoverBookID: "123",
 				Title:           "Test Book",
 				Author:          "Test Author",
 				Reason:          "test reason",
@@ -288,7 +288,7 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 					Return([]models.Author{}, nil) // Return empty slice to simulate author not found
 			},
 			expected: EditionExport{
-				BookID:        123, // Parsed from BookID
+				BookID:        123, // Parsed from HardcoverBookID
 				Title:         "Test Book",
 				AuthorIDs:     []int{}, // Empty slice when no authors found
 				AudioSeconds:  19800,
@@ -303,6 +303,7 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 			name: "book with all fields",
 			book: BookMismatch{
 				BookID:          "456",
+				HardcoverBookID: "456",
 				Title:           "Test Book",
 				Subtitle:        "Test Subtitle",
 				Author:          "Test Author",
