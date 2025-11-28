@@ -1146,8 +1146,14 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		// Get the last sync state for this book using the composite key
 		bookState, exists := s.state.Books[stateKey]
 		if exists && !s.config.Sync.DryRun {
+			// Normalize legacy percentage values stored in state if necessary
+			storedProgress := bookState.LastProgress
+			if storedProgress > 1.0 {
+				storedProgress = storedProgress / 100.0
+			}
+
 			// Check if progress has changed significantly (more than 1%)
-			progressChanged := math.Abs(currentProgress-bookState.LastProgress) > 0.01
+			progressChanged := math.Abs(currentProgress-storedProgress) > 0.01
 
 			// Check if status has changed
 			currentStatus := s.determineBookStatus(currentProgress, book.Progress.IsFinished, book.Progress.FinishedAt)
@@ -1712,6 +1718,27 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 	log := s.createFinishedBookLogger(userBookID, editionID, book)
 	log.Info("Handling finished book", nil)
 
+	stateKey := book.ID
+	if editionID != "" {
+		stateKey = fmt.Sprintf("%s:%s", book.ID, editionID)
+	}
+	progressPct := 0.0
+	if book.Media.Duration > 0 {
+		progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
+	}
+	success := false
+	defer func() {
+		if !success {
+			return
+		}
+		if updated := s.state.UpdateBook(stateKey, progressPct, "FINISHED"); updated {
+			log.Debug("Updated book state to FINISHED", map[string]interface{}{
+				"state_key": stateKey,
+				"progress":  progressPct,
+			})
+		}
+	}()
+
 	// First, check the current status of the book and update to FINISHED if needed
 	log.Info("Checking current book status", map[string]interface{}{
 		"user_book_id": userBookID,
@@ -1988,6 +2015,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 				"title":   book.Media.Metadata.Title,
 			})
 		}
+		success = true
 		return nil
 	}
 
@@ -2046,6 +2074,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 		log.Info("Skipping read record creation - recent finished read exists", nil)
 	}
 
+	success = true
 	return nil
 }
 
