@@ -196,54 +196,99 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 
 	now := time.Now().Unix()
 	debugLog := false
-	
+
+	// Normalize incoming progress to a 0.0–1.0 fraction.
+	// Older callers used percentages (0–100), so convert those.
+	normalizedProgress := progress
+	if normalizedProgress > 1.0 {
+		normalizedProgress = normalizedProgress / 100.0
+	}
+
+	updated := false
+
 	// Check if we already have state for this book
 	if existing, exists := s.Books[bookID]; exists {
+		// Normalize stored legacy percentage values if present
+		storedProgress := existing.LastProgress
+		if storedProgress > 1.0 {
+			storedProgress = storedProgress / 100.0
+		}
+
 		// Calculate if progress has changed significantly (more than 0.1%)
-		progressDiff := math.Abs(existing.LastProgress - progress)
+		progressDiff := math.Abs(storedProgress - normalizedProgress)
 		progressChanged := progressDiff > 0.001
 		statusChanged := existing.Status != status
-		
+
 		// Debug logging for Scrum book
 		if strings.Contains(strings.ToLower(bookID), "scrum") {
 			debugLog = true
 			log.Printf("DEBUG - UpdateBook for Scrum - ID: %s, Progress: %.4f -> %.4f (diff: %.4f), Status: %s -> %s",
-				bookID, existing.LastProgress, progress, progressDiff, existing.Status, status)
+				bookID, storedProgress, normalizedProgress, progressDiff, existing.Status, status)
 		}
-		
+
 		// Only update if something has changed
 		if !progressChanged && !statusChanged {
 			if debugLog {
 				log.Printf("DEBUG - No update needed for book %s - no significant changes", bookID)
 			}
-			return false
-		}
-		
-		// Update only the changed fields
-		s.Books[bookID] = Book{
-			LastProgress: progress,
-			LastUpdated:  now,
-			Status:       status,
-		}
-		
-		if debugLog {
-			log.Printf("DEBUG - Updated book %s state - progress: %.4f, status: %s", bookID, progress, status)
+			// Even if we don't change this specific entry, we may still update
+			// the aggregate base-ID entry below.
+		} else {
+			// Update only the changed fields
+			s.Books[bookID] = Book{
+				LastProgress: normalizedProgress,
+				LastUpdated:  now,
+				Status:       status,
+			}
+			updated = true
+			if debugLog {
+				log.Printf("DEBUG - Updated book %s state - progress: %.4f, status: %s", bookID, normalizedProgress, status)
+			}
 		}
 	} else {
 		// New book, always update
 		s.Books[bookID] = Book{
-			LastProgress: progress,
+			LastProgress: normalizedProgress,
 			LastUpdated:  now,
 			Status:       status,
 		}
-		
+		updated = true
+
 		if strings.Contains(strings.ToLower(bookID), "scrum") {
-			log.Printf("DEBUG - Created new state for Scrum book %s - progress: %.4f, status: %s", bookID, progress, status)
+			log.Printf("DEBUG - Created new state for Scrum book %s - progress: %.4f, status: %s", bookID, normalizedProgress, status)
 		}
 	}
-	
+
+	// Additionally maintain an aggregate entry keyed by the base ABS book ID
+	// (the part before any ':'). This allows incremental sync pre-filtering to
+	// work with either composite or base keys.
+	if baseID := strings.SplitN(bookID, ":", 2)[0]; baseID != "" && baseID != bookID {
+		if existing, exists := s.Books[baseID]; exists {
+			storedProgress := existing.LastProgress
+			if storedProgress > 1.0 {
+				storedProgress = storedProgress / 100.0
+			}
+			progressDiff := math.Abs(storedProgress - normalizedProgress)
+			statusChanged := existing.Status != status
+			if progressDiff > 0.001 || statusChanged {
+				s.Books[baseID] = Book{
+					LastProgress: normalizedProgress,
+					LastUpdated:  now,
+					Status:       status,
+				}
+			}
+		} else {
+			// No existing aggregate entry; create one.
+			s.Books[baseID] = Book{
+				LastProgress: normalizedProgress,
+				LastUpdated:  now,
+				Status:       status,
+			}
+		}
+	}
+
 	s.LastSync = now
-	return true
+	return updated
 }
 
 // UpdateLibrary updates the state for a library
@@ -262,7 +307,7 @@ func (s *State) UpdateLibrary(libraryID string) {
 func (s *State) SetFullSync() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
+
 	s.LastFullSync = time.Now().Unix()
 }
 
@@ -271,24 +316,34 @@ func (s *State) SetFullSync() {
 func (s *State) NeedsSync(bookID string, currentProgress float64, currentStatus string, minChangeThreshold float64) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	
+
 	lastBook, exists := s.Books[bookID]
 	if !exists {
 		// New book, needs sync
 		return true
 	}
-	
+
 	// Check if status changed
 	if lastBook.Status != currentStatus {
 		return true
 	}
-	
+
+	// Normalize legacy percentage values stored in state if necessary
+	storedProgress := lastBook.LastProgress
+	if storedProgress > 1.0 {
+		storedProgress = storedProgress / 100.0
+	}
+	normalizedCurrent := currentProgress
+	if normalizedCurrent > 1.0 {
+		normalizedCurrent = normalizedCurrent / 100.0
+	}
+
 	// Check if progress changed significantly
-	progressDiff := math.Abs(currentProgress - lastBook.LastProgress)
+	progressDiff := math.Abs(normalizedCurrent - storedProgress)
 	if progressDiff >= minChangeThreshold {
 		return true
 	}
-	
+
 	// No significant changes
 	return false
 }
@@ -297,7 +352,7 @@ func (s *State) NeedsSync(bookID string, currentProgress float64, currentStatus 
 func (s *State) GetBookState(bookID string) (Book, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	
+
 	book, exists := s.Books[bookID]
 	return book, exists
 }
@@ -306,16 +361,16 @@ func (s *State) GetBookState(bookID string) (Book, bool) {
 func (s *State) GetStaleBooks(maxAge time.Duration) []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	
+
 	cutoff := time.Now().Add(-maxAge).Unix()
 	var staleBooks []string
-	
+
 	for bookID, book := range s.Books {
 		if book.LastUpdated < cutoff {
 			staleBooks = append(staleBooks, bookID)
 		}
 	}
-	
+
 	return staleBooks
 }
 
