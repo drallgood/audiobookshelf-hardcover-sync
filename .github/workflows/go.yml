@@ -6,16 +6,12 @@ on:
     paths-ignore:
       - '**/*.md'
       - '**/*.txt'
-      - '**/*.yaml'
-      - '**/*.yml'
       - '**/Dockerfile'
   pull_request:
     branches: [ main, develop ]
     paths-ignore:
       - '**/*.md'
       - '**/*.txt'
-      - '**/*.yaml'
-      - '**/*.yml'
       - '**/Dockerfile'
 
 permissions:
@@ -27,15 +23,15 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: [ '1.22.x' ]
+        go-version: [ '1.24.x' ]
         os: [ ubuntu-latest ]
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v5
+      uses: actions/checkout@v6
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v6
       with:
         go-version: ${{ matrix.go-version }}
         cache: true

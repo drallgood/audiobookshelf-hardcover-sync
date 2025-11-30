@@ -24,8 +24,8 @@ type EditionInput struct {
 	Title         string `json:"title"`
 	Subtitle      string `json:"subtitle,omitempty"`
 	ImageURL      string `json:"image_url,omitempty"`
-	ISBN10        string `json:"isbn10,omitempty"`
-	ISBN13        string `json:"isbn13,omitempty"`
+	ISBN10        string `json:"isbn_10,omitempty"`
+	ISBN13        string `json:"isbn_13,omitempty"`
 	ASIN          string `json:"asin,omitempty"`
 	PublishedDate string `json:"published_date,omitempty"`
 	PublisherID   int    `json:"publisher_id,omitempty"`
@@ -313,7 +313,7 @@ func (c *Creator) uploadImageToGCS(ctx context.Context, editionID int, imageURL 
 
 	log.Debug("Got upload credentials", map[string]interface{}{
 		"url":    uploadInfo.URL,
-		"fields":  uploadInfo.Fields,
+		"fields": uploadInfo.Fields,
 	})
 
 	// Step 3: Upload to Google Cloud Storage
@@ -445,7 +445,7 @@ func (c *Creator) CreateImageRecord(ctx context.Context, editionID int, imageURL
 
 	// Get the image ID from the response
 	imageID := response.InsertImage.ID
-	
+
 	if imageID == 0 {
 		c.log.Error("Failed to get image ID from response", map[string]interface{}{
 			"edition_id": editionID,

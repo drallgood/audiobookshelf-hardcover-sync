@@ -50,28 +50,22 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 	// Get logger from context
 	logger := logger.FromContext(ctx)
 
-	// Parse book ID (use 0 if not available)
+	// Parse Hardcover book ID (use 0 if not available)
+	// We intentionally do NOT fall back to BookID here to avoid importing
+	// with incorrect IDs when no Hardcover book ID is known.
 	bookID := 0
-	if b.BookID != "" {
-		// First try to parse as integer
-		if id, err := strconv.Atoi(b.BookID); err == nil {
+	if b.HardcoverBookID != "" {
+		if id, err := strconv.Atoi(b.HardcoverBookID); err == nil {
 			bookID = id
-		} else {
-			// If it's not a number, try to extract a number from the string
-			re := regexp.MustCompile(`(\d+)`)
-			if matches := re.FindStringSubmatch(b.BookID); len(matches) > 0 {
-				if id, err := strconv.Atoi(matches[0]); err == nil {
-					bookID = id
-				}
-			}
 		}
 	}
 
-	// Log the book ID for debugging
+	// Log the IDs for debugging
 	logger.Debug("Converting BookMismatch to EditionExport", map[string]interface{}{
-		"original_book_id": b.BookID,
-		"parsed_book_id":   bookID,
-		"title":            b.Title,
+		"hardcover_book_id": b.HardcoverBookID,
+		"fallback_book_id":  b.BookID,
+		"parsed_book_id":    bookID,
+		"title":             b.Title,
 	})
 
 	// Set edition format based on publisher if possible
@@ -80,11 +74,11 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 		// Try to determine a more specific format based on publisher
 		if b.Publisher != "" {
 			publisher := strings.ToLower(b.Publisher)
-			
+
 			switch {
-			case strings.Contains(publisher, "audible") || 
-			     strings.Contains(publisher, "brilliance") || 
-			     strings.Contains(publisher, "amazon"):
+			case strings.Contains(publisher, "audible") ||
+				strings.Contains(publisher, "brilliance") ||
+				strings.Contains(publisher, "amazon"):
 				editionFormat = "Audible Audio"
 			case strings.Contains(publisher, "libro"):
 				editionFormat = "libro.fm"
@@ -114,26 +108,27 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 	// Use the provided publisher ID or default to 0
 	publisherID := b.PublisherID
 
-    // Prefer Hardcover cover if available for the exported image_url,
-    // then fall back to explicit ImageURL, then CoverURL
-    imageURL := b.HardcoverCoverURL
-    if imageURL == "" {
-        imageURL = b.ImageURL
-    }
-    if imageURL == "" {
-        imageURL = b.CoverURL
-    }
+	// Prefer Audiobookshelf cover (ImageURL/CoverURL) for image_url so the
+	// edition tool can fetch from ABS, and only fall back to Hardcover cover
+	// if no ABS image is available.
+	imageURL := b.ImageURL
+	if imageURL == "" {
+		imageURL = b.CoverURL
+	}
+	if imageURL == "" {
+		imageURL = b.HardcoverCoverURL
+	}
 
 	// Set edition information to describe the edition (e.g., "Unabridged")
 	// Default to empty string if we don't know
 	editionInfo := ""
-	
+
 	// If EditionInfo is already set in the mismatch, check if it's valid
-	if b.EditionInfo != "" && 
-	   !strings.Contains(b.EditionInfo, "error") && 
-	   !strings.Contains(b.EditionInfo, "Reason:") && 
-	   !strings.Contains(b.EditionInfo, "mismatch") && 
-	   !strings.Contains(b.EditionInfo, "Audiobookshelf") {
+	if b.EditionInfo != "" &&
+		!strings.Contains(b.EditionInfo, "error") &&
+		!strings.Contains(b.EditionInfo, "Reason:") &&
+		!strings.Contains(b.EditionInfo, "mismatch") &&
+		!strings.Contains(b.EditionInfo, "Audiobookshelf") {
 		// Use existing value if it appears valid
 		editionInfo = strings.TrimSpace(b.EditionInfo)
 	} else {
@@ -222,23 +217,23 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 
 		// Additional informational fields (not used during import)
 		Info: &EditionExportInfo{
-			AuthorName:    b.Author,
-			NarratorName:  b.Narrator,
-			PublisherName: b.Publisher,
-			PublishedYear:    b.PublishedYear,
-			CoverURL:         b.CoverURL,
-            HardcoverCoverURL: b.HardcoverCoverURL,
-			Timestamp:     b.Timestamp,
-			CreatedAt:     b.CreatedAt.Format(time.RFC3339),
-			Reason:        b.Reason,
-			Attempts:      b.Attempts,
+			AuthorName:        b.Author,
+			NarratorName:      b.Narrator,
+			PublisherName:     b.Publisher,
+			PublishedYear:     b.PublishedYear,
+			CoverURL:          b.CoverURL,
+			HardcoverCoverURL: b.HardcoverCoverURL,
+			Timestamp:         b.Timestamp,
+			CreatedAt:         b.CreatedAt.Format(time.RFC3339),
+			Reason:            b.Reason,
+			Attempts:          b.Attempts,
 		},
 	}
 
-    // If info.cover_url duplicates the main image_url, drop it to reduce redundancy
-    if result.Info != nil && result.Info.CoverURL == result.ImageURL {
-        result.Info.CoverURL = ""
-    }
+	// If info.cover_url duplicates the main image_url, drop it to reduce redundancy
+	if result.Info != nil && result.Info.CoverURL == result.ImageURL {
+		result.Info.CoverURL = ""
+	}
 
 	// Log final result for debugging
 	logger.Debug(fmt.Sprintf("Final EditionExport - BookID: %d, Title: %s, EditionInfo: %s, AuthorIDs: %v, PublisherID: %d",
@@ -426,8 +421,8 @@ type EditionExportInfo struct {
 	PublisherName string `json:"publisher,omitempty"`
 
 	// Additional metadata from source
-	PublishedYear    string `json:"published_year,omitempty"`
-	CoverURL         string `json:"cover_url,omitempty"`
+	PublishedYear     string `json:"published_year,omitempty"`
+	CoverURL          string `json:"cover_url,omitempty"`
 	HardcoverCoverURL string `json:"hardcover_cover_url,omitempty"`
 
 	// Export process metadata

@@ -1,23 +1,23 @@
 module github.com/drallgood/audiobookshelf-hardcover-sync
 
-go 1.23.0
+go 1.24.0
 
-toolchain go1.23.10
+toolchain go1.24.8
 
 require (
 	github.com/coreos/go-oidc/v3 v3.15.0
-	github.com/hasura/go-graphql-client v0.14.4
+	github.com/hasura/go-graphql-client v0.15.0
 	github.com/rs/zerolog v1.34.0
-	github.com/stretchr/testify v1.10.0
+	github.com/stretchr/testify v1.11.1
 	github.com/urfave/cli/v2 v2.27.7
-	golang.org/x/crypto v0.41.0
-	golang.org/x/oauth2 v0.30.0
+	golang.org/x/crypto v0.45.0
+	golang.org/x/oauth2 v0.33.0
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/driver/postgres v1.6.0
-	gorm.io/driver/sqlite v1.5.6
-	gorm.io/gorm v1.30.1
-	modernc.org/sqlite v1.38.2
+	gorm.io/driver/sqlite v1.6.0
+	gorm.io/gorm v1.31.1
+	modernc.org/sqlite v1.40.1
 )
 
 require (
@@ -47,10 +47,10 @@ require (
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/xrash/smetrics v0.0.0-20240521201337-686a1a2994c1 // indirect
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
-	golang.org/x/sync v0.16.0 // indirect
-	golang.org/x/sys v0.35.0 // indirect
-	golang.org/x/text v0.28.0 // indirect
-	modernc.org/libc v1.66.3 // indirect
+	golang.org/x/sync v0.18.0 // indirect
+	golang.org/x/sys v0.38.0 // indirect
+	golang.org/x/text v0.31.0 // indirect
+	modernc.org/libc v1.66.10 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )

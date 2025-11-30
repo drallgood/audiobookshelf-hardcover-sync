@@ -1838,6 +1838,7 @@ class SyncProfileApp {
                 sync_want_to_read: formData.get('sync_want_to_read') === 'on',
                 process_unread_books: formData.get('process_unread_books') === 'on',
                 sync_owned: formData.get('sync_owned') === 'on',
+                include_ebooks: formData.get('include_ebooks') === 'on',
                 dry_run: false,
                 test_book_filter: '',
                 test_book_limit: 0
@@ -1936,6 +1937,10 @@ class SyncProfileApp {
         document.getElementById('edit-sync-want-to-read').checked = this.toBool(config.sync_want_to_read, true);
         document.getElementById('edit-process-unread-books').checked = this.toBool(config.process_unread_books, true);
         document.getElementById('edit-sync-owned').checked = this.toBool(config.sync_owned, true);
+        const includeEbooksEl = document.getElementById('edit-include-ebooks');
+        if (includeEbooksEl) {
+            includeEbooksEl.checked = this.toBool(config.include_ebooks, false);
+        }
         
         // Library filters
         const libraries = config.libraries || {};
@@ -1982,6 +1987,7 @@ class SyncProfileApp {
                 sync_want_to_read: formData.get('sync_want_to_read') === 'on',
                 process_unread_books: formData.get('process_unread_books') === 'on',
                 sync_owned: formData.get('sync_owned') === 'on',
+                include_ebooks: formData.get('include_ebooks') === 'on',
                 dry_run: false,
                 test_book_filter: '',
                 test_book_limit: 0

@@ -99,6 +99,7 @@ func (m *MigrationManager) MigrateFromSingleUserConfig(configPath string) error 
 		MinimumProgress: cfg.Sync.MinimumProgress,
 		SyncWantToRead:  cfg.Sync.SyncWantToRead,
 		SyncOwned:       cfg.Sync.SyncOwned,
+		IncludeEbooks:   cfg.Sync.IncludeEbooks,
 		DryRun:          cfg.Sync.DryRun,
 		TestBookFilter:  cfg.App.TestBookFilter,
 		TestBookLimit:   cfg.App.TestBookLimit,

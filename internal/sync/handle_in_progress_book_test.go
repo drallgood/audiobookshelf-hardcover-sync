@@ -138,7 +138,7 @@ func TestHandleInProgressBook_RecentUpdate(t *testing.T) {
 	bookCacheKey := "test-book-1:123"
 	svc.lastProgressUpdates[bookCacheKey] = progressUpdateInfo{
 		timestamp: time.Now().Add(-1 * time.Minute), // 1 minute ago
-		progress:  98, // Very close to current progress (100)
+		progress:  98,                               // Very close to current progress (100)
 	}
 
 	// Call the function
@@ -158,7 +158,7 @@ func TestHandleInProgressBook_UpdateExistingRead(t *testing.T) {
 	// Create a test book with progress
 	testAudiobook := createTestBook("test-book-1", "Test Book", "Test Author", "B08N5KWB9H", "9781234567890")
 	testAudiobook.Progress.CurrentTime = 300 // Current progress in ABS
-	testAudiobook.Media.Duration = 1000     // Total duration
+	testAudiobook.Media.Duration = 1000      // Total duration
 	audiobook := toAudiobookshelfBook(testAudiobook)
 
 	// Mock the GetUserBook call
@@ -190,9 +190,9 @@ func TestHandleInProgressBook_UpdateExistingRead(t *testing.T) {
 	// Mock the UpdateUserBookRead call
 	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
 		// Verify the input has the correct ID and progress
-		return input.ID == readID && 
-			   input.Object["progress_seconds"] == int64(300) && 
-			   input.Object["edition_id"] == editionID
+		return input.ID == readID &&
+			input.Object["progress_seconds"] == int64(300) &&
+			input.Object["edition_id"] == editionID
 	})).Return(true, nil).Once()
 
 	// Mock the UpdateUserBookStatus call
@@ -218,7 +218,7 @@ func TestHandleInProgressBook_SmallProgressDifference(t *testing.T) {
 	// Create a test book with progress
 	testAudiobook := createTestBook("test-book-1", "Test Book", "Test Author", "B08N5KWB9H", "9781234567890")
 	testAudiobook.Progress.CurrentTime = 105 // Current progress in ABS (very close to Hardcover's 100)
-	testAudiobook.Media.Duration = 1000     // Total duration
+	testAudiobook.Media.Duration = 1000      // Total duration
 	audiobook := toAudiobookshelfBook(testAudiobook)
 
 	// Mock the GetUserBook call
@@ -262,7 +262,7 @@ func TestHandleInProgressBook_CreateNewRead(t *testing.T) {
 	// Create a test book with progress
 	testAudiobook := createTestBook("test-book-1", "Test Book", "Test Author", "B08N5KWB9H", "9781234567890")
 	testAudiobook.Progress.CurrentTime = 300 // Current progress in ABS
-	testAudiobook.Media.Duration = 1000     // Total duration
+	testAudiobook.Media.Duration = 1000      // Total duration
 	audiobook := toAudiobookshelfBook(testAudiobook)
 
 	// Mock the GetUserBook call - only called once due to caching
@@ -291,11 +291,11 @@ func TestHandleInProgressBook_CreateNewRead(t *testing.T) {
 	progressSeconds := 300
 	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
 		// Verify the input has the correct user book ID and progress
-		return input.UserBookID == userBookID && 
-			   input.DatesRead.ProgressSeconds != nil && 
-			   *input.DatesRead.ProgressSeconds == progressSeconds && 
-			   input.DatesRead.EditionID != nil && 
-			   *input.DatesRead.EditionID == editionID
+		return input.UserBookID == userBookID &&
+			input.DatesRead.ProgressSeconds != nil &&
+			*input.DatesRead.ProgressSeconds == progressSeconds &&
+			input.DatesRead.EditionID != nil &&
+			*input.DatesRead.EditionID == editionID
 	})).Return(789, nil).Once()
 
 	// Mock the UpdateUserBookStatus call
@@ -313,6 +313,61 @@ func TestHandleInProgressBook_CreateNewRead(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
+func TestHandleInProgressBook_CreateNewRead_UsesStateKeyEdition(t *testing.T) {
+	// Create test service and mock client
+	svc, mockClient := createTestService()
+
+	// Create a test book with progress
+	testAudiobook := createTestBook("test-book-1", "Test Book", "Test Author", "B08N5KWB9H", "9781234567890")
+	testAudiobook.Progress.CurrentTime = 300 // Current progress in ABS
+	testAudiobook.Media.Duration = 1000      // Total duration
+	audiobook := toAudiobookshelfBook(testAudiobook)
+
+	// Mock the GetUserBook call so Hardcover user book has a different EditionID
+	userBookID := int64(123)
+	mockClient.On("GetUserBook", mock.Anything, "123").Return(&models.HardcoverBook{
+		ID:        "book-123",
+		Title:     "Test Book",
+		EditionID: "999", // Different from the edition we encode in stateKey
+	}, nil).Once()
+
+	// No unfinished reads
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+		Status:     "unfinished",
+	}).Return([]hardcover.UserBookRead{}, nil).Once()
+
+	// Second-chance read fetches (no status filter) return no reads
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{}, nil).Twice()
+
+	// Expect InsertUserBookRead to use the edition ID from stateKey (456), not hcBook.EditionID (999)
+	editionID := int64(456)
+	progressSeconds := 300
+	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
+		return input.UserBookID == userBookID &&
+			input.DatesRead.ProgressSeconds != nil &&
+			*input.DatesRead.ProgressSeconds == progressSeconds &&
+			input.DatesRead.EditionID != nil &&
+			*input.DatesRead.EditionID == editionID
+	})).Return(789, nil).Once()
+
+	// Mock the UpdateUserBookStatus call
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+		ID:       userBookID,
+		StatusID: 2, // 2 = Currently Reading
+	}).Return(nil).Once()
+
+	// Call the function with stateKey encoding the editionID
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+
+	// Verify results
+	assert.NoError(t, err, "Should not return an error when creating new read with stateKey edition")
+	mockClient.AssertExpectations(t)
+}
+
 // TestHandleInProgressBook_UpdateReadError tests error handling when UpdateUserBookRead fails
 func TestHandleInProgressBook_UpdateReadError(t *testing.T) {
 	// Create test service and mock client
@@ -321,7 +376,7 @@ func TestHandleInProgressBook_UpdateReadError(t *testing.T) {
 	// Create a test book with progress
 	testAudiobook := createTestBook("test-book-1", "Test Book", "Test Author", "B08N5KWB9H", "9781234567890")
 	testAudiobook.Progress.CurrentTime = 300 // Current progress in ABS
-	testAudiobook.Media.Duration = 1000     // Total duration
+	testAudiobook.Media.Duration = 1000      // Total duration
 	audiobook := toAudiobookshelfBook(testAudiobook)
 
 	// Mock the GetUserBook call
@@ -356,8 +411,8 @@ func TestHandleInProgressBook_UpdateReadError(t *testing.T) {
 	expectedErr := errors.New("API error")
 	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
 		// Verify the input has the correct ID and progress
-		return input.ID == readID && 
-			   input.Object["progress_seconds"] == int64(300)
+		return input.ID == readID &&
+			input.Object["progress_seconds"] == int64(300)
 	})).Return(false, expectedErr).Once()
 
 	// Call the function
@@ -378,7 +433,7 @@ func TestHandleInProgressBook_GetUserBookReadsError(t *testing.T) {
 	// Create a test book with progress
 	testAudiobook := createTestBook("test-book-1", "Test Book", "Test Author", "B08N5KWB9H", "9781234567890")
 	testAudiobook.Progress.CurrentTime = 100 // Some progress
-	testAudiobook.Media.Duration = 3600     // Total duration
+	testAudiobook.Media.Duration = 3600      // Total duration
 	audiobook := toAudiobookshelfBook(testAudiobook)
 
 	// Mock the GetUserBook call - first call at the beginning of handleInProgressBook
@@ -399,16 +454,16 @@ func TestHandleInProgressBook_GetUserBookReadsError(t *testing.T) {
 	// Note: Second GetUserBook call is now served from cache, so no additional mock needed
 
 	// Second-chance read fetch (no status filter) is performed twice: once after initial failure and once pre-insert
-    mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
-        UserBookID: userBookID,
-    }).Return([]hardcover.UserBookRead{}, nil).Twice()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{}, nil).Twice()
 
 	// Mock the InsertUserBookRead call
 	progressSeconds := 100
 	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
-		return input.UserBookID == userBookID && 
-			   input.DatesRead.ProgressSeconds != nil && 
-			   *input.DatesRead.ProgressSeconds == progressSeconds
+		return input.UserBookID == userBookID &&
+			input.DatesRead.ProgressSeconds != nil &&
+			*input.DatesRead.ProgressSeconds == progressSeconds
 	})).Return(789, nil).Once()
 
 	// Mock the UpdateUserBookStatus call
@@ -468,9 +523,9 @@ func TestHandleInProgressBook_FinishedBook(t *testing.T) {
 	// Mock the UpdateUserBookRead call
 	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
 		// Verify the input has the correct ID, progress, and finished date
-		return input.ID == readID && 
-			   input.Object["progress_seconds"] == int64(1000) && 
-			   input.Object["finished_at"] != nil
+		return input.ID == readID &&
+			input.Object["progress_seconds"] == int64(1000) &&
+			input.Object["finished_at"] != nil
 	})).Return(true, nil).Once()
 
 	// Mock the UpdateUserBookStatus call to mark as completed

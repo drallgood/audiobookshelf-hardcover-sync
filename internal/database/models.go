@@ -59,6 +59,7 @@ type SyncConfigData struct {
 	SyncWantToRead     bool    `json:"sync_want_to_read"`
 	ProcessUnreadBooks bool    `json:"process_unread_books"`
 	SyncOwned          bool    `json:"sync_owned"`
+	IncludeEbooks      bool    `json:"include_ebooks"`
 	DryRun             bool    `json:"dry_run"`
 	TestBookFilter     string  `json:"test_book_filter"`
 	TestBookLimit      int     `json:"test_book_limit"`
@@ -76,6 +77,7 @@ func (s SyncConfigData) IsEmpty() bool {
 		!s.SyncWantToRead &&
 		!s.ProcessUnreadBooks &&
 		!s.SyncOwned &&
+		!s.IncludeEbooks &&
 		!s.DryRun &&
 		s.TestBookFilter == "" &&
 		s.TestBookLimit == 0
