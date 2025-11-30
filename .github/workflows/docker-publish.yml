@@ -211,7 +211,7 @@ jobs:
       - name: Get image digest
         id: image_digest
         run: |
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA::8} | cut -d'@' -f2)
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA} 2>/dev/null | cut -d'@' -f2 || true)
           echo "digest=$DIGEST" >> $GITHUB_OUTPUT
 
   # This job will only run for tags starting with 'v' (e.g., v1.0.0)
@@ -248,7 +248,7 @@ jobs:
         id: prepare_release_body
         run: |
           # Get the image digest from the build step
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA::8} | cut -d'@' -f2)
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA} 2>/dev/null | cut -d'@' -f2 || true)
           
           # Create release body using a heredoc with proper escaping
           cat << 'EOF' > body.md
@@ -269,6 +269,19 @@ jobs:
           - **Source:** [View on GitHub](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
           EOF
           
+          # Append the changelog section for this tag only
+          TAG_NAME="${{ steps.get-tag.outputs.tag_name }}"
+          echo "" >> body.md
+          echo "### Changelog" >> body.md
+          echo "" >> body.md
+          awk -v ver="$TAG_NAME" '
+            $0 ~ "^## \\[" ver "\\]" { in_section=1 }
+            in_section {
+              if ($0 ~ /^## \\[/ && $0 !~ "^## \\[" ver "\\]") { exit }
+              print
+            }
+          ' CHANGELOG.md >> body.md
+
           # Replace placeholder with actual digest
           sed -i "s|%DIGEST%|${DIGEST}|g" body.md
           
@@ -282,7 +295,7 @@ jobs:
         with:
           tag_name: ${{ steps.get-tag.outputs.tag_name }}
           name: Release ${{ steps.get-tag.outputs.tag_name }}
-          body_path: CHANGELOG.md  # Use our detailed CHANGELOG.md content
+          body_path: body.md  # Only the current version's changelog and Docker info
           draft: false
           prerelease: false
           # We won't generate additional notes since our CHANGELOG is comprehensive
