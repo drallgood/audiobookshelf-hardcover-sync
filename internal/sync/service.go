@@ -1954,7 +1954,14 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 		if latestUnfinishedRead != nil {
 			// Create update object with all fields needed for the update
 			progress := 100.0
-			finishedAt := time.Now().Format("2006-01-02")
+
+			// Use the finished date from Audiobookshelf if available, otherwise fall back to current date
+			var finishedAt string
+			if book.Progress.FinishedAt > 0 {
+				finishedAt = time.Unix(book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
+			} else {
+				finishedAt = time.Now().Format("2006-01-02")
+			}
 
 			// Prepare the update object with all fields
 			updateObj := map[string]interface{}{
@@ -1970,11 +1977,14 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 				updateObj["progress_seconds"] = durationInt
 			}
 
-			// Preserve started_at if it exists
+			// Preserve started_at if it exists, or use ABS started_at
 			if latestUnfinishedRead.StartedAt != nil && *latestUnfinishedRead.StartedAt != "" {
 				updateObj["started_at"] = *latestUnfinishedRead.StartedAt
+			} else if book.Progress.StartedAt > 0 {
+				// Use the started date from Audiobookshelf
+				updateObj["started_at"] = time.Unix(book.Progress.StartedAt/1000, 0).Format("2006-01-02")
 			} else {
-				// If no started_at, use current date as fallback
+				// If no started_at available, use finished date as fallback
 				updateObj["started_at"] = finishedAt
 			}
 
@@ -2024,8 +2034,21 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 
 	if shouldCreateNewRead {
 		// Create a new read record with current progress
-		finishedAt := time.Now().Format("2006-01-02")
-		startedAt := finishedAt // Use current time as started_at if not available
+		// Use the finished date from Audiobookshelf if available, otherwise fall back to current date
+		var finishedAt string
+		if book.Progress.FinishedAt > 0 {
+			finishedAt = time.Unix(book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
+		} else {
+			finishedAt = time.Now().Format("2006-01-02")
+		}
+
+		// Use the started date from Audiobookshelf if available, otherwise use finished date
+		var startedAt string
+		if book.Progress.StartedAt > 0 {
+			startedAt = time.Unix(book.Progress.StartedAt/1000, 0).Format("2006-01-02")
+		} else {
+			startedAt = finishedAt // Use finished date as fallback if no started date
+		}
 
 		// If we have progress from the book, use it
 		var progressSeconds *int
