@@ -140,11 +140,6 @@ func (em *EncryptionManager) Decrypt(ciphertext string) (string, error) {
 	return string(plaintext), nil
 }
 
-// getOrCreateEncryptionKey gets the encryption key from environment or creates a new one
-func getOrCreateEncryptionKey() ([]byte, error) {
-	return getOrCreateEncryptionKeyWithDataDir("")
-}
-
 // getOrCreateEncryptionKeyWithDataDir gets the encryption key using configurable data directory
 func getOrCreateEncryptionKeyWithDataDir(dataDir string) ([]byte, error) {
 	// First, try to get key from environment variable
@@ -225,16 +220,16 @@ func getKeyFilePath() string {
 			dataDir = "./data"
 		}
 	}
-	
+
 	// Ensure data directory exists
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		// Log error but continue - we'll handle file creation errors later
 		logger.Get().Warn("Failed to create data directory", map[string]interface{}{
-			"dir": dataDir,
+			"dir":   dataDir,
 			"error": err,
 		})
 	}
-	
+
 	return fmt.Sprintf("%s/encryption.key", dataDir)
 }
 
@@ -244,16 +239,16 @@ func getKeyFilePathFromConfig(dataDir string) string {
 		// Fallback to environment variable or auto-detection
 		return getKeyFilePath()
 	}
-	
+
 	// Ensure data directory exists
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		// Log error but continue - we'll handle file creation errors later
 		logger.Get().Warn("Failed to create data directory", map[string]interface{}{
-			"dir": dataDir,
+			"dir":   dataDir,
 			"error": err,
 		})
 	}
-	
+
 	return fmt.Sprintf("%s/encryption.key", dataDir)
 }
 
