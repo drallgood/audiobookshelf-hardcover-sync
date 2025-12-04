@@ -27,7 +27,12 @@ type EncryptionManager struct {
 
 // NewEncryptionManager creates a new encryption manager
 func NewEncryptionManager(log *logger.Logger) (*EncryptionManager, error) {
-	key, err := getOrCreateEncryptionKey()
+	return NewEncryptionManagerWithDataDir("", log)
+}
+
+// NewEncryptionManagerWithDataDir creates a new encryption manager using a specific data directory
+func NewEncryptionManagerWithDataDir(dataDir string, log *logger.Logger) (*EncryptionManager, error) {
+	key, err := getOrCreateEncryptionKeyWithDataDir(dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get encryption key: %w", err)
 	}
@@ -151,6 +156,12 @@ func getOrCreateEncryptionKeyWithDataDir(dataDir string) ([]byte, error) {
 		if len(key) != 32 {
 			return nil, fmt.Errorf("encryption key must be 32 bytes, got %d", len(key))
 		}
+
+		logger.Get().Info("Using encryption key from environment", map[string]interface{}{
+			"source": "env",
+			"env":    "ENCRYPTION_KEY",
+		})
+
 		return key, nil
 	}
 
@@ -169,6 +180,12 @@ func getOrCreateEncryptionKeyWithDataDir(dataDir string) ([]byte, error) {
 		if len(key) != 32 {
 			return nil, fmt.Errorf("encryption key must be 32 bytes, got %d", len(key))
 		}
+
+		logger.Get().Info("Loaded encryption key from file", map[string]interface{}{
+			"source": "file",
+			"path":   keyPath,
+		})
+
 		return key, nil
 	}
 
@@ -183,6 +200,11 @@ func getOrCreateEncryptionKeyWithDataDir(dataDir string) ([]byte, error) {
 	if err := os.WriteFile(keyPath, []byte(encoded), 0600); err != nil {
 		return nil, fmt.Errorf("failed to save encryption key: %w", err)
 	}
+
+	logger.Get().Info("Generated new encryption key and saved to file", map[string]interface{}{
+		"source": "generated",
+		"path":   keyPath,
+	})
 
 	return key, nil
 }
