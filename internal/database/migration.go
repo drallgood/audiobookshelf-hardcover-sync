@@ -55,19 +55,19 @@ func (m *MigrationManager) MigrateFromSingleUserConfig(configPath string) error 
 			if err != nil || profileWithTokens.AudiobookshelfURL == "" {
 				m.logger.Warn("Found profile without complete configuration, will recreate", map[string]interface{}{
 					"profile_id": profile.ID,
-					"error": err,
+					"error":      err,
 				})
 				// Delete incomplete profile and continue with migration
 				if deleteErr := m.repository.DeleteProfile(profile.ID); deleteErr != nil {
 					m.logger.Error("Failed to delete incomplete profile", map[string]interface{}{
 						"profile_id": profile.ID,
-						"error": deleteErr.Error(),
+						"error":      deleteErr.Error(),
 					})
 				}
 				break // Continue with migration
 			}
 		}
-		
+
 		// If we get here, all profiles have complete configurations
 		m.logger.Info("Sync profiles with complete configurations already exist, skipping migration", map[string]interface{}{
 			"sync_profile_count": len(profiles),
@@ -123,21 +123,21 @@ func (m *MigrationManager) MigrateFromSingleUserConfig(configPath string) error 
 	if err := copyFile(configPath, backupPath); err != nil {
 		m.logger.Warn("Failed to backup original config file", map[string]interface{}{
 			"original_path": configPath,
-			"backup_path":  backupPath,
-			"error":        err.Error(),
+			"backup_path":   backupPath,
+			"error":         err.Error(),
 		})
 	} else {
 		m.logger.Info("Backed up original config file", map[string]interface{}{
 			"original_path": configPath,
-			"backup_path":  backupPath,
+			"backup_path":   backupPath,
 		})
 	}
 
 	m.logger.Info("Successfully migrated single-user config to multi-profile database", map[string]interface{}{
-		"profile_id":  profileID,
+		"profile_id":   profileID,
 		"profile_name": profileName,
-		"config_path": configPath,
-		"backup_path": backupPath,
+		"config_path":  configPath,
+		"backup_path":  backupPath,
 	})
 
 	return nil
@@ -172,7 +172,7 @@ func AutoMigrate(dbConfig *DatabaseConfig, configPath string, log *logger.Logger
 		"path": dbConfig.Path,
 		"type": dbConfig.Type,
 	})
-	
+
 	// Create database connection
 	db, err := NewDatabase(dbConfig, log)
 	if err != nil {
@@ -180,8 +180,14 @@ func AutoMigrate(dbConfig *DatabaseConfig, configPath string, log *logger.Logger
 	}
 	defer db.Close()
 
+	// Determine data directory for encryption key based on database configuration
+	encryptionDataDir := ""
+	if dbConfig != nil && dbConfig.Type == DatabaseTypeSQLite && dbConfig.Path != "" {
+		encryptionDataDir = filepath.Dir(dbConfig.Path)
+	}
+
 	// Create encryption manager
-	encryptor, err := crypto.NewEncryptionManager(log)
+	encryptor, err := crypto.NewEncryptionManagerWithDataDir(encryptionDataDir, log)
 	if err != nil {
 		return fmt.Errorf("failed to create encryption manager: %w", err)
 	}

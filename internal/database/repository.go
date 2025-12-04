@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -30,10 +31,10 @@ func NewRepository(db *Database, encryptor *crypto.EncryptionManager, log *logge
 
 // ProfileWithTokens represents a sync profile with decrypted tokens
 type ProfileWithTokens struct {
-	Profile             SyncProfile `json:"profile"`
-	AudiobookshelfURL   string      `json:"audiobookshelf_url"`
-	AudiobookshelfToken string      `json:"audiobookshelf_token"`
-	HardcoverToken      string      `json:"hardcover_token"`
+	Profile             SyncProfile    `json:"profile"`
+	AudiobookshelfURL   string         `json:"audiobookshelf_url"`
+	AudiobookshelfToken string         `json:"audiobookshelf_token"`
+	HardcoverToken      string         `json:"hardcover_token"`
 	SyncConfig          SyncConfigData `json:"sync_config"`
 }
 
@@ -82,11 +83,11 @@ func (r *Repository) CreateProfile(profileID, name, audiobookshelfURL, audiobook
 
 		// Create profile config
 		config := SyncProfileConfig{
-			ProfileID:                  profileID,
-			AudiobookshelfURL:          audiobookshelfURL,
+			ProfileID:                    profileID,
+			AudiobookshelfURL:            audiobookshelfURL,
 			AudiobookshelfTokenEncrypted: encryptedABSToken,
-			HardcoverTokenEncrypted:    encryptedHCToken,
-			SyncConfig:                 string(syncConfigJSON),
+			HardcoverTokenEncrypted:      encryptedHCToken,
+			SyncConfig:                   string(syncConfigJSON),
 		}
 		if err := tx.Create(&config).Error; err != nil {
 			return fmt.Errorf("failed to create sync profile config: %w", err)
@@ -128,19 +129,29 @@ func (r *Repository) GetProfile(profileID string) (*ProfileWithTokens, error) {
 	// Decrypt tokens
 	audiobookshelfToken, err := r.encryptor.Decrypt(profile.Config.AudiobookshelfTokenEncrypted)
 	if err != nil {
-		r.logger.Error("Failed to decrypt Audiobookshelf token", map[string]interface{}{
+		fields := map[string]interface{}{
 			"profile_id": profileID,
 			"error":      err.Error(),
-		})
+		}
+		if isLikelyEncryptionKeyMismatch(err) {
+			fields["hint"] = "encryption key mismatch suspected; ensure ENCRYPTION_KEY, DATA_DIR, paths.data_dir and volume mounts are consistent with when tokens were created"
+		}
+
+		r.logger.Error("Failed to decrypt Audiobookshelf token", fields)
 		return nil, fmt.Errorf("failed to decrypt Audiobookshelf token: %w", err)
 	}
 
 	hardcoverToken, err := r.encryptor.Decrypt(profile.Config.HardcoverTokenEncrypted)
 	if err != nil {
-		r.logger.Error("Failed to decrypt Hardcover token", map[string]interface{}{
+		fields := map[string]interface{}{
 			"profile_id": profileID,
 			"error":      err.Error(),
-		})
+		}
+		if isLikelyEncryptionKeyMismatch(err) {
+			fields["hint"] = "encryption key mismatch suspected; ensure ENCRYPTION_KEY, DATA_DIR, paths.data_dir and volume mounts are consistent with when tokens were created"
+		}
+
+		r.logger.Error("Failed to decrypt Hardcover token", fields)
 		return nil, fmt.Errorf("failed to decrypt Hardcover token: %w", err)
 	}
 
@@ -338,4 +349,16 @@ func (r *Repository) UserExists(profileID string) (bool, error) {
 		return false, fmt.Errorf("failed to check profile existence: %w", err)
 	}
 	return count > 0, nil
+}
+
+func isLikelyEncryptionKeyMismatch(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if errors.Is(err, crypto.ErrInvalidCiphertext) {
+		return true
+	}
+
+	return strings.Contains(err.Error(), "cipher: message authentication failed")
 }
