@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -145,24 +146,35 @@ func main() {
 
 	// Initialize multi-user system
 	log.Info("Initializing multi-user system", nil)
-	
+
 	// Set up database with config.yaml and environment-based configuration
 	// Create database config from config.yaml with environment variable override
 	configDB := &database.ConfigDatabase{
-		Type:           cfg.Database.Type,
-		Host:           cfg.Database.Host,
-		Port:           cfg.Database.Port,
-		Name:           cfg.Database.Name,
-		User:           cfg.Database.User,
-		Password:       cfg.Database.Password,
-		Path:           cfg.Database.Path,
-		SSLMode:        cfg.Database.SSLMode,
+		Type:     cfg.Database.Type,
+		Host:     cfg.Database.Host,
+		Port:     cfg.Database.Port,
+		Name:     cfg.Database.Name,
+		User:     cfg.Database.User,
+		Password: cfg.Database.Password,
+		Path:     cfg.Database.Path,
+		SSLMode:  cfg.Database.SSLMode,
 	}
 	configDB.ConnectionPool.MaxOpenConns = cfg.Database.ConnectionPool.MaxOpenConns
 	configDB.ConnectionPool.MaxIdleConns = cfg.Database.ConnectionPool.MaxIdleConns
 	configDB.ConnectionPool.ConnMaxLifetime = cfg.Database.ConnectionPool.ConnMaxLifetime
-	
+
 	dbConfig := database.NewDatabaseConfigFromConfig(configDB)
+
+	// Determine data directory for encryption key
+	encryptionDataDir := cfg.Paths.DataDir
+	if envDataDir := os.Getenv("DATA_DIR"); envDataDir != "" {
+		encryptionDataDir = envDataDir
+	}
+	if encryptionDataDir == "" {
+		if dbConfig != nil && dbConfig.Type == database.DatabaseTypeSQLite && dbConfig.Path != "" {
+			encryptionDataDir = filepath.Dir(dbConfig.Path)
+		}
+	}
 
 	// Log the database configuration being used
 	log.Info("Database configuration", map[string]interface{}{
@@ -171,6 +183,11 @@ func main() {
 		"port":     dbConfig.Port,
 		"database": dbConfig.Database,
 		"path":     dbConfig.Path,
+	})
+
+	log.Info("Encryption configuration", map[string]interface{}{
+		"data_dir":      encryptionDataDir,
+		"using_env_key": os.Getenv("ENCRYPTION_KEY") != "",
 	})
 
 	db, err := database.NewDatabase(dbConfig, log)
@@ -183,29 +200,29 @@ func main() {
 		os.Exit(1)
 	}
 	defer db.Close()
-	
+
 	// Set up encryption
-	encryptor, err := crypto.NewEncryptionManager(log)
+	encryptor, err := crypto.NewEncryptionManagerWithDataDir(encryptionDataDir, log)
 	if err != nil {
 		log.Error("Failed to initialize encryption", map[string]interface{}{
 			"error": err.Error(),
 		})
 		os.Exit(1)
 	}
-	
+
 	// Set up repository
 	repo := database.NewRepository(db, encryptor, log)
-	
+
 	// Perform automatic migration from single-user config if needed
 	// Use the actual config path that was loaded, not default search paths
 	configPath := flags.configFile
-	
+
 	// Log the migration attempt with the actual database path being used
 	log.Info("Checking migration from config", map[string]interface{}{
 		"config_path": configPath,
 		"db_path":     dbConfig.Path, // Use the same path as the main database
 	})
-	
+
 	// Pass the same database config to ensure migration uses the same database as main application
 	if err := database.AutoMigrate(dbConfig, configPath, log); err != nil {
 		log.Error("Failed to perform migration", map[string]interface{}{
@@ -213,10 +230,10 @@ func main() {
 		})
 		os.Exit(1)
 	}
-	
+
 	// Create multi-user service
 	multiUserService := multiuser.NewMultiUserService(repo, cfg, log)
-	
+
 	// Initialize authentication system
 	log.Info("Initializing authentication system", nil)
 	// Convert config.yaml auth config to internal auth config with env overrides
@@ -272,7 +289,7 @@ func main() {
 		})
 		os.Exit(1)
 	}
-	
+
 	// Initialize default admin user if authentication is enabled and no users exist
 	if authConfig.Enabled {
 		if err := authService.InitializeDefaultUser(ctx); err != nil {
@@ -282,7 +299,7 @@ func main() {
 			// Don't exit - this is not critical
 		}
 		log.Info("Authentication system initialized", map[string]interface{}{
-			"enabled": authConfig.Enabled,
+			"enabled":   authConfig.Enabled,
 			"providers": len(authConfig.Providers),
 		})
 	} else {
@@ -291,7 +308,7 @@ func main() {
 	// In Web UI mode, the sync service is managed per-profile through the multiUserService
 	// In simple mode, we'll create a one-off sync service
 	var syncService *sync.Service
-	
+
 	if !cfg.Server.EnableWebUI {
 		// Simple mode: Create clients from config
 		audiobookshelfClient := audiobookshelf.NewClient(cfg.Audiobookshelf.URL, cfg.Audiobookshelf.Token)
@@ -319,7 +336,7 @@ func main() {
 		})
 
 		hardcoverClient := hardcover.NewClientWithConfig(hcCfg, cfg.Hardcover.Token, log)
-		
+
 		// Create sync service with config
 		syncService, err = sync.NewService(audiobookshelfClient, hardcoverClient, cfg)
 		if err != nil {
@@ -343,7 +360,7 @@ func main() {
 		// Start the HTTP server
 		go func() {
 			log.Info("Starting HTTP server with web UI", map[string]interface{}{
-				"port": cfg.Server.Port,
+				"port":   cfg.Server.Port,
 				"web_ui": true,
 			})
 
@@ -400,7 +417,7 @@ func main() {
 						if err := multiUserService.StartSync(profileID); err != nil {
 							log.Error("Failed to start sync for profile", map[string]interface{}{
 								"profile_id": profileID,
-								"error":     err.Error(),
+								"error":      err.Error(),
 							})
 						}
 					}(profile.ID)
@@ -437,7 +454,7 @@ func main() {
 							if err := multiUserService.StartSync(profileID); err != nil {
 								log.Error("Failed to start sync for profile", map[string]interface{}{
 									"profile_id": profileID,
-									"error":     err.Error(),
+									"error":      err.Error(),
 								})
 							}
 						}(profile.ID)
