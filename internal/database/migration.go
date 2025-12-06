@@ -163,7 +163,7 @@ func (m *MigrationManager) CheckMigrationNeeded(configPath string) (bool, error)
 
 // AutoMigrate performs automatic migration if needed
 // Uses the provided database configuration to ensure consistency with main application
-func AutoMigrate(dbConfig *DatabaseConfig, configPath string, log *logger.Logger) error {
+func AutoMigrate(dbConfig *DatabaseConfig, configPath string, dataDir string, log *logger.Logger) error {
 	if dbConfig == nil {
 		return fmt.Errorf("database configuration is required for migration")
 	}
@@ -180,9 +180,10 @@ func AutoMigrate(dbConfig *DatabaseConfig, configPath string, log *logger.Logger
 	}
 	defer db.Close()
 
-	// Determine data directory for encryption key based on database configuration
-	encryptionDataDir := ""
-	if dbConfig != nil && dbConfig.Type == DatabaseTypeSQLite && dbConfig.Path != "" {
+	// Use the provided data directory for encryption key
+	// Fall back to database path's parent directory if not provided
+	encryptionDataDir := dataDir
+	if encryptionDataDir == "" && dbConfig != nil && dbConfig.Type == DatabaseTypeSQLite && dbConfig.Path != "" {
 		encryptionDataDir = filepath.Dir(dbConfig.Path)
 	}
 
