@@ -223,8 +223,8 @@ func main() {
 		"db_path":     dbConfig.Path, // Use the same path as the main database
 	})
 
-	// Pass the same database config to ensure migration uses the same database as main application
-	if err := database.AutoMigrate(dbConfig, configPath, log); err != nil {
+	// Pass the same database config and data directory to ensure migration uses consistent paths
+	if err := database.AutoMigrate(dbConfig, configPath, encryptionDataDir, log); err != nil {
 		log.Error("Failed to perform migration", map[string]interface{}{
 			"error": err.Error(),
 		})
