@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Finished Date Sync**: Use actual completion date from Audiobookshelf instead of sync date when marking books as finished in Hardcover (#74)
+ - **Encryption Key Persistence & Logging**: Store the AES-256 encryption key in the same persistent data directory as the database and add detailed logging and hints for token decryption failures to diagnose encryption key and volume mismatches in multi-user setups (#58)
+
 ## [v3.1.0] - 2025-11-30
 
 ### Added
