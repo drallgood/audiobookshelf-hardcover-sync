@@ -195,7 +195,8 @@ prepare-release:
 		exit 1; \
 	fi
 	@echo "Updating CHANGELOG.md for $(VERSION)..."
-	@sed -i '' "s/## \[Unreleased\]/## [$(VERSION)] - $(shell date +%Y-%m-%d)/" CHANGELOG.md
+	@sed -i.bak -e "s/^## \[Unreleased\]$$/## [$(VERSION)] - $(shell date +%Y-%m-%d)/" CHANGELOG.md
+	@rm -f CHANGELOG.md.bak
 	@echo "Changelog updated. Review changes, commit, and create a tag:"
 	@echo "  git add CHANGELOG.md"
 	@echo "  git commit -m 'Release $(VERSION)'"
