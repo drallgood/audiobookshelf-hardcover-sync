@@ -120,9 +120,14 @@ func TestMismatchJSONFileCreationWithASINReference(t *testing.T) {
 				}
 			}
 
-			// Verify edition format defaults
-			if editionInput.EditionFormat != "Audible Audio" {
-				t.Errorf("File %s: Edition format should default to 'Audible Audio', got %s", file.Name(), editionInput.EditionFormat)
+			// Verify edition format based on ASIN presence
+			expectedFormat := ""
+			if editionInput.ASIN != "" {
+				expectedFormat = "Audible Audio" // ASIN indicates Audible/Amazon purchase
+			}
+			
+			if editionInput.EditionFormat != expectedFormat {
+				t.Errorf("File %s: Edition format should be '%s', got %s", file.Name(), expectedFormat, editionInput.EditionFormat)
 			}
 
 			// Check that lookup information is preserved in EditionInfo

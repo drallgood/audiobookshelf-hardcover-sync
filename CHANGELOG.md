@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Edition Format Detection**: Edition format logic updated to be more precise:
+  - "Audible Audio" format is only applied when the book was purchased from Audible/Amazon (detected by presence of ASIN)
+  - "libro.fm" format is applied for libro.fm publishers
+  - Generic audiobooks now leave the format field empty (since the type is already "audiobook")
+  - Previously, generic audiobooks incorrectly defaulted to "Audiobook" format
+
 ## [v3.2.0] - 2025-12-17
 
 ### Fixed

@@ -292,7 +292,7 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 				Title:         "Test Book",
 				AuthorIDs:     []int{}, // Empty slice when no authors found
 				AudioSeconds:  19800,
-				EditionFormat: "Audible Audio", // Updated to match new default
+				EditionFormat: "", // Empty for generic audiobooks (no ASIN)
 				EditionInfo:   "Unabridged",    // Updated to match new default
 				LanguageID:    1,               // Default values
 				CountryID:     1,               // Default values
@@ -356,7 +356,7 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 				PublisherID:   2,
 				ReleaseDate:   "2020-01-01",
 				AudioSeconds:  37800,
-				EditionFormat: "Audible Audio",   // Updated to match new default
+				EditionFormat: "Audible Audio",   // ASIN indicates Audible/Amazon purchase
 				EditionInfo:   "Special Edition", // Updated to remove the period at the end
 				LanguageID:    1,
 				CountryID:     1,
