@@ -32,6 +32,9 @@ type HardcoverClientInterface interface {
 	// GetUserBookID retrieves the user book ID for a given edition ID
 	GetUserBookID(ctx context.Context, editionID int) (int, error)
 
+	// ClearUserBookCache clears the user book ID cache
+	ClearUserBookCache()
+
     // SearchBookByISBN13 searches for a book by ISBN-13
     SearchBookByISBN13(ctx context.Context, isbn13 string) (*models.HardcoverBook, error)
 

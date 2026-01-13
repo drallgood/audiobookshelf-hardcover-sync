@@ -499,6 +499,9 @@ func (s *Service) Sync(ctx context.Context) error {
 
 	// Clear ASIN cache to ensure fresh lookups for this sync run
 	s.clearASINCache()
+	
+	// Clear user book cache to ensure fresh edition-specific lookups
+	s.hardcover.ClearUserBookCache()
 
 	// Reset per-run guard map to avoid cross-run interference
 	s.createdReadsMutex.Lock()

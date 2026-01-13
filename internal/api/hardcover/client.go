@@ -2751,15 +2751,16 @@ func (c *Client) GetUserBookID(ctx context.Context, editionID int) (int, error) 
 		return 0, fmt.Errorf("invalid book ID format: %w", err)
 	}
 
-	// First try to find by book ID (preferred method)
-	userBookID, err := c.lookupUserBookByBookID(ctx, bookID, userID)
+	// First try to find by book ID AND edition ID (preferred method)
+	userBookID, err := c.lookupUserBookByBookID(ctx, bookID, editionID, userID)
 	if err != nil {
-		log.Warn("Failed to lookup user book by book ID", map[string]interface{}{
+		log.Warn("Failed to lookup user book by book ID and edition ID", map[string]interface{}{
 			"bookID": bookID,
+			"editionID": editionID,
 			"userID": userID,
 			"error":  err.Error(),
 		})
-		return 0, fmt.Errorf("failed to lookup user book by book ID: %w", err)
+		return 0, fmt.Errorf("failed to lookup user book by book ID and edition ID: %w", err)
 	}
 
 	// If not found by book ID, fall back to edition ID (for backward compatibility)
@@ -2781,8 +2782,9 @@ func (c *Client) GetUserBookID(ctx context.Context, editionID int) (int, error) 
 			})
 		}
 	} else {
-		log.Debug("Found user book by book ID", map[string]interface{}{
+		log.Debug("Found user book by book ID and edition ID", map[string]interface{}{
 			"bookID":     bookID,
+			"editionID":  editionID,
 			"userBookID": userBookID,
 		})
 	}
@@ -2795,56 +2797,69 @@ func (c *Client) GetUserBookID(ctx context.Context, editionID int) (int, error) 
 	return userBookID, nil
 }
 
-// lookupUserBookByBookID performs a single lookup of a user book by book ID
-func (c *Client) lookupUserBookByBookID(ctx context.Context, bookID, userID int) (int, error) {
+// ClearUserBookCache clears the user book ID cache
+func (c *Client) ClearUserBookCache() {
+	c.userBookIDCache.Clear()
+	c.logger.Debug("Cleared user book ID cache", nil)
+}
+
+// lookupUserBookByBookID performs a single lookup of a user book by book ID and edition ID
+func (c *Client) lookupUserBookByBookID(ctx context.Context, bookID, editionID, userID int) (int, error) {
 	log := c.logger.With(map[string]interface{}{
 		"bookID": bookID,
+		"editionID": editionID,
 		"userID": userID,
 		"method": "lookupUserBookByBookID",
 	})
 
-	// Define the GraphQL query
+	// Define the GraphQL query - look for user book with both book_id and edition_id
 	const query = `
-	query GetUserBookByBook($bookId: Int!, $userId: Int!) {
+	query GetUserBookByBook($bookId: Int!, $editionId: Int!, $userId: Int!) {
 	  user_books(
 		where: {
 		  book_id: {_eq: $bookId},
+		  edition_id: {_eq: $editionId},
 		  user_id: {_eq: $userId}
 		}, 
 		limit: 1
 	  ) {
 		id
 		book_id
+		edition_id
 	  }
 	}`
 
 	// Define the response structure
 	var response struct {
 		UserBooks []struct {
-			ID     int `json:"id"`
-			BookID int `json:"book_id"`
+			ID        int `json:"id"`
+			BookID    int `json:"book_id"`
+			EditionID int `json:"edition_id"`
 		} `json:"user_books"`
 	}
 
 	// Execute the query
 	err := c.GraphQLQuery(ctx, query, map[string]interface{}{
-		"bookId": bookID,
-		"userId": userID,
+		"bookId":    bookID,
+		"editionId": editionID,
+		"userId":    userID,
 	}, &response)
 
 	if err != nil {
-		errMsg := fmt.Sprintf("failed to query user books by book ID: %v", err)
+		errMsg := fmt.Sprintf("failed to query user books by book ID and edition ID: %v", err)
 		log.Error(errMsg, map[string]interface{}{
-			"error":  err.Error(),
-			"bookID": bookID,
-			"userID": userID,
+			"error":     err.Error(),
+			"bookID":    bookID,
+			"editionID": editionID,
+			"userID":    userID,
 		})
 		return 0, errors.New(errMsg)
 	}
 
 	// Log the response
-	log.Debug("User book lookup by book ID response", map[string]interface{}{
+	log.Debug("User book lookup by book ID and edition ID response", map[string]interface{}{
 		"bookID":      bookID,
+		"editionID":   editionID,
 		"userID":      userID,
 		"resultCount": len(response.UserBooks),
 	})
@@ -2856,9 +2871,10 @@ func (c *Client) lookupUserBookByBookID(ctx context.Context, bookID, userID int)
 	userBook := response.UserBooks[0]
 	userBookID := userBook.ID
 
-	log.Debug("Found user book by book ID", map[string]interface{}{
+	log.Debug("Found user book by book ID and edition ID", map[string]interface{}{
 		"userBookID": userBookID,
 		"bookID":     userBook.BookID,
+		"editionID":  userBook.EditionID,
 	})
 
 	return userBookID, nil

@@ -126,6 +126,10 @@ func (m *MockHardcoverClient) GetUserBookID(ctx context.Context, editionID int) 
 	return 0, nil
 }
 
+func (m *MockHardcoverClient) ClearUserBookCache() {
+	// Mock implementation - does nothing
+}
+
 func (m *MockHardcoverClient) GetUserBook(ctx context.Context, userBookID string) (*models.HardcoverBook, error) {
 	args := m.Called(ctx, userBookID)
 	if args.Get(0) == nil {

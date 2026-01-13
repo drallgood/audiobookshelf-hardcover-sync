@@ -171,6 +171,11 @@ func (m *MockHardcoverClient) GetUserBookID(ctx context.Context, editionID int) 
 	return args.Int(0), args.Error(1)
 }
 
+// ClearUserBookCache mocks the ClearUserBookCache method
+func (m *MockHardcoverClient) ClearUserBookCache() {
+	m.Called()
+}
+
 // GetUserBook mocks the GetUserBook method
 func (m *MockHardcoverClient) GetUserBook(ctx context.Context, userBookID string) (*models.HardcoverBook, error) {
 	args := m.Called(ctx, userBookID)
