@@ -290,12 +290,12 @@ func (h *Handler) UpdateProfileConfig(w http.ResponseWriter, r *http.Request) {
 	if req.AudiobookshelfURL == "" && req.AudiobookshelfToken == "" && req.HardcoverToken == "" {
 		// Check if sync config has any actual values set
 		hasSyncConfig := !req.SyncConfig.IsEmpty() || 
-			req.SyncConfig.ProcessUnreadBooks == false || // Explicitly set to false
-			req.SyncConfig.Incremental == true || // Explicitly set to true
-			req.SyncConfig.SyncWantToRead == true || // Explicitly set to true
-			req.SyncConfig.SyncOwned == true || // Explicitly set to true
-			req.SyncConfig.IncludeEbooks == true || // Explicitly set to true
-			req.SyncConfig.DryRun == true // Explicitly set to true
+			!req.SyncConfig.ProcessUnreadBooks || // Explicitly set to false
+			req.SyncConfig.Incremental || // Explicitly set to true
+			req.SyncConfig.SyncWantToRead || // Explicitly set to true
+			req.SyncConfig.SyncOwned || // Explicitly set to true
+			req.SyncConfig.IncludeEbooks || // Explicitly set to true
+			req.SyncConfig.DryRun // Explicitly set to true
 		
 		if !hasSyncConfig {
 			h.writeErrorResponse(w, http.StatusBadRequest, "At least one field must be provided")
