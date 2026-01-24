@@ -129,6 +129,8 @@ jobs:
             type=raw,value=dev,enable=${{ github.ref == 'refs/heads/develop' }}
             type=raw,value=develop,enable=${{ github.ref == 'refs/heads/develop' }}
             type=raw,value=latest-dev,enable=${{ github.ref == 'refs/heads/develop' }}
+            # Unique beta tag with timestamp for ArgoCD
+            type=raw,value=beta-${{ github.run_number }}-${{ github.sha }},enable=${{ github.ref == 'refs/heads/develop' }}
           labels: |
             org.opencontainers.image.title=${{ github.event.repository.name }}
             org.opencontainers.image.description=${{ github.event.repository.description }}

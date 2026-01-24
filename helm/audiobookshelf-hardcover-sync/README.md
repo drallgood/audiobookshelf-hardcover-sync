@@ -20,6 +20,43 @@ The command deploys the sync application on the Kubernetes cluster in the defaul
 
 > **Tip**: List all releases using `helm list`
 
+## Beta Releases with ArgoCD ImageUpdater
+
+For automatic beta deployments from the `develop` branch, you can use the `latest-dev` image tag. This is ideal for testing new features before they are released.
+
+### Installing Beta Version
+
+```bash
+helm install my-beta-sync ./helm/audiobookshelf-hardcover-sync \
+  -f ./helm/audiobookshelf-hardcover-sync/values-development.yaml \
+  --namespace audiobookshelf-sync-beta \
+  --create-namespace
+```
+
+### ArgoCD Integration
+
+The `beta-{build-number}-{sha}` tags are automatically generated when code is pushed to the `develop` branch. These unique tags ensure Kubernetes always detects and pulls new versions. You can configure ArgoCD ImageUpdater to automatically deploy these updates:
+
+```yaml
+annotations:
+  argocd-image-updater.argoproj.io/image-list: sync=ghcr.io/drallgood/audiobookshelf-hardcover-sync
+  argocd-image-updater.argoproj.io/sync.update-strategy: version
+  argocd-image-updater.argoproj.io/sync.version-tag: beta
+  argocd-image-updater.argoproj.io/sync.allow-tags: regexp:^beta-[0-9]+-[a-f0-9]+$
+  argocd-image-updater.argoproj.io/write-back-method: git
+```
+
+For detailed setup instructions, see [Beta ArgoCD Setup Guide](../../docs/beta-argocd-setup.md).
+
+### Available Tags
+
+- `latest` - Stable releases from main branch
+- `beta-{build-number}-{sha}` - Unique beta releases from develop branch (e.g., `beta-123-abc123def`)
+- `latest-dev` - Latest beta version (may not trigger updates due to tag caching)
+- `vX.Y.Z` - Specific version tags
+
+**Note:** Use the unique `beta-{build-number}-{sha}` tags for ArgoCD to ensure automatic updates work properly.
+
 ## Uninstalling the Chart
 
 To uninstall/delete the `my-sync` deployment:
