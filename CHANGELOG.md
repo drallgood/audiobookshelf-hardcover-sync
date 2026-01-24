@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Process Unread Books**: Fixed `process_unread_books` setting not being respected in both single-user and multi-user modes (#90)
+  - Single-user: Updated config.example.yaml to show correct default value (true)
+  - Multi-user: Added missing field assignments in sync config application
+  - API: Fixed validation that incorrectly rejected updates when setting to false
+  - Migration: Added missing ProcessUnreadBooks field when migrating from single-user config
+- **Incremental Sync**: Fixed incremental sync not working correctly in multi-user mode (#90)
+  - State file paths are now profile-specific to avoid conflicts between users
+  - Each user now has their own sync state file: `./data/sync_state.{profileID}.json`
 - **Edition Format Detection**: Edition format logic updated to be more precise:
   - "Audible Audio" format is only applied when the book was purchased from Audible/Amazon (detected by presence of ASIN)
   - "libro.fm" format is applied for libro.fm publishers
