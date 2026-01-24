@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
-
-
 )
 
 // Config holds all configuration for the application
@@ -60,6 +58,8 @@ type Config struct {
 		} `yaml:"libraries"`
 		// IncludeEbooks controls whether items with mediaType "ebook" are included in sync (default: false)
 		IncludeEbooks bool `yaml:"include_ebooks" env:"SYNC_INCLUDE_EBOOKS"`
+		// PreserveDNF controls whether books marked as DNF in Hardcover should be protected from sync updates
+		PreserveDNF bool `yaml:"preserve_dnf" env:"SYNC_PRESERVE_DNF"`
 	} `yaml:"sync"`
 
 	// Rate limiting configuration
@@ -225,6 +225,7 @@ func DefaultConfig() *Config {
 	cfg.Sync.TestBookFilter = ""
 	cfg.Sync.TestBookLimit = 0
 	cfg.Sync.IncludeEbooks = false
+	cfg.Sync.PreserveDNF = true // Preserve DNF status by default
 
 	// Database defaults
 	cfg.Database.Type = "sqlite"

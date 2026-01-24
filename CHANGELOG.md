@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **DNF Status Preservation**: New option to preserve books marked as "Did Not Finish" in Hardcover
+  - Added `preserve_dnf` configuration option (default: true)
+  - When enabled, sync will skip books with DNF status to prevent accidental overrides
+  - Environment variable: `SYNC_PRESERVE_DNF`
+  - Users can now mark books as DNF in Hardcover without losing the status during sync
+
 ### Fixed
 - **Process Unread Books**: Fixed `process_unread_books` setting not being respected in both single-user and multi-user modes (#90)
   - Single-user: Updated config.example.yaml to show correct default value (true)

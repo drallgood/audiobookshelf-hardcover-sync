@@ -1777,6 +1777,16 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 		})
 		// Continue with update even if we couldn't get the current status
 	} else if userBook != nil {
+		// Check if the book is marked as DNF and should be preserved
+		if s.config.Sync.PreserveDNF && s.isBookDNF(userBook) {
+			log.Info("Book is marked as DNF in Hardcover, preserving DNF status and skipping sync", map[string]interface{}{
+				"user_book_id":   userBookID,
+				"book_status_id": userBook.BookStatusID,
+				"title":          book.Media.Metadata.Title,
+			})
+			return nil
+		}
+
 		// Check if the book is already marked as FINISHED (status ID 3)
 		log.Debug("Current book status", map[string]interface{}{
 			"book_status_id": userBook.BookStatusID,
@@ -2163,6 +2173,16 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		errCtx["error"] = err.Error()
 		s.log.With(errCtx).Error("Failed to get current book status from Hardcover", nil)
 		return fmt.Errorf("failed to get current book status: %w", err)
+	}
+
+	// Check if the book is marked as DNF in Hardcover
+	if s.config.Sync.PreserveDNF && s.isBookDNF(hcBook) {
+		log.Info("Book is marked as DNF in Hardcover, preserving DNF status and skipping sync", map[string]interface{}{
+			"user_book_id":   userBookID,
+			"book_status_id": hcBook.BookStatusID,
+			"title":          book.Media.Metadata.Title,
+		})
+		return nil
 	}
 
 	// Get the current read status to check progress - only get unfinished reads
@@ -2951,6 +2971,15 @@ func (s *Service) determineBookStatus(progress float64, isFinished bool, finishe
 
 	// If sync_want_to_read is disabled, return empty string for 0% progress books
 	return ""
+}
+
+// isBookDNF checks if the book is marked as DNF (Did Not Finish) in Hardcover
+func (s *Service) isBookDNF(userBook *models.HardcoverBook) bool {
+	if userBook == nil {
+		return false
+	}
+	// DNF status ID is 5 according to Hardcover API documentation
+	return userBook.BookStatusID == 5
 }
 
 // processFoundBook handles the common logic for processing a found book

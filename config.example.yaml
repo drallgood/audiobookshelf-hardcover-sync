@@ -77,6 +77,10 @@ sync:
   # When false, items with mediaType "ebook" are skipped
   include_ebooks: false
   
+  # Preserve books marked as "Did Not Finish" in Hardcover (default: true)
+  # When true, sync will skip books with DNF status to preserve the user's marking
+  preserve_dnf: true
+  
   # Library filtering configuration
   libraries:
     # Include only these libraries (empty = all)
