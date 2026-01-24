@@ -204,7 +204,7 @@ func (r *Repository) UpdateProfile(profileID, name string) error {
 // UpdateUserConfig updates user configuration with encrypted tokens
 // If audiobookshelfToken or hardcoverToken are empty, the existing tokens will be preserved
 func (r *Repository) UpdateUserConfig(profileID, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig SyncConfigData) error {
-	// Get existing config to preserve tokens if not provided
+	// Get existing config to preserve tokens and sync config if not provided
 	var existingConfig SyncProfileConfig
 	if err := r.db.GetDB().Where("profile_id = ?", profileID).First(&existingConfig).Error; err != nil {
 		return fmt.Errorf("failed to get existing user config: %w", err)
@@ -232,8 +232,65 @@ func (r *Repository) UpdateUserConfig(profileID, audiobookshelfURL, audiobookshe
 		encryptedHCToken = existingConfig.HardcoverTokenEncrypted
 	}
 
+	// Merge with existing sync config to preserve values not being updated
+	var existingSyncConfig SyncConfigData
+	if existingConfig.SyncConfig != "" {
+		if err := json.Unmarshal([]byte(existingConfig.SyncConfig), &existingSyncConfig); err != nil {
+			return fmt.Errorf("failed to unmarshal existing sync config: %w", err)
+		}
+	}
+	
+	// Only update sync config if it's not empty (has at least one field set)
+	// This prevents clearing all values when only updating tokens
+	finalSyncConfig := existingSyncConfig
+	if !syncConfig.IsEmpty() {
+		// Merge the new config with existing, preserving unset values
+		if syncConfig.Incremental || existingSyncConfig.Incremental {
+			finalSyncConfig.Incremental = syncConfig.Incremental
+		}
+		if syncConfig.StateFile != "" {
+			finalSyncConfig.StateFile = syncConfig.StateFile
+		}
+		if syncConfig.MinChangeThreshold != 0 {
+			finalSyncConfig.MinChangeThreshold = syncConfig.MinChangeThreshold
+		}
+		if syncConfig.SyncInterval != "" {
+			finalSyncConfig.SyncInterval = syncConfig.SyncInterval
+		}
+		if syncConfig.MinimumProgress != 0 {
+			finalSyncConfig.MinimumProgress = syncConfig.MinimumProgress
+		}
+		if syncConfig.SyncWantToRead || existingSyncConfig.SyncWantToRead {
+			finalSyncConfig.SyncWantToRead = syncConfig.SyncWantToRead
+		}
+		// For ProcessUnreadBooks, we need to explicitly check if it was provided
+		// since false is a valid value that should be preserved
+		finalSyncConfig.ProcessUnreadBooks = syncConfig.ProcessUnreadBooks
+		if syncConfig.SyncOwned || existingSyncConfig.SyncOwned {
+			finalSyncConfig.SyncOwned = syncConfig.SyncOwned
+		}
+		if syncConfig.IncludeEbooks || existingSyncConfig.IncludeEbooks {
+			finalSyncConfig.IncludeEbooks = syncConfig.IncludeEbooks
+		}
+		if syncConfig.DryRun || existingSyncConfig.DryRun {
+			finalSyncConfig.DryRun = syncConfig.DryRun
+		}
+		if syncConfig.TestBookFilter != "" {
+			finalSyncConfig.TestBookFilter = syncConfig.TestBookFilter
+		}
+		if syncConfig.TestBookLimit != 0 {
+			finalSyncConfig.TestBookLimit = syncConfig.TestBookLimit
+		}
+		if len(syncConfig.Libraries.Include) > 0 {
+			finalSyncConfig.Libraries.Include = syncConfig.Libraries.Include
+		}
+		if len(syncConfig.Libraries.Exclude) > 0 {
+			finalSyncConfig.Libraries.Exclude = syncConfig.Libraries.Exclude
+		}
+	}
+
 	// Serialize sync config
-	syncConfigJSON, err := json.Marshal(syncConfig)
+	syncConfigJSON, err := json.Marshal(finalSyncConfig)
 	if err != nil {
 		return fmt.Errorf("failed to marshal sync config: %w", err)
 	}

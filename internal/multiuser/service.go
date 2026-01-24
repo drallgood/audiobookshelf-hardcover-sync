@@ -429,9 +429,14 @@ func (s *MultiUserService) createProfileSpecificConfig(profileConfig *database.P
 	config.Audiobookshelf.Token = profileConfig.AudiobookshelfToken
 	config.Hardcover.Token = profileConfig.HardcoverToken
 	
-	// Apply sync config from profile if available
+	// Apply sync config from profile
 	syncConfig := profileConfig.SyncConfig
-	if syncConfig.SyncInterval != "" { // Check if sync config has been set
+	
+	// Always apply the sync config from the profile
+	// The config in the profile should already have the correct values (either defaults or explicitly set)
+	
+	// Parse sync interval if provided
+	if syncConfig.SyncInterval != "" {
 		duration, err := time.ParseDuration(syncConfig.SyncInterval)
 		if err != nil {
 			s.logger.Warn("Invalid sync interval, using default", map[string]interface{}{
@@ -441,18 +446,36 @@ func (s *MultiUserService) createProfileSpecificConfig(profileConfig *database.P
 			})
 			duration = 1 * time.Hour // Default to 1 hour if invalid
 		}
-		
-		config.Sync.Incremental = syncConfig.Incremental
-		config.Sync.StateFile = syncConfig.StateFile
-		config.Sync.MinChangeThreshold = syncConfig.MinChangeThreshold
-		config.Sync.Libraries.Include = syncConfig.Libraries.Include
-		config.Sync.Libraries.Exclude = syncConfig.Libraries.Exclude
 		config.Sync.SyncInterval = duration
-		config.Sync.MinimumProgress = syncConfig.MinimumProgress
-		config.Sync.SyncWantToRead = syncConfig.SyncWantToRead
-		config.Sync.SyncOwned = syncConfig.SyncOwned
-		config.Sync.DryRun = syncConfig.DryRun
 	}
+	
+	// Apply all sync config values from the profile
+	config.Sync.Incremental = syncConfig.Incremental
+	// Make state file path profile-specific to avoid conflicts
+	if syncConfig.StateFile != "" {
+		config.Sync.StateFile = fmt.Sprintf("%s.%s", syncConfig.StateFile, profileConfig.Profile.ID)
+	} else {
+		config.Sync.StateFile = fmt.Sprintf("./data/sync_state.%s.json", profileConfig.Profile.ID)
+	}
+	config.Sync.MinChangeThreshold = syncConfig.MinChangeThreshold
+	config.Sync.Libraries.Include = syncConfig.Libraries.Include
+	config.Sync.Libraries.Exclude = syncConfig.Libraries.Exclude
+	config.Sync.MinimumProgress = syncConfig.MinimumProgress
+	config.Sync.SyncWantToRead = syncConfig.SyncWantToRead
+	config.Sync.ProcessUnreadBooks = syncConfig.ProcessUnreadBooks
+	config.Sync.SyncOwned = syncConfig.SyncOwned
+	config.Sync.IncludeEbooks = syncConfig.IncludeEbooks
+	config.Sync.DryRun = syncConfig.DryRun
+	config.Sync.TestBookFilter = syncConfig.TestBookFilter
+	config.Sync.TestBookLimit = syncConfig.TestBookLimit
+	
+	// Debug logging to verify the config is being applied correctly
+	s.logger.Debug("Applied sync config for profile", map[string]interface{}{
+		"profileID":             profileConfig.Profile.ID,
+		"process_unread_books":  config.Sync.ProcessUnreadBooks,
+		"incremental":           config.Sync.Incremental,
+		"sync_want_to_read":     config.Sync.SyncWantToRead,
+	})
 	
 	return &config
 }

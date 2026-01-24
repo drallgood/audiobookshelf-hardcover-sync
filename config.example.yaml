@@ -59,7 +59,7 @@ sync:
   sync_want_to_read: true
   
   # Process books with 0% progress for mismatches and "want to read" status
-  process_unread_books: false
+  process_unread_books: true
   
   # Mark synced books as owned in Hardcover
   sync_owned: true

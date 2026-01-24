@@ -95,14 +95,15 @@ func (m *MigrationManager) MigrateFromSingleUserConfig(configPath string) error 
 			Include: cfg.Sync.Libraries.Include,
 			Exclude: cfg.Sync.Libraries.Exclude,
 		},
-		SyncInterval:    cfg.Sync.SyncInterval.String(),
-		MinimumProgress: cfg.Sync.MinimumProgress,
-		SyncWantToRead:  cfg.Sync.SyncWantToRead,
-		SyncOwned:       cfg.Sync.SyncOwned,
-		IncludeEbooks:   cfg.Sync.IncludeEbooks,
-		DryRun:          cfg.Sync.DryRun,
-		TestBookFilter:  cfg.App.TestBookFilter,
-		TestBookLimit:   cfg.App.TestBookLimit,
+		SyncInterval:       cfg.Sync.SyncInterval.String(),
+		MinimumProgress:    cfg.Sync.MinimumProgress,
+		SyncWantToRead:     cfg.Sync.SyncWantToRead,
+		ProcessUnreadBooks: cfg.Sync.ProcessUnreadBooks,
+		SyncOwned:          cfg.Sync.SyncOwned,
+		IncludeEbooks:      cfg.Sync.IncludeEbooks,
+		DryRun:             cfg.Sync.DryRun,
+		TestBookFilter:     cfg.Sync.TestBookFilter,
+		TestBookLimit:      cfg.Sync.TestBookLimit,
 	}
 
 	// Create profile in database
