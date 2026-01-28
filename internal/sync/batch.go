@@ -75,7 +75,13 @@ func (s *Service) BatchProcessBooks(ctx context.Context, books []models.Audioboo
 			// Calculate current progress and status
 			currentProgress := 0.0
 			if book.Media.Duration > 0 {
-				currentProgress = book.Progress.CurrentTime / book.Media.Duration
+				// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
+				// because Audiobookshelf sometimes reports CurrentTime as 0 for finished books
+				if book.Progress.IsFinished && book.Progress.FinishedAt > 0 {
+					currentProgress = 1.0
+				} else {
+					currentProgress = book.Progress.CurrentTime / book.Media.Duration
+				}
 			}
 			currentStatus := s.determineBookStatus(currentProgress, book.Progress.IsFinished, book.Progress.FinishedAt)
 			

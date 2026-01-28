@@ -499,7 +499,7 @@ func (s *Service) Sync(ctx context.Context) error {
 
 	// Clear ASIN cache to ensure fresh lookups for this sync run
 	s.clearASINCache()
-	
+
 	// Clear user book cache to ensure fresh edition-specific lookups
 	s.hardcover.ClearUserBookCache()
 
@@ -900,7 +900,13 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		// Calculate current progress and status
 		currentProgress := 0.0
 		if book.Media.Duration > 0 { // Ensure duration is not zero to avoid division by zero
-			currentProgress = book.Progress.CurrentTime / book.Media.Duration
+			// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
+			// because Audiobookshelf sometimes reports CurrentTime as 0 for finished books
+			if book.Progress.IsFinished && book.Progress.FinishedAt > 0 {
+				currentProgress = 1.0
+			} else {
+				currentProgress = book.Progress.CurrentTime / book.Media.Duration
+			}
 		}
 		currentStatus := s.determineBookStatus(currentProgress, book.Progress.IsFinished, book.Progress.FinishedAt)
 
@@ -974,7 +980,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			}
 
 			// Add Hardcover book details if available
-			if foundByTitleAuthor && hcBook != nil {
+			if foundByTitleAuthor {
 				// Hydrate Hardcover book with full details (including slug) before recording mismatch
 				if hcBook.ID != "" {
 					if enriched, err := s.hardcover.GetBookByID(ctx, hcBook.ID); err == nil && enriched != nil {
@@ -1142,8 +1148,14 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	if s.config.Sync.Incremental {
 		// Calculate current progress
 		currentProgress := 0.0
-		if book.Media.Duration > 0 && book.Progress.CurrentTime > 0 {
-			currentProgress = book.Progress.CurrentTime / book.Media.Duration
+		if book.Media.Duration > 0 {
+			// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
+			// because Audiobookshelf sometimes reports CurrentTime as 0 for finished books
+			if book.Progress.IsFinished && book.Progress.FinishedAt > 0 {
+				currentProgress = 1.0
+			} else if book.Progress.CurrentTime > 0 {
+				currentProgress = book.Progress.CurrentTime / book.Media.Duration
+			}
 		}
 
 		// Get the last sync state for this book using the composite key
@@ -2994,16 +3006,14 @@ func (s *Service) processFoundBook(ctx context.Context, hcBook *models.Hardcover
 	}
 
 	// Add book-specific fields if available
-	if hcBook != nil {
-		logCtx["book_id"] = hcBook.ID
-		if hcBook.EditionID != "" {
-			logCtx["edition_id"] = hcBook.EditionID
-		}
+	logCtx["book_id"] = hcBook.ID
+	if hcBook.EditionID != "" {
+		logCtx["edition_id"] = hcBook.EditionID
 	}
 	log := s.log.With(logCtx)
 
 	// Mark book as owned if sync_owned is enabled
-	if s.config.Sync.SyncOwned && hcBook != nil && hcBook.EditionID != "" && hcBook.EditionID != "0" {
+	if s.config.Sync.SyncOwned && hcBook.EditionID != "" && hcBook.EditionID != "0" {
 		editionID, err := strconv.Atoi(hcBook.EditionID)
 		if err != nil {
 			log.Warn("Invalid edition ID format for marking as owned", map[string]interface{}{
@@ -3486,7 +3496,7 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 		if err != nil {
 			// Check if this is a BookError with a book ID
 			var bookErr *hardcover.BookError
-			if err != nil && errors.As(err, &bookErr) && bookErr.BookID != "" {
+			if errors.As(err, &bookErr) && bookErr.BookID != "" {
 				log.Info("Found book ID in BookError", map[string]interface{}{
 					"book_id": bookErr.BookID,
 					"error":   bookErr.Error(),
@@ -3551,7 +3561,7 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 		if err != nil {
 			// Check if this is a BookError with a book ID
 			var bookErr *hardcover.BookError
-			if err != nil && errors.As(err, &bookErr) {
+			if errors.As(err, &bookErr) {
 				log.Info("Found book ID in BookError from ISBN-13 search", map[string]interface{}{
 					"book_id": bookErr.BookID,
 					"error":   bookErr.Error(),
@@ -3571,7 +3581,7 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 		if err != nil {
 			// Check if this is a BookError with a book ID
 			var bookErr *hardcover.BookError
-			if err != nil && errors.As(err, &bookErr) && bookErr.BookID != "" {
+			if errors.As(err, &bookErr) && bookErr.BookID != "" {
 				log.Info("Found book ID in BookError from ISBN-10 search", map[string]interface{}{
 					"book_id": bookErr.BookID,
 					"error":   bookErr.Error(),

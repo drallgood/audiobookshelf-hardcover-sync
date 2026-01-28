@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Incremental Sync**: Fixed incremental sync not working correctly in multi-user mode (#90)
   - State file paths are now profile-specific to avoid conflicts between users
   - Each user now has their own sync state file: `./data/sync_state.{profileID}.json`
+- **Finished Book Sync Loop**: Fixed infinite sync loop for finished books that reported 0% progress in Audiobookshelf
+  - Books marked as finished (`IsFinished=true` with valid `FinishedAt`) are now treated as 100% progress regardless of `CurrentTime`
+  - Prevents finished books from flipping between "Finished Reading" and "Wants to Read" statuses
+  - Applied fix to all sync decision paths: early filtering, incremental sync, and batch processing
 - **Edition Format Detection**: Edition format logic updated to be more precise:
   - "Audible Audio" format is only applied when the book was purchased from Audible/Amazon (detected by presence of ASIN)
   - "libro.fm" format is applied for libro.fm publishers
