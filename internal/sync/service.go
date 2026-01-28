@@ -895,6 +895,23 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		})
 	}
 
+	// Skip books that haven't been started unless ProcessUnreadBooks is true
+	// This check is done early to avoid expensive API calls for unstarted books
+	bookLog.Debug("Checking ProcessUnreadBooks setting", map[string]interface{}{
+		"current_time":         book.Progress.CurrentTime,
+		"process_unread_books": s.config.Sync.ProcessUnreadBooks,
+		"book_id":              book.ID,
+		"title":                book.Media.Metadata.Title,
+	})
+
+	if book.Progress.CurrentTime <= 0 && !s.config.Sync.ProcessUnreadBooks {
+		bookLog.Debug("Skipping unstarted book (ProcessUnreadBooks is false)", map[string]interface{}{
+			"current_time": book.Progress.CurrentTime,
+		})
+		bookProcessed = true // Count as processed since we made a decision to skip
+		return nil
+	}
+
 	// Early filtering for incremental sync - check if book needs syncing
 	if s.config.Sync.Incremental {
 		// Calculate current progress and status
@@ -1299,22 +1316,6 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				bookLog.Debug("No enhanced progress data found in /api/me response", nil)
 			}
 		}
-	}
-
-	// Skip books that haven't been started unless ProcessUnreadBooks is true
-	bookLog.Debug("Checking ProcessUnreadBooks setting", map[string]interface{}{
-		"current_time":         book.Progress.CurrentTime,
-		"process_unread_books": s.config.Sync.ProcessUnreadBooks,
-		"book_id":              book.ID,
-		"title":                book.Media.Metadata.Title,
-	})
-
-	if book.Progress.CurrentTime <= 0 && !s.config.Sync.ProcessUnreadBooks {
-		bookLog.Debug("Skipping unstarted book (ProcessUnreadBooks is false)", map[string]interface{}{
-			"current_time": book.Progress.CurrentTime,
-		})
-		bookProcessed = true // Count as processed since we made a decision to skip
-		return nil
 	}
 
 	// Calculate progress percentage based on current time and total duration
