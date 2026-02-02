@@ -902,7 +902,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		if book.Media.Duration > 0 { // Ensure duration is not zero to avoid division by zero
 			// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
 			// because Audiobookshelf sometimes reports CurrentTime as 0 for finished books
-			if book.Progress.IsFinished && book.Progress.FinishedAt > 0 {
+			if book.Progress.IsFinished {
 				currentProgress = 1.0
 			} else {
 				currentProgress = book.Progress.CurrentTime / book.Media.Duration
@@ -1153,7 +1153,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		if book.Media.Duration > 0 {
 			// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
 			// because Audiobookshelf sometimes reports CurrentTime as 0 for finished books
-			if book.Progress.IsFinished && book.Progress.FinishedAt > 0 {
+			if book.Progress.IsFinished {
 				currentProgress = 1.0
 			} else if book.Progress.CurrentTime > 0 {
 				currentProgress = book.Progress.CurrentTime / book.Media.Duration
