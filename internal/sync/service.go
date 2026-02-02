@@ -1329,7 +1329,8 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		"title":                 book.Media.Metadata.Title,
 	})
 	
-	if book.Progress.CurrentTime <= 0 && !s.config.Sync.ProcessUnreadBooks {
+	// Don't skip finished books even if CurrentTime is 0 (they have progress=1.0)
+	if book.Progress.CurrentTime <= 0 && !s.config.Sync.ProcessUnreadBooks && !book.Progress.IsFinished {
 		bookLog.Debug("Skipping unstarted book (ProcessUnreadBooks is false)", map[string]interface{}{
 			"current_time": book.Progress.CurrentTime,
 		})
