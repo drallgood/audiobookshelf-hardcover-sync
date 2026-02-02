@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **ProcessUnreadBooks Regression**: Fixed regression where finished books with `CurrentTime=0` were incorrectly skipped
   - Added `!book.Progress.IsFinished` condition to ProcessUnreadBooks check
   - Ensures finished books are processed even when they report 0% current time
+- **Finished Book Progress Override**: Removed `FinishedAt > 0` condition from progress calculation
+  - Some finished books have `FinishedAt = 0` but `IsFinished = true`
+  - Now all books marked as finished are treated as 100% progress regardless of FinishedAt value
+  - Fixes incremental sync incorrectly flagging finished books as needing updates
 - **Edition Format Detection**: Edition format logic updated to be more precise:
   - "Audible Audio" format is only applied when the book was purchased from Audible/Amazon (detected by presence of ASIN)
   - "libro.fm" format is applied for libro.fm publishers
