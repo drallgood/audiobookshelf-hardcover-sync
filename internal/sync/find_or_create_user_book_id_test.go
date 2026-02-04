@@ -37,13 +37,6 @@ func TestFindOrCreateUserBookID_ExistingUserBook(t *testing.T) {
 	expectedUserBookID := 789
 	mockClient.On("GetUserBookID", mock.Anything, 456).Return(expectedUserBookID, nil).Once()
 
-	// Mock the GetEdition call for checking existing user book by book ID
-	mockEdition := &models.Edition{
-		ID:     "456",
-		BookID: "432575", // Some book ID
-	}
-	mockClient.On("GetEdition", mock.Anything, editionID).Return(mockEdition, nil).Once()
-
 	// Call the function
 	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "WANT_TO_READ")
 
