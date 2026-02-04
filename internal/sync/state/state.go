@@ -39,6 +39,7 @@ type Book struct {
 	LastProgress float64 `json:"lastProgress"`
 	LastUpdated  int64   `json:"lastUpdated"`
 	Status       string  `json:"status,omitempty"` // e.g., "WANT_TO_READ", "IN_PROGRESS", "FINISHED"
+	UserBookID   string  `json:"userBookID,omitempty"` // Track the user book ID for this book
 }
 
 // NewState creates a new empty state with current version
@@ -372,6 +373,28 @@ func (s *State) GetStaleBooks(maxAge time.Duration) []string {
 	}
 
 	return staleBooks
+}
+
+// UpdateBookWithUserBookID updates the book state and tracks the user book ID
+func (s *State) UpdateBookWithUserBookID(bookID string, progress float64, status string, userBookID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Normalize progress to 0-1 range
+	normalizedProgress := progress
+	if normalizedProgress > 1.0 {
+		normalizedProgress = normalizedProgress / 100.0
+	}
+
+	now := time.Now().Unix()
+
+	// Update the book state
+	s.Books[bookID] = Book{
+		LastProgress: normalizedProgress,
+		LastUpdated:  now,
+		Status:       status,
+		UserBookID:   userBookID,
+	}
 }
 
 // v1State represents the version 1.0 state format

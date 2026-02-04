@@ -1763,6 +1763,8 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 				"progress":  progressPct,
 			})
 		}
+		// Also update with user book ID for tracking shared books
+		s.state.UpdateBookWithUserBookID(stateKey, progressPct, "FINISHED", strconv.FormatInt(userBookID, 10))
 	}()
 
 	// First, check the current status of the book and update to FINISHED if needed
