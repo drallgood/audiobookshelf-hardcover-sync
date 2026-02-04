@@ -34,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Some finished books have `FinishedAt = 0` but `IsFinished = true`
   - Now all books marked as finished are treated as 100% progress regardless of FinishedAt value
   - Fixes incremental sync incorrectly flagging finished books as needing updates
+- **Shared User Book Tracking**: Added UserBookID field to sync state to handle shared books
+  - Multiple Audiobookshelf books can map to different editions of the same Hardcover book
+  - Each ABS book maintains its own sync state while sharing the same user book ID
+  - Fixes infinite sync loop when different ASINs map to the same Hardcover book
 - **Edition Format Detection**: Edition format logic updated to be more precise:
   - "Audible Audio" format is only applied when the book was purchased from Audible/Amazon (detected by presence of ASIN)
   - "libro.fm" format is applied for libro.fm publishers
