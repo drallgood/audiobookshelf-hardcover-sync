@@ -447,38 +447,6 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 
 	// If we found an existing user book ID in the second check, return it
 	if userBookID > 0 {
-		// Check if the existing user book is using a different edition
-		// This can happen when multiple ABS books map to different editions of the same HC book
-		editionIDInt, _ := strconv.ParseInt(editionID, 10, 64)
-		userBookIDInt64 := int64(userBookID)
-		if s.shouldUpdateUserBookEdition(ctx, userBookIDInt64, editionIDInt) {
-			// Get current edition for logging
-			userBook, _ := s.hardcover.GetUserBook(ctx, strconv.Itoa(userBookID))
-			currentEdition := "unknown"
-			if userBook != nil {
-				currentEdition = userBook.EditionID
-			}
-			
-			s.log.Info("Updating user book to different edition", map[string]interface{}{
-				"user_book_id":     userBookID,
-				"current_edition":  currentEdition,
-				"new_edition":      editionID,
-			})
-			
-			// Update the user book to point to the new edition
-			err := s.hardcover.UpdateUserBook(ctx, hardcover.UpdateUserBookInput{
-				ID:        userBookIDInt64,
-				EditionID: &editionIDInt,
-			})
-			if err != nil {
-				s.log.Warn("Failed to update user book edition", map[string]interface{}{
-					"error":        err.Error(),
-					"user_book_id": userBookID,
-					"edition_id":   editionID,
-				})
-			}
-		}
-		
 		s.log.Info("Found existing user book ID in second check", map[string]interface{}{
 			"editionID":    editionID,
 			"editionIDInt": editionIDInt,
@@ -520,31 +488,6 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 	})
 
 	return userBookID64, nil
-}
-
-// shouldUpdateUserBookEdition checks if a user book should be updated to a different edition
-func (s *Service) shouldUpdateUserBookEdition(ctx context.Context, userBookID, targetEditionID int64) bool {
-	// Get the current user book to check its edition
-	userBook, err := s.hardcover.GetUserBook(ctx, strconv.FormatInt(userBookID, 10))
-	if err != nil {
-		s.log.Warn("Failed to get user book for edition check", map[string]interface{}{
-			"error":        err.Error(),
-			"user_book_id": userBookID,
-		})
-		return false
-	}
-	
-	// If the current edition is different from target, update it
-	if userBook.EditionID != strconv.FormatInt(targetEditionID, 10) {
-		s.log.Debug("User book edition differs from target", map[string]interface{}{
-			"user_book_id":     userBookID,
-			"current_edition":  userBook.EditionID,
-			"target_edition":   targetEditionID,
-		})
-		return true
-	}
-	
-	return false
 }
 
 // Sync performs a full synchronization between Audiobookshelf and Hardcover

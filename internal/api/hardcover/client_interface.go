@@ -35,9 +35,6 @@ type HardcoverClientInterface interface {
 	// ClearUserBookCache clears the user book ID cache
 	ClearUserBookCache()
 
-    // UpdateUserBook updates a user book (e.g., to change edition)
-    UpdateUserBook(ctx context.Context, input UpdateUserBookInput) error
-
     // SearchBookByISBN13 searches for a book by ISBN-13
     SearchBookByISBN13(ctx context.Context, isbn13 string) (*models.HardcoverBook, error)
 
