@@ -38,6 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Multiple Audiobookshelf books can map to different editions of the same Hardcover book
   - Each ABS book maintains its own sync state while sharing the same user book ID
   - Fixes infinite sync loop when different ASINs map to the same Hardcover book
+- **Dynamic Edition Switching**: When multiple ABS books map to different editions, update the user book's edition dynamically during sync
+  - Allows proper progress tracking while maintaining a single user book per book title
+  - Automatically switches edition when syncing different ABS books that map to the same HC book
+  - Prevents edition conflicts and ensures accurate progress updates
 - **Edition Format Detection**: Edition format logic updated to be more precise:
   - "Audible Audio" format is only applied when the book was purchased from Audible/Amazon (detected by presence of ASIN)
   - "libro.fm" format is applied for libro.fm publishers
