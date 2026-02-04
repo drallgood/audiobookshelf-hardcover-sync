@@ -2797,6 +2797,78 @@ func (c *Client) GetUserBookID(ctx context.Context, editionID int) (int, error) 
 	return userBookID, nil
 }
 
+// LookupUserBookByBookIDOnly performs a lookup of a user book by book ID only (ignoring edition)
+func (c *Client) LookupUserBookByBookIDOnly(ctx context.Context, bookID, userID int) (int, error) {
+	log := c.logger.With(map[string]interface{}{
+		"bookID": bookID,
+		"userID": userID,
+		"method": "lookupUserBookByBookIDOnly",
+	})
+
+	// Define the GraphQL query - look for user book with just book_id
+	const query = `
+	query GetUserBookByBookOnly($bookId: Int!, $userId: Int!) {
+	  user_books(
+		where: {
+		  book_id: {_eq: $bookId},
+		  user_id: {_eq: $userId}
+		}, 
+		limit: 1
+	  ) {
+		id
+		book_id
+		edition_id
+	  }
+	}`
+
+	// Define the response structure
+	var response struct {
+		UserBooks []struct {
+			ID        int `json:"id"`
+			BookID    int `json:"book_id"`
+			EditionID int `json:"edition_id"`
+		} `json:"user_books"`
+	}
+
+	// Execute the query
+	err := c.GraphQLQuery(ctx, query, map[string]interface{}{
+		"bookId": bookID,
+		"userId": userID,
+	}, &response)
+
+	if err != nil {
+		errMsg := fmt.Sprintf("failed to query user books by book ID only: %v", err)
+		log.Error(errMsg, map[string]interface{}{
+			"error":  err.Error(),
+			"bookID": bookID,
+			"userID": userID,
+		})
+		return 0, errors.New(errMsg)
+	}
+
+	// Log the response
+	log.Debug("User book lookup by book ID only response", map[string]interface{}{
+		"bookID":      bookID,
+		"userID":      userID,
+		"resultCount": len(response.UserBooks),
+	})
+
+	if len(response.UserBooks) == 0 {
+		return 0, nil
+	}
+
+	userBook := response.UserBooks[0]
+	userBookID := userBook.ID
+
+	log.Debug("Found user book by book ID only", map[string]interface{}{
+		"userBookID": userBookID,
+		"bookID":     userBook.BookID,
+		"editionID":  userBook.EditionID,
+	})
+
+	return userBookID, nil
+}
+
 // ClearUserBookCache clears the user book ID cache
 func (c *Client) ClearUserBookCache() {
 	c.userBookIDCache.Clear()

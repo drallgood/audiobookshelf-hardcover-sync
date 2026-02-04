@@ -455,6 +455,43 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 		return int64(userBookID), nil
 	}
 
+	// Before creating a new user book, check if we already have ANY user book for this book
+	// This prevents creating multiple editions for the same book
+	// Get the edition to find the book ID
+	edition, err := s.hardcover.GetEdition(ctx, editionID)
+	if err != nil {
+		logCtx.Error("Failed to get edition details", map[string]interface{}{
+			"error":     err.Error(),
+			"editionID": editionID,
+		})
+		return 0, fmt.Errorf("failed to get edition details: %w", err)
+	}
+	
+	bookID, err := strconv.ParseInt(edition.BookID, 10, 64)
+	if err != nil {
+		logCtx.Error("Invalid book ID format", map[string]interface{}{
+			"error":   err.Error(),
+			"book_id": edition.BookID,
+		})
+		return 0, fmt.Errorf("invalid book ID format: %w", err)
+	}
+	
+	existingUserBookID, err := s.findExistingUserBookForBook(ctx, bookID)
+	if err != nil {
+		logCtx.Warn("Failed to check for existing user book by book ID", map[string]interface{}{
+			"error":   err.Error(),
+			"book_id": bookID,
+		})
+		// Continue with creation if check fails
+	} else if existingUserBookID > 0 {
+		s.log.Info("Found existing user book for this book (different edition), reusing it", map[string]interface{}{
+			"book_id":         bookID,
+			"existing_user_book_id": existingUserBookID,
+			"requested_edition_id": editionID,
+		})
+		return existingUserBookID, nil
+	}
+
 	// Create a new user book with the specified status
 	logCtx.Info("Attempting to create new user book", map[string]interface{}{
 		"status": status,
@@ -488,6 +525,32 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 	})
 
 	return userBookID64, nil
+}
+
+// findExistingUserBookForBook checks if there's already a user book for this book (any edition)
+func (s *Service) findExistingUserBookForBook(ctx context.Context, bookID int64) (int64, error) {
+	// Use the existing GetUserBookID method with edition 0 to check if any user book exists
+	// This is a workaround since we don't have a direct lookup by book ID only
+	// We'll iterate through known editions or use a different approach
+	
+	// For now, let's use the Hardcover client's internal method directly
+	// by type asserting to the concrete type
+	if hcClient, ok := s.hardcover.(*hardcover.Client); ok {
+		userID, err := hcClient.GetCurrentUserID(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("failed to get current user ID: %w", err)
+		}
+		
+		userBookID, err := hcClient.LookupUserBookByBookIDOnly(ctx, int(bookID), int(userID))
+		if err != nil {
+			return 0, fmt.Errorf("failed to lookup user book by book ID: %w", err)
+		}
+		
+		return int64(userBookID), nil
+	}
+	
+	// Fallback: return 0 (no existing user book)
+	return 0, nil
 }
 
 // Sync performs a full synchronization between Audiobookshelf and Hardcover
