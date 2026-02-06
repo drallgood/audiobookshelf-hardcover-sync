@@ -470,6 +470,8 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 				editionID := 456
 				// Expect GetUserBookID and CheckBookOwnership since sync_owned is true
 				m.On("GetUserBookID", mock.Anything, editionID).Return(789, nil)
+				// GetEdition is called when checking for existing user book
+				m.On("GetEdition", mock.Anything, "456").Return(&models.Edition{ID: "456", BookID: "123"}, nil)
 				// CheckBookOwnership uses BOOK ID (123)
 				m.On("CheckBookOwnership", mock.Anything, 123).Return(false, nil)
 				m.On("MarkEditionAsOwned", mock.Anything, editionID).Return(nil)
@@ -494,6 +496,8 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 				editionID := 456
 				// Only expect GetUserBookID when sync_owned is false
 				m.On("GetUserBookID", mock.Anything, editionID).Return(789, nil)
+				// GetEdition is called when checking for existing user book
+				m.On("GetEdition", mock.Anything, "456").Return(&models.Edition{ID: "456", BookID: "123"}, nil)
 			},
 			verifyResult: func(t *testing.T, result *models.HardcoverBook, err error) {
 				assert.NoError(t, err)
@@ -515,6 +519,8 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 				editionID := 456
 				// Expect GetUserBookID and CheckBookOwnership since sync_owned is true
 				m.On("GetUserBookID", mock.Anything, editionID).Return(789, nil)
+				// GetEdition is called when checking for existing user book
+				m.On("GetEdition", mock.Anything, "456").Return(&models.Edition{ID: "456", BookID: "123"}, nil)
 				// Return true to indicate the book is already owned (BOOK ID)
 				m.On("CheckBookOwnership", mock.Anything, 123).Return(true, nil)
 			},
@@ -561,6 +567,8 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 				}
 				m.On("GetEdition", mock.Anything, "123").Return(edition, nil)
 				m.On("GetUserBookID", mock.Anything, 789).Return(101112, nil)
+				// GetEdition is called again when checking existing user book
+				m.On("GetEdition", mock.Anything, "789").Return(&models.Edition{ID: "789", BookID: "123"}, nil)
 			},
 			verifyResult: func(t *testing.T, result *models.HardcoverBook, err error) {
 				assert.NoError(t, err)
@@ -586,6 +594,8 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 				editionID := 456
 				// Expect GetUserBookID and CheckBookOwnership with error
 				m.On("GetUserBookID", mock.Anything, editionID).Return(789, nil)
+				// GetEdition is called when checking for existing user book
+				m.On("GetEdition", mock.Anything, "456").Return(&models.Edition{ID: "456", BookID: "123"}, nil)
 				// BOOK ID is used for ownership check
 				m.On("CheckBookOwnership", mock.Anything, 123).Return(false, errors.New("ownership check failed"))
 			},
@@ -609,6 +619,8 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 				editionID := 456
 				// Expect GetUserBookID, CheckBookOwnership, and MarkEditionAsOwned with error
 				m.On("GetUserBookID", mock.Anything, editionID).Return(789, nil)
+				// GetEdition is called when checking for existing user book
+				m.On("GetEdition", mock.Anything, "456").Return(&models.Edition{ID: "456", BookID: "123"}, nil)
 				// Use BOOK ID for ownership check
 				m.On("CheckBookOwnership", mock.Anything, 123).Return(false, nil)
 				m.On("MarkEditionAsOwned", mock.Anything, editionID).Return(errors.New("failed to mark as owned"))
@@ -740,6 +752,7 @@ func TestProcessFoundBook_WithBook(t *testing.T) {
 
 		// The code may call these methods with different parameters
 		mockClient.On("UpdateReadingProgress", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+		mockClient.On("GetEdition", mock.Anything, mock.AnythingOfType("string")).Return(&models.Edition{ID: "456", BookID: "123"}, nil).Maybe()
 		mockClient.On("CheckBookOwnership", mock.Anything, mock.AnythingOfType("int")).Return(false, nil).Maybe()
 		mockClient.On("MarkEditionAsOwned", mock.Anything, mock.AnythingOfType("int")).Return(nil).Maybe()
 
@@ -875,6 +888,7 @@ func TestProcessFoundBook_OwnershipSync_DryRun(t *testing.T) {
 
     // Expectations: ownership checked by BOOK ID, but MarkEditionAsOwned must NOT be called due to DryRun
     mockClient.On("GetUserBookID", mock.Anything, 456).Return(789, nil).Once()
+    mockClient.On("GetEdition", mock.Anything, "456").Return(&models.Edition{ID: "456", BookID: "123"}, nil).Once()
     mockClient.On("CheckBookOwnership", mock.Anything, 123).Return(false, nil).Once()
 
     // Execute

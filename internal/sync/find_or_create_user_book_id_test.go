@@ -37,6 +37,17 @@ func TestFindOrCreateUserBookID_ExistingUserBook(t *testing.T) {
 	expectedUserBookID := 789
 	mockClient.On("GetUserBookID", mock.Anything, 456).Return(expectedUserBookID, nil).Once()
 
+	// Mock the GetEdition call for checking existing user book by book ID
+	mockEdition := &models.Edition{
+		ID:     "456",
+		BookID: "432575", // Some book ID
+	}
+	mockClient.On("GetEdition", mock.Anything, editionID).Return(mockEdition, nil).Once()
+
+	// Mock the findExistingUserBookForBook to return no existing user book
+	// This requires type asserting to the concrete client, so we'll handle it differently
+	// For now, let's make sure the test works with the current implementation
+
 	// Call the function
 	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "WANT_TO_READ")
 
@@ -98,13 +109,6 @@ func TestFindOrCreateUserBookID_SecondCheckFindsUserBook(t *testing.T) {
 	// Mock the second GetUserBookID call to return an existing user book ID
 	expectedUserBookID := 789
 	mockClient.On("GetUserBookID", mock.Anything, 456).Return(expectedUserBookID, nil).Once()
-
-	// Mock the GetEdition call for checking existing user book by book ID
-	mockEdition := &models.Edition{
-		ID:     "456",
-		BookID: "432575", // Some book ID
-	}
-	mockClient.On("GetEdition", mock.Anything, editionID).Return(mockEdition, nil).Once()
 
 	// Call the function
 	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "WANT_TO_READ")
