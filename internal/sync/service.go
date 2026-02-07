@@ -2174,9 +2174,6 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 			progressSeconds = &seconds
 		}
 
-		// Convert editionID to int64
-		editionIDInt, _ := strconv.ParseInt(editionID, 10, 64)
-
 		// Set progress to 100% when creating a new finished read
 		// We'll use progress_seconds to set the progress
 		var finalProgressSeconds int
@@ -2197,7 +2194,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 				FinishedAt:      &finishedAt,
 				StartedAt:       &startedAt,
 				ProgressSeconds: &finalProgressSeconds, // This will effectively set progress to 100%
-				EditionID:       &editionIDInt,
+				// EditionID removed to prevent edition switching - the read is already linked to the user book
 			},
 		})
 
@@ -2808,16 +2805,8 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			log.Info(fmt.Sprintf("Updating existing read status - progress difference (%s) >= min threshold (%.2f)", pDiff, mDiff), logCtx)
 		}
 
-		// Include edition_id if available
-		if readStatusToUpdate.EditionID != nil {
-			updateObj["edition_id"] = *readStatusToUpdate.EditionID
-		} else if hcBook != nil && hcBook.EditionID != "" {
-			// Convert string edition ID to int if needed
-			editionID, err := strconv.Atoi(hcBook.EditionID)
-			if err == nil && editionID != 0 {
-				updateObj["edition_id"] = editionID
-			}
-		}
+		// EditionID removed from update to prevent edition switching
+		// The read is already linked to the user book, we shouldn't change its edition
 
 		// Update the read with the current progress
 		updateInput := hardcover.UpdateUserBookReadInput{
@@ -2995,23 +2984,8 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			log.Debug("Second-chance read fetch skipped due to error", map[string]interface{}{"error": scErr.Error()})
 		}
 
-		// Try to set edition ID from stateKey (format: bookID:editionID) first
-		parts := strings.Split(stateKey, ":")
-		if len(parts) == 2 {
-			if eid, err := strconv.Atoi(parts[1]); err == nil && eid != 0 {
-				eid64 := int64(eid)
-				createObj.EditionID = &eid64
-			}
-		}
-
-		// If not set from stateKey, fall back to Hardcover user book's edition ID if available
-		if createObj.EditionID == nil && hcBook.EditionID != "" {
-			// Convert string edition ID to int if needed
-			if eid, err := strconv.Atoi(hcBook.EditionID); err == nil && eid != 0 {
-				eid64 := int64(eid) // Convert to int64 to match expected type
-				createObj.EditionID = &eid64
-			}
-		}
+		// EditionID removed to prevent edition switching - the read is already linked to the user book
+		// The user book determines the edition, not individual read records
 
 		// Per-run guard to avoid duplicate inserts for the same userBookID
 		s.createdReadsMutex.Lock()

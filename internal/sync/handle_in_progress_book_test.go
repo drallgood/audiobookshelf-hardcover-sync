@@ -191,8 +191,8 @@ func TestHandleInProgressBook_UpdateExistingRead(t *testing.T) {
 	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
 		// Verify the input has the correct ID and progress
 		return input.ID == readID &&
-			input.Object["progress_seconds"] == int64(300) &&
-			input.Object["edition_id"] == editionID
+			input.Object["progress_seconds"] == int64(300)
+			// edition_id removed to prevent edition switching
 	})).Return(true, nil).Once()
 
 	// Mock the UpdateUserBookStatus call
@@ -287,15 +287,13 @@ func TestHandleInProgressBook_CreateNewRead(t *testing.T) {
 	}).Return([]hardcover.UserBookRead{}, nil).Twice()
 
 	// Mock the InsertUserBookRead call
-	editionID := int64(456)
 	progressSeconds := 300
 	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
 		// Verify the input has the correct user book ID and progress
 		return input.UserBookID == userBookID &&
 			input.DatesRead.ProgressSeconds != nil &&
 			*input.DatesRead.ProgressSeconds == progressSeconds &&
-			input.DatesRead.EditionID != nil &&
-			*input.DatesRead.EditionID == editionID
+			input.DatesRead.EditionID == nil // EditionID removed to prevent edition switching
 	})).Return(789, nil).Once()
 
 	// Mock the UpdateUserBookStatus call
@@ -342,15 +340,13 @@ func TestHandleInProgressBook_CreateNewRead_UsesStateKeyEdition(t *testing.T) {
 		UserBookID: userBookID,
 	}).Return([]hardcover.UserBookRead{}, nil).Twice()
 
-	// Expect InsertUserBookRead to use the edition ID from stateKey (456), not hcBook.EditionID (999)
-	editionID := int64(456)
+	// Expect InsertUserBookRead to not use edition ID to prevent edition switching
 	progressSeconds := 300
 	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
 		return input.UserBookID == userBookID &&
 			input.DatesRead.ProgressSeconds != nil &&
 			*input.DatesRead.ProgressSeconds == progressSeconds &&
-			input.DatesRead.EditionID != nil &&
-			*input.DatesRead.EditionID == editionID
+			input.DatesRead.EditionID == nil // EditionID removed to prevent edition switching
 	})).Return(789, nil).Once()
 
 	// Mock the UpdateUserBookStatus call
@@ -359,8 +355,8 @@ func TestHandleInProgressBook_CreateNewRead_UsesStateKeyEdition(t *testing.T) {
 		StatusID: 2, // 2 = Currently Reading
 	}).Return(nil).Once()
 
-	// Call the function with stateKey encoding the editionID
-	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
+	// Call the function with stateKey encoding the editionID (456)
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, 456)
 	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
 	// Verify results
