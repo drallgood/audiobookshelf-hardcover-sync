@@ -1375,8 +1375,14 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 
 	// Calculate progress percentage based on current time and total duration
 	var progress float64
-	if book.Media.Duration > 0 && book.Progress.CurrentTime > 0 {
-		progress = book.Progress.CurrentTime / book.Media.Duration
+	if book.Media.Duration > 0 {
+		// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
+		// because Audiobookshelf sometimes reports CurrentTime as 0 for finished books
+		if book.Progress.IsFinished {
+			progress = 1.0
+		} else {
+			progress = book.Progress.CurrentTime / book.Media.Duration
+		}
 	}
 
 	// Update logger with progress information
@@ -3152,7 +3158,13 @@ func (s *Service) processFoundBook(ctx context.Context, hcBook *models.Hardcover
 	isFinished := book.Progress.IsFinished
 	finishedAt := book.Progress.FinishedAt
 	if book.Media.Duration > 0 {
-		progress = book.Progress.CurrentTime / book.Media.Duration
+		// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
+		// because Audiobookshelf sometimes reports CurrentTime as 0 for finished books
+		if isFinished {
+			progress = 1.0
+		} else {
+			progress = book.Progress.CurrentTime / book.Media.Duration
+		}
 	}
 
 	// Determine the status based on progress and isFinished flag
@@ -3522,7 +3534,13 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 				isFinished := book.Progress.IsFinished
 				finishedAt := book.Progress.FinishedAt
 				if book.Media.Duration > 0 {
-					progress = book.Progress.CurrentTime / book.Media.Duration
+					// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
+					// because Audiobookshelf sometimes reports CurrentTime as 0 for finished books
+					if isFinished {
+						progress = 1.0
+					} else {
+						progress = book.Progress.CurrentTime / book.Media.Duration
+					}
 				}
 
 				// Determine the status based on progress and isFinished flag
@@ -3584,7 +3602,13 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 			isFinished := book.Progress.IsFinished
 			finishedAt := book.Progress.FinishedAt
 			if book.Media.Duration > 0 {
-				progress = book.Progress.CurrentTime / book.Media.Duration
+				// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
+				// because Audiobookshelf sometimes reports CurrentTime as 0 for finished books
+				if isFinished {
+					progress = 1.0
+				} else {
+					progress = book.Progress.CurrentTime / book.Media.Duration
+				}
 			}
 
 			// Determine the status based on progress and isFinished flag
