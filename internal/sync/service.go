@@ -384,8 +384,52 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 		"editionIDInt": editionIDInt,
 	})
 
-	// Check if we already have a user book ID for this edition
-	logCtx.Debug("Checking for existing user book ID", map[string]interface{}{
+	// Get the edition details to find the book ID first
+	edition, err := s.hardcover.GetEdition(ctx, editionID)
+	if err != nil {
+		logCtx.Error("Failed to get edition details", map[string]interface{}{
+			"error":     err.Error(),
+			"editionID": editionID,
+		})
+		return 0, fmt.Errorf("failed to get edition details: %w", err)
+	}
+	
+	// Parse book ID
+	bookID, err := strconv.ParseInt(edition.BookID, 10, 64)
+	if err != nil {
+		logCtx.Error("Invalid book ID format", map[string]interface{}{
+			"error":   err.Error(),
+			"book_id": edition.BookID,
+		})
+		return 0, fmt.Errorf("invalid book ID format: %w", err)
+	}
+	
+	// FIRST: Check if there's already a user book for this book (any edition)
+	// This prevents creating multiple user books for the same book with different editions
+	logCtx.Debug("Checking for existing user book by book ID (any edition)", map[string]interface{}{
+		"book_id": bookID,
+	})
+	
+	existingUserBookID, err := s.findExistingUserBookForBook(ctx, bookID)
+	if err != nil {
+		logCtx.Warn("Failed to check for existing user book by book ID", map[string]interface{}{
+			"error":   err.Error(),
+			"book_id": bookID,
+		})
+		// Continue to edition-specific check if book-only check fails
+	} else if existingUserBookID > 0 {
+		// Found an existing user book for this book (possibly different edition)
+		logCtx.Info("Found existing user book for same book, using it", map[string]interface{}{
+			"book_id":               bookID,
+			"existing_user_book_id": existingUserBookID,
+			"requested_edition_id":  editionID,
+		})
+		return existingUserBookID, nil
+	}
+	
+	// SECOND: If no user book exists for this book at all, check for the specific edition
+	// This is for backward compatibility in case there's a user book with this specific edition
+	logCtx.Debug("No existing user book found for book, checking for specific edition", map[string]interface{}{
 		"editionID":    editionID,
 		"editionIDInt": editionIDInt,
 	})
@@ -400,61 +444,9 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 		return 0, fmt.Errorf("error checking for existing user book ID: %w", err)
 	}
 
-	// If we found an existing user book ID, check if it's for a different edition of the same book
+	// If we found an existing user book ID for this specific edition, return it
 	if userBookID > 0 {
-		// Get the edition details to find the book ID
-		edition, err := s.hardcover.GetEdition(ctx, editionID)
-		if err != nil {
-			logCtx.Error("Failed to get edition details", map[string]interface{}{
-				"error":     err.Error(),
-				"editionID": editionID,
-			})
-			// Continue with the found user book if we can't get edition details
-			s.log.Info("Found existing user book ID", map[string]interface{}{
-				"editionID":    editionID,
-				"editionIDInt": editionIDInt,
-				"userBookID":   userBookID,
-			})
-			return int64(userBookID), nil
-		}
-		
-		// Check if this user book is for a different edition of the same book
-		bookID, err := strconv.ParseInt(edition.BookID, 10, 64)
-		if err != nil {
-			logCtx.Error("Invalid book ID format", map[string]interface{}{
-				"error":   err.Error(),
-				"book_id": edition.BookID,
-			})
-			// Continue with the found user book if we can't parse book ID
-			s.log.Info("Found existing user book ID", map[string]interface{}{
-				"editionID":    editionID,
-				"editionIDInt": editionIDInt,
-				"userBookID":   userBookID,
-			})
-			return int64(userBookID), nil
-		}
-		
-		// Check if there's already a user book for this book (any edition)
-		existingUserBookID, err := s.findExistingUserBookForBook(ctx, bookID)
-		if err != nil {
-			logCtx.Warn("Failed to check for existing user book by book ID", map[string]interface{}{
-				"error":   err.Error(),
-				"book_id": bookID,
-			})
-			// Continue with the found user book if check fails
-		} else if existingUserBookID > 0 && existingUserBookID != int64(userBookID) {
-			// Found a different user book for the same book - use that one instead
-			s.log.Info("Found different user book for same book, switching to it", map[string]interface{}{
-				"book_id":               bookID,
-				"current_user_book_id":  userBookID,
-				"existing_user_book_id": existingUserBookID,
-				"requested_edition_id":  editionID,
-			})
-			return existingUserBookID, nil
-		}
-		
-		// Otherwise, continue with the found user book
-		s.log.Info("Found existing user book ID", map[string]interface{}{
+		logCtx.Info("Found existing user book ID for specific edition", map[string]interface{}{
 			"editionID":    editionID,
 			"editionIDInt": editionIDInt,
 			"userBookID":   userBookID,
