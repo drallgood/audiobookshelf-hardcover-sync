@@ -837,12 +837,12 @@ func TestProcessFoundBook_NoEditionFound(t *testing.T) {
 	// Setup mock expectations
 	editionErr := errors.New("edition not found")
 
-	// Mock the GetEdition call to return not found - but this might not be called if the edition ID is already set
+	// Mock the GetEdition call to return not found - this will be called by findOrCreateUserBookID
 	editionID := "456"
 	editionIDInt, _ := strconv.Atoi(editionID)
 	nilEdition := (*models.Edition)(nil)
-	// Make this expectation optional since processFoundBook might not call GetEdition if edition ID is already set
-	mockClient.On("GetEdition", mock.Anything, editionID).Return(nilEdition, editionErr).Maybe()
+	// This is called by findOrCreateUserBookID and will cause it to return early
+	mockClient.On("GetEdition", mock.Anything, editionID).Return(nilEdition, editionErr).Once()
 
 	// Mock the CheckBookOwnership call to return false (not owned) using BOOK ID
 	mockClient.On("CheckBookOwnership", mock.Anything, 123).Return(false, nil).Maybe()
@@ -850,18 +850,17 @@ func TestProcessFoundBook_NoEditionFound(t *testing.T) {
 	// Mock the MarkEditionAsOwned call since the book is not owned and sync_owned is true
 	mockClient.On("MarkEditionAsOwned", mock.Anything, editionIDInt).Return(nil).Maybe()
 
-	// Mock the GetUserBookID call to return a user book ID
-	userBookID := 789
-	mockClient.On("GetUserBookID", mock.Anything, editionIDInt).Return(userBookID, nil).Once()
-
+	// GetUserBookID should NOT be called because GetEdition fails and findOrCreateUserBookID returns early
+	
 	// Call the function
 	result, err := svc.processFoundBook(context.Background(), hcBook, *audiobook)
 
-	// Verify results
+	// Verify results - the function should still succeed but without a user book ID
 	assert.NoError(t, err, "Should not return an error when edition is not found but book is processed")
 	require.NotNil(t, result, "Should return a result even when edition is not found")
 	assert.Equal(t, "123", result.ID, "Result should have the correct book ID")
 	assert.Equal(t, "Test Book", result.Title, "Result should have the correct title")
+	assert.Equal(t, "", result.UserBookID, "User book ID should be empty since findOrCreateUserBookID failed")
 	
 	// Use mock.Anything for the context parameter to make the test more flexible
 	mockClient.AssertExpectations(t)
