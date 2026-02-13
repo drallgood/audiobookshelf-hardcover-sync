@@ -2872,10 +2872,24 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			ProgressSeconds: &progressSeconds,
 		}
 
-		// Add dates if available
-		if book.Progress.StartedAt > 0 {
-			startedAt := time.Unix(book.Progress.StartedAt/1000, 0).Format("2006-01-02")
-			createObj.StartedAt = &startedAt
+		// For the start date, we need to determine if this is a reread
+		// If we have a mostRecentRead that's finished, this is a reread - use current date
+		// Otherwise, use the date from Audiobookshelf
+		if mostRecentRead != nil && mostRecentRead.FinishedAt != nil && *mostRecentRead.FinishedAt != "" {
+			// This is a reread - use today's date as the start date
+			today := time.Now().Format("2006-01-02")
+			createObj.StartedAt = &today
+			log.Info("Creating new read status for reread - using current date as start date", map[string]interface{}{
+				"original_read_id":   mostRecentRead.ID,
+				"original_started":   mostRecentRead.StartedAt,
+				"new_started_at":     today,
+			})
+		} else {
+			// This is a first read - use the date from Audiobookshelf
+			if book.Progress.StartedAt > 0 {
+				startedAt := time.Unix(book.Progress.StartedAt/1000, 0).Format("2006-01-02")
+				createObj.StartedAt = &startedAt
+			}
 		}
 
 		if book.Progress.IsFinished && book.Progress.FinishedAt > 0 {
