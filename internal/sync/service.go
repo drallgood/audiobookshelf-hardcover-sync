@@ -1775,6 +1775,47 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		bookProcessed = true
 		return nil
 
+	case "WANT_TO_READ":
+		// Handle want to read books - update status to WANT_TO_READ (StatusID 1)
+		bookLog.Info("Processing want to read book", map[string]interface{}{
+			"status": status,
+		})
+
+		// Only update if SyncWantToRead is enabled
+		if !s.config.Sync.SyncWantToRead {
+			bookLog.Info("Skipping want to read book - SyncWantToRead is disabled", nil)
+			bookProcessed = true
+			return nil
+		}
+
+		// Update the book status to WANT_TO_READ in Hardcover
+		err := s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
+			ID:       userBookID,
+			StatusID: 1, // 1 = WANT_TO_READ
+		})
+		if err != nil {
+			bookLog.Error("Failed to update book status to WANT_TO_READ", map[string]interface{}{
+				"error": err,
+			})
+			return fmt.Errorf("error updating book status: %w", err)
+		}
+
+		// Update state with current progress and status
+		progressPct := 0.0
+		if book.Media.Duration > 0 {
+			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
+		}
+		if updated := s.state.UpdateBook(stateKey, progressPct, "WANT_TO_READ"); updated {
+			bookLog.Debug("Updated book state to WANT_TO_READ", map[string]interface{}{
+				"progress":  progressPct,
+				"state_key": stateKey,
+			})
+		}
+
+		bookProcessed = true
+		bookLog.Info("Successfully processed want to read book")
+		return nil
+
 	default:
 		// For any other status, we still consider it processed successfully
 		bookProcessed = true
