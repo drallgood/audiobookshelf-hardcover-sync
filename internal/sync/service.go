@@ -2935,17 +2935,19 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				"original_started":   mostRecentRead.StartedAt,
 				"new_started_at":     today,
 			})
+			// For rereads, don't set finished_at even if the book is marked as finished in ABS
+			// The finished_at should be set only when the user actually finishes this reading session
 		} else {
 			// This is a first read - use the date from Audiobookshelf
 			if book.Progress.StartedAt > 0 {
 				startedAt := time.Unix(book.Progress.StartedAt/1000, 0).Format("2006-01-02")
 				createObj.StartedAt = &startedAt
 			}
-		}
-
-		if book.Progress.IsFinished && book.Progress.FinishedAt > 0 {
-			finishedAt := time.Unix(book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
-			createObj.FinishedAt = &finishedAt
+			// Only set finished_at for first reads, not for rereads
+			if book.Progress.IsFinished && book.Progress.FinishedAt > 0 {
+				finishedAt := time.Unix(book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
+				createObj.FinishedAt = &finishedAt
+			}
 		}
 
 		// Get the edition ID from the user book
