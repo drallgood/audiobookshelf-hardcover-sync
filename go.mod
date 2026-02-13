@@ -1,8 +1,6 @@
 module github.com/drallgood/audiobookshelf-hardcover-sync
 
-go 1.24.0
-
-toolchain go1.24.8
+go 1.26.0
 
 require (
 	github.com/coreos/go-oidc/v3 v3.17.0

@@ -148,6 +148,10 @@ func (r *responseWriterWrapper) WriteHeader(status int) {
 	r.ResponseWriter.WriteHeader(status)
 }
 
+func (r *responseWriterWrapper) Write(b []byte) (int, error) {
+	return r.ResponseWriter.Write(b)
+}
+
 // Get returns the global logger instance
 func Get() *Logger {
 	once.Do(func() {
