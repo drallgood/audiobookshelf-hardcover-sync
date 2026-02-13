@@ -2723,8 +2723,18 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		"reading_format_id": 2, // 2 = Audiobook format
 	}
 
-	// Format dates as YYYY-MM-DD strings
-	if book.Progress.StartedAt > 0 {
+	// For started_at, we need to be careful:
+	// - If this is an existing read that's being updated, preserve the existing started_at
+	// - Only set started_at if we're creating a new read or if the existing one doesn't have it
+	if readStatusToUpdate != nil && readStatusToUpdate.StartedAt != nil && *readStatusToUpdate.StartedAt != "" {
+		// Preserve the existing started_at from Hardcover
+		// This prevents overwriting manually corrected dates
+		updateObj["started_at"] = *readStatusToUpdate.StartedAt
+		log.Debug("Preserving existing started_at from Hardcover", map[string]interface{}{
+			"existing_started_at": *readStatusToUpdate.StartedAt,
+		})
+	} else if book.Progress.StartedAt > 0 {
+		// Only use ABS started_at for new reads or if no started_at exists
 		startedAt := time.Unix(book.Progress.StartedAt/1000, 0).Format("2006-01-02")
 		updateObj["started_at"] = startedAt
 	}
