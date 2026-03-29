@@ -13,8 +13,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - When enabled, sync will skip books with DNF status to prevent accidental overrides
   - Environment variable: `SYNC_PRESERVE_DNF`
   - Users can now mark books as DNF in Hardcover without losing the status during sync
+- **WebUI Auto-Refresh Toggle**: Pause/Resume button for sync status auto-refresh (#111)
+  - Allows users to pause the 5-second auto-refresh to review sync logs without interruption
+  - Toggle button added to Sync Status tab
 
 ### Fixed
+- **OAuth State Parameter Security**: Fixed insufficient entropy in OAuth2 state parameter (#112)
+  - State now uses 32 cryptographically random bytes (44 chars base64-encoded) instead of URL-encoded redirect path
+  - Provides proper CSRF protection per RFC 6749 §10.12
+  - Compatible with Authelia and other OIDC providers requiring ≥8 character state
+  - Added 10-minute TTL with automatic cleanup to prevent memory exhaustion
+- **Verbose API Response Logging**: Reduced raw API response logs from Info to Debug level (#111)
+  - Raw response logs now only appear when `LOG_LEVEL=debug`
+  - Prevents log spam in normal operation
 - **Process Unread Books**: Fixed `process_unread_books` setting not being respected in both single-user and multi-user modes (#90)
   - Single-user: Updated config.example.yaml to show correct default value (true)
   - Multi-user: Added missing field assignments in sync config application
