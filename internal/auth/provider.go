@@ -28,7 +28,8 @@ type IAuthProvider interface {
 	HandleCallback(ctx context.Context, r *http.Request) (*AuthUser, error)
 	
 	// GetAuthURL returns the authentication URL for redirect-based auth (if applicable)
-	GetAuthURL(state string) (string, error)
+	// The redirectURL is stored server-side and a random state is generated
+	GetAuthURL(redirectURL string) (string, error)
 	
 	// ValidateToken validates a token and returns user info (if applicable)
 	ValidateToken(ctx context.Context, token string) (*AuthUser, error)
@@ -36,10 +37,11 @@ type IAuthProvider interface {
 
 // AuthResult represents the result of an authentication attempt
 type AuthResult struct {
-	User    *AuthUser `json:"user"`
-	Token   string    `json:"token,omitempty"`
-	Success bool      `json:"success"`
-	Error   string    `json:"error,omitempty"`
+	User        *AuthUser `json:"user"`
+	Token       string    `json:"token,omitempty"`
+	RedirectURL string    `json:"redirect_url,omitempty"` // For OAuth flows
+	Success     bool      `json:"success"`
+	Error       string    `json:"error,omitempty"`
 }
 
 // SessionManager handles user sessions

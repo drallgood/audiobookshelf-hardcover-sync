@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"golang.org/x/crypto/bcrypt"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // LocalAuthProvider implements local username/password authentication
@@ -174,7 +174,7 @@ func (p *LocalAuthProvider) HandleCallback(ctx context.Context, r *http.Request)
 }
 
 // GetAuthURL is not applicable for local authentication
-func (p *LocalAuthProvider) GetAuthURL(state string) (string, error) {
+func (p *LocalAuthProvider) GetAuthURL(redirectURL string) (string, error) {
 	return "", fmt.Errorf("auth URL not supported for local authentication")
 }
 
