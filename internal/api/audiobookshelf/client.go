@@ -198,12 +198,12 @@ func (c *Client) GetLibraryItems(ctx context.Context, libraryID string) ([]model
 				"path":  tmpFile,
 			})
 		} else {
-			log.Info("Saved raw API response to temp file", map[string]interface{}{
+			log.Debug("Saved raw API response to temp file", map[string]interface{}{
 				"path": tmpFile,
 			})
 		}
 	} else {
-		log.Info("Successfully saved raw API response to file", map[string]interface{}{
+		log.Debug("Successfully saved raw API response to file", map[string]interface{}{
 			"path": logFile,
 		})
 	}
@@ -221,7 +221,7 @@ func (c *Client) GetLibraryItems(ctx context.Context, libraryID string) ([]model
 			"path":  absPath,
 		})
 	} else {
-		log.Info("Saved raw response to file", map[string]interface{}{
+		log.Debug("Saved raw response to file", map[string]interface{}{
 			"path": absPath,
 		})
 	}
@@ -235,7 +235,7 @@ func (c *Client) GetLibraryItems(ctx context.Context, libraryID string) ([]model
 			"path":  relPath,
 		})
 	} else {
-		log.Info("Saved raw response to current directory", map[string]interface{}{
+		log.Debug("Saved raw response to current directory", map[string]interface{}{
 			"path": relPath,
 		})
 	}
@@ -277,7 +277,7 @@ func (c *Client) GetLibraryItems(ctx context.Context, libraryID string) ([]model
 	for k := range rawResponse {
 		keys = append(keys, k)
 	}
-	log.Info("Top-level keys in API response", map[string]interface{}{
+	log.Debug("Top-level keys in API response", map[string]interface{}{
 		"top_level_keys": keys,
 	})
 
@@ -291,7 +291,7 @@ func (c *Client) GetLibraryItems(ctx context.Context, libraryID string) ([]model
 	}
 
 	// Log the type of the results value
-	log.Info("Type of results in API response", map[string]interface{}{
+	log.Debug("Type of results in API response", map[string]interface{}{
 		"results_type": fmt.Sprintf("%T", resultsRaw),
 	})
 
@@ -315,7 +315,7 @@ func (c *Client) GetLibraryItems(ctx context.Context, libraryID string) ([]model
 	// Log the first book's raw data for debugging
 	if len(books) > 0 {
 		firstBook := books[0]
-		log.Info("First book details from parsed response", map[string]interface{}{
+		log.Debug("First book details from parsed response", map[string]interface{}{
 			"first_book_id":     firstBook.ID,
 			"first_book_title":  firstBook.Media.Metadata.Title,
 			"first_book_author": firstBook.Media.Metadata.AuthorName,

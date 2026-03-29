@@ -43,7 +43,10 @@
         <div id="sync-tab" class="tab-content">
             <div class="section-header">
                 <h2>Sync Status</h2>
-                <button class="btn btn-primary" onclick="refreshStatus()">🔄 Refresh</button>
+                <div class="header-buttons">
+                    <button class="btn btn-secondary" id="auto-refresh-toggle" onclick="toggleAutoRefresh()">⏸️ Pause Auto-Refresh</button>
+                    <button class="btn btn-primary" onclick="refreshStatus()">🔄 Refresh</button>
+                </div>
             </div>
             
             <div id="sync-status" class="status-grid">
