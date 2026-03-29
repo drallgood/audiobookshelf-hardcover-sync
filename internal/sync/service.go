@@ -384,8 +384,52 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 		"editionIDInt": editionIDInt,
 	})
 
-	// Check if we already have a user book ID for this edition
-	logCtx.Debug("Checking for existing user book ID", map[string]interface{}{
+	// Get the edition details to find the book ID first
+	edition, err := s.hardcover.GetEdition(ctx, editionID)
+	if err != nil {
+		logCtx.Error("Failed to get edition details", map[string]interface{}{
+			"error":     err.Error(),
+			"editionID": editionID,
+		})
+		return 0, fmt.Errorf("failed to get edition details: %w", err)
+	}
+	
+	// Parse book ID
+	bookID, err := strconv.ParseInt(edition.BookID, 10, 64)
+	if err != nil {
+		logCtx.Error("Invalid book ID format", map[string]interface{}{
+			"error":   err.Error(),
+			"book_id": edition.BookID,
+		})
+		return 0, fmt.Errorf("invalid book ID format: %w", err)
+	}
+	
+	// FIRST: Check if there's already a user book for this book (any edition)
+	// This prevents creating multiple user books for the same book with different editions
+	logCtx.Debug("Checking for existing user book by book ID (any edition)", map[string]interface{}{
+		"book_id": bookID,
+	})
+	
+	existingUserBookID, err := s.findExistingUserBookForBook(ctx, bookID)
+	if err != nil {
+		logCtx.Warn("Failed to check for existing user book by book ID", map[string]interface{}{
+			"error":   err.Error(),
+			"book_id": bookID,
+		})
+		// Continue to edition-specific check if book-only check fails
+	} else if existingUserBookID > 0 {
+		// Found an existing user book for this book (possibly different edition)
+		logCtx.Info("Found existing user book for same book, using it", map[string]interface{}{
+			"book_id":               bookID,
+			"existing_user_book_id": existingUserBookID,
+			"requested_edition_id":  editionID,
+		})
+		return existingUserBookID, nil
+	}
+	
+	// SECOND: If no user book exists for this book at all, check for the specific edition
+	// This is for backward compatibility in case there's a user book with this specific edition
+	logCtx.Debug("No existing user book found for book, checking for specific edition", map[string]interface{}{
 		"editionID":    editionID,
 		"editionIDInt": editionIDInt,
 	})
@@ -400,9 +444,9 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 		return 0, fmt.Errorf("error checking for existing user book ID: %w", err)
 	}
 
-	// If we found an existing user book ID, return it
+	// If we found an existing user book ID for this specific edition, return it
 	if userBookID > 0 {
-		s.log.Info("Found existing user book ID", map[string]interface{}{
+		logCtx.Info("Found existing user book ID for specific edition", map[string]interface{}{
 			"editionID":    editionID,
 			"editionIDInt": editionIDInt,
 			"userBookID":   userBookID,
@@ -447,7 +491,7 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 
 	// If we found an existing user book ID in the second check, return it
 	if userBookID > 0 {
-		s.log.Info("Found existing user book ID in second check", map[string]interface{}{
+		logCtx.Info("Found existing user book ID", map[string]interface{}{
 			"editionID":    editionID,
 			"editionIDInt": editionIDInt,
 			"userBookID":   userBookID,
@@ -490,6 +534,32 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 	return userBookID64, nil
 }
 
+// findExistingUserBookForBook checks if there's already a user book for this book (any edition)
+func (s *Service) findExistingUserBookForBook(ctx context.Context, bookID int64) (int64, error) {
+	// Use the existing GetUserBookID method with edition 0 to check if any user book exists
+	// This is a workaround since we don't have a direct lookup by book ID only
+	// We'll iterate through known editions or use a different approach
+	
+	// For now, let's use the Hardcover client's internal method directly
+	// by type asserting to the concrete type
+	if hcClient, ok := s.hardcover.(*hardcover.Client); ok {
+		userID, err := hcClient.GetCurrentUserID(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("failed to get current user ID: %w", err)
+		}
+		
+		userBookID, err := hcClient.LookupUserBookByBookIDOnly(ctx, int(bookID), int(userID))
+		if err != nil {
+			return 0, fmt.Errorf("failed to lookup user book by book ID: %w", err)
+		}
+		
+		return int64(userBookID), nil
+	}
+	
+	// Fallback: return 0 (no existing user book)
+	return 0, nil
+}
+
 // Sync performs a full synchronization between Audiobookshelf and Hardcover
 func (s *Service) Sync(ctx context.Context) error {
 	// Clear any existing mismatches at the start of each sync cycle
@@ -499,6 +569,9 @@ func (s *Service) Sync(ctx context.Context) error {
 
 	// Clear ASIN cache to ensure fresh lookups for this sync run
 	s.clearASINCache()
+
+	// Clear user book cache to ensure fresh edition-specific lookups
+	s.hardcover.ClearUserBookCache()
 
 	// Reset per-run guard map to avoid cross-run interference
 	s.createdReadsMutex.Lock()
@@ -897,8 +970,16 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		// Calculate current progress and status
 		currentProgress := 0.0
 		if book.Media.Duration > 0 { // Ensure duration is not zero to avoid division by zero
-			currentProgress = book.Progress.CurrentTime / book.Media.Duration
+			// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
+			// because Audiobookshelf sometimes reports CurrentTime as 0 for finished books
+			if book.Progress.IsFinished {
+				currentProgress = 1.0
+			} else {
+				currentProgress = book.Progress.CurrentTime / book.Media.Duration
+			}
 		}
+
+		// Determine current status based on progress
 		currentStatus := s.determineBookStatus(currentProgress, book.Progress.IsFinished, book.Progress.FinishedAt)
 
 		// Create preliminary state key (we'll update it with edition ID later if found)
@@ -971,7 +1052,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			}
 
 			// Add Hardcover book details if available
-			if foundByTitleAuthor && hcBook != nil {
+			if foundByTitleAuthor {
 				// Hydrate Hardcover book with full details (including slug) before recording mismatch
 				if hcBook.ID != "" {
 					if enriched, err := s.hardcover.GetBookByID(ctx, hcBook.ID); err == nil && enriched != nil {
@@ -1139,8 +1220,14 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	if s.config.Sync.Incremental {
 		// Calculate current progress
 		currentProgress := 0.0
-		if book.Media.Duration > 0 && book.Progress.CurrentTime > 0 {
-			currentProgress = book.Progress.CurrentTime / book.Media.Duration
+		if book.Media.Duration > 0 {
+			// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
+			// because Audiobookshelf sometimes reports CurrentTime as 0 for finished books
+			if book.Progress.IsFinished {
+				currentProgress = 1.0
+			} else if book.Progress.CurrentTime > 0 {
+				currentProgress = book.Progress.CurrentTime / book.Media.Duration
+			}
 		}
 
 		// Get the last sync state for this book using the composite key
@@ -1286,19 +1373,16 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		}
 	}
 
-	// Skip books that haven't been started unless ProcessUnreadBooks is true
-	if book.Progress.CurrentTime <= 0 && !s.config.Sync.ProcessUnreadBooks {
-		bookLog.Debug("Skipping unstarted book (ProcessUnreadBooks is false)", map[string]interface{}{
-			"current_time": book.Progress.CurrentTime,
-		})
-		bookProcessed = true // Count as processed since we made a decision to skip
-		return nil
-	}
-
 	// Calculate progress percentage based on current time and total duration
 	var progress float64
-	if book.Media.Duration > 0 && book.Progress.CurrentTime > 0 {
-		progress = book.Progress.CurrentTime / book.Media.Duration
+	if book.Media.Duration > 0 {
+		// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
+		// because Audiobookshelf sometimes reports CurrentTime as 0 for finished books
+		if book.Progress.IsFinished {
+			progress = 1.0
+		} else {
+			progress = book.Progress.CurrentTime / book.Media.Duration
+		}
 	}
 
 	// Update logger with progress information
@@ -1311,6 +1395,24 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	})
 
 	bookLog.Debug("Calculated book progress", nil)
+
+	// Skip books that haven't been started unless ProcessUnreadBooks is true
+	// This check is done after progress enhancement to ensure we have accurate progress data
+	bookLog.Debug("Checking ProcessUnreadBooks setting", map[string]interface{}{
+		"current_time":          book.Progress.CurrentTime,
+		"process_unread_books":  s.config.Sync.ProcessUnreadBooks,
+		"book_id":               book.ID,
+		"title":                 book.Media.Metadata.Title,
+	})
+	
+	// Don't skip finished books even if CurrentTime is 0 (they have progress=1.0)
+	if book.Progress.CurrentTime <= 0 && !s.config.Sync.ProcessUnreadBooks && !book.Progress.IsFinished {
+		bookLog.Debug("Skipping unstarted book (ProcessUnreadBooks is false)", map[string]interface{}{
+			"current_time": book.Progress.CurrentTime,
+		})
+		bookProcessed = true // Count as processed since we made a decision to skip
+		return nil
+	}
 
 	// Skip books below minimum progress threshold
 	if progress < s.config.Sync.MinimumProgress && progress > 0 {
@@ -1673,6 +1775,47 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		bookProcessed = true
 		return nil
 
+	case "WANT_TO_READ":
+		// Handle want to read books - update status to WANT_TO_READ (StatusID 1)
+		bookLog.Info("Processing want to read book", map[string]interface{}{
+			"status": status,
+		})
+
+		// Only update if SyncWantToRead is enabled
+		if !s.config.Sync.SyncWantToRead {
+			bookLog.Info("Skipping want to read book - SyncWantToRead is disabled", nil)
+			bookProcessed = true
+			return nil
+		}
+
+		// Update the book status to WANT_TO_READ in Hardcover
+		err := s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
+			ID:       userBookID,
+			StatusID: 1, // 1 = WANT_TO_READ
+		})
+		if err != nil {
+			bookLog.Error("Failed to update book status to WANT_TO_READ", map[string]interface{}{
+				"error": err,
+			})
+			return fmt.Errorf("error updating book status: %w", err)
+		}
+
+		// Update state with current progress and status
+		progressPct := 0.0
+		if book.Media.Duration > 0 {
+			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
+		}
+		if updated := s.state.UpdateBook(stateKey, progressPct, "WANT_TO_READ"); updated {
+			bookLog.Debug("Updated book state to WANT_TO_READ", map[string]interface{}{
+				"progress":  progressPct,
+				"state_key": stateKey,
+			})
+		}
+
+		bookProcessed = true
+		bookLog.Info("Successfully processed want to read book")
+		return nil
+
 	default:
 		// For any other status, we still consider it processed successfully
 		bookProcessed = true
@@ -1737,6 +1880,8 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 				"progress":  progressPct,
 			})
 		}
+		// Also update with user book ID for tracking shared books
+		s.state.UpdateBookWithUserBookID(stateKey, progressPct, "FINISHED", strconv.FormatInt(userBookID, 10))
 	}()
 
 	// First, check the current status of the book and update to FINISHED if needed
@@ -1774,6 +1919,16 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 		})
 		// Continue with update even if we couldn't get the current status
 	} else if userBook != nil {
+		// Check if the book is marked as DNF and should be preserved
+		if s.config.Sync.PreserveDNF && s.isBookDNF(userBook) {
+			log.Info("Book is marked as DNF in Hardcover, preserving DNF status and skipping sync", map[string]interface{}{
+				"user_book_id":   userBookID,
+				"book_status_id": userBook.BookStatusID,
+				"title":          book.Media.Metadata.Title,
+			})
+			return nil
+		}
+
 		// Check if the book is already marked as FINISHED (status ID 3)
 		log.Debug("Current book status", map[string]interface{}{
 			"book_status_id": userBook.BookStatusID,
@@ -2058,9 +2213,6 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 			progressSeconds = &seconds
 		}
 
-		// Convert editionID to int64
-		editionIDInt, _ := strconv.ParseInt(editionID, 10, 64)
-
 		// Set progress to 100% when creating a new finished read
 		// We'll use progress_seconds to set the progress
 		var finalProgressSeconds int
@@ -2081,7 +2233,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 				FinishedAt:      &finishedAt,
 				StartedAt:       &startedAt,
 				ProgressSeconds: &finalProgressSeconds, // This will effectively set progress to 100%
-				EditionID:       &editionIDInt,
+				// EditionID removed to prevent edition switching - the read is already linked to the user book
 			},
 		})
 
@@ -2160,6 +2312,16 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		errCtx["error"] = err.Error()
 		s.log.With(errCtx).Error("Failed to get current book status from Hardcover", nil)
 		return fmt.Errorf("failed to get current book status: %w", err)
+	}
+
+	// Check if the book is marked as DNF in Hardcover
+	if s.config.Sync.PreserveDNF && s.isBookDNF(hcBook) {
+		log.Info("Book is marked as DNF in Hardcover, preserving DNF status and skipping sync", map[string]interface{}{
+			"user_book_id":   userBookID,
+			"book_status_id": hcBook.BookStatusID,
+			"title":          book.Media.Metadata.Title,
+		})
+		return nil
 	}
 
 	// Get the current read status to check progress - only get unfinished reads
@@ -2602,8 +2764,18 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		"reading_format_id": 2, // 2 = Audiobook format
 	}
 
-	// Format dates as YYYY-MM-DD strings
-	if book.Progress.StartedAt > 0 {
+	// For started_at, we need to be careful:
+	// - If this is an existing read that's being updated, preserve the existing started_at
+	// - Only set started_at if we're creating a new read or if the existing one doesn't have it
+	if readStatusToUpdate != nil && readStatusToUpdate.StartedAt != nil && *readStatusToUpdate.StartedAt != "" {
+		// Preserve the existing started_at from Hardcover
+		// This prevents overwriting manually corrected dates
+		updateObj["started_at"] = *readStatusToUpdate.StartedAt
+		log.Debug("Preserving existing started_at from Hardcover", map[string]interface{}{
+			"existing_started_at": *readStatusToUpdate.StartedAt,
+		})
+	} else if book.Progress.StartedAt > 0 {
+		// Only use ABS started_at for new reads or if no started_at exists
 		startedAt := time.Unix(book.Progress.StartedAt/1000, 0).Format("2006-01-02")
 		updateObj["started_at"] = startedAt
 	}
@@ -2682,16 +2854,8 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			log.Info(fmt.Sprintf("Updating existing read status - progress difference (%s) >= min threshold (%.2f)", pDiff, mDiff), logCtx)
 		}
 
-		// Include edition_id if available
-		if readStatusToUpdate.EditionID != nil {
-			updateObj["edition_id"] = *readStatusToUpdate.EditionID
-		} else if hcBook != nil && hcBook.EditionID != "" {
-			// Convert string edition ID to int if needed
-			editionID, err := strconv.Atoi(hcBook.EditionID)
-			if err == nil && editionID != 0 {
-				updateObj["edition_id"] = editionID
-			}
-		}
+		// EditionID removed from update to prevent edition switching
+		// The read is already linked to the user book, we shouldn't change its edition
 
 		// Update the read with the current progress
 		updateInput := hardcover.UpdateUserBookReadInput{
@@ -2759,15 +2923,31 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			ProgressSeconds: &progressSeconds,
 		}
 
-		// Add dates if available
-		if book.Progress.StartedAt > 0 {
-			startedAt := time.Unix(book.Progress.StartedAt/1000, 0).Format("2006-01-02")
-			createObj.StartedAt = &startedAt
-		}
-
-		if book.Progress.IsFinished && book.Progress.FinishedAt > 0 {
-			finishedAt := time.Unix(book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
-			createObj.FinishedAt = &finishedAt
+		// For the start date, we need to determine if this is a reread
+		// If we have a mostRecentRead that's finished, this is a reread - use current date
+		// Otherwise, use the date from Audiobookshelf
+		if mostRecentRead != nil && mostRecentRead.FinishedAt != nil && *mostRecentRead.FinishedAt != "" {
+			// This is a reread - use today's date as the start date
+			today := time.Now().Format("2006-01-02")
+			createObj.StartedAt = &today
+			log.Info("Creating new read status for reread - using current date as start date", map[string]interface{}{
+				"original_read_id":   mostRecentRead.ID,
+				"original_started":   mostRecentRead.StartedAt,
+				"new_started_at":     today,
+			})
+			// For rereads, don't set finished_at even if the book is marked as finished in ABS
+			// The finished_at should be set only when the user actually finishes this reading session
+		} else {
+			// This is a first read - use the date from Audiobookshelf
+			if book.Progress.StartedAt > 0 {
+				startedAt := time.Unix(book.Progress.StartedAt/1000, 0).Format("2006-01-02")
+				createObj.StartedAt = &startedAt
+			}
+			// Only set finished_at for first reads, not for rereads
+			if book.Progress.IsFinished && book.Progress.FinishedAt > 0 {
+				finishedAt := time.Unix(book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
+				createObj.FinishedAt = &finishedAt
+			}
 		}
 
 		// Get the edition ID from the user book
@@ -2869,23 +3049,8 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			log.Debug("Second-chance read fetch skipped due to error", map[string]interface{}{"error": scErr.Error()})
 		}
 
-		// Try to set edition ID from stateKey (format: bookID:editionID) first
-		parts := strings.Split(stateKey, ":")
-		if len(parts) == 2 {
-			if eid, err := strconv.Atoi(parts[1]); err == nil && eid != 0 {
-				eid64 := int64(eid)
-				createObj.EditionID = &eid64
-			}
-		}
-
-		// If not set from stateKey, fall back to Hardcover user book's edition ID if available
-		if createObj.EditionID == nil && hcBook.EditionID != "" {
-			// Convert string edition ID to int if needed
-			if eid, err := strconv.Atoi(hcBook.EditionID); err == nil && eid != 0 {
-				eid64 := int64(eid) // Convert to int64 to match expected type
-				createObj.EditionID = &eid64
-			}
-		}
+		// EditionID removed to prevent edition switching - the read is already linked to the user book
+		// The user book determines the edition, not individual read records
 
 		// Per-run guard to avoid duplicate inserts for the same userBookID
 		s.createdReadsMutex.Lock()
@@ -2950,6 +3115,15 @@ func (s *Service) determineBookStatus(progress float64, isFinished bool, finishe
 	return ""
 }
 
+// isBookDNF checks if the book is marked as DNF (Did Not Finish) in Hardcover
+func (s *Service) isBookDNF(userBook *models.HardcoverBook) bool {
+	if userBook == nil {
+		return false
+	}
+	// DNF status ID is 5 according to Hardcover API documentation
+	return userBook.BookStatusID == 5
+}
+
 // processFoundBook handles the common logic for processing a found book
 func (s *Service) processFoundBook(ctx context.Context, hcBook *models.HardcoverBook, book models.AudiobookshelfBook) (*models.HardcoverBook, error) {
 	if hcBook == nil {
@@ -2962,16 +3136,14 @@ func (s *Service) processFoundBook(ctx context.Context, hcBook *models.Hardcover
 	}
 
 	// Add book-specific fields if available
-	if hcBook != nil {
-		logCtx["book_id"] = hcBook.ID
-		if hcBook.EditionID != "" {
-			logCtx["edition_id"] = hcBook.EditionID
-		}
+	logCtx["book_id"] = hcBook.ID
+	if hcBook.EditionID != "" {
+		logCtx["edition_id"] = hcBook.EditionID
 	}
 	log := s.log.With(logCtx)
 
 	// Mark book as owned if sync_owned is enabled
-	if s.config.Sync.SyncOwned && hcBook != nil && hcBook.EditionID != "" && hcBook.EditionID != "0" {
+	if s.config.Sync.SyncOwned && hcBook.EditionID != "" && hcBook.EditionID != "0" {
 		editionID, err := strconv.Atoi(hcBook.EditionID)
 		if err != nil {
 			log.Warn("Invalid edition ID format for marking as owned", map[string]interface{}{
@@ -3053,7 +3225,13 @@ func (s *Service) processFoundBook(ctx context.Context, hcBook *models.Hardcover
 	isFinished := book.Progress.IsFinished
 	finishedAt := book.Progress.FinishedAt
 	if book.Media.Duration > 0 {
-		progress = book.Progress.CurrentTime / book.Media.Duration
+		// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
+		// because Audiobookshelf sometimes reports CurrentTime as 0 for finished books
+		if isFinished {
+			progress = 1.0
+		} else {
+			progress = book.Progress.CurrentTime / book.Media.Duration
+		}
 	}
 
 	// Determine the status based on progress and isFinished flag
@@ -3423,7 +3601,13 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 				isFinished := book.Progress.IsFinished
 				finishedAt := book.Progress.FinishedAt
 				if book.Media.Duration > 0 {
-					progress = book.Progress.CurrentTime / book.Media.Duration
+					// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
+					// because Audiobookshelf sometimes reports CurrentTime as 0 for finished books
+					if isFinished {
+						progress = 1.0
+					} else {
+						progress = book.Progress.CurrentTime / book.Media.Duration
+					}
 				}
 
 				// Determine the status based on progress and isFinished flag
@@ -3454,7 +3638,7 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 		if err != nil {
 			// Check if this is a BookError with a book ID
 			var bookErr *hardcover.BookError
-			if err != nil && errors.As(err, &bookErr) && bookErr.BookID != "" {
+			if errors.As(err, &bookErr) && bookErr.BookID != "" {
 				log.Info("Found book ID in BookError", map[string]interface{}{
 					"book_id": bookErr.BookID,
 					"error":   bookErr.Error(),
@@ -3485,7 +3669,13 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 			isFinished := book.Progress.IsFinished
 			finishedAt := book.Progress.FinishedAt
 			if book.Media.Duration > 0 {
-				progress = book.Progress.CurrentTime / book.Media.Duration
+				// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
+				// because Audiobookshelf sometimes reports CurrentTime as 0 for finished books
+				if isFinished {
+					progress = 1.0
+				} else {
+					progress = book.Progress.CurrentTime / book.Media.Duration
+				}
 			}
 
 			// Determine the status based on progress and isFinished flag
@@ -3519,7 +3709,7 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 		if err != nil {
 			// Check if this is a BookError with a book ID
 			var bookErr *hardcover.BookError
-			if err != nil && errors.As(err, &bookErr) {
+			if errors.As(err, &bookErr) {
 				log.Info("Found book ID in BookError from ISBN-13 search", map[string]interface{}{
 					"book_id": bookErr.BookID,
 					"error":   bookErr.Error(),
@@ -3539,7 +3729,7 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 		if err != nil {
 			// Check if this is a BookError with a book ID
 			var bookErr *hardcover.BookError
-			if err != nil && errors.As(err, &bookErr) && bookErr.BookID != "" {
+			if errors.As(err, &bookErr) && bookErr.BookID != "" {
 				log.Info("Found book ID in BookError from ISBN-10 search", map[string]interface{}{
 					"book_id": bookErr.BookID,
 					"error":   bookErr.Error(),

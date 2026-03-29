@@ -126,6 +126,10 @@ func (m *MockHardcoverClient) GetUserBookID(ctx context.Context, editionID int) 
 	return 0, nil
 }
 
+func (m *MockHardcoverClient) ClearUserBookCache() {
+	// Mock implementation - does nothing
+}
+
 func (m *MockHardcoverClient) GetUserBook(ctx context.Context, userBookID string) (*models.HardcoverBook, error) {
 	args := m.Called(ctx, userBookID)
 	if args.Get(0) == nil {
@@ -292,7 +296,7 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 				Title:         "Test Book",
 				AuthorIDs:     []int{}, // Empty slice when no authors found
 				AudioSeconds:  19800,
-				EditionFormat: "Audible Audio", // Updated to match new default
+				EditionFormat: "", // Empty for generic audiobooks (no ASIN)
 				EditionInfo:   "Unabridged",    // Updated to match new default
 				LanguageID:    1,               // Default values
 				CountryID:     1,               // Default values
@@ -356,7 +360,7 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 				PublisherID:   2,
 				ReleaseDate:   "2020-01-01",
 				AudioSeconds:  37800,
-				EditionFormat: "Audible Audio",   // Updated to match new default
+				EditionFormat: "Audible Audio",   // ASIN indicates Audible/Amazon purchase
 				EditionInfo:   "Special Edition", // Updated to remove the period at the end
 				LanguageID:    1,
 				CountryID:     1,

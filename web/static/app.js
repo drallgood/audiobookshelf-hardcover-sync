@@ -33,6 +33,7 @@ class SyncProfileApp {
         this.currentUser = null;
         this.authEnabled = false;
         this.hasRedirectedToLogin = false;
+        this.autoRefreshEnabled = true; // Auto-refresh is enabled by default
         
         this.init();
     }
@@ -2167,7 +2168,7 @@ class SyncProfileApp {
     startAutoRefresh() {
         // Refresh statuses every 5 seconds
         this.refreshInterval = setInterval(() => {
-            if (document.getElementById('sync-tab').classList.contains('active')) {
+            if (this.autoRefreshEnabled && document.getElementById('sync-tab').classList.contains('active')) {
                 this.loadStatuses();
             }
         }, 5000);
@@ -2177,6 +2178,22 @@ class SyncProfileApp {
         if (this.refreshInterval) {
             clearInterval(this.refreshInterval);
             this.refreshInterval = null;
+        }
+    }
+
+    toggleAutoRefresh() {
+        this.autoRefreshEnabled = !this.autoRefreshEnabled;
+        const button = document.getElementById('auto-refresh-toggle');
+        if (button) {
+            if (this.autoRefreshEnabled) {
+                button.textContent = '⏸️ Pause Auto-Refresh';
+                button.classList.remove('btn-warning');
+                button.classList.add('btn-secondary');
+            } else {
+                button.textContent = '▶️ Resume Auto-Refresh';
+                button.classList.remove('btn-secondary');
+                button.classList.add('btn-warning');
+            }
         }
     }
 
@@ -2246,6 +2263,10 @@ function refreshUsers() {
 
 function refreshStatus() {
     app.loadStatuses();
+}
+
+function toggleAutoRefresh() {
+    app.toggleAutoRefresh();
 }
 
 function togglePassword(inputId) {

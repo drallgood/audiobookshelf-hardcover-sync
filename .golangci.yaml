@@ -1,0 +1,16 @@
+run:
+  timeout: 5m
+  go: '1.26'
+
+linters:
+  enable:
+    - errcheck
+    - staticcheck
+    - unused
+    - gosimple
+    - ineffassign
+    - typecheck
+    - govet
+    - misspell
+    - nakedret
+    - copyloopvar

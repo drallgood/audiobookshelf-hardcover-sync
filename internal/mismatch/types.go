@@ -68,29 +68,26 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 		"title":             b.Title,
 	})
 
-	// Set edition format based on publisher if possible
+	// Set edition format based on purchase source (ASIN indicates Audible/Amazon) and publisher
 	editionFormat := b.EditionFormat
 	if editionFormat == "" || editionFormat == "Audiobook" {
-		// Try to determine a more specific format based on publisher
-		if b.Publisher != "" {
+		// Primary check: ASIN indicates Audible/Amazon purchase
+		if b.ASIN != "" {
+			editionFormat = "Audible Audio"
+		} else if b.Publisher != "" {
+			// Secondary check: use publisher as a hint for specific platforms
 			publisher := strings.ToLower(b.Publisher)
 
 			switch {
-			case strings.Contains(publisher, "audible") ||
-				strings.Contains(publisher, "brilliance") ||
-				strings.Contains(publisher, "amazon"):
-				editionFormat = "Audible Audio"
 			case strings.Contains(publisher, "libro"):
 				editionFormat = "libro.fm"
-			case strings.Contains(publisher, "audiobook"):
-				editionFormat = "Audiobook"
 			default:
-				// If we can't determine, use "Audible Audio" as default for audiobooks
-				editionFormat = "Audible Audio"
+				// Leave empty for generic audiobooks since the type is already "audiobook"
+				editionFormat = ""
 			}
 		} else {
-			// Default to Audible Audio if no publisher info
-			editionFormat = "Audible Audio"
+			// Leave empty when no specific platform is identified
+			editionFormat = ""
 		}
 	}
 

@@ -2311,6 +2311,7 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 				isbn_13
 				asin
 				release_date
+				reading_format_id
 			}
 		}`
 
@@ -2319,13 +2320,14 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 	// should match what's inside the data field
 	var response struct {
 		Editions []struct {
-			ID          int     `json:"id"`
-			BookID      int     `json:"book_id"`
-			Title       *string `json:"title"`
-			ISBN10      *string `json:"isbn_10"`
-			ISBN13      *string `json:"isbn_13"`
-			ASIN        *string `json:"asin"`
-			ReleaseDate *string `json:"release_date"`
+			ID             int     `json:"id"`
+			BookID         int     `json:"book_id"`
+			Title          *string `json:"title"`
+			ISBN10         *string `json:"isbn_10"`
+			ISBN13         *string `json:"isbn_13"`
+			ASIN           *string `json:"asin"`
+			ReleaseDate    *string `json:"release_date"`
+			ReadingFormatID *int    `json:"reading_format_id"`
 		} `json:"editions"`
 	}
 
@@ -2363,13 +2365,14 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 
 	// Log the raw edition data for debugging
 	log.Debug("Retrieved edition details", map[string]interface{}{
-		"id":           edition.ID,
-		"book_id":      edition.BookID,
-		"title":        safeString(edition.Title),
-		"isbn_10":      safeString(edition.ISBN10),
-		"isbn_13":      safeString(edition.ISBN13),
-		"asin":         safeString(edition.ASIN),
-		"release_date": safeString(edition.ReleaseDate),
+		"id":               edition.ID,
+		"book_id":          edition.BookID,
+		"title":            safeString(edition.Title),
+		"isbn_10":          safeString(edition.ISBN10),
+		"isbn_13":          safeString(edition.ISBN13),
+		"asin":             safeString(edition.ASIN),
+		"release_date":     safeString(edition.ReleaseDate),
+		"reading_format_id": edition.ReadingFormatID,
 	})
 
 	// Create the edition model
@@ -2393,6 +2396,9 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 	}
 	if edition.ReleaseDate != nil {
 		editionModel.ReleaseDate = *edition.ReleaseDate
+	}
+	if edition.ReadingFormatID != nil {
+		editionModel.ReadingFormatID = strconv.Itoa(*edition.ReadingFormatID)
 	}
 
 	log.Debug("Retrieved edition details", map[string]interface{}{
@@ -2751,15 +2757,16 @@ func (c *Client) GetUserBookID(ctx context.Context, editionID int) (int, error) 
 		return 0, fmt.Errorf("invalid book ID format: %w", err)
 	}
 
-	// First try to find by book ID (preferred method)
-	userBookID, err := c.lookupUserBookByBookID(ctx, bookID, userID)
+	// First try to find by book ID AND edition ID (preferred method)
+	userBookID, err := c.lookupUserBookByBookID(ctx, bookID, editionID, userID)
 	if err != nil {
-		log.Warn("Failed to lookup user book by book ID", map[string]interface{}{
+		log.Warn("Failed to lookup user book by book ID and edition ID", map[string]interface{}{
 			"bookID": bookID,
+			"editionID": editionID,
 			"userID": userID,
 			"error":  err.Error(),
 		})
-		return 0, fmt.Errorf("failed to lookup user book by book ID: %w", err)
+		return 0, fmt.Errorf("failed to lookup user book by book ID and edition ID: %w", err)
 	}
 
 	// If not found by book ID, fall back to edition ID (for backward compatibility)
@@ -2781,8 +2788,9 @@ func (c *Client) GetUserBookID(ctx context.Context, editionID int) (int, error) 
 			})
 		}
 	} else {
-		log.Debug("Found user book by book ID", map[string]interface{}{
+		log.Debug("Found user book by book ID and edition ID", map[string]interface{}{
 			"bookID":     bookID,
+			"editionID":  editionID,
 			"userBookID": userBookID,
 		})
 	}
@@ -2795,17 +2803,17 @@ func (c *Client) GetUserBookID(ctx context.Context, editionID int) (int, error) 
 	return userBookID, nil
 }
 
-// lookupUserBookByBookID performs a single lookup of a user book by book ID
-func (c *Client) lookupUserBookByBookID(ctx context.Context, bookID, userID int) (int, error) {
+// LookupUserBookByBookIDOnly performs a lookup of a user book by book ID only (ignoring edition)
+func (c *Client) LookupUserBookByBookIDOnly(ctx context.Context, bookID, userID int) (int, error) {
 	log := c.logger.With(map[string]interface{}{
 		"bookID": bookID,
 		"userID": userID,
-		"method": "lookupUserBookByBookID",
+		"method": "lookupUserBookByBookIDOnly",
 	})
 
-	// Define the GraphQL query
+	// Define the GraphQL query - look for user book with just book_id
 	const query = `
-	query GetUserBookByBook($bookId: Int!, $userId: Int!) {
+	query GetUserBookByBookOnly($bookId: Int!, $userId: Int!) {
 	  user_books(
 		where: {
 		  book_id: {_eq: $bookId},
@@ -2815,14 +2823,16 @@ func (c *Client) lookupUserBookByBookID(ctx context.Context, bookID, userID int)
 	  ) {
 		id
 		book_id
+		edition_id
 	  }
 	}`
 
 	// Define the response structure
 	var response struct {
 		UserBooks []struct {
-			ID     int `json:"id"`
-			BookID int `json:"book_id"`
+			ID        int `json:"id"`
+			BookID    int `json:"book_id"`
+			EditionID int `json:"edition_id"`
 		} `json:"user_books"`
 	}
 
@@ -2833,7 +2843,7 @@ func (c *Client) lookupUserBookByBookID(ctx context.Context, bookID, userID int)
 	}, &response)
 
 	if err != nil {
-		errMsg := fmt.Sprintf("failed to query user books by book ID: %v", err)
+		errMsg := fmt.Sprintf("failed to query user books by book ID only: %v", err)
 		log.Error(errMsg, map[string]interface{}{
 			"error":  err.Error(),
 			"bookID": bookID,
@@ -2843,7 +2853,7 @@ func (c *Client) lookupUserBookByBookID(ctx context.Context, bookID, userID int)
 	}
 
 	// Log the response
-	log.Debug("User book lookup by book ID response", map[string]interface{}{
+	log.Debug("User book lookup by book ID only response", map[string]interface{}{
 		"bookID":      bookID,
 		"userID":      userID,
 		"resultCount": len(response.UserBooks),
@@ -2856,9 +2866,93 @@ func (c *Client) lookupUserBookByBookID(ctx context.Context, bookID, userID int)
 	userBook := response.UserBooks[0]
 	userBookID := userBook.ID
 
-	log.Debug("Found user book by book ID", map[string]interface{}{
+	log.Debug("Found user book by book ID only", map[string]interface{}{
 		"userBookID": userBookID,
 		"bookID":     userBook.BookID,
+		"editionID":  userBook.EditionID,
+	})
+
+	return userBookID, nil
+}
+
+// ClearUserBookCache clears the user book ID cache
+func (c *Client) ClearUserBookCache() {
+	c.userBookIDCache.Clear()
+	c.logger.Debug("Cleared user book ID cache", nil)
+}
+
+// lookupUserBookByBookID performs a single lookup of a user book by book ID and edition ID
+func (c *Client) lookupUserBookByBookID(ctx context.Context, bookID, editionID, userID int) (int, error) {
+	log := c.logger.With(map[string]interface{}{
+		"bookID": bookID,
+		"editionID": editionID,
+		"userID": userID,
+		"method": "lookupUserBookByBookID",
+	})
+
+	// Define the GraphQL query - look for user book with both book_id and edition_id
+	const query = `
+	query GetUserBookByBook($bookId: Int!, $editionId: Int!, $userId: Int!) {
+	  user_books(
+		where: {
+		  book_id: {_eq: $bookId},
+		  edition_id: {_eq: $editionId},
+		  user_id: {_eq: $userId}
+		}, 
+		limit: 1
+	  ) {
+		id
+		book_id
+		edition_id
+	  }
+	}`
+
+	// Define the response structure
+	var response struct {
+		UserBooks []struct {
+			ID        int `json:"id"`
+			BookID    int `json:"book_id"`
+			EditionID int `json:"edition_id"`
+		} `json:"user_books"`
+	}
+
+	// Execute the query
+	err := c.GraphQLQuery(ctx, query, map[string]interface{}{
+		"bookId":    bookID,
+		"editionId": editionID,
+		"userId":    userID,
+	}, &response)
+
+	if err != nil {
+		errMsg := fmt.Sprintf("failed to query user books by book ID and edition ID: %v", err)
+		log.Error(errMsg, map[string]interface{}{
+			"error":     err.Error(),
+			"bookID":    bookID,
+			"editionID": editionID,
+			"userID":    userID,
+		})
+		return 0, errors.New(errMsg)
+	}
+
+	// Log the response
+	log.Debug("User book lookup by book ID and edition ID response", map[string]interface{}{
+		"bookID":      bookID,
+		"editionID":   editionID,
+		"userID":      userID,
+		"resultCount": len(response.UserBooks),
+	})
+
+	if len(response.UserBooks) == 0 {
+		return 0, nil
+	}
+
+	userBook := response.UserBooks[0]
+	userBookID := userBook.ID
+
+	log.Debug("Found user book by book ID and edition ID", map[string]interface{}{
+		"userBookID": userBookID,
+		"bookID":     userBook.BookID,
+		"editionID":  userBook.EditionID,
 	})
 
 	return userBookID, nil

@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **DNF Status Preservation**: New option to preserve books marked as "Did Not Finish" in Hardcover (#88)
+  - Added `preserve_dnf` configuration option (default: true)
+  - When enabled, sync will skip books with DNF status to prevent accidental overrides
+  - Environment variable: `SYNC_PRESERVE_DNF`
+  - Users can now mark books as DNF in Hardcover without losing the status during sync
+- **WebUI Auto-Refresh Toggle**: Pause/Resume button for sync status auto-refresh (#111)
+  - Allows users to pause the 5-second auto-refresh to review sync logs without interruption
+  - Toggle button added to Sync Status tab
+
+### Fixed
+- **OAuth State Parameter Security**: Fixed insufficient entropy in OAuth2 state parameter (#112)
+  - State now uses 32 cryptographically random bytes (44 chars base64-encoded) instead of URL-encoded redirect path
+  - Provides proper CSRF protection per RFC 6749 §10.12
+  - Compatible with Authelia and other OIDC providers requiring ≥8 character state
+  - Added 10-minute TTL with automatic cleanup to prevent memory exhaustion
+- **Verbose API Response Logging**: Reduced raw API response logs from Info to Debug level (#111)
+  - Raw response logs now only appear when `LOG_LEVEL=debug`
+  - Prevents log spam in normal operation
+- **Process Unread Books**: Fixed `process_unread_books` setting not being respected in both single-user and multi-user modes (#90)
+  - Single-user: Updated config.example.yaml to show correct default value (true)
+  - Multi-user: Added missing field assignments in sync config application
+  - API: Fixed validation that incorrectly rejected updates when setting to false
+  - Migration: Added missing ProcessUnreadBooks field when migrating from single-user config
+- **Incremental Sync**: Fixed incremental sync not working correctly in multi-user mode (#90)
+  - State file paths are now profile-specific to avoid conflicts between users
+  - Each user now has their own sync state file: `./data/sync_state.{profileID}.json`
+- **Finished Book Sync Loop**: Fixed infinite sync loop for finished books that reported 0% progress in Audiobookshelf
+  - Books marked as finished (`IsFinished=true` with valid `FinishedAt`) are now treated as 100% progress regardless of `CurrentTime`
+  - Prevents finished books from flipping between "Finished Reading" and "Wants to Read" statuses
+  - Applied fix to all sync decision paths: early filtering, incremental sync, and batch processing
+- **ProcessUnreadBooks Regression**: Fixed regression where finished books with `CurrentTime=0` were incorrectly skipped
+  - Added `!book.Progress.IsFinished` condition to ProcessUnreadBooks check
+  - Ensures finished books are processed even when they report 0% current time
+- **Finished Book Progress Override**: Removed `FinishedAt > 0` condition from progress calculation
+  - Some finished books have `FinishedAt = 0` but `IsFinished = true`
+  - Now all books marked as finished are treated as 100% progress regardless of FinishedAt value
+  - Fixes incremental sync incorrectly flagging finished books as needing updates
+- **Shared User Book Tracking**: Added UserBookID field to sync state to handle shared books
+  - Multiple Audiobookshelf books can map to different editions of the same Hardcover book
+  - Each ABS book maintains its own sync state while sharing the same user book ID
+  - Fixes infinite sync loop when different ASINs map to the same Hardcover book
+- **Edition Change Prevention**: Prevent edition updates when user book already exists
+  - Before creating a new user book, check if one already exists for the book (any edition)
+  - Reuse existing user book instead of updating edition to prevent continuous changes
+  - Ensures sync stability when multiple ABS books map to different HC editions
+- **Edition Format Detection**: Edition format logic updated to be more precise:
+  - "Audible Audio" format is only applied when the book was purchased from Audible/Amazon (detected by presence of ASIN)
+  - "libro.fm" format is applied for libro.fm publishers
+  - Generic audiobooks now leave the format field empty (since the type is already "audiobook")
+  - Previously, generic audiobooks incorrectly defaulted to "Audiobook" format
+
 ## [v3.2.0] - 2025-12-17
 
 ### Fixed

@@ -522,6 +522,7 @@ sync:
   sync_owned: true        # Mark synced books as owned in Hardcover
   include_ebooks: false    # Include items with media type "ebook" in sync
   process_unread_books: false  # Process books with 0% progress for mismatches and want-to-read status
+  preserve_dnf: true      # Preserve books marked as "Did Not Finish" in Hardcover
   mismatch_output_dir: "./mismatches"  # Directory to store mismatch JSON files
   dry_run: false           # Enable dry run mode (no changes will be made)
   test_book_filter: ""    # Filter books by title for testing

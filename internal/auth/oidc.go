@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
-	"golang.org/x/oauth2"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"golang.org/x/oauth2"
 )
 
 // OIDCProvider implements OpenID Connect authentication using coreos/go-oidc
@@ -33,12 +33,20 @@ type OIDCProvider struct {
 	verifier     *oidc.IDTokenVerifier
 	oauth2Config *oauth2.Config
 	
-	// PKCE state storage (in production, use Redis or database)
-	pkceStates   map[string]string // state -> code_verifier
-	statesMutex  sync.RWMutex
-	
+	// State storage for OAuth flow (in production, use Redis or database)
+	// Stores both PKCE verifier and redirect URL for each state
+	stateData    map[string]*oauthStateData // state -> state data
+	statesMutex   sync.RWMutex
+
 	// Logger for debug information
 	logger       *logger.Logger
+}
+
+// oauthStateData holds all data associated with an OAuth state parameter
+type oauthStateData struct {
+	codeVerifier string
+	redirectURL  string
+	createdAt    time.Time
 }
 
 // OIDCClaims represents claims from OIDC ID token
@@ -166,7 +174,7 @@ func NewOIDCProvider(name string, config map[string]string, log *logger.Logger) 
 		provider:     provider,
 		verifier:     verifier,
 		oauth2Config: oauth2Config,
-		pkceStates:   make(map[string]string),
+		stateData:   make(map[string]*oauthStateData),
 		logger:       log,
 	}
 	
@@ -205,22 +213,37 @@ func (p *OIDCProvider) Authenticate(ctx context.Context, credentials map[string]
 }
 
 // GetAuthURL generates an OAuth2 authorization URL with PKCE
-func (p *OIDCProvider) GetAuthURL(state string) (string, error) {
+// The state parameter should be a cryptographically random string.
+// The redirectURL is stored server-side keyed by the state.
+func (p *OIDCProvider) GetAuthURL(redirectURL string) (string, error) {
 	if !p.enabled {
 		if p.logger != nil {
 			p.logger.Warn("Attempted to get auth URL from disabled provider", map[string]interface{}{
 				"provider": p.name,
-				"state":    state,
 			})
 		}
 		return "", fmt.Errorf("provider %s is disabled", p.name)
 	}
 
+	// Generate cryptographically random state parameter
+	stateBytes := make([]byte, 32)
+	if _, err := rand.Read(stateBytes); err != nil {
+		if p.logger != nil {
+			p.logger.Error("Failed to generate random state", map[string]interface{}{
+				"provider": p.name,
+				"error":    err.Error(),
+			})
+		}
+		return "", fmt.Errorf("failed to generate state: %w", err)
+	}
+	state := base64.URLEncoding.EncodeToString(stateBytes)
+
 	if p.logger != nil {
 		p.logger.Debug("Generating OAuth2 authorization URL", map[string]interface{}{
-			"provider": p.name,
-			"state":    state,
-			"scopes":   p.scopes,
+			"provider":     p.name,
+			"state_length": len(state),
+			"redirect_url": redirectURL,
+			"scopes":       p.scopes,
 		})
 	}
 
@@ -237,9 +260,15 @@ func (p *OIDCProvider) GetAuthURL(state string) (string, error) {
 		})
 	}
 
-	// Store code verifier for later use in token exchange
+	// Store state data (code verifier + redirect URL) for later use
 	p.statesMutex.Lock()
-	p.pkceStates[state] = codeVerifier
+	p.stateData[state] = &oauthStateData{
+		codeVerifier: codeVerifier,
+		redirectURL:  redirectURL,
+		createdAt:    time.Now(),
+	}
+	// Clean up expired states (older than 10 minutes)
+	p.cleanupExpiredStates()
 	p.statesMutex.Unlock()
 
 	// Generate authorization URL with PKCE
@@ -250,9 +279,9 @@ func (p *OIDCProvider) GetAuthURL(state string) (string, error) {
 
 	if p.logger != nil {
 		p.logger.Info("Generated OAuth2 authorization URL", map[string]interface{}{
-			"provider": p.name,
-			"state":    state,
-			"auth_url": authURL,
+			"provider":     p.name,
+			"state_length": len(state),
+			"auth_url":     authURL,
 		})
 	}
 
@@ -321,9 +350,9 @@ func (p *OIDCProvider) HandleCallback(ctx context.Context, r *http.Request) (*Au
 		})
 	}
 
-	// Get stored code verifier
+	// Get stored state data
 	p.statesMutex.RLock()
-	codeVerifier, exists := p.pkceStates[state]
+	data, exists := p.stateData[state]
 	p.statesMutex.RUnlock()
 
 	if !exists {
@@ -336,6 +365,23 @@ func (p *OIDCProvider) HandleCallback(ctx context.Context, r *http.Request) (*Au
 		return nil, fmt.Errorf("invalid or expired state parameter")
 	}
 
+	// Check if state has expired (10 minute TTL)
+	if time.Since(data.createdAt) > 10*time.Minute {
+		p.statesMutex.Lock()
+		delete(p.stateData, state)
+		p.statesMutex.Unlock()
+		if p.logger != nil {
+			p.logger.Error("State parameter has expired", map[string]interface{}{
+				"provider":   p.name,
+				"state":      state,
+				"age_seconds": time.Since(data.createdAt).Seconds(),
+			})
+		}
+		return nil, fmt.Errorf("state parameter has expired")
+	}
+
+	codeVerifier := data.codeVerifier
+
 	if p.logger != nil {
 		p.logger.Debug("Retrieved PKCE code verifier", map[string]interface{}{
 			"provider":      p.name,
@@ -346,7 +392,7 @@ func (p *OIDCProvider) HandleCallback(ctx context.Context, r *http.Request) (*Au
 
 	// Clean up state
 	p.statesMutex.Lock()
-	delete(p.pkceStates, state)
+	delete(p.stateData, state)
 	p.statesMutex.Unlock()
 
 	// Exchange code for tokens with PKCE
@@ -580,4 +626,34 @@ func generateCodeVerifier() string {
 func generateCodeChallenge(verifier string) string {
 	hash := sha256.Sum256([]byte(verifier))
 	return base64.RawURLEncoding.EncodeToString(hash[:])
+}
+
+// cleanupExpiredStates removes expired state entries (must be called with lock held)
+func (p *OIDCProvider) cleanupExpiredStates() {
+	expiredCount := 0
+	for state, data := range p.stateData {
+		if time.Since(data.createdAt) > 10*time.Minute {
+			delete(p.stateData, state)
+			expiredCount++
+		}
+	}
+	if expiredCount > 0 && p.logger != nil {
+		p.logger.Debug("Cleaned up expired OAuth states", map[string]interface{}{
+			"provider":       p.name,
+			"expired_count": expiredCount,
+		})
+	}
+}
+
+// GetRedirectURL retrieves the redirect URL for a given state
+// This is used by the callback handler to redirect after successful auth
+func (p *OIDCProvider) GetRedirectURL(state string) (string, bool) {
+	p.statesMutex.RLock()
+	defer p.statesMutex.RUnlock()
+	
+	data, exists := p.stateData[state]
+	if !exists {
+		return "", false
+	}
+	return data.redirectURL, true
 }

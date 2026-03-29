@@ -45,6 +45,51 @@ query BookByASIN($asin: String!) {
   }
 ```
 
+## Book by ISBN-13
+
+```graphql
+query BookByISBN13($isbn13: String!) {
+  books(where: {editions: {isbn_13: {_eq: $isbn13}, reading_format: {id: {_eq: 2}}}}, limit: 1) {
+    id
+    title
+    audio_seconds
+    book_status_id
+    canonical_id
+    editions(where: {isbn_13: {_eq: $isbn13}, reading_format: {id: {_eq: 2}}}, limit: 1) {
+      id
+      asin
+      isbn_13: isbn_13
+      isbn_10: isbn_10
+      title
+      edition_format
+      reading_format {
+        id
+      }
+      audio_seconds
+      cached_image(path: "url")
+      publisher {
+        id
+        name
+      }
+      language {
+        id
+        language
+      }
+      image {
+        id
+        url
+      }
+    }
+  }
+}
+```
+
+```json
+  {
+    "isbn13": "9780593457573"
+  }
+```
+
 ## Book by ID
 
 ```graphql

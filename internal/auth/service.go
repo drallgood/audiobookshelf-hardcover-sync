@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"gorm.io/gorm"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"gorm.io/gorm"
 )
 
 // AuthService provides high-level authentication operations
@@ -435,7 +435,7 @@ func (s *AuthService) createOrUpdateUser(ctx context.Context, user *AuthUser) (*
 }
 
 // GetAuthURL gets the authentication URL for a provider
-func (s *AuthService) GetAuthURL(providerName, state string) (string, error) {
+func (s *AuthService) GetAuthURL(providerName, redirectURL string) (string, error) {
 	if !s.enabled {
 		return "", fmt.Errorf("authentication is disabled")
 	}
@@ -445,7 +445,7 @@ func (s *AuthService) GetAuthURL(providerName, state string) (string, error) {
 		return "", fmt.Errorf("provider %s not found", providerName)
 	}
 	
-	return provider.GetAuthURL(state)
+	return provider.GetAuthURL(redirectURL)
 }
 
 // HandleCallback handles OAuth/OIDC callbacks
@@ -467,6 +467,17 @@ func (s *AuthService) HandleCallback(ctx context.Context, providerName string, r
 		}, nil
 	}
 	
+	// Get redirect URL from OIDC provider if applicable
+	var redirectURL string
+	if oidcProvider, ok := provider.(*OIDCProvider); ok {
+		state := r.URL.Query().Get("state")
+		if state != "" {
+			if storedURL, exists := oidcProvider.GetRedirectURL(state); exists {
+				redirectURL = storedURL
+			}
+		}
+	}
+	
 	// Create or update user in database
 	dbUser, err := s.createOrUpdateUser(ctx, user)
 	if err != nil {
@@ -486,9 +497,10 @@ func (s *AuthService) HandleCallback(ctx context.Context, providerName string, r
 	}
 	
 	return &AuthResult{
-		User:    dbUser,
-		Token:   session.Token,
-		Success: true,
+		User:        dbUser,
+		Token:       session.Token,
+		RedirectURL: redirectURL,
+		Success:     true,
 	}, nil
 }
 

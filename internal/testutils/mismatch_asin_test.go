@@ -86,8 +86,14 @@ func TestMismatchASINReferenceIntegration(t *testing.T) {
 				t.Errorf("Audio length mismatch: expected %d, got %d", expectedAudioLength, editionInput.AudioLength)
 			}
 
-			if editionInput.EditionFormat != "Audible Audio" {
-				t.Errorf("Edition format should default to 'Audible Audio', got %s", editionInput.EditionFormat)
+			// Check edition format based on ASIN presence
+			expectedFormat := ""
+			if tt.asin != "" {
+				expectedFormat = "Audible Audio" // ASIN indicates Audible/Amazon purchase
+			}
+			
+			if editionInput.EditionFormat != expectedFormat {
+				t.Errorf("File %s: Edition format should be '%s', got %s", "test_file", expectedFormat, editionInput.EditionFormat)
 			}
 
 			t.Logf("Test '%s' completed successfully", tt.name)

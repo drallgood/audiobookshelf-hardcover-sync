@@ -276,13 +276,9 @@ func (h *AuthHandlers) HandleOAuthCallback(w http.ResponseWriter, r *http.Reques
 	})
 
 	// Redirect to original URL or dashboard
-	state := r.URL.Query().Get("state")
-	redirectURL := "/"
-	if state != "" {
-		// Decode state to get original redirect URL
-		if decoded, err := url.QueryUnescape(state); err == nil {
-			redirectURL = decoded
-		}
+	redirectURL := result.RedirectURL
+	if redirectURL == "" {
+		redirectURL = "/"
 	}
 
 	http.Redirect(w, r, redirectURL, http.StatusFound)
@@ -310,11 +306,8 @@ func (h *AuthHandlers) HandleOAuthLogin(w http.ResponseWriter, r *http.Request) 
 		redirectURL = "/"
 	}
 
-	// Generate state parameter (encode redirect URL)
-	state := url.QueryEscape(redirectURL)
-
-	// Get auth URL from provider
-	authURL, err := h.service.GetAuthURL(providerName, state)
+	// Get auth URL from provider (provider generates random state internally)
+	authURL, err := h.service.GetAuthURL(providerName, redirectURL)
 	if err != nil {
 		h.logger.Error("Failed to get OAuth URL", map[string]interface{}{
 			"provider": providerName,

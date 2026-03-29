@@ -2,6 +2,7 @@ package edition
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -277,14 +278,21 @@ func (c *Creator) uploadImageToGCS(ctx context.Context, editionID int, imageURL 
 	q.Add("path", fmt.Sprintf("editions/%d", editionID))
 	req.URL.RawQuery = q.Encode()
 
-	// Set headers
+	// Set headers to look like a legitimate browser request
 	req.Header.Set("Content-Length", "0") // Important for POST with empty body
 	req.Header.Set("Authorization", c.client.GetAuthHeader())
 	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
 	req.Header.Set("Origin", "https://hardcover.app")
 	req.Header.Set("Referer", "https://hardcover.app/")
 	req.Header.Set("Sec-Fetch-Dest", "empty")
 	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Site", "same-site")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("sec-ch-ua", `"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"`)
+	req.Header.Set("sec-ch-ua-mobile", "?0")
+	req.Header.Set("sec-ch-ua-platform", `"macOS"`)
 
 	// Send the request
 	respCreds, err := c.httpClient.Do(req)
@@ -304,9 +312,20 @@ func (c *Creator) uploadImageToGCS(ctx context.Context, editionID int, imageURL 
 		return "", fmt.Errorf("failed to get upload credentials: HTTP %d: %s", respCreds.StatusCode, string(body))
 	}
 
-	// Parse the response
+	// Parse the response - handle gzip compression if present
+	var reader io.Reader = respCreds.Body
+	if strings.Contains(respCreds.Header.Get("Content-Encoding"), "gzip") {
+		gzipReader, err := gzip.NewReader(respCreds.Body)
+		if err != nil {
+			log.Error("Failed to create gzip reader", map[string]interface{}{"error": err.Error()})
+			return "", fmt.Errorf("failed to create gzip reader: %w", err)
+		}
+		defer gzipReader.Close()
+		reader = gzipReader
+	}
+	
 	var uploadInfo GoogleUploadInfo
-	if err := json.NewDecoder(respCreds.Body).Decode(&uploadInfo); err != nil {
+	if err := json.NewDecoder(reader).Decode(&uploadInfo); err != nil {
 		log.Error("Failed to parse upload credentials", map[string]interface{}{"error": err.Error()})
 		return "", fmt.Errorf("failed to parse upload credentials: %w", err)
 	}
