@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v3.3.0] - 2026-03-29
+
 ### Added
 - **DNF Status Preservation**: New option to preserve books marked as "Did Not Finish" in Hardcover (#88)
   - Added `preserve_dnf` configuration option (default: true)
