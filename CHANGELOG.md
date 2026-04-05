@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Reading Progress Percentage Sync**: Fixed regression where new Hardcover read entries could be created without `progress_seconds`, causing books to show as just started even when Audiobookshelf progress was in-progress (#122)
+  - `InsertUserBookRead` now includes `progress_seconds` in the GraphQL `user_book_read` payload
+  - Added regression test to verify `progress_seconds` is always sent on read creation
+
 ## [v3.3.0] - 2026-03-29
 
 ### Added
