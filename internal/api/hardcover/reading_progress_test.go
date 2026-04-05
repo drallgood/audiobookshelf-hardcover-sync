@@ -204,6 +204,98 @@ func TestClient_InsertUserBookRead(t *testing.T) {
 	}
 }
 
+func TestClient_InsertUserBookRead_IncludesProgressSeconds(t *testing.T) {
+	logger.Setup(logger.Config{
+		Level:  "debug",
+		Format: "json",
+	})
+	log := logger.Get()
+
+	expectedProgressSeconds := 3650
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+
+		var req map[string]interface{}
+		require.NoError(t, json.Unmarshal(body, &req))
+
+		query, _ := req["query"].(string)
+		if strings.Contains(query, "GetCurrentUserID") {
+			response := map[string]interface{}{
+				"data": map[string]interface{}{
+					"me": []map[string]interface{}{{"id": 42}},
+				},
+			}
+			responseJSON, err := json.Marshal(response)
+			require.NoError(t, err)
+			w.WriteHeader(http.StatusOK)
+			_, err = w.Write(responseJSON)
+			require.NoError(t, err)
+			return
+		}
+
+		if strings.Contains(query, "InsertUserBookRead") || strings.Contains(query, "insert_user_book_read") {
+			variables, ok := req["variables"].(map[string]interface{})
+			require.True(t, ok)
+
+			userBookRead, ok := variables["user_book_read"].(map[string]interface{})
+			require.True(t, ok)
+
+			progressRaw, exists := userBookRead["progress_seconds"]
+			require.True(t, exists, "progress_seconds should be included in insert_user_book_read payload")
+
+			progressVal, ok := progressRaw.(float64)
+			require.True(t, ok)
+			assert.Equal(t, float64(expectedProgressSeconds), progressVal)
+
+			response := map[string]interface{}{
+				"data": map[string]interface{}{
+					"insert_user_book_read": map[string]interface{}{
+						"id":    999,
+						"error": nil,
+					},
+				},
+			}
+			responseJSON, err := json.Marshal(response)
+			require.NoError(t, err)
+			w.WriteHeader(http.StatusOK)
+			_, err = w.Write(responseJSON)
+			require.NoError(t, err)
+			return
+		}
+
+		w.WriteHeader(http.StatusBadRequest)
+		_, err = w.Write([]byte(`{"error":"Unhandled GraphQL query"}`))
+		require.NoError(t, err)
+	}))
+	defer server.Close()
+
+	client := &Client{
+		baseURL:         server.URL,
+		authToken:       "test-token",
+		httpClient:      server.Client(),
+		logger:          log,
+		rateLimiter:     util.NewRateLimiter(10*time.Millisecond, 1, 1, log),
+		maxRetries:      3,
+		retryDelay:      10 * time.Millisecond,
+		userBookIDCache: cache.NewMemoryCache[int, int](log),
+		userCache:       cache.NewMemoryCache[string, any](log),
+	}
+
+	readID, err := client.InsertUserBookRead(context.Background(), InsertUserBookReadInput{
+		UserBookID: 123,
+		DatesRead: DatesReadInput{
+			ProgressSeconds: &expectedProgressSeconds,
+		},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, 999, readID)
+}
+
 func TestClient_UpdateUserBookRead(t *testing.T) {
 	// Set up the logger
 	logger.Setup(logger.Config{

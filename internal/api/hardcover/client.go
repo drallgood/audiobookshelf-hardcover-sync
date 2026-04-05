@@ -1738,6 +1738,9 @@ func (c *Client) InsertUserBookRead(ctx context.Context, input InsertUserBookRea
 	if input.DatesRead.StartedAt != nil {
 		userBookRead["started_at"] = input.DatesRead.StartedAt
 	}
+	if input.DatesRead.ProgressSeconds != nil {
+		userBookRead["progress_seconds"] = input.DatesRead.ProgressSeconds
+	}
 
 	variables := map[string]interface{}{
 		"user_book_id":   input.UserBookID,
