@@ -3,7 +3,9 @@ package multiuser
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	stdSync "sync"
+	"strings"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
@@ -452,11 +454,22 @@ func (s *MultiUserService) createProfileSpecificConfig(profileConfig *database.P
 	// Apply all sync config values from the profile
 	config.Sync.Incremental = syncConfig.Incremental
 	// Make state file path profile-specific to avoid conflicts
-	if syncConfig.StateFile != "" {
-		config.Sync.StateFile = fmt.Sprintf("%s.%s", syncConfig.StateFile, profileConfig.Profile.ID)
-	} else {
-		config.Sync.StateFile = fmt.Sprintf("./data/sync_state.%s.json", profileConfig.Profile.ID)
+	// Resolve state file path using paths.data_dir if not set or relative
+	statePath := syncConfig.StateFile
+	if statePath == "" {
+		// Use paths.data_dir for default state file location
+		if s.globalConfig != nil && s.globalConfig.Paths.DataDir != "" {
+			statePath = fmt.Sprintf("%s/sync_state.json", strings.TrimSuffix(s.globalConfig.Paths.DataDir, "/"))
+		} else {
+			statePath = "/data/sync_state.json" // Container-friendly default
+		}
+	} else if !filepath.IsAbs(statePath) {
+		// If relative, resolve it against paths.data_dir
+		if s.globalConfig != nil && s.globalConfig.Paths.DataDir != "" {
+			statePath = fmt.Sprintf("%s/sync_state.json", strings.TrimSuffix(s.globalConfig.Paths.DataDir, "/"))
+		}
 	}
+	config.Sync.StateFile = fmt.Sprintf("%s.%s", strings.TrimSuffix(statePath, ".json"), profileConfig.Profile.ID)
 	config.Sync.MinChangeThreshold = syncConfig.MinChangeThreshold
 	config.Sync.Libraries.Include = syncConfig.Libraries.Include
 	config.Sync.Libraries.Exclude = syncConfig.Libraries.Exclude

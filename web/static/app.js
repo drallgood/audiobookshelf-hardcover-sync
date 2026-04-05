@@ -1828,7 +1828,7 @@ class SyncProfileApp {
             hardcover_token: formData.get('hardcover_token'),
             sync_config: {
                 incremental: formData.get('incremental') === 'on',
-                state_file: `./data/${formData.get('id')}_sync_state.json`,
+                state_file: `/data/sync_state.json`,
                 min_change_threshold: 60,
                 libraries: {
                     include: this.parseCommaSeparated(formData.get('include_libraries')),
@@ -1977,7 +1977,7 @@ class SyncProfileApp {
             hardcover_token: formData.get('hardcover_token') || this.currentEditUser.hardcover_token,
             sync_config: {
                 incremental: formData.get('incremental') === 'on',
-                state_file: `./data/${userId}_sync_state.json`,
+                state_file: `/data/sync_state.json`,
                 min_change_threshold: 60,
                 libraries: {
                     include: this.parseCommaSeparated(formData.get('include_libraries')),

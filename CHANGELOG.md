@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Manual Verification Documentation**: Added troubleshooting guidance for "Edition not matched" / "Manual verification required" mismatch states, including cause-based resolution paths and `edition-tool` workflow (#124)
 
 ### Fixed
+- **Profile Sync State Path Resolution**: Fixed sync state files being written to relative `./data/` paths instead of respecting `paths.data_dir` configuration, causing permission errors in Kubernetes deployments (#125)
+  - Web UI now defaults to absolute `/data/sync_state.json` instead of relative paths
+  - Migration process derives profile state_file from `paths.data_dir` configuration
+  - Runtime profile config creation normalizes relative paths to absolute paths using configured data directory as anchor
+  - This ensures profile configuration is consistent across UI, migration, and runtime in containerized environments
 - **Reading Progress Percentage Sync**: Fixed regression where new Hardcover read entries could be created without `progress_seconds`, causing books to show as just started even when Audiobookshelf progress was in-progress (#122)
   - `InsertUserBookRead` now includes `progress_seconds` in the GraphQL `user_book_read` payload
   - Added regression test to verify `progress_seconds` is always sent on read creation
