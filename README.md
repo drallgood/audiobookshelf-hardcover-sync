@@ -859,6 +859,58 @@ For additional support:
 - 📖 Review the [MIGRATION.md](MIGRATION.md) documentation
 - 🐛 Create a new issue with debug logs if problems persist
 
+### "Manual verification required" / "Edition not matched"
+
+If sync reports:
+- `Edition not matched, create or link Hardcover edition`
+- `Manual verification required`
+
+it means the app could not confidently match your AudiobookShelf item to a specific Hardcover audiobook edition.
+
+Important: The web UI currently shows this warning but does not include a one-click "link edition" action yet.
+
+Use this workflow:
+
+1. **Find the mismatch details**
+  - Open the sync summary in the web UI and inspect the mismatch entries.
+  - Optionally review JSON mismatch files in your configured `sync.mismatch_output_dir` (default: `./mismatches`).
+
+2. **Identify why matching failed**
+  - Missing or incorrect identifiers in AudiobookShelf (ASIN/ISBN)
+  - Book exists in Hardcover, but the audiobook edition does not
+  - Book itself does not exist in Hardcover
+  - Invalid/expired Hardcover token (least common)
+
+3. **Resolve based on cause**
+  - **Missing ASIN/ISBN in AudiobookShelf**: Add/correct identifiers, then re-run sync.
+  - **Book exists, edition missing in Hardcover**:
+    - Create the edition manually on Hardcover, or
+    - Use `edition-tool` with a generated mismatch JSON/template.
+  - **Book missing in Hardcover**: Create the book and audiobook edition in Hardcover, then re-run sync.
+  - **Token issue**: Generate a new Hardcover token and update configuration.
+
+4. **Re-run sync and verify**
+  - Re-run sync after your metadata or Hardcover updates.
+  - The mismatch warning should disappear once the correct edition can be matched.
+
+#### Using `edition-tool` for faster fixes
+
+```bash
+# Build tools
+make build-tools
+
+# Inspect commands
+./bin/edition-tool help
+
+# Create edition interactively
+./bin/edition-tool create --interactive
+
+# Create edition from JSON template/mismatch data
+./bin/edition-tool create --file path/to/edition-template.json
+```
+
+Tip: Always review JSON data before creating editions to avoid linking to the wrong book/edition.
+
 ## Contributing
 
 We welcome contributions! Please see our [contributing guidelines](CONTRIBUTING.md) for details.
