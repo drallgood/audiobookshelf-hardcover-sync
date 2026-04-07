@@ -644,3 +644,118 @@ func TestHandleInProgressBook_RefreshesStaleStartedAtForReread(t *testing.T) {
 	assert.NoError(t, err)
 	mockClient.AssertExpectations(t)
 }
+
+// TestHandleInProgressBook_SecondChancePreservesStartedAt verifies that when the
+// second-chance fetch returns an unfinished read (for example, auto-created by Hardcover),
+// we preserve that read's started_at instead of overwriting it with stale ABS started_at.
+func TestHandleInProgressBook_SecondChancePreservesStartedAt(t *testing.T) {
+	// Create test service and mock client
+	svc, mockClient := createTestService()
+
+	// Create a test book with in-progress state and an old ABS started_at timestamp.
+	testAudiobook := createTestBook("test-book-second-chance", "Dust", "Hugh Howey", "B0BKR4Q1PH", "")
+	testAudiobook.Progress.CurrentTime = 23168
+	testAudiobook.Media.Duration = 39216.33
+	testAudiobook.Progress.IsFinished = false
+	testAudiobook.Progress.StartedAt = time.Date(2025, time.June, 2, 12, 0, 0, 0, time.UTC).UnixMilli()
+	audiobook := toAudiobookshelfBook(testAudiobook)
+
+	userBookID := int64(7791036)
+	staleReadID := int64(5047267)
+	newReadID := int64(5048973)
+	editionID := int64(32058625)
+	staleStartedAt := "2025-06-02"
+	latestFinishedAt := "2025-06-10"
+	newStartedAt := "2026-04-08"
+	staleProgressSeconds := 23168
+	finishedProgressSeconds := 39216
+	finishedProgress := 100.0
+
+	mockClient.On("GetUserBook", mock.Anything, "7791036").Return(&models.HardcoverBook{
+		ID:        "427570",
+		Title:     "Dust",
+		EditionID: "32058625",
+	}, nil).Once()
+
+	// Initial unfinished read lookup: stale active read exists.
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+		Status:     "unfinished",
+	}).Return([]hardcover.UserBookRead{
+		{
+			ID:              staleReadID,
+			ProgressSeconds: &staleProgressSeconds,
+			StartedAt:       &staleStartedAt,
+			EditionID:       &editionID,
+			FinishedAt:      nil,
+		},
+	}, nil).Once()
+
+	// Full read history includes a finished read, forcing stale read close behavior.
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{
+		{
+			ID:              staleReadID,
+			ProgressSeconds: &staleProgressSeconds,
+			StartedAt:       &staleStartedAt,
+			EditionID:       &editionID,
+			FinishedAt:      nil,
+		},
+		{
+			ID:              2903829,
+			StartedAt:       &latestFinishedAt,
+			FinishedAt:      &latestFinishedAt,
+			EditionID:       &editionID,
+			ProgressSeconds: &finishedProgressSeconds,
+			Progress:        finishedProgress,
+		},
+	}, nil).Once()
+
+	// Stale unfinished read is closed.
+	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		if input.ID != staleReadID {
+			return false
+		}
+		return input.Object["finished_at"] == latestFinishedAt
+	})).Return(true, nil).Once()
+
+	// Status set to IN_PROGRESS before second-chance fetch.
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+		ID:       userBookID,
+		StatusID: 2,
+	}).Return(nil).Once()
+
+	// Second-chance fetch finds the newly created unfinished read with a fresh start date.
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{
+		{
+			ID:              newReadID,
+			StartedAt:       &newStartedAt,
+			FinishedAt:      nil,
+			EditionID:       &editionID,
+			ProgressSeconds: nil,
+			Progress:        0,
+		},
+	}, nil).Once()
+
+	// Verify second-chance update preserves new started_at instead of using stale ABS date.
+	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		if input.ID != newReadID {
+			return false
+		}
+		startedAt, ok := input.Object["started_at"]
+		if !ok {
+			return false
+		}
+		return startedAt == newStartedAt
+	})).Return(true, nil).Once()
+
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+
+	assert.NoError(t, err)
+	mockClient.AssertExpectations(t)
+	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+}

@@ -3131,7 +3131,10 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 					"progress_seconds":  int64(book.Progress.CurrentTime),
 					"reading_format_id": 2,
 				}
-				if book.Progress.StartedAt > 0 {
+				if scUnfinished.StartedAt != nil && *scUnfinished.StartedAt != "" {
+					// Preserve the unfinished read's own started_at (for example, a just-created reread start date).
+					updateObj["started_at"] = *scUnfinished.StartedAt
+				} else if book.Progress.StartedAt > 0 {
 					startedAt := time.Unix(book.Progress.StartedAt/1000, 0).Format("2006-01-02")
 					updateObj["started_at"] = startedAt
 				}
@@ -3143,7 +3146,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				}
 				if scUnfinished.EditionID != nil {
 					updateObj["edition_id"] = *scUnfinished.EditionID
-				} else if hcBook != nil && hcBook.EditionID != "" {
+				} else if hcBook.EditionID != "" {
 					if eid, convErr := strconv.Atoi(hcBook.EditionID); convErr == nil && eid != 0 {
 						updateObj["edition_id"] = eid
 					}
