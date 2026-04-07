@@ -2644,6 +2644,8 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		})
 	}
 
+	latestFinishedReadDate := ""
+
 	// If no read status found at all, we'll create a new one
 	if readStatusToUpdate == nil && mostRecentRead == nil {
 		log.Info("No existing read status found, will create a new one", logCtx)
@@ -2687,6 +2689,74 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			// Calculate progress difference in both absolute seconds and percentage
 			progressDiff := math.Abs(float64(book.Progress.CurrentTime - hcProgressSeconds))
 			minDiff := 60.0 // 60 second minimum difference to trigger an update (increased from 30s)
+			forceSyncFromZero := hcProgressSeconds <= 0 && book.Progress.CurrentTime > 0
+			splitRereadFromStaleUnfinished := false
+			latestFinishedReadDate = ""
+
+			if !book.Progress.IsFinished && readStatusToUpdate.StartedAt != nil && *readStatusToUpdate.StartedAt != "" {
+				existingStartedAt := *readStatusToUpdate.StartedAt
+				if len(existingStartedAt) > 10 {
+					existingStartedAt = existingStartedAt[:10]
+				}
+
+				allReads, allReadsErr := s.hardcover.GetUserBookReads(ctx, hardcover.GetUserBookReadsInput{
+					UserBookID: userBookID,
+				})
+				if allReadsErr == nil {
+					for i := range allReads {
+						if allReads[i].FinishedAt == nil || *allReads[i].FinishedAt == "" {
+							continue
+						}
+						finishedDate := *allReads[i].FinishedAt
+						if len(finishedDate) > 10 {
+							finishedDate = finishedDate[:10]
+						}
+						if _, parseErr := time.Parse("2006-01-02", finishedDate); parseErr != nil {
+							continue
+						}
+						if finishedDate > latestFinishedReadDate {
+							latestFinishedReadDate = finishedDate
+						}
+					}
+
+					if latestFinishedReadDate != "" && existingStartedAt <= latestFinishedReadDate {
+						splitRereadFromStaleUnfinished = true
+						logCtx["existing_started_at"] = existingStartedAt
+						logCtx["latest_finished_read_at"] = latestFinishedReadDate
+					}
+				}
+			}
+
+			if splitRereadFromStaleUnfinished {
+				closeObj := map[string]interface{}{
+					"finished_at": latestFinishedReadDate,
+				}
+				if readStatusToUpdate.ProgressSeconds != nil {
+					closeObj["progress_seconds"] = *readStatusToUpdate.ProgressSeconds
+				}
+
+				_, closeErr := s.hardcover.UpdateUserBookRead(ctx, hardcover.UpdateUserBookReadInput{
+					ID:     readStatusToUpdate.ID,
+					Object: closeObj,
+				})
+				if closeErr != nil {
+					log.With(map[string]interface{}{
+						"read_id": readStatusToUpdate.ID,
+						"error":   closeErr.Error(),
+					}).Error("Failed to close stale unfinished reread")
+					return fmt.Errorf("failed to close stale unfinished reread: %w", closeErr)
+				}
+
+				log.Info("Closed stale unfinished reread, creating a new active read", map[string]interface{}{
+					"closed_read_id":         readStatusToUpdate.ID,
+					"closed_finished_at":     latestFinishedReadDate,
+					"existing_started_at":    logCtx["existing_started_at"],
+					"latest_finished_read_at": latestFinishedReadDate,
+				})
+
+				// Continue via create path below.
+				readStatusToUpdate = nil
+			}
 
 			// Calculate progress percentage difference if we have duration
 			var progressPctDiff float64
@@ -2703,20 +2773,31 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				minDiff = 10.0 // 10 second threshold for new/small progress
 			}
 
-			// If progress is nearly the same (within 1 second), skip update regardless of threshold
-			if progressDiff < 1.0 {
-				logCtx["progress_diff_seconds"] = fmt.Sprintf("%.2f", progressDiff)
-				log.Info("Progress is identical or nearly identical, skipping update", logCtx)
-				return nil
+			if readStatusToUpdate == nil {
+				log.Info("Proceeding to create a new read for reread session", logCtx)
+			} else if forceSyncFromZero {
+				logCtx["force_sync_reason"] = "hardcover_progress_seconds_is_zero"
+				log.Info("Hardcover progress is zero while ABS has progress, forcing update", logCtx)
+			} else {
+				// If progress is nearly the same (within 1 second), skip update regardless of threshold
+				if progressDiff < 1.0 {
+					logCtx["progress_diff_seconds"] = fmt.Sprintf("%.2f", progressDiff)
+					log.Info("Progress is identical or nearly identical, skipping update", logCtx)
+					return nil
+				}
 			}
 
 			logCtx["progress_diff_seconds"] = fmt.Sprintf("%.2f", progressDiff)
 			logCtx["min_diff_seconds"] = minDiff
 
 			// Skip update if progress difference is below threshold
-			if progressDiff < minDiff {
+			if readStatusToUpdate != nil && !forceSyncFromZero && progressDiff < minDiff {
 				log.Info("Progress difference below threshold, skipping update", logCtx)
 				return nil
+			}
+
+			if latestFinishedReadDate != "" {
+				logCtx["latest_finished_read_at"] = latestFinishedReadDate
 			}
 
 			// Warn about extremely large progress differences (> 1 hour)
@@ -2768,12 +2849,33 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 	// - If this is an existing read that's being updated, preserve the existing started_at
 	// - Only set started_at if we're creating a new read or if the existing one doesn't have it
 	if readStatusToUpdate != nil && readStatusToUpdate.StartedAt != nil && *readStatusToUpdate.StartedAt != "" {
-		// Preserve the existing started_at from Hardcover
-		// This prevents overwriting manually corrected dates
-		updateObj["started_at"] = *readStatusToUpdate.StartedAt
-		log.Debug("Preserving existing started_at from Hardcover", map[string]interface{}{
-			"existing_started_at": *readStatusToUpdate.StartedAt,
-		})
+		existingStartedAt := *readStatusToUpdate.StartedAt
+		if len(existingStartedAt) > 10 {
+			existingStartedAt = existingStartedAt[:10]
+		}
+
+		if latestFinishedReadDate != "" && existingStartedAt <= latestFinishedReadDate {
+			// Stale reread start date: refresh start date for the active unfinished read.
+			newStartedAt := time.Now().Format("2006-01-02")
+			if book.Progress.StartedAt > 0 {
+				absStartedAt := time.Unix(book.Progress.StartedAt/1000, 0).Format("2006-01-02")
+				if absStartedAt > latestFinishedReadDate {
+					newStartedAt = absStartedAt
+				}
+			}
+			updateObj["started_at"] = newStartedAt
+			log.Info("Detected stale started_at on unfinished reread; refreshing started_at", map[string]interface{}{
+				"existing_started_at":      existingStartedAt,
+				"latest_finished_read_at":  latestFinishedReadDate,
+				"new_started_at":           newStartedAt,
+			})
+		} else {
+			// Preserve the existing started_at from Hardcover to avoid unnecessary churn.
+			updateObj["started_at"] = *readStatusToUpdate.StartedAt
+			log.Debug("Preserving existing started_at from Hardcover", map[string]interface{}{
+				"existing_started_at": *readStatusToUpdate.StartedAt,
+			})
+		}
 	} else if book.Progress.StartedAt > 0 {
 		// Only use ABS started_at for new reads or if no started_at exists
 		startedAt := time.Unix(book.Progress.StartedAt/1000, 0).Format("2006-01-02")
