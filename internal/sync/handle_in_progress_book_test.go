@@ -579,7 +579,12 @@ func TestHandleInProgressBook_RefreshesStaleStartedAtForReread(t *testing.T) {
 		},
 	}, nil).Once()
 
-	// Full read fetch contains both unfinished and a finished read, allowing stale-start detection.
+	// Full read fetch contains the unfinished read plus a legitimate prior finished audio read.
+	// The prior finished read has real progress and different start/end dates so it is not
+	// filtered out by the zero-progress-closed or physical-read guards.
+	priorFinishedStartedAt := "2025-06-01"
+	priorFinishedProgressSeconds := 50000 // fully listened
+	priorFinishedProgress := 100.0
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
 	}).Return([]hardcover.UserBookRead{
@@ -591,10 +596,12 @@ func TestHandleInProgressBook_RefreshesStaleStartedAtForReread(t *testing.T) {
 			FinishedAt:      nil,
 		},
 		{
-			ID:         2901494,
-			StartedAt:  &finishedAt,
-			FinishedAt: &finishedAt,
-			EditionID:  &editionID,
+			ID:              2901494,
+			StartedAt:       &priorFinishedStartedAt,
+			FinishedAt:      &finishedAt,
+			EditionID:       &editionID,
+			ProgressSeconds: &priorFinishedProgressSeconds,
+			Progress:        priorFinishedProgress,
 		},
 	}, nil).Once()
 
@@ -611,10 +618,12 @@ func TestHandleInProgressBook_RefreshesStaleStartedAtForReread(t *testing.T) {
 		UserBookID: userBookID,
 	}).Return([]hardcover.UserBookRead{
 		{
-			ID:         2901494,
-			StartedAt:  &finishedAt,
-			FinishedAt: &finishedAt,
-			EditionID:  &editionID,
+			ID:              2901494,
+			StartedAt:       &priorFinishedStartedAt,
+			FinishedAt:      &finishedAt,
+			EditionID:       &editionID,
+			ProgressSeconds: &priorFinishedProgressSeconds,
+			Progress:        priorFinishedProgress,
 		},
 	}, nil).Once()
 

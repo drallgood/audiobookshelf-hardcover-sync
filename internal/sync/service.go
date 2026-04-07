@@ -2707,6 +2707,20 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 						if allReads[i].FinishedAt == nil || *allReads[i].FinishedAt == "" {
 							continue
 						}
+						// Skip reads that have no edition ID — these are physical/manual reads
+						// that should not influence audio stale-reread detection.
+						if allReads[i].EditionID == nil {
+							continue
+						}
+						// Skip zero-progress closed reads that our own sync code produces when
+						// collapsing previous stale entries — they should not cascade.
+						isZeroProgressClosed := (allReads[i].ProgressSeconds == nil || *allReads[i].ProgressSeconds == 0) &&
+							allReads[i].Progress == 0 &&
+							allReads[i].StartedAt != nil && allReads[i].FinishedAt != nil &&
+							*allReads[i].StartedAt == *allReads[i].FinishedAt
+						if isZeroProgressClosed {
+							continue
+						}
 						finishedDate := *allReads[i].FinishedAt
 						if len(finishedDate) > 10 {
 							finishedDate = finishedDate[:10]
