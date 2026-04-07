@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Reading Progress Percentage Sync**: Fixed regression where new Hardcover read entries could be created without `progress_seconds`, causing books to show as just started even when Audiobookshelf progress was in-progress (#122)
   - `InsertUserBookRead` now includes `progress_seconds` in the GraphQL `user_book_read` payload
   - Added regression test to verify `progress_seconds` is always sent on read creation
+- **In-Progress Reread Timeline Sync**: Fixed stale `started_at` and 00h00 edge cases for active unfinished reads in Hardcover (#122)
+  - In-progress sync now forces updates when Hardcover `progress_seconds` is `0` but Audiobookshelf has listening time
+  - Added stale reread detection: if an unfinished read predates an existing finished read, the stale unfinished read is closed and a new active read is created
+  - Prevents active reads from incorrectly showing old start dates (for example, 2025) when the current session started recently
+  - Added regression test coverage for stale reread close-and-create behavior
 
 ## [v3.3.0] - 2026-03-29
 
