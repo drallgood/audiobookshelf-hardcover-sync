@@ -210,6 +210,59 @@ func TestHandleInProgressBook_UpdateExistingRead(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
+// TestHandleInProgressBook_ForceUpdatesWhenProgressSecondsMissing verifies that
+// unfinished reads missing progress_seconds are force-healed even when progress
+// appears identical.
+func TestHandleInProgressBook_ForceUpdatesWhenProgressSecondsMissing(t *testing.T) {
+	svc, mockClient := createTestService()
+
+	testAudiobook := createTestBook("test-book-missing-progress-seconds", "Test Book", "Test Author", "B08N5KWB9H", "")
+	testAudiobook.Progress.CurrentTime = 300
+	testAudiobook.Media.Duration = 1000
+	testAudiobook.Progress.IsFinished = false
+	audiobook := toAudiobookshelfBook(testAudiobook)
+
+	userBookID := int64(123)
+	readID := int64(790)
+	editionID := int64(456)
+
+	mockClient.On("GetUserBook", mock.Anything, "123").Return(&models.HardcoverBook{
+		ID:        "book-123",
+		Title:     "Test Book",
+		EditionID: "456",
+	}, nil).Once()
+
+	// ProgressSeconds is missing, and Progress value mirrors ABS current time.
+	// Prior behavior could skip as identical; we now force update to set progress_seconds.
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+		Status:     "unfinished",
+	}).Return([]hardcover.UserBookRead{
+		{
+			ID:              readID,
+			ProgressSeconds: nil,
+			Progress:        300,
+			EditionID:       &editionID,
+			FinishedAt:      nil,
+		},
+	}, nil).Once()
+
+	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		return input.ID == readID && input.Object["progress_seconds"] == int64(300)
+	})).Return(true, nil).Once()
+
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+		ID:       userBookID,
+		StatusID: 2,
+	}).Return(nil).Once()
+
+	stateKey := fmt.Sprintf("%s:test-edition", audiobook.ID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+
+	assert.NoError(t, err)
+	mockClient.AssertExpectations(t)
+}
+
 // TestHandleInProgressBook_PrefersMatchingEditionRead verifies we don't update
 // an unfinished read tied to a different edition (for example, physical format).
 func TestHandleInProgressBook_PrefersMatchingEditionRead(t *testing.T) {

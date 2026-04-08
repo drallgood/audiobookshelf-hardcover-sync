@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Stale Reread Close Metadata Preservation**: Fixed stale unfinished reread closure to preserve read metadata on the closed entry
   - When closing stale unfinished reads, sync now keeps the existing `started_at` and `edition_id` values instead of leaving legacy null metadata
   - Prevents completed historical rows from showing missing start date or format-linked edition context
+- **Unfinished Read Progress Self-Healing**: Fixed in-progress sync potentially skipping active reads that are missing `progress_seconds`
+  - Unfinished reads with missing `progress_seconds` are now force-updated from Audiobookshelf current progress
+  - Prevents active rows from remaining in incorrect/null progress state after stale-read transitions
 - **Profile Sync State Path Resolution**: Fixed sync state files being written to relative `./data/` paths instead of respecting `paths.data_dir` configuration, causing permission errors in Kubernetes deployments (#125)
   - Web UI now defaults to absolute `/data/sync_state.json` instead of relative paths
   - Migration process derives profile state_file from `paths.data_dir` configuration

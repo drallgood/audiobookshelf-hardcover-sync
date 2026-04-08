@@ -2702,16 +2702,24 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		// Log which read status we're using
 		if readStatusToUpdate != nil {
 			logCtx["read_status_id"] = readStatusToUpdate.ID
-			// Use ProgressSeconds if available, otherwise fall back to Progress field
+			// Use ProgressSeconds if available. If missing, convert percentage progress
+			// when possible and force a sync so Hardcover gets canonical progress_seconds.
 			var hcProgressSeconds float64
+			missingProgressSeconds := false
 			if readStatusToUpdate.ProgressSeconds != nil {
 				hcProgressSeconds = float64(*readStatusToUpdate.ProgressSeconds)
 				logCtx["existing_progress_seconds"] = hcProgressSeconds
 				logCtx["progress_source"] = "progress_seconds"
 			} else {
-				hcProgressSeconds = readStatusToUpdate.Progress
+				missingProgressSeconds = true
+				if readStatusToUpdate.Progress > 0 && book.Media.Duration > 0 {
+					hcProgressSeconds = (readStatusToUpdate.Progress / 100.0) * book.Media.Duration
+					logCtx["progress_source"] = "progress_pct_converted"
+				} else {
+					hcProgressSeconds = 0
+					logCtx["progress_source"] = "missing_progress_seconds"
+				}
 				logCtx["existing_progress_seconds"] = hcProgressSeconds
-				logCtx["progress_source"] = "progress"
 			}
 			if readStatusToUpdate.FinishedAt != nil {
 				logCtx["read_status_finished_at"] = *readStatusToUpdate.FinishedAt
@@ -2721,6 +2729,8 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			progressDiff := math.Abs(float64(book.Progress.CurrentTime - hcProgressSeconds))
 			minDiff := 60.0 // 60 second minimum difference to trigger an update (increased from 30s)
 			forceSyncFromZero := hcProgressSeconds <= 0 && book.Progress.CurrentTime > 0
+			forceSyncMissingProgress := missingProgressSeconds && book.Progress.CurrentTime > 0
+			forceSync := forceSyncFromZero || forceSyncMissingProgress
 			splitRereadFromStaleUnfinished := false
 			latestFinishedReadDate = ""
 
@@ -2830,9 +2840,14 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 
 			if readStatusToUpdate == nil {
 				log.Info("Proceeding to create a new read for reread session", logCtx)
-			} else if forceSyncFromZero {
-				logCtx["force_sync_reason"] = "hardcover_progress_seconds_is_zero"
-				log.Info("Hardcover progress is zero while ABS has progress, forcing update", logCtx)
+			} else if forceSync {
+				if forceSyncMissingProgress {
+					logCtx["force_sync_reason"] = "hardcover_progress_seconds_missing"
+					log.Info("Hardcover unfinished read is missing progress_seconds, forcing update", logCtx)
+				} else {
+					logCtx["force_sync_reason"] = "hardcover_progress_seconds_is_zero"
+					log.Info("Hardcover progress is zero while ABS has progress, forcing update", logCtx)
+				}
 			} else {
 				// If progress is nearly the same (within 1 second), skip update regardless of threshold
 				if progressDiff < 1.0 {
@@ -2846,7 +2861,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			logCtx["min_diff_seconds"] = minDiff
 
 			// Skip update if progress difference is below threshold
-			if readStatusToUpdate != nil && !forceSyncFromZero && progressDiff < minDiff {
+			if readStatusToUpdate != nil && !forceSync && progressDiff < minDiff {
 				log.Info("Progress difference below threshold, skipping update", logCtx)
 				return nil
 			}
