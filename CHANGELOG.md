@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Manual Verification Documentation**: Added troubleshooting guidance for "Edition not matched" / "Manual verification required" mismatch states, including cause-based resolution paths and `edition-tool` workflow (#124)
 
 ### Fixed
+- **Cross-Format Read Selection**: Fixed in-progress sync potentially updating the wrong unfinished read when a user book has multiple read entries across formats/editions
+  - `handleInProgressBook` now prefers reads matching the target audiobook edition from state/user-book context
+  - Prevents audiobook progress updates from being applied to physical/manual read entries under the same user book
+  - Added regression test coverage for mixed-edition unfinished read scenarios
 - **Profile Sync State Path Resolution**: Fixed sync state files being written to relative `./data/` paths instead of respecting `paths.data_dir` configuration, causing permission errors in Kubernetes deployments (#125)
   - Web UI now defaults to absolute `/data/sync_state.json` instead of relative paths
   - Migration process derives profile state_file from `paths.data_dir` configuration

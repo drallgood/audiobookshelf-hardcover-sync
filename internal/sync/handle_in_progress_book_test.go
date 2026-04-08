@@ -210,6 +210,100 @@ func TestHandleInProgressBook_UpdateExistingRead(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
+// TestHandleInProgressBook_PrefersMatchingEditionRead verifies we don't update
+// an unfinished read tied to a different edition (for example, physical format).
+func TestHandleInProgressBook_PrefersMatchingEditionRead(t *testing.T) {
+	svc, mockClient := createTestService()
+
+	testAudiobook := createTestBook("test-book-edition-filter", "Shift", "Hugh Howey", "B0BKR7LNQ9", "")
+	testAudiobook.Progress.CurrentTime = 20000
+	testAudiobook.Media.Duration = 50000
+	testAudiobook.Progress.IsFinished = false
+	audiobook := toAudiobookshelfBook(testAudiobook)
+
+	userBookID := int64(7782662)
+	audiobookEditionID := int64(32058624)
+	physicalEditionID := int64(32050000)
+	audiobookReadID := int64(5046837)
+	physicalReadID := int64(5046000)
+	audiobookProgressSeconds := 1000
+	physicalProgressSeconds := 40000
+	startedAt := "2025-06-02"
+
+	mockClient.On("GetUserBook", mock.Anything, "7782662").Return(&models.HardcoverBook{
+		ID:        "427963",
+		Title:     "Shift",
+		EditionID: "32058624",
+	}, nil).Once()
+
+	// Unfinished reads include one from another edition and one matching audiobook edition.
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+		Status:     "unfinished",
+	}).Return([]hardcover.UserBookRead{
+		{
+			ID:              physicalReadID,
+			ProgressSeconds: &physicalProgressSeconds,
+			StartedAt:       &startedAt,
+			EditionID:       &physicalEditionID,
+			FinishedAt:      nil,
+		},
+		{
+			ID:              audiobookReadID,
+			ProgressSeconds: &audiobookProgressSeconds,
+			StartedAt:       &startedAt,
+			EditionID:       &audiobookEditionID,
+			FinishedAt:      nil,
+		},
+	}, nil).Once()
+
+	// Full history read used by stale-reread detection; no finished reads here.
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{
+		{
+			ID:              physicalReadID,
+			ProgressSeconds: &physicalProgressSeconds,
+			StartedAt:       &startedAt,
+			EditionID:       &physicalEditionID,
+			FinishedAt:      nil,
+		},
+		{
+			ID:              audiobookReadID,
+			ProgressSeconds: &audiobookProgressSeconds,
+			StartedAt:       &startedAt,
+			EditionID:       &audiobookEditionID,
+			FinishedAt:      nil,
+		},
+	}, nil).Once()
+
+	// Ensure we update the audiobook read, not the physical read.
+	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		if input.ID != audiobookReadID {
+			return false
+		}
+		progressSeconds, ok := input.Object["progress_seconds"]
+		if !ok {
+			return false
+		}
+		return progressSeconds == int64(20000)
+	})).Return(true, nil).Once()
+
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+		ID:       userBookID,
+		StatusID: 2,
+	}).Return(nil).Once()
+
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, audiobookEditionID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+
+	assert.NoError(t, err)
+	mockClient.AssertExpectations(t)
+	mockClient.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		return input.ID == physicalReadID
+	}))
+}
+
 // TestHandleInProgressBook_SmallProgressDifference tests skipping updates when progress difference is small
 func TestHandleInProgressBook_SmallProgressDifference(t *testing.T) {
 	// Create test service and mock client
@@ -758,4 +852,107 @@ func TestHandleInProgressBook_SecondChancePreservesStartedAt(t *testing.T) {
 	assert.NoError(t, err)
 	mockClient.AssertExpectations(t)
 	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+}
+
+// TestHandleInProgressBook_UsesHistoricalZeroProgressFinishedReadForStaleDetection verifies that
+// historical zero-progress closed reads still participate in stale reread detection.
+func TestHandleInProgressBook_UsesHistoricalZeroProgressFinishedReadForStaleDetection(t *testing.T) {
+	// Create test service and mock client
+	svc, mockClient := createTestService()
+
+	// Create a test book with in-progress state
+	testAudiobook := createTestBook("test-book-shift-stale", "Shift", "Hugh Howey", "B0BKR7LNQ9", "")
+	testAudiobook.Progress.CurrentTime = 16700
+	testAudiobook.Media.Duration = 52572.281678
+	testAudiobook.Progress.IsFinished = false
+	audiobook := toAudiobookshelfBook(testAudiobook)
+
+	userBookID := int64(7782662)
+	staleReadID := int64(5046837)
+	editionID := int64(32058624)
+	staleStartedAt := "2025-06-02"
+	historicalFinishedAt := "2025-06-10"
+	staleProgressSeconds := 16700
+	zeroProgressSeconds := 0
+
+	mockClient.On("GetUserBook", mock.Anything, "7782662").Return(&models.HardcoverBook{
+		ID:        "427963",
+		Title:     "Shift",
+		EditionID: "32058624",
+	}, nil).Once()
+
+	// Initial unfinished read lookup returns stale active reread.
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+		Status:     "unfinished",
+	}).Return([]hardcover.UserBookRead{
+		{
+			ID:              staleReadID,
+			ProgressSeconds: &staleProgressSeconds,
+			StartedAt:       &staleStartedAt,
+			EditionID:       &editionID,
+			FinishedAt:      nil,
+		},
+	}, nil).Once()
+
+	// Full read history includes a historical zero-progress closed read.
+	// This must still be considered for stale detection.
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{
+		{
+			ID:              staleReadID,
+			ProgressSeconds: &staleProgressSeconds,
+			StartedAt:       &staleStartedAt,
+			EditionID:       &editionID,
+			FinishedAt:      nil,
+		},
+		{
+			ID:              2901494,
+			StartedAt:       &historicalFinishedAt,
+			FinishedAt:      &historicalFinishedAt,
+			EditionID:       &editionID,
+			ProgressSeconds: &zeroProgressSeconds,
+			Progress:        0,
+		},
+	}, nil).Once()
+
+	// Stale unfinished read should be closed at the latest finished date.
+	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		if input.ID != staleReadID {
+			return false
+		}
+		return input.Object["finished_at"] == historicalFinishedAt
+	})).Return(true, nil).Once()
+
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+		ID:       userBookID,
+		StatusID: 2,
+	}).Return(nil).Once()
+
+	// After close, second-chance fetch finds no unfinished read, so insert path is used.
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{
+		{
+			ID:              2901494,
+			StartedAt:       &historicalFinishedAt,
+			FinishedAt:      &historicalFinishedAt,
+			EditionID:       &editionID,
+			ProgressSeconds: &zeroProgressSeconds,
+			Progress:        0,
+		},
+	}, nil).Once()
+
+	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
+		return input.UserBookID == userBookID &&
+			input.DatesRead.ProgressSeconds != nil &&
+			*input.DatesRead.ProgressSeconds == 16700
+	})).Return(999998, nil).Once()
+
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+
+	assert.NoError(t, err)
+	mockClient.AssertExpectations(t)
 }

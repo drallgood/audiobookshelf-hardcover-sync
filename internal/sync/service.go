@@ -2351,6 +2351,30 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		logCtx["hardcover_title"] = hcBook.Title
 	}
 
+	// Determine the target edition for this sync pass so we do not accidentally
+	// update reads tied to another format/edition (for example, physical reads).
+	var targetEditionID *int64
+	if parts := strings.Split(stateKey, ":"); len(parts) == 2 {
+		if parsed, parseErr := strconv.ParseInt(parts[1], 10, 64); parseErr == nil {
+			targetEditionID = &parsed
+		}
+	}
+	if targetEditionID == nil && hcBook != nil && hcBook.EditionID != "" {
+		if parsed, parseErr := strconv.ParseInt(hcBook.EditionID, 10, 64); parseErr == nil {
+			targetEditionID = &parsed
+		}
+	}
+	if targetEditionID != nil {
+		logCtx["target_edition_id"] = *targetEditionID
+	}
+
+	readMatchesTargetEdition := func(read *hardcover.UserBookRead) bool {
+		if targetEditionID == nil {
+			return true
+		}
+		return read != nil && read.EditionID != nil && *read.EditionID == *targetEditionID
+	}
+
 	// Calculate progress percentage if we have duration
 	if book.Media.Duration > 0 {
 		progressPct := (book.Progress.CurrentTime / book.Media.Duration) * 100
@@ -2413,6 +2437,10 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 	// First pass: identify all unfinished reads and find the one with most progress
 	for i := range readStatuses {
 		read := &readStatuses[i]
+
+		if !readMatchesTargetEdition(read) {
+			continue
+		}
 
 		// Track all unfinished reads
 		if read.FinishedAt == nil {
@@ -2551,6 +2579,9 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			duplicateUnfinishedReads = nil
 			for i := range allReads {
 				read := &allReads[i]
+				if !readMatchesTargetEdition(read) {
+					continue
+				}
 				if read.FinishedAt == nil || *read.FinishedAt == "" {
 					if readStatusToUpdate == nil {
 						readStatusToUpdate = read
@@ -2712,13 +2743,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 						if allReads[i].EditionID == nil {
 							continue
 						}
-						// Skip zero-progress closed reads that our own sync code produces when
-						// collapsing previous stale entries — they should not cascade.
-						isZeroProgressClosed := (allReads[i].ProgressSeconds == nil || *allReads[i].ProgressSeconds == 0) &&
-							allReads[i].Progress == 0 &&
-							allReads[i].StartedAt != nil && allReads[i].FinishedAt != nil &&
-							*allReads[i].StartedAt == *allReads[i].FinishedAt
-						if isZeroProgressClosed {
+						if targetEditionID != nil && *allReads[i].EditionID != *targetEditionID {
 							continue
 						}
 						finishedDate := *allReads[i].FinishedAt
@@ -2726,6 +2751,16 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 							finishedDate = finishedDate[:10]
 						}
 						if _, parseErr := time.Parse("2006-01-02", finishedDate); parseErr != nil {
+							continue
+						}
+						// Skip zero-progress closed reads that our own sync code produces when
+						// collapsing previous stale entries on the current day — they should
+						// not cascade into repeated split/close cycles.
+						isZeroProgressClosed := (allReads[i].ProgressSeconds == nil || *allReads[i].ProgressSeconds == 0) &&
+							allReads[i].Progress == 0 &&
+							allReads[i].StartedAt != nil && allReads[i].FinishedAt != nil &&
+							*allReads[i].StartedAt == *allReads[i].FinishedAt
+						if isZeroProgressClosed && finishedDate == time.Now().Format("2006-01-02") {
 							continue
 						}
 						if finishedDate > latestFinishedReadDate {
@@ -3116,6 +3151,9 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		if scErr == nil {
 			var scUnfinished *hardcover.UserBookRead
 			for i := range secondChanceReads {
+				if !readMatchesTargetEdition(&secondChanceReads[i]) {
+					continue
+				}
 				if secondChanceReads[i].FinishedAt == nil || *secondChanceReads[i].FinishedAt == "" {
 					scUnfinished = &secondChanceReads[i]
 					break
