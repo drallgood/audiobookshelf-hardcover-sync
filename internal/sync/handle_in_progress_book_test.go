@@ -210,6 +210,128 @@ func TestHandleInProgressBook_UpdateExistingRead(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
+// TestHandleInProgressBook_UsesNilEditionUnfinishedRead verifies that when
+// target edition is known but the only unfinished read has nil edition_id,
+// we still update that existing read instead of creating a duplicate.
+func TestHandleInProgressBook_UsesNilEditionUnfinishedRead(t *testing.T) {
+	svc, mockClient := createTestService()
+
+	testAudiobook := createTestBook("test-book-nil-edition-read", "Test Book", "Test Author", "B08N5KWB9H", "")
+	testAudiobook.Progress.CurrentTime = 300
+	testAudiobook.Media.Duration = 1000
+	testAudiobook.Progress.IsFinished = false
+	audiobook := toAudiobookshelfBook(testAudiobook)
+
+	userBookID := int64(123)
+	readID := int64(790)
+	progressSeconds := 100
+
+	mockClient.On("GetUserBook", mock.Anything, "123").Return(&models.HardcoverBook{
+		ID:        "book-123",
+		Title:     "Test Book",
+		EditionID: "456",
+	}, nil).Once()
+
+	// Unfinished read exists, but edition_id is nil.
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+		Status:     "unfinished",
+	}).Return([]hardcover.UserBookRead{
+		{
+			ID:              readID,
+			ProgressSeconds: &progressSeconds,
+			EditionID:       nil,
+			FinishedAt:      nil,
+		},
+	}, nil).Once()
+
+	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		return input.ID == readID && input.Object["progress_seconds"] == int64(300)
+	})).Return(true, nil).Once()
+
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+		ID:       userBookID,
+		StatusID: 2,
+	}).Return(nil).Once()
+
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, 456)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+
+	assert.NoError(t, err)
+	mockClient.AssertExpectations(t)
+	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+}
+
+// TestHandleInProgressBook_CleansNilEditionDuplicateWhenTargetReadExists verifies
+// that if both a target-edition unfinished read and a nil-edition unfinished read
+// exist, the nil-edition one is cleaned as duplicate and the target read is updated.
+func TestHandleInProgressBook_CleansNilEditionDuplicateWhenTargetReadExists(t *testing.T) {
+	svc, mockClient := createTestService()
+
+	testAudiobook := createTestBook("test-book-dup-nil-edition", "Shift", "Hugh Howey", "B0BKR7LNQ9", "")
+	testAudiobook.Progress.CurrentTime = 300
+	testAudiobook.Media.Duration = 1000
+	testAudiobook.Progress.IsFinished = false
+	audiobook := toAudiobookshelfBook(testAudiobook)
+
+	userBookID := int64(7782662)
+	targetReadID := int64(5051951)
+	nilEditionReadID := int64(5058839)
+	targetEditionID := int64(32058624)
+	targetProgress := 200
+	nilProgress := 250
+
+	mockClient.On("GetUserBook", mock.Anything, "7782662").Return(&models.HardcoverBook{
+		ID:        "427963",
+		Title:     "Shift",
+		EditionID: "32058624",
+	}, nil).Once()
+
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+		Status:     "unfinished",
+	}).Return([]hardcover.UserBookRead{
+		{
+			ID:              nilEditionReadID,
+			ProgressSeconds: &nilProgress,
+			EditionID:       nil,
+			FinishedAt:      nil,
+		},
+		{
+			ID:              targetReadID,
+			ProgressSeconds: &targetProgress,
+			EditionID:       &targetEditionID,
+			FinishedAt:      nil,
+		},
+	}, nil).Once()
+
+	// Duplicate nil-edition read should be soft-closed.
+	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		if input.ID != nilEditionReadID {
+			return false
+		}
+		_, hasFinishedAt := input.Object["finished_at"]
+		return hasFinishedAt && input.Object["progress_seconds"] == 0 && input.Object["progress"] == 0
+	})).Return(true, nil).Once()
+
+	// Target read should be updated with current ABS progress.
+	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		return input.ID == targetReadID && input.Object["progress_seconds"] == int64(300)
+	})).Return(true, nil).Once()
+
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+		ID:       userBookID,
+		StatusID: 2,
+	}).Return(nil).Once()
+
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, targetEditionID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+
+	assert.NoError(t, err)
+	mockClient.AssertExpectations(t)
+	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+}
+
 // TestHandleInProgressBook_ForceUpdatesWhenProgressSecondsMissing verifies that
 // unfinished reads missing progress_seconds are force-healed even when progress
 // appears identical.
@@ -440,7 +562,8 @@ func TestHandleInProgressBook_CreateNewRead(t *testing.T) {
 		return input.UserBookID == userBookID &&
 			input.DatesRead.ProgressSeconds != nil &&
 			*input.DatesRead.ProgressSeconds == progressSeconds &&
-			input.DatesRead.EditionID == nil // EditionID removed to prevent edition switching
+			input.DatesRead.EditionID != nil &&
+			*input.DatesRead.EditionID == int64(456)
 	})).Return(789, nil).Once()
 
 	// Mock the UpdateUserBookStatus call
@@ -493,7 +616,8 @@ func TestHandleInProgressBook_CreateNewRead_UsesStateKeyEdition(t *testing.T) {
 		return input.UserBookID == userBookID &&
 			input.DatesRead.ProgressSeconds != nil &&
 			*input.DatesRead.ProgressSeconds == progressSeconds &&
-			input.DatesRead.EditionID == nil // EditionID removed to prevent edition switching
+			input.DatesRead.EditionID != nil &&
+			*input.DatesRead.EditionID == int64(999)
 	})).Return(789, nil).Once()
 
 	// Mock the UpdateUserBookStatus call
@@ -697,6 +821,7 @@ func TestHandleInProgressBook_RefreshesStaleStartedAtForReread(t *testing.T) {
 	testAudiobook.Progress.CurrentTime = 20000
 	testAudiobook.Media.Duration = 50000
 	testAudiobook.Progress.IsFinished = false
+	testAudiobook.Progress.StartedAt = time.Date(2026, time.April, 2, 12, 0, 0, 0, time.UTC).UnixMilli()
 	audiobook := toAudiobookshelfBook(testAudiobook)
 
 	userBookID := int64(7782662)
@@ -783,7 +908,11 @@ func TestHandleInProgressBook_RefreshesStaleStartedAtForReread(t *testing.T) {
 	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
 		return input.UserBookID == userBookID &&
 			input.DatesRead.ProgressSeconds != nil &&
-			*input.DatesRead.ProgressSeconds == 20000
+			*input.DatesRead.ProgressSeconds == 20000 &&
+			input.DatesRead.StartedAt != nil &&
+			*input.DatesRead.StartedAt == "2026-04-02" &&
+			input.DatesRead.EditionID != nil &&
+			*input.DatesRead.EditionID == editionID
 	})).Return(999999, nil).Once()
 
 	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{

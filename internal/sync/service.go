@@ -2433,12 +2433,16 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 	var mostRecentRead *hardcover.UserBookRead
 	var mostRecentTime time.Time
 	var duplicateUnfinishedReads []*hardcover.UserBookRead
+	var nilEditionUnfinishedReads []*hardcover.UserBookRead
 
 	// First pass: identify all unfinished reads and find the one with most progress
 	for i := range readStatuses {
 		read := &readStatuses[i]
 
 		if !readMatchesTargetEdition(read) {
+			if targetEditionID != nil && read.FinishedAt == nil && read.EditionID == nil {
+				nilEditionUnfinishedReads = append(nilEditionUnfinishedReads, read)
+			}
 			continue
 		}
 
@@ -2487,6 +2491,43 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				mostRecentRead = read
 			}
 		}
+	}
+
+	if readStatusToUpdate == nil && len(nilEditionUnfinishedReads) > 0 {
+		best := nilEditionUnfinishedReads[0]
+		bestProgress := 0.0
+		if best.ProgressSeconds != nil {
+			bestProgress = float64(*best.ProgressSeconds)
+		} else {
+			bestProgress = best.Progress
+		}
+
+		for i := 1; i < len(nilEditionUnfinishedReads); i++ {
+			candidate := nilEditionUnfinishedReads[i]
+			candidateProgress := 0.0
+			if candidate.ProgressSeconds != nil {
+				candidateProgress = float64(*candidate.ProgressSeconds)
+			} else {
+				candidateProgress = candidate.Progress
+			}
+			if candidateProgress > bestProgress {
+				best = candidate
+				bestProgress = candidateProgress
+			}
+		}
+
+		readStatusToUpdate = best
+		log.Warn("No unfinished read matched target edition; using unfinished read with nil edition_id", map[string]interface{}{
+			"read_id":           best.ID,
+			"target_edition_id": targetEditionID,
+			"read_progress":     bestProgress,
+		})
+	} else if readStatusToUpdate != nil && len(nilEditionUnfinishedReads) > 0 {
+		duplicateUnfinishedReads = append(duplicateUnfinishedReads, nilEditionUnfinishedReads...)
+		log.Warn("Found unfinished reads with nil edition_id alongside a target-edition unfinished read; marking nil-edition rows as duplicates", map[string]interface{}{
+			"target_read_id":          readStatusToUpdate.ID,
+			"nil_edition_duplicates": len(nilEditionUnfinishedReads),
+		})
 	}
 
 	// If we don't have an unfinished read but have a finished one, and the book is being read again
@@ -3099,13 +3140,25 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		// If we have a mostRecentRead that's finished, this is a reread - use current date
 		// Otherwise, use the date from Audiobookshelf
 		if mostRecentRead != nil && mostRecentRead.FinishedAt != nil && *mostRecentRead.FinishedAt != "" {
-			// This is a reread - use today's date as the start date
-			today := time.Now().Format("2006-01-02")
-			createObj.StartedAt = &today
-			log.Info("Creating new read status for reread - using current date as start date", map[string]interface{}{
-				"original_read_id":   mostRecentRead.ID,
-				"original_started":   mostRecentRead.StartedAt,
-				"new_started_at":     today,
+			// This is a reread. Prefer ABS started_at when it's newer than the latest
+			// finished read date, otherwise fall back to today's date.
+			newStartedAt := time.Now().Format("2006-01-02")
+			latestFinishedDate := *mostRecentRead.FinishedAt
+			if len(latestFinishedDate) > 10 {
+				latestFinishedDate = latestFinishedDate[:10]
+			}
+			if book.Progress.StartedAt > 0 {
+				absStartedAt := time.Unix(book.Progress.StartedAt/1000, 0).Format("2006-01-02")
+				if latestFinishedDate == "" || absStartedAt > latestFinishedDate {
+					newStartedAt = absStartedAt
+				}
+			}
+			createObj.StartedAt = &newStartedAt
+			log.Info("Creating new read status for reread", map[string]interface{}{
+				"original_read_id":      mostRecentRead.ID,
+				"latest_finished_read_at": latestFinishedDate,
+				"abs_started_at_ms":     book.Progress.StartedAt,
+				"new_started_at":        newStartedAt,
 			})
 			// For rereads, don't set finished_at even if the book is marked as finished in ABS
 			// The finished_at should be set only when the user actually finishes this reading session
@@ -3151,6 +3204,12 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			errCtx := map[string]interface{}{"error": errMsg}
 			log.With(errCtx).Error("Cannot create read status without user book")
 			return fmt.Errorf("cannot create read status: %s", errMsg)
+		}
+
+		if hcBook.EditionID != "" {
+			if eid, convErr := strconv.ParseInt(hcBook.EditionID, 10, 64); convErr == nil && eid != 0 {
+				createObj.EditionID = &eid
+			}
 		}
 
 		// Set status to IN_PROGRESS before attempting insert so any server-side
@@ -3226,9 +3285,6 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		} else {
 			log.Debug("Second-chance read fetch skipped due to error", map[string]interface{}{"error": scErr.Error()})
 		}
-
-		// EditionID removed to prevent edition switching - the read is already linked to the user book
-		// The user book determines the edition, not individual read records
 
 		// Per-run guard to avoid duplicate inserts for the same userBookID
 		s.createdReadsMutex.Lock()
