@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `handleInProgressBook` now prefers reads matching the target audiobook edition from state/user-book context
   - Prevents audiobook progress updates from being applied to physical/manual read entries under the same user book
   - Added regression test coverage for mixed-edition unfinished read scenarios
+- **Stale Reread Close Metadata Preservation**: Fixed stale unfinished reread closure to preserve read metadata on the closed entry
+  - When closing stale unfinished reads, sync now keeps the existing `started_at` and `edition_id` values instead of leaving legacy null metadata
+  - Prevents completed historical rows from showing missing start date or format-linked edition context
 - **Profile Sync State Path Resolution**: Fixed sync state files being written to relative `./data/` paths instead of respecting `paths.data_dir` configuration, causing permission errors in Kubernetes deployments (#125)
   - Web UI now defaults to absolute `/data/sync_state.json` instead of relative paths
   - Migration process derives profile state_file from `paths.data_dir` configuration

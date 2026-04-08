@@ -2780,8 +2780,14 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				closeObj := map[string]interface{}{
 					"finished_at": latestFinishedReadDate,
 				}
+				if readStatusToUpdate.StartedAt != nil && *readStatusToUpdate.StartedAt != "" {
+					closeObj["started_at"] = *readStatusToUpdate.StartedAt
+				}
 				if readStatusToUpdate.ProgressSeconds != nil {
 					closeObj["progress_seconds"] = *readStatusToUpdate.ProgressSeconds
+				}
+				if readStatusToUpdate.EditionID != nil {
+					closeObj["edition_id"] = *readStatusToUpdate.EditionID
 				}
 
 				_, closeErr := s.hardcover.UpdateUserBookRead(ctx, hardcover.UpdateUserBookReadInput{

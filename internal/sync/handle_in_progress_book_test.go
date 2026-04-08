@@ -704,7 +704,13 @@ func TestHandleInProgressBook_RefreshesStaleStartedAtForReread(t *testing.T) {
 		if input.ID != readID {
 			return false
 		}
-		return input.Object["finished_at"] == finishedAt
+		if input.Object["finished_at"] != finishedAt {
+			return false
+		}
+		if input.Object["started_at"] != oldStartedAt {
+			return false
+		}
+		return input.Object["edition_id"] == editionID
 	})).Return(true, nil).Once()
 
 	// Second full read fetch happens after stale close to discover unfinished entries before insert.
