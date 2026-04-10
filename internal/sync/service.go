@@ -2556,6 +2556,25 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 	if len(duplicateUnfinishedReads) > 0 {
 		log.Warn(fmt.Sprintf("Found %d duplicate unfinished read entries, will clean up", len(duplicateUnfinishedReads)), nil)
 
+		buildDuplicateCloseUpdate := func(read *hardcover.UserBookRead) map[string]interface{} {
+			today := time.Now().Format("2006-01-02")
+			updateObj := map[string]interface{}{
+				"finished_at":      today,
+				"progress_seconds": 0,
+				"progress":         0,
+			}
+
+			// Preserve row metadata to avoid Hardcover nulling fields on partial updates.
+			if read.StartedAt != nil && *read.StartedAt != "" {
+				updateObj["started_at"] = *read.StartedAt
+			}
+			if read.EditionID != nil {
+				updateObj["edition_id"] = *read.EditionID
+			}
+
+			return updateObj
+		}
+
 		// We'll only delete the duplicates if we're not in dry-run mode
 		if !s.config.Sync.DryRun {
 			for _, duplicateRead := range duplicateUnfinishedReads {
@@ -2563,14 +2582,8 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 					"read_id": duplicateRead.ID,
 				})
 
-				// Mark the duplicate as deleted by setting finished_at to today and progress to 0
-				// (We do this instead of deleting to preserve history)
-				today := time.Now().Format("2006-01-02")
-				updateObj := map[string]interface{}{
-					"finished_at":      today,
-					"progress_seconds": 0,
-					"progress":         0,
-				}
+				// Mark the duplicate as deleted while preserving metadata for auditability.
+				updateObj := buildDuplicateCloseUpdate(duplicateRead)
 
 				_, err := s.hardcover.UpdateUserBookRead(ctx, hardcover.UpdateUserBookReadInput{
 					ID:     duplicateRead.ID,
@@ -2665,17 +2678,30 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			}
 			// If we found duplicates now, clean them up just like in the first pass
 			if len(duplicateUnfinishedReads) > 0 && !s.config.Sync.DryRun {
-				for _, duplicateRead := range duplicateUnfinishedReads {
-					log.Info("Marking duplicate read entry as deleted (second-chance)", map[string]interface{}{
-						"read_id": duplicateRead.ID,
-					})
-
+				buildDuplicateCloseUpdate := func(read *hardcover.UserBookRead) map[string]interface{} {
 					today := time.Now().Format("2006-01-02")
 					updateObj := map[string]interface{}{
 						"finished_at":      today,
 						"progress_seconds": 0,
 						"progress":         0,
 					}
+
+					if read.StartedAt != nil && *read.StartedAt != "" {
+						updateObj["started_at"] = *read.StartedAt
+					}
+					if read.EditionID != nil {
+						updateObj["edition_id"] = *read.EditionID
+					}
+
+					return updateObj
+				}
+
+				for _, duplicateRead := range duplicateUnfinishedReads {
+					log.Info("Marking duplicate read entry as deleted (second-chance)", map[string]interface{}{
+						"read_id": duplicateRead.ID,
+					})
+
+					updateObj := buildDuplicateCloseUpdate(duplicateRead)
 
 					_, uerr := s.hardcover.UpdateUserBookRead(ctx, hardcover.UpdateUserBookReadInput{
 						ID:     duplicateRead.ID,

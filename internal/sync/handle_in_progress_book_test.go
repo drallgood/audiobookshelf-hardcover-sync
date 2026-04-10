@@ -332,6 +332,104 @@ func TestHandleInProgressBook_CleansNilEditionDuplicateWhenTargetReadExists(t *t
 	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
 }
 
+// TestHandleInProgressBook_DuplicateCleanupPreservesMetadata verifies that soft-closing
+// duplicate unfinished reads keeps started_at and edition_id to avoid metadata loss.
+func TestHandleInProgressBook_DuplicateCleanupPreservesMetadata(t *testing.T) {
+	svc, mockClient := createTestService()
+
+	testAudiobook := createTestBook("test-book-dup-preserve-meta", "Dust", "Hugh Howey", "B0BKRG3NQ6", "")
+	testAudiobook.Progress.CurrentTime = 7000
+	testAudiobook.Media.Duration = 100000
+	testAudiobook.Progress.IsFinished = false
+	audiobook := toAudiobookshelfBook(testAudiobook)
+
+	userBookID := int64(7791036)
+	duplicateReadID := int64(5054020)
+	selectedReadID := int64(5066673)
+	editionID := int64(32058625)
+	duplicateProgress := 5000
+	selectedProgress := 6000
+	duplicateStartedAt := "2026-04-08"
+	selectedStartedAt := "2026-04-09"
+
+	mockClient.On("GetUserBook", mock.Anything, "7791036").Return(&models.HardcoverBook{
+		ID:        "427964",
+		Title:     "Dust",
+		EditionID: "32058625",
+	}, nil).Once()
+
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+		Status:     "unfinished",
+	}).Return([]hardcover.UserBookRead{
+		{
+			ID:              duplicateReadID,
+			ProgressSeconds: &duplicateProgress,
+			EditionID:       &editionID,
+			StartedAt:       &duplicateStartedAt,
+			FinishedAt:      nil,
+		},
+		{
+			ID:              selectedReadID,
+			ProgressSeconds: &selectedProgress,
+			EditionID:       &editionID,
+			StartedAt:       &selectedStartedAt,
+			FinishedAt:      nil,
+		},
+	}, nil).Once()
+
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+		Status:     "",
+	}).Return([]hardcover.UserBookRead{
+		{
+			ID:              duplicateReadID,
+			ProgressSeconds: &duplicateProgress,
+			EditionID:       &editionID,
+			StartedAt:       &duplicateStartedAt,
+			FinishedAt:      nil,
+		},
+		{
+			ID:              selectedReadID,
+			ProgressSeconds: &selectedProgress,
+			EditionID:       &editionID,
+			StartedAt:       &selectedStartedAt,
+			FinishedAt:      nil,
+		},
+	}, nil).Once()
+
+	// Duplicate read should be soft-closed while preserving metadata.
+	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		if input.ID != duplicateReadID {
+			return false
+		}
+		if input.Object["progress_seconds"] != 0 || input.Object["progress"] != 0 {
+			return false
+		}
+		if input.Object["started_at"] != duplicateStartedAt {
+			return false
+		}
+		return input.Object["edition_id"] == editionID
+	})).Return(true, nil).Once()
+
+	// Higher-progress unfinished read is kept and updated.
+	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		return input.ID == selectedReadID && input.Object["progress_seconds"] == int64(7000)
+	})).Return(true, nil).Once()
+
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+		ID:       userBookID,
+		StatusID: 2,
+	}).Return(nil).Once()
+
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+
+	assert.NoError(t, err)
+	mockClient.AssertExpectations(t)
+	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+}
+
 // TestHandleInProgressBook_ForceUpdatesWhenProgressSecondsMissing verifies that
 // unfinished reads missing progress_seconds are force-healed even when progress
 // appears identical.
