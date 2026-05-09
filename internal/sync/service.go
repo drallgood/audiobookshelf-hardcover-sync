@@ -2365,6 +2365,12 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			targetEditionID = &parsed
 		}
 	}
+	var userBookEditionID *int64
+	if hcBook != nil && hcBook.EditionID != "" {
+		if parsed, parseErr := strconv.ParseInt(hcBook.EditionID, 10, 64); parseErr == nil {
+			userBookEditionID = &parsed
+		}
+	}
 	if targetEditionID != nil {
 		logCtx["target_edition_id"] = *targetEditionID
 	}
@@ -2374,6 +2380,23 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			return true
 		}
 		return read != nil && read.EditionID != nil && *read.EditionID == *targetEditionID
+	}
+	normalizeProgress := func(progress float64) float64 {
+		if progress > 1.0 {
+			return progress / 100.0
+		}
+		if progress < 0 {
+			return 0
+		}
+		return progress
+	}
+
+	priorState, priorStateExists := s.state.GetBookState(stateKey)
+	if !priorStateExists {
+		baseStateKey := strings.SplitN(stateKey, ":", 2)[0]
+		if baseStateKey != "" {
+			priorState, priorStateExists = s.state.GetBookState(baseStateKey)
+		}
 	}
 
 	// Calculate progress percentage if we have duration
@@ -2435,6 +2458,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 	var mostRecentTime time.Time
 	var duplicateUnfinishedReads []*hardcover.UserBookRead
 	var nilEditionUnfinishedReads []*hardcover.UserBookRead
+	var fallbackUserBookEditionReads []*hardcover.UserBookRead
 
 	// First pass: identify all unfinished reads and find the one with most progress
 	for i := range readStatuses {
@@ -2443,6 +2467,9 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		isUnfinished := read.FinishedAt == nil || *read.FinishedAt == ""
 
 		if !readMatchesTargetEdition(read) {
+			if userBookEditionID != nil && isUnfinished && read.EditionID != nil && *read.EditionID == *userBookEditionID {
+				fallbackUserBookEditionReads = append(fallbackUserBookEditionReads, read)
+			}
 			if targetEditionID != nil && isUnfinished && read.EditionID == nil {
 				nilEditionUnfinishedReads = append(nilEditionUnfinishedReads, read)
 			}
@@ -2530,6 +2557,38 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		log.Warn("Found unfinished reads with nil edition_id alongside a target-edition unfinished read; marking nil-edition rows as duplicates", map[string]interface{}{
 			"target_read_id":          readStatusToUpdate.ID,
 			"nil_edition_duplicates": len(nilEditionUnfinishedReads),
+		})
+	}
+
+	if readStatusToUpdate == nil && len(fallbackUserBookEditionReads) > 0 {
+		best := fallbackUserBookEditionReads[0]
+		bestProgress := 0.0
+		if best.ProgressSeconds != nil {
+			bestProgress = float64(*best.ProgressSeconds)
+		} else {
+			bestProgress = best.Progress
+		}
+
+		for i := 1; i < len(fallbackUserBookEditionReads); i++ {
+			candidate := fallbackUserBookEditionReads[i]
+			candidateProgress := 0.0
+			if candidate.ProgressSeconds != nil {
+				candidateProgress = float64(*candidate.ProgressSeconds)
+			} else {
+				candidateProgress = candidate.Progress
+			}
+			if candidateProgress > bestProgress {
+				best = candidate
+				bestProgress = candidateProgress
+			}
+		}
+
+		readStatusToUpdate = best
+		log.Warn("Target edition does not match user_book edition; falling back to unfinished read on user_book edition", map[string]interface{}{
+			"target_edition_id":    targetEditionID,
+			"user_book_edition_id": userBookEditionID,
+			"read_id":              best.ID,
+			"read_progress":        bestProgress,
 		})
 	}
 
@@ -2636,12 +2695,17 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				mostRecentRead = nil
 				mostRecentTime = time.Time{}
 				duplicateUnfinishedReads = nil
+				fallbackUserBookEditionReads = nil
 				for i := range allReads {
 					read := &allReads[i]
+					isUnfinished := read.FinishedAt == nil || *read.FinishedAt == ""
 					if !readMatchesTargetEdition(read) {
+						if userBookEditionID != nil && isUnfinished && read.EditionID != nil && *read.EditionID == *userBookEditionID {
+							fallbackUserBookEditionReads = append(fallbackUserBookEditionReads, read)
+						}
 						continue
 					}
-					if read.FinishedAt == nil || *read.FinishedAt == "" {
+					if isUnfinished {
 						if readStatusToUpdate == nil {
 							readStatusToUpdate = read
 						} else {
@@ -2681,6 +2745,37 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 						}
 					}
 				}
+
+				if readStatusToUpdate == nil && len(fallbackUserBookEditionReads) > 0 {
+					best := fallbackUserBookEditionReads[0]
+					bestProgress := 0.0
+					if best.ProgressSeconds != nil {
+						bestProgress = float64(*best.ProgressSeconds)
+					} else {
+						bestProgress = best.Progress
+					}
+					for i := 1; i < len(fallbackUserBookEditionReads); i++ {
+						candidate := fallbackUserBookEditionReads[i]
+						candidateProgress := 0.0
+						if candidate.ProgressSeconds != nil {
+							candidateProgress = float64(*candidate.ProgressSeconds)
+						} else {
+							candidateProgress = candidate.Progress
+						}
+						if candidateProgress > bestProgress {
+							best = candidate
+							bestProgress = candidateProgress
+						}
+					}
+					readStatusToUpdate = best
+					log.Warn("Second-chance fallback: target edition does not match user_book edition; using unfinished read on user_book edition", map[string]interface{}{
+						"target_edition_id":    targetEditionID,
+						"user_book_edition_id": userBookEditionID,
+						"read_id":              best.ID,
+						"read_progress":        bestProgress,
+					})
+				}
+
 				// If we found duplicates now, clean them up just like in the first pass
 				if len(duplicateUnfinishedReads) > 0 && !s.config.Sync.DryRun {
 					buildDuplicateCloseUpdate := func(read *hardcover.UserBookRead) map[string]interface{} {
@@ -3197,7 +3292,35 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		} else {
 			// This is a first read - use the date from Audiobookshelf
 			if book.Progress.StartedAt > 0 {
-				startedAt := time.Unix(book.Progress.StartedAt/1000, 0).Format("2006-01-02")
+				startedAtTime := time.Unix(book.Progress.StartedAt/1000, 0)
+				startedAt := startedAtTime.Format("2006-01-02")
+
+				// If ABS reports an old started_at but recent sync state indicates
+				// a likely restarted session, prefer today's date to avoid creating
+				// a new read entry anchored to stale history.
+				if priorStateExists {
+					currentProgressNorm := 0.0
+					if book.Media.Duration > 0 {
+						currentProgressNorm = normalizeProgress(book.Progress.CurrentTime / book.Media.Duration)
+					}
+					priorProgressNorm := normalizeProgress(priorState.LastProgress)
+					likelyRestart := priorState.Status == "FINISHED" ||
+						(priorState.Status == "IN_PROGRESS" && priorProgressNorm > currentProgressNorm+0.15)
+					recentlyObserved := priorState.LastUpdated > 0 && time.Since(time.Unix(priorState.LastUpdated, 0)) < (30*24*time.Hour)
+					staleABSStart := time.Since(startedAtTime) > (120 * 24 * time.Hour)
+
+					if likelyRestart && recentlyObserved && staleABSStart {
+						startedAt = time.Now().Format("2006-01-02")
+						log.Warn("ABS started_at appears stale for a likely restarted session; using today's date for new read", map[string]interface{}{
+							"abs_started_at":      startedAtTime.Format("2006-01-02"),
+							"replacement_started_at": startedAt,
+							"prior_status":        priorState.Status,
+							"prior_progress":      priorProgressNorm,
+							"current_progress":    currentProgressNorm,
+						})
+					}
+				}
+
 				createObj.StartedAt = &startedAt
 			}
 			// Only set finished_at for first reads, not for rereads
@@ -3324,6 +3447,30 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				"user_book_id": userBookID,
 			})
 			return nil
+		}
+
+		// Cross-run idempotency guard: if prior sync state already shows nearly the
+		// same in-progress progress, avoid inserting a duplicate read when the API
+		// snapshot temporarily appears empty.
+		if priorStateExists && priorState.Status == "IN_PROGRESS" && priorState.LastUpdated > 0 {
+			priorProgress := normalizeProgress(priorState.LastProgress)
+			currentProgress := 0.0
+			if book.Media.Duration > 0 {
+				currentProgress = normalizeProgress(book.Progress.CurrentTime / book.Media.Duration)
+			}
+			progressDelta := math.Abs(currentProgress - priorProgress)
+			recentlySynced := time.Since(time.Unix(priorState.LastUpdated, 0)) < (24 * time.Hour)
+
+			if currentProgress > 0 && priorProgress > 0 && progressDelta < 0.005 && recentlySynced {
+				log.Warn("Skipping read creation because prior sync state already has nearly identical in-progress progress", map[string]interface{}{
+					"user_book_id":            userBookID,
+					"prior_progress":          priorProgress,
+					"current_progress":        currentProgress,
+					"progress_delta":          progressDelta,
+					"prior_state_last_updated": priorState.LastUpdated,
+				})
+				return nil
+			}
 		}
 
 		// Per-run guard to avoid duplicate inserts for the same userBookID
