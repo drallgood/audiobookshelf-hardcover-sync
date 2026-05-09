@@ -210,6 +210,65 @@ func TestHandleInProgressBook_UpdateExistingRead(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
+// TestHandleInProgressBook_EmptyFinishedAtTreatedAsUnfinished verifies that
+// unfinished reads with finished_at as an empty string are updated instead of
+// being misclassified as finished (which would trigger duplicate inserts).
+func TestHandleInProgressBook_EmptyFinishedAtTreatedAsUnfinished(t *testing.T) {
+	svc, mockClient := createTestService()
+
+	testAudiobook := createTestBook("test-book-empty-finished-at", "Catching Fire", "Suzanne Collins", "B004J4WKTW", "")
+	testAudiobook.Progress.CurrentTime = 10870
+	testAudiobook.Media.Duration = 39772
+	testAudiobook.Progress.IsFinished = false
+	audiobook := toAudiobookshelfBook(testAudiobook)
+
+	userBookID := int64(7726703)
+	unfinishedReadID := int64(5285601)
+	finishedReadID := int64(2880599)
+	unfinishedProgress := 7222
+	finishedProgress := 79655
+	editionID := int64(30438067)
+	emptyFinishedAt := ""
+	finishedAt := "2025-06-04"
+
+	mockClient.On("GetUserBook", mock.Anything, "7726703").Return(&models.HardcoverBook{
+		ID:        "645490",
+		Title:     "Catching Fire",
+		EditionID: "30438067",
+	}, nil).Once()
+
+	// Unfinished read comes back with finished_at as empty string, plus a prior finished read.
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+		Status:     "unfinished",
+	}).Return([]hardcover.UserBookRead{
+		{
+			ID:              unfinishedReadID,
+			ProgressSeconds: &unfinishedProgress,
+			EditionID:       &editionID,
+			FinishedAt:      &emptyFinishedAt,
+		},
+		{
+			ID:              finishedReadID,
+			ProgressSeconds: &finishedProgress,
+			EditionID:       &editionID,
+			FinishedAt:      &finishedAt,
+		},
+	}, nil).Once()
+
+	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		return input.ID == unfinishedReadID && input.Object["progress_seconds"] == int64(10870)
+	})).Return(true, nil).Once()
+
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+
+	assert.NoError(t, err)
+	mockClient.AssertExpectations(t)
+	mockClient.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+}
+
 // TestHandleInProgressBook_UsesNilEditionUnfinishedRead verifies that when
 // target edition is known but the only unfinished read has nil edition_id,
 // we still update that existing read instead of creating a duplicate.

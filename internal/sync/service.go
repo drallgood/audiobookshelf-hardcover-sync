@@ -2439,15 +2439,17 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 	for i := range readStatuses {
 		read := &readStatuses[i]
 
+		isUnfinished := read.FinishedAt == nil || *read.FinishedAt == ""
+
 		if !readMatchesTargetEdition(read) {
-			if targetEditionID != nil && read.FinishedAt == nil && read.EditionID == nil {
+			if targetEditionID != nil && isUnfinished && read.EditionID == nil {
 				nilEditionUnfinishedReads = append(nilEditionUnfinishedReads, read)
 			}
 			continue
 		}
 
 		// Track all unfinished reads
-		if read.FinishedAt == nil {
+		if isUnfinished {
 			if readStatusToUpdate == nil {
 				// First unfinished read we find becomes our primary
 				readStatusToUpdate = read
