@@ -2329,6 +2329,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		UserBookID: userBookID,
 		Status:     "unfinished",
 	})
+	readSnapshotReliable := err == nil
 	if err != nil {
 		errCtx := make(map[string]interface{}, len(logCtx)+1)
 		errCtx["error"] = err.Error()
@@ -2627,98 +2628,101 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			log.Warn("Second-chance full fetch failed; proceeding without it", map[string]interface{}{
 				"error": err.Error(),
 			})
-		} else if len(allReads) > 0 {
-			// Recompute unfinished and most recent finished using the full set
-			readStatusToUpdate = nil
-			mostRecentRead = nil
-			mostRecentTime = time.Time{}
-			duplicateUnfinishedReads = nil
-			for i := range allReads {
-				read := &allReads[i]
-				if !readMatchesTargetEdition(read) {
-					continue
-				}
-				if read.FinishedAt == nil || *read.FinishedAt == "" {
-					if readStatusToUpdate == nil {
-						readStatusToUpdate = read
-					} else {
-						var currentProgress, newProgress float64
-
-						if readStatusToUpdate.ProgressSeconds != nil {
-							currentProgress = float64(*readStatusToUpdate.ProgressSeconds)
-						} else {
-							currentProgress = readStatusToUpdate.Progress
-						}
-
-						if read.ProgressSeconds != nil {
-							newProgress = float64(*read.ProgressSeconds)
-						} else {
-							newProgress = read.Progress
-						}
-
-						log.Warn("Found duplicate unfinished read entry (second-chance)", map[string]interface{}{
-							"current_read_id":    readStatusToUpdate.ID,
-							"current_progress":   currentProgress,
-							"duplicate_read_id":  read.ID,
-							"duplicate_progress": newProgress,
-						})
-
-						if newProgress > currentProgress {
-							duplicateUnfinishedReads = append(duplicateUnfinishedReads, readStatusToUpdate)
+		} else {
+			readSnapshotReliable = true
+			if len(allReads) > 0 {
+				// Recompute unfinished and most recent finished using the full set
+				readStatusToUpdate = nil
+				mostRecentRead = nil
+				mostRecentTime = time.Time{}
+				duplicateUnfinishedReads = nil
+				for i := range allReads {
+					read := &allReads[i]
+					if !readMatchesTargetEdition(read) {
+						continue
+					}
+					if read.FinishedAt == nil || *read.FinishedAt == "" {
+						if readStatusToUpdate == nil {
 							readStatusToUpdate = read
 						} else {
-							duplicateUnfinishedReads = append(duplicateUnfinishedReads, read)
+							var currentProgress, newProgress float64
+
+							if readStatusToUpdate.ProgressSeconds != nil {
+								currentProgress = float64(*readStatusToUpdate.ProgressSeconds)
+							} else {
+								currentProgress = readStatusToUpdate.Progress
+							}
+
+							if read.ProgressSeconds != nil {
+								newProgress = float64(*read.ProgressSeconds)
+							} else {
+								newProgress = read.Progress
+							}
+
+							log.Warn("Found duplicate unfinished read entry (second-chance)", map[string]interface{}{
+								"current_read_id":    readStatusToUpdate.ID,
+								"current_progress":   currentProgress,
+								"duplicate_read_id":  read.ID,
+								"duplicate_progress": newProgress,
+							})
+
+							if newProgress > currentProgress {
+								duplicateUnfinishedReads = append(duplicateUnfinishedReads, readStatusToUpdate)
+								readStatusToUpdate = read
+							} else {
+								duplicateUnfinishedReads = append(duplicateUnfinishedReads, read)
+							}
+						}
+					} else if read.FinishedAt != nil && *read.FinishedAt != "" {
+						finishedTime, perr := time.Parse("2006-01-02", *read.FinishedAt)
+						if perr == nil && (mostRecentRead == nil || finishedTime.After(mostRecentTime)) {
+							mostRecentTime = finishedTime
+							mostRecentRead = read
 						}
 					}
-				} else if read.FinishedAt != nil && *read.FinishedAt != "" {
-					finishedTime, perr := time.Parse("2006-01-02", *read.FinishedAt)
-					if perr == nil && (mostRecentRead == nil || finishedTime.After(mostRecentTime)) {
-						mostRecentTime = finishedTime
-						mostRecentRead = read
-					}
 				}
-			}
-			// If we found duplicates now, clean them up just like in the first pass
-			if len(duplicateUnfinishedReads) > 0 && !s.config.Sync.DryRun {
-				buildDuplicateCloseUpdate := func(read *hardcover.UserBookRead) map[string]interface{} {
-					today := time.Now().Format("2006-01-02")
-					updateObj := map[string]interface{}{
-						"finished_at":      today,
-						"progress_seconds": 0,
-						"progress":         0,
+				// If we found duplicates now, clean them up just like in the first pass
+				if len(duplicateUnfinishedReads) > 0 && !s.config.Sync.DryRun {
+					buildDuplicateCloseUpdate := func(read *hardcover.UserBookRead) map[string]interface{} {
+						today := time.Now().Format("2006-01-02")
+						updateObj := map[string]interface{}{
+							"finished_at":      today,
+							"progress_seconds": 0,
+							"progress":         0,
+						}
+
+						if read.StartedAt != nil && *read.StartedAt != "" {
+							updateObj["started_at"] = *read.StartedAt
+						}
+						if read.EditionID != nil {
+							updateObj["edition_id"] = *read.EditionID
+						}
+
+						return updateObj
 					}
 
-					if read.StartedAt != nil && *read.StartedAt != "" {
-						updateObj["started_at"] = *read.StartedAt
-					}
-					if read.EditionID != nil {
-						updateObj["edition_id"] = *read.EditionID
-					}
-
-					return updateObj
-				}
-
-				for _, duplicateRead := range duplicateUnfinishedReads {
-					log.Info("Marking duplicate read entry as deleted (second-chance)", map[string]interface{}{
-						"read_id": duplicateRead.ID,
-					})
-
-					updateObj := buildDuplicateCloseUpdate(duplicateRead)
-
-					_, uerr := s.hardcover.UpdateUserBookRead(ctx, hardcover.UpdateUserBookReadInput{
-						ID:     duplicateRead.ID,
-						Object: updateObj,
-					})
-
-					if uerr != nil {
-						log.Error("Failed to mark duplicate read as deleted (second-chance)", map[string]interface{}{
-							"read_id": duplicateRead.ID,
-							"error":   uerr.Error(),
-						})
-					} else {
-						log.Info("Successfully marked duplicate read as deleted (second-chance)", map[string]interface{}{
+					for _, duplicateRead := range duplicateUnfinishedReads {
+						log.Info("Marking duplicate read entry as deleted (second-chance)", map[string]interface{}{
 							"read_id": duplicateRead.ID,
 						})
+
+						updateObj := buildDuplicateCloseUpdate(duplicateRead)
+
+						_, uerr := s.hardcover.UpdateUserBookRead(ctx, hardcover.UpdateUserBookReadInput{
+							ID:     duplicateRead.ID,
+							Object: updateObj,
+						})
+
+						if uerr != nil {
+							log.Error("Failed to mark duplicate read as deleted (second-chance)", map[string]interface{}{
+								"read_id": duplicateRead.ID,
+								"error":   uerr.Error(),
+							})
+						} else {
+							log.Info("Successfully marked duplicate read as deleted (second-chance)", map[string]interface{}{
+								"read_id": duplicateRead.ID,
+							})
+						}
 					}
 				}
 			}
@@ -3257,6 +3261,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			UserBookID: userBookID,
 		})
 		if scErr == nil {
+			readSnapshotReliable = true
 			var scUnfinished *hardcover.UserBookRead
 			for i := range secondChanceReads {
 				if !readMatchesTargetEdition(&secondChanceReads[i]) {
@@ -3312,6 +3317,13 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			}
 		} else {
 			log.Debug("Second-chance read fetch skipped due to error", map[string]interface{}{"error": scErr.Error()})
+		}
+
+		if !readSnapshotReliable {
+			log.Warn("Skipping read creation because read snapshot is unreliable after fetch errors", map[string]interface{}{
+				"user_book_id": userBookID,
+			})
+			return nil
 		}
 
 		// Per-run guard to avoid duplicate inserts for the same userBookID

@@ -905,6 +905,55 @@ func TestHandleInProgressBook_GetUserBookReadsError(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
+// TestHandleInProgressBook_SkipsCreateWhenReadFetchesUnreliable verifies we do not
+// insert a new read when both initial and second-chance read fetches fail.
+func TestHandleInProgressBook_SkipsCreateWhenReadFetchesUnreliable(t *testing.T) {
+	// Create test service and mock client
+	svc, mockClient := createTestService()
+
+	// Create a test book with progress
+	testAudiobook := createTestBook("test-book-unreliable-fetch", "Test Book", "Test Author", "B08N5KWB9H", "9781234567890")
+	testAudiobook.Progress.CurrentTime = 100
+	testAudiobook.Media.Duration = 3600
+	audiobook := toAudiobookshelfBook(testAudiobook)
+
+	userBookID := int64(123)
+	mockClient.On("GetUserBook", mock.Anything, "123").Return(&models.HardcoverBook{
+		ID:        "book-123",
+		Title:     "Test Book",
+		EditionID: "456",
+	}, nil).Once()
+
+	readErr := errors.New("transient API failure")
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+		Status:     "unfinished",
+	}).Return(nil, readErr).Once()
+
+	// First second-chance full fetch (after no reads detected)
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return(nil, readErr).Once()
+
+	// Status may still be set prior to creation path
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+		ID:       userBookID,
+		StatusID: 2,
+	}).Return(nil).Once()
+
+	// Second second-chance fetch in create path (pre-insert)
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return(nil, readErr).Once()
+
+	stateKey := fmt.Sprintf("%s:test-edition", audiobook.ID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+
+	assert.NoError(t, err, "Should skip creation when read fetches are unreliable")
+	mockClient.AssertExpectations(t)
+	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+}
+
 // TestHandleInProgressBook_FinishedBook tests handling a finished book
 func TestHandleInProgressBook_FinishedBook(t *testing.T) {
 	// Create test service and mock client
