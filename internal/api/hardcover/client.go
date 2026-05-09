@@ -385,6 +385,34 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("HTTP error %d: %s", e.StatusCode, string(e.Body))
 }
 
+func isRetryableHTTPStatus(statusCode int) bool {
+	return statusCode == http.StatusTooManyRequests || (statusCode >= 500 && statusCode <= 599)
+}
+
+func parseRetryAfterDelay(value string) (time.Duration, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+
+	if seconds, err := strconv.Atoi(value); err == nil {
+		if seconds < 0 {
+			seconds = 0
+		}
+		return time.Duration(seconds) * time.Second, true
+	}
+
+	if retryAt, err := http.ParseTime(value); err == nil {
+		delay := time.Until(retryAt)
+		if delay < 0 {
+			delay = 0
+		}
+		return delay, true
+	}
+
+	return 0, false
+}
+
 // GraphQLQuery executes a GraphQL query and unmarshals the response into the result parameter
 func (c *Client) GraphQLQuery(ctx context.Context, query string, variables map[string]interface{}, result interface{}) error {
 	if variables == nil {
@@ -487,8 +515,8 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		}
 
 		// Read the response body
-		defer resp.Body.Close()
 		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		if err != nil {
 			lastErr = fmt.Errorf("failed to read response body: %w", err)
 			c.logger.Error("Failed to read response body", map[string]interface{}{
@@ -516,6 +544,23 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"error":   lastErr.Error(),
 				"attempt": attempt + 1,
 			})
+			if !isRetryableHTTPStatus(resp.StatusCode) {
+				return fmt.Errorf("non-retryable HTTP error: %w", lastErr)
+			}
+
+			if resp.StatusCode == http.StatusTooManyRequests {
+				if retryAfter, ok := parseRetryAfterDelay(resp.Header.Get("Retry-After")); ok {
+					genericDelay := c.retryDelay * time.Duration(attempt+1)
+					if retryAfter > genericDelay {
+						extraDelay := retryAfter - genericDelay
+						select {
+						case <-ctx.Done():
+							return fmt.Errorf("retry canceled: %w", ctx.Err())
+						case <-time.After(extraDelay):
+						}
+					}
+				}
+			}
 			continue
 		}
 
