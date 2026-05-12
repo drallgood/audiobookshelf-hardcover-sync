@@ -321,9 +321,10 @@ func TestHandleInProgressBook_UsesNilEditionUnfinishedRead(t *testing.T) {
 	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
 }
 
-// TestHandleInProgressBook_CleansNilEditionDuplicateWhenTargetReadExists verifies
+// TestHandleInProgressBook_KeepsNilEditionDuplicateOpenWhenTargetReadExists verifies
 // that if both a target-edition unfinished read and a nil-edition unfinished read
-// exist, the nil-edition one is cleaned as duplicate and the target read is updated.
+// exist, we keep the duplicate open (to avoid false finished rows) and only update
+// the selected target read.
 func TestHandleInProgressBook_CleansNilEditionDuplicateWhenTargetReadExists(t *testing.T) {
 	svc, mockClient := createTestService()
 
@@ -364,15 +365,6 @@ func TestHandleInProgressBook_CleansNilEditionDuplicateWhenTargetReadExists(t *t
 		},
 	}, nil).Once()
 
-	// Duplicate nil-edition read should be soft-closed.
-	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
-		if input.ID != nilEditionReadID {
-			return false
-		}
-		_, hasFinishedAt := input.Object["finished_at"]
-		return hasFinishedAt && input.Object["progress_seconds"] == 0 && input.Object["progress"] == 0
-	})).Return(true, nil).Once()
-
 	// Target read should be updated with current ABS progress.
 	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
 		return input.ID == targetReadID && input.Object["progress_seconds"] == int64(300)
@@ -388,11 +380,14 @@ func TestHandleInProgressBook_CleansNilEditionDuplicateWhenTargetReadExists(t *t
 
 	assert.NoError(t, err)
 	mockClient.AssertExpectations(t)
+	mockClient.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		return input.ID == nilEditionReadID
+	}))
 	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
 }
 
-// TestHandleInProgressBook_DuplicateCleanupPreservesMetadata verifies that soft-closing
-// duplicate unfinished reads keeps started_at and edition_id to avoid metadata loss.
+// TestHandleInProgressBook_DuplicateCleanupPreservesMetadata verifies that duplicate
+// unfinished reads are left untouched while the highest-progress read is updated.
 func TestHandleInProgressBook_DuplicateCleanupPreservesMetadata(t *testing.T) {
 	svc, mockClient := createTestService()
 
@@ -457,20 +452,6 @@ func TestHandleInProgressBook_DuplicateCleanupPreservesMetadata(t *testing.T) {
 		},
 	}, nil).Once()
 
-	// Duplicate read should be soft-closed while preserving metadata.
-	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
-		if input.ID != duplicateReadID {
-			return false
-		}
-		if input.Object["progress_seconds"] != 0 || input.Object["progress"] != 0 {
-			return false
-		}
-		if input.Object["started_at"] != duplicateStartedAt {
-			return false
-		}
-		return input.Object["edition_id"] == editionID
-	})).Return(true, nil).Once()
-
 	// Higher-progress unfinished read is kept and updated.
 	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
 		return input.ID == selectedReadID && input.Object["progress_seconds"] == int64(7000)
@@ -486,6 +467,9 @@ func TestHandleInProgressBook_DuplicateCleanupPreservesMetadata(t *testing.T) {
 
 	assert.NoError(t, err)
 	mockClient.AssertExpectations(t)
+	mockClient.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		return input.ID == duplicateReadID
+	}))
 	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
 }
 

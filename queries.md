@@ -269,11 +269,17 @@ query GetUserBookReadsForUserBookID($user_book_id: Int!) {
 
 A single ASIN always has a single edition ID, so that's not it
 
-## User Book Reads by title
+## User Book Reads by title (scoped to user)
 
 ```graphql
-query GetUserBookReadsForTitle($title: String!) {
-  user_book_reads(where: {edition: {title: {_eq: $title}}}, order_by: { id: desc }) {
+query GetUserBookReadsForTitle($title: String!, $user_id: Int!) {
+  user_book_reads(
+    where: {
+      edition: {title: {_eq: $title}},
+      user_book: {user_id: {_eq: $user_id}}
+    },
+    order_by: { id: desc }
+  ) {
     finished_at
     paused_at
     id
@@ -292,15 +298,21 @@ query GetUserBookReadsForTitle($title: String!) {
 
 ```json
 {
-  "title": "The Name of the Wind"
+  "title": "The Name of the Wind",
+  "user_id": 36307
 }
 ```
 ## User Book Reads by book id
 
 ```graphql
-query GetUserBookReadsForBookID($book_id: Int!) {
+query GetUserBookReadsForBookID($book_id: Int!, $user_id: Int!) {
   user_book_reads(
-    where: {user_book: {book_id: {_eq: $book_id}}}
+    where: {
+      user_book: {
+        book_id: {_eq: $book_id},
+        user_id: {_eq: $user_id}
+      }
+    }
     order_by: {id: desc}
   ) {
     finished_at
@@ -322,7 +334,65 @@ query GetUserBookReadsForBookID($book_id: Int!) {
 
 ```json
 {
-  "book_id": 1
+  "book_id": 1,
+  "user_id": 36307
+}
+```
+
+## Cleanup: suspicious auto-finished reads (inspect first)
+
+Use this to find likely bogus rows created by old duplicate-close behavior.
+
+```graphql
+query GetSuspiciousAutoFinishedReads($user_id: Int!) {
+  user_book_reads(
+    where: {
+      user_book: {user_id: {_eq: $user_id}},
+      finished_at: {_is_null: false},
+      progress_seconds: {_eq: 0}
+    },
+    order_by: {id: desc}
+  ) {
+    id
+    user_book_id
+    started_at
+    finished_at
+    progress
+    progress_seconds
+    edition {
+      id
+      title
+    }
+    user_book {
+      book {
+        id
+        title
+      }
+    }
+  }
+}
+```
+
+```json
+{
+  "user_id": 36307
+}
+```
+
+Delete only IDs you have manually verified as bogus.
+Run this mutation once per ID.
+
+```graphql
+mutation DeleteUserBookReadByID($id: Int!) {
+  delete_user_book_read(id: $id) {
+    id
+  }
+}
+```
+
+```json
+{
+  "id": 5296515
 }
 ```
 
