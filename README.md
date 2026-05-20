@@ -492,9 +492,9 @@ server:
 
 # Rate limiting configuration
 rate_limit:
-  rate: "1500ms"        # Minimum time between requests (e.g., 1500ms for ~40 requests per minute)
-  burst: 2              # Maximum number of requests in a burst
-  max_concurrent: 3     # Maximum number of concurrent requests
+  rate: "2s"            # Minimum time between requests (30 requests per minute)
+  burst: 1              # Maximum number of requests in a burst
+  max_concurrent: 1     # Maximum number of concurrent requests
 
 # Logging configuration
 logging:
@@ -605,9 +605,9 @@ paths:
 | `LOG_LEVEL` | Logging level | `info` | `debug`, `warn`, `error` |
 | `LOG_FORMAT` | Log output format | `json` | `json`, `text` |
 | `HARDCOVER_BASE_URL` | Hardcover GraphQL API base URL | `https://api.hardcover.app/v1/graphql` | `https://api.hardcover.app/v1/graphql` |
-| `RATE_LIMIT_RATE` | Minimum time between Hardcover API requests | unset | `1500ms`, `2s` |
-| `RATE_LIMIT_BURST` | Max burst size for requests | unset | `2` |
-| `RATE_LIMIT_MAX_CONCURRENT` | Max concurrent requests | unset | `3` |
+| `RATE_LIMIT_RATE` | Minimum time between Hardcover API requests | unset | `2s` (30 rpm) |
+| `RATE_LIMIT_BURST` | Max burst size for requests | unset | `1` |
+| `RATE_LIMIT_MAX_CONCURRENT` | Max concurrent requests | unset | `1` |
 
 **Single-User Mode (Legacy)** - For backwards compatibility (web UI disabled):
 
@@ -661,9 +661,9 @@ hardcover:
 | `AUDIOBOOKSHELF_TOKEN` | AudiobookShelf API token | `audiobookshelf.token` | Legacy mode only |
 | `HARDCOVER_TOKEN` | Hardcover API token | `hardcover.token` | Legacy mode only |
 | `HARDCOVER_BASE_URL` | Hardcover API base URL | `hardcover.base_url` | Override default endpoint |
-| `RATE_LIMIT_RATE` | Min time between requests | `rate_limit.rate` | e.g. `1500ms` (≈40 rpm) |
-| `RATE_LIMIT_BURST` | Burst size | `rate_limit.burst` | e.g. `2` |
-| `RATE_LIMIT_MAX_CONCURRENT` | Max concurrent requests | `rate_limit.max_concurrent` | e.g. `3` |
+| `RATE_LIMIT_RATE` | Min time between requests | `rate_limit.rate` | e.g. `2s` (30 rpm) |
+| `RATE_LIMIT_BURST` | Burst size | `rate_limit.burst` | e.g. `1` |
+| `RATE_LIMIT_MAX_CONCURRENT` | Max concurrent requests | `rate_limit.max_concurrent` | e.g. `1` |
 | `SYNC_INTERVAL` | Time between automatic syncs | `sync.sync_interval` | Legacy mode only |
 | `SYNC_INCLUDE_EBOOKS` | Include items with media type "ebook" | `sync.include_ebooks` | Legacy mode only |
 | `SYNC_LIBRARIES_INCLUDE` | Comma-separated list of libraries to include | `sync.libraries.include` | Legacy mode only |

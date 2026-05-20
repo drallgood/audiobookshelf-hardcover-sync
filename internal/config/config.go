@@ -227,6 +227,11 @@ func DefaultConfig() *Config {
 	cfg.Sync.IncludeEbooks = false
 	cfg.Sync.PreserveDNF = true // Preserve DNF status by default
 
+	// Default rate limiting (Hardcover API limit: 30 requests per minute)
+	cfg.RateLimit.Rate = 2 * time.Second
+	cfg.RateLimit.Burst = 1
+	cfg.RateLimit.MaxConcurrent = 1
+
 	// Database defaults
 	cfg.Database.Type = "sqlite"
 	cfg.Database.Host = "localhost"

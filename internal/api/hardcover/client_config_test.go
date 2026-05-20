@@ -18,9 +18,9 @@ func TestDefaultClientConfig(t *testing.T) {
 	assert.Equal(t, DefaultTimeout, cfg.Timeout)
 	assert.Equal(t, DefaultMaxRetries, cfg.MaxRetries)
 	assert.Equal(t, DefaultRetryDelay, cfg.RetryDelay)
-	assert.Equal(t, 1500*time.Millisecond, cfg.RateLimit) // Match actual implementation
-	assert.Equal(t, 2, cfg.Burst)                         // Match actual implementation
-	assert.Equal(t, 3, cfg.MaxConcurrent)
+	assert.Equal(t, 2*time.Second, cfg.RateLimit) // 30 requests/minute
+	assert.Equal(t, 1, cfg.Burst)
+	assert.Equal(t, 1, cfg.MaxConcurrent)
 }
 
 func TestNewClient(t *testing.T) {

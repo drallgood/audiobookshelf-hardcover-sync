@@ -98,12 +98,13 @@ const (
 
 // Default rate limiting configuration
 const (
-	// DefaultRateLimit is the default minimum time between requests (1.5s to match Hardcover's rate limits)
-	DefaultRateLimit = 1500 * time.Millisecond
+	// DefaultRateLimit is the default minimum time between requests.
+	// Hardcover now enforces 30 requests/minute, so use 2s between requests.
+	DefaultRateLimit = 2 * time.Second
 	// DefaultBurst is the default burst size for rate limiting
-	DefaultBurst = 2
+	DefaultBurst = 1
 	// DefaultMaxConcurrent is the default maximum concurrent requests
-	DefaultMaxConcurrent = 3
+	DefaultMaxConcurrent = 1
 )
 
 // ClientConfig holds configuration for the Hardcover client
