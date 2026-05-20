@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Manual Verification Documentation**: Added troubleshooting guidance for "Edition not matched" / "Manual verification required" mismatch states, including cause-based resolution paths and `edition-tool` workflow (#124)
 
 ### Fixed
+- **Hardcover API Rate Limit Alignment**: Updated default client throttling and configuration examples to match Hardcover's new 30 requests/minute limit
+  - Default rate limit is now `2s` between requests
+  - Default burst is now `1`
+  - Default max concurrent requests is now `1`
+  - Updated `.env.example`, `config.example.yaml`, README, and migration docs to reflect new defaults
 - **Cross-Format Read Selection**: Fixed in-progress sync potentially updating the wrong unfinished read when a user book has multiple read entries across formats/editions
   - `handleInProgressBook` now prefers reads matching the target audiobook edition from state/user-book context
   - Prevents audiobook progress updates from being applied to physical/manual read entries under the same user book
