@@ -160,14 +160,12 @@ func uploadBookImage(imageURL, bookID, description string, cfg *config.Config) {
 
 	// Create a new client with configuration
 	hcCfg := hardcover.DefaultClientConfig()
-	// Use a default timeout if not specified in config
-	timeout := 30 * time.Second
-	if cfg.Server.ShutdownTimeout > 0 {
-		timeout = cfg.Server.ShutdownTimeout
-	}
+	// Use a longer timeout for image uploads to accommodate rate limit backoffs
+	// The rate limiter can back off for up to 16+ seconds, so we need a longer context timeout
+	timeout := 90 * time.Second
 	client := hardcover.NewClientWithConfig(hcCfg, token, logger.Get())
 
-	// Create a context with timeout from config
+	// Create a context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -219,13 +217,11 @@ func uploadEditionImage(imageURL string, editionID string, description string, c
 
 	// Create a new client with configuration
 	hcCfg := hardcover.DefaultClientConfig()
-	// Use a default timeout if not specified in config
-	timeout := 30 * time.Second
-	if cfg.Server.ShutdownTimeout > 0 {
-		timeout = cfg.Server.ShutdownTimeout
-	}
+	// Use a longer timeout for image uploads to accommodate rate limit backoffs
+	// The rate limiter can back off for up to 16+ seconds, so we need a longer context timeout
+	timeout := 90 * time.Second
 
-	// Create a context with timeout from config
+	// Create a context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 

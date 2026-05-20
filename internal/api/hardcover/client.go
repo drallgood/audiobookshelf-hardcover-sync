@@ -162,9 +162,10 @@ type Client struct {
 	rateLimiter      *util.RateLimiter
 	maxRetries       int
 	retryDelay       time.Duration
-	userBookIDCache  cache.Cache[int, int]             // editionID -> userBookID
-	userCache        cache.Cache[string, any]          // Generic cache for user-specific data
-	editionCache     cache.Cache[int, *models.Edition] // editionID -> Edition
+	userBookIDCache       cache.Cache[int, int]             // editionID -> userBookID
+	userBookByBookIDCache cache.Cache[int, int]             // bookID -> userBookID
+	userCache             cache.Cache[string, any]          // Generic cache for user-specific data
+	editionCache          cache.Cache[int, *models.Edition] // editionID -> Edition
 }
 
 // GetAuthHeader returns the properly formatted Authorization header value
@@ -288,19 +289,26 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 		7*24*time.Hour, // 7 days TTL
 	)
 
+	// Create book-ID-only user book cache (bookID -> userBookID) with same TTL as edition
+	userBookByBookIDCache := cache.WithTTL[int, int](
+		cache.NewMemoryCache[int, int](childLogger),
+		UserBookIDCacheTTL,
+	)
+
 	// Create and return the client
 	client := &Client{
-		baseURL:         strings.TrimRight(cfg.BaseURL, "/"),
-		authToken:       token,
-		httpClient:      httpClient,
-		gqlClient:       gqlClient,
-		logger:          childLogger,
-		rateLimiter:     rateLimiter,
-		maxRetries:      cfg.MaxRetries,
-		retryDelay:      cfg.RetryDelay,
-		userBookIDCache: userBookIDCache,
-		userCache:       userCache,
-		editionCache:    editionCache,
+		baseURL:               strings.TrimRight(cfg.BaseURL, "/"),
+		authToken:             token,
+		httpClient:            httpClient,
+		gqlClient:             gqlClient,
+		logger:                childLogger,
+		rateLimiter:           rateLimiter,
+		maxRetries:            cfg.MaxRetries,
+		retryDelay:            cfg.RetryDelay,
+		userBookIDCache:       userBookIDCache,
+		userBookByBookIDCache: userBookByBookIDCache,
+		userCache:             userCache,
+		editionCache:          editionCache,
 	}
 
 	// Log client creation
@@ -2851,13 +2859,24 @@ func (c *Client) GetUserBookID(ctx context.Context, editionID int) (int, error) 
 	return userBookID, nil
 }
 
-// LookupUserBookByBookIDOnly performs a lookup of a user book by book ID only (ignoring edition)
+// LookupUserBookByBookIDOnly performs a lookup of a user book by book ID only (ignoring edition).
+// Results are cached by bookID for the duration of the sync run to avoid redundant API calls.
 func (c *Client) LookupUserBookByBookIDOnly(ctx context.Context, bookID, userID int) (int, error) {
 	log := c.logger.With(map[string]interface{}{
 		"bookID": bookID,
 		"userID": userID,
 		"method": "lookupUserBookByBookIDOnly",
 	})
+
+	// Check the cache first to avoid redundant API calls — the same book_id may be
+	// queried many times per sync run across different code paths.
+	if cached, found := c.userBookByBookIDCache.Get(bookID); found {
+		log.Debug("User book lookup by book ID only served from cache", map[string]interface{}{
+			"bookID":     bookID,
+			"userBookID": cached,
+		})
+		return cached, nil
+	}
 
 	// Define the GraphQL query - look for user book with just book_id
 	const query = `
@@ -2908,6 +2927,9 @@ func (c *Client) LookupUserBookByBookIDOnly(ctx context.Context, bookID, userID 
 	})
 
 	if len(response.UserBooks) == 0 {
+		// Cache the "not found" result (0) so repeated lookups for the same book
+		// within one sync run don't each make an API call.
+		c.userBookByBookIDCache.Set(bookID, 0, UserBookIDCacheTTL)
 		return 0, nil
 	}
 
@@ -2920,13 +2942,18 @@ func (c *Client) LookupUserBookByBookIDOnly(ctx context.Context, bookID, userID 
 		"editionID":  userBook.EditionID,
 	})
 
+	// Cache the result so repeated calls for the same book within one sync run
+	// are served locally without hitting the API again.
+	c.userBookByBookIDCache.Set(bookID, userBookID, UserBookIDCacheTTL)
+
 	return userBookID, nil
 }
 
-// ClearUserBookCache clears the user book ID cache
+// ClearUserBookCache clears the user book ID caches (by edition and by book)
 func (c *Client) ClearUserBookCache() {
 	c.userBookIDCache.Clear()
-	c.logger.Debug("Cleared user book ID cache", nil)
+	c.userBookByBookIDCache.Clear()
+	c.logger.Debug("Cleared user book ID caches", nil)
 }
 
 // lookupUserBookByBookID performs a single lookup of a user book by book ID and edition ID
