@@ -2107,16 +2107,20 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 	if hasFinishedRead || latestUnfinishedRead != nil {
 		// If we have an unfinished read, update it to mark as finished
 		if latestUnfinishedRead != nil {
+			if book.Progress.FinishedAt <= 0 {
+				log.Warn("Audiobookshelf marks book finished but finished_at is missing; skipping unfinished-read closure to avoid synthetic dates", map[string]interface{}{
+					"read_id":          latestUnfinishedRead.ID,
+					"has_finished_read": hasFinishedRead,
+				})
+				success = true
+				return nil
+			}
+
 			// Create update object with all fields needed for the update
 			progress := 100.0
 
-			// Use the finished date from Audiobookshelf if available, otherwise fall back to current date
-			var finishedAt string
-			if book.Progress.FinishedAt > 0 {
-				finishedAt = time.Unix(book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
-			} else {
-				finishedAt = time.Now().Format("2006-01-02")
-			}
+			// Only use a source finish date from Audiobookshelf; never fabricate today's date.
+			finishedAt := time.Unix(book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
 
 			// Prepare the update object with all fields
 			updateObj := map[string]interface{}{
@@ -2188,14 +2192,18 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 	shouldCreateNewRead := true
 
 	if shouldCreateNewRead {
-		// Create a new read record with current progress
-		// Use the finished date from Audiobookshelf if available, otherwise fall back to current date
-		var finishedAt string
-		if book.Progress.FinishedAt > 0 {
-			finishedAt = time.Unix(book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
-		} else {
-			finishedAt = time.Now().Format("2006-01-02")
+		if book.Progress.FinishedAt <= 0 {
+			log.Warn("Skipping finished-read creation because Audiobookshelf finished_at is missing", map[string]interface{}{
+				"user_book_id": userBookID,
+				"book_id":      book.ID,
+			})
+			success = true
+			return nil
 		}
+
+		// Create a new read record with current progress
+		// Only use a source finish date from Audiobookshelf; never fabricate today's date.
+		finishedAt := time.Unix(book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
 
 		// Use the started date from Audiobookshelf if available, otherwise use finished date
 		var startedAt string
