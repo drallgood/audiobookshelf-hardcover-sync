@@ -886,6 +886,112 @@ func TestHandleInProgressBook_CreateNewRead_RefreshesStaleABSStartedAtOnLikelyRe
 	mockClient.AssertExpectations(t)
 }
 
+func TestHandleInProgressBook_SkipsRereadCreateWithoutRestartSignal(t *testing.T) {
+	svc, mockClient := createTestService()
+
+	testAudiobook := createTestBook("test-book-no-reread", "For We Are Many", "Dennis E. Taylor", "B01LZBXVG8", "")
+	testAudiobook.Progress.CurrentTime = 32350
+	testAudiobook.Media.Duration = 32360
+	testAudiobook.Progress.IsFinished = false
+	testAudiobook.Progress.FinishedAt = 0
+	// ABS started_at is not newer than historical finish, so this is not a restart signal.
+	testAudiobook.Progress.StartedAt = time.Date(2026, time.June, 23, 0, 0, 0, 0, time.UTC).UnixMilli()
+	audiobook := toAudiobookshelfBook(testAudiobook)
+
+	userBookID := int64(8154667)
+	mockClient.On("GetUserBook", mock.Anything, "8154667").Return(&models.HardcoverBook{
+		ID:        "736789",
+		Title:     "For We Are Many",
+		EditionID: "31546165",
+	}, nil).Once()
+
+	// Initial unfinished query returns nothing.
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+		Status:     "unfinished",
+	}).Return([]hardcover.UserBookRead{}, nil).Once()
+
+	// Second-chance full fetch returns only a finished historical read.
+	finishedAt := "2026-06-23"
+	startedAt := "2026-06-23"
+	progressSeconds := 32360
+	editionID := int64(31546165)
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{
+		{
+			ID:              5694568,
+			UserBookID:      userBookID,
+			StartedAt:       &startedAt,
+			FinishedAt:      &finishedAt,
+			Progress:        100.0,
+			ProgressSeconds: &progressSeconds,
+			EditionID:       &editionID,
+		},
+	}, nil).Once()
+
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, 31546165)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+
+	assert.NoError(t, err)
+	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+	mockClient.AssertExpectations(t)
+}
+
+func TestHandleInProgressBook_SkipsRereadCreateWhenNearCompleteAcrossDays(t *testing.T) {
+	svc, mockClient := createTestService()
+
+	testAudiobook := createTestBook("test-book-near-complete", "For We Are Many", "Dennis E. Taylor", "B01LZBXVG8", "")
+	testAudiobook.Progress.CurrentTime = 32350
+	testAudiobook.Media.Duration = 32360
+	testAudiobook.Progress.IsFinished = false
+	testAudiobook.Progress.FinishedAt = 0
+	// ABS started_at after latest finished date (cross-day), but progress is still near complete.
+	testAudiobook.Progress.StartedAt = time.Date(2026, time.June, 24, 8, 0, 0, 0, time.UTC).UnixMilli()
+	audiobook := toAudiobookshelfBook(testAudiobook)
+
+	userBookID := int64(8154667)
+	mockClient.On("GetUserBook", mock.Anything, "8154667").Return(&models.HardcoverBook{
+		ID:        "736789",
+		Title:     "For We Are Many",
+		EditionID: "31546165",
+	}, nil).Once()
+
+	// No unfinished reads.
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+		Status:     "unfinished",
+	}).Return([]hardcover.UserBookRead{}, nil).Once()
+
+	// Full fetch returns only a finished read from previous day.
+	finishedAt := "2026-06-23"
+	startedAt := "2026-06-23"
+	progressSeconds := 32360
+	editionID := int64(31546165)
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{
+		{
+			ID:              5694568,
+			UserBookID:      userBookID,
+			StartedAt:       &startedAt,
+			FinishedAt:      &finishedAt,
+			Progress:        100.0,
+			ProgressSeconds: &progressSeconds,
+			EditionID:       &editionID,
+		},
+	}, nil).Once()
+
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, 31546165)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+
+	assert.NoError(t, err)
+	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+	mockClient.AssertExpectations(t)
+}
+
 // TestHandleInProgressBook_UpdateReadError tests error handling when UpdateUserBookRead fails
 func TestHandleInProgressBook_UpdateReadError(t *testing.T) {
 	// Create test service and mock client

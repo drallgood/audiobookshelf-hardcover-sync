@@ -2601,6 +2601,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 	}
 
 	// If we don't have an unfinished read but have a finished one, and the book is being read again
+	shouldCreateRereadFromFinished := false
 	if readStatusToUpdate == nil && mostRecentRead != nil && book.Progress.CurrentTime > 0 {
 		// Check if the progress is significantly different from the last read
 		lastProgress := 0.0
@@ -2610,15 +2611,50 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			lastProgress = mostRecentRead.Progress
 		}
 
-		// If current progress is significantly less than the last read's progress,
-		// it's likely a re-read, so we'll create a new read status
-		if book.Progress.CurrentTime < (lastProgress * 0.9) {
+		currentProgressRatio := 0.0
+		if book.Media.Duration > 0 {
+			currentProgressRatio = book.Progress.CurrentTime / book.Media.Duration
+		}
+
+		latestFinishedDate := ""
+		if mostRecentRead.FinishedAt != nil {
+			latestFinishedDate = *mostRecentRead.FinishedAt
+			if len(latestFinishedDate) > 10 {
+				latestFinishedDate = latestFinishedDate[:10]
+			}
+		}
+
+		absStartedAfterLatestFinished := false
+		if latestFinishedDate != "" && book.Progress.StartedAt > 0 {
+			absStartedAt := time.Unix(book.Progress.StartedAt/1000, 0).Format("2006-01-02")
+			absStartedAfterLatestFinished = absStartedAt > latestFinishedDate
+		}
+
+		// Only treat this as a reread when there is a meaningful progress reset.
+		// Without this guard, ABS started_at drift can create duplicate reads across days
+		// even when progress is still near completion.
+		progressLooksReset := book.Progress.CurrentTime < (lastProgress * 0.9)
+		nearCompleteProgress := currentProgressRatio >= 0.95
+
+		if progressLooksReset || (absStartedAfterLatestFinished && !nearCompleteProgress) {
+			shouldCreateRereadFromFinished = true
 			log.Info("Detected possible re-read of a finished book, will create new read status", map[string]interface{}{
-				"previous_read_id":  mostRecentRead.ID,
-				"previous_progress": lastProgress,
-				"current_progress":  book.Progress.CurrentTime,
+				"previous_read_id":               mostRecentRead.ID,
+				"previous_progress":              lastProgress,
+				"current_progress":               book.Progress.CurrentTime,
+				"current_progress_ratio":         currentProgressRatio,
+				"latest_finished_date":           latestFinishedDate,
+				"abs_started_after_latest_finish": absStartedAfterLatestFinished,
+				"progress_looks_reset":           progressLooksReset,
 			})
-			// We'll let the code below create a new read status
+		} else {
+			log.Info("Finished read exists and no restart signal detected; skipping reread creation", map[string]interface{}{
+				"previous_read_id":     mostRecentRead.ID,
+				"previous_progress":    lastProgress,
+				"current_progress":     book.Progress.CurrentTime,
+				"current_progress_ratio": currentProgressRatio,
+				"latest_finished_date": latestFinishedDate,
+			})
 		}
 	}
 
@@ -3187,6 +3223,13 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		// If we have a mostRecentRead that's finished, this is a reread - use current date
 		// Otherwise, use the date from Audiobookshelf
 		if mostRecentRead != nil && mostRecentRead.FinishedAt != nil && *mostRecentRead.FinishedAt != "" {
+			if !shouldCreateRereadFromFinished {
+				log.Info("Skipping new read creation because finished history exists without a clear reread signal", map[string]interface{}{
+					"most_recent_read_id": mostRecentRead.ID,
+				})
+				return nil
+			}
+
 			// This is a reread. Prefer ABS started_at when it's newer than the latest
 			// finished read date, otherwise fall back to today's date.
 			newStartedAt := time.Now().Format("2006-01-02")
