@@ -195,12 +195,6 @@ func TestHandleInProgressBook_UpdateExistingRead(t *testing.T) {
 			// edition_id removed to prevent edition switching
 	})).Return(true, nil).Once()
 
-	// Mock the UpdateUserBookStatus call
-	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
-		ID:       userBookID,
-		StatusID: 2, // 2 = Currently Reading
-	}).Return(nil).Once()
-
 	// Call the function
 	stateKey := fmt.Sprintf("%s:test-edition", audiobook.ID)
 	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
@@ -308,11 +302,6 @@ func TestHandleInProgressBook_UsesNilEditionUnfinishedRead(t *testing.T) {
 		return input.ID == readID && input.Object["progress_seconds"] == int64(300)
 	})).Return(true, nil).Once()
 
-	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
-		ID:       userBookID,
-		StatusID: 2,
-	}).Return(nil).Once()
-
 	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, 456)
 	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
@@ -369,11 +358,6 @@ func TestHandleInProgressBook_CleansNilEditionDuplicateWhenTargetReadExists(t *t
 	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
 		return input.ID == targetReadID && input.Object["progress_seconds"] == int64(300)
 	})).Return(true, nil).Once()
-
-	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
-		ID:       userBookID,
-		StatusID: 2,
-	}).Return(nil).Once()
 
 	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, targetEditionID)
 	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
@@ -457,11 +441,6 @@ func TestHandleInProgressBook_DuplicateCleanupPreservesMetadata(t *testing.T) {
 		return input.ID == selectedReadID && input.Object["progress_seconds"] == int64(7000)
 	})).Return(true, nil).Once()
 
-	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
-		ID:       userBookID,
-		StatusID: 2,
-	}).Return(nil).Once()
-
 	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
 	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
@@ -513,11 +492,6 @@ func TestHandleInProgressBook_ForceUpdatesWhenProgressSecondsMissing(t *testing.
 	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
 		return input.ID == readID && input.Object["progress_seconds"] == int64(300)
 	})).Return(true, nil).Once()
-
-	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
-		ID:       userBookID,
-		StatusID: 2,
-	}).Return(nil).Once()
 
 	stateKey := fmt.Sprintf("%s:test-edition", audiobook.ID)
 	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
@@ -605,11 +579,6 @@ func TestHandleInProgressBook_PrefersMatchingEditionRead(t *testing.T) {
 		return progressSeconds == int64(20000)
 	})).Return(true, nil).Once()
 
-	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
-		ID:       userBookID,
-		StatusID: 2,
-	}).Return(nil).Once()
-
 	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, audiobookEditionID)
 	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
@@ -662,11 +631,6 @@ func TestHandleInProgressBook_FallsBackToUserBookEditionOnTargetMismatch(t *test
 	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
 		return input.ID == readID && input.Object["progress_seconds"] == int64(31000)
 	})).Return(true, nil).Once()
-
-	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
-		ID:       userBookID,
-		StatusID: 2,
-	}).Return(nil).Once()
 
 	// stateKey target edition intentionally mismatches user_book edition.
 	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, 32803577)
