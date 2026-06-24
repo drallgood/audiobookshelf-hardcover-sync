@@ -3193,21 +3193,12 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 					log.Info("Successfully updated book status to COMPLETED", nil)
 				}
 			} else if !isFinishedInHC {
-				// If the book is in progress in ABS but not in Hardcover, update status
-				log.Debug("Updating book status to IN_PROGRESS", logCtx)
-				err = s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
-					ID:       userBookID,
-					StatusID: 2, // 2 = Currently Reading
+				// We already updated an active unfinished read above. Avoid a redundant
+				// status mutation here because some Hardcover responses create a new
+				// blank unfinished read row as a side effect of repeated IN_PROGRESS updates.
+				log.Debug("Skipping explicit IN_PROGRESS status update after read progress update", map[string]interface{}{
+					"user_book_id": userBookID,
 				})
-				if err != nil {
-					errCtx := map[string]interface{}{
-						"user_book_id": userBookID,
-						"error":        err.Error(),
-					}
-					log.With(errCtx).Error("Failed to update book status to IN_PROGRESS")
-				} else {
-					log.Info("Successfully updated book status to IN_PROGRESS", nil)
-				}
 			} else {
 				log.Debug("Book status is already up to date", logCtx)
 			}

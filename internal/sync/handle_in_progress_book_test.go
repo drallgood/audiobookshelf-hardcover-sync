@@ -886,6 +886,86 @@ func TestHandleInProgressBook_CreateNewRead_RefreshesStaleABSStartedAtOnLikelyRe
 	mockClient.AssertExpectations(t)
 }
 
+func TestHandleInProgressBook_DoesNotSetInProgressStatusWhenUpdatingExistingRead(t *testing.T) {
+	svc, mockClient := createTestService()
+
+	testAudiobook := createTestBook("test-book-existing-read", "For We Are Many", "Dennis E. Taylor", "B01N17THEO", "9781603932189")
+	testAudiobook.Progress.CurrentTime = 32360
+	testAudiobook.Media.Duration = 32372.773333
+	testAudiobook.Progress.IsFinished = false
+	testAudiobook.Progress.FinishedAt = 0
+	testAudiobook.Progress.StartedAt = time.Date(2026, time.June, 24, 0, 0, 0, 0, time.UTC).UnixMilli()
+	audiobook := toAudiobookshelfBook(testAudiobook)
+
+	userBookID := int64(8154667)
+	mockClient.On("GetUserBook", mock.Anything, "8154667").Return(&models.HardcoverBook{
+		ID:        "427993",
+		Title:     "For We Are Many",
+		EditionID: "31546165",
+	}, nil).Once()
+
+	readID := int64(5701845)
+	startedAt := "2026-06-24"
+	editionID := int64(31546165)
+
+	// Unfinished read exists but missing progress_seconds.
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+		Status:     "unfinished",
+	}).Return([]hardcover.UserBookRead{
+		{
+			ID:         readID,
+			StartedAt:  &startedAt,
+			FinishedAt: nil,
+			Progress:   0,
+			EditionID:  &editionID,
+		},
+	}, nil).Once()
+
+	// Full read history returns finished rows so stale-reread detection runs.
+	finishedAt := "2026-06-24"
+	progressSeconds := 32360
+	todayFinishedReadID := int64(5701844)
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{
+		{
+			ID:              readID,
+			StartedAt:       &startedAt,
+			FinishedAt:      nil,
+			Progress:        0,
+			EditionID:       &editionID,
+			ProgressSeconds: nil,
+		},
+		{
+			ID:              todayFinishedReadID,
+			StartedAt:       &startedAt,
+			FinishedAt:      &finishedAt,
+			Progress:        100,
+			EditionID:       &editionID,
+			ProgressSeconds: &progressSeconds,
+		},
+	}, nil).Once()
+
+	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		if input.ID != readID {
+			return false
+		}
+		ps, ok := input.Object["progress_seconds"].(int64)
+		if !ok || ps != 32360 {
+			return false
+		}
+		return true
+	})).Return(true, nil).Once()
+
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, 33014501)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+
+	assert.NoError(t, err)
+	mockClient.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+	mockClient.AssertExpectations(t)
+}
+
 func TestHandleInProgressBook_SkipsRereadCreateWithoutRestartSignal(t *testing.T) {
 	svc, mockClient := createTestService()
 
