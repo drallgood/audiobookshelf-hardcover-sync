@@ -492,9 +492,9 @@ server:
 
 # Rate limiting configuration
 rate_limit:
-  rate: "1500ms"        # Minimum time between requests (e.g., 1500ms for ~40 requests per minute)
-  burst: 2              # Maximum number of requests in a burst
-  max_concurrent: 3     # Maximum number of concurrent requests
+  rate: "2s"            # Minimum time between requests (30 requests per minute)
+  burst: 1              # Maximum number of requests in a burst
+  max_concurrent: 1     # Maximum number of concurrent requests
 
 # Logging configuration
 logging:
@@ -605,9 +605,9 @@ paths:
 | `LOG_LEVEL` | Logging level | `info` | `debug`, `warn`, `error` |
 | `LOG_FORMAT` | Log output format | `json` | `json`, `text` |
 | `HARDCOVER_BASE_URL` | Hardcover GraphQL API base URL | `https://api.hardcover.app/v1/graphql` | `https://api.hardcover.app/v1/graphql` |
-| `RATE_LIMIT_RATE` | Minimum time between Hardcover API requests | unset | `1500ms`, `2s` |
-| `RATE_LIMIT_BURST` | Max burst size for requests | unset | `2` |
-| `RATE_LIMIT_MAX_CONCURRENT` | Max concurrent requests | unset | `3` |
+| `RATE_LIMIT_RATE` | Minimum time between Hardcover API requests | unset | `2s` (30 rpm) |
+| `RATE_LIMIT_BURST` | Max burst size for requests | unset | `1` |
+| `RATE_LIMIT_MAX_CONCURRENT` | Max concurrent requests | unset | `1` |
 
 **Single-User Mode (Legacy)** - For backwards compatibility (web UI disabled):
 
@@ -661,9 +661,9 @@ hardcover:
 | `AUDIOBOOKSHELF_TOKEN` | AudiobookShelf API token | `audiobookshelf.token` | Legacy mode only |
 | `HARDCOVER_TOKEN` | Hardcover API token | `hardcover.token` | Legacy mode only |
 | `HARDCOVER_BASE_URL` | Hardcover API base URL | `hardcover.base_url` | Override default endpoint |
-| `RATE_LIMIT_RATE` | Min time between requests | `rate_limit.rate` | e.g. `1500ms` (≈40 rpm) |
-| `RATE_LIMIT_BURST` | Burst size | `rate_limit.burst` | e.g. `2` |
-| `RATE_LIMIT_MAX_CONCURRENT` | Max concurrent requests | `rate_limit.max_concurrent` | e.g. `3` |
+| `RATE_LIMIT_RATE` | Min time between requests | `rate_limit.rate` | e.g. `2s` (30 rpm) |
+| `RATE_LIMIT_BURST` | Burst size | `rate_limit.burst` | e.g. `1` |
+| `RATE_LIMIT_MAX_CONCURRENT` | Max concurrent requests | `rate_limit.max_concurrent` | e.g. `1` |
 | `SYNC_INTERVAL` | Time between automatic syncs | `sync.sync_interval` | Legacy mode only |
 | `SYNC_INCLUDE_EBOOKS` | Include items with media type "ebook" | `sync.include_ebooks` | Legacy mode only |
 | `SYNC_LIBRARIES_INCLUDE` | Comma-separated list of libraries to include | `sync.libraries.include` | Legacy mode only |
@@ -858,6 +858,58 @@ For additional support:
 - 📋 Check [existing issues](https://github.com/drallgood/audiobookshelf-hardcover-sync/issues)
 - 📖 Review the [MIGRATION.md](MIGRATION.md) documentation
 - 🐛 Create a new issue with debug logs if problems persist
+
+### "Manual verification required" / "Edition not matched"
+
+If sync reports:
+- `Edition not matched, create or link Hardcover edition`
+- `Manual verification required`
+
+it means the app could not confidently match your AudiobookShelf item to a specific Hardcover audiobook edition.
+
+Important: The web UI currently shows this warning but does not include a one-click "link edition" action yet.
+
+Use this workflow:
+
+1. **Find the mismatch details**
+  - Open the sync summary in the web UI and inspect the mismatch entries.
+  - Optionally review JSON mismatch files in your configured `sync.mismatch_output_dir` (default: `./mismatches`).
+
+2. **Identify why matching failed**
+  - Missing or incorrect identifiers in AudiobookShelf (ASIN/ISBN)
+  - Book exists in Hardcover, but the audiobook edition does not
+  - Book itself does not exist in Hardcover
+  - Invalid/expired Hardcover token (least common)
+
+3. **Resolve based on cause**
+  - **Missing ASIN/ISBN in AudiobookShelf**: Add/correct identifiers, then re-run sync.
+  - **Book exists, edition missing in Hardcover**:
+    - Create the edition manually on Hardcover, or
+    - Use `edition-tool` with a generated mismatch JSON/template.
+  - **Book missing in Hardcover**: Create the book and audiobook edition in Hardcover, then re-run sync.
+  - **Token issue**: Generate a new Hardcover token and update configuration.
+
+4. **Re-run sync and verify**
+  - Re-run sync after your metadata or Hardcover updates.
+  - The mismatch warning should disappear once the correct edition can be matched.
+
+#### Using `edition-tool` for faster fixes
+
+```bash
+# Build tools
+make build-tools
+
+# Inspect commands
+./bin/edition-tool help
+
+# Create edition interactively
+./bin/edition-tool create --interactive
+
+# Create edition from JSON template/mismatch data
+./bin/edition-tool create --file path/to/edition-template.json
+```
+
+Tip: Always review JSON data before creating editions to avoid linking to the wrong book/edition.
 
 ## Contributing
 

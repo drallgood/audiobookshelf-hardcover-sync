@@ -436,7 +436,7 @@ func TestAddWithMetadata(t *testing.T) {
 		AuthorName:    "Test Author",
 		NarratorName:  "Test Narrator",
 		ISBN:          "1234567890",
-		ASIN:          "B07GNTNXQW",
+		ASIN:          "",
 		CoverURL:      "https://example.com/cover.jpg",
 		PublishedYear: "2020",
 		PublishedDate: "2020-01-15",
@@ -458,11 +458,11 @@ func TestAddWithMetadata(t *testing.T) {
 	assert.Equal(t, "Test Narrator", mismatch.Narrator)
 	assert.Equal(t, "1234567890", mismatch.ISBN)
 	assert.Equal(t, "1234567890", mismatch.ISBN10) // Should be set from ISBN
-	assert.Equal(t, "B07GNTNXQW", mismatch.ASIN)
+	assert.Equal(t, "", mismatch.ASIN)
 	assert.Equal(t, "https://example.com/cover.jpg", mismatch.CoverURL)
 	assert.Equal(t, "https://example.com/cover.jpg", mismatch.ImageURL) // Should match CoverURL
 	assert.Equal(t, 3600, mismatch.DurationSeconds)
-	assert.Equal(t, "2018-10-02", mismatch.ReleaseDate) // Uses the date from Audnex API response
+	assert.Equal(t, "2020-01-15", mismatch.ReleaseDate) // Uses the date from metadata PublishedDate
 	assert.Equal(t, "2020", mismatch.PublishedYear)
 	assert.Equal(t, "Audiobook", mismatch.EditionFormat)
 	assert.Equal(t, "Audiobookshelf", mismatch.EditionInfo) // Only contains platform name

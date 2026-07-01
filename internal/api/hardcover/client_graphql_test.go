@@ -6,10 +6,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -175,4 +178,70 @@ func TestGraphQLQuery_BookByASIN(t *testing.T) {
 	assert.Equal(t, 2, edition.ReadingFormatID, "Reading format ID should be 2 (audiobook)")
 	assert.Equal(t, "B00I8OW9R2", *edition.ASIN, "ASIN should match the query parameter")
 	assert.Equal(t, 12345, *edition.AudioSeconds, "Audio seconds should match the mock response")
+}
+
+func TestGraphQLQuery_RetriesOn429ThenSucceeds(t *testing.T) {
+	logger.Setup(logger.Config{Level: "debug", Format: "json"})
+	log := logger.Get()
+
+	var attempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&attempts, 1) < 3 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":"Throttled"}`))
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"books":[{"id":1}]}}`))
+	}))
+	defer server.Close()
+
+	client := CreateTestClient(server)
+	client.logger = log
+	client.maxRetries = 3
+	client.retryDelay = 1 * time.Millisecond
+	client.rateLimiter = util.NewRateLimiter(time.Nanosecond, 100, 100, log)
+
+	var response struct {
+		Books []struct {
+			ID int `json:"id"`
+		} `json:"books"`
+	}
+
+	err := client.GraphQLQuery(context.Background(), `query RetryTest { books { id } }`, nil, &response)
+	require.NoError(t, err)
+	require.Len(t, response.Books, 1)
+	assert.Equal(t, 3, int(atomic.LoadInt32(&attempts)))
+	assert.Equal(t, 1, response.Books[0].ID)
+}
+
+func TestGraphQLQuery_FailsFastOn400(t *testing.T) {
+	logger.Setup(logger.Config{Level: "debug", Format: "json"})
+	log := logger.Get()
+
+	var attempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	client := CreateTestClient(server)
+	client.logger = log
+	client.maxRetries = 3
+	client.retryDelay = 1 * time.Millisecond
+	client.rateLimiter = util.NewRateLimiter(time.Nanosecond, 100, 100, log)
+
+	var response struct {
+		Books []struct {
+			ID int `json:"id"`
+		} `json:"books"`
+	}
+
+	err := client.GraphQLQuery(context.Background(), `query FailFastTest { books { id } }`, nil, &response)
+	require.Error(t, err)
+	assert.Equal(t, 1, int(atomic.LoadInt32(&attempts)))
+	assert.Contains(t, err.Error(), "non-retryable HTTP error")
 }

@@ -98,12 +98,13 @@ const (
 
 // Default rate limiting configuration
 const (
-	// DefaultRateLimit is the default minimum time between requests (1.5s to match Hardcover's rate limits)
-	DefaultRateLimit = 1500 * time.Millisecond
+	// DefaultRateLimit is the default minimum time between requests.
+	// Hardcover now enforces 30 requests/minute, so use 2s between requests.
+	DefaultRateLimit = 2 * time.Second
 	// DefaultBurst is the default burst size for rate limiting
-	DefaultBurst = 2
+	DefaultBurst = 1
 	// DefaultMaxConcurrent is the default maximum concurrent requests
-	DefaultMaxConcurrent = 3
+	DefaultMaxConcurrent = 1
 )
 
 // ClientConfig holds configuration for the Hardcover client
@@ -162,9 +163,10 @@ type Client struct {
 	rateLimiter      *util.RateLimiter
 	maxRetries       int
 	retryDelay       time.Duration
-	userBookIDCache  cache.Cache[int, int]             // editionID -> userBookID
-	userCache        cache.Cache[string, any]          // Generic cache for user-specific data
-	editionCache     cache.Cache[int, *models.Edition] // editionID -> Edition
+	userBookIDCache       cache.Cache[int, int]             // editionID -> userBookID
+	userBookByBookIDCache cache.Cache[int, int]             // bookID -> userBookID
+	userCache             cache.Cache[string, any]          // Generic cache for user-specific data
+	editionCache          cache.Cache[int, *models.Edition] // editionID -> Edition
 }
 
 // GetAuthHeader returns the properly formatted Authorization header value
@@ -288,19 +290,26 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 		7*24*time.Hour, // 7 days TTL
 	)
 
+	// Create book-ID-only user book cache (bookID -> userBookID) with same TTL as edition
+	userBookByBookIDCache := cache.WithTTL[int, int](
+		cache.NewMemoryCache[int, int](childLogger),
+		UserBookIDCacheTTL,
+	)
+
 	// Create and return the client
 	client := &Client{
-		baseURL:         strings.TrimRight(cfg.BaseURL, "/"),
-		authToken:       token,
-		httpClient:      httpClient,
-		gqlClient:       gqlClient,
-		logger:          childLogger,
-		rateLimiter:     rateLimiter,
-		maxRetries:      cfg.MaxRetries,
-		retryDelay:      cfg.RetryDelay,
-		userBookIDCache: userBookIDCache,
-		userCache:       userCache,
-		editionCache:    editionCache,
+		baseURL:               strings.TrimRight(cfg.BaseURL, "/"),
+		authToken:             token,
+		httpClient:            httpClient,
+		gqlClient:             gqlClient,
+		logger:                childLogger,
+		rateLimiter:           rateLimiter,
+		maxRetries:            cfg.MaxRetries,
+		retryDelay:            cfg.RetryDelay,
+		userBookIDCache:       userBookIDCache,
+		userBookByBookIDCache: userBookByBookIDCache,
+		userCache:             userCache,
+		editionCache:          editionCache,
 	}
 
 	// Log client creation
@@ -383,6 +392,34 @@ type HTTPError struct {
 
 func (e *HTTPError) Error() string {
 	return fmt.Sprintf("HTTP error %d: %s", e.StatusCode, string(e.Body))
+}
+
+func isRetryableHTTPStatus(statusCode int) bool {
+	return statusCode == http.StatusTooManyRequests || (statusCode >= 500 && statusCode <= 599)
+}
+
+func parseRetryAfterDelay(value string) (time.Duration, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+
+	if seconds, err := strconv.Atoi(value); err == nil {
+		if seconds < 0 {
+			seconds = 0
+		}
+		return time.Duration(seconds) * time.Second, true
+	}
+
+	if retryAt, err := http.ParseTime(value); err == nil {
+		delay := time.Until(retryAt)
+		if delay < 0 {
+			delay = 0
+		}
+		return delay, true
+	}
+
+	return 0, false
 }
 
 // GraphQLQuery executes a GraphQL query and unmarshals the response into the result parameter
@@ -487,8 +524,8 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		}
 
 		// Read the response body
-		defer resp.Body.Close()
 		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		if err != nil {
 			lastErr = fmt.Errorf("failed to read response body: %w", err)
 			c.logger.Error("Failed to read response body", map[string]interface{}{
@@ -516,6 +553,23 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"error":   lastErr.Error(),
 				"attempt": attempt + 1,
 			})
+			if !isRetryableHTTPStatus(resp.StatusCode) {
+				return fmt.Errorf("non-retryable HTTP error: %w", lastErr)
+			}
+
+			if resp.StatusCode == http.StatusTooManyRequests {
+				if retryAfter, ok := parseRetryAfterDelay(resp.Header.Get("Retry-After")); ok {
+					genericDelay := c.retryDelay * time.Duration(attempt+1)
+					if retryAfter > genericDelay {
+						extraDelay := retryAfter - genericDelay
+						select {
+						case <-ctx.Done():
+							return fmt.Errorf("retry canceled: %w", ctx.Err())
+						case <-time.After(extraDelay):
+						}
+					}
+				}
+			}
 			continue
 		}
 
@@ -1738,6 +1792,9 @@ func (c *Client) InsertUserBookRead(ctx context.Context, input InsertUserBookRea
 	if input.DatesRead.StartedAt != nil {
 		userBookRead["started_at"] = input.DatesRead.StartedAt
 	}
+	if input.DatesRead.ProgressSeconds != nil {
+		userBookRead["progress_seconds"] = input.DatesRead.ProgressSeconds
+	}
 
 	variables := map[string]interface{}{
 		"user_book_id":   input.UserBookID,
@@ -2803,13 +2860,24 @@ func (c *Client) GetUserBookID(ctx context.Context, editionID int) (int, error) 
 	return userBookID, nil
 }
 
-// LookupUserBookByBookIDOnly performs a lookup of a user book by book ID only (ignoring edition)
+// LookupUserBookByBookIDOnly performs a lookup of a user book by book ID only (ignoring edition).
+// Results are cached by bookID for the duration of the sync run to avoid redundant API calls.
 func (c *Client) LookupUserBookByBookIDOnly(ctx context.Context, bookID, userID int) (int, error) {
 	log := c.logger.With(map[string]interface{}{
 		"bookID": bookID,
 		"userID": userID,
 		"method": "lookupUserBookByBookIDOnly",
 	})
+
+	// Check the cache first to avoid redundant API calls — the same book_id may be
+	// queried many times per sync run across different code paths.
+	if cached, found := c.userBookByBookIDCache.Get(bookID); found {
+		log.Debug("User book lookup by book ID only served from cache", map[string]interface{}{
+			"bookID":     bookID,
+			"userBookID": cached,
+		})
+		return cached, nil
+	}
 
 	// Define the GraphQL query - look for user book with just book_id
 	const query = `
@@ -2860,6 +2928,9 @@ func (c *Client) LookupUserBookByBookIDOnly(ctx context.Context, bookID, userID 
 	})
 
 	if len(response.UserBooks) == 0 {
+		// Cache the "not found" result (0) so repeated lookups for the same book
+		// within one sync run don't each make an API call.
+		c.userBookByBookIDCache.Set(bookID, 0, UserBookIDCacheTTL)
 		return 0, nil
 	}
 
@@ -2872,13 +2943,18 @@ func (c *Client) LookupUserBookByBookIDOnly(ctx context.Context, bookID, userID 
 		"editionID":  userBook.EditionID,
 	})
 
+	// Cache the result so repeated calls for the same book within one sync run
+	// are served locally without hitting the API again.
+	c.userBookByBookIDCache.Set(bookID, userBookID, UserBookIDCacheTTL)
+
 	return userBookID, nil
 }
 
-// ClearUserBookCache clears the user book ID cache
+// ClearUserBookCache clears the user book ID caches (by edition and by book)
 func (c *Client) ClearUserBookCache() {
 	c.userBookIDCache.Clear()
-	c.logger.Debug("Cleared user book ID cache", nil)
+	c.userBookByBookIDCache.Clear()
+	c.logger.Debug("Cleared user book ID caches", nil)
 }
 
 // lookupUserBookByBookID performs a single lookup of a user book by book ID and edition ID

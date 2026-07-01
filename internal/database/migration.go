@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
@@ -84,9 +85,18 @@ func (m *MigrationManager) MigrateFromSingleUserConfig(configPath string) error 
 	profileName := "Default Profile"
 
 	// Convert config to sync config data
+	// Use paths.data_dir for state file to ensure consistency with container deployment
+	statePath := cfg.Sync.StateFile
+	if statePath == "" || statePath == "./data/sync_state.json" {
+		// Prefer paths.data_dir when available; fall back to sync.state_file otherwise
+		if cfg.Paths.DataDir != "" {
+			statePath = fmt.Sprintf("%s/sync_state.json", strings.TrimSuffix(cfg.Paths.DataDir, "/"))
+		}
+	}
+
 	syncConfig := SyncConfigData{
 		Incremental:        cfg.Sync.Incremental,
-		StateFile:          cfg.Sync.StateFile,
+		StateFile:          statePath,
 		MinChangeThreshold: cfg.Sync.MinChangeThreshold,
 		Libraries: struct {
 			Include []string `json:"include"`

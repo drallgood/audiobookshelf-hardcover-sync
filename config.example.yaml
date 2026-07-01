@@ -6,9 +6,9 @@ server:
 
 # Rate limiting configuration
 rate_limit:
-  rate: "1500ms"        # Minimum time between requests (e.g., 1500ms for ~40 requests per minute)
-  burst: 2              # Maximum number of requests in a burst
-  max_concurrent: 3      # Maximum number of concurrent requests
+  rate: "2s"            # Minimum time between requests (30 requests per minute)
+  burst: 1              # Maximum number of requests in a burst
+  max_concurrent: 1     # Maximum number of concurrent requests
 
 # Logging configuration
 logging:

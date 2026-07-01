@@ -240,6 +240,59 @@ func TestHandleFinishedBook(t *testing.T) {
 	}
 }
 
+func TestHandleFinishedBook_MissingFinishedAtSkipsReadMutation(t *testing.T) {
+	logger.Setup(logger.Config{Level: "debug", Format: "json"})
+
+	svc, mockClient := createTestService()
+	svc.config = createTestConfigForTests(true)
+
+	book := createTestFinishedBook("abs-book-missing-finished-at", "The Moscow Rules", "Test Author", "B123", "978123")
+	book.Progress.FinishedAt = 0
+
+	userBookID := int64(7792556)
+	userBookIDStr := strconv.FormatInt(userBookID, 10)
+
+	readStatuses := []hardcover.UserBookRead{
+		{
+			ID:              int64(5687935),
+			UserBookID:      userBookID,
+			StartedAt:       stringPointer("2025-06-11"),
+			FinishedAt:      nil,
+			Progress:        83.6,
+			ProgressSeconds: intPointer(21234),
+		},
+		{
+			ID:              int64(2904322),
+			UserBookID:      userBookID,
+			StartedAt:       stringPointer("2025-06-11"),
+			FinishedAt:      stringPointer("2025-06-11"),
+			Progress:        100.0,
+			ProgressSeconds: intPointer(25383),
+		},
+	}
+
+	mockClient.On("GetUserBook", mock.Anything, userBookIDStr).Return(&models.HardcoverBook{
+		ID:           "book-moscow-rules",
+		UserBookID:   userBookIDStr,
+		BookStatusID: 2,
+	}, nil)
+
+	mockClient.On("UpdateUserBookStatus", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookStatusInput) bool {
+		return input.ID == userBookID && input.Status == "FINISHED"
+	})).Return(nil)
+
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return(readStatuses, nil)
+
+	err := svc.HandleFinishedBook(context.Background(), convertTestBookToModel(book), "32059489", userBookID)
+	assert.NoError(t, err)
+
+	mockClient.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+	mockClient.AssertExpectations(t)
+}
+
 // Helper functions for test data
 func stringPointer(s string) *string {
 	return &s

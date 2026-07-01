@@ -1826,10 +1826,9 @@ class SyncProfileApp {
             audiobookshelf_url: formData.get('audiobookshelf_url'),
             audiobookshelf_token: formData.get('audiobookshelf_token'),
             hardcover_token: formData.get('hardcover_token'),
-            sync_config: {
-                incremental: formData.get('incremental') === 'on',
-                state_file: `./data/${formData.get('id')}_sync_state.json`,
-                min_change_threshold: 60,
+                sync_config: {
+                    incremental: formData.get('incremental') === 'on',
+                    min_change_threshold: 60,
                 libraries: {
                     include: this.parseCommaSeparated(formData.get('include_libraries')),
                     exclude: this.parseCommaSeparated(formData.get('exclude_libraries'))
@@ -1975,10 +1974,9 @@ class SyncProfileApp {
             audiobookshelf_url: formData.get('audiobookshelf_url'),
             audiobookshelf_token: formData.get('audiobookshelf_token') || this.currentEditUser.audiobookshelf_token,
             hardcover_token: formData.get('hardcover_token') || this.currentEditUser.hardcover_token,
-            sync_config: {
-                incremental: formData.get('incremental') === 'on',
-                state_file: `./data/${userId}_sync_state.json`,
-                min_change_threshold: 60,
+                sync_config: {
+                    incremental: formData.get('incremental') === 'on',
+                    min_change_threshold: 60,
                 libraries: {
                     include: this.parseCommaSeparated(formData.get('include_libraries')),
                     exclude: this.parseCommaSeparated(formData.get('exclude_libraries'))

@@ -5,7 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v3.3.1] - 2026-07-01
+
+## [v3.3.1] - 2026-07-01
+
+### Added
+- **Manual Verification Documentation**: Added troubleshooting guidance for "Edition not matched" / "Manual verification required" mismatch states, including cause-based resolution paths and `edition-tool` workflow (#124)
+
+### Performance
+- **Hardcover Book ID Lookup Cache**: `LookupUserBookByBookIDOnly` results are now cached by book ID to reduce redundant Hardcover API calls during sync, significantly lowering request volume on large libraries
+
+### Security
+- **JWT Library Upgrade**: Bumped `go-jose` to v4.1.4 to address upstream security vulnerabilities in JWT/JWS handling
+
+### Fixed
+- **Hardcover API Rate Limit Alignment**: Updated default client throttling and configuration examples to match Hardcover's new 30 requests/minute limit
+  - Default rate limit is now `2s` between requests
+  - Default burst is now `1`
+  - Default max concurrent requests is now `1`
+  - Updated `.env.example`, `config.example.yaml`, README, and migration docs to reflect new defaults
+- **Cross-Format Read Selection**: Fixed in-progress sync potentially updating the wrong unfinished read when a user book has multiple read entries across formats/editions
+  - `handleInProgressBook` now prefers reads matching the target audiobook edition from state/user-book context
+  - Prevents audiobook progress updates from being applied to physical/manual read entries under the same user book
+  - Added regression test coverage for mixed-edition unfinished read scenarios
+- **Stale Reread Close Metadata Preservation**: Fixed stale unfinished reread closure to preserve read metadata on the closed entry
+  - When closing stale unfinished reads, sync now keeps the existing `started_at` and `edition_id` values instead of leaving legacy null metadata
+  - Prevents completed historical rows from showing missing start date or format-linked edition context
+- **Unfinished Read Progress Self-Healing**: Fixed in-progress sync potentially skipping active reads that are missing `progress_seconds`
+  - Unfinished reads with missing `progress_seconds` are now force-updated from Audiobookshelf current progress
+  - Prevents active rows from remaining in incorrect/null progress state after stale-read transitions
+- **Profile Sync State Path Resolution**: Fixed sync state files being written to relative `./data/` paths instead of respecting `paths.data_dir` configuration, causing permission errors in Kubernetes deployments (#125)
+  - Web UI now defaults to absolute `/data/sync_state.json` instead of relative paths
+  - Migration process derives profile state_file from `paths.data_dir` configuration
+  - Runtime profile config creation normalizes relative paths to absolute paths using configured data directory as anchor
+  - This ensures profile configuration is consistent across UI, migration, and runtime in containerized environments
+- **Reading Progress Percentage Sync**: Fixed regression where new Hardcover read entries could be created without `progress_seconds`, causing books to show as just started even when Audiobookshelf progress was in-progress (#122)
+  - `InsertUserBookRead` now includes `progress_seconds` in the GraphQL `user_book_read` payload
+  - Added regression test to verify `progress_seconds` is always sent on read creation
+- **In-Progress Reread Timeline Sync**: Fixed stale `started_at` and 00h00 edge cases for active unfinished reads in Hardcover (#122)
+  - In-progress sync now forces updates when Hardcover `progress_seconds` is `0` but Audiobookshelf has listening time
+  - Added stale reread detection: if an unfinished read predates an existing finished read, the stale unfinished read is closed and a new active read is created
+  - Prevents active reads from incorrectly showing old start dates (for example, 2025) when the current session started recently
+  - Added regression test coverage for stale reread close-and-create behavior
+- **Duplicate Read Prevention**: Fixed multiple edge cases where sync could create unintended duplicate read entries in Hardcover
+  - In-progress sync now stops creating duplicate unfinished rows when a valid active read already exists
+  - Cross-day reread detection prevents duplicate entries when a book is finished on a different day
+  - Removed unreliable `hasExistingRead` snapshot check that could miss recent reads and cause duplicates
+  - In-progress cleanup now correctly identifies already-cleaned reads to avoid redundant operations
+  - Edition mismatch paths now prevent duplicate read inserts when ABS `started_at` is stale
+  - Finished-at logic skips insert when `finished_at` is empty to avoid zero-date entries
+  - Soft-close preserves read metadata (edition, started_at) when deduplicating
+  - Nil-edition duplicate reads are cleaned while preserving the valid active read
+  - Retry logic hardened to prevent cascading duplicate inserts on transient failures
+
+## [v3.3.0] - 2026-03-29
 
 ### Added
 - **DNF Status Preservation**: New option to preserve books marked as "Did Not Finish" in Hardcover (#88)
