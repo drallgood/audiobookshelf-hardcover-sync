@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Manual Verification Documentation**: Added troubleshooting guidance for "Edition not matched" / "Manual verification required" mismatch states, including cause-based resolution paths and `edition-tool` workflow (#124)
 
+### Performance
+- **Hardcover Book ID Lookup Cache**: `LookupUserBookByBookIDOnly` results are now cached by book ID to reduce redundant Hardcover API calls during sync, significantly lowering request volume on large libraries
+
+### Security
+- **JWT Library Upgrade**: Bumped `go-jose` to v4.1.4 to address upstream security vulnerabilities in JWT/JWS handling
+
 ### Fixed
 - **Hardcover API Rate Limit Alignment**: Updated default client throttling and configuration examples to match Hardcover's new 30 requests/minute limit
   - Default rate limit is now `2s` between requests
@@ -39,6 +45,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added stale reread detection: if an unfinished read predates an existing finished read, the stale unfinished read is closed and a new active read is created
   - Prevents active reads from incorrectly showing old start dates (for example, 2025) when the current session started recently
   - Added regression test coverage for stale reread close-and-create behavior
+- **Duplicate Read Prevention**: Fixed multiple edge cases where sync could create unintended duplicate read entries in Hardcover
+  - In-progress sync now stops creating duplicate unfinished rows when a valid active read already exists
+  - Cross-day reread detection prevents duplicate entries when a book is finished on a different day
+  - Removed unreliable `hasExistingRead` snapshot check that could miss recent reads and cause duplicates
+  - In-progress cleanup now correctly identifies already-cleaned reads to avoid redundant operations
+  - Edition mismatch paths now prevent duplicate read inserts when ABS `started_at` is stale
+  - Finished-at logic skips insert when `finished_at` is empty to avoid zero-date entries
+  - Soft-close preserves read metadata (edition, started_at) when deduplicating
+  - Nil-edition duplicate reads are cleaned while preserving the valid active read
+  - Retry logic hardened to prevent cascading duplicate inserts on transient failures
 
 ## [v3.3.0] - 2026-03-29
 
