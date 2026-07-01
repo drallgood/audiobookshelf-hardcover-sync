@@ -464,9 +464,9 @@ func (s *MultiUserService) createProfileSpecificConfig(profileConfig *database.P
 			statePath = "/data/sync_state.json" // Container-friendly default
 		}
 	} else if !filepath.IsAbs(statePath) {
-		// If relative, resolve it against paths.data_dir
+		// If relative, resolve it against paths.data_dir (preserving the relative filename).
 		if s.globalConfig != nil && s.globalConfig.Paths.DataDir != "" {
-			statePath = fmt.Sprintf("%s/sync_state.json", strings.TrimSuffix(s.globalConfig.Paths.DataDir, "/"))
+			statePath = filepath.Join(s.globalConfig.Paths.DataDir, statePath)
 		}
 	}
 	config.Sync.StateFile = fmt.Sprintf("%s.%s", strings.TrimSuffix(statePath, ".json"), profileConfig.Profile.ID)

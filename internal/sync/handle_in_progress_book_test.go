@@ -314,7 +314,7 @@ func TestHandleInProgressBook_UsesNilEditionUnfinishedRead(t *testing.T) {
 // that if both a target-edition unfinished read and a nil-edition unfinished read
 // exist, we keep the duplicate open (to avoid false finished rows) and only update
 // the selected target read.
-func TestHandleInProgressBook_CleansNilEditionDuplicateWhenTargetReadExists(t *testing.T) {
+func TestHandleInProgressBook_KeepsNilEditionDuplicateOpenWhenTargetReadExists(t *testing.T) {
 	svc, mockClient := createTestService()
 
 	testAudiobook := createTestBook("test-book-dup-nil-edition", "Shift", "Hugh Howey", "B0BKR7LNQ9", "")
