@@ -1072,6 +1072,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	if book.Progress.CurrentTime <= 0 && !s.config.Sync.ProcessUnreadBooks && !book.Progress.IsFinished {
 		bookLog.Debug("Skipping unstarted book before Hardcover lookup", map[string]interface{}{
 			"current_time": book.Progress.CurrentTime,
+			"book_id":      book.ID,
 		})
 		bookProcessed = false // Explicitly mark as not processed when skipping unread books
 		return nil
