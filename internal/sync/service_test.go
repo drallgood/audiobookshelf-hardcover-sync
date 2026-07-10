@@ -710,6 +710,7 @@ func createTestService() (*Service, *MockHardcoverClient) {
 		config:    cfg,
 		log:       logger.Get(),
 		state:     state,
+		summary:             &SyncSummary{},
 		lastProgressUpdates: make(map[string]progressUpdateInfo),
 		asinCache:           make(map[string]*models.HardcoverBook),
 		persistentCache:     persistentCache,
@@ -718,6 +719,130 @@ func createTestService() (*Service, *MockHardcoverClient) {
 	}
 
 	return svc, mockClient
+}
+
+func TestProcessBookSkipsUnreadBeforeHardcoverLookup(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.config.Sync.Incremental = false
+	svc.config.Sync.ProcessUnreadBooks = false
+
+	book := toAudiobookshelfBook(createTestBook("unread-book", "Unread Book", "Test Author", "ASIN", "ISBN"))
+	book.Progress.CurrentTime = 0
+	book.Progress.IsFinished = false
+
+	err := svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{})
+
+	assert.NoError(t, err)
+	mockClient.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
+	assert.Equal(t, int32(0), svc.summary.BooksSynced, "skipped unread book must not count as synced")
+	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed)
+}
+
+// addMediaProgress appends a mediaProgress entry to a user progress fixture.
+// It exists so tests don't each restate the anonymous struct element type of
+// models.AudiobookshelfUserProgress.MediaProgress.
+func addMediaProgress(up *models.AudiobookshelfUserProgress, libraryItemID string, currentTime float64, startedAt, lastUpdate int64) {
+	up.MediaProgress = append(up.MediaProgress, struct {
+		ID            string  `json:"id"`
+		LibraryItemID string  `json:"libraryItemId"`
+		UserID        string  `json:"userId"`
+		IsFinished    bool    `json:"isFinished"`
+		Progress      float64 `json:"progress"`
+		CurrentTime   float64 `json:"currentTime"`
+		Duration      float64 `json:"duration"`
+		StartedAt     int64   `json:"startedAt"`
+		FinishedAt    int64   `json:"finishedAt"`
+		LastUpdate    int64   `json:"lastUpdate"`
+		TimeListening float64 `json:"timeListening"`
+	}{
+		LibraryItemID: libraryItemID,
+		CurrentTime:   currentTime,
+		StartedAt:     startedAt,
+		LastUpdate:    lastUpdate,
+	})
+}
+
+// addListeningSession appends a listening session to a user progress fixture;
+// see addMediaProgress for why.
+func addListeningSession(up *models.AudiobookshelfUserProgress, libraryItemID string, currentTime float64, startedAt, updatedAt int64) {
+	up.ListeningSessions = append(up.ListeningSessions, struct {
+		ID            string `json:"id"`
+		UserID        string `json:"userId"`
+		LibraryItemID string `json:"libraryItemId"`
+		MediaType     string `json:"mediaType"`
+		MediaMetadata struct {
+			Title  string `json:"title"`
+			Author string `json:"author"`
+		} `json:"mediaMetadata"`
+		Duration    float64 `json:"duration"`
+		CurrentTime float64 `json:"currentTime"`
+		Progress    float64 `json:"progress"`
+		IsFinished  bool    `json:"isFinished"`
+		StartedAt   int64   `json:"startedAt"`
+		UpdatedAt   int64   `json:"updatedAt"`
+	}{
+		LibraryItemID: libraryItemID,
+		CurrentTime:   currentTime,
+		StartedAt:     startedAt,
+		UpdatedAt:     updatedAt,
+	})
+}
+
+func TestProcessBookMergesUserProgressBeforeUnreadSkip(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.config.Sync.Incremental = false
+	svc.config.Sync.ProcessUnreadBooks = false
+
+	// The library item reports no playback, but the authoritative /me media
+	// progress says the book is started. The merge must happen before the
+	// unread skip, so the book has to reach the Hardcover lookup.
+	book := toAudiobookshelfBook(createTestBook("started-book", "Started Book", "Test Author", "ASIN123", ""))
+	book.Progress.CurrentTime = 0
+	book.Progress.IsFinished = false
+
+	userProgress := &models.AudiobookshelfUserProgress{}
+	addMediaProgress(userProgress, book.ID, 120, 0, 200)
+
+	mockClient.On("SearchBookByASIN", mock.Anything, "ASIN123").Return((*models.HardcoverBook)(nil), assert.AnError)
+	mockClient.On("SearchBooks", mock.Anything, mock.Anything, mock.Anything).Return([]models.HardcoverBook{}, nil)
+
+	_ = svc.processBook(context.Background(), *book, userProgress)
+
+	mockClient.AssertCalled(t, "SearchBookByASIN", mock.Anything, "ASIN123")
+}
+
+func TestEnhanceBookProgressFromUserData(t *testing.T) {
+	svc, _ := createTestService()
+
+	t.Run("prefers media progress over listening session", func(t *testing.T) {
+		book := toAudiobookshelfBook(createTestBook("progress-book", "Progress Book", "Test Author", "", ""))
+		userProgress := &models.AudiobookshelfUserProgress{}
+		addMediaProgress(userProgress, book.ID, 120, 100, 200)
+		// The session is more recently updated, but media progress must win.
+		addListeningSession(userProgress, book.ID, 60, 50, 300)
+
+		svc.enhanceBookProgressFromUserData(book, userProgress, logger.Get())
+
+		assert.Equal(t, 120.0, book.Progress.CurrentTime)
+		assert.Equal(t, int64(100), book.Progress.StartedAt)
+	})
+
+	t.Run("session fallback preserves library StartedAt", func(t *testing.T) {
+		// When no media progress matches, the session supplies
+		// CurrentTime/IsFinished but must not overwrite the library StartedAt —
+		// a session's startedAt is when playback began, not when the read began.
+		book := toAudiobookshelfBook(createTestBook("progress-book", "Progress Book", "Test Author", "", ""))
+		book.Progress.StartedAt = 999
+		userProgress := &models.AudiobookshelfUserProgress{}
+		addListeningSession(userProgress, book.ID, 60, 50, 300)
+
+		svc.enhanceBookProgressFromUserData(book, userProgress, logger.Get())
+
+		assert.Equal(t, 60.0, book.Progress.CurrentTime)
+		assert.Equal(t, int64(999), book.Progress.StartedAt)
+	})
 }
 
 func TestProcessFoundBook_WithBook(t *testing.T) {

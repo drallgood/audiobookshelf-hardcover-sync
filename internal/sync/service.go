@@ -1030,7 +1030,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	}()
 
 	bookLog.Debug("Starting book processing")
-	// Mark as processed by default, will be set to false if there's an error
+	// Mark as processed by default; set to false when the book is skipped or fails
 	bookProcessed = true
 
 	// Media type filtering: skip ebooks unless explicitly enabled
@@ -1062,6 +1062,19 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			"filter":  s.config.Sync.TestBookFilter,
 			"dry_run": s.config.Sync.DryRun,
 		})
+	}
+
+	// Skip books that haven't been started unless ProcessUnreadBooks is true.
+	// This must happen before any Hardcover lookup so that a broad library pass
+	// doesn't spend API capacity (or create mismatch records) on books this
+	// profile has opted out of processing.
+	// Don't skip finished books even if CurrentTime is 0 (they have progress=1.0).
+	if book.Progress.CurrentTime <= 0 && !s.config.Sync.ProcessUnreadBooks && !book.Progress.IsFinished {
+		bookLog.Debug("Skipping unstarted book before Hardcover lookup", map[string]interface{}{
+			"current_time": book.Progress.CurrentTime,
+		})
+		bookProcessed = false // Explicitly mark as not processed when skipping unread books
+		return nil
 	}
 
 	// Early filtering for incremental sync - check if book needs syncing
@@ -1401,24 +1414,6 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	})
 
 	bookLog.Debug("Calculated book progress", nil)
-
-	// Skip books that haven't been started unless ProcessUnreadBooks is true
-	// This check is done after progress enhancement to ensure we have accurate progress data
-	bookLog.Debug("Checking ProcessUnreadBooks setting", map[string]interface{}{
-		"current_time":          book.Progress.CurrentTime,
-		"process_unread_books":  s.config.Sync.ProcessUnreadBooks,
-		"book_id":               book.ID,
-		"title":                 book.Media.Metadata.Title,
-	})
-	
-	// Don't skip finished books even if CurrentTime is 0 (they have progress=1.0)
-	if book.Progress.CurrentTime <= 0 && !s.config.Sync.ProcessUnreadBooks && !book.Progress.IsFinished {
-		bookLog.Debug("Skipping unstarted book (ProcessUnreadBooks is false)", map[string]interface{}{
-			"current_time": book.Progress.CurrentTime,
-		})
-		bookProcessed = true // Count as processed since we made a decision to skip
-		return nil
-	}
 
 	// Skip books below minimum progress threshold
 	if progress < s.config.Sync.MinimumProgress && progress > 0 {

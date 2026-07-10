@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Unread Book Filtering Before Hardcover Lookup**: Skip unstarted books (when `process_unread_books` is disabled) before matching the book in Hardcover, instead of after. This prevents unnecessary Hardcover API requests and mismatch records for books that were going to be skipped anyway.
+- **Sync Summary Accuracy**: Books skipped by the unread filter are no longer counted in `BooksSynced` (they still count toward total books processed).
+
 ## [v3.3.1] - 2026-07-01
 
 ### Added
