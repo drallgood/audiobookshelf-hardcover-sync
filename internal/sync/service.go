@@ -892,6 +892,102 @@ func (s *Service) processLibrary(ctx context.Context, library *audiobookshelf.Au
 	return processed, nil
 }
 
+// enhanceBookProgressFromUserData populates book progress fields from the
+// Audiobookshelf /api/me response (mediaProgress or listening sessions).
+// The library items endpoint does not include per-user progress.
+func (s *Service) enhanceBookProgressFromUserData(book *models.AudiobookshelfBook, userProgress *models.AudiobookshelfUserProgress, log *logger.Logger) *logger.Logger {
+	if userProgress == nil {
+		return log
+	}
+
+	var bestProgress *struct {
+		ID            string  `json:"id"`
+		LibraryItemID string  `json:"libraryItemId"`
+		UserID        string  `json:"userId"`
+		IsFinished    bool    `json:"isFinished"`
+		Progress      float64 `json:"progress"`
+		CurrentTime   float64 `json:"currentTime"`
+		Duration      float64 `json:"duration"`
+		StartedAt     int64   `json:"startedAt"`
+		FinishedAt    int64   `json:"finishedAt"`
+		LastUpdate    int64   `json:"lastUpdate"`
+		TimeListening float64 `json:"timeListening"`
+	}
+
+	for i := range userProgress.MediaProgress {
+		if userProgress.MediaProgress[i].LibraryItemID == book.ID {
+			if bestProgress == nil || userProgress.MediaProgress[i].LastUpdate > bestProgress.LastUpdate {
+				bestProgress = &userProgress.MediaProgress[i]
+			}
+		}
+	}
+
+	if bestProgress != nil {
+		log = log.With(map[string]interface{}{
+			"has_media_progress": true,
+			"progress":           bestProgress.Progress,
+			"is_finished":        bestProgress.IsFinished,
+			"last_update":        bestProgress.LastUpdate,
+		})
+
+		book.Progress.CurrentTime = bestProgress.CurrentTime
+		book.Progress.IsFinished = bestProgress.IsFinished
+		book.Progress.FinishedAt = bestProgress.FinishedAt
+		book.Progress.StartedAt = bestProgress.StartedAt
+
+		log.Debug("Using enhanced progress from media progress data", map[string]interface{}{
+			"current_time": book.Progress.CurrentTime,
+			"finished_at":  book.Progress.FinishedAt,
+		})
+		return log
+	}
+
+	var bestSession *struct {
+		ID            string `json:"id"`
+		UserID        string `json:"userId"`
+		LibraryItemID string `json:"libraryItemId"`
+		MediaType     string `json:"mediaType"`
+		MediaMetadata struct {
+			Title  string `json:"title"`
+			Author string `json:"author"`
+		} `json:"mediaMetadata"`
+		Duration    float64 `json:"duration"`
+		CurrentTime float64 `json:"currentTime"`
+		Progress    float64 `json:"progress"`
+		IsFinished  bool    `json:"isFinished"`
+		StartedAt   int64   `json:"startedAt"`
+		UpdatedAt   int64   `json:"updatedAt"`
+	}
+
+	for i := range userProgress.ListeningSessions {
+		session := &userProgress.ListeningSessions[i]
+		if session.LibraryItemID == book.ID &&
+			(bestSession == nil || session.UpdatedAt > bestSession.UpdatedAt) {
+			bestSession = session
+		}
+	}
+
+	if bestSession != nil {
+		log = log.WithFields(map[string]interface{}{
+			"has_session_progress": true,
+			"session_progress":     bestSession.Progress,
+			"session_finished":     bestSession.IsFinished,
+			"session_updated":      bestSession.UpdatedAt,
+		})
+
+		book.Progress.CurrentTime = bestSession.CurrentTime
+		book.Progress.IsFinished = bestSession.IsFinished
+
+		log.Debug("Using progress from listening session", map[string]interface{}{
+			"current_time": book.Progress.CurrentTime,
+		})
+		return log
+	}
+
+	log.Debug("No enhanced progress data found in /api/me response", nil)
+	return log
+}
+
 // processBook processes a single book and updates its status in Hardcover
 func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBook, userProgress *models.AudiobookshelfUserProgress) error {
 	// Create a logger with book context at the start of the function
@@ -948,7 +1044,10 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		return ErrSkippedBook
 	}
 
-	// Track if we found the book in Hardcover
+	// Enhance book progress from the /api/me endpoint before any sync checks.
+	// The library items endpoint does not include per-user progress, so
+	// book.Progress.CurrentTime is always 0 unless enhanced here.
+	bookLog = s.enhanceBookProgressFromUserData(&book, userProgress, bookLog)
 
 	// Apply test book filter if configured - do this before any expensive lookups
 	if s.config.Sync.TestBookFilter != "" {
@@ -1277,99 +1376,6 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				"last_status":      bookState.Status,
 				"current_status":   currentStatus,
 			})
-		}
-	}
-
-	// Enhance book data with user progress if available
-	if userProgress != nil {
-		// Try to find matching progress in mediaProgress (most accurate source)
-		var bestProgress *struct {
-			ID            string  `json:"id"`
-			LibraryItemID string  `json:"libraryItemId"`
-			UserID        string  `json:"userId"`
-			IsFinished    bool    `json:"isFinished"`
-			Progress      float64 `json:"progress"`
-			CurrentTime   float64 `json:"currentTime"`
-			Duration      float64 `json:"duration"`
-			StartedAt     int64   `json:"startedAt"`
-			FinishedAt    int64   `json:"finishedAt"`
-			LastUpdate    int64   `json:"lastUpdate"`
-			TimeListening float64 `json:"timeListening"`
-		}
-
-		// Find the most recent progress entry for this book
-		for i := range userProgress.MediaProgress {
-			if userProgress.MediaProgress[i].LibraryItemID == book.ID {
-				if bestProgress == nil || userProgress.MediaProgress[i].LastUpdate > bestProgress.LastUpdate {
-					bestProgress = &userProgress.MediaProgress[i]
-				}
-			}
-		}
-
-		// If we found progress in mediaProgress, use it
-		if bestProgress != nil {
-			bookLog = bookLog.With(map[string]interface{}{
-				"has_media_progress": true,
-				"progress":           bestProgress.Progress,
-				"is_finished":        bestProgress.IsFinished,
-				"last_update":        bestProgress.LastUpdate,
-			})
-
-			// Update book progress with the most accurate data
-			book.Progress.CurrentTime = bestProgress.CurrentTime
-			book.Progress.IsFinished = bestProgress.IsFinished
-			book.Progress.FinishedAt = bestProgress.FinishedAt
-			book.Progress.StartedAt = bestProgress.StartedAt
-
-			bookLog.Debug("Using enhanced progress from media progress data", map[string]interface{}{
-				"current_time": book.Progress.CurrentTime,
-				"finished_at":  book.Progress.FinishedAt,
-			})
-		} else {
-			// Fall back to listening sessions if no media progress found
-			var bestSession *struct {
-				ID            string `json:"id"`
-				UserID        string `json:"userId"`
-				LibraryItemID string `json:"libraryItemId"`
-				MediaType     string `json:"mediaType"`
-				MediaMetadata struct {
-					Title  string `json:"title"`
-					Author string `json:"author"`
-				} `json:"mediaMetadata"`
-				Duration    float64 `json:"duration"`
-				CurrentTime float64 `json:"currentTime"`
-				Progress    float64 `json:"progress"`
-				IsFinished  bool    `json:"isFinished"`
-				StartedAt   int64   `json:"startedAt"`
-				UpdatedAt   int64   `json:"updatedAt"`
-			}
-
-			// Find the most recent listening session for this book
-			for i := range userProgress.ListeningSessions {
-				session := &userProgress.ListeningSessions[i]
-				if session.LibraryItemID == book.ID &&
-					(bestSession == nil || session.UpdatedAt > bestSession.UpdatedAt) {
-					bestSession = session
-				}
-			}
-
-			if bestSession != nil {
-				bookLog = bookLog.WithFields(map[string]interface{}{
-					"has_session_progress": true,
-					"session_progress":     bestSession.Progress,
-					"session_finished":     bestSession.IsFinished,
-					"session_updated":      bestSession.UpdatedAt,
-				})
-
-				book.Progress.CurrentTime = bestSession.CurrentTime
-				book.Progress.IsFinished = bestSession.IsFinished
-
-				bookLog.Debug("Using progress from listening session", map[string]interface{}{
-					"current_time": book.Progress.CurrentTime,
-				})
-			} else {
-				bookLog.Debug("No enhanced progress data found in /api/me response", nil)
-			}
 		}
 	}
 
