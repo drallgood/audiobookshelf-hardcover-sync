@@ -481,6 +481,7 @@ func (s *MultiUserService) createProfileSpecificConfig(profileConfig *database.P
 	config.Sync.DryRun = syncConfig.DryRun
 	config.Sync.TestBookFilter = syncConfig.TestBookFilter
 	config.Sync.TestBookLimit = syncConfig.TestBookLimit
+	config.Audiobookshelf.AudnexusRegion = syncConfig.AudnexusRegion
 	
 	// Debug logging to verify the config is being applied correctly
 	s.logger.Debug("Applied sync config for profile", map[string]interface{}{

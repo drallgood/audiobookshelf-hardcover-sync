@@ -1285,6 +1285,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				book.Media.Duration,
 				book.ID,
 				s.hardcover,
+				s.config.Audiobookshelf.AudnexusRegion,
 			)
 			bookLog.Info("Book found by title/author - recorded as mismatch (with enrichment)")
 
@@ -1530,9 +1531,8 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			book.Media.Duration,
 			book.ID,
 			s.hardcover, // Pass the Hardcover client for publisher lookup
+			s.config.Audiobookshelf.AudnexusRegion,
 		)
-
-		// Calculate progress percentage if we have duration
 		progressPct := 0.0
 		if book.Media.Duration > 0 {
 			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
@@ -1581,6 +1581,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			book.Media.Duration,
 			book.ID,
 			s.hardcover, // Pass the Hardcover client for publisher lookup
+			s.config.Audiobookshelf.AudnexusRegion,
 		)
 
 		// Update the state to track this book with current progress
@@ -1641,6 +1642,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			book.Media.Duration,
 			book.ID,
 			s.hardcover, // Pass the Hardcover client for publisher lookup
+			s.config.Audiobookshelf.AudnexusRegion,
 		)
 
 		// Update state with current progress before returning
@@ -1708,6 +1710,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			book.Media.Duration,
 			book.ID,
 			s.hardcover, // Pass the Hardcover client for publisher lookup
+			s.config.Audiobookshelf.AudnexusRegion,
 		)
 		bookProcessed = true // Count as processed since we recorded a mismatch
 		return nil

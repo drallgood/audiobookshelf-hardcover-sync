@@ -83,9 +83,11 @@ type Config struct {
 	// Audiobookshelf configuration
 	Audiobookshelf struct {
 		// URL is the base URL of the Audiobookshelf server
-		URL string `yaml:"url" env:"AUDIOBOOKSHELF_URL"`
+		URL            string `yaml:"url" env:"AUDIOBOOKSHELF_URL"`
 		// Token is the API token for Audiobookshelf
-		Token string `yaml:"token" env:"AUDIOBOOKSHELF_TOKEN"`
+		Token          string `yaml:"token" env:"AUDIOBOOKSHELF_TOKEN"`
+		// AudnexusRegion is the region for Audnexus API calls (ca, uk, au, de, fr, us)
+		AudnexusRegion string `yaml:"audnexus_region" env:"AUDIOBOOKSHELF_AUDNEXUS_REGION"`
 	} `yaml:"audiobookshelf"`
 
 	// Hardcover configuration
@@ -322,8 +324,8 @@ func Load(configPath string) (*Config, error) {
 	fmt.Println("Final configuration after validation and migration:")
 	fmt.Printf("Server:\n  port: %s\n  shutdown_timeout: %s\n  enable_web_ui: %v\n", 
 		cfg.Server.Port, cfg.Server.ShutdownTimeout, cfg.Server.EnableWebUI)
-	fmt.Printf("Audiobookshelf:\n  url: %s\n  has_token: %v\n", 
-		cfg.Audiobookshelf.URL, cfg.Audiobookshelf.Token != "")
+	fmt.Printf("Audiobookshelf:\n  url: %s\n  has_token: %v\n  audnexus_region: %s\n", 
+		cfg.Audiobookshelf.URL, cfg.Audiobookshelf.Token != "", cfg.Audiobookshelf.AudnexusRegion)
 	fmt.Printf("Hardcover:\n  has_token: %v\n  base_url: %s\n", cfg.Hardcover.Token != "", cfg.Hardcover.BaseURL)
 	fmt.Printf("Sync:\n  incremental: %v\n  state_file: %s\n  min_change_threshold: %d\n  sync_interval: %s\n  minimum_progress: %f\n  sync_want_to_read: %v\n  process_unread_books: %v\n  sync_owned: %v\n  dry_run: %v\n  single_user_mode: %v\n  single_user_username: %s\n  test_book_filter: %s\n  test_book_limit: %d\n  include_ebooks: %v\n",
 		cfg.Sync.Incremental, cfg.Sync.StateFile, cfg.Sync.MinChangeThreshold, 
@@ -418,6 +420,15 @@ func (c *Config) Validate() error {
 		// Set a default sync interval if invalid
 		c.Sync.SyncInterval = 1 * time.Hour
 		fmt.Printf("Warning: Invalid sync interval, using default: %s\n", c.Sync.SyncInterval)
+	}
+
+	// Validate audnexus region
+	if c.Audiobookshelf.AudnexusRegion != "" {
+		validRegions := map[string]bool{"us": true, "ca": true, "uk": true, "au": true, "de": true, "fr": true}
+		if !validRegions[strings.ToLower(c.Audiobookshelf.AudnexusRegion)] {
+			fmt.Printf("Warning: Unknown audnexus_region '%s'. Valid values: us, ca, uk, au, de, fr\n",
+				c.Audiobookshelf.AudnexusRegion)
+		}
 	}
 
 	// Validate minimum progress is between 0 and 1
@@ -579,6 +590,9 @@ func loadFromEnv(cfg *Config) {
 	}
 	if token := os.Getenv("AUDIOBOOKSHELF_TOKEN"); token != "" {
 		cfg.Audiobookshelf.Token = token
+	}
+	if region := os.Getenv("AUDIOBOOKSHELF_AUDNEXUS_REGION"); region != "" {
+		cfg.Audiobookshelf.AudnexusRegion = region
 	}
 
 	// Hardcover configuration

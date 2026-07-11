@@ -7,8 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Configurable Audnexus Region Support**: Non-US Audible users can now configure their Audnexus region for accurate ASIN lookups (#139)
+  - New `audnexus_region` field in `audiobookshelf` config section (values: `us`, `ca`, `uk`, `au`, `de`, `fr`)
+  - Environment variable: `AUDIOBOOKSHELF_AUDNEXUS_REGION`
+  - Fallback mechanism: tries configured region first, then falls back to `us` if the lookup fails
+  - Per-profile support in multi-user mode via `SyncConfigData.AudnexusRegion`
+  - Web UI input field in Add/Edit Profile forms
+  - Backward compatible: defaults to empty (no region filter, existing behavior)
+  - Thanks to @patriceb for this contribution.
+
 ### Fixed
-- **Progress Enhancement Before Incremental Sync**: Moved per-user progress enrichment from the `/api/me` endpoint before the incremental sync check. Previously, `book.Progress.CurrentTime` was always 0 from the library items endpoint, causing the incremental sync to skip books with real progress as "no significant changes." Now progress is populated first, so books with active listening progress are correctly detected and synced.: Skip unstarted books (when `process_unread_books` is disabled) before matching the book in Hardcover, instead of after. This prevents unnecessary Hardcover API requests and mismatch records for books that were going to be skipped anyway.
+- **Progress Enhancement Before Incremental Sync**: Moved per-user progress enrichment from the `/api/me` endpoint before the incremental sync check. Previously, `book.Progress.CurrentTime` was always 0 from the library items endpoint, causing the incremental sync to skip books with real progress as "no significant changes." Now progress is populated first, so books with active listening progress are correctly detected and synced.
+- **Unread Book Sync Optimization**: Skip unstarted books (when `process_unread_books` is disabled) before matching the book in Hardcover, instead of after. This prevents unnecessary Hardcover API requests and mismatch records for books that were going to be skipped anyway.
 - **Sync Summary Accuracy**: Books skipped by the unread filter are no longer counted in `BooksSynced` (they still count toward total books processed).
 - Thanks to @matthewbrahms for this contribution.
 

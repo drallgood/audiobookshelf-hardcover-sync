@@ -1841,7 +1841,8 @@ class SyncProfileApp {
                 include_ebooks: formData.get('include_ebooks') === 'on',
                 dry_run: false,
                 test_book_filter: '',
-                test_book_limit: 0
+                test_book_limit: 0,
+                audnexus_region: formData.get('audnexus_region') || ''
             }
         };
 
@@ -1947,6 +1948,9 @@ class SyncProfileApp {
         document.getElementById('edit-include-libraries').value = (libraries.include || []).join(', ');
         document.getElementById('edit-exclude-libraries').value = (libraries.exclude || []).join(', ');
         
+        // Audnexus region
+        document.getElementById('edit-audnexus-region').value = config.audnexus_region || '';
+        
         document.getElementById('edit-user-modal').style.display = 'block';
     }
 
@@ -1989,7 +1993,8 @@ class SyncProfileApp {
                 include_ebooks: formData.get('include_ebooks') === 'on',
                 dry_run: false,
                 test_book_filter: '',
-                test_book_limit: 0
+                test_book_limit: 0,
+                audnexus_region: formData.get('audnexus_region') || ''
             }
         };
 

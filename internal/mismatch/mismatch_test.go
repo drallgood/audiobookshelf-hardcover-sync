@@ -443,7 +443,7 @@ func TestAddWithMetadata(t *testing.T) {
 	}
 
 	// Call the function with a nil Hardcover client for testing
-	AddWithMetadata(metadata, "123", "edition123", "test reason", 3600, "abs123", nil)
+	AddWithMetadata(metadata, "123", "edition123", "test reason", 3600, "abs123", nil, "")
 
 	// Get the added mismatch
 	mismatches := GetAll()
