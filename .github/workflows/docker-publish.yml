@@ -43,7 +43,7 @@ jobs:
           cache: true
 
       - name: Cache Go modules
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/go-build
@@ -181,7 +181,7 @@ jobs:
           echo "Date: $DATE"
 
       - name: Set up Docker Buildx cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: /tmp/.buildx-cache
           key: ${{ runner.os }}-buildx-${{ github.sha }}
