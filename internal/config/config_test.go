@@ -173,3 +173,100 @@ http:
 	assert.Equal(t, "test-audiobookshelf-token", cfg.Audiobookshelf.Token)
 	assert.Equal(t, "test-hardcover-token", cfg.Hardcover.Token)
 }
+
+func TestLoadConfig_WithAudnexusRegion(t *testing.T) {
+	// Set required environment variables including Audnexus region
+	t.Setenv("AUDIOBOOKSHELF_URL", "https://example.com/audiobookshelf")
+	t.Setenv("AUDIOBOOKSHELF_TOKEN", "test-audiobookshelf-token")
+	t.Setenv("HARDCOVER_TOKEN", "test-hardcover-token")
+	t.Setenv("AUDIOBOOKSHELF_AUDNEXUS_REGION", "ca")
+
+	// Minimal YAML that omits audnexus_region to test env var path
+	yamlContent := `server:
+  port: "8080"
+audiobookshelf:
+  url: "https://example.com/audiobookshelf"
+  token: "test-audiobookshelf-token"
+hardcover:
+  token: "test-hardcover-token"
+`
+
+	tmpfile, err := os.CreateTemp("", "config-*.yaml")
+	require.NoError(t, err)
+	defer os.Remove(tmpfile.Name())
+
+	_, err = tmpfile.WriteString(yamlContent)
+	require.NoError(t, err)
+	err = tmpfile.Close()
+	require.NoError(t, err)
+
+	cfg, err := Load(tmpfile.Name())
+	require.NoError(t, err)
+
+	assert.Equal(t, "ca", cfg.Audiobookshelf.AudnexusRegion,
+		"AudnexusRegion should be 'ca' from env var")
+}
+
+func TestLoadConfig_WithAudnexusRegionFromYAML(t *testing.T) {
+	// Set required environment variables only (no audnexus env var)
+	t.Setenv("AUDIOBOOKSHELF_URL", "https://example.com/audiobookshelf")
+	t.Setenv("AUDIOBOOKSHELF_TOKEN", "test-audiobookshelf-token")
+	t.Setenv("HARDCOVER_TOKEN", "test-hardcover-token")
+
+	// YAML with audnexus_region set
+	yamlContent := `server:
+  port: "8080"
+audiobookshelf:
+  url: "https://example.com/audiobookshelf"
+  token: "test-audiobookshelf-token"
+  audnexus_region: "uk"
+hardcover:
+  token: "test-hardcover-token"
+`
+
+	tmpfile, err := os.CreateTemp("", "config-*.yaml")
+	require.NoError(t, err)
+	defer os.Remove(tmpfile.Name())
+
+	_, err = tmpfile.WriteString(yamlContent)
+	require.NoError(t, err)
+	err = tmpfile.Close()
+	require.NoError(t, err)
+
+	cfg, err := Load(tmpfile.Name())
+	require.NoError(t, err)
+
+	assert.Equal(t, "uk", cfg.Audiobookshelf.AudnexusRegion,
+		"AudnexusRegion should be 'uk' from YAML config")
+}
+
+func TestLoadConfig_DefaultAudnexusRegion(t *testing.T) {
+	// No AUDIOBOOKSHELF_AUDNEXUS_REGION env var set
+	t.Setenv("AUDIOBOOKSHELF_URL", "https://example.com/audiobookshelf")
+	t.Setenv("AUDIOBOOKSHELF_TOKEN", "test-audiobookshelf-token")
+	t.Setenv("HARDCOVER_TOKEN", "test-hardcover-token")
+
+	yamlContent := `server:
+  port: "8080"
+audiobookshelf:
+  url: "https://example.com/audiobookshelf"
+  token: "test-audiobookshelf-token"
+hardcover:
+  token: "test-hardcover-token"
+`
+
+	tmpfile, err := os.CreateTemp("", "config-*.yaml")
+	require.NoError(t, err)
+	defer os.Remove(tmpfile.Name())
+
+	_, err = tmpfile.WriteString(yamlContent)
+	require.NoError(t, err)
+	err = tmpfile.Close()
+	require.NoError(t, err)
+
+	cfg, err := Load(tmpfile.Name())
+	require.NoError(t, err)
+
+	assert.Equal(t, "", cfg.Audiobookshelf.AudnexusRegion,
+		"AudnexusRegion should default to empty string")
+}

@@ -111,6 +111,17 @@ func NewClient(logger *logger.Logger) *Client {
 	}
 }
 
+// NewClientForTesting creates a client with a custom base URL for testing
+func NewClientForTesting(baseURL string, log *logger.Logger) *Client {
+	return &Client{
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+		baseURL: baseURL,
+		logger:  log,
+	}
+}
+
 // GetBookByASIN retrieves book details by ASIN with retry mechanism
 func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book, error) {
 	if asin == "" {

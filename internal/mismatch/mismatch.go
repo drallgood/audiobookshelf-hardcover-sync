@@ -23,6 +23,12 @@ var (
 	mismatchLock sync.Mutex
 )
 
+// newAudnexClient is a factory for creating Audnex API clients.
+// It can be overridden in tests to inject mock clients.
+var newAudnexClient = func(log *logger.Logger) *audnex.Client {
+	return audnex.NewClient(log)
+}
+
 // Add adds a new book mismatch to the collection
 func Add(book BookMismatch) {
 	mismatchLock.Lock()
@@ -133,7 +139,7 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 		defer cancel()
 
 		// Create Audnex client and log the creation
-		audnexClient := audnex.NewClient(logger.Get())
+		audnexClient := newAudnexClient(logger.Get())
 		log.Debug("Created Audnex client for ASIN lookup", map[string]interface{}{
 			"asin":       metadata.ASIN,
 			"client_nil": audnexClient == nil,

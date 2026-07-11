@@ -92,3 +92,78 @@ func TestGetBookByASIN_NotFound(t *testing.T) {
 		t.Errorf("Expected book to be nil, got %v", book)
 	}
 }
+
+func TestGetBookByASIN_WithRegion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/books/B0BXJF2LW5" {
+			t.Errorf("Expected request to '/books/B0BXJF2LW5', got '%s'", r.URL.Path)
+		}
+		if r.URL.Query().Get("region") != "ca" {
+			t.Errorf("Expected region query param to be 'ca', got '%s'", r.URL.Query().Get("region"))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, err := w.Write([]byte(`{
+			"asin": "B0BXJF2LW5",
+			"title": "Canadian Test Book",
+			"authors": ["Author CA"],
+			"narrators": ["Narrator CA"],
+			"releaseDate": "2023-05-15",
+			"language": "English"
+		}`))
+		if err != nil {
+			t.Errorf("Failed to write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	client := &Client{
+		httpClient: server.Client(),
+		baseURL:    server.URL,
+		logger:     logger.Get(),
+	}
+
+	book, err := client.GetBookByASIN(context.Background(), "B0BXJF2LW5", "ca")
+
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if book == nil {
+		t.Fatal("Expected book to be non-nil")
+	}
+	if book.Title != "Canadian Test Book" {
+		t.Errorf("Expected Title to be 'Canadian Test Book', got '%s'", book.Title)
+	}
+}
+
+func TestGetBookByASIN_NoRegion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RawQuery != "" {
+			t.Errorf("Expected no query string, got '%s'", r.URL.RawQuery)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, err := w.Write([]byte(`{"asin": "NO_REGION", "title": "No Region Book"}`))
+		if err != nil {
+			t.Errorf("Failed to write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	client := &Client{
+		httpClient: server.Client(),
+		baseURL:    server.URL,
+		logger:     logger.Get(),
+	}
+
+	book, err := client.GetBookByASIN(context.Background(), "NO_REGION", "")
+
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if book == nil {
+		t.Fatal("Expected book to be non-nil")
+	}
+}
