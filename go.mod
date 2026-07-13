@@ -3,7 +3,7 @@ module github.com/drallgood/audiobookshelf-hardcover-sync
 go 1.26.0
 
 require (
-	github.com/coreos/go-oidc/v3 v3.19.0
+	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/hasura/go-graphql-client v0.16.0
 	github.com/rs/zerolog v1.35.1
 	github.com/stretchr/testify v1.11.1
