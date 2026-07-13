@@ -15,7 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Per-profile support in multi-user mode via `SyncConfigData.AudnexusRegion`
   - Web UI input field in Add/Edit Profile forms
   - Backward compatible: defaults to empty (no region filter, existing behavior)
-  - Thanks to @patriceb for this contribution.
 
 ### Fixed
 - **Progress Enhancement Before Incremental Sync**: Moved per-user progress enrichment from the `/api/me` endpoint before the incremental sync check. Previously, `book.Progress.CurrentTime` was always 0 from the library items endpoint, causing the incremental sync to skip books with real progress as "no significant changes." Now progress is populated first, so books with active listening progress are correctly detected and synced.
