@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audnex"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/edition"
@@ -443,7 +447,7 @@ func TestAddWithMetadata(t *testing.T) {
 	}
 
 	// Call the function with a nil Hardcover client for testing
-	AddWithMetadata(metadata, "123", "edition123", "test reason", 3600, "abs123", nil)
+	AddWithMetadata(metadata, "123", "edition123", "test reason", 3600, "abs123", nil, "")
 
 	// Get the added mismatch
 	mismatches := GetAll()
@@ -737,4 +741,182 @@ func TestSaveMismatchesJSONFileIndividual(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestAddWithMetadata_RegionFallback(t *testing.T) {
+	callCount := make(map[string]int)
+	var mu sync.Mutex
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		region := r.URL.Query().Get("region")
+		callCount[region]++
+		mu.Unlock()
+
+		if region == "ca" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// region "us" or "" returns success
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, err := w.Write([]byte(`{
+			"asin": "TESTASIN",
+			"title": "Region Test Book",
+			"releaseDate": "2024-01-15",
+			"authors": ["Author One"],
+			"narrators": ["Narrator One"]
+		}`))
+		if err != nil {
+			t.Errorf("Failed to write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	// Override the client factory to point to our mock server
+	originalFactory := newAudnexClient
+	newAudnexClient = func(log *logger.Logger) *audnex.Client {
+		return audnex.NewClientForTesting(server.URL, log)
+	}
+	defer func() { newAudnexClient = originalFactory }()
+
+	Clear()
+
+	metadata := MediaMetadata{
+		Title:         "Region Test Book",
+		AuthorName:    "Author One",
+		ASIN:          "TESTASIN",
+		PublishedDate: "2024-01-01",
+		CoverURL:      "https://example.com/cover.jpg",
+	}
+
+	// Test with "ca" region - should fail on "ca" and fall back to "us"
+	AddWithMetadata(metadata, "123", "edition123", "test reason", 3600, "abs123", nil, "ca")
+
+	mismatches := GetAll()
+	require.NotEmpty(t, mismatches, "Expected at least one mismatch")
+	m := mismatches[len(mismatches)-1]
+
+	assert.Equal(t, "2024-01-15", m.ReleaseDate, "Should use release date from Audnex (via fallback to us)")
+
+	mu.Lock()
+	caCalls := callCount["ca"]
+	usCalls := callCount["us"]
+	mu.Unlock()
+
+	assert.Equal(t, 1, caCalls, "Should have called Audnex with region=ca once")
+	assert.Equal(t, 1, usCalls, "Should have called Audnex with region=us as fallback")
+}
+
+func TestAddWithMetadata_RegionSucceedsOnFirstTry(t *testing.T) {
+	callCount := make(map[string]int)
+	var mu sync.Mutex
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		region := r.URL.Query().Get("region")
+		callCount[region]++
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, err := w.Write([]byte(`{
+			"asin": "TESTASIN",
+			"title": "Direct Hit",
+			"releaseDate": "2024-06-01",
+			"authors": ["Author One"],
+			"narrators": ["Narrator One"]
+		}`))
+		if err != nil {
+			t.Errorf("Failed to write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	originalFactory := newAudnexClient
+	newAudnexClient = func(log *logger.Logger) *audnex.Client {
+		return audnex.NewClientForTesting(server.URL, log)
+	}
+	defer func() { newAudnexClient = originalFactory }()
+
+	Clear()
+
+	metadata := MediaMetadata{
+		Title:         "Direct Hit",
+		AuthorName:    "Author One",
+		ASIN:          "TESTASIN",
+		PublishedDate: "2024-01-01",
+	}
+
+	// Test with "uk" region - should succeed on first try, no fallback needed
+	AddWithMetadata(metadata, "456", "edition456", "test reason", 3600, "abs456", nil, "uk")
+
+	mismatches := GetAll()
+	require.NotEmpty(t, mismatches)
+	m := mismatches[len(mismatches)-1]
+
+	assert.Equal(t, "2024-06-01", m.ReleaseDate, "Should use release date from Audnex (first try with uk)")
+
+	mu.Lock()
+	ukCalls := callCount["uk"]
+	usCalls := callCount["us"]
+	mu.Unlock()
+
+	assert.Equal(t, 1, ukCalls, "Should have called Audnex with region=uk once")
+	assert.Equal(t, 0, usCalls, "Should NOT have fallen back to us when uk succeeded")
+}
+
+func TestAddWithMetadata_NoRegionSet(t *testing.T) {
+	callCount := make(map[string]int)
+	var mu sync.Mutex
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		region := r.URL.Query().Get("region")
+		callCount[region]++
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, err := w.Write([]byte(`{
+			"asin": "TESTASIN",
+			"title": "No Region",
+			"releaseDate": "2024-03-15",
+			"authors": ["Author One"],
+			"narrators": ["Narrator One"]
+		}`))
+		if err != nil {
+			t.Errorf("Failed to write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	originalFactory := newAudnexClient
+	newAudnexClient = func(log *logger.Logger) *audnex.Client {
+		return audnex.NewClientForTesting(server.URL, log)
+	}
+	defer func() { newAudnexClient = originalFactory }()
+
+	Clear()
+
+	metadata := MediaMetadata{
+		Title:         "No Region",
+		AuthorName:    "Author One",
+		ASIN:          "TESTASIN",
+		PublishedDate: "2024-01-01",
+	}
+
+	AddWithMetadata(metadata, "789", "edition789", "test reason", 3600, "abs789", nil, "")
+
+	mismatches := GetAll()
+	require.NotEmpty(t, mismatches)
+	m := mismatches[len(mismatches)-1]
+
+	assert.Equal(t, "2024-03-15", m.ReleaseDate)
+
+	mu.Lock()
+	emptyCalls := callCount[""]
+	mu.Unlock()
+
+	assert.Equal(t, 1, emptyCalls, "Should have called Audnex with empty region (backward-compatible behavior)")
 }

@@ -19,6 +19,9 @@ logging:
 audiobookshelf:
   url: "https://your-audiobookshelf-instance.com"
   token: "your-audiobookshelf-token"
+  # Audnexus region for non-US Audible ASIN lookups (ca, uk, au, de, fr, us)
+  # Leave empty for default behavior (no region filter)
+  audnexus_region: ""
 
 # Hardcover configuration
 hardcover:

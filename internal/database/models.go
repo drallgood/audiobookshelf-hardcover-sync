@@ -63,6 +63,7 @@ type SyncConfigData struct {
 	DryRun             bool    `json:"dry_run"`
 	TestBookFilter     string  `json:"test_book_filter"`
 	TestBookLimit      int     `json:"test_book_limit"`
+	AudnexusRegion     string  `json:"audnexus_region"`
 }
 
 // IsEmpty checks if the SyncConfigData is empty (all fields at their zero values)
@@ -80,7 +81,8 @@ func (s SyncConfigData) IsEmpty() bool {
 		!s.IncludeEbooks &&
 		!s.DryRun &&
 		s.TestBookFilter == "" &&
-		s.TestBookLimit == 0
+		s.TestBookLimit == 0 &&
+		s.AudnexusRegion == ""
 }
 
 // BeforeCreate hook for SyncProfile

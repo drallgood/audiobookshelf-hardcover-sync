@@ -23,6 +23,12 @@ var (
 	mismatchLock sync.Mutex
 )
 
+// newAudnexClient is a factory for creating Audnex API clients.
+// It can be overridden in tests to inject mock clients.
+var newAudnexClient = func(log *logger.Logger) *audnex.Client {
+	return audnex.NewClient(log)
+}
+
 // Add adds a new book mismatch to the collection
 func Add(book BookMismatch) {
 	mismatchLock.Lock()
@@ -79,7 +85,7 @@ func RecordMismatch(book *BookMismatch) error {
 
 // AddWithMetadata creates and adds a new book mismatch with enhanced metadata
 // If hc is provided, it will be used to look up publisher and other metadata
-func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, duration float64, audiobookShelfID string, hc hardcover.HardcoverClientInterface) {
+func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, duration float64, audiobookShelfID string, hc hardcover.HardcoverClientInterface, audnexusRegion string) {
 	// Create a logger
 	log := logger.Get()
 
@@ -133,7 +139,7 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 		defer cancel()
 
 		// Create Audnex client and log the creation
-		audnexClient := audnex.NewClient(logger.Get())
+		audnexClient := newAudnexClient(logger.Get())
 		log.Debug("Created Audnex client for ASIN lookup", map[string]interface{}{
 			"asin":       metadata.ASIN,
 			"client_nil": audnexClient == nil,
@@ -146,8 +152,36 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 			"context": "mismatch_enrichment",
 		})
 
-		// Try to get book details from Audnex API
-		book, err := audnexClient.GetBookByASIN(ctx, metadata.ASIN, "")
+		// Try to get book details from Audnex API with region fallback
+		regions := []string{}
+		if audnexusRegion != "" {
+			regions = append(regions, audnexusRegion)
+			regions = append(regions, "us")
+		} else {
+			regions = append(regions, "")
+		}
+
+		var book *audnex.Book
+		var err error
+		for _, region := range regions {
+			book, err = audnexClient.GetBookByASIN(ctx, metadata.ASIN, region)
+			if err == nil && book != nil {
+				if region != "" {
+					log.Info("Audnex API lookup succeeded with region", map[string]interface{}{
+						"asin":   metadata.ASIN,
+						"region": region,
+					})
+				}
+				break
+			}
+			if region != "" {
+				log.Debug("Audnex lookup failed for region, trying fallback", map[string]interface{}{
+					"asin":   metadata.ASIN,
+					"region": region,
+					"error":  err.Error(),
+				})
+			}
+		}
 
 		// Enhanced logging based on response
 		if err == nil && book != nil {
