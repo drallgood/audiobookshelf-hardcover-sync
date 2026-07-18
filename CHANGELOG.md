@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Reread Detection After Restart**: Fixed `handleInProgressBook` silently skipping reread creation when a user relistens to a finished audiobook. Two root causes addressed (#156):
+  - **State written before Hardcover mutation**: Sync state was updated with current progress before the Hardcover API call, causing permanent "no change" skipping if the subsequent read creation was skipped. State is now only persisted after a successful Hardcover mutation.
+  - **Broken reread detection via stale `startedAt`**: Audiobookshelf does not reset `startedAt` when a finished book is restarted — the media progress retains the original first-read date. The previous detection logic relied on `progressLooksReset` (fails at >90% progress) and `absStartedAfterLatestFinished` (always false with stale `startedAt`), causing all rereads to be silently dropped. The redundant detection gate has been removed; the existing logic at the read-status selection layer already correctly identifies rereads by checking for finished-only read history with active ABS progress.
+
 ## [v3.4.0] - 2026-07-14
 
 ### Added

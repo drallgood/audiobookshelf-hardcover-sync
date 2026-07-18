@@ -938,7 +938,6 @@ func TestHandleInProgressBook_SkipsRereadCreateWithoutRestartSignal(t *testing.T
 	testAudiobook.Media.Duration = 32360
 	testAudiobook.Progress.IsFinished = false
 	testAudiobook.Progress.FinishedAt = 0
-	// ABS started_at is not newer than historical finish, so this is not a restart signal.
 	testAudiobook.Progress.StartedAt = time.Date(2026, time.June, 23, 0, 0, 0, 0, time.UTC).UnixMilli()
 	audiobook := toAudiobookshelfBook(testAudiobook)
 
@@ -949,13 +948,11 @@ func TestHandleInProgressBook_SkipsRereadCreateWithoutRestartSignal(t *testing.T
 		EditionID: "31546165",
 	}, nil).Once()
 
-	// Initial unfinished query returns nothing.
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
 		Status:     "unfinished",
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
-	// Second-chance full fetch returns only a finished historical read.
 	finishedAt := "2026-06-23"
 	startedAt := "2026-06-23"
 	progressSeconds := 32360
@@ -974,12 +971,29 @@ func TestHandleInProgressBook_SkipsRereadCreateWithoutRestartSignal(t *testing.T
 		},
 	}, nil).Once()
 
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+		ID:       userBookID,
+		StatusID: 2,
+	}).Return(nil).Once()
+
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{}, nil).Once()
+
+	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
+		if input.UserBookID != userBookID || input.DatesRead.StartedAt == nil {
+			return false
+		}
+		if input.DatesRead.ProgressSeconds == nil || *input.DatesRead.ProgressSeconds != 32350 {
+			return false
+		}
+		return true
+	})).Return(99999, nil).Once()
+
 	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, 31546165)
 	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
 	assert.NoError(t, err)
-	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
-	mockClient.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
 	mockClient.AssertExpectations(t)
 }
 
@@ -991,7 +1005,6 @@ func TestHandleInProgressBook_SkipsRereadCreateWhenNearCompleteAcrossDays(t *tes
 	testAudiobook.Media.Duration = 32360
 	testAudiobook.Progress.IsFinished = false
 	testAudiobook.Progress.FinishedAt = 0
-	// ABS started_at after latest finished date (cross-day), but progress is still near complete.
 	testAudiobook.Progress.StartedAt = time.Date(2026, time.June, 24, 8, 0, 0, 0, time.UTC).UnixMilli()
 	audiobook := toAudiobookshelfBook(testAudiobook)
 
@@ -1002,13 +1015,11 @@ func TestHandleInProgressBook_SkipsRereadCreateWhenNearCompleteAcrossDays(t *tes
 		EditionID: "31546165",
 	}, nil).Once()
 
-	// No unfinished reads.
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
 		Status:     "unfinished",
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
-	// Full fetch returns only a finished read from previous day.
 	finishedAt := "2026-06-23"
 	startedAt := "2026-06-23"
 	progressSeconds := 32360
@@ -1027,12 +1038,29 @@ func TestHandleInProgressBook_SkipsRereadCreateWhenNearCompleteAcrossDays(t *tes
 		},
 	}, nil).Once()
 
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+		ID:       userBookID,
+		StatusID: 2,
+	}).Return(nil).Once()
+
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{}, nil).Once()
+
+	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
+		if input.UserBookID != userBookID || input.DatesRead.StartedAt == nil {
+			return false
+		}
+		if input.DatesRead.ProgressSeconds == nil || *input.DatesRead.ProgressSeconds != 32350 {
+			return false
+		}
+		return true
+	})).Return(99999, nil).Once()
+
 	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, 31546165)
 	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
 	assert.NoError(t, err)
-	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
-	mockClient.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
 	mockClient.AssertExpectations(t)
 }
 

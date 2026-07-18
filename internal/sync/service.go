@@ -2605,64 +2605,6 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		})
 	}
 
-	// If we don't have an unfinished read but have a finished one, and the book is being read again
-	shouldCreateRereadFromFinished := false
-	if readStatusToUpdate == nil && mostRecentRead != nil && book.Progress.CurrentTime > 0 {
-		// Check if the progress is significantly different from the last read
-		lastProgress := 0.0
-		if mostRecentRead.ProgressSeconds != nil {
-			lastProgress = float64(*mostRecentRead.ProgressSeconds)
-		} else {
-			lastProgress = mostRecentRead.Progress
-		}
-
-		currentProgressRatio := 0.0
-		if book.Media.Duration > 0 {
-			currentProgressRatio = book.Progress.CurrentTime / book.Media.Duration
-		}
-
-		latestFinishedDate := ""
-		if mostRecentRead.FinishedAt != nil {
-			latestFinishedDate = *mostRecentRead.FinishedAt
-			if len(latestFinishedDate) > 10 {
-				latestFinishedDate = latestFinishedDate[:10]
-			}
-		}
-
-		absStartedAfterLatestFinished := false
-		if latestFinishedDate != "" && book.Progress.StartedAt > 0 {
-			absStartedAt := time.Unix(book.Progress.StartedAt/1000, 0).Format("2006-01-02")
-			absStartedAfterLatestFinished = absStartedAt > latestFinishedDate
-		}
-
-		// Only treat this as a reread when there is a meaningful progress reset.
-		// Without this guard, ABS started_at drift can create duplicate reads across days
-		// even when progress is still near completion.
-		progressLooksReset := book.Progress.CurrentTime < (lastProgress * 0.9)
-		nearCompleteProgress := currentProgressRatio >= 0.95
-
-		if progressLooksReset || (absStartedAfterLatestFinished && !nearCompleteProgress) {
-			shouldCreateRereadFromFinished = true
-			log.Info("Detected possible re-read of a finished book, will create new read status", map[string]interface{}{
-				"previous_read_id":               mostRecentRead.ID,
-				"previous_progress":              lastProgress,
-				"current_progress":               book.Progress.CurrentTime,
-				"current_progress_ratio":         currentProgressRatio,
-				"latest_finished_date":           latestFinishedDate,
-				"abs_started_after_latest_finish": absStartedAfterLatestFinished,
-				"progress_looks_reset":           progressLooksReset,
-			})
-		} else {
-			log.Info("Finished read exists and no restart signal detected; skipping reread creation", map[string]interface{}{
-				"previous_read_id":     mostRecentRead.ID,
-				"previous_progress":    lastProgress,
-				"current_progress":     book.Progress.CurrentTime,
-				"current_progress_ratio": currentProgressRatio,
-				"latest_finished_date": latestFinishedDate,
-			})
-		}
-	}
-
 	// If we found duplicates, clean them up
 	if len(duplicateUnfinishedReads) > 0 {
 		log.Warn(fmt.Sprintf("Found %d duplicate unfinished read entries; keeping highest-progress read and skipping duplicate close to avoid false finished history", len(duplicateUnfinishedReads)), nil)
@@ -2783,25 +2725,6 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				}
 			}
 		}
-	}
-
-	// Update state with current progress before proceeding
-	progressPct := 0.0
-	if book.Media.Duration > 0 {
-		progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
-	}
-	status := "IN_PROGRESS"
-	if book.Progress.IsFinished {
-		status = "FINISHED"
-	}
-
-	// Update the state with the current progress and status using the composite key
-	if s.state.UpdateBook(stateKey, progressPct, status) {
-		bookLog.Debug("Updated book state", map[string]interface{}{
-			"progress":  progressPct,
-			"status":    status,
-			"state_key": stateKey,
-		})
 	}
 
 	latestFinishedReadDate := ""
@@ -3017,23 +2940,6 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			}
 			s.lastProgressMutex.Unlock()
 
-			// Update the state with current progress and status
-			status := "IN_PROGRESS"
-			if book.Progress.IsFinished {
-				status = "FINISHED"
-			}
-			progressPct := 0.0
-			if book.Media.Duration > 0 {
-				progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
-			}
-			if updated := s.state.UpdateBook(stateKey, progressPct, status); updated {
-				log.Debug("Updated book state with new progress", map[string]interface{}{
-					"book_id":  book.ID,
-					"progress": progressPct,
-					"status":   status,
-				})
-			}
-
 			log.Info("Significant progress difference detected, will update", logCtx)
 		}
 	}
@@ -3179,6 +3085,24 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 
 		log.Info("Successfully updated read status in Hardcover", logCtx)
 
+		// Update the sync state with the current progress and status using the composite key.
+		// State is only written AFTER a successful Hardcover mutation.
+		progressPct := 0.0
+		if book.Media.Duration > 0 {
+			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
+		}
+		status := "IN_PROGRESS"
+		if book.Progress.IsFinished {
+			status = "FINISHED"
+		}
+		if s.state.UpdateBook(stateKey, progressPct, status) {
+			bookLog.Debug("Updated book state", map[string]interface{}{
+				"progress":  progressPct,
+				"status":    status,
+				"state_key": stateKey,
+			})
+		}
+
 		// Update book status based on progress
 		if hcBook != nil {
 			// If the book is marked as finished in ABS but not in Hardcover, update status
@@ -3219,13 +3143,6 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		// If we have a mostRecentRead that's finished, this is a reread - use current date
 		// Otherwise, use the date from Audiobookshelf
 		if mostRecentRead != nil && mostRecentRead.FinishedAt != nil && *mostRecentRead.FinishedAt != "" {
-			if !shouldCreateRereadFromFinished {
-				log.Info("Skipping new read creation because finished history exists without a clear reread signal", map[string]interface{}{
-					"most_recent_read_id": mostRecentRead.ID,
-				})
-				return nil
-			}
-
 			// This is a reread. Prefer ABS started_at when it's newer than the latest
 			// finished read date, otherwise fall back to today's date.
 			newStartedAt := time.Now().Format("2006-01-02")
@@ -3395,9 +3312,21 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				}
 
 				log.Info("Successfully updated second-chance unfinished read", nil)
+
+				// Update the sync state after successful HC mutation.
+				scPct := 0.0
+				if book.Media.Duration > 0 {
+					scPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
+				}
+				scStatus := "IN_PROGRESS"
+				if book.Progress.IsFinished {
+					scStatus = "FINISHED"
+				}
+				s.state.UpdateBook(stateKey, scPct, scStatus)
+
 				return nil
-			}
-		} else {
+		}
+	} else {
 			log.Debug("Second-chance read fetch skipped due to error", map[string]interface{}{"error": scErr.Error()})
 		}
 
@@ -3462,6 +3391,25 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		}
 
 		log.Info("Successfully created new read status in Hardcover", nil)
+
+		// Update the sync state with the current progress and status using the composite key.
+		// State is only written AFTER a successful Hardcover mutation to prevent state
+		// inconsistency when the mutation is skipped or fails.
+		progressPct := 0.0
+		if book.Media.Duration > 0 {
+			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
+		}
+		status := "IN_PROGRESS"
+		if book.Progress.IsFinished {
+			status = "FINISHED"
+		}
+		if s.state.UpdateBook(stateKey, progressPct, status) {
+			bookLog.Debug("Updated book state", map[string]interface{}{
+				"progress":  progressPct,
+				"status":    status,
+				"state_key": stateKey,
+			})
+		}
 
 		return nil
 	}
