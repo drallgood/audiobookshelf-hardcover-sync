@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **ASIN Lookup via Book Mappings**: ASIN matching now also searches edition `book_mappings` platform entries (Audible, Amazon) in addition to the direct `edition.asin` field. This handles cases where a book's Audible ASIN differs from its Kindle ASIN and is only present in book_mappings. The GraphQL search query and all five edition response parsers were extended to extract and fall back to book_mappings ASINs (with locale suffix stripping for `:us`, `:uk`, etc.).
+
 ### Fixed
 - **Reread Detection After Restart**: Fixed `handleInProgressBook` silently skipping reread creation when a user relistens to a finished audiobook. Two root causes addressed (#156):
   - **State written before Hardcover mutation**: Sync state was updated with current progress before the Hardcover API call, causing permanent "no change" skipping if the subsequent read creation was skipped. State is now only persisted after a successful Hardcover mutation.
