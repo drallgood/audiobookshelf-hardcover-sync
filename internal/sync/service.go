@@ -3302,10 +3302,12 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		// Set book status to IN_PROGRESS AFTER inserting the read, so HC
 		// does not auto-create a blank row as a side effect.
 		if !isFinishedInHC {
-			s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
+			if err := s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
 				ID:       userBookID,
 				StatusID: 2, // Currently Reading
-			})
+			}); err != nil {
+				log.With(map[string]interface{}{"error": err.Error()}).Warn("Failed to set IN_PROGRESS after read creation")
+			}
 		}
 
 		// Update the sync state with the current progress and status using the composite key.
