@@ -3100,6 +3100,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				"state_key": stateKey,
 			})
 		}
+		s.state.SetHasProgressSeconds(stateKey)
 
 		// Update book status based on progress
 		if hcBook != nil {
@@ -3328,6 +3329,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				"state_key": stateKey,
 			})
 		}
+		s.state.SetHasProgressSeconds(stateKey)
 
 		return nil
 	}

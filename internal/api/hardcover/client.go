@@ -1842,6 +1842,7 @@ type DatesReadInput struct {
 	ID              *int64  `json:"id,omitempty"`
 	StartedAt       *string `json:"started_at,omitempty"`
 	ProgressSeconds *int    `json:"progress_seconds,omitempty"`
+	ReadingFormatID *int    `json:"reading_format_id,omitempty"`
 }
 
 // InsertUserBookReadInput represents the input for creating a new user book read entry
@@ -1886,6 +1887,9 @@ func (c *Client) InsertUserBookRead(ctx context.Context, input InsertUserBookRea
 	}
 	if input.DatesRead.ProgressSeconds != nil {
 		userBookRead["progress_seconds"] = input.DatesRead.ProgressSeconds
+	}
+	if input.DatesRead.ReadingFormatID != nil {
+		userBookRead["reading_format_id"] = input.DatesRead.ReadingFormatID
 	}
 
 	variables := map[string]interface{}{
@@ -2291,6 +2295,9 @@ func (c *Client) UpdateUserBookRead(ctx context.Context, input UpdateUserBookRea
 	}
 	if datesReadInput.ProgressSeconds != nil {
 		updateObjMap["progress_seconds"] = datesReadInput.ProgressSeconds
+	}
+	if datesReadInput.ReadingFormatID != nil {
+		updateObjMap["reading_format_id"] = datesReadInput.ReadingFormatID
 	}
 
 	// Define the result type
