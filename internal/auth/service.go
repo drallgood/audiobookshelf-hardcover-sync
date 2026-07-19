@@ -440,11 +440,14 @@ func (s *AuthService) GetAuthURL(providerName, redirectURL string) (string, erro
 		return "", fmt.Errorf("authentication is disabled")
 	}
 	
-	provider, exists := s.providers[providerName]
+provider, exists := s.providers[providerName]
 	if !exists {
-		return "", fmt.Errorf("provider %s not found", providerName)
+		provider = s.findProviderByType(providerName)
+		if provider == nil {
+			return "", fmt.Errorf("provider %s not found", providerName)
+		}
 	}
-	
+
 	return provider.GetAuthURL(redirectURL)
 }
 
@@ -454,11 +457,14 @@ func (s *AuthService) HandleCallback(ctx context.Context, providerName string, r
 		return nil, fmt.Errorf("authentication is disabled")
 	}
 	
-	provider, exists := s.providers[providerName]
+provider, exists := s.providers[providerName]
 	if !exists {
-		return nil, fmt.Errorf("provider %s not found", providerName)
+		provider = s.findProviderByType(providerName)
+		if provider == nil {
+			return nil, fmt.Errorf("provider %s not found", providerName)
+		}
 	}
-	
+
 	user, err := provider.HandleCallback(ctx, r)
 	if err != nil {
 		return &AuthResult{
@@ -671,4 +677,13 @@ func LoadConfigFromEnv() AuthConfig {
 	}
 	
 	return config
+}
+
+func (s *AuthService) findProviderByType(providerType string) IAuthProvider {
+	for _, provider := range s.providers {
+		if provider.GetType() == providerType {
+			return provider
+		}
+	}
+	return nil
 }
