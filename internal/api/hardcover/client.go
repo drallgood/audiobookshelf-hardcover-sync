@@ -1268,12 +1268,13 @@ func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.Har
 		}
 	}
 	query := `
-query BookByASIN($asin: String!, $asin_like: String!, $format_id: Int!) {
+query BookByASIN($asin: String!, $asin_us: String!, $format_id: Int!) {
   books(
     where: { 
       _or: [
         { editions: { asin: { _eq: $asin }, reading_format: { id: { _eq: $format_id } } } },
-        { editions: { book_mappings: { external_id: { _like: $asin_like }, platform: { name: { _eq: "Audible" } } }, reading_format: { id: { _eq: $format_id } } } }
+        { editions: { book_mappings: { external_id: { _eq: $asin }, platform: { name: { _eq: "Audible" } } }, reading_format: { id: { _eq: $format_id } } } },
+        { editions: { book_mappings: { external_id: { _eq: $asin_us }, platform: { name: { _eq: "Audible" } } }, reading_format: { id: { _eq: $format_id } } } }
       ]
     },
     limit: 1
@@ -1286,7 +1287,8 @@ query BookByASIN($asin: String!, $asin_like: String!, $format_id: Int!) {
       where: { 
         _or: [
           { asin: { _eq: $asin }, reading_format: { id: { _eq: $format_id } } },
-          { book_mappings: { external_id: { _like: $asin_like }, platform: { name: { _eq: "Audible" } } }, reading_format: { id: { _eq: $format_id } } }
+          { book_mappings: { external_id: { _eq: $asin }, platform: { name: { _eq: "Audible" } } }, reading_format: { id: { _eq: $format_id } } },
+          { book_mappings: { external_id: { _eq: $asin_us }, platform: { name: { _eq: "Audible" } } }, reading_format: { id: { _eq: $format_id } } }
         ]
       },
       limit: 1
@@ -1312,7 +1314,7 @@ query BookByASIN($asin: String!, $asin_like: String!, $format_id: Int!) {
 
 	vars := map[string]interface{}{
 		"asin":      asin,
-		"asin_like": asin + "%",
+		"asin_us":   asin + ":us",
 		"format_id": formatID,
 	}
 	err := c.GraphQLQuery(ctx, query, vars, &rawResponse)
