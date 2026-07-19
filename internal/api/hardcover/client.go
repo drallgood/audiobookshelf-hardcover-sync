@@ -2296,9 +2296,6 @@ func (c *Client) UpdateUserBookRead(ctx context.Context, input UpdateUserBookRea
 	if datesReadInput.ProgressSeconds != nil {
 		updateObjMap["progress_seconds"] = datesReadInput.ProgressSeconds
 	}
-	if datesReadInput.ReadingFormatID != nil {
-		updateObjMap["reading_format_id"] = datesReadInput.ReadingFormatID
-	}
 
 	// Define the result type
 	var result struct {

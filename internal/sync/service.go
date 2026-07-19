@@ -2942,10 +2942,9 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		}
 	}
 
-	// Prepare the update object with progress and format
+	// Prepare the update object with progress
 	updateObj := map[string]interface{}{
-		"progress_seconds":  int64(book.Progress.CurrentTime),
-		"reading_format_id": 2, // 2 = Audiobook format
+		"progress_seconds": int64(book.Progress.CurrentTime),
 	}
 
 	// For started_at, we need to be careful:
