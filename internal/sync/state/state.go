@@ -245,11 +245,7 @@ func (s *State) NeedsSync(bookID string, currentProgress float64, currentStatus 
 	}
 
 	progressDiff := math.Abs(normalizedCurrent - storedProgress)
-	if progressDiff >= minChangeThreshold {
-		return true
-	}
-
-	return false
+	return progressDiff >= minChangeThreshold
 }
 
 func (s *State) GetBookState(bookID string) (Book, bool) {
