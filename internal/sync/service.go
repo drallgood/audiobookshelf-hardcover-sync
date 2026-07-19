@@ -2342,7 +2342,6 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		UserBookID: userBookID,
 		Status:     "unfinished",
 	})
-	readSnapshotReliable := err == nil
 	if err != nil {
 		errCtx := make(map[string]interface{}, len(logCtx)+1)
 		errCtx["error"] = err.Error()
@@ -2632,7 +2631,6 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				"error": err.Error(),
 			})
 		} else {
-			readSnapshotReliable = true
 			if len(allReads) > 0 {
 				// Recompute unfinished and most recent finished using the full set
 				readStatusToUpdate = nil
@@ -3243,100 +3241,11 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			}
 		}
 
-		// Set status to IN_PROGRESS before attempting insert so any server-side
-		// auto-created unfinished read becomes visible to the next fetch
-		if !isFinishedInHC {
-			if err := s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
-				ID:       userBookID,
-				StatusID: 2, // Currently Reading
-			}); err != nil {
-				log.With(map[string]interface{}{"error": err.Error()}).Warn("Failed to set IN_PROGRESS before read creation")
-			}
-		}
-
-		// Second-chance fetch AFTER status update: check for any unfinished reads
-		// that may exist (including any auto-created by Hardcover)
-		secondChanceReads, scErr := s.hardcover.GetUserBookReads(ctx, hardcover.GetUserBookReadsInput{
-			UserBookID: userBookID,
-		})
-		if scErr == nil {
-			readSnapshotReliable = true
-			var scUnfinished *hardcover.UserBookRead
-			for i := range secondChanceReads {
-				if !readMatchesTargetEdition(&secondChanceReads[i]) {
-					continue
-				}
-				if secondChanceReads[i].FinishedAt == nil || *secondChanceReads[i].FinishedAt == "" {
-					scUnfinished = &secondChanceReads[i]
-					break
-				}
-			}
-			if scUnfinished != nil {
-				log.Info("Second-chance read fetch found unfinished read; updating instead of creating", map[string]interface{}{
-					"read_id": scUnfinished.ID,
-				})
-
-				// Build update object
-				updateObj := map[string]interface{}{
-					"progress_seconds":  int64(book.Progress.CurrentTime),
-					"reading_format_id": 2,
-				}
-				if scUnfinished.StartedAt != nil && *scUnfinished.StartedAt != "" {
-					// Preserve the unfinished read's own started_at (for example, a just-created reread start date).
-					updateObj["started_at"] = *scUnfinished.StartedAt
-				} else if book.Progress.StartedAt > 0 {
-					startedAt := time.Unix(book.Progress.StartedAt/1000, 0).Format("2006-01-02")
-					updateObj["started_at"] = startedAt
-				}
-				if book.Progress.IsFinished && book.Progress.FinishedAt > 0 {
-					finishedAt := time.Unix(book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
-					updateObj["finished_at"] = finishedAt
-				} else if scUnfinished.FinishedAt != nil {
-					updateObj["finished_at"] = nil
-				}
-				if scUnfinished.EditionID != nil {
-					updateObj["edition_id"] = *scUnfinished.EditionID
-				} else if hcBook.EditionID != "" {
-					if eid, convErr := strconv.Atoi(hcBook.EditionID); convErr == nil && eid != 0 {
-						updateObj["edition_id"] = eid
-					}
-				}
-
-				_, uerr := s.hardcover.UpdateUserBookRead(ctx, hardcover.UpdateUserBookReadInput{
-					ID:     scUnfinished.ID,
-					Object: updateObj,
-				})
-				if uerr != nil {
-					log.With(map[string]interface{}{"read_id": scUnfinished.ID, "error": uerr.Error()}).Error("Failed to update second-chance unfinished read")
-					return fmt.Errorf("failed to update second-chance unfinished read: %w", uerr)
-				}
-
-				log.Info("Successfully updated second-chance unfinished read", nil)
-
-				// Update the sync state after successful HC mutation.
-				scPct := 0.0
-				if book.Media.Duration > 0 {
-					scPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
-				}
-				scStatus := "IN_PROGRESS"
-				if book.Progress.IsFinished {
-					scStatus = "FINISHED"
-				}
-				s.state.UpdateBook(stateKey, scPct, scStatus)
-
-				return nil
-		}
-	} else {
-			log.Debug("Second-chance read fetch skipped due to error", map[string]interface{}{"error": scErr.Error()})
-		}
-
-		if !readSnapshotReliable {
-			log.Warn("Skipping read creation because read snapshot is unreliable after fetch errors", map[string]interface{}{
-				"user_book_id": userBookID,
-			})
-			return nil
-		}
-
+		// Insert the new read status FIRST before setting the book status to
+		// IN_PROGRESS. This prevents Hardcover from auto-creating a blank
+		// unfinished read row as a side effect of the status change, which
+		// would otherwise result in duplicate reads on subsequent syncs.
+		// Per-run guard to avoid duplicate inserts for the same userBookID
 		// Cross-run idempotency guard: if prior sync state already shows nearly the
 		// same in-progress progress, avoid inserting a duplicate read when the API
 		// snapshot temporarily appears empty.
@@ -3370,11 +3279,9 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			})
 			return nil
 		}
-		// Tentatively mark as created to guard concurrent paths
 		s.createdReadsThisRun[userBookID] = struct{}{}
 		s.createdReadsMutex.Unlock()
 
-		// Insert the new read status
 		_, err = s.hardcover.InsertUserBookRead(ctx, hardcover.InsertUserBookReadInput{
 			UserBookID: userBookID,
 			DatesRead:  createObj,
@@ -3391,6 +3298,15 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		}
 
 		log.Info("Successfully created new read status in Hardcover", nil)
+
+		// Set book status to IN_PROGRESS AFTER inserting the read, so HC
+		// does not auto-create a blank row as a side effect.
+		if !isFinishedInHC {
+			s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
+				ID:       userBookID,
+				StatusID: 2, // Currently Reading
+			})
+		}
 
 		// Update the sync state with the current progress and status using the composite key.
 		// State is only written AFTER a successful Hardcover mutation to prevent state

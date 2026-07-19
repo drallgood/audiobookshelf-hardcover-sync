@@ -712,10 +712,10 @@ func TestHandleInProgressBook_CreateNewRead(t *testing.T) {
 		Status:     "unfinished",
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
-	// Second-chance read fetch (no status filter) should also return no reads, allowing creation
+	// Second-chance full fetch also returns no reads
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-	}).Return([]hardcover.UserBookRead{}, nil).Twice()
+	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
 	// Mock the InsertUserBookRead call
 	progressSeconds := 300
@@ -767,10 +767,10 @@ func TestHandleInProgressBook_CreateNewRead_UsesStateKeyEdition(t *testing.T) {
 		Status:     "unfinished",
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
-	// Second-chance read fetches (no status filter) return no reads
+	// Second-chance full fetch also returns no reads
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-	}).Return([]hardcover.UserBookRead{}, nil).Twice()
+	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
 	// Expect InsertUserBookRead to not use edition ID to prevent edition switching
 	progressSeconds := 300
@@ -821,10 +821,10 @@ func TestHandleInProgressBook_CreateNewRead_RefreshesStaleABSStartedAtOnLikelyRe
 		Status:     "unfinished",
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
-	// Second-chance full fetches return no reads, so create-path is used.
+	// Second-chance full fetch also returns no reads
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-	}).Return([]hardcover.UserBookRead{}, nil).Twice()
+	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
 	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
 		ID:       userBookID,
@@ -953,32 +953,15 @@ func TestHandleInProgressBook_SkipsRereadCreateWithoutRestartSignal(t *testing.T
 		Status:     "unfinished",
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
-	finishedAt := "2026-06-23"
-	startedAt := "2026-06-23"
-	progressSeconds := 32360
-	editionID := int64(31546165)
+	// Second-chance full fetch also returns no reads
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-	}).Return([]hardcover.UserBookRead{
-		{
-			ID:              5694568,
-			UserBookID:      userBookID,
-			StartedAt:       &startedAt,
-			FinishedAt:      &finishedAt,
-			Progress:        100.0,
-			ProgressSeconds: &progressSeconds,
-			EditionID:       &editionID,
-		},
-	}, nil).Once()
+	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
 	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
 		ID:       userBookID,
 		StatusID: 2,
 	}).Return(nil).Once()
-
-	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
-		UserBookID: userBookID,
-	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
 	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
 		if input.UserBookID != userBookID || input.DatesRead.StartedAt == nil {
@@ -1020,32 +1003,15 @@ func TestHandleInProgressBook_SkipsRereadCreateWhenNearCompleteAcrossDays(t *tes
 		Status:     "unfinished",
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
-	finishedAt := "2026-06-23"
-	startedAt := "2026-06-23"
-	progressSeconds := 32360
-	editionID := int64(31546165)
+	// Second-chance full fetch also returns no reads
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-	}).Return([]hardcover.UserBookRead{
-		{
-			ID:              5694568,
-			UserBookID:      userBookID,
-			StartedAt:       &startedAt,
-			FinishedAt:      &finishedAt,
-			Progress:        100.0,
-			ProgressSeconds: &progressSeconds,
-			EditionID:       &editionID,
-		},
-	}, nil).Once()
+	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
 	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
 		ID:       userBookID,
 		StatusID: 2,
 	}).Return(nil).Once()
-
-	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
-		UserBookID: userBookID,
-	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
 	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
 		if input.UserBookID != userBookID || input.DatesRead.StartedAt == nil {
@@ -1147,12 +1113,12 @@ func TestHandleInProgressBook_GetUserBookReadsError(t *testing.T) {
 		Status:     "unfinished",
 	}).Return(nil, expectedErr).Once()
 
-	// Note: Second GetUserBook call is now served from cache, so no additional mock needed
-
-	// Second-chance read fetch (no status filter) is performed twice: once after initial failure and once pre-insert
+	// Second-chance full fetch also returns the same error
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-	}).Return([]hardcover.UserBookRead{}, nil).Twice()
+	}).Return(nil, expectedErr).Once()
+
+	// Note: Second GetUserBook call is now served from cache, so no additional mock needed
 
 	// Mock the InsertUserBookRead call
 	progressSeconds := 100
@@ -1175,55 +1141,6 @@ func TestHandleInProgressBook_GetUserBookReadsError(t *testing.T) {
 	// Verify results - the function should continue despite the GetUserBookReads error
 	assert.NoError(t, err, "Should not return an error when GetUserBookReads fails but we can create a new read")
 	mockClient.AssertExpectations(t)
-}
-
-// TestHandleInProgressBook_SkipsCreateWhenReadFetchesUnreliable verifies we do not
-// insert a new read when both initial and second-chance read fetches fail.
-func TestHandleInProgressBook_SkipsCreateWhenReadFetchesUnreliable(t *testing.T) {
-	// Create test service and mock client
-	svc, mockClient := createTestService()
-
-	// Create a test book with progress
-	testAudiobook := createTestBook("test-book-unreliable-fetch", "Test Book", "Test Author", "B08N5KWB9H", "9781234567890")
-	testAudiobook.Progress.CurrentTime = 100
-	testAudiobook.Media.Duration = 3600
-	audiobook := toAudiobookshelfBook(testAudiobook)
-
-	userBookID := int64(123)
-	mockClient.On("GetUserBook", mock.Anything, "123").Return(&models.HardcoverBook{
-		ID:        "book-123",
-		Title:     "Test Book",
-		EditionID: "456",
-	}, nil).Once()
-
-	readErr := errors.New("transient API failure")
-	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
-		UserBookID: userBookID,
-		Status:     "unfinished",
-	}).Return(nil, readErr).Once()
-
-	// First second-chance full fetch (after no reads detected)
-	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
-		UserBookID: userBookID,
-	}).Return(nil, readErr).Once()
-
-	// Status may still be set prior to creation path
-	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
-		ID:       userBookID,
-		StatusID: 2,
-	}).Return(nil).Once()
-
-	// Second second-chance fetch in create path (pre-insert)
-	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
-		UserBookID: userBookID,
-	}).Return(nil, readErr).Once()
-
-	stateKey := fmt.Sprintf("%s:test-edition", audiobook.ID)
-	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
-
-	assert.NoError(t, err, "Should skip creation when read fetches are unreliable")
-	mockClient.AssertExpectations(t)
-	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
 }
 
 // TestHandleInProgressBook_SkipsCreateWhenPriorStateMatchesProgress verifies
@@ -1259,17 +1176,6 @@ func TestHandleInProgressBook_SkipsCreateWhenPriorStateMatchesProgress(t *testin
 		UserBookID: userBookID,
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
-	// Status may still be set before create-path guards run.
-	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
-		ID:       userBookID,
-		StatusID: 2,
-	}).Return(nil).Once()
-
-	// Pre-insert second-chance fetch still appears empty.
-	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
-		UserBookID: userBookID,
-	}).Return([]hardcover.UserBookRead{}, nil).Once()
-
 	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, 30438067)
 	priorProgress := (testAudiobook.Progress.CurrentTime / testAudiobook.Media.Duration) * 100
 	svc.state.UpdateBook(stateKey, priorProgress, "IN_PROGRESS")
@@ -1279,6 +1185,7 @@ func TestHandleInProgressBook_SkipsCreateWhenPriorStateMatchesProgress(t *testin
 	assert.NoError(t, err)
 	mockClient.AssertExpectations(t)
 	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
 }
 
 // TestHandleInProgressBook_FinishedBook tests handling a finished book
@@ -1424,20 +1331,6 @@ func TestHandleInProgressBook_RefreshesStaleStartedAtForReread(t *testing.T) {
 		return input.Object["edition_id"] == editionID
 	})).Return(true, nil).Once()
 
-	// Second full read fetch happens after stale close to discover unfinished entries before insert.
-	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
-		UserBookID: userBookID,
-	}).Return([]hardcover.UserBookRead{
-		{
-			ID:              2901494,
-			StartedAt:       &priorFinishedStartedAt,
-			FinishedAt:      &finishedAt,
-			EditionID:       &editionID,
-			ProgressSeconds: &priorFinishedProgressSeconds,
-			Progress:        priorFinishedProgress,
-		},
-	}, nil).Once()
-
 	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
 		return input.UserBookID == userBookID &&
 			input.DatesRead.ProgressSeconds != nil &&
@@ -1460,9 +1353,10 @@ func TestHandleInProgressBook_RefreshesStaleStartedAtForReread(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
-// TestHandleInProgressBook_SecondChancePreservesStartedAt verifies that when the
-// second-chance fetch returns an unfinished read (for example, auto-created by Hardcover),
-// we preserve that read's started_at instead of overwriting it with stale ABS started_at.
+// TestHandleInProgressBook_SecondChancePreservesStartedAt verifies that when
+// the stale-reread logic closes an old unfinished read and falls through to the create
+// path, a new read is inserted via InsertUserBookRead with a fresh started_at rather
+// than the stale ABS started_at.
 func TestHandleInProgressBook_SecondChancePreservesStartedAt(t *testing.T) {
 	// Create test service and mock client
 	svc, mockClient := createTestService()
@@ -1477,11 +1371,9 @@ func TestHandleInProgressBook_SecondChancePreservesStartedAt(t *testing.T) {
 
 	userBookID := int64(7791036)
 	staleReadID := int64(5047267)
-	newReadID := int64(5048973)
 	editionID := int64(32058625)
 	staleStartedAt := "2025-06-02"
 	latestFinishedAt := "2025-06-10"
-	newStartedAt := "2026-04-08"
 	staleProgressSeconds := 23168
 	finishedProgressSeconds := 39216
 	finishedProgress := 100.0
@@ -1535,44 +1427,27 @@ func TestHandleInProgressBook_SecondChancePreservesStartedAt(t *testing.T) {
 		return input.Object["finished_at"] == latestFinishedAt
 	})).Return(true, nil).Once()
 
-	// Status set to IN_PROGRESS before second-chance fetch.
+	// After stale close, code falls directly into the create path:
+	// InsertUserBookRead + UpdateUserBookStatus instead of the old second-chance update.
+	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
+		return input.UserBookID == userBookID &&
+			input.DatesRead.ProgressSeconds != nil &&
+			*input.DatesRead.ProgressSeconds == staleProgressSeconds &&
+			input.DatesRead.StartedAt != nil &&
+			input.DatesRead.EditionID != nil &&
+			*input.DatesRead.EditionID == editionID
+	})).Return(999999, nil).Once()
+
 	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
 		ID:       userBookID,
 		StatusID: 2,
 	}).Return(nil).Once()
-
-	// Second-chance fetch finds the newly created unfinished read with a fresh start date.
-	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
-		UserBookID: userBookID,
-	}).Return([]hardcover.UserBookRead{
-		{
-			ID:              newReadID,
-			StartedAt:       &newStartedAt,
-			FinishedAt:      nil,
-			EditionID:       &editionID,
-			ProgressSeconds: nil,
-			Progress:        0,
-		},
-	}, nil).Once()
-
-	// Verify second-chance update preserves new started_at instead of using stale ABS date.
-	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
-		if input.ID != newReadID {
-			return false
-		}
-		startedAt, ok := input.Object["started_at"]
-		if !ok {
-			return false
-		}
-		return startedAt == newStartedAt
-	})).Return(true, nil).Once()
 
 	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
 	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
 	assert.NoError(t, err)
 	mockClient.AssertExpectations(t)
-	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
 }
 
 // TestHandleInProgressBook_UsesHistoricalZeroProgressFinishedReadForStaleDetection verifies that
@@ -1650,20 +1525,6 @@ func TestHandleInProgressBook_UsesHistoricalZeroProgressFinishedReadForStaleDete
 		ID:       userBookID,
 		StatusID: 2,
 	}).Return(nil).Once()
-
-	// After close, second-chance fetch finds no unfinished read, so insert path is used.
-	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
-		UserBookID: userBookID,
-	}).Return([]hardcover.UserBookRead{
-		{
-			ID:              2901494,
-			StartedAt:       &historicalFinishedAt,
-			FinishedAt:      &historicalFinishedAt,
-			EditionID:       &editionID,
-			ProgressSeconds: &zeroProgressSeconds,
-			Progress:        0,
-		},
-	}, nil).Once()
 
 	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
 		return input.UserBookID == userBookID &&
