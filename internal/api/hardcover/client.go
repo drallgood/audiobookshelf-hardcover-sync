@@ -27,11 +27,27 @@ type ctxKey string
 
 const ctxKeyReadingFormat ctxKey = "hardcover_reading_format"
 
+const ctxKeyAudnexRegion ctxKey = "hardcover_audnex_region"
+
 // WithReadingFormat returns a context that carries the desired reading format string.
 // Accepted values typically include "audiobook" and "ebook". Case-insensitive.
 // When absent, client defaults to audiobook-only behavior for compatibility.
 func WithReadingFormat(ctx context.Context, format string) context.Context {
 	return context.WithValue(ctx, ctxKeyReadingFormat, strings.ToLower(strings.TrimSpace(format)))
+}
+
+// WithAudnexRegion returns a context that carries the configured Audnexus region.
+func WithAudnexRegion(ctx context.Context, region string) context.Context {
+	return context.WithValue(ctx, ctxKeyAudnexRegion, region)
+}
+
+// getAudnexRegionFromCtx extracts the Audnex region from context. Defaults to "us".
+func getAudnexRegionFromCtx(ctx context.Context) string {
+	v := ctx.Value(ctxKeyAudnexRegion)
+	if s, ok := v.(string); ok && s != "" {
+		return s
+	}
+	return "us"
 }
 
 // getReadingFormatFromCtx extracts a normalized reading format string from context, if present.
@@ -1312,9 +1328,11 @@ query BookByASIN($asin: String!, $asin_us: String!, $format_id: Int!) {
 	// Use a flexible raw map to be resilient to schema variations
 	var rawResponse map[string]interface{}
 
+	audnexRegion := getAudnexRegionFromCtx(ctx)
+
 	vars := map[string]interface{}{
 		"asin":      asin,
-		"asin_us":   asin + ":us",
+		"asin_us":   asin + ":" + audnexRegion,
 		"format_id": formatID,
 	}
 	err := c.GraphQLQuery(ctx, query, vars, &rawResponse)
