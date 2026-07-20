@@ -81,6 +81,9 @@ type HardcoverClientInterface interface {
 	// UpdateUserBookStatus updates the status of a user book
 	UpdateUserBookStatus(ctx context.Context, input UpdateUserBookStatusInput) error
 
+	// UpdateUserBookEdition updates the edition_id of a user book
+	UpdateUserBookEdition(ctx context.Context, userBookID, editionID int) error
+
 	// CreateUserBook creates a new user book entry
 	CreateUserBook(ctx context.Context, editionID, status string) (string, error)
 

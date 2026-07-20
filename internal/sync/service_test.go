@@ -111,6 +111,12 @@ func (m *MockHardcoverClient) UpdateUserBookStatus(ctx context.Context, input ha
 	return args.Error(0)
 }
 
+// UpdateUserBookEdition mocks the UpdateUserBookEdition method
+func (m *MockHardcoverClient) UpdateUserBookEdition(ctx context.Context, userBookID, editionID int) error {
+	args := m.Called(ctx, userBookID, editionID)
+	return args.Error(0)
+}
+
 // CreateUserBook mocks the CreateUserBook method
 func (m *MockHardcoverClient) CreateUserBook(ctx context.Context, editionID, status string) (string, error) {
 	args := m.Called(ctx, editionID, status)

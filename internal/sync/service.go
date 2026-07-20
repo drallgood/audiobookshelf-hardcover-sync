@@ -418,12 +418,27 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 		})
 		// Continue to edition-specific check if book-only check fails
 	} else if existingUserBookID > 0 {
-		// Found an existing user book for this book (possibly different edition)
 		logCtx.Info("Found existing user book for same book, using it", map[string]interface{}{
 			"book_id":               bookID,
 			"existing_user_book_id": existingUserBookID,
 			"requested_edition_id":  editionID,
 		})
+
+		// If the existing user_book is linked to a different edition, update it
+		existingUB, ubErr := s.hardcover.GetUserBook(ctx, strconv.FormatInt(existingUserBookID, 10))
+		if ubErr == nil && existingUB != nil && existingUB.EditionID != editionID {
+			logCtx.Info("Updating existing user book to correct edition", map[string]interface{}{
+				"existing_user_book_id": existingUserBookID,
+				"old_edition_id":        existingUB.EditionID,
+				"new_edition_id":        editionID,
+			})
+			if edErr := s.hardcover.UpdateUserBookEdition(ctx, int(existingUserBookID), int(editionIDInt)); edErr != nil {
+				logCtx.Warn("Failed to update user book edition", map[string]interface{}{
+					"error": edErr.Error(),
+				})
+			}
+		}
+
 		return existingUserBookID, nil
 	}
 	

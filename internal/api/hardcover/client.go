@@ -2012,6 +2012,43 @@ func (c *Client) UpdateUserBookStatus(ctx context.Context, input UpdateUserBookS
 	return nil
 }
 
+// UpdateUserBookEdition updates the edition_id of a user book in Hardcover
+func (c *Client) UpdateUserBookEdition(ctx context.Context, userBookID, editionID int) error {
+	const mutation = `
+	mutation UpdateUserBookEdition($id: Int!, $edition_id: Int!) {
+	  update_user_book(id: $id, object: { edition_id: $edition_id }) {
+		id
+		error
+	  }
+	}`
+
+	var result struct {
+		UpdateUserBook *struct {
+			ID    int     `json:"id"`
+			Error *string `json:"error"`
+		} `json:"update_user_book"`
+	}
+
+	variables := map[string]interface{}{
+		"id":         userBookID,
+		"edition_id": editionID,
+	}
+
+	if err := c.executeGraphQLQuery(ctx, mutation, variables, &result); err != nil {
+		return fmt.Errorf("failed to update user book edition: %w", err)
+	}
+
+	if result.UpdateUserBook == nil {
+		return fmt.Errorf("failed to update user book edition: user book not found")
+	}
+
+	if result.UpdateUserBook.Error != nil {
+		return fmt.Errorf("failed to update user book edition: %s", *result.UpdateUserBook.Error)
+	}
+
+	return nil
+}
+
 // GetUserBookReadsInput represents the input for querying user book reads
 type GetUserBookReadsInput struct {
 	UserBookID int64  `json:"user_book_id"`
