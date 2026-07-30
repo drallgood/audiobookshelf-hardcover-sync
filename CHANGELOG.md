@@ -5,16 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v3.5.0] - 2026-07-30
 
 ### Added
-- **ASIN Lookup via Book Mappings**: ASIN matching now also searches edition `book_mappings` platform entries (Audible, Amazon) in addition to the direct `edition.asin` field. This handles cases where a book's Audible ASIN differs from its Kindle ASIN and is only present in book_mappings. The GraphQL search query and all five edition response parsers were extended to extract and fall back to book_mappings ASINs (with locale suffix stripping for `:us`, `:uk`, etc.).
+- **ASIN Lookup via Book Mappings**: ASIN matching now also searches edition `book_mappings` platform entries (Audible, Amazon) in addition to the direct `edition.asin` field. Uses `_eq` operator for performance and respects the configured Audnexus region for locale suffix stripping (`:us`, `:uk`, etc.). The GraphQL search query and all five edition response parsers were extended to extract and fall back to book_mappings ASINs.
 
 ### Fixed
 - **Reread Detection After Restart**: Fixed `handleInProgressBook` silently skipping reread creation when a user relistens to a finished audiobook. Two root causes addressed (#156):
   - **State written before Hardcover mutation**: Sync state was updated with current progress before the Hardcover API call, causing permanent "no change" skipping if the subsequent read creation was skipped. State is now only persisted after a successful Hardcover mutation.
   - **Broken reread detection via stale `startedAt`**: Audiobookshelf does not reset `startedAt` when a finished book is restarted — the media progress retains the original first-read date. The previous detection logic relied on `progressLooksReset` (fails at >90% progress) and `absStartedAfterLatestFinished` (always false with stale `startedAt`), causing all rereads to be silently dropped. The redundant detection gate has been removed; the existing logic at the read-status selection layer already correctly identifies rereads by checking for finished-only read history with active ABS progress.
 - **Duplicate Reads on New Books**: Fixed Hardcover auto-creating blank read rows as a side effect of status changes. The create path now inserts the read first, then sets the book status to IN_PROGRESS. Previously the status was set first, which triggered Hardcover to auto-create a blank row — the subsequent sync couldn't find it (edition mismatch), creating a duplicate. Also removed the second-chance fetch from the create path and retained the cross-run idempotency guard to prevent duplicates from state mismatches.
+- **Hardcover API Compatibility**: Removed unsupported `reading_format_id` field from `UpdateUserBookRead` GraphQL mutation and added `reading_format_id` to `DatesReadInput`, fixing Hardcover API rejections. Added force resync for stalled `progress_seconds` entries that were missing from in-progress reads.
+- **Edition Update on Mismatch**: User book edition is now updated when the matched Hardcover edition differs from the existing user book edition, keeping edition links accurate across syncs.
+- **OIDC Callback Fallback**: Fixed OIDC callback to fall back by provider type when the provider name doesn't match the configured provider, improving compatibility with identity providers that use variant naming.
 
 ## [v3.4.0] - 2026-07-14
 
