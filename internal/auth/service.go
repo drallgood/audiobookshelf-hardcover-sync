@@ -440,7 +440,7 @@ func (s *AuthService) GetAuthURL(providerName, redirectURL string) (string, erro
 		return "", fmt.Errorf("authentication is disabled")
 	}
 	
-provider, exists := s.providers[providerName]
+	provider, exists := s.providers[providerName]
 	if !exists {
 		provider = s.findProviderByType(providerName)
 		if provider == nil {
