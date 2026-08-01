@@ -27,11 +27,27 @@ type ctxKey string
 
 const ctxKeyReadingFormat ctxKey = "hardcover_reading_format"
 
+const ctxKeyAudnexRegion ctxKey = "hardcover_audnex_region"
+
 // WithReadingFormat returns a context that carries the desired reading format string.
 // Accepted values typically include "audiobook" and "ebook". Case-insensitive.
 // When absent, client defaults to audiobook-only behavior for compatibility.
 func WithReadingFormat(ctx context.Context, format string) context.Context {
 	return context.WithValue(ctx, ctxKeyReadingFormat, strings.ToLower(strings.TrimSpace(format)))
+}
+
+// WithAudnexRegion returns a context that carries the configured Audnexus region.
+func WithAudnexRegion(ctx context.Context, region string) context.Context {
+	return context.WithValue(ctx, ctxKeyAudnexRegion, region)
+}
+
+// getAudnexRegionFromCtx extracts the Audnex region from context. Defaults to "us".
+func getAudnexRegionFromCtx(ctx context.Context) string {
+	v := ctx.Value(ctxKeyAudnexRegion)
+	if s, ok := v.(string); ok && s != "" {
+		return s
+	}
+	return "us"
 }
 
 // getReadingFormatFromCtx extracts a normalized reading format string from context, if present.
@@ -863,6 +879,10 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 	      reading_format_id
 	      audio_seconds
 	      publisher { name }
+	      book_mappings {
+	        external_id
+	        platform { name }
+	      }
 	    }
 	  }
 	}`
@@ -1023,6 +1043,11 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 		if s, ok := chosen["asin"].(string); ok {
 			hcBook.EditionASIN = s
 		}
+		if hcBook.EditionASIN == "" {
+			if bm, ok := chosen["book_mappings"].([]interface{}); ok {
+				hcBook.EditionASIN = extractBookMappingsASIN(bm)
+			}
+		}
 		if s, ok := chosen["isbn_13"].(string); ok {
 			hcBook.EditionISBN13 = s
 		}
@@ -1090,6 +1115,10 @@ func (c *Client) GetUserBook(ctx context.Context, userBookID string) (*models.Ha
 				asin
 				isbn_13
 				isbn_10
+				book_mappings {
+					external_id
+					platform { name }
+				}
 			}
 		}
 	}`
@@ -1115,6 +1144,12 @@ func (c *Client) GetUserBook(ctx context.Context, userBookID string) (*models.Ha
 				ASIN   *string `json:"asin"`
 				ISBN13 *string `json:"isbn_13"`
 				ISBN10 *string `json:"isbn_10"`
+				BookMappings []struct {
+					ExternalID string `json:"external_id"`
+					Platform   struct {
+						Name string `json:"name"`
+					} `json:"platform"`
+				} `json:"book_mappings"`
 			} `json:"edition"`
 		} `json:"user_books"`
 	}
@@ -1150,6 +1185,19 @@ func (c *Client) GetUserBook(ctx context.Context, userBookID string) (*models.Ha
 	if userBook.Edition.ASIN != nil {
 		book.EditionASIN = *userBook.Edition.ASIN
 	}
+	if book.EditionASIN == "" {
+		for _, bm := range userBook.Edition.BookMappings {
+			name := strings.ToLower(bm.Platform.Name)
+			if name == "audible" || name == "amazon" {
+				externalID := bm.ExternalID
+				if idx := strings.LastIndex(externalID, ":"); idx > 0 {
+					externalID = externalID[:idx]
+				}
+				book.EditionASIN = externalID
+				break
+			}
+		}
+	}
 	if userBook.Edition.ISBN13 != nil {
 		book.EditionISBN13 = *userBook.Edition.ISBN13
 	}
@@ -1183,6 +1231,35 @@ func (c *Client) AddWithMetadata(key string, value interface{}, metadata map[str
 	return nil
 }
 
+// extractBookMappingsASIN extracts an ASIN from book_mappings for Audible/Amazon platforms.
+// Returns empty string if no matching mapping is found.
+func extractBookMappingsASIN(mappings []interface{}) string {
+	for _, m := range mappings {
+		bm, ok := m.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		platform, ok := bm["platform"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name, _ := platform["name"].(string)
+		name = strings.ToLower(name)
+		if name != "audible" && name != "amazon" {
+			continue
+		}
+		externalID, _ := bm["external_id"].(string)
+		if externalID == "" {
+			continue
+		}
+		if idx := strings.LastIndex(externalID, ":"); idx > 0 {
+			externalID = externalID[:idx]
+		}
+		return externalID
+	}
+	return ""
+}
+
 // SearchBookByASIN searches for a book in the Hardcover database by ASIN
 func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.HardcoverBook, error) {
 	if asin == "" {
@@ -1207,15 +1284,14 @@ func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.Har
 		}
 	}
 	query := `
-query BookByASIN($asin: String!, $format_id: Int!) {
+query BookByASIN($asin: String!, $asin_us: String!, $format_id: Int!) {
   books(
     where: { 
-      editions: { 
-        _and: [
-          { asin: { _eq: $asin } }, 
-          { reading_format: { id: { _eq: $format_id } } }
-        ]
-      } 
+      _or: [
+        { editions: { asin: { _eq: $asin }, reading_format: { id: { _eq: $format_id } } } },
+        { editions: { book_mappings: { external_id: { _eq: $asin }, platform: { name: { _eq: "Audible" } } }, reading_format: { id: { _eq: $format_id } } } },
+        { editions: { book_mappings: { external_id: { _eq: $asin_us }, platform: { name: { _eq: "Audible" } } }, reading_format: { id: { _eq: $format_id } } } }
+      ]
     },
     limit: 1
   ) {
@@ -1225,9 +1301,10 @@ query BookByASIN($asin: String!, $format_id: Int!) {
     canonical_id
     editions(
       where: { 
-        _and: [
-          { asin: { _eq: $asin }},
-          { reading_format: { id: { _eq: $format_id } } }
+        _or: [
+          { asin: { _eq: $asin }, reading_format: { id: { _eq: $format_id } } },
+          { book_mappings: { external_id: { _eq: $asin }, platform: { name: { _eq: "Audible" } } }, reading_format: { id: { _eq: $format_id } } },
+          { book_mappings: { external_id: { _eq: $asin_us }, platform: { name: { _eq: "Audible" } } }, reading_format: { id: { _eq: $format_id } } }
         ]
       },
       limit: 1
@@ -1238,6 +1315,10 @@ query BookByASIN($asin: String!, $format_id: Int!) {
       isbn_10
       reading_format_id
       audio_seconds
+      book_mappings {
+        external_id
+        platform { name }
+      }
     }
   }
 }`
@@ -1247,8 +1328,11 @@ query BookByASIN($asin: String!, $format_id: Int!) {
 	// Use a flexible raw map to be resilient to schema variations
 	var rawResponse map[string]interface{}
 
+	audnexRegion := getAudnexRegionFromCtx(ctx)
+
 	vars := map[string]interface{}{
 		"asin":      asin,
+		"asin_us":   asin + ":" + audnexRegion,
 		"format_id": formatID,
 	}
 	err := c.GraphQLQuery(ctx, query, vars, &rawResponse)
@@ -1406,6 +1490,11 @@ query BookByASIN($asin: String!, $format_id: Int!) {
 	if asin, ok := edition["asin"].(string); ok && asin != "" {
 		hcBook.EditionASIN = asin
 	}
+	if hcBook.EditionASIN == "" {
+		if bm, ok := edition["book_mappings"].([]interface{}); ok {
+			hcBook.EditionASIN = extractBookMappingsASIN(bm)
+		}
+	}
 	if isbn13, ok := edition["isbn_13"].(string); ok && isbn13 != "" {
 		hcBook.EditionISBN13 = isbn13
 	}
@@ -1482,6 +1571,10 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
           isbn_10
           reading_format_id
           audio_seconds
+          book_mappings {
+            external_id
+            platform { name }
+          }
         }
       }
     }`, isbnField, isbnField)
@@ -1494,6 +1587,12 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
 		ISBN10          *string     `json:"isbn_10"`
 		ReadingFormatID *int        `json:"reading_format_id"`
 		AudioSeconds    *int        `json:"audio_seconds"`
+		BookMappings    []struct {
+			ExternalID string `json:"external_id"`
+			Platform   struct {
+				Name string `json:"name"`
+			} `json:"platform"`
+		} `json:"book_mappings"`
 	}
 
 	type Book struct {
@@ -1601,6 +1700,19 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
 	// Set optional fields if they exist
 	if edition.ASIN != nil && *edition.ASIN != "" {
 		hcBook.EditionASIN = *edition.ASIN
+	}
+	if hcBook.EditionASIN == "" {
+		for _, bm := range edition.BookMappings {
+			name := strings.ToLower(bm.Platform.Name)
+			if name == "audible" || name == "amazon" {
+				externalID := bm.ExternalID
+				if idx := strings.LastIndex(externalID, ":"); idx > 0 {
+					externalID = externalID[:idx]
+				}
+				hcBook.EditionASIN = externalID
+				break
+			}
+		}
 	}
 	if edition.ISBN13 != nil && *edition.ISBN13 != "" {
 		hcBook.EditionISBN13 = *edition.ISBN13
@@ -1750,6 +1862,7 @@ type DatesReadInput struct {
 	ID              *int64  `json:"id,omitempty"`
 	StartedAt       *string `json:"started_at,omitempty"`
 	ProgressSeconds *int    `json:"progress_seconds,omitempty"`
+	ReadingFormatID *int    `json:"reading_format_id,omitempty"`
 }
 
 // InsertUserBookReadInput represents the input for creating a new user book read entry
@@ -1794,6 +1907,9 @@ func (c *Client) InsertUserBookRead(ctx context.Context, input InsertUserBookRea
 	}
 	if input.DatesRead.ProgressSeconds != nil {
 		userBookRead["progress_seconds"] = input.DatesRead.ProgressSeconds
+	}
+	if input.DatesRead.ReadingFormatID != nil {
+		userBookRead["reading_format_id"] = input.DatesRead.ReadingFormatID
 	}
 
 	variables := map[string]interface{}{
@@ -1891,6 +2007,43 @@ func (c *Client) UpdateUserBookStatus(ctx context.Context, input UpdateUserBookS
 	// Check for errors in the response
 	if result.UpdateUserBook.Error != nil {
 		return fmt.Errorf("failed to update user book status: %s", *result.UpdateUserBook.Error)
+	}
+
+	return nil
+}
+
+// UpdateUserBookEdition updates the edition_id of a user book in Hardcover
+func (c *Client) UpdateUserBookEdition(ctx context.Context, userBookID, editionID int) error {
+	const mutation = `
+	mutation UpdateUserBookEdition($id: Int!, $edition_id: Int!) {
+	  update_user_book(id: $id, object: { edition_id: $edition_id }) {
+		id
+		error
+	  }
+	}`
+
+	var result struct {
+		UpdateUserBook *struct {
+			ID    int     `json:"id"`
+			Error *string `json:"error"`
+		} `json:"update_user_book"`
+	}
+
+	variables := map[string]interface{}{
+		"id":         userBookID,
+		"edition_id": editionID,
+	}
+
+	if err := c.executeGraphQLQuery(ctx, mutation, variables, &result); err != nil {
+		return fmt.Errorf("failed to update user book edition: %w", err)
+	}
+
+	if result.UpdateUserBook == nil {
+		return fmt.Errorf("failed to update user book edition: user book not found")
+	}
+
+	if result.UpdateUserBook.Error != nil {
+		return fmt.Errorf("failed to update user book edition: %s", *result.UpdateUserBook.Error)
 	}
 
 	return nil
@@ -2369,6 +2522,10 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 				asin
 				release_date
 				reading_format_id
+				book_mappings {
+					external_id
+					platform { name }
+				}
 			}
 		}`
 
@@ -2385,6 +2542,12 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 			ASIN           *string `json:"asin"`
 			ReleaseDate    *string `json:"release_date"`
 			ReadingFormatID *int    `json:"reading_format_id"`
+			BookMappings   []struct {
+				ExternalID string `json:"external_id"`
+				Platform   struct {
+					Name string `json:"name"`
+				} `json:"platform"`
+			} `json:"book_mappings"`
 		} `json:"editions"`
 	}
 
@@ -2450,6 +2613,26 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 	}
 	if edition.ASIN != nil {
 		editionModel.ASIN = *edition.ASIN
+	}
+	editionModel.BookMappings = make([]models.BookMapping, len(edition.BookMappings))
+	for i, bmRaw := range edition.BookMappings {
+		editionModel.BookMappings[i] = models.BookMapping{
+			ExternalID: bmRaw.ExternalID,
+			Platform:   models.BookMappingPlatform{Name: bmRaw.Platform.Name},
+		}
+	}
+	if editionModel.ASIN == "" {
+		for _, bm := range edition.BookMappings {
+			name := strings.ToLower(bm.Platform.Name)
+			if name == "audible" || name == "amazon" {
+				externalID := bm.ExternalID
+				if idx := strings.LastIndex(externalID, ":"); idx > 0 {
+					externalID = externalID[:idx]
+				}
+				editionModel.ASIN = externalID
+				break
+			}
+		}
 	}
 	if edition.ReleaseDate != nil {
 		editionModel.ReleaseDate = *edition.ReleaseDate

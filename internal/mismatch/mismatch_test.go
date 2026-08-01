@@ -260,6 +260,12 @@ func (m *MockHardcoverClient) UpdateUserBookStatus(ctx context.Context, input ha
 	return args.Error(0)
 }
 
+// UpdateUserBookEdition mocks the UpdateUserBookEdition method
+func (m *MockHardcoverClient) UpdateUserBookEdition(ctx context.Context, userBookID, editionID int) error {
+	args := m.Called(ctx, userBookID, editionID)
+	return args.Error(0)
+}
+
 // GetGoogleUploadCredentials is a mock implementation for the HardcoverClientInterface
 func (m *MockHardcoverClient) GetGoogleUploadCredentials(ctx context.Context, filename string, fileSize int) (*edition.GoogleUploadInfo, error) {
 	args := m.Called(ctx, filename, fileSize)

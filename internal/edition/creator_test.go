@@ -221,6 +221,12 @@ func (m *MockHardcoverClient) GetGoogleUploadCredentials(ctx context.Context, fi
 	return args.Get(0).(*edition.GoogleUploadInfo), args.Error(1)
 }
 
+// UpdateUserBookEdition mocks the UpdateUserBookEdition method
+func (m *MockHardcoverClient) UpdateUserBookEdition(ctx context.Context, userBookID, editionID int) error {
+	args := m.Called(ctx, userBookID, editionID)
+	return args.Error(0)
+}
+
 func newTestCreator(t *testing.T, client edition.HardcoverClient) *edition.Creator {
 	t.Helper()
 

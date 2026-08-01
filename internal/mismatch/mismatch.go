@@ -135,7 +135,7 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 		})
 
 		// Create a context with timeout for the ASIN lookup
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ctx, cancel := context.WithTimeout(hardcover.WithAudnexRegion(context.Background(), audnexusRegion), 15*time.Second)
 		defer cancel()
 
 		// Create Audnex client and log the creation
@@ -304,7 +304,7 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 	// If we have a Hardcover client and a publisher name, try to look up the publisher ID
 	if hc != nil && publisherName != "" {
 		// Create a context with timeout for the publisher lookup
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(hardcover.WithAudnexRegion(context.Background(), audnexusRegion), 10*time.Second)
 		defer cancel()
 
 		// Look up the publisher ID
@@ -390,7 +390,7 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 			"author":     metadata.AuthorName,
 		})
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(hardcover.WithAudnexRegion(context.Background(), audnexusRegion), 10*time.Second)
 		defer cancel()
 
 		// Helper to apply Hardcover book details to mismatch
