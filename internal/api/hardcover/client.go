@@ -2407,6 +2407,32 @@ func (c *Client) UpdateUserBookRead(ctx context.Context, input UpdateUserBookRea
 	return true, nil
 }
 
+// DeleteUserBookRead deletes a user book read entry by its ID.
+func (c *Client) DeleteUserBookRead(ctx context.Context, id int64) error {
+	const mutation = `
+	mutation DeleteUserBookReadByID($id: Int!) {
+	  delete_user_book_read(id: $id) {
+		id
+	  }
+	}`
+
+	variables := map[string]interface{}{
+		"id": id,
+	}
+
+	var result struct {
+		DeleteUserBookRead *struct {
+			ID int64 `json:"id"`
+		} `json:"delete_user_book_read"`
+	}
+
+	if err := c.executeGraphQLQuery(ctx, mutation, variables, &result); err != nil {
+		return fmt.Errorf("failed to delete user book read: %w", err)
+	}
+
+	return nil
+}
+
 // GetEditionByISBN13 retrieves an edition by its ISBN-13
 func (c *Client) GetEditionByISBN13(ctx context.Context, isbn13 string) (*models.Edition, error) {
 	// First try to find the book by ISBN-13

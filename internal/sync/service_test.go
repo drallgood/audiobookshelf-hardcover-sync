@@ -96,6 +96,12 @@ func (m *MockHardcoverClient) UpdateUserBookRead(ctx context.Context, input hard
 	return args.Bool(0), args.Error(1)
 }
 
+// DeleteUserBookRead mocks the DeleteUserBookRead method
+func (m *MockHardcoverClient) DeleteUserBookRead(ctx context.Context, id int64) error {
+	args := m.Called(ctx, id)
+	return args.Error(0)
+}
+
 // CheckExistingUserBookRead mocks the CheckExistingUserBookRead method
 func (m *MockHardcoverClient) CheckExistingUserBookRead(ctx context.Context, input hardcover.CheckExistingUserBookReadInput) (*hardcover.CheckExistingUserBookReadResult, error) {
 	args := m.Called(ctx, input)
