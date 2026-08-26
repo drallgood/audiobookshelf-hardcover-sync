@@ -2843,7 +2843,12 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 						}
 					}
 
-					if latestFinishedReadDate != "" && existingStartedAt <= latestFinishedReadDate {
+					// Strictly-less-than: a read whose started_at already equals the latest
+					// finished date is one we just split on a prior cycle (finished_at is
+					// stamped with today's date). Using <= here re-matches that same read
+					// every subsequent cycle, closing and recreating it in an infinite loop
+					// for any book that stays in progress across multiple sync runs.
+					if latestFinishedReadDate != "" && existingStartedAt < latestFinishedReadDate {
 						splitRereadFromStaleUnfinished = true
 						logCtx["existing_started_at"] = existingStartedAt
 						logCtx["latest_finished_read_at"] = latestFinishedReadDate
@@ -2971,7 +2976,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			existingStartedAt = existingStartedAt[:10]
 		}
 
-		if latestFinishedReadDate != "" && existingStartedAt <= latestFinishedReadDate {
+		if latestFinishedReadDate != "" && existingStartedAt < latestFinishedReadDate {
 			// Stale reread start date: refresh start date for the active unfinished read.
 			newStartedAt := time.Now().Format("2006-01-02")
 			if book.Progress.StartedAt > 0 {
