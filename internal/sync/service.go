@@ -3316,7 +3316,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 
 		// Set book status to IN_PROGRESS AFTER inserting the read, so HC
 		// does not auto-create a blank row as a side effect.
-		// Skip the status mutation if the book is already IN_PROGRESS (2)
+// Skip the status mutation if the book is already IN_PROGRESS (2)
 		// or COMPLETED (3) to avoid triggering HC's blank-read auto-creation.
 		currentStatusID := 0
 		if hcBook != nil {
@@ -3329,7 +3329,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				StatusID: 2, // Currently Reading
 			}); err != nil {
 				log.With(map[string]interface{}{"error": err.Error()}).Warn("Failed to set IN_PROGRESS after read creation")
-			} else {
+} else {
 				// After a necessary status transition, HC may auto-create a blank
 				// read row (no progress, no progress_seconds) as a side effect.
 				// Detect and delete such rows so they do not accumulate.
