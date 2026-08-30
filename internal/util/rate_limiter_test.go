@@ -609,7 +609,7 @@ func TestRateLimitBuckets(t *testing.T) {
 	}{
 		{`"Free";r=8;t=42, "daily";r=4231;t=51234`, 2},
 		{`"Free";r=8;t=42`, 1},
-		{"", 1}, // empty string returns [""] - one bucket
+		{"", 0}, // empty string = no buckets
 	}
 	for _, tt := range tests {
 		buckets := rateLimitBuckets(tt.input)

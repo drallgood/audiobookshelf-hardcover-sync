@@ -554,6 +554,9 @@ func (r *RateLimiter) parseIETFRateLimitPolicy(h http.Header) (quota map[string]
 // rateLimitBuckets splits a raw IETF RateLimit header into individual bucket entries.
 // Format: "name";k=v;...[, "name2";k=v;...]
 func rateLimitBuckets(raw string) []string {
+	if raw == "" {
+		return []string{}
+	}
 	var buckets []string
 	inQuotes := false
 	start := 0
