@@ -2352,10 +2352,10 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		return nil
 	}
 
-	// Get the current read status to check progress - only get unfinished reads
+	// Get all reads for this user book — fetch once and reuse throughout the function
+	// to avoid multiple redundant API calls.
 	readStatuses, err := s.hardcover.GetUserBookReads(ctx, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		Status:     "unfinished",
 	})
 	if err != nil {
 		errCtx := make(map[string]interface{}, len(logCtx)+1)
@@ -2631,115 +2631,6 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		"author":  book.Media.Metadata.AuthorName,
 	})
 
-	// Second-chance fetch: if we didn't find any unfinished or finished reads from the
-	// initial unfinished-only query, fetch ALL reads without status filter.
-	// This protects against API edge cases and prevents creating duplicate unfinished reads.
-	if readStatusToUpdate == nil && mostRecentRead == nil {
-		log.Info("No reads from unfinished-only query; performing second-chance full fetch", map[string]interface{}{
-			"user_book_id": userBookID,
-		})
-		allReads, err := s.hardcover.GetUserBookReads(ctx, hardcover.GetUserBookReadsInput{
-			UserBookID: userBookID,
-		})
-		if err != nil {
-			log.Warn("Second-chance full fetch failed; proceeding without it", map[string]interface{}{
-				"error": err.Error(),
-			})
-		} else {
-			if len(allReads) > 0 {
-				// Recompute unfinished and most recent finished using the full set
-				readStatusToUpdate = nil
-				mostRecentRead = nil
-				mostRecentTime = time.Time{}
-				duplicateUnfinishedReads = nil
-				fallbackUserBookEditionReads = nil
-				for i := range allReads {
-					read := &allReads[i]
-					isUnfinished := read.FinishedAt == nil || *read.FinishedAt == ""
-					if !readMatchesTargetEdition(read) {
-						if userBookEditionID != nil && isUnfinished && read.EditionID != nil && *read.EditionID == *userBookEditionID {
-							fallbackUserBookEditionReads = append(fallbackUserBookEditionReads, read)
-						}
-						continue
-					}
-					if isUnfinished {
-						if readStatusToUpdate == nil {
-							readStatusToUpdate = read
-						} else {
-							var currentProgress, newProgress float64
-
-							if readStatusToUpdate.ProgressSeconds != nil {
-								currentProgress = float64(*readStatusToUpdate.ProgressSeconds)
-							} else {
-								currentProgress = readStatusToUpdate.Progress
-							}
-
-							if read.ProgressSeconds != nil {
-								newProgress = float64(*read.ProgressSeconds)
-							} else {
-								newProgress = read.Progress
-							}
-
-							log.Warn("Found duplicate unfinished read entry (second-chance)", map[string]interface{}{
-								"current_read_id":    readStatusToUpdate.ID,
-								"current_progress":   currentProgress,
-								"duplicate_read_id":  read.ID,
-								"duplicate_progress": newProgress,
-							})
-
-							if newProgress > currentProgress {
-								duplicateUnfinishedReads = append(duplicateUnfinishedReads, readStatusToUpdate)
-								readStatusToUpdate = read
-							} else {
-								duplicateUnfinishedReads = append(duplicateUnfinishedReads, read)
-							}
-						}
-					} else if read.FinishedAt != nil && *read.FinishedAt != "" {
-						finishedTime, perr := time.Parse("2006-01-02", *read.FinishedAt)
-						if perr == nil && (mostRecentRead == nil || finishedTime.After(mostRecentTime)) {
-							mostRecentTime = finishedTime
-							mostRecentRead = read
-						}
-					}
-				}
-
-				if readStatusToUpdate == nil && len(fallbackUserBookEditionReads) > 0 {
-					best := fallbackUserBookEditionReads[0]
-					bestProgress := 0.0
-					if best.ProgressSeconds != nil {
-						bestProgress = float64(*best.ProgressSeconds)
-					} else {
-						bestProgress = best.Progress
-					}
-					for i := 1; i < len(fallbackUserBookEditionReads); i++ {
-						candidate := fallbackUserBookEditionReads[i]
-						candidateProgress := 0.0
-						if candidate.ProgressSeconds != nil {
-							candidateProgress = float64(*candidate.ProgressSeconds)
-						} else {
-							candidateProgress = candidate.Progress
-						}
-						if candidateProgress > bestProgress {
-							best = candidate
-							bestProgress = candidateProgress
-						}
-					}
-					readStatusToUpdate = best
-					log.Warn("Second-chance fallback: target edition does not match user_book edition; using unfinished read on user_book edition", map[string]interface{}{
-						"target_edition_id":    targetEditionID,
-						"user_book_edition_id": userBookEditionID,
-						"read_id":              best.ID,
-						"read_progress":        bestProgress,
-					})
-				}
-
-				if len(duplicateUnfinishedReads) > 0 {
-					log.Warn(fmt.Sprintf("Found %d duplicate unfinished read entries in second-chance fetch; keeping highest-progress read and skipping duplicate close to avoid false finished history", len(duplicateUnfinishedReads)), nil)
-				}
-			}
-		}
-	}
-
 	latestFinishedReadDate := ""
 
 	// If no read status found at all, we'll create a new one
@@ -2805,23 +2696,20 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 					existingStartedAt = existingStartedAt[:10]
 				}
 
-				allReads, allReadsErr := s.hardcover.GetUserBookReads(ctx, hardcover.GetUserBookReadsInput{
-					UserBookID: userBookID,
-				})
-				if allReadsErr == nil {
-					for i := range allReads {
-						if allReads[i].FinishedAt == nil || *allReads[i].FinishedAt == "" {
+				// Reuse the readStatuses slice fetched earlier instead of making another API call.
+				for i := range readStatuses {
+						if readStatuses[i].FinishedAt == nil || *readStatuses[i].FinishedAt == "" {
 							continue
 						}
 						// Skip reads that have no edition ID — these are physical/manual reads
 						// that should not influence audio stale-reread detection.
-						if allReads[i].EditionID == nil {
+						if readStatuses[i].EditionID == nil {
 							continue
 						}
-						if targetEditionID != nil && *allReads[i].EditionID != *targetEditionID {
+						if targetEditionID != nil && *readStatuses[i].EditionID != *targetEditionID {
 							continue
 						}
-						finishedDate := *allReads[i].FinishedAt
+						finishedDate := *readStatuses[i].FinishedAt
 						if len(finishedDate) > 10 {
 							finishedDate = finishedDate[:10]
 						}
@@ -2831,10 +2719,10 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 						// Skip zero-progress closed reads that our own sync code produces when
 						// collapsing previous stale entries on the current day — they should
 						// not cascade into repeated split/close cycles.
-						isZeroProgressClosed := (allReads[i].ProgressSeconds == nil || *allReads[i].ProgressSeconds == 0) &&
-							allReads[i].Progress == 0 &&
-							allReads[i].StartedAt != nil && allReads[i].FinishedAt != nil &&
-							*allReads[i].StartedAt == *allReads[i].FinishedAt
+						isZeroProgressClosed := (readStatuses[i].ProgressSeconds == nil || *readStatuses[i].ProgressSeconds == 0) &&
+							readStatuses[i].Progress == 0 &&
+							readStatuses[i].StartedAt != nil && readStatuses[i].FinishedAt != nil &&
+							*readStatuses[i].StartedAt == *readStatuses[i].FinishedAt
 						if isZeroProgressClosed && finishedDate == time.Now().Format("2006-01-02") {
 							continue
 						}
@@ -2853,7 +2741,6 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 						logCtx["existing_started_at"] = existingStartedAt
 						logCtx["latest_finished_read_at"] = latestFinishedReadDate
 					}
-				}
 			}
 
 			if splitRereadFromStaleUnfinished {

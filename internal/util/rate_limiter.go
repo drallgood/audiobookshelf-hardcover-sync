@@ -388,31 +388,6 @@ func (r *RateLimiter) calculateJitter() time.Duration {
 	return time.Duration((rand.Float64()*2 - 1) * float64(r.rate) * r.jitterFactor)
 }
 
-// ensureRateLimit adjusts the rate limiter to respect the given reset duration
-// without triggering a full backoff. This is used when we know when the rate limit
-// will reset and want to space out our requests accordingly.
-func (r *RateLimiter) ensureRateLimit(resetDuration time.Duration) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// Calculate a conservative rate based on the reset duration
-	// We'll aim to use no more than 80% of the remaining window
-	safeDuration := time.Duration(float64(resetDuration) * 0.8)
-	if safeDuration < r.minRate {
-		safeDuration = r.minRate
-	}
-
-	// If the current rate is more aggressive than our safe duration, slow down
-	if r.rate < safeDuration {
-		r.rate = safeDuration
-		r.logger.Debug("Adjusted rate to respect rate limit reset", map[string]interface{}{
-			"previousRate": r.rate.String(),
-			"newRate":      safeDuration.String(),
-			"resetIn":      resetDuration.String(),
-		})
-	}
-}
-
 var (
 	// testMode is used to disable buffering in tests
 	testMode = false
