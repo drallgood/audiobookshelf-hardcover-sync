@@ -3321,13 +3321,13 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 
 		// Set book status to IN_PROGRESS AFTER inserting the read, so HC
 		// does not auto-create a blank row as a side effect.
-// Skip the status mutation if the book is already IN_PROGRESS (2)
-		// or COMPLETED (3) to avoid triggering HC's blank-read auto-creation.
+		// Skip the status mutation if the book is already IN_PROGRESS (2), but allow
+		// transition from COMPLETED (3) for rereads to avoid triggering HC's blank-read auto-creation.
 		currentStatusID := 0
 		if hcBook != nil {
 			currentStatusID = hcBook.BookStatusID
 		}
-		needsStatusUpdate := !isFinishedInHC && currentStatusID != 2 && currentStatusID != 3
+		needsStatusUpdate := !isFinishedInHC && currentStatusID != 2
 		if needsStatusUpdate {
 			if err := s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
 				ID:       userBookID,
