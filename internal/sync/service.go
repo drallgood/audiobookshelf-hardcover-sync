@@ -1553,6 +1553,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
 		}
 		if updated := s.state.UpdateBook(stateKey, progressPct, "SKIPPED"); updated {
+			s.state.SetHasProgressSeconds(stateKey)
 			bookLog.Debug("Updated book state to SKIPPED", map[string]interface{}{
 				"progress": progressPct,
 			})
@@ -1605,6 +1606,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
 		}
 		if updated := s.state.UpdateBook(stateKey, progressPct, "NO_EDITION"); updated {
+			s.state.SetHasProgressSeconds(stateKey)
 			bookLog.Debug("Updated book state to NO_EDITION", map[string]interface{}{
 				"progress": progressPct,
 			})
@@ -1666,6 +1668,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
 		}
 		if updated := s.state.UpdateBook(stateKey, progressPct, "NOT_FOUND"); updated {
+			s.state.SetHasProgressSeconds(stateKey)
 			bookLog.Debug("Updated book state to NOT_FOUND", map[string]interface{}{
 				"progress": progressPct,
 			})
@@ -1826,6 +1829,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
 		}
 		if updated := s.state.UpdateBook(stateKey, progressPct, "WANT_TO_READ"); updated {
+			s.state.SetHasProgressSeconds(stateKey)
 			bookLog.Debug("Updated book state to WANT_TO_READ", map[string]interface{}{
 				"progress":  progressPct,
 				"state_key": stateKey,
