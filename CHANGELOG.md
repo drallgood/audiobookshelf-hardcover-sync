@@ -8,7 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
-- **Blank Read Cleanup After Status Transitions**: Added automatic deletion of blank read rows that Hardcover auto-creates as a side effect of `IN_PROGRESS` status updates. Skip redundant status mutations when the book is already in the target state, and clean up the orphaned blank reads to prevent duplicates from accumulating across sync cycles (#167).
+- **Blank Read Cleanup After Status Transitions**: Added automatic deletion of blank read rows that Hardcover auto-creates as a side effect of `IN_PROGRESS` status updates. Skip redundant status mutations when the book is already in the target state, and clean up the orphaned blank reads to prevent duplicates from accumulating across sync cycles (commit 341df21).
+- **Reread Status Not Updating from COMPLETED**: Fixed the blank-read cleanup guard incorrectly blocking the COMPLETED→IN_PROGRESS status transition needed when creating a new read for a reread session. The `currentStatusID != 3` check prevented the book from moving out of "Read" status, causing the new activity to not appear in the user's stream (#167).
 - **Infinite Reread-Split Loop for In-Progress Books**: Fixed stale-reread detection creating duplicate reads every sync cycle for books that stay in progress across multiple runs (#167). The `existingStartedAt <= latestFinishedReadDate` comparison would re-match reads that were just split on a prior cycle (both dates land on "today"), closing and recreating them in a loop. Changed both occurrences to strict `<` so a read is only treated as a stale reread when it genuinely started before the latest finished read.
 
 ## [v3.5.0] - 2026-07-30
