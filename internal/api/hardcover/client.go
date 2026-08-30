@@ -559,6 +559,10 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 			"raw_response":   string(body),
 		})
 
+		// Process rate limit headers from EVERY response so the rate limiter
+		// can self-throttle proactively before hitting HTTP 429.
+		c.rateLimiter.WithRateLimitHeaders(resp)
+
 		// Check for HTTP errors
 		if resp.StatusCode >= 400 {
 			lastErr = &HTTPError{

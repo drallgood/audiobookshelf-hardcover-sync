@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Reread Status Not Updating from COMPLETED**: Fixed the blank-read cleanup guard incorrectly blocking the COMPLETED→IN_PROGRESS status transition needed when creating a new read for a reread session. The `currentStatusID != 3` check prevented the book from moving out of "Read" status, causing the new activity to not appear in the user's stream (#167).
 - **Infinite Reread-Split Loop for In-Progress Books**: Fixed stale-reread detection creating duplicate reads every sync cycle for books that stay in progress across multiple runs (#167). The `existingStartedAt <= latestFinishedReadDate` comparison would re-match reads that were just split on a prior cycle (both dates land on "today"), closing and recreating them in a loop. Changed both occurrences to strict `<` so a read is only treated as a stale reread when it genuinely started before the latest finished read.
 
+### Changed
+- **Rate Limit Header Handling for Hardcover API v2**: Updated the rate limiter to parse the new IETF RFC-draft `RateLimit`/`RateLimit-Policy` headers introduced in the August 2026 Hardcover API refresh, while maintaining backward compatibility with legacy `X-RateLimit-*` headers. Headers are now processed on every response (not just errors) so the rate limiter can self-throttle proactively. Added daily limit tracking with automatic slowdown when remaining requests drop below 10% (4x rate reduction) or 20% (warning log). Exposed `DailyRemaining()` and `DailyLimit()` getters for callers to skip non-critical operations when approaching the daily cap.
+
 ## [v3.5.0] - 2026-07-30
 
 ### Added

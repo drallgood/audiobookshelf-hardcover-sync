@@ -58,6 +58,11 @@ type RateLimiter struct {
 	backoffFactor  float64
 	jitterFactor   float64
 
+	// Daily limit tracking from IETF RateLimit headers
+	dailyRemaining int
+	dailyLimit     int
+	dailyResetSec  int
+
 	// Concurrency control
 	maxConcurrent  int32         // Maximum number of concurrent requests
 	semaphore      chan struct{} // Buffered channel used as a semaphore
@@ -67,6 +72,21 @@ type RateLimiter struct {
 
 	// Logger
 	logger *logger.Logger
+}
+
+// DailyRemaining returns the number of daily requests remaining, or -1 if unknown.
+// Callers can use this to decide whether to skip non-critical operations.
+func (r *RateLimiter) DailyRemaining() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.dailyRemaining
+}
+
+// DailyLimit returns the daily request cap, or 0 if unknown.
+func (r *RateLimiter) DailyLimit() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.dailyLimit
 }
 
 // NewRateLimiter creates a new RateLimiter with the specified rate and burst size
@@ -452,24 +472,27 @@ func IsRateLimitError(err error) bool {
 	return false
 }
 
-// WithRateLimitHeaders is a helper to handle rate limit headers from HTTP responses
-// It checks for standard rate limiting headers and updates the rate limiter accordingly
+// WithRateLimitHeaders is a helper to handle rate limit headers from HTTP responses.
+// Parses the IETF RFC-draft RateLimit / RateLimit-Policy headers (primary) and
+// falls back to legacy X-RateLimit-* headers. Updates the rate limiter accordingly.
 func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 	if resp == nil {
 		return
 	}
 
-	// Log all rate limit headers for debugging
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Collect rate-limit headers for debug logging.
 	headers := make(map[string]string)
 	for k, v := range resp.Header {
-		if strings.HasPrefix(strings.ToLower(k), "ratelimit-") ||
-			strings.HasPrefix(strings.ToLower(k), "x-ratelimit-") ||
-			strings.EqualFold(k, "retry-after") {
+		lower := strings.ToLower(k)
+		if strings.HasPrefix(lower, "ratelimit") ||
+			strings.HasPrefix(lower, "x-ratelimit-") ||
+			lower == "retry-after" {
 			headers[k] = strings.Join(v, ", ")
 		}
 	}
-
-	// Log the rate limit headers if any were found
 	if len(headers) > 0 {
 		r.logger.Debug("Processing rate limit headers", map[string]interface{}{
 			"component":          "rate_limiter",
@@ -477,50 +500,227 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 		})
 	}
 
-	// Log the current rate limiting state
-	r.logger.Debug("Rate limiter state", map[string]interface{}{
-		"rate":         r.rate.String(),
-		"tokens":       fmt.Sprintf("%d/%d", r.tokens, r.maxTokens),
-		"last_request": r.last.Format(time.RFC3339),
-	})
-
-	// Check for Retry-After header (highest priority)
+	// Retry-After takes highest priority (server explicitly telling us to wait).
 	if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
-		duration, err := ParseRetryAfter(retryAfter)
-		if err == nil && duration > 0 {
-			logFields := map[string]interface{}{
-				"retryAfter": retryAfter,
-				"status":     resp.Status,
-			}
-			
-			// Only include URL if Request is not nil
+		if duration, err := ParseRetryAfter(retryAfter); err == nil && duration > 0 {
+			logFields := map[string]interface{}{"retryAfter": retryAfter, "status": resp.Status}
 			if resp.Request != nil && resp.Request.URL != nil {
 				logFields["url"] = resp.Request.URL.String()
 			}
-			
 			r.logger.Warn("Rate limit error with retry-after header", logFields)
-			r.OnRateLimit(duration)
+			r.applyBackoff(duration)
+			r.drainBucket()
 			return
 		}
 	}
 
-	// Check for standard rate limit headers (RFC 6585)
-	limit := resp.Header.Get("RateLimit-Limit")
-	remaining := resp.Header.Get("RateLimit-Remaining")
-	reset := resp.Header.Get("RateLimit-Reset")
-
-	// Fall back to X-RateLimit-* headers if standard ones aren't present
-	if limit == "" {
-		limit = resp.Header.Get("X-RateLimit-Limit")
-	}
-	if remaining == "" {
-		remaining = resp.Header.Get("X-RateLimit-Remaining")
-	}
-	if reset == "" {
-		reset = resp.Header.Get("X-RateLimit-Reset")
+	// Try IETF RateLimit headers first (e.g. "Free";r=8;t=42, "daily";r=4231;t=51234).
+	if iefRemaining, iefReset := r.parseIETFRateLimit(resp.Header); len(iefRemaining) > 0 {
+		r.applyIETFHeaders(iefRemaining, iefReset, resp.Header)
+		return
 	}
 
-	// If we have rate limit information, use it to adjust our rate
+	// Fall back to legacy X-RateLimit-* headers.
+	r.applyLegacyHeaders(resp.Header)
+}
+
+// parseIETFRateLimit parses the IETF RateLimit header value.
+// Returns maps from bucket name -> remaining/seconds-until-reset.
+func (r *RateLimiter) parseIETFRateLimit(h http.Header) (remaining map[string]int, reset map[string]int) {
+	val := h.Get("RateLimit")
+	if val == "" {
+		return nil, nil
+	}
+
+	remaining = make(map[string]int)
+	reset = make(map[string]int)
+
+	for _, bucket := range rateLimitBuckets(val) {
+		name, params := parseRateLimitBucket(bucket)
+		if name == "" {
+			continue
+		}
+		if v, ok := params["r"]; ok {
+			remaining[name] = v
+		}
+		if v, ok := params["t"]; ok {
+			reset[name] = v
+		}
+	}
+	return remaining, reset
+}
+
+// parseIETFRateLimitPolicy parses the IETF RateLimit-Policy header value.
+// Returns maps from bucket name -> quota/burst.
+func (r *RateLimiter) parseIETFRateLimitPolicy(h http.Header) (quota map[string]int, burst map[string]int) {
+	val := h.Get("RateLimit-Policy")
+	if val == "" {
+		return nil, nil
+	}
+
+	quota = make(map[string]int)
+	burst = make(map[string]int)
+
+	for _, bucket := range rateLimitBuckets(val) {
+		name, params := parseRateLimitBucket(bucket)
+		if name == "" {
+			continue
+		}
+		if v, ok := params["q"]; ok {
+			quota[name] = v
+		}
+		if v, ok := params["burst"]; ok {
+			burst[name] = v
+		}
+	}
+	return quota, burst
+}
+
+// rateLimitBuckets splits a raw IETF RateLimit header into individual bucket entries.
+// Format: "name";k=v;...[, "name2";k=v;...]
+func rateLimitBuckets(raw string) []string {
+	var buckets []string
+	inQuotes := false
+	start := 0
+	for i := 0; i < len(raw); i++ {
+		switch raw[i] {
+		case '"':
+			inQuotes = !inQuotes
+		case ',':
+			if !inQuotes {
+				buckets = append(buckets, strings.TrimSpace(raw[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	if start < len(raw) {
+		buckets = append(buckets, strings.TrimSpace(raw[start:]))
+	}
+	return buckets
+}
+
+// parseRateLimitBucket parses a single bucket entry like `"Free";r=8;t=42`
+// into the bucket name and a map of key=value pairs.
+func parseRateLimitBucket(bucket string) (string, map[string]int) {
+	params := make(map[string]int)
+
+	// Extract the quoted bucket name.
+	if !strings.HasPrefix(bucket, `"`) {
+		return "", params
+	}
+	nameEnd := strings.IndexByte(bucket[1:], '"')
+	if nameEnd < 0 {
+		return "", params
+	}
+	name := bucket[1 : nameEnd+1]
+	if name == "" {
+		return "", params
+	}
+
+	// Parse the ;k=v pairs after the name.
+	rest := bucket[nameEnd+2:]
+	for _, kv := range strings.Split(rest, ";") {
+		kv = strings.TrimSpace(kv)
+		parts := strings.SplitN(kv, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		v, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err == nil {
+			params[strings.TrimSpace(parts[0])] = v
+		}
+	}
+
+	return strings.ToLower(name), params
+}
+
+// applyIETFHeaders applies rate limit info parsed from IETF-format headers.
+func (r *RateLimiter) applyIETFHeaders(remaining, reset map[string]int, h http.Header) {
+	quota, burst := r.parseIETFRateLimitPolicy(h)
+
+	// Update daily tracking.
+	dailyName := findBucketName(remaining, "daily")
+	if dailyName != "" {
+		r.dailyRemaining = remaining[dailyName]
+		if q, ok := quota[dailyName]; ok {
+			r.dailyLimit = q
+		}
+		if t, ok := reset[dailyName]; ok && t > 0 {
+			r.dailyResetSec = t
+		}
+
+		if r.dailyRemaining > 0 && r.dailyLimit > 0 {
+			pct := float64(r.dailyRemaining) / float64(r.dailyLimit) * 100
+			if pct < 10.0 {
+				backoff := r.rate * 4
+				r.logger.Warn("Daily rate limit critically low, slowing down", map[string]interface{}{
+					"component":       "rate_limiter",
+					"daily_remaining": r.dailyRemaining,
+					"daily_limit":     r.dailyLimit,
+					"remaining_pct":   fmt.Sprintf("%.1f%%", pct),
+					"new_rate":        backoff.String(),
+				})
+				r.applyBackoff(backoff)
+			} else if pct < 20.0 {
+				r.logger.Warn("Daily rate limit approaching, being conservative", map[string]interface{}{
+					"component":       "rate_limiter",
+					"daily_remaining": r.dailyRemaining,
+					"daily_limit":     r.dailyLimit,
+					"remaining_pct":   fmt.Sprintf("%.1f%%", pct),
+				})
+			}
+		}
+	}
+
+	// Apply per-minute rate limiting.
+	for name, rem := range remaining {
+		if name == dailyName {
+			continue
+		}
+		b := 0
+		if v, ok := burst[name]; ok {
+			b = v
+		}
+		if rem <= 1 {
+			resetSec := reset[name]
+			var backoff time.Duration
+			if resetSec > 0 {
+				backoff = time.Duration(float64(resetSec)*1.2) * time.Second
+			} else if b > 0 {
+				backoff = time.Duration(60/b) * time.Second
+			} else {
+				backoff = r.rate * 2
+			}
+			r.logger.Warn("Per-minute rate limit nearly exhausted, backing off", map[string]interface{}{
+				"component":   "rate_limiter",
+				"bucket":      name,
+				"remaining":   rem,
+				"burst":       b,
+				"reset_in_s":  reset[name],
+				"backoff":     backoff.String(),
+			})
+			r.applyBackoff(backoff)
+			r.drainBucket()
+		}
+	}
+}
+
+// findBucketName returns the key in the map whose lowercase form matches target.
+func findBucketName(m map[string]int, target string) string {
+	for k := range m {
+		if strings.Contains(strings.ToLower(k), target) {
+			return k
+		}
+	}
+	return ""
+}
+
+// applyLegacyHeaders parses legacy X-RateLimit-* headers.
+func (r *RateLimiter) applyLegacyHeaders(h http.Header) {
+	limit := h.Get("X-RateLimit-Limit")
+	remaining := h.Get("X-RateLimit-Remaining")
+	reset := h.Get("X-RateLimit-Reset")
+
 	if remaining != "" {
 		rem, err := strconv.Atoi(remaining)
 		if err == nil {
@@ -528,79 +728,75 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 			if limit != "" {
 				totalLimit, _ = strconv.Atoi(limit)
 			}
-
-			// If we know the total limit, calculate the remaining percentage
 			if totalLimit > 0 {
 				remainingPct := (float64(rem) / float64(totalLimit)) * 100
-
-				// If we're below 20% of our rate limit, start being more conservative
 				if remainingPct < 20.0 {
-					r.logger.Warn("Approaching rate limit, being more conservative", map[string]interface{}{
+					backoff := time.Duration(float64(r.rate) * (1.0 + (100.0-remainingPct)/10.0))
+					r.logger.Warn("Approaching rate limit (legacy headers), being more conservative", map[string]interface{}{
 						"component":     "rate_limiter",
 						"remaining":     remaining,
 						"limit":         limit,
 						"remaining_pct": remainingPct,
 					})
-
-					// Calculate a backoff based on how close we are to the limit
-					// The closer we are, the longer the backoff
-					backoff := time.Duration(float64(r.GetRate()) * (1.0 + (100.0-remainingPct)/10.0))
-					r.OnRateLimit(backoff)
-				} else {
-					// Otherwise use exponential backoff
-					backoff := r.GetRate() * 2
-					r.logger.Warn("Rate limit reached or nearly reached, backing off aggressively", map[string]interface{}{
-						"header":  resp.Header.Get("RateLimit-Reset"),
-						"backoff": backoff.String(),
-						"error":   err.Error(),
-					})
-					r.OnRateLimit(backoff)
+					r.applyBackoff(backoff)
 				}
 			}
-
-			// If we're at or near the limit, back off aggressively
 			if rem <= 1 {
 				var backoff time.Duration
 				if reset != "" {
-					// If we have a reset time, use that to calculate backoff
 					if ts, err := strconv.ParseInt(reset, 10, 64); err == nil {
-						resetTime := time.Unix(ts, 0)
-						backoff = time.Until(resetTime)
-						// Add 20% buffer to be safe
-						backoff = time.Duration(float64(backoff) * 1.2)
+						backoff = time.Duration(float64(time.Until(time.Unix(ts, 0))) * 1.2)
 					}
-				} else {
-					// Otherwise use exponential backoff
-					backoff = r.GetRate() * 2
 				}
-
-				r.logger.Warn("Rate limit reached or nearly reached, backing off aggressively", map[string]interface{}{
-					"header":  resp.Header.Get("RateLimit-Reset"),
-					"backoff": backoff.String(),
-					"error":   err.Error(),
+				if backoff <= 0 {
+					backoff = r.rate * 2
+				}
+				r.logger.Warn("Rate limit reached (legacy headers), backing off", map[string]interface{}{
+					"component": "rate_limiter",
+					"backoff":   backoff.String(),
 				})
-
-				r.OnRateLimit(backoff)
+				r.applyBackoff(backoff)
+				r.drainBucket()
 			}
 		}
 	}
 
-	// If we have a reset time, use it to schedule our next request
 	if reset != "" {
 		ts, err := strconv.ParseInt(reset, 10, 64)
 		if err == nil {
 			resetTime := time.Unix(ts, 0)
-			now := time.Now()
-			if resetTime.After(now) {
-				resetDuration := resetTime.Sub(now)
+			if resetTime.After(time.Now()) {
 				r.logger.Info("Rate limit will reset, scheduling next request", map[string]interface{}{
-					"component":  "rate_limiter",
-					"reset_time": resetTime.Format(time.RFC3339),
-					"reset_in":   resetDuration.String(),
+					"component": "rate_limiter",
+					"reset_in":  time.Until(resetTime).String(),
 				})
-				// Don't back off, but ensure we don't exceed the rate limit
-				r.ensureRateLimit(resetDuration)
 			}
 		}
 	}
 }
+
+// applyBackoff adjusts the rate and sets a backoff interval.
+func (r *RateLimiter) applyBackoff(baseBackoff time.Duration) {
+	backoff := time.Duration(float64(baseBackoff) * r.backoffFactor)
+	jitter := time.Duration(rand.Float64() * float64(backoff) * r.jitterFactor)
+	if rand.Float64() < 0.5 {
+		backoff -= jitter
+	} else {
+		backoff += jitter
+	}
+	if backoff < r.minRate {
+		backoff = r.minRate
+	}
+	if backoff > r.maxRate {
+		backoff = r.maxRate
+	}
+	r.rate = backoff
+	r.backoffUntil = time.Now().Add(backoff)
+}
+
+// drainBucket empties the token bucket to prevent burst after backoff.
+func (r *RateLimiter) drainBucket() {
+	r.tokens = 1
+}
+
+// Metrics returns a snapshot of the rate limiter's internal state.

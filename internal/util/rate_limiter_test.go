@@ -556,6 +556,67 @@ func TestIsRateLimitError(t *testing.T) {
 	}
 }
 
+func TestParseIETFRateLimitBucket(t *testing.T) {
+	tests := []struct {
+		input    string
+		wantName string
+		wantR    int
+		wantT    int
+	}{
+		{`"Free";r=8;t=42`, "free", 8, 42},
+		{`"daily";r=4231;t=51234`, "daily", 4231, 51234},
+		{`"Free";r=0;t=0`, "free", 0, 0},
+		{`"Free"`, "free", 0, 0},
+		{`"";r=5`, "", 0, 0},
+	}
+	for _, tt := range tests {
+		name, params := parseRateLimitBucket(tt.input)
+		assert.Equal(t, tt.wantName, name)
+		assert.Equal(t, tt.wantR, params["r"])
+		assert.Equal(t, tt.wantT, params["t"])
+	}
+}
+
+func TestParseIETFRateLimit(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("RateLimit", `"Free";r=8;t=42, "daily";r=4231;t=51234`)
+
+	var rl RateLimiter
+	remaining, reset := rl.parseIETFRateLimit(headers)
+
+	assert.Equal(t, 8, remaining["free"])
+	assert.Equal(t, 4231, remaining["daily"])
+	assert.Equal(t, 42, reset["free"])
+	assert.Equal(t, 51234, reset["daily"])
+}
+
+func TestParseIETFRateLimitPolicy(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("RateLimit-Policy", `"Free";q=60;w=60;burst=10, "daily";q=5000;w=86400`)
+
+	var rl RateLimiter
+	quota, burst := rl.parseIETFRateLimitPolicy(headers)
+
+	assert.Equal(t, 60, quota["free"])
+	assert.Equal(t, 5000, quota["daily"])
+	assert.Equal(t, 10, burst["free"])
+}
+
+func TestRateLimitBuckets(t *testing.T) {
+	tests := []struct {
+		input string
+		want  int
+	}{
+		{`"Free";r=8;t=42, "daily";r=4231;t=51234`, 2},
+		{`"Free";r=8;t=42`, 1},
+		{"", 1}, // empty string returns [""] - one bucket
+	}
+	for _, tt := range tests {
+		buckets := rateLimitBuckets(tt.input)
+		assert.Len(t, buckets, tt.want)
+	}
+}
+
 func TestWithRateLimitHeaders(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -590,6 +651,30 @@ func TestWithRateLimitHeaders(t *testing.T) {
 				
 				// Should set a backoff for the retry-after duration
 				assert.False(t, rl.backoffUntil.IsZero())
+			},
+		},
+		{
+			name: "ietf ratelimit header - per-minute only",
+			headers: map[string]string{
+				"RateLimit":        `"Free";r=8;t=42, "daily";r=4231;t=51234`,
+				"RateLimit-Policy": `"Free";q=60;w=60;burst=10, "daily";q=5000;w=86400`,
+			},
+			check: func(t *testing.T, rl *RateLimiter) {
+				assert.Equal(t, 4231, rl.DailyRemaining())
+				assert.Equal(t, 5000, rl.DailyLimit())
+			},
+		},
+		{
+			name: "ietf ratelimit header - low daily remaining",
+			headers: map[string]string{
+				"RateLimit":        `"Free";r=8;t=42, "daily";r=400;t=51234`,
+				"RateLimit-Policy": `"Free";q=60;w=60;burst=10, "daily";q=5000;w=86400`,
+			},
+			check: func(t *testing.T, rl *RateLimiter) {
+				assert.Equal(t, 400, rl.DailyRemaining())
+				assert.Equal(t, 5000, rl.DailyLimit())
+				// Rate should have been increased due to <10% daily remaining.
+				assert.True(t, rl.GetRate() >= 100*time.Millisecond)
 			},
 		},
 		{
