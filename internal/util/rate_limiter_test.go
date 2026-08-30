@@ -667,13 +667,13 @@ func TestWithRateLimitHeaders(t *testing.T) {
 		{
 			name: "ietf ratelimit header - low daily remaining",
 			headers: map[string]string{
-				"RateLimit":        `"Free";r=8;t=42, "daily";r=400;t=51234`,
+				"RateLimit":        `"Free";r=8;t=42, "daily";r=40;t=51234`,
 				"RateLimit-Policy": `"Free";q=60;w=60;burst=10, "daily";q=5000;w=86400`,
 			},
 			check: func(t *testing.T, rl *RateLimiter) {
-				assert.Equal(t, 400, rl.DailyRemaining())
+				assert.Equal(t, 40, rl.DailyRemaining())
 				assert.Equal(t, 5000, rl.DailyLimit())
-				// Rate should have been increased due to <10% daily remaining.
+				// Rate should have been increased due to <1% daily remaining.
 				assert.True(t, rl.GetRate() >= 100*time.Millisecond)
 			},
 		},
