@@ -629,8 +629,10 @@ func (r *RateLimiter) applyIETFHeaders(remaining, reset map[string]int, h http.H
 
 		if r.dailyRemaining > 0 && r.dailyLimit > 0 {
 			pct := float64(r.dailyRemaining) / float64(r.dailyLimit) * 100
-			if pct < 10.0 {
-				backoff := r.rate * 4
+			if pct < 10.0 && time.Now().After(r.backoffUntil) {
+				// Use 10× the default rate (20s) as a floor — not the current rate,
+				// which would compound exponentially on every response.
+				backoff := max(DefaultRate*10, r.rate)
 				r.logger.Warn("Daily rate limit critically low, slowing down", map[string]interface{}{
 					"component":       "rate_limiter",
 					"daily_remaining": r.dailyRemaining,
@@ -708,7 +710,7 @@ func (r *RateLimiter) applyLegacyHeaders(h http.Header) {
 			}
 			if totalLimit > 0 {
 				remainingPct := (float64(rem) / float64(totalLimit)) * 100
-				if remainingPct < 20.0 {
+				if remainingPct < 20.0 && time.Now().After(r.backoffUntil) {
 					backoff := time.Duration(float64(r.rate) * (1.0 + (100.0-remainingPct)/10.0))
 					r.logger.Warn("Approaching rate limit (legacy headers), being more conservative", map[string]interface{}{
 						"component":     "rate_limiter",
