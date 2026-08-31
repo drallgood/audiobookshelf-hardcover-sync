@@ -864,7 +864,9 @@ func (s *Service) processLibrary(ctx context.Context, library *audiobookshelf.Au
 		"items_count":  len(items),
 	})
 
-	s.summary.BooksTotal += int32(len(items))
+	if s.summary != nil {
+		s.summary.BooksTotal += int32(len(items))
+	}
 
 	// If we have a maxBooks limit, apply it
 	if maxBooks > 0 && len(items) > maxBooks {
@@ -2118,6 +2120,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 				"title":   book.Media.Metadata.Title,
 			})
 			needsStatusUpdate = false
+			success = true
 		} else {
 			log.Info("Book has finished reads but status is not FINISHED; will update status", map[string]interface{}{
 				"book_id": book.ID,
