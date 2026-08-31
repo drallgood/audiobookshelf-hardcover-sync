@@ -714,6 +714,22 @@ func (s *Service) Sync(ctx context.Context) error {
 	// Track total books processed across all libraries
 	totalBooksProcessed := 0
 
+	// Pre-count all library items so BooksTotal is available immediately
+	// in the status endpoint, showing 345/345 instead of counting up from 0.
+	for i := range filteredLibraries {
+		items, countErr := s.audiobookshelf.GetLibraryItems(ctx, filteredLibraries[i].ID)
+		if countErr != nil {
+			s.log.Warn("Failed to pre-count library items", map[string]interface{}{
+				"library_id": filteredLibraries[i].ID,
+				"error":      countErr,
+			})
+			continue
+		}
+		s.summary.Lock()
+		s.summary.BooksTotal += int32(len(items))
+		s.summary.Unlock()
+	}
+
 	// Log the test book limit if it's set
 	if totalBooksLimit > 0 {
 		s.log.Info("Test book limit is active", map[string]interface{}{
@@ -864,12 +880,6 @@ func (s *Service) processLibrary(ctx context.Context, library *audiobookshelf.Au
 		"library_name": library.Name,
 		"items_count":  len(items),
 	})
-
-	if s.summary != nil {
-		s.summary.Lock()
-		s.summary.BooksTotal += int32(len(items))
-		s.summary.Unlock()
-	}
 
 	// If we have a maxBooks limit, apply it
 	if maxBooks > 0 && len(items) > maxBooks {
