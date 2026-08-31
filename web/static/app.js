@@ -618,18 +618,16 @@ class SyncProfileApp {
                     const booksSynced = summaryData.books_synced || statuses[profileId].books_synced || 0;
                     const booksNotFound = summaryData.books_not_found || statuses[profileId].books_not_found || [];
                     const mismatches = summaryData.mismatches || statuses[profileId].mismatches || [];
-                    const totalBooks = summaryData.total_books_processed !== undefined 
-                        ? summaryData.total_books_processed 
-                        : statuses[profileId].books_total || 0;
                     
                     // Update the status with the summary data
+                    // Keep books_total from the status response (pre-counted total),
+                    // don't override with total_books_processed (running count).
                     statuses[profileId] = {
                         ...statuses[profileId],
                         books_synced: booksSynced,
                         books_not_found: booksNotFound,
                         mismatches: mismatches,
                         has_summary: true,
-                        books_total: totalBooks,
                         last_sync: statuses[profileId].last_sync || new Date().toISOString()
                     };
                     
@@ -671,7 +669,9 @@ class SyncProfileApp {
             const progress = status.progress || 0;
             const booksSynced = status.books_synced || 0;
             const booksTotal = status.books_total || 0;
-            const totalProcessed = status.total_books_processed !== undefined ? status.total_books_processed : booksTotal;
+            const totalProcessed = status.last_sync_summary?.total_books_processed !== undefined
+                ? status.last_sync_summary.total_books_processed
+                : (status.total_books_processed !== undefined ? status.total_books_processed : booksTotal);
             const booksNotFound = status.books_not_found?.length || 0;
             const mismatches = status.mismatches?.length || 0;
             
