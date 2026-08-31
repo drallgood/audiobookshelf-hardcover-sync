@@ -598,6 +598,7 @@ func (s *Service) Sync(ctx context.Context) error {
 	s.summary.Lock()
 	s.summary.TotalBooksProcessed = 0
 	s.summary.BooksSynced = 0
+	s.summary.BooksTotal = 0
 	s.summary.Unlock()
 
 	// Keep BooksNotFound and Mismatches as they are for historical tracking

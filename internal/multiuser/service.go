@@ -196,7 +196,11 @@ func (s *MultiUserService) GetProfileStatus(profileID string) *SyncProfileStatus
 	if svc, exists := s.syncServices[profileID]; exists {
 		summary := svc.GetSummary()
 		if summary != nil {
-			status.BooksTotal = int(summary.TotalBooksProcessed)
+if summary.BooksTotal > 0 {
+				status.BooksTotal = int(summary.BooksTotal)
+			} else {
+				status.BooksTotal = int(summary.TotalBooksProcessed)
+			}
 			status.BooksSynced = int(summary.BooksSynced)
 			
 			// Create proper copies of the slices to avoid race conditions
@@ -377,11 +381,15 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
             "profileID": profileID,
             "error":     err,
         })
-    } else {
-        status.Status = "completed"
-        status.Progress = "Sync completed successfully"
-        status.BooksTotal = int(summary.TotalBooksProcessed)
-        status.BooksSynced = int(summary.BooksSynced)
+} else {
+		status.Status = "completed"
+		status.Progress = "Sync completed successfully"
+		if summary.BooksTotal > 0 {
+			status.BooksTotal = int(summary.BooksTotal)
+		} else {
+			status.BooksTotal = int(summary.TotalBooksProcessed)
+		}
+		status.BooksSynced = int(summary.BooksSynced)
 
         // Store full data at top level
         status.BooksNotFound = summary.BooksNotFound
