@@ -38,6 +38,7 @@ type SyncSummary struct {
 	BooksNotFound       []BookNotFoundInfo      `json:"books_not_found,omitempty"`
 	Mismatches          []mismatch.BookMismatch `json:"mismatches,omitempty"`
 	BooksSynced         int32                   `json:"books_synced,omitempty"`
+	BooksTotal          int32                   `json:"books_total"`
 	sync.RWMutex        `json:"-"`
 }
 
@@ -862,6 +863,8 @@ func (s *Service) processLibrary(ctx context.Context, library *audiobookshelf.Au
 		"library_name": library.Name,
 		"items_count":  len(items),
 	})
+
+	s.summary.BooksTotal += int32(len(items))
 
 	// If we have a maxBooks limit, apply it
 	if maxBooks > 0 && len(items) > maxBooks {
