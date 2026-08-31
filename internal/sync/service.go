@@ -1822,6 +1822,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			})
 			return fmt.Errorf("error updating book status: %w", err)
 		}
+		s.userBookCache.InvalidateByUserBook(int(userBookID))
 
 		// Update state with current progress and status
 		progressPct := 0.0
@@ -2139,6 +2140,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 				"error": statusErr,
 			})
 		} else {
+			s.userBookCache.InvalidateByUserBook(int(userBookID))
 			log.Info("Successfully updated book status to FINISHED", nil)
 
 			// --- STEP 3: Clean up auto-created blank reads ---
@@ -2915,6 +2917,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 					}
 					log.With(errCtx).Error("Failed to update book status to COMPLETED")
 				} else {
+					s.userBookCache.InvalidateByUserBook(int(userBookID))
 					log.Info("Successfully updated book status to COMPLETED", nil)
 				}
 			} else if !isFinishedInHC {
@@ -3113,6 +3116,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			}); err != nil {
 				log.With(map[string]interface{}{"error": err.Error()}).Warn("Failed to set IN_PROGRESS after read creation")
 } else {
+				s.userBookCache.InvalidateByUserBook(int(userBookID))
 				// After a necessary status transition, HC may auto-create a blank
 				// read row (no progress, no progress_seconds) as a side effect.
 				// Detect and delete such rows so they do not accumulate.

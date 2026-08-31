@@ -297,6 +297,13 @@ func (c *PersistentUserBookCache) Clear() {
 	c.entries = make(map[string]*UserBookCacheEntry)
 }
 
+// InvalidateByUserBook removes a cached entry by user_book_id.
+// Call after status mutations to prevent stale BookStatusID reads.
+func (c *PersistentUserBookCache) InvalidateByUserBook(userBookID int) {
+	key := "ub:" + strconv.Itoa(userBookID)
+	delete(c.entries, key)
+}
+
 // Size returns the number of entries in the cache
 func (c *PersistentUserBookCache) Size() int {
 	return len(c.entries)
