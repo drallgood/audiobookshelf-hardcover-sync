@@ -254,6 +254,7 @@ func (s *Service) GetSummary() *SyncSummary {
 		UserID:              s.summary.UserID,
 		TotalBooksProcessed: s.summary.TotalBooksProcessed,
 		BooksSynced:         s.summary.BooksSynced,
+		BooksTotal:          s.summary.BooksTotal,
 		BooksNotFound:       make([]BookNotFoundInfo, len(s.summary.BooksNotFound)),
 		Mismatches:          make([]mismatch.BookMismatch, len(s.summary.Mismatches)),
 	}
