@@ -866,7 +866,9 @@ func (s *Service) processLibrary(ctx context.Context, library *audiobookshelf.Au
 	})
 
 	if s.summary != nil {
+		s.summary.Lock()
 		s.summary.BooksTotal += int32(len(items))
+		s.summary.Unlock()
 	}
 
 	// If we have a maxBooks limit, apply it
