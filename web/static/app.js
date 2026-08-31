@@ -671,6 +671,7 @@ class SyncProfileApp {
             const progress = status.progress || 0;
             const booksSynced = status.books_synced || 0;
             const booksTotal = status.books_total || 0;
+            const totalProcessed = status.total_books_processed !== undefined ? status.total_books_processed : booksTotal;
             const booksNotFound = status.books_not_found?.length || 0;
             const mismatches = status.mismatches?.length || 0;
             
@@ -679,7 +680,7 @@ class SyncProfileApp {
                              (status.status === 'completed' && 
                               (booksSynced > 0 || booksNotFound > 0 || mismatches > 0));
             
-            const progressPercent = booksTotal > 0 ? Math.round((booksSynced / booksTotal) * 100) : 0;
+            const progressPercent = totalProcessed > 0 ? Math.round((totalProcessed / booksTotal) * 100) : 0;
             const lastSync = status.last_sync || status.lastSync || null;
             const statusText = status.status || 'idle';
             const profileName = status.profile_name || status.profile_id || 'Unknown Profile';
@@ -698,7 +699,8 @@ class SyncProfileApp {
                             <div><strong>Progress:</strong> ${progress}%</div>
                         ` : ''}
                         ${booksTotal > 0 ? `
-                            <div><strong>Books Processed:</strong> ${booksSynced} of ${booksTotal}</div>
+                            <div><strong>Books Processed:</strong> ${totalProcessed} of ${booksTotal}</div>
+                            ${booksSynced > 0 ? `<div><strong>Books Synced:</strong> ${booksSynced}</div>` : ''}
                             <div class="progress-bar">
                                 <div class="progress-fill" style="width: ${progressPercent}%"></div>
                             </div>
