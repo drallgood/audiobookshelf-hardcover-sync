@@ -148,7 +148,7 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 				LastUpdated:        now,
 				Status:             status,
 				UserBookID:         oldBook.UserBookID,
-				HasProgressSeconds: oldBook.HasProgressSeconds,
+				HasProgressSeconds: oldBook.HasProgressSeconds || status == "FINISHED",
 			}
 			updated = true
 			if debugLog {
@@ -157,9 +157,10 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 		}
 	} else {
 		s.Books[bookID] = Book{
-			LastProgress: normalizedProgress,
-			LastUpdated:  now,
-			Status:       status,
+			LastProgress:       normalizedProgress,
+			LastUpdated:        now,
+			Status:             status,
+			HasProgressSeconds: status == "FINISHED",
 		}
 		updated = true
 
@@ -184,14 +185,15 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 					LastUpdated:        now,
 					Status:             status,
 					UserBookID:         oldBook.UserBookID,
-					HasProgressSeconds: oldBook.HasProgressSeconds,
+					HasProgressSeconds: oldBook.HasProgressSeconds || status == "FINISHED",
 				}
 			}
 		} else {
 			s.Books[baseID] = Book{
-				LastProgress: normalizedProgress,
-				LastUpdated:  now,
-				Status:       status,
+				LastProgress:       normalizedProgress,
+				LastUpdated:        now,
+				Status:             status,
+				HasProgressSeconds: status == "FINISHED",
 			}
 		}
 	}
