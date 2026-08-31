@@ -1397,9 +1397,9 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			// Check if there's any activity that would require an update
 			lastActivity := int64(0)
 			if book.Progress.FinishedAt > 0 {
-				lastActivity = book.Progress.FinishedAt
+				lastActivity = book.Progress.FinishedAt / 1000 // ABS timestamps are in ms, state is in seconds
 			} else if book.Progress.StartedAt > 0 {
-				lastActivity = book.Progress.StartedAt
+				lastActivity = book.Progress.StartedAt / 1000
 			}
 			activityChanged := lastActivity > bookState.LastUpdated
 
