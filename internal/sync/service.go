@@ -1908,42 +1908,24 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 		s.state.UpdateBookWithUserBookID(stateKey, progressPct, "FINISHED", strconv.FormatInt(userBookID, 10))
 	}()
 
-	// First, check the current status of the book and update to FINISHED if needed
-	log.Info("Checking current book status", map[string]interface{}{
-		"user_book_id": userBookID,
-	})
-
-	// Convert userBookID to string for GetUserBook
+	// Check DNF status first — if the book is DNF, return without any mutations.
 	userBookIDStr := strconv.FormatInt(userBookID, 10)
-
-	// Get the current user book to check its status
-	// Try cache first
 	var userBook *models.HardcoverBook
 	var getUserBookErr error
 
 	if cachedUserBook, found := s.getUserBookFromCache(int(userBookID)); found {
-		log.Debug("User book found in cache", map[string]interface{}{
-			"user_book_id": userBookID,
-		})
 		userBook = cachedUserBook
 	} else {
-		// Not in cache, fetch from API
 		userBook, getUserBookErr = s.hardcover.GetUserBook(ctx, userBookIDStr)
 		if getUserBookErr == nil && userBook != nil {
-			// Cache the result
 			s.setUserBookByUserBookInCache(int(userBookID), userBook)
-			log.Debug("User book cached", map[string]interface{}{
-				"user_book_id": userBookID,
-			})
 		}
 	}
 	if getUserBookErr != nil {
-		log.Warn("Failed to get current book status, will attempt to update anyway", map[string]interface{}{
+		log.Warn("Failed to get current book status, will attempt to process anyway", map[string]interface{}{
 			"error": getUserBookErr,
 		})
-		// Continue with update even if we couldn't get the current status
 	} else if userBook != nil {
-		// Check if the book is marked as DNF and should be preserved
 		if s.config.Sync.PreserveDNF && s.isBookDNF(userBook) {
 			log.Info("Book is marked as DNF in Hardcover, preserving DNF status and skipping sync", map[string]interface{}{
 				"user_book_id":   userBookID,
@@ -1952,58 +1934,13 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 			})
 			return nil
 		}
-
-		// Check if the book is already marked as FINISHED (status ID 3)
-		log.Debug("Current book status", map[string]interface{}{
-			"book_status_id": userBook.BookStatusID,
-		})
-
-		// Only update if not already FINISHED (status ID 3 = READ/FINISHED)
-		if userBook.BookStatusID != 3 {
-			log.Info("Updating book status to FINISHED", map[string]interface{}{
-				"user_book_id":      userBookID,
-				"current_status_id": userBook.BookStatusID,
-			})
-
-			statusErr := s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
-				ID:     userBookID,
-				Status: "FINISHED",
-			})
-
-			if statusErr != nil {
-				log.Error("Failed to update book status to FINISHED", map[string]interface{}{
-					"error": statusErr,
-				})
-				// Continue processing even if this fails - we'll still try to update the read status
-			} else {
-				log.Info("Successfully updated book status to FINISHED", nil)
-			}
-		} else {
-			log.Info("Book already has FINISHED status, skipping status update", map[string]interface{}{
-				"user_book_id":   userBookID,
-				"book_status_id": userBook.BookStatusID,
-			})
-		}
-	} else {
-		// If we got nil without an error, something is wrong
-		log.Warn("Got nil user book without error, will attempt to update status anyway", nil)
-
-		statusErr := s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
-			ID:     userBookID,
-			Status: "FINISHED",
-		})
-
-		if statusErr != nil {
-			log.Error("Failed to update book status to FINISHED", map[string]interface{}{
-				"error": statusErr,
-			})
-			// Continue processing even if this fails - we'll still try to update the read status
-		} else {
-			log.Info("Successfully updated book status to FINISHED", nil)
-		}
 	}
 
-	// Look for the most recent unfinished read and check for existing finished reads
+	// --- STEP 1: Process reads FIRST (insert/update read record) ---
+	// Insert the read record BEFORE setting the book status to FINISHED.
+	// This prevents Hardcover from auto-creating a blank finished read row
+	// as a side effect of the status transition.
+
 	log.Info("Fetching read statuses from Hardcover", map[string]interface{}{
 		"user_book_id": userBookID,
 	})
@@ -2023,99 +1960,30 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 		"count": len(readStatuses),
 	})
 
-	// Look for the most recent unfinished read and check for existing finished reads today
+	// Look for the most recent unfinished read and check for existing finished reads
 	var latestUnfinishedRead *hardcover.UserBookRead
 	var latestFinishedReadTime time.Time
 	hasFinishedRead := false
 
-	log.Debug("Processing read statuses", map[string]interface{}{
-		"total_statuses": len(readStatuses),
-		"book_id":        book.ID,
-		"title":          book.Media.Metadata.Title,
-	})
-
 	for i, read := range readStatuses {
-		log.Debug("Processing read status", map[string]interface{}{
-			"index":            i,
-			"read_id":          read.ID,
-			"started_at":       read.StartedAt,
-			"finished_at":      read.FinishedAt,
-			"progress":         read.Progress,
-			"progress_seconds": read.ProgressSeconds,
-		})
-
-		// Check if this is a finished read
 		if read.FinishedAt != nil && *read.FinishedAt != "" {
+			hasFinishedRead = true
 			finishedDate := *read.FinishedAt
-			if len(finishedDate) > 10 { // If it includes time, truncate to just date
+			if len(finishedDate) > 10 {
 				finishedDate = finishedDate[:10]
 			}
-
-			// Track the most recent finished read
-			// Parse the date string, handling multiple possible formats
 			var finishedAt time.Time
-			var parseErr error
-
-			// Try parsing as RFC3339 first (full timestamp with timezone)
-			finishedAt, parseErr = time.Parse(time.RFC3339, finishedDate)
-			if parseErr != nil {
-				// Try parsing as just date (YYYY-MM-DD)
-				finishedAt, parseErr = time.Parse("2006-01-02", finishedDate)
+			if t, pe := time.Parse(time.RFC3339, finishedDate); pe == nil {
+				finishedAt = t
+			} else if t, pe := time.Parse("2006-01-02", finishedDate); pe == nil {
+				finishedAt = t
 			}
-
-			if parseErr != nil {
-				log.Error("Failed to parse finished date", map[string]interface{}{
-					"error":   parseErr.Error(),
-					"rawDate": finishedDate,
-				})
-			} else if finishedAt.After(latestFinishedReadTime) {
+			if finishedAt.After(latestFinishedReadTime) {
 				latestFinishedReadTime = finishedAt
 			}
-
-			hasFinishedRead = true
 		}
-
-		if read.FinishedAt == nil || *read.FinishedAt == "" {
-			// This is an unfinished read
-			log.Debug("Found unfinished read", map[string]interface{}{
-				"read_id": read.ID,
-			})
-			if latestUnfinishedRead == nil {
-				latestUnfinishedRead = &readStatuses[i]
-			}
-		} else {
-			// This is a finished read
-			hasFinishedRead = true
-			// Track the most recent finished read
-			if read.FinishedAt != nil && *read.FinishedAt != "" {
-				// Try parsing with RFC3339 first, then fall back to YYYY-MM-DD
-				finishedDate := *read.FinishedAt
-				var finishedAt time.Time
-				var parseErr error
-
-				// Try parsing as RFC3339 first (full timestamp with timezone)
-				finishedAt, parseErr = time.Parse(time.RFC3339, finishedDate)
-				if parseErr != nil {
-					// Try parsing as just date (YYYY-MM-DD)
-					if len(finishedDate) > 10 { // If it includes time, truncate to just date
-						finishedDate = finishedDate[:10]
-					}
-					finishedAt, parseErr = time.Parse("2006-01-02", finishedDate)
-				}
-
-				if parseErr != nil {
-					log.Error("Failed to parse finished_at time", map[string]interface{}{
-						"error":     parseErr.Error(),
-						"raw_value": *read.FinishedAt,
-					})
-				} else if finishedAt.After(latestFinishedReadTime) {
-					latestFinishedReadTime = finishedAt
-					log.Debug("Updated latest finished read time", map[string]interface{}{
-						"new_time": latestFinishedReadTime,
-						"read_id":  read.ID,
-					})
-				}
-			}
+		if (read.FinishedAt == nil || *read.FinishedAt == "") && latestUnfinishedRead == nil {
+			latestUnfinishedRead = &readStatuses[i]
 		}
 	}
 
@@ -2127,95 +1995,70 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 		"title":               book.Media.Metadata.Title,
 	})
 
-	// If we have any read status, we don't need to create a new one
-	if hasFinishedRead || latestUnfinishedRead != nil {
-		// If we have an unfinished read, update it to mark as finished
-		if latestUnfinishedRead != nil {
-			if book.Progress.FinishedAt <= 0 {
-				log.Warn("Audiobookshelf marks book finished but finished_at is missing; skipping unfinished-read closure to avoid synthetic dates", map[string]interface{}{
-					"read_id":          latestUnfinishedRead.ID,
-					"has_finished_read": hasFinishedRead,
-				})
-				success = true
-				return nil
-			}
+	needsStatusUpdate := true
 
-			// Create update object with all fields needed for the update
-			progress := 100.0
-
-			// Only use a source finish date from Audiobookshelf; never fabricate today's date.
-			finishedAt := time.Unix(book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
-
-			// Prepare the update object with all fields
-			updateObj := map[string]interface{}{
-				"finished_at": finishedAt,
-				"progress":    progress, // Always set to 100% when marking as finished
-			}
-
-			// Add progress_seconds if available, otherwise use book's duration
-			if latestUnfinishedRead.ProgressSeconds != nil {
-				updateObj["progress_seconds"] = *latestUnfinishedRead.ProgressSeconds
-			} else if book.Media.Duration > 0 {
-				durationInt := int(book.Media.Duration)
-				updateObj["progress_seconds"] = durationInt
-			}
-
-			// Preserve started_at if it exists, or use ABS started_at
-			if latestUnfinishedRead.StartedAt != nil && *latestUnfinishedRead.StartedAt != "" {
-				updateObj["started_at"] = *latestUnfinishedRead.StartedAt
-			} else if book.Progress.StartedAt > 0 {
-				// Use the started date from Audiobookshelf
-				updateObj["started_at"] = time.Unix(book.Progress.StartedAt/1000, 0).Format("2006-01-02")
-			} else {
-				// If no started_at available, use finished date as fallback
-				updateObj["started_at"] = finishedAt
-			}
-
-			// Preserve edition_id if it exists
-			if latestUnfinishedRead.EditionID != nil {
-				editionID := *latestUnfinishedRead.EditionID
-				updateObj["edition_id"] = editionID
-			}
-
-			// Log the update object for debugging
-			s.log.Debug("Updating existing read status to mark as finished", map[string]interface{}{
-				"id":          latestUnfinishedRead.ID,
-				"progress":    updateObj["progress"],
-				"started_at":  updateObj["started_at"],
-				"finished_at": updateObj["finished_at"],
+	if latestUnfinishedRead != nil {
+		// Close the unfinished read and mark as finished.
+		if book.Progress.FinishedAt <= 0 {
+			log.Warn("Audiobookshelf marks book finished but finished_at is missing; skipping unfinished-read closure to avoid synthetic dates", map[string]interface{}{
+				"read_id":          latestUnfinishedRead.ID,
+				"has_finished_read": hasFinishedRead,
 			})
+			success = true
+			return nil
+		}
 
-			// Update the read record with all fields
-			_, err = s.hardcover.UpdateUserBookRead(ctx, hardcover.UpdateUserBookReadInput{
-				ID:     latestUnfinishedRead.ID,
-				Object: updateObj,
-			})
+		finishedAt := time.Unix(book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
 
-			if err != nil {
-				log.Error("Failed to update existing read status", map[string]interface{}{
-					"error":   err.Error(),
-					"read_id": latestUnfinishedRead.ID,
-				})
-				return fmt.Errorf("error updating read status: %w", err)
-			}
+		updateObj := map[string]interface{}{
+			"finished_at": finishedAt,
+			"progress":    100.0,
+		}
 
-			log.Info("Updated existing read status to mark as finished", map[string]interface{}{
+		if latestUnfinishedRead.ProgressSeconds != nil {
+			updateObj["progress_seconds"] = *latestUnfinishedRead.ProgressSeconds
+		} else if book.Media.Duration > 0 {
+			updateObj["progress_seconds"] = int(book.Media.Duration)
+		}
+
+		if latestUnfinishedRead.StartedAt != nil && *latestUnfinishedRead.StartedAt != "" {
+			updateObj["started_at"] = *latestUnfinishedRead.StartedAt
+		} else if book.Progress.StartedAt > 0 {
+			updateObj["started_at"] = time.Unix(book.Progress.StartedAt/1000, 0).Format("2006-01-02")
+		} else {
+			updateObj["started_at"] = finishedAt
+		}
+
+		if latestUnfinishedRead.EditionID != nil {
+			updateObj["edition_id"] = *latestUnfinishedRead.EditionID
+		}
+
+		s.log.Debug("Updating existing read status to mark as finished", map[string]interface{}{
+			"id":          latestUnfinishedRead.ID,
+			"progress":    updateObj["progress"],
+			"started_at":  updateObj["started_at"],
+			"finished_at": updateObj["finished_at"],
+		})
+
+		_, err = s.hardcover.UpdateUserBookRead(ctx, hardcover.UpdateUserBookReadInput{
+			ID:     latestUnfinishedRead.ID,
+			Object: updateObj,
+		})
+
+		if err != nil {
+			log.Error("Failed to update existing read status", map[string]interface{}{
+				"error":   err.Error(),
 				"read_id": latestUnfinishedRead.ID,
 			})
-		} else {
-			log.Info("Book already has a read status, not creating a new one", map[string]interface{}{
-				"book_id": book.ID,
-				"title":   book.Media.Metadata.Title,
-			})
+			return fmt.Errorf("error updating read status: %w", err)
 		}
+
+		log.Info("Updated existing read status to mark as finished", map[string]interface{}{
+			"read_id": latestUnfinishedRead.ID,
+		})
 		success = true
-		return nil
-	}
-
-	// If we get here, there are no existing read statuses at all
-	shouldCreateNewRead := true
-
-	if shouldCreateNewRead {
+	} else if !hasFinishedRead {
+		// No reads at all — create a new finished read.
 		if book.Progress.FinishedAt <= 0 {
 			log.Warn("Skipping finished-read creation because Audiobookshelf finished_at is missing", map[string]interface{}{
 				"user_book_id": userBookID,
@@ -2225,47 +2068,30 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 			return nil
 		}
 
-		// Create a new read record with current progress
-		// Only use a source finish date from Audiobookshelf; never fabricate today's date.
 		finishedAt := time.Unix(book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
 
-		// Use the started date from Audiobookshelf if available, otherwise use finished date
 		var startedAt string
 		if book.Progress.StartedAt > 0 {
 			startedAt = time.Unix(book.Progress.StartedAt/1000, 0).Format("2006-01-02")
 		} else {
-			startedAt = finishedAt // Use finished date as fallback if no started date
+			startedAt = finishedAt
 		}
 
-		// If we have progress from the book, use it
-		var progressSeconds *int
-
-		if book.Progress.CurrentTime > 0 {
-			seconds := int(book.Progress.CurrentTime)
-			progressSeconds = &seconds
-		}
-
-		// Set progress to 100% when creating a new finished read
-		// We'll use progress_seconds to set the progress
 		var finalProgressSeconds int
-		if progressSeconds != nil {
-			finalProgressSeconds = *progressSeconds
+		if book.Progress.CurrentTime > 0 {
+			finalProgressSeconds = int(book.Progress.CurrentTime)
 		} else if book.Media.Duration > 0 {
-			// If no progress seconds but we have duration, use that
 			finalProgressSeconds = int(book.Media.Duration)
 		} else {
-			// Default to a reasonable value if we have no other info
-			finalProgressSeconds = 3600 // 1 hour as fallback
+			finalProgressSeconds = 3600
 		}
 
-		// Create the read record using the proper input type
 		_, err = s.hardcover.InsertUserBookRead(ctx, hardcover.InsertUserBookReadInput{
 			UserBookID: userBookID,
 			DatesRead: hardcover.DatesReadInput{
 				FinishedAt:      &finishedAt,
 				StartedAt:       &startedAt,
-				ProgressSeconds: &finalProgressSeconds, // This will effectively set progress to 100%
-				// EditionID removed to prevent edition switching - the read is already linked to the user book
+				ProgressSeconds: &finalProgressSeconds,
 			},
 		})
 
@@ -2277,11 +2103,72 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 		}
 
 		log.Info("Successfully created new read record")
+		success = true
 	} else {
-		log.Info("Skipping read record creation - recent finished read exists", nil)
+		// Book already has finished reads — no new read to create.
+		// Only update status if it's not already FINISHED.
+		if userBook != nil && userBook.BookStatusID == 3 {
+			log.Info("Book already has FINISHED status and finished reads, nothing to do", map[string]interface{}{
+				"book_id": book.ID,
+				"title":   book.Media.Metadata.Title,
+			})
+			needsStatusUpdate = false
+		} else {
+			log.Info("Book has finished reads but status is not FINISHED; will update status", map[string]interface{}{
+				"book_id": book.ID,
+				"title":   book.Media.Metadata.Title,
+			})
+		}
+		success = true
 	}
 
-	success = true
+	// --- STEP 2: Update status to FINISHED SECOND ---
+	// Now that the read record is in place, set the book status to FINISHED.
+	if needsStatusUpdate {
+		log.Info("Updating book status to FINISHED", map[string]interface{}{
+			"user_book_id": userBookID,
+		})
+
+		statusErr := s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
+			ID:     userBookID,
+			Status: "FINISHED",
+		})
+
+		if statusErr != nil {
+			log.Error("Failed to update book status to FINISHED", map[string]interface{}{
+				"error": statusErr,
+			})
+		} else {
+			log.Info("Successfully updated book status to FINISHED", nil)
+
+			// --- STEP 3: Clean up auto-created blank reads ---
+			// After the status transition, Hardcover may auto-create a blank
+			// read row as a side effect. Detect and delete these so they don't
+			// pollute the activity stream.
+			cleanupReads, refetchErr := s.hardcover.GetUserBookReads(ctx, hardcover.GetUserBookReadsInput{
+				UserBookID: userBookID,
+			})
+			if refetchErr == nil {
+				for i := range cleanupReads {
+					read := &cleanupReads[i]
+					if read.ProgressSeconds != nil && *read.ProgressSeconds > 0 {
+						continue
+					}
+					if read.Progress > 0 {
+						continue
+					}
+					if read.FinishedAt != nil && *read.FinishedAt != "" {
+						continue
+					}
+					log.Info("Deleting auto-created blank read after FINISHED status transition", map[string]interface{}{
+						"read_id": read.ID,
+					})
+					_ = s.hardcover.DeleteUserBookRead(ctx, read.ID)
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
