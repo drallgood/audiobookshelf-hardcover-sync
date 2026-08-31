@@ -1907,6 +1907,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 		}
 		// Also update with user book ID for tracking shared books
 		s.state.UpdateBookWithUserBookID(stateKey, progressPct, "FINISHED", strconv.FormatInt(userBookID, 10))
+		s.state.SetHasProgressSeconds(stateKey)
 	}()
 
 	// Check DNF status first — if the book is DNF, return without any mutations.
@@ -2921,12 +2922,28 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 					log.Info("Successfully updated book status to COMPLETED", nil)
 				}
 			} else if !isFinishedInHC {
-				// We already updated an active unfinished read above. Avoid a redundant
-				// status mutation here because some Hardcover responses create a new
-				// blank unfinished read row as a side effect of repeated IN_PROGRESS updates.
-				log.Debug("Skipping explicit IN_PROGRESS status update after read progress update", map[string]interface{}{
-					"user_book_id": userBookID,
-				})
+				// Skip the status mutation if the book is already IN_PROGRESS (2),
+				// but transition from READ (3) for rereads where a finished book
+				// is being listened to again.
+				if hcBook.BookStatusID == 2 {
+					log.Debug("Skipping explicit IN_PROGRESS status update after read progress update", map[string]interface{}{
+						"user_book_id": userBookID,
+					})
+				} else {
+					log.Info("Updating book status to IN_PROGRESS for reread", map[string]interface{}{
+						"user_book_id":      userBookID,
+						"current_status_id": hcBook.BookStatusID,
+					})
+					err = s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
+						ID:       userBookID,
+						StatusID: 2,
+					})
+					if err != nil {
+						log.With(map[string]interface{}{"error": err.Error()}).Warn("Failed to set IN_PROGRESS after read update")
+					} else {
+						s.userBookCache.InvalidateByUserBook(int(userBookID))
+					}
+				}
 			} else {
 				log.Debug("Book status is already up to date", logCtx)
 			}
