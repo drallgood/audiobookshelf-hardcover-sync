@@ -223,6 +223,7 @@ if summary.BooksTotal > 0 {
 				UserID:              summary.UserID,
 				TotalBooksProcessed: summary.TotalBooksProcessed,
 				BooksSynced:         summary.BooksSynced,
+				BooksTotal:          summary.BooksTotal,
 				// Intentionally leave BooksNotFound and Mismatches empty to avoid duplication
 				BooksNotFound:       []sync.BookNotFoundInfo{},
 				Mismatches:          []mismatch.BookMismatch{},
@@ -400,6 +401,7 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
             UserID:              summary.UserID,
             TotalBooksProcessed: summary.TotalBooksProcessed,
             BooksSynced:         summary.BooksSynced,
+            BooksTotal:          summary.BooksTotal,
             BooksNotFound:       []sync.BookNotFoundInfo{},
             Mismatches:          []mismatch.BookMismatch{},
         }
