@@ -1908,23 +1908,19 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 	if editionID != "" {
 		stateKey = fmt.Sprintf("%s:%s", book.ID, editionID)
 	}
-	progressPct := 0.0
-	if book.Media.Duration > 0 {
-		progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
-	}
 	success := false
 	defer func() {
 		if !success {
 			return
 		}
-		if updated := s.state.UpdateBook(stateKey, progressPct, "FINISHED"); updated {
+		if updated := s.state.UpdateBook(stateKey, 100.0, "FINISHED"); updated {
 			log.Debug("Updated book state to FINISHED", map[string]interface{}{
 				"state_key": stateKey,
-				"progress":  progressPct,
+				"progress":  100.0,
 			})
 		}
 		// Also update with user book ID for tracking shared books
-		s.state.UpdateBookWithUserBookID(stateKey, progressPct, "FINISHED", strconv.FormatInt(userBookID, 10))
+		s.state.UpdateBookWithUserBookID(stateKey, 100.0, "FINISHED", strconv.FormatInt(userBookID, 10))
 		s.state.SetHasProgressSeconds(stateKey)
 	}()
 
