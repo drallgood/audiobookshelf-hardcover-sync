@@ -1162,6 +1162,9 @@ func TestHandleInProgressBook_FinishedBook(t *testing.T) {
 		StatusID: 3, // 3 = Completed
 	}).Return(nil).Once()
 
+	// COMPLETED status transition triggers blank-read cleanup
+	mockClient.On("GetUserBookReads", mock.Anything, mock.Anything).Return([]hardcover.UserBookRead{}, nil).Once()
+
 	// Call the function
 	stateKey := fmt.Sprintf("%s:test-edition", audiobook.ID)
 	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)

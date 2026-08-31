@@ -2144,31 +2144,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 			s.userBookCache.InvalidateByUserBook(int(userBookID))
 			log.Info("Successfully updated book status to FINISHED", nil)
 
-			// --- STEP 3: Clean up auto-created blank reads ---
-			// After the status transition, Hardcover may auto-create a blank
-			// read row as a side effect. Detect and delete these so they don't
-			// pollute the activity stream.
-			cleanupReads, refetchErr := s.hardcover.GetUserBookReads(ctx, hardcover.GetUserBookReadsInput{
-				UserBookID: userBookID,
-			})
-			if refetchErr == nil {
-				for i := range cleanupReads {
-					read := &cleanupReads[i]
-					if read.ProgressSeconds != nil && *read.ProgressSeconds > 0 {
-						continue
-					}
-					if read.Progress > 0 {
-						continue
-					}
-					if read.FinishedAt != nil && *read.FinishedAt != "" {
-						continue
-					}
-					log.Info("Deleting auto-created blank read after FINISHED status transition", map[string]interface{}{
-						"read_id": read.ID,
-					})
-					_ = s.hardcover.DeleteUserBookRead(ctx, read.ID)
-				}
-			}
+			s.deleteBlankReads(ctx, userBookID, log)
 		}
 	}
 
@@ -2919,6 +2895,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 					log.With(errCtx).Error("Failed to update book status to COMPLETED")
 				} else {
 					s.userBookCache.InvalidateByUserBook(int(userBookID))
+					s.deleteBlankReads(ctx, userBookID, log)
 					log.Info("Successfully updated book status to COMPLETED", nil)
 				}
 			} else if !isFinishedInHC {
@@ -2941,7 +2918,8 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 					if err != nil {
 						log.With(map[string]interface{}{"error": err.Error()}).Warn("Failed to set IN_PROGRESS after read update")
 					} else {
-						s.userBookCache.InvalidateByUserBook(int(userBookID))
+s.userBookCache.InvalidateByUserBook(int(userBookID))
+						s.deleteBlankReads(ctx, userBookID, log)
 					}
 				}
 			} else {
@@ -3134,33 +3112,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				log.With(map[string]interface{}{"error": err.Error()}).Warn("Failed to set IN_PROGRESS after read creation")
 } else {
 				s.userBookCache.InvalidateByUserBook(int(userBookID))
-				// After a necessary status transition, HC may auto-create a blank
-				// read row (no progress, no progress_seconds) as a side effect.
-				// Detect and delete such rows so they do not accumulate.
-				allReads, refetchErr := s.hardcover.GetUserBookReads(ctx, hardcover.GetUserBookReadsInput{
-					UserBookID: userBookID,
-				})
-				if refetchErr == nil {
-					for i := range allReads {
-						read := &allReads[i]
-						if read.ProgressSeconds != nil {
-							continue
-						}
-						if read.Progress > 0 {
-							continue
-						}
-						if read.FinishedAt != nil && *read.FinishedAt != "" {
-							continue
-						}
-						log.Warn("Detected auto-created blank read after IN_PROGRESS status update; deleting", map[string]interface{}{
-							"blank_read_id": read.ID,
-							"user_book_id":  userBookID,
-						})
-						if delErr := s.hardcover.DeleteUserBookRead(ctx, read.ID); delErr != nil {
-							log.With(map[string]interface{}{"error": delErr.Error()}).Warn("Failed to delete auto-created blank read")
-						}
-					}
-				}
+				s.deleteBlankReads(ctx, userBookID, log)
 			}
 		}
 
@@ -3188,6 +3140,38 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 	}
 	// Ensure function returns nil when update path completes without earlier returns
 	return nil
+}
+
+// deleteBlankReads detects and deletes auto-created blank read rows that Hardcover
+// can create as a side effect of status transitions. Blank reads have no progress,
+// no progress_seconds, and no finished_at timestamp.
+func (s *Service) deleteBlankReads(ctx context.Context, userBookID int64, log *logger.Logger) {
+	allReads, refetchErr := s.hardcover.GetUserBookReads(ctx, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	})
+	if refetchErr != nil {
+		log.With(map[string]interface{}{"error": refetchErr.Error()}).Warn("Failed to check for blank reads after status transition")
+		return
+	}
+	for i := range allReads {
+		read := &allReads[i]
+		if read.ProgressSeconds != nil {
+			continue
+		}
+		if read.Progress > 0 {
+			continue
+		}
+		if read.FinishedAt != nil && *read.FinishedAt != "" {
+			continue
+		}
+		log.Warn("Deleting auto-created blank read after status transition", map[string]interface{}{
+			"blank_read_id": read.ID,
+			"user_book_id":  userBookID,
+		})
+		if delErr := s.hardcover.DeleteUserBookRead(ctx, read.ID); delErr != nil {
+			log.With(map[string]interface{}{"error": delErr.Error()}).Warn("Failed to delete auto-created blank read")
+		}
+	}
 }
 
 // determineBookStatus determines the book status based on progress and finished status
