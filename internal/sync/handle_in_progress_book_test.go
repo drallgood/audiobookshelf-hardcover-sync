@@ -1385,7 +1385,7 @@ func TestHandleInProgressBook_UsesHistoricalZeroProgressFinishedReadForStaleDete
 	}, nil).Once()
 
 	// Initial read fetch: returns both the stale unfinished read AND a historical
-	// zero-progress closed read for stale rhe read data is reused).
+	// zero-progress closed read, so stale detection reuses the initial fetch.
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
 		
