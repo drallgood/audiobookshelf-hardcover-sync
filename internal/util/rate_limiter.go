@@ -79,6 +79,9 @@ type RateLimiter struct {
 func (r *RateLimiter) DailyRemaining() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	if r.dailyLimit == 0 && r.dailyRemaining == 0 && r.dailyResetSec == 0 {
+		return -1
+	}
 	return r.dailyRemaining
 }
 
