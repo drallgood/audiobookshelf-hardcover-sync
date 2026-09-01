@@ -196,7 +196,7 @@ func (s *MultiUserService) GetProfileStatus(profileID string) *SyncProfileStatus
 	if svc, exists := s.syncServices[profileID]; exists {
 		summary := svc.GetSummary()
 		if summary != nil {
-if summary.BooksTotal > 0 {
+			if summary.BooksTotal > 0 {
 				status.BooksTotal = int(summary.BooksTotal)
 			} else {
 				status.BooksTotal = int(summary.TotalBooksProcessed)
