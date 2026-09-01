@@ -75,6 +75,9 @@ type HardcoverClientInterface interface {
 	// UpdateUserBookRead updates an existing reading progress entry
 	UpdateUserBookRead(ctx context.Context, input UpdateUserBookReadInput) (bool, error)
 
+	// DeleteUserBookRead deletes a user book read entry by ID
+	DeleteUserBookRead(ctx context.Context, id int64) error
+
 	// CheckExistingUserBookRead checks if a reading progress entry exists
 	CheckExistingUserBookRead(ctx context.Context, input CheckExistingUserBookReadInput) (*CheckExistingUserBookReadResult, error)
 

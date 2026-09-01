@@ -141,6 +141,13 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 			if debugLog {
 				log.Printf("DEBUG - No update needed for book %s - no significant changes", bookID)
 			}
+			// Even when nothing changed, fix up HasProgressSeconds for FINISHED books
+			// so the incremental NeedsSync check skips them on subsequent runs.
+			if status == "FINISHED" && !s.Books[bookID].HasProgressSeconds {
+				old := s.Books[bookID]
+				old.HasProgressSeconds = true
+				s.Books[bookID] = old
+			}
 		} else {
 			oldBook := s.Books[bookID]
 			s.Books[bookID] = Book{
@@ -148,7 +155,7 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 				LastUpdated:        now,
 				Status:             status,
 				UserBookID:         oldBook.UserBookID,
-				HasProgressSeconds: oldBook.HasProgressSeconds,
+				HasProgressSeconds: oldBook.HasProgressSeconds || status == "FINISHED",
 			}
 			updated = true
 			if debugLog {
@@ -157,9 +164,10 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 		}
 	} else {
 		s.Books[bookID] = Book{
-			LastProgress: normalizedProgress,
-			LastUpdated:  now,
-			Status:       status,
+			LastProgress:       normalizedProgress,
+			LastUpdated:        now,
+			Status:             status,
+			HasProgressSeconds: status == "FINISHED",
 		}
 		updated = true
 
@@ -184,14 +192,18 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 					LastUpdated:        now,
 					Status:             status,
 					UserBookID:         oldBook.UserBookID,
-					HasProgressSeconds: oldBook.HasProgressSeconds,
+					HasProgressSeconds: oldBook.HasProgressSeconds || status == "FINISHED",
 				}
+			} else if !existing.HasProgressSeconds && status == "FINISHED" {
+				existing.HasProgressSeconds = true
+				s.Books[baseID] = existing
 			}
 		} else {
 			s.Books[baseID] = Book{
-				LastProgress: normalizedProgress,
-				LastUpdated:  now,
-				Status:       status,
+				LastProgress:       normalizedProgress,
+				LastUpdated:        now,
+				Status:             status,
+				HasProgressSeconds: status == "FINISHED",
 			}
 		}
 	}

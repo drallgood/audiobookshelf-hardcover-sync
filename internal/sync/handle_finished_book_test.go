@@ -113,7 +113,7 @@ func TestHandleFinishedBook(t *testing.T) {
 			editionID:              "999",
 			expectUpdateCall:       false,
 			expectInsertCall:       false,
-			expectStatusUpdateCall: true, // Should try to update status
+			expectStatusUpdateCall: false, // Read error returns before status update
 			book:                   createTestFinishedBook("abs-book-4", "Error Book", "Error Author", "B999999999", "9789999999990"),
 			readStatuses:           []hardcover.UserBookRead{},
 			mockGetReadsError:      fmt.Errorf("API error"),
@@ -143,7 +143,7 @@ func TestHandleFinishedBook(t *testing.T) {
 			},
 			expectUpdateCall:       true,
 			expectInsertCall:       false,
-			expectStatusUpdateCall: true, // Should update status to FINISHED
+			expectStatusUpdateCall: false, // Read error returns before status update
 			mockUpdateError:        fmt.Errorf("API error"),
 			expectedError:          true,
 			expectedErrorString:    "error updating read status",
@@ -162,7 +162,7 @@ func TestHandleFinishedBook(t *testing.T) {
 			readStatuses:           []hardcover.UserBookRead{},
 			expectUpdateCall:       false,
 			expectInsertCall:       true,
-			expectStatusUpdateCall: true, // Should update status to FINISHED
+			expectStatusUpdateCall: false, // Insert error returns before status update
 			mockInsertError:        fmt.Errorf("API error"),
 			expectedError:          true,
 			expectedErrorString:    "error creating new read record",
@@ -276,10 +276,6 @@ func TestHandleFinishedBook_MissingFinishedAtSkipsReadMutation(t *testing.T) {
 		UserBookID:   userBookIDStr,
 		BookStatusID: 2,
 	}, nil)
-
-	mockClient.On("UpdateUserBookStatus", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookStatusInput) bool {
-		return input.ID == userBookID && input.Status == "FINISHED"
-	})).Return(nil)
 
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,

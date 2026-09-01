@@ -559,6 +559,10 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 			"raw_response":   string(body),
 		})
 
+		// Process rate limit headers from EVERY response so the rate limiter
+		// can self-throttle proactively before hitting HTTP 429.
+		c.rateLimiter.WithRateLimitHeaders(resp)
+
 		// Check for HTTP errors
 		if resp.StatusCode >= 400 {
 			lastErr = &HTTPError{
@@ -2405,6 +2409,32 @@ func (c *Client) UpdateUserBookRead(ctx context.Context, input UpdateUserBookRea
 	})
 
 	return true, nil
+}
+
+// DeleteUserBookRead deletes a user book read entry by its ID.
+func (c *Client) DeleteUserBookRead(ctx context.Context, id int64) error {
+	const mutation = `
+	mutation DeleteUserBookReadByID($id: Int!) {
+	  delete_user_book_read(id: $id) {
+		id
+	  }
+	}`
+
+	variables := map[string]interface{}{
+		"id": id,
+	}
+
+	var result struct {
+		DeleteUserBookRead *struct {
+			ID int64 `json:"id"`
+		} `json:"delete_user_book_read"`
+	}
+
+	if err := c.executeGraphQLQuery(ctx, mutation, variables, &result); err != nil {
+		return fmt.Errorf("failed to delete user book read: %w", err)
+	}
+
+	return nil
 }
 
 // GetEditionByISBN13 retrieves an edition by its ISBN-13

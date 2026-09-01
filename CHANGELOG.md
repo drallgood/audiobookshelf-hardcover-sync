@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v3.6.0] - 2026-09-01
+
+### Fixed
+- **53 FINISHED Books Re-Synced Every Cycle (689 → 5 API calls)**: Root cause: a milliseconds-vs-seconds comparison in the second incremental check (`book.Progress.FinishedAt` is in milliseconds from Audiobookshelf, `bookState.LastUpdated` is in seconds from `time.Now().Unix()`). `1778435826287 > 1788206781` was always `true`, so every FINISHED book passed the `activityChanged` gate on every cycle. Supporting fixes required: `HandleFinishedBook` now stores `100.0` as state progress (not raw listening percentage like `30.0`) so the first incremental check's progress comparison matches correctly; the `nothing to do` early-exit branch now sets `success=true` so the deferred `UpdateBook`/`SetHasProgressSeconds` actually fires; `HasProgressSeconds` propagates to the base key even when no progress/status change occurs, auto-migrating existing state files. Books synced dropped from 53 to 1 (the single actively-listened book). Daily API calls dropped from ~25k to <10. (#167)
+- **Books Processed UI showing wrong count / BooksTotal not visible**: `GetSummary()` created a copy of the `SyncSummary` struct but forgot to include the `BooksTotal` field — the copy always had `BooksTotal=0`, so the status endpoint fell back to `TotalBooksProcessed` which counted up during sync. The UI summary fetch was overriding `books_total` with `total_books_processed`. Fixed the `GetSummary` copy, both `last_sync_summary` construction sites in the multiuser service, and the UI fetch logic. `books_total` is now pre-counted from library items at sync start, so it shows `345/345` immediately. (#167)
+- **HandleFinishedBook Read Insert Before Status**: Swapped the order: insert/update reads first, then set status to FINISHED, then clean up blank reads. The old order triggered Hardcover to auto-create a blank finished read row, hiding the real read from the activity stream. (#167)
+- **Blank Read Accumulation Across Sync Cycles**: Added shared `deleteBlankReads` helper and wired it into all four status-transition paths (IN_PROGRESS update/read, IN_PROGRESS create, COMPLETED, FINISHED). Reread transitions left auto-created blank reads with no progress/seconds/finished_at. (#167)
+- **Rereads Stuck at READ (Update Path)**: The update path unconditionally skipped IN_PROGRESS status updates. Added `hcBook.BookStatusID` check: only skips when already IN_PROGRESS (2). (#167)
+- **Stale User Book Cache (6h TTL) Blocking Transitions**: Added `InvalidateByUserBook()` after every `UpdateUserBookStatus` success to prevent stale `BookStatusID: 2` from persisting across cycles. (#167)
+- **Rate Limiter Backoff Compounding**: Daily limit check used `r.rate * 4`, compounding exponentially. Fixed with `max(DefaultRate*10, r.rate)` and `backoffUntil` guard. (#167)
+- **Rate Limiter Thresholds Lowered**: Daily backoff from 10%→1%, warning from 20%→5%. (#167)
+
+### Changed
+- **API Call Reduction in handleInProgressBook**: `GetUserBookReads` calls reduced from 3 to 1 per book by fetching all reads once and reusing throughout the function. Removed second-chance fetch block. (#167)
+- **IETF Rate Limit Headers**: Parses new `RateLimit`/`RateLimit-Policy` headers, backward-compatible with legacy `X-RateLimit-*`. Daily limit tracking with automatic slowdown. (#167)
+
 ## [v3.5.0] - 2026-07-30
 
 ### Added
@@ -893,3 +909,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [v1.0.0] - Previous Release
 - Initial stable release with full sync functionality between AudiobookShelf and Hardcover
+
+[v3.6.0]: https://github.com/drallgood/audiobookshelf-hardcover-sync/compare/v3.5.0...v3.6.0

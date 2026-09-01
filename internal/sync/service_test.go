@@ -96,6 +96,12 @@ func (m *MockHardcoverClient) UpdateUserBookRead(ctx context.Context, input hard
 	return args.Bool(0), args.Error(1)
 }
 
+// DeleteUserBookRead mocks the DeleteUserBookRead method
+func (m *MockHardcoverClient) DeleteUserBookRead(ctx context.Context, id int64) error {
+	args := m.Called(ctx, id)
+	return args.Error(0)
+}
+
 // CheckExistingUserBookRead mocks the CheckExistingUserBookRead method
 func (m *MockHardcoverClient) CheckExistingUserBookRead(ctx context.Context, input hardcover.CheckExistingUserBookReadInput) (*hardcover.CheckExistingUserBookReadResult, error) {
 	args := m.Called(ctx, input)
@@ -708,7 +714,8 @@ func createTestService() (*Service, *MockHardcoverClient) {
 	_ = persistentCache.Load() // Load cache (will create empty if doesn't exist)
 	
 	userBookCache := NewPersistentUserBookCache("/tmp/test-cache")
-	_ = userBookCache.Load() // Load cache (will create empty if doesn't exist)
+	_ = userBookCache.Load()
+	userBookCache.Clear() // Load cache (will create empty if doesn't exist)
 
 	// Create and return a test service with the mock client
 	svc := &Service{
