@@ -680,7 +680,7 @@ class SyncProfileApp {
                              (status.status === 'completed' && 
                               (booksSynced > 0 || booksNotFound > 0 || mismatches > 0));
             
-            const progressPercent = totalProcessed > 0 ? Math.round((totalProcessed / booksTotal) * 100) : 0;
+            const progressPercent = booksTotal > 0 ? Math.round((totalProcessed / booksTotal) * 100) : 0;
             const lastSync = status.last_sync || status.lastSync || null;
             const statusText = status.status || 'idle';
             const profileName = status.profile_name || status.profile_id || 'Unknown Profile';
