@@ -2934,7 +2934,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 					if err != nil {
 						log.With(map[string]interface{}{"error": err.Error()}).Warn("Failed to set IN_PROGRESS after read update")
 					} else {
-s.userBookCache.InvalidateByUserBook(int(userBookID))
+						s.userBookCache.InvalidateByUserBook(int(userBookID))
 						s.deleteBlankReads(ctx, userBookID, log)
 					}
 				}
