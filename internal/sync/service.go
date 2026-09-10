@@ -566,9 +566,13 @@ func (s *Service) findExistingUserBookForBook(ctx context.Context, bookID int64)
 	// This is a workaround since we don't have a direct lookup by book ID only
 	// We'll iterate through known editions or use a different approach
 	
-	// For now, let's use the Hardcover client's internal method directly
-	// by type asserting to the concrete type
-	if hcClient, ok := s.hardcover.(userBookByBookLookupClient); ok {
+	// Unwrap the dry-run decorator before checking for the optional lookup seam.
+	hardcoverClient := s.hardcover
+	if dryRunClient, ok := hardcoverClient.(*dryRunHardcoverClient); ok {
+		hardcoverClient = dryRunClient.HardcoverClientInterface
+	}
+
+	if hcClient, ok := hardcoverClient.(userBookByBookLookupClient); ok {
 		userID, err := hcClient.GetCurrentUserID(ctx)
 		if err != nil {
 			return 0, fmt.Errorf("failed to get current user ID: %w", err)
