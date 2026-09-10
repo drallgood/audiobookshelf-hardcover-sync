@@ -208,10 +208,11 @@ func (c *Client) GetLibraryItems(ctx context.Context, libraryID string) ([]model
 		})
 	}
 
-	// Print the raw response directly to stderr to ensure it's captured
-	os.Stderr.WriteString("\n=== START OF RAW API RESPONSE ===\n")
-	os.Stderr.Write(body)
-	os.Stderr.WriteString("\n=== END OF RAW API RESPONSE ===\n\n")
+	// Keep the full response available for troubleshooting without exposing it
+	// during normal operation.
+	log.Debug("Raw API response from Audiobookshelf", map[string]interface{}{
+		"response": string(body),
+	})
 
 	// Save to a file in the current directory using absolute path
 	absPath := "/tmp/audiobookshelf_raw_response.json"
