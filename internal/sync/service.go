@@ -75,15 +75,10 @@ type Service struct {
 // Config is the configuration type for the sync service
 type Config = config.Config
 
-type userBookByBookLookupClient interface {
-	GetCurrentUserID(ctx context.Context) (int, error)
-	LookupUserBookByBookIDOnly(ctx context.Context, bookID, userID int) (int, error)
-}
-
 // NewService creates a new sync service
 func NewService(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverClientInterface, cfg *Config) (*Service, error) {
-	if cfg.Sync.DryRun {
-		hcClient = &dryRunHardcoverClient{HardcoverClientInterface: hcClient}
+	if client, ok := hcClient.(*hardcover.Client); ok {
+		client.SetDryRun(cfg.Sync.DryRun)
 	}
 
 	svc := &Service{
@@ -562,17 +557,9 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 
 // findExistingUserBookForBook checks if there's already a user book for this book (any edition)
 func (s *Service) findExistingUserBookForBook(ctx context.Context, bookID int64) (int64, error) {
-	// Use the existing GetUserBookID method with edition 0 to check if any user book exists
-	// This is a workaround since we don't have a direct lookup by book ID only
-	// We'll iterate through known editions or use a different approach
-	
-	// Unwrap the dry-run decorator before checking for the optional lookup seam.
-	hardcoverClient := s.hardcover
-	if dryRunClient, ok := hardcoverClient.(*dryRunHardcoverClient); ok {
-		hardcoverClient = dryRunClient.HardcoverClientInterface
-	}
-
-	if hcClient, ok := hardcoverClient.(userBookByBookLookupClient); ok {
+	// HardcoverClientInterface does not expose the book-level lookup helpers,
+	// so use them when the configured implementation is the concrete client.
+	if hcClient, ok := s.hardcover.(*hardcover.Client); ok {
 		userID, err := hcClient.GetCurrentUserID(ctx)
 		if err != nil {
 			return 0, fmt.Errorf("failed to get current user ID: %w", err)
