@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+- **Limit raw API response logging to debug**: Routes the full Audiobookshelf library-items API response through debug logging instead of writing it directly to standard error. (#174)
 
 ## [v3.6.0] - 2026-09-01
 
