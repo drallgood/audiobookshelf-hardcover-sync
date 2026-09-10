@@ -12,6 +12,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type userBookLookupMockClient struct {
+	*MockHardcoverClient
+}
+
+func (m *userBookLookupMockClient) GetCurrentUserID(ctx context.Context) (int, error) {
+	args := m.Called(ctx)
+	return args.Int(0), args.Error(1)
+}
+
+func (m *userBookLookupMockClient) LookupUserBookByBookIDOnly(ctx context.Context, bookID, userID int) (int, error) {
+	args := m.Called(ctx, bookID, userID)
+	return args.Int(0), args.Error(1)
+}
+
+func TestFindExistingUserBookForBookDryRunUnwrapsClient(t *testing.T) {
+	svc, _ := createTestService()
+	lookupClient := &userBookLookupMockClient{MockHardcoverClient: new(MockHardcoverClient)}
+	svc.config.Sync.DryRun = true
+	svc.hardcover = &dryRunHardcoverClient{HardcoverClientInterface: lookupClient}
+
+	ctx := context.Background()
+	lookupClient.On("GetCurrentUserID", ctx).Return(456, nil).Once()
+	lookupClient.On("LookupUserBookByBookIDOnly", ctx, 123, 456).Return(789, nil).Once()
+
+	userBookID, err := svc.findExistingUserBookForBook(ctx, 123)
+
+	require.NoError(t, err)
+	assert.EqualValues(t, 789, userBookID)
+	lookupClient.AssertExpectations(t)
+}
+
 func TestHandleFinishedBookDryRunDoesNotAdvanceState(t *testing.T) {
 	svc, mockClient := createTestService()
 	svc.config.Sync.DryRun = true
