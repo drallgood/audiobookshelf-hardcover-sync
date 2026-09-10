@@ -1841,7 +1841,7 @@ class SyncProfileApp {
                 process_unread_books: formData.get('process_unread_books') === 'on',
                 sync_owned: formData.get('sync_owned') === 'on',
                 include_ebooks: formData.get('include_ebooks') === 'on',
-                dry_run: false,
+                dry_run: formData.get('dry_run') === 'on',
                 test_book_filter: '',
                 test_book_limit: 0,
                 audnexus_region: formData.get('audnexus_region') || ''
@@ -1944,6 +1944,7 @@ class SyncProfileApp {
         if (includeEbooksEl) {
             includeEbooksEl.checked = this.toBool(config.include_ebooks, false);
         }
+        document.getElementById('edit-dry-run').checked = this.toBool(config.dry_run, false);
         
         // Library filters
         const libraries = config.libraries || {};
@@ -1993,7 +1994,7 @@ class SyncProfileApp {
                 process_unread_books: formData.get('process_unread_books') === 'on',
                 sync_owned: formData.get('sync_owned') === 'on',
                 include_ebooks: formData.get('include_ebooks') === 'on',
-                dry_run: false,
+                dry_run: formData.get('dry_run') === 'on',
                 test_book_filter: '',
                 test_book_limit: 0,
                 audnexus_region: formData.get('audnexus_region') || ''
