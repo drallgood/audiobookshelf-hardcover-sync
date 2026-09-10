@@ -75,8 +75,17 @@ type Service struct {
 // Config is the configuration type for the sync service
 type Config = config.Config
 
+type userBookByBookLookupClient interface {
+	GetCurrentUserID(ctx context.Context) (int, error)
+	LookupUserBookByBookIDOnly(ctx context.Context, bookID, userID int) (int, error)
+}
+
 // NewService creates a new sync service
 func NewService(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverClientInterface, cfg *Config) (*Service, error) {
+	if cfg.Sync.DryRun {
+		hcClient = &dryRunHardcoverClient{HardcoverClientInterface: hcClient}
+	}
+
 	svc := &Service{
 		audiobookshelf:      absClient,
 		hardcover:           hcClient,
@@ -559,7 +568,7 @@ func (s *Service) findExistingUserBookForBook(ctx context.Context, bookID int64)
 	
 	// For now, let's use the Hardcover client's internal method directly
 	// by type asserting to the concrete type
-	if hcClient, ok := s.hardcover.(*hardcover.Client); ok {
+	if hcClient, ok := s.hardcover.(userBookByBookLookupClient); ok {
 		userID, err := hcClient.GetCurrentUserID(ctx)
 		if err != nil {
 			return 0, fmt.Errorf("failed to get current user ID: %w", err)
