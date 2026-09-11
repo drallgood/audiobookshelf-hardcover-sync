@@ -2,6 +2,8 @@ package sync
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 // AudiobookshelfClientInterface defines the interface for audiobookshelf.Client
@@ -400,6 +403,61 @@ func TestProcessLibrary(t *testing.T) {
 		// Verify mock expectations
 		mockABS.AssertExpectations(t)
 	})
+}
+
+func TestCheckpointStatePersistsCompletedBook(t *testing.T) {
+	svc, _ := createTestService()
+	svc.statePath = filepath.Join(t.TempDir(), "sync_state.json")
+	svc.state.UpdateBook("book1", 50, "IN_PROGRESS")
+	svc.state.SetHasProgressSeconds("book1")
+
+	require.NoError(t, svc.checkpointState("book1"))
+
+	loadedState, err := state.LoadState(svc.statePath)
+	require.NoError(t, err)
+	bookState, exists := loadedState.GetBookState("book1")
+	require.True(t, exists)
+	assert.Equal(t, 0.5, bookState.LastProgress)
+	assert.Equal(t, "IN_PROGRESS", bookState.Status)
+	assert.True(t, bookState.HasProgressSeconds)
+}
+
+func TestCheckpointStateSkipsDryRun(t *testing.T) {
+	svc, _ := createTestService()
+	svc.config.Sync.DryRun = true
+	svc.statePath = filepath.Join(t.TempDir(), "sync_state.json")
+	svc.state.UpdateBook("book1", 50, "IN_PROGRESS")
+
+	require.NoError(t, svc.checkpointState("book1"))
+	_, err := os.Stat(svc.statePath)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+	_, exists := svc.state.GetBookState("book1")
+	assert.True(t, exists, "dry-run state should remain available in memory")
+}
+
+func TestProcessLibraryReturnsCheckpointFailure(t *testing.T) {
+	svc, mockHC := createTestService()
+	svc.config.Sync.ProcessUnreadBooks = false
+	svc.statePath = t.TempDir() // Renaming a state file over a directory must fail.
+
+	mockABS := new(MockAudiobookshelfClient)
+	book := toAudiobookshelfBook(createTestBook("book1", "Unread Book", "Test Author", "", ""))
+	book.Progress.CurrentTime = 0
+	book.Progress.IsFinished = false
+	mockABS.On("GetLibraryItems", mock.Anything, "lib1").Return([]models.AudiobookshelfBook{*book}, nil).Once()
+	svc.audiobookshelf = mockABS
+
+	processed, err := svc.processLibrary(
+		context.Background(),
+		&audiobookshelf.AudiobookshelfLibrary{ID: "lib1", Name: "Test Library"},
+		0,
+		&models.AudiobookshelfUserProgress{},
+	)
+
+	assert.ErrorIs(t, err, errStateCheckpoint)
+	assert.Zero(t, processed)
+	mockABS.AssertExpectations(t)
+	mockHC.AssertExpectations(t)
 }
 
 // TestProcessBook and TestFindBookInHardcover functions would follow the same pattern

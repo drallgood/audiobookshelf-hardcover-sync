@@ -22,7 +22,8 @@ import (
 
 // Error definitions
 var (
-	ErrSkippedBook = errors.New("book was skipped")
+	ErrSkippedBook     = errors.New("book was skipped")
+	errStateCheckpoint = errors.New("failed to checkpoint sync state")
 )
 
 // progressUpdateInfo stores information about the last progress update for a book
@@ -760,6 +761,9 @@ func (s *Service) Sync(ctx context.Context) error {
 				"error":      err,
 				"library_id": filteredLibraries[i].ID,
 			})
+			if errors.Is(err, errStateCheckpoint) {
+				return err
+			}
 			continue
 		}
 
@@ -904,6 +908,9 @@ func (s *Service) processLibrary(ctx context.Context, library *audiobookshelf.Au
 	for _, book := range items {
 		// Process the item
 		err := s.processBook(ctx, book, userProgress)
+		if checkpointErr := s.checkpointState(book.ID); checkpointErr != nil {
+			return processed, checkpointErr
+		}
 		if err != nil {
 			// Check if this is ErrSkippedBook - which we still count as processed
 			// since we've recorded a mismatch and updated state for these books
@@ -932,6 +939,25 @@ func (s *Service) processLibrary(ctx context.Context, library *audiobookshelf.Au
 	})
 
 	return processed, nil
+}
+
+// checkpointState persists progress after each book so completed work survives
+// cancellation or process termination before the full sync finishes.
+func (s *Service) checkpointState(bookID string) error {
+	if s.config.Sync.DryRun {
+		return nil
+	}
+
+	if err := s.state.Save(s.statePath); err != nil {
+		s.log.Error("Failed to checkpoint sync state", map[string]interface{}{
+			"book_id":    bookID,
+			"state_path": s.statePath,
+			"error":      err.Error(),
+		})
+		return fmt.Errorf("%w after book %s: %w", errStateCheckpoint, bookID, err)
+	}
+
+	return nil
 }
 
 // enhanceBookProgressFromUserData populates book progress fields from the
