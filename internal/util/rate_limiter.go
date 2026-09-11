@@ -452,7 +452,10 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 		// and prevent repeated 429s from escalating.
 		backoff := r.exponentialBackoff(r.rate)
 		r.setRate(backoff)
-		r.setBackoffUntil(time.Now().Add(backoff))
+		until := time.Now().Add(backoff)
+		if until.After(r.backoffUntil) {
+			r.setBackoffUntil(until)
+		}
 		r.drainBucket()
 		r.logger.Warn("Rate limit response without reset guidance", map[string]interface{}{
 			"component":     "rate_limiter",

@@ -733,6 +733,32 @@ func TestRateLimiterFallsBackForBareTooManyRequests(t *testing.T) {
 	assert.Equal(t, 100*time.Millisecond, rl.GetRate())
 }
 
+func TestRateLimiterUnguided429PreservesLongerBackoff(t *testing.T) {
+	rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+	rl.SetBackoffFactor(2)
+	rl.SetJitterFactor(0)
+
+	rl.WithRateLimitHeaders(&http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{"Retry-After": {"2"}},
+	})
+	rl.mu.RLock()
+	authoritativeDeadline := rl.backoffUntil
+	rl.mu.RUnlock()
+
+	rl.WithRateLimitHeaders(&http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{},
+	})
+
+	assert.Equal(t, 200*time.Millisecond, rl.GetRate(), "bare 429 should still escalate steady pacing")
+	assert.Equal(t, uint64(2), rl.GetMetrics().RateLimited, "each 429 should count")
+	rl.mu.RLock()
+	actualDeadline := rl.backoffUntil
+	rl.mu.RUnlock()
+	assert.Equal(t, authoritativeDeadline, actualDeadline, "shorter fallback must not replace authoritative backoff")
+}
+
 func TestRateLimiterFallsBackForUnguidedTooManyRequests(t *testing.T) {
 	reset := strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10)
 	tests := []struct {
