@@ -62,7 +62,7 @@ func (c *Collector) Add(book BookMismatch) {
 	log := logger.Get()
 	if log != nil {
 		mismatchLogLock.Lock()
-		log.Info("Mismatch recorded", map[string]interface{}{
+		log.Debug("Mismatch recorded", map[string]interface{}{
 			"title":  book.Title,
 			"reason": book.Reason,
 		})
@@ -115,7 +115,7 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 
 	// If we have an ASIN, try to look up the book details from Audnex API
 	if metadata.ASIN != "" {
-		log.Info("Attempting Audnex enrichment for mismatch with ASIN", map[string]interface{}{
+		log.Debug("Attempting Audnex enrichment for mismatch with ASIN", map[string]interface{}{
 			"asin":     metadata.ASIN,
 			"title":    metadata.Title,
 			"book_id":  bookID,
@@ -134,7 +134,7 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 		})
 
 		// Log details just before the API call
-		log.Info("Calling Audnex API for book details by ASIN", map[string]interface{}{
+		log.Debug("Calling Audnex API for book details by ASIN", map[string]interface{}{
 			"asin":    metadata.ASIN,
 			"title":   metadata.Title,
 			"context": "mismatch_enrichment",
@@ -155,7 +155,7 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 			book, err = audnexClient.GetBookByASIN(ctx, metadata.ASIN, region)
 			if err == nil && book != nil {
 				if region != "" {
-					log.Info("Audnex API lookup succeeded with region", map[string]interface{}{
+					log.Debug("Audnex API lookup succeeded with region", map[string]interface{}{
 						"asin":   metadata.ASIN,
 						"region": region,
 					})
@@ -174,7 +174,7 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 		// Enhanced logging based on response
 		if err == nil && book != nil {
 			// Successfully retrieved book details from Audnex
-			log.Info("Audnex API lookup succeeded", map[string]interface{}{
+			log.Debug("Audnex API lookup succeeded", map[string]interface{}{
 				"asin":           metadata.ASIN,
 				"audnex_title":   book.Title,
 				"has_release":    book.ReleaseDate != "",
@@ -196,7 +196,7 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 
 			if book.ReleaseDate != "" {
 				audnexReleaseDate = book.ReleaseDate
-				log.Info("Using release date from Audnex API for mismatch enrichment", map[string]interface{}{
+				log.Debug("Using release date from Audnex API for mismatch enrichment", map[string]interface{}{
 					"asin":         metadata.ASIN,
 					"release_date": audnexReleaseDate,
 					"title":        book.Title,
@@ -708,7 +708,7 @@ func saveToFile(ctx context.Context, hc hardcover.HardcoverClientInterface, outp
 	}
 
 	if len(mismatches) == 0 {
-		log.Info("No mismatches to save")
+		log.Debug("No mismatches to save")
 		return nil
 	}
 
@@ -773,7 +773,7 @@ func saveToFile(ctx context.Context, hc hardcover.HardcoverClientInterface, outp
 			"failed":     len(saveErrors),
 		})
 	} else {
-		log.Info("Successfully saved all mismatch files in mismatch.SaveToFile", map[string]interface{}{
+		log.Debug("Successfully saved all mismatch files in mismatch.SaveToFile", map[string]interface{}{
 			"count": successCount,
 		})
 	}

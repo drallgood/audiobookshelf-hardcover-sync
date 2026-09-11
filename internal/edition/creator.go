@@ -144,14 +144,14 @@ func (c *Creator) CreateEdition(ctx context.Context, input *EditionInput) (*Edit
 		return nil, fmt.Errorf("invalid input: %w", err)
 	}
 
-	c.log.Info("Creating new audiobook edition", map[string]interface{}{
+	c.log.Debug("Creating new audiobook edition", map[string]interface{}{
 		"book_id": input.BookID,
 		"title":   input.Title,
 		"dry_run": c.dryRun,
 	})
 
 	if c.dryRun {
-		c.log.Info("Dry run enabled - no changes will be made", nil)
+		c.log.Debug("Dry run enabled - no changes will be made", nil)
 		return &EditionResult{
 			Success:   true,
 			EditionID: 0,
@@ -394,7 +394,7 @@ func (c *Creator) uploadImageToGCS(ctx context.Context, editionID int, imageURL 
 	// Return the public URL of the uploaded image
 	// Use the assets.hardcover.app URL format as shown in the documentation
 	uploadedImageURL := fmt.Sprintf("https://assets.hardcover.app/%s", filePath)
-	log.Info("Successfully uploaded image to GCS", map[string]interface{}{
+	log.Debug("Successfully uploaded image to GCS", map[string]interface{}{
 		"url": uploadedImageURL,
 	})
 	return uploadedImageURL, nil
@@ -402,7 +402,7 @@ func (c *Creator) uploadImageToGCS(ctx context.Context, editionID int, imageURL 
 
 // CreateImageRecord creates an image record in Hardcover for an uploaded image
 func (c *Creator) CreateImageRecord(ctx context.Context, editionID int, imageURL string) (int, error) {
-	c.log.Info("Creating image record in Hardcover", map[string]interface{}{
+	c.log.Debug("Creating image record in Hardcover", map[string]interface{}{
 		"edition_id": editionID,
 		"image_url":  imageURL,
 	})
@@ -483,7 +483,7 @@ func (c *Creator) CreateImageRecord(ctx context.Context, editionID int, imageURL
 		"image_id":   imageID,
 	})
 
-	c.log.Info("Successfully created image record", map[string]interface{}{
+	c.log.Debug("Successfully created image record", map[string]interface{}{
 		"edition_id": editionID,
 		"image_id":   imageID,
 	})
@@ -588,7 +588,7 @@ func (c *Creator) updateEditionImage(ctx context.Context, editionID, imageID int
 	}
 
 	// Log success
-	c.log.Info("Successfully updated edition with new image", map[string]interface{}{
+	c.log.Debug("Successfully updated edition with new image", map[string]interface{}{
 		"edition_id": editionID,
 		"image_id":   imageID,
 	})
@@ -623,7 +623,7 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 		edition, err := c.client.GetEditionByASIN(ctx, input.ASIN)
 		if err == nil && edition != nil && edition.ID != "" {
 			editionID, _ := strconv.Atoi(edition.ID)
-			c.log.Info("Edition already exists with this ASIN", map[string]interface{}{
+			c.log.Debug("Edition already exists with this ASIN", map[string]interface{}{
 				"edition_id": editionID,
 				"asin":       input.ASIN,
 			})
@@ -777,7 +777,7 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 				edition, err := c.client.GetEditionByISBN13(ctx, isbn13)
 				if err == nil && edition != nil && edition.ID != "" {
 					// Found an existing edition with this ISBN-13
-					c.log.Info("Found existing edition with ISBN-13", map[string]interface{}{
+					c.log.Debug("Found existing edition with ISBN-13", map[string]interface{}{
 						"edition_id": edition.ID,
 						"isbn13":     isbn13,
 					})
@@ -794,7 +794,7 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 				edition, err := c.client.GetEditionByASIN(ctx, asin)
 				if err == nil && edition != nil && edition.ID != "" {
 					// Found an existing edition with this ASIN
-					c.log.Info("Found existing edition with ASIN", map[string]interface{}{
+					c.log.Debug("Found existing edition with ASIN", map[string]interface{}{
 						"edition_id": edition.ID,
 						"asin":       asin,
 					})
@@ -851,7 +851,7 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 	}
 
 	// Success! Return the new edition ID
-	c.log.Info("Successfully created new edition", map[string]interface{}{
+	c.log.Debug("Successfully created new edition", map[string]interface{}{
 		"edition_id": editionID,
 	})
 

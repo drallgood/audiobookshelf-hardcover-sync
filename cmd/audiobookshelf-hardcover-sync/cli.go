@@ -177,12 +177,12 @@ func RunOneTimeSync(flags *configFlags) {
 	})
 	log := logger.Get()
 
-	log.Info("========================================", nil)
+	log.Debug("========================================", nil)
 	log.Info("STARTING ONE-TIME SYNC OPERATION")
-	log.Info("========================================")
+	log.Debug("========================================")
 
 	// Load configuration from file if specified, otherwise from environment
-	log.Info("Loading configuration...", map[string]interface{}{
+	log.Debug("Loading configuration...", map[string]interface{}{
 		"config_file": flags.configFile,
 	})
 	cfg, err := config.Load(flags.configFile)
@@ -202,24 +202,24 @@ func RunOneTimeSync(flags *configFlags) {
 	})
 	log = logger.Get() // Get the reconfigured logger
 
-	log.Info("Starting one-time sync with debug logging", map[string]interface{}{
+	log.Debug("Starting one-time sync with debug logging", map[string]interface{}{
 		"version": version,
 	})
 
 	// Log detailed configuration
-	log.Info("========================================", nil)
-	log.Info("CONFIGURATION", nil)
-	log.Info("========================================", nil)
+	log.Debug("========================================", nil)
+	log.Debug("CONFIGURATION", nil)
+	log.Debug("========================================", nil)
 
 	// Log API configuration
-	log.Info("API Configuration", map[string]interface{}{
+	log.Debug("API Configuration", map[string]interface{}{
 		"audiobookshelf_url":       cfg.Audiobookshelf.URL,
 		"has_audiobookshelf_token": cfg.Audiobookshelf.Token != "",
 		"has_hardcover_token":      cfg.Hardcover.Token != "",
 	})
 
 	// Log sync settings
-	log.Info("Sync Settings", map[string]interface{}{
+	log.Debug("Sync Settings", map[string]interface{}{
 		"minimum_progress_threshold": cfg.Sync.MinimumProgress,
 		"sync_want_to_read":          cfg.Sync.SyncWantToRead,
 		"sync_owned":                 cfg.Sync.SyncOwned,
@@ -236,15 +236,15 @@ func RunOneTimeSync(flags *configFlags) {
 		log.Warn("DEPRECATED: 'app.sync_owned' is deprecated. Please use 'sync.sync_owned' instead.", nil)
 	}
 	// Log paths and cache settings
-	log.Info("Paths Configuration", map[string]interface{}{
+	log.Debug("Paths Configuration", map[string]interface{}{
 		"cache_dir":           cfg.Paths.CacheDir,
 		"mismatch_output_dir": cfg.Paths.MismatchOutputDir,
 	})
 
-	log.Info("========================================")
+	log.Debug("========================================")
 
 	// Create API clients with detailed logging
-	log.Info("Initializing API clients...")
+	log.Debug("Initializing API clients...")
 	log.Debug("Creating API clients", map[string]interface{}{
 		"audiobookshelf_url":       cfg.Audiobookshelf.URL,
 		"has_audiobookshelf_token": cfg.Audiobookshelf.Token != "",
@@ -267,7 +267,7 @@ func RunOneTimeSync(flags *configFlags) {
 	})
 
 	// Create sync service with detailed logging
-	log.Info("Initializing sync service...", nil)
+	log.Debug("Initializing sync service...", nil)
 	syncService, err := sync.NewServiceWithRunIdentity(
 		audiobookshelfClient,
 		hardcoverClient,
@@ -294,11 +294,11 @@ func RunOneTimeSync(flags *configFlags) {
 	ctx = log.Logger.WithContext(ctx)
 
 	// Run the sync with detailed logging
-	log.Info("========================================", map[string]interface{}{})
-	log.Info("STARTING SYNC OPERATION", map[string]interface{}{})
-	log.Info("========================================", map[string]interface{}{})
+	log.Debug("========================================", map[string]interface{}{})
+	log.Debug("STARTING SYNC OPERATION", map[string]interface{}{})
+	log.Debug("========================================", map[string]interface{}{})
 
-	log.Info("Sync configuration:", map[string]interface{}{
+	log.Debug("Sync configuration:", map[string]interface{}{
 		"audiobookshelf_url":       cfg.Audiobookshelf.URL,
 		"has_audiobookshelf_token": cfg.Audiobookshelf.Token != "",
 		"has_hardcover_token":      cfg.Hardcover.Token != "",
@@ -306,12 +306,12 @@ func RunOneTimeSync(flags *configFlags) {
 	})
 
 	startTime := time.Now()
-	log.Info("Starting sync operation...", map[string]interface{}{
+	log.Debug("Starting sync operation...", map[string]interface{}{
 		"start_time": startTime,
 	})
 
 	// Run the sync
-	log.Info("Initiating sync service...", map[string]interface{}{
+	log.Debug("Initiating sync service...", map[string]interface{}{
 		"client_type": "sync",
 	})
 	err = syncService.Sync(ctx)
@@ -332,5 +332,5 @@ func RunOneTimeSync(flags *configFlags) {
 		"duration":         duration.String(),
 		"duration_seconds": duration.Seconds(),
 	})
-	log.Info("========================================")
+	log.Debug("========================================")
 }

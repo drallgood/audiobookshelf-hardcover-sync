@@ -100,7 +100,7 @@ func TestHTTPMiddleware(t *testing.T) {
 
 			// Configure the logger with JSON format for easier parsing
 			Setup(Config{
-				Level:      "info",
+				Level:      "debug",
 				Format:     FormatJSON,
 				Output:     &buf,
 				TimeFormat: "", // No timestamp in tests for easier assertions

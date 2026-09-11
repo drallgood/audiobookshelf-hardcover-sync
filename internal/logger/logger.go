@@ -133,7 +133,7 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Log the request with all details
-		l.Info("HTTP request", fields)
+		l.Debug("HTTP request", fields)
 	})
 }
 

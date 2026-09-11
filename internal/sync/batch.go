@@ -62,7 +62,7 @@ func (s *Service) BatchProcessBooks(ctx context.Context, books []models.Audioboo
 		return nil
 	}
 
-	s.log.Info("Starting batch book processing", map[string]interface{}{
+	s.log.Debug("Starting batch book processing", map[string]interface{}{
 		"total_books": len(books),
 	})
 
@@ -96,7 +96,7 @@ func (s *Service) BatchProcessBooks(ctx context.Context, books []models.Audioboo
 		booksToProcess = append(booksToProcess, book)
 	}
 
-	s.log.Info("Pre-filtering complete", map[string]interface{}{
+	s.log.Debug("Pre-filtering complete", map[string]interface{}{
 		"original_count":  len(books),
 		"to_process":      len(booksToProcess),
 		"skipped":         skippedCount,
@@ -104,7 +104,7 @@ func (s *Service) BatchProcessBooks(ctx context.Context, books []models.Audioboo
 	})
 
 	if len(booksToProcess) == 0 {
-		s.log.Info("No books need processing after pre-filtering")
+		s.log.Debug("No books need processing after pre-filtering")
 		return nil
 	}
 
@@ -121,7 +121,7 @@ func (s *Service) BatchProcessBooks(ctx context.Context, books []models.Audioboo
 		}
 	}
 
-	s.log.Info("ASIN analysis complete", map[string]interface{}{
+	s.log.Debug("ASIN analysis complete", map[string]interface{}{
 		"unique_asins":    len(uniqueASINs),
 		"books_with_asin": len(asinToBooks),
 		"deduplication":   fmt.Sprintf("%.1f%% reduction", float64(len(booksToProcess)-len(uniqueASINs))/float64(len(booksToProcess))*100),
@@ -180,7 +180,7 @@ func (s *Service) BatchProcessBooks(ctx context.Context, books []models.Audioboo
 		}
 	}
 
-	s.log.Info("Batch processing complete", map[string]interface{}{
+	s.log.Debug("Batch processing complete", map[string]interface{}{
 		"total_books":  len(booksToProcess),
 		"processed":    processedCount,
 		"failed":       len(booksToProcess) - processedCount,
@@ -208,7 +208,7 @@ func (s *Service) PreloadASINCache(ctx context.Context, books []models.Audiobook
 		return nil
 	}
 
-	s.log.Info("Preloading ASIN cache", map[string]interface{}{
+	s.log.Debug("Preloading ASIN cache", map[string]interface{}{
 		"asins_to_preload": len(asinsToPreload),
 	})
 
@@ -227,7 +227,7 @@ func (s *Service) OptimizeCache() {
 	if s.persistentCache != nil {
 		removed := s.persistentCache.CleanExpired()
 		if removed > 0 {
-			s.log.Info("Cleaned expired cache entries", map[string]interface{}{
+			s.log.Debug("Cleaned expired cache entries", map[string]interface{}{
 				"removed_entries": removed,
 			})
 		}

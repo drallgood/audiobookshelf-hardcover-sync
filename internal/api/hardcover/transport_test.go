@@ -1,6 +1,7 @@
 package hardcover
 
 import (
+	"bytes"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -58,8 +59,14 @@ func TestHeaderAddingTransport_RoundTrip(t *testing.T) {
 }
 
 func TestLoggingRoundTripper_RoundTrip(t *testing.T) {
-	// Initialize logger
-	logger := logger.Get()
+	var output bytes.Buffer
+	logger.ResetForTesting()
+	logger.Setup(logger.Config{
+		Level:  "debug",
+		Format: logger.FormatJSON,
+		Output: &output,
+	})
+	log := logger.Get()
 
 	// Create a mock response
 	mockResp := &http.Response{
@@ -75,7 +82,7 @@ func TestLoggingRoundTripper_RoundTrip(t *testing.T) {
 
 	// Create the transport under test
 	transport := loggingRoundTripper{
-		logger: logger,
+		logger: log,
 		rt:     mockRT,
 	}
 
@@ -88,6 +95,9 @@ func TestLoggingRoundTripper_RoundTrip(t *testing.T) {
 	// Assertions
 	require.NoError(t, err)
 	assert.Equal(t, mockResp, resp)
+	assert.Contains(t, output.String(), `"level":"debug"`)
+	assert.Contains(t, output.String(), `"message":"Sending request"`)
+	assert.Contains(t, output.String(), `"message":"Received response"`)
 }
 
 func TestLoggingRoundTripper_RoundTrip_Error(t *testing.T) {

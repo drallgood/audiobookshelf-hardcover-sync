@@ -274,7 +274,7 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 	}
 
 	// Log the logger configuration
-	log.Info("Logger initialized for Hardcover client", map[string]interface{}{
+	log.Debug("Logger initialized for Hardcover client", map[string]interface{}{
 		"log_level": log.GetLevel().String(),
 	})
 
@@ -286,7 +286,7 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 		})
 	}
 
-	childLogger.Info("Created child logger for Hardcover client", nil)
+	childLogger.Debug("Created child logger for Hardcover client", nil)
 
 	// Create authenticated HTTP client with headers
 	authClient := &http.Client{
@@ -354,7 +354,7 @@ type loggingRoundTripper struct {
 // RoundTrip implements the http.RoundTripper interface
 func (l loggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Log the request with basic info
-	l.logger.Info("Sending request", map[string]interface{}{
+	l.logger.Debug("Sending request", map[string]interface{}{
 		"method": req.Method,
 		"url":    req.URL.String(),
 	})
@@ -393,7 +393,7 @@ func (l loggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	if resp.StatusCode >= 400 {
 		l.logger.Error("Received error response", logFields)
 	} else {
-		l.logger.Info("Received response", logFields)
+		l.logger.Debug("Received response", logFields)
 	}
 
 	// Create a new response with the body since we've already read it
@@ -1849,7 +1849,7 @@ func (c *Client) searchBooksWithLimit(ctx context.Context, query string, limit i
 		resultIDs = append(resultIDs, fmt.Sprintf("%s (%s)", r.ID, r.Title))
 	}
 
-	log.Info("Successfully searched for books", map[string]interface{}{
+	log.Debug("Successfully searched for books", map[string]interface{}{
 		"count":   len(searchResults),
 		"results": resultIDs,
 	})
@@ -2425,14 +2425,14 @@ func (c *Client) UpdateUserBookRead(ctx context.Context, input UpdateUserBookRea
 	// The API sometimes returns success with user_book_read: null
 	// In this case, we'll assume the update was successful
 	if result.UpdateUserBookRead.UserBookRead == nil {
-		c.logger.Info("Successfully updated user book read (no user_book_read in response but no error)", map[string]interface{}{
+		c.logger.Debug("Successfully updated user book read (no user_book_read in response but no error)", map[string]interface{}{
 			"id": input.ID,
 		})
 		return true, nil
 	}
 
 	updatedID := result.UpdateUserBookRead.UserBookRead.ID
-	c.logger.Info("Successfully updated user book read entry", map[string]interface{}{
+	c.logger.Debug("Successfully updated user book read entry", map[string]interface{}{
 		"updated_id": updatedID,
 	})
 
@@ -3467,7 +3467,7 @@ func (c *Client) CreateUserBook(ctx context.Context, editionID, status string) (
 
 	userBookID := strconv.Itoa(result.InsertUserBook.UserBook.ID)
 
-	c.logger.Info("Successfully created user book", map[string]interface{}{
+	c.logger.Debug("Successfully created user book", map[string]interface{}{
 		"userBookID":    result.InsertUserBook.UserBook.ID,
 		"statusID":      result.InsertUserBook.UserBook.StatusID,
 		"editionID":     editionIDInt,
@@ -3963,7 +3963,7 @@ func (c *Client) UpdateUserBook(ctx context.Context, input UpdateUserBookInput) 
 		return ErrUserBookNotFound
 	}
 
-	log.Info("Successfully updated user book", map[string]interface{}{
+	log.Debug("Successfully updated user book", map[string]interface{}{
 		"id":         result.UpdateUserBookByPk.ID,
 		"edition_id": result.UpdateUserBookByPk.EditionID,
 	})

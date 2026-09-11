@@ -25,7 +25,7 @@ type AuthService struct {
 // NewAuthService creates a new authentication service
 func NewAuthService(db *gorm.DB, config AuthConfig, log *logger.Logger) (*AuthService, error) {
 	if log != nil {
-		log.Info("Starting authentication service initialization", map[string]interface{}{
+		log.Debug("Starting authentication service initialization", map[string]interface{}{
 			"enabled":         config.Enabled,
 			"provider_count":  len(config.Providers),
 			"session_enabled": config.Session.Secret != "",
@@ -95,7 +95,7 @@ func NewAuthService(db *gorm.DB, config AuthConfig, log *logger.Logger) (*AuthSe
 // initializeProviders initializes authentication providers based on configuration
 func (s *AuthService) initializeProviders() error {
 	if s.logger != nil {
-		s.logger.Info("Starting provider initialization", map[string]interface{}{
+		s.logger.Debug("Starting provider initialization", map[string]interface{}{
 			"total_providers": len(s.config.Providers),
 		})
 	}
@@ -124,7 +124,7 @@ func (s *AuthService) initializeProviders() error {
 		var err error
 
 		if s.logger != nil {
-			s.logger.Info("Creating enabled provider", map[string]interface{}{
+			s.logger.Debug("Creating enabled provider", map[string]interface{}{
 				"name": providerConfig.Name,
 				"type": providerConfig.Type,
 			})
@@ -134,13 +134,13 @@ func (s *AuthService) initializeProviders() error {
 		case "local":
 			provider = NewLocalAuthProvider(providerConfig.Name, providerConfig.Config, s.logger, s.repository)
 			if s.logger != nil {
-				s.logger.Info("Local provider created successfully", map[string]interface{}{
+				s.logger.Debug("Local provider created successfully", map[string]interface{}{
 					"name": providerConfig.Name,
 				})
 			}
 		case "oidc":
 			if s.logger != nil {
-				s.logger.Info("Creating OIDC provider", map[string]interface{}{
+				s.logger.Debug("Creating OIDC provider", map[string]interface{}{
 					"name": providerConfig.Name,
 				})
 			}
@@ -155,7 +155,7 @@ func (s *AuthService) initializeProviders() error {
 				return fmt.Errorf("failed to create OIDC provider %s: %w", providerConfig.Name, err)
 			}
 			if s.logger != nil {
-				s.logger.Info("OIDC provider created successfully", map[string]interface{}{
+				s.logger.Debug("OIDC provider created successfully", map[string]interface{}{
 					"name": providerConfig.Name,
 				})
 			}
@@ -179,7 +179,7 @@ func (s *AuthService) initializeProviders() error {
 	}
 
 	if s.logger != nil {
-		s.logger.Info("Provider initialization completed", map[string]interface{}{
+		s.logger.Debug("Provider initialization completed", map[string]interface{}{
 			"active_providers": len(s.providers),
 		})
 	}
@@ -595,7 +595,7 @@ func (s *AuthService) InitializeDefaultUser(ctx context.Context) error {
 		if count > 0 {
 			action = "ensuring/updating"
 		}
-		s.logger.Info("Upserting default admin user", map[string]interface{}{
+		s.logger.Debug("Upserting default admin user", map[string]interface{}{
 			"action":   action,
 			"username": username,
 			"email":    email,
@@ -609,7 +609,7 @@ func (s *AuthService) InitializeDefaultUser(ctx context.Context) error {
 	}
 
 	if s.logger != nil {
-		s.logger.Info("Default admin user ensured successfully", map[string]interface{}{
+		s.logger.Debug("Default admin user ensured successfully", map[string]interface{}{
 			"username": username,
 			"email":    email,
 		})
