@@ -258,6 +258,76 @@ func TestRateLimiter_ConcurrentWaitsArePaced(t *testing.T) {
 	}
 }
 
+func TestRateLimiter_PendingWaitObservesNewBackoff(t *testing.T) {
+	const (
+		interval = 100 * time.Millisecond
+		backoff  = 160 * time.Millisecond
+	)
+	rl := NewRateLimiter(interval, 1, 2, setupTestLogger(t))
+	type result struct {
+		completedAt time.Time
+		err         error
+	}
+	completed := make(chan result, 1)
+
+	go func() {
+		err := rl.Wait(context.Background())
+		completed <- result{completedAt: time.Now(), err: err}
+	}()
+	require.Eventually(t, func() bool {
+		return rl.GetMetrics().Requests == 1
+	}, time.Second, time.Millisecond)
+
+	backoffStarted := time.Now()
+	rl.OnRateLimit(backoff)
+	got := <-completed
+	require.NoError(t, got.err)
+
+	assert.GreaterOrEqual(t, got.completedAt.Sub(backoffStarted), 140*time.Millisecond,
+		"pending waiter was admitted before the new backoff expired")
+}
+
+func TestRateLimiter_CancellationDoesNotCollapsePendingSlots(t *testing.T) {
+	const interval = 80 * time.Millisecond
+	rl := NewRateLimiter(interval, 1, 3, setupTestLogger(t))
+	type result struct {
+		completedAt time.Time
+		err         error
+	}
+	completed := make(chan result, 2)
+
+	go func() {
+		err := rl.Wait(context.Background())
+		completed <- result{completedAt: time.Now(), err: err}
+	}()
+	require.Eventually(t, func() bool {
+		return rl.GetMetrics().Requests == 1
+	}, time.Second, time.Millisecond)
+
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	canceled := make(chan error, 1)
+	go func() {
+		canceled <- rl.Wait(cancelCtx)
+	}()
+	require.Eventually(t, func() bool {
+		return rl.GetMetrics().Requests == 2
+	}, time.Second, time.Millisecond)
+	cancel()
+	require.ErrorIs(t, <-canceled, context.Canceled)
+
+	go func() {
+		err := rl.Wait(context.Background())
+		completed <- result{completedAt: time.Now(), err: err}
+	}()
+
+	first := <-completed
+	second := <-completed
+	require.NoError(t, first.err)
+	require.NoError(t, second.err)
+	assert.GreaterOrEqual(t, second.completedAt.Sub(first.completedAt), 60*time.Millisecond,
+		"cancellation allowed two pending waiters into the same pacing slot")
+}
+
 const (
 	// Default backoff factor for testing
 	testDefaultBackoffFactor = 8.0 // This matches the default in the implementation

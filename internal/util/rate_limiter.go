@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
@@ -46,17 +45,18 @@ var (
 
 // RateLimiter implements a token bucket rate limiter with dynamic rate adjustment
 type RateLimiter struct {
-	mu            sync.RWMutex
-	last          time.Time
-	rate          time.Duration
-	minRate       time.Duration
-	maxRate       time.Duration
-	tokens        int
-	maxTokens     int
-	lastRateDrop  time.Time
-	backoffUntil  time.Time
-	backoffFactor float64
-	jitterFactor  float64
+	mu              sync.RWMutex
+	last            time.Time
+	rate            time.Duration
+	minRate         time.Duration
+	maxRate         time.Duration
+	tokens          int
+	maxTokens       int
+	lastRateDrop    time.Time
+	backoffUntil    time.Time
+	backoffFactor   float64
+	jitterFactor    float64
+	scheduleChanged chan struct{}
 
 	// Daily limit tracking from IETF RateLimit headers
 	dailyRemaining int
@@ -123,20 +123,21 @@ func NewRateLimiter(rate time.Duration, burst, maxConcurrent int, log *logger.Lo
 
 	now := time.Now()
 	rl := &RateLimiter{
-		last:          now,
-		rate:          rate,
-		minRate:       rate,
-		maxRate:       DefaultMaxBackoff, // Maximum time between requests
-		tokens:        burst,
-		maxTokens:     burst,
-		lastRateDrop:  now,
-		backoffUntil:  time.Time{},
-		backoffFactor: DefaultBackoffFactor,
-		jitterFactor:  DefaultJitterFactor,
-		maxConcurrent: int32(maxConcurrent),
-		semaphore:     make(chan struct{}, maxConcurrent),
-		metrics:       Metrics{},
-		logger:        log,
+		last:            now,
+		rate:            rate,
+		minRate:         rate,
+		maxRate:         DefaultMaxBackoff, // Maximum time between requests
+		tokens:          burst,
+		maxTokens:       burst,
+		lastRateDrop:    now,
+		backoffUntil:    time.Time{},
+		backoffFactor:   DefaultBackoffFactor,
+		jitterFactor:    DefaultJitterFactor,
+		scheduleChanged: make(chan struct{}),
+		maxConcurrent:   int32(maxConcurrent),
+		semaphore:       make(chan struct{}, maxConcurrent),
+		metrics:         Metrics{},
+		logger:          log,
 	}
 
 	// Initialize the semaphore with maxConcurrent tokens
@@ -166,41 +167,50 @@ func (r *RateLimiter) Wait(ctx context.Context) error {
 	}
 
 	r.mu.Lock()
-	atomic.AddUint64(&r.metrics.Requests, 1)
-	now := time.Now()
-	readyAt := now
-	if r.backoffUntil.After(readyAt) {
-		readyAt = r.backoffUntil
-		r.logger.Debug("Rate limiter in backoff period", map[string]interface{}{
-			"backoff_remaining": readyAt.Sub(now).String(),
-		})
-	}
-	if nextRequestAt := r.last.Add(r.rate); nextRequestAt.After(readyAt) {
-		readyAt = nextRequestAt
-	}
-
-	// Reserve the request's admission time while holding the lock. Every
-	// concurrent waiter therefore receives a distinct slot at least rate apart.
-	r.last = readyAt
+	r.metrics.Requests++
 	r.mu.Unlock()
 
-	waitTime := time.Until(readyAt)
-	if waitTime <= 0 {
-		return nil
-	}
-	timer := time.NewTimer(waitTime)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		// Only roll back the reservation when no later waiter depends on it.
+	for {
 		r.mu.Lock()
-		if r.last.Equal(readyAt) {
-			r.last = time.Now()
+		now := time.Now()
+		readyAt := r.last.Add(r.rate)
+		if r.backoffUntil.After(readyAt) {
+			readyAt = r.backoffUntil
+			r.logger.Debug("Rate limiter in backoff period", map[string]interface{}{
+				"backoff_remaining": readyAt.Sub(now).String(),
+			})
 		}
+		if !readyAt.After(now) {
+			// Record actual admission rather than a future reservation. Other
+			// waiters re-check this value before they may proceed.
+			r.last = now
+			r.mu.Unlock()
+			return nil
+		}
+		scheduleChanged := r.scheduleChanged
 		r.mu.Unlock()
-		return ctx.Err()
-	case <-timer.C:
-		return nil
+
+		timer := time.NewTimer(time.Until(readyAt))
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return ctx.Err()
+		case <-scheduleChanged:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			// Recalculate immediately when rate-limit headers change the
+			// steady pace or install/remove a backoff period.
+		case <-timer.C:
+		}
 	}
 }
 
@@ -233,7 +243,7 @@ func (r *RateLimiter) OnRateLimit(retryAfter time.Duration) time.Duration {
 	// rate-limit response restores the configured rate.
 	backoff := r.exponentialBackoff(r.rate)
 	r.setRate(backoff)
-	r.backoffUntil = now.Add(backoff)
+	r.setBackoffUntil(now.Add(backoff))
 	r.drainBucket()
 
 	// Log the rate limit event with detailed information
@@ -253,6 +263,7 @@ func (r *RateLimiter) ResetRate() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	scheduleChanged := r.rate != r.minRate || !r.backoffUntil.IsZero()
 	// Reset to the rate configured for this limiter, not the package default.
 	r.rate = r.minRate
 	// Reset the backoff period
@@ -263,6 +274,9 @@ func (r *RateLimiter) ResetRate() {
 	r.backoffFactor = DefaultBackoffFactor
 	// Reset the jitter factor to the default
 	r.jitterFactor = DefaultJitterFactor
+	if scheduleChanged {
+		r.notifyScheduleChanged()
+	}
 
 	r.logger.Debug("Rate limiter reset", map[string]interface{}{
 		"rate":          r.rate,
@@ -439,7 +453,7 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 		resp.Header.Get("X-RateLimit-Reset") == "" {
 		backoff := r.exponentialBackoff(r.rate)
 		r.setRate(backoff)
-		r.backoffUntil = time.Now().Add(backoff)
+		r.setBackoffUntil(time.Now().Add(backoff))
 		r.drainBucket()
 		r.metrics.RateLimited++
 		r.logger.Warn("Rate limit response without reset guidance", map[string]interface{}{
@@ -782,7 +796,7 @@ func (r *RateLimiter) applyRetryAfter(delay time.Duration) time.Duration {
 	}
 	until := time.Now().Add(delay)
 	if until.After(r.backoffUntil) {
-		r.backoffUntil = until
+		r.setBackoffUntil(until)
 		r.metrics.BackoffEvents++
 	}
 	return delay
@@ -812,6 +826,24 @@ func (r *RateLimiter) setRate(rate time.Duration) {
 	}
 	r.rate = rate
 	r.lastRateDrop = time.Now()
+	r.notifyScheduleChanged()
+}
+
+// setBackoffUntil updates the temporary admission pause. The caller must hold
+// r.mu.
+func (r *RateLimiter) setBackoffUntil(until time.Time) {
+	if until.Equal(r.backoffUntil) {
+		return
+	}
+	r.backoffUntil = until
+	r.notifyScheduleChanged()
+}
+
+// notifyScheduleChanged wakes admission waiters so they can recalculate after
+// a pacing or backoff update. The caller must hold r.mu.
+func (r *RateLimiter) notifyScheduleChanged() {
+	close(r.scheduleChanged)
+	r.scheduleChanged = make(chan struct{})
 }
 
 // drainBucket empties the token bucket to prevent burst after backoff.
