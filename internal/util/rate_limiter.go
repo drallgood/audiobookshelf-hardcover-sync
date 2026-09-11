@@ -35,6 +35,8 @@ var (
 	DefaultBurst = 1
 	// DefaultMaxBackoff is the default maximum backoff time (increased for more conservative behavior)
 	DefaultMaxBackoff = 10 * time.Minute
+	// DefaultMaxDailyResetWait bounds authoritative daily quota reset delays.
+	DefaultMaxDailyResetWait = 24 * time.Hour
 	// DefaultBackoffFactor is the default backoff multiplier (increased for more aggressive backoff)
 	DefaultBackoffFactor = 8.0
 	// DefaultJitterFactor is the default jitter factor (0.0 to 1.0) (increased for better distribution)
@@ -625,15 +627,14 @@ func (r *RateLimiter) applyIETFHeaders(remaining, reset map[string]int, h http.H
 		}
 
 		if r.dailyRemaining <= 0 && reset[dailyName] > 0 {
-			pause := time.Duration(reset[dailyName]) * time.Second
-			retryInterval := r.applyRetryAfter(pause)
+			resetSeconds := reset[dailyName]
+			appliedPause := r.applyDailyResetWait(resetSeconds)
 			r.drainBucket()
-			r.logger.Warn("Daily rate limit exhausted, retrying periodically until reset", map[string]interface{}{
+			r.logger.Warn("Daily rate limit exhausted, pausing until reset", map[string]interface{}{
 				"component":       "rate_limiter",
 				"daily_remaining": r.dailyRemaining,
 				"daily_limit":     r.dailyLimit,
-				"reset_in":        pause.String(),
-				"retry_interval":  retryInterval.String(),
+				"pause":           appliedPause.String(),
 			})
 		} else if r.dailyRemaining > 0 && r.dailyLimit > 0 {
 			pct := float64(r.dailyRemaining) / float64(r.dailyLimit) * 100
@@ -817,11 +818,28 @@ func (r *RateLimiter) exponentialBackoff(baseBackoff time.Duration) time.Duratio
 
 // applyRetryAfter installs an exact, temporary server-directed pause.
 func (r *RateLimiter) applyRetryAfter(delay time.Duration) time.Duration {
+	return r.applyPause(delay, r.maxBackoff)
+}
+
+// applyDailyResetWait pauses admission until an authoritative daily quota reset,
+// bounded independently from shorter retry backoffs.
+func (r *RateLimiter) applyDailyResetWait(resetSeconds int) time.Duration {
+	if resetSeconds <= 0 {
+		return 0
+	}
+	maxSeconds := int(DefaultMaxDailyResetWait / time.Second)
+	if resetSeconds > maxSeconds {
+		resetSeconds = maxSeconds
+	}
+	return r.applyPause(time.Duration(resetSeconds)*time.Second, DefaultMaxDailyResetWait)
+}
+
+func (r *RateLimiter) applyPause(delay, maxDelay time.Duration) time.Duration {
 	if delay <= 0 {
 		return 0
 	}
-	if delay > r.maxBackoff {
-		delay = r.maxBackoff
+	if delay > maxDelay {
+		delay = maxDelay
 	}
 	until := time.Now().Add(delay)
 	if until.After(r.backoffUntil) {

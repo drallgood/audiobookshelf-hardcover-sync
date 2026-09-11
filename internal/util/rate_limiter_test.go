@@ -447,36 +447,51 @@ func TestRateLimiterCapsServerPauseAtDefaultMaxBackoff(t *testing.T) {
 	serverDelay := time.Duration(serverDelaySeconds) * time.Second
 	require.Greater(t, serverDelay, DefaultMaxBackoff)
 
+	rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+		"Retry-After": {strconv.Itoa(serverDelaySeconds)},
+	}})
+
+	rl.mu.RLock()
+	pause := rl.checkBackoff()
+	rl.mu.RUnlock()
+
+	assert.Greater(t, pause, DefaultMaxBackoff-time.Second)
+	assert.LessOrEqual(t, pause, DefaultMaxBackoff)
+}
+
+func TestRateLimiterWaitsForDailyQuotaReset(t *testing.T) {
 	tests := []struct {
-		name string
-		resp *http.Response
+		name               string
+		serverDelaySeconds int
+		expectedPause      time.Duration
 	}{
 		{
-			name: "Retry-After",
-			resp: &http.Response{Header: http.Header{
-				"Retry-After": {strconv.Itoa(serverDelaySeconds)},
-			}},
+			name:               "waits beyond ordinary backoff cap",
+			serverDelaySeconds: int((DefaultMaxBackoff + time.Minute) / time.Second),
+			expectedPause:      DefaultMaxBackoff + time.Minute,
 		},
 		{
-			name: "exhausted daily IETF reset",
-			resp: &http.Response{Header: http.Header{
-				"Ratelimit":        {fmt.Sprintf(`"daily";r=0;t=%d`, serverDelaySeconds)},
-				"Ratelimit-Policy": {`"daily";q=5000;w=86400`},
-			}},
+			name:               "caps maximum integer without overflowing",
+			serverDelaySeconds: int(^uint(0) >> 1),
+			expectedPause:      DefaultMaxDailyResetWait,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
-			rl.WithRateLimitHeaders(tt.resp)
+			rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+				"Ratelimit":        {fmt.Sprintf(`"daily";r=0;t=%d`, tt.serverDelaySeconds)},
+				"Ratelimit-Policy": {`"daily";q=5000;w=86400`},
+			}})
 
 			rl.mu.RLock()
 			pause := rl.checkBackoff()
 			rl.mu.RUnlock()
 
-			assert.Greater(t, pause, DefaultMaxBackoff-time.Second)
-			assert.LessOrEqual(t, pause, DefaultMaxBackoff)
+			assert.Greater(t, pause, tt.expectedPause-time.Second)
+			assert.LessOrEqual(t, pause, tt.expectedPause)
 		})
 	}
 }
