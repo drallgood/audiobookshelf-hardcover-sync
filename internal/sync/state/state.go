@@ -126,6 +126,25 @@ func (s *State) Save(path string) error {
 	if err := os.Rename(tempPath, path); err != nil {
 		return fmt.Errorf("failed to replace state file: %w", err)
 	}
+	if err := syncDirectory(dir); err != nil {
+		return fmt.Errorf("failed to sync state directory: %w", err)
+	}
+
+	return nil
+}
+
+func syncDirectory(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("failed to open directory: %w", err)
+	}
+	if err := dir.Sync(); err != nil {
+		_ = dir.Close()
+		return fmt.Errorf("failed to sync directory: %w", err)
+	}
+	if err := dir.Close(); err != nil {
+		return fmt.Errorf("failed to close directory: %w", err)
+	}
 
 	return nil
 }

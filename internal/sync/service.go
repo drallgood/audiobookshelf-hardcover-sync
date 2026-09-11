@@ -761,7 +761,9 @@ func (s *Service) Sync(ctx context.Context) error {
 				"error":      err,
 				"library_id": filteredLibraries[i].ID,
 			})
-			if errors.Is(err, errStateCheckpoint) {
+			if errors.Is(err, errStateCheckpoint) ||
+				errors.Is(err, context.Canceled) ||
+				errors.Is(err, context.DeadlineExceeded) {
 				return err
 			}
 			continue
@@ -809,7 +811,7 @@ func (s *Service) Sync(ctx context.Context) error {
 			s.log.Error("Failed to save sync state", map[string]interface{}{
 				"error": err.Error(),
 			})
-			// Don't return the error here as the sync itself was successful
+			return fmt.Errorf("failed to save final sync state: %w", err)
 		}
 	} else {
 		s.log.Info("[DRY-RUN] Skipping sync state save", nil)
@@ -910,6 +912,9 @@ func (s *Service) processLibrary(ctx context.Context, library *audiobookshelf.Au
 		err := s.processBook(ctx, book, userProgress)
 		if checkpointErr := s.checkpointState(book.ID); checkpointErr != nil {
 			return processed, checkpointErr
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return processed, ctxErr
 		}
 		if err != nil {
 			// Check if this is ErrSkippedBook - which we still count as processed

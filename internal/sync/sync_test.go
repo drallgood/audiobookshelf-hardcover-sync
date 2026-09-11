@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -456,6 +457,62 @@ func TestProcessLibraryReturnsCheckpointFailure(t *testing.T) {
 
 	assert.ErrorIs(t, err, errStateCheckpoint)
 	assert.Zero(t, processed)
+	mockABS.AssertExpectations(t)
+	mockHC.AssertExpectations(t)
+}
+
+func TestProcessLibraryCheckpointsOnceThenReturnsCancellation(t *testing.T) {
+	svc, mockHC := createTestService()
+	svc.config.Sync.ProcessUnreadBooks = false
+	svc.statePath = filepath.Join(t.TempDir(), "sync_state.json")
+	svc.state.UpdateBook("completed-book", 50, "IN_PROGRESS")
+
+	mockABS := new(MockAudiobookshelfClient)
+	books := make([]models.AudiobookshelfBook, 2)
+	for i := range books {
+		book := toAudiobookshelfBook(createTestBook(fmt.Sprintf("book%d", i+1), "Unread Book", "Test Author", "", ""))
+		book.Progress.CurrentTime = 0
+		book.Progress.IsFinished = false
+		books[i] = *book
+	}
+	mockABS.On("GetLibraryItems", mock.Anything, "lib1").Return(books, nil).Once()
+	svc.audiobookshelf = mockABS
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	processed, err := svc.processLibrary(
+		ctx,
+		&audiobookshelf.AudiobookshelfLibrary{ID: "lib1", Name: "Test Library"},
+		0,
+		&models.AudiobookshelfUserProgress{},
+	)
+
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, processed)
+	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed, "cancellation must stop before the second book")
+	loadedState, loadErr := state.LoadState(svc.statePath)
+	require.NoError(t, loadErr)
+	_, exists := loadedState.GetBookState("completed-book")
+	assert.True(t, exists, "the final checkpoint must be durable before cancellation returns")
+	mockABS.AssertExpectations(t)
+	mockHC.AssertExpectations(t)
+}
+
+func TestSyncReturnsFinalStateSaveFailure(t *testing.T) {
+	svc, mockHC := createTestService()
+	svc.statePath = t.TempDir() // Renaming a state file over a directory must fail.
+	svc.config.Paths.MismatchOutputDir = t.TempDir()
+
+	mockABS := new(MockAudiobookshelfClient)
+	mockABS.On("GetUserProgress", mock.Anything).Return(&models.AudiobookshelfUserProgress{}, nil).Once()
+	mockABS.On("GetLibraries", mock.Anything).Return([]audiobookshelf.AudiobookshelfLibrary{}, nil).Once()
+	mockHC.On("ClearUserBookCache").Return().Once()
+	svc.audiobookshelf = mockABS
+
+	err := svc.Sync(context.Background())
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "failed to save final sync state")
 	mockABS.AssertExpectations(t)
 	mockHC.AssertExpectations(t)
 }

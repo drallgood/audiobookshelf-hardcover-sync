@@ -252,3 +252,11 @@ func TestCustomStatePathAndPermissions(t *testing.T) {
 		})
 	}
 }
+
+func TestSyncDirectoryReturnsOpenError(t *testing.T) {
+	t.Parallel()
+
+	err := syncDirectory(filepath.Join(t.TempDir(), "missing"))
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "failed to open directory")
+}
