@@ -348,10 +348,10 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 // enforceRateLimit ensures we don't exceed the API rate limits
 func (c *Client) enforceRateLimit(ctx context.Context) error {
 	// Simply use the rate limiter which already handles:
-	// - Token bucket algorithm
-	// - Jitter
+	// - Request pacing and server-guided backoff
 	// - Context cancellation
 	// - Dynamic rate adjustment
+	// - Concurrent request admission
 	return c.rateLimiter.Wait(ctx)
 }
 

@@ -39,7 +39,7 @@ If you previously used environment variables for configuration, you will need to
 
 ### Removed Environment Variables
 
-- **`HARDCOVER_SYNC_DELAY_MS`**: Replaced with token bucket rate limiting
+- **`HARDCOVER_SYNC_DELAY_MS`**: Replaced with request pacing and concurrency limiting
   - **Migration**: Use the rate limiting configuration in `config.yaml` instead
 - **`AUDIOBOOK_MATCH_MODE`**: This legacy option has been removed
   - **Migration**: No action needed, improved matching is now the default
