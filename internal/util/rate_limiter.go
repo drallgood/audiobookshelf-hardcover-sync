@@ -117,19 +117,14 @@ func NewRateLimiter(rate time.Duration, maxConcurrent int, log *logger.Logger) *
 		rate:            rate,
 		minRate:         rate,
 		maxBackoff:      DefaultMaxBackoff, // Maximum backoff and pacing interval
-		backoffUntil:    time.Time{},
 		backoffFactor:   DefaultBackoffFactor,
 		jitterFactor:    DefaultJitterFactor,
 		scheduleChanged: make(chan struct{}),
 		semaphore:       make(chan struct{}, maxConcurrent),
-		metrics:         Metrics{},
 		logger:          log,
 	}
 
-	// Initialize the semaphore with maxConcurrent tokens
-	// Each token is represented by sending a value to the channel.
-	// To acquire a token, receive from the channel.
-	// To release a token, send to the channel.
+	// Initialize the semaphore with one slot for each allowed concurrent request.
 	for i := 0; i < maxConcurrent; i++ {
 		rl.semaphore <- struct{}{}
 	}
@@ -137,7 +132,7 @@ func NewRateLimiter(rate time.Duration, maxConcurrent int, log *logger.Logger) *
 	return rl
 }
 
-// Wait blocks until a token is available or the context is cancelled
+// Wait blocks until request admission is available or the context is cancelled.
 func (r *RateLimiter) Wait(ctx context.Context) error {
 	// Limit the number of goroutines concurrently waiting for admission.
 	select {
