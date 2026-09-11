@@ -177,9 +177,9 @@ func RunOneTimeSync(flags *configFlags) {
 	})
 	log := logger.Get()
 
-	log.Debug("========================================", nil)
+	log.Info("========================================", nil)
 	log.Info("STARTING ONE-TIME SYNC OPERATION")
-	log.Debug("========================================")
+	log.Info("========================================")
 
 	// Load configuration from file if specified, otherwise from environment
 	log.Debug("Loading configuration...", map[string]interface{}{
@@ -332,5 +332,5 @@ func RunOneTimeSync(flags *configFlags) {
 		"duration":         duration.String(),
 		"duration_seconds": duration.Seconds(),
 	})
-	log.Debug("========================================")
+	log.Info("========================================")
 }
