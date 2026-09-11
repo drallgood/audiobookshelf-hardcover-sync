@@ -41,6 +41,8 @@ If you previously used environment variables for configuration, you will need to
 
 - **`HARDCOVER_SYNC_DELAY_MS`**: Replaced with request pacing and concurrency limiting
   - **Migration**: Use the rate limiting configuration in `config.yaml` instead
+- **`RATE_LIMIT_BURST` / `rate_limit.burst`**: This setting has been removed and no longer has any effect
+  - **Migration**: Delete it from your environment or YAML configuration. To adjust rate limiting, use `RATE_LIMIT_RATE` / `rate_limit.rate` to control how often requests are sent and `RATE_LIMIT_MAX_CONCURRENT` / `rate_limit.max_concurrent` to limit simultaneous requests.
 - **`AUDIOBOOK_MATCH_MODE`**: This legacy option has been removed
   - **Migration**: No action needed, improved matching is now the default
 

@@ -2862,11 +2862,6 @@ func (c *Client) SearchPublishers(ctx context.Context, name string, limit int) (
 		"limit":     limit,
 	})
 
-	// Enforce rate limiting
-	if err := c.enforceRateLimit(ctx); err != nil {
-		return nil, fmt.Errorf("rate limit error: %w", err)
-	}
-
 	// Define the GraphQL query
 	// Note: Using _eq for exact match as _ilike is not supported by the API
 	query := `
