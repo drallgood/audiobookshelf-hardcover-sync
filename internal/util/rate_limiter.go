@@ -176,20 +176,10 @@ func (r *RateLimiter) Wait(ctx context.Context) error {
 		timer := time.NewTimer(time.Until(readyAt))
 		select {
 		case <-ctx.Done():
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
+			stopAndDrainTimer(timer)
 			return ctx.Err()
 		case <-scheduleChanged:
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
+			stopAndDrainTimer(timer)
 			// Recalculate immediately when rate-limit headers change the
 			// steady pace or install/remove a backoff period.
 		case <-timer.C:
@@ -202,8 +192,6 @@ func (r *RateLimiter) Wait(ctx context.Context) error {
 func (r *RateLimiter) OnRateLimit(retryAfter time.Duration) time.Duration {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
-	now := time.Now()
 
 	// Update metrics
 	r.metrics.RateLimited++
@@ -224,9 +212,7 @@ func (r *RateLimiter) OnRateLimit(retryAfter time.Duration) time.Duration {
 
 	// Without server guidance, use exponential backoff. A subsequent healthy
 	// rate-limit response restores the configured rate.
-	backoff := r.exponentialBackoff(r.rate)
-	r.setRate(backoff)
-	r.setBackoffUntil(now.Add(backoff))
+	backoff := r.applyExponentialBackoff(false)
 
 	// Log the rate limit event with detailed information
 	r.logger.Warn("Rate limit backoff", map[string]interface{}{
@@ -422,13 +408,13 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 	}
 
 	// Try IETF RateLimit headers first (e.g. "Free";r=8;t=42, "daily";r=4231;t=51234).
-	iefRemaining, iefReset := r.parseIETFRateLimit(resp.Header)
+	ietfRemaining, ietfReset := r.parseIETFRateLimit(resp.Header)
 	if resp.StatusCode == http.StatusTooManyRequests {
 		// On a 429, only an exhausted quota with a usable reset is authoritative.
 		// Other IETF or legacy headers may be partial, malformed, or merely
 		// advisory; fall through to the bounded client-selected backoff instead.
-		if hasExhaustedIETFQuota(iefRemaining, iefReset) {
-			r.applyIETFHeaders(iefRemaining, iefReset, resp.Header)
+		if hasExhaustedIETFQuota(ietfRemaining, ietfReset) {
+			r.applyIETFHeaders(ietfRemaining, ietfReset, resp.Header)
 			return
 		}
 		if hasExhaustedLegacyQuota(resp.Header) {
@@ -438,12 +424,7 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 
 		// Processing an incomplete legacy header set first would reset the rate
 		// and prevent repeated 429s from escalating.
-		backoff := r.exponentialBackoff(r.rate)
-		r.setRate(backoff)
-		until := time.Now().Add(backoff)
-		if until.After(r.backoffUntil) {
-			r.setBackoffUntil(until)
-		}
+		backoff := r.applyExponentialBackoff(true)
 		r.logger.Warn("Rate limit response without reset guidance", map[string]interface{}{
 			"component":     "rate_limiter",
 			"backoff":       backoff.String(),
@@ -451,8 +432,8 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 		})
 		return
 	}
-	if len(iefRemaining) > 0 {
-		r.applyIETFHeaders(iefRemaining, iefReset, resp.Header)
+	if len(ietfRemaining) > 0 {
+		r.applyIETFHeaders(ietfRemaining, ietfReset, resp.Header)
 		return
 	}
 
@@ -798,6 +779,20 @@ func (r *RateLimiter) exponentialBackoff(baseBackoff time.Duration) time.Duratio
 	return backoff
 }
 
+// applyExponentialBackoff increases pacing and installs a client-selected pause.
+// preserveLongerPause keeps an existing authoritative pause when it is longer
+// than the newly calculated fallback backoff.
+func (r *RateLimiter) applyExponentialBackoff(preserveLongerPause bool) time.Duration {
+	backoff := r.exponentialBackoff(r.rate)
+	r.setRate(backoff)
+
+	until := time.Now().Add(backoff)
+	if !preserveLongerPause || until.After(r.backoffUntil) {
+		r.setBackoffUntil(until)
+	}
+	return backoff
+}
+
 // applyRetryAfter installs an exact, temporary server-directed pause.
 func (r *RateLimiter) applyRetryAfter(delay time.Duration) time.Duration {
 	return r.applyPause(delay, r.maxBackoff)
@@ -865,6 +860,15 @@ func (r *RateLimiter) setBackoffUntil(until time.Time) {
 	}
 	r.backoffUntil = until
 	r.notifyScheduleChanged()
+}
+
+func stopAndDrainTimer(timer *time.Timer) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
 }
 
 // notifyScheduleChanged wakes admission waiters so they can recalculate after
