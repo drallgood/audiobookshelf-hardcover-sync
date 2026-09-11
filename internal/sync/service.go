@@ -2410,7 +2410,6 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		}
 	} else if hcBook != nil {
 		// Book was found successfully
-		bookProcessed = true
 		if hcBook.EditionID != "" {
 			editionID = hcBook.EditionID
 		}
@@ -4191,7 +4190,11 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			return fmt.Errorf("failed to update progress: %w", err)
 		}
 
-		log.Debug("Successfully updated read status in Hardcover", logCtx)
+		if s.config.Sync.DryRun {
+			log.Debug("Successfully simulated read status update in Hardcover", logCtx)
+		} else {
+			log.Info("Successfully updated read status in Hardcover", logCtx)
+		}
 		reportProcessBookOutcome(ctx, OutcomeSynced, "updated Hardcover read progress")
 
 		if err := reconcileBookStatus(); err != nil {
@@ -4389,7 +4392,11 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			return fmt.Errorf("failed to create read status in Hardcover: %w", err)
 		}
 
-		log.Debug("Successfully created new read status in Hardcover", nil)
+		if s.config.Sync.DryRun {
+			log.Debug("Successfully simulated read status creation in Hardcover", nil)
+		} else {
+			log.Info("Successfully created new read status in Hardcover", nil)
+		}
 		reportProcessBookOutcome(ctx, OutcomeSynced, "created Hardcover read progress")
 
 		// Set the book status after inserting the read, so HC does not auto-create

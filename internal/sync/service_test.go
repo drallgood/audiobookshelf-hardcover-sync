@@ -753,6 +753,28 @@ func TestProcessBookSkipsUnreadBeforeHardcoverLookup(t *testing.T) {
 	assert.Equal(t, int32(1), svc.outcomeCounts.Total())
 }
 
+func TestProcessBookErrorDoesNotCountAsSynced(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.config.Sync.ProcessUnreadBooks = true
+
+	book := toAudiobookshelfBook(createTestBook("failing-book", "Failing Book", "Test Author", "FAIL-ASIN", ""))
+	book.Progress.CurrentTime = book.Media.Duration / 2
+	hcBook := &models.HardcoverBook{
+		ID:        "123",
+		EditionID: "invalid",
+		Title:     book.Media.Metadata.Title,
+	}
+	mockClient.On("SearchBookByASIN", mock.Anything, "FAIL-ASIN").Return(hcBook, nil).Once()
+
+	err := svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid edition ID format")
+	assert.Equal(t, int32(0), svc.summary.BooksSynced, "failed book must not count as synced")
+	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed)
+	mockClient.AssertExpectations(t)
+}
+
 // addMediaProgress appends a mediaProgress entry to a user progress fixture.
 // It exists so tests don't each restate the anonymous struct element type of
 // models.AudiobookshelfUserProgress.MediaProgress.

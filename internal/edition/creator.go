@@ -151,7 +151,7 @@ func (c *Creator) CreateEdition(ctx context.Context, input *EditionInput) (*Edit
 	})
 
 	if c.dryRun {
-		c.log.Debug("Dry run enabled - no changes will be made", nil)
+		c.log.Info("Dry run enabled - no changes will be made", nil)
 		return &EditionResult{
 			Success:   true,
 			EditionID: 0,

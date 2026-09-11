@@ -497,6 +497,29 @@ func TestEditionCreator_CreateEdition(t *testing.T) {
 	}
 }
 
+func TestEditionCreator_DryRunLogsAtInfo(t *testing.T) {
+	var output bytes.Buffer
+	logger.ResetForTesting()
+	t.Cleanup(logger.ResetForTesting)
+	logger.Setup(logger.Config{
+		Level:  "info",
+		Format: logger.FormatJSON,
+		Output: &output,
+	})
+
+	creator := edition.NewCreator(&MockHardcoverClient{}, logger.Get(), true, "")
+	result, err := creator.CreateEdition(context.Background(), &edition.EditionInput{
+		BookID:    123,
+		Title:     "Dry Run Book",
+		AuthorIDs: []int{456},
+	})
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	assert.Contains(t, output.String(), `"level":"info"`)
+	assert.Contains(t, output.String(), `"message":"Dry run enabled - no changes will be made"`)
+}
+
 func TestEditionCreator_PrepopulateFromBook(t *testing.T) {
 	// Setup
 	mockClient := new(MockHardcoverClient)
