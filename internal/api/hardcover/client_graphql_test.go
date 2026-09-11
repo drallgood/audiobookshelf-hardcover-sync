@@ -245,3 +245,116 @@ func TestGraphQLQuery_FailsFastOn400(t *testing.T) {
 	assert.Equal(t, 1, int(atomic.LoadInt32(&attempts)))
 	assert.Contains(t, err.Error(), "non-retryable HTTP error")
 }
+
+func TestGraphQLQuery_BoundsRetryAfterPause(t *testing.T) {
+	logger.Setup(logger.Config{Level: "error", Format: "json"})
+	log := logger.Get()
+
+	previousMaxBackoff := util.DefaultMaxBackoff
+	util.DefaultMaxBackoff = 25 * time.Millisecond
+	t.Cleanup(func() { util.DefaultMaxBackoff = previousMaxBackoff })
+
+	var attempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&attempts, 1) == 1 {
+			w.Header().Set("Retry-After", "5")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"books":[{"id":1}]}}`))
+	}))
+	defer server.Close()
+
+	client := CreateTestClient(server)
+	client.logger = log
+	client.maxRetries = 1
+	client.retryDelay = time.Millisecond
+	client.rateLimiter = util.NewRateLimiter(time.Nanosecond, 1, log)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	var response struct {
+		Books []struct {
+			ID int `json:"id"`
+		} `json:"books"`
+	}
+
+	err := client.GraphQLQuery(ctx, `query RetryAfterTest { books { id } }`, nil, &response)
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), atomic.LoadInt32(&attempts))
+	assert.Equal(t, 1, response.Books[0].ID)
+}
+
+func TestGraphQLQuery_MaxConcurrentLimitsActiveRequests(t *testing.T) {
+	logger.Setup(logger.Config{Level: "error", Format: "json"})
+	log := logger.Get()
+
+	var active, maxActive int32
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{}, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current := atomic.AddInt32(&active, 1)
+		for {
+			previous := atomic.LoadInt32(&maxActive)
+			if current <= previous || atomic.CompareAndSwapInt32(&maxActive, previous, current) {
+				break
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		entered <- struct{}{}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+		atomic.AddInt32(&active, -1)
+		_, _ = w.Write([]byte(`{"data":{"books":[{"id":1}]}}`))
+	}))
+	defer server.Close()
+
+	client := CreateTestClient(server)
+	client.logger = log
+	client.rateLimiter = util.NewRateLimiter(time.Nanosecond, 1, log)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	var response1, response2 struct {
+		Books []struct {
+			ID int `json:"id"`
+		} `json:"books"`
+	}
+	errs := make(chan error, 2)
+	go func() {
+		errs <- client.GraphQLQuery(ctx, `query ConcurrentTest { books { id } }`, nil, &response1)
+	}()
+	go func() {
+		errs <- client.GraphQLQuery(ctx, `query ConcurrentTest { books { id } }`, nil, &response2)
+	}()
+
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("first request did not reach the server")
+	}
+	select {
+	case <-entered:
+		t.Fatal("second request reached the server while the first was active")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	release <- struct{}{}
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("second request did not reach the server after the first completed")
+	}
+	release <- struct{}{}
+
+	require.NoError(t, <-errs)
+	require.NoError(t, <-errs)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&maxActive))
+}

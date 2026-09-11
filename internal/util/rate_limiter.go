@@ -132,16 +132,18 @@ func NewRateLimiter(rate time.Duration, maxConcurrent int, log *logger.Logger) *
 	return rl
 }
 
-// Wait blocks until request admission is available or the context is cancelled.
-func (r *RateLimiter) Wait(ctx context.Context) error {
-	// Limit the number of goroutines concurrently waiting for admission.
+// Acquire blocks until request admission is available or the context is
+// cancelled. The returned function releases the concurrent-request permit.
+func (r *RateLimiter) Acquire(ctx context.Context) (func(), error) {
+	// Limit the number of concurrently admitted active requests.
 	select {
 	case <-r.semaphore:
-		defer func() {
-			r.semaphore <- struct{}{}
-		}()
 	case <-ctx.Done():
-		return ctx.Err()
+		return nil, ctx.Err()
+	}
+
+	release := func() {
+		r.semaphore <- struct{}{}
 	}
 
 	r.mu.Lock()
@@ -163,7 +165,7 @@ func (r *RateLimiter) Wait(ctx context.Context) error {
 			// waiters re-check this value before they may proceed.
 			r.last = now
 			r.mu.Unlock()
-			return nil
+			return release, nil
 		}
 		scheduleChanged := r.scheduleChanged
 		r.mu.Unlock()
@@ -172,7 +174,8 @@ func (r *RateLimiter) Wait(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			stopAndDrainTimer(timer)
-			return ctx.Err()
+			release()
+			return nil, ctx.Err()
 		case <-scheduleChanged:
 			stopAndDrainTimer(timer)
 			// Recalculate immediately when rate-limit headers change the
@@ -180,6 +183,18 @@ func (r *RateLimiter) Wait(ctx context.Context) error {
 		case <-timer.C:
 		}
 	}
+}
+
+// Wait blocks until request admission is available or the context is
+// cancelled. It preserves the legacy admission-only behavior by releasing
+// the concurrent-request permit immediately after admission.
+func (r *RateLimiter) Wait(ctx context.Context) error {
+	release, err := r.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	release()
+	return nil
 }
 
 // OnRateLimit is called when a rate limit is encountered

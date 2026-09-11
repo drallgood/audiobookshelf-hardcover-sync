@@ -425,30 +425,6 @@ func isRetryableHTTPStatus(statusCode int) bool {
 	return statusCode == http.StatusTooManyRequests || (statusCode >= 500 && statusCode <= 599)
 }
 
-func parseRetryAfterDelay(value string) (time.Duration, bool) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return 0, false
-	}
-
-	if seconds, err := strconv.Atoi(value); err == nil {
-		if seconds < 0 {
-			seconds = 0
-		}
-		return time.Duration(seconds) * time.Second, true
-	}
-
-	if retryAt, err := http.ParseTime(value); err == nil {
-		delay := time.Until(retryAt)
-		if delay < 0 {
-			delay = 0
-		}
-		return delay, true
-	}
-
-	return 0, false
-}
-
 // GraphQLQuery executes a GraphQL query and unmarshals the response into the result parameter
 func (c *Client) GraphQLQuery(ctx context.Context, query string, variables map[string]interface{}, result interface{}) error {
 	if variables == nil {
@@ -505,11 +481,6 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 			}
 		}
 
-		// Apply rate limiting
-		if err := c.rateLimiter.Wait(ctx); err != nil {
-			return fmt.Errorf("rate limiter error: %w", err)
-		}
-
 		// Create the request body
 		reqBody := map[string]interface{}{
 			"query":     query,
@@ -544,9 +515,16 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 			"body": string(jsonBody),
 		})
 
+		// Apply pacing and acquire a permit for the active HTTP request.
+		release, err := c.rateLimiter.Acquire(ctx)
+		if err != nil {
+			return fmt.Errorf("rate limiter error: %w", err)
+		}
+
 		// Execute the request
 		resp, err := httpClient.Do(req)
 		if err != nil {
+			release()
 			lastErr = fmt.Errorf("HTTP request failed: %w", err)
 			c.logger.Error("GraphQL request failed", map[string]interface{}{
 				"error":   lastErr.Error(),
@@ -558,6 +536,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		// Read the response body
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		release()
 		if err != nil {
 			lastErr = fmt.Errorf("failed to read response body: %w", err)
 			c.logger.Error("Failed to read response body", map[string]interface{}{
@@ -593,19 +572,6 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				return fmt.Errorf("non-retryable HTTP error: %w", lastErr)
 			}
 
-			if resp.StatusCode == http.StatusTooManyRequests {
-				if retryAfter, ok := parseRetryAfterDelay(resp.Header.Get("Retry-After")); ok {
-					genericDelay := c.retryDelay * time.Duration(attempt+1)
-					if retryAfter > genericDelay {
-						extraDelay := retryAfter - genericDelay
-						select {
-						case <-ctx.Done():
-							return fmt.Errorf("retry canceled: %w", ctx.Err())
-						case <-time.After(extraDelay):
-						}
-					}
-				}
-			}
 			continue
 		}
 

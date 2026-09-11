@@ -75,3 +75,39 @@ func TestRateLimiterConcurrentAccess(t *testing.T) {
 	}
 	assert.Equal(t, uint64(totalRequests), rl.GetMetrics().Requests)
 }
+
+func TestRateLimiterAcquireBlocksUntilRelease(t *testing.T) {
+	rl := NewRateLimiter(time.Nanosecond, 1, nil)
+	firstRelease, err := rl.Acquire(context.Background())
+	require.NoError(t, err)
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			firstRelease()
+		}
+	})
+
+	secondResult := make(chan error, 1)
+	go func() {
+		secondRelease, err := rl.Acquire(context.Background())
+		if err == nil {
+			secondRelease()
+		}
+		secondResult <- err
+	}()
+
+	select {
+	case err := <-secondResult:
+		t.Fatalf("second admission completed while first permit was held: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	firstRelease()
+	released = true
+	select {
+	case err := <-secondResult:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("second admission did not complete after first permit was released")
+	}
+}
