@@ -22,6 +22,7 @@ type SyncProfileStatus struct {
 	ProfileID          string                 `json:"profile_id"`
 	ProfileName        string                 `json:"profile_name"`
 	Status             string                 `json:"status"` // "idle", "syncing", "error", "completed"
+	DryRun             bool                   `json:"dry_run,omitempty"`
 	LastSync           *time.Time             `json:"last_sync"`
 	Error              string                 `json:"error,omitempty"`
 	Progress           string                 `json:"progress,omitempty"`
@@ -128,6 +129,7 @@ func (s *MultiUserService) GetAllProfileStatuses() ([]*SyncProfileStatus, error)
 				ProfileID:   status.ProfileID,
 				ProfileName: status.ProfileName,
 				Status:      status.Status,
+				DryRun:      status.DryRun,
 				LastSync:    status.LastSync,
 				Error:       status.Error,
 				Progress:    status.Progress,
@@ -259,6 +261,7 @@ func (s *MultiUserService) StartSync(profileID string) error {
         ProfileID:   profileID,
         ProfileName: profileConfig.Profile.Name,
         Status:      "syncing",
+        DryRun:      profileConfig.SyncConfig.DryRun,
         LastSync:    nil,
         Progress:    "Starting sync...",
     })
