@@ -626,14 +626,15 @@ func (r *RateLimiter) applyIETFHeaders(remaining, reset map[string]int, h http.H
 
 		if r.dailyRemaining <= 0 && reset[dailyName] > 0 {
 			pause := time.Duration(reset[dailyName]) * time.Second
-			r.logger.Warn("Daily rate limit exhausted, pausing", map[string]interface{}{
+			retryInterval := r.applyRetryAfter(pause)
+			r.drainBucket()
+			r.logger.Warn("Daily rate limit exhausted, retrying periodically until reset", map[string]interface{}{
 				"component":       "rate_limiter",
 				"daily_remaining": r.dailyRemaining,
 				"daily_limit":     r.dailyLimit,
-				"pause":           pause.String(),
+				"reset_in":        pause.String(),
+				"retry_interval":  retryInterval.String(),
 			})
-			r.applyRetryAfter(pause)
-			r.drainBucket()
 		} else if r.dailyRemaining > 0 && r.dailyLimit > 0 {
 			pct := float64(r.dailyRemaining) / float64(r.dailyLimit) * 100
 			if pct < 1.0 {
@@ -717,51 +718,56 @@ func (r *RateLimiter) applyLegacyHeaders(h http.Header) {
 	limit := h.Get("X-RateLimit-Limit")
 	remaining := h.Get("X-RateLimit-Remaining")
 	reset := h.Get("X-RateLimit-Reset")
+	if remaining == "" {
+		return
+	}
+	rem, err := strconv.Atoi(remaining)
+	if err != nil {
+		return
+	}
+
 	desiredRate := r.minRate
 
-	if remaining != "" {
-		rem, err := strconv.Atoi(remaining)
-		if err == nil {
-			totalLimit := 0
-			if limit != "" {
-				totalLimit, _ = strconv.Atoi(limit)
+	totalLimit := 0
+	if limit != "" {
+		totalLimit, _ = strconv.Atoi(limit)
+	}
+	if totalLimit > 0 {
+		remainingPct := (float64(rem) / float64(totalLimit)) * 100
+		if rem > 0 && remainingPct < 20.0 {
+			if resetAt, ok := parseUnixReset(reset); ok {
+				desiredRate = max(desiredRate, time.Until(resetAt)/time.Duration(rem))
+			} else {
+				desiredRate = max(desiredRate, r.minRate*2)
 			}
-			if totalLimit > 0 {
-				remainingPct := (float64(rem) / float64(totalLimit)) * 100
-				if rem > 0 && remainingPct < 20.0 {
-					if resetAt, ok := parseUnixReset(reset); ok {
-						desiredRate = max(desiredRate, time.Until(resetAt)/time.Duration(rem))
-					} else {
-						desiredRate = max(desiredRate, r.minRate*2)
-					}
-					r.logger.Info("Approaching rate limit (legacy headers), being more conservative", map[string]interface{}{
-						"component":     "rate_limiter",
-						"remaining":     remaining,
-						"limit":         limit,
-						"remaining_pct": remainingPct,
-						"new_rate":      desiredRate.String(),
-					})
-				}
-			}
-			if rem <= 0 {
-				pause := time.Duration(0)
-				if resetAt, ok := parseUnixReset(reset); ok {
-					pause = time.Until(resetAt)
-				}
-				if pause <= 0 {
-					desiredRate = max(desiredRate, r.minRate*2)
-				}
-				r.logger.Warn("Rate limit reached (legacy headers), backing off", map[string]interface{}{
-					"component": "rate_limiter",
-					"backoff":   pause.String(),
-					"new_rate":  desiredRate.String(),
-				})
-				if pause > 0 {
-					r.applyRetryAfter(pause)
-					r.drainBucket()
-				}
-			}
+			r.logger.Info("Approaching rate limit (legacy headers), being more conservative", map[string]interface{}{
+				"component":     "rate_limiter",
+				"remaining":     remaining,
+				"limit":         limit,
+				"remaining_pct": remainingPct,
+				"new_rate":      desiredRate.String(),
+			})
 		}
+	}
+	if rem <= 0 {
+		pause := time.Duration(0)
+		if resetAt, ok := parseUnixReset(reset); ok {
+			pause = time.Until(resetAt)
+		}
+		if pause <= 0 {
+			desiredRate = max(desiredRate, r.minRate*2)
+		}
+		backoff := time.Duration(0)
+		if pause > 0 {
+			backoff = r.applyRetryAfter(pause)
+			r.drainBucket()
+		}
+		r.logger.Warn("Rate limit reached (legacy headers), backing off", map[string]interface{}{
+			"component": "rate_limiter",
+			"reset_in":  pause.String(),
+			"backoff":   backoff.String(),
+			"new_rate":  desiredRate.String(),
+		})
 	}
 	r.setRate(desiredRate)
 

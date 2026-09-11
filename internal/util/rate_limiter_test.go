@@ -509,6 +509,12 @@ func TestRateLimiterFallsBackForBareTooManyRequests(t *testing.T) {
 	assert.Equal(t, uint64(2), rl.GetMetrics().RateLimited)
 
 	rl.WithRateLimitHeaders(&http.Response{StatusCode: http.StatusOK, Header: http.Header{}})
+	assert.Equal(t, 400*time.Millisecond, rl.GetRate())
+
+	healthyHeaders := make(http.Header)
+	healthyHeaders.Set("X-RateLimit-Limit", "100")
+	healthyHeaders.Set("X-RateLimit-Remaining", "90")
+	rl.WithRateLimitHeaders(&http.Response{StatusCode: http.StatusOK, Header: healthyHeaders})
 	assert.Equal(t, 100*time.Millisecond, rl.GetRate())
 }
 

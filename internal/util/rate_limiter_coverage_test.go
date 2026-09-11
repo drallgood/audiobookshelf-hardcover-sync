@@ -16,40 +16,29 @@ func TestNewRateLimiter(t *testing.T) {
 		rate          time.Duration
 		burst         int
 		maxConcurrent int
-		expectPanic   bool
 	}{
 		{
 			name:          "default values",
 			rate:          0,
 			burst:         0,
 			maxConcurrent: 0,
-			expectPanic:   false,
 		},
 		{
 			name:          "custom values",
 			rate:          time.Second,
 			burst:         5,
 			maxConcurrent: 10,
-			expectPanic:   false,
 		},
 		{
 			name:          "negative rate uses default",
 			rate:          -1 * time.Second,
 			burst:         5,
 			maxConcurrent: 10,
-			expectPanic:   false, // Negative rate is handled by using default
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.expectPanic {
-				assert.Panics(t, func() {
-					NewRateLimiter(tt.rate, tt.burst, tt.maxConcurrent, nil)
-				}, "Expected panic for invalid values")
-				return
-			}
-
 			rl := NewRateLimiter(tt.rate, tt.burst, tt.maxConcurrent, nil)
 			defer rl.ResetRate()
 
