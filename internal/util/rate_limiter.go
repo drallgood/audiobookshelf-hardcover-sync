@@ -63,8 +63,7 @@ type RateLimiter struct {
 	dailyResetSec  int
 
 	// Concurrency control
-	maxConcurrent int32         // Maximum number of concurrent admission waiters
-	semaphore     chan struct{} // Buffered channel used as a semaphore
+	semaphore chan struct{} // Buffered channel used as a semaphore
 
 	// Metrics
 	metrics Metrics
@@ -132,7 +131,6 @@ func NewRateLimiter(rate time.Duration, burst, maxConcurrent int, log *logger.Lo
 		backoffFactor:   DefaultBackoffFactor,
 		jitterFactor:    DefaultJitterFactor,
 		scheduleChanged: make(chan struct{}),
-		maxConcurrent:   int32(maxConcurrent),
 		semaphore:       make(chan struct{}, maxConcurrent),
 		metrics:         Metrics{},
 		logger:          log,
@@ -142,7 +140,7 @@ func NewRateLimiter(rate time.Duration, burst, maxConcurrent int, log *logger.Lo
 	// Each token is represented by sending a value to the channel.
 	// To acquire a token, receive from the channel.
 	// To release a token, send to the channel.
-	for i := 0; i < int(rl.maxConcurrent); i++ {
+	for i := 0; i < maxConcurrent; i++ {
 		rl.semaphore <- struct{}{}
 	}
 
@@ -152,15 +150,13 @@ func NewRateLimiter(rate time.Duration, burst, maxConcurrent int, log *logger.Lo
 // Wait blocks until a token is available or the context is cancelled
 func (r *RateLimiter) Wait(ctx context.Context) error {
 	// Limit the number of goroutines concurrently waiting for admission.
-	if r.maxConcurrent > 0 {
-		select {
-		case <-r.semaphore:
-			defer func() {
-				r.semaphore <- struct{}{}
-			}()
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	select {
+	case <-r.semaphore:
+		defer func() {
+			r.semaphore <- struct{}{}
+		}()
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 
 	r.mu.Lock()
