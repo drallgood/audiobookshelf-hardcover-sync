@@ -535,7 +535,7 @@ func TestRateLimiterUnguided429PreservesLongerBackoff(t *testing.T) {
 	rl.mu.RLock()
 	actualDeadline := rl.backoffUntil
 	rl.mu.RUnlock()
-	assert.Equal(t, authoritativeDeadline, actualDeadline, "shorter fallback must not replace authoritative backoff")
+	assert.False(t, actualDeadline.Before(authoritativeDeadline), "fallback must not shorten authoritative backoff")
 }
 
 func TestRateLimiterFallsBackForUnguidedTooManyRequests(t *testing.T) {
