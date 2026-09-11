@@ -682,14 +682,17 @@ class SyncProfileApp {
             
             const progressPercent = booksTotal > 0 ? Math.round((totalProcessed / booksTotal) * 100) : 0;
             const lastSync = status.last_sync || status.lastSync || null;
-            const statusText = status.status || 'idle';
+            const statusState = status.status || 'idle';
+            const statusText = statusState.toLowerCase() === 'syncing' && this.toBool(status.dry_run, false)
+                ? 'syncing (dry run)'
+                : statusState;
             const profileName = status.profile_name || status.profile_id || 'Unknown Profile';
 
             return `
-                <div class="status-card ${statusText.toLowerCase()}">
+                <div class="status-card ${statusState.toLowerCase()}">
                     <div class="status-header">
                         <h3>${this.escapeHtml(profileName)}</h3>
-                        <span class="status-badge">${statusText}</span>
+                        <span class="status-badge">${this.escapeHtml(statusText)}</span>
                     </div>
                     <div class="status-info">
                         ${lastSync ? `
@@ -720,13 +723,13 @@ class SyncProfileApp {
                         ` : ''}
                     </div>
                     <div class="status-actions">
-                        ${statusText.toLowerCase() === 'syncing' ? `
+                        ${statusState.toLowerCase() === 'syncing' ? `
                             <button class="btn btn-warning" onclick="app.cancelSync('${profileId}')">
                                 Cancel Sync
                             </button>
                         ` : `
                             <button class="btn btn-primary" onclick="app.startSync('${profileId}')">
-                                ${statusText.toLowerCase() === 'error' ? 'Retry Sync' : 'Start Sync'}
+                                ${statusState.toLowerCase() === 'error' ? 'Retry Sync' : 'Start Sync'}
                             </button>
                         `}
                         ${hasSummary ? `
@@ -1841,7 +1844,7 @@ class SyncProfileApp {
                 process_unread_books: formData.get('process_unread_books') === 'on',
                 sync_owned: formData.get('sync_owned') === 'on',
                 include_ebooks: formData.get('include_ebooks') === 'on',
-                dry_run: false,
+                dry_run: formData.get('dry_run') === 'on',
                 test_book_filter: '',
                 test_book_limit: 0,
                 audnexus_region: formData.get('audnexus_region') || ''
@@ -1944,6 +1947,7 @@ class SyncProfileApp {
         if (includeEbooksEl) {
             includeEbooksEl.checked = this.toBool(config.include_ebooks, false);
         }
+        document.getElementById('edit-dry-run').checked = this.toBool(config.dry_run, false);
         
         // Library filters
         const libraries = config.libraries || {};
@@ -1993,7 +1997,7 @@ class SyncProfileApp {
                 process_unread_books: formData.get('process_unread_books') === 'on',
                 sync_owned: formData.get('sync_owned') === 'on',
                 include_ebooks: formData.get('include_ebooks') === 'on',
-                dry_run: false,
+                dry_run: formData.get('dry_run') === 'on',
                 test_book_filter: '',
                 test_book_limit: 0,
                 audnexus_region: formData.get('audnexus_region') || ''

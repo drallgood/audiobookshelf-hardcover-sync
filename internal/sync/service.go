@@ -77,6 +77,10 @@ type Config = config.Config
 
 // NewService creates a new sync service
 func NewService(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverClientInterface, cfg *Config) (*Service, error) {
+	if client, ok := hcClient.(*hardcover.Client); ok {
+		client.SetDryRun(cfg.Sync.DryRun)
+	}
+
 	svc := &Service{
 		audiobookshelf:      absClient,
 		hardcover:           hcClient,
@@ -481,7 +485,7 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 		logCtx.Info(dryRunMsg, map[string]interface{}{
 			"status": status,
 		})
-		// Return a negative value to indicate dry-run mode
+		// CreateUserBook uses the same -1 sentinel; it must not be treated as a real user-book ID.
 		return -1, nil
 	}
 
@@ -553,12 +557,8 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 
 // findExistingUserBookForBook checks if there's already a user book for this book (any edition)
 func (s *Service) findExistingUserBookForBook(ctx context.Context, bookID int64) (int64, error) {
-	// Use the existing GetUserBookID method with edition 0 to check if any user book exists
-	// This is a workaround since we don't have a direct lookup by book ID only
-	// We'll iterate through known editions or use a different approach
-	
-	// For now, let's use the Hardcover client's internal method directly
-	// by type asserting to the concrete type
+	// HardcoverClientInterface does not expose the book-level lookup helpers,
+	// so use them when the configured implementation is the concrete client.
 	if hcClient, ok := s.hardcover.(*hardcover.Client); ok {
 		userID, err := hcClient.GetCurrentUserID(ctx)
 		if err != nil {
@@ -617,8 +617,12 @@ func (s *Service) Sync(ctx context.Context) error {
 	s.log.Info("STARTING FULL SYNCHRONIZATION", nil)
 	s.log.Info("========================================", nil)
 
-	// Update the last sync start time
-	s.state.UpdateLibrary("sync") // Using "sync" as a special library ID for global sync state
+	// Update the last sync start time only for real syncs. A dry run must not
+	// leave persisted state that could make a later real incremental run skip
+	// mutations that were never applied.
+	if !s.config.Sync.DryRun {
+		s.state.UpdateLibrary("sync") // Using "sync" as a special library ID for global sync state
+	}
 
 	// Log service configuration (without accessing unexported fields directly)
 	s.log.Info("SYNC CONFIGURATION", nil)
@@ -792,15 +796,19 @@ func (s *Service) Sync(ctx context.Context) error {
 		s.recordMismatch(m)
 	}
 
-	// Update the last sync time
-	s.state.SetFullSync()
-
-	// Save the state
-	if err := s.state.Save(s.statePath); err != nil {
-		s.log.Error("Failed to save sync state", map[string]interface{}{
-			"error": err.Error(),
-		})
-		// Don't return the error here as the sync itself was successful
+	// Update and save the state only after a real sync. Dry-run mutation
+	// wrappers return successful no-ops, so persisting this in-memory state
+	// would incorrectly mark skipped Hardcover mutations as applied.
+	if !s.config.Sync.DryRun {
+		s.state.SetFullSync()
+		if err := s.state.Save(s.statePath); err != nil {
+			s.log.Error("Failed to save sync state", map[string]interface{}{
+				"error": err.Error(),
+			})
+			// Don't return the error here as the sync itself was successful
+		}
+	} else {
+		s.log.Info("[DRY-RUN] Skipping sync state save", nil)
 	}
 
 	// Log ASIN cache performance statistics
@@ -1843,17 +1851,20 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		}
 		s.userBookCache.InvalidateByUserBook(int(userBookID))
 
-		// Update state with current progress and status
-		progressPct := 0.0
-		if book.Media.Duration > 0 {
-			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
-		}
-		if updated := s.state.UpdateBook(stateKey, progressPct, "WANT_TO_READ"); updated {
-			s.state.SetHasProgressSeconds(stateKey)
-			bookLog.Debug("Updated book state to WANT_TO_READ", map[string]interface{}{
-				"progress":  progressPct,
-				"state_key": stateKey,
-			})
+		if !s.config.Sync.DryRun {
+			// Update state with current progress and status only after the
+			// Hardcover mutation is actually applied.
+			progressPct := 0.0
+			if book.Media.Duration > 0 {
+				progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
+			}
+			if updated := s.state.UpdateBook(stateKey, progressPct, "WANT_TO_READ"); updated {
+				s.state.SetHasProgressSeconds(stateKey)
+				bookLog.Debug("Updated book state to WANT_TO_READ", map[string]interface{}{
+					"progress":  progressPct,
+					"state_key": stateKey,
+				})
+			}
 		}
 
 		bookProcessed = true
@@ -1911,7 +1922,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 	}
 	success := false
 	defer func() {
-		if !success {
+		if !success || s.config.Sync.DryRun {
 			return
 		}
 		if updated := s.state.UpdateBook(stateKey, 100.0, "FINISHED"); updated {

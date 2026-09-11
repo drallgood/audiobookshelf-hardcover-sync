@@ -1,12 +1,16 @@
 package sync
 
 import (
+	"context"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestNewService_Success tests the successful creation of a new service
@@ -37,6 +41,22 @@ func TestNewService_Success(t *testing.T) {
 
 	// Clean up
 	_ = os.Remove(cfg.Sync.StateFile)
+}
+
+func TestNewServiceConfiguresHardcoverDryRun(t *testing.T) {
+	logger.Setup(logger.Config{Level: "debug", Format: "json"})
+	cfg := createTestConfig(false)
+	cfg.Sync.DryRun = true
+	cfg.Sync.StateFile = filepath.Join(t.TempDir(), "sync_state.json")
+	cfg.Paths.CacheDir = t.TempDir()
+	hcClient := hardcover.NewClient("test-token", logger.Get())
+
+	svc, err := NewService(&audiobookshelf.Client{}, hcClient, cfg)
+	require.NoError(t, err)
+
+	createdID, err := svc.hardcover.CreateUserBook(context.Background(), "invalid", "invalid")
+	require.NoError(t, err)
+	assert.Equal(t, "-1", createdID)
 }
 
 // TestNewService_WithDifferentLogFormat tests creating a service with different log formats
