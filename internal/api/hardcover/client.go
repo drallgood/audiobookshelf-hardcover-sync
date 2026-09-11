@@ -171,6 +171,7 @@ const (
 type Client struct {
 	baseURL          string
 	authToken        string
+	dryRun           bool
 	httpClient       *http.Client
 	gqlClient        *graphql.Client
 	logger           *logger.Logger
@@ -183,6 +184,21 @@ type Client struct {
 	userBookByBookIDCache cache.Cache[int, int]             // bookID -> userBookID
 	userCache             cache.Cache[string, any]          // Generic cache for user-specific data
 	editionCache          cache.Cache[int, *models.Edition] // editionID -> Edition
+}
+
+// SetDryRun enables or disables mutation suppression for this client.
+func (c *Client) SetDryRun(dryRun bool) {
+	c.dryRun = dryRun
+}
+
+func (c *Client) logSkippedMutation(operation string) {
+	log := c.logger
+	if log == nil {
+		log = logger.Get()
+	}
+	log.Info("[DRY-RUN] Skipping Hardcover mutation", map[string]interface{}{
+		"operation": operation,
+	})
 }
 
 // GetAuthHeader returns the properly formatted Authorization header value
@@ -451,6 +467,11 @@ func (c *Client) GraphQLQuery(ctx context.Context, query string, variables map[s
 
 // GraphQLMutation executes a GraphQL mutation and unmarshals the response into the result parameter
 func (c *Client) GraphQLMutation(ctx context.Context, mutation string, variables map[string]interface{}, result interface{}) error {
+	if c.dryRun {
+		c.logSkippedMutation("GraphQLMutation")
+		return nil
+	}
+
 	if variables == nil {
 		variables = make(map[string]interface{})
 	}
@@ -1877,6 +1898,11 @@ type InsertUserBookReadInput struct {
 
 // InsertUserBookRead creates a new user book read entry in Hardcover
 func (c *Client) InsertUserBookRead(ctx context.Context, input InsertUserBookReadInput) (int, error) {
+	if c.dryRun {
+		c.logSkippedMutation("InsertUserBookRead")
+		return 0, nil
+	}
+
 	const mutation = `
 	mutation InsertUserBookRead($user_book_id: Int!, $user_book_read: DatesReadInput!) {
 	  insert_user_book_read(
@@ -1955,6 +1981,11 @@ type UpdateUserBookStatusInput struct {
 
 // UpdateUserBookStatus updates the status of a user book in Hardcover
 func (c *Client) UpdateUserBookStatus(ctx context.Context, input UpdateUserBookStatusInput) error {
+	if c.dryRun {
+		c.logSkippedMutation("UpdateUserBookStatus")
+		return nil
+	}
+
 	const mutation = `
 	mutation UpdateUserBookStatus($id: Int!, $status_id: Int!) {
 	  update_user_book(id: $id, object: { status_id: $status_id }) {
@@ -2018,6 +2049,11 @@ func (c *Client) UpdateUserBookStatus(ctx context.Context, input UpdateUserBookS
 
 // UpdateUserBookEdition updates the edition_id of a user book in Hardcover
 func (c *Client) UpdateUserBookEdition(ctx context.Context, userBookID, editionID int) error {
+	if c.dryRun {
+		c.logSkippedMutation("UpdateUserBookEdition")
+		return nil
+	}
+
 	const mutation = `
 	mutation UpdateUserBookEdition($id: Int!, $edition_id: Int!) {
 	  update_user_book(id: $id, object: { edition_id: $edition_id }) {
@@ -2299,6 +2335,11 @@ func (c *Client) CheckExistingUserBookRead(ctx context.Context, input CheckExist
 
 // UpdateUserBookRead updates an existing user book read entry
 func (c *Client) UpdateUserBookRead(ctx context.Context, input UpdateUserBookReadInput) (bool, error) {
+	if c.dryRun {
+		c.logSkippedMutation("UpdateUserBookRead")
+		return true, nil
+	}
+
 	c.logger.Debug("Updating user book read", map[string]interface{}{
 		"id":     input.ID,
 		"object": input.Object,
@@ -2413,6 +2454,11 @@ func (c *Client) UpdateUserBookRead(ctx context.Context, input UpdateUserBookRea
 
 // DeleteUserBookRead deletes a user book read entry by its ID.
 func (c *Client) DeleteUserBookRead(ctx context.Context, id int64) error {
+	if c.dryRun {
+		c.logSkippedMutation("DeleteUserBookRead")
+		return nil
+	}
+
 	const mutation = `
 	mutation DeleteUserBookReadByID($id: Int!) {
 	  delete_user_book_read(id: $id) {
@@ -3330,6 +3376,11 @@ var statusNameToID = map[string]int{
 
 // CreateUserBook creates a new user book entry for the given edition ID and status
 func (c *Client) CreateUserBook(ctx context.Context, editionID, status string) (string, error) {
+	if c.dryRun {
+		c.logSkippedMutation("CreateUserBook")
+		return "-1", nil
+	}
+
 	// First, get the edition to ensure it exists and get the book_id
 	c.logger.Debug("Getting edition details for user book creation", map[string]interface{}{
 		"editionID": editionID,
@@ -3800,6 +3851,11 @@ func (c *Client) SearchBookByTitleAuthor(ctx context.Context, title, author stri
 
 // MarkEditionAsOwned marks an edition as owned in the user's "Owned" list
 func (c *Client) MarkEditionAsOwned(ctx context.Context, editionID int) error {
+	if c.dryRun {
+		c.logSkippedMutation("MarkEditionAsOwned")
+		return nil
+	}
+
 	log := c.logger.With(map[string]interface{}{
 		"edition_id": editionID,
 		"method":     "MarkEditionAsOwned",
@@ -3870,6 +3926,11 @@ func (c *Client) MarkEditionAsOwned(ctx context.Context, editionID int) error {
 
 // UpdateUserBook updates a user book
 func (c *Client) UpdateUserBook(ctx context.Context, input UpdateUserBookInput) error {
+	if c.dryRun {
+		c.logSkippedMutation("UpdateUserBook")
+		return nil
+	}
+
 	log := c.logger.With(map[string]interface{}{
 		"method":     "UpdateUserBook",
 		"id":         input.ID,
