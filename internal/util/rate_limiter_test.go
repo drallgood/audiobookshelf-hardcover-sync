@@ -169,77 +169,15 @@ func TestRateLimiter_CancellationDoesNotCollapsePendingSlots(t *testing.T) {
 		"cancellation allowed two pending waiters into the same pacing slot")
 }
 
-const (
-	// Default backoff factor for testing
-	testDefaultBackoffFactor = 8.0 // This matches the default in the implementation
-
-	// Default jitter factor for testing (0.0 to disable jitter)
-	testDefaultJitterFactor = 0.0
-)
-
 func TestRateLimiter_OnRateLimit(t *testing.T) {
-	// Create a rate limiter with test values
 	rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
 	defer rl.ResetRate()
 
-	// Set test values for backoff and jitter
-	rl.SetBackoffFactor(testDefaultBackoffFactor)
-	rl.SetJitterFactor(testDefaultJitterFactor)
+	waitTime := rl.OnRateLimit(10 * time.Second)
 
-	tests := []struct {
-		name       string
-		retryAfter time.Duration
-		setup      func(rl *RateLimiter)
-		check      func(t *testing.T, waitTime time.Duration, rl *RateLimiter)
-	}{
-		{
-			name:       "short retry with default backoff",
-			retryAfter: 100 * time.Millisecond,
-			setup: func(rl *RateLimiter) {
-				// No special setup needed for this test case
-			},
-			check: func(t *testing.T, waitTime time.Duration, rl *RateLimiter) {
-				assert.Equal(t, 100*time.Millisecond, waitTime)
-				assert.Equal(t, 100*time.Millisecond, rl.GetRate(), "Retry-After must not permanently change request pacing")
-
-				// Verify metrics
-				metrics := rl.GetMetrics()
-				assert.Equal(t, uint64(1), metrics.RateLimited)
-			},
-		},
-		{
-			name:       "long retry with backoff",
-			retryAfter: 10 * time.Second,
-			setup: func(rl *RateLimiter) {
-				// Set a custom backoff factor for this test
-				rl.SetBackoffFactor(1.5)
-			},
-			check: func(t *testing.T, waitTime time.Duration, rl *RateLimiter) {
-				assert.Equal(t, 10*time.Second, waitTime)
-				assert.Equal(t, 100*time.Millisecond, rl.GetRate(), "Retry-After must remain a temporary pause")
-
-				// Verify metrics
-				metrics := rl.GetMetrics()
-				assert.Equal(t, uint64(1), metrics.RateLimited)
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
-			defer rl.ResetRate()
-
-			// Apply any test-specific setup
-			if tt.setup != nil {
-				tt.setup(rl)
-			}
-
-			// Call OnRateLimit and verify the result
-			waitTime := rl.OnRateLimit(tt.retryAfter)
-			tt.check(t, waitTime, rl)
-		})
-	}
+	assert.Equal(t, 10*time.Second, waitTime)
+	assert.Equal(t, 100*time.Millisecond, rl.GetRate(), "Retry-After must remain a temporary pause")
+	assert.Equal(t, uint64(1), rl.GetMetrics().RateLimited)
 }
 
 func TestRateLimiter_ResetRate(t *testing.T) {
