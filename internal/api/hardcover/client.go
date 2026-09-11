@@ -536,8 +536,8 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		// Read the response body
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		release()
 		if err != nil {
+			release()
 			lastErr = fmt.Errorf("failed to read response body: %w", err)
 			c.logger.Error("Failed to read response body", map[string]interface{}{
 				"error":   lastErr.Error(),
@@ -557,6 +557,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		// Process rate limit headers from EVERY response so the rate limiter
 		// can self-throttle proactively before hitting HTTP 429.
 		c.rateLimiter.WithRateLimitHeaders(resp)
+		release()
 
 		// Check for HTTP errors
 		if resp.StatusCode >= 400 {

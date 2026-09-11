@@ -286,6 +286,47 @@ func TestGraphQLQuery_BoundsRetryAfterPause(t *testing.T) {
 	assert.Equal(t, 1, response.Books[0].ID)
 }
 
+func TestGraphQLQuery_DailyResetOverridesRetryAfter(t *testing.T) {
+	logger.Setup(logger.Config{Level: "error", Format: "json"})
+	log := logger.Get()
+
+	previousMaxBackoff := util.DefaultMaxBackoff
+	util.DefaultMaxBackoff = 25 * time.Millisecond
+	t.Cleanup(func() { util.DefaultMaxBackoff = previousMaxBackoff })
+
+	var attempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&attempts, 1) == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.Header().Set("RateLimit", `"Free";r=59;t=1, "daily";r=0;t=1`)
+			w.Header().Set("RateLimit-Policy", `"Free";q=60;w=60, "daily";q=5000;w=86400`)
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"books":[{"id":1}]}}`))
+	}))
+	defer server.Close()
+
+	client := CreateTestClient(server)
+	client.logger = log
+	client.maxRetries = 1
+	client.retryDelay = time.Millisecond
+	client.rateLimiter = util.NewRateLimiter(time.Nanosecond, 1, log)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	var response struct {
+		Books []struct {
+			ID int `json:"id"`
+		} `json:"books"`
+	}
+
+	err := client.GraphQLQuery(ctx, `query DailyResetTest { books { id } }`, nil, &response)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&attempts))
+}
+
 func TestGraphQLQuery_MaxConcurrentLimitsActiveRequests(t *testing.T) {
 	logger.Setup(logger.Config{Level: "error", Format: "json"})
 	log := logger.Get()

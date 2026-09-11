@@ -437,6 +437,30 @@ func TestRateLimiterCapsServerPauseAtDefaultMaxBackoff(t *testing.T) {
 	assert.LessOrEqual(t, pause, DefaultMaxBackoff)
 }
 
+func TestRateLimiterDailyExhaustionOverridesRetryAfter(t *testing.T) {
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
+	dailyResetSeconds := int(DefaultMaxDailyResetWait/time.Second) + 1
+	rl.WithRateLimitHeaders(&http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header: http.Header{
+			"Retry-After": {"1"},
+			"Ratelimit": {
+				fmt.Sprintf(`"Free";r=59;t=1, "daily";r=0;t=%d`, dailyResetSeconds),
+			},
+			"Ratelimit-Policy": {`"Free";q=60;w=60, "daily";q=5000;w=86400`},
+		},
+	})
+
+	rl.mu.RLock()
+	pause := rl.backoffUntil.Sub(time.Now())
+	rl.mu.RUnlock()
+	assert.Greater(t, pause, DefaultMaxBackoff)
+	assert.LessOrEqual(t, pause, DefaultMaxDailyResetWait)
+	assert.Equal(t, 0, rl.DailyRemaining())
+	assert.Equal(t, 5000, rl.DailyLimit())
+	assert.Equal(t, uint64(1), rl.GetMetrics().RateLimited)
+}
+
 func TestRateLimiterWaitsForDailyQuotaReset(t *testing.T) {
 	tests := []struct {
 		name               string

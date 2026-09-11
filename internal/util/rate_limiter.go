@@ -389,7 +389,15 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 		})
 	}
 
-	// Retry-After takes highest priority (server explicitly telling us to wait).
+	// An exhausted daily quota takes precedence over a generic Retry-After so
+	// the longer authoritative daily reset pause is preserved.
+	ietfRemaining, ietfReset := r.parseIETFRateLimit(resp.Header)
+	if resp.StatusCode == http.StatusTooManyRequests && hasExhaustedDailyIETFQuota(ietfRemaining, ietfReset) {
+		r.applyIETFHeaders(ietfRemaining, ietfReset, resp.Header)
+		return
+	}
+
+	// Retry-After takes priority when no exhausted daily quota overrides it.
 	if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
 		if duration, err := ParseRetryAfter(retryAfter); err == nil && duration > 0 {
 			logFields := map[string]interface{}{"retryAfter": retryAfter, "status": resp.Status}
@@ -403,7 +411,6 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 	}
 
 	// Try IETF RateLimit headers first (e.g. "Free";r=8;t=42, "daily";r=4231;t=51234).
-	ietfRemaining, ietfReset := r.parseIETFRateLimit(resp.Header)
 	if resp.StatusCode == http.StatusTooManyRequests {
 		// On a 429, only an exhausted quota with a usable reset is authoritative.
 		// Other IETF or legacy headers may be partial, malformed, or merely
@@ -443,6 +450,11 @@ func hasExhaustedIETFQuota(remaining, reset map[string]int) bool {
 		}
 	}
 	return false
+}
+
+func hasExhaustedDailyIETFQuota(remaining, reset map[string]int) bool {
+	dailyName := findBucketName(remaining, "daily")
+	return dailyName != "" && remaining[dailyName] <= 0 && reset[dailyName] > 0
 }
 
 func hasExhaustedLegacyQuota(h http.Header) bool {
