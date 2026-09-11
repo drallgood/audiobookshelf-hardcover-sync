@@ -833,6 +833,7 @@ func TestRateLimiterHonorsAuthoritativeTooManyRequestsGuidance(t *testing.T) {
 			})
 
 			assert.Equal(t, tt.expectedRate, rl.GetRate())
+			assert.Equal(t, uint64(1), rl.GetMetrics().RateLimited)
 			rl.mu.RLock()
 			assert.Greater(t, rl.checkBackoff(), time.Duration(0))
 			rl.mu.RUnlock()

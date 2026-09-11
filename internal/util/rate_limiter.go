@@ -398,6 +398,9 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		r.metrics.RateLimited++
+	}
 
 	// Collect rate-limit headers for debug logging.
 	headers := make(map[string]string)
@@ -451,7 +454,6 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 		r.setRate(backoff)
 		r.setBackoffUntil(time.Now().Add(backoff))
 		r.drainBucket()
-		r.metrics.RateLimited++
 		r.logger.Warn("Rate limit response without reset guidance", map[string]interface{}{
 			"component":     "rate_limiter",
 			"backoff":       backoff.String(),
