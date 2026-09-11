@@ -49,10 +49,9 @@ type RateLimiter struct {
 	last            time.Time
 	rate            time.Duration
 	minRate         time.Duration
-	maxRate         time.Duration
+	maxBackoff      time.Duration
 	tokens          int
 	maxTokens       int
-	lastRateDrop    time.Time
 	backoffUntil    time.Time
 	backoffFactor   float64
 	jitterFactor    float64
@@ -126,10 +125,9 @@ func NewRateLimiter(rate time.Duration, burst, maxConcurrent int, log *logger.Lo
 		last:            now,
 		rate:            rate,
 		minRate:         rate,
-		maxRate:         DefaultMaxBackoff, // Maximum time between requests
+		maxBackoff:      DefaultMaxBackoff, // Maximum backoff and pacing interval
 		tokens:          burst,
 		maxTokens:       burst,
-		lastRateDrop:    now,
 		backoffUntil:    time.Time{},
 		backoffFactor:   DefaultBackoffFactor,
 		jitterFactor:    DefaultJitterFactor,
@@ -144,7 +142,6 @@ func NewRateLimiter(rate time.Duration, burst, maxConcurrent int, log *logger.Lo
 	// Each token is represented by sending a value to the channel.
 	// To acquire a token, receive from the channel.
 	// To release a token, send to the channel.
-	rl.semaphore = make(chan struct{}, rl.maxConcurrent)
 	for i := 0; i < int(rl.maxConcurrent); i++ {
 		rl.semaphore <- struct{}{}
 	}
@@ -268,8 +265,6 @@ func (r *RateLimiter) ResetRate() {
 	r.rate = r.minRate
 	// Reset the backoff period
 	r.backoffUntil = time.Time{}
-	// Reset the last rate drop time
-	r.lastRateDrop = time.Now()
 	// Reset the backoff factor to the default
 	r.backoffFactor = DefaultBackoffFactor
 	// Reset the jitter factor to the default
@@ -807,8 +802,8 @@ func (r *RateLimiter) exponentialBackoff(baseBackoff time.Duration) time.Duratio
 	if backoff < r.minRate {
 		backoff = r.minRate
 	}
-	if backoff > r.maxRate {
-		backoff = r.maxRate
+	if backoff > r.maxBackoff {
+		backoff = r.maxBackoff
 	}
 	return backoff
 }
@@ -818,8 +813,8 @@ func (r *RateLimiter) applyRetryAfter(delay time.Duration) time.Duration {
 	if delay <= 0 {
 		return 0
 	}
-	if delay > r.maxRate {
-		delay = r.maxRate
+	if delay > r.maxBackoff {
+		delay = r.maxBackoff
 	}
 	until := time.Now().Add(delay)
 	if until.After(r.backoffUntil) {
@@ -836,8 +831,8 @@ func (r *RateLimiter) setRate(rate time.Duration) {
 	if rate < r.minRate {
 		rate = r.minRate
 	}
-	if rate > r.maxRate {
-		rate = r.maxRate
+	if rate > r.maxBackoff {
+		rate = r.maxBackoff
 	}
 	if rate == r.rate {
 		return
@@ -852,7 +847,6 @@ func (r *RateLimiter) setRate(rate time.Duration) {
 		})
 	}
 	r.rate = rate
-	r.lastRateDrop = time.Now()
 	r.notifyScheduleChanged()
 }
 
