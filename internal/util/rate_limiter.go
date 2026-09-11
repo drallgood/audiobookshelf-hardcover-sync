@@ -46,17 +46,17 @@ var (
 
 // RateLimiter implements a token bucket rate limiter with dynamic rate adjustment
 type RateLimiter struct {
-	mu             sync.RWMutex
-	last           time.Time
-	rate           time.Duration
-	minRate        time.Duration
-	maxRate        time.Duration
-	tokens         int
-	maxTokens      int
-	lastRateDrop   time.Time
-	backoffUntil   time.Time
-	backoffFactor  float64
-	jitterFactor   float64
+	mu            sync.RWMutex
+	last          time.Time
+	rate          time.Duration
+	minRate       time.Duration
+	maxRate       time.Duration
+	tokens        int
+	maxTokens     int
+	lastRateDrop  time.Time
+	backoffUntil  time.Time
+	backoffFactor float64
+	jitterFactor  float64
 
 	// Daily limit tracking from IETF RateLimit headers
 	dailyRemaining int
@@ -64,8 +64,8 @@ type RateLimiter struct {
 	dailyResetSec  int
 
 	// Concurrency control
-	maxConcurrent  int32         // Maximum number of concurrent requests
-	semaphore      chan struct{} // Buffered channel used as a semaphore
+	maxConcurrent int32         // Maximum number of concurrent admission waiters
+	semaphore     chan struct{} // Buffered channel used as a semaphore
 
 	// Metrics
 	metrics Metrics
@@ -126,7 +126,7 @@ func NewRateLimiter(rate time.Duration, burst, maxConcurrent int, log *logger.Lo
 		last:          now,
 		rate:          rate,
 		minRate:       rate,
-		maxRate:       10 * time.Minute, // Maximum time between requests
+		maxRate:       DefaultMaxBackoff, // Maximum time between requests
 		tokens:        burst,
 		maxTokens:     burst,
 		lastRateDrop:  now,
@@ -153,49 +153,11 @@ func NewRateLimiter(rate time.Duration, burst, maxConcurrent int, log *logger.Lo
 
 // Wait blocks until a token is available or the context is cancelled
 func (r *RateLimiter) Wait(ctx context.Context) error {
-	// Check if we're in a backoff period first
-	r.mu.RLock()
-	backoffRemaining := r.checkBackoff()
-	r.mu.RUnlock()
-
-	if backoffRemaining > 0 {
-		r.logger.Debug("Rate limiter in backoff period", map[string]interface{}{
-			"backoff_remaining": backoffRemaining.String(),
-		})
-
-		// If we have a context with deadline, check if we can wait that long
-		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < backoffRemaining {
-			r.logger.Debug("Context deadline too soon for backoff", map[string]interface{}{
-				"deadline":           deadline,
-				"backoff_remaining": backoffRemaining,
-			})
-			// Return the context error to ensure proper error wrapping
-			if ctx.Err() == nil {
-				return context.DeadlineExceeded
-			}
-			return ctx.Err()
-		}
-
-		// Wait for the backoff period or context cancellation
-		timer := time.NewTimer(backoffRemaining)
-		defer timer.Stop()
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timer.C:
-			// Continue with the request after backoff
-		}
-	}
-
-	// First handle concurrency limiting if enabled
+	// Limit the number of goroutines concurrently waiting for admission.
 	if r.maxConcurrent > 0 {
-		// Try to acquire a token from the semaphore channel (will block if empty)
 		select {
 		case <-r.semaphore:
-			// Successfully acquired a token, make sure to release it when done
 			defer func() {
-				// Release the token by sending it back to the channel
 				r.semaphore <- struct{}{}
 			}()
 		case <-ctx.Done():
@@ -203,51 +165,43 @@ func (r *RateLimiter) Wait(ctx context.Context) error {
 		}
 	}
 
-	// Now handle rate limiting
 	r.mu.Lock()
-
-	// Update metrics
 	atomic.AddUint64(&r.metrics.Requests, 1)
-
 	now := time.Now()
-
-	// Calculate time since last request
-	timeSinceLast := now.Sub(r.last)
-
-	// If we haven't waited long enough since the last request, wait the remaining time
-	if timeSinceLast < r.rate {
-		waitTime := r.rate - timeSinceLast
-		
-		// Update the last request time before releasing the lock
-		// This ensures proper rate limiting even if we get preempted
-		r.last = r.last.Add(waitTime)
-
-		// Release the lock while we wait
-		r.mu.Unlock()
-
-		// Wait for the required time or context cancellation
-		timer := time.NewTimer(waitTime)
-		defer timer.Stop()
-
-		select {
-		case <-ctx.Done():
-			// If context is canceled, we need to re-acquire the lock to update state
-			r.mu.Lock()
-			// Update the last request time to now to prevent other goroutines from
-			// immediately proceeding if they were waiting on this one
-			r.last = time.Now()
-			r.mu.Unlock()
-			return ctx.Err()
-		case <-timer.C:
-			// No need to update state here since we already did it before waiting
-			return nil
-		}
+	readyAt := now
+	if r.backoffUntil.After(readyAt) {
+		readyAt = r.backoffUntil
+		r.logger.Debug("Rate limiter in backoff period", map[string]interface{}{
+			"backoff_remaining": readyAt.Sub(now).String(),
+		})
+	}
+	if nextRequestAt := r.last.Add(r.rate); nextRequestAt.After(readyAt) {
+		readyAt = nextRequestAt
 	}
 
-	// If we get here, we don't need to wait
-	r.last = now
+	// Reserve the request's admission time while holding the lock. Every
+	// concurrent waiter therefore receives a distinct slot at least rate apart.
+	r.last = readyAt
 	r.mu.Unlock()
-	return nil
+
+	waitTime := time.Until(readyAt)
+	if waitTime <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(waitTime)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		// Only roll back the reservation when no later waiter depends on it.
+		r.mu.Lock()
+		if r.last.Equal(readyAt) {
+			r.last = time.Now()
+		}
+		r.mu.Unlock()
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // OnRateLimit is called when a rate limit is encountered
@@ -264,41 +218,23 @@ func (r *RateLimiter) OnRateLimit(retryAfter time.Duration) time.Duration {
 		r.metrics.RetryAfter++
 	}
 
-	// If we have a retry-after header, use that as the base for backoff
-	baseBackoff := r.rate
+	// Retry-After is an authoritative server delay. Honor it directly rather
+	// than multiplying it again as an exponential backoff input.
 	if retryAfter > 0 {
-		baseBackoff = retryAfter
-		// Add a small buffer to the retry-after to be extra safe
-		baseBackoff = time.Duration(float64(baseBackoff) * 1.2)
+		backoff := r.applyRetryAfter(retryAfter)
+		r.logger.Warn("Rate limit backoff", map[string]interface{}{
+			"retryAfter":   retryAfter.String(),
+			"backoffUntil": r.backoffUntil.Format(time.RFC3339),
+		})
+		return backoff
 	}
 
-	// Calculate exponential backoff with the configured factor
-	backoff := time.Duration(float64(baseBackoff) * r.backoffFactor)
-
-	// Add jitter to prevent thundering herd (using the full jitter range)
-	jitter := time.Duration(rand.Float64() * float64(backoff) * r.jitterFactor)
-	if rand.Float64() < 0.5 {
-		backoff -= jitter
-	} else {
-		backoff += jitter
-	}
-
-	// Ensure backoff is within bounds
-	if backoff < r.minRate {
-		backoff = r.minRate
-	}
-	if backoff > r.maxRate {
-		backoff = r.maxRate
-	}
-
-	// Update rate to the new backoff value
-	r.rate = backoff
-
-	// Reset tokens to prevent burst after backoff
-	r.tokens = 1
-
-	// Set backoff until time
+	// Without server guidance, use exponential backoff. A subsequent healthy
+	// rate-limit response restores the configured rate.
+	backoff := r.exponentialBackoff(r.rate)
+	r.setRate(backoff)
 	r.backoffUntil = now.Add(backoff)
+	r.drainBucket()
 
 	// Log the rate limit event with detailed information
 	r.logger.Warn("Rate limit backoff", map[string]interface{}{
@@ -312,15 +248,13 @@ func (r *RateLimiter) OnRateLimit(retryAfter time.Duration) time.Duration {
 	return backoff
 }
 
-// ResetRate resets the rate limiter to its default rate and backoff factor
+// ResetRate restores the configured rate and default backoff settings.
 func (r *RateLimiter) ResetRate() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Reset the rate to the default rate
-	r.rate = DefaultRate
-	// Also update minRate to match the default rate
-	r.minRate = DefaultRate
+	// Reset to the rate configured for this limiter, not the package default.
+	r.rate = r.minRate
 	// Reset the backoff period
 	r.backoffUntil = time.Time{}
 	// Reset the last rate drop time
@@ -378,8 +312,7 @@ func (r *RateLimiter) checkBackoff() time.Duration {
 	}
 
 	now := time.Now()
-	if now.After(r.backoffUntil) {
-		r.backoffUntil = time.Time{}
+	if !now.Before(r.backoffUntil) {
 		return 0
 	}
 
@@ -486,7 +419,7 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 				logFields["url"] = resp.Request.URL.String()
 			}
 			r.logger.Warn("Rate limit error with retry-after header", logFields)
-			r.applyBackoff(duration)
+			r.applyRetryAfter(duration)
 			r.drainBucket()
 			return
 		}
@@ -495,6 +428,25 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 	// Try IETF RateLimit headers first (e.g. "Free";r=8;t=42, "daily";r=4231;t=51234).
 	if iefRemaining, iefReset := r.parseIETFRateLimit(resp.Header); len(iefRemaining) > 0 {
 		r.applyIETFHeaders(iefRemaining, iefReset, resp.Header)
+		return
+	}
+
+	// A bare 429 has no server guidance to apply, so preserve the current rate
+	// and build exponential backoff from it. Processing an empty legacy header
+	// set first would reset the rate and prevent repeated 429s from escalating.
+	if resp.StatusCode == http.StatusTooManyRequests &&
+		resp.Header.Get("X-RateLimit-Remaining") == "" &&
+		resp.Header.Get("X-RateLimit-Reset") == "" {
+		backoff := r.exponentialBackoff(r.rate)
+		r.setRate(backoff)
+		r.backoffUntil = time.Now().Add(backoff)
+		r.drainBucket()
+		r.metrics.RateLimited++
+		r.logger.Warn("Rate limit response without reset guidance", map[string]interface{}{
+			"component":     "rate_limiter",
+			"backoff":       backoff.String(),
+			"backoff_until": r.backoffUntil.Format(time.RFC3339),
+		})
 		return
 	}
 
@@ -529,15 +481,16 @@ func (r *RateLimiter) parseIETFRateLimit(h http.Header) (remaining map[string]in
 }
 
 // parseIETFRateLimitPolicy parses the IETF RateLimit-Policy header value.
-// Returns maps from bucket name -> quota/burst.
-func (r *RateLimiter) parseIETFRateLimitPolicy(h http.Header) (quota map[string]int, burst map[string]int) {
+// Returns maps from bucket name to quota, burst allowance, and window seconds.
+func (r *RateLimiter) parseIETFRateLimitPolicy(h http.Header) (quota, burst, window map[string]int) {
 	val := h.Get("RateLimit-Policy")
 	if val == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	quota = make(map[string]int)
 	burst = make(map[string]int)
+	window = make(map[string]int)
 
 	for _, bucket := range rateLimitBuckets(val) {
 		name, params := parseRateLimitBucket(bucket)
@@ -550,8 +503,11 @@ func (r *RateLimiter) parseIETFRateLimitPolicy(h http.Header) (quota map[string]
 		if v, ok := params["burst"]; ok {
 			burst[name] = v
 		}
+		if v, ok := params["w"]; ok {
+			window[name] = v
+		}
 	}
-	return quota, burst
+	return quota, burst, window
 }
 
 // rateLimitBuckets splits a raw IETF RateLimit header into individual bucket entries.
@@ -617,7 +573,8 @@ func parseRateLimitBucket(bucket string) (string, map[string]int) {
 
 // applyIETFHeaders applies rate limit info parsed from IETF-format headers.
 func (r *RateLimiter) applyIETFHeaders(remaining, reset map[string]int, h http.Header) {
-	quota, burst := r.parseIETFRateLimitPolicy(h)
+	quota, burst, window := r.parseIETFRateLimitPolicy(h)
+	desiredRate := r.minRate
 
 	// Update daily tracking.
 	dailyName := findBucketName(remaining, "daily")
@@ -630,18 +587,32 @@ func (r *RateLimiter) applyIETFHeaders(remaining, reset map[string]int, h http.H
 			r.dailyResetSec = t
 		}
 
-		if r.dailyRemaining > 0 && r.dailyLimit > 0 {
+		if r.dailyRemaining <= 0 && reset[dailyName] > 0 {
+			pause := time.Duration(reset[dailyName]) * time.Second
+			r.logger.Warn("Daily rate limit exhausted, pausing", map[string]interface{}{
+				"component":       "rate_limiter",
+				"daily_remaining": r.dailyRemaining,
+				"daily_limit":     r.dailyLimit,
+				"pause":           pause.String(),
+			})
+			r.applyRetryAfter(pause)
+			r.drainBucket()
+		} else if r.dailyRemaining > 0 && r.dailyLimit > 0 {
 			pct := float64(r.dailyRemaining) / float64(r.dailyLimit) * 100
-			if pct < 1.0 && time.Now().After(r.backoffUntil) {
-				backoff := max(DefaultRate*10, r.rate)
+			if pct < 1.0 {
+				recoveryWindow := time.Duration(reset[dailyName]) * time.Second
+				if recoveryWindow > 0 {
+					desiredRate = max(desiredRate, recoveryWindow/time.Duration(r.dailyRemaining))
+				} else {
+					desiredRate = max(desiredRate, r.minRate*2)
+				}
 				r.logger.Warn("Daily rate limit exhausted, slowing down", map[string]interface{}{
 					"component":       "rate_limiter",
 					"daily_remaining": r.dailyRemaining,
 					"daily_limit":     r.dailyLimit,
 					"remaining_pct":   fmt.Sprintf("%.1f%%", pct),
-					"new_rate":        backoff.String(),
+					"new_rate":        desiredRate.String(),
 				})
-				r.applyBackoff(backoff)
 			} else if pct < 5.0 {
 				r.logger.Warn("Daily rate limit approaching, being conservative", map[string]interface{}{
 					"component":       "rate_limiter",
@@ -653,10 +624,15 @@ func (r *RateLimiter) applyIETFHeaders(remaining, reset map[string]int, h http.H
 		}
 	}
 
-	// Apply per-minute rate limiting.
+	// Apply per-window rate limiting. The policy quota/window describes the
+	// sustainable request interval; burst is not a requests-per-minute quota.
 	for name, rem := range remaining {
 		if name == dailyName {
 			continue
+		}
+		if q := quota[name]; q > 0 && window[name] > 0 {
+			sustainableRate := time.Duration(window[name]) * time.Second / time.Duration(q)
+			desiredRate = max(desiredRate, sustainableRate)
 		}
 		b := 0
 		if v, ok := burst[name]; ok {
@@ -664,26 +640,29 @@ func (r *RateLimiter) applyIETFHeaders(remaining, reset map[string]int, h http.H
 		}
 		if rem <= 1 {
 			resetSec := reset[name]
-			var backoff time.Duration
+			var pause time.Duration
 			if resetSec > 0 {
-				backoff = time.Duration(float64(resetSec)*1.2) * time.Second
-			} else if b > 0 {
-				backoff = time.Duration(60/b) * time.Second
-			} else {
-				backoff = r.rate * 2
+				pause = time.Duration(float64(resetSec)*1.2) * time.Second
 			}
-			r.logger.Warn("Per-minute rate limit nearly exhausted, backing off", map[string]interface{}{
-				"component":   "rate_limiter",
-				"bucket":      name,
-				"remaining":   rem,
-				"burst":       b,
-				"reset_in_s":  reset[name],
-				"backoff":     backoff.String(),
-			})
-			r.applyBackoff(backoff)
-			r.drainBucket()
+			if pause > 0 || desiredRate > r.minRate {
+				r.logger.Info("Rate limit window nearly exhausted, slowing down", map[string]interface{}{
+					"component":  "rate_limiter",
+					"bucket":     name,
+					"remaining":  rem,
+					"burst":      b,
+					"reset_in_s": reset[name],
+					"pause":      pause.String(),
+					"new_rate":   desiredRate.String(),
+				})
+			}
+			if pause > 0 {
+				r.applyRetryAfter(pause)
+				r.drainBucket()
+			}
 		}
 	}
+
+	r.setRate(desiredRate)
 }
 
 // findBucketName returns the key in the map whose lowercase form matches target.
@@ -701,6 +680,7 @@ func (r *RateLimiter) applyLegacyHeaders(h http.Header) {
 	limit := h.Get("X-RateLimit-Limit")
 	remaining := h.Get("X-RateLimit-Remaining")
 	reset := h.Get("X-RateLimit-Reset")
+	desiredRate := r.minRate
 
 	if remaining != "" {
 		rem, err := strconv.Atoi(remaining)
@@ -711,43 +691,49 @@ func (r *RateLimiter) applyLegacyHeaders(h http.Header) {
 			}
 			if totalLimit > 0 {
 				remainingPct := (float64(rem) / float64(totalLimit)) * 100
-				if remainingPct < 20.0 && time.Now().After(r.backoffUntil) {
-					backoff := time.Duration(float64(r.rate) * (1.0 + (100.0-remainingPct)/10.0))
-					r.logger.Warn("Approaching rate limit (legacy headers), being more conservative", map[string]interface{}{
+				if rem > 0 && remainingPct < 20.0 {
+					if resetAt, ok := parseUnixReset(reset); ok {
+						desiredRate = max(desiredRate, time.Until(resetAt)/time.Duration(rem))
+					} else {
+						desiredRate = max(desiredRate, r.minRate*2)
+					}
+					r.logger.Info("Approaching rate limit (legacy headers), being more conservative", map[string]interface{}{
 						"component":     "rate_limiter",
 						"remaining":     remaining,
 						"limit":         limit,
 						"remaining_pct": remainingPct,
+						"new_rate":      desiredRate.String(),
 					})
-					r.applyBackoff(backoff)
 				}
 			}
-			if rem <= 1 {
-				var backoff time.Duration
-				if reset != "" {
-					if ts, err := strconv.ParseInt(reset, 10, 64); err == nil {
-						backoff = time.Duration(float64(time.Until(time.Unix(ts, 0))) * 1.2)
-					}
+			if rem <= 0 {
+				pause := time.Duration(0)
+				if resetAt, ok := parseUnixReset(reset); ok {
+					pause = time.Until(resetAt)
 				}
-				if backoff <= 0 {
-					backoff = r.rate * 2
+				if pause <= 0 {
+					desiredRate = max(desiredRate, r.minRate*2)
 				}
 				r.logger.Warn("Rate limit reached (legacy headers), backing off", map[string]interface{}{
 					"component": "rate_limiter",
-					"backoff":   backoff.String(),
+					"backoff":   pause.String(),
+					"new_rate":  desiredRate.String(),
 				})
-				r.applyBackoff(backoff)
-				r.drainBucket()
+				if pause > 0 {
+					r.applyRetryAfter(pause)
+					r.drainBucket()
+				}
 			}
 		}
 	}
+	r.setRate(desiredRate)
 
 	if reset != "" {
 		ts, err := strconv.ParseInt(reset, 10, 64)
 		if err == nil {
 			resetTime := time.Unix(ts, 0)
 			if resetTime.After(time.Now()) {
-				r.logger.Info("Rate limit will reset, scheduling next request", map[string]interface{}{
+				r.logger.Debug("Rate limit will reset, scheduling next request", map[string]interface{}{
 					"component": "rate_limiter",
 					"reset_in":  time.Until(resetTime).String(),
 				})
@@ -756,8 +742,20 @@ func (r *RateLimiter) applyLegacyHeaders(h http.Header) {
 	}
 }
 
-// applyBackoff adjusts the rate and sets a backoff interval.
-func (r *RateLimiter) applyBackoff(baseBackoff time.Duration) {
+func parseUnixReset(value string) (time.Time, bool) {
+	if value == "" {
+		return time.Time{}, false
+	}
+	ts, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	resetAt := time.Unix(ts, 0)
+	return resetAt, resetAt.After(time.Now())
+}
+
+// exponentialBackoff calculates a bounded client-selected retry delay.
+func (r *RateLimiter) exponentialBackoff(baseBackoff time.Duration) time.Duration {
 	backoff := time.Duration(float64(baseBackoff) * r.backoffFactor)
 	jitter := time.Duration(rand.Float64() * float64(backoff) * r.jitterFactor)
 	if rand.Float64() < 0.5 {
@@ -771,8 +769,49 @@ func (r *RateLimiter) applyBackoff(baseBackoff time.Duration) {
 	if backoff > r.maxRate {
 		backoff = r.maxRate
 	}
-	r.rate = backoff
-	r.backoffUntil = time.Now().Add(backoff)
+	return backoff
+}
+
+// applyRetryAfter installs an exact, temporary server-directed pause.
+func (r *RateLimiter) applyRetryAfter(delay time.Duration) time.Duration {
+	if delay <= 0 {
+		return 0
+	}
+	if delay > r.maxRate {
+		delay = r.maxRate
+	}
+	until := time.Now().Add(delay)
+	if until.After(r.backoffUntil) {
+		r.backoffUntil = until
+		r.metrics.BackoffEvents++
+	}
+	return delay
+}
+
+// setRate updates the steady request interval. Header processing calls this on
+// every response, so authoritative healthy quota data restores the configured
+// rate after a temporary slowdown.
+func (r *RateLimiter) setRate(rate time.Duration) {
+	if rate < r.minRate {
+		rate = r.minRate
+	}
+	if rate > r.maxRate {
+		rate = r.maxRate
+	}
+	if rate == r.rate {
+		return
+	}
+	if rate > r.rate {
+		r.metrics.BackoffEvents++
+	} else {
+		r.logger.Info("Rate limiter pacing recovered", map[string]interface{}{
+			"component":     "rate_limiter",
+			"previous_rate": r.rate.String(),
+			"new_rate":      rate.String(),
+		})
+	}
+	r.rate = rate
+	r.lastRateDrop = time.Now()
 }
 
 // drainBucket empties the token bucket to prevent burst after backoff.
