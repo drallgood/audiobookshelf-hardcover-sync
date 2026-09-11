@@ -370,9 +370,6 @@ func main() {
 				})
 			} else {
 				for _, profile := range profiles {
-					log.Debug("Starting initial sync for profile", map[string]interface{}{
-						"profile_id": profile.ID,
-					})
 					go func(profileID string) {
 						log.Debug("Starting initial sync for profile", map[string]interface{}{
 							"profile_id": profileID,
