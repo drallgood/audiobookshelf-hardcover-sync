@@ -241,29 +241,6 @@ func TestRateLimiter_SetJitterFactor(t *testing.T) {
 	rl.mu.RUnlock()
 }
 
-func TestRateLimiter_CheckBackoff(t *testing.T) {
-	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
-	defer rl.ResetRate()
-
-	// No backoff initially
-	rl.mu.RLock()
-	remaining := rl.checkBackoff()
-	rl.mu.RUnlock()
-	assert.Equal(t, time.Duration(0), remaining)
-
-	// Set a backoff
-	rl.mu.Lock()
-	rl.backoffUntil = time.Now().Add(100 * time.Millisecond)
-	rl.mu.Unlock()
-
-	// Should return remaining backoff time
-	rl.mu.RLock()
-	remaining = rl.checkBackoff()
-	rl.mu.RUnlock()
-	assert.Greater(t, remaining, time.Duration(0))
-	assert.LessOrEqual(t, remaining, 100*time.Millisecond)
-}
-
 func TestRateLimiter_CalculateJitter(t *testing.T) {
 	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
 	defer rl.ResetRate()
@@ -439,7 +416,7 @@ func TestRateLimiterIETFZeroResetDoesNotCreatePermanentBackoff(t *testing.T) {
 	assert.Equal(t, configuredRate, rl.GetRate())
 	rl.mu.RLock()
 	defer rl.mu.RUnlock()
-	assert.Zero(t, rl.checkBackoff())
+	assert.Zero(t, rl.backoffUntil)
 }
 
 func TestRateLimiterCapsServerPauseAtDefaultMaxBackoff(t *testing.T) {
@@ -453,7 +430,7 @@ func TestRateLimiterCapsServerPauseAtDefaultMaxBackoff(t *testing.T) {
 	}})
 
 	rl.mu.RLock()
-	pause := rl.checkBackoff()
+	pause := rl.backoffUntil.Sub(time.Now())
 	rl.mu.RUnlock()
 
 	assert.Greater(t, pause, DefaultMaxBackoff-time.Second)
@@ -487,7 +464,7 @@ func TestRateLimiterWaitsForDailyQuotaReset(t *testing.T) {
 			}})
 
 			rl.mu.RLock()
-			pause := rl.checkBackoff()
+			pause := rl.backoffUntil.Sub(time.Now())
 			rl.mu.RUnlock()
 
 			assert.Greater(t, pause, tt.expectedPause-time.Second)
@@ -516,7 +493,7 @@ func TestRateLimiterFallsBackForBareTooManyRequests(t *testing.T) {
 	assert.Equal(t, 200*time.Millisecond, rl.GetRate())
 	assert.Equal(t, uint64(1), rl.GetMetrics().RateLimited)
 	rl.mu.RLock()
-	assert.Greater(t, rl.checkBackoff(), time.Duration(0))
+	assert.True(t, rl.backoffUntil.After(time.Now()))
 	rl.mu.RUnlock()
 
 	rl.WithRateLimitHeaders(&http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{}})
@@ -609,7 +586,7 @@ func TestRateLimiterFallsBackForUnguidedTooManyRequests(t *testing.T) {
 			assert.Equal(t, 200*time.Millisecond, rl.GetRate())
 			assert.Equal(t, uint64(1), rl.GetMetrics().RateLimited)
 			rl.mu.RLock()
-			assert.Greater(t, rl.checkBackoff(), time.Duration(0))
+			assert.True(t, rl.backoffUntil.After(time.Now()))
 			rl.mu.RUnlock()
 		})
 	}
@@ -661,7 +638,7 @@ func TestRateLimiterHonorsAuthoritativeTooManyRequestsGuidance(t *testing.T) {
 			assert.Equal(t, tt.expectedRate, rl.GetRate())
 			assert.Equal(t, uint64(1), rl.GetMetrics().RateLimited)
 			rl.mu.RLock()
-			assert.Greater(t, rl.checkBackoff(), time.Duration(0))
+			assert.True(t, rl.backoffUntil.After(time.Now()))
 			rl.mu.RUnlock()
 		})
 	}

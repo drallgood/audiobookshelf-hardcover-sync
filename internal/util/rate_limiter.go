@@ -279,21 +279,6 @@ func (r *RateLimiter) SetJitterFactor(factor float64) {
 	r.jitterFactor = math.Max(0, math.Min(1, factor)) // Clamp between 0 and 1
 }
 
-// checkBackoff checks if we're in a backoff period and returns the remaining duration
-// Note: Caller must hold at least a read lock on r.mu
-func (r *RateLimiter) checkBackoff() time.Duration {
-	if r.backoffUntil.IsZero() {
-		return 0
-	}
-
-	now := time.Now()
-	if !now.Before(r.backoffUntil) {
-		return 0
-	}
-
-	return r.backoffUntil.Sub(now)
-}
-
 // calculateJitter calculates a jitter duration based on the current rate
 func (r *RateLimiter) calculateJitter() time.Duration {
 	return time.Duration((rand.Float64()*2 - 1) * float64(r.rate) * r.jitterFactor)
