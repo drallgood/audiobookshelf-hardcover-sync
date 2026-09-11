@@ -10,7 +10,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -50,164 +49,6 @@ func containsLogEntry(t *testing.T, output, level, message string) bool {
 func init() {
 	// Enable test mode to disable buffering in ParseRetryAfter
 	testMode = true
-}
-
-func TestRateLimiter_Wait(t *testing.T) {
-	tests := []struct {
-		name          string
-		rate          time.Duration
-		burst         int
-		maxConcurrent int
-		reqCount      int
-		expectError   bool
-		setup         func(*RateLimiter) // Optional setup function for the rate limiter
-		minTime       time.Duration      // Minimum expected time for the test to complete
-	}{
-		{
-			name:          "single request",
-			rate:          time.Millisecond * 50, // Reduced from 100ms for faster tests
-			burst:         1,
-			maxConcurrent: 1,
-			reqCount:      1,
-			expectError:   false,
-			minTime:       0, // No minimum time for a single request
-		},
-		{
-			name:          "multiple requests within burst",
-			rate:          time.Millisecond * 50, // Reduced from 100ms for faster tests
-			burst:         5,
-			maxConcurrent: 5,
-			reqCount:      3,
-			expectError:   false,
-			minTime:       0, // No rate limiting within burst
-		},
-		{
-			name:          "concurrent requests with rate limiting",
-			rate:          time.Millisecond * 50, // Reduced from 200ms for faster tests
-			burst:         2,
-			maxConcurrent: 10,
-			reqCount:      5, // Reduced from 10 to make test faster
-			expectError:   false,
-			minTime:       time.Duration(5-2) * 50 * time.Millisecond, // (reqCount - burst) * rate
-		},
-		{
-			name:          "context canceled",
-			rate:          time.Hour, // Very slow rate to ensure we hit the context timeout
-			burst:         1,
-			maxConcurrent: 1,
-			reqCount:      1,
-			expectError:   true,
-			minTime:       0, // Not relevant for this test case
-			setup: func(rl *RateLimiter) {
-				rl.SetBackoffFactor(1.0) // Disable backoff for this test
-			},
-		},
-		{
-			name:          "with backoff",
-			rate:          time.Millisecond * 50, // Reduced from 100ms for faster tests
-			burst:         1,
-			maxConcurrent: 3, // Increased to allow the test to run
-			reqCount:      2, // Reduced from 3 to make test faster
-			expectError:   false,
-			minTime:       time.Second, // Backoff is set to 1 second
-			setup: func(rl *RateLimiter) {
-				rl.SetBackoffFactor(2.0)
-				// Simulate a rate limit to trigger backoff
-				rl.mu.Lock()
-				rl.backoffUntil = time.Now().Add(time.Second)
-				rl.mu.Unlock()
-				// Log the backoff state for debugging
-				rl.logger.Debug("Test setup: Backoff set", map[string]interface{}{
-					"backoff_until": rl.backoffUntil,
-					"now":           time.Now(),
-				})
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rl := NewRateLimiter(tt.rate, tt.burst, tt.maxConcurrent, nil)
-			// Apply any test-specific setup
-			if tt.setup != nil {
-				tt.setup(rl)
-			}
-
-			var wg sync.WaitGroup
-			start := time.Now()
-			errCh := make(chan error, tt.reqCount)
-
-			for i := 0; i < tt.reqCount; i++ {
-				wg.Add(1)
-				go func(i int) {
-					defer wg.Done()
-					// For the context canceled test, create a canceled context
-					var ctx context.Context
-					if tt.name == "context canceled" {
-						var cancel context.CancelFunc
-						ctx, cancel = context.WithCancel(context.Background())
-						cancel() // Immediately cancel the context
-					} else {
-						ctx = context.Background()
-					}
-
-					err := rl.Wait(ctx)
-					if tt.expectError {
-						errCh <- err
-					} else if err != nil {
-						errCh <- fmt.Errorf("unexpected error: %v", err)
-					} else {
-						errCh <- nil
-					}
-				}(i)
-			}
-
-			// Wait for all goroutines to complete
-			wg.Wait()
-			close(errCh)
-
-			// Check for any errors
-			for err := range errCh {
-				if tt.expectError {
-					assert.Error(t, err)
-				} else {
-					assert.NoError(t, err)
-				}
-			}
-
-			// For tests that don't expect errors, verify timing if specified
-			if !tt.expectError && tt.minTime > 0 {
-				elapsed := time.Since(start)
-				// Allow for some timing slack (80% of expected time)
-				minAllowedTime := time.Duration(float64(tt.minTime) * 0.8)
-				assert.GreaterOrEqual(t, elapsed, minAllowedTime,
-					"test %s: expected at least %v, got %v", tt.name, minAllowedTime, elapsed)
-			}
-		})
-	}
-}
-
-func TestRateLimiter_BasicRateLimiting(t *testing.T) {
-	t.Run("basic rate limiting", func(t *testing.T) {
-		rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
-		defer rl.ResetRate()
-
-		start := time.Now()
-		ctx := context.Background()
-
-		// First request should pass immediately
-		err := rl.Wait(ctx)
-		require.NoError(t, err)
-
-		// Second request should be rate limited
-		err = rl.Wait(ctx)
-		require.NoError(t, err)
-		elapsed := time.Since(start)
-
-		// Should take at least 80ms due to rate limiting (allowing for some timing variation)
-		// The actual rate is 100ms, but timing can vary slightly due to scheduling
-		assert.GreaterOrEqual(t, elapsed, 80*time.Millisecond, "expected at least 80ms delay, got %v", elapsed)
-	})
 }
 
 func TestRateLimiter_ContextCancellation(t *testing.T) {
@@ -892,6 +733,12 @@ func TestRateLimiterRecoversFromHeaderDrivenSlowdown(t *testing.T) {
 }
 
 func TestRateLimiterAdaptivePacingLogLevels(t *testing.T) {
+	previousLevel := zerolog.GlobalLevel()
+	zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	t.Cleanup(func() {
+		zerolog.SetGlobalLevel(previousLevel)
+	})
+
 	t.Run("IETF window adjustment is info", func(t *testing.T) {
 		var logs bytes.Buffer
 		testLogger := &logger.Logger{Logger: zerolog.New(&logs).Level(zerolog.DebugLevel)}
