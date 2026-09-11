@@ -643,7 +643,7 @@ func (r *RateLimiter) applyIETFHeaders(remaining, reset map[string]int, h http.H
 				} else {
 					desiredRate = max(desiredRate, r.minRate*2)
 				}
-				r.logger.Warn("Daily rate limit exhausted, slowing down", map[string]interface{}{
+				r.logger.Warn("Daily rate limit nearly exhausted, slowing down", map[string]interface{}{
 					"component":       "rate_limiter",
 					"daily_remaining": r.dailyRemaining,
 					"daily_limit":     r.dailyLimit,
