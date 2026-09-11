@@ -181,18 +181,18 @@ func TestRateLimiter_OnRateLimit(t *testing.T) {
 }
 
 func TestRateLimiter_ResetRate(t *testing.T) {
-	// Create a rate limiter with a custom rate
 	rl := NewRateLimiter(time.Second, 1, 1, nil)
+	rl.SetBackoffFactor(2)
+	rl.SetJitterFactor(0)
 
-	// Modify the rate to something different
-	rl.mu.Lock()
-	rl.rate = 5 * time.Second
-	rl.mu.Unlock()
+	rl.WithRateLimitHeaders(&http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{},
+	})
+	require.Equal(t, 2*time.Second, rl.GetRate())
 
-	// Reset the rate
 	rl.ResetRate()
 
-	// Should be back to the rate configured for this limiter.
 	assert.Equal(t, time.Second, rl.GetRate())
 }
 
