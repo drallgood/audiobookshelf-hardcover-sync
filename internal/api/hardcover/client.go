@@ -188,6 +188,7 @@ type Client struct {
 	logger                *logger.Logger
 	currentUserID         int
 	currentUserMutex      sync.RWMutex
+	currentUserFetch      chan struct{}
 	rateLimiter           *util.RateLimiter
 	maxRetries            int
 	retryDelay            time.Duration
@@ -719,28 +720,28 @@ func (c *Client) executeGraphQLMutation(ctx context.Context, mutation string, va
 // It returns the user ID from cache if available, otherwise fetches it from the API
 // and caches it for future use. The function is safe for concurrent access.
 func (c *Client) GetCurrentUserID(ctx context.Context) (int, error) {
-	// Try to get the user ID from cache first (read lock)
-	c.currentUserMutex.RLock()
-	if c.currentUserID != 0 {
-		userID := c.currentUserID
-		c.currentUserMutex.RUnlock()
-		c.logger.Debug("Returning cached user ID", map[string]interface{}{
-			"user_id": userID,
-		})
-		return userID, nil
-	}
-	c.currentUserMutex.RUnlock()
-
-	// If not in cache, acquire write lock and check again (double-checked locking pattern)
-	c.currentUserMutex.Lock()
-	defer c.currentUserMutex.Unlock()
-
-	// Check again in case another goroutine updated the cache while we were waiting for the lock
-	if c.currentUserID != 0 {
-		c.logger.Debug("Returning user ID from cache (after acquiring lock)", map[string]interface{}{
-			"user_id": c.currentUserID,
-		})
-		return c.currentUserID, nil
+	for {
+		c.currentUserMutex.Lock()
+		if c.currentUserID != 0 {
+			userID := c.currentUserID
+			c.currentUserMutex.Unlock()
+			c.logger.Debug("Returning cached user ID", map[string]interface{}{
+				"user_id": userID,
+			})
+			return userID, nil
+		}
+		if fetchDone := c.currentUserFetch; fetchDone != nil {
+			c.currentUserMutex.Unlock()
+			select {
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			case <-fetchDone:
+				continue
+			}
+		}
+		c.currentUserFetch = make(chan struct{})
+		c.currentUserMutex.Unlock()
+		break
 	}
 
 	c.logger.Debug("User ID not in cache, fetching from Hardcover API", nil)
@@ -763,28 +764,39 @@ func (c *Client) GetCurrentUserID(ctx context.Context) (int, error) {
 	// Execute the query
 	err := c.GraphQLQuery(ctx, query, nil, &resp)
 	if err != nil {
+		c.finishCurrentUserFetch(0)
 		return 0, fmt.Errorf("failed to get current user ID: %w", err)
 	}
 
 	// Check if we got any results
 	if len(resp.Me) == 0 {
+		c.finishCurrentUserFetch(0)
 		return 0, fmt.Errorf("no user data returned from API")
 	}
 
 	// Check if we got a valid user ID
 	userID := resp.Me[0].ID
 	if userID == 0 {
+		c.finishCurrentUserFetch(0)
 		return 0, fmt.Errorf("received invalid user ID from API: %d", userID)
 	}
 
-	// Cache the user ID
-	c.currentUserID = userID
+	c.finishCurrentUserFetch(userID)
 
 	c.logger.Debug("Successfully retrieved and cached current user ID from Hardcover", map[string]interface{}{
 		"user_id": userID,
 	})
 
 	return userID, nil
+}
+
+func (c *Client) finishCurrentUserFetch(userID int) {
+	c.currentUserMutex.Lock()
+	c.currentUserID = userID
+	fetchDone := c.currentUserFetch
+	c.currentUserFetch = nil
+	c.currentUserMutex.Unlock()
+	close(fetchDone)
 }
 
 // SearchBookByISBN13 searches for a book in the Hardcover database by ISBN-13

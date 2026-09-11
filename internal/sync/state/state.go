@@ -284,7 +284,7 @@ func containsParentTraversal(components []string) bool {
 
 func (s *State) UpdateBook(bookID string, progress float64, status string) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var debugMessages []string
 
 	debugLog := false
 	if strings.Contains(strings.ToLower(bookID), "scrum") {
@@ -307,13 +307,15 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 		statusChanged := existing.Status != status
 
 		if debugLog {
-			log.Printf("DEBUG - UpdateBook for %s (existing) - stored: %.4f, new: %.4f, storedStatus: %s, newStatus: %s, progressChanged: %v, statusChanged: %v",
-				bookID, storedProgress, normalizedProgress, existing.Status, status, progressChanged, statusChanged)
+			debugMessages = append(debugMessages, fmt.Sprintf(
+				"DEBUG - UpdateBook for %s (existing) - stored: %.4f, new: %.4f, storedStatus: %s, newStatus: %s, progressChanged: %v, statusChanged: %v",
+				bookID, storedProgress, normalizedProgress, existing.Status, status, progressChanged, statusChanged,
+			))
 		}
 
 		if !progressChanged && !statusChanged {
 			if debugLog {
-				log.Printf("DEBUG - No update needed for book %s - no significant changes", bookID)
+				debugMessages = append(debugMessages, fmt.Sprintf("DEBUG - No update needed for book %s - no significant changes", bookID))
 			}
 			// Even when nothing changed, fix up HasProgressSeconds for FINISHED books
 			// so the incremental NeedsSync check skips them on subsequent runs.
@@ -334,7 +336,7 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 			}
 			updated = true
 			if debugLog {
-				log.Printf("DEBUG - Updated book %s state - progress: %.4f, status: %s", bookID, normalizedProgress, status)
+				debugMessages = append(debugMessages, fmt.Sprintf("DEBUG - Updated book %s state - progress: %.4f, status: %s", bookID, normalizedProgress, status))
 			}
 		}
 	} else {
@@ -347,7 +349,7 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 		updated = true
 
 		if strings.Contains(strings.ToLower(bookID), "scrum") {
-			log.Printf("DEBUG - Created new state for Scrum book %s - progress: %.4f, status: %s", bookID, normalizedProgress, status)
+			debugMessages = append(debugMessages, fmt.Sprintf("DEBUG - Created new state for Scrum book %s - progress: %.4f, status: %s", bookID, normalizedProgress, status))
 		}
 	}
 
@@ -388,6 +390,10 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 
 	if updated {
 		s.dirty = true
+	}
+	s.mu.Unlock()
+	for _, message := range debugMessages {
+		log.Print(message)
 	}
 	return updated
 }

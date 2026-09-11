@@ -43,7 +43,6 @@ var newAudnexClient = func(log *logger.Logger) *audnex.Client {
 // Add adds a new book mismatch to this collector.
 func (c *Collector) Add(book BookMismatch) {
 	c.lock.Lock()
-	defer c.lock.Unlock()
 
 	// Set timestamp if not already set
 	if book.Timestamp == 0 {
@@ -57,6 +56,7 @@ func (c *Collector) Add(book BookMismatch) {
 	}
 
 	c.mismatches = append(c.mismatches, book)
+	c.lock.Unlock()
 
 	// Log the mismatch
 	log := logger.Get()

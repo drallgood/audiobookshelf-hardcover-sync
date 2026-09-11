@@ -268,8 +268,14 @@ func (p *OIDCProvider) GetAuthURL(redirectURL string) (string, error) {
 		createdAt:    time.Now(),
 	}
 	// Clean up expired states (older than 10 minutes)
-	p.cleanupExpiredStates()
+	expiredCount := p.cleanupExpiredStates()
 	p.statesMutex.Unlock()
+	if expiredCount > 0 && p.logger != nil {
+		p.logger.Debug("Cleaned up expired OAuth states", map[string]interface{}{
+			"provider":      p.name,
+			"expired_count": expiredCount,
+		})
+	}
 
 	// Generate authorization URL with PKCE
 	authURL := p.oauth2Config.AuthCodeURL(state,
@@ -629,7 +635,7 @@ func generateCodeChallenge(verifier string) string {
 }
 
 // cleanupExpiredStates removes expired state entries (must be called with lock held)
-func (p *OIDCProvider) cleanupExpiredStates() {
+func (p *OIDCProvider) cleanupExpiredStates() int {
 	expiredCount := 0
 	for state, data := range p.stateData {
 		if time.Since(data.createdAt) > 10*time.Minute {
@@ -637,12 +643,7 @@ func (p *OIDCProvider) cleanupExpiredStates() {
 			expiredCount++
 		}
 	}
-	if expiredCount > 0 && p.logger != nil {
-		p.logger.Debug("Cleaned up expired OAuth states", map[string]interface{}{
-			"provider":      p.name,
-			"expired_count": expiredCount,
-		})
-	}
+	return expiredCount
 }
 
 // GetRedirectURL retrieves the redirect URL for a given state
