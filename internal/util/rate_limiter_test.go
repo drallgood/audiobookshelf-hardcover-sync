@@ -733,6 +733,113 @@ func TestRateLimiterFallsBackForBareTooManyRequests(t *testing.T) {
 	assert.Equal(t, 100*time.Millisecond, rl.GetRate())
 }
 
+func TestRateLimiterFallsBackForUnguidedTooManyRequests(t *testing.T) {
+	reset := strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10)
+	tests := []struct {
+		name   string
+		header http.Header
+	}{
+		{
+			name: "legacy reset without remaining",
+			header: http.Header{
+				"X-RateLimit-Reset": {reset},
+			},
+		},
+		{
+			name: "malformed legacy remaining",
+			header: http.Header{
+				"X-RateLimit-Remaining": {"unknown"},
+				"X-RateLimit-Reset":     {reset},
+			},
+		},
+		{
+			name: "nonzero legacy remaining",
+			header: http.Header{
+				"X-RateLimit-Limit":     {"100"},
+				"X-RateLimit-Remaining": {"10"},
+				"X-RateLimit-Reset":     {reset},
+			},
+		},
+		{
+			name: "non-exhausted IETF quota",
+			header: http.Header{
+				"RateLimit":        {`"Free";r=8;t=42`},
+				"RateLimit-Policy": {`"Free";q=60;w=60;burst=10`},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+			rl.SetBackoffFactor(2)
+			rl.SetJitterFactor(0)
+
+			rl.WithRateLimitHeaders(&http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Header:     tt.header,
+			})
+
+			assert.Equal(t, 200*time.Millisecond, rl.GetRate())
+			assert.Equal(t, uint64(1), rl.GetMetrics().RateLimited)
+			rl.mu.RLock()
+			assert.Greater(t, rl.checkBackoff(), time.Duration(0))
+			rl.mu.RUnlock()
+		})
+	}
+}
+
+func TestRateLimiterHonorsAuthoritativeTooManyRequestsGuidance(t *testing.T) {
+	reset := strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10)
+	tests := []struct {
+		name         string
+		header       http.Header
+		expectedRate time.Duration
+	}{
+		{
+			name:         "positive Retry-After",
+			expectedRate: 100 * time.Millisecond,
+			header: http.Header{
+				"Retry-After": {"1"},
+			},
+		},
+		{
+			name:         "exhausted IETF quota",
+			expectedRate: time.Second,
+			header: http.Header{
+				"Ratelimit":        {`"Free";r=0;t=42`},
+				"Ratelimit-Policy": {`"Free";q=60;w=60;burst=10`},
+			},
+		},
+		{
+			name:         "exhausted legacy quota",
+			expectedRate: 100 * time.Millisecond,
+			header: http.Header{
+				"X-Ratelimit-Limit":     {"100"},
+				"X-Ratelimit-Remaining": {"0"},
+				"X-Ratelimit-Reset":     {reset},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+			rl.SetBackoffFactor(2)
+			rl.SetJitterFactor(0)
+			rl.WithRateLimitHeaders(&http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Header:     tt.header,
+			})
+
+			assert.Equal(t, tt.expectedRate, rl.GetRate())
+			rl.mu.RLock()
+			assert.Greater(t, rl.checkBackoff(), time.Duration(0))
+			rl.mu.RUnlock()
+		})
+	}
+}
+
 func TestRateLimiterRecoversFromHeaderDrivenSlowdown(t *testing.T) {
 	configuredRate := 2 * time.Second
 	var logs bytes.Buffer

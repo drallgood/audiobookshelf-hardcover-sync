@@ -440,17 +440,22 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 	}
 
 	// Try IETF RateLimit headers first (e.g. "Free";r=8;t=42, "daily";r=4231;t=51234).
-	if iefRemaining, iefReset := r.parseIETFRateLimit(resp.Header); len(iefRemaining) > 0 {
-		r.applyIETFHeaders(iefRemaining, iefReset, resp.Header)
-		return
-	}
+	iefRemaining, iefReset := r.parseIETFRateLimit(resp.Header)
+	if resp.StatusCode == http.StatusTooManyRequests {
+		// On a 429, only an exhausted quota with a usable reset is authoritative.
+		// Other IETF or legacy headers may be partial, malformed, or merely
+		// advisory; fall through to the bounded client-selected backoff instead.
+		if hasExhaustedIETFQuota(iefRemaining, iefReset) {
+			r.applyIETFHeaders(iefRemaining, iefReset, resp.Header)
+			return
+		}
+		if hasExhaustedLegacyQuota(resp.Header) {
+			r.applyLegacyHeaders(resp.Header)
+			return
+		}
 
-	// A bare 429 has no server guidance to apply, so preserve the current rate
-	// and build exponential backoff from it. Processing an empty legacy header
-	// set first would reset the rate and prevent repeated 429s from escalating.
-	if resp.StatusCode == http.StatusTooManyRequests &&
-		resp.Header.Get("X-RateLimit-Remaining") == "" &&
-		resp.Header.Get("X-RateLimit-Reset") == "" {
+		// Processing an incomplete legacy header set first would reset the rate
+		// and prevent repeated 429s from escalating.
 		backoff := r.exponentialBackoff(r.rate)
 		r.setRate(backoff)
 		r.setBackoffUntil(time.Now().Add(backoff))
@@ -463,9 +468,31 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 		})
 		return
 	}
+	if len(iefRemaining) > 0 {
+		r.applyIETFHeaders(iefRemaining, iefReset, resp.Header)
+		return
+	}
 
 	// Fall back to legacy X-RateLimit-* headers.
 	r.applyLegacyHeaders(resp.Header)
+}
+
+func hasExhaustedIETFQuota(remaining, reset map[string]int) bool {
+	for name, rem := range remaining {
+		if rem <= 0 && reset[name] > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func hasExhaustedLegacyQuota(h http.Header) bool {
+	rem, err := strconv.Atoi(h.Get("X-RateLimit-Remaining"))
+	if err != nil || rem > 0 {
+		return false
+	}
+	_, ok := parseUnixReset(h.Get("X-RateLimit-Reset"))
+	return ok
 }
 
 // parseIETFRateLimit parses the IETF RateLimit header value.
