@@ -430,7 +430,7 @@ func TestRateLimiterCapsServerPauseAtDefaultMaxBackoff(t *testing.T) {
 	}})
 
 	rl.mu.RLock()
-	pause := rl.backoffUntil.Sub(time.Now())
+	pause := time.Until(rl.backoffUntil)
 	rl.mu.RUnlock()
 
 	assert.Greater(t, pause, DefaultMaxBackoff-time.Second)
@@ -452,7 +452,7 @@ func TestRateLimiterDailyExhaustionOverridesRetryAfter(t *testing.T) {
 	})
 
 	rl.mu.RLock()
-	pause := rl.backoffUntil.Sub(time.Now())
+	pause := time.Until(rl.backoffUntil)
 	rl.mu.RUnlock()
 	assert.Greater(t, pause, DefaultMaxBackoff)
 	assert.LessOrEqual(t, pause, DefaultMaxDailyResetWait)
@@ -488,7 +488,7 @@ func TestRateLimiterWaitsForDailyQuotaReset(t *testing.T) {
 			}})
 
 			rl.mu.RLock()
-			pause := rl.backoffUntil.Sub(time.Now())
+			pause := time.Until(rl.backoffUntil)
 			rl.mu.RUnlock()
 
 			assert.Greater(t, pause, tt.expectedPause-time.Second)
