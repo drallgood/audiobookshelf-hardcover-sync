@@ -24,6 +24,7 @@ type State struct {
 	Libraries    map[string]Library `json:"libraries,omitempty"`
 	Books        map[string]Book    `json:"books,omitempty"`
 	mu           sync.RWMutex       `json:"-"`
+	dirty        bool               `json:"-"`
 }
 
 type Library struct {
@@ -88,12 +89,19 @@ func LoadState(path string) (*State, error) {
 }
 
 func (s *State) Save(path string) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create state directory: %w", err)
+	}
+
+	fileMode := os.FileMode(0644)
+	if info, err := os.Stat(path); err == nil {
+		fileMode = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to stat state file: %w", err)
 	}
 
 	data, err := json.MarshalIndent(s, "", "  ")
@@ -108,7 +116,7 @@ func (s *State) Save(path string) error {
 	tempPath := tempFile.Name()
 	defer func() { _ = os.Remove(tempPath) }()
 
-	if err := tempFile.Chmod(0644); err != nil {
+	if err := tempFile.Chmod(fileMode); err != nil {
 		_ = tempFile.Close()
 		return fmt.Errorf("failed to set temporary state file permissions: %w", err)
 	}
@@ -129,6 +137,7 @@ func (s *State) Save(path string) error {
 	if err := syncDirectory(dir); err != nil {
 		return fmt.Errorf("failed to sync state directory: %w", err)
 	}
+	s.dirty = false
 
 	return nil
 }
@@ -188,6 +197,7 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 				old := s.Books[bookID]
 				old.HasProgressSeconds = true
 				s.Books[bookID] = old
+				updated = true
 			}
 		} else {
 			oldBook := s.Books[bookID]
@@ -235,9 +245,11 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 					UserBookID:         oldBook.UserBookID,
 					HasProgressSeconds: oldBook.HasProgressSeconds || status == "FINISHED",
 				}
+				updated = true
 			} else if !existing.HasProgressSeconds && status == "FINISHED" {
 				existing.HasProgressSeconds = true
 				s.Books[baseID] = existing
+				updated = true
 			}
 		} else {
 			s.Books[baseID] = Book{
@@ -246,10 +258,14 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 				Status:             status,
 				HasProgressSeconds: status == "FINISHED",
 			}
+			updated = true
 		}
 	}
 
-	s.LastSync = now
+	if updated {
+		s.LastSync = now
+		s.dirty = true
+	}
 	return updated
 }
 
@@ -258,17 +274,25 @@ func (s *State) UpdateLibrary(libraryID string) {
 	defer s.mu.Unlock()
 
 	now := time.Now().Unix()
-	s.Libraries[libraryID] = Library{
+	updated := Library{
 		LastUpdated: now,
 	}
-	s.LastSync = now
+	if existing, exists := s.Libraries[libraryID]; !exists || existing != updated {
+		s.Libraries[libraryID] = updated
+		s.LastSync = now
+		s.dirty = true
+	}
 }
 
 func (s *State) SetFullSync() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.LastFullSync = time.Now().Unix()
+	lastFullSync := time.Now().Unix()
+	if s.LastFullSync != lastFullSync {
+		s.LastFullSync = lastFullSync
+		s.dirty = true
+	}
 }
 
 func (s *State) NeedsSync(bookID string, currentProgress float64, currentStatus string, minChangeThreshold float64) bool {
@@ -338,7 +362,7 @@ func (s *State) UpdateBookWithUserBookID(bookID string, progress float64, status
 		hasProgressSeconds = oldBook.HasProgressSeconds
 	}
 
-	s.Books[bookID] = Book{
+	updated := Book{
 		LastProgress:       normalizedProgress,
 		LastUpdated:        now,
 		Status:             status,
@@ -346,7 +370,11 @@ func (s *State) UpdateBookWithUserBookID(bookID string, progress float64, status
 		HasProgressSeconds: hasProgressSeconds,
 	}
 
-	s.LastSync = now
+	if !exists || oldBook != updated {
+		s.Books[bookID] = updated
+		s.LastSync = now
+		s.dirty = true
+	}
 }
 
 func normalizeProgress(progress float64) float64 {
@@ -380,14 +408,28 @@ func (s *State) SetHasProgressSeconds(bookID string) {
 	defer s.mu.Unlock()
 
 	if book, exists := s.Books[bookID]; exists {
-		book.HasProgressSeconds = true
-		s.Books[bookID] = book
+		if !book.HasProgressSeconds {
+			book.HasProgressSeconds = true
+			s.Books[bookID] = book
+			s.dirty = true
+		}
 	}
 
 	if baseID := strings.SplitN(bookID, ":", 2)[0]; baseID != "" && baseID != bookID {
 		if book, exists := s.Books[baseID]; exists {
-			book.HasProgressSeconds = true
-			s.Books[baseID] = book
+			if !book.HasProgressSeconds {
+				book.HasProgressSeconds = true
+				s.Books[baseID] = book
+				s.dirty = true
+			}
 		}
 	}
+}
+
+// IsDirty reports whether the state has changes that have not been persisted.
+func (s *State) IsDirty() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.dirty
 }

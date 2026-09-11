@@ -423,6 +423,31 @@ func TestCheckpointStatePersistsCompletedBook(t *testing.T) {
 	assert.True(t, bookState.HasProgressSeconds)
 }
 
+func TestCheckpointStateSkipsUnchangedState(t *testing.T) {
+	svc, _ := createTestService()
+	svc.statePath = filepath.Join(t.TempDir(), "sync_state.json")
+	svc.state.UpdateBook("book1", 50, "IN_PROGRESS")
+	require.NoError(t, svc.checkpointState("book1"))
+
+	checkpointTime := time.Unix(123, 456)
+	require.NoError(t, os.Chtimes(svc.statePath, checkpointTime, checkpointTime))
+	infoBefore, err := os.Stat(svc.statePath)
+	require.NoError(t, err)
+
+	require.NoError(t, svc.checkpointState("book1"))
+	infoAfter, err := os.Stat(svc.statePath)
+	require.NoError(t, err)
+	assert.Equal(t, infoBefore.ModTime(), infoAfter.ModTime())
+
+	svc.state.UpdateBook("book1", 75, "IN_PROGRESS")
+	require.NoError(t, svc.checkpointState("book1"))
+	loadedState, err := state.LoadState(svc.statePath)
+	require.NoError(t, err)
+	bookState, exists := loadedState.GetBookState("book1")
+	require.True(t, exists)
+	assert.Equal(t, 0.75, bookState.LastProgress)
+}
+
 func TestCheckpointStateSkipsDryRun(t *testing.T) {
 	svc, _ := createTestService()
 	svc.config.Sync.DryRun = true
@@ -440,6 +465,7 @@ func TestProcessLibraryReturnsCheckpointFailure(t *testing.T) {
 	svc, mockHC := createTestService()
 	svc.config.Sync.ProcessUnreadBooks = false
 	svc.statePath = t.TempDir() // Renaming a state file over a directory must fail.
+	svc.state.UpdateBook("existing-book", 50, "IN_PROGRESS")
 
 	mockABS := new(MockAudiobookshelfClient)
 	book := toAudiobookshelfBook(createTestBook("book1", "Unread Book", "Test Author", "", ""))

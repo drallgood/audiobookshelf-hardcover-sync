@@ -952,6 +952,9 @@ func (s *Service) checkpointState(bookID string) error {
 	if s.config.Sync.DryRun {
 		return nil
 	}
+	if !s.state.IsDirty() {
+		return nil
+	}
 
 	if err := s.state.Save(s.statePath); err != nil {
 		s.log.Error("Failed to checkpoint sync state", map[string]interface{}{

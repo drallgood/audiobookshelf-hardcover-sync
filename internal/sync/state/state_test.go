@@ -99,6 +99,54 @@ func TestSaveAndLoad(t *testing.T) {
 	assert.Equal(t, "IN_PROGRESS", book.Status)
 }
 
+func TestSavePreservesExistingFilePermissions(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	statePath := filepath.Join(tempDir, "state.json")
+	state := NewState()
+	require.NoError(t, state.Save(statePath))
+	require.NoError(t, os.Chmod(statePath, 0600))
+
+	state.UpdateBook("book1", 0.5, "IN_PROGRESS")
+	require.NoError(t, state.Save(statePath))
+
+	info, err := os.Stat(statePath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0600), info.Mode().Perm())
+}
+
+func TestStateDirtyTracking(t *testing.T) {
+	t.Parallel()
+
+	state := NewState()
+	assert.False(t, state.IsDirty())
+
+	assert.True(t, state.UpdateBook("book1", 0.5, "IN_PROGRESS"))
+	assert.True(t, state.IsDirty())
+	require.NoError(t, state.Save(filepath.Join(t.TempDir(), "state.json")))
+	assert.False(t, state.IsDirty())
+
+	assert.False(t, state.UpdateBook("book1", 0.5, "IN_PROGRESS"))
+	assert.False(t, state.IsDirty())
+
+	state.UpdateLibrary("library")
+	assert.True(t, state.IsDirty())
+	require.NoError(t, state.Save(filepath.Join(t.TempDir(), "state.json")))
+	state.SetFullSync()
+	assert.True(t, state.IsDirty())
+	require.NoError(t, state.Save(filepath.Join(t.TempDir(), "state.json")))
+
+	state.UpdateBookWithUserBookID("book1", 0.5, "IN_PROGRESS", "user-book")
+	assert.True(t, state.IsDirty())
+	require.NoError(t, state.Save(filepath.Join(t.TempDir(), "state.json")))
+	state.SetHasProgressSeconds("book1")
+	assert.True(t, state.IsDirty())
+	require.NoError(t, state.Save(filepath.Join(t.TempDir(), "state.json")))
+	state.SetHasProgressSeconds("book1")
+	assert.False(t, state.IsDirty())
+}
+
 func TestConcurrentAccess(t *testing.T) {
 	t.Parallel()
 
