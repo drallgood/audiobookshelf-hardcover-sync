@@ -663,6 +663,45 @@ func TestRateLimiterIETFZeroResetDoesNotCreatePermanentBackoff(t *testing.T) {
 	assert.Zero(t, rl.checkBackoff())
 }
 
+func TestRateLimiterCapsServerPauseAtDefaultMaxBackoff(t *testing.T) {
+	serverDelaySeconds := int(DefaultMaxBackoff/time.Second) + 1
+	serverDelay := time.Duration(serverDelaySeconds) * time.Second
+	require.Greater(t, serverDelay, DefaultMaxBackoff)
+
+	tests := []struct {
+		name string
+		resp *http.Response
+	}{
+		{
+			name: "Retry-After",
+			resp: &http.Response{Header: http.Header{
+				"Retry-After": {strconv.Itoa(serverDelaySeconds)},
+			}},
+		},
+		{
+			name: "exhausted daily IETF reset",
+			resp: &http.Response{Header: http.Header{
+				"Ratelimit":        {fmt.Sprintf(`"daily";r=0;t=%d`, serverDelaySeconds)},
+				"Ratelimit-Policy": {`"daily";q=5000;w=86400`},
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+			rl.WithRateLimitHeaders(tt.resp)
+
+			rl.mu.RLock()
+			pause := rl.checkBackoff()
+			rl.mu.RUnlock()
+
+			assert.Greater(t, pause, DefaultMaxBackoff-time.Second)
+			assert.LessOrEqual(t, pause, DefaultMaxBackoff)
+		})
+	}
+}
+
 func TestRateLimiterUsesPolicyWindowForSteadyPacing(t *testing.T) {
 	rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
 	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
