@@ -2,6 +2,9 @@ package hardcover
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
@@ -11,7 +14,16 @@ import (
 
 func TestClientDryRunSkipsMutations(t *testing.T) {
 	logger.Setup(logger.Config{Level: "debug", Format: "json"})
-	client := &Client{logger: logger.Get()}
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	clientConfig := DefaultClientConfig()
+	clientConfig.BaseURL = server.URL
+	client := NewClientWithConfig(clientConfig, "test-token", logger.Get())
 	client.SetDryRun(true)
 	ctx := context.Background()
 	require.NoError(t, client.GraphQLMutation(ctx, "mutation Test { test }", nil, nil))
@@ -34,4 +46,5 @@ func TestClientDryRunSkipsMutations(t *testing.T) {
 
 	require.NoError(t, client.MarkEditionAsOwned(ctx, 2))
 	require.NoError(t, client.UpdateUserBook(ctx, UpdateUserBookInput{}))
+	assert.Zero(t, requestCount.Load(), "dry-run mutations must not make HTTP requests")
 }

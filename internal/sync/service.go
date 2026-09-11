@@ -485,7 +485,7 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 		logCtx.Info(dryRunMsg, map[string]interface{}{
 			"status": status,
 		})
-		// Return a negative value to indicate dry-run mode
+		// CreateUserBook uses the same -1 sentinel; it must not be treated as a real user-book ID.
 		return -1, nil
 	}
 
