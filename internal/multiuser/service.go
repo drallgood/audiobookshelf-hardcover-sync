@@ -325,9 +325,6 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
         if s.globalConfig.RateLimit.Rate > 0 {
             hcCfg.RateLimit = s.globalConfig.RateLimit.Rate
         }
-        if s.globalConfig.RateLimit.Burst > 0 {
-            hcCfg.Burst = s.globalConfig.RateLimit.Burst
-        }
         if s.globalConfig.RateLimit.MaxConcurrent > 0 {
             hcCfg.MaxConcurrent = s.globalConfig.RateLimit.MaxConcurrent
         }
@@ -337,7 +334,6 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
         "profile_id":     profileID,
         "base_url":       hcCfg.BaseURL,
         "rate_limit":     hcCfg.RateLimit.String(),
-        "burst":          hcCfg.Burst,
         "max_concurrent": hcCfg.MaxConcurrent,
     })
 

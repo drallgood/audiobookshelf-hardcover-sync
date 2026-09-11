@@ -19,7 +19,6 @@ func TestDefaultClientConfig(t *testing.T) {
 	assert.Equal(t, DefaultMaxRetries, cfg.MaxRetries)
 	assert.Equal(t, DefaultRetryDelay, cfg.RetryDelay)
 	assert.Equal(t, 2*time.Second, cfg.RateLimit) // 30 requests/minute
-	assert.Equal(t, 1, cfg.Burst)
 	assert.Equal(t, 1, cfg.MaxConcurrent)
 }
 
@@ -59,7 +58,6 @@ func TestNewClientWithConfig(t *testing.T) {
 				MaxRetries:    5,
 				RetryDelay:    1 * time.Second,
 				RateLimit:     200 * time.Millisecond,
-				Burst:         5,
 				MaxConcurrent: 2,
 			},
 			token: "custom-token",
@@ -142,7 +140,6 @@ func TestClient_enforceRateLimit(t *testing.T) {
 		MaxRetries:    DefaultMaxRetries,
 		RetryDelay:    DefaultRetryDelay,
 		RateLimit:     10 * time.Millisecond, // Very short for testing
-		Burst:         1,
 		MaxConcurrent: 1,
 	}
 

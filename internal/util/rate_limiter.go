@@ -31,8 +31,6 @@ var (
 	ErrRetryAfter = errors.New("retry after")
 	// DefaultRate is the default minimum time between requests (2s = 0.5 req/s)
 	DefaultRate = 2 * time.Second
-	// DefaultBurst is the default burst size (reduced for more conservative behavior)
-	DefaultBurst = 1
 	// DefaultMaxBackoff is the default maximum backoff time (increased for more conservative behavior)
 	DefaultMaxBackoff = 10 * time.Minute
 	// DefaultMaxDailyResetWait bounds authoritative daily quota reset delays.
@@ -45,15 +43,13 @@ var (
 	DefaultMaxConcurrent = 3
 )
 
-// RateLimiter implements a token bucket rate limiter with dynamic rate adjustment
+// RateLimiter implements dynamic request pacing and concurrency control.
 type RateLimiter struct {
 	mu              sync.RWMutex
 	last            time.Time
 	rate            time.Duration
 	minRate         time.Duration
 	maxBackoff      time.Duration
-	tokens          int
-	maxTokens       int
 	backoffUntil    time.Time
 	backoffFactor   float64
 	jitterFactor    float64
@@ -92,18 +88,13 @@ func (r *RateLimiter) DailyLimit() int {
 	return r.dailyLimit
 }
 
-// NewRateLimiter creates a new RateLimiter with the specified rate and burst size
+// NewRateLimiter creates a new RateLimiter with the specified pacing and concurrency limits.
 // rate is the minimum time between requests (e.g., 1*time.Second for 1 request per second)
-// burst is the maximum number of tokens that can be consumed at once
 // maxConcurrent is the maximum number of concurrent requests (0 for DefaultMaxConcurrent)
 // log is the logger to use for rate limit events (can be nil)
-func NewRateLimiter(rate time.Duration, burst, maxConcurrent int, log *logger.Logger) *RateLimiter {
+func NewRateLimiter(rate time.Duration, maxConcurrent int, log *logger.Logger) *RateLimiter {
 	if rate <= 0 {
 		rate = DefaultRate
-	}
-
-	if burst < 1 {
-		burst = 1
 	}
 
 	if maxConcurrent < 1 {
@@ -117,7 +108,6 @@ func NewRateLimiter(rate time.Duration, burst, maxConcurrent int, log *logger.Lo
 
 	log.Debug("Initializing rate limiter", map[string]interface{}{
 		"rate":          rate,
-		"burst":         burst,
 		"maxConcurrent": maxConcurrent,
 	})
 
@@ -127,8 +117,6 @@ func NewRateLimiter(rate time.Duration, burst, maxConcurrent int, log *logger.Lo
 		rate:            rate,
 		minRate:         rate,
 		maxBackoff:      DefaultMaxBackoff, // Maximum backoff and pacing interval
-		tokens:          burst,
-		maxTokens:       burst,
 		backoffUntil:    time.Time{},
 		backoffFactor:   DefaultBackoffFactor,
 		jitterFactor:    DefaultJitterFactor,
@@ -239,7 +227,6 @@ func (r *RateLimiter) OnRateLimit(retryAfter time.Duration) time.Duration {
 	backoff := r.exponentialBackoff(r.rate)
 	r.setRate(backoff)
 	r.setBackoffUntil(now.Add(backoff))
-	r.drainBucket()
 
 	// Log the rate limit event with detailed information
 	r.logger.Warn("Rate limit backoff", map[string]interface{}{
@@ -430,7 +417,6 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 			}
 			r.logger.Warn("Rate limit error with retry-after header", logFields)
 			r.applyRetryAfter(duration)
-			r.drainBucket()
 			return
 		}
 	}
@@ -458,7 +444,6 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 		if until.After(r.backoffUntil) {
 			r.setBackoffUntil(until)
 		}
-		r.drainBucket()
 		r.logger.Warn("Rate limit response without reset guidance", map[string]interface{}{
 			"component":     "rate_limiter",
 			"backoff":       backoff.String(),
@@ -629,7 +614,6 @@ func (r *RateLimiter) applyIETFHeaders(remaining, reset map[string]int, h http.H
 		if r.dailyRemaining <= 0 && reset[dailyName] > 0 {
 			resetSeconds := reset[dailyName]
 			appliedPause := r.applyDailyResetWait(resetSeconds)
-			r.drainBucket()
 			r.logger.Warn("Daily rate limit exhausted, pausing until reset", map[string]interface{}{
 				"component":       "rate_limiter",
 				"daily_remaining": r.dailyRemaining,
@@ -696,7 +680,6 @@ func (r *RateLimiter) applyIETFHeaders(remaining, reset map[string]int, h http.H
 			}
 			if pause > 0 {
 				r.applyRetryAfter(pause)
-				r.drainBucket()
 			}
 		}
 	}
@@ -761,7 +744,6 @@ func (r *RateLimiter) applyLegacyHeaders(h http.Header) {
 		backoff := time.Duration(0)
 		if pause > 0 {
 			backoff = r.applyRetryAfter(pause)
-			r.drainBucket()
 		}
 		r.logger.Warn("Rate limit reached (legacy headers), backing off", map[string]interface{}{
 			"component": "rate_limiter",
@@ -890,11 +872,6 @@ func (r *RateLimiter) setBackoffUntil(until time.Time) {
 func (r *RateLimiter) notifyScheduleChanged() {
 	close(r.scheduleChanged)
 	r.scheduleChanged = make(chan struct{})
-}
-
-// drainBucket empties the token bucket to prevent burst after backoff.
-func (r *RateLimiter) drainBucket() {
-	r.tokens = 1
 }
 
 // Metrics returns a snapshot of the rate limiter's internal state.

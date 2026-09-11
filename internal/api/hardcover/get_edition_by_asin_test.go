@@ -247,7 +247,7 @@ func TestClient_GetEditionByASIN(t *testing.T) {
 				},
 				logger:          log,
 				// Initialize rate limiter for tests
-				rateLimiter:     util.NewRateLimiter(10*time.Millisecond, 1, 1, log),
+				rateLimiter:     util.NewRateLimiter(10*time.Millisecond, 1, log),
 				// Initialize required caches
 				userBookIDCache: cache.NewMemoryCache[int, int](log),
 				userCache:       cache.NewMemoryCache[string, any](log),

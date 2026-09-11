@@ -54,7 +54,7 @@ func init() {
 func TestRateLimiter_ContextCancellation(t *testing.T) {
 	t.Run("context canceled", func(t *testing.T) {
 		log := setupTestLogger(t)
-		rl := NewRateLimiter(100*time.Millisecond, 1, 5, log)
+		rl := NewRateLimiter(100*time.Millisecond, 5, log)
 
 		// Create a context with timeout
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
@@ -71,7 +71,7 @@ func TestRateLimiter_ConcurrentWaitsArePaced(t *testing.T) {
 		interval      = 15 * time.Millisecond
 		totalRequests = 5
 	)
-	rl := NewRateLimiter(interval, 1, 2, setupTestLogger(t))
+	rl := NewRateLimiter(interval, 2, setupTestLogger(t))
 	start := make(chan struct{})
 	type result struct {
 		completedAt time.Time
@@ -104,7 +104,7 @@ func TestRateLimiter_PendingWaitObservesNewBackoff(t *testing.T) {
 		interval = 100 * time.Millisecond
 		backoff  = 160 * time.Millisecond
 	)
-	rl := NewRateLimiter(interval, 1, 2, setupTestLogger(t))
+	rl := NewRateLimiter(interval, 2, setupTestLogger(t))
 	type result struct {
 		completedAt time.Time
 		err         error
@@ -130,7 +130,7 @@ func TestRateLimiter_PendingWaitObservesNewBackoff(t *testing.T) {
 
 func TestRateLimiter_CancellationDoesNotCollapsePendingSlots(t *testing.T) {
 	const interval = 80 * time.Millisecond
-	rl := NewRateLimiter(interval, 1, 3, setupTestLogger(t))
+	rl := NewRateLimiter(interval, 3, setupTestLogger(t))
 	type result struct {
 		completedAt time.Time
 		err         error
@@ -170,7 +170,7 @@ func TestRateLimiter_CancellationDoesNotCollapsePendingSlots(t *testing.T) {
 }
 
 func TestRateLimiter_OnRateLimit(t *testing.T) {
-	rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
 	defer rl.ResetRate()
 
 	waitTime := rl.OnRateLimit(10 * time.Second)
@@ -181,7 +181,7 @@ func TestRateLimiter_OnRateLimit(t *testing.T) {
 }
 
 func TestRateLimiter_ResetRate(t *testing.T) {
-	rl := NewRateLimiter(time.Second, 1, 1, nil)
+	rl := NewRateLimiter(time.Second, 1, nil)
 	rl.SetBackoffFactor(2)
 	rl.SetJitterFactor(0)
 
@@ -197,7 +197,7 @@ func TestRateLimiter_ResetRate(t *testing.T) {
 }
 
 func TestRateLimiter_GetMetrics(t *testing.T) {
-	rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
 	defer rl.ResetRate()
 
 	// Initial metrics
@@ -216,7 +216,7 @@ func TestRateLimiter_GetMetrics(t *testing.T) {
 }
 
 func TestRateLimiter_SetBackoffFactor(t *testing.T) {
-	rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
 	defer rl.ResetRate()
 
 	// Set backoff factor
@@ -229,7 +229,7 @@ func TestRateLimiter_SetBackoffFactor(t *testing.T) {
 }
 
 func TestRateLimiter_SetJitterFactor(t *testing.T) {
-	rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
 	defer rl.ResetRate()
 
 	// Set jitter factor
@@ -242,7 +242,7 @@ func TestRateLimiter_SetJitterFactor(t *testing.T) {
 }
 
 func TestRateLimiter_CheckBackoff(t *testing.T) {
-	rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
 	defer rl.ResetRate()
 
 	// No backoff initially
@@ -265,7 +265,7 @@ func TestRateLimiter_CheckBackoff(t *testing.T) {
 }
 
 func TestRateLimiter_CalculateJitter(t *testing.T) {
-	rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
 	defer rl.ResetRate()
 
 	// Test with default jitter factor
@@ -413,7 +413,7 @@ func TestParseIETFRateLimitPolicy(t *testing.T) {
 
 func TestRateLimiterWaitDoesNotAccelerate(t *testing.T) {
 	const interval = 15 * time.Millisecond
-	rl := NewRateLimiter(interval, 1, 1, nil)
+	rl := NewRateLimiter(interval, 1, nil)
 
 	var previous time.Time
 	for range 6 {
@@ -428,7 +428,7 @@ func TestRateLimiterWaitDoesNotAccelerate(t *testing.T) {
 
 func TestRateLimiterIETFZeroResetDoesNotCreatePermanentBackoff(t *testing.T) {
 	configuredRate := 2 * time.Second
-	rl := NewRateLimiter(configuredRate, 1, 1, nil)
+	rl := NewRateLimiter(configuredRate, 1, nil)
 	resp := &http.Response{Header: http.Header{
 		"Ratelimit":        {`"Free";r=1;t=0`},
 		"Ratelimit-Policy": {`"Free";q=60;w=60;burst=10`},
@@ -447,7 +447,7 @@ func TestRateLimiterCapsServerPauseAtDefaultMaxBackoff(t *testing.T) {
 	serverDelay := time.Duration(serverDelaySeconds) * time.Second
 	require.Greater(t, serverDelay, DefaultMaxBackoff)
 
-	rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
 	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
 		"Retry-After": {strconv.Itoa(serverDelaySeconds)},
 	}})
@@ -480,7 +480,7 @@ func TestRateLimiterWaitsForDailyQuotaReset(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+			rl := NewRateLimiter(100*time.Millisecond, 1, nil)
 			rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
 				"Ratelimit":        {fmt.Sprintf(`"daily";r=0;t=%d`, tt.serverDelaySeconds)},
 				"Ratelimit-Policy": {`"daily";q=5000;w=86400`},
@@ -497,7 +497,7 @@ func TestRateLimiterWaitsForDailyQuotaReset(t *testing.T) {
 }
 
 func TestRateLimiterUsesPolicyWindowForSteadyPacing(t *testing.T) {
-	rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
 	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
 		"Ratelimit":        {`"Free";r=8;t=42`},
 		"Ratelimit-Policy": {`"Free";q=60;w=60;burst=10`},
@@ -507,7 +507,7 @@ func TestRateLimiterUsesPolicyWindowForSteadyPacing(t *testing.T) {
 }
 
 func TestRateLimiterFallsBackForBareTooManyRequests(t *testing.T) {
-	rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
 	rl.SetBackoffFactor(2)
 	rl.SetJitterFactor(0)
 
@@ -534,7 +534,7 @@ func TestRateLimiterFallsBackForBareTooManyRequests(t *testing.T) {
 }
 
 func TestRateLimiterUnguided429PreservesLongerBackoff(t *testing.T) {
-	rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
 	rl.SetBackoffFactor(2)
 	rl.SetJitterFactor(0)
 
@@ -597,7 +597,7 @@ func TestRateLimiterFallsBackForUnguidedTooManyRequests(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+			rl := NewRateLimiter(100*time.Millisecond, 1, nil)
 			rl.SetBackoffFactor(2)
 			rl.SetJitterFactor(0)
 
@@ -650,7 +650,7 @@ func TestRateLimiterHonorsAuthoritativeTooManyRequestsGuidance(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+			rl := NewRateLimiter(100*time.Millisecond, 1, nil)
 			rl.SetBackoffFactor(2)
 			rl.SetJitterFactor(0)
 			rl.WithRateLimitHeaders(&http.Response{
@@ -671,7 +671,7 @@ func TestRateLimiterRecoversFromHeaderDrivenSlowdown(t *testing.T) {
 	configuredRate := 2 * time.Second
 	var logs bytes.Buffer
 	testLogger := &logger.Logger{Logger: zerolog.New(&logs).Level(zerolog.InfoLevel)}
-	rl := NewRateLimiter(configuredRate, 1, 1, testLogger)
+	rl := NewRateLimiter(configuredRate, 1, testLogger)
 
 	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
 		"Ratelimit":        {`"Free";r=8;t=42, "daily";r=1;t=10`},
@@ -701,7 +701,7 @@ func TestRateLimiterAdaptivePacingLogLevels(t *testing.T) {
 	t.Run("IETF window adjustment is info", func(t *testing.T) {
 		var logs bytes.Buffer
 		testLogger := &logger.Logger{Logger: zerolog.New(&logs).Level(zerolog.DebugLevel)}
-		rl := NewRateLimiter(100*time.Millisecond, 1, 1, testLogger)
+		rl := NewRateLimiter(100*time.Millisecond, 1, testLogger)
 		logs.Reset()
 
 		rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
@@ -717,7 +717,7 @@ func TestRateLimiterAdaptivePacingLogLevels(t *testing.T) {
 	t.Run("legacy adjustment is info and reset schedule is debug", func(t *testing.T) {
 		var logs bytes.Buffer
 		testLogger := &logger.Logger{Logger: zerolog.New(&logs).Level(zerolog.DebugLevel)}
-		rl := NewRateLimiter(100*time.Millisecond, 1, 1, testLogger)
+		rl := NewRateLimiter(100*time.Millisecond, 1, testLogger)
 		logs.Reset()
 
 		header := make(http.Header)
@@ -834,7 +834,7 @@ func TestWithRateLimitHeaders(t *testing.T) {
 				TimeFormat: time.RFC3339,
 			})
 			log := logger.Get().With(map[string]interface{}{"test": tt.name})
-			rl := NewRateLimiter(100*time.Millisecond, 10, 1, log)
+			rl := NewRateLimiter(100*time.Millisecond, 1, log)
 			defer rl.ResetRate()
 
 			// Create a response with headers and a valid Request

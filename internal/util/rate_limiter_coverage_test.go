@@ -14,32 +14,28 @@ func TestNewRateLimiter(t *testing.T) {
 	tests := []struct {
 		name          string
 		rate          time.Duration
-		burst         int
 		maxConcurrent int
 	}{
 		{
 			name:          "default values",
 			rate:          0,
-			burst:         0,
 			maxConcurrent: 0,
 		},
 		{
 			name:          "custom values",
 			rate:          time.Second,
-			burst:         5,
 			maxConcurrent: 10,
 		},
 		{
 			name:          "negative rate uses default",
 			rate:          -1 * time.Second,
-			burst:         5,
 			maxConcurrent: 10,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rl := NewRateLimiter(tt.rate, tt.burst, tt.maxConcurrent, nil)
+			rl := NewRateLimiter(tt.rate, tt.maxConcurrent, nil)
 			defer rl.ResetRate()
 
 			if tt.rate > 0 {
@@ -47,18 +43,12 @@ func TestNewRateLimiter(t *testing.T) {
 			} else {
 				assert.Equal(t, DefaultRate, rl.GetRate())
 			}
-
-			if tt.burst > 0 {
-				assert.Greater(t, rl.maxTokens, 0)
-			} else {
-				assert.Equal(t, DefaultBurst, rl.maxTokens)
-			}
 		})
 	}
 }
 
 func TestRateLimiterConcurrentAccess(t *testing.T) {
-	rl := NewRateLimiter(5*time.Millisecond, 5, 3, nil)
+	rl := NewRateLimiter(5*time.Millisecond, 3, nil)
 	defer rl.ResetRate()
 
 	const totalRequests = 10

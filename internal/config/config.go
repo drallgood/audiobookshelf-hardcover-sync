@@ -66,8 +66,6 @@ type Config struct {
 	RateLimit struct {
 		// Rate is the minimum time between requests (e.g., 2s for 1 request per 2 seconds)
 		Rate time.Duration `yaml:"rate" env:"RATE_LIMIT_RATE"`
-		// Burst is the maximum number of requests that can be made in a burst
-		Burst int `yaml:"burst" env:"RATE_LIMIT_BURST"`
 		// MaxConcurrent is the maximum number of concurrent requests
 		MaxConcurrent int `yaml:"max_concurrent" env:"RATE_LIMIT_MAX_CONCURRENT"`
 	} `yaml:"rate_limit"`
@@ -231,7 +229,6 @@ func DefaultConfig() *Config {
 
 	// Default rate limiting (Hardcover API limit: 30 requests per minute)
 	cfg.RateLimit.Rate = 2 * time.Second
-	cfg.RateLimit.Burst = 1
 	cfg.RateLimit.MaxConcurrent = 1
 
 	// Database defaults
@@ -333,8 +330,8 @@ func Load(configPath string) (*Config, error) {
 		cfg.Sync.ProcessUnreadBooks, cfg.Sync.SyncOwned, cfg.Sync.DryRun,
 		cfg.Sync.SingleUserMode, cfg.Sync.SingleUserUsername, cfg.Sync.TestBookFilter,
 		cfg.Sync.TestBookLimit, cfg.Sync.IncludeEbooks)
-	fmt.Printf("Rate Limiting:\n  rate: %s\n  burst: %d\n  max_concurrent: %d\n",
-		cfg.RateLimit.Rate, cfg.RateLimit.Burst, cfg.RateLimit.MaxConcurrent)
+	fmt.Printf("Rate Limiting:\n  rate: %s\n  max_concurrent: %d\n",
+		cfg.RateLimit.Rate, cfg.RateLimit.MaxConcurrent)
 	fmt.Printf("Logging:\n  level: %s\n  format: %s\n", 
 		cfg.Logging.Level, cfg.Logging.Format)
 	fmt.Printf("Database:\n  type: %s\n  path: %s\n", 

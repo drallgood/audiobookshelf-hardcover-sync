@@ -202,7 +202,7 @@ func TestGraphQLQuery_RetriesOn429ThenSucceeds(t *testing.T) {
 	client.logger = log
 	client.maxRetries = 3
 	client.retryDelay = 1 * time.Millisecond
-	client.rateLimiter = util.NewRateLimiter(time.Nanosecond, 100, 100, log)
+	client.rateLimiter = util.NewRateLimiter(time.Nanosecond, 100, log)
 
 	var response struct {
 		Books []struct {
@@ -232,7 +232,7 @@ func TestGraphQLQuery_FailsFastOn400(t *testing.T) {
 	client.logger = log
 	client.maxRetries = 3
 	client.retryDelay = 1 * time.Millisecond
-	client.rateLimiter = util.NewRateLimiter(time.Nanosecond, 100, 100, log)
+	client.rateLimiter = util.NewRateLimiter(time.Nanosecond, 100, log)
 
 	var response struct {
 		Books []struct {

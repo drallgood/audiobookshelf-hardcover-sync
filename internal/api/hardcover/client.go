@@ -117,8 +117,6 @@ const (
 	// DefaultRateLimit is the default minimum time between requests.
 	// Hardcover now enforces 30 requests/minute, so use 2s between requests.
 	DefaultRateLimit = 2 * time.Second
-	// DefaultBurst is the default burst size for rate limiting
-	DefaultBurst = 1
 	// DefaultMaxConcurrent is the default maximum concurrent requests
 	DefaultMaxConcurrent = 1
 )
@@ -135,8 +133,6 @@ type ClientConfig struct {
 	RetryDelay time.Duration
 	// RateLimit specifies the minimum time between requests (default: from config or DefaultRateLimit)
 	RateLimit time.Duration
-	// Burst specifies the burst size for rate limiting (default: from config or DefaultBurst)
-	Burst int
 	// MaxConcurrent specifies the maximum number of concurrent requests (default: from config or 3)
 	MaxConcurrent int
 }
@@ -233,7 +229,6 @@ func DefaultClientConfig() *ClientConfig {
 		MaxRetries:    DefaultMaxRetries,
 		RetryDelay:    DefaultRetryDelay,
 		RateLimit:     DefaultRateLimit,     // Use hardcoded default
-		Burst:         DefaultBurst,         // Use hardcoded default
 		MaxConcurrent: DefaultMaxConcurrent, // Use hardcoded default
 	}
 }
@@ -271,7 +266,7 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 	}
 
 	// Create rate limiter with max concurrent requests from config
-	rateLimiter := util.NewRateLimiter(cfg.RateLimit, cfg.Burst, cfg.MaxConcurrent, log)
+	rateLimiter := util.NewRateLimiter(cfg.RateLimit, cfg.MaxConcurrent, log)
 
 	// Create logger if not provided
 	if log == nil {

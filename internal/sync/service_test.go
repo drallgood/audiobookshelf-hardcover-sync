@@ -432,7 +432,6 @@ func createTestConfig(syncOwned bool) *config.Config {
 	
 	// Other configuration
 	cfg.RateLimit.Rate = 100 * time.Millisecond
-	cfg.RateLimit.Burst = 10
 	cfg.RateLimit.MaxConcurrent = 5
 	cfg.Logging.Level = "info"
 	cfg.Logging.Format = "console"

@@ -238,7 +238,6 @@ config:
   # Rate limiting configuration
   rateLimit:
     rate: "1500ms"        # Minimum time between requests
-    burst: 2              # Maximum number of requests in a burst
     maxConcurrent: 3      # Maximum number of concurrent requests
 
   # Logging configuration
