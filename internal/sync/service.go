@@ -2306,11 +2306,6 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		// establish that a transition is required.
 		return hcBook != nil && hcBook.BookStatusID > 0 && hcBook.BookStatusID != desiredStatusID
 	}
-	statusMatchesDesired := func() bool {
-		// A no-op can advance local state only when Hardcover returned a
-		// concrete status matching the progress/read snapshot we verified.
-		return hcBook != nil && hcBook.BookStatusID == desiredStatusID
-	}
 	clearProgressUpdateCache := func() {
 		bookCacheKey := fmt.Sprintf("%s:%d", book.ID, userBookID)
 		s.lastProgressMutex.Lock()
@@ -2786,7 +2781,9 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			}
 			handleSkippedProgressUpdate := func() error {
 				if !statusNeedsReconcile() {
-					if statusMatchesDesired() {
+					// A no-op can advance local state only when Hardcover returned a
+					// concrete status matching the progress/read snapshot we verified.
+					if hcBook != nil && hcBook.BookStatusID == desiredStatusID {
 						updateSyncState()
 					}
 					return nil
