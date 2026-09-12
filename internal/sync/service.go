@@ -400,7 +400,7 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 		})
 		return 0, fmt.Errorf("failed to get edition details: %w", err)
 	}
-	
+
 	// Parse book ID
 	bookID, err := strconv.ParseInt(edition.BookID, 10, 64)
 	if err != nil {
@@ -410,13 +410,13 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 		})
 		return 0, fmt.Errorf("invalid book ID format: %w", err)
 	}
-	
+
 	// FIRST: Check if there's already a user book for this book (any edition)
 	// This prevents creating multiple user books for the same book with different editions
 	logCtx.Debug("Checking for existing user book by book ID (any edition)", map[string]interface{}{
 		"book_id": bookID,
 	})
-	
+
 	existingUserBookID, err := s.findExistingUserBookForBook(ctx, bookID)
 	if err != nil {
 		logCtx.Warn("Failed to check for existing user book by book ID", map[string]interface{}{
@@ -448,7 +448,7 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 
 		return existingUserBookID, nil
 	}
-	
+
 	// SECOND: If no user book exists for this book at all, check for the specific edition
 	// This is for backward compatibility in case there's a user book with this specific edition
 	logCtx.Debug("No existing user book found for book, checking for specific edition", map[string]interface{}{
@@ -565,15 +565,15 @@ func (s *Service) findExistingUserBookForBook(ctx context.Context, bookID int64)
 		if err != nil {
 			return 0, fmt.Errorf("failed to get current user ID: %w", err)
 		}
-		
+
 		userBookID, err := hcClient.LookupUserBookByBookIDOnly(ctx, int(bookID), int(userID))
 		if err != nil {
 			return 0, fmt.Errorf("failed to lookup user book by book ID: %w", err)
 		}
-		
+
 		return int64(userBookID), nil
 	}
-	
+
 	// Fallback: return 0 (no existing user book)
 	return 0, nil
 }
@@ -2181,7 +2181,6 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 				"title":   book.Media.Metadata.Title,
 			})
 		}
-		success = true
 	}
 
 	// --- STEP 2: Update status to FINISHED SECOND ---
@@ -2296,6 +2295,43 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		// Continue with update as we can't determine current progress
 	}
 
+	desiredStatusID := 2 // 2 = Currently Reading
+	desiredStatus := "IN_PROGRESS"
+	if book.Progress.IsFinished {
+		desiredStatusID = 3 // 3 = Completed
+		desiredStatus = "FINISHED"
+	}
+	statusNeedsReconcile := func() bool {
+		// A zero status is unavailable in some API responses, so it cannot
+		// establish that a transition is required.
+		return hcBook != nil && hcBook.BookStatusID > 0 && hcBook.BookStatusID != desiredStatusID
+	}
+	clearProgressUpdateCache := func() {
+		bookCacheKey := fmt.Sprintf("%s:%d", book.ID, userBookID)
+		s.lastProgressMutex.Lock()
+		delete(s.lastProgressUpdates, bookCacheKey)
+		s.lastProgressMutex.Unlock()
+	}
+	reconcileBookStatus := func() error {
+		if !statusNeedsReconcile() {
+			return nil
+		}
+
+		err := s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
+			ID:       userBookID,
+			StatusID: desiredStatusID,
+		})
+		if err != nil {
+			clearProgressUpdateCache()
+			log.With(map[string]interface{}{"error": err.Error()}).Error("Failed to reconcile book status")
+			return fmt.Errorf("failed to reconcile book status to %s: %w", desiredStatus, err)
+		}
+
+		s.userBookCache.InvalidateByUserBook(int(userBookID))
+		s.deleteBlankReads(ctx, userBookID, log)
+		return nil
+	}
+
 	// Add progress information to log context
 	logCtx["current_time_sec"] = book.Progress.CurrentTime
 	logCtx["is_finished"] = book.Progress.IsFinished
@@ -2366,6 +2402,20 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 
 	// Create logger with all context
 	log = s.log.With(logCtx)
+	updateSyncState := func() {
+		progressPct := 0.0
+		if book.Media.Duration > 0 {
+			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
+		}
+		if s.state.UpdateBook(stateKey, progressPct, desiredStatus) {
+			log.Debug("Updated book state", map[string]interface{}{
+				"progress":  progressPct,
+				"status":    desiredStatus,
+				"state_key": stateKey,
+			})
+		}
+		s.state.SetHasProgressSeconds(stateKey)
+	}
 
 	// In dry-run mode, log that we're in dry-run and continue with checks
 	if s.config.Sync.DryRun {
@@ -2406,8 +2456,11 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			logCtx["last_update_time"] = lastUpdate.timestamp
 			logCtx["last_progress"] = lastUpdate.progress
 			logCtx["progress_diff"] = progressDiff
-			log.Info("Skipping update - recently updated with similar progress", logCtx)
-			return nil
+			if !statusNeedsReconcile() {
+				log.Info("Skipping update - recently updated with similar progress", logCtx)
+				return nil
+			}
+			log.Info("Recent progress update has stale book status; verifying read before reconciliation", logCtx)
 		}
 	}
 
@@ -2742,6 +2795,13 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				if progressDiff < 1.0 {
 					logCtx["progress_diff_seconds"] = fmt.Sprintf("%.2f", progressDiff)
 					log.Info("Progress is identical or nearly identical, skipping update", logCtx)
+					if !statusNeedsReconcile() {
+						return nil
+					}
+					if err := reconcileBookStatus(); err != nil {
+						return err
+					}
+					updateSyncState()
 					return nil
 				}
 			}
@@ -2752,6 +2812,13 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			// Skip update if progress difference is below threshold
 			if readStatusToUpdate != nil && !forceSync && progressDiff < minDiff {
 				log.Info("Progress difference below threshold, skipping update", logCtx)
+				if !statusNeedsReconcile() {
+					return nil
+				}
+				if err := reconcileBookStatus(); err != nil {
+					return err
+				}
+				updateSyncState()
 				return nil
 			}
 
@@ -2766,16 +2833,6 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				logCtx["hc_progress_time"] = time.Duration(int64(hcProgressSeconds) * int64(time.Second)).String()
 				log.Warn("Extremely large progress difference detected. Possible book mapping or sync issue.", logCtx)
 			}
-
-			// Store the last update time and progress for this book to prevent frequent updates
-			// This is a memory-only cache that will be reset when the service restarts
-			bookCacheKey := fmt.Sprintf("%s:%d", book.ID, userBookID)
-			s.lastProgressMutex.Lock()
-			s.lastProgressUpdates[bookCacheKey] = progressUpdateInfo{
-				timestamp: time.Now(),
-				progress:  book.Progress.CurrentTime,
-			}
-			s.lastProgressMutex.Unlock()
 
 			log.Info("Significant progress difference detected, will update", logCtx)
 		}
@@ -2837,13 +2894,22 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 	// HardcoverBook doesn't have a Status field, so we'll assume it's not finished
 	// We'll need to get this information from the read status instead
 	isFinishedInHC := false
-	if readStatusToUpdate != nil && readStatusToUpdate.FinishedAt != nil {
+	if readStatusToUpdate != nil && readStatusToUpdate.FinishedAt != nil && *readStatusToUpdate.FinishedAt != "" {
+		isFinishedInHC = true
+	} else if readStatusToUpdate == nil && mostRecentRead != nil && mostRecentRead.FinishedAt != nil && *mostRecentRead.FinishedAt != "" {
 		isFinishedInHC = true
 	}
 
 	// If the book is marked as finished in both systems, we don't need to update anything
 	if isFinishedInABS && isFinishedInHC {
 		log.Info("Book is already marked as finished in both systems, skipping update", logCtx)
+		if !statusNeedsReconcile() {
+			return nil
+		}
+		if err := reconcileBookStatus(); err != nil {
+			return err
+		}
+		updateSyncState()
 		return nil
 	}
 
@@ -2921,55 +2987,8 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 
 		log.Info("Successfully updated read status in Hardcover", logCtx)
 
-		// Update book status based on progress
-		if hcBook != nil {
-			// If the book is marked as finished in ABS but not in Hardcover, update status
-			if book.Progress.IsFinished && !isFinishedInHC {
-				log.Debug("Updating book status to COMPLETED", logCtx)
-				err = s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
-					ID:       userBookID,
-					StatusID: 3, // 3 = Completed
-				})
-				if err != nil {
-					errCtx := map[string]interface{}{
-						"user_book_id": userBookID,
-						"error":        err.Error(),
-					}
-					log.With(errCtx).Error("Failed to update book status to COMPLETED")
-					return fmt.Errorf("failed to update book status to COMPLETED: %w", err)
-				} else {
-					s.userBookCache.InvalidateByUserBook(int(userBookID))
-					s.deleteBlankReads(ctx, userBookID, log)
-					log.Info("Successfully updated book status to COMPLETED", nil)
-				}
-			} else if !isFinishedInHC {
-				// Skip the status mutation if the book is already IN_PROGRESS (2),
-				// but transition from READ (3) for rereads where a finished book
-				// is being listened to again.
-				if hcBook.BookStatusID == 2 {
-					log.Debug("Skipping explicit IN_PROGRESS status update after read progress update", map[string]interface{}{
-						"user_book_id": userBookID,
-					})
-				} else {
-					log.Info("Updating book status to IN_PROGRESS for reread", map[string]interface{}{
-						"user_book_id":      userBookID,
-						"current_status_id": hcBook.BookStatusID,
-					})
-					err = s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
-						ID:       userBookID,
-						StatusID: 2,
-					})
-					if err != nil {
-						log.With(map[string]interface{}{"error": err.Error()}).Error("Failed to set IN_PROGRESS after read update")
-						return fmt.Errorf("failed to set IN_PROGRESS after read update: %w", err)
-					} else {
-						s.userBookCache.InvalidateByUserBook(int(userBookID))
-						s.deleteBlankReads(ctx, userBookID, log)
-					}
-				}
-			} else {
-				log.Debug("Book status is already up to date", logCtx)
-			}
+		if err := reconcileBookStatus(); err != nil {
+			return err
 		}
 
 		// Update the sync state only after every required Hardcover mutation has
@@ -2990,6 +3009,13 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			})
 		}
 		s.state.SetHasProgressSeconds(stateKey)
+		bookCacheKey := fmt.Sprintf("%s:%d", book.ID, userBookID)
+		s.lastProgressMutex.Lock()
+		s.lastProgressUpdates[bookCacheKey] = progressUpdateInfo{
+			timestamp: time.Now(),
+			progress:  book.Progress.CurrentTime,
+		}
+		s.lastProgressMutex.Unlock()
 	} else {
 		// Create a new read status since none exists
 		progressSeconds := int(book.Progress.CurrentTime)
@@ -3065,35 +3091,37 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		}
 
 		// Get the edition ID from the user book
-		// Try cache first
-		var hcBook *models.HardcoverBook
-		var err error
+		// Try cache first. Keep the outer value in sync because status
+		// reconciliation below uses the same current user-book snapshot.
+		var creationHCBook *models.HardcoverBook
+		var creationErr error
 
 		if cachedUserBook, found := s.getUserBookFromCache(int(userBookID)); found {
 			log.Debug("User book found in cache for read status creation", map[string]interface{}{
 				"user_book_id": userBookID,
 			})
-			hcBook = cachedUserBook
+			creationHCBook = cachedUserBook
 		} else {
 			// Not in cache, fetch from API
-			hcBook, err = s.hardcover.GetUserBook(ctx, strconv.FormatInt(userBookID, 10))
-			if err == nil && hcBook != nil {
+			creationHCBook, creationErr = s.hardcover.GetUserBook(ctx, strconv.FormatInt(userBookID, 10))
+			if creationErr == nil && creationHCBook != nil {
 				// Cache the result
-				s.setUserBookByUserBookInCache(int(userBookID), hcBook)
+				s.setUserBookByUserBookInCache(int(userBookID), creationHCBook)
 				log.Debug("User book cached for read status creation", map[string]interface{}{
 					"user_book_id": userBookID,
 				})
 			}
 		}
-		if err != nil || hcBook == nil {
+		if creationErr != nil || creationHCBook == nil {
 			errMsg := "User book not found"
-			if err != nil {
-				errMsg = fmt.Sprintf("Failed to get user book: %v", err)
+			if creationErr != nil {
+				errMsg = fmt.Sprintf("Failed to get user book: %v", creationErr)
 			}
 			errCtx := map[string]interface{}{"error": errMsg}
 			log.With(errCtx).Error("Cannot create read status without user book")
 			return fmt.Errorf("cannot create read status: %s", errMsg)
 		}
+		hcBook = creationHCBook
 
 		if hcBook.EditionID != "" {
 			if eid, convErr := strconv.ParseInt(hcBook.EditionID, 10, 64); convErr == nil && eid != 0 {
@@ -3159,26 +3187,28 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 
 		log.Info("Successfully created new read status in Hardcover", nil)
 
-		// Set book status to IN_PROGRESS AFTER inserting the read, so HC
-		// does not auto-create a blank row as a side effect.
-		// Skip the status mutation if the book is already IN_PROGRESS (2), but allow
-		// transition from COMPLETED (3) for rereads to avoid triggering HC's blank-read auto-creation.
+		// Set the book status after inserting the read, so HC does not auto-create
+		// a blank row as a side effect. Reconcile stale statuses for rereads too.
 		currentStatusID := 0
 		if hcBook != nil {
 			currentStatusID = hcBook.BookStatusID
 		}
-		needsStatusUpdate := !isFinishedInHC && currentStatusID != 2
-		if needsStatusUpdate {
+		if statusNeedsReconcile() {
+			if err := reconcileBookStatus(); err != nil {
+				return err
+			}
+		} else if currentStatusID == 0 {
+			// Preserve the existing behavior for responses without a status:
+			// inserting a read is followed by an IN_PROGRESS transition.
 			if err := s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
 				ID:       userBookID,
-				StatusID: 2, // Currently Reading
+				StatusID: 2,
 			}); err != nil {
 				log.With(map[string]interface{}{"error": err.Error()}).Error("Failed to set IN_PROGRESS after read creation")
 				return fmt.Errorf("failed to set IN_PROGRESS after read creation: %w", err)
-			} else {
-				s.userBookCache.InvalidateByUserBook(int(userBookID))
-				s.deleteBlankReads(ctx, userBookID, log)
 			}
+			s.userBookCache.InvalidateByUserBook(int(userBookID))
+			s.deleteBlankReads(ctx, userBookID, log)
 		}
 
 		// Update the sync state only after every required Hardcover mutation has

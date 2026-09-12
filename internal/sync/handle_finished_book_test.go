@@ -11,6 +11,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -333,6 +334,48 @@ func TestHandleFinishedBook_StatusFailureDoesNotAdvanceState(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
+func TestHandleFinishedBook_ExistingFinishedReadStatusFailureDoesNotAdvanceState(t *testing.T) {
+	logger.Setup(logger.Config{Level: "debug", Format: "json"})
+
+	svc, mockClient := createTestService()
+	svc.state = state.NewState()
+	svc.config = createTestConfigForTests(true)
+
+	book := createTestFinishedBook("abs-book-finished-read-status-failure", "Finished Read Status Failure", "Test Author", "B124", "978124")
+	userBookID := int64(7792558)
+	userBookIDStr := strconv.FormatInt(userBookID, 10)
+	finishedAt := "2025-06-11"
+	statusErr := fmt.Errorf("status update failed")
+
+	mockClient.On("GetUserBook", mock.Anything, userBookIDStr).Return(&models.HardcoverBook{
+		ID:           "book-finished-read-status-failure",
+		UserBookID:   userBookIDStr,
+		BookStatusID: 2,
+	}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{{
+		ID:              5687937,
+		UserBookID:      userBookID,
+		StartedAt:       stringPointer("2025-06-01"),
+		FinishedAt:      &finishedAt,
+		ProgressSeconds: intPointer(21234),
+	}}, nil).Once()
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+		ID:     userBookID,
+		Status: "FINISHED",
+	}).Return(statusErr).Once()
+
+	err := svc.HandleFinishedBook(context.Background(), convertTestBookToModel(book), "32059491", userBookID)
+
+	assert.ErrorIs(t, err, statusErr)
+	_, exists := svc.state.GetBookState("abs-book-finished-read-status-failure:32059491")
+	assert.False(t, exists, "a failed status mutation must remain retryable")
+	mockClient.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+	mockClient.AssertExpectations(t)
+}
+
 // Helper functions for test data
 func stringPointer(s string) *string {
 	return &s
@@ -399,8 +442,5 @@ func createTestConfigForTests(syncOwned bool) *config.Config {
 	
 	return cfg
 }
-
-
-
 
 

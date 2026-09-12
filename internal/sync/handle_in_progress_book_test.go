@@ -9,6 +9,7 @@ import (
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -289,6 +290,177 @@ func TestHandleInProgressBook_NewReadStatusFailureDoesNotAdvanceState(t *testing
 	assert.ErrorIs(t, err, statusErr)
 	_, exists := svc.state.GetBookState(stateKey)
 	assert.False(t, exists, "a failed status mutation must not advance new-read state")
+	mockClient.AssertExpectations(t)
+}
+
+func TestHandleInProgressBook_ExistingReadStatusFailureRetriesStatusWithoutReadMutation(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.state = state.NewState()
+
+	testAudiobook := createTestBook("test-book-status-retry", "Status Retry", "Test Author", "B08N5KWB9H", "9781234567890")
+	testAudiobook.Progress.CurrentTime = 300
+	testAudiobook.Media.Duration = 1000
+	audiobook := toAudiobookshelfBook(testAudiobook)
+
+	userBookID := int64(126)
+	readID := int64(791)
+	editionID := int64(458)
+	firstProgress := 100
+	secondProgress := 300
+	statusErr := errors.New("status update failed")
+
+	mockClient.On("GetUserBook", mock.Anything, "126").Return(&models.HardcoverBook{
+		ID:           "book-126",
+		Title:        "Status Retry",
+		EditionID:    "458",
+		BookStatusID: 3,
+	}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{{
+		ID:              readID,
+		ProgressSeconds: &firstProgress,
+		EditionID:       &editionID,
+		FinishedAt:      nil,
+	}}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{{
+		ID:              readID,
+		ProgressSeconds: &secondProgress,
+		EditionID:       &editionID,
+		FinishedAt:      nil,
+	}}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{}, nil).Once()
+	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		return input.ID == readID && input.Object["progress_seconds"] == int64(300)
+	})).Return(true, nil).Once()
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{ID: userBookID, StatusID: 2}).Return(statusErr).Once()
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{ID: userBookID, StatusID: 2}).Return(nil).Once()
+
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+	assert.ErrorIs(t, err, statusErr)
+	_, exists := svc.state.GetBookState(stateKey)
+	assert.False(t, exists, "a failed status mutation must remain retryable")
+	svc.lastProgressMutex.Lock()
+	svc.lastProgressUpdates[fmt.Sprintf("%s:%d", audiobook.ID, userBookID)] = progressUpdateInfo{
+		timestamp: time.Now(),
+		progress:  audiobook.Progress.CurrentTime,
+	}
+	svc.lastProgressMutex.Unlock()
+
+	err = svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+	assert.NoError(t, err)
+	bookState, exists := svc.state.GetBookState(stateKey)
+	assert.True(t, exists)
+	assert.InDelta(t, 0.3, bookState.LastProgress, 0.001)
+	assert.Equal(t, "IN_PROGRESS", bookState.Status)
+	mockClient.AssertExpectations(t)
+}
+
+func TestHandleInProgressBook_NewReadStatusFailureRetriesStatusWithoutReadMutation(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.state = state.NewState()
+
+	testAudiobook := createTestBook("test-book-new-status-retry", "New Status Retry", "Test Author", "B08N5KWB8N", "9781234567891")
+	testAudiobook.Progress.CurrentTime = 300
+	testAudiobook.Media.Duration = 1000
+	audiobook := toAudiobookshelfBook(testAudiobook)
+
+	userBookID := int64(127)
+	editionID := int64(459)
+	readID := int64(792)
+	progress := 300
+	statusErr := errors.New("status creation update failed")
+
+	mockClient.On("GetUserBook", mock.Anything, "127").Return(&models.HardcoverBook{
+		ID:           "book-127",
+		Title:        "New Status Retry",
+		EditionID:    "459",
+		BookStatusID: 1,
+	}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{{
+		ID:              readID,
+		ProgressSeconds: &progress,
+		EditionID:       &editionID,
+		FinishedAt:      nil,
+	}}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{}, nil).Once()
+	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
+		return input.UserBookID == userBookID && input.DatesRead.ProgressSeconds != nil && *input.DatesRead.ProgressSeconds == progress
+	})).Return(int(readID), nil).Once()
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{ID: userBookID, StatusID: 2}).Return(statusErr).Once()
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{ID: userBookID, StatusID: 2}).Return(nil).Once()
+
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+	assert.ErrorIs(t, err, statusErr)
+	_, exists := svc.state.GetBookState(stateKey)
+	assert.False(t, exists, "a failed status mutation must remain retryable")
+
+	err = svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+	assert.NoError(t, err)
+	bookState, exists := svc.state.GetBookState(stateKey)
+	assert.True(t, exists)
+	assert.InDelta(t, 0.3, bookState.LastProgress, 0.001)
+	assert.Equal(t, "IN_PROGRESS", bookState.Status)
+	mockClient.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+	mockClient.AssertExpectations(t)
+}
+
+func TestHandleInProgressBook_FinishedReadStatusFailureRetriesStatusWithoutReadMutation(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.state = state.NewState()
+
+	testAudiobook := createTestBook("test-book-finished-status-retry", "Finished Status Retry", "Test Author", "B08N5KWB9H", "9781234567890")
+	testAudiobook.Progress.CurrentTime = 1000
+	testAudiobook.Media.Duration = 1000
+	testAudiobook.Progress.IsFinished = true
+	testAudiobook.Progress.FinishedAt = time.Date(2026, time.June, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	audiobook := toAudiobookshelfBook(testAudiobook)
+
+	userBookID := int64(128)
+	readID := int64(793)
+	editionID := int64(460)
+	firstProgress := 500
+	secondProgress := 1000
+	statusErr := errors.New("completed status update failed")
+	finishedAt := time.Unix(testAudiobook.Progress.FinishedAt/1000, 0).Format("2006-01-02")
+
+	mockClient.On("GetUserBook", mock.Anything, "128").Return(&models.HardcoverBook{
+		ID:           "book-128",
+		Title:        "Finished Status Retry",
+		EditionID:    "460",
+		BookStatusID: 2,
+	}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{{
+		ID:              readID,
+		ProgressSeconds: &firstProgress,
+		EditionID:       &editionID,
+		FinishedAt:      nil,
+	}}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{{
+		ID:              readID,
+		ProgressSeconds: &secondProgress,
+		EditionID:       &editionID,
+		FinishedAt:      &finishedAt,
+	}}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{}, nil).Once()
+	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		return input.ID == readID && input.Object["finished_at"] == finishedAt
+	})).Return(true, nil).Once()
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{ID: userBookID, StatusID: 3}).Return(statusErr).Once()
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{ID: userBookID, StatusID: 3}).Return(nil).Once()
+
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+	assert.ErrorIs(t, err, statusErr)
+	_, exists := svc.state.GetBookState(stateKey)
+	assert.False(t, exists, "a failed status mutation must remain retryable")
+
+	err = svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+	assert.NoError(t, err)
+	bookState, exists := svc.state.GetBookState(stateKey)
+	assert.True(t, exists)
+	assert.Equal(t, "FINISHED", bookState.Status)
 	mockClient.AssertExpectations(t)
 }
 
