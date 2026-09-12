@@ -19,7 +19,9 @@ and CI use Go 1.26 (`go.mod` and `.github/workflows/go.yml`).
 - Use `.github/pull_request_template.md` for **every** pull request. Complete
   its summary and testing sections, answer every checklist item accurately,
   and explain any item that does not apply. Do not leave checklist items
-  unanswered.
+  unanswered. For a `hotfix/*` pull request to `main`, keep the template's
+  sections and checklist but explicitly identify the hotfix exception to its
+  `develop`-target warning and describe the required back-merge to `develop`.
 - Run the affected tests and relevant lint/build checks before opening a pull
   request. Keep commits and the pull-request description clear.
 
@@ -54,8 +56,11 @@ and CI use Go 1.26 (`go.mod` and `.github/workflows/go.yml`).
   persist state that would make a later real incremental sync skip unapplied
   work. Cover the real mutation boundary and the relevant state behavior.
 - Preserve the Hardcover client's established rate limiting, retry, timeout,
-  and query-shape behavior. Do not introduce undocumented external API limits
-  or assumptions.
+  and query-shape behavior. The checked-in schema exposes operators that the
+  hosted API may disable: `_ilike` is known to be unsupported, and pattern,
+  regex, or similarity operators must be confirmed against existing client or
+  runtime evidence before use. Do not introduce other undocumented external
+  API limits or assumptions.
 
 ## Implementation and configuration
 
