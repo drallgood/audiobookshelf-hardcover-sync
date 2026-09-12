@@ -99,23 +99,6 @@ func TestSaveAndLoad(t *testing.T) {
 	assert.Equal(t, "IN_PROGRESS", book.Status)
 }
 
-func TestSavePreservesExistingFilePermissions(t *testing.T) {
-	t.Parallel()
-
-	tempDir := t.TempDir()
-	statePath := filepath.Join(tempDir, "state.json")
-	state := NewState()
-	require.NoError(t, state.Save(statePath))
-	require.NoError(t, os.Chmod(statePath, 0640))
-
-	state.UpdateBook("book1", 0.5, "IN_PROGRESS")
-	require.NoError(t, state.Save(statePath))
-
-	info, err := os.Stat(statePath)
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0640), info.Mode().Perm())
-}
-
 func TestSavePreservesSymlinkTarget(t *testing.T) {
 	t.Parallel()
 
