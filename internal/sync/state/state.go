@@ -97,17 +97,12 @@ func (s *State) Save(path string) error {
 		return fmt.Errorf("failed to resolve state file: %w", err)
 	}
 	dir := filepath.Dir(targetPath)
+	directoriesToSync, err := stateDirectorySyncPaths(dir)
+	if err != nil {
+		return fmt.Errorf("failed to inspect state directory: %w", err)
+	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create state directory: %w", err)
-	}
-
-	// CreateTemp uses 0600, so new state files do not expose book IDs or
-	// progress details to other users. Existing files retain their permissions.
-	fileMode := os.FileMode(0600)
-	if info, err := os.Stat(targetPath); err == nil {
-		fileMode = info.Mode().Perm()
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("failed to stat state file: %w", err)
 	}
 
 	data, err := json.MarshalIndent(s, "", "  ")
@@ -122,10 +117,6 @@ func (s *State) Save(path string) error {
 	tempPath := tempFile.Name()
 	defer func() { _ = os.Remove(tempPath) }()
 
-	if err := tempFile.Chmod(fileMode); err != nil {
-		_ = tempFile.Close()
-		return fmt.Errorf("failed to set temporary state file permissions: %w", err)
-	}
 	if _, err := tempFile.Write(data); err != nil {
 		_ = tempFile.Close()
 		return fmt.Errorf("failed to write temporary state file: %w", err)
@@ -140,12 +131,40 @@ func (s *State) Save(path string) error {
 	if err := os.Rename(tempPath, targetPath); err != nil {
 		return fmt.Errorf("failed to replace state file: %w", err)
 	}
-	if err := syncDirectory(dir); err != nil {
-		return fmt.Errorf("failed to sync state directory: %w", err)
+	for _, directory := range directoriesToSync {
+		if err := syncDirectory(directory); err != nil {
+			return fmt.Errorf("failed to sync state directory %q: %w", directory, err)
+		}
 	}
 	s.dirty = false
 
 	return nil
+}
+
+// stateDirectorySyncPaths returns the destination directory and every missing
+// parent up to the nearest directory that existed before MkdirAll. Flushing
+// each of these directories after the state file rename makes the complete
+// newly-created path durable across a power loss.
+func stateDirectorySyncPaths(dir string) ([]string, error) {
+	var paths []string
+	for current := dir; ; current = filepath.Dir(current) {
+		info, err := os.Stat(current)
+		switch {
+		case err == nil:
+			if !info.IsDir() {
+				return nil, fmt.Errorf("state path component %q is not a directory", current)
+			}
+			return append(paths, current), nil
+		case !os.IsNotExist(err):
+			return nil, fmt.Errorf("failed to inspect state directory %q: %w", current, err)
+		}
+
+		paths = append(paths, current)
+		parent := filepath.Dir(current)
+		if parent == current {
+			return nil, fmt.Errorf("no existing ancestor for state directory %q", dir)
+		}
+	}
 }
 
 const maxStateSymlinkDepth = 255
