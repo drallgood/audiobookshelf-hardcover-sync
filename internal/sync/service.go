@@ -2904,13 +2904,16 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 	// If the book is marked as finished in both systems, we don't need to update anything
 	if isFinishedInABS && isFinishedInHC {
 		log.Info("Book is already marked as finished in both systems, skipping update", logCtx)
-		if !statusNeedsReconcile() {
-			return nil
+		if statusNeedsReconcile() {
+			if err := reconcileBookStatus(); err != nil {
+				return err
+			}
+			updateSyncState()
+		} else if hcBook != nil && hcBook.BookStatusID == desiredStatusID {
+			// A concrete matching status confirms that the remote snapshot is
+			// synchronized, so record it locally even though no mutation was needed.
+			updateSyncState()
 		}
-		if err := reconcileBookStatus(); err != nil {
-			return err
-		}
-		updateSyncState()
 		return nil
 	}
 

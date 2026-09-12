@@ -299,6 +299,7 @@ func TestHandleFinishedBook_StatusFailureDoesNotAdvanceState(t *testing.T) {
 	svc.config = createTestConfigForTests(true)
 
 	book := createTestFinishedBook("abs-book-status-failure", "Status Failure", "Test Author", "B123", "978123")
+	finishedAt := time.Unix(book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
 	userBookID := int64(7792557)
 	userBookIDStr := strconv.FormatInt(userBookID, 10)
 	readID := int64(5687936)
@@ -319,7 +320,7 @@ func TestHandleFinishedBook_StatusFailureDoesNotAdvanceState(t *testing.T) {
 		ProgressSeconds: intPointer(21234),
 	}}, nil).Once()
 	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
-		return input.ID == readID
+		return input.ID == readID && input.Object["finished_at"] == finishedAt
 	})).Return(true, nil).Once()
 	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
 		ID:     userBookID,
