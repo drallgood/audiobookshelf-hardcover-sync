@@ -152,54 +152,123 @@ const maxStateSymlinkDepth = 255
 
 // resolveStatePath follows the configured state path to the file that should
 // be replaced. Resolving the path before the atomic rename keeps a configured
-// symlink in place, including when its target does not exist yet.
+// symlink in place, including when its target does not exist yet. Components
+// are resolved in filesystem order rather than cleaning the path first. This
+// matters for paths such as "link/../state": the ".." is relative to the
+// symlink target, not to the directory containing the symlink.
 func resolveStatePath(path string) (string, error) {
-	absPath, err := filepath.Abs(path)
+	absPath, err := absoluteStatePath(path)
 	if err != nil {
 		return "", fmt.Errorf("failed to make state path absolute: %w", err)
 	}
 
-	return resolveStatePathPart(filepath.Clean(absPath), make(map[string]struct{}), 0)
+	base, components := splitStatePath(absPath)
+	return resolveStatePathComponents(base, components, make(map[string]struct{}), 0)
 }
 
-func resolveStatePathPart(path string, visited map[string]struct{}, depth int) (string, error) {
-	path = filepath.Clean(path)
-	if info, err := os.Lstat(path); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			if depth >= maxStateSymlinkDepth {
-				return "", fmt.Errorf("state path exceeds maximum symlink depth")
-			}
-			if _, seen := visited[path]; seen {
-				return "", fmt.Errorf("state path contains a symlink loop")
-			}
-			visited[path] = struct{}{}
-
-			target, err := os.Readlink(path)
-			if err != nil {
-				return "", fmt.Errorf("failed to read state path symlink: %w", err)
-			}
-			if !filepath.IsAbs(target) {
-				resolvedParent, err := resolveStatePathPart(filepath.Dir(path), visited, depth)
-				if err != nil {
-					return "", err
-				}
-				target = filepath.Join(resolvedParent, target)
-			}
-			return resolveStatePathPart(target, visited, depth+1)
-		}
-	} else if !os.IsNotExist(err) {
-		return "", fmt.Errorf("failed to inspect state path: %w", err)
-	}
-
-	parent := filepath.Dir(path)
-	if parent == path {
+func absoluteStatePath(path string) (string, error) {
+	if filepath.IsAbs(path) {
 		return path, nil
 	}
-	resolvedParent, err := resolveStatePathPart(parent, visited, depth)
+
+	workingDir, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(resolvedParent, filepath.Base(path)), nil
+	if path == "" {
+		return workingDir, nil
+	}
+	// Do not use filepath.Join here: it cleans away ".." before the
+	// component-by-component resolver can apply it after symlink expansion.
+	return workingDir + string(filepath.Separator) + path, nil
+}
+
+func splitStatePath(path string) (string, []string) {
+	volume := filepath.VolumeName(path)
+	remainder := strings.TrimPrefix(path, volume)
+	if filepath.IsAbs(path) {
+		root := volume + string(filepath.Separator)
+		remainder = strings.TrimLeft(remainder, string(filepath.Separator))
+		return root, strings.Split(remainder, string(filepath.Separator))
+	}
+
+	return "", strings.Split(remainder, string(filepath.Separator))
+}
+
+func resolveStatePathComponents(base string, components []string, visited map[string]struct{}, depth int) (string, error) {
+	if len(components) == 0 {
+		return base, nil
+	}
+
+	component := components[0]
+	rest := components[1:]
+	if component == "" || component == "." {
+		return resolveStatePathComponents(base, rest, visited, depth)
+	}
+	if component == ".." {
+		return resolveStatePathComponents(filepath.Dir(base), rest, visited, depth)
+	}
+
+	candidate := filepath.Join(base, component)
+	info, err := os.Lstat(candidate)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if containsParentTraversal(rest) {
+				return "", fmt.Errorf("cannot resolve state path through missing component %q", candidate)
+			}
+			// A missing component cannot contain a symlink below it. Keep the
+			// remaining non-traversing components for MkdirAll and Save.
+			return filepath.Join(append([]string{candidate}, rest...)...), nil
+		}
+		return "", fmt.Errorf("failed to inspect state path: %w", err)
+	}
+
+	if info.Mode()&os.ModeSymlink != 0 {
+		if depth >= maxStateSymlinkDepth {
+			return "", fmt.Errorf("state path exceeds maximum symlink depth")
+		}
+		if _, seen := visited[candidate]; seen {
+			return "", fmt.Errorf("state path contains a symlink loop")
+		}
+
+		target, err := os.Readlink(candidate)
+		if err != nil {
+			return "", fmt.Errorf("failed to read state path symlink: %w", err)
+		}
+		if target == "" {
+			return "", fmt.Errorf("state path symlink %q has an empty target", candidate)
+		}
+
+		targetBase, targetComponents := splitStatePath(target)
+		if targetBase != "" {
+			base = targetBase
+		}
+		next := make([]string, 0, len(targetComponents)+len(rest))
+		next = append(next, targetComponents...)
+		next = append(next, rest...)
+
+		// Keep this set scoped to the current symlink expansion. A path can
+		// legitimately encounter the same symlink again after resolving
+		// ".." back to its parent; only an active re-entry is a loop.
+		visited[candidate] = struct{}{}
+		resolved, err := resolveStatePathComponents(base, next, visited, depth+1)
+		delete(visited, candidate)
+		return resolved, err
+	}
+
+	if len(rest) > 0 && !info.IsDir() {
+		return "", fmt.Errorf("state path component %q is not a directory", candidate)
+	}
+	return resolveStatePathComponents(candidate, rest, visited, depth)
+}
+
+func containsParentTraversal(components []string) bool {
+	for _, component := range components {
+		if component == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 func syncDirectory(path string) error {

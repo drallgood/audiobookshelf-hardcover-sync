@@ -183,6 +183,67 @@ func TestSaveResolvesRelativeSymlinkTargetFromResolvedParent(t *testing.T) {
 	assert.NotEqual(t, 0, linkInfo.Mode()&os.ModeSymlink)
 }
 
+func TestSaveResolvesDotDotAfterSymlinkComponent(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	configDir := filepath.Join(tempDir, "config")
+	dataDir := filepath.Join(tempDir, "data")
+	linkDir := filepath.Join(configDir, "linkdir")
+	targetPath := filepath.Join(dataDir, "state.json")
+	wrongTargetPath := filepath.Join(configDir, "state.json")
+	configuredPath := configDir + string(filepath.Separator) + "linkdir" +
+		string(filepath.Separator) + ".." + string(filepath.Separator) + "state.json"
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dataDir, "nested"), 0755))
+	require.NoError(t, os.MkdirAll(configDir, 0755))
+	require.NoError(t, os.Symlink(filepath.Join("..", "data", "nested"), linkDir))
+	require.NoError(t, os.WriteFile(wrongTargetPath, []byte("sentinel"), 0600))
+
+	state := NewState()
+	state.UpdateBook("book1", 0.5, "IN_PROGRESS")
+	require.NoError(t, state.Save(configuredPath))
+
+	loaded, err := LoadState(targetPath)
+	require.NoError(t, err)
+	assert.Equal(t, 0.5, loaded.Books["book1"].LastProgress)
+
+	wrongTarget, err := os.ReadFile(wrongTargetPath)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("sentinel"), wrongTarget)
+
+	linkInfo, err := os.Lstat(linkDir)
+	require.NoError(t, err)
+	assert.NotEqual(t, 0, linkInfo.Mode()&os.ModeSymlink)
+}
+
+func TestSaveResolvesDanglingFinalSymlink(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	targetDir := filepath.Join(tempDir, "target")
+	configDir := filepath.Join(tempDir, "config")
+	linkPath := filepath.Join(configDir, "sync_state.json")
+	targetPath := filepath.Join(targetDir, "state.json")
+	require.NoError(t, os.MkdirAll(targetDir, 0755))
+	require.NoError(t, os.MkdirAll(configDir, 0755))
+	require.NoError(t, os.Symlink(filepath.Join("..", "target", "state.json"), linkPath))
+
+	state := NewState()
+	state.UpdateBook("book1", 0.5, "IN_PROGRESS")
+	require.NoError(t, state.Save(linkPath))
+
+	loaded, err := LoadState(linkPath)
+	require.NoError(t, err)
+	assert.Equal(t, 0.5, loaded.Books["book1"].LastProgress)
+
+	linkInfo, err := os.Lstat(linkPath)
+	require.NoError(t, err)
+	assert.NotEqual(t, 0, linkInfo.Mode()&os.ModeSymlink)
+	_, err = os.Stat(targetPath)
+	require.NoError(t, err)
+}
+
 func TestSaveRejectsSymlinkLoop(t *testing.T) {
 	t.Parallel()
 
