@@ -473,7 +473,11 @@ class SyncProfileApp {
     async fetchJsonWithTimeout(url, options = {}) {
         const { signal: requestSignal, ...fetchOptions } = options;
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), STATUS_LOAD_TIMEOUT_MS);
+        let timedOut = false;
+        const timeout = setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+        }, STATUS_LOAD_TIMEOUT_MS);
         const abortForRequest = () => controller.abort(requestSignal.reason);
 
         if (requestSignal) {
@@ -488,11 +492,20 @@ class SyncProfileApp {
             const response = await fetch(url, { ...fetchOptions, signal: controller.signal });
             const data = await response.json();
             if (controller.signal.aborted) {
-                const error = new Error('Request timed out');
-                error.name = 'AbortError';
+                const error = new Error(timedOut ? 'Request timed out' : 'Request aborted');
+                error.name = timedOut ? 'TimeoutError' : 'AbortError';
                 throw error;
             }
             return { response, data };
+        } catch (error) {
+            // fetch() rejects with AbortError before reaching the response path.
+            // Keep a real timeout distinct from an intentional parent cancellation.
+            if (timedOut && error.name === 'AbortError') {
+                const timeoutError = new Error('Request timed out');
+                timeoutError.name = 'TimeoutError';
+                throw timeoutError;
+            }
+            throw error;
         } finally {
             clearTimeout(timeout);
             requestSignal?.removeEventListener('abort', abortForRequest);
@@ -539,7 +552,7 @@ class SyncProfileApp {
                 }
             }
         } catch (error) {
-            if (statusOwned && error.name === 'AbortError') throw error;
+            if (statusOwned && (error.name === 'AbortError' || error.name === 'TimeoutError')) throw error;
             this.showToast('Error loading sync profiles: ' + error.message, 'error');
         } finally {
             if (showLoading) this.hideLoading();
