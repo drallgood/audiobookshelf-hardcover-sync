@@ -539,48 +539,6 @@ class SyncProfileApp {
                             if (statusData.data?.state === 'completed' || statusData.data?.state === 'error') {
                                 summaryPromises.push(this.fetchSyncSummary(user.id, statuses));
                             }
-                        // HC-specific: show correct notices and add extra fields
-                        if (source === 'hc') {
-                            const hasBookMatch = !!(cleanData.url || cleanData.slug || cleanData.path);
-                            if (hasBookMatch) {
-                                // We found a book via search (slug/path/url), but it's a mismatch (edition not matched)
-                                details.push(`
-                                    <div class="mt-2">
-                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
-                                            Edition not matched — showing closest book match
-                                        </span>
-                                    </div>
-                                `);
-                            } else {
-                                // We couldn't even find a book match
-                                details.push(`
-                                    <div class="mt-2">
-                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
-                                            Book not found on Hardcover
-                                        </span>
-                                    </div>
-                                `);
-                            }
-
-                            // Extra HC metadata if present
-                            if (typeof cleanData.average_rating === 'number' || typeof cleanData.rating === 'number') {
-                                const r = (cleanData.average_rating ?? cleanData.rating).toString();
-                                metadata.push({ label: 'Rating', value: this.escapeHtml(r) });
-                            }
-                            if (typeof cleanData.ratings_count === 'number') {
-                                metadata.push({ label: 'Ratings', value: this.escapeHtml(cleanData.ratings_count.toString()) });
-                            }
-                            if (cleanData.slug) {
-                                metadata.push({ label: 'Slug', value: this.escapeHtml(cleanData.slug) });
-                            }
-                            if (cleanData.series && typeof cleanData.series === 'string') {
-                                metadata.push({ label: 'Series', value: this.escapeHtml(cleanData.series) });
-                            }
-                            const genres = cleanData.genres || cleanData.subjects;
-                            if (Array.isArray(genres) && genres.length > 0) {
-                                metadata.push({ label: 'Genres', value: genres.map(g => this.escapeHtml(String(g))).join(', ') });
-                            }
-                        }
                         }
                     }
                 } catch (error) {
