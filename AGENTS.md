@@ -1,105 +1,100 @@
 # Repository Instructions
 
-## Project Overview
+## Scope and authoritative references
 
-This Go application synchronizes reading progress and book metadata between
-Audiobookshelf and Hardcover. It uses Audiobookshelf's REST API and Hardcover's
-GraphQL API, and includes a web UI, authentication, persistent sync state, and
-supporting command-line tools.
+This Go service synchronizes Audiobookshelf reading progress and book metadata
+with Hardcover. It has a CLI, a web UI, persistent sync state, and Docker and
+Helm deployment artifacts.
 
-Before changing contribution, branching, pull-request, or release behavior,
-read [CONTRIBUTING.md](CONTRIBUTING.md) and [RELEASE.md](RELEASE.md). Those files
-are authoritative when their procedures are more specific than this summary.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing contribution or pull
+request workflow, and [RELEASE.md](RELEASE.md) before changing release
+behavior. Those documents are authoritative for their procedures. The module
+and CI use Go 1.26 (`go.mod` and `.github/workflows/go.yml`).
 
-## Contribution Workflow
+## Contribution and pull requests
 
-- Create feature branches from `develop` and target `develop` in pull requests.
-- Create urgent hotfix branches from `main`; merge hotfixes back into both
-  `main` and `develop`.
-- Keep `main` stable. Releases are cut from `main`.
-- Use clear commit messages and a clear pull-request description.
-- Use `.github/pull_request_template.md` for every pull request. Complete its
-  summary and testing sections, and answer every checklist item accurately;
-  explain any item that does not apply rather than leaving the checklist
+- Create feature branches from `develop` and target `develop` in pull
+  requests. Create urgent `hotfix/*` branches from `main`, then merge them
+  into both `main` and `develop`. Keep `main` stable; releases are cut from it.
+- Use `.github/pull_request_template.md` for **every** pull request. Complete
+  its summary and testing sections, answer every checklist item accurately,
+  and explain any item that does not apply. Do not leave checklist items
   unanswered.
-- Ensure the affected tests, lint checks, and builds pass before opening a pull
-  request.
-- Follow the issue-reporting and licensing guidance in `CONTRIBUTING.md`.
+- Run the affected tests and relevant lint/build checks before opening a pull
+  request. Keep commits and the pull-request description clear.
 
-## Repository Layout
+## Code map and boundaries
 
-- `cmd/audiobookshelf-hardcover-sync/`: main application entry point and CLI
-- `cmd/edition`, `cmd/edition-tool`, `cmd/hardcover-lookup`, `cmd/image-tool`:
-  supporting command-line tools
-- `internal/api/audiobookshelf/`: Audiobookshelf REST client and API schema
-- `internal/api/hardcover/`: Hardcover GraphQL client and schema
-- `internal/sync/`: synchronization behavior and persistent sync state
-- `internal/config/`: YAML and environment configuration
-- `internal/auth/`, `internal/database/`, `internal/server/`, and
-  `internal/multiuser/`: web service, authentication, persistence, and profile
-  orchestration
-- `internal/edition/` and `internal/mismatch/`: edition and mismatch handling
-- `internal/testutils/`: legacy and broader integration-style tests excluded
-  from the default core test target
-- `web/`: web UI assets
-- `helm/audiobookshelf-hardcover-sync/`: Helm chart
-- `docs/`: feature and operational documentation
+- `cmd/audiobookshelf-hardcover-sync/` is the primary application. Supporting
+  commands are in `cmd/edition/`, `cmd/edition-tool/`,
+  `cmd/hardcover-lookup/`, and `cmd/image-tool/`.
+- `internal/api/audiobookshelf/` contains the REST client and its OpenAPI
+  schema; `internal/api/hardcover/` contains the GraphQL client and schema.
+  Inspect the relevant schema and existing client before changing an API
+  request or response shape.
+- `internal/sync/` owns synchronization and persisted state. Configuration is
+  defined in `internal/config/`; its YAML tags and environment handling are
+  the source of truth for configuration names and precedence.
+- `internal/auth/`, `internal/database/`, `internal/multiuser/`, and
+  `internal/server/` own the web service and profiles. `internal/edition/` and
+  `internal/mismatch/` handle matching and edition work. `web/` contains UI
+  assets; `helm/audiobookshelf-hardcover-sync/` contains the chart.
+- `internal/testutils/` is deliberately excluded from the core Make test
+  target. Include it only when its broader coverage is relevant.
 
-## API Contracts
+## Behavioral safeguards
 
-- Use GraphQL for Hardcover. Consult
-  `internal/api/hardcover/hardcover-schema.graphql` before changing queries or
-  mutations.
-- Use REST for Audiobookshelf. Consult
-  `internal/api/audiobookshelf/audiobookshelf-openapi.json` and the current
-  Audiobookshelf implementation when changing endpoints or payloads.
-- Hardcover ownership is represented by the user's `Owned` list, not by a
-  `user_books.owned` field. Use the existing ownership client methods.
-- Finished-book detection incorporates Audiobookshelf `/api/me` `isFinished`
-  data. Preserve the finished-state check that prevents ordinary completed
-  books from being mistaken for re-reads.
-- Hardcover tokens expire after one year and reset on January 1. Its API is
-  rate-limited, queries time out after 30 seconds, query depth is limited to
-  three, and regex/similarity operators may be disabled. Preserve the existing
-  rate-limiter and query-shape constraints.
+- Use GraphQL for Hardcover and REST for Audiobookshelf. Keep Hardcover
+  ownership checks on the user's `Owned` list, using the existing ownership
+  client methods.
+- Preserve the existing Audiobookshelf finished-state handling when changing
+  progress or reread logic.
+- Dry run is a no-external-mutation mode: route Hardcover writes through the
+  concrete client safety boundary, keep read operations available, and do not
+  persist state that would make a later real incremental sync skip unapplied
+  work. Cover the real mutation boundary and the relevant state behavior.
+- Preserve the Hardcover client's established rate limiting, retry, timeout,
+  and query-shape behavior. Do not introduce undocumented external API limits
+  or assumptions.
 
-## Implementation Guidelines
+## Implementation and configuration
 
-- Follow idiomatic Go and run `gofmt` on changed Go files.
-- Keep functions small and composable; prefer named functions over long
-  anonymous functions.
-- Use interfaces at external boundaries when they improve testability, but
-  avoid unnecessary abstraction.
-- Follow the existing client, mapping, configuration, logging, and error
-  handling patterns. Wrap errors with useful context.
-- Keep imports at the top of each file and remove unused code.
-- Configuration belongs in `internal/config`. Preserve existing YAML and
-  environment-variable compatibility, choose sensible defaults, and document
-  user-facing options in `README.md`.
-- Preserve dry-run as a no-external-mutation contract. Route new Hardcover
-  mutations through the existing client safety boundary.
+- Follow idiomatic Go, run `gofmt` on changed Go files, keep imports clean,
+  and wrap errors with useful context. Favor small, composable functions and
+  interfaces at real external boundaries.
+- Add only proportionate, behavior-focused tests needed to protect observable
+  product contracts across relevant success, no-op, and failure paths. Prefer
+  table-driven tests where they make cases clearer.
+- Do not add brittle tests for implementation details that are not required
+  for the code to work. For example, do not test that a source line remains
+  absent to "prevent regression" or that a log statement uses a particular
+  level. Avoid assertions tied only to source text, internal call order,
+  logging wording or level, or code structure unless that detail is itself an
+  explicit external contract.
+- Preserve YAML and environment-variable compatibility. Environment values
+  are applied after defaults and an optional config file by
+  `internal/config.Load`; document user-facing configuration in `README.md`.
+- Update `README.md` for user-visible configuration or behavior, focused
+  documents (and `MIGRATION.md` for upgrade requirements), and the
+  `[Unreleased]` section of `CHANGELOG.md` for release-facing changes. Keep
+  Docker Compose and Helm examples consistent with configuration changes.
 
-## Testing and Validation
+## Validation, containers, and releases
 
-- Add behavior-focused tests for new or changed behavior, including relevant
-  success, no-op, and failure paths.
-- Keep tests next to their package using Go's `*_test.go` convention. Prefer
-  table-driven tests and subtests where they make cases easier to understand.
-- `make test` runs the core suite with the race detector and coverage.
-- `make test-all` includes the legacy `internal/testutils` package.
-- `make lint` runs `golangci-lint`; `make build` builds the application and
-  command-line tools; `make all` runs the standard test, lint, and build gates.
-- Run the narrowest relevant tests while iterating, then the applicable full
-  project checks before handing off a completed change.
-
-## Documentation, Docker, and Releases
-
-- Update `README.md` for user-visible features and configuration changes.
-- Add release-facing changes to the `[Unreleased]` section of `CHANGELOG.md`.
-- Update focused documentation and `MIGRATION.md` when behavior or upgrade
-  requirements change.
-- Keep the multi-stage container build and scratch runtime image minimal and
-  secure. Keep Docker Compose and Helm examples aligned with configuration
-  changes.
-- Follow `RELEASE.md` rather than improvising a release. Tags use semantic
-  versions (`vX.Y.Z`), and GitHub Actions publishes the release artifacts.
+- `make test` runs the core suite with the race detector and atomic coverage;
+  it excludes `internal/testutils`. `make test-all` includes all discovered Go
+  packages. Use focused `go test` commands while iterating, then the relevant
+  Make target before handoff.
+- `make lint` runs `golangci-lint` with a five-minute timeout and installs the
+  tool into `GOPATH/bin` if absent. `make build` builds the main binary plus
+  `edition`, `image-tool`, and `hardcover-lookup`; run
+  `go build ./cmd/edition-tool` when that command changes. `make all` runs the
+  standard test, lint, and build targets.
+- The Dockerfile is a multi-stage build with an Alpine runtime image. Keep its
+  runtime dependencies, entrypoint, volumes, and non-root application setup
+  aligned with the application; keep Docker Compose and Helm deployment
+  examples aligned as well.
+- Follow [RELEASE.md](RELEASE.md) rather than inventing a release path. The
+  documented release flow updates the changelog, merges `develop` to `main`,
+  tags `vX.Y.Z`, and relies on the tag-triggered GitHub Actions workflow to
+  publish images and create the GitHub Release.
