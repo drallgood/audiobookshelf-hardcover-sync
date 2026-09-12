@@ -305,12 +305,6 @@ func TestHandleInProgressBook_ExistingReadStatusFailureRetriesStatusWithoutReadM
 	assert.ErrorIs(t, err, statusErr)
 	_, exists := svc.state.GetBookState(stateKey)
 	assert.False(t, exists, "a failed status mutation must remain retryable")
-	svc.lastProgressMutex.Lock()
-	svc.lastProgressUpdates[fmt.Sprintf("%s:%d", audiobook.ID, userBookID)] = progressUpdateInfo{
-		timestamp: time.Now(),
-		progress:  audiobook.Progress.CurrentTime,
-	}
-	svc.lastProgressMutex.Unlock()
 
 	err = svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 	assert.NoError(t, err)
