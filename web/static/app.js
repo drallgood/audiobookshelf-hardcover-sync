@@ -653,7 +653,7 @@ class SyncProfileApp {
                     </div>
                     <div class="status-info">
                         ${lastSync ? `
-                            <div><strong>Last Sync:</strong> <span title="${new Date(lastSync).toLocaleString()}">${this.formatRelativeTime(lastSync)}</span></div>
+                            <div><strong>Last Sync:</strong> <span class="relative-sync-time" data-sync-timestamp="${this.escapeHtml(lastSync)}" title="${new Date(lastSync).toLocaleString()}">${this.formatRelativeTime(lastSync)}</span></div>
                         ` : ''}
                         ${progress > 0 ? `
                             <div><strong>Progress:</strong> ${progress}%</div>
@@ -707,14 +707,23 @@ class SyncProfileApp {
         }
     }
 
+    updateRelativeSyncTime(card, lastSync) {
+        const relativeTime = card.querySelector('.relative-sync-time');
+        if (!relativeTime || !lastSync) return;
+
+        relativeTime.dataset.syncTimestamp = lastSync;
+        relativeTime.textContent = this.formatRelativeTime(lastSync);
+        relativeTime.title = new Date(lastSync).toLocaleString();
+    }
+
     renderStatuses() {
         const container = document.getElementById('sync-status');
         if (!container) return;
 
         if (Object.keys(this.statuses).length === 0) {
-            if (!container.querySelector('.status-card')) {
+            if (!container.querySelector('.status-empty-state')) {
                 container.innerHTML = `
-                    <div class="text-center" style="grid-column: 1 / -1; padding: 40px;">
+                    <div class="text-center status-empty-state" style="grid-column: 1 / -1; padding: 40px;">
                         <h3>No sync statuses available</h3>
                         <p>Add a new sync profile and start syncing to see status information.</p>
                     </div>
@@ -772,6 +781,7 @@ class SyncProfileApp {
             }
 
             retainedProfiles.add(profileId);
+            this.updateRelativeSyncTime(card, status.last_sync || status.lastSync);
             const cardAtPosition = container.children[index];
             if (cardAtPosition !== card) {
                 container.insertBefore(card, cardAtPosition || null);
