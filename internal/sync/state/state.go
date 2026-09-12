@@ -179,7 +179,11 @@ func resolveStatePathPart(path string, visited map[string]struct{}, depth int) (
 				return "", fmt.Errorf("failed to read state path symlink: %w", err)
 			}
 			if !filepath.IsAbs(target) {
-				target = filepath.Join(filepath.Dir(path), target)
+				resolvedParent, err := resolveStatePathPart(filepath.Dir(path), visited, depth)
+				if err != nil {
+					return "", err
+				}
+				target = filepath.Join(resolvedParent, target)
 			}
 			return resolveStatePathPart(target, visited, depth+1)
 		}

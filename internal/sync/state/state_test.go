@@ -151,6 +151,38 @@ func TestSavePreservesSymlinkTarget(t *testing.T) {
 	assert.Equal(t, 0.5, loaded.Books["book1"].LastProgress)
 }
 
+func TestSaveResolvesRelativeSymlinkTargetFromResolvedParent(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	dataDir := filepath.Join(tempDir, "data")
+	configDir := filepath.Join(dataDir, "config")
+	parentLink := filepath.Join(tempDir, "config")
+	targetPath := filepath.Join(dataDir, "state.json")
+	childLink := filepath.Join(configDir, "sync_state.json")
+	wrongTargetPath := filepath.Join(tempDir, "state.json")
+	require.NoError(t, os.MkdirAll(configDir, 0755))
+	require.NoError(t, os.Symlink(filepath.Join("data", "config"), parentLink))
+	require.NoError(t, os.WriteFile(wrongTargetPath, []byte("sentinel"), 0600))
+	require.NoError(t, os.Symlink(filepath.Join("..", "state.json"), childLink))
+
+	state := NewState()
+	state.UpdateBook("book1", 0.5, "IN_PROGRESS")
+	require.NoError(t, state.Save(filepath.Join(parentLink, "sync_state.json")))
+
+	loaded, err := LoadState(targetPath)
+	require.NoError(t, err)
+	assert.Equal(t, 0.5, loaded.Books["book1"].LastProgress)
+
+	wrongTarget, err := os.ReadFile(wrongTargetPath)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("sentinel"), wrongTarget)
+
+	linkInfo, err := os.Lstat(childLink)
+	require.NoError(t, err)
+	assert.NotEqual(t, 0, linkInfo.Mode()&os.ModeSymlink)
+}
+
 func TestSaveRejectsSymlinkLoop(t *testing.T) {
 	t.Parallel()
 
