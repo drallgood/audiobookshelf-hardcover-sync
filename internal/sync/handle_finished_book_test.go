@@ -376,6 +376,83 @@ func TestHandleFinishedBook_ExistingFinishedReadStatusFailureDoesNotAdvanceState
 	mockClient.AssertExpectations(t)
 }
 
+func TestHandleFinishedBook_BlankReadCleanupFailureRetriesWithoutDuplicateMutations(t *testing.T) {
+	logger.Setup(logger.Config{Level: "debug", Format: "json"})
+
+	svc, mockClient := createTestService()
+	svc.state = state.NewState()
+	svc.config = createTestConfigForTests(true)
+
+	book := createTestFinishedBook("abs-book-finished-cleanup-retry", "Finished Cleanup Retry", "Test Author", "B125", "978125")
+	userBookID := int64(7792559)
+	userBookIDStr := strconv.FormatInt(userBookID, 10)
+	readID := int64(5687938)
+	blankReadID := int64(5687939)
+	progressSeconds := int(book.Media.Duration)
+	finishedAt := "2025-06-11"
+	startedAt := "2025-06-01"
+	blankStartedAt := "2026-09-12"
+	cleanupErr := fmt.Errorf("blank read cleanup failed")
+
+	unfinishedRead := hardcover.UserBookRead{
+		ID:              readID,
+		UserBookID:      userBookID,
+		StartedAt:       &startedAt,
+		ProgressSeconds: &progressSeconds,
+	}
+	finishedRead := unfinishedRead
+	finishedRead.FinishedAt = &finishedAt
+	blankRead := hardcover.UserBookRead{
+		ID:         blankReadID,
+		UserBookID: userBookID,
+		StartedAt:  &blankStartedAt,
+	}
+	readsAfterStatus := []hardcover.UserBookRead{finishedRead, blankRead}
+
+	// The first pass finishes the existing read and status, then fails while
+	// deleting the blank row. The second pass must retry only that cleanup.
+	mockClient.On("GetUserBook", mock.Anything, userBookIDStr).Return(&models.HardcoverBook{
+		ID:           "book-finished-cleanup-retry",
+		UserBookID:   userBookIDStr,
+		BookStatusID: 2,
+	}, nil).Once()
+	mockClient.On("GetUserBook", mock.Anything, userBookIDStr).Return(&models.HardcoverBook{
+		ID:           "book-finished-cleanup-retry",
+		UserBookID:   userBookIDStr,
+		BookStatusID: 3,
+	}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{unfinishedRead}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return(readsAfterStatus, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return(readsAfterStatus, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return(readsAfterStatus, nil).Once()
+	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		return input.ID == readID
+	})).Return(true, nil).Once()
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+		ID:     userBookID,
+		Status: "FINISHED",
+	}).Return(nil).Once()
+	mockClient.On("DeleteUserBookRead", mock.Anything, blankReadID).Return(cleanupErr).Once()
+	mockClient.On("DeleteUserBookRead", mock.Anything, blankReadID).Return(nil).Once()
+
+	stateKey := "abs-book-finished-cleanup-retry:32059492"
+	err := svc.HandleFinishedBook(context.Background(), convertTestBookToModel(book), "32059492", userBookID)
+	assert.ErrorIs(t, err, cleanupErr)
+	_, exists := svc.state.GetBookState(stateKey)
+	assert.False(t, exists, "a failed blank-read cleanup must remain retryable")
+
+	err = svc.HandleFinishedBook(context.Background(), convertTestBookToModel(book), "32059492", userBookID)
+	assert.NoError(t, err)
+	bookState, exists := svc.state.GetBookState(stateKey)
+	assert.True(t, exists)
+	assert.InDelta(t, 1.0, bookState.LastProgress, 0.001)
+	assert.Equal(t, "FINISHED", bookState.Status)
+	mockClient.AssertNumberOfCalls(t, "UpdateUserBookRead", 1)
+	mockClient.AssertNumberOfCalls(t, "UpdateUserBookStatus", 1)
+	mockClient.AssertNumberOfCalls(t, "DeleteUserBookRead", 2)
+	mockClient.AssertExpectations(t)
+}
+
 // Helper functions for test data
 func stringPointer(s string) *string {
 	return &s
@@ -442,5 +519,3 @@ func createTestConfigForTests(syncOwned bool) *config.Config {
 	
 	return cfg
 }
-
-

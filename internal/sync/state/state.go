@@ -243,17 +243,28 @@ func resolveStatePathComponents(base string, components []string, visited map[st
 		if targetBase != "" {
 			base = targetBase
 		}
-		next := make([]string, 0, len(targetComponents)+len(rest))
-		next = append(next, targetComponents...)
-		next = append(next, rest...)
-
-		// Keep this set scoped to the current symlink expansion. A path can
-		// legitimately encounter the same symlink again after resolving
-		// ".." back to its parent; only an active re-entry is a loop.
+		// Keep this marker active while the symlink target is resolved so an
+		// actual loop is rejected. Clear it before resolving the configured
+		// path's remaining components: a path can legitimately encounter the
+		// same symlink again after resolving ".." back to its parent.
 		visited[candidate] = struct{}{}
-		resolved, err := resolveStatePathComponents(base, next, visited, depth+1)
+		resolved, err := resolveStatePathComponents(base, targetComponents, visited, depth+1)
 		delete(visited, candidate)
-		return resolved, err
+		if err != nil {
+			return "", err
+		}
+		if len(rest) > 0 {
+			info, err := os.Lstat(resolved)
+			switch {
+			case err == nil && !info.IsDir():
+				return "", fmt.Errorf("state path component %q is not a directory", resolved)
+			case err != nil && !os.IsNotExist(err):
+				return "", fmt.Errorf("failed to inspect state path: %w", err)
+			case os.IsNotExist(err) && containsParentTraversal(rest):
+				return "", fmt.Errorf("cannot resolve state path through missing component %q", resolved)
+			}
+		}
+		return resolveStatePathComponents(resolved, rest, visited, depth+1)
 	}
 
 	if len(rest) > 0 && !info.IsDir() {

@@ -2022,6 +2022,17 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 		return fmt.Errorf("error getting read statuses: %w", err)
 	}
 
+	// A status transition can leave behind a blank read row. Clean up any row
+	// observed from an earlier failed cleanup before selecting a read to update;
+	// otherwise a retry could update the blank row or create a duplicate read.
+	if userBook != nil && userBook.BookStatusID == 3 &&
+		hasBlankRead(readStatuses) && hasNonBlankReadAtProgress(readStatuses, book.Progress.CurrentTime, book.Media.Duration) {
+		if err := s.deleteBlankReads(ctx, userBookID, log); err != nil {
+			return fmt.Errorf("error cleaning up blank reads: %w", err)
+		}
+		readStatuses = filterBlankReads(readStatuses)
+	}
+
 	log.Info("Received read statuses from Hardcover", map[string]interface{}{
 		"count": len(readStatuses),
 	})
@@ -2204,7 +2215,9 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 			s.userBookCache.InvalidateByUserBook(int(userBookID))
 			log.Info("Successfully updated book status to FINISHED", nil)
 
-			s.deleteBlankReads(ctx, userBookID, log)
+			if err := s.deleteBlankReads(ctx, userBookID, log); err != nil {
+				return fmt.Errorf("error cleaning up blank reads: %w", err)
+			}
 		}
 	}
 	success = true
@@ -2328,7 +2341,9 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		}
 
 		s.userBookCache.InvalidateByUserBook(int(userBookID))
-		s.deleteBlankReads(ctx, userBookID, log)
+		if err := s.deleteBlankReads(ctx, userBookID, log); err != nil {
+			return fmt.Errorf("failed to clean up blank reads: %w", err)
+		}
 		return nil
 	}
 
@@ -2375,6 +2390,32 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			return true
 		}
 		return read != nil && read.EditionID != nil && *read.EditionID == *targetEditionID
+	}
+
+	// A previous pass may have completed the read/status mutations but failed
+	// while deleting an auto-created blank read. Only retry cleanup when a
+	// nonblank read already matches the current ABS progress; this keeps a
+	// standalone zero-progress/manual read out of the cleanup path and avoids
+	// duplicate read creation on a retry.
+	blankCleanupResolved := false
+	if hasBlankRead(readStatuses) {
+		matchingRead := false
+		for i := range readStatuses {
+			read := &readStatuses[i]
+			if !isBlankRead(*read) && readMatchesTargetEdition(read) &&
+				(read.FinishedAt == nil || *read.FinishedAt == "") &&
+				math.Abs(book.Progress.CurrentTime-readProgressSeconds(*read, book.Media.Duration)) < 1.0 {
+				matchingRead = true
+				break
+			}
+		}
+		if matchingRead {
+			if err := s.deleteBlankReads(ctx, userBookID, log); err != nil {
+				return fmt.Errorf("failed to clean up blank reads: %w", err)
+			}
+			readStatuses = filterBlankReads(readStatuses)
+			blankCleanupResolved = true
+		}
 	}
 	normalizeProgress := func(progress float64) float64 {
 		if progress > 1.0 {
@@ -2439,6 +2480,9 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 	// Check if we have progress to report
 	if book.Progress.CurrentTime <= 0 {
 		log.Info("No progress to update (current time is 0)", nil)
+		if blankCleanupResolved {
+			updateSyncState()
+		}
 		return nil
 	}
 
@@ -2457,6 +2501,9 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			logCtx["last_progress"] = lastUpdate.progress
 			logCtx["progress_diff"] = progressDiff
 			if !statusNeedsReconcile() {
+				if blankCleanupResolved {
+					updateSyncState()
+				}
 				log.Info("Skipping update - recently updated with similar progress", logCtx)
 				return nil
 			}
@@ -2796,6 +2843,9 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 					logCtx["progress_diff_seconds"] = fmt.Sprintf("%.2f", progressDiff)
 					log.Info("Progress is identical or nearly identical, skipping update", logCtx)
 					if !statusNeedsReconcile() {
+						if blankCleanupResolved {
+							updateSyncState()
+						}
 						return nil
 					}
 					if err := reconcileBookStatus(); err != nil {
@@ -2813,6 +2863,9 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			if readStatusToUpdate != nil && !forceSync && progressDiff < minDiff {
 				log.Info("Progress difference below threshold, skipping update", logCtx)
 				if !statusNeedsReconcile() {
+					if blankCleanupResolved {
+						updateSyncState()
+					}
 					return nil
 				}
 				if err := reconcileBookStatus(); err != nil {
@@ -3208,7 +3261,9 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				return fmt.Errorf("failed to set IN_PROGRESS after read creation: %w", err)
 			}
 			s.userBookCache.InvalidateByUserBook(int(userBookID))
-			s.deleteBlankReads(ctx, userBookID, log)
+			if err := s.deleteBlankReads(ctx, userBookID, log); err != nil {
+				return fmt.Errorf("failed to clean up blank reads: %w", err)
+			}
 		}
 
 		// Update the sync state only after every required Hardcover mutation has
@@ -3236,26 +3291,67 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 	return nil
 }
 
+func isBlankRead(read hardcover.UserBookRead) bool {
+	return read.ProgressSeconds == nil &&
+		read.Progress <= 0 &&
+		(read.FinishedAt == nil || *read.FinishedAt == "")
+}
+
+func readProgressSeconds(read hardcover.UserBookRead, duration float64) float64 {
+	if read.ProgressSeconds != nil {
+		return float64(*read.ProgressSeconds)
+	}
+	if read.Progress > 0 && duration > 0 {
+		return read.Progress / 100.0 * duration
+	}
+	return read.Progress
+}
+
+func hasBlankRead(reads []hardcover.UserBookRead) bool {
+	for _, read := range reads {
+		if isBlankRead(read) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasNonBlankReadAtProgress(reads []hardcover.UserBookRead, progress, duration float64) bool {
+	for _, read := range reads {
+		if isBlankRead(read) {
+			continue
+		}
+		if math.Abs(progress-readProgressSeconds(read, duration)) < 1.0 {
+			return true
+		}
+	}
+	return false
+}
+
+func filterBlankReads(reads []hardcover.UserBookRead) []hardcover.UserBookRead {
+	filtered := make([]hardcover.UserBookRead, 0, len(reads))
+	for _, read := range reads {
+		if !isBlankRead(read) {
+			filtered = append(filtered, read)
+		}
+	}
+	return filtered
+}
+
 // deleteBlankReads detects and deletes auto-created blank read rows that Hardcover
 // can create as a side effect of status transitions. Blank reads have no progress,
 // no progress_seconds, and no finished_at timestamp.
-func (s *Service) deleteBlankReads(ctx context.Context, userBookID int64, log *logger.Logger) {
+func (s *Service) deleteBlankReads(ctx context.Context, userBookID int64, log *logger.Logger) error {
 	allReads, refetchErr := s.hardcover.GetUserBookReads(ctx, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
 	})
 	if refetchErr != nil {
 		log.With(map[string]interface{}{"error": refetchErr.Error()}).Warn("Failed to check for blank reads after status transition")
-		return
+		return fmt.Errorf("failed to check for blank reads: %w", refetchErr)
 	}
 	for i := range allReads {
 		read := &allReads[i]
-		if read.ProgressSeconds != nil {
-			continue
-		}
-		if read.Progress > 0 {
-			continue
-		}
-		if read.FinishedAt != nil && *read.FinishedAt != "" {
+		if !isBlankRead(*read) {
 			continue
 		}
 		log.Warn("Deleting auto-created blank read after status transition", map[string]interface{}{
@@ -3264,8 +3360,10 @@ func (s *Service) deleteBlankReads(ctx context.Context, userBookID int64, log *l
 		})
 		if delErr := s.hardcover.DeleteUserBookRead(ctx, read.ID); delErr != nil {
 			log.With(map[string]interface{}{"error": delErr.Error()}).Warn("Failed to delete auto-created blank read")
+			return fmt.Errorf("failed to delete blank read %d: %w", read.ID, delErr)
 		}
 	}
+	return nil
 }
 
 // determineBookStatus determines the book status based on progress and finished status

@@ -217,6 +217,86 @@ func TestSaveResolvesDotDotAfterSymlinkComponent(t *testing.T) {
 	assert.NotEqual(t, 0, linkInfo.Mode()&os.ModeSymlink)
 }
 
+func TestSaveAllowsRepeatedSymlinkAfterDotDot(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	dataDir := filepath.Join(tempDir, "data")
+	realDir := filepath.Join(dataDir, "real")
+	linkPath := filepath.Join(dataDir, "link")
+	targetPath := filepath.Join(realDir, "state.json")
+	wrongTargetPath := filepath.Join(dataDir, "state.json")
+	configuredPath := dataDir + string(filepath.Separator) + "link" +
+		string(filepath.Separator) + ".." + string(filepath.Separator) + "link" +
+		string(filepath.Separator) + "state.json"
+
+	require.NoError(t, os.MkdirAll(realDir, 0755))
+	require.NoError(t, os.Symlink("real", linkPath))
+
+	state := NewState()
+	state.UpdateBook("book1", 0.5, "IN_PROGRESS")
+	require.NoError(t, state.Save(configuredPath))
+
+	loaded, err := LoadState(targetPath)
+	require.NoError(t, err)
+	assert.Equal(t, 0.5, loaded.Books["book1"].LastProgress)
+
+	_, err = os.Stat(wrongTargetPath)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+
+	linkInfo, err := os.Lstat(linkPath)
+	require.NoError(t, err)
+	assert.NotEqual(t, 0, linkInfo.Mode()&os.ModeSymlink)
+}
+
+func TestSaveRejectsFileSymlinkBeforeRemainingPath(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	dataDir := filepath.Join(tempDir, "data")
+	filePath := filepath.Join(dataDir, "file.json")
+	linkPath := filepath.Join(dataDir, "link")
+	wrongTargetPath := filepath.Join(dataDir, "state.json")
+	configuredPath := dataDir + string(filepath.Separator) + "link" +
+		string(filepath.Separator) + ".." + string(filepath.Separator) + "state.json"
+
+	require.NoError(t, os.MkdirAll(dataDir, 0755))
+	require.NoError(t, os.WriteFile(filePath, []byte("source"), 0600))
+	require.NoError(t, os.WriteFile(wrongTargetPath, []byte("sentinel"), 0600))
+	require.NoError(t, os.Symlink("file.json", linkPath))
+
+	err := NewState().Save(configuredPath)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "is not a directory")
+
+	wrongTarget, err := os.ReadFile(wrongTargetPath)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("sentinel"), wrongTarget)
+}
+
+func TestSaveRejectsDanglingSymlinkBeforeParentTraversal(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	dataDir := filepath.Join(tempDir, "data")
+	linkPath := filepath.Join(dataDir, "link")
+	wrongTargetPath := filepath.Join(dataDir, "state.json")
+	configuredPath := dataDir + string(filepath.Separator) + "link" +
+		string(filepath.Separator) + ".." + string(filepath.Separator) + "state.json"
+
+	require.NoError(t, os.MkdirAll(dataDir, 0755))
+	require.NoError(t, os.WriteFile(wrongTargetPath, []byte("sentinel"), 0600))
+	require.NoError(t, os.Symlink("missing.json", linkPath))
+
+	err := NewState().Save(configuredPath)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "cannot resolve state path through missing component")
+
+	wrongTarget, err := os.ReadFile(wrongTargetPath)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("sentinel"), wrongTarget)
+}
+
 func TestSaveResolvesDanglingFinalSymlink(t *testing.T) {
 	t.Parallel()
 
