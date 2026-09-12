@@ -286,6 +286,50 @@ func TestHandleFinishedBook_MissingFinishedAtSkipsReadMutation(t *testing.T) {
 
 	mockClient.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
 	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+	_, exists := svc.state.GetBookState("abs-book-missing-finished-at:32059489")
+	assert.False(t, exists, "without a finished timestamp, the skipped mutation must remain retryable")
+	mockClient.AssertExpectations(t)
+}
+
+func TestHandleFinishedBook_StatusFailureDoesNotAdvanceState(t *testing.T) {
+	logger.Setup(logger.Config{Level: "debug", Format: "json"})
+
+	svc, mockClient := createTestService()
+	svc.config = createTestConfigForTests(true)
+
+	book := createTestFinishedBook("abs-book-status-failure", "Status Failure", "Test Author", "B123", "978123")
+	userBookID := int64(7792557)
+	userBookIDStr := strconv.FormatInt(userBookID, 10)
+	readID := int64(5687936)
+	statusErr := fmt.Errorf("status update failed")
+
+	mockClient.On("GetUserBook", mock.Anything, userBookIDStr).Return(&models.HardcoverBook{
+		ID:           "book-status-failure",
+		UserBookID:   userBookIDStr,
+		BookStatusID: 2,
+	}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{{
+		ID:              readID,
+		UserBookID:      userBookID,
+		StartedAt:       stringPointer("2025-06-11"),
+		FinishedAt:      nil,
+		ProgressSeconds: intPointer(21234),
+	}}, nil).Once()
+	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		return input.ID == readID
+	})).Return(true, nil).Once()
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+		ID:     userBookID,
+		Status: "FINISHED",
+	}).Return(statusErr).Once()
+
+	err := svc.HandleFinishedBook(context.Background(), convertTestBookToModel(book), "32059490", userBookID)
+
+	assert.ErrorIs(t, err, statusErr)
+	_, exists := svc.state.GetBookState("abs-book-status-failure:32059490")
+	assert.False(t, exists, "a failed status mutation must remain retryable")
 	mockClient.AssertExpectations(t)
 }
 

@@ -106,14 +106,14 @@ func TestSavePreservesExistingFilePermissions(t *testing.T) {
 	statePath := filepath.Join(tempDir, "state.json")
 	state := NewState()
 	require.NoError(t, state.Save(statePath))
-	require.NoError(t, os.Chmod(statePath, 0600))
+	require.NoError(t, os.Chmod(statePath, 0640))
 
 	state.UpdateBook("book1", 0.5, "IN_PROGRESS")
 	require.NoError(t, state.Save(statePath))
 
 	info, err := os.Stat(statePath)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0600), info.Mode().Perm())
+	assert.Equal(t, os.FileMode(0640), info.Mode().Perm())
 }
 
 func TestStateDirtyTracking(t *testing.T) {
@@ -274,7 +274,7 @@ func TestCustomStatePathAndPermissions(t *testing.T) {
 			info, err := os.Stat(statePath)
 			require.NoError(t, err)
 			require.False(t, info.IsDir())
-			require.Equal(t, os.FileMode(0644), info.Mode().Perm())
+			require.Equal(t, os.FileMode(0600), info.Mode().Perm())
 
 			// Test loading state
 			loadedState, err := LoadState(statePath)
@@ -296,7 +296,7 @@ func TestCustomStatePathAndPermissions(t *testing.T) {
 			info, err = os.Stat(statePath)
 			require.NoError(t, err)
 			require.False(t, info.IsDir())
-			require.Equal(t, os.FileMode(0644), info.Mode().Perm())
+			require.Equal(t, os.FileMode(0600), info.Mode().Perm())
 		})
 	}
 }

@@ -97,7 +97,9 @@ func (s *State) Save(path string) error {
 		return fmt.Errorf("failed to create state directory: %w", err)
 	}
 
-	fileMode := os.FileMode(0644)
+	// CreateTemp uses 0600, so new state files do not expose book IDs or
+	// progress details to other users. Existing files retain their permissions.
+	fileMode := os.FileMode(0600)
 	if info, err := os.Stat(path); err == nil {
 		fileMode = info.Mode().Perm()
 	} else if !os.IsNotExist(err) {

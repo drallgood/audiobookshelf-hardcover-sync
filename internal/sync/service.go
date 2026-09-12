@@ -908,6 +908,10 @@ func (s *Service) processLibrary(ctx context.Context, library *audiobookshelf.Au
 	// Process each item in the library
 	processed := 0
 	for _, book := range items {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return processed, ctxErr
+		}
+
 		// Process the item
 		err := s.processBook(ctx, book, userProgress)
 		if checkpointErr := s.checkpointState(book.ID); checkpointErr != nil {
@@ -1203,7 +1207,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		hcBook    *models.HardcoverBook
 		findErr   error
 		editionID string
-		stateKey  string
+		stateKey  = book.ID
 	)
 
 	// Find the book in Hardcover to get the edition ID
@@ -2066,7 +2070,6 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 				"read_id":          latestUnfinishedRead.ID,
 				"has_finished_read": hasFinishedRead,
 			})
-			success = true
 			return nil
 		}
 
@@ -2118,7 +2121,6 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 		log.Info("Updated existing read status to mark as finished", map[string]interface{}{
 			"read_id": latestUnfinishedRead.ID,
 		})
-		success = true
 	} else if !hasFinishedRead {
 		// No reads at all — create a new finished read.
 		if book.Progress.FinishedAt <= 0 {
@@ -2126,7 +2128,6 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 				"user_book_id": userBookID,
 				"book_id":      book.ID,
 			})
-			success = true
 			return nil
 		}
 
@@ -2165,7 +2166,6 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 		}
 
 		log.Info("Successfully created new read record")
-		success = true
 	} else {
 		// Book already has finished reads — no new read to create.
 		// Only update status if it's not already FINISHED.
@@ -2175,7 +2175,6 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 				"title":   book.Media.Metadata.Title,
 			})
 			needsStatusUpdate = false
-			success = true
 		} else {
 			log.Info("Book has finished reads but status is not FINISHED; will update status", map[string]interface{}{
 				"book_id": book.ID,
@@ -2201,6 +2200,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 			log.Error("Failed to update book status to FINISHED", map[string]interface{}{
 				"error": statusErr,
 			})
+			return fmt.Errorf("error updating book status to FINISHED: %w", statusErr)
 		} else {
 			s.userBookCache.InvalidateByUserBook(int(userBookID))
 			log.Info("Successfully updated book status to FINISHED", nil)
@@ -2208,6 +2208,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 			s.deleteBlankReads(ctx, userBookID, log)
 		}
 	}
+	success = true
 
 	return nil
 }
@@ -2920,25 +2921,6 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 
 		log.Info("Successfully updated read status in Hardcover", logCtx)
 
-		// Update the sync state with the current progress and status using the composite key.
-		// State is only written AFTER a successful Hardcover mutation.
-		progressPct := 0.0
-		if book.Media.Duration > 0 {
-			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
-		}
-		status := "IN_PROGRESS"
-		if book.Progress.IsFinished {
-			status = "FINISHED"
-		}
-		if s.state.UpdateBook(stateKey, progressPct, status) {
-			bookLog.Debug("Updated book state", map[string]interface{}{
-				"progress":  progressPct,
-				"status":    status,
-				"state_key": stateKey,
-			})
-		}
-		s.state.SetHasProgressSeconds(stateKey)
-
 		// Update book status based on progress
 		if hcBook != nil {
 			// If the book is marked as finished in ABS but not in Hardcover, update status
@@ -2954,6 +2936,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 						"error":        err.Error(),
 					}
 					log.With(errCtx).Error("Failed to update book status to COMPLETED")
+					return fmt.Errorf("failed to update book status to COMPLETED: %w", err)
 				} else {
 					s.userBookCache.InvalidateByUserBook(int(userBookID))
 					s.deleteBlankReads(ctx, userBookID, log)
@@ -2977,7 +2960,8 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 						StatusID: 2,
 					})
 					if err != nil {
-						log.With(map[string]interface{}{"error": err.Error()}).Warn("Failed to set IN_PROGRESS after read update")
+						log.With(map[string]interface{}{"error": err.Error()}).Error("Failed to set IN_PROGRESS after read update")
+						return fmt.Errorf("failed to set IN_PROGRESS after read update: %w", err)
 					} else {
 						s.userBookCache.InvalidateByUserBook(int(userBookID))
 						s.deleteBlankReads(ctx, userBookID, log)
@@ -2987,6 +2971,25 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				log.Debug("Book status is already up to date", logCtx)
 			}
 		}
+
+		// Update the sync state only after every required Hardcover mutation has
+		// succeeded. This keeps a failed status transition retryable next run.
+		progressPct := 0.0
+		if book.Media.Duration > 0 {
+			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
+		}
+		status := "IN_PROGRESS"
+		if book.Progress.IsFinished {
+			status = "FINISHED"
+		}
+		if s.state.UpdateBook(stateKey, progressPct, status) {
+			bookLog.Debug("Updated book state", map[string]interface{}{
+				"progress":  progressPct,
+				"status":    status,
+				"state_key": stateKey,
+			})
+		}
+		s.state.SetHasProgressSeconds(stateKey)
 	} else {
 		// Create a new read status since none exists
 		progressSeconds := int(book.Progress.CurrentTime)
@@ -3170,16 +3173,16 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				ID:       userBookID,
 				StatusID: 2, // Currently Reading
 			}); err != nil {
-				log.With(map[string]interface{}{"error": err.Error()}).Warn("Failed to set IN_PROGRESS after read creation")
-} else {
+				log.With(map[string]interface{}{"error": err.Error()}).Error("Failed to set IN_PROGRESS after read creation")
+				return fmt.Errorf("failed to set IN_PROGRESS after read creation: %w", err)
+			} else {
 				s.userBookCache.InvalidateByUserBook(int(userBookID))
 				s.deleteBlankReads(ctx, userBookID, log)
 			}
 		}
 
-		// Update the sync state with the current progress and status using the composite key.
-		// State is only written AFTER a successful Hardcover mutation to prevent state
-		// inconsistency when the mutation is skipped or fails.
+		// Update the sync state only after every required Hardcover mutation has
+		// succeeded. This keeps a failed status transition retryable next run.
 		progressPct := 0.0
 		if book.Media.Duration > 0 {
 			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100

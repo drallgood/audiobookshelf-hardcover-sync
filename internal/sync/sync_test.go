@@ -508,15 +508,18 @@ func TestProcessLibraryCheckpointsOnceThenReturnsCancellation(t *testing.T) {
 		books[i] = *book
 	}
 	mockABS.On("GetLibraryItems", mock.Anything, "lib1").Return(books, nil).Once()
+	ctx, cancel := context.WithCancel(context.Background())
 	mockHC.On("SearchBookByISBN13", mock.Anything, "ISBN").Return(&models.HardcoverBook{}, nil).Once()
-	mockHC.On("SearchBookByISBN13", mock.Anything, "ISBN").Return((*models.HardcoverBook)(nil), assert.AnError).Once()
+	mockHC.On("SearchBookByISBN13", mock.Anything, "ISBN").Return((*models.HardcoverBook)(nil), assert.AnError).Once().Run(func(mock.Arguments) {
+		// Cancel after the first book reaches its final lookup, before the
+		// next loop iteration, so the first book's checkpoint is durable.
+		cancel()
+	})
 	mockHC.On("SearchBookByISBN10", mock.Anything, "ISBN").Return((*models.HardcoverBook)(nil), nil).Once()
 	mockHC.On("SearchBooks", mock.Anything, "Unread Book Test Author", "").Return([]models.HardcoverBook{}, nil).Once()
 	mockHC.On("SearchBooks", mock.Anything, "Unread Book", "Test Author").Return([]models.HardcoverBook{}, nil).Once()
 	svc.audiobookshelf = mockABS
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
 	processed, err := svc.processLibrary(
 		ctx,
 		&audiobookshelf.AudiobookshelfLibrary{ID: "lib1", Name: "Test Library"},
@@ -534,6 +537,37 @@ func TestProcessLibraryCheckpointsOnceThenReturnsCancellation(t *testing.T) {
 	assert.Equal(t, 0.5, bookState.LastProgress)
 	assert.Equal(t, "SKIPPED", bookState.Status)
 	assert.True(t, bookState.HasProgressSeconds)
+	_, exists = loadedState.GetBookState("book2")
+	assert.False(t, exists, "the second book must not be entered after cancellation")
+	mockABS.AssertExpectations(t)
+	mockHC.AssertExpectations(t)
+}
+
+func TestProcessLibraryStopsBeforeBookWhenAlreadyCanceled(t *testing.T) {
+	svc, mockHC := createTestService()
+	svc.config.Sync.ProcessUnreadBooks = false
+	svc.statePath = filepath.Join(t.TempDir(), "sync_state.json")
+
+	mockABS := new(MockAudiobookshelfClient)
+	book := toAudiobookshelfBook(createTestBook("book1", "Unread Book", "Test Author", "", ""))
+	book.Progress.CurrentTime = book.Media.Duration / 2
+	mockABS.On("GetLibraryItems", mock.Anything, "lib1").Return([]models.AudiobookshelfBook{*book}, nil).Once()
+	svc.audiobookshelf = mockABS
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	processed, err := svc.processLibrary(
+		ctx,
+		&audiobookshelf.AudiobookshelfLibrary{ID: "lib1", Name: "Test Library"},
+		0,
+		&models.AudiobookshelfUserProgress{},
+	)
+
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, processed)
+	assert.Zero(t, svc.summary.TotalBooksProcessed, "an already-canceled run must not enter a book")
+	_, statErr := os.Stat(svc.statePath)
+	assert.ErrorIs(t, statErr, os.ErrNotExist)
 	mockABS.AssertExpectations(t)
 	mockHC.AssertExpectations(t)
 }
