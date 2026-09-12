@@ -637,7 +637,6 @@ class SyncProfileApp {
             }
         } catch (error) {
             console.error(`Error fetching summary for profile ${profileId}:`, error);
-            if (error.name === 'AbortError') return;
             // Don't show toast here to avoid multiple toasts for multiple failures
         }
     }
