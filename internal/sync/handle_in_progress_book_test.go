@@ -205,6 +205,57 @@ func TestHandleInProgressBook_UpdateExistingRead(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
+func TestHandleInProgressBook_MatchingReadNoOpAdvancesState(t *testing.T) {
+	tests := []struct {
+		name              string
+		hardcoverProgress int
+	}{
+		{name: "identical progress", hardcoverProgress: 300},
+		{name: "below update threshold", hardcoverProgress: 250},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, mockClient := createTestService()
+
+			testAudiobook := createTestBook("test-book-matching-read", "Matching Read", "Test Author", "B08N5KWB9H", "9781234567890")
+			testAudiobook.Progress.CurrentTime = 300
+			testAudiobook.Media.Duration = 1000
+			audiobook := toAudiobookshelfBook(testAudiobook)
+
+			userBookID := int64(130)
+			editionID := int64(462)
+			readID := int64(796)
+			readProgress := tt.hardcoverProgress
+			mockClient.On("GetUserBook", mock.Anything, "130").Return(&models.HardcoverBook{
+				ID: "book-130", Title: "Matching Read", EditionID: "462", BookStatusID: 2,
+			}, nil).Once()
+			mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+				UserBookID: userBookID,
+			}).Return([]hardcover.UserBookRead{{
+				ID: readID, ProgressSeconds: &readProgress, EditionID: &editionID,
+				FinishedAt: nil,
+			}}, nil).Once()
+
+			stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
+			err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+
+			assert.NoError(t, err)
+			bookState, exists := svc.state.GetBookState(stateKey)
+			assert.True(t, exists, "a verified remote no-op should create composite state")
+			assert.InDelta(t, 0.3, bookState.LastProgress, 0.001)
+			assert.Equal(t, "IN_PROGRESS", bookState.Status)
+			assert.True(t, bookState.HasProgressSeconds)
+			assert.False(t, svc.state.NeedsSync(stateKey, 0.3, "IN_PROGRESS", 0.01))
+			assert.False(t, svc.state.NeedsSync(audiobook.ID, 0.3, "IN_PROGRESS", 0.01))
+			mockClient.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+			mockClient.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+			mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+			mockClient.AssertExpectations(t)
+		})
+	}
+}
+
 func TestHandleInProgressBook_ExistingReadStatusFailureDoesNotAdvanceState(t *testing.T) {
 	svc, mockClient := createTestService()
 
