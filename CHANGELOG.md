@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Moved and updated repository guidance from `.github/copilot-instructions.md` to root `AGENTS.md`, including contributor workflow and behavior-focused testing guidance. (#177)
+- Moved and updated repository guidance from `.github/copilot-instructions.md` to root `AGENTS.md`, including contributor workflow and behavior-focused testing guidance by @Snuffy2. (#177)
 
 ## [v3.6.0] - 2026-09-01
 
