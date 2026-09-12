@@ -17,11 +17,12 @@ and CI use Go 1.26 (`go.mod` and `.github/workflows/go.yml`).
   requests. Create urgent `hotfix/*` branches from `main`, then merge them
   into both `main` and `develop`. Keep `main` stable; releases are cut from it.
 - Use `.github/pull_request_template.md` for **every** pull request. Complete
-  its summary and testing sections, answer every checklist item accurately,
-  and explain any item that does not apply. Do not leave checklist items
-  unanswered. For a `hotfix/*` pull request to `main`, keep the template's
-  sections and checklist but explicitly identify the hotfix exception to its
-  `develop`-target warning and describe the required back-merge to `develop`.
+  its summary and testing sections, and answer every checklist item exactly as
+  written. Do not add explanations or qualifications in the Checklist section;
+  put relevant context in Testing Instructions instead.
+- For a `hotfix/*` pull request to `main`, keep the template's sections and
+  checklist, and identify the hotfix exception to its `develop`-target warning
+  in Summary of Changes.
 - Run the affected tests and relevant lint/build checks before opening a pull
   request. Keep commits and the pull-request description clear.
 
