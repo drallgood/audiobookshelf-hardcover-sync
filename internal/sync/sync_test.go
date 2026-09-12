@@ -491,17 +491,28 @@ func TestProcessLibraryCheckpointsOnceThenReturnsCancellation(t *testing.T) {
 	svc, mockHC := createTestService()
 	svc.config.Sync.ProcessUnreadBooks = false
 	svc.statePath = filepath.Join(t.TempDir(), "sync_state.json")
-	svc.state.UpdateBook("completed-book", 50, "IN_PROGRESS")
 
 	mockABS := new(MockAudiobookshelfClient)
 	books := make([]models.AudiobookshelfBook, 2)
 	for i := range books {
 		book := toAudiobookshelfBook(createTestBook(fmt.Sprintf("book%d", i+1), "Unread Book", "Test Author", "", ""))
-		book.Progress.CurrentTime = 0
+		if i == 0 {
+			// Give the first book enough progress to reach the deterministic
+			// lookup failure path, which records its state before cancellation.
+			book.Media.Metadata.ISBN = "ISBN"
+			book.Progress.CurrentTime = book.Media.Duration / 2
+		} else {
+			book.Progress.CurrentTime = 0
+		}
 		book.Progress.IsFinished = false
 		books[i] = *book
 	}
 	mockABS.On("GetLibraryItems", mock.Anything, "lib1").Return(books, nil).Once()
+	mockHC.On("SearchBookByISBN13", mock.Anything, "ISBN").Return(&models.HardcoverBook{}, nil).Once()
+	mockHC.On("SearchBookByISBN13", mock.Anything, "ISBN").Return((*models.HardcoverBook)(nil), assert.AnError).Once()
+	mockHC.On("SearchBookByISBN10", mock.Anything, "ISBN").Return((*models.HardcoverBook)(nil), nil).Once()
+	mockHC.On("SearchBooks", mock.Anything, "Unread Book Test Author", "").Return([]models.HardcoverBook{}, nil).Once()
+	mockHC.On("SearchBooks", mock.Anything, "Unread Book", "Test Author").Return([]models.HardcoverBook{}, nil).Once()
 	svc.audiobookshelf = mockABS
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -518,8 +529,11 @@ func TestProcessLibraryCheckpointsOnceThenReturnsCancellation(t *testing.T) {
 	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed, "cancellation must stop before the second book")
 	loadedState, loadErr := state.LoadState(svc.statePath)
 	require.NoError(t, loadErr)
-	_, exists := loadedState.GetBookState("completed-book")
-	assert.True(t, exists, "the final checkpoint must be durable before cancellation returns")
+	bookState, exists := loadedState.GetBookState("book1")
+	require.True(t, exists, "the first book state must be durable before cancellation returns")
+	assert.Equal(t, 0.5, bookState.LastProgress)
+	assert.Equal(t, "SKIPPED", bookState.Status)
+	assert.True(t, bookState.HasProgressSeconds)
 	mockABS.AssertExpectations(t)
 	mockHC.AssertExpectations(t)
 }
