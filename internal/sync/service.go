@@ -1207,7 +1207,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		hcBook    *models.HardcoverBook
 		findErr   error
 		editionID string
-		stateKey  = book.ID
+		stateKey  string
 	)
 
 	// Find the book in Hardcover to get the edition ID
