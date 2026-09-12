@@ -92,7 +92,11 @@ func (s *State) Save(path string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	dir := filepath.Dir(path)
+	targetPath, err := resolveStatePath(path)
+	if err != nil {
+		return fmt.Errorf("failed to resolve state file: %w", err)
+	}
+	dir := filepath.Dir(targetPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create state directory: %w", err)
 	}
@@ -100,7 +104,7 @@ func (s *State) Save(path string) error {
 	// CreateTemp uses 0600, so new state files do not expose book IDs or
 	// progress details to other users. Existing files retain their permissions.
 	fileMode := os.FileMode(0600)
-	if info, err := os.Stat(path); err == nil {
+	if info, err := os.Stat(targetPath); err == nil {
 		fileMode = info.Mode().Perm()
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("failed to stat state file: %w", err)
@@ -133,7 +137,7 @@ func (s *State) Save(path string) error {
 	if err := tempFile.Close(); err != nil {
 		return fmt.Errorf("failed to close temporary state file: %w", err)
 	}
-	if err := os.Rename(tempPath, path); err != nil {
+	if err := os.Rename(tempPath, targetPath); err != nil {
 		return fmt.Errorf("failed to replace state file: %w", err)
 	}
 	if err := syncDirectory(dir); err != nil {
@@ -142,6 +146,56 @@ func (s *State) Save(path string) error {
 	s.dirty = false
 
 	return nil
+}
+
+const maxStateSymlinkDepth = 255
+
+// resolveStatePath follows the configured state path to the file that should
+// be replaced. Resolving the path before the atomic rename keeps a configured
+// symlink in place, including when its target does not exist yet.
+func resolveStatePath(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to make state path absolute: %w", err)
+	}
+
+	return resolveStatePathPart(filepath.Clean(absPath), make(map[string]struct{}), 0)
+}
+
+func resolveStatePathPart(path string, visited map[string]struct{}, depth int) (string, error) {
+	path = filepath.Clean(path)
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			if depth >= maxStateSymlinkDepth {
+				return "", fmt.Errorf("state path exceeds maximum symlink depth")
+			}
+			if _, seen := visited[path]; seen {
+				return "", fmt.Errorf("state path contains a symlink loop")
+			}
+			visited[path] = struct{}{}
+
+			target, err := os.Readlink(path)
+			if err != nil {
+				return "", fmt.Errorf("failed to read state path symlink: %w", err)
+			}
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(filepath.Dir(path), target)
+			}
+			return resolveStatePathPart(target, visited, depth+1)
+		}
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("failed to inspect state path: %w", err)
+	}
+
+	parent := filepath.Dir(path)
+	if parent == path {
+		return path, nil
+	}
+	resolvedParent, err := resolveStatePathPart(parent, visited, depth)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolvedParent, filepath.Base(path)), nil
 }
 
 func syncDirectory(path string) error {

@@ -116,6 +116,55 @@ func TestSavePreservesExistingFilePermissions(t *testing.T) {
 	assert.Equal(t, os.FileMode(0640), info.Mode().Perm())
 }
 
+func TestSavePreservesSymlinkTarget(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	targetDir := filepath.Join(tempDir, "target")
+	linkDir := filepath.Join(tempDir, "config")
+	require.NoError(t, os.MkdirAll(targetDir, 0755))
+	require.NoError(t, os.MkdirAll(linkDir, 0755))
+
+	targetPath := filepath.Join(targetDir, "state.json")
+	linkPath := filepath.Join(linkDir, "sync_state.json")
+	state := NewState()
+	require.NoError(t, state.Save(targetPath))
+	require.NoError(t, os.Chmod(targetPath, 0640))
+
+	relativeTarget, err := filepath.Rel(linkDir, targetPath)
+	require.NoError(t, err)
+	require.NoError(t, os.Symlink(relativeTarget, linkPath))
+
+	state.UpdateBook("book1", 0.5, "IN_PROGRESS")
+	require.NoError(t, state.Save(linkPath))
+
+	linkInfo, err := os.Lstat(linkPath)
+	require.NoError(t, err)
+	assert.NotEqual(t, 0, linkInfo.Mode()&os.ModeSymlink)
+
+	targetInfo, err := os.Stat(targetPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0640), targetInfo.Mode().Perm())
+
+	loaded, err := LoadState(linkPath)
+	require.NoError(t, err)
+	assert.Equal(t, 0.5, loaded.Books["book1"].LastProgress)
+}
+
+func TestSaveRejectsSymlinkLoop(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	firstPath := filepath.Join(tempDir, "first.json")
+	secondPath := filepath.Join(tempDir, "second.json")
+	require.NoError(t, os.Symlink(filepath.Base(secondPath), firstPath))
+	require.NoError(t, os.Symlink(filepath.Base(firstPath), secondPath))
+
+	err := NewState().Save(firstPath)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "symlink loop")
+}
+
 func TestStateDirtyTracking(t *testing.T) {
 	t.Parallel()
 
