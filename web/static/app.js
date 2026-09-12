@@ -34,6 +34,8 @@ class SyncProfileApp {
         this.authEnabled = false;
         this.hasRedirectedToLogin = false;
         this.autoRefreshEnabled = true; // Auto-refresh is enabled by default
+        this.statusLoadSequence = 0;
+        this.activeStatusLoads = 0;
         
         this.init();
     }
@@ -445,9 +447,9 @@ class SyncProfileApp {
         }).join('');
     }
 
-    async loadProfiles() {
+    async loadProfiles({ showLoading = true } = {}) {
         try {
-            this.showLoading();
+            if (showLoading) this.showLoading();
             
             // Check authentication status first
             if (this.authEnabled && !this.currentUser) {
@@ -488,23 +490,30 @@ class SyncProfileApp {
         } catch (error) {
             this.showToast('Error loading sync profiles: ' + error.message, 'error');
         } finally {
-            this.hideLoading();
+            if (showLoading) this.hideLoading();
         }
     }
 
-    async loadStatuses() {
+    async loadStatuses({ silent = false } = {}) {
+        const requestSequence = ++this.statusLoadSequence;
         try {
-            this.showLoading();
+            if (!silent) {
+                this.activeStatusLoads += 1;
+                this.showLoading();
+            }
             const statuses = {};
             const summaryPromises = [];
             
             // First, get the list of profiles if not already loaded
             if (!this.users || this.users.length === 0) {
-                await this.loadProfiles();
+                // This status request owns its loading feedback. Avoid letting
+                // the nested profile request hide it before statuses finish.
+                await this.loadProfiles({ showLoading: false });
             }
             
             // If no users, render empty status
             if (!this.users || this.users.length === 0) {
+                if (requestSequence !== this.statusLoadSequence) return;
                 this.statuses = {};
                 this.renderStatuses();
                 return;
@@ -548,6 +557,10 @@ class SyncProfileApp {
             
             // Wait for all summary fetches to complete
             await Promise.all(summaryPromises);
+
+            // Only the newest request may publish a status snapshot. A slower
+            // response from an older poll must not roll the UI back.
+            if (requestSequence !== this.statusLoadSequence) return;
             
             this.statuses = statuses;
             this.renderStatuses();
@@ -555,9 +568,14 @@ class SyncProfileApp {
             
         } catch (error) {
             console.error('Error in loadStatuses:', error);
-            this.showToast('Error loading statuses: ' + error.message, 'error');
+            if (!silent && requestSequence === this.statusLoadSequence) {
+                this.showToast('Error loading statuses: ' + error.message, 'error');
+            }
         } finally {
-            this.hideLoading();
+            if (!silent) {
+                this.activeStatusLoads -= 1;
+                if (this.activeStatusLoads === 0) this.hideLoading();
+            }
         }
     }
     
@@ -591,8 +609,6 @@ class SyncProfileApp {
                     
                     console.log(`Updated sync summary for profile ${profileId}:`, statuses[profileId]);
                     
-                    // Force a re-render of the statuses to show the updated summary
-                    this.statuses = { ...statuses };
                 }
             } else {
                 console.error(`Failed to fetch summary for profile ${profileId}:`, response.status, response.statusText);
@@ -603,27 +619,7 @@ class SyncProfileApp {
         }
     }
     
-    renderStatuses() {
-        const container = document.getElementById('sync-status');
-        if (!container) return;
-
-        if (Object.keys(this.statuses).length === 0) {
-            container.innerHTML = `
-                <div class="text-center" style="grid-column: 1 / -1; padding: 40px;">
-                    <h3>No sync statuses available</h3>
-                    <p>Add a new sync profile and start syncing to see status information.</p>
-                </div>
-            `;
-            return;
-        }
-
-        // Debug: Log status data to console for troubleshooting
-        console.log('Rendering statuses with data:', this.statuses);
-
-        // Convert statuses object to array and filter out any null/undefined entries
-        const statusArray = Object.entries(this.statuses).filter(([_, status]) => status);
-        
-        container.innerHTML = statusArray.map(([profileId, status]) => {
+    renderStatusCard(profileId, status) {
             const progress = status.progress || 0;
             const booksSynced = status.books_synced || 0;
             const booksTotal = status.books_total || 0;
@@ -647,7 +643,7 @@ class SyncProfileApp {
             const profileName = status.profile_name || status.profile_id || 'Unknown Profile';
 
             return `
-                <div class="status-card ${statusState.toLowerCase()}">
+                <div class="status-card ${statusState.toLowerCase()}" data-profile-id="${this.escapeHtml(profileId)}">
                     <div class="status-header">
                         <h3>${this.escapeHtml(profileName)}</h3>
                         <span class="status-badge">${this.escapeHtml(statusText)}</span>
@@ -698,7 +694,98 @@ class SyncProfileApp {
                     </div>
                 </div>
             `;
-        }).join('');
+    }
+
+    statusSignature(status) {
+        try {
+            return JSON.stringify(status);
+        } catch (_) {
+            return String(status);
+        }
+    }
+
+    renderStatuses() {
+        const container = document.getElementById('sync-status');
+        if (!container) return;
+
+        if (Object.keys(this.statuses).length === 0) {
+            if (!container.querySelector('.status-card')) {
+                container.innerHTML = `
+                    <div class="text-center" style="grid-column: 1 / -1; padding: 40px;">
+                        <h3>No sync statuses available</h3>
+                        <p>Add a new sync profile and start syncing to see status information.</p>
+                    </div>
+                `;
+            }
+            return;
+        }
+
+        // Debug: Log status data to console for troubleshooting
+        console.log('Rendering statuses with data:', this.statuses);
+
+        const statusArray = Object.entries(this.statuses).filter(([_, status]) => status);
+        const existingCards = new Map(
+            [...container.querySelectorAll('.status-card[data-profile-id]')]
+                .map(card => [card.dataset.profileId, card])
+        );
+        const retainedProfiles = new Set();
+        const activeElement = document.activeElement;
+        const scrollPosition = { x: window.scrollX, y: window.scrollY };
+        let changed = false;
+
+        // Remove the empty-state message once real status cards are available.
+        [...container.children].filter(child => !child.matches('.status-card')).forEach(child => {
+            child.remove();
+            changed = true;
+        });
+
+        statusArray.forEach(([profileId, status], index) => {
+            let card = existingCards.get(profileId);
+            const signature = this.statusSignature(status);
+            const focusInfo = card && activeElement && card.contains(activeElement)
+                ? { id: activeElement.id, tagName: activeElement.tagName, onclick: activeElement.getAttribute('onclick') }
+                : null;
+
+            if (!card || card.__statusSignature !== signature) {
+                const wrapper = document.createElement('div');
+                wrapper.innerHTML = this.renderStatusCard(profileId, status).trim();
+                const replacement = wrapper.firstElementChild;
+                replacement.__statusSignature = signature;
+                if (card) {
+                    card.replaceWith(replacement);
+                } else {
+                    container.appendChild(replacement);
+                }
+                card = replacement;
+                changed = true;
+
+                if (focusInfo) {
+                    const focusTarget = focusInfo.id
+                        ? [...card.querySelectorAll('[id]')].find(element => element.id === focusInfo.id)
+                        : [...card.querySelectorAll(focusInfo.tagName)].find(element =>
+                            element.getAttribute('onclick') === focusInfo.onclick);
+                    if (focusTarget) focusTarget.focus({ preventScroll: true });
+                }
+            }
+
+            retainedProfiles.add(profileId);
+            const cardAtPosition = container.children[index];
+            if (cardAtPosition !== card) {
+                container.insertBefore(card, cardAtPosition || null);
+                changed = true;
+            }
+        });
+
+        existingCards.forEach((card, profileId) => {
+            if (!retainedProfiles.has(profileId)) {
+                card.remove();
+                changed = true;
+            }
+        });
+
+        if (changed && typeof window.scrollTo === 'function') {
+            window.scrollTo(scrollPosition.x, scrollPosition.y);
+        }
     }
     
     showSyncSummary(profileId) {
@@ -2133,10 +2220,12 @@ class SyncProfileApp {
     }
 
     startAutoRefresh() {
+        if (this.refreshInterval) return;
+
         // Refresh statuses every 5 seconds
         this.refreshInterval = setInterval(() => {
             if (this.autoRefreshEnabled && document.getElementById('sync-tab').classList.contains('active')) {
-                this.loadStatuses();
+                this.loadStatuses({ silent: true });
             }
         }, 5000);
     }
