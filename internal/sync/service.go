@@ -2784,6 +2784,19 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			if hcProgressSeconds < 60 || book.Progress.CurrentTime < 60 {
 				minDiff = 10.0 // 10 second threshold for new/small progress
 			}
+			handleSkippedProgressUpdate := func() error {
+				if !statusNeedsReconcile() {
+					if statusMatchesDesired() {
+						updateSyncState()
+					}
+					return nil
+				}
+				if err := reconcileBookStatus(); err != nil {
+					return err
+				}
+				updateSyncState()
+				return nil
+			}
 
 			if readStatusToUpdate == nil {
 				log.Info("Proceeding to create a new read for reread session", logCtx)
@@ -2800,17 +2813,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				if progressDiff < 1.0 {
 					logCtx["progress_diff_seconds"] = fmt.Sprintf("%.2f", progressDiff)
 					log.Info("Progress is identical or nearly identical, skipping update", logCtx)
-					if !statusNeedsReconcile() {
-						if statusMatchesDesired() {
-							updateSyncState()
-						}
-						return nil
-					}
-					if err := reconcileBookStatus(); err != nil {
-						return err
-					}
-					updateSyncState()
-					return nil
+					return handleSkippedProgressUpdate()
 				}
 			}
 
@@ -2820,17 +2823,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			// Skip update if progress difference is below threshold
 			if readStatusToUpdate != nil && !forceSync && progressDiff < minDiff {
 				log.Info("Progress difference below threshold, skipping update", logCtx)
-				if !statusNeedsReconcile() {
-					if statusMatchesDesired() {
-						updateSyncState()
-					}
-					return nil
-				}
-				if err := reconcileBookStatus(); err != nil {
-					return err
-				}
-				updateSyncState()
-				return nil
+				return handleSkippedProgressUpdate()
 			}
 
 			if latestFinishedReadDate != "" {
