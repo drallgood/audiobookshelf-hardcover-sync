@@ -185,18 +185,6 @@ func (r *RateLimiter) Acquire(ctx context.Context) (func(), error) {
 	}
 }
 
-// Wait blocks until request admission is available or the context is
-// cancelled. It preserves the legacy admission-only behavior by releasing
-// the concurrent-request permit immediately after admission.
-func (r *RateLimiter) Wait(ctx context.Context) error {
-	release, err := r.Acquire(ctx)
-	if err != nil {
-		return err
-	}
-	release()
-	return nil
-}
-
 // OnRateLimit is called when a rate limit is encountered
 // It increases the delay between requests and returns the time to wait
 func (r *RateLimiter) OnRateLimit(retryAfter time.Duration) time.Duration {
@@ -222,7 +210,7 @@ func (r *RateLimiter) OnRateLimit(retryAfter time.Duration) time.Duration {
 
 	// Without server guidance, use exponential backoff. A subsequent healthy
 	// rate-limit response restores the configured rate.
-	backoff := r.applyExponentialBackoff(false)
+	backoff := r.applyExponentialBackoff(true)
 
 	// Log the rate limit event with detailed information
 	r.logger.Warn("Rate limit backoff", map[string]interface{}{
@@ -611,7 +599,7 @@ func (r *RateLimiter) applyIETFHeaders(remaining, reset map[string]int, h http.H
 		} else if r.dailyRemaining > 0 && r.dailyLimit > 0 {
 			pct := float64(r.dailyRemaining) / float64(r.dailyLimit) * 100
 			if pct < 1.0 {
-				recoveryWindow := time.Duration(reset[dailyName]) * time.Second
+				recoveryWindow := boundedSecondsDuration(reset[dailyName], 1, DefaultMaxDailyResetWait)
 				if recoveryWindow > 0 {
 					desiredRate = max(desiredRate, recoveryWindow/time.Duration(r.dailyRemaining))
 				} else {
@@ -642,7 +630,7 @@ func (r *RateLimiter) applyIETFHeaders(remaining, reset map[string]int, h http.H
 			continue
 		}
 		if q := quota[name]; q > 0 && window[name] > 0 {
-			sustainableRate := time.Duration(window[name]) * time.Second / time.Duration(q)
+			sustainableRate := boundedSecondsRate(window[name], q, r.maxBackoff)
 			desiredRate = max(desiredRate, sustainableRate)
 		}
 		b := 0
@@ -653,7 +641,7 @@ func (r *RateLimiter) applyIETFHeaders(remaining, reset map[string]int, h http.H
 			resetSec := reset[name]
 			var pause time.Duration
 			if resetSec > 0 {
-				pause = time.Duration(float64(resetSec)*1.2) * time.Second
+				pause = boundedSecondsDuration(resetSec, 1.2, r.maxBackoff)
 			}
 			if pause > 0 || desiredRate > r.minRate {
 				r.logger.Info("Rate limit window nearly exhausted, slowing down", map[string]interface{}{
@@ -784,6 +772,41 @@ func (r *RateLimiter) exponentialBackoff(baseBackoff time.Duration) time.Duratio
 		backoff = r.maxBackoff
 	}
 	return backoff
+}
+
+// boundedSecondsDuration converts header-provided seconds to a duration while
+// avoiding overflow during conversion or multiplication. Values at or beyond
+// the bound are conservatively capped at maxDuration.
+func boundedSecondsDuration(seconds int, multiplier float64, maxDuration time.Duration) time.Duration {
+	if seconds <= 0 || multiplier <= 0 || maxDuration <= 0 {
+		return 0
+	}
+	if float64(seconds) >= float64(maxDuration)/float64(time.Second)/multiplier {
+		return maxDuration
+	}
+	return time.Duration(float64(seconds) * multiplier * float64(time.Second))
+}
+
+// boundedSecondsRate computes a sustainable per-request interval from a
+// policy window and quota without multiplying an untrusted window by a
+// duration before division.
+func boundedSecondsRate(windowSeconds, quota int, maxDuration time.Duration) time.Duration {
+	if windowSeconds <= 0 || quota <= 0 || maxDuration <= 0 {
+		return 0
+	}
+	wholeSeconds := windowSeconds / quota
+	if wholeSeconds >= int(maxDuration/time.Second) {
+		return maxDuration
+	}
+
+	interval := time.Duration(wholeSeconds) * time.Second
+	// The remainder is always less than quota, so only the fractional second
+	// needs floating-point conversion; no untrusted value is multiplied first.
+	fraction := time.Duration(float64(windowSeconds%quota) / float64(quota) * float64(time.Second))
+	if interval > maxDuration-fraction {
+		return maxDuration
+	}
+	return interval + fraction
 }
 
 // applyExponentialBackoff increases pacing and installs a client-selected pause.

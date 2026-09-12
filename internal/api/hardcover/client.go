@@ -165,17 +165,17 @@ const (
 // Client represents a client for the Hardcover API
 // Client represents a client for the Hardcover API
 type Client struct {
-	baseURL          string
-	authToken        string
-	dryRun           bool
-	httpClient       *http.Client
-	gqlClient        *graphql.Client
-	logger           *logger.Logger
-	currentUserID    int
-	currentUserMutex sync.RWMutex
-	rateLimiter      *util.RateLimiter
-	maxRetries       int
-	retryDelay       time.Duration
+	baseURL               string
+	authToken             string
+	dryRun                bool
+	httpClient            *http.Client
+	gqlClient             *graphql.Client
+	logger                *logger.Logger
+	currentUserID         int
+	currentUserMutex      sync.RWMutex
+	rateLimiter           *util.RateLimiter
+	maxRetries            int
+	retryDelay            time.Duration
 	userBookIDCache       cache.Cache[int, int]             // editionID -> userBookID
 	userBookByBookIDCache cache.Cache[int, int]             // bookID -> userBookID
 	userCache             cache.Cache[string, any]          // Generic cache for user-specific data
@@ -345,16 +345,6 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 	return client
 }
 
-// enforceRateLimit ensures we don't exceed the API rate limits
-func (c *Client) enforceRateLimit(ctx context.Context) error {
-	// Simply use the rate limiter which already handles:
-	// - Request pacing and server-guided backoff
-	// - Context cancellation
-	// - Dynamic rate adjustment
-	// - Concurrent request admission
-	return c.rateLimiter.Wait(ctx)
-}
-
 // loggingRoundTripper is a custom http.RoundTripper that logs requests and responses
 type loggingRoundTripper struct {
 	logger *logger.Logger
@@ -454,12 +444,22 @@ func (c *Client) GraphQLMutation(ctx context.Context, mutation string, variables
 
 // executeGraphQLOperation is a helper function that handles the common logic for executing GraphQL operations
 func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperation, query string, variables map[string]interface{}, result interface{}) error {
-	// Create a new GraphQL client with logging transport
-	httpClient := &http.Client{
-		Transport: loggingRoundTripper{
-			logger: c.logger,
-			rt:     http.DefaultTransport,
-		},
+	// Preserve the configured client (including timeout, redirects, cookies, and
+	// custom transport) while adding request/response logging around its
+	// transport. A few tests and callers construct Client values directly, so
+	// retain a safe default when no HTTP client or transport is configured.
+	httpClient := &http.Client{}
+	if c.httpClient != nil {
+		clientCopy := *c.httpClient
+		httpClient = &clientCopy
+	}
+	transport := httpClient.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	httpClient.Transport = loggingRoundTripper{
+		logger: c.logger,
+		rt:     transport,
 	}
 
 	// Set the authorization header
@@ -1127,10 +1127,10 @@ func (c *Client) GetUserBook(ctx context.Context, userBookID string) (*models.Ha
 			} `json:"book"`
 			EditionID int `json:"edition_id"`
 			Edition   struct {
-				ID     int     `json:"id"`
-				ASIN   *string `json:"asin"`
-				ISBN13 *string `json:"isbn_13"`
-				ISBN10 *string `json:"isbn_10"`
+				ID           int     `json:"id"`
+				ASIN         *string `json:"asin"`
+				ISBN13       *string `json:"isbn_13"`
+				ISBN10       *string `json:"isbn_10"`
 				BookMappings []struct {
 					ExternalID string `json:"external_id"`
 					Platform   struct {
@@ -2572,15 +2572,15 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 	// should match what's inside the data field
 	var response struct {
 		Editions []struct {
-			ID             int     `json:"id"`
-			BookID         int     `json:"book_id"`
-			Title          *string `json:"title"`
-			ISBN10         *string `json:"isbn_10"`
-			ISBN13         *string `json:"isbn_13"`
-			ASIN           *string `json:"asin"`
-			ReleaseDate    *string `json:"release_date"`
+			ID              int     `json:"id"`
+			BookID          int     `json:"book_id"`
+			Title           *string `json:"title"`
+			ISBN10          *string `json:"isbn_10"`
+			ISBN13          *string `json:"isbn_13"`
+			ASIN            *string `json:"asin"`
+			ReleaseDate     *string `json:"release_date"`
 			ReadingFormatID *int    `json:"reading_format_id"`
-			BookMappings   []struct {
+			BookMappings    []struct {
 				ExternalID string `json:"external_id"`
 				Platform   struct {
 					Name string `json:"name"`
@@ -2623,13 +2623,13 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 
 	// Log the raw edition data for debugging
 	log.Debug("Retrieved edition details", map[string]interface{}{
-		"id":               edition.ID,
-		"book_id":          edition.BookID,
-		"title":            safeString(edition.Title),
-		"isbn_10":          safeString(edition.ISBN10),
-		"isbn_13":          safeString(edition.ISBN13),
-		"asin":             safeString(edition.ASIN),
-		"release_date":     safeString(edition.ReleaseDate),
+		"id":                edition.ID,
+		"book_id":           edition.BookID,
+		"title":             safeString(edition.Title),
+		"isbn_10":           safeString(edition.ISBN10),
+		"isbn_13":           safeString(edition.ISBN13),
+		"asin":              safeString(edition.ASIN),
+		"release_date":      safeString(edition.ReleaseDate),
 		"reading_format_id": edition.ReadingFormatID,
 	})
 
@@ -3034,10 +3034,10 @@ func (c *Client) GetUserBookID(ctx context.Context, editionID int) (int, error) 
 	userBookID, err := c.lookupUserBookByBookID(ctx, bookID, editionID, userID)
 	if err != nil {
 		log.Warn("Failed to lookup user book by book ID and edition ID", map[string]interface{}{
-			"bookID": bookID,
+			"bookID":    bookID,
 			"editionID": editionID,
-			"userID": userID,
-			"error":  err.Error(),
+			"userID":    userID,
+			"error":     err.Error(),
 		})
 		return 0, fmt.Errorf("failed to lookup user book by book ID and edition ID: %w", err)
 	}
@@ -3176,10 +3176,10 @@ func (c *Client) ClearUserBookCache() {
 // lookupUserBookByBookID performs a single lookup of a user book by book ID and edition ID
 func (c *Client) lookupUserBookByBookID(ctx context.Context, bookID, editionID, userID int) (int, error) {
 	log := c.logger.With(map[string]interface{}{
-		"bookID": bookID,
+		"bookID":    bookID,
 		"editionID": editionID,
-		"userID": userID,
-		"method": "lookupUserBookByBookID",
+		"userID":    userID,
+		"method":    "lookupUserBookByBookID",
 	})
 
 	// Define the GraphQL query - look for user book with both book_id and edition_id

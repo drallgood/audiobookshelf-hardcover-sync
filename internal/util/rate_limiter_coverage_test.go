@@ -63,7 +63,11 @@ func TestRateLimiterConcurrentAccess(t *testing.T) {
 			<-startCh
 			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()
-			errCh <- rl.Wait(ctx)
+			release, err := rl.Acquire(ctx)
+			if err == nil {
+				release()
+			}
+			errCh <- err
 		}()
 	}
 

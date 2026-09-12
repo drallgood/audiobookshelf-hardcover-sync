@@ -6,8 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"sync/atomic"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,28 +34,28 @@ func TestGraphQLQuery_BookByASIN(t *testing.T) {
 		// Read the request body once
 		body, err := io.ReadAll(r.Body)
 		require.NoError(t, err, "Error reading request body")
-		
+
 		// Create a new reader with the body content for parsing
 		r.Body = io.NopCloser(strings.NewReader(string(body)))
-		
+
 		// Check if it's a GetCurrentUserID query first
 		if HandleGetCurrentUserIDQuery(t, w, r) {
 			return
 		}
-		
+
 		// Reuse the body content for our own parsing
 		r.Body = io.NopCloser(strings.NewReader(string(body)))
-		
+
 		// Parse the request body to check if it's the ASIN query
 		var reqBody struct {
 			Query     string                 `json:"query"`
 			Variables map[string]interface{} `json:"variables"`
 		}
-		
+
 		// Decode the request body
 		err = json.NewDecoder(r.Body).Decode(&reqBody)
 		require.NoError(t, err, "Error decoding request body")
-		
+
 		// Check if this is our ASIN query
 		if _, ok := reqBody.Variables["asin"]; ok {
 			// Create a simple JSON response that matches the expected structure
@@ -81,7 +81,7 @@ func TestGraphQLQuery_BookByASIN(t *testing.T) {
 					]
 				}
 			}`
-			
+
 			w.Header().Set("Content-Type", "application/json")
 			_, err := w.Write([]byte(responseJSON))
 			if err != nil {
@@ -89,7 +89,7 @@ func TestGraphQLQuery_BookByASIN(t *testing.T) {
 			}
 			return
 		}
-		
+
 		// If we get here, it's an unknown query
 		http.Error(w, "Unexpected query", http.StatusBadRequest)
 	}))
@@ -164,7 +164,7 @@ func TestGraphQLQuery_BookByASIN(t *testing.T) {
 	// Execute the query
 	err := client.GraphQLQuery(context.Background(), query, variables, &response)
 	require.NoError(t, err, "GraphQL query should not return an error")
-	
+
 	t.Logf("Response received: %+v", response)
 
 	// Assert the response
@@ -398,4 +398,84 @@ func TestGraphQLQuery_MaxConcurrentLimitsActiveRequests(t *testing.T) {
 	require.NoError(t, <-errs)
 	require.NoError(t, <-errs)
 	assert.Equal(t, int32(1), atomic.LoadInt32(&maxActive))
+}
+
+func TestGraphQLQuery_UsesConfiguredTimeoutAndReleasesPermit(t *testing.T) {
+	logger.Setup(logger.Config{Level: "error", Format: "json"})
+	log := logger.Get()
+
+	var requests int32
+	firstStarted := make(chan struct{})
+	firstFinished := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch atomic.AddInt32(&requests, 1) {
+		case 1:
+			close(firstStarted)
+			// Keep the handler stalled longer than the configured client timeout.
+			// Do not rely on the server observing the client-side connection close.
+			time.Sleep(200 * time.Millisecond)
+			close(firstFinished)
+		case 2:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"data":{"books":[{"id":1}]}}`)
+		default:
+			t.Errorf("unexpected request count: %d", atomic.LoadInt32(&requests))
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithConfig(&ClientConfig{
+		BaseURL:       server.URL,
+		Timeout:       25 * time.Millisecond,
+		MaxRetries:    0,
+		RetryDelay:    time.Millisecond,
+		RateLimit:     time.Nanosecond,
+		MaxConcurrent: 1,
+	}, "test-token", log)
+
+	var firstResponse struct {
+		Books []struct {
+			ID int `json:"id"`
+		} `json:"books"`
+	}
+	firstErr := make(chan error, 1)
+	startedAt := time.Now()
+	go func() {
+		firstErr <- client.GraphQLQuery(context.Background(), `query TimeoutTest { books { id } }`, nil, &firstResponse)
+	}()
+
+	select {
+	case <-firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("stalled request did not reach the server")
+	}
+
+	select {
+	case err := <-firstErr:
+		require.Error(t, err)
+		assert.Less(t, time.Since(startedAt), 150*time.Millisecond)
+	case <-time.After(time.Second):
+		t.Fatal("configured HTTP timeout did not end the stalled request")
+	}
+	var secondResponse struct {
+		Books []struct {
+			ID int `json:"id"`
+		} `json:"books"`
+	}
+	secondErr := make(chan error, 1)
+	go func() {
+		secondErr <- client.GraphQLQuery(context.Background(), `query ReusePermit { books { id } }`, nil, &secondResponse)
+	}()
+	select {
+	case err := <-secondErr:
+		require.NoError(t, err)
+		assert.Equal(t, 1, secondResponse.Books[0].ID)
+	case <-time.After(time.Second):
+		t.Fatal("rate-limiter permit was not released after the timed-out request")
+	}
+	select {
+	case <-firstFinished:
+	case <-time.After(time.Second):
+		t.Fatal("stalled test handler did not finish")
+	}
 }

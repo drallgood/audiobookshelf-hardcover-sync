@@ -51,6 +51,15 @@ func init() {
 	testMode = true
 }
 
+func acquireAndRelease(ctx context.Context, rl *RateLimiter) error {
+	release, err := rl.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	release()
+	return nil
+}
+
 func TestRateLimiter_ContextCancellation(t *testing.T) {
 	t.Run("context canceled", func(t *testing.T) {
 		log := setupTestLogger(t)
@@ -61,12 +70,12 @@ func TestRateLimiter_ContextCancellation(t *testing.T) {
 		defer cancel()
 
 		// This should fail due to context timeout
-		err := rl.Wait(ctx)
+		err := acquireAndRelease(ctx, rl)
 		assert.ErrorIs(t, err, context.DeadlineExceeded)
 	})
 }
 
-func TestRateLimiter_ConcurrentWaitsArePaced(t *testing.T) {
+func TestRateLimiter_ConcurrentAcquiresArePaced(t *testing.T) {
 	const (
 		interval      = 15 * time.Millisecond
 		totalRequests = 5
@@ -82,7 +91,7 @@ func TestRateLimiter_ConcurrentWaitsArePaced(t *testing.T) {
 	for range totalRequests {
 		go func() {
 			<-start
-			err := rl.Wait(context.Background())
+			err := acquireAndRelease(context.Background(), rl)
 			completed <- result{completedAt: time.Now(), err: err}
 		}()
 	}
@@ -99,7 +108,7 @@ func TestRateLimiter_ConcurrentWaitsArePaced(t *testing.T) {
 	}
 }
 
-func TestRateLimiter_PendingWaitObservesNewBackoff(t *testing.T) {
+func TestRateLimiter_PendingAcquireObservesNewBackoff(t *testing.T) {
 	const (
 		interval = 100 * time.Millisecond
 		backoff  = 160 * time.Millisecond
@@ -112,7 +121,7 @@ func TestRateLimiter_PendingWaitObservesNewBackoff(t *testing.T) {
 	completed := make(chan result, 1)
 
 	go func() {
-		err := rl.Wait(context.Background())
+		err := acquireAndRelease(context.Background(), rl)
 		completed <- result{completedAt: time.Now(), err: err}
 	}()
 	require.Eventually(t, func() bool {
@@ -125,10 +134,10 @@ func TestRateLimiter_PendingWaitObservesNewBackoff(t *testing.T) {
 	require.NoError(t, got.err)
 
 	assert.GreaterOrEqual(t, got.completedAt.Sub(backoffStarted), 140*time.Millisecond,
-		"pending waiter was admitted before the new backoff expired")
+		"pending acquire was admitted before the new backoff expired")
 }
 
-func TestRateLimiter_CancellationDoesNotCollapsePendingSlots(t *testing.T) {
+func TestRateLimiter_CancellationDoesNotCollapsePendingAcquires(t *testing.T) {
 	const interval = 80 * time.Millisecond
 	rl := NewRateLimiter(interval, 3, setupTestLogger(t))
 	type result struct {
@@ -138,7 +147,7 @@ func TestRateLimiter_CancellationDoesNotCollapsePendingSlots(t *testing.T) {
 	completed := make(chan result, 2)
 
 	go func() {
-		err := rl.Wait(context.Background())
+		err := acquireAndRelease(context.Background(), rl)
 		completed <- result{completedAt: time.Now(), err: err}
 	}()
 	require.Eventually(t, func() bool {
@@ -148,7 +157,7 @@ func TestRateLimiter_CancellationDoesNotCollapsePendingSlots(t *testing.T) {
 	cancelCtx, cancel := context.WithCancel(context.Background())
 	canceled := make(chan error, 1)
 	go func() {
-		canceled <- rl.Wait(cancelCtx)
+		canceled <- acquireAndRelease(cancelCtx, rl)
 	}()
 	require.Eventually(t, func() bool {
 		return rl.GetMetrics().Requests == 2
@@ -157,7 +166,7 @@ func TestRateLimiter_CancellationDoesNotCollapsePendingSlots(t *testing.T) {
 	require.ErrorIs(t, <-canceled, context.Canceled)
 
 	go func() {
-		err := rl.Wait(context.Background())
+		err := acquireAndRelease(context.Background(), rl)
 		completed <- result{completedAt: time.Now(), err: err}
 	}()
 
@@ -166,7 +175,7 @@ func TestRateLimiter_CancellationDoesNotCollapsePendingSlots(t *testing.T) {
 	require.NoError(t, first.err)
 	require.NoError(t, second.err)
 	assert.GreaterOrEqual(t, second.completedAt.Sub(first.completedAt), 60*time.Millisecond,
-		"cancellation allowed two pending waiters into the same pacing slot")
+		"cancellation allowed two pending acquires into the same pacing slot")
 }
 
 func TestRateLimiter_OnRateLimit(t *testing.T) {
@@ -178,6 +187,25 @@ func TestRateLimiter_OnRateLimit(t *testing.T) {
 	assert.Equal(t, 10*time.Second, waitTime)
 	assert.Equal(t, 100*time.Millisecond, rl.GetRate(), "Retry-After must remain a temporary pause")
 	assert.Equal(t, uint64(1), rl.GetMetrics().RateLimited)
+}
+
+func TestRateLimiter_OnRateLimitFallbackPreservesLongerAuthoritativePause(t *testing.T) {
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
+	rl.SetBackoffFactor(2)
+	rl.SetJitterFactor(0)
+
+	rl.OnRateLimit(2 * time.Second)
+	rl.mu.RLock()
+	authoritativeDeadline := rl.backoffUntil
+	rl.mu.RUnlock()
+
+	assert.Equal(t, 200*time.Millisecond, rl.OnRateLimit(0))
+	rl.mu.RLock()
+	actualDeadline := rl.backoffUntil
+	rl.mu.RUnlock()
+
+	assert.False(t, actualDeadline.Before(authoritativeDeadline),
+		"exponential fallback must not shorten an authoritative pause")
 }
 
 func TestRateLimiter_ResetRate(t *testing.T) {
@@ -207,7 +235,7 @@ func TestRateLimiter_GetMetrics(t *testing.T) {
 
 	// Make a request
 	ctx := context.Background()
-	err := rl.Wait(ctx)
+	err := acquireAndRelease(ctx, rl)
 	require.NoError(t, err)
 
 	// Check updated metrics
@@ -388,21 +416,6 @@ func TestParseIETFRateLimitPolicy(t *testing.T) {
 	assert.Equal(t, 86400, window["daily"])
 }
 
-func TestRateLimiterWaitDoesNotAccelerate(t *testing.T) {
-	const interval = 15 * time.Millisecond
-	rl := NewRateLimiter(interval, 1, nil)
-
-	var previous time.Time
-	for range 6 {
-		require.NoError(t, rl.Wait(context.Background()))
-		now := time.Now()
-		if !previous.IsZero() {
-			assert.GreaterOrEqual(t, now.Sub(previous), 12*time.Millisecond)
-		}
-		previous = now
-	}
-}
-
 func TestRateLimiterIETFZeroResetDoesNotCreatePermanentBackoff(t *testing.T) {
 	configuredRate := 2 * time.Second
 	rl := NewRateLimiter(configuredRate, 1, nil)
@@ -493,6 +506,70 @@ func TestRateLimiterWaitsForDailyQuotaReset(t *testing.T) {
 
 			assert.Greater(t, pause, tt.expectedPause-time.Second)
 			assert.LessOrEqual(t, pause, tt.expectedPause)
+		})
+	}
+}
+
+func TestRateLimiterBoundsExtremeNonExhaustedIETFValues(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+	extreme := strconv.Itoa(maxInt)
+	tests := []struct {
+		name        string
+		rateLimit   string
+		policy      string
+		wantRate    time.Duration
+		wantBackoff bool
+	}{
+		{
+			name:        "near exhausted daily reset",
+			rateLimit:   fmt.Sprintf(`"daily";r=1;t=%s`, extreme),
+			policy:      fmt.Sprintf(`"daily";q=%s;w=86400`, extreme),
+			wantRate:    DefaultMaxBackoff,
+			wantBackoff: false,
+		},
+		{
+			name:        "sustainable window",
+			rateLimit:   `"free";r=2;t=1`,
+			policy:      fmt.Sprintf(`"free";q=1;w=%s`, extreme),
+			wantRate:    DefaultMaxBackoff,
+			wantBackoff: false,
+		},
+		{
+			name:        "near exhausted non daily pause",
+			rateLimit:   fmt.Sprintf(`"free";r=1;t=%s`, extreme),
+			policy:      `"free";q=60;w=60`,
+			wantRate:    time.Second,
+			wantBackoff: true,
+		},
+		{
+			name:        "malformed extreme values",
+			rateLimit:   `"free";r=1;t=999999999999999999999999999999`,
+			policy:      `"free";q=60;w=999999999999999999999999999999`,
+			wantRate:    100 * time.Millisecond,
+			wantBackoff: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rl := NewRateLimiter(100*time.Millisecond, 1, nil)
+			rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+				"Ratelimit":        {tt.rateLimit},
+				"Ratelimit-Policy": {tt.policy},
+			}})
+
+			assert.Equal(t, tt.wantRate, rl.GetRate())
+			assert.GreaterOrEqual(t, rl.GetRate(), time.Duration(0))
+			assert.LessOrEqual(t, rl.GetRate(), DefaultMaxBackoff)
+			rl.mu.RLock()
+			pause := time.Until(rl.backoffUntil)
+			backoffSet := !rl.backoffUntil.IsZero()
+			rl.mu.RUnlock()
+			assert.Equal(t, tt.wantBackoff, backoffSet)
+			if backoffSet {
+				assert.Greater(t, pause, DefaultMaxBackoff-time.Second)
+				assert.LessOrEqual(t, pause, DefaultMaxBackoff)
+			}
 		})
 	}
 }

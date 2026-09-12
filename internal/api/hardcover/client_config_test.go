@@ -1,7 +1,6 @@
 package hardcover
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -12,7 +11,7 @@ import (
 
 func TestDefaultClientConfig(t *testing.T) {
 	cfg := DefaultClientConfig()
-	
+
 	require.NotNil(t, cfg)
 	assert.Equal(t, DefaultBaseURL, cfg.BaseURL)
 	assert.Equal(t, DefaultTimeout, cfg.Timeout)
@@ -126,38 +125,4 @@ func TestClient_GetAuthHeader(t *testing.T) {
 			assert.Equal(t, tt.expected, header)
 		})
 	}
-}
-
-func TestClient_enforceRateLimit(t *testing.T) {
-	// Initialize logger for test
-	logger.Setup(logger.Config{Level: "debug", Format: "json"})
-	log := logger.Get()
-
-	// Create a client with a very short rate limit for testing
-	cfg := &ClientConfig{
-		BaseURL:       DefaultBaseURL,
-		Timeout:       DefaultTimeout,
-		MaxRetries:    DefaultMaxRetries,
-		RetryDelay:    DefaultRetryDelay,
-		RateLimit:     10 * time.Millisecond, // Very short for testing
-		MaxConcurrent: 1,
-	}
-
-	client := NewClientWithConfig(cfg, "test-token", log)
-
-	// Test that rate limiting doesn't error
-	err1 := client.enforceRateLimit(context.Background())
-	assert.NoError(t, err1)
-
-	// Test multiple rapid calls
-	start := time.Now()
-	err2 := client.enforceRateLimit(context.Background())
-	assert.NoError(t, err2)
-	err3 := client.enforceRateLimit(context.Background())
-	assert.NoError(t, err3)
-	duration := time.Since(start)
-
-	// The second and third calls should have been rate limited,
-	// so the total duration should be at least the rate limit duration
-	assert.GreaterOrEqual(t, duration, cfg.RateLimit)
 }
