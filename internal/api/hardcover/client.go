@@ -117,8 +117,6 @@ const (
 	// DefaultRateLimit is the default minimum time between requests.
 	// Hardcover now enforces 30 requests/minute, so use 2s between requests.
 	DefaultRateLimit = 2 * time.Second
-	// DefaultBurst is the default burst size for rate limiting
-	DefaultBurst = 1
 	// DefaultMaxConcurrent is the default maximum concurrent requests
 	DefaultMaxConcurrent = 1
 )
@@ -135,8 +133,6 @@ type ClientConfig struct {
 	RetryDelay time.Duration
 	// RateLimit specifies the minimum time between requests (default: from config or DefaultRateLimit)
 	RateLimit time.Duration
-	// Burst specifies the burst size for rate limiting (default: from config or DefaultBurst)
-	Burst int
 	// MaxConcurrent specifies the maximum number of concurrent requests (default: from config or 3)
 	MaxConcurrent int
 }
@@ -169,17 +165,17 @@ const (
 // Client represents a client for the Hardcover API
 // Client represents a client for the Hardcover API
 type Client struct {
-	baseURL          string
-	authToken        string
-	dryRun           bool
-	httpClient       *http.Client
-	gqlClient        *graphql.Client
-	logger           *logger.Logger
-	currentUserID    int
-	currentUserMutex sync.RWMutex
-	rateLimiter      *util.RateLimiter
-	maxRetries       int
-	retryDelay       time.Duration
+	baseURL               string
+	authToken             string
+	dryRun                bool
+	httpClient            *http.Client
+	gqlClient             *graphql.Client
+	logger                *logger.Logger
+	currentUserID         int
+	currentUserMutex      sync.RWMutex
+	rateLimiter           *util.RateLimiter
+	maxRetries            int
+	retryDelay            time.Duration
 	userBookIDCache       cache.Cache[int, int]             // editionID -> userBookID
 	userBookByBookIDCache cache.Cache[int, int]             // bookID -> userBookID
 	userCache             cache.Cache[string, any]          // Generic cache for user-specific data
@@ -233,7 +229,6 @@ func DefaultClientConfig() *ClientConfig {
 		MaxRetries:    DefaultMaxRetries,
 		RetryDelay:    DefaultRetryDelay,
 		RateLimit:     DefaultRateLimit,     // Use hardcoded default
-		Burst:         DefaultBurst,         // Use hardcoded default
 		MaxConcurrent: DefaultMaxConcurrent, // Use hardcoded default
 	}
 }
@@ -271,7 +266,7 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 	}
 
 	// Create rate limiter with max concurrent requests from config
-	rateLimiter := util.NewRateLimiter(cfg.RateLimit, cfg.Burst, cfg.MaxConcurrent, log)
+	rateLimiter := util.NewRateLimiter(cfg.RateLimit, cfg.MaxConcurrent, log)
 
 	// Create logger if not provided
 	if log == nil {
@@ -350,16 +345,6 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 	return client
 }
 
-// enforceRateLimit ensures we don't exceed the API rate limits
-func (c *Client) enforceRateLimit(ctx context.Context) error {
-	// Simply use the rate limiter which already handles:
-	// - Token bucket algorithm
-	// - Jitter
-	// - Context cancellation
-	// - Dynamic rate adjustment
-	return c.rateLimiter.Wait(ctx)
-}
-
 // loggingRoundTripper is a custom http.RoundTripper that logs requests and responses
 type loggingRoundTripper struct {
 	logger *logger.Logger
@@ -430,30 +415,6 @@ func isRetryableHTTPStatus(statusCode int) bool {
 	return statusCode == http.StatusTooManyRequests || (statusCode >= 500 && statusCode <= 599)
 }
 
-func parseRetryAfterDelay(value string) (time.Duration, bool) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return 0, false
-	}
-
-	if seconds, err := strconv.Atoi(value); err == nil {
-		if seconds < 0 {
-			seconds = 0
-		}
-		return time.Duration(seconds) * time.Second, true
-	}
-
-	if retryAt, err := http.ParseTime(value); err == nil {
-		delay := time.Until(retryAt)
-		if delay < 0 {
-			delay = 0
-		}
-		return delay, true
-	}
-
-	return 0, false
-}
-
 // GraphQLQuery executes a GraphQL query and unmarshals the response into the result parameter
 func (c *Client) GraphQLQuery(ctx context.Context, query string, variables map[string]interface{}, result interface{}) error {
 	if variables == nil {
@@ -483,12 +444,22 @@ func (c *Client) GraphQLMutation(ctx context.Context, mutation string, variables
 
 // executeGraphQLOperation is a helper function that handles the common logic for executing GraphQL operations
 func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperation, query string, variables map[string]interface{}, result interface{}) error {
-	// Create a new GraphQL client with logging transport
-	httpClient := &http.Client{
-		Transport: loggingRoundTripper{
-			logger: c.logger,
-			rt:     http.DefaultTransport,
-		},
+	// Preserve the configured client (including timeout, redirects, cookies, and
+	// custom transport) while adding request/response logging around its
+	// transport. A few tests and callers construct Client values directly, so
+	// retain a safe default when no HTTP client or transport is configured.
+	httpClient := &http.Client{}
+	if c.httpClient != nil {
+		clientCopy := *c.httpClient
+		httpClient = &clientCopy
+	}
+	transport := httpClient.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	httpClient.Transport = loggingRoundTripper{
+		logger: c.logger,
+		rt:     transport,
 	}
 
 	// Set the authorization header
@@ -508,11 +479,6 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				return fmt.Errorf("retry canceled: %w", ctx.Err())
 			case <-time.After(c.retryDelay * time.Duration(attempt)):
 			}
-		}
-
-		// Apply rate limiting
-		if err := c.rateLimiter.Wait(ctx); err != nil {
-			return fmt.Errorf("rate limiter error: %w", err)
 		}
 
 		// Create the request body
@@ -549,9 +515,16 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 			"body": string(jsonBody),
 		})
 
+		// Apply pacing and acquire a permit for the active HTTP request.
+		release, err := c.rateLimiter.Acquire(ctx)
+		if err != nil {
+			return fmt.Errorf("rate limiter error: %w", err)
+		}
+
 		// Execute the request
 		resp, err := httpClient.Do(req)
 		if err != nil {
+			release()
 			lastErr = fmt.Errorf("HTTP request failed: %w", err)
 			c.logger.Error("GraphQL request failed", map[string]interface{}{
 				"error":   lastErr.Error(),
@@ -564,6 +537,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
+			release()
 			lastErr = fmt.Errorf("failed to read response body: %w", err)
 			c.logger.Error("Failed to read response body", map[string]interface{}{
 				"error":   lastErr.Error(),
@@ -583,6 +557,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		// Process rate limit headers from EVERY response so the rate limiter
 		// can self-throttle proactively before hitting HTTP 429.
 		c.rateLimiter.WithRateLimitHeaders(resp)
+		release()
 
 		// Check for HTTP errors
 		if resp.StatusCode >= 400 {
@@ -598,19 +573,6 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				return fmt.Errorf("non-retryable HTTP error: %w", lastErr)
 			}
 
-			if resp.StatusCode == http.StatusTooManyRequests {
-				if retryAfter, ok := parseRetryAfterDelay(resp.Header.Get("Retry-After")); ok {
-					genericDelay := c.retryDelay * time.Duration(attempt+1)
-					if retryAfter > genericDelay {
-						extraDelay := retryAfter - genericDelay
-						select {
-						case <-ctx.Done():
-							return fmt.Errorf("retry canceled: %w", ctx.Err())
-						case <-time.After(extraDelay):
-						}
-					}
-				}
-			}
 			continue
 		}
 
@@ -1165,10 +1127,10 @@ func (c *Client) GetUserBook(ctx context.Context, userBookID string) (*models.Ha
 			} `json:"book"`
 			EditionID int `json:"edition_id"`
 			Edition   struct {
-				ID     int     `json:"id"`
-				ASIN   *string `json:"asin"`
-				ISBN13 *string `json:"isbn_13"`
-				ISBN10 *string `json:"isbn_10"`
+				ID           int     `json:"id"`
+				ASIN         *string `json:"asin"`
+				ISBN13       *string `json:"isbn_13"`
+				ISBN10       *string `json:"isbn_10"`
 				BookMappings []struct {
 					ExternalID string `json:"external_id"`
 					Platform   struct {
@@ -2610,15 +2572,15 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 	// should match what's inside the data field
 	var response struct {
 		Editions []struct {
-			ID             int     `json:"id"`
-			BookID         int     `json:"book_id"`
-			Title          *string `json:"title"`
-			ISBN10         *string `json:"isbn_10"`
-			ISBN13         *string `json:"isbn_13"`
-			ASIN           *string `json:"asin"`
-			ReleaseDate    *string `json:"release_date"`
+			ID              int     `json:"id"`
+			BookID          int     `json:"book_id"`
+			Title           *string `json:"title"`
+			ISBN10          *string `json:"isbn_10"`
+			ISBN13          *string `json:"isbn_13"`
+			ASIN            *string `json:"asin"`
+			ReleaseDate     *string `json:"release_date"`
 			ReadingFormatID *int    `json:"reading_format_id"`
-			BookMappings   []struct {
+			BookMappings    []struct {
 				ExternalID string `json:"external_id"`
 				Platform   struct {
 					Name string `json:"name"`
@@ -2661,13 +2623,13 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 
 	// Log the raw edition data for debugging
 	log.Debug("Retrieved edition details", map[string]interface{}{
-		"id":               edition.ID,
-		"book_id":          edition.BookID,
-		"title":            safeString(edition.Title),
-		"isbn_10":          safeString(edition.ISBN10),
-		"isbn_13":          safeString(edition.ISBN13),
-		"asin":             safeString(edition.ASIN),
-		"release_date":     safeString(edition.ReleaseDate),
+		"id":                edition.ID,
+		"book_id":           edition.BookID,
+		"title":             safeString(edition.Title),
+		"isbn_10":           safeString(edition.ISBN10),
+		"isbn_13":           safeString(edition.ISBN13),
+		"asin":              safeString(edition.ASIN),
+		"release_date":      safeString(edition.ReleaseDate),
 		"reading_format_id": edition.ReadingFormatID,
 	})
 
@@ -2900,11 +2862,6 @@ func (c *Client) SearchPublishers(ctx context.Context, name string, limit int) (
 		"limit":     limit,
 	})
 
-	// Enforce rate limiting
-	if err := c.enforceRateLimit(ctx); err != nil {
-		return nil, fmt.Errorf("rate limit error: %w", err)
-	}
-
 	// Define the GraphQL query
 	// Note: Using _eq for exact match as _ilike is not supported by the API
 	query := `
@@ -3077,10 +3034,10 @@ func (c *Client) GetUserBookID(ctx context.Context, editionID int) (int, error) 
 	userBookID, err := c.lookupUserBookByBookID(ctx, bookID, editionID, userID)
 	if err != nil {
 		log.Warn("Failed to lookup user book by book ID and edition ID", map[string]interface{}{
-			"bookID": bookID,
+			"bookID":    bookID,
 			"editionID": editionID,
-			"userID": userID,
-			"error":  err.Error(),
+			"userID":    userID,
+			"error":     err.Error(),
 		})
 		return 0, fmt.Errorf("failed to lookup user book by book ID and edition ID: %w", err)
 	}
@@ -3219,10 +3176,10 @@ func (c *Client) ClearUserBookCache() {
 // lookupUserBookByBookID performs a single lookup of a user book by book ID and edition ID
 func (c *Client) lookupUserBookByBookID(ctx context.Context, bookID, editionID, userID int) (int, error) {
 	log := c.logger.With(map[string]interface{}{
-		"bookID": bookID,
+		"bookID":    bookID,
 		"editionID": editionID,
-		"userID": userID,
-		"method": "lookupUserBookByBookID",
+		"userID":    userID,
+		"method":    "lookupUserBookByBookID",
 	})
 
 	// Define the GraphQL query - look for user book with both book_id and edition_id

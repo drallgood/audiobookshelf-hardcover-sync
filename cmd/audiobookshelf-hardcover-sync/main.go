@@ -321,9 +321,6 @@ func main() {
 		if cfg.RateLimit.Rate > 0 {
 			hcCfg.RateLimit = cfg.RateLimit.Rate
 		}
-		if cfg.RateLimit.Burst > 0 {
-			hcCfg.Burst = cfg.RateLimit.Burst
-		}
 		if cfg.RateLimit.MaxConcurrent > 0 {
 			hcCfg.MaxConcurrent = cfg.RateLimit.MaxConcurrent
 		}
@@ -331,7 +328,6 @@ func main() {
 		log.Debug("Initializing Hardcover client (single-user)", map[string]interface{}{
 			"base_url":       hcCfg.BaseURL,
 			"rate_limit":     hcCfg.RateLimit.String(),
-			"burst":          hcCfg.Burst,
 			"max_concurrent": hcCfg.MaxConcurrent,
 		})
 

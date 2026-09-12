@@ -397,6 +397,23 @@ func TestClient_SearchPublishers(t *testing.T) {
 	}
 }
 
+func TestClient_SearchPublishersAdmitsRateLimiterOnce(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := io.WriteString(w, `{"data":{"publishers":[{"id":123,"name":"Test Publisher"}]}}`); err != nil {
+			t.Fatalf("failed to write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	client := CreateTestClient(server)
+	publishers, err := client.SearchPublishers(context.Background(), "Test Publisher", 1)
+
+	require.NoError(t, err)
+	require.Len(t, publishers, 1)
+	assert.Equal(t, uint64(1), client.rateLimiter.GetMetrics().Requests)
+}
+
 func TestClient_GetPersonByID(t *testing.T) {
 	tests := []struct {
 		name         string

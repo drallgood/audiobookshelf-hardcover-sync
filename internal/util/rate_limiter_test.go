@@ -1,18 +1,20 @@
 package util
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"strconv"
-	"sync"
-	"sync/atomic"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -30,367 +32,200 @@ func setupTestLogger(t *testing.T) *logger.Logger {
 	return logger.Get()
 }
 
+func containsLogEntry(t *testing.T, output, level, message string) bool {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry["level"] == level && entry["message"] == message {
+			return true
+		}
+	}
+	return false
+}
+
 func init() {
 	// Enable test mode to disable buffering in ParseRetryAfter
 	testMode = true
 }
 
-func TestRateLimiter_Wait(t *testing.T) {
-	tests := []struct {
-		name           string
-		rate           time.Duration
-		burst         int
-		maxConcurrent int
-		reqCount      int
-		expectError   bool
-		setup         func(*RateLimiter) // Optional setup function for the rate limiter
-		minTime       time.Duration     // Minimum expected time for the test to complete
-	}{
-		{
-			name:           "single request",
-			rate:           time.Millisecond * 50, // Reduced from 100ms for faster tests
-			burst:         1,
-			maxConcurrent: 1,
-			reqCount:      1,
-			expectError:   false,
-			minTime:       0, // No minimum time for a single request
-		},
-		{
-			name:           "multiple requests within burst",
-			rate:           time.Millisecond * 50, // Reduced from 100ms for faster tests
-			burst:         5,
-			maxConcurrent: 5,
-			reqCount:      3,
-			expectError:   false,
-			minTime:       0, // No rate limiting within burst
-		},
-		{
-			name:           "concurrent requests with rate limiting",
-			rate:           time.Millisecond * 50, // Reduced from 200ms for faster tests
-			burst:         2,
-			maxConcurrent: 10,
-			reqCount:      5, // Reduced from 10 to make test faster
-			expectError:   false,
-			minTime:       time.Duration(5-2) * 50 * time.Millisecond, // (reqCount - burst) * rate
-		},
-		{
-			name:           "context canceled",
-			rate:           time.Hour, // Very slow rate to ensure we hit the context timeout
-			burst:         1,
-			maxConcurrent: 1,
-			reqCount:      1,
-			expectError:   true,
-			minTime:       0, // Not relevant for this test case
-			setup: func(rl *RateLimiter) {
-				rl.SetBackoffFactor(1.0) // Disable backoff for this test
-			},
-		},
-		{
-			name:           "with backoff",
-			rate:           time.Millisecond * 50, // Reduced from 100ms for faster tests
-			burst:         1,
-			maxConcurrent: 3, // Increased to allow the test to run
-			reqCount:      2, // Reduced from 3 to make test faster
-			expectError:   false,
-			minTime:       time.Second, // Backoff is set to 1 second
-			setup: func(rl *RateLimiter) {
-				rl.SetBackoffFactor(2.0)
-				// Simulate a rate limit to trigger backoff
-				rl.mu.Lock()
-				rl.backoffUntil = time.Now().Add(time.Second)
-				rl.mu.Unlock()
-				// Log the backoff state for debugging
-				rl.logger.Debug("Test setup: Backoff set", map[string]interface{}{
-					"backoff_until": rl.backoffUntil,
-					"now":           time.Now(),
-				})
-			},
-		},
+func acquireAndRelease(ctx context.Context, rl *RateLimiter) error {
+	release, err := rl.Acquire(ctx)
+	if err != nil {
+		return err
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rl := NewRateLimiter(tt.rate, tt.burst, tt.maxConcurrent, nil)
-			// Apply any test-specific setup
-			if tt.setup != nil {
-				tt.setup(rl)
-			}
-
-			var wg sync.WaitGroup
-			start := time.Now()
-			errCh := make(chan error, tt.reqCount)
-
-			for i := 0; i < tt.reqCount; i++ {
-				wg.Add(1)
-				go func(i int) {
-					defer wg.Done()
-					// For the context canceled test, create a canceled context
-					var ctx context.Context
-					if tt.name == "context canceled" {
-						var cancel context.CancelFunc
-						ctx, cancel = context.WithCancel(context.Background())
-						cancel() // Immediately cancel the context
-					} else {
-						ctx = context.Background()
-					}
-
-					err := rl.Wait(ctx)
-					if tt.expectError {
-						errCh <- err
-					} else if err != nil {
-						errCh <- fmt.Errorf("unexpected error: %v", err)
-					} else {
-						errCh <- nil
-					}
-				}(i)
-			}
-
-			// Wait for all goroutines to complete
-			wg.Wait()
-			close(errCh)
-
-			// Check for any errors
-			for err := range errCh {
-				if tt.expectError {
-					assert.Error(t, err)
-				} else {
-					assert.NoError(t, err)
-				}
-			}
-
-			// For tests that don't expect errors, verify timing if specified
-			if !tt.expectError && tt.minTime > 0 {
-				elapsed := time.Since(start)
-				// Allow for some timing slack (80% of expected time)
-				minAllowedTime := time.Duration(float64(tt.minTime) * 0.8)
-				assert.GreaterOrEqual(t, elapsed, minAllowedTime, 
-					"test %s: expected at least %v, got %v", tt.name, minAllowedTime, elapsed)
-			}
-		})
-	}
-}
-
-func TestRateLimiter_BasicRateLimiting(t *testing.T) {
-	t.Run("basic rate limiting", func(t *testing.T) {
-		rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
-		defer rl.ResetRate()
-
-		start := time.Now()
-		ctx := context.Background()
-
-		// First request should pass immediately
-		err := rl.Wait(ctx)
-		require.NoError(t, err)
-
-		// Second request should be rate limited
-		err = rl.Wait(ctx)
-		require.NoError(t, err)
-		elapsed := time.Since(start)
-
-		// Should take at least 80ms due to rate limiting (allowing for some timing variation)
-		// The actual rate is 100ms, but timing can vary slightly due to scheduling
-		assert.GreaterOrEqual(t, elapsed, 80*time.Millisecond, "expected at least 80ms delay, got %v", elapsed)
-	})
+	release()
+	return nil
 }
 
 func TestRateLimiter_ContextCancellation(t *testing.T) {
 	t.Run("context canceled", func(t *testing.T) {
 		log := setupTestLogger(t)
-		rl := NewRateLimiter(100*time.Millisecond, 1, 5, log)
+		rl := NewRateLimiter(100*time.Millisecond, 5, log)
 
 		// Create a context with timeout
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 		defer cancel()
 
 		// This should fail due to context timeout
-		err := rl.Wait(ctx)
+		err := acquireAndRelease(ctx, rl)
 		assert.ErrorIs(t, err, context.DeadlineExceeded)
 	})
 }
 
-func TestRateLimiter_ConcurrencyLimiting(t *testing.T) {
-	t.Run("concurrency limiting", func(t *testing.T) {
-		log := setupTestLogger(t)
-		
-		// Use a very slow rate to ensure we hit concurrency limits before rate limits
-		rate := 10 * time.Second
-		burst := 1
-		maxConcurrent := 2
-		totalRequests := 5
+func TestRateLimiter_ConcurrentAcquiresArePaced(t *testing.T) {
+	const (
+		interval      = 15 * time.Millisecond
+		totalRequests = 5
+	)
+	rl := NewRateLimiter(interval, 2, setupTestLogger(t))
+	start := make(chan struct{})
+	type result struct {
+		completedAt time.Time
+		err         error
+	}
+	completed := make(chan result, totalRequests)
 
-		t.Logf("Starting test with maxConcurrent=%d, totalRequests=%d", maxConcurrent, totalRequests)
+	for range totalRequests {
+		go func() {
+			<-start
+			err := acquireAndRelease(context.Background(), rl)
+			completed <- result{completedAt: time.Now(), err: err}
+		}()
+	}
+	close(start)
 
-		rateLimiter := NewRateLimiter(rate, burst, maxConcurrent, log)
-		t.Logf("Rate limiter created: rate=%v, burst=%d, maxConcurrent=%d", rate, burst, rateLimiter.maxConcurrent)
-
-		// Channel to coordinate goroutine startup
-		startCh := make(chan struct{})
-
-		// Channel to collect errors
-		errCh := make(chan error, totalRequests)
-
-		// Channel to signal when each goroutine is done
-		doneCh := make(chan struct{}, totalRequests)
-
-		// Track the number of active requests
-		var activeReqs int32
-		var maxActive int32
-
-		// Start all the goroutines
-		for i := 0; i < totalRequests; i++ {
-			go func(id int) {
-				// Wait for the start signal
-				<-startCh
-
-				// Call the rate limiter to acquire the semaphore
-				err := rateLimiter.Wait(context.Background())
-				if err != nil {
-					errCh <- fmt.Errorf("goroutine %d: %v", id, err)
-					doneCh <- struct{}{}
-					return
-				}
-
-				// Track active requests
-				current := atomic.AddInt32(&activeReqs, 1)
-				for {
-					prevMax := atomic.LoadInt32(&maxActive)
-					if current <= prevMax || atomic.CompareAndSwapInt32(&maxActive, prevMax, current) {
-						break
-					}
-				}
-
-				// Simulate work
-				time.Sleep(100 * time.Millisecond)
-
-				// Mark request as done
-				atomic.AddInt32(&activeReqs, -1)
-				doneCh <- struct{}{}
-			}(i)
-		}
-
-		// Start all requests at once
-		close(startCh)
-
-		// Wait for all goroutines to complete
-		for i := 0; i < totalRequests; i++ {
-			select {
-			case err := <-errCh:
-				t.Error(err)
-			case <-doneCh:
-				// Goroutine completed
-			}
-		}
-
-		// Verify max concurrency was respected
-		maxConcurrentReached := atomic.LoadInt32(&maxActive)
-		if maxConcurrentReached > int32(maxConcurrent) {
-			t.Errorf("Max concurrency exceeded: got %d, want <= %d", maxConcurrentReached, maxConcurrent)
-		} else {
-			t.Logf("Max concurrency was properly limited to %d", maxConcurrentReached)
-		}
-	})
+	first := <-completed
+	require.NoError(t, first.err)
+	previous := first.completedAt
+	for range totalRequests - 1 {
+		current := <-completed
+		require.NoError(t, current.err)
+		assert.GreaterOrEqual(t, current.completedAt.Sub(previous), 12*time.Millisecond)
+		previous = current.completedAt
+	}
 }
 
-const (
-	// Default backoff factor for testing
-	testDefaultBackoffFactor = 8.0 // This matches the default in the implementation
+func TestRateLimiter_PendingAcquireObservesNewBackoff(t *testing.T) {
+	const (
+		interval = 100 * time.Millisecond
+		backoff  = 160 * time.Millisecond
+	)
+	rl := NewRateLimiter(interval, 2, setupTestLogger(t))
+	type result struct {
+		completedAt time.Time
+		err         error
+	}
+	completed := make(chan result, 1)
 
-	// Default jitter factor for testing (0.0 to disable jitter)
-	testDefaultJitterFactor = 0.0
-)
+	go func() {
+		err := acquireAndRelease(context.Background(), rl)
+		completed <- result{completedAt: time.Now(), err: err}
+	}()
+	require.Eventually(t, func() bool {
+		return rl.GetMetrics().Requests == 1
+	}, time.Second, time.Millisecond)
+
+	backoffStarted := time.Now()
+	rl.OnRateLimit(backoff)
+	got := <-completed
+	require.NoError(t, got.err)
+
+	assert.GreaterOrEqual(t, got.completedAt.Sub(backoffStarted), 140*time.Millisecond,
+		"pending acquire was admitted before the new backoff expired")
+}
+
+func TestRateLimiter_CancellationDoesNotCollapsePendingAcquires(t *testing.T) {
+	const interval = 80 * time.Millisecond
+	rl := NewRateLimiter(interval, 3, setupTestLogger(t))
+	type result struct {
+		completedAt time.Time
+		err         error
+	}
+	completed := make(chan result, 2)
+
+	go func() {
+		err := acquireAndRelease(context.Background(), rl)
+		completed <- result{completedAt: time.Now(), err: err}
+	}()
+	require.Eventually(t, func() bool {
+		return rl.GetMetrics().Requests == 1
+	}, time.Second, time.Millisecond)
+
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	canceled := make(chan error, 1)
+	go func() {
+		canceled <- acquireAndRelease(cancelCtx, rl)
+	}()
+	require.Eventually(t, func() bool {
+		return rl.GetMetrics().Requests == 2
+	}, time.Second, time.Millisecond)
+	cancel()
+	require.ErrorIs(t, <-canceled, context.Canceled)
+
+	go func() {
+		err := acquireAndRelease(context.Background(), rl)
+		completed <- result{completedAt: time.Now(), err: err}
+	}()
+
+	first := <-completed
+	second := <-completed
+	require.NoError(t, first.err)
+	require.NoError(t, second.err)
+	assert.GreaterOrEqual(t, second.completedAt.Sub(first.completedAt), 60*time.Millisecond,
+		"cancellation allowed two pending acquires into the same pacing slot")
+}
 
 func TestRateLimiter_OnRateLimit(t *testing.T) {
-	// Create a rate limiter with test values
-	rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
 	defer rl.ResetRate()
 
-	// Set test values for backoff and jitter
-	rl.SetBackoffFactor(testDefaultBackoffFactor)
-	rl.SetJitterFactor(testDefaultJitterFactor)
+	waitTime := rl.OnRateLimit(10 * time.Second)
 
-	tests := []struct {
-		name       string
-		retryAfter time.Duration
-		setup      func(rl *RateLimiter)
-		check      func(t *testing.T, waitTime time.Duration, rl *RateLimiter)
-	}{
-		{
-			name:       "short retry with default backoff",
-			retryAfter: 100 * time.Millisecond,
-			setup: func(rl *RateLimiter) {
-				// No special setup needed for this test case
-			},
-			check: func(t *testing.T, waitTime time.Duration, rl *RateLimiter) {
-				// With the default backoff factor of 8.0, we expect waitTime to be around 800ms (100ms * 8.0)
-				// The actual calculation includes some additional factors, so we'll use a range
-				expectedMin := 100 * time.Millisecond
-				expectedMax := 2 * time.Second
-				assert.GreaterOrEqual(t, waitTime, expectedMin, "wait time should be at least %v", expectedMin)
-				assert.LessOrEqual(t, waitTime, expectedMax, "wait time should be at most %v", expectedMax)
+	assert.Equal(t, 10*time.Second, waitTime)
+	assert.Equal(t, 100*time.Millisecond, rl.GetRate(), "Retry-After must remain a temporary pause")
+	assert.Equal(t, uint64(1), rl.GetMetrics().RateLimited)
+}
 
-				// Verify metrics
-				metrics := rl.GetMetrics()
-				assert.Equal(t, uint64(1), metrics.RateLimited)
-			},
-		},
-		{
-			name:       "long retry with backoff",
-			retryAfter: 10 * time.Second,
-			setup: func(rl *RateLimiter) {
-				// Set a custom backoff factor for this test
-				rl.SetBackoffFactor(1.5)
-			},
-			check: func(t *testing.T, waitTime time.Duration, rl *RateLimiter) {
-				// With backoff factor of 1.5, we expect waitTime to be around 15s (10s * 1.5)
-				// The actual calculation includes some additional factors, so we'll use a range
-				// Using 9s instead of 10s to account for test environment timing variations
-				expectedMin := 9 * time.Second
-				expectedMax := 30 * time.Second
-				assert.GreaterOrEqual(t, waitTime, expectedMin, "wait time should be at least %v (was %v)", expectedMin, waitTime)
-				assert.LessOrEqual(t, waitTime, expectedMax, "wait time should be at most %v (was %v)", expectedMax, waitTime)
+func TestRateLimiter_OnRateLimitFallbackPreservesLongerAuthoritativePause(t *testing.T) {
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
+	rl.SetBackoffFactor(2)
+	rl.SetJitterFactor(0)
 
-				// Verify metrics
-				metrics := rl.GetMetrics()
-				assert.Equal(t, uint64(1), metrics.RateLimited)
-			},
-		},
-	}
+	rl.OnRateLimit(2 * time.Second)
+	rl.mu.RLock()
+	authoritativeDeadline := rl.backoffUntil
+	rl.mu.RUnlock()
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
-			defer rl.ResetRate()
+	assert.Equal(t, 200*time.Millisecond, rl.OnRateLimit(0))
+	rl.mu.RLock()
+	actualDeadline := rl.backoffUntil
+	rl.mu.RUnlock()
 
-			// Apply any test-specific setup
-			if tt.setup != nil {
-				tt.setup(rl)
-			}
-
-			// Call OnRateLimit and verify the result
-			waitTime := rl.OnRateLimit(tt.retryAfter)
-			tt.check(t, waitTime, rl)
-		})
-	}
+	assert.False(t, actualDeadline.Before(authoritativeDeadline),
+		"exponential fallback must not shorten an authoritative pause")
 }
 
 func TestRateLimiter_ResetRate(t *testing.T) {
-	// Create a rate limiter with a custom rate
-	rl := NewRateLimiter(time.Second, 1, 1, nil)
+	rl := NewRateLimiter(time.Second, 1, nil)
+	rl.SetBackoffFactor(2)
+	rl.SetJitterFactor(0)
 
-	// Modify the rate to something different
-	rl.mu.Lock()
-	rl.rate = 5 * time.Second
-	rl.mu.Unlock()
+	rl.WithRateLimitHeaders(&http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{},
+	})
+	require.Equal(t, 2*time.Second, rl.GetRate())
 
-	// Reset the rate
 	rl.ResetRate()
 
-	// Should be back to the default (2 seconds)
-	assert.Equal(t, 2*time.Second, rl.GetRate(), "rate should be reset to default 2 seconds")
+	assert.Equal(t, time.Second, rl.GetRate())
 }
 
 func TestRateLimiter_GetMetrics(t *testing.T) {
-	rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
 	defer rl.ResetRate()
 
 	// Initial metrics
@@ -400,7 +235,7 @@ func TestRateLimiter_GetMetrics(t *testing.T) {
 
 	// Make a request
 	ctx := context.Background()
-	err := rl.Wait(ctx)
+	err := acquireAndRelease(ctx, rl)
 	require.NoError(t, err)
 
 	// Check updated metrics
@@ -409,7 +244,7 @@ func TestRateLimiter_GetMetrics(t *testing.T) {
 }
 
 func TestRateLimiter_SetBackoffFactor(t *testing.T) {
-	rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
 	defer rl.ResetRate()
 
 	// Set backoff factor
@@ -422,7 +257,7 @@ func TestRateLimiter_SetBackoffFactor(t *testing.T) {
 }
 
 func TestRateLimiter_SetJitterFactor(t *testing.T) {
-	rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
 	defer rl.ResetRate()
 
 	// Set jitter factor
@@ -434,31 +269,8 @@ func TestRateLimiter_SetJitterFactor(t *testing.T) {
 	rl.mu.RUnlock()
 }
 
-func TestRateLimiter_CheckBackoff(t *testing.T) {
-	rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
-	defer rl.ResetRate()
-
-	// No backoff initially
-	rl.mu.RLock()
-	remaining := rl.checkBackoff()
-	rl.mu.RUnlock()
-	assert.Equal(t, time.Duration(0), remaining)
-
-	// Set a backoff
-	rl.mu.Lock()
-	rl.backoffUntil = time.Now().Add(100 * time.Millisecond)
-	rl.mu.Unlock()
-
-	// Should return remaining backoff time
-	rl.mu.RLock()
-	remaining = rl.checkBackoff()
-	rl.mu.RUnlock()
-	assert.Greater(t, remaining, time.Duration(0))
-	assert.LessOrEqual(t, remaining, 100*time.Millisecond)
-}
-
 func TestRateLimiter_CalculateJitter(t *testing.T) {
-	rl := NewRateLimiter(100*time.Millisecond, 1, 1, nil)
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
 	defer rl.ResetRate()
 
 	// Test with default jitter factor
@@ -474,17 +286,17 @@ func TestRateLimiter_CalculateJitter(t *testing.T) {
 func TestParseRetryAfter(t *testing.T) {
 	// Use a fixed time for testing
 	fixedTime := time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC)
-	
+
 	// Override time.Now for this test
 	origNow := timeNow
 	timeNow = func() time.Time { return fixedTime }
 	defer func() { timeNow = origNow }()
 
 	tests := []struct {
-		name     string
-		header   string
-		setup    func()
-		check    func(t *testing.T, d time.Duration, err error)
+		name   string
+		header string
+		setup  func()
+		check  func(t *testing.T, d time.Duration, err error)
 	}{
 		{
 			name:   "seconds",
@@ -595,11 +407,408 @@ func TestParseIETFRateLimitPolicy(t *testing.T) {
 	headers.Set("RateLimit-Policy", `"Free";q=60;w=60;burst=10, "daily";q=5000;w=86400`)
 
 	var rl RateLimiter
-	quota, burst := rl.parseIETFRateLimitPolicy(headers)
+	quota, burst, window := rl.parseIETFRateLimitPolicy(headers)
 
 	assert.Equal(t, 60, quota["free"])
 	assert.Equal(t, 5000, quota["daily"])
 	assert.Equal(t, 10, burst["free"])
+	assert.Equal(t, 60, window["free"])
+	assert.Equal(t, 86400, window["daily"])
+}
+
+func TestRateLimiterIETFZeroResetDoesNotCreatePermanentBackoff(t *testing.T) {
+	configuredRate := 2 * time.Second
+	rl := NewRateLimiter(configuredRate, 1, nil)
+	resp := &http.Response{Header: http.Header{
+		"Ratelimit":        {`"Free";r=1;t=0`},
+		"Ratelimit-Policy": {`"Free";q=60;w=60;burst=10`},
+	}}
+
+	rl.WithRateLimitHeaders(resp)
+
+	assert.Equal(t, configuredRate, rl.GetRate())
+	rl.mu.RLock()
+	defer rl.mu.RUnlock()
+	assert.Zero(t, rl.backoffUntil)
+}
+
+func TestRateLimiterCapsServerPauseAtDefaultMaxBackoff(t *testing.T) {
+	serverDelaySeconds := int(DefaultMaxBackoff/time.Second) + 1
+	serverDelay := time.Duration(serverDelaySeconds) * time.Second
+	require.Greater(t, serverDelay, DefaultMaxBackoff)
+
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
+	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+		"Retry-After": {strconv.Itoa(serverDelaySeconds)},
+	}})
+
+	rl.mu.RLock()
+	pause := time.Until(rl.backoffUntil)
+	rl.mu.RUnlock()
+
+	assert.Greater(t, pause, DefaultMaxBackoff-time.Second)
+	assert.LessOrEqual(t, pause, DefaultMaxBackoff)
+}
+
+func TestRateLimiterDailyExhaustionOverridesRetryAfter(t *testing.T) {
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
+	dailyResetSeconds := int(DefaultMaxDailyResetWait/time.Second) + 1
+	rl.WithRateLimitHeaders(&http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header: http.Header{
+			"Retry-After": {"1"},
+			"Ratelimit": {
+				fmt.Sprintf(`"Free";r=59;t=1, "daily";r=0;t=%d`, dailyResetSeconds),
+			},
+			"Ratelimit-Policy": {`"Free";q=60;w=60, "daily";q=5000;w=86400`},
+		},
+	})
+
+	rl.mu.RLock()
+	pause := time.Until(rl.backoffUntil)
+	rl.mu.RUnlock()
+	assert.Greater(t, pause, DefaultMaxBackoff)
+	assert.LessOrEqual(t, pause, DefaultMaxDailyResetWait)
+	assert.Equal(t, 0, rl.DailyRemaining())
+	assert.Equal(t, 5000, rl.DailyLimit())
+	assert.Equal(t, uint64(1), rl.GetMetrics().RateLimited)
+}
+
+func TestRateLimiterWaitsForDailyQuotaReset(t *testing.T) {
+	tests := []struct {
+		name               string
+		serverDelaySeconds int
+		expectedPause      time.Duration
+	}{
+		{
+			name:               "waits beyond ordinary backoff cap",
+			serverDelaySeconds: int((DefaultMaxBackoff + time.Minute) / time.Second),
+			expectedPause:      DefaultMaxBackoff + time.Minute,
+		},
+		{
+			name:               "caps maximum integer without overflowing",
+			serverDelaySeconds: int(^uint(0) >> 1),
+			expectedPause:      DefaultMaxDailyResetWait,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rl := NewRateLimiter(100*time.Millisecond, 1, nil)
+			rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+				"Ratelimit":        {fmt.Sprintf(`"daily";r=0;t=%d`, tt.serverDelaySeconds)},
+				"Ratelimit-Policy": {`"daily";q=5000;w=86400`},
+			}})
+
+			rl.mu.RLock()
+			pause := time.Until(rl.backoffUntil)
+			rl.mu.RUnlock()
+
+			assert.Greater(t, pause, tt.expectedPause-time.Second)
+			assert.LessOrEqual(t, pause, tt.expectedPause)
+		})
+	}
+}
+
+func TestRateLimiterBoundsExtremeNonExhaustedIETFValues(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+	extreme := strconv.Itoa(maxInt)
+	tests := []struct {
+		name        string
+		rateLimit   string
+		policy      string
+		wantRate    time.Duration
+		wantBackoff bool
+	}{
+		{
+			name:        "near exhausted daily reset",
+			rateLimit:   fmt.Sprintf(`"daily";r=1;t=%s`, extreme),
+			policy:      fmt.Sprintf(`"daily";q=%s;w=86400`, extreme),
+			wantRate:    DefaultMaxBackoff,
+			wantBackoff: false,
+		},
+		{
+			name:        "sustainable window",
+			rateLimit:   `"free";r=2;t=1`,
+			policy:      fmt.Sprintf(`"free";q=1;w=%s`, extreme),
+			wantRate:    DefaultMaxBackoff,
+			wantBackoff: false,
+		},
+		{
+			name:        "near exhausted non daily pause",
+			rateLimit:   fmt.Sprintf(`"free";r=1;t=%s`, extreme),
+			policy:      `"free";q=60;w=60`,
+			wantRate:    time.Second,
+			wantBackoff: true,
+		},
+		{
+			name:        "malformed extreme values",
+			rateLimit:   `"free";r=1;t=999999999999999999999999999999`,
+			policy:      `"free";q=60;w=999999999999999999999999999999`,
+			wantRate:    100 * time.Millisecond,
+			wantBackoff: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rl := NewRateLimiter(100*time.Millisecond, 1, nil)
+			rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+				"Ratelimit":        {tt.rateLimit},
+				"Ratelimit-Policy": {tt.policy},
+			}})
+
+			assert.Equal(t, tt.wantRate, rl.GetRate())
+			assert.GreaterOrEqual(t, rl.GetRate(), time.Duration(0))
+			assert.LessOrEqual(t, rl.GetRate(), DefaultMaxBackoff)
+			rl.mu.RLock()
+			pause := time.Until(rl.backoffUntil)
+			backoffSet := !rl.backoffUntil.IsZero()
+			rl.mu.RUnlock()
+			assert.Equal(t, tt.wantBackoff, backoffSet)
+			if backoffSet {
+				assert.Greater(t, pause, DefaultMaxBackoff-time.Second)
+				assert.LessOrEqual(t, pause, DefaultMaxBackoff)
+			}
+		})
+	}
+}
+
+func TestRateLimiterUsesPolicyWindowForSteadyPacing(t *testing.T) {
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
+	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+		"Ratelimit":        {`"Free";r=8;t=42`},
+		"Ratelimit-Policy": {`"Free";q=60;w=60;burst=10`},
+	}})
+
+	assert.Equal(t, time.Second, rl.GetRate())
+}
+
+func TestRateLimiterFallsBackForBareTooManyRequests(t *testing.T) {
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
+	rl.SetBackoffFactor(2)
+	rl.SetJitterFactor(0)
+
+	rl.WithRateLimitHeaders(&http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{}})
+
+	assert.Equal(t, 200*time.Millisecond, rl.GetRate())
+	assert.Equal(t, uint64(1), rl.GetMetrics().RateLimited)
+	rl.mu.RLock()
+	assert.True(t, rl.backoffUntil.After(time.Now()))
+	rl.mu.RUnlock()
+
+	rl.WithRateLimitHeaders(&http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{}})
+	assert.Equal(t, 400*time.Millisecond, rl.GetRate())
+	assert.Equal(t, uint64(2), rl.GetMetrics().RateLimited)
+
+	rl.WithRateLimitHeaders(&http.Response{StatusCode: http.StatusOK, Header: http.Header{}})
+	assert.Equal(t, 400*time.Millisecond, rl.GetRate())
+
+	healthyHeaders := make(http.Header)
+	healthyHeaders.Set("X-RateLimit-Limit", "100")
+	healthyHeaders.Set("X-RateLimit-Remaining", "90")
+	rl.WithRateLimitHeaders(&http.Response{StatusCode: http.StatusOK, Header: healthyHeaders})
+	assert.Equal(t, 100*time.Millisecond, rl.GetRate())
+}
+
+func TestRateLimiterUnguided429PreservesLongerBackoff(t *testing.T) {
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
+	rl.SetBackoffFactor(2)
+	rl.SetJitterFactor(0)
+
+	rl.WithRateLimitHeaders(&http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{"Retry-After": {"2"}},
+	})
+	rl.mu.RLock()
+	authoritativeDeadline := rl.backoffUntil
+	rl.mu.RUnlock()
+
+	rl.WithRateLimitHeaders(&http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{},
+	})
+
+	assert.Equal(t, 200*time.Millisecond, rl.GetRate(), "bare 429 should still escalate steady pacing")
+	assert.Equal(t, uint64(2), rl.GetMetrics().RateLimited, "each 429 should count")
+	rl.mu.RLock()
+	actualDeadline := rl.backoffUntil
+	rl.mu.RUnlock()
+	assert.False(t, actualDeadline.Before(authoritativeDeadline), "fallback must not shorten authoritative backoff")
+}
+
+func TestRateLimiterFallsBackForUnguidedTooManyRequests(t *testing.T) {
+	reset := strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10)
+	tests := []struct {
+		name   string
+		header http.Header
+	}{
+		{
+			name: "legacy reset without remaining",
+			header: http.Header{
+				"X-RateLimit-Reset": {reset},
+			},
+		},
+		{
+			name: "malformed legacy remaining",
+			header: http.Header{
+				"X-RateLimit-Remaining": {"unknown"},
+				"X-RateLimit-Reset":     {reset},
+			},
+		},
+		{
+			name: "nonzero legacy remaining",
+			header: http.Header{
+				"X-RateLimit-Limit":     {"100"},
+				"X-RateLimit-Remaining": {"10"},
+				"X-RateLimit-Reset":     {reset},
+			},
+		},
+		{
+			name: "non-exhausted IETF quota",
+			header: http.Header{
+				"RateLimit":        {`"Free";r=8;t=42`},
+				"RateLimit-Policy": {`"Free";q=60;w=60;burst=10`},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rl := NewRateLimiter(100*time.Millisecond, 1, nil)
+			rl.SetBackoffFactor(2)
+			rl.SetJitterFactor(0)
+
+			rl.WithRateLimitHeaders(&http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Header:     tt.header,
+			})
+
+			assert.Equal(t, 200*time.Millisecond, rl.GetRate())
+			assert.Equal(t, uint64(1), rl.GetMetrics().RateLimited)
+			rl.mu.RLock()
+			assert.True(t, rl.backoffUntil.After(time.Now()))
+			rl.mu.RUnlock()
+		})
+	}
+}
+
+func TestRateLimiterHonorsAuthoritativeTooManyRequestsGuidance(t *testing.T) {
+	reset := strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10)
+	tests := []struct {
+		name         string
+		header       http.Header
+		expectedRate time.Duration
+	}{
+		{
+			name:         "positive Retry-After",
+			expectedRate: 100 * time.Millisecond,
+			header: http.Header{
+				"Retry-After": {"1"},
+			},
+		},
+		{
+			name:         "exhausted IETF quota",
+			expectedRate: time.Second,
+			header: http.Header{
+				"Ratelimit":        {`"Free";r=0;t=42`},
+				"Ratelimit-Policy": {`"Free";q=60;w=60;burst=10`},
+			},
+		},
+		{
+			name:         "exhausted legacy quota",
+			expectedRate: 100 * time.Millisecond,
+			header: http.Header{
+				"X-Ratelimit-Limit":     {"100"},
+				"X-Ratelimit-Remaining": {"0"},
+				"X-Ratelimit-Reset":     {reset},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rl := NewRateLimiter(100*time.Millisecond, 1, nil)
+			rl.SetBackoffFactor(2)
+			rl.SetJitterFactor(0)
+			rl.WithRateLimitHeaders(&http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Header:     tt.header,
+			})
+
+			assert.Equal(t, tt.expectedRate, rl.GetRate())
+			assert.Equal(t, uint64(1), rl.GetMetrics().RateLimited)
+			rl.mu.RLock()
+			assert.True(t, rl.backoffUntil.After(time.Now()))
+			rl.mu.RUnlock()
+		})
+	}
+}
+
+func TestRateLimiterRecoversFromHeaderDrivenSlowdown(t *testing.T) {
+	configuredRate := 2 * time.Second
+	var logs bytes.Buffer
+	testLogger := &logger.Logger{Logger: zerolog.New(&logs).Level(zerolog.InfoLevel)}
+	rl := NewRateLimiter(configuredRate, 1, testLogger)
+
+	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+		"Ratelimit":        {`"Free";r=8;t=42, "daily";r=1;t=10`},
+		"Ratelimit-Policy": {`"Free";q=60;w=60;burst=10, "daily";q=5000;w=86400`},
+	}})
+	assert.Greater(t, rl.GetRate(), configuredRate)
+
+	logs.Reset()
+	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+		"Ratelimit":        {`"Free";r=8;t=42, "daily";r=4000;t=1000`},
+		"Ratelimit-Policy": {`"Free";q=60;w=60;burst=10, "daily";q=5000;w=86400`},
+	}})
+	assert.Equal(t, configuredRate, rl.GetRate())
+	assert.Contains(t, logs.String(), `"level":"info"`)
+	assert.Contains(t, logs.String(), `"previous_rate":"10s"`)
+	assert.Contains(t, logs.String(), `"new_rate":"2s"`)
+	assert.Contains(t, logs.String(), `"message":"Rate limiter pacing recovered"`)
+}
+
+func TestRateLimiterAdaptivePacingLogLevels(t *testing.T) {
+	previousLevel := zerolog.GlobalLevel()
+	zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	t.Cleanup(func() {
+		zerolog.SetGlobalLevel(previousLevel)
+	})
+
+	t.Run("IETF window adjustment is info", func(t *testing.T) {
+		var logs bytes.Buffer
+		testLogger := &logger.Logger{Logger: zerolog.New(&logs).Level(zerolog.DebugLevel)}
+		rl := NewRateLimiter(100*time.Millisecond, 1, testLogger)
+		logs.Reset()
+
+		rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+			"Ratelimit":        {`"Free";r=1;t=10`},
+			"Ratelimit-Policy": {`"Free";q=60;w=60;burst=10`},
+		}})
+
+		message := "Rate limit window nearly exhausted, slowing down"
+		assert.True(t, containsLogEntry(t, logs.String(), "info", message))
+		assert.False(t, containsLogEntry(t, logs.String(), "warn", message))
+	})
+
+	t.Run("legacy adjustment is info and reset schedule is debug", func(t *testing.T) {
+		var logs bytes.Buffer
+		testLogger := &logger.Logger{Logger: zerolog.New(&logs).Level(zerolog.DebugLevel)}
+		rl := NewRateLimiter(100*time.Millisecond, 1, testLogger)
+		logs.Reset()
+
+		header := make(http.Header)
+		header.Set("X-RateLimit-Limit", "100")
+		header.Set("X-RateLimit-Remaining", "10")
+		header.Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10))
+		rl.WithRateLimitHeaders(&http.Response{Header: header})
+
+		adjustment := "Approaching rate limit (legacy headers), being more conservative"
+		assert.True(t, containsLogEntry(t, logs.String(), "info", adjustment))
+		assert.False(t, containsLogEntry(t, logs.String(), "warn", adjustment))
+		assert.True(t, containsLogEntry(t, logs.String(), "debug", "Rate limit will reset, scheduling next request"))
+	})
 }
 
 func TestRateLimitBuckets(t *testing.T) {
@@ -633,7 +842,7 @@ func TestWithRateLimitHeaders(t *testing.T) {
 			check: func(t *testing.T, rl *RateLimiter) {
 				rl.mu.RLock()
 				defer rl.mu.RUnlock()
-				
+
 				// Rate should be adjusted based on remaining requests and time
 				// The exact value depends on the rate limiter's internal calculations
 				assert.Greater(t, rl.rate, 0*time.Second)
@@ -648,7 +857,7 @@ func TestWithRateLimitHeaders(t *testing.T) {
 			check: func(t *testing.T, rl *RateLimiter) {
 				rl.mu.RLock()
 				defer rl.mu.RUnlock()
-				
+
 				// Should set a backoff for the retry-after duration
 				assert.False(t, rl.backoffUntil.IsZero())
 			},
@@ -686,7 +895,7 @@ func TestWithRateLimitHeaders(t *testing.T) {
 				// No rate limiting should be applied
 				rl.mu.RLock()
 				defer rl.mu.RUnlock()
-				
+
 				// Should keep the original rate
 				assert.Equal(t, 100*time.Millisecond, rl.rate)
 			},
@@ -703,7 +912,7 @@ func TestWithRateLimitHeaders(t *testing.T) {
 				TimeFormat: time.RFC3339,
 			})
 			log := logger.Get().With(map[string]interface{}{"test": tt.name})
-			rl := NewRateLimiter(100*time.Millisecond, 10, 1, log)
+			rl := NewRateLimiter(100*time.Millisecond, 1, log)
 			defer rl.ResetRate()
 
 			// Create a response with headers and a valid Request

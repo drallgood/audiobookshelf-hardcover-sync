@@ -174,7 +174,7 @@ func TestClient_UpdateUserBookStatus(t *testing.T) {
 				logger:      log,
 				maxRetries:  3,
 				retryDelay:  time.Millisecond * 100,
-				rateLimiter: util.NewRateLimiter(10*time.Millisecond, 5, 10, log), // Initialize rate limiter with reasonable test values
+				rateLimiter: util.NewRateLimiter(10*time.Millisecond, 10, log), // Initialize rate limiter with reasonable test values
 			}
 			
 			// Prepare the expected input that the server should receive

@@ -7,7 +7,6 @@ server:
 # Rate limiting configuration
 rate_limit:
   rate: "2s"            # Minimum time between requests (30 requests per minute)
-  burst: 1              # Maximum number of requests in a burst
   max_concurrent: 1     # Maximum number of concurrent requests
 
 # Logging configuration

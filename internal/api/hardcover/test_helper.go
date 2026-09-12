@@ -36,7 +36,7 @@ func CreateTestClient(server *httptest.Server) *Client {
 			},
 		},
 		logger:          log,
-		rateLimiter:     util.NewRateLimiter(10*time.Millisecond, 5, 10, log),
+		rateLimiter:     util.NewRateLimiter(10*time.Millisecond, 10, log),
 		maxRetries:      0, // Disable retries in tests to reduce noise
 		retryDelay:      time.Millisecond,
 		userBookIDCache: cache.NewMemoryCache[int, int](log),

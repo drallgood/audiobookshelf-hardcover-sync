@@ -183,7 +183,6 @@ See the [Authentication Guide](../../docs/AUTHENTICATION.md) for detailed setup 
 | `config.server.port`                    | Server port                                                | `"8080"`           |
 | `config.server.shutdownTimeout`         | Graceful shutdown timeout                                  | `"10s"`            |
 | `config.rateLimit.rate`                 | Minimum time between requests                              | `"1500ms"`         |
-| `config.rateLimit.burst`                | Maximum number of requests in a burst                      | `2`                |
 | `config.rateLimit.maxConcurrent`        | Maximum number of concurrent requests                      | `3`                |
 | `config.logging.level`                  | Log level                                                  | `"info"`           |
 | `config.logging.format`                 | Log format                                                 | `"json"`           |
