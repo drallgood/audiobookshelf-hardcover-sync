@@ -36,6 +36,7 @@ class SyncProfileApp {
         this.autoRefreshEnabled = true; // Auto-refresh is enabled by default
         this.statusLoadSequence = 0;
         this.activeStatusLoads = 0;
+        this.activeStatusRequests = 0;
         
         this.init();
     }
@@ -496,6 +497,7 @@ class SyncProfileApp {
 
     async loadStatuses({ silent = false } = {}) {
         const requestSequence = ++this.statusLoadSequence;
+        this.activeStatusRequests += 1;
         try {
             if (!silent) {
                 this.activeStatusLoads += 1;
@@ -572,6 +574,7 @@ class SyncProfileApp {
                 this.showToast('Error loading statuses: ' + error.message, 'error');
             }
         } finally {
+            this.activeStatusRequests -= 1;
             if (!silent) {
                 this.activeStatusLoads -= 1;
                 if (this.activeStatusLoads === 0) this.hideLoading();
@@ -2225,6 +2228,7 @@ class SyncProfileApp {
         // Refresh statuses every 5 seconds
         this.refreshInterval = setInterval(() => {
             if (this.autoRefreshEnabled && document.getElementById('sync-tab').classList.contains('active')) {
+                if (this.activeStatusRequests > 0) return;
                 this.loadStatuses({ silent: true });
             }
         }, 5000);
