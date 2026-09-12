@@ -38,6 +38,7 @@ class SyncProfileApp {
         this.statusLoadSequence = 0;
         this.activeStatusLoads = 0;
         this.activeStatusRequests = 0;
+        this.statusLoadController = null;
         
         this.init();
     }
@@ -341,6 +342,28 @@ class SyncProfileApp {
     }
 
     setupEventListeners() {
+        const bindProfileActions = (containerId, cardSelector) => {
+            const container = document.getElementById(containerId);
+            container.addEventListener('click', (event) => {
+                const button = event.target.closest('button[data-profile-action]');
+                if (!button || !container.contains(button)) return;
+
+                const card = button.closest(cardSelector);
+                if (!card || !container.contains(card)) return;
+                const profileId = card.dataset.profileId;
+
+                switch (button.dataset.profileAction) {
+                    case 'edit': this.editProfile(profileId); break;
+                    case 'delete': this.deleteProfile(profileId); break;
+                    case 'start': this.startSync(profileId); break;
+                    case 'cancel': this.cancelSync(profileId); break;
+                    case 'summary': this.showSyncSummary(profileId); break;
+                }
+            });
+        };
+        bindProfileActions('users-list', '.user-card[data-profile-id]');
+        bindProfileActions('sync-status', '.status-card[data-profile-id]');
+
         // Tab switching
         document.querySelectorAll('.tab-button').forEach(button => {
             button.addEventListener('click', (e) => {
@@ -410,7 +433,7 @@ class SyncProfileApp {
             const statusIcon = user.active ? '✓' : '✗';
             
             return `
-                <div class="user-card">
+                <div class="user-card" data-profile-id="${this.escapeHtml(user.id)}">
                     <div class="user-card-header">
                         <h3>${this.escapeHtml(user.name || user.id)}</h3>
                         <span class="status-badge ${statusClass}" title="${user.active ? 'Active' : 'Inactive'}">
@@ -431,13 +454,13 @@ class SyncProfileApp {
                         </div>
                         
                         <div class="user-card-actions">
-                            <button class="btn btn-sm btn-icon" onclick="app.editProfile('${this.escapeHtml(user.id)}')" title="Edit Profile">
+                            <button class="btn btn-sm btn-icon" data-profile-action="edit" title="Edit Profile">
                                 <span class="icon">✏️</span> Edit
                             </button>
-                            <button class="btn btn-sm btn-icon btn-danger" onclick="app.deleteProfile('${this.escapeHtml(user.id)}')" title="Delete Profile">
+                            <button class="btn btn-sm btn-icon btn-danger" data-profile-action="delete" title="Delete Profile">
                                 <span class="icon">🗑️</span> Delete
                             </button>
-                            <button class="btn btn-sm btn-primary" onclick="app.startSync('${this.escapeHtml(user.id)}')" ${user.active ? '' : 'disabled'}>
+                            <button class="btn btn-sm btn-primary" data-profile-action="start" ${user.active ? '' : 'disabled'}>
                                 <span class="icon">🔄</span> Sync Now
                             </button>
                         </div>
@@ -448,11 +471,21 @@ class SyncProfileApp {
     }
 
     async fetchJsonWithTimeout(url, options = {}) {
+        const { signal: requestSignal, ...fetchOptions } = options;
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), STATUS_LOAD_TIMEOUT_MS);
+        const abortForRequest = () => controller.abort(requestSignal.reason);
+
+        if (requestSignal) {
+            if (requestSignal.aborted) {
+                abortForRequest();
+            } else {
+                requestSignal.addEventListener('abort', abortForRequest, { once: true });
+            }
+        }
 
         try {
-            const response = await fetch(url, { ...options, signal: controller.signal });
+            const response = await fetch(url, { ...fetchOptions, signal: controller.signal });
             const data = await response.json();
             if (controller.signal.aborted) {
                 const error = new Error('Request timed out');
@@ -462,10 +495,11 @@ class SyncProfileApp {
             return { response, data };
         } finally {
             clearTimeout(timeout);
+            requestSignal?.removeEventListener('abort', abortForRequest);
         }
     }
 
-    async loadProfiles({ showLoading = true, statusOwned = false } = {}) {
+    async loadProfiles({ showLoading = true, statusOwned = false, signal } = {}) {
         try {
             if (showLoading) this.showLoading();
             
@@ -481,7 +515,8 @@ class SyncProfileApp {
                 credentials: 'include', // Include session cookies
                 headers: {
                     'Content-Type': 'application/json'
-                }
+                },
+                signal
             });
             
             // Handle authentication errors specifically
@@ -513,6 +548,11 @@ class SyncProfileApp {
 
     async loadStatuses({ silent = false } = {}) {
         const requestSequence = ++this.statusLoadSequence;
+        this.statusLoadController?.abort();
+        const controller = new AbortController();
+        this.statusLoadController = controller;
+        const { signal } = controller;
+        const isCurrentRequest = () => requestSequence === this.statusLoadSequence && !signal.aborted;
         this.activeStatusRequests += 1;
         try {
             if (!silent) {
@@ -526,12 +566,12 @@ class SyncProfileApp {
             if (!this.users || this.users.length === 0) {
                 // This status request owns its loading feedback. Avoid letting
                 // the nested profile request hide it before statuses finish.
-                await this.loadProfiles({ showLoading: false, statusOwned: true });
+                await this.loadProfiles({ showLoading: false, statusOwned: true, signal });
             }
             
             // If no users, render empty status
             if (!this.users || this.users.length === 0) {
-                if (requestSequence !== this.statusLoadSequence) return;
+                if (!isCurrentRequest()) return;
                 this.statuses = {};
                 this.renderStatuses();
                 return;
@@ -539,9 +579,11 @@ class SyncProfileApp {
             
             // Fetch status for each profile
             for (const user of this.users) {
+                if (!isCurrentRequest()) return;
                 try {
                     const { response: statusResponse, data: statusData } = await this.fetchJsonWithTimeout(
-                        `/api/profiles/${user.id}/status`
+                        `/api/profiles/${user.id}/status`,
+                        { signal }
                     );
                     if (statusResponse.ok) {
                         if (statusData.success) {
@@ -565,13 +607,13 @@ class SyncProfileApp {
                             
                             // Always try to fetch the summary for completed/error states
                             if (statusData.data?.state === 'completed' || statusData.data?.state === 'error') {
-                                summaryPromises.push(this.fetchSyncSummary(user.id, statuses));
+                                summaryPromises.push(this.fetchSyncSummary(user.id, statuses, signal));
                             }
                         }
                     }
                 } catch (error) {
                     console.error(`Error fetching status for profile ${user.id}:`, error);
-                    if (error.name === 'AbortError') {
+                    if (error.name === 'AbortError' && isCurrentRequest()) {
                         if (this.statuses[user.id]) statuses[user.id] = this.statuses[user.id];
                     }
                 }
@@ -582,7 +624,7 @@ class SyncProfileApp {
 
             // Only the newest request may publish a status snapshot. A slower
             // response from an older poll must not roll the UI back.
-            if (requestSequence !== this.statusLoadSequence) return;
+            if (!isCurrentRequest()) return;
             
             this.statuses = statuses;
             this.renderStatuses();
@@ -595,6 +637,9 @@ class SyncProfileApp {
             }
         } finally {
             this.activeStatusRequests -= 1;
+            if (this.statusLoadController === controller) {
+                this.statusLoadController = null;
+            }
             if (!silent) {
                 this.activeStatusLoads -= 1;
                 if (this.activeStatusLoads === 0) this.hideLoading();
@@ -602,10 +647,13 @@ class SyncProfileApp {
         }
     }
     
-    async fetchSyncSummary(profileId, statuses) {
+    async fetchSyncSummary(profileId, statuses, signal) {
         try {
             console.log(`Fetching sync summary for profile ${profileId}...`);
-            const { response, data: result } = await this.fetchJsonWithTimeout(`/api/profiles/${profileId}/summary`);
+            const { response, data: result } = await this.fetchJsonWithTimeout(
+                `/api/profiles/${profileId}/summary`,
+                { signal }
+            );
             if (response.ok) {
                 console.log('Raw sync summary response:', result);
                 
@@ -700,16 +748,16 @@ class SyncProfileApp {
                     </div>
                     <div class="status-actions">
                         ${statusState.toLowerCase() === 'syncing' ? `
-                            <button class="btn btn-warning" onclick="app.cancelSync('${profileId}')">
+                            <button class="btn btn-warning" data-profile-action="cancel">
                                 Cancel Sync
                             </button>
                         ` : `
-                            <button class="btn btn-primary" onclick="app.startSync('${profileId}')">
+                            <button class="btn btn-primary" data-profile-action="start">
                                 ${statusState.toLowerCase() === 'error' ? 'Retry Sync' : 'Start Sync'}
                             </button>
                         `}
                         ${hasSummary ? `
-                            <button class="btn btn-secondary" onclick="app.showSyncSummary('${profileId}')">
+                            <button class="btn btn-secondary" data-profile-action="summary">
                                 View Details
                             </button>
                         ` : ''}
@@ -766,7 +814,7 @@ class SyncProfileApp {
             let card = existingCards.get(profileId);
             const signature = JSON.stringify(status);
             const focusInfo = card && activeElement && card.contains(activeElement)
-                ? { id: activeElement.id, tagName: activeElement.tagName, onclick: activeElement.getAttribute('onclick') }
+                ? { id: activeElement.id, tagName: activeElement.tagName, action: activeElement.dataset.profileAction }
                 : null;
 
             if (!card || card.__statusSignature !== signature) {
@@ -786,9 +834,9 @@ class SyncProfileApp {
                     const focusTarget = focusInfo.id
                         ? [...card.querySelectorAll('[id]')].find(element => element.id === focusInfo.id)
                         : [...card.querySelectorAll(focusInfo.tagName)].find(element =>
-                            element.getAttribute('onclick') === focusInfo.onclick);
+                            element.dataset.profileAction === focusInfo.action);
                     const fallbackTarget = card.querySelector(
-                        '.status-actions button[onclick*="startSync"], .status-actions button[onclick*="cancelSync"]'
+                        '.status-actions button[data-profile-action="start"], .status-actions button[data-profile-action="cancel"]'
                     );
                     (focusTarget || fallbackTarget)?.focus({ preventScroll: true });
                 }
@@ -835,7 +883,7 @@ class SyncProfileApp {
         
         // Update the tabs to show the current profile
         tabsContainer.innerHTML = `
-            <button class="tab-button active" data-profile="${profileId}">
+            <button class="tab-button active" data-profile="${this.escapeHtml(profileId)}">
                 ${this.escapeHtml(status.profile_name || `Profile ${profileId}`)}
             </button>`;
         
