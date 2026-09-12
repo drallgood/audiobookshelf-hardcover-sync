@@ -2180,19 +2180,10 @@ class SyncProfileApp {
             
             if (response.ok) {
                 this.showToast('Sync started successfully', 'success');
-                // Update the specific profile status
-                if (result.data) {
-                    this.statusLoadSequence += 1;
-                    this.statuses[profileId] = {
-                        ...result.data,
-                        profile_id: profileId,
-                        profile_name: this.statuses[profileId]?.profile_name || profileId
-                    };
-                    this.renderStatuses();
-                } else {
-                    // If no data in response, refresh all statuses
-                    await this.loadStatuses();
-                }
+                // The action acknowledgement only contains a message; reload
+                // the authoritative status before updating the card.
+                this.statusLoadSequence += 1;
+                await this.loadStatuses();
             } else {
                 throw new Error(result.error || 'Failed to start sync');
             }
@@ -2233,20 +2224,10 @@ class SyncProfileApp {
             
             if (response.ok) {
                 this.showToast('Sync cancelled', 'info');
-                // Update the specific profile status
-                if (result.data) {
-                    this.statusLoadSequence += 1;
-                    this.statuses[profileId] = {
-                        ...result.data,
-                        profile_id: profileId,
-                        profile_name: this.statuses[profileId]?.profile_name || profileId,
-                        status: 'cancelled'
-                    };
-                    this.renderStatuses();
-                } else {
-                    // If no data in response, refresh all statuses
-                    await this.loadStatuses();
-                }
+                // The action acknowledgement only contains a message; reload
+                // the authoritative status before updating the card.
+                this.statusLoadSequence += 1;
+                await this.loadStatuses();
             } else {
                 throw new Error(result.error || 'Failed to cancel sync');
             }
