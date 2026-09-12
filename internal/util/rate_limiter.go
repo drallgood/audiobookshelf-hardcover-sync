@@ -210,7 +210,7 @@ func (r *RateLimiter) OnRateLimit(retryAfter time.Duration) time.Duration {
 
 	// Without server guidance, use exponential backoff. A subsequent healthy
 	// rate-limit response restores the configured rate.
-	backoff := r.applyExponentialBackoff(true)
+	backoff := r.applyExponentialBackoff()
 
 	// Log the rate limit event with detailed information
 	r.logger.Warn("Rate limit backoff", map[string]interface{}{
@@ -414,7 +414,7 @@ func (r *RateLimiter) WithRateLimitHeaders(resp *http.Response) {
 
 		// Processing an incomplete legacy header set first would reset the rate
 		// and prevent repeated 429s from escalating.
-		backoff := r.applyExponentialBackoff(true)
+		backoff := r.applyExponentialBackoff()
 		r.logger.Warn("Rate limit response without reset guidance", map[string]interface{}{
 			"component":     "rate_limiter",
 			"backoff":       backoff.String(),
@@ -685,6 +685,7 @@ func (r *RateLimiter) applyLegacyHeaders(h http.Header) {
 	if err != nil {
 		return
 	}
+	resetAt, resetOK := parseUnixReset(reset)
 
 	desiredRate := r.minRate
 
@@ -695,7 +696,7 @@ func (r *RateLimiter) applyLegacyHeaders(h http.Header) {
 	if totalLimit > 0 {
 		remainingPct := (float64(rem) / float64(totalLimit)) * 100
 		if rem > 0 && remainingPct < 20.0 {
-			if resetAt, ok := parseUnixReset(reset); ok {
+			if resetOK {
 				desiredRate = max(desiredRate, time.Until(resetAt)/time.Duration(rem))
 			} else {
 				desiredRate = max(desiredRate, r.minRate*2)
@@ -711,7 +712,7 @@ func (r *RateLimiter) applyLegacyHeaders(h http.Header) {
 	}
 	if rem <= 0 {
 		pause := time.Duration(0)
-		if resetAt, ok := parseUnixReset(reset); ok {
+		if resetOK {
 			pause = time.Until(resetAt)
 		}
 		if pause <= 0 {
@@ -730,17 +731,11 @@ func (r *RateLimiter) applyLegacyHeaders(h http.Header) {
 	}
 	r.setRate(desiredRate)
 
-	if reset != "" {
-		ts, err := strconv.ParseInt(reset, 10, 64)
-		if err == nil {
-			resetTime := time.Unix(ts, 0)
-			if resetTime.After(time.Now()) {
-				r.logger.Debug("Rate limit will reset, scheduling next request", map[string]interface{}{
-					"component": "rate_limiter",
-					"reset_in":  time.Until(resetTime).String(),
-				})
-			}
-		}
+	if resetOK {
+		r.logger.Debug("Rate limit will reset, scheduling next request", map[string]interface{}{
+			"component": "rate_limiter",
+			"reset_in":  time.Until(resetAt).String(),
+		})
 	}
 }
 
@@ -809,15 +804,14 @@ func boundedSecondsRate(windowSeconds, quota int, maxDuration time.Duration) tim
 	return interval + fraction
 }
 
-// applyExponentialBackoff increases pacing and installs a client-selected pause.
-// preserveLongerPause keeps an existing authoritative pause when it is longer
-// than the newly calculated fallback backoff.
-func (r *RateLimiter) applyExponentialBackoff(preserveLongerPause bool) time.Duration {
+// applyExponentialBackoff increases pacing and installs a client-selected pause
+// without shortening an existing authoritative pause.
+func (r *RateLimiter) applyExponentialBackoff() time.Duration {
 	backoff := r.exponentialBackoff(r.rate)
 	r.setRate(backoff)
 
 	until := time.Now().Add(backoff)
-	if !preserveLongerPause || until.After(r.backoffUntil) {
+	if until.After(r.backoffUntil) {
 		r.setBackoffUntil(until)
 	}
 	return backoff
@@ -831,14 +825,10 @@ func (r *RateLimiter) applyRetryAfter(delay time.Duration) time.Duration {
 // applyDailyResetWait pauses admission until an authoritative daily quota reset,
 // bounded independently from shorter retry backoffs.
 func (r *RateLimiter) applyDailyResetWait(resetSeconds int) time.Duration {
-	if resetSeconds <= 0 {
-		return 0
-	}
-	maxSeconds := int(DefaultMaxDailyResetWait / time.Second)
-	if resetSeconds > maxSeconds {
-		resetSeconds = maxSeconds
-	}
-	return r.applyPause(time.Duration(resetSeconds)*time.Second, DefaultMaxDailyResetWait)
+	return r.applyPause(
+		boundedSecondsDuration(resetSeconds, 1, DefaultMaxDailyResetWait),
+		DefaultMaxDailyResetWait,
+	)
 }
 
 func (r *RateLimiter) applyPause(delay, maxDelay time.Duration) time.Duration {
