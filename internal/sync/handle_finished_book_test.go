@@ -25,22 +25,22 @@ func TestHandleFinishedBook(t *testing.T) {
 
 	// Setup test cases
 	testCases := []struct {
-		name                    string
-		userBookID              int // Changed from int64 to int to match interface expectation
-		editionID               string
-		book                    *TestAudiobookshelfBook
-		readStatuses            []hardcover.UserBookRead
-		expectUpdateCall        bool
-		expectInsertCall        bool
-		expectStatusUpdateCall  bool // Added for status update testing
-		mockUpdateError         error
-		mockInsertError         error
-		mockGetReadsError       error
-		mockStatusUpdateError   error // Added for status update errors
-		expectedError           bool
-		expectedErrorString     string
-		mockUserBook            *models.HardcoverBook // Added to mock GetUserBook response
-		mockGetUserBookError    error // Added for GetUserBook errors
+		name                   string
+		userBookID             int // Changed from int64 to int to match interface expectation
+		editionID              string
+		book                   *TestAudiobookshelfBook
+		readStatuses           []hardcover.UserBookRead
+		expectUpdateCall       bool
+		expectInsertCall       bool
+		expectStatusUpdateCall bool // Added for status update testing
+		mockUpdateError        error
+		mockInsertError        error
+		mockGetReadsError      error
+		mockStatusUpdateError  error // Added for status update errors
+		expectedError          bool
+		expectedErrorString    string
+		mockUserBook           *models.HardcoverBook // Added to mock GetUserBook response
+		mockGetUserBookError   error                 // Added for GetUserBook errors
 	}{
 		{
 			name:                   "Update existing unfinished read",
@@ -128,10 +128,10 @@ func TestHandleFinishedBook(t *testing.T) {
 			},
 		},
 		{
-			name:                   "Error updating read status",
-			userBookID:             123,
-			editionID:              "456",
-			book:                   createTestFinishedBook("abs-book-5", "Update Error Book", "Update Error Author", "B555555555", "9785555555550"),
+			name:       "Error updating read status",
+			userBookID: 123,
+			editionID:  "456",
+			book:       createTestFinishedBook("abs-book-5", "Update Error Book", "Update Error Author", "B555555555", "9785555555550"),
 			readStatuses: []hardcover.UserBookRead{
 				{
 					ID:              int64(3),
@@ -180,18 +180,18 @@ func TestHandleFinishedBook(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// Create a test service with mock client
 			svc, mockClient := createTestService()
-			
+
 			// Create a test configuration
 			cfg := createTestConfigForTests(true)
 			svc.config = cfg
-			
+
 			// Set up mock expectations
 			ctx := context.Background()
-			
+
 			// Mock GetUserBook to return the book with the appropriate status
 			userBookIDStr := strconv.FormatInt(int64(tc.userBookID), 10)
 			mockClient.On("GetUserBook", mock.Anything, userBookIDStr).Return(tc.mockUserBook, tc.mockGetUserBookError)
-			
+
 			// Mock GetUserBookReads
 			mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 				UserBookID: int64(tc.userBookID),
@@ -212,7 +212,7 @@ func TestHandleFinishedBook(t *testing.T) {
 					return input.ID == tc.readStatuses[0].ID
 				})).Return(false, tc.mockUpdateError)
 			}
-			
+
 			// Set up status update expectation if needed
 			if tc.expectStatusUpdateCall {
 				mockClient.On("UpdateUserBookStatus", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookStatusInput) bool {
@@ -223,7 +223,7 @@ func TestHandleFinishedBook(t *testing.T) {
 
 			// Convert test book to models.AudiobookshelfBook
 			modelBook := convertTestBookToModel(tc.book)
-			
+
 			// Call the function under test
 			err := svc.HandleFinishedBook(ctx, modelBook, tc.editionID, int64(tc.userBookID))
 
@@ -376,83 +376,6 @@ func TestHandleFinishedBook_ExistingFinishedReadStatusFailureDoesNotAdvanceState
 	mockClient.AssertExpectations(t)
 }
 
-func TestHandleFinishedBook_BlankReadCleanupFailureRetriesWithoutDuplicateMutations(t *testing.T) {
-	logger.Setup(logger.Config{Level: "debug", Format: "json"})
-
-	svc, mockClient := createTestService()
-	svc.state = state.NewState()
-	svc.config = createTestConfigForTests(true)
-
-	book := createTestFinishedBook("abs-book-finished-cleanup-retry", "Finished Cleanup Retry", "Test Author", "B125", "978125")
-	userBookID := int64(7792559)
-	userBookIDStr := strconv.FormatInt(userBookID, 10)
-	readID := int64(5687938)
-	blankReadID := int64(5687939)
-	progressSeconds := int(book.Media.Duration)
-	finishedAt := "2025-06-11"
-	startedAt := "2025-06-01"
-	blankStartedAt := "2026-09-12"
-	cleanupErr := fmt.Errorf("blank read cleanup failed")
-
-	unfinishedRead := hardcover.UserBookRead{
-		ID:              readID,
-		UserBookID:      userBookID,
-		StartedAt:       &startedAt,
-		ProgressSeconds: &progressSeconds,
-	}
-	finishedRead := unfinishedRead
-	finishedRead.FinishedAt = &finishedAt
-	blankRead := hardcover.UserBookRead{
-		ID:         blankReadID,
-		UserBookID: userBookID,
-		StartedAt:  &blankStartedAt,
-	}
-	readsAfterStatus := []hardcover.UserBookRead{finishedRead, blankRead}
-
-	// The first pass finishes the existing read and status, then fails while
-	// deleting the blank row. The second pass must retry only that cleanup.
-	mockClient.On("GetUserBook", mock.Anything, userBookIDStr).Return(&models.HardcoverBook{
-		ID:           "book-finished-cleanup-retry",
-		UserBookID:   userBookIDStr,
-		BookStatusID: 2,
-	}, nil).Once()
-	mockClient.On("GetUserBook", mock.Anything, userBookIDStr).Return(&models.HardcoverBook{
-		ID:           "book-finished-cleanup-retry",
-		UserBookID:   userBookIDStr,
-		BookStatusID: 3,
-	}, nil).Once()
-	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{unfinishedRead}, nil).Once()
-	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return(readsAfterStatus, nil).Once()
-	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return(readsAfterStatus, nil).Once()
-	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return(readsAfterStatus, nil).Once()
-	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
-		return input.ID == readID
-	})).Return(true, nil).Once()
-	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
-		ID:     userBookID,
-		Status: "FINISHED",
-	}).Return(nil).Once()
-	mockClient.On("DeleteUserBookRead", mock.Anything, blankReadID).Return(cleanupErr).Once()
-	mockClient.On("DeleteUserBookRead", mock.Anything, blankReadID).Return(nil).Once()
-
-	stateKey := "abs-book-finished-cleanup-retry:32059492"
-	err := svc.HandleFinishedBook(context.Background(), convertTestBookToModel(book), "32059492", userBookID)
-	assert.ErrorIs(t, err, cleanupErr)
-	_, exists := svc.state.GetBookState(stateKey)
-	assert.False(t, exists, "a failed blank-read cleanup must remain retryable")
-
-	err = svc.HandleFinishedBook(context.Background(), convertTestBookToModel(book), "32059492", userBookID)
-	assert.NoError(t, err)
-	bookState, exists := svc.state.GetBookState(stateKey)
-	assert.True(t, exists)
-	assert.InDelta(t, 1.0, bookState.LastProgress, 0.001)
-	assert.Equal(t, "FINISHED", bookState.Status)
-	mockClient.AssertNumberOfCalls(t, "UpdateUserBookRead", 1)
-	mockClient.AssertNumberOfCalls(t, "UpdateUserBookStatus", 1)
-	mockClient.AssertNumberOfCalls(t, "DeleteUserBookRead", 2)
-	mockClient.AssertExpectations(t)
-}
-
 // Helper functions for test data
 func stringPointer(s string) *string {
 	return &s
@@ -470,7 +393,7 @@ func convertTestBookToModel(testBook *TestAudiobookshelfBook) models.Audiobooksh
 		Path:      testBook.Path,
 		MediaType: testBook.MediaType,
 	}
-	
+
 	// Set the media fields
 	book.Media.ID = testBook.Media.ID
 	book.Media.Metadata = models.AudiobookshelfMetadataStruct{
@@ -480,12 +403,12 @@ func convertTestBookToModel(testBook *TestAudiobookshelfBook) models.Audiobooksh
 		ISBN:       testBook.Media.Metadata.ISBN,
 	}
 	book.Media.Duration = testBook.Media.Duration
-	
+
 	// Set the progress fields
 	book.Progress.IsFinished = testBook.Progress.IsFinished
 	book.Progress.FinishedAt = testBook.Progress.FinishedAt
 	book.Progress.CurrentTime = testBook.Progress.CurrentTime
-	
+
 	return book
 }
 
@@ -494,7 +417,7 @@ func convertTestBookToModel(testBook *TestAudiobookshelfBook) models.Audiobooksh
 func createTestConfigForTests(syncOwned bool) *config.Config {
 	// Start with default config
 	cfg := config.DefaultConfig()
-	
+
 	// Configure sync settings - all sync-related settings are now consolidated under Sync
 	cfg.Sync.Incremental = false
 	cfg.Sync.StateFile = "/tmp/sync_state_test.json"
@@ -504,11 +427,11 @@ func createTestConfigForTests(syncOwned bool) *config.Config {
 	cfg.Sync.SyncWantToRead = true
 	cfg.Sync.SyncOwned = syncOwned
 	cfg.Sync.DryRun = false
-	
+
 	// Initialize libraries include/exclude
 	cfg.Sync.Libraries.Include = []string{}
 	cfg.Sync.Libraries.Exclude = []string{}
-	
+
 	// Other configuration
 	cfg.RateLimit.Rate = 100 * time.Millisecond
 	cfg.RateLimit.MaxConcurrent = 5
@@ -516,6 +439,6 @@ func createTestConfigForTests(syncOwned bool) *config.Config {
 	cfg.Logging.Format = "console"
 	cfg.Server.Port = "8080"
 	cfg.Server.ShutdownTimeout = 30 * time.Second
-	
+
 	return cfg
 }
