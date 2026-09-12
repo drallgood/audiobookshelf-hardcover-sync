@@ -449,16 +449,10 @@ class SyncProfileApp {
 
     async fetchJsonWithTimeout(url, options = {}) {
         const controller = new AbortController();
-        const { signal: parentSignal, ...fetchOptions } = options;
-        const abortFromParent = () => controller.abort();
-        if (parentSignal) {
-            if (parentSignal.aborted) controller.abort();
-            else parentSignal.addEventListener('abort', abortFromParent, { once: true });
-        }
         const timeout = setTimeout(() => controller.abort(), STATUS_LOAD_TIMEOUT_MS);
 
         try {
-            const response = await fetch(url, { ...fetchOptions, signal: controller.signal });
+            const response = await fetch(url, { ...options, signal: controller.signal });
             const data = await response.json();
             if (controller.signal.aborted) {
                 const error = new Error('Request timed out');
@@ -468,7 +462,6 @@ class SyncProfileApp {
             return { response, data };
         } finally {
             clearTimeout(timeout);
-            if (parentSignal) parentSignal.removeEventListener('abort', abortFromParent);
         }
     }
 
@@ -727,11 +720,7 @@ class SyncProfileApp {
     }
 
     statusSignature(status) {
-        try {
-            return JSON.stringify(status);
-        } catch (_) {
-            return String(status);
-        }
+        return JSON.stringify(status);
     }
 
     updateRelativeSyncTime(card, lastSync) {
@@ -2182,7 +2171,6 @@ class SyncProfileApp {
                 this.showToast('Sync started successfully', 'success');
                 // The action acknowledgement only contains a message; reload
                 // the authoritative status before updating the card.
-                this.statusLoadSequence += 1;
                 await this.loadStatuses();
             } else {
                 throw new Error(result.error || 'Failed to start sync');
@@ -2218,7 +2206,6 @@ class SyncProfileApp {
                 this.showToast('Sync cancelled', 'info');
                 // The action acknowledgement only contains a message; reload
                 // the authoritative status before updating the card.
-                this.statusLoadSequence += 1;
                 await this.loadStatuses();
             } else {
                 throw new Error(result.error || 'Failed to cancel sync');
