@@ -1,5 +1,6 @@
 // Sync Profile Management App
 console.info('Sync UI loaded', { build: '2025-08-16 01:05:44+02:00' });
+const STATUS_LOAD_TIMEOUT_MS = 15000;
 // Global image error handler for cover fallbacks
 window.__absHandleImageError = function(img) {
     try {
@@ -105,11 +106,9 @@ class SyncProfileApp {
             
             // If we get here, either auth is disabled or user is authenticated
             try {
-                // Load data in parallel for better performance
-                await Promise.all([
-                    this.loadProfiles(),
-                    this.loadStatuses()
-                ]);
+                // Status loading owns the initial loading state and loads profiles
+                // before fetching their statuses.
+                await this.loadStatuses();
                 
                 // Start auto-refresh only if we have data to refresh
                 if (this.users.length > 0) {
@@ -448,7 +447,7 @@ class SyncProfileApp {
         }).join('');
     }
 
-    async loadProfiles({ showLoading = true } = {}) {
+    async loadProfiles({ showLoading = true, signal } = {}) {
         try {
             if (showLoading) this.showLoading();
             
@@ -462,6 +461,7 @@ class SyncProfileApp {
             const response = await fetch('/api/profiles', {
                 method: 'GET',
                 credentials: 'include', // Include session cookies
+                signal,
                 headers: {
                     'Content-Type': 'application/json'
                 }
@@ -489,6 +489,7 @@ class SyncProfileApp {
                 }
             }
         } catch (error) {
+            if (error.name === 'AbortError') throw error;
             this.showToast('Error loading sync profiles: ' + error.message, 'error');
         } finally {
             if (showLoading) this.hideLoading();
@@ -498,6 +499,12 @@ class SyncProfileApp {
     async loadStatuses({ silent = false } = {}) {
         const requestSequence = ++this.statusLoadSequence;
         this.activeStatusRequests += 1;
+        const controller = new AbortController();
+        let timedOut = false;
+        const timeout = setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+        }, STATUS_LOAD_TIMEOUT_MS);
         try {
             if (!silent) {
                 this.activeStatusLoads += 1;
@@ -510,12 +517,12 @@ class SyncProfileApp {
             if (!this.users || this.users.length === 0) {
                 // This status request owns its loading feedback. Avoid letting
                 // the nested profile request hide it before statuses finish.
-                await this.loadProfiles({ showLoading: false });
+                await this.loadProfiles({ showLoading: false, signal: controller.signal });
             }
             
             // If no users, render empty status
             if (!this.users || this.users.length === 0) {
-                if (requestSequence !== this.statusLoadSequence) return;
+                if (controller.signal.aborted || requestSequence !== this.statusLoadSequence) return;
                 this.statuses = {};
                 this.renderStatuses();
                 return;
@@ -524,7 +531,9 @@ class SyncProfileApp {
             // Fetch status for each profile
             for (const user of this.users) {
                 try {
-                    const statusResponse = await fetch(`/api/profiles/${user.id}/status`);
+                    const statusResponse = await fetch(`/api/profiles/${user.id}/status`, {
+                        signal: controller.signal
+                    });
                     if (statusResponse.ok) {
                         const statusData = await statusResponse.json();
                         if (statusData.success) {
@@ -548,12 +557,13 @@ class SyncProfileApp {
                             
                             // Always try to fetch the summary for completed/error states
                             if (statusData.data?.state === 'completed' || statusData.data?.state === 'error') {
-                                summaryPromises.push(this.fetchSyncSummary(user.id, statuses));
+                                summaryPromises.push(this.fetchSyncSummary(user.id, statuses, controller.signal));
                             }
                         }
                     }
                 } catch (error) {
                     console.error(`Error fetching status for profile ${user.id}:`, error);
+                    if (error.name === 'AbortError') throw error;
                 }
             }
             
@@ -562,7 +572,7 @@ class SyncProfileApp {
 
             // Only the newest request may publish a status snapshot. A slower
             // response from an older poll must not roll the UI back.
-            if (requestSequence !== this.statusLoadSequence) return;
+            if (controller.signal.aborted || requestSequence !== this.statusLoadSequence) return;
             
             this.statuses = statuses;
             this.renderStatuses();
@@ -570,10 +580,12 @@ class SyncProfileApp {
             
         } catch (error) {
             console.error('Error in loadStatuses:', error);
-            if (!silent && requestSequence === this.statusLoadSequence) {
+            if (!silent && requestSequence === this.statusLoadSequence && (timedOut || error.name !== 'AbortError')) {
                 this.showToast('Error loading statuses: ' + error.message, 'error');
             }
         } finally {
+            clearTimeout(timeout);
+            controller.abort();
             this.activeStatusRequests -= 1;
             if (!silent) {
                 this.activeStatusLoads -= 1;
@@ -582,10 +594,10 @@ class SyncProfileApp {
         }
     }
     
-    async fetchSyncSummary(profileId, statuses) {
+    async fetchSyncSummary(profileId, statuses, signal) {
         try {
             console.log(`Fetching sync summary for profile ${profileId}...`);
-            const response = await fetch(`/api/profiles/${profileId}/summary`);
+            const response = await fetch(`/api/profiles/${profileId}/summary`, { signal });
             if (response.ok) {
                 const result = await response.json();
                 console.log('Raw sync summary response:', result);
@@ -618,6 +630,7 @@ class SyncProfileApp {
             }
         } catch (error) {
             console.error(`Error fetching summary for profile ${profileId}:`, error);
+            if (error.name === 'AbortError') return;
             // Don't show toast here to avoid multiple toasts for multiple failures
         }
     }
@@ -776,7 +789,10 @@ class SyncProfileApp {
                         ? [...card.querySelectorAll('[id]')].find(element => element.id === focusInfo.id)
                         : [...card.querySelectorAll(focusInfo.tagName)].find(element =>
                             element.getAttribute('onclick') === focusInfo.onclick);
-                    if (focusTarget) focusTarget.focus({ preventScroll: true });
+                    const fallbackTarget = card.querySelector(
+                        '.status-actions button[onclick*="startSync"], .status-actions button[onclick*="cancelSync"]'
+                    );
+                    (focusTarget || fallbackTarget)?.focus({ preventScroll: true });
                 }
             }
 
@@ -2152,6 +2168,7 @@ class SyncProfileApp {
                 this.showToast('Sync started successfully', 'success');
                 // Update the specific profile status
                 if (result.data) {
+                    this.statusLoadSequence += 1;
                     this.statuses[profileId] = {
                         ...result.data,
                         profile_id: profileId,
@@ -2171,6 +2188,7 @@ class SyncProfileApp {
             
             // Update UI to show error state
             if (profileId && this.statuses[profileId]) {
+                this.statusLoadSequence += 1;
                 this.statuses[profileId].status = 'error';
                 this.statuses[profileId].error = error.message;
                 this.renderStatuses();
@@ -2203,6 +2221,7 @@ class SyncProfileApp {
                 this.showToast('Sync cancelled', 'info');
                 // Update the specific profile status
                 if (result.data) {
+                    this.statusLoadSequence += 1;
                     this.statuses[profileId] = {
                         ...result.data,
                         profile_id: profileId,
@@ -2223,6 +2242,7 @@ class SyncProfileApp {
             
             // Update UI to show error state
             if (profileId && this.statuses[profileId]) {
+                this.statusLoadSequence += 1;
                 this.statuses[profileId].status = 'error';
                 this.statuses[profileId].error = error.message;
                 this.renderStatuses();
