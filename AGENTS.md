@@ -42,8 +42,7 @@ and CI use Go 1.26 (`go.mod` and `.github/workflows/go.yml`).
   `internal/server/` own the web service and profiles. `internal/edition/` and
   `internal/mismatch/` handle matching and edition work. `web/` contains UI
   assets; `helm/audiobookshelf-hardcover-sync/` contains the chart.
-- `internal/testutils/` is deliberately excluded from the core Make test
-  target. Include it only when its broader coverage is relevant.
+- `internal/testutils/` contains shared test utilities.
 
 ## Behavioral safeguards
 
@@ -82,8 +81,7 @@ and CI use Go 1.26 (`go.mod` and `.github/workflows/go.yml`).
   `internal/config.Load`; document user-facing configuration in `README.md`.
 - Update `README.md` for user-visible configuration or behavior, focused
   documents (and `MIGRATION.md` for upgrade requirements), and the
-  `[Unreleased]` section of `CHANGELOG.md` for release-facing changes. Keep
-  Docker Compose and Helm examples consistent with configuration changes.
+  `[Unreleased]` section of `CHANGELOG.md` for release-facing changes.
 
 ## Validation, containers, and releases
 
@@ -91,9 +89,8 @@ and CI use Go 1.26 (`go.mod` and `.github/workflows/go.yml`).
   it excludes `internal/testutils`. `make test-all` includes all discovered Go
   packages. Use focused `go test` commands while iterating, then the relevant
   Make target before handoff.
-- `make lint` runs `golangci-lint` with a five-minute timeout and installs the
-  tool into `GOPATH/bin` if absent. `make build` builds the main binary plus
-  `edition`, `image-tool`, and `hardcover-lookup`; run
+- `make lint` runs `golangci-lint` with a five-minute timeout. `make build`
+  builds the main binary plus `edition`, `image-tool`, and `hardcover-lookup`; run
   `go build ./cmd/edition-tool` when that command changes. `make all` runs the
   standard test, lint, and build targets.
 - The Dockerfile is a multi-stage build with an Alpine runtime image. Keep its
