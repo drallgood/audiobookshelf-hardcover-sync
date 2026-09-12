@@ -718,10 +718,6 @@ class SyncProfileApp {
             `;
     }
 
-    statusSignature(status) {
-        return JSON.stringify(status);
-    }
-
     updateRelativeSyncTime(card, lastSync) {
         const relativeTime = card.querySelector('.relative-sync-time');
         if (!relativeTime || !lastSync) return;
@@ -768,7 +764,7 @@ class SyncProfileApp {
 
         statusArray.forEach(([profileId, status], index) => {
             let card = existingCards.get(profileId);
-            const signature = this.statusSignature(status);
+            const signature = JSON.stringify(status);
             const focusInfo = card && activeElement && card.contains(activeElement)
                 ? { id: activeElement.id, tagName: activeElement.tagName, onclick: activeElement.getAttribute('onclick') }
                 : null;
