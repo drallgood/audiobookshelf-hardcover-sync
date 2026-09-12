@@ -2190,14 +2190,6 @@ class SyncProfileApp {
         } catch (error) {
             console.error('Error starting sync:', error);
             this.showToast(`Error: ${error.message}`, 'error');
-            
-            // Update UI to show error state
-            if (profileId && this.statuses[profileId]) {
-                this.statusLoadSequence += 1;
-                this.statuses[profileId].status = 'error';
-                this.statuses[profileId].error = error.message;
-                this.renderStatuses();
-            }
         } finally {
             this.hideLoading();
         }
@@ -2234,14 +2226,6 @@ class SyncProfileApp {
         } catch (error) {
             console.error('Error cancelling sync:', error);
             this.showToast(`Error: ${error.message}`, 'error');
-            
-            // Update UI to show error state
-            if (profileId && this.statuses[profileId]) {
-                this.statusLoadSequence += 1;
-                this.statuses[profileId].status = 'error';
-                this.statuses[profileId].error = error.message;
-                this.renderStatuses();
-            }
         } finally {
             this.hideLoading();
         }
