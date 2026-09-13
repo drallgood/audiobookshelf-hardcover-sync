@@ -3193,13 +3193,16 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			}
 		} else if currentStatusID == 0 {
 			// Preserve the existing behavior for responses without a status:
-			// inserting a read is followed by an IN_PROGRESS transition.
+			// inserting a read is followed by the desired status transition.
 			if err := s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
 				ID:       userBookID,
-				StatusID: 2,
+				StatusID: desiredStatusID,
 			}); err != nil {
-				log.With(map[string]interface{}{"error": err.Error()}).Error("Failed to set IN_PROGRESS after read creation")
-				return fmt.Errorf("failed to set IN_PROGRESS after read creation: %w", err)
+				log.With(map[string]interface{}{
+					"error":          err.Error(),
+					"desired_status": desiredStatus,
+				}).Error("Failed to set desired book status after read creation")
+				return fmt.Errorf("failed to set %s status after read creation: %w", desiredStatus, err)
 			}
 			s.userBookCache.InvalidateByUserBook(int(userBookID))
 			s.deleteBlankReads(ctx, userBookID, log)

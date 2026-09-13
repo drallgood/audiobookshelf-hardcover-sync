@@ -370,6 +370,38 @@ func TestStateDirtyTracking(t *testing.T) {
 	assert.False(t, state.IsDirty())
 }
 
+func TestUpdateBookWithUserBookIDNoOpPreservesTimestamps(t *testing.T) {
+	t.Parallel()
+
+	const initialTimestamp int64 = 1234
+	state := NewState()
+	state.Books["book1"] = Book{
+		LastProgress:       0.5,
+		LastUpdated:        initialTimestamp,
+		Status:             "IN_PROGRESS",
+		UserBookID:         "user-book",
+		HasProgressSeconds: true,
+	}
+	state.LastSync = initialTimestamp
+
+	state.UpdateBookWithUserBookID("book1", 0.5, "IN_PROGRESS", "user-book")
+
+	book, exists := state.Books["book1"]
+	require.True(t, exists)
+	assert.Equal(t, initialTimestamp, book.LastUpdated)
+	assert.Equal(t, initialTimestamp, state.LastSync)
+	assert.False(t, state.IsDirty())
+
+	state.UpdateBookWithUserBookID("book1", 0.5, "FINISHED", "user-book")
+
+	book, exists = state.Books["book1"]
+	require.True(t, exists)
+	assert.Equal(t, "FINISHED", book.Status)
+	assert.Greater(t, book.LastUpdated, initialTimestamp)
+	assert.Greater(t, state.LastSync, initialTimestamp)
+	assert.True(t, state.IsDirty())
+}
+
 func TestConcurrentAccess(t *testing.T) {
 	t.Parallel()
 

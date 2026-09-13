@@ -500,24 +500,25 @@ func (s *State) UpdateBookWithUserBookID(bookID string, progress float64, status
 	normalizedProgress := normalizeProgress(progress)
 
 	oldBook, exists := s.Books[bookID]
-	hasProgressSeconds := false
-	if exists {
-		hasProgressSeconds = oldBook.HasProgressSeconds
-	}
-
 	updated := Book{
 		LastProgress:       normalizedProgress,
-		LastUpdated:        now,
 		Status:             status,
 		UserBookID:         userBookID,
-		HasProgressSeconds: hasProgressSeconds,
+		HasProgressSeconds: oldBook.HasProgressSeconds,
 	}
 
-	if !exists || oldBook != updated {
-		s.Books[bookID] = updated
-		s.LastSync = now
-		s.dirty = true
+	if exists {
+		// LastUpdated records the last semantic state change, so it must not
+		// make an otherwise identical update dirty merely because time passed.
+		updated.LastUpdated = oldBook.LastUpdated
+		if oldBook == updated {
+			return
+		}
 	}
+	updated.LastUpdated = now
+	s.Books[bookID] = updated
+	s.LastSync = now
+	s.dirty = true
 }
 
 func normalizeProgress(progress float64) float64 {

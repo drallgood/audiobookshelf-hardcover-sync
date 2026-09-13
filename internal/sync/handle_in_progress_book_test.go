@@ -1025,6 +1025,53 @@ func TestHandleInProgressBook_CreateNewRead(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
+func TestHandleInProgressBook_FinishedNewReadWithUnavailableStatusUsesFinishedStatus(t *testing.T) {
+	svc, mockClient := createTestService()
+
+	testAudiobook := createTestFinishedBook("test-book-finished-status-unknown", "Finished Status Unknown", "Test Author", "B08N5KWB9H", "9781234567890")
+	audiobook := toAudiobookshelfBook(testAudiobook)
+	userBookID := int64(133)
+	editionID := int64(465)
+
+	// A zero status is unavailable, so the initial lookup is invalidated and
+	// the read-creation path fetches the same unavailable snapshot again.
+	mockClient.On("GetUserBook", mock.Anything, "133").Return(&models.HardcoverBook{
+		ID:           "book-133",
+		Title:        "Finished Status Unknown",
+		EditionID:    "465",
+		BookStatusID: 0,
+	}, nil).Twice()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{}, nil).Once()
+	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
+		return input.UserBookID == userBookID &&
+			input.DatesRead.ProgressSeconds != nil &&
+			*input.DatesRead.ProgressSeconds == int(testAudiobook.Media.Duration) &&
+			input.DatesRead.FinishedAt != nil
+	})).Return(790, nil).Once()
+	// A finished Audiobookshelf book must transition to FINISHED even when the
+	// status in the Hardcover snapshot was unavailable.
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+		ID:       userBookID,
+		StatusID: 3,
+	}).Return(nil).Once()
+	// Status transition cleanup refetches reads.
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{}, nil).Once()
+
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+
+	assert.NoError(t, err)
+	bookState, exists := svc.state.GetBookState(stateKey)
+	assert.True(t, exists, "successful finished read creation should checkpoint local state")
+	assert.InDelta(t, 1.0, bookState.LastProgress, 0.001)
+	assert.Equal(t, "FINISHED", bookState.Status)
+	mockClient.AssertExpectations(t)
+}
+
 func TestHandleInProgressBook_CreateNewRead_UsesStateKeyEdition(t *testing.T) {
 	// Create test service and mock client
 	svc, mockClient := createTestService()
