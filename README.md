@@ -19,7 +19,7 @@ Automatically syncs your Audiobookshelf library with Hardcover, including readin
 - **👥 Multiple Sync Profiles**: Each profile can have individual Audiobookshelf and Hardcover tokens
 - **🔒 Secure Storage**: All API tokens encrypted at rest with AES-256-GCM
 - **🔄 Concurrent Syncing**: Multiple profiles can sync simultaneously
-- **📊 Real-Time Monitoring**: Live sync status with auto-refresh
+- **📊 Real-Time Monitoring**: Live sync status with quiet auto-refresh and automatic retry after a temporary profile-load failure
 - **🔧 REST API**: Complete programmatic control via RESTful endpoints
 - **⬆️ Automatic Migration**: Seamless upgrade from single-profile setups
 - **🔙 Backwards Compatible**: All existing functionality preserved
@@ -156,7 +156,7 @@ The project follows standard Go project layout:
 - **🌐 Web Interface**: Modern, responsive management dashboard at `http://localhost:8080`
 - **🔒 Secure Storage**: AES-256-GCM encrypted token storage
 - **🔄 Concurrent Syncing**: Multiple users can sync simultaneously
-- **📊 Real-Time Monitoring**: Live sync status with auto-refresh
+- **📊 Real-Time Monitoring**: Live sync status with quiet auto-refresh and automatic retry after a temporary profile-load failure
 - **🔧 REST API**: Complete programmatic control via RESTful endpoints
 - **⬆️ Automatic Migration**: Seamless upgrade from single-user setups
 - **🔙 Backwards Compatible**: All existing functionality preserved

@@ -1,5 +1,6 @@
 // Sync Profile Management App
 console.info('Sync UI loaded', { build: '2025-08-16 01:05:44+02:00' });
+const STATUS_LOAD_TIMEOUT_MS = 15000;
 // Global image error handler for cover fallbacks
 window.__absHandleImageError = function(img) {
     try {
@@ -34,6 +35,11 @@ class SyncProfileApp {
         this.authEnabled = false;
         this.hasRedirectedToLogin = false;
         this.autoRefreshEnabled = true; // Auto-refresh is enabled by default
+        this.statusLoadSequence = 0;
+        this.activeStatusLoads = 0;
+        this.activeStatusRequests = 0;
+        this.statusLoadController = null;
+        this.profileLoadFailed = false;
         
         this.init();
     }
@@ -102,14 +108,12 @@ class SyncProfileApp {
             
             // If we get here, either auth is disabled or user is authenticated
             try {
-                // Load data in parallel for better performance
-                await Promise.all([
-                    this.loadProfiles(),
-                    this.loadStatuses()
-                ]);
+                // Status loading owns the initial loading state and loads profiles
+                // before fetching their statuses.
+                await this.loadStatuses();
                 
-                // Start auto-refresh only if we have data to refresh
-                if (this.users.length > 0) {
+                // Keep retrying if the initial profile request failed.
+                if (this.users.length > 0 || this.profileLoadFailed) {
                     this.startAutoRefresh();
                 }
             } catch (error) {
@@ -339,6 +343,28 @@ class SyncProfileApp {
     }
 
     setupEventListeners() {
+        const bindProfileActions = (containerId, cardSelector) => {
+            const container = document.getElementById(containerId);
+            container.addEventListener('click', (event) => {
+                const button = event.target.closest('button[data-profile-action]');
+                if (!button || !container.contains(button)) return;
+
+                const card = button.closest(cardSelector);
+                if (!card || !container.contains(card)) return;
+                const profileId = card.dataset.profileId;
+
+                switch (button.dataset.profileAction) {
+                    case 'edit': this.editProfile(profileId); break;
+                    case 'delete': this.deleteProfile(profileId); break;
+                    case 'start': this.startSync(profileId); break;
+                    case 'cancel': this.cancelSync(profileId); break;
+                    case 'summary': this.showSyncSummary(profileId); break;
+                }
+            });
+        };
+        bindProfileActions('users-list', '.user-card[data-profile-id]');
+        bindProfileActions('sync-status', '.status-card[data-profile-id]');
+
         // Tab switching
         document.querySelectorAll('.tab-button').forEach(button => {
             button.addEventListener('click', (e) => {
@@ -408,7 +434,7 @@ class SyncProfileApp {
             const statusIcon = user.active ? '✓' : '✗';
             
             return `
-                <div class="user-card">
+                <div class="user-card" data-profile-id="${this.escapeHtmlAttribute(user.id)}">
                     <div class="user-card-header">
                         <h3>${this.escapeHtml(user.name || user.id)}</h3>
                         <span class="status-badge ${statusClass}" title="${user.active ? 'Active' : 'Inactive'}">
@@ -429,13 +455,13 @@ class SyncProfileApp {
                         </div>
                         
                         <div class="user-card-actions">
-                            <button class="btn btn-sm btn-icon" onclick="app.editProfile('${this.escapeHtml(user.id)}')" title="Edit Profile">
+                            <button class="btn btn-sm btn-icon" data-profile-action="edit" title="Edit Profile">
                                 <span class="icon">✏️</span> Edit
                             </button>
-                            <button class="btn btn-sm btn-icon btn-danger" onclick="app.deleteProfile('${this.escapeHtml(user.id)}')" title="Delete Profile">
+                            <button class="btn btn-sm btn-icon btn-danger" data-profile-action="delete" title="Delete Profile">
                                 <span class="icon">🗑️</span> Delete
                             </button>
-                            <button class="btn btn-sm btn-primary" onclick="app.startSync('${this.escapeHtml(user.id)}')" ${user.active ? '' : 'disabled'}>
+                            <button class="btn btn-sm btn-primary" data-profile-action="start" ${user.active ? '' : 'disabled'}>
                                 <span class="icon">🔄</span> Sync Now
                             </button>
                         </div>
@@ -445,66 +471,128 @@ class SyncProfileApp {
         }).join('');
     }
 
-    async loadProfiles() {
+    async fetchJsonWithTimeout(url, options = {}) {
+        const { signal: requestSignal, ...fetchOptions } = options;
+        const controller = new AbortController();
+        let timedOut = false;
+        const timeout = setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+        }, STATUS_LOAD_TIMEOUT_MS);
+        const abortForRequest = () => controller.abort(requestSignal.reason);
+
+        if (requestSignal) {
+            if (requestSignal.aborted) {
+                abortForRequest();
+            } else {
+                requestSignal.addEventListener('abort', abortForRequest, { once: true });
+            }
+        }
+
         try {
-            this.showLoading();
+            const response = await fetch(url, { ...fetchOptions, signal: controller.signal });
+            const data = await response.json();
+            if (controller.signal.aborted) {
+                const error = new Error(timedOut ? 'Request timed out' : 'Request aborted');
+                error.name = timedOut ? 'TimeoutError' : 'AbortError';
+                throw error;
+            }
+            return { response, data };
+        } catch (error) {
+            // fetch() rejects with AbortError before reaching the response path.
+            // Keep a real timeout distinct from an intentional parent cancellation.
+            if (timedOut && error.name === 'AbortError') {
+                const timeoutError = new Error('Request timed out');
+                timeoutError.name = 'TimeoutError';
+                throw timeoutError;
+            }
+            throw error;
+        } finally {
+            clearTimeout(timeout);
+            requestSignal?.removeEventListener('abort', abortForRequest);
+        }
+    }
+
+    async loadProfiles({ showLoading = true, statusOwned = false, signal } = {}) {
+        try {
+            if (showLoading) this.showLoading();
             
             // Check authentication status first
             if (this.authEnabled && !this.currentUser) {
+                this.profileLoadFailed = false;
                 this.showToast('Please log in to view profiles', 'error');
                 this.redirectToLogin();
                 return;
             }
             
-            const response = await fetch('/api/profiles', {
+            const { response, data } = await this.fetchJsonWithTimeout('/api/profiles', {
                 method: 'GET',
                 credentials: 'include', // Include session cookies
                 headers: {
                     'Content-Type': 'application/json'
-                }
+                },
+                signal
             });
             
             // Handle authentication errors specifically
             if (response.status === 401 || response.status === 403) {
+                this.profileLoadFailed = false;
                 this.showToast('Authentication required. Please log in.', 'error');
                 this.redirectToLogin();
                 return;
             }
             
-            const data = await response.json();
-
             if (response.ok && data.success) {
+                this.profileLoadFailed = false;
                 this.users = data.data;
                 this.renderProfiles();
             } else {
                 // Handle different types of errors
                 if (data.error && data.error.code === 'authentication_required') {
+                    this.profileLoadFailed = false;
                     this.showToast('Authentication required. Please log in.', 'error');
                     this.redirectToLogin();
                 } else {
-                    this.showToast('Failed to load sync profiles: ' + (data.error?.message || data.error || 'Unknown error'), 'error');
+                    const message = 'Failed to load sync profiles: ' + (data.error?.message || data.error || 'Unknown error');
+                    if (statusOwned) throw new Error(message);
+                    this.showToast(message, 'error');
                 }
             }
         } catch (error) {
+            if (statusOwned) throw error;
             this.showToast('Error loading sync profiles: ' + error.message, 'error');
         } finally {
-            this.hideLoading();
+            if (showLoading) this.hideLoading();
         }
     }
 
-    async loadStatuses() {
+    async loadStatuses({ silent = false } = {}) {
+        const requestSequence = ++this.statusLoadSequence;
+        this.statusLoadController?.abort();
+        const controller = new AbortController();
+        this.statusLoadController = controller;
+        const { signal } = controller;
+        const isCurrentRequest = () => requestSequence === this.statusLoadSequence && !signal.aborted;
+        this.activeStatusRequests += 1;
         try {
-            this.showLoading();
+            if (!silent) {
+                this.activeStatusLoads += 1;
+                this.showLoading();
+            }
             const statuses = {};
             const summaryPromises = [];
+            let failedStatuses = 0;
             
             // First, get the list of profiles if not already loaded
             if (!this.users || this.users.length === 0) {
-                await this.loadProfiles();
+                // This status request owns its loading feedback. Avoid letting
+                // the nested profile request hide it before statuses finish.
+                await this.loadProfiles({ showLoading: false, statusOwned: true, signal });
             }
             
             // If no users, render empty status
             if (!this.users || this.users.length === 0) {
+                if (!isCurrentRequest()) return;
                 this.statuses = {};
                 this.renderStatuses();
                 return;
@@ -512,10 +600,14 @@ class SyncProfileApp {
             
             // Fetch status for each profile
             for (const user of this.users) {
+                if (!isCurrentRequest()) return;
+                let statusLoaded = false;
                 try {
-                    const statusResponse = await fetch(`/api/profiles/${user.id}/status`);
+                    const { response: statusResponse, data: statusData } = await this.fetchJsonWithTimeout(
+                        `/api/profiles/${user.id}/status`,
+                        { signal }
+                    );
                     if (statusResponse.ok) {
-                        const statusData = await statusResponse.json();
                         if (statusData.success) {
                             const hasSummary = statusData.data?.last_sync_summary || 
                                             (statusData.data?.books_synced !== undefined && 
@@ -534,39 +626,68 @@ class SyncProfileApp {
                                 books_synced: statusData.data?.books_synced || 0,
                                 last_sync: statusData.data?.last_sync
                             };
+                            statusLoaded = true;
                             
                             // Always try to fetch the summary for completed/error states
                             if (statusData.data?.state === 'completed' || statusData.data?.state === 'error') {
-                                summaryPromises.push(this.fetchSyncSummary(user.id, statuses));
+                                summaryPromises.push(this.fetchSyncSummary(user.id, statuses, signal));
                             }
                         }
                     }
                 } catch (error) {
                     console.error(`Error fetching status for profile ${user.id}:`, error);
                 }
+                if (!isCurrentRequest()) return;
+                if (!statusLoaded) {
+                    failedStatuses += 1;
+                    if (this.statuses[user.id]) statuses[user.id] = this.statuses[user.id];
+                }
             }
             
             // Wait for all summary fetches to complete
             await Promise.all(summaryPromises);
+
+            // Only the newest request may publish a status snapshot. A slower
+            // response from an older poll must not roll the UI back.
+            if (!isCurrentRequest()) return;
             
             this.statuses = statuses;
-            this.renderStatuses();
+            this.renderStatuses({ unavailable: failedStatuses > 0 });
             this.renderSyncSummary();
+            if (failedStatuses > 0 && !silent) {
+                this.showToast(`Could not load status for ${failedStatuses} profile${failedStatuses === 1 ? '' : 's'}. Showing last known data where available.`, 'error');
+            }
             
         } catch (error) {
             console.error('Error in loadStatuses:', error);
-            this.showToast('Error loading statuses: ' + error.message, 'error');
+            if (this.users.length === 0 && requestSequence === this.statusLoadSequence && error.name !== 'AbortError') {
+                this.profileLoadFailed = true;
+                this.renderStatuses({ unavailable: true });
+                this.startAutoRefresh();
+            }
+            if (!silent && requestSequence === this.statusLoadSequence && error.name !== 'AbortError') {
+                this.showToast('Error loading statuses: ' + error.message, 'error');
+            }
         } finally {
-            this.hideLoading();
+            this.activeStatusRequests -= 1;
+            if (this.statusLoadController === controller) {
+                this.statusLoadController = null;
+            }
+            if (!silent) {
+                this.activeStatusLoads -= 1;
+                if (this.activeStatusLoads === 0) this.hideLoading();
+            }
         }
     }
     
-    async fetchSyncSummary(profileId, statuses) {
+    async fetchSyncSummary(profileId, statuses, signal) {
         try {
             console.log(`Fetching sync summary for profile ${profileId}...`);
-            const response = await fetch(`/api/profiles/${profileId}/summary`);
+            const { response, data: result } = await this.fetchJsonWithTimeout(
+                `/api/profiles/${profileId}/summary`,
+                { signal }
+            );
             if (response.ok) {
-                const result = await response.json();
                 console.log('Raw sync summary response:', result);
                 
                 // The API returns the data directly in the response, not in a 'data' property
@@ -591,8 +712,6 @@ class SyncProfileApp {
                     
                     console.log(`Updated sync summary for profile ${profileId}:`, statuses[profileId]);
                     
-                    // Force a re-render of the statuses to show the updated summary
-                    this.statuses = { ...statuses };
                 }
             } else {
                 console.error(`Failed to fetch summary for profile ${profileId}:`, response.status, response.statusText);
@@ -603,27 +722,7 @@ class SyncProfileApp {
         }
     }
     
-    renderStatuses() {
-        const container = document.getElementById('sync-status');
-        if (!container) return;
-
-        if (Object.keys(this.statuses).length === 0) {
-            container.innerHTML = `
-                <div class="text-center" style="grid-column: 1 / -1; padding: 40px;">
-                    <h3>No sync statuses available</h3>
-                    <p>Add a new sync profile and start syncing to see status information.</p>
-                </div>
-            `;
-            return;
-        }
-
-        // Debug: Log status data to console for troubleshooting
-        console.log('Rendering statuses with data:', this.statuses);
-
-        // Convert statuses object to array and filter out any null/undefined entries
-        const statusArray = Object.entries(this.statuses).filter(([_, status]) => status);
-        
-        container.innerHTML = statusArray.map(([profileId, status]) => {
+    renderStatusCard(profileId, status) {
             const progress = status.progress || 0;
             const booksSynced = status.books_synced || 0;
             const booksTotal = status.books_total || 0;
@@ -647,14 +746,14 @@ class SyncProfileApp {
             const profileName = status.profile_name || status.profile_id || 'Unknown Profile';
 
             return `
-                <div class="status-card ${statusState.toLowerCase()}">
+                <div class="status-card ${statusState.toLowerCase()}" data-profile-id="${this.escapeHtmlAttribute(profileId)}">
                     <div class="status-header">
                         <h3>${this.escapeHtml(profileName)}</h3>
                         <span class="status-badge">${this.escapeHtml(statusText)}</span>
                     </div>
                     <div class="status-info">
                         ${lastSync ? `
-                            <div><strong>Last Sync:</strong> <span title="${new Date(lastSync).toLocaleString()}">${this.formatRelativeTime(lastSync)}</span></div>
+                            <div><strong>Last Sync:</strong> <span class="relative-sync-time" data-sync-timestamp="${this.escapeHtml(lastSync)}" title="${new Date(lastSync).toLocaleString()}">${this.formatRelativeTime(lastSync)}</span></div>
                         ` : ''}
                         ${progress > 0 ? `
                             <div><strong>Progress:</strong> ${progress}%</div>
@@ -682,23 +781,125 @@ class SyncProfileApp {
                     </div>
                     <div class="status-actions">
                         ${statusState.toLowerCase() === 'syncing' ? `
-                            <button class="btn btn-warning" onclick="app.cancelSync('${profileId}')">
+                            <button class="btn btn-warning" data-profile-action="cancel">
                                 Cancel Sync
                             </button>
                         ` : `
-                            <button class="btn btn-primary" onclick="app.startSync('${profileId}')">
+                            <button class="btn btn-primary" data-profile-action="start">
                                 ${statusState.toLowerCase() === 'error' ? 'Retry Sync' : 'Start Sync'}
                             </button>
                         `}
                         ${hasSummary ? `
-                            <button class="btn btn-secondary" onclick="app.showSyncSummary('${profileId}')">
+                            <button class="btn btn-secondary" data-profile-action="summary">
                                 View Details
                             </button>
                         ` : ''}
                     </div>
                 </div>
             `;
-        }).join('');
+    }
+
+    updateRelativeSyncTime(card, lastSync) {
+        const relativeTime = card.querySelector('.relative-sync-time');
+        if (!relativeTime || !lastSync) return;
+
+        relativeTime.dataset.syncTimestamp = lastSync;
+        relativeTime.textContent = this.formatRelativeTime(lastSync);
+        relativeTime.title = new Date(lastSync).toLocaleString();
+    }
+
+    renderStatuses({ unavailable = false } = {}) {
+        const container = document.getElementById('sync-status');
+        if (!container) return;
+
+        if (Object.keys(this.statuses).length === 0) {
+            const emptyState = container.querySelector('.status-empty-state');
+            if (!emptyState) {
+                container.innerHTML = `
+                    <div class="text-center status-empty-state" style="grid-column: 1 / -1; padding: 40px;">
+                        <h3></h3>
+                        <p></p>
+                    </div>
+                `;
+            }
+            const state = container.querySelector('.status-empty-state');
+            state.querySelector('h3').textContent = unavailable ? 'Unable to load sync statuses' : 'No sync statuses available';
+            state.querySelector('p').textContent = unavailable
+                ? 'Try refreshing the status in a moment.'
+                : 'Add a new sync profile and start syncing to see status information.';
+            return;
+        }
+
+        // Debug: Log status data to console for troubleshooting
+        console.log('Rendering statuses with data:', this.statuses);
+
+        const statusArray = Object.entries(this.statuses).filter(([_, status]) => status);
+        const existingCards = new Map(
+            [...container.querySelectorAll('.status-card[data-profile-id]')]
+                .map(card => [card.dataset.profileId, card])
+        );
+        const retainedProfiles = new Set();
+        const activeElement = document.activeElement;
+        const scrollPosition = { x: window.scrollX, y: window.scrollY };
+        let changed = false;
+
+        // Remove the empty-state message once real status cards are available.
+        [...container.children].filter(child => !child.matches('.status-card')).forEach(child => {
+            child.remove();
+            changed = true;
+        });
+
+        statusArray.forEach(([profileId, status], index) => {
+            let card = existingCards.get(profileId);
+            const signature = JSON.stringify(status);
+            const focusInfo = card && activeElement && card.contains(activeElement)
+                ? { id: activeElement.id, tagName: activeElement.tagName, action: activeElement.dataset.profileAction }
+                : null;
+
+            if (!card || card.__statusSignature !== signature) {
+                const wrapper = document.createElement('div');
+                wrapper.innerHTML = this.renderStatusCard(profileId, status).trim();
+                const replacement = wrapper.firstElementChild;
+                replacement.__statusSignature = signature;
+                if (card) {
+                    card.replaceWith(replacement);
+                } else {
+                    container.appendChild(replacement);
+                }
+                card = replacement;
+                changed = true;
+
+                if (focusInfo) {
+                    const focusTarget = focusInfo.id
+                        ? [...card.querySelectorAll('[id]')].find(element => element.id === focusInfo.id)
+                        : [...card.querySelectorAll(focusInfo.tagName)].find(element =>
+                            element.dataset.profileAction === focusInfo.action);
+                    const fallbackTarget = card.querySelector(
+                        '.status-actions button[data-profile-action="start"], .status-actions button[data-profile-action="cancel"]'
+                    );
+                    (focusTarget || fallbackTarget)?.focus({ preventScroll: true });
+                }
+            }
+
+            retainedProfiles.add(profileId);
+            this.updateRelativeSyncTime(card, status.last_sync || status.lastSync);
+            const cardAtPosition = container.children[index];
+            if (cardAtPosition !== card) {
+                container.insertBefore(card, cardAtPosition || null);
+                changed = true;
+            }
+        });
+
+        existingCards.forEach((card, profileId) => {
+            if (!retainedProfiles.has(profileId)) {
+                card.remove();
+                changed = true;
+            }
+        });
+
+        if (changed && typeof window.scrollTo === 'function') {
+            window.scrollTo(scrollPosition.x, scrollPosition.y);
+        }
     }
     
     showSyncSummary(profileId) {
@@ -721,7 +922,7 @@ class SyncProfileApp {
         
         // Update the tabs to show the current profile
         tabsContainer.innerHTML = `
-            <button class="tab-button active" data-profile="${profileId}">
+            <button class="tab-button active" data-profile="${this.escapeHtmlAttribute(profileId)}">
                 ${this.escapeHtml(status.profile_name || `Profile ${profileId}`)}
             </button>`;
         
@@ -2050,31 +2251,15 @@ class SyncProfileApp {
             
             if (response.ok) {
                 this.showToast('Sync started successfully', 'success');
-                // Update the specific profile status
-                if (result.data) {
-                    this.statuses[profileId] = {
-                        ...result.data,
-                        profile_id: profileId,
-                        profile_name: this.statuses[profileId]?.profile_name || profileId
-                    };
-                    this.renderStatuses();
-                } else {
-                    // If no data in response, refresh all statuses
-                    await this.loadStatuses();
-                }
+                // The action acknowledgement only contains a message; reload
+                // the authoritative status before updating the card.
+                await this.loadStatuses();
             } else {
                 throw new Error(result.error || 'Failed to start sync');
             }
         } catch (error) {
             console.error('Error starting sync:', error);
             this.showToast(`Error: ${error.message}`, 'error');
-            
-            // Update UI to show error state
-            if (profileId && this.statuses[profileId]) {
-                this.statuses[profileId].status = 'error';
-                this.statuses[profileId].error = error.message;
-                this.renderStatuses();
-            }
         } finally {
             this.hideLoading();
         }
@@ -2101,42 +2286,29 @@ class SyncProfileApp {
             
             if (response.ok) {
                 this.showToast('Sync cancelled', 'info');
-                // Update the specific profile status
-                if (result.data) {
-                    this.statuses[profileId] = {
-                        ...result.data,
-                        profile_id: profileId,
-                        profile_name: this.statuses[profileId]?.profile_name || profileId,
-                        status: 'cancelled'
-                    };
-                    this.renderStatuses();
-                } else {
-                    // If no data in response, refresh all statuses
-                    await this.loadStatuses();
-                }
+                // The action acknowledgement only contains a message; reload
+                // the authoritative status before updating the card.
+                await this.loadStatuses();
             } else {
                 throw new Error(result.error || 'Failed to cancel sync');
             }
         } catch (error) {
             console.error('Error cancelling sync:', error);
             this.showToast(`Error: ${error.message}`, 'error');
-            
-            // Update UI to show error state
-            if (profileId && this.statuses[profileId]) {
-                this.statuses[profileId].status = 'error';
-                this.statuses[profileId].error = error.message;
-                this.renderStatuses();
-            }
         } finally {
             this.hideLoading();
         }
     }
 
     startAutoRefresh() {
+        if (this.refreshInterval) return;
+
         // Refresh statuses every 5 seconds
         this.refreshInterval = setInterval(() => {
-            if (this.autoRefreshEnabled && document.getElementById('sync-tab').classList.contains('active')) {
-                this.loadStatuses();
+            if (this.autoRefreshEnabled &&
+                (this.profileLoadFailed || document.getElementById('sync-tab').classList.contains('active'))) {
+                if (this.activeStatusRequests > 0) return;
+                this.loadStatuses({ silent: true });
             }
         }, 5000);
     }
@@ -2217,6 +2389,10 @@ class SyncProfileApp {
         div.textContent = text;
         return div.innerHTML;
     }
+
+    escapeHtmlAttribute(text) {
+        return this.escapeHtml(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
 }
 
 // Global functions for HTML onclick handlers
@@ -2257,7 +2433,6 @@ function closeEditModal() {
 let app;
 document.addEventListener('DOMContentLoaded', () => {
     app = new SyncProfileApp();
-    app.init();
     
     // Add event delegation for read more/less functionality
     document.addEventListener('click', (e) => {
