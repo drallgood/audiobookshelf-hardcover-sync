@@ -29,6 +29,7 @@ class SyncProfileApp {
     constructor() {
         this.users = [];
         this.statuses = {};
+        this.actionErrors = new Map();
         this.currentEditUser = null;
         this.refreshInterval = null;
         this.currentUser = null;
@@ -359,6 +360,10 @@ class SyncProfileApp {
                     case 'start': this.startSync(profileId); break;
                     case 'cancel': this.cancelSync(profileId); break;
                     case 'summary': this.showSyncSummary(profileId); break;
+                    case 'dismiss-error':
+                        this.actionErrors.delete(profileId);
+                        this.renderStatuses();
+                        break;
                 }
             });
         };
@@ -749,6 +754,7 @@ class SyncProfileApp {
                 ? 'syncing (dry run)'
                 : statusState;
             const profileName = status.profile_name || status.profile_id || 'Unknown Profile';
+            const actionError = this.actionErrors.get(profileId);
 
             return `
                 <div class="status-card ${statusState.toLowerCase()}" data-profile-id="${this.escapeHtmlAttribute(profileId)}">
@@ -782,6 +788,12 @@ class SyncProfileApp {
                         ` : ''}
                         ${status.error ? `
                             <div class="status-error">Error: ${this.escapeHtml(status.error)}</div>
+                        ` : ''}
+                        ${actionError ? `
+                            <div class="action-error" role="alert">
+                                <span>${this.escapeHtml(actionError.action)} failed: ${this.escapeHtml(actionError.message)}</span>
+                                <button class="btn btn-sm" data-profile-action="dismiss-error" aria-label="Dismiss action error">Dismiss</button>
+                            </div>
                         ` : ''}
                     </div>
                     <div class="status-actions">
@@ -856,7 +868,7 @@ class SyncProfileApp {
 
         statusArray.forEach(([profileId, status], index) => {
             let card = existingCards.get(profileId);
-            const signature = JSON.stringify(status);
+            const signature = JSON.stringify([status, this.actionErrors.get(profileId)]);
             const focusInfo = card && activeElement && card.contains(activeElement)
                 ? { id: activeElement.id, tagName: activeElement.tagName, action: activeElement.dataset.profileAction }
                 : null;
@@ -2255,6 +2267,8 @@ class SyncProfileApp {
             const result = await response.json();
             
             if (response.ok) {
+                this.actionErrors.delete(profileId);
+                this.renderStatuses();
                 this.showToast('Sync started successfully', 'success');
                 // The action acknowledgement only contains a message; reload
                 // the authoritative status before updating the card.
@@ -2264,6 +2278,8 @@ class SyncProfileApp {
             }
         } catch (error) {
             console.error('Error starting sync:', error);
+            this.actionErrors.set(profileId, { action: 'Start sync', message: error.message });
+            this.renderStatuses();
             this.showToast(`Error: ${error.message}`, 'error');
         } finally {
             this.hideLoading();
@@ -2290,6 +2306,8 @@ class SyncProfileApp {
             const result = await response.json();
             
             if (response.ok) {
+                this.actionErrors.delete(profileId);
+                this.renderStatuses();
                 this.showToast('Sync cancelled', 'info');
                 // The action acknowledgement only contains a message; reload
                 // the authoritative status before updating the card.
@@ -2299,6 +2317,8 @@ class SyncProfileApp {
             }
         } catch (error) {
             console.error('Error cancelling sync:', error);
+            this.actionErrors.set(profileId, { action: 'Cancel sync', message: error.message });
+            this.renderStatuses();
             this.showToast(`Error: ${error.message}`, 'error');
         } finally {
             this.hideLoading();
