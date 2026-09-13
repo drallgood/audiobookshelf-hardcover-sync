@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Moved and updated repository guidance from `.github/copilot-instructions.md` to root `AGENTS.md`, including contributor workflow and behavior-focused testing guidance by @Snuffy2. (#177)
-- **Incremental sync checkpoints**: Persist per-book sync state after each processed book so completed work survives cancellation or process termination before the full library run finishes. State-file replacement is now atomic, dry runs remain non-persistent, and checkpoint failures stop the sync instead of reporting false success. By @Snuffy2. (#179)
+- **Incremental sync checkpoints**: Persist per-book sync state after each processed book so completed work survives cancellation or process termination before the full library run finishes. State-file replacement is now atomic, dry runs remain non-persistent, and checkpoint failures stop the sync instead of reporting false success. Failed Hardcover status updates leave the affected book uncheckpointed for retry, even if its read progress was saved; a persistent status failure can therefore recur while other books continue. An unavailable status on an existing read is not blindly changed or checkpointed after a read update. By @Snuffy2. (#179)
 
 ## [v3.6.0] - 2026-09-01
 
