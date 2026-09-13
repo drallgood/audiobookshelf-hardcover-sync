@@ -209,9 +209,10 @@ func TestHandleInProgressBook_MatchingReadNoOpAdvancesState(t *testing.T) {
 	tests := []struct {
 		name              string
 		hardcoverProgress int
+		expectState       bool
 	}{
-		{name: "identical progress", hardcoverProgress: 300},
-		{name: "below update threshold", hardcoverProgress: 250},
+		{name: "identical progress", hardcoverProgress: 300, expectState: true},
+		{name: "below update threshold", hardcoverProgress: 250, expectState: false},
 	}
 
 	for _, tt := range tests {
@@ -244,12 +245,17 @@ func TestHandleInProgressBook_MatchingReadNoOpAdvancesState(t *testing.T) {
 
 			assert.NoError(t, err)
 			bookState, exists := svc.state.GetBookState(stateKey)
-			assert.True(t, exists, "a verified remote no-op should create composite state")
-			assert.InDelta(t, 0.3, bookState.LastProgress, 0.001)
-			assert.Equal(t, "IN_PROGRESS", bookState.Status)
-			assert.True(t, bookState.HasProgressSeconds)
-			assert.False(t, svc.state.NeedsSync(stateKey, 0.3, "IN_PROGRESS", 0.01))
-			assert.False(t, svc.state.NeedsSync(audiobook.ID, 0.3, "IN_PROGRESS", 0.01))
+			if tt.expectState {
+				assert.True(t, exists, "a verified remote no-op should create composite state")
+				assert.InDelta(t, 0.3, bookState.LastProgress, 0.001)
+				assert.Equal(t, "IN_PROGRESS", bookState.Status)
+				assert.True(t, bookState.HasProgressSeconds)
+				assert.False(t, svc.state.NeedsSync(stateKey, 0.3, "IN_PROGRESS", 0.01))
+				assert.False(t, svc.state.NeedsSync(audiobook.ID, 0.3, "IN_PROGRESS", 0.01))
+			} else {
+				assert.False(t, exists, "a below-threshold progress skip must remain retryable")
+				assert.True(t, svc.state.NeedsSync(stateKey, 0.3, "IN_PROGRESS", 0.01))
+			}
 			mockClient.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
 			mockClient.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
 			mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
@@ -257,6 +263,71 @@ func TestHandleInProgressBook_MatchingReadNoOpAdvancesState(t *testing.T) {
 			mockClient.AssertExpectations(t)
 		})
 	}
+}
+
+func TestHandleInProgressBook_BelowThresholdProgressRemainsRetryable(t *testing.T) {
+	svc, mockClient := createTestService()
+
+	testAudiobook := createTestBook("test-book-below-threshold", "Below Threshold", "Test Author", "B08N5KWB9H", "9781234567890")
+	testAudiobook.Media.Duration = 1000
+	audiobook := toAudiobookshelfBook(testAudiobook)
+	userBookID := int64(134)
+	editionID := int64(466)
+	readID := int64(801)
+	readProgress := 100
+
+	mockClient.On("GetUserBook", mock.Anything, "134").Return(&models.HardcoverBook{
+		ID: "book-134", Title: "Below Threshold", EditionID: "466", BookStatusID: 3,
+	}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{{
+		ID: readID, ProgressSeconds: &readProgress, EditionID: &editionID,
+	}}, nil).Once()
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+		ID: userBookID, StatusID: 2,
+	}).Return(nil).Once()
+	// Status reconciliation checks for auto-created blank reads, but must not
+	// turn the status-only mutation into a progress checkpoint.
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{{
+		ID: readID, ProgressSeconds: &readProgress, EditionID: &editionID,
+	}}, nil).Once()
+
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
+	audiobook.Progress.CurrentTime = 150
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+
+	assert.NoError(t, err)
+	_, exists := svc.state.GetBookState(stateKey)
+	assert.False(t, exists, "a below-threshold progress skip must remain retryable")
+	assert.True(t, svc.state.NeedsSync(stateKey, 0.2, "IN_PROGRESS", 0.01))
+	mockClient.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+	mockClient.AssertExpectations(t)
+
+	// The next run sees the unchanged Hardcover progress and applies the now-
+	// significant Audiobookshelf delta instead of skipping from a false local baseline.
+	mockClient.On("GetUserBook", mock.Anything, "134").Return(&models.HardcoverBook{
+		ID: "book-134", Title: "Below Threshold", EditionID: "466", BookStatusID: 2,
+	}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{{
+		ID: readID, ProgressSeconds: &readProgress, EditionID: &editionID,
+	}}, nil).Once()
+	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		return input.ID == readID && input.Object["progress_seconds"] == int64(200)
+	})).Return(true, nil).Once()
+	audiobook.Progress.CurrentTime = 200
+	err = svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+
+	assert.NoError(t, err)
+	bookState, exists := svc.state.GetBookState(stateKey)
+	assert.True(t, exists, "a significant progress update should checkpoint local state")
+	assert.InDelta(t, 0.2, bookState.LastProgress, 0.001)
+	assert.Equal(t, "IN_PROGRESS", bookState.Status)
+	mockClient.AssertExpectations(t)
 }
 
 func TestHandleInProgressBook_MatchingFinishedReadNoOpAdvancesState(t *testing.T) {

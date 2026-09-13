@@ -2776,11 +2776,13 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			if hcProgressSeconds < 60 || book.Progress.CurrentTime < 60 {
 				minDiff = 10.0 // 10 second threshold for new/small progress
 			}
-			handleSkippedProgressUpdate := func() error {
+			handleSkippedProgressUpdate := func(checkpointState bool) error {
+				// Status reconciliation is independent of progress, but a threshold
+				// skip must not checkpoint progress that was never written to Hardcover.
 				if !statusNeedsReconcile() {
 					// A no-op can advance local state only when Hardcover returned a
 					// concrete status matching the progress/read snapshot we verified.
-					if hcBook != nil && hcBook.BookStatusID == desiredStatusID {
+					if checkpointState && hcBook != nil && hcBook.BookStatusID == desiredStatusID {
 						updateSyncState()
 					}
 					return nil
@@ -2788,7 +2790,9 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				if err := reconcileBookStatus(); err != nil {
 					return err
 				}
-				updateSyncState()
+				if checkpointState {
+					updateSyncState()
+				}
 				return nil
 			}
 
@@ -2807,7 +2811,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				if progressDiff < 1.0 {
 					logCtx["progress_diff_seconds"] = fmt.Sprintf("%.2f", progressDiff)
 					log.Info("Progress is identical or nearly identical, skipping update", logCtx)
-					return handleSkippedProgressUpdate()
+					return handleSkippedProgressUpdate(true)
 				}
 			}
 
@@ -2817,7 +2821,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			// Skip update if progress difference is below threshold
 			if readStatusToUpdate != nil && !forceSync && progressDiff < minDiff {
 				log.Info("Progress difference below threshold, skipping update", logCtx)
-				return handleSkippedProgressUpdate()
+				return handleSkippedProgressUpdate(false)
 			}
 
 			if latestFinishedReadDate != "" {
