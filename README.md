@@ -19,11 +19,15 @@ Automatically syncs your Audiobookshelf library with Hardcover, including readin
 - **👥 Multiple Sync Profiles**: Each profile can have individual Audiobookshelf and Hardcover tokens
 - **🔒 Secure Storage**: All API tokens encrypted at rest with AES-256-GCM
 - **🔄 Concurrent Syncing**: Multiple profiles can sync simultaneously
-- **📊 Real-Time Monitoring**: Live sync status with auto-refresh
+- **📊 Real-Time Monitoring**: Live sync status with quiet auto-refresh and automatic retry after a temporary profile-load failure
 - **🔧 REST API**: Complete programmatic control via RESTful endpoints
 - **⬆️ Automatic Migration**: Seamless upgrade from single-profile setups
 - **🔙 Backwards Compatible**: All existing functionality preserved
 - **🚀 Cache Busting**: Automatic cache invalidation ensures profiles always get the latest UI updates
+
+### Browser support
+
+The web interface supports desktop Chrome 84+, Edge 84+, Firefox 74+, and Safari 15+, plus Safari on iOS 15.5+. These minimums account for optional chaining in the untranspiled JavaScript, flexbox `gap` in the layout, and `focus({ preventScroll: true })` when live status cards update. The loading overlay's background blur is decorative and may differ between supported browsers. Other mobile browsers may scroll when focus is restored during a status update.
 
 ### Quick Start (Multi-User)
 
@@ -156,7 +160,7 @@ The project follows standard Go project layout:
 - **🌐 Web Interface**: Modern, responsive management dashboard at `http://localhost:8080`
 - **🔒 Secure Storage**: AES-256-GCM encrypted token storage
 - **🔄 Concurrent Syncing**: Multiple users can sync simultaneously
-- **📊 Real-Time Monitoring**: Live sync status with auto-refresh
+- **📊 Real-Time Monitoring**: Live sync status with quiet auto-refresh and automatic retry after a temporary profile-load failure
 - **🔧 REST API**: Complete programmatic control via RESTful endpoints
 - **⬆️ Automatic Migration**: Seamless upgrade from single-user setups
 - **🔙 Backwards Compatible**: All existing functionality preserved
