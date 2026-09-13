@@ -326,6 +326,53 @@ func TestHandleInProgressBook_MatchingFinishedReadNoOpAdvancesState(t *testing.T
 	}
 }
 
+func TestHandleInProgressBook_UnavailableStatusAfterReadUpdateRemainsRetryable(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.state = state.NewState()
+
+	testAudiobook := createTestBook("test-book-unknown-status", "Unknown Status", "Test Author", "B08N5KWB9H", "9781234567890")
+	testAudiobook.Progress.CurrentTime = 300
+	testAudiobook.Media.Duration = 1000
+	audiobook := toAudiobookshelfBook(testAudiobook)
+
+	userBookID := int64(132)
+	editionID := int64(464)
+	readID := int64(800)
+	oldProgress := 100
+	updatedProgress := 300
+	bookStatus := &models.HardcoverBook{ID: "book-132", EditionID: "464", BookStatusID: 0}
+	mockClient.On("GetUserBook", mock.Anything, "132").Return(bookStatus, nil).Once()
+	mockClient.On("GetUserBook", mock.Anything, "132").Return(&models.HardcoverBook{
+		ID: "book-132", EditionID: "464", BookStatusID: 2,
+	}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{{
+		ID: readID, ProgressSeconds: &oldProgress, EditionID: &editionID,
+	}}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{{
+		ID: readID, ProgressSeconds: &updatedProgress, EditionID: &editionID,
+	}}, nil).Once()
+	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		return input.ID == readID && input.Object["progress_seconds"] == int64(updatedProgress)
+	})).Return(true, nil).Once()
+
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+	assert.NoError(t, err)
+	_, exists := svc.state.GetBookState(stateKey)
+	assert.False(t, exists, "an unavailable status must not checkpoint a completed read update")
+	assert.True(t, svc.state.NeedsSync(audiobook.ID, 0.3, "IN_PROGRESS", 0.01))
+
+	err = svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+	assert.NoError(t, err)
+	bookState, exists := svc.state.GetBookState(stateKey)
+	assert.True(t, exists, "a later verified status should advance state")
+	assert.InDelta(t, 0.3, bookState.LastProgress, 0.001)
+	assert.False(t, svc.state.NeedsSync(audiobook.ID, 0.3, "IN_PROGRESS", 0.01))
+	mockClient.AssertNumberOfCalls(t, "UpdateUserBookRead", 1)
+	mockClient.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+	mockClient.AssertExpectations(t)
+}
+
 func TestHandleInProgressBook_ExistingReadStatusFailureRetriesStatusWithoutReadMutation(t *testing.T) {
 	svc, mockClient := createTestService()
 	svc.state = state.NewState()
