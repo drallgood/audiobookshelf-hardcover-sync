@@ -25,6 +25,10 @@ Automatically syncs your Audiobookshelf library with Hardcover, including readin
 - **🔙 Backwards Compatible**: All existing functionality preserved
 - **🚀 Cache Busting**: Automatic cache invalidation ensures profiles always get the latest UI updates
 
+### Browser support
+
+The web interface supports desktop Chrome 84+, Edge 84+, Firefox 74+, and Safari 15+, plus Safari on iOS 15.5+. These minimums account for optional chaining in the untranspiled JavaScript, flexbox `gap` in the layout, and `focus({ preventScroll: true })` when live status cards update. The loading overlay's background blur is decorative and may differ between supported browsers. Other mobile browsers may scroll when focus is restored during a status update.
+
 ### Quick Start (Multi-User)
 
 1. **Start the application with web UI enabled**:

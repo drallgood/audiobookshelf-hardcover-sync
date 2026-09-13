@@ -473,6 +473,11 @@ class SyncProfileApp {
 
     async fetchJsonWithTimeout(url, options = {}) {
         const { signal: requestSignal, ...fetchOptions } = options;
+        if (typeof AbortController === 'undefined') {
+            const response = await fetch(url, fetchOptions);
+            return { response, data: await response.json() };
+        }
+
         const controller = new AbortController();
         let timedOut = false;
         const timeout = setTimeout(() => {
@@ -569,10 +574,10 @@ class SyncProfileApp {
     async loadStatuses({ silent = false } = {}) {
         const requestSequence = ++this.statusLoadSequence;
         this.statusLoadController?.abort();
-        const controller = new AbortController();
+        const controller = typeof AbortController === 'undefined' ? null : new AbortController();
         this.statusLoadController = controller;
-        const { signal } = controller;
-        const isCurrentRequest = () => requestSequence === this.statusLoadSequence && !signal.aborted;
+        const signal = controller?.signal;
+        const isCurrentRequest = () => requestSequence === this.statusLoadSequence && !signal?.aborted;
         this.activeStatusRequests += 1;
         try {
             if (!silent) {
