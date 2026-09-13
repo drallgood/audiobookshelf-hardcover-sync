@@ -39,6 +39,7 @@ class SyncProfileApp {
         this.activeStatusLoads = 0;
         this.activeStatusRequests = 0;
         this.statusLoadController = null;
+        this.profileLoadFailed = false;
         
         this.init();
     }
@@ -111,8 +112,8 @@ class SyncProfileApp {
                 // before fetching their statuses.
                 await this.loadStatuses();
                 
-                // Start auto-refresh only if we have data to refresh
-                if (this.users.length > 0) {
+                // Keep retrying if the initial profile request failed.
+                if (this.users.length > 0 || this.profileLoadFailed) {
                     this.startAutoRefresh();
                 }
             } catch (error) {
@@ -518,6 +519,7 @@ class SyncProfileApp {
             
             // Check authentication status first
             if (this.authEnabled && !this.currentUser) {
+                this.profileLoadFailed = false;
                 this.showToast('Please log in to view profiles', 'error');
                 this.redirectToLogin();
                 return;
@@ -534,25 +536,30 @@ class SyncProfileApp {
             
             // Handle authentication errors specifically
             if (response.status === 401 || response.status === 403) {
+                this.profileLoadFailed = false;
                 this.showToast('Authentication required. Please log in.', 'error');
                 this.redirectToLogin();
                 return;
             }
             
             if (response.ok && data.success) {
+                this.profileLoadFailed = false;
                 this.users = data.data;
                 this.renderProfiles();
             } else {
                 // Handle different types of errors
                 if (data.error && data.error.code === 'authentication_required') {
+                    this.profileLoadFailed = false;
                     this.showToast('Authentication required. Please log in.', 'error');
                     this.redirectToLogin();
                 } else {
-                    this.showToast('Failed to load sync profiles: ' + (data.error?.message || data.error || 'Unknown error'), 'error');
+                    const message = 'Failed to load sync profiles: ' + (data.error?.message || data.error || 'Unknown error');
+                    if (statusOwned) throw new Error(message);
+                    this.showToast(message, 'error');
                 }
             }
         } catch (error) {
-            if (statusOwned && (error.name === 'AbortError' || error.name === 'TimeoutError')) throw error;
+            if (statusOwned) throw error;
             this.showToast('Error loading sync profiles: ' + error.message, 'error');
         } finally {
             if (showLoading) this.hideLoading();
@@ -653,6 +660,11 @@ class SyncProfileApp {
             
         } catch (error) {
             console.error('Error in loadStatuses:', error);
+            if (this.users.length === 0 && requestSequence === this.statusLoadSequence && error.name !== 'AbortError') {
+                this.profileLoadFailed = true;
+                this.renderStatuses({ unavailable: true });
+                this.startAutoRefresh();
+            }
             if (!silent && requestSequence === this.statusLoadSequence && error.name !== 'AbortError') {
                 this.showToast('Error loading statuses: ' + error.message, 'error');
             }
@@ -2293,7 +2305,8 @@ class SyncProfileApp {
 
         // Refresh statuses every 5 seconds
         this.refreshInterval = setInterval(() => {
-            if (this.autoRefreshEnabled && document.getElementById('sync-tab').classList.contains('active')) {
+            if (this.autoRefreshEnabled &&
+                (this.profileLoadFailed || document.getElementById('sync-tab').classList.contains('active'))) {
                 if (this.activeStatusRequests > 0) return;
                 this.loadStatuses({ silent: true });
             }
