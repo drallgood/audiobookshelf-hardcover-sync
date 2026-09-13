@@ -358,16 +358,6 @@ func (s *Service) logASINCacheStats() {
 	})
 }
 
-// getUserBookFromCache retrieves a cached user book by user_book_id
-func (s *Service) getUserBookFromCache(userBookID int) (*models.HardcoverBook, bool) {
-	return s.userBookCache.GetByUserBook(userBookID)
-}
-
-// setUserBookByUserBookInCache stores a cached user book by user_book_id
-func (s *Service) setUserBookByUserBookInCache(userBookID int, userBook *models.HardcoverBook) {
-	s.userBookCache.SetByUserBook(userBookID, userBook)
-}
-
 // findOrCreateUserBookID finds or creates a user book ID for the given edition ID and status
 func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status string) (int64, error) {
 	s.log.Debug("Starting findOrCreateUserBookID", map[string]interface{}{
@@ -1979,12 +1969,12 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 	var userBook *models.HardcoverBook
 	var getUserBookErr error
 
-	if cachedUserBook, found := s.getUserBookFromCache(int(userBookID)); found {
+	if cachedUserBook, found := s.userBookCache.GetByUserBook(int(userBookID)); found {
 		userBook = cachedUserBook
 	} else {
 		userBook, getUserBookErr = s.hardcover.GetUserBook(ctx, userBookIDStr)
 		if getUserBookErr == nil && userBook != nil {
-			s.setUserBookByUserBookInCache(int(userBookID), userBook)
+			s.userBookCache.SetByUserBook(int(userBookID), userBook)
 		}
 	}
 	if getUserBookErr != nil {
@@ -2250,7 +2240,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 	var hcBook *models.HardcoverBook
 	var err error
 
-	if cachedUserBook, found := s.getUserBookFromCache(int(userBookID)); found {
+	if cachedUserBook, found := s.userBookCache.GetByUserBook(int(userBookID)); found {
 		log.Debug("User book found in cache", map[string]interface{}{
 			"user_book_id": userBookID,
 		})
@@ -2260,7 +2250,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		hcBook, err = s.hardcover.GetUserBook(ctx, strconv.FormatInt(userBookID, 10))
 		if err == nil && hcBook != nil {
 			// Cache the result
-			s.setUserBookByUserBookInCache(int(userBookID), hcBook)
+			s.userBookCache.SetByUserBook(int(userBookID), hcBook)
 			log.Debug("User book cached", map[string]interface{}{
 				"user_book_id": userBookID,
 			})
@@ -3091,7 +3081,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		var creationHCBook *models.HardcoverBook
 		var creationErr error
 
-		if cachedUserBook, found := s.getUserBookFromCache(int(userBookID)); found {
+		if cachedUserBook, found := s.userBookCache.GetByUserBook(int(userBookID)); found {
 			log.Debug("User book found in cache for read status creation", map[string]interface{}{
 				"user_book_id": userBookID,
 			})
@@ -3101,7 +3091,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			creationHCBook, creationErr = s.hardcover.GetUserBook(ctx, strconv.FormatInt(userBookID, 10))
 			if creationErr == nil && creationHCBook != nil {
 				// Cache the result
-				s.setUserBookByUserBookInCache(int(userBookID), creationHCBook)
+				s.userBookCache.SetByUserBook(int(userBookID), creationHCBook)
 				log.Debug("User book cached for read status creation", map[string]interface{}{
 					"user_book_id": userBookID,
 				})
