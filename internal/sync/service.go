@@ -2613,13 +2613,6 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		log.Warn(fmt.Sprintf("Found %d duplicate unfinished read entries; keeping highest-progress read and skipping duplicate close to avoid false finished history", len(duplicateUnfinishedReads)), nil)
 	}
 
-	// Create a logger with book context
-	bookLog := s.log.WithFields(map[string]interface{}{
-		"book_id": book.ID,
-		"title":   book.Media.Metadata.Title,
-		"author":  book.Media.Metadata.AuthorName,
-	})
-
 	latestFinishedReadDate := ""
 
 	// If no read status found at all, we'll create a new one
@@ -3009,22 +3002,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 
 		// Update the sync state only after every required Hardcover mutation has
 		// succeeded. This keeps a failed status transition retryable next run.
-		progressPct := 0.0
-		if book.Media.Duration > 0 {
-			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
-		}
-		status := "IN_PROGRESS"
-		if book.Progress.IsFinished {
-			status = "FINISHED"
-		}
-		if s.state.UpdateBook(stateKey, progressPct, status) {
-			bookLog.Debug("Updated book state", map[string]interface{}{
-				"progress":  progressPct,
-				"status":    status,
-				"state_key": stateKey,
-			})
-		}
-		s.state.SetHasProgressSeconds(stateKey)
+		updateSyncState()
 		bookCacheKey := fmt.Sprintf("%s:%d", book.ID, userBookID)
 		s.lastProgressMutex.Lock()
 		s.lastProgressUpdates[bookCacheKey] = progressUpdateInfo{
@@ -3229,22 +3207,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 
 		// Update the sync state only after every required Hardcover mutation has
 		// succeeded. This keeps a failed status transition retryable next run.
-		progressPct := 0.0
-		if book.Media.Duration > 0 {
-			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
-		}
-		status := "IN_PROGRESS"
-		if book.Progress.IsFinished {
-			status = "FINISHED"
-		}
-		if s.state.UpdateBook(stateKey, progressPct, status) {
-			bookLog.Debug("Updated book state", map[string]interface{}{
-				"progress":  progressPct,
-				"status":    status,
-				"state_key": stateKey,
-			})
-		}
-		s.state.SetHasProgressSeconds(stateKey)
+		updateSyncState()
 
 		return nil
 	}
