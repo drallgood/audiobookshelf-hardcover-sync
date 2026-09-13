@@ -462,6 +462,22 @@ header p {
     margin-bottom: 15px;
 }
 
+.action-error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    border-left: 3px solid #dc3545;
+    border-radius: 4px;
+    background: #fff0f0;
+    color: #a71d2a;
+}
+
+.action-error span {
+    overflow-wrap: anywhere;
+}
+
 .status-actions {
     display: flex;
     gap: 10px;
