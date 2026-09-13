@@ -790,7 +790,7 @@ class SyncProfileApp {
                     </div>
                     <div class="status-info">
                         ${lastSync ? `
-                            <div><strong>Last Sync:</strong> <span class="relative-sync-time" data-sync-timestamp="${this.escapeHtmlAttribute(lastSync)}" title="${new Date(lastSync).toLocaleString()}">${this.formatRelativeTime(lastSync)}</span></div>
+                            <div><strong>Last Sync:</strong> <span class="relative-sync-time" title="${new Date(lastSync).toLocaleString()}">${this.formatRelativeTime(lastSync)}</span></div>
                         ` : ''}
                         ${progress > 0 ? `
                             <div><strong>Progress:</strong> ${progress}%</div>
@@ -849,7 +849,6 @@ class SyncProfileApp {
         const relativeTime = card.querySelector('.relative-sync-time');
         if (!relativeTime || !lastSync) return;
 
-        relativeTime.dataset.syncTimestamp = lastSync;
         relativeTime.textContent = this.formatRelativeTime(lastSync);
         relativeTime.title = new Date(lastSync).toLocaleString();
     }
