@@ -777,7 +777,7 @@ class SyncProfileApp {
                     </div>
                     <div class="status-info">
                         ${lastSync ? `
-                            <div><strong>Last Sync:</strong> <span class="relative-sync-time" data-sync-timestamp="${this.escapeHtml(lastSync)}" title="${new Date(lastSync).toLocaleString()}">${this.formatRelativeTime(lastSync)}</span></div>
+                            <div><strong>Last Sync:</strong> <span class="relative-sync-time" data-sync-timestamp="${this.escapeHtmlAttribute(lastSync)}" title="${new Date(lastSync).toLocaleString()}">${this.formatRelativeTime(lastSync)}</span></div>
                         ` : ''}
                         ${progress > 0 ? `
                             <div><strong>Progress:</strong> ${progress}%</div>
