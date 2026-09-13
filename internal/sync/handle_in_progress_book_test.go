@@ -205,7 +205,7 @@ func TestHandleInProgressBook_UpdateExistingRead(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
-func TestHandleInProgressBook_MatchingReadNoOpAdvancesState(t *testing.T) {
+func TestHandleInProgressBook_MatchingReadNoOpStateHandling(t *testing.T) {
 	tests := []struct {
 		name              string
 		hardcoverProgress int

@@ -2776,13 +2776,13 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			if hcProgressSeconds < 60 || book.Progress.CurrentTime < 60 {
 				minDiff = 10.0 // 10 second threshold for new/small progress
 			}
-			handleSkippedProgressUpdate := func(checkpointState bool) error {
+			handleSkippedProgressUpdate := func(shouldUpdateSyncState bool) error {
 				// Status reconciliation is independent of progress, but a threshold
 				// skip must not checkpoint progress that was never written to Hardcover.
 				if !statusNeedsReconcile() {
 					// A no-op can advance local state only when Hardcover returned a
 					// concrete status matching the progress/read snapshot we verified.
-					if checkpointState && hcBook != nil && hcBook.BookStatusID == desiredStatusID {
+					if shouldUpdateSyncState && hcBook != nil && hcBook.BookStatusID == desiredStatusID {
 						updateSyncState()
 					}
 					return nil
@@ -2790,7 +2790,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				if err := reconcileBookStatus(); err != nil {
 					return err
 				}
-				if checkpointState {
+				if shouldUpdateSyncState {
 					updateSyncState()
 				}
 				return nil
