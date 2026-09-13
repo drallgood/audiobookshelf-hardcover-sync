@@ -627,6 +627,13 @@ class SyncProfileApp {
                         `/api/profiles/${user.id}/status`,
                         { signal }
                     );
+                    if (statusResponse.status === 401 && isCurrentRequest()) {
+                        this.authEnabled = true;
+                        this.currentUser = null;
+                        this.showToast('Authentication required. Please log in.', 'error');
+                        this.redirectToLogin();
+                        return;
+                    }
                     if (statusResponse.ok) {
                         if (statusData.success) {
                             const hasSummary = statusData.data?.last_sync_summary || 
@@ -636,6 +643,7 @@ class SyncProfileApp {
                             
                             statuses[user.id] = {
                                 ...statusData.data,
+                                unavailable: false,
                                 profile_id: user.id,
                                 profile_name: user.name || `Profile ${user.id}`,
                                 books_not_found: statusData.data?.books_not_found || [],
@@ -660,7 +668,12 @@ class SyncProfileApp {
                 if (!isCurrentRequest()) return;
                 if (!statusLoaded) {
                     failedStatuses += 1;
-                    if (this.statuses[user.id]) statuses[user.id] = this.statuses[user.id];
+                    if (this.statuses[user.id]) {
+                        statuses[user.id] = {
+                            ...this.statuses[user.id],
+                            unavailable: true
+                        };
+                    }
                 }
             }
             
@@ -801,6 +814,9 @@ class SyncProfileApp {
                         ` : ''}
                         ${status.error ? `
                             <div class="status-error">Error: ${this.escapeHtml(status.error)}</div>
+                        ` : ''}
+                        ${status.unavailable ? `
+                            <div class="status-message" role="status">Status unavailable. Showing last known data.</div>
                         ` : ''}
                         ${actionError ? `
                             <div class="action-error" role="alert">
