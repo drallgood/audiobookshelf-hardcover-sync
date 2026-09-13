@@ -294,7 +294,7 @@ func createTestBook(id, title, author, asin, isbn string) *TestAudiobookshelfBoo
 func createTestFinishedBook(id, title, author, asin, isbn string) *TestAudiobookshelfBook {
 	book := createTestBook(id, title, author, asin, isbn)
 	book.Progress.IsFinished = true
-	book.Progress.FinishedAt = time.Now().Unix()
+	book.Progress.FinishedAt = time.Now().UnixMilli()
 	book.Progress.CurrentTime = book.Media.Duration // Set current time to duration (100% complete)
 	return book
 }
