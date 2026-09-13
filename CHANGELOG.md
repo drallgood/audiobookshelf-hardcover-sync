@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Make sync status refresh unobtrusive**: Make Sync Status polling quiet and race safe so background refreshes do not flash the page or disturb the user's current view. By @Snuffy2.
 - **Sync Status fetch errors**: Remove misplaced Hardcover mismatch-display code from status loading so successful profile status requests no longer log an undefined-variable error by @Snuffy2. (#178)
 - **Limit raw API response logging to debug**: Routes the full Audiobookshelf library-items API response through debug logging instead of writing it directly to standard error. (#174)
 - **Prevent Hardcover mutations during dry runs**: dry_run was not working correctly. Prevent dry-run syncs from calling Hardcover mutation APIs while preserving the read operations needed to report intended changes, and identify active dry runs on the Sync Status page. (#175)
