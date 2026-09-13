@@ -2399,18 +2399,15 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 	}
 
 	// Calculate progress percentage if we have duration
+	progressPct := 0.0
 	if book.Media.Duration > 0 {
-		progressPct := (book.Progress.CurrentTime / book.Media.Duration) * 100
+		progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
 		logCtx["progress_percent"] = fmt.Sprintf("%.1f%%", progressPct)
 	}
 
 	// Create logger with all context
 	log = s.log.With(logCtx)
 	updateSyncState := func() {
-		progressPct := 0.0
-		if book.Media.Duration > 0 {
-			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
-		}
 		if s.state.UpdateBook(stateKey, progressPct, desiredStatus) {
 			log.Debug("Updated book state", map[string]interface{}{
 				"progress":  progressPct,
