@@ -1,6 +1,8 @@
 // Sync Profile Management App
 console.info('Sync UI loaded', { build: '2025-08-16 01:05:44+02:00' });
 const STATUS_LOAD_TIMEOUT_MS = 15000;
+const PROFILE_RETRY_BASE_MS = 5000;
+const PROFILE_RETRY_MAX_MS = 60000;
 // Global image error handler for cover fallbacks
 window.__absHandleImageError = function(img) {
     try {
@@ -41,6 +43,8 @@ class SyncProfileApp {
         this.activeStatusRequests = 0;
         this.statusLoadController = null;
         this.profileLoadFailed = false;
+        this.profileRetryFailures = 0;
+        this.nextProfileRetryAt = 0;
         
         this.init();
     }
@@ -529,7 +533,7 @@ class SyncProfileApp {
             
             // Check authentication status first
             if (this.authEnabled && !this.currentUser) {
-                this.profileLoadFailed = false;
+                this.resetProfileRetry();
                 this.showToast('Please log in to view profiles', 'error');
                 this.redirectToLogin();
                 return;
@@ -546,20 +550,20 @@ class SyncProfileApp {
             
             // Handle authentication errors specifically
             if (response.status === 401 || response.status === 403) {
-                this.profileLoadFailed = false;
+                this.resetProfileRetry();
                 this.showToast('Authentication required. Please log in.', 'error');
                 this.redirectToLogin();
                 return;
             }
             
             if (response.ok && data.success) {
-                this.profileLoadFailed = false;
+                this.resetProfileRetry();
                 this.users = data.data;
                 this.renderProfiles();
             } else {
                 // Handle different types of errors
                 if (data.error && data.error.code === 'authentication_required') {
-                    this.profileLoadFailed = false;
+                    this.resetProfileRetry();
                     this.showToast('Authentication required. Please log in.', 'error');
                     this.redirectToLogin();
                 } else {
@@ -574,6 +578,12 @@ class SyncProfileApp {
         } finally {
             if (showLoading) this.hideLoading();
         }
+    }
+
+    resetProfileRetry() {
+        this.profileLoadFailed = false;
+        this.profileRetryFailures = 0;
+        this.nextProfileRetryAt = 0;
     }
 
     async loadStatuses({ silent = false } = {}) {
@@ -672,6 +682,9 @@ class SyncProfileApp {
             console.error('Error in loadStatuses:', error);
             if (this.users.length === 0 && requestSequence === this.statusLoadSequence && error.name !== 'AbortError') {
                 this.profileLoadFailed = true;
+                this.profileRetryFailures = Math.min(this.profileRetryFailures + 1, 5);
+                const retryDelay = Math.min(PROFILE_RETRY_BASE_MS * 2 ** (this.profileRetryFailures - 1), PROFILE_RETRY_MAX_MS);
+                this.nextProfileRetryAt = Date.now() + retryDelay;
                 this.renderStatuses({ unavailable: true });
                 this.startAutoRefresh();
             }
@@ -2333,6 +2346,7 @@ class SyncProfileApp {
             if (this.autoRefreshEnabled &&
                 (this.profileLoadFailed || document.getElementById('sync-tab').classList.contains('active'))) {
                 if (this.activeStatusRequests > 0) return;
+                if (this.profileLoadFailed && Date.now() < this.nextProfileRetryAt) return;
                 this.loadStatuses({ silent: true });
             }
         }, 5000);
