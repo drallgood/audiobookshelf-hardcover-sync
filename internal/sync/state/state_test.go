@@ -482,28 +482,14 @@ func TestSetFullSync(t *testing.T) {
 func TestCustomStatePath(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name string
-		dir  string
-	}{
-		{name: "custom directory", dir: "custom_state_dir"},
-		{name: "nested directories", dir: filepath.Join("nested", "dir", "for", "state")},
-	}
+	statePath := filepath.Join(t.TempDir(), "nested", "dir", "for", "state", "sync_state.json")
+	state := NewState()
+	state.UpdateBook("test:123", 0.5, "IN_PROGRESS")
+	require.NoError(t, state.Save(statePath))
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			statePath := filepath.Join(t.TempDir(), tc.dir, "sync_state.json")
-			state := NewState()
-			state.UpdateBook("test:123", 0.5, "IN_PROGRESS")
-			require.NoError(t, state.Save(statePath))
-
-			loadedState, err := LoadState(statePath)
-			require.NoError(t, err)
-			book, exists := loadedState.GetBookState("test:123")
-			require.True(t, exists)
-			assert.Equal(t, 0.5, book.LastProgress)
-		})
-	}
+	loadedState, err := LoadState(statePath)
+	require.NoError(t, err)
+	book, exists := loadedState.GetBookState("test:123")
+	require.True(t, exists)
+	assert.Equal(t, 0.5, book.LastProgress)
 }
