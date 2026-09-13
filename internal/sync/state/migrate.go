@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 )
 
 // MigrateOldState migrates the old sync state file to the new location
@@ -33,11 +32,6 @@ func MigrateOldState(oldPath, newPath string) (bool, error) {
 			return false, nil
 		}
 		return false, fmt.Errorf("failed to read old state file: %w", err)
-	}
-
-	// Ensure new directory exists
-	if err := os.MkdirAll(filepath.Dir(newPath), 0755); err != nil {
-		return false, fmt.Errorf("failed to create state directory: %w", err)
 	}
 
 	// Parse the old state to validate it

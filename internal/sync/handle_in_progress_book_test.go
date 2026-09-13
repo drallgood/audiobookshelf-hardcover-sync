@@ -9,6 +9,7 @@ import (
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -33,7 +34,6 @@ func TestHandleInProgressBook_NoProgress(t *testing.T) {
 	// Mock the GetUserBookReads call
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
 	// Call the function
@@ -68,7 +68,6 @@ func TestHandleInProgressBook_DryRun(t *testing.T) {
 	// Mock the GetUserBookReads call
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
 	// Call the function
@@ -118,16 +117,15 @@ func TestHandleInProgressBook_RecentUpdate(t *testing.T) {
 	// Mock the GetUserBook call
 	userBookID := int64(123)
 	mockClient.On("GetUserBook", mock.Anything, "123").Return(&models.HardcoverBook{
-		ID:        "book-123",
-		Title:     "Test Book",
-		EditionID: "456",
+		ID:           "book-123",
+		Title:        "Test Book",
+		EditionID:    "456",
 		BookStatusID: 2,
 	}, nil).Once()
 
 	// Mock the GetUserBookReads call
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
 	// Initialize the lastProgressUpdates map if it doesn't exist
@@ -181,7 +179,6 @@ func TestHandleInProgressBook_UpdateExistingRead(t *testing.T) {
 	// Create a read status with some progress
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{
 		{
 			ID:              readID,
@@ -196,7 +193,7 @@ func TestHandleInProgressBook_UpdateExistingRead(t *testing.T) {
 		// Verify the input has the correct ID and progress
 		return input.ID == readID &&
 			input.Object["progress_seconds"] == int64(300)
-			// edition_id removed to prevent edition switching
+		// edition_id removed to prevent edition switching
 	})).Return(true, nil).Once()
 
 	// Call the function
@@ -205,6 +202,410 @@ func TestHandleInProgressBook_UpdateExistingRead(t *testing.T) {
 
 	// Verify results
 	assert.NoError(t, err, "Should not return an error when updating existing read")
+	mockClient.AssertExpectations(t)
+}
+
+func TestHandleInProgressBook_MatchingReadNoOpStateHandling(t *testing.T) {
+	tests := []struct {
+		name              string
+		hardcoverProgress int
+		expectState       bool
+	}{
+		{name: "identical progress", hardcoverProgress: 300, expectState: true},
+		{name: "below update threshold", hardcoverProgress: 250, expectState: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, mockClient := createTestService()
+
+			testAudiobook := createTestBook("test-book-matching-read", "Matching Read", "Test Author", "B08N5KWB9H", "9781234567890")
+			testAudiobook.Progress.CurrentTime = 300
+			testAudiobook.Media.Duration = 1000
+			audiobook := toAudiobookshelfBook(testAudiobook)
+
+			userBookID := int64(130)
+			editionID := int64(462)
+			readID := int64(796)
+			manualReadID := int64(797)
+			readProgress := tt.hardcoverProgress
+			mockClient.On("GetUserBook", mock.Anything, "130").Return(&models.HardcoverBook{
+				ID: "book-130", Title: "Matching Read", EditionID: "462", BookStatusID: 2,
+			}, nil).Once()
+			mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+				UserBookID: userBookID,
+			}).Return([]hardcover.UserBookRead{
+				{ID: readID, ProgressSeconds: &readProgress, EditionID: &editionID},
+				// An unrelated physical/manual read has no edition or progress.
+				{ID: manualReadID, ProgressSeconds: nil, Progress: 0, FinishedAt: nil},
+			}, nil).Once()
+
+			stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
+			err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+
+			assert.NoError(t, err)
+			bookState, exists := svc.state.GetBookState(stateKey)
+			if tt.expectState {
+				assert.True(t, exists, "a verified remote no-op should create composite state")
+				assert.InDelta(t, 0.3, bookState.LastProgress, 0.001)
+				assert.Equal(t, "IN_PROGRESS", bookState.Status)
+				assert.True(t, bookState.HasProgressSeconds)
+				assert.False(t, svc.state.NeedsSync(stateKey, 0.3, "IN_PROGRESS", 0.01))
+				assert.False(t, svc.state.NeedsSync(audiobook.ID, 0.3, "IN_PROGRESS", 0.01))
+			} else {
+				assert.False(t, exists, "a below-threshold progress skip must remain retryable")
+				assert.True(t, svc.state.NeedsSync(stateKey, 0.3, "IN_PROGRESS", 0.01))
+			}
+			mockClient.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+			mockClient.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+			mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+			mockClient.AssertNotCalled(t, "DeleteUserBookRead", mock.Anything, mock.Anything)
+			mockClient.AssertExpectations(t)
+		})
+	}
+}
+
+func TestHandleInProgressBook_BelowThresholdProgressRemainsRetryable(t *testing.T) {
+	svc, mockClient := createTestService()
+
+	testAudiobook := createTestBook("test-book-below-threshold", "Below Threshold", "Test Author", "B08N5KWB9H", "9781234567890")
+	testAudiobook.Media.Duration = 1000
+	audiobook := toAudiobookshelfBook(testAudiobook)
+	userBookID := int64(134)
+	editionID := int64(466)
+	readID := int64(801)
+	readProgress := 100
+
+	mockClient.On("GetUserBook", mock.Anything, "134").Return(&models.HardcoverBook{
+		ID: "book-134", Title: "Below Threshold", EditionID: "466", BookStatusID: 3,
+	}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{{
+		ID: readID, ProgressSeconds: &readProgress, EditionID: &editionID,
+	}}, nil).Once()
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+		ID: userBookID, StatusID: 2,
+	}).Return(nil).Once()
+	// Status reconciliation checks for auto-created blank reads, but must not
+	// turn the status-only mutation into a progress checkpoint.
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{{
+		ID: readID, ProgressSeconds: &readProgress, EditionID: &editionID,
+	}}, nil).Once()
+
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
+	audiobook.Progress.CurrentTime = 150
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+
+	assert.NoError(t, err)
+	_, exists := svc.state.GetBookState(stateKey)
+	assert.False(t, exists, "a below-threshold progress skip must remain retryable")
+	assert.True(t, svc.state.NeedsSync(stateKey, 0.2, "IN_PROGRESS", 0.01))
+	mockClient.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+	mockClient.AssertExpectations(t)
+
+	// The next run sees the unchanged Hardcover progress and applies the now-
+	// significant Audiobookshelf delta instead of skipping from a false local baseline.
+	mockClient.On("GetUserBook", mock.Anything, "134").Return(&models.HardcoverBook{
+		ID: "book-134", Title: "Below Threshold", EditionID: "466", BookStatusID: 2,
+	}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{{
+		ID: readID, ProgressSeconds: &readProgress, EditionID: &editionID,
+	}}, nil).Once()
+	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		return input.ID == readID && input.Object["progress_seconds"] == int64(200)
+	})).Return(true, nil).Once()
+	audiobook.Progress.CurrentTime = 200
+	err = svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+
+	assert.NoError(t, err)
+	bookState, exists := svc.state.GetBookState(stateKey)
+	assert.True(t, exists, "a significant progress update should checkpoint local state")
+	assert.InDelta(t, 0.2, bookState.LastProgress, 0.001)
+	assert.Equal(t, "IN_PROGRESS", bookState.Status)
+	mockClient.AssertExpectations(t)
+}
+
+func TestHandleInProgressBook_MatchingFinishedReadNoOpAdvancesState(t *testing.T) {
+	tests := []struct {
+		name              string
+		hardcoverStatusID int
+		expectState       bool
+	}{
+		{name: "concrete matching status", hardcoverStatusID: 3, expectState: true},
+		{name: "unavailable status", hardcoverStatusID: 0, expectState: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, mockClient := createTestService()
+
+			testAudiobook := createTestFinishedBook(
+				"test-book-matching-finished-read",
+				"Matching Finished Read",
+				"Test Author",
+				"B08N5KWB9H",
+				"9781234567890",
+			)
+			audiobook := toAudiobookshelfBook(testAudiobook)
+			userBookID := int64(131)
+			editionID := int64(463)
+			readID := int64(799)
+			finishedAt := time.Unix(testAudiobook.Progress.FinishedAt/1000, 0).Format("2006-01-02")
+			progressSeconds := int(testAudiobook.Media.Duration)
+
+			mockClient.On("GetUserBook", mock.Anything, "131").Return(&models.HardcoverBook{
+				ID:           "book-131",
+				Title:        "Matching Finished Read",
+				EditionID:    "463",
+				BookStatusID: tt.hardcoverStatusID,
+			}, nil).Once()
+			mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+				UserBookID: userBookID,
+			}).Return([]hardcover.UserBookRead{{
+				ID:              readID,
+				ProgressSeconds: &progressSeconds,
+				EditionID:       &editionID,
+				FinishedAt:      &finishedAt,
+			}}, nil).Once()
+
+			stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
+			err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+
+			assert.NoError(t, err)
+			bookState, exists := svc.state.GetBookState(stateKey)
+			if tt.expectState {
+				assert.True(t, exists, "a concrete matching remote status should create local state")
+				assert.InDelta(t, 1.0, bookState.LastProgress, 0.001)
+				assert.Equal(t, "FINISHED", bookState.Status)
+				assert.True(t, bookState.HasProgressSeconds)
+				assert.False(t, svc.state.NeedsSync(stateKey, 1.0, "FINISHED", 0.01))
+			} else {
+				assert.False(t, exists, "an unavailable remote status must not advance local state")
+				assert.True(t, svc.state.NeedsSync(stateKey, 1.0, "FINISHED", 0.01))
+			}
+			mockClient.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+			mockClient.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+			mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+			mockClient.AssertNotCalled(t, "DeleteUserBookRead", mock.Anything, mock.Anything)
+			mockClient.AssertExpectations(t)
+		})
+	}
+}
+
+func TestHandleInProgressBook_UnavailableStatusAfterReadUpdateRemainsRetryable(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.state = state.NewState()
+
+	testAudiobook := createTestBook("test-book-unknown-status", "Unknown Status", "Test Author", "B08N5KWB9H", "9781234567890")
+	testAudiobook.Progress.CurrentTime = 300
+	testAudiobook.Media.Duration = 1000
+	audiobook := toAudiobookshelfBook(testAudiobook)
+
+	userBookID := int64(132)
+	editionID := int64(464)
+	readID := int64(800)
+	oldProgress := 100
+	updatedProgress := 300
+	bookStatus := &models.HardcoverBook{ID: "book-132", EditionID: "464", BookStatusID: 0}
+	mockClient.On("GetUserBook", mock.Anything, "132").Return(bookStatus, nil).Once()
+	mockClient.On("GetUserBook", mock.Anything, "132").Return(&models.HardcoverBook{
+		ID: "book-132", EditionID: "464", BookStatusID: 2,
+	}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{{
+		ID: readID, ProgressSeconds: &oldProgress, EditionID: &editionID,
+	}}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{{
+		ID: readID, ProgressSeconds: &updatedProgress, EditionID: &editionID,
+	}}, nil).Once()
+	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		return input.ID == readID && input.Object["progress_seconds"] == int64(updatedProgress)
+	})).Return(true, nil).Once()
+
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+	assert.NoError(t, err)
+	_, exists := svc.state.GetBookState(stateKey)
+	assert.False(t, exists, "an unavailable status must not checkpoint a completed read update")
+	assert.True(t, svc.state.NeedsSync(audiobook.ID, 0.3, "IN_PROGRESS", 0.01))
+
+	err = svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+	assert.NoError(t, err)
+	bookState, exists := svc.state.GetBookState(stateKey)
+	assert.True(t, exists, "a later verified status should advance state")
+	assert.InDelta(t, 0.3, bookState.LastProgress, 0.001)
+	assert.False(t, svc.state.NeedsSync(audiobook.ID, 0.3, "IN_PROGRESS", 0.01))
+	mockClient.AssertNumberOfCalls(t, "UpdateUserBookRead", 1)
+	mockClient.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+	mockClient.AssertExpectations(t)
+}
+
+func TestHandleInProgressBook_ExistingReadStatusFailureRetriesStatusWithoutReadMutation(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.state = state.NewState()
+
+	testAudiobook := createTestBook("test-book-status-retry", "Status Retry", "Test Author", "B08N5KWB9H", "9781234567890")
+	testAudiobook.Progress.CurrentTime = 300
+	testAudiobook.Media.Duration = 1000
+	audiobook := toAudiobookshelfBook(testAudiobook)
+
+	userBookID := int64(126)
+	readID := int64(791)
+	editionID := int64(458)
+	firstProgress := 100
+	secondProgress := 300
+	statusErr := errors.New("status update failed")
+
+	mockClient.On("GetUserBook", mock.Anything, "126").Return(&models.HardcoverBook{
+		ID:           "book-126",
+		Title:        "Status Retry",
+		EditionID:    "458",
+		BookStatusID: 3,
+	}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{{
+		ID:              readID,
+		ProgressSeconds: &firstProgress,
+		EditionID:       &editionID,
+		FinishedAt:      nil,
+	}}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{{
+		ID:              readID,
+		ProgressSeconds: &secondProgress,
+		EditionID:       &editionID,
+		FinishedAt:      nil,
+	}}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{}, nil).Once()
+	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		return input.ID == readID && input.Object["progress_seconds"] == int64(300)
+	})).Return(true, nil).Once()
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{ID: userBookID, StatusID: 2}).Return(statusErr).Once()
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{ID: userBookID, StatusID: 2}).Return(nil).Once()
+
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+	assert.ErrorIs(t, err, statusErr)
+	_, exists := svc.state.GetBookState(stateKey)
+	assert.False(t, exists, "a failed status mutation must remain retryable")
+
+	err = svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+	assert.NoError(t, err)
+	bookState, exists := svc.state.GetBookState(stateKey)
+	assert.True(t, exists)
+	assert.InDelta(t, 0.3, bookState.LastProgress, 0.001)
+	assert.Equal(t, "IN_PROGRESS", bookState.Status)
+	mockClient.AssertExpectations(t)
+}
+
+func TestHandleInProgressBook_NewReadStatusFailureRetriesStatusWithoutReadMutation(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.state = state.NewState()
+
+	testAudiobook := createTestBook("test-book-new-status-retry", "New Status Retry", "Test Author", "B08N5KWB8N", "9781234567891")
+	testAudiobook.Progress.CurrentTime = 300
+	testAudiobook.Media.Duration = 1000
+	audiobook := toAudiobookshelfBook(testAudiobook)
+
+	userBookID := int64(127)
+	editionID := int64(459)
+	readID := int64(792)
+	progress := 300
+	statusErr := errors.New("status creation update failed")
+
+	mockClient.On("GetUserBook", mock.Anything, "127").Return(&models.HardcoverBook{
+		ID:           "book-127",
+		Title:        "New Status Retry",
+		EditionID:    "459",
+		BookStatusID: 1,
+	}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{{
+		ID:              readID,
+		ProgressSeconds: &progress,
+		EditionID:       &editionID,
+		FinishedAt:      nil,
+	}}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{}, nil).Once()
+	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
+		return input.UserBookID == userBookID && input.DatesRead.ProgressSeconds != nil && *input.DatesRead.ProgressSeconds == progress
+	})).Return(int(readID), nil).Once()
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{ID: userBookID, StatusID: 2}).Return(statusErr).Once()
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{ID: userBookID, StatusID: 2}).Return(nil).Once()
+
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+	assert.ErrorIs(t, err, statusErr)
+	_, exists := svc.state.GetBookState(stateKey)
+	assert.False(t, exists, "a failed status mutation must remain retryable")
+
+	err = svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+	assert.NoError(t, err)
+	bookState, exists := svc.state.GetBookState(stateKey)
+	assert.True(t, exists)
+	assert.InDelta(t, 0.3, bookState.LastProgress, 0.001)
+	assert.Equal(t, "IN_PROGRESS", bookState.Status)
+	mockClient.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+	mockClient.AssertExpectations(t)
+}
+
+func TestHandleInProgressBook_FinishedReadStatusFailureRetriesStatusWithoutReadMutation(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.state = state.NewState()
+
+	testAudiobook := createTestBook("test-book-finished-status-retry", "Finished Status Retry", "Test Author", "B08N5KWB9H", "9781234567890")
+	testAudiobook.Progress.CurrentTime = 1000
+	testAudiobook.Media.Duration = 1000
+	testAudiobook.Progress.IsFinished = true
+	testAudiobook.Progress.FinishedAt = time.Date(2026, time.June, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	audiobook := toAudiobookshelfBook(testAudiobook)
+
+	userBookID := int64(128)
+	readID := int64(793)
+	editionID := int64(460)
+	firstProgress := 500
+	secondProgress := 1000
+	statusErr := errors.New("completed status update failed")
+	finishedAt := time.Unix(testAudiobook.Progress.FinishedAt/1000, 0).Format("2006-01-02")
+
+	mockClient.On("GetUserBook", mock.Anything, "128").Return(&models.HardcoverBook{
+		ID:           "book-128",
+		Title:        "Finished Status Retry",
+		EditionID:    "460",
+		BookStatusID: 2,
+	}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{{
+		ID:              readID,
+		ProgressSeconds: &firstProgress,
+		EditionID:       &editionID,
+		FinishedAt:      nil,
+	}}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{{
+		ID:              readID,
+		ProgressSeconds: &secondProgress,
+		EditionID:       &editionID,
+		FinishedAt:      &finishedAt,
+	}}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{}, nil).Once()
+	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		return input.ID == readID && input.Object["finished_at"] == finishedAt
+	})).Return(true, nil).Once()
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{ID: userBookID, StatusID: 3}).Return(statusErr).Once()
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{ID: userBookID, StatusID: 3}).Return(nil).Once()
+
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+	assert.ErrorIs(t, err, statusErr)
+	_, exists := svc.state.GetBookState(stateKey)
+	assert.False(t, exists, "a failed status mutation must remain retryable")
+
+	err = svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+	assert.NoError(t, err)
+	bookState, exists := svc.state.GetBookState(stateKey)
+	assert.True(t, exists)
+	assert.Equal(t, "FINISHED", bookState.Status)
 	mockClient.AssertExpectations(t)
 }
 
@@ -230,16 +631,15 @@ func TestHandleInProgressBook_EmptyFinishedAtTreatedAsUnfinished(t *testing.T) {
 	finishedAt := "2025-06-04"
 
 	mockClient.On("GetUserBook", mock.Anything, "7726703").Return(&models.HardcoverBook{
-		ID:        "645490",
-		Title:     "Catching Fire",
-		EditionID: "30438067",
+		ID:           "645490",
+		Title:        "Catching Fire",
+		EditionID:    "30438067",
 		BookStatusID: 2,
 	}, nil).Once()
 
 	// Unfinished read comes back with finished_at as empty string, plus a prior finished read.
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{
 		{
 			ID:              unfinishedReadID,
@@ -294,7 +694,6 @@ func TestHandleInProgressBook_UsesNilEditionUnfinishedRead(t *testing.T) {
 	// Unfinished read exists, but edition_id is nil.
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{
 		{
 			ID:              readID,
@@ -337,15 +736,14 @@ func TestHandleInProgressBook_KeepsNilEditionDuplicateOpenWhenTargetReadExists(t
 	nilProgress := 250
 
 	mockClient.On("GetUserBook", mock.Anything, "7782662").Return(&models.HardcoverBook{
-		ID:        "427963",
-		Title:     "Shift",
-		EditionID: "32058624",
+		ID:           "427963",
+		Title:        "Shift",
+		EditionID:    "32058624",
 		BookStatusID: 2,
 	}, nil).Once()
 
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{
 		{
 			ID:              nilEditionReadID,
@@ -398,15 +796,14 @@ func TestHandleInProgressBook_DuplicateCleanupPreservesMetadata(t *testing.T) {
 	selectedStartedAt := "2026-04-09"
 
 	mockClient.On("GetUserBook", mock.Anything, "7791036").Return(&models.HardcoverBook{
-		ID:        "427964",
-		Title:     "Dust",
-		EditionID: "32058625",
+		ID:           "427964",
+		Title:        "Dust",
+		EditionID:    "32058625",
 		BookStatusID: 2,
 	}, nil).Once()
 
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{
 		{
 			ID:              duplicateReadID,
@@ -423,7 +820,6 @@ func TestHandleInProgressBook_DuplicateCleanupPreservesMetadata(t *testing.T) {
 			FinishedAt:      nil,
 		},
 	}, nil).Once()
-
 
 	// Higher-progress unfinished read is kept and updated.
 	mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
@@ -458,9 +854,9 @@ func TestHandleInProgressBook_ForceUpdatesWhenProgressSecondsMissing(t *testing.
 	editionID := int64(456)
 
 	mockClient.On("GetUserBook", mock.Anything, "123").Return(&models.HardcoverBook{
-		ID:        "book-123",
-		Title:     "Test Book",
-		EditionID: "456",
+		ID:           "book-123",
+		Title:        "Test Book",
+		EditionID:    "456",
 		BookStatusID: 2,
 	}, nil).Once()
 
@@ -468,7 +864,6 @@ func TestHandleInProgressBook_ForceUpdatesWhenProgressSecondsMissing(t *testing.
 	// Prior behavior could skip as identical; we now force update to set progress_seconds.
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{
 		{
 			ID:              readID,
@@ -511,16 +906,15 @@ func TestHandleInProgressBook_PrefersMatchingEditionRead(t *testing.T) {
 	startedAt := "2025-06-02"
 
 	mockClient.On("GetUserBook", mock.Anything, "7782662").Return(&models.HardcoverBook{
-		ID:        "427963",
-		Title:     "Shift",
-		EditionID: "32058624",
+		ID:           "427963",
+		Title:        "Shift",
+		EditionID:    "32058624",
 		BookStatusID: 2,
 	}, nil).Once()
 
 	// Unfinished reads include one from another edition and one matching audiobook edition.
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{
 		{
 			ID:              physicalReadID,
@@ -580,9 +974,9 @@ func TestHandleInProgressBook_FallsBackToUserBookEditionOnTargetMismatch(t *test
 
 	// User book is tied to edition 30438067.
 	mockClient.On("GetUserBook", mock.Anything, "7726703").Return(&models.HardcoverBook{
-		ID:        "645490",
-		Title:     "Catching Fire",
-		EditionID: "30438067",
+		ID:           "645490",
+		Title:        "Catching Fire",
+		EditionID:    "30438067",
 		BookStatusID: 2,
 	}, nil).Once()
 
@@ -590,7 +984,6 @@ func TestHandleInProgressBook_FallsBackToUserBookEditionOnTargetMismatch(t *test
 	// but stateKey target edition will be a different one.
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{
 		{
 			ID:              readID,
@@ -639,7 +1032,6 @@ func TestHandleInProgressBook_SmallProgressDifference(t *testing.T) {
 	// Mock the GetUserBookReads call to return an existing read status
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{
 		{
 			ID:              readID,
@@ -671,9 +1063,9 @@ func TestHandleInProgressBook_CreateNewRead(t *testing.T) {
 	// Mock the GetUserBook call - only called once due to caching
 	userBookID := int64(123)
 	mockClient.On("GetUserBook", mock.Anything, "123").Return(&models.HardcoverBook{
-		ID:        "book-123",
-		Title:     "Test Book",
-		EditionID: "456",
+		ID:           "book-123",
+		Title:        "Test Book",
+		EditionID:    "456",
 		BookStatusID: 2,
 	}, nil).Once()
 
@@ -682,9 +1074,7 @@ func TestHandleInProgressBook_CreateNewRead(t *testing.T) {
 	// Mock the GetUserBookReads call to return no existing read status
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
-
 
 	// Mock the InsertUserBookRead call
 	progressSeconds := 300
@@ -697,14 +1087,59 @@ func TestHandleInProgressBook_CreateNewRead(t *testing.T) {
 			*input.DatesRead.EditionID == int64(456)
 	})).Return(789, nil).Once()
 
-
-
 	// Call the function
 	stateKey := fmt.Sprintf("%s:test-edition", audiobook.ID)
 	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
 	// Verify results
 	assert.NoError(t, err, "Should not return an error when creating new read")
+	mockClient.AssertExpectations(t)
+}
+
+func TestHandleInProgressBook_FinishedNewReadWithUnavailableStatusUsesFinishedStatus(t *testing.T) {
+	svc, mockClient := createTestService()
+
+	testAudiobook := createTestFinishedBook("test-book-finished-status-unknown", "Finished Status Unknown", "Test Author", "B08N5KWB9H", "9781234567890")
+	audiobook := toAudiobookshelfBook(testAudiobook)
+	userBookID := int64(133)
+	editionID := int64(465)
+
+	// A zero status is unavailable, so the initial lookup is invalidated and
+	// the read-creation path fetches the same unavailable snapshot again.
+	mockClient.On("GetUserBook", mock.Anything, "133").Return(&models.HardcoverBook{
+		ID:           "book-133",
+		Title:        "Finished Status Unknown",
+		EditionID:    "465",
+		BookStatusID: 0,
+	}, nil).Twice()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{}, nil).Once()
+	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
+		return input.UserBookID == userBookID &&
+			input.DatesRead.ProgressSeconds != nil &&
+			*input.DatesRead.ProgressSeconds == int(testAudiobook.Media.Duration) &&
+			input.DatesRead.FinishedAt != nil
+	})).Return(790, nil).Once()
+	// A finished Audiobookshelf book must transition to FINISHED even when the
+	// status in the Hardcover snapshot was unavailable.
+	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+		ID:       userBookID,
+		StatusID: 3,
+	}).Return(nil).Once()
+	// Status transition cleanup refetches reads.
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+		UserBookID: userBookID,
+	}).Return([]hardcover.UserBookRead{}, nil).Once()
+
+	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
+	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
+
+	assert.NoError(t, err)
+	bookState, exists := svc.state.GetBookState(stateKey)
+	assert.True(t, exists, "successful finished read creation should checkpoint local state")
+	assert.InDelta(t, 1.0, bookState.LastProgress, 0.001)
+	assert.Equal(t, "FINISHED", bookState.Status)
 	mockClient.AssertExpectations(t)
 }
 
@@ -721,18 +1156,16 @@ func TestHandleInProgressBook_CreateNewRead_UsesStateKeyEdition(t *testing.T) {
 	// Mock the GetUserBook call so Hardcover user book has a different EditionID
 	userBookID := int64(123)
 	mockClient.On("GetUserBook", mock.Anything, "123").Return(&models.HardcoverBook{
-		ID:        "book-123",
-		Title:     "Test Book",
-		EditionID: "999",
+		ID:           "book-123",
+		Title:        "Test Book",
+		EditionID:    "999",
 		BookStatusID: 2, // Different from the edition we encode in stateKey
 	}, nil).Once()
 
 	// No unfinished reads
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
-
 
 	// Expect InsertUserBookRead to not use edition ID to prevent edition switching
 	progressSeconds := 300
@@ -743,8 +1176,6 @@ func TestHandleInProgressBook_CreateNewRead_UsesStateKeyEdition(t *testing.T) {
 			input.DatesRead.EditionID != nil &&
 			*input.DatesRead.EditionID == int64(999)
 	})).Return(789, nil).Once()
-
-
 
 	// Call the function with stateKey encoding the editionID (456)
 	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, 456)
@@ -768,18 +1199,16 @@ func TestHandleInProgressBook_CreateNewRead_RefreshesStaleABSStartedAtOnLikelyRe
 
 	userBookID := int64(7726703)
 	mockClient.On("GetUserBook", mock.Anything, "7726703").Return(&models.HardcoverBook{
-		ID:        "645490",
-		Title:     "Catching Fire",
-		EditionID: "30438067",
+		ID:           "645490",
+		Title:        "Catching Fire",
+		EditionID:    "30438067",
 		BookStatusID: 2,
 	}, nil).Once()
 
 	// No unfinished reads found.
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
-
 
 	today := time.Now().Format("2006-01-02")
 
@@ -791,7 +1220,7 @@ func TestHandleInProgressBook_CreateNewRead_RefreshesStaleABSStartedAtOnLikelyRe
 	})).Return(5289673, nil).Once()
 
 	mockClient.On("GetUserBookReads", mock.Anything, mock.Anything).Return([]hardcover.UserBookRead{}, nil)
-	
+
 	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, 32803577)
 	// Prior state indicates a likely restart (recently finished), which should
 	// trigger started_at refresh instead of reusing stale ABS started_at.
@@ -816,9 +1245,9 @@ func TestHandleInProgressBook_DoesNotSetInProgressStatusWhenUpdatingExistingRead
 
 	userBookID := int64(8154667)
 	mockClient.On("GetUserBook", mock.Anything, "8154667").Return(&models.HardcoverBook{
-		ID:        "427993",
-		Title:     "For We Are Many",
-		EditionID: "31546165",
+		ID:           "427993",
+		Title:        "For We Are Many",
+		EditionID:    "31546165",
 		BookStatusID: 2,
 	}, nil).Once()
 
@@ -832,7 +1261,6 @@ func TestHandleInProgressBook_DoesNotSetInProgressStatusWhenUpdatingExistingRead
 	todayFinishedReadID := int64(5701844)
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{
 		{
 			ID:         readID,
@@ -883,17 +1311,15 @@ func TestHandleInProgressBook_SkipsRereadCreateWithoutRestartSignal(t *testing.T
 
 	userBookID := int64(8154667)
 	mockClient.On("GetUserBook", mock.Anything, "8154667").Return(&models.HardcoverBook{
-		ID:        "736789",
-		Title:     "For We Are Many",
-		EditionID: "31546165",
+		ID:           "736789",
+		Title:        "For We Are Many",
+		EditionID:    "31546165",
 		BookStatusID: 2,
 	}, nil).Once()
 
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
-
 
 	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
 		if input.UserBookID != userBookID || input.DatesRead.StartedAt == nil {
@@ -925,18 +1351,15 @@ func TestHandleInProgressBook_SkipsRereadCreateWhenNearCompleteAcrossDays(t *tes
 
 	userBookID := int64(8154667)
 	mockClient.On("GetUserBook", mock.Anything, "8154667").Return(&models.HardcoverBook{
-		ID:        "736789",
-		Title:     "For We Are Many",
-		EditionID: "31546165",
+		ID:           "736789",
+		Title:        "For We Are Many",
+		EditionID:    "31546165",
 		BookStatusID: 2,
 	}, nil).Once()
 
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
-
-
 
 	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
 		if input.UserBookID != userBookID || input.DatesRead.StartedAt == nil {
@@ -949,7 +1372,7 @@ func TestHandleInProgressBook_SkipsRereadCreateWhenNearCompleteAcrossDays(t *tes
 	})).Return(99999, nil).Once()
 
 	mockClient.On("GetUserBookReads", mock.Anything, mock.Anything).Return([]hardcover.UserBookRead{}, nil)
-	
+
 	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, 31546165)
 	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
@@ -971,9 +1394,9 @@ func TestHandleInProgressBook_UpdateReadError(t *testing.T) {
 	// Mock the GetUserBook call
 	userBookID := int64(123)
 	mockClient.On("GetUserBook", mock.Anything, "123").Return(&models.HardcoverBook{
-		ID:        "book-123",
-		Title:     "Test Book",
-		EditionID: "456",
+		ID:           "book-123",
+		Title:        "Test Book",
+		EditionID:    "456",
 		BookStatusID: 2,
 	}, nil).Once()
 
@@ -985,7 +1408,6 @@ func TestHandleInProgressBook_UpdateReadError(t *testing.T) {
 	// Mock the GetUserBookReads call to return an existing read status
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{
 		{
 			ID:              readID,
@@ -1029,9 +1451,9 @@ func TestHandleInProgressBook_GetUserBookReadsError(t *testing.T) {
 	// Mock the GetUserBook call - first call at the beginning of handleInProgressBook
 	userBookID := int64(123)
 	mockClient.On("GetUserBook", mock.Anything, "123").Return(&models.HardcoverBook{
-		ID:        "book-123",
-		Title:     "Test Book",
-		EditionID: "456",
+		ID:           "book-123",
+		Title:        "Test Book",
+		EditionID:    "456",
 		BookStatusID: 2,
 	}, nil).Once()
 
@@ -1039,7 +1461,6 @@ func TestHandleInProgressBook_GetUserBookReadsError(t *testing.T) {
 	expectedErr := errors.New("API error")
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return(nil, expectedErr).Once()
 
 	// Second-chance full fetch also returns the same error
@@ -1053,8 +1474,6 @@ func TestHandleInProgressBook_GetUserBookReadsError(t *testing.T) {
 			input.DatesRead.ProgressSeconds != nil &&
 			*input.DatesRead.ProgressSeconds == progressSeconds
 	})).Return(789, nil).Once()
-
-
 
 	// Call the function
 	stateKey := fmt.Sprintf("%s:test-edition", audiobook.ID)
@@ -1082,16 +1501,15 @@ func TestHandleInProgressBook_SkipsCreateWhenPriorStateMatchesProgress(t *testin
 	userBookID := int64(7726703)
 
 	mockClient.On("GetUserBook", mock.Anything, "7726703").Return(&models.HardcoverBook{
-		ID:        "645490",
-		Title:     "Catching Fire",
-		EditionID: "30438067",
+		ID:           "645490",
+		Title:        "Catching Fire",
+		EditionID:    "30438067",
 		BookStatusID: 2,
 	}, nil).Once()
 
 	// Initial unfinished read snapshot appears empty.
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
 	// First second-chance full fetch also appears empty.
@@ -1124,9 +1542,9 @@ func TestHandleInProgressBook_FinishedBook(t *testing.T) {
 	// Mock the GetUserBook call
 	userBookID := int64(123)
 	mockClient.On("GetUserBook", mock.Anything, "123").Return(&models.HardcoverBook{
-		ID:        "book-123",
-		Title:     "Test Book",
-		EditionID: "456",
+		ID:           "book-123",
+		Title:        "Test Book",
+		EditionID:    "456",
 		BookStatusID: 2,
 	}, nil).Once()
 
@@ -1138,7 +1556,6 @@ func TestHandleInProgressBook_FinishedBook(t *testing.T) {
 	// Mock the GetUserBookReads call to return an existing read status
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{
 		{
 			ID:              readID,
@@ -1196,9 +1613,9 @@ func TestHandleInProgressBook_RefreshesStaleStartedAtForReread(t *testing.T) {
 	finishedAt := "2025-06-10"
 
 	mockClient.On("GetUserBook", mock.Anything, "7782662").Return(&models.HardcoverBook{
-		ID:        "427963",
-		Title:     "Shift",
-		EditionID: "32058624",
+		ID:           "427963",
+		Title:        "Shift",
+		EditionID:    "32058624",
 		BookStatusID: 2,
 	}, nil).Once()
 
@@ -1209,7 +1626,6 @@ func TestHandleInProgressBook_RefreshesStaleStartedAtForReread(t *testing.T) {
 	priorFinishedProgress := 100.0
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{
 		{
 			ID:              readID,
@@ -1252,14 +1668,8 @@ func TestHandleInProgressBook_RefreshesStaleStartedAtForReread(t *testing.T) {
 			*input.DatesRead.EditionID == editionID
 	})).Return(999999, nil).Once()
 
-
-
-
-
-
-
 	mockClient.On("GetUserBookReads", mock.Anything, mock.Anything).Return([]hardcover.UserBookRead{}, nil)
-	
+
 	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
 	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
@@ -1293,9 +1703,9 @@ func TestHandleInProgressBook_SecondChancePreservesStartedAt(t *testing.T) {
 	finishedProgress := 100.0
 
 	mockClient.On("GetUserBook", mock.Anything, "7791036").Return(&models.HardcoverBook{
-		ID:        "427570",
-		Title:     "Dust",
-		EditionID: "32058625",
+		ID:           "427570",
+		Title:        "Dust",
+		EditionID:    "32058625",
 		BookStatusID: 2,
 	}, nil).Once()
 
@@ -1303,7 +1713,6 @@ func TestHandleInProgressBook_SecondChancePreservesStartedAt(t *testing.T) {
 	// so the stale-reread detection triggers (code now reuses the initial fetch).
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{
 		{
 			ID:              staleReadID,
@@ -1341,14 +1750,8 @@ func TestHandleInProgressBook_SecondChancePreservesStartedAt(t *testing.T) {
 			*input.DatesRead.EditionID == editionID
 	})).Return(999999, nil).Once()
 
-
-
-
-
-
-
 	mockClient.On("GetUserBookReads", mock.Anything, mock.Anything).Return([]hardcover.UserBookRead{}, nil)
-	
+
 	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
 	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
@@ -1378,9 +1781,9 @@ func TestHandleInProgressBook_UsesHistoricalZeroProgressFinishedReadForStaleDete
 	zeroProgressSeconds := 0
 
 	mockClient.On("GetUserBook", mock.Anything, "7782662").Return(&models.HardcoverBook{
-		ID:        "427963",
-		Title:     "Shift",
-		EditionID: "32058624",
+		ID:           "427963",
+		Title:        "Shift",
+		EditionID:    "32058624",
 		BookStatusID: 2,
 	}, nil).Once()
 
@@ -1388,7 +1791,6 @@ func TestHandleInProgressBook_UsesHistoricalZeroProgressFinishedReadForStaleDete
 	// zero-progress closed read, so stale detection reuses the initial fetch.
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-		
 	}).Return([]hardcover.UserBookRead{
 		{
 			ID:              staleReadID,
@@ -1415,11 +1817,6 @@ func TestHandleInProgressBook_UsesHistoricalZeroProgressFinishedReadForStaleDete
 		return input.Object["finished_at"] == historicalFinishedAt
 	})).Return(true, nil).Once()
 
-
-
-
-
-
 	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
 		return input.UserBookID == userBookID &&
 			input.DatesRead.ProgressSeconds != nil &&
@@ -1427,7 +1824,7 @@ func TestHandleInProgressBook_UsesHistoricalZeroProgressFinishedReadForStaleDete
 	})).Return(999998, nil).Once()
 
 	mockClient.On("GetUserBookReads", mock.Anything, mock.Anything).Return([]hardcover.UserBookRead{}, nil)
-	
+
 	stateKey := fmt.Sprintf("%s:%d", audiobook.ID, editionID)
 	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
