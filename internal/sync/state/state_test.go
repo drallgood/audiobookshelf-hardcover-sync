@@ -483,72 +483,27 @@ func TestCustomStatePath(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		setup       func(t *testing.T) (string, func())
-		expectError bool
+		name string
+		dir  string
 	}{
-		{
-			name: "custom directory",
-			setup: func(t *testing.T) (string, func()) {
-				tempDir := t.TempDir()
-				customDir := filepath.Join(tempDir, "custom_state_dir")
-				statePath := filepath.Join(customDir, "sync_state.json")
-				return statePath, func() {}
-			},
-			expectError: false,
-		},
-		{
-			name: "nested directories",
-			setup: func(t *testing.T) (string, func()) {
-				tempDir := t.TempDir()
-				nestedDir := filepath.Join(tempDir, "nested", "dir", "for", "state")
-				statePath := filepath.Join(nestedDir, "sync_state.json")
-				return statePath, func() {}
-			},
-			expectError: false,
-		},
+		{name: "custom directory", dir: "custom_state_dir"},
+		{name: "nested directories", dir: filepath.Join("nested", "dir", "for", "state")},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			statePath, cleanup := tc.setup(t)
-			defer cleanup()
-
-			// Test saving state
+			statePath := filepath.Join(t.TempDir(), tc.dir, "sync_state.json")
 			state := NewState()
-			err := state.Save(statePath)
-			if tc.expectError {
-				require.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
+			state.UpdateBook("test:123", 0.5, "IN_PROGRESS")
+			require.NoError(t, state.Save(statePath))
 
-			// Verify file exists
-			info, err := os.Stat(statePath)
-			require.NoError(t, err)
-			require.False(t, info.IsDir())
-
-			// Test loading state
 			loadedState, err := LoadState(statePath)
 			require.NoError(t, err)
-			require.NotNil(t, loadedState)
-			require.Equal(t, CurrentVersion, loadedState.Version)
-
-			// Verify the directory exists
-			dirInfo, err := os.Stat(filepath.Dir(statePath))
-			require.NoError(t, err)
-			require.True(t, dirInfo.IsDir())
-
-			// Test updating and saving again
-			loadedState.UpdateBook("test:123", 0.5, "IN_PROGRESS")
-			require.NoError(t, loadedState.Save(statePath))
-
-			// Verify the file still exists
-			info, err = os.Stat(statePath)
-			require.NoError(t, err)
-			require.False(t, info.IsDir())
+			book, exists := loadedState.GetBookState("test:123")
+			require.True(t, exists)
+			assert.Equal(t, 0.5, book.LastProgress)
 		})
 	}
 }
