@@ -26,8 +26,8 @@ func expectASINMatch(mockClient *MockHardcoverClient, asin string, bookID, editi
 	}, nil).Once()
 	mockClient.On("GetEdition", mock.Anything, editionID).Return(&models.Edition{
 		ID: editionID, BookID: bookID,
-	}, nil).Times(3)
-	mockClient.On("GetUserBookID", mock.Anything, mock.AnythingOfType("int")).Return(userBookID, nil).Times(3)
+	}, nil)
+	mockClient.On("GetUserBookID", mock.Anything, mock.AnythingOfType("int")).Return(userBookID, nil)
 }
 
 func TestProcessBookRecordsSkipAndIncrementalNoChange(t *testing.T) {
