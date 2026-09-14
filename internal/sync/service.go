@@ -2372,7 +2372,9 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			s.config.Audiobookshelf.AudnexusRegion,
 		)
 		enrichedMismatch.BookID = book.ID
-		s.enrichLiveMismatch(enrichedMismatch)
+		if shouldPublishLegacyMismatch(lookupOutcome, findErr) {
+			s.enrichLiveMismatch(enrichedMismatch)
+		}
 		// Keep the legacy checkpoint for this attempted item. The SKIPPED status
 		// does not suppress a retry because the next run's target status differs;
 		// the outcome record retains the more precise technical failure.
