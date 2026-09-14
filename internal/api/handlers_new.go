@@ -524,15 +524,6 @@ func (h *Handler) GetSyncSummary(w http.ResponseWriter, r *http.Request) {
 		snapshot = status.Snapshot
 	}
 
-	// Prefer the profile status snapshot. Multiuser resolves and copies the
-	// active service snapshot under one profile, keeping all response fields on
-	// the same run.
-	if snapshot == nil {
-		if syncSvc, exists := h.multiUserService.GetSyncService(profileID); exists && syncSvc != nil {
-			current := syncSvc.GetSnapshot()
-			snapshot = &current
-		}
-	}
 	if snapshot != nil {
 		summary = &sync.SyncSummary{
 			UserID:              snapshot.UserID,
