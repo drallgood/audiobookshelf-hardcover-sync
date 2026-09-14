@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Account for per-run book outcomes**: Account for each attempted Audiobookshelf book with one per-run outcome so processed totals reconcile with the outcome categories. This prepares the backend for a subsequent live-status change while preserving the existing status API. By @Snuffy2 (#183)
+
 ### Fixed
 
 - **Make sync status refresh unobtrusive**: Refresh Sync Status without page flashing or interrupting interaction, and retry temporary profile-load failures. By @Snuffy2. (#180)
