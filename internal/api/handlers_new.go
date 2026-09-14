@@ -554,18 +554,10 @@ func (h *Handler) GetSyncSummary(w http.ResponseWriter, r *http.Request) {
 		"mismatches_count":     len(summary.Mismatches),
 	})
 
-	// Log the summary we received from the service
-	h.log.Debug("Processing sync summary from service", map[string]interface{}{
-		"total_books_processed": summary.TotalBooksProcessed,
-		"books_synced":         summary.BooksSynced,
-		"books_not_found_count": len(summary.BooksNotFound),
-		"mismatches_count":     len(summary.Mismatches),
-	})
-
 	// Convert to API response
 	syncSummary := types.SyncSummaryResponse{
-		TotalBooksProcessed: summary.TotalBooksProcessed, // Direct access is safe due to mutex in GetSummary()
-		BooksSynced:         summary.BooksSynced,         // Direct access is safe due to mutex in GetSummary()
+		TotalBooksProcessed: summary.TotalBooksProcessed,
+		BooksSynced:         summary.BooksSynced,
 		BooksNotFound:       make([]types.BookNotFoundInfo, 0, len(summary.BooksNotFound)),
 		Mismatches:          make([]mismatch.BookMismatch, 0, len(summary.Mismatches)),
 	}
