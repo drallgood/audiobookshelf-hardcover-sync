@@ -28,9 +28,7 @@ func TestHandleFinishedBookDryRunDoesNotAdvanceState(t *testing.T) {
 	}, nil).Once()
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-	}).Return([]hardcover.UserBookRead{}, nil).Twice()
-	mockClient.On("InsertUserBookRead", mock.Anything, mock.Anything).Return(0, nil).Once()
-	mockClient.On("UpdateUserBookStatus", mock.Anything, mock.Anything).Return(nil).Once()
+	}).Return([]hardcover.UserBookRead{}, nil).Once()
 
 	require.NoError(t, svc.HandleFinishedBook(context.Background(), modelBook, "456", userBookID))
 
@@ -57,8 +55,6 @@ func TestProcessWantToReadDryRunDoesNotAdvanceState(t *testing.T) {
 		BookID: "123",
 	}, nil).Times(3)
 	mockClient.On("GetUserBookID", mock.Anything, 456).Return(789, nil).Times(3)
-	mockClient.On("UpdateUserBookStatus", mock.Anything, mock.Anything).Return(nil).Once()
-
 	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
 
 	_, exists := svc.state.GetBookState(stateKey)
