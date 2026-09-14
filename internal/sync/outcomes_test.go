@@ -294,7 +294,7 @@ func TestProcessBookSnapshotKeepsEnrichedSecondLookupFailure(t *testing.T) {
 	hc.On("GetEdition", mock.Anything, "902").Return(&models.Edition{
 		ID: "902", BookID: "901",
 	}, nil).Once()
-	hc.On("GetUserBookID", mock.Anything, 902).Return(0, nil).Twice()
+	hc.On("GetUserBookID", mock.Anything, 902).Return(0, nil)
 	hc.On("CreateUserBook", mock.Anything, "902", "IN_PROGRESS").Return("903", nil).Once()
 	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return((*models.HardcoverBook)(nil), lookupErr).Once()
 	hc.On("SearchBookByISBN10", mock.Anything, book.Media.Metadata.ISBN).Return((*models.HardcoverBook)(nil), lookupErr).Once()
@@ -381,7 +381,7 @@ func TestProcessBookSnapshotKeepsEnrichedNoEditionMismatch(t *testing.T) {
 	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return(&models.HardcoverBook{
 		ID: "905",
 	}, nil).Twice()
-	hc.On("GetEdition", mock.Anything, "905").Return((*models.Edition)(nil), nil).Twice()
+	hc.On("GetEdition", mock.Anything, "905").Return((*models.Edition)(nil), nil)
 	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return(&models.HardcoverBook{
 		ID: "905", Title: "Hardcover No Edition", ReleaseDate: "2020-02-03",
 		CoverImageURL: "https://example.test/no-edition-cover.jpg", Authors: []models.Author{{Name: "Hardcover Author"}},
@@ -466,7 +466,7 @@ func TestSyncTestBookLimitIgnoresUnattemptedLibraryPrecountError(t *testing.T) {
 		{ID: "library-a", Name: "Library A"},
 		{ID: "library-b", Name: "Library B"},
 	}, nil).Once()
-	mockABS.On("GetLibraryItems", mock.Anything, "library-a").Return([]models.AudiobookshelfBook{*book}, nil).Twice()
+	mockABS.On("GetLibraryItems", mock.Anything, "library-a").Return([]models.AudiobookshelfBook{*book}, nil)
 	mockABS.On("GetLibraryItems", mock.Anything, "library-b").Return(nil, errors.New("library B unavailable")).Once()
 	hc.On("ClearUserBookCache").Return().Once()
 	svc.audiobookshelf = mockABS
@@ -505,7 +505,7 @@ func TestSyncTestBookLimitCountsFailedBookAttempt(t *testing.T) {
 	}, nil).Once()
 	// The first library is pre-counted and then processed. The second library
 	// is only pre-counted because the failed first attempt consumes the limit.
-	mockABS.On("GetLibraryItems", mock.Anything, "library-a").Return([]models.AudiobookshelfBook{*failedBook}, nil).Twice()
+	mockABS.On("GetLibraryItems", mock.Anything, "library-a").Return([]models.AudiobookshelfBook{*failedBook}, nil)
 	mockABS.On("GetLibraryItems", mock.Anything, "library-b").Return([]models.AudiobookshelfBook{*secondBook}, nil).Once()
 	hc.On("ClearUserBookCache").Return().Once()
 	hc.On("SearchBookByASIN", mock.Anything, "limit-failed-asin").Return(&models.HardcoverBook{
