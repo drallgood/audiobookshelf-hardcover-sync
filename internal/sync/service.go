@@ -740,35 +740,6 @@ func (s *Service) recordBookOutcomeWithMatchMethod(book models.AudiobookshelfBoo
 	}
 }
 
-// recordBookNotFound records a book that couldn't be found in Hardcover
-func (s *Service) recordBookNotFound(book models.AudiobookshelfBook, err error) {
-	if s.summary == nil || book.ID == "" {
-		return
-	}
-	s.summary.Lock()
-	defer s.summary.Unlock()
-
-	bookInfo := BookNotFoundInfo{
-		BookID: book.ID,
-		Title:  book.Media.Metadata.Title,
-		Author: book.Media.Metadata.AuthorName,
-		ASIN:   book.Media.Metadata.ASIN,
-		ISBN:   book.Media.Metadata.ISBN,
-		Error:  "no suitable Hardcover book found",
-	}
-	if err != nil {
-		bookInfo.Error = err.Error()
-	}
-
-	for i := range s.summary.BooksNotFound {
-		if s.summary.BooksNotFound[i].BookID == book.ID {
-			s.summary.BooksNotFound[i] = bookInfo
-			return
-		}
-	}
-	s.summary.BooksNotFound = append(s.summary.BooksNotFound, bookInfo)
-}
-
 // GetSnapshot returns one race-safe deep copy of the current run. Attention
 // records are derived from the same outcome map and lock acquisition as all
 // counters, so callers never observe fields from different points in a run.
@@ -2105,9 +2076,9 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			outcomeError = findErr
 			lookupOutcome := classifyBookLookupOutcome(findErr)
 			setOutcome(lookupOutcome, findErr.Error())
-			if lookupOutcome == OutcomeNotFound {
-				s.recordBookNotFound(book, findErr)
-			}
+			// Publish the lookup result before mismatch enrichment so status
+			// readers observe the outcome and legacy list atomically.
+			s.recordBookOutcomeWithMatchMethod(book, lookupOutcome, findErr.Error(), findErr, hcBook, matchMethod)
 			bookLog.Warn("Book lookup did not produce a usable match", map[string]interface{}{
 				"error": findErr.Error(),
 			})
@@ -2298,7 +2269,12 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	hcBook, findErr = s.findBookInHardcover(ctx, book)
 	if findErr != nil {
 		outcomeError = findErr
-		setOutcome(classifyBookLookupOutcome(findErr), findErr.Error())
+		lookupOutcome := classifyBookLookupOutcome(findErr)
+		setOutcome(lookupOutcome, findErr.Error())
+		// This is the second lookup after the initial match. Publish the
+		// conclusive or technical result before the synchronous mismatch
+		// enrichment below, which may wait on Audnex.
+		s.recordBookOutcomeWithMatchMethod(book, lookupOutcome, findErr.Error(), findErr, hcBook, matchMethod)
 		errMsg := "error finding book in Hardcover"
 		bookLog.Error("Error finding book in Hardcover, skipping", map[string]interface{}{
 			"error": findErr,
@@ -2438,7 +2414,6 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		// Keep the conclusive no-result visible even if the compatibility
 		// enrichment/file-export path below is slow.
 		s.recordBookOutcomeWithMatchMethod(book, OutcomeNotFound, reason, findErr, nil, matchMethod)
-		s.recordBookNotFound(book, findErr)
 		errMsg := "could not find book in Hardcover"
 		if book.Media.Metadata.Title == "" {
 			errMsg = "book title is empty, cannot search by title/author"
