@@ -53,8 +53,8 @@ func TestProcessWantToReadDryRunDoesNotAdvanceState(t *testing.T) {
 	mockClient.On("GetEdition", mock.Anything, "456").Return(&models.Edition{
 		ID:     "456",
 		BookID: "123",
-	}, nil).Times(3)
-	mockClient.On("GetUserBookID", mock.Anything, 456).Return(789, nil).Times(3)
+	}, nil)
+	mockClient.On("GetUserBookID", mock.Anything, 456).Return(789, nil)
 	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
 
 	_, exists := svc.state.GetBookState(stateKey)
