@@ -79,6 +79,85 @@ func TestHandleInProgressBook_DryRun(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
+func TestHandleInProgressBook_DryRunUsesLiveReadSelection(t *testing.T) {
+	targetEditionID := int64(456)
+	userBookEditionID := int64(789)
+	behind := 100
+	current := 300
+	tests := []struct {
+		name            string
+		userBookEdition string
+		reads           []hardcover.UserBookRead
+		wantOutcome     SyncOutcome
+	}{
+		{
+			name:            "highest progress on target edition",
+			userBookEdition: "456",
+			reads: []hardcover.UserBookRead{
+				{ID: 1, EditionID: &targetEditionID, ProgressSeconds: &behind},
+				{ID: 2, EditionID: &targetEditionID, ProgressSeconds: &current},
+			},
+			wantOutcome: OutcomeAlreadyCurrent,
+		},
+		{
+			name:            "highest progress nil edition fallback",
+			userBookEdition: "456",
+			reads: []hardcover.UserBookRead{
+				{ID: 3, ProgressSeconds: &behind},
+				{ID: 4, ProgressSeconds: &current},
+			},
+			wantOutcome: OutcomeAlreadyCurrent,
+		},
+		{
+			name:            "highest progress user book edition fallback",
+			userBookEdition: "789",
+			reads: []hardcover.UserBookRead{
+				{ID: 5, EditionID: &userBookEditionID, ProgressSeconds: &behind},
+				{ID: 6, EditionID: &userBookEditionID, ProgressSeconds: &current},
+			},
+			wantOutcome: OutcomeAlreadyCurrent,
+		},
+		{
+			name:            "target edition takes priority over nil edition",
+			userBookEdition: "456",
+			reads: []hardcover.UserBookRead{
+				{ID: 7, ProgressSeconds: &current},
+				{ID: 8, EditionID: &targetEditionID, ProgressSeconds: &behind},
+			},
+			wantOutcome: OutcomeWouldSync,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, mockClient := createTestService()
+			svc.config.Sync.DryRun = true
+			book := createTestBook("dry-run-read-selection", "Test Book", "Test Author", "", "")
+			book.Progress.CurrentTime = 300
+			book.Media.Duration = 1000
+			audiobook := toAudiobookshelfBook(book)
+			mockClient.On("GetUserBook", mock.Anything, "123").Return(&models.HardcoverBook{
+				ID: "book-123", EditionID: tt.userBookEdition, BookStatusID: 2,
+			}, nil).Once()
+			mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: 123}).Return(tt.reads, nil).Once()
+
+			var gotOutcome SyncOutcome
+			ctx := context.WithValue(context.Background(), processBookOutcomeReporterKey{}, processBookOutcomeReporter(func(outcome SyncOutcome, _ string) {
+				gotOutcome = outcome
+			}))
+			err := svc.handleInProgressBook(ctx, 123, *audiobook, audiobook.ID+":456")
+
+			assert.NoError(t, err)
+			assert.Equal(t, tt.wantOutcome, gotOutcome)
+			assert.NotContains(t, svc.state.Books, audiobook.ID+":456")
+			mockClient.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+			mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+			mockClient.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+			mockClient.AssertExpectations(t)
+		})
+	}
+}
+
 // TestHandleInProgressBook_GetUserBookError tests error handling when GetUserBook fails
 func TestHandleInProgressBook_GetUserBookError(t *testing.T) {
 	// Create test service and mock client

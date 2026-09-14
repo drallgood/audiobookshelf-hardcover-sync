@@ -2936,6 +2936,149 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		}
 		s.state.SetHasProgressSeconds(stateKey)
 	}
+	selectReadStatuses := func() (*hardcover.UserBookRead, *hardcover.UserBookRead, []*hardcover.UserBookRead) {
+		// Find the most appropriate read status to update and identify any duplicates
+		var readStatusToUpdate *hardcover.UserBookRead
+		var mostRecentRead *hardcover.UserBookRead
+		var mostRecentTime time.Time
+		var duplicateUnfinishedReads []*hardcover.UserBookRead
+		var nilEditionUnfinishedReads []*hardcover.UserBookRead
+		var fallbackUserBookEditionReads []*hardcover.UserBookRead
+
+		// First pass: identify all unfinished reads and find the one with most progress
+		for i := range readStatuses {
+			read := &readStatuses[i]
+
+			isUnfinished := read.FinishedAt == nil || *read.FinishedAt == ""
+
+			if !readMatchesTargetEdition(read) {
+				if userBookEditionID != nil && isUnfinished && read.EditionID != nil && *read.EditionID == *userBookEditionID {
+					fallbackUserBookEditionReads = append(fallbackUserBookEditionReads, read)
+				}
+				if targetEditionID != nil && isUnfinished && read.EditionID == nil {
+					nilEditionUnfinishedReads = append(nilEditionUnfinishedReads, read)
+				}
+				continue
+			}
+
+			// Track all unfinished reads
+			if isUnfinished {
+				if readStatusToUpdate == nil {
+					// First unfinished read we find becomes our primary
+					readStatusToUpdate = read
+				} else {
+					// Any additional unfinished reads are duplicates
+					// Compare progress and use the one with the highest progress as primary
+					var currentProgress, newProgress float64
+
+					if readStatusToUpdate.ProgressSeconds != nil {
+						currentProgress = float64(*readStatusToUpdate.ProgressSeconds)
+					} else {
+						currentProgress = readStatusToUpdate.Progress
+					}
+
+					if read.ProgressSeconds != nil {
+						newProgress = float64(*read.ProgressSeconds)
+					} else {
+						newProgress = read.Progress
+					}
+
+					log.Warn("Found duplicate unfinished read entry", map[string]interface{}{
+						"current_read_id":    readStatusToUpdate.ID,
+						"current_progress":   currentProgress,
+						"duplicate_read_id":  read.ID,
+						"duplicate_progress": newProgress,
+					})
+
+					// If the new one has higher progress, swap them
+					if newProgress > currentProgress {
+						duplicateUnfinishedReads = append(duplicateUnfinishedReads, readStatusToUpdate)
+						readStatusToUpdate = read
+					} else {
+						duplicateUnfinishedReads = append(duplicateUnfinishedReads, read)
+					}
+				}
+			} else {
+				// Track the most recent finished read as a fallback for potential re-reads
+				finishedTime, err := time.Parse("2006-01-02", *read.FinishedAt)
+				if err == nil && (mostRecentRead == nil || finishedTime.After(mostRecentTime)) {
+					mostRecentTime = finishedTime
+					mostRecentRead = read
+				}
+			}
+		}
+
+		if readStatusToUpdate == nil && len(nilEditionUnfinishedReads) > 0 {
+			best := nilEditionUnfinishedReads[0]
+			bestProgress := 0.0
+			if best.ProgressSeconds != nil {
+				bestProgress = float64(*best.ProgressSeconds)
+			} else {
+				bestProgress = best.Progress
+			}
+
+			for i := 1; i < len(nilEditionUnfinishedReads); i++ {
+				candidate := nilEditionUnfinishedReads[i]
+				candidateProgress := 0.0
+				if candidate.ProgressSeconds != nil {
+					candidateProgress = float64(*candidate.ProgressSeconds)
+				} else {
+					candidateProgress = candidate.Progress
+				}
+				if candidateProgress > bestProgress {
+					best = candidate
+					bestProgress = candidateProgress
+				}
+			}
+
+			readStatusToUpdate = best
+			log.Warn("No unfinished read matched target edition; using unfinished read with nil edition_id", map[string]interface{}{
+				"read_id":           best.ID,
+				"target_edition_id": targetEditionID,
+				"read_progress":     bestProgress,
+			})
+		} else if readStatusToUpdate != nil && len(nilEditionUnfinishedReads) > 0 {
+			duplicateUnfinishedReads = append(duplicateUnfinishedReads, nilEditionUnfinishedReads...)
+			log.Warn("Found unfinished reads with nil edition_id alongside a target-edition unfinished read; marking nil-edition rows as duplicates", map[string]interface{}{
+				"target_read_id":         readStatusToUpdate.ID,
+				"nil_edition_duplicates": len(nilEditionUnfinishedReads),
+			})
+		}
+
+		if readStatusToUpdate == nil && len(fallbackUserBookEditionReads) > 0 {
+			best := fallbackUserBookEditionReads[0]
+			bestProgress := 0.0
+			if best.ProgressSeconds != nil {
+				bestProgress = float64(*best.ProgressSeconds)
+			} else {
+				bestProgress = best.Progress
+			}
+
+			for i := 1; i < len(fallbackUserBookEditionReads); i++ {
+				candidate := fallbackUserBookEditionReads[i]
+				candidateProgress := 0.0
+				if candidate.ProgressSeconds != nil {
+					candidateProgress = float64(*candidate.ProgressSeconds)
+				} else {
+					candidateProgress = candidate.Progress
+				}
+				if candidateProgress > bestProgress {
+					best = candidate
+					bestProgress = candidateProgress
+				}
+			}
+
+			readStatusToUpdate = best
+			log.Warn("Target edition does not match user_book edition; falling back to unfinished read on user_book edition", map[string]interface{}{
+				"target_edition_id":    targetEditionID,
+				"user_book_edition_id": userBookEditionID,
+				"read_id":              best.ID,
+				"read_progress":        bestProgress,
+			})
+		}
+		return readStatusToUpdate, mostRecentRead, duplicateUnfinishedReads
+	}
+
 	determineDryRunOutcome := func() {
 		if hcBook == nil || hcBook.BookStatusID == 0 {
 			reportProcessBookOutcome(ctx, OutcomeFailed, "Hardcover status unavailable during dry-run")
@@ -2943,13 +3086,10 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		}
 		needsMutation := statusNeedsReconcile()
 		if !needsMutation && book.Progress.CurrentTime > 0 {
-			matchedUnfinishedRead := false
-			for i := range readStatuses {
-				read := &readStatuses[i]
-				if !readMatchesTargetEdition(read) || (read.FinishedAt != nil && *read.FinishedAt != "") {
-					continue
-				}
-				matchedUnfinishedRead = true
+			read, _, _ := selectReadStatuses()
+			if read == nil {
+				needsMutation = true
+			} else {
 				var currentProgress float64
 				if read.ProgressSeconds != nil {
 					currentProgress = float64(*read.ProgressSeconds)
@@ -2963,10 +3103,6 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				if read.ProgressSeconds == nil || currentProgress <= 0 || math.Abs(book.Progress.CurrentTime-currentProgress) >= threshold {
 					needsMutation = true
 				}
-				break
-			}
-			if !matchedUnfinishedRead {
-				needsMutation = true
 			}
 		}
 		if needsMutation {
@@ -3031,145 +3167,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		}
 	}
 
-	// Find the most appropriate read status to update and identify any duplicates
-	var readStatusToUpdate *hardcover.UserBookRead
-	var mostRecentRead *hardcover.UserBookRead
-	var mostRecentTime time.Time
-	var duplicateUnfinishedReads []*hardcover.UserBookRead
-	var nilEditionUnfinishedReads []*hardcover.UserBookRead
-	var fallbackUserBookEditionReads []*hardcover.UserBookRead
-
-	// First pass: identify all unfinished reads and find the one with most progress
-	for i := range readStatuses {
-		read := &readStatuses[i]
-
-		isUnfinished := read.FinishedAt == nil || *read.FinishedAt == ""
-
-		if !readMatchesTargetEdition(read) {
-			if userBookEditionID != nil && isUnfinished && read.EditionID != nil && *read.EditionID == *userBookEditionID {
-				fallbackUserBookEditionReads = append(fallbackUserBookEditionReads, read)
-			}
-			if targetEditionID != nil && isUnfinished && read.EditionID == nil {
-				nilEditionUnfinishedReads = append(nilEditionUnfinishedReads, read)
-			}
-			continue
-		}
-
-		// Track all unfinished reads
-		if isUnfinished {
-			if readStatusToUpdate == nil {
-				// First unfinished read we find becomes our primary
-				readStatusToUpdate = read
-			} else {
-				// Any additional unfinished reads are duplicates
-				// Compare progress and use the one with the highest progress as primary
-				var currentProgress, newProgress float64
-
-				if readStatusToUpdate.ProgressSeconds != nil {
-					currentProgress = float64(*readStatusToUpdate.ProgressSeconds)
-				} else {
-					currentProgress = readStatusToUpdate.Progress
-				}
-
-				if read.ProgressSeconds != nil {
-					newProgress = float64(*read.ProgressSeconds)
-				} else {
-					newProgress = read.Progress
-				}
-
-				log.Warn("Found duplicate unfinished read entry", map[string]interface{}{
-					"current_read_id":    readStatusToUpdate.ID,
-					"current_progress":   currentProgress,
-					"duplicate_read_id":  read.ID,
-					"duplicate_progress": newProgress,
-				})
-
-				// If the new one has higher progress, swap them
-				if newProgress > currentProgress {
-					duplicateUnfinishedReads = append(duplicateUnfinishedReads, readStatusToUpdate)
-					readStatusToUpdate = read
-				} else {
-					duplicateUnfinishedReads = append(duplicateUnfinishedReads, read)
-				}
-			}
-		} else {
-			// Track the most recent finished read as a fallback for potential re-reads
-			finishedTime, err := time.Parse("2006-01-02", *read.FinishedAt)
-			if err == nil && (mostRecentRead == nil || finishedTime.After(mostRecentTime)) {
-				mostRecentTime = finishedTime
-				mostRecentRead = read
-			}
-		}
-	}
-
-	if readStatusToUpdate == nil && len(nilEditionUnfinishedReads) > 0 {
-		best := nilEditionUnfinishedReads[0]
-		bestProgress := 0.0
-		if best.ProgressSeconds != nil {
-			bestProgress = float64(*best.ProgressSeconds)
-		} else {
-			bestProgress = best.Progress
-		}
-
-		for i := 1; i < len(nilEditionUnfinishedReads); i++ {
-			candidate := nilEditionUnfinishedReads[i]
-			candidateProgress := 0.0
-			if candidate.ProgressSeconds != nil {
-				candidateProgress = float64(*candidate.ProgressSeconds)
-			} else {
-				candidateProgress = candidate.Progress
-			}
-			if candidateProgress > bestProgress {
-				best = candidate
-				bestProgress = candidateProgress
-			}
-		}
-
-		readStatusToUpdate = best
-		log.Warn("No unfinished read matched target edition; using unfinished read with nil edition_id", map[string]interface{}{
-			"read_id":           best.ID,
-			"target_edition_id": targetEditionID,
-			"read_progress":     bestProgress,
-		})
-	} else if readStatusToUpdate != nil && len(nilEditionUnfinishedReads) > 0 {
-		duplicateUnfinishedReads = append(duplicateUnfinishedReads, nilEditionUnfinishedReads...)
-		log.Warn("Found unfinished reads with nil edition_id alongside a target-edition unfinished read; marking nil-edition rows as duplicates", map[string]interface{}{
-			"target_read_id":         readStatusToUpdate.ID,
-			"nil_edition_duplicates": len(nilEditionUnfinishedReads),
-		})
-	}
-
-	if readStatusToUpdate == nil && len(fallbackUserBookEditionReads) > 0 {
-		best := fallbackUserBookEditionReads[0]
-		bestProgress := 0.0
-		if best.ProgressSeconds != nil {
-			bestProgress = float64(*best.ProgressSeconds)
-		} else {
-			bestProgress = best.Progress
-		}
-
-		for i := 1; i < len(fallbackUserBookEditionReads); i++ {
-			candidate := fallbackUserBookEditionReads[i]
-			candidateProgress := 0.0
-			if candidate.ProgressSeconds != nil {
-				candidateProgress = float64(*candidate.ProgressSeconds)
-			} else {
-				candidateProgress = candidate.Progress
-			}
-			if candidateProgress > bestProgress {
-				best = candidate
-				bestProgress = candidateProgress
-			}
-		}
-
-		readStatusToUpdate = best
-		log.Warn("Target edition does not match user_book edition; falling back to unfinished read on user_book edition", map[string]interface{}{
-			"target_edition_id":    targetEditionID,
-			"user_book_edition_id": userBookEditionID,
-			"read_id":              best.ID,
-			"read_progress":        bestProgress,
-		})
-	}
+	readStatusToUpdate, mostRecentRead, duplicateUnfinishedReads := selectReadStatuses()
 
 	// If we found duplicates, clean them up
 	if len(duplicateUnfinishedReads) > 0 {
