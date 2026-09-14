@@ -961,7 +961,7 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 	if progressErr != nil {
 		userProgressRunError = fmt.Errorf("failed to fetch user progress data: %w", progressErr)
 		ctx = context.WithValue(ctx, userProgressUnavailableContextKey{}, true)
-		s.log.Warn("Failed to fetch user progress data, falling back to basic progress tracking", map[string]interface{}{
+		s.log.Warn("Failed to fetch user progress data; only books with reliable embedded progress will be processed", map[string]interface{}{
 			"error": progressErr,
 		})
 	} else {
@@ -4544,8 +4544,6 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 			return hcBook, lookupErr
 		}
 		return hcBook, errHardcoverTitleOnly
-
-		// Unreachable code removed; mismatch is already indicated by the return above
 	}
 
 	log.Warn("Book not found in Hardcover by any search method", map[string]interface{}{
