@@ -140,11 +140,13 @@ func TestPublicStatusAndSummaryRoutesShareCurrentRunSnapshot(t *testing.T) {
 	var summaryResponse summaryHTTPResponse
 	callJSONHandler(t, handler.GetSyncSummary, "/api/profiles/profile-a/summary", &summaryResponse)
 	require.True(t, summaryResponse.Success)
+	require.Equal(t, "default", summaryResponse.Data.UserID)
 
 	statusSnapshot := statusResponse.Data.Snapshot
 	summarySnapshot := summaryResponse.Data.Snapshot
 	requireSnapshotMatchesSummary(t, statusSnapshot, summaryResponse.Data)
 	require.Equal(t, statusSnapshot.RunID, summarySnapshot.RunID)
+	require.Equal(t, "profile-a", summarySnapshot.UserID)
 	require.Equal(t, statusSnapshot.AttentionRecords[0].BookID, "profile-a")
 
 	// Existing consumers can continue using the flattened fields while moving
@@ -158,6 +160,16 @@ func TestPublicStatusAndSummaryRoutesShareCurrentRunSnapshot(t *testing.T) {
 	require.Len(t, statusResponse.Data.BooksNotFound, 1)
 	require.Equal(t, "Missing A", statusResponse.Data.BooksNotFound[0].Title)
 	require.Empty(t, statusResponse.Data.Mismatches)
+
+	var unknownSummaryResponse summaryHTTPResponse
+	routes := newMountedStatusRoutes(handler)
+	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/unknown/summary", &unknownSummaryResponse)
+	require.True(t, unknownSummaryResponse.Success)
+	require.Equal(t, "default", unknownSummaryResponse.Data.UserID)
+	require.Nil(t, unknownSummaryResponse.Data.Snapshot)
+	require.Zero(t, unknownSummaryResponse.Data.TotalBooksProcessed)
+	require.Empty(t, unknownSummaryResponse.Data.BooksNotFound)
+	require.Empty(t, unknownSummaryResponse.Data.Mismatches)
 
 	var allStatusesResponse allStatusHTTPResponse
 	callJSONHandler(t, handler.GetAllProfileStatuses, "/api/status", &allStatusesResponse)
@@ -235,6 +247,8 @@ func TestPublicStatusAndSummaryRoutesExposeLiveAttentionOutcomes(t *testing.T) {
 	callJSONHandler(t, handler.GetSyncSummary, "/api/profiles/"+profileID+"/summary", &summaryResponse)
 	require.True(t, summaryResponse.Success)
 	requireSnapshotMatchesSummary(t, liveSnapshot, summaryResponse.Data)
+	require.Equal(t, "default", summaryResponse.Data.UserID)
+	require.Equal(t, profileID, summaryResponse.Data.Snapshot.UserID)
 	require.Len(t, summaryResponse.Data.AttentionRecords, 2)
 	require.Len(t, summaryResponse.Data.BooksNotFound, 1)
 	require.Len(t, summaryResponse.Data.Mismatches, 1)
@@ -380,6 +394,8 @@ func TestPublicStatusAndSummaryRoutesExposeTechnicalTimeoutAsFailedOutcome(t *te
 	callJSONHandler(t, handler.GetSyncSummary, "/api/profiles/"+profileID+"/summary", &summaryResponse)
 	require.True(t, summaryResponse.Success)
 	require.NotNil(t, summaryResponse.Data.Snapshot)
+	require.Equal(t, "default", summaryResponse.Data.UserID)
+	require.Equal(t, profileID, summaryResponse.Data.Snapshot.UserID)
 	require.Equal(t, completed.Snapshot.RunID, summaryResponse.Data.RunID)
 	require.Equal(t, completed.Snapshot.OutcomeCounts, summaryResponse.Data.OutcomeCounts)
 	require.Equal(t, int32(1), summaryResponse.Data.OutcomeCounts.Failed)
@@ -389,6 +405,7 @@ func TestPublicStatusAndSummaryRoutesExposeTechnicalTimeoutAsFailedOutcome(t *te
 
 type statusSummaryPayload struct {
 	Snapshot            *syncsvc.SyncSnapshot       `json:"snapshot"`
+	UserID              string                      `json:"user_id"`
 	RunID               string                      `json:"run_id"`
 	RunStartedAt        time.Time                   `json:"run_started_at"`
 	State               string                      `json:"state"`

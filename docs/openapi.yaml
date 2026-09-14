@@ -517,13 +517,6 @@ paths:
                     example: true
                   data:
                     $ref: '#/components/schemas/SyncSummary'
-        '404':
-          description: Profile not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
   /profiles/{profileId}/status:
     get:
       tags: [Status]

@@ -641,7 +641,9 @@ func (h *Handler) GetSyncSummary(w http.ResponseWriter, r *http.Request) {
 	// Create the final response with user_id and total_books_processed at the top level
 	// Always include mismatches in the response, even if empty
 	response := map[string]interface{}{
-		"user_id":               syncSummary.UserID,
+		// Keep the legacy top-level identifier stable for existing clients. The
+		// profile-specific identifier remains available in the nested snapshot.
+		"user_id":               "default",
 		"total_books_processed": syncSummary.TotalBooksProcessed,
 		"books_synced":          syncSummary.BooksSynced,
 		"books_not_found":       syncSummary.BooksNotFound,

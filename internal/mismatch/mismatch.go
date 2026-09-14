@@ -84,8 +84,9 @@ func RecordMismatch(book *BookMismatch) error {
 }
 
 // AddWithMetadata creates and adds a new book mismatch with enhanced metadata
-// If hc is provided, it will be used to look up publisher and other metadata
-func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, duration float64, audiobookShelfID string, hc hardcover.HardcoverClientInterface, audnexusRegion string) {
+// and returns the enriched record. If hc is provided, it will be used to look
+// up publisher and other metadata.
+func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, duration float64, audiobookShelfID string, hc hardcover.HardcoverClientInterface, audnexusRegion string) BookMismatch {
 	// Create a logger
 	log := logger.Get()
 
@@ -652,6 +653,7 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 	}
 
 	Add(mismatch)
+	return mismatch
 }
 
 // GetAll returns a copy of all collected mismatches

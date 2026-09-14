@@ -2305,7 +2305,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		}
 
 		// Record mismatch with error details
-		mismatch.AddWithMetadata(
+		enrichedMismatch := mismatch.AddWithMetadata(
 			mismatch.MediaMetadata{
 				Title:         book.Media.Metadata.Title,
 				Subtitle:      book.Media.Metadata.Subtitle,
@@ -2328,6 +2328,8 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			s.hardcover, // Pass the Hardcover client for publisher lookup
 			s.config.Audiobookshelf.AudnexusRegion,
 		)
+		enrichedMismatch.BookID = book.ID
+		s.enrichLiveMismatch(enrichedMismatch)
 		// Keep the legacy checkpoint for this attempted item. The SKIPPED status
 		// does not suppress a retry because the next run's target status differs;
 		// the outcome record retains the more precise technical failure.
@@ -2368,7 +2370,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		}
 
 		// Record mismatch for book without edition
-		mismatch.AddWithMetadata(
+		enrichedMismatch := mismatch.AddWithMetadata(
 			mismatch.MediaMetadata{
 				Title:         book.Media.Metadata.Title,
 				Subtitle:      book.Media.Metadata.Subtitle,
@@ -2391,6 +2393,8 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			s.hardcover, // Pass the Hardcover client for publisher lookup
 			s.config.Audiobookshelf.AudnexusRegion,
 		)
+		enrichedMismatch.BookID = book.ID
+		s.enrichLiveMismatch(enrichedMismatch)
 
 		// Update the state to track this book with current progress
 		progressPct := 0.0
