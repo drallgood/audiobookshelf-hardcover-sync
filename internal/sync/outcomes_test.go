@@ -246,6 +246,7 @@ func TestProcessBookSnapshotKeepsEnrichedSecondLookupFailure(t *testing.T) {
 	book.Progress.CurrentTime = 300
 	absBook := toAudiobookshelfBook(book)
 	absBook.Media.Metadata.PublishedYear = "2023"
+	absBook.Media.Metadata.Publisher = "Test Publisher"
 	lookupErr := errors.New("temporary identifier failure")
 
 	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return(&models.HardcoverBook{
@@ -260,6 +261,7 @@ func TestProcessBookSnapshotKeepsEnrichedSecondLookupFailure(t *testing.T) {
 	hc.On("SearchBookByISBN10", mock.Anything, book.Media.Metadata.ISBN).Return((*models.HardcoverBook)(nil), lookupErr).Once()
 	hc.On("SearchBooks", mock.Anything, "Second Lookup Author", "").Return([]models.HardcoverBook{}, nil).Once()
 	// AddWithMetadata reuses the same Hardcover client to enrich the mismatch.
+	hc.On("SearchPublishers", mock.Anything, "Test Publisher", 5).Return([]models.Publisher{{ID: "777", Name: "Test Publisher"}}, nil).Once()
 	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return(&models.HardcoverBook{
 		ID: "904", Title: "Hardcover Second Lookup", ReleaseDate: "2021-04-05",
 		CoverImageURL: "https://example.test/cover.jpg", Authors: []models.Author{{Name: "Hardcover Author"}},
@@ -278,6 +280,8 @@ func TestProcessBookSnapshotKeepsEnrichedSecondLookupFailure(t *testing.T) {
 	assert.Equal(t, "https://example.test/cover.jpg", got.HardcoverCoverURL)
 	assert.Equal(t, "2021", got.HardcoverPublishedYear)
 	assert.Equal(t, "2023-01-01", got.ReleaseDate)
+	assert.Equal(t, book.Media.Metadata.ISBN, got.ISBN13)
+	assert.Equal(t, 777, got.PublisherID)
 	assert.Equal(t, OutcomeFailed, snapshot.BookOutcomes[0].Outcome)
 	hc.AssertExpectations(t)
 }

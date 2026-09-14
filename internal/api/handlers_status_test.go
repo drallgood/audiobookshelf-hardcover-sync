@@ -172,7 +172,7 @@ func TestPublicStatusAndSummaryRoutesShareCurrentRunSnapshot(t *testing.T) {
 	require.Empty(t, unknownSummaryResponse.Data.Mismatches)
 
 	var allStatusesResponse allStatusHTTPResponse
-	callJSONHandler(t, handler.GetAllProfileStatuses, "/api/status", &allStatusesResponse)
+	callJSONRoute(t, routes, http.MethodGet, "/api/status", &allStatusesResponse)
 	require.True(t, allStatusesResponse.Success)
 	require.Len(t, allStatusesResponse.Data, 2)
 	byID := make(map[string]multiuser.SyncProfileStatus, len(allStatusesResponse.Data))
@@ -181,13 +181,16 @@ func TestPublicStatusAndSummaryRoutesShareCurrentRunSnapshot(t *testing.T) {
 	}
 	require.Contains(t, byID, "profile-a")
 	require.Contains(t, byID, "profile-b")
-	require.NotNil(t, byID["profile-a"].Snapshot)
-	require.NotNil(t, byID["profile-b"].Snapshot)
-	require.NotEqual(t, byID["profile-a"].Snapshot.RunID, byID["profile-b"].Snapshot.RunID)
-	require.Equal(t, "profile-a", byID["profile-a"].Snapshot.AttentionRecords[0].BookID)
-	require.Equal(t, "profile-b", byID["profile-b"].Snapshot.AttentionRecords[0].BookID)
-	require.Equal(t, "Missing A", byID["profile-a"].Snapshot.AttentionRecords[0].Title)
-	require.Equal(t, "Missing B", byID["profile-b"].Snapshot.AttentionRecords[0].Title)
+	require.Nil(t, byID["profile-a"].Snapshot)
+	require.Nil(t, byID["profile-b"].Snapshot)
+	require.Nil(t, byID["profile-a"].LastSyncSummary)
+	require.Nil(t, byID["profile-b"].LastSyncSummary)
+	require.Empty(t, byID["profile-a"].BooksNotFound)
+	require.Empty(t, byID["profile-b"].BooksNotFound)
+	require.Empty(t, byID["profile-a"].Mismatches)
+	require.Empty(t, byID["profile-b"].Mismatches)
+	require.Equal(t, 1, byID["profile-a"].BooksTotal)
+	require.Equal(t, 1, byID["profile-b"].BooksTotal)
 }
 
 func TestPublicStatusAndSummaryRoutesExposeLiveAttentionOutcomes(t *testing.T) {

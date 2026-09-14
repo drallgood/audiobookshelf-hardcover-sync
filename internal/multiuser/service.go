@@ -123,10 +123,31 @@ func (s *MultiUserService) GetAllProfileStatuses() ([]*SyncProfileStatus, error)
 	statuses := make([]*SyncProfileStatus, 0, len(profiles))
 	for _, profile := range profiles {
 		status := s.getProfileStatus(profile.ID, &profile, profile.SyncState)
-		statuses = append(statuses, status)
+		statuses = append(statuses, aggregateProfileStatus(status))
 	}
 
 	return statuses, nil
+}
+
+// aggregateProfileStatus projects a profile status for the unauthenticated
+// aggregate endpoint. Detailed book metadata belongs on the authenticated
+// per-profile status endpoint.
+func aggregateProfileStatus(status *SyncProfileStatus) *SyncProfileStatus {
+	if status == nil {
+		return nil
+	}
+
+	return &SyncProfileStatus{
+		ProfileID:   status.ProfileID,
+		ProfileName: status.ProfileName,
+		Status:      status.Status,
+		DryRun:      status.DryRun,
+		LastSync:    status.LastSync,
+		Error:       status.Error,
+		Progress:    status.Progress,
+		BooksTotal:  status.BooksTotal,
+		BooksSynced: status.BooksSynced,
+	}
 }
 
 // GetSyncService returns the sync service for a profile, if it exists

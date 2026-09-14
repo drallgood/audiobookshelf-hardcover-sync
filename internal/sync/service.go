@@ -517,63 +517,45 @@ func (s *Service) upsertLiveMismatchLocked(book models.AudiobookshelfBook, recor
 		mismatchRecord.Reason = record.Error
 	}
 	if previous, exists := s.liveMismatches[book.ID]; exists {
+		// The deferred outcome write contains only the current Audiobookshelf
+		// fields. Start with the complete enriched record so identifiers,
+		// relationship IDs, and other metadata survive that refresh.
+		enriched := cloneBookMismatch(previous)
+		enriched.BookID = mismatchRecord.BookID
+		enriched.Title = mismatchRecord.Title
+		enriched.Author = mismatchRecord.Author
+		enriched.ASIN = mismatchRecord.ASIN
+		enriched.ISBN = mismatchRecord.ISBN
+		enriched.LibraryID = mismatchRecord.LibraryID
+		enriched.PublishedYear = mismatchRecord.PublishedYear
+		enriched.DurationSeconds = mismatchRecord.DurationSeconds
+		if mismatchRecord.Subtitle != "" {
+			enriched.Subtitle = mismatchRecord.Subtitle
+		}
+		if mismatchRecord.Narrator != "" {
+			enriched.Narrator = mismatchRecord.Narrator
+		}
+		if mismatchRecord.CoverURL != "" {
+			enriched.CoverURL = mismatchRecord.CoverURL
+			enriched.ImageURL = mismatchRecord.ImageURL
+		}
+		if mismatchRecord.Publisher != "" {
+			enriched.Publisher = mismatchRecord.Publisher
+		}
+
 		// Keep the enriched technical reason when the deferred outcome write
 		// republishes the same failure with its shorter outcome reason.
 		if record.Error != "" && strings.Contains(previous.Reason, record.Error) {
-			mismatchRecord.Reason = previous.Reason
+			enriched.Reason = previous.Reason
+		} else {
+			enriched.Reason = mismatchRecord.Reason
 		}
-		if mismatchRecord.Subtitle == "" {
-			mismatchRecord.Subtitle = previous.Subtitle
+		enriched.Timestamp = mismatchRecord.Timestamp
+		enriched.CreatedAt = mismatchRecord.CreatedAt
+		if mismatchRecord.HardcoverBookID != "" {
+			enriched.HardcoverBookID = mismatchRecord.HardcoverBookID
 		}
-		if mismatchRecord.Narrator == "" {
-			mismatchRecord.Narrator = previous.Narrator
-		}
-		if mismatchRecord.CoverURL == "" {
-			mismatchRecord.CoverURL = previous.CoverURL
-			mismatchRecord.ImageURL = previous.ImageURL
-		}
-		if mismatchRecord.HardcoverBookID == "" {
-			mismatchRecord.HardcoverBookID = previous.HardcoverBookID
-		}
-		if mismatchRecord.ReleaseDate == "" {
-			mismatchRecord.ReleaseDate = previous.ReleaseDate
-		}
-		if mismatchRecord.ImageURL == "" {
-			mismatchRecord.ImageURL = previous.ImageURL
-		}
-		if mismatchRecord.EditionFormat == "" {
-			mismatchRecord.EditionFormat = previous.EditionFormat
-		}
-		if mismatchRecord.EditionInfo == "" {
-			mismatchRecord.EditionInfo = previous.EditionInfo
-		}
-		if mismatchRecord.HardcoverTitle == "" {
-			mismatchRecord.HardcoverTitle = previous.HardcoverTitle
-		}
-		if mismatchRecord.HardcoverAuthor == "" {
-			mismatchRecord.HardcoverAuthor = previous.HardcoverAuthor
-		}
-		if mismatchRecord.HardcoverPublishedYear == "" {
-			mismatchRecord.HardcoverPublishedYear = previous.HardcoverPublishedYear
-		}
-		if mismatchRecord.HardcoverCoverURL == "" {
-			mismatchRecord.HardcoverCoverURL = previous.HardcoverCoverURL
-		}
-		if mismatchRecord.HardcoverPublisher == "" {
-			mismatchRecord.HardcoverPublisher = previous.HardcoverPublisher
-		}
-		if mismatchRecord.HardcoverASIN == "" {
-			mismatchRecord.HardcoverASIN = previous.HardcoverASIN
-		}
-		if mismatchRecord.HardcoverISBN == "" {
-			mismatchRecord.HardcoverISBN = previous.HardcoverISBN
-		}
-		if mismatchRecord.HardcoverSlug == "" {
-			mismatchRecord.HardcoverSlug = previous.HardcoverSlug
-		}
-		if mismatchRecord.CreatedAt.IsZero() {
-			mismatchRecord.CreatedAt = previous.CreatedAt
-		}
+		mismatchRecord = enriched
 	}
 	s.liveMismatches[book.ID] = mismatchRecord
 	s.replaceSummaryMismatchLocked(mismatchRecord)
