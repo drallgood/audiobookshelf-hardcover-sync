@@ -1896,13 +1896,13 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		// Handle mismatch case (found by title/author)
 		if errors.Is(findErr, errHardcoverTitleOnly) ||
 			(hcBook != nil && errors.Is(findErr, errHardcoverLookupFailed)) {
-			matchMethod = "title_author"
 			if errors.Is(findErr, errHardcoverLookupFailed) {
 				outcomeError = findErr
 				setOutcome(OutcomeFailed, "identifier lookup failed; title candidate requires review")
 				// Publish the technical failure before optional enrichment.
 				s.recordBookOutcomeWithMatchMethod(book, OutcomeFailed, outcomeReason, outcomeError, hcBook, matchMethod)
 			} else {
+				matchMethod = "title_author"
 				setOutcome(OutcomeNeedsReview, "found by title/author only - manual verification required")
 				// Publish the attention item before optional Hardcover enrichment.
 				s.recordBookOutcomeWithMatchMethod(book, OutcomeNeedsReview, outcomeReason, nil, hcBook, matchMethod)
