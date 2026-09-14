@@ -235,10 +235,6 @@ func (s *MultiUserService) getProfileStatus(profileID string, profile *database.
 		lastSync := *profileState.LastSync
 		status.LastSync = &lastSync
 	}
-	if status.Snapshot != nil {
-		applySnapshotToStatus(status, *status.Snapshot)
-	}
-
 	service, generation := s.currentSyncServiceLocked(profileID)
 	if service == nil {
 		return status
