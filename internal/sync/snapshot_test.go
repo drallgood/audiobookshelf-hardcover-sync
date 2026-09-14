@@ -11,14 +11,14 @@ func TestSnapshotDeepCopiesLegacyAttentionDetails(t *testing.T) {
 	svc, _ := createTestService()
 	svc.beginOutcomeRun()
 	book := *toAudiobookshelfBook(createTestBook("snapshot-copy", "Snapshot Copy", "Author", "", ""))
-	svc.recordBookOutcome(book, OutcomeNeedsReview, "manual review", nil, nil)
+	svc.recordBookOutcomeWithMatchMethod(book, OutcomeNeedsReview, "manual review", nil, nil, "")
 	svc.enrichLiveMismatch(mismatch.BookMismatch{
 		BookID:      book.ID,
 		AuthorIDs:   []int{11},
 		NarratorIDs: []int{22},
 		Reason:      "manual review",
 	})
-	svc.recordBookOutcome(book, OutcomeNotFound, "not found", nil, nil)
+	svc.recordBookOutcomeWithMatchMethod(book, OutcomeNotFound, "not found", nil, nil, "")
 
 	first := svc.GetSnapshot()
 	require.Len(t, first.Mismatches, 0, "replacing attention with not_found removes its mismatch")
@@ -28,7 +28,7 @@ func TestSnapshotDeepCopiesLegacyAttentionDetails(t *testing.T) {
 	// A distinct needs-review item exercises deep-copying of mismatch-owned
 	// slices while the outcome and legacy stores are read together.
 	otherBook := *toAudiobookshelfBook(createTestBook("snapshot-mismatch", "Mismatch", "Author", "", ""))
-	svc.recordBookOutcome(otherBook, OutcomeNeedsReview, "review", nil, nil)
+	svc.recordBookOutcomeWithMatchMethod(otherBook, OutcomeNeedsReview, "review", nil, nil, "")
 	svc.enrichLiveMismatch(mismatch.BookMismatch{
 		BookID:      otherBook.ID,
 		AuthorIDs:   []int{33},
