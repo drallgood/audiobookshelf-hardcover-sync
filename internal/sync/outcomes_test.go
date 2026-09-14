@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
@@ -79,6 +80,49 @@ func TestProcessBookRecordsSuccessfulMutation(t *testing.T) {
 	assert.Equal(t, OutcomeSynced, recordedOutcome(svc, book.ID).Outcome)
 	assert.Equal(t, int32(1), svc.outcomeCounts.Synced)
 	hc.AssertExpectations(t)
+}
+
+func TestProcessBookThresholdSkipRecordsSkipped(t *testing.T) {
+	svc, hc := createTestService()
+	svc.config.Sync.SyncOwned = false
+	testBook := createTestBook("outcome-threshold", "Progress", "Author", "outcome-threshold-asin", "")
+	testBook.Media.Duration = 1000
+	testBook.Progress.CurrentTime = 300
+	book := toAudiobookshelfBook(testBook)
+	expectASINMatch(hc, "outcome-threshold-asin", "110", "210", 310)
+	hc.On("GetUserBook", mock.Anything, "310").Return(&models.HardcoverBook{
+		ID: "110", EditionID: "210", BookStatusID: 2,
+	}, nil).Once()
+	editionID := int64(210)
+	progress := 250
+	hc.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: 310}).Return([]hardcover.UserBookRead{{
+		ID: 410, EditionID: &editionID, ProgressSeconds: &progress,
+	}}, nil).Once()
+
+	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
+	assert.Equal(t, OutcomeSkipped, recordedOutcome(svc, book.ID).Outcome)
+	assert.Equal(t, int32(0), svc.summary.BooksSynced)
+	assert.Equal(t, int32(1), svc.outcomeCounts.Skipped)
+	hc.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+	hc.AssertExpectations(t)
+}
+
+func TestRecordBookOutcomeReplacementClearsPreviousError(t *testing.T) {
+	svc, _ := createTestService()
+	book := *toAudiobookshelfBook(createTestBook("outcome-replacement", "Replacement", "Author", "", ""))
+
+	svc.recordBookOutcomeWithMatchMethod(book, OutcomeFailed, "temporary failure", errors.New("temporary failure"), nil, "")
+	svc.recordBookOutcomeWithMatchMethod(book, OutcomeSynced, "completed", nil, nil, "")
+
+	record := recordedOutcome(svc, book.ID)
+	assert.Equal(t, OutcomeSynced, record.Outcome)
+	assert.Empty(t, record.Error)
+	assert.Equal(t, int32(1), svc.outcomeCounts.Synced)
+	assert.Equal(t, int32(0), svc.outcomeCounts.Failed)
+	assert.Equal(t, int32(1), svc.summary.BooksSynced)
+	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed)
 }
 
 func TestProcessBookSeparatesNotFoundAndTechnicalLookupFailure(t *testing.T) {
@@ -256,6 +300,32 @@ func TestProcessLibrarySkipsMissingIDAndReconcilesOutcomes(t *testing.T) {
 	assert.Equal(t, int32(1), svc.outcomeCounts.Skipped)
 	assert.Equal(t, int32(1), svc.outcomeCounts.NotFound)
 	assert.NotContains(t, svc.outcomeRecords, "")
+	hc.AssertExpectations(t)
+}
+
+func TestSyncTestBookLimitIgnoresUnattemptedLibraryPrecountError(t *testing.T) {
+	svc, hc := createTestService()
+	svc.config.Sync.ProcessUnreadBooks = false
+	svc.config.Sync.TestBookLimit = 1
+	svc.statePath = filepath.Join(t.TempDir(), "sync_state.json")
+	svc.config.Paths.MismatchOutputDir = t.TempDir()
+
+	book := toAudiobookshelfBook(createTestBook("limited-book", "Unread", "Author", "", ""))
+	mockABS := new(MockAudiobookshelfClient)
+	mockABS.On("GetUserProgress", mock.Anything).Return(&models.AudiobookshelfUserProgress{}, nil).Once()
+	mockABS.On("GetLibraries", mock.Anything).Return([]audiobookshelf.AudiobookshelfLibrary{
+		{ID: "library-a", Name: "Library A"},
+		{ID: "library-b", Name: "Library B"},
+	}, nil).Once()
+	mockABS.On("GetLibraryItems", mock.Anything, "library-a").Return([]models.AudiobookshelfBook{*book}, nil).Twice()
+	mockABS.On("GetLibraryItems", mock.Anything, "library-b").Return(nil, errors.New("library B unavailable")).Once()
+	hc.On("ClearUserBookCache").Return().Once()
+	svc.audiobookshelf = mockABS
+
+	require.NoError(t, svc.Sync(context.Background()))
+	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed)
+	assert.Equal(t, int32(0), svc.summary.BooksSynced)
+	mockABS.AssertExpectations(t)
 	hc.AssertExpectations(t)
 }
 

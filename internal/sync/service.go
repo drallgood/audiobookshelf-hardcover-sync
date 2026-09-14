@@ -457,9 +457,6 @@ func (s *Service) recordBookOutcomeWithMatchMethod(book models.AudiobookshelfBoo
 		if record.Reason == "" {
 			record.Reason = previous.Reason
 		}
-		if record.Error == "" {
-			record.Error = previous.Error
-		}
 		if record.HardcoverBookID == "" {
 			record.HardcoverBookID = previous.HardcoverBookID
 		}
@@ -1023,6 +1020,7 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 
 	// Track total books processed across all libraries
 	totalBooksProcessed := 0
+	attemptedLibraries := make(map[string]bool)
 	// A library fetch failure means its candidates were never observed. Keep
 	// that run-level error separate instead of fabricating per-book outcomes.
 	libraryErrors := make(map[string]error)
@@ -1066,6 +1064,7 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 		}
 
 		// Process the library and get the number of books processed
+		attemptedLibraries[filteredLibraries[i].ID] = true
 		processed, err := s.processLibrary(ctx, &filteredLibraries[i], totalBooksLimit-totalBooksProcessed, userProgress)
 		if err != nil {
 			s.log.Error("Failed to process library", map[string]interface{}{
@@ -1111,7 +1110,7 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 	// out of the per-book denominator because no processing attempt occurred.
 	var libraryRunError error
 	for i := range filteredLibraries {
-		if libraryErr, ok := libraryErrors[filteredLibraries[i].ID]; ok {
+		if libraryErr, ok := libraryErrors[filteredLibraries[i].ID]; ok && attemptedLibraries[filteredLibraries[i].ID] {
 			if libraryRunError == nil {
 				libraryRunError = libraryErr
 			} else {
@@ -1466,7 +1465,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		// A completed mutation is authoritative. Later no-op guards can run
 		// after stale-reread closure and must not downgrade it.
 		if (outcome == OutcomeAlreadyCurrent || outcome == OutcomeSkipped) &&
-			(outcomeHint == OutcomeSynced || outcomeHint == OutcomeWouldSync) {
+			(outcomeHint == OutcomeSynced || outcomeHint == OutcomeFailed || outcomeHint == OutcomeWouldSync) {
 			return
 		}
 		outcomeHint = outcome
@@ -3355,6 +3354,8 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 					if shouldUpdateSyncState && hcBook != nil && hcBook.BookStatusID == desiredStatusID {
 						updateSyncState()
 						reportProcessBookOutcome(ctx, OutcomeAlreadyCurrent, "Hardcover progress and status already current")
+					} else if !shouldUpdateSyncState {
+						reportProcessBookOutcome(ctx, OutcomeSkipped, "progress difference below threshold")
 					}
 					return nil
 				}
