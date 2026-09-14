@@ -98,6 +98,8 @@ syncs do not share counts or attention records.
 Existing fields such as `total_books_processed`, `books_synced`,
 `books_not_found`, and `mismatches` remain available for existing API clients.
 The snapshot is current-run status, not persistent run history.
+Canceling a run currently returns the profile to idle and clears its live
+snapshot; partial canceled-run results are not retained.
 
 ### Environment Variables (Multi-Profile)
 

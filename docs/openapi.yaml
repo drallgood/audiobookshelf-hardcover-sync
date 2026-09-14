@@ -221,7 +221,8 @@ components:
         run_started_at: {type: string, format: date-time}
         state:
           type: string
-          enum: [idle, syncing, completed, failed, canceled]
+          enum: [idle, syncing, completed, failed]
+          description: Cancellation currently clears the live snapshot and returns the profile to idle.
         books_total:
           type: integer
           description: Number of candidates observed before processing limits.
