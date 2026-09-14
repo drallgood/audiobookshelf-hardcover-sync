@@ -4533,6 +4533,9 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 			if errors.Is(err, errHardcoverTitleOnly) {
 				// Preserve the candidate so mismatch reporting can include its
 				// Hardcover metadata while keeping it out of automatic mutation.
+				if lookupErr != nil {
+					return hcBook, lookupErr
+				}
 				return hcBook, errHardcoverTitleOnly
 			}
 			if lookupErr != nil {
@@ -4546,6 +4549,9 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 			"book_id": hcBook.ID,
 			"title":   hcBook.Title,
 		})
+		if lookupErr != nil {
+			return hcBook, lookupErr
+		}
 		return hcBook, fmt.Errorf("found by title/author only")
 
 		// Unreachable code removed; mismatch is already indicated by the return above

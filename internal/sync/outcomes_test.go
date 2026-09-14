@@ -112,6 +112,26 @@ func TestProcessBookSeparatesNotFoundAndTechnicalLookupFailure(t *testing.T) {
 	})
 }
 
+func TestProcessBookKeepsIdentifierFailureWhenTitleSearchFindsCandidate(t *testing.T) {
+	svc, hc := createTestService()
+	book := createTestBook("outcome-incomplete-lookup", "Possible Match", "Author", "failed-asin", "")
+	book.Progress.CurrentTime = 300
+	absBook := toAudiobookshelfBook(book)
+	lookupErr := errors.New("identifier lookup unavailable")
+	hc.On("SearchBookByASIN", mock.Anything, "failed-asin").Return((*models.HardcoverBook)(nil), lookupErr).Once()
+	hc.On("SearchBooks", mock.Anything, "Possible Match Author", "").Return([]models.HardcoverBook{{
+		ID: "901", Title: "Possible Match",
+	}}, nil).Once()
+	hc.On("GetBookByID", mock.Anything, "901").Return((*models.HardcoverBook)(nil), nil).Once()
+
+	require.NoError(t, svc.processBook(context.Background(), *absBook, &models.AudiobookshelfUserProgress{}))
+	record := recordedOutcome(svc, absBook.ID)
+	assert.Equal(t, OutcomeFailed, record.Outcome)
+	assert.Contains(t, record.Error, lookupErr.Error())
+	assert.Empty(t, record.MatchMethod, "title candidate cannot verify an incomplete identifier search")
+	hc.AssertExpectations(t)
+}
+
 func TestProcessBookProgressReadFailureIsTechnicalFailure(t *testing.T) {
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
