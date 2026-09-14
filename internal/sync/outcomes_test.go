@@ -7,6 +7,7 @@ import (
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -113,6 +114,8 @@ func TestProcessBookSeparatesNotFoundAndTechnicalLookupFailure(t *testing.T) {
 }
 
 func TestProcessBookKeepsIdentifierFailureWhenTitleSearchFindsCandidate(t *testing.T) {
+	mismatch.Clear()
+	t.Cleanup(mismatch.Clear)
 	svc, hc := createTestService()
 	book := createTestBook("outcome-incomplete-lookup", "Possible Match", "Author", "failed-asin", "")
 	book.Progress.CurrentTime = 300
@@ -120,15 +123,24 @@ func TestProcessBookKeepsIdentifierFailureWhenTitleSearchFindsCandidate(t *testi
 	lookupErr := errors.New("identifier lookup unavailable")
 	hc.On("SearchBookByASIN", mock.Anything, "failed-asin").Return((*models.HardcoverBook)(nil), lookupErr).Once()
 	hc.On("SearchBooks", mock.Anything, "Possible Match Author", "").Return([]models.HardcoverBook{{
-		ID: "901", Title: "Possible Match",
+		ID: "901", Title: "Possible Match", Slug: "possible-match",
 	}}, nil).Once()
-	hc.On("GetBookByID", mock.Anything, "901").Return((*models.HardcoverBook)(nil), nil).Once()
+	hc.On("GetBookByID", mock.Anything, "901").Return(&models.HardcoverBook{
+		ID: "901", Title: "Possible Match", Slug: "possible-match",
+	}, nil).Once()
 
 	require.NoError(t, svc.processBook(context.Background(), *absBook, &models.AudiobookshelfUserProgress{}))
 	record := recordedOutcome(svc, absBook.ID)
 	assert.Equal(t, OutcomeFailed, record.Outcome)
 	assert.Contains(t, record.Error, lookupErr.Error())
 	assert.Empty(t, record.MatchMethod, "title candidate cannot verify an incomplete identifier search")
+	matches := mismatch.GetAll()
+	require.Len(t, matches, 1)
+	assert.Equal(t, absBook.ID, matches[0].BookID)
+	assert.Equal(t, "901", matches[0].HardcoverBookID)
+	assert.Equal(t, "Possible Match", matches[0].HardcoverTitle)
+	assert.Equal(t, "possible-match", matches[0].HardcoverSlug)
+	assert.Contains(t, matches[0].Reason, lookupErr.Error())
 	hc.AssertExpectations(t)
 }
 
@@ -218,6 +230,33 @@ func TestProcessLibraryCandidateDenominatorIgnoresLimit(t *testing.T) {
 	assert.Equal(t, int32(2), svc.summary.BooksTotal)
 	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed)
 	hc.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
+}
+
+func TestProcessLibrarySkipsMissingIDAndReconcilesOutcomes(t *testing.T) {
+	svc, hc := createTestService()
+	svc.config.Sync.ProcessUnreadBooks = false
+	mockABS := new(MockAudiobookshelfClient)
+	svc.audiobookshelf = mockABS
+	unread := toAudiobookshelfBook(createTestBook("unread-item", "Unread", "Author", "", ""))
+	missing := toAudiobookshelfBook(createTestBook("missing-item", "Missing", "Author", "", ""))
+	missing.Progress.CurrentTime = 300
+	missing.Media.Duration = 1000
+	items := []models.AudiobookshelfBook{*unread, {LibraryID: "library"}, *missing}
+	// A second fetch can observe more items than the early pre-count.
+	svc.recordLibraryCandidateTotal("library", 2)
+	mockABS.On("GetLibraryItems", mock.Anything, "library").Return(items, nil).Once()
+	hc.On("SearchBooks", mock.Anything, "Missing Author", "").Return([]models.HardcoverBook{}, nil).Once()
+
+	processed, err := svc.processLibrary(context.Background(), &audiobookshelf.AudiobookshelfLibrary{ID: "library", Name: "Library"}, 0, &models.AudiobookshelfUserProgress{})
+	require.NoError(t, err)
+	assert.Equal(t, 2, processed)
+	assert.Equal(t, int32(3), svc.summary.BooksTotal)
+	assert.Equal(t, int32(2), svc.summary.TotalBooksProcessed)
+	assert.Equal(t, int32(2), svc.outcomeCounts.Total())
+	assert.Equal(t, int32(1), svc.outcomeCounts.Skipped)
+	assert.Equal(t, int32(1), svc.outcomeCounts.NotFound)
+	assert.NotContains(t, svc.outcomeRecords, "")
+	hc.AssertExpectations(t)
 }
 
 func TestProcessBookOutcomeStaleRereadMutationWinsOverNoOp(t *testing.T) {

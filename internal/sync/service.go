@@ -22,9 +22,8 @@ import (
 
 // Error definitions
 var (
-	ErrSkippedBook          = errors.New("book was skipped")
-	errStateCheckpoint      = errors.New("failed to checkpoint sync state")
-	errInvalidLibraryItemID = errors.New("audiobookshelf library item has no ID")
+	ErrSkippedBook     = errors.New("book was skipped")
+	errStateCheckpoint = errors.New("failed to checkpoint sync state")
 
 	// These errors preserve the distinction between a completed search with no
 	// result and a lookup that could not be completed. Callers should use
@@ -195,8 +194,9 @@ type Service struct {
 	// the live status work publishes this store.
 	outcomeCounts  OutcomeCounts
 	outcomeRecords map[string]BookOutcomeRecord
-	// libraryCandidateTotals makes pre-count and processing fetches idempotent.
-	libraryCandidateTotals map[string]struct{}
+	// libraryCandidateTotals tracks the largest observed library size across
+	// pre-count and processing fetches.
+	libraryCandidateTotals map[string]int
 	// Per-run guard to prevent duplicate read inserts
 	createdReadsThisRun map[int64]struct{}
 	createdReadsMutex   sync.Mutex
@@ -226,7 +226,7 @@ func NewService(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverCl
 			Mismatches:    make([]mismatch.BookMismatch, 0),
 		},
 		outcomeRecords:         make(map[string]BookOutcomeRecord),
-		libraryCandidateTotals: make(map[string]struct{}),
+		libraryCandidateTotals: make(map[string]int),
 		createdReadsThisRun:    make(map[int64]struct{}),
 	}
 
@@ -381,14 +381,14 @@ func (s *Service) beginOutcomeRun() {
 	defer s.summary.Unlock()
 	s.outcomeCounts = OutcomeCounts{}
 	s.outcomeRecords = make(map[string]BookOutcomeRecord)
-	s.libraryCandidateTotals = make(map[string]struct{})
+	s.libraryCandidateTotals = make(map[string]int)
 	s.summary.TotalBooksProcessed = 0
 	s.summary.BooksSynced = 0
 	s.summary.BooksTotal = 0
 }
 
-// recordLibraryCandidateTotal records a library's full candidate count once.
-// The count occurs before processLibrary applies maxBooks so the denominator
+// recordLibraryCandidateTotal keeps the largest observed library size. The
+// count occurs before processLibrary applies maxBooks so the denominator
 // remains the library size rather than the test limit.
 func (s *Service) recordLibraryCandidateTotal(libraryID string, total int) {
 	if s.summary == nil || libraryID == "" {
@@ -397,13 +397,13 @@ func (s *Service) recordLibraryCandidateTotal(libraryID string, total int) {
 	s.summary.Lock()
 	defer s.summary.Unlock()
 	if s.libraryCandidateTotals == nil {
-		s.libraryCandidateTotals = make(map[string]struct{})
+		s.libraryCandidateTotals = make(map[string]int)
 	}
-	if _, recorded := s.libraryCandidateTotals[libraryID]; recorded {
+	if prior, recorded := s.libraryCandidateTotals[libraryID]; recorded && total <= prior {
 		return
 	}
-	s.libraryCandidateTotals[libraryID] = struct{}{}
-	s.summary.BooksTotal += int32(total)
+	s.summary.BooksTotal += int32(total - s.libraryCandidateTotals[libraryID])
+	s.libraryCandidateTotals[libraryID] = total
 }
 
 // processedOutcomeTotal avoids cloning outcome details for progress logging.
@@ -1073,7 +1073,6 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 				"library_id": filteredLibraries[i].ID,
 			})
 			if errors.Is(err, errStateCheckpoint) ||
-				errors.Is(err, errInvalidLibraryItemID) ||
 				errors.Is(err, context.Canceled) ||
 				errors.Is(err, context.DeadlineExceeded) {
 				return err
@@ -1263,13 +1262,10 @@ func (s *Service) processLibrary(ctx context.Context, library *audiobookshelf.Au
 			return processed, ctxErr
 		}
 		if book.ID == "" {
-			return processed, fmt.Errorf(
-				"%w: library %q (ID %q), item position %d",
-				errInvalidLibraryItemID,
-				library.Name,
-				library.ID,
-				itemIndex+1,
-			)
+			libraryLog.Warn("Skipping library item without an ID", map[string]interface{}{
+				"item_position": itemIndex + 1,
+			})
+			continue
 		}
 		if userProgressUnavailable(ctx) && !hasReliableEmbeddedProgress(book) {
 			libraryLog.Debug("Skipping book because Audiobookshelf user progress is unavailable", map[string]interface{}{
@@ -1620,12 +1616,20 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	hcBook, findErr = s.findBookInHardcover(ctx, book)
 	if findErr != nil {
 		// Handle mismatch case (found by title/author)
-		if errors.Is(findErr, errHardcoverTitleOnly) || strings.Contains(findErr.Error(), "found by title/author only") {
-			matchMethod = "title_author"
-			setOutcome(OutcomeNeedsReview, "found by title/author only - manual verification required")
+		if errors.Is(findErr, errHardcoverTitleOnly) ||
+			(hcBook != nil && errors.Is(findErr, errHardcoverLookupFailed)) {
+			if errors.Is(findErr, errHardcoverLookupFailed) {
+				outcomeError = findErr
+				setOutcome(OutcomeFailed, "identifier lookup failed; title candidate requires review")
+			} else {
+				matchMethod = "title_author"
+				setOutcome(OutcomeNeedsReview, "found by title/author only - manual verification required")
+			}
 			// Try to find the book by title/author to get the Hardcover book details
-			if enrichedBook, _ := s.findBookInHardcoverByTitleAuthor(ctx, book); enrichedBook != nil {
-				hcBook = enrichedBook
+			if hcBook == nil {
+				if enrichedBook, _ := s.findBookInHardcoverByTitleAuthor(ctx, book); enrichedBook != nil {
+					hcBook = enrichedBook
+				}
 			}
 			foundByTitleAuthor := hcBook != nil
 
@@ -1656,15 +1660,6 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 
 			// Add Hardcover book details if available
 			if foundByTitleAuthor {
-				// Hydrate Hardcover book with full details (including slug) before recording mismatch
-				if hcBook.ID != "" {
-					if enriched, err := s.hardcover.GetBookByID(ctx, hcBook.ID); err == nil && enriched != nil {
-						bookLog.Debugf("Hydrated Hardcover book details via GetBookByID: id=%s, title=%s, slug=%s", enriched.ID, enriched.Title, enriched.Slug)
-						hcBook = enriched
-					} else if err != nil {
-						bookLog.Debugf("Failed to hydrate Hardcover book via GetBookByID: id=%s, error=%v", hcBook.ID, err)
-					}
-				}
 				// Map Hardcover book fields to the mismatch
 				mismatchData.HardcoverBookID = hcBook.ID
 				mismatchData.HardcoverTitle = hcBook.Title
@@ -1753,31 +1748,38 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				edID = hcBook.EditionID
 			}
 
-			// Record the mismatch via global collector so SaveToFile and Audnex enrichment run
-			mismatch.AddWithMetadata(
-				mismatch.MediaMetadata{
-					Title:         book.Media.Metadata.Title,
-					Subtitle:      book.Media.Metadata.Subtitle,
-					AuthorName:    book.Media.Metadata.AuthorName,
-					NarratorName:  book.Media.Metadata.NarratorName,
-					Publisher:     book.Media.Metadata.Publisher,
-					PublishedYear: book.Media.Metadata.PublishedYear,
-					ISBN:          book.Media.Metadata.ISBN,
-					ASIN:          book.Media.Metadata.ASIN,
-					CoverURL:      coverURL,
-					Duration:      book.Media.Duration,
-					LibraryID:     book.LibraryID,
-					FolderID:      "",
-				},
-				book.ID,
-				edID,
-				"Found by title/author only - manual verification required",
-				book.Media.Duration,
-				book.ID,
-				s.hardcover,
-				s.config.Audiobookshelf.AudnexusRegion,
-			)
-			bookLog.Info("Book found by title/author - recorded as mismatch (with enrichment)")
+			// Keep an incomplete identifier lookup in the legacy mismatch report
+			// while its exclusive outcome remains a technical failure.
+			if errors.Is(findErr, errHardcoverLookupFailed) {
+				mismatchData.Reason = fmt.Sprintf("Identifier lookup failed; title/author candidate requires review: %v", findErr)
+				mismatch.Add(mismatchData)
+			} else {
+				// Preserve the existing enrichment path for completed title-only lookups.
+				mismatch.AddWithMetadata(
+					mismatch.MediaMetadata{
+						Title:         book.Media.Metadata.Title,
+						Subtitle:      book.Media.Metadata.Subtitle,
+						AuthorName:    book.Media.Metadata.AuthorName,
+						NarratorName:  book.Media.Metadata.NarratorName,
+						Publisher:     book.Media.Metadata.Publisher,
+						PublishedYear: book.Media.Metadata.PublishedYear,
+						ISBN:          book.Media.Metadata.ISBN,
+						ASIN:          book.Media.Metadata.ASIN,
+						CoverURL:      coverURL,
+						Duration:      book.Media.Duration,
+						LibraryID:     book.LibraryID,
+						FolderID:      "",
+					},
+					book.ID,
+					edID,
+					"Found by title/author only - manual verification required",
+					book.Media.Duration,
+					book.ID,
+					s.hardcover,
+					s.config.Audiobookshelf.AudnexusRegion,
+				)
+			}
+			bookLog.Info("Book found by title/author - recorded as mismatch")
 
 			// Set the book as processed
 			bookProcessed = true
@@ -3530,14 +3532,6 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			} else {
 				// If the existing status is already finished with the same date, skip update
 				log.Info("Skipping update - existing read status is already marked as finished with the same date", logCtx)
-				if err := reconcileBookStatus(); err != nil {
-					return err
-				}
-				if hcBook == nil || hcBook.BookStatusID == 0 {
-					reportProcessBookOutcome(ctx, OutcomeFailed, "Hardcover status unavailable while checking finished read")
-				} else {
-					reportProcessBookOutcome(ctx, OutcomeAlreadyCurrent, "Hardcover finished read and status already current")
-				}
 				return nil
 			}
 		} else {
@@ -4204,6 +4198,7 @@ func (s *Service) findBookInHardcoverByTitleAuthor(ctx context.Context, book mod
 			bestMatch = &models.HardcoverBook{
 				ID:           result.ID,
 				Title:        resultTitle,
+				Slug:         result.Slug,
 				BookStatusID: 0, // Will be set when we get the full book details
 				// Include additional details from search result
 				Authors:       result.Authors,
@@ -4278,6 +4273,9 @@ func (s *Service) findBookInHardcoverByTitleAuthor(ctx context.Context, book mod
 			if bestMatch.CoverImageURL == "" && fullBook.CoverImageURL != "" {
 				bestMatch.CoverImageURL = fullBook.CoverImageURL
 			}
+			if bestMatch.Slug == "" {
+				bestMatch.Slug = fullBook.Slug
+			}
 			// Prefer a concrete publisher/release date if search lacked them
 			if bestMatch.Publisher == "" && fullBook.Publisher != "" {
 				bestMatch.Publisher = fullBook.Publisher
@@ -4333,62 +4331,54 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 	if book.Media.Metadata.ASIN != "" {
 		// Check ASIN cache first
 		if cachedBook, exists := s.getASINFromCache(book.Media.Metadata.ASIN); exists {
-			if cachedBook == nil {
-				// This ASIN was previously looked up and failed
-				log.Debug("Found negative ASIN cache result, skipping API call", map[string]interface{}{
-					"asin": book.Media.Metadata.ASIN,
-				})
-				// Continue to ISBN lookup
-			} else {
-				log.Debug("Found book in ASIN cache", map[string]interface{}{
-					"asin":       book.Media.Metadata.ASIN,
-					"book_id":    cachedBook.ID,
-					"edition_id": cachedBook.EditionID,
-				})
+			log.Debug("Found book in ASIN cache", map[string]interface{}{
+				"asin":       book.Media.Metadata.ASIN,
+				"book_id":    cachedBook.ID,
+				"edition_id": cachedBook.EditionID,
+			})
 
-				// Create a copy of the cached book to avoid modifying the cached version
-				hcBook := &models.HardcoverBook{
-					ID:        cachedBook.ID,
-					Title:     cachedBook.Title,
-					EditionID: cachedBook.EditionID,
-					// Copy other fields as needed
-				}
-
-				// Still need to get/create user book ID for this specific book
-				editionIDStr := hcBook.EditionID
-				progress := 0.0
-				isFinished := book.Progress.IsFinished
-				finishedAt := book.Progress.FinishedAt
-				if book.Media.Duration > 0 {
-					// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
-					// because Audiobookshelf sometimes reports CurrentTime as 0 for finished books
-					if isFinished {
-						progress = 1.0
-					} else {
-						progress = book.Progress.CurrentTime / book.Media.Duration
-					}
-				}
-
-				// Determine the status based on progress and isFinished flag
-				status := s.determineBookStatus(progress, isFinished, finishedAt)
-				userBookID, err := s.findOrCreateUserBookID(ctx, editionIDStr, status)
-				if err != nil {
-					s.log.Warn("Failed to get or create user book ID for cached edition", map[string]interface{}{
-						"edition_id": editionIDStr,
-						"error":      err.Error(),
-					})
-				} else {
-					hcBook.UserBookID = strconv.FormatInt(userBookID, 10)
-				}
-
-				s.log.Info("Using cached book by ASIN", map[string]interface{}{
-					"book_id":      hcBook.ID,
-					"edition_id":   hcBook.EditionID,
-					"user_book_id": hcBook.UserBookID,
-				})
-
-				return hcBook, nil
+			// Create a copy of the cached book to avoid modifying the cached version
+			hcBook := &models.HardcoverBook{
+				ID:        cachedBook.ID,
+				Title:     cachedBook.Title,
+				EditionID: cachedBook.EditionID,
+				// Copy other fields as needed
 			}
+
+			// Still need to get/create user book ID for this specific book
+			editionIDStr := hcBook.EditionID
+			progress := 0.0
+			isFinished := book.Progress.IsFinished
+			finishedAt := book.Progress.FinishedAt
+			if book.Media.Duration > 0 {
+				// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
+				// because Audiobookshelf sometimes reports CurrentTime as 0 for finished books
+				if isFinished {
+					progress = 1.0
+				} else {
+					progress = book.Progress.CurrentTime / book.Media.Duration
+				}
+			}
+
+			// Determine the status based on progress and isFinished flag
+			status := s.determineBookStatus(progress, isFinished, finishedAt)
+			userBookID, err := s.findOrCreateUserBookID(ctx, editionIDStr, status)
+			if err != nil {
+				s.log.Warn("Failed to get or create user book ID for cached edition", map[string]interface{}{
+					"edition_id": editionIDStr,
+					"error":      err.Error(),
+				})
+			} else {
+				hcBook.UserBookID = strconv.FormatInt(userBookID, 10)
+			}
+
+			s.log.Info("Using cached book by ASIN", map[string]interface{}{
+				"book_id":      hcBook.ID,
+				"edition_id":   hcBook.EditionID,
+				"user_book_id": hcBook.UserBookID,
+			})
+
+			return hcBook, nil
 		}
 
 		log.Info(fmt.Sprintf("Searching for book by ASIN: %s", book.Media.Metadata.ASIN), nil)
@@ -4552,7 +4542,7 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 		if lookupErr != nil {
 			return hcBook, lookupErr
 		}
-		return hcBook, fmt.Errorf("found by title/author only")
+		return hcBook, errHardcoverTitleOnly
 
 		// Unreachable code removed; mismatch is already indicated by the return above
 	}
