@@ -231,6 +231,9 @@ func TestProcessBookKeepsIdentifierFailureWhenTitleSearchFindsCandidate(t *testi
 	assert.Equal(t, "Possible Match", matches[0].HardcoverTitle)
 	assert.Equal(t, "possible-match", matches[0].HardcoverSlug)
 	assert.Contains(t, matches[0].Reason, lookupErr.Error())
+	snapshot := svc.GetSnapshot()
+	require.Len(t, snapshot.Mismatches, 1)
+	assert.Contains(t, snapshot.Mismatches[0].Reason, lookupErr.Error())
 	hc.AssertExpectations(t)
 }
 

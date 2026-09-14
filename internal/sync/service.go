@@ -517,6 +517,11 @@ func (s *Service) upsertLiveMismatchLocked(book models.AudiobookshelfBook, recor
 		mismatchRecord.Reason = record.Error
 	}
 	if previous, exists := s.liveMismatches[book.ID]; exists {
+		// Keep the enriched technical reason when the deferred outcome write
+		// republishes the same failure with its shorter outcome reason.
+		if record.Error != "" && strings.Contains(previous.Reason, record.Error) {
+			mismatchRecord.Reason = previous.Reason
+		}
 		if mismatchRecord.Subtitle == "" {
 			mismatchRecord.Subtitle = previous.Subtitle
 		}
@@ -1921,6 +1926,11 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				coverURL = fmt.Sprintf("%s/api/items/%s/cover", s.config.Audiobookshelf.URL, book.ID)
 			}
 
+			mismatchReason := "Found by title/author only - manual verification required"
+			if errors.Is(findErr, errHardcoverLookupFailed) {
+				mismatchReason = fmt.Sprintf("Identifier lookup failed; title/author candidate requires review: %v", findErr)
+			}
+
 			// Create mismatch with both Audiobookshelf and Hardcover details
 			mismatchData := mismatch.BookMismatch{
 				BookID:          book.ID,
@@ -1935,7 +1945,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				DurationSeconds: int(book.Media.Duration),
 				CoverURL:        coverURL,
 				Publisher:       book.Media.Metadata.Publisher,
-				Reason:          "Found by title/author only - manual verification required",
+				Reason:          mismatchReason,
 				Timestamp:       time.Now().Unix(),
 				CreatedAt:       time.Now(),
 			}
@@ -2037,7 +2047,6 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			// Keep an incomplete identifier lookup in the legacy mismatch report
 			// while its exclusive outcome remains a technical failure.
 			if errors.Is(findErr, errHardcoverLookupFailed) {
-				mismatchData.Reason = fmt.Sprintf("Identifier lookup failed; title/author candidate requires review: %v", findErr)
 				mismatch.Add(mismatchData)
 			} else {
 				// Preserve the existing enrichment path for completed title-only lookups.
