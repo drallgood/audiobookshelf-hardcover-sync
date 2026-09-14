@@ -329,6 +329,51 @@ func TestSyncTestBookLimitIgnoresUnattemptedLibraryPrecountError(t *testing.T) {
 	hc.AssertExpectations(t)
 }
 
+func TestSyncTestBookLimitCountsFailedBookAttempt(t *testing.T) {
+	svc, hc := createTestService()
+	svc.config.Sync.ProcessUnreadBooks = true
+	svc.config.Sync.SyncOwned = false
+	svc.config.Sync.TestBookLimit = 1
+	svc.config.Sync.StateFile = filepath.Join(t.TempDir(), "sync_state.json")
+	svc.statePath = svc.config.Sync.StateFile
+	svc.config.Paths.MismatchOutputDir = t.TempDir()
+	cacheDir := t.TempDir()
+	svc.persistentCache = NewPersistentASINCache(cacheDir)
+	require.NoError(t, svc.persistentCache.Load())
+	svc.userBookCache = NewPersistentUserBookCache(cacheDir)
+	require.NoError(t, svc.userBookCache.Load())
+
+	failedBook := toAudiobookshelfBook(createTestBook("limit-failed", "Failed Book", "Author", "limit-failed-asin", ""))
+	failedBook.Progress.CurrentTime = 300
+	secondBook := toAudiobookshelfBook(createTestBook("limit-second", "Second Book", "Author", "limit-second-asin", ""))
+	secondBook.Progress.CurrentTime = 300
+
+	mockABS := new(MockAudiobookshelfClient)
+	mockABS.On("GetUserProgress", mock.Anything).Return(&models.AudiobookshelfUserProgress{}, nil).Once()
+	mockABS.On("GetLibraries", mock.Anything).Return([]audiobookshelf.AudiobookshelfLibrary{
+		{ID: "library-a", Name: "Library A"},
+		{ID: "library-b", Name: "Library B"},
+	}, nil).Once()
+	// The first library is pre-counted and then processed. The second library
+	// is only pre-counted because the failed first attempt consumes the limit.
+	mockABS.On("GetLibraryItems", mock.Anything, "library-a").Return([]models.AudiobookshelfBook{*failedBook}, nil).Twice()
+	mockABS.On("GetLibraryItems", mock.Anything, "library-b").Return([]models.AudiobookshelfBook{*secondBook}, nil).Once()
+	hc.On("ClearUserBookCache").Return().Once()
+	hc.On("SearchBookByASIN", mock.Anything, "limit-failed-asin").Return(&models.HardcoverBook{
+		ID: "101", EditionID: "not-a-number",
+	}, nil).Once()
+	svc.audiobookshelf = mockABS
+
+	err := svc.Sync(context.Background())
+
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), svc.summary.BooksTotal)
+	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed)
+	assert.Equal(t, int32(1), svc.outcomeCounts.Failed)
+	mockABS.AssertExpectations(t)
+	hc.AssertExpectations(t)
+}
+
 func TestProcessBookOutcomeStaleRereadMutationWinsOverNoOp(t *testing.T) {
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false

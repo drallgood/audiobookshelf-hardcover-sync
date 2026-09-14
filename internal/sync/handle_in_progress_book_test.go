@@ -158,6 +158,42 @@ func TestHandleInProgressBook_DryRunUsesLiveReadSelection(t *testing.T) {
 	}
 }
 
+func TestHandleInProgressBook_DryRunDetectsStaleReread(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.config.Sync.DryRun = true
+
+	book := createTestBook("dry-run-stale-reread", "Test Book", "Test Author", "", "")
+	book.Progress.CurrentTime = 300
+	book.Media.Duration = 1000
+	audiobook := toAudiobookshelfBook(book)
+
+	userBookID := int64(123)
+	editionID := int64(456)
+	progress := 300
+	oldStartedAt := "2025-01-01"
+	finishedAt := "2025-02-01"
+	mockClient.On("GetUserBook", mock.Anything, "123").Return(&models.HardcoverBook{
+		ID: "book-123", EditionID: "456", BookStatusID: 2,
+	}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{
+		{ID: 1, EditionID: &editionID, StartedAt: &oldStartedAt, ProgressSeconds: &progress},
+		{ID: 2, EditionID: &editionID, StartedAt: &finishedAt, FinishedAt: &finishedAt, ProgressSeconds: &progress},
+	}, nil).Once()
+
+	var gotOutcome SyncOutcome
+	ctx := context.WithValue(context.Background(), processBookOutcomeReporterKey{}, processBookOutcomeReporter(func(outcome SyncOutcome, _ string) {
+		gotOutcome = outcome
+	}))
+	err := svc.handleInProgressBook(ctx, userBookID, *audiobook, audiobook.ID+":456")
+
+	assert.NoError(t, err)
+	assert.Equal(t, OutcomeWouldSync, gotOutcome)
+	mockClient.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+	mockClient.AssertExpectations(t)
+}
+
 // TestHandleInProgressBook_GetUserBookError tests error handling when GetUserBook fails
 func TestHandleInProgressBook_GetUserBookError(t *testing.T) {
 	// Create test service and mock client

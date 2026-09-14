@@ -1275,6 +1275,9 @@ func (s *Service) processLibrary(ctx context.Context, library *audiobookshelf.Au
 
 		// Process the item
 		err := s.processBook(ctx, book, userProgress)
+		// Count every attempted book toward the caller's test-book limit,
+		// including attempts that return an error.
+		processed++
 		if checkpointErr := s.checkpointState(book.ID); checkpointErr != nil {
 			return processed, checkpointErr
 		}
@@ -1288,9 +1291,7 @@ func (s *Service) processLibrary(ctx context.Context, library *audiobookshelf.Au
 				libraryLog.Debug("Book was skipped but counted as processed", map[string]interface{}{
 					"item_id": book.ID,
 				})
-				processed++
 			} else {
-				// For other errors, log and skip without incrementing processed count
 				libraryLog.Error("Failed to process item", map[string]interface{}{
 					"error":   err,
 					"item_id": book.ID,
@@ -1298,8 +1299,6 @@ func (s *Service) processLibrary(ctx context.Context, library *audiobookshelf.Au
 			}
 			continue
 		}
-
-		processed++
 	}
 
 	libraryLog.Info("Finished processing library", map[string]interface{}{
@@ -3078,6 +3077,53 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		}
 		return readStatusToUpdate, mostRecentRead, duplicateUnfinishedReads
 	}
+	findStaleRereadDate := func(read *hardcover.UserBookRead) (string, bool) {
+		if book.Progress.IsFinished || read == nil || read.StartedAt == nil || *read.StartedAt == "" {
+			return "", false
+		}
+
+		existingStartedAt := *read.StartedAt
+		if len(existingStartedAt) > 10 {
+			existingStartedAt = existingStartedAt[:10]
+		}
+
+		latestFinishedReadDate := ""
+		for i := range readStatuses {
+			finishedRead := &readStatuses[i]
+			if finishedRead.FinishedAt == nil || *finishedRead.FinishedAt == "" {
+				continue
+			}
+			// Reads without an edition are physical/manual reads and must not
+			// influence stale detection for an audio edition.
+			if finishedRead.EditionID == nil {
+				continue
+			}
+			if targetEditionID != nil && *finishedRead.EditionID != *targetEditionID {
+				continue
+			}
+			finishedDate := *finishedRead.FinishedAt
+			if len(finishedDate) > 10 {
+				finishedDate = finishedDate[:10]
+			}
+			if _, parseErr := time.Parse("2006-01-02", finishedDate); parseErr != nil {
+				continue
+			}
+			// Ignore the zero-progress row created by stale-reread cleanup on the
+			// current day so it cannot trigger another split on the next run.
+			isZeroProgressClosed := (finishedRead.ProgressSeconds == nil || *finishedRead.ProgressSeconds == 0) &&
+				finishedRead.Progress == 0 &&
+				finishedRead.StartedAt != nil && finishedRead.FinishedAt != nil &&
+				*finishedRead.StartedAt == *finishedRead.FinishedAt
+			if isZeroProgressClosed && finishedDate == time.Now().Format("2006-01-02") {
+				continue
+			}
+			if finishedDate > latestFinishedReadDate {
+				latestFinishedReadDate = finishedDate
+			}
+		}
+
+		return latestFinishedReadDate, latestFinishedReadDate != "" && existingStartedAt < latestFinishedReadDate
+	}
 
 	determineDryRunOutcome := func() {
 		if hcBook == nil || hcBook.BookStatusID == 0 {
@@ -3090,6 +3136,10 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			if read == nil {
 				needsMutation = true
 			} else {
+				_, staleReread := findStaleRereadDate(read)
+				if staleReread {
+					needsMutation = true
+				}
 				var currentProgress float64
 				if read.ProgressSeconds != nil {
 					currentProgress = float64(*read.ProgressSeconds)
@@ -3100,7 +3150,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				if currentProgress < 60 || book.Progress.CurrentTime < 60 {
 					threshold = 10
 				}
-				if read.ProgressSeconds == nil || currentProgress <= 0 || math.Abs(book.Progress.CurrentTime-currentProgress) >= threshold {
+				if !staleReread && (read.ProgressSeconds == nil || currentProgress <= 0 || math.Abs(book.Progress.CurrentTime-currentProgress) >= threshold) {
 					needsMutation = true
 				}
 			}
@@ -3239,48 +3289,13 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 					existingStartedAt = existingStartedAt[:10]
 				}
 
-				// Reuse the readStatuses slice fetched earlier instead of making another API call.
-				for i := range readStatuses {
-					if readStatuses[i].FinishedAt == nil || *readStatuses[i].FinishedAt == "" {
-						continue
-					}
-					// Skip reads that have no edition ID — these are physical/manual reads
-					// that should not influence audio stale-reread detection.
-					if readStatuses[i].EditionID == nil {
-						continue
-					}
-					if targetEditionID != nil && *readStatuses[i].EditionID != *targetEditionID {
-						continue
-					}
-					finishedDate := *readStatuses[i].FinishedAt
-					if len(finishedDate) > 10 {
-						finishedDate = finishedDate[:10]
-					}
-					if _, parseErr := time.Parse("2006-01-02", finishedDate); parseErr != nil {
-						continue
-					}
-					// Skip zero-progress closed reads that our own sync code produces when
-					// collapsing previous stale entries on the current day — they should
-					// not cascade into repeated split/close cycles.
-					isZeroProgressClosed := (readStatuses[i].ProgressSeconds == nil || *readStatuses[i].ProgressSeconds == 0) &&
-						readStatuses[i].Progress == 0 &&
-						readStatuses[i].StartedAt != nil && readStatuses[i].FinishedAt != nil &&
-						*readStatuses[i].StartedAt == *readStatuses[i].FinishedAt
-					if isZeroProgressClosed && finishedDate == time.Now().Format("2006-01-02") {
-						continue
-					}
-					if finishedDate > latestFinishedReadDate {
-						latestFinishedReadDate = finishedDate
-					}
-				}
-
+				latestFinishedReadDate, splitRereadFromStaleUnfinished = findStaleRereadDate(readStatusToUpdate)
 				// Strictly-less-than: a read whose started_at already equals the latest
 				// finished date is one we just split on a prior cycle (finished_at is
 				// stamped with today's date). Using <= here re-matches that same read
 				// every subsequent cycle, closing and recreating it in an infinite loop
 				// for any book that stays in progress across multiple sync runs.
-				if latestFinishedReadDate != "" && existingStartedAt < latestFinishedReadDate {
-					splitRereadFromStaleUnfinished = true
+				if splitRereadFromStaleUnfinished {
 					logCtx["existing_started_at"] = existingStartedAt
 					logCtx["latest_finished_read_at"] = latestFinishedReadDate
 				}
