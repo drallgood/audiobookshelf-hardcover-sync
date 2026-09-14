@@ -237,6 +237,45 @@ func TestProcessBookKeepsIdentifierFailureWhenTitleSearchFindsCandidate(t *testi
 	hc.AssertExpectations(t)
 }
 
+func TestProcessBookSnapshotKeepsTitleOnlyEnrichment(t *testing.T) {
+	mismatch.Clear()
+	t.Cleanup(mismatch.Clear)
+	svc, hc := createTestService()
+	svc.config.Sync.SyncOwned = false
+	book := createTestBook("snapshot-title-only", "Title Only", "Author", "", "9781234567890")
+	book.Progress.CurrentTime = 300
+	absBook := toAudiobookshelfBook(book)
+
+	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return((*models.HardcoverBook)(nil), nil).Once()
+	hc.On("SearchBookByISBN10", mock.Anything, book.Media.Metadata.ISBN).Return((*models.HardcoverBook)(nil), nil).Once()
+	hc.On("SearchBooks", mock.Anything, "Title Only Author", "").Return([]models.HardcoverBook{{
+		ID: "901", Title: "Title Only Candidate", Slug: "candidate-slug",
+		Authors: []models.Author{{Name: "Candidate Author"}},
+	}}, nil).Once()
+	hc.On("GetBookByID", mock.Anything, "901").Return(&models.HardcoverBook{
+		ID: "901", Title: "Title Only Candidate", Slug: "candidate-slug",
+		Authors: []models.Author{{Name: "Candidate Author"}},
+	}, nil).Once()
+	// AddWithMetadata enriches the local record with identifier-derived fields.
+	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return(&models.HardcoverBook{
+		ID: "904", Title: "Enriched Hardcover", Authors: []models.Author{{Name: "Enriched Author"}},
+		EditionISBN13: book.Media.Metadata.ISBN,
+	}, nil).Once()
+
+	require.NoError(t, svc.processBook(context.Background(), *absBook, &models.AudiobookshelfUserProgress{}))
+
+	snapshot := svc.GetSnapshot()
+	require.Len(t, snapshot.Mismatches, 1)
+	got := snapshot.Mismatches[0]
+	assert.Equal(t, absBook.ID, got.BookID)
+	assert.Equal(t, book.Media.Metadata.ISBN, got.ISBN13)
+	assert.Equal(t, "904", got.HardcoverBookID)
+	assert.Empty(t, got.HardcoverSlug, "candidate metadata from a different Hardcover book must not be mixed")
+	assert.Equal(t, "Enriched Author", got.HardcoverAuthor)
+	assert.Equal(t, OutcomeNeedsReview, snapshot.BookOutcomes[0].Outcome)
+	hc.AssertExpectations(t)
+}
+
 func TestProcessBookSnapshotKeepsEnrichedSecondLookupFailure(t *testing.T) {
 	mismatch.Clear()
 	t.Cleanup(mismatch.Clear)

@@ -612,6 +612,43 @@ func cloneBookMismatch(record mismatch.BookMismatch) mismatch.BookMismatch {
 	return copyOf
 }
 
+// mergeMissingCandidateDetails preserves candidate details when a later
+// enrichment lookup returns a less complete record. Non-empty values from the
+// later enrichment remain authoritative.
+func mergeMissingCandidateDetails(record, fallback mismatch.BookMismatch) mismatch.BookMismatch {
+	if record.HardcoverBookID != "" && record.HardcoverBookID != fallback.HardcoverBookID {
+		return record
+	}
+	if record.HardcoverBookID == "" {
+		record.HardcoverBookID = fallback.HardcoverBookID
+	}
+	if record.HardcoverTitle == "" {
+		record.HardcoverTitle = fallback.HardcoverTitle
+	}
+	if record.HardcoverAuthor == "" {
+		record.HardcoverAuthor = fallback.HardcoverAuthor
+	}
+	if record.HardcoverPublishedYear == "" {
+		record.HardcoverPublishedYear = fallback.HardcoverPublishedYear
+	}
+	if record.HardcoverCoverURL == "" {
+		record.HardcoverCoverURL = fallback.HardcoverCoverURL
+	}
+	if record.HardcoverPublisher == "" {
+		record.HardcoverPublisher = fallback.HardcoverPublisher
+	}
+	if record.HardcoverASIN == "" {
+		record.HardcoverASIN = fallback.HardcoverASIN
+	}
+	if record.HardcoverISBN == "" {
+		record.HardcoverISBN = fallback.HardcoverISBN
+	}
+	if record.HardcoverSlug == "" {
+		record.HardcoverSlug = fallback.HardcoverSlug
+	}
+	return record
+}
+
 func (s *Service) removeLiveMismatchLocked(bookID string) {
 	if s.liveMismatches == nil {
 		return
@@ -2039,7 +2076,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				mismatch.Add(mismatchData)
 			} else {
 				// Preserve the existing enrichment path for completed title-only lookups.
-				mismatch.AddWithMetadata(
+				enrichedMismatch := mismatch.AddWithMetadata(
 					mismatch.MediaMetadata{
 						Title:         book.Media.Metadata.Title,
 						Subtitle:      book.Media.Metadata.Subtitle,
@@ -2062,6 +2099,14 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 					s.hardcover,
 					s.config.Audiobookshelf.AudnexusRegion,
 				)
+				enrichedMismatch.BookID = book.ID
+				enrichedMismatch = mergeMissingCandidateDetails(enrichedMismatch, mismatchData)
+				s.enrichLiveMismatch(enrichedMismatch)
+				if enrichedMismatch.HardcoverBookID != "" && hcBook != nil {
+					enrichedHCBook := *hcBook
+					enrichedHCBook.ID = enrichedMismatch.HardcoverBookID
+					hcBook = &enrichedHCBook
+				}
 			}
 			bookLog.Info("Book found by title/author - recorded as mismatch")
 
