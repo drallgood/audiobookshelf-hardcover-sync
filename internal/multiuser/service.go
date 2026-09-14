@@ -121,9 +121,14 @@ func (s *MultiUserService) GetAllProfileStatuses() ([]*SyncProfileStatus, error)
 	}
 
 	statuses := make([]*SyncProfileStatus, 0, len(profiles))
+
+	// The aggregate endpoint is intentionally scalar-only. Reading a full
+	// profile status here would copy every book outcome before redacting it.
+	s.statusMutex.RLock()
+	defer s.statusMutex.RUnlock()
+
 	for _, profile := range profiles {
-		status := s.getProfileStatus(profile.ID, &profile, profile.SyncState)
-		statuses = append(statuses, aggregateProfileStatus(status))
+		statuses = append(statuses, aggregateProfileStatus(profile, s.profileStatuses[profile.ID]))
 	}
 
 	return statuses, nil
@@ -132,12 +137,16 @@ func (s *MultiUserService) GetAllProfileStatuses() ([]*SyncProfileStatus, error)
 // aggregateProfileStatus projects a profile status for the unauthenticated
 // aggregate endpoint. Detailed book metadata belongs on the authenticated
 // per-profile status endpoint.
-func aggregateProfileStatus(status *SyncProfileStatus) *SyncProfileStatus {
+func aggregateProfileStatus(profile database.SyncProfile, status *SyncProfileStatus) *SyncProfileStatus {
 	if status == nil {
-		return nil
+		return &SyncProfileStatus{
+			ProfileID:   profile.ID,
+			ProfileName: profile.Name,
+			Status:      "idle",
+		}
 	}
 
-	return &SyncProfileStatus{
+	aggregate := &SyncProfileStatus{
 		ProfileID:   status.ProfileID,
 		ProfileName: status.ProfileName,
 		Status:      status.Status,
@@ -148,6 +157,10 @@ func aggregateProfileStatus(status *SyncProfileStatus) *SyncProfileStatus {
 		BooksTotal:  status.BooksTotal,
 		BooksSynced: status.BooksSynced,
 	}
+	if aggregate.Status == "" {
+		aggregate.Status = "idle"
+	}
+	return aggregate
 }
 
 // GetSyncService returns the sync service for a profile, if it exists

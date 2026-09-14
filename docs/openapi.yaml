@@ -163,6 +163,38 @@ components:
         snapshot:
           $ref: '#/components/schemas/SyncSnapshot'
 
+    AggregateSyncStatus:
+      type: object
+      description: Baseline status exposed by the public aggregate status endpoint.
+      properties:
+        profile_id:
+          type: string
+        profile_name:
+          type: string
+        status:
+          type: string
+          enum: [idle, syncing, completed, error]
+          example: "idle"
+        dry_run:
+          type: boolean
+        last_sync:
+          type: string
+          format: date-time
+          nullable: true
+          example: "2023-01-01T00:00:00Z"
+        error:
+          type: string
+          example: "Connection failed"
+        progress:
+          type: string
+          example: "Starting sync..."
+        books_total:
+          type: integer
+          description: Number of candidates observed before processing limits.
+        books_synced:
+          type: integer
+          description: Legacy count retained for existing clients.
+
     OutcomeCounts:
       type: object
       required: [synced, already_current, skipped, needs_review, not_found, failed, would_sync]
@@ -552,6 +584,7 @@ paths:
     get:
       tags: [Status]
       summary: Get sync status for all profiles
+      security: []
       responses:
         '200':
           description: Sync status for all profiles
@@ -566,16 +599,7 @@ paths:
                   data:
                     type: array
                     items:
-                      type: object
-                      properties:
-                        profileId:
-                          type: string
-                          example: "profile-123"
-                        profileName:
-                          type: string
-                          example: "My Audiobooks"
-                        status:
-                          $ref: '#/components/schemas/SyncStatus'
+                      $ref: '#/components/schemas/AggregateSyncStatus'
   
   /profiles/{profileId}/sync:
     post:

@@ -317,10 +317,12 @@ func TestProcessBookSnapshotKeepsEnrichedNoEditionMismatch(t *testing.T) {
 	assert.Equal(t, "https://example.test/no-edition-cover.jpg", got.HardcoverCoverURL)
 	assert.Equal(t, "2020", got.HardcoverPublishedYear)
 	assert.Equal(t, "2023-01-01", got.ReleaseDate)
+	assert.Equal(t, 1, got.Attempts)
 	assert.Equal(t, OutcomeNeedsReview, snapshot.BookOutcomes[0].Outcome)
 	global := mismatch.GetAll()
 	require.Len(t, global, 1)
 	assert.Equal(t, "905", global[0].BookID, "global mismatch export keeps its established Hardcover identifier")
+	assert.Equal(t, 1, global[0].Attempts)
 	hc.AssertExpectations(t)
 }
 

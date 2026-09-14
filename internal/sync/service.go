@@ -508,6 +508,7 @@ func (s *Service) upsertLiveMismatchLocked(book models.AudiobookshelfBook, recor
 		Timestamp:       record.UpdatedAt.Unix(),
 		CreatedAt:       record.UpdatedAt,
 		HardcoverBookID: record.HardcoverBookID,
+		Attempts:        1,
 	}
 	if book.Media.CoverPath != "" {
 		mismatchRecord.CoverURL = fmt.Sprintf("%s/api/items/%s/cover", s.config.Audiobookshelf.URL, book.ID)
@@ -521,6 +522,9 @@ func (s *Service) upsertLiveMismatchLocked(book models.AudiobookshelfBook, recor
 		// fields. Start with the complete enriched record so identifiers,
 		// relationship IDs, and other metadata survive that refresh.
 		enriched := cloneBookMismatch(previous)
+		if enriched.Attempts <= 0 {
+			enriched.Attempts = 1
+		}
 		enriched.BookID = mismatchRecord.BookID
 		enriched.Title = mismatchRecord.Title
 		enriched.Author = mismatchRecord.Author
@@ -584,9 +588,12 @@ func (s *Service) enrichLiveMismatch(record mismatch.BookMismatch) {
 		if record.CreatedAt.IsZero() {
 			record.CreatedAt = previous.CreatedAt
 		}
-		if record.Attempts == 0 {
+		if record.Attempts <= 0 {
 			record.Attempts = previous.Attempts
 		}
+	}
+	if record.Attempts <= 0 {
+		record.Attempts = 1
 	}
 	if record.Timestamp == 0 {
 		record.Timestamp = time.Now().Unix()
