@@ -416,13 +416,9 @@ func (s *Service) processedOutcomeTotal() int32 {
 	return s.outcomeCounts.Total()
 }
 
-// recordBookOutcome atomically replaces the outcome for one ABS item and its
-// category count. Repeated calls for the same item adjust the old category and
-// never inflate processed totals.
-func (s *Service) recordBookOutcome(book models.AudiobookshelfBook, outcome SyncOutcome, reason string, err error, hcBook *models.HardcoverBook) {
-	s.recordBookOutcomeWithMatchMethod(book, outcome, reason, err, hcBook, "")
-}
-
+// recordBookOutcomeWithMatchMethod atomically replaces the outcome for one ABS
+// item and its category count. Repeated calls adjust the old category without
+// inflating processed totals.
 func (s *Service) recordBookOutcomeWithMatchMethod(book models.AudiobookshelfBook, outcome SyncOutcome, reason string, err error, hcBook *models.HardcoverBook, matchMethod string) {
 	if s.summary == nil || book.ID == "" {
 		return
