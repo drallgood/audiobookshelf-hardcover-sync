@@ -373,6 +373,22 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
         ProfileName: profileConfig.Profile.Name,
         LastSync:    timePtr(time.Now()),
     }
+	if summary.BooksTotal > 0 {
+		status.BooksTotal = int(summary.BooksTotal)
+	} else {
+		status.BooksTotal = int(summary.TotalBooksProcessed)
+	}
+	status.BooksSynced = int(summary.BooksSynced)
+	status.BooksNotFound = summary.BooksNotFound
+	status.Mismatches = summary.Mismatches
+	status.LastSyncSummary = &sync.SyncSummary{
+		UserID:              summary.UserID,
+		TotalBooksProcessed: summary.TotalBooksProcessed,
+		BooksSynced:         summary.BooksSynced,
+		BooksTotal:          summary.BooksTotal,
+		BooksNotFound:       []sync.BookNotFoundInfo{},
+		Mismatches:          []mismatch.BookMismatch{},
+	}
 
     if err != nil {
         status.Status = "error"
@@ -384,28 +400,6 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
 } else {
 		status.Status = "completed"
 		status.Progress = "Sync completed successfully"
-		if summary.BooksTotal > 0 {
-			status.BooksTotal = int(summary.BooksTotal)
-		} else {
-			status.BooksTotal = int(summary.TotalBooksProcessed)
-		}
-		status.BooksSynced = int(summary.BooksSynced)
-
-        // Store full data at top level
-        status.BooksNotFound = summary.BooksNotFound
-        status.Mismatches = summary.Mismatches
-
-        // Lightweight last_sync_summary (counters only)
-        summaryCopy := &sync.SyncSummary{
-            UserID:              summary.UserID,
-            TotalBooksProcessed: summary.TotalBooksProcessed,
-            BooksSynced:         summary.BooksSynced,
-            BooksTotal:          summary.BooksTotal,
-            BooksNotFound:       []sync.BookNotFoundInfo{},
-            Mismatches:          []mismatch.BookMismatch{},
-        }
-        status.LastSyncSummary = summaryCopy
-
         s.logger.Debug("Stored full sync summary in profile status", map[string]interface{}{
             "profileID":       profileID,
             "books_processed": summary.TotalBooksProcessed,

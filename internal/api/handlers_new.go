@@ -26,6 +26,27 @@ type syncService interface {
 	GetSummary() *sync.SyncSummary
 }
 
+// summaryFromProfileStatus reconstructs a summary after an inactive sync
+// service has been removed. LastSyncSummary preserves the processed count for
+// partial runs; BooksTotal remains the fallback for older status records.
+func summaryFromProfileStatus(status *multiuser.SyncProfileStatus) *sync.SyncSummary {
+	if status == nil || status.LastSync == nil {
+		return nil
+	}
+
+	totalBooksProcessed := int32(status.BooksTotal)
+	if status.LastSyncSummary != nil {
+		totalBooksProcessed = status.LastSyncSummary.TotalBooksProcessed
+	}
+
+	return &sync.SyncSummary{
+		TotalBooksProcessed: totalBooksProcessed,
+		BooksSynced:         int32(status.BooksSynced),
+		BooksNotFound:       status.BooksNotFound,
+		Mismatches:          status.Mismatches,
+	}
+}
+
 // NewHandler creates a new API handler
 func NewHandler(multiUserService *multiuser.MultiUserService, syncSvc syncService, log *logger.Logger) *Handler {
 	h := &Handler{
@@ -505,14 +526,8 @@ func (h *Handler) GetSyncSummary(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// If no active sync service, try to get the last sync status
 		status := h.multiUserService.GetProfileStatus(profileID)
-		if status != nil && status.LastSync != nil {
-			// Create a summary from the last sync status
-			summary = &sync.SyncSummary{
-				TotalBooksProcessed: int32(status.BooksTotal),
-				BooksSynced:         int32(status.BooksSynced),
-				BooksNotFound:       status.BooksNotFound,
-				Mismatches:          status.Mismatches,
-			}
+		if summary = summaryFromProfileStatus(status); summary != nil {
+			// Log the summary reconstructed from the last sync status.
 			h.log.Debug("Created summary from profile status", map[string]interface{}{
 				"total_books_processed": summary.TotalBooksProcessed,
 				"books_synced":         summary.BooksSynced,
@@ -539,18 +554,10 @@ func (h *Handler) GetSyncSummary(w http.ResponseWriter, r *http.Request) {
 		"mismatches_count":     len(summary.Mismatches),
 	})
 
-	// Log the summary we received from the service
-	h.log.Debug("Processing sync summary from service", map[string]interface{}{
-		"total_books_processed": summary.TotalBooksProcessed,
-		"books_synced":         summary.BooksSynced,
-		"books_not_found_count": len(summary.BooksNotFound),
-		"mismatches_count":     len(summary.Mismatches),
-	})
-
 	// Convert to API response
 	syncSummary := types.SyncSummaryResponse{
-		TotalBooksProcessed: summary.TotalBooksProcessed, // Direct access is safe due to mutex in GetSummary()
-		BooksSynced:         summary.BooksSynced,         // Direct access is safe due to mutex in GetSummary()
+		TotalBooksProcessed: summary.TotalBooksProcessed,
+		BooksSynced:         summary.BooksSynced,
 		BooksNotFound:       make([]types.BookNotFoundInfo, 0, len(summary.BooksNotFound)),
 		Mismatches:          make([]mismatch.BookMismatch, 0, len(summary.Mismatches)),
 	}

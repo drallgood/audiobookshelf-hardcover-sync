@@ -79,6 +79,121 @@ func TestHandleInProgressBook_DryRun(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
+func TestHandleInProgressBook_DryRunUsesLiveReadSelection(t *testing.T) {
+	targetEditionID := int64(456)
+	userBookEditionID := int64(789)
+	behind := 100
+	current := 300
+	tests := []struct {
+		name            string
+		userBookEdition string
+		reads           []hardcover.UserBookRead
+		wantOutcome     SyncOutcome
+	}{
+		{
+			name:            "highest progress on target edition",
+			userBookEdition: "456",
+			reads: []hardcover.UserBookRead{
+				{ID: 1, EditionID: &targetEditionID, ProgressSeconds: &behind},
+				{ID: 2, EditionID: &targetEditionID, ProgressSeconds: &current},
+			},
+			wantOutcome: OutcomeAlreadyCurrent,
+		},
+		{
+			name:            "highest progress nil edition fallback",
+			userBookEdition: "456",
+			reads: []hardcover.UserBookRead{
+				{ID: 3, ProgressSeconds: &behind},
+				{ID: 4, ProgressSeconds: &current},
+			},
+			wantOutcome: OutcomeAlreadyCurrent,
+		},
+		{
+			name:            "highest progress user book edition fallback",
+			userBookEdition: "789",
+			reads: []hardcover.UserBookRead{
+				{ID: 5, EditionID: &userBookEditionID, ProgressSeconds: &behind},
+				{ID: 6, EditionID: &userBookEditionID, ProgressSeconds: &current},
+			},
+			wantOutcome: OutcomeAlreadyCurrent,
+		},
+		{
+			name:            "target edition takes priority over nil edition",
+			userBookEdition: "456",
+			reads: []hardcover.UserBookRead{
+				{ID: 7, ProgressSeconds: &current},
+				{ID: 8, EditionID: &targetEditionID, ProgressSeconds: &behind},
+			},
+			wantOutcome: OutcomeWouldSync,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, mockClient := createTestService()
+			svc.config.Sync.DryRun = true
+			book := createTestBook("dry-run-read-selection", "Test Book", "Test Author", "", "")
+			book.Progress.CurrentTime = 300
+			book.Media.Duration = 1000
+			audiobook := toAudiobookshelfBook(book)
+			mockClient.On("GetUserBook", mock.Anything, "123").Return(&models.HardcoverBook{
+				ID: "book-123", EditionID: tt.userBookEdition, BookStatusID: 2,
+			}, nil).Once()
+			mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: 123}).Return(tt.reads, nil).Once()
+
+			var gotOutcome SyncOutcome
+			ctx := context.WithValue(context.Background(), processBookOutcomeReporterKey{}, processBookOutcomeReporter(func(outcome SyncOutcome, _ string) {
+				gotOutcome = outcome
+			}))
+			err := svc.handleInProgressBook(ctx, 123, *audiobook, audiobook.ID+":456")
+
+			assert.NoError(t, err)
+			assert.Equal(t, tt.wantOutcome, gotOutcome)
+			assert.NotContains(t, svc.state.Books, audiobook.ID+":456")
+			mockClient.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+			mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+			mockClient.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+			mockClient.AssertExpectations(t)
+		})
+	}
+}
+
+func TestHandleInProgressBook_DryRunDetectsStaleReread(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.config.Sync.DryRun = true
+
+	book := createTestBook("dry-run-stale-reread", "Test Book", "Test Author", "", "")
+	book.Progress.CurrentTime = 300
+	book.Media.Duration = 1000
+	audiobook := toAudiobookshelfBook(book)
+
+	userBookID := int64(123)
+	editionID := int64(456)
+	progress := 300
+	oldStartedAt := "2025-01-01"
+	finishedAt := "2025-02-01"
+	mockClient.On("GetUserBook", mock.Anything, "123").Return(&models.HardcoverBook{
+		ID: "book-123", EditionID: "456", BookStatusID: 2,
+	}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{
+		{ID: 1, EditionID: &editionID, StartedAt: &oldStartedAt, ProgressSeconds: &progress},
+		{ID: 2, EditionID: &editionID, StartedAt: &finishedAt, FinishedAt: &finishedAt, ProgressSeconds: &progress},
+	}, nil).Once()
+
+	var gotOutcome SyncOutcome
+	ctx := context.WithValue(context.Background(), processBookOutcomeReporterKey{}, processBookOutcomeReporter(func(outcome SyncOutcome, _ string) {
+		gotOutcome = outcome
+	}))
+	err := svc.handleInProgressBook(ctx, userBookID, *audiobook, audiobook.ID+":456")
+
+	assert.NoError(t, err)
+	assert.Equal(t, OutcomeWouldSync, gotOutcome)
+	mockClient.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+	mockClient.AssertExpectations(t)
+}
+
 // TestHandleInProgressBook_GetUserBookError tests error handling when GetUserBook fails
 func TestHandleInProgressBook_GetUserBookError(t *testing.T) {
 	// Create test service and mock client
@@ -1463,24 +1578,13 @@ func TestHandleInProgressBook_GetUserBookReadsError(t *testing.T) {
 		UserBookID: userBookID,
 	}).Return(nil, expectedErr).Once()
 
-	// Second-chance full fetch also returns the same error
-
-	// Note: Second GetUserBook call is now served from cache, so no additional mock needed
-
-	// Mock the InsertUserBookRead call
-	progressSeconds := 100
-	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
-		return input.UserBookID == userBookID &&
-			input.DatesRead.ProgressSeconds != nil &&
-			*input.DatesRead.ProgressSeconds == progressSeconds
-	})).Return(789, nil).Once()
-
 	// Call the function
 	stateKey := fmt.Sprintf("%s:test-edition", audiobook.ID)
 	err := svc.handleInProgressBook(context.Background(), userBookID, *audiobook, stateKey)
 
-	// Verify results - the function should continue despite the GetUserBookReads error
-	assert.NoError(t, err, "Should not return an error when GetUserBookReads fails but we can create a new read")
+	// A failed progress read is a technical failure; creating a new read from an
+	// incomplete remote snapshot could duplicate or overwrite user history.
+	assert.ErrorIs(t, err, expectedErr)
 	mockClient.AssertExpectations(t)
 }
 
