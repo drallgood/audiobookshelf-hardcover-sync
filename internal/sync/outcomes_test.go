@@ -56,30 +56,76 @@ func TestProcessBookRecordsSkipAndIncrementalNoChange(t *testing.T) {
 	})
 }
 
-func TestProcessBookRecordsSuccessfulMutation(t *testing.T) {
-	svc, hc := createTestService()
-	svc.config.Sync.SyncOwned = false
-	testBook := createTestBook("outcome-success", "Progress", "Author", "outcome-success-asin", "")
-	testBook.Media.Duration = 1000
-	testBook.Progress.CurrentTime = 300
-	book := toAudiobookshelfBook(testBook)
-	expectASINMatch(hc, "outcome-success-asin", "100", "200", 300)
-	hc.On("GetUserBook", mock.Anything, "300").Return(&models.HardcoverBook{
-		ID: "100", EditionID: "200", BookStatusID: 2,
-	}, nil).Once()
-	editionID := int64(200)
-	progress := 100
-	hc.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: 300}).Return([]hardcover.UserBookRead{{
-		ID: 400, EditionID: &editionID, ProgressSeconds: &progress,
-	}}, nil).Once()
-	hc.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
-		return input.ID == 400 && input.Object["progress_seconds"] == int64(300)
-	})).Return(true, nil).Once()
+func TestProcessBookClassifiesProgressMutationOutcomes(t *testing.T) {
+	readErr := errors.New("progress endpoint unavailable")
+	writeErr := errors.New("progress mutation rejected")
+	for _, tt := range []struct {
+		name            string
+		dryRun          bool
+		readErr         error
+		writeErr        error
+		expectedOutcome SyncOutcome
+		expectedErr     error
+	}{
+		{name: "synced", expectedOutcome: OutcomeSynced},
+		{name: "read failure", readErr: readErr, expectedOutcome: OutcomeFailed, expectedErr: readErr},
+		{name: "write failure", writeErr: writeErr, expectedOutcome: OutcomeFailed, expectedErr: writeErr},
+		{name: "dry run", dryRun: true, expectedOutcome: OutcomeWouldSync},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, hc := createTestService()
+			svc.config.Sync.SyncOwned = false
+			svc.config.Sync.DryRun = tt.dryRun
+			book := toAudiobookshelfBook(createTestBook(
+				"outcome-"+tt.name, "Progress", "Author", "outcome-"+tt.name+"-asin", ""))
+			book.Media.Duration = 1000
+			book.Progress.CurrentTime = 300
+			expectASINMatch(hc, book.Media.Metadata.ASIN, "100", "200", 300)
+			hc.On("GetUserBook", mock.Anything, "300").Return(&models.HardcoverBook{
+				ID: "100", EditionID: "200", BookStatusID: 2,
+			}, nil).Once()
+			if tt.readErr != nil {
+				hc.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: 300}).Return(nil, tt.readErr).Once()
+			} else {
+				editionID := int64(200)
+				progress := 100
+				hc.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: 300}).Return([]hardcover.UserBookRead{{
+					ID: 400, EditionID: &editionID, ProgressSeconds: &progress,
+				}}, nil).Once()
+				if !tt.dryRun {
+					hc.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+						return input.ID == 400 && input.Object["progress_seconds"] == int64(300)
+					})).Return(tt.writeErr == nil, tt.writeErr).Once()
+				}
+			}
 
-	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
-	assert.Equal(t, OutcomeSynced, recordedOutcome(svc, book.ID).Outcome)
-	assert.Equal(t, int32(1), svc.outcomeCounts.Synced)
-	hc.AssertExpectations(t)
+			err := svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{})
+			if tt.expectedErr != nil {
+				assert.ErrorIs(t, err, tt.expectedErr)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.expectedOutcome, recordedOutcome(svc, book.ID).Outcome)
+			assert.Equal(t, int32(1), svc.outcomeCounts.Total())
+			switch tt.expectedOutcome {
+			case OutcomeSynced:
+				assert.Equal(t, int32(1), svc.outcomeCounts.Synced)
+			case OutcomeFailed:
+				assert.Equal(t, int32(1), svc.outcomeCounts.Failed)
+			case OutcomeWouldSync:
+				assert.Equal(t, int32(1), svc.outcomeCounts.WouldSync)
+			}
+			if tt.expectedOutcome != OutcomeSynced {
+				assert.NotContains(t, svc.state.Books, book.ID)
+			}
+			if tt.dryRun {
+				hc.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+				hc.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+				hc.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+			}
+			hc.AssertExpectations(t)
+		})
+	}
 }
 
 func TestProcessBookThresholdSkipRecordsSkipped(t *testing.T) {
@@ -186,77 +232,6 @@ func TestProcessBookKeepsIdentifierFailureWhenTitleSearchFindsCandidate(t *testi
 	assert.Equal(t, "possible-match", matches[0].HardcoverSlug)
 	assert.Contains(t, matches[0].Reason, lookupErr.Error())
 	hc.AssertExpectations(t)
-}
-
-func TestProcessBookProgressReadFailureIsTechnicalFailure(t *testing.T) {
-	svc, hc := createTestService()
-	svc.config.Sync.SyncOwned = false
-	book := createTestBook("outcome-progress-failed", "Progress Failure", "Author", "progress-failed-asin", "")
-	book.Media.Duration = 1000
-	book.Progress.CurrentTime = 300
-	absBook := toAudiobookshelfBook(book)
-	expectASINMatch(hc, "progress-failed-asin", "101", "201", 301)
-	hc.On("GetUserBook", mock.Anything, "301").Return(&models.HardcoverBook{
-		ID: "101", EditionID: "201", BookStatusID: 2,
-	}, nil).Once()
-	progressErr := errors.New("progress endpoint unavailable")
-	hc.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: 301}).Return(nil, progressErr).Once()
-
-	err := svc.processBook(context.Background(), *absBook, &models.AudiobookshelfUserProgress{})
-	assert.ErrorIs(t, err, progressErr)
-	assert.Equal(t, OutcomeFailed, recordedOutcome(svc, absBook.ID).Outcome)
-	assert.NotContains(t, svc.state.Books, absBook.ID)
-}
-
-func TestProcessBookProgressWriteFailureIsTechnicalFailure(t *testing.T) {
-	svc, hc := createTestService()
-	svc.config.Sync.SyncOwned = false
-	book := createTestBook("outcome-progress-write-failed", "Progress Write Failure", "Author", "progress-write-failed-asin", "")
-	book.Media.Duration = 1000
-	book.Progress.CurrentTime = 300
-	absBook := toAudiobookshelfBook(book)
-	expectASINMatch(hc, "progress-write-failed-asin", "104", "204", 304)
-	hc.On("GetUserBook", mock.Anything, "304").Return(&models.HardcoverBook{
-		ID: "104", EditionID: "204", BookStatusID: 2,
-	}, nil).Once()
-	editionID := int64(204)
-	progress := 100
-	hc.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: 304}).Return([]hardcover.UserBookRead{{
-		ID: 404, EditionID: &editionID, ProgressSeconds: &progress,
-	}}, nil).Once()
-	writeErr := errors.New("progress mutation rejected")
-	hc.On("UpdateUserBookRead", mock.Anything, mock.Anything).Return(false, writeErr).Once()
-
-	err := svc.processBook(context.Background(), *absBook, &models.AudiobookshelfUserProgress{})
-	assert.ErrorIs(t, err, writeErr)
-	assert.Equal(t, OutcomeFailed, recordedOutcome(svc, absBook.ID).Outcome)
-	assert.NotContains(t, svc.state.Books, absBook.ID)
-}
-
-func TestProcessBookDryRunRecordsActionWithoutMutationOrState(t *testing.T) {
-	svc, hc := createTestService()
-	svc.config.Sync.DryRun = true
-	svc.config.Sync.SyncOwned = false
-	book := createTestBook("outcome-dry-run", "Dry Run", "Author", "dry-run-asin", "")
-	book.Media.Duration = 1000
-	book.Progress.CurrentTime = 300
-	absBook := toAudiobookshelfBook(book)
-	expectASINMatch(hc, "dry-run-asin", "102", "202", 302)
-	hc.On("GetUserBook", mock.Anything, "302").Return(&models.HardcoverBook{
-		ID: "102", EditionID: "202", BookStatusID: 2,
-	}, nil).Once()
-	editionID := int64(202)
-	progress := 100
-	hc.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: 302}).Return([]hardcover.UserBookRead{{
-		ID: 402, EditionID: &editionID, ProgressSeconds: &progress,
-	}}, nil).Once()
-
-	require.NoError(t, svc.processBook(context.Background(), *absBook, &models.AudiobookshelfUserProgress{}))
-	assert.Equal(t, OutcomeWouldSync, recordedOutcome(svc, absBook.ID).Outcome)
-	assert.NotContains(t, svc.state.Books, absBook.ID)
-	hc.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
-	hc.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
-	hc.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
 }
 
 func TestProcessLibraryCandidateDenominatorIgnoresLimit(t *testing.T) {
