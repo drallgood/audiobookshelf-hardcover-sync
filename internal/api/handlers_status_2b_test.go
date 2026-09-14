@@ -321,7 +321,15 @@ func TestPublicStatusPublishesSecondLookupOutcomeBeforeEnrichment(t *testing.T) 
 		t.Fatal("timed out waiting for delayed enrichment")
 	}
 
-	status := multiUser.GetProfileStatus(profileID)
+	handler := NewHandler(multiUser, nil, logger.Get())
+	routes := newMountedStatusRoutes(handler)
+	var statusResponse struct {
+		Success bool                        `json:"success"`
+		Data    multiuser.SyncProfileStatus `json:"data"`
+	}
+	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/status", &statusResponse)
+	require.True(t, statusResponse.Success)
+	status := &statusResponse.Data
 	require.NotNil(t, status)
 	require.NotNil(t, status.Snapshot)
 	require.Equal(t, "syncing", status.Snapshot.State)
@@ -331,7 +339,7 @@ func TestPublicStatusPublishesSecondLookupOutcomeBeforeEnrichment(t *testing.T) 
 	require.Equal(t, "delayed-book", status.Snapshot.BooksNotFound[0].BookID)
 
 	hardcoverServer.releaseEnrichment()
-	completed := waitForStatusRun(t, multiUser, profileID)
+	completed := waitForMountedStatusRun(t, routes, profileID, status.Snapshot.RunID)
 	require.Equal(t, "completed", completed.Status)
 }
 
@@ -391,25 +399,49 @@ func TestPublicStatusRunReplacementKeepsNewRunCurrent(t *testing.T) {
 		t.Fatal("timed out waiting for first run to block in enrichment")
 	}
 
-	oldStatus := multiUser.GetProfileStatus(profileID)
-	require.NotNil(t, oldStatus)
-	require.NotNil(t, oldStatus.Snapshot)
-	oldRunID := oldStatus.Snapshot.RunID
+	handler := NewHandler(multiUser, nil, logger.Get())
+	routes := newMountedStatusRoutes(handler)
+	var oldStatusResponse struct {
+		Success bool                        `json:"success"`
+		Data    multiuser.SyncProfileStatus `json:"data"`
+	}
+	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/status", &oldStatusResponse)
+	require.True(t, oldStatusResponse.Success)
+	require.NotNil(t, oldStatusResponse.Data.Snapshot)
+	oldRunID := oldStatusResponse.Data.Snapshot.RunID
 	require.NoError(t, multiUser.CancelSync(profileID))
 	require.NoError(t, multiUser.StartSync(profileID))
-	newStatus := multiUser.GetProfileStatus(profileID)
-	require.NotNil(t, newStatus)
-	require.NotNil(t, newStatus.Snapshot)
-	newRunID := newStatus.Snapshot.RunID
+	var newStatusResponse struct {
+		Success bool                        `json:"success"`
+		Data    multiuser.SyncProfileStatus `json:"data"`
+	}
+	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/status", &newStatusResponse)
+	require.True(t, newStatusResponse.Success)
+	require.NotNil(t, newStatusResponse.Data.Snapshot)
+	newRunID := newStatusResponse.Data.Snapshot.RunID
 	require.NotEqual(t, oldRunID, newRunID)
 
-	// Let the canceled run return first; its terminal publication must be
-	// rejected by generation, leaving the replacement run current.
+	// Release the canceled run's blocked upstream request and wait until its
+	// handler has returned before asserting the replacement remains current.
 	hardcoverServer.releaseEnrichment()
-	completed := waitForStatusRun(t, multiUser, profileID)
+	select {
+	case <-hardcoverServer.firstEnrichmentDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for canceled run to finish its blocked lookup")
+	}
+	completed := waitForMountedStatusRun(t, routes, profileID, newRunID)
 	require.Equal(t, "completed", completed.Status)
 	require.NotNil(t, completed.Snapshot)
 	require.Equal(t, newRunID, completed.Snapshot.RunID)
+
+	var finalStatusResponse struct {
+		Success bool                        `json:"success"`
+		Data    multiuser.SyncProfileStatus `json:"data"`
+	}
+	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/status", &finalStatusResponse)
+	require.True(t, finalStatusResponse.Success)
+	require.NotNil(t, finalStatusResponse.Data.Snapshot)
+	require.Equal(t, newRunID, finalStatusResponse.Data.Snapshot.RunID)
 }
 
 func TestPublicStatusRoutesIsolateConcurrentProfileRuns(t *testing.T) {
@@ -869,18 +901,22 @@ func newTimeoutStatusHardcoverServer() *httptest.Server {
 
 type delayedSecondLookupHardcoverServer struct {
 	*httptest.Server
-	enrichmentStarted chan struct{}
-	release           chan struct{}
-	startOnce         sync.Once
-	releaseOnce       sync.Once
-	mu                sync.Mutex
-	isbnCalls         int
+	enrichmentStarted   chan struct{}
+	firstEnrichmentDone chan struct{}
+	release             chan struct{}
+	startOnce           sync.Once
+	firstDoneOnce       sync.Once
+	releaseOnce         sync.Once
+	mu                  sync.Mutex
+	isbnCalls           int
+	enrichmentCalls     int
 }
 
 func newDelayedSecondLookupHardcoverServer() *delayedSecondLookupHardcoverServer {
 	fixture := &delayedSecondLookupHardcoverServer{
-		enrichmentStarted: make(chan struct{}),
-		release:           make(chan struct{}),
+		enrichmentStarted:   make(chan struct{}),
+		firstEnrichmentDone: make(chan struct{}),
+		release:             make(chan struct{}),
 	}
 	fixture.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
@@ -914,10 +950,23 @@ func newDelayedSecondLookupHardcoverServer() *delayedSecondLookupHardcoverServer
 		case strings.Contains(request.Query, "GetCurrentUserID"):
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": map[string]interface{}{"me": []map[string]interface{}{{"id": 1}}}})
 		case strings.Contains(request.Query, "SearchPublishers"):
+			fixture.mu.Lock()
+			fixture.enrichmentCalls++
+			enrichmentCall := fixture.enrichmentCalls
+			fixture.mu.Unlock()
 			fixture.startOnce.Do(func() { close(fixture.enrichmentStarted) })
+			defer func() {
+				if enrichmentCall == 1 {
+					fixture.firstDoneOnce.Do(func() { close(fixture.firstEnrichmentDone) })
+				}
+			}()
 			select {
 			case <-fixture.release:
 			case <-r.Context().Done():
+				// Keep the fixture's completion barrier deterministic: the test
+				// releases the blocked request after replacing the run, then
+				// waits for this handler to return before its final HTTP read.
+				<-fixture.release
 				return
 			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": map[string]interface{}{"publishers": []interface{}{}}})
@@ -964,9 +1013,45 @@ func waitForStatusRun(t *testing.T, service *multiuser.MultiUserService, profile
 	return nil
 }
 
+func newMountedStatusRoutes(handler *Handler) http.Handler {
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("GET /profiles/{id}/status", handler.GetProfileStatus)
+	apiMux.HandleFunc("GET /profiles/{id}/summary", handler.GetSyncSummary)
+
+	root := http.NewServeMux()
+	root.HandleFunc("GET /api/status", handler.GetAllProfileStatuses)
+	root.Handle("/api/", http.StripPrefix("/api", apiMux))
+	return root
+}
+
+func waitForMountedStatusRun(t *testing.T, routes http.Handler, profileID, runID string) *multiuser.SyncProfileStatus {
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var response struct {
+			Success bool                        `json:"success"`
+			Data    multiuser.SyncProfileStatus `json:"data"`
+		}
+		callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/status", &response)
+		if response.Success && response.Data.Status == "completed" &&
+			response.Data.Snapshot != nil && response.Data.Snapshot.RunID == runID {
+			return &response.Data
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for mounted status run %q to complete", runID)
+	return nil
+}
+
 func callJSONHandler(t *testing.T, handler http.HandlerFunc, path string, target interface{}) {
 	recorder := httptest.NewRecorder()
 	handler(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), target))
+}
+
+func callJSONRoute(t *testing.T, routes http.Handler, method, path string, target interface{}) {
+	recorder := httptest.NewRecorder()
+	routes.ServeHTTP(recorder, httptest.NewRequest(method, path, nil))
 	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), target))
 }
