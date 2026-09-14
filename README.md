@@ -67,10 +67,37 @@ Existing single-profile setups are **automatically migrated** on first startup:
 | `PUT` | `/api/profiles/{id}` | Update profile |
 | `DELETE` | `/api/profiles/{id}` | Delete profile |
 | `PUT` | `/api/profiles/{id}/config` | Update profile configuration |
-| `GET` | `/api/profiles/{id}/status` | Get sync status |
+| `GET` | `/api/profiles/{id}/status` | Get sync status and the profile's current-run outcome snapshot |
+| `GET` | `/api/profiles/{id}/summary` | Get the current-run outcome summary with legacy summary fields |
 | `POST` | `/api/profiles/{id}/sync` | Start sync |
 | `DELETE` | `/api/profiles/{id}/sync` | Cancel sync |
 | `GET` | `/api/status` | All profile statuses |
+
+### Current-run outcome status
+
+While a profile is syncing, its status includes one coherent snapshot for that
+run. The profile status response exposes it as `snapshot`; the summary endpoint
+also returns its fields for programmatic clients. The fields include `run_id`,
+`run_started_at`, `state`, `books_total`, `processed_so_far`,
+`outcome_counts`, and `attention_records`. Each processed Audiobookshelf item
+has exactly one outcome:
+
+- `synced`
+- `already_current`
+- `skipped`
+- `needs_review`
+- `not_found`
+- `failed`
+- `would_sync` (a dry run reached an action that would otherwise update Hardcover)
+
+The seven outcome counts always add up to `processed_so_far`. `needs_review`,
+`not_found`, and `failed` records are available as the run's attention list as
+soon as they are recorded. Statuses are isolated by profile, so concurrent
+syncs do not share counts or attention records.
+
+Existing fields such as `total_books_processed`, `books_synced`,
+`books_not_found`, and `mismatches` remain available for existing API clients.
+The snapshot is current-run status, not persistent run history.
 
 ### Environment Variables (Multi-Profile)
 

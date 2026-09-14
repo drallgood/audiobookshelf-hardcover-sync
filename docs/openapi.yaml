@@ -137,6 +137,144 @@ components:
           type: string
           nullable: true
           example: "Connection failed"
+        profile_id:
+          type: string
+        profile_name:
+          type: string
+        dry_run:
+          type: boolean
+        books_total:
+          type: integer
+          description: Number of candidates observed before processing limits.
+        books_synced:
+          type: integer
+          description: Legacy count retained for existing clients.
+        books_not_found:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookNotFoundInfo'
+        mismatches:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookMismatch'
+        last_sync_summary:
+          type: object
+          description: Legacy summary fields retained for existing clients.
+        snapshot:
+          $ref: '#/components/schemas/SyncSnapshot'
+
+    OutcomeCounts:
+      type: object
+      required: [synced, already_current, skipped, needs_review, not_found, failed, would_sync]
+      properties:
+        synced: {type: integer}
+        already_current: {type: integer}
+        skipped: {type: integer}
+        needs_review: {type: integer}
+        not_found: {type: integer}
+        failed: {type: integer}
+        would_sync: {type: integer}
+
+    BookOutcomeRecord:
+      type: object
+      required: [book_id, outcome, updated_at]
+      properties:
+        book_id: {type: string}
+        outcome:
+          type: string
+          enum: [synced, already_current, skipped, needs_review, not_found, failed, would_sync]
+        title: {type: string}
+        author: {type: string}
+        asin: {type: string}
+        isbn: {type: string}
+        reason: {type: string}
+        error: {type: string}
+        match_method: {type: string}
+        hardcover_book_id: {type: string}
+        edition_id: {type: string}
+        updated_at: {type: string, format: date-time}
+
+    BookNotFoundInfo:
+      type: object
+      properties:
+        book_id: {type: string}
+        title: {type: string}
+        author: {type: string}
+        asin: {type: string}
+        isbn: {type: string}
+        error: {type: string}
+
+    BookMismatch:
+      type: object
+      properties:
+        book_id: {type: string}
+        title: {type: string}
+        author: {type: string}
+        reason: {type: string}
+
+    SyncSnapshot:
+      type: object
+      required: [run_id, run_started_at, state, books_total, processed_so_far, processed_count, outcome_counts, book_outcomes, attention_records]
+      properties:
+        user_id: {type: string}
+        run_id: {type: string}
+        run_started_at: {type: string, format: date-time}
+        state:
+          type: string
+          enum: [idle, syncing, completed, failed, canceled]
+        books_total:
+          type: integer
+          description: Number of candidates observed before processing limits.
+        processed_so_far:
+          type: integer
+          description: Sum of all outcome_counts categories.
+        processed_count:
+          type: integer
+          description: Alias of processed_so_far for clients that prefer count terminology.
+        outcome_counts:
+          $ref: '#/components/schemas/OutcomeCounts'
+        book_outcomes:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookOutcomeRecord'
+        attention_records:
+          type: array
+          description: Needs-review, not-found, and failed records currently requiring attention.
+          items:
+            $ref: '#/components/schemas/BookOutcomeRecord'
+
+    SyncSummary:
+      type: object
+      properties:
+        snapshot:
+          $ref: '#/components/schemas/SyncSnapshot'
+        user_id: {type: string}
+        run_id: {type: string}
+        run_started_at: {type: string, format: date-time}
+        state: {type: string}
+        books_total: {type: integer}
+        processed_so_far: {type: integer}
+        processed_count: {type: integer}
+        outcome_counts:
+          $ref: '#/components/schemas/OutcomeCounts'
+        book_outcomes:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookOutcomeRecord'
+        attention_records:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookOutcomeRecord'
+        total_books_processed: {type: integer}
+        books_synced: {type: integer}
+        books_not_found:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookNotFoundInfo'
+        mismatches:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookMismatch'
 
 security:
   - BearerAuth: []
@@ -354,6 +492,37 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
   
+  /profiles/{profileId}/summary:
+    get:
+      tags: [Status]
+      summary: Get the current-run sync summary for a profile
+      parameters:
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "profile-123"
+      responses:
+        '200':
+          description: Current run snapshot and legacy summary fields
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/SyncSummary'
+        '404':
+          description: Profile not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /profiles/{profileId}/status:
     get:
       tags: [Status]

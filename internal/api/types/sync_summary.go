@@ -1,14 +1,32 @@
 package types
 
 import (
+	"time"
+
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 )
 
 // SyncSummaryResponse represents the sync summary data returned by the API
 type SyncSummaryResponse struct {
-	TotalBooksProcessed int32                `json:"total_books_processed"`
-	BooksSynced         int32                `json:"books_synced"`
-	BooksNotFound       []BookNotFoundInfo   `json:"books_not_found"`
+	Snapshot *sync.SyncSnapshot `json:"snapshot,omitempty"`
+
+	// These fields describe one coherent current or completed run. The legacy
+	// fields below remain available for existing API clients.
+	UserID           string                   `json:"user_id,omitempty"`
+	RunID            string                   `json:"run_id,omitempty"`
+	RunStartedAt     time.Time                `json:"run_started_at,omitempty"`
+	State            string                   `json:"state,omitempty"`
+	BooksTotal       int32                    `json:"books_total"`
+	ProcessedSoFar   int32                    `json:"processed_so_far"`
+	ProcessedCount   int32                    `json:"processed_count"`
+	OutcomeCounts    sync.OutcomeCounts       `json:"outcome_counts"`
+	BookOutcomes     []sync.BookOutcomeRecord `json:"book_outcomes"`
+	AttentionRecords []sync.BookOutcomeRecord `json:"attention_records"`
+
+	TotalBooksProcessed int32                   `json:"total_books_processed"`
+	BooksSynced         int32                   `json:"books_synced"`
+	BooksNotFound       []BookNotFoundInfo      `json:"books_not_found"`
 	Mismatches          []mismatch.BookMismatch `json:"mismatches"`
 }
 
