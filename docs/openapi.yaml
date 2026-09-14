@@ -123,16 +123,14 @@ components:
           type: string
           enum: [idle, syncing, completed, error]
           example: "idle"
-        lastSync:
+        last_sync:
           type: string
           format: date-time
           nullable: true
           example: "2023-01-01T00:00:00Z"
         progress:
-          type: integer
-          minimum: 0
-          maximum: 100
-          example: 0
+          type: string
+          example: "Starting sync..."
         error:
           type: string
           nullable: true
