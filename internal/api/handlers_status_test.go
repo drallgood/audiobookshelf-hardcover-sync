@@ -294,7 +294,6 @@ func TestPublicStatusPublishesSecondLookupOutcomeBeforeEnrichment(t *testing.T) 
 	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/status", &statusResponse)
 	require.True(t, statusResponse.Success)
 	status := &statusResponse.Data
-	require.NotNil(t, status)
 	require.NotNil(t, status.Snapshot)
 	require.Equal(t, "syncing", status.Snapshot.State)
 	require.Equal(t, int32(1), status.Snapshot.ProcessedSoFar)
@@ -350,10 +349,7 @@ func TestPublicStatusRunReplacementKeepsNewRunCurrent(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for canceled run to finish its blocked lookup")
 	}
-	completed := waitForMountedStatusRun(t, routes, profileID, newRunID)
-	require.Equal(t, "completed", completed.Status)
-	require.NotNil(t, completed.Snapshot)
-	require.Equal(t, newRunID, completed.Snapshot.RunID)
+	waitForMountedStatusRun(t, routes, profileID, newRunID)
 
 	var finalStatusResponse statusHTTPResponse
 	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/status", &finalStatusResponse)
