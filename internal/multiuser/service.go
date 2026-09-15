@@ -266,9 +266,7 @@ func aggregateProfileStatus(profile database.SyncProfile, status *SyncProfileSta
 		BooksTotal:  status.BooksTotal,
 		BooksSynced: status.BooksSynced,
 	}
-	if status.Snapshot != nil {
-		aggregate.Snapshot = status.Snapshot
-	}
+	aggregate.Snapshot = status.Snapshot
 	if aggregate.Status == "" {
 		aggregate.Status = "idle"
 	}
