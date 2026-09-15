@@ -76,26 +76,26 @@ Existing single-profile setups are **automatically migrated** on first startup:
 
 ### Current-run sync status
 
-The Sync Status page shows one current run per profile: processed progress and
-a breakdown of its outcomes. Select **View Details** to load that run's
-book-level records on demand.
+The Sync Status page shows the current run for each profile, including its
+progress and outcome counts. Select **View Details** to see the books in each
+category. Audiobookshelf titles link to their library items, and known
+Hardcover books link to Hardcover; a needs-review result links the candidate
+title instead.
 
-`GET /api/status` supplies the scalar current-run snapshot used for aggregate
-polling (run ID, start time, state, totals, and outcome counts), without
-book-level records. When `AUTH_ENABLED=true`, the profile routes require
-authentication; their status and summary responses include the full current
-snapshot. `GET /api/profiles/{id}/runs/{runId}/details` returns the book-level
-outcomes and attention records for that exact current run. A stale, replaced,
-canceled, or unknown run ID returns `404`; refresh status and select the
-current run instead. Each processed book has one outcome:
-`synced`, `already_current`, `skipped`, `needs_review`, `not_found`, `failed`,
-or dry-run `would_sync`. Their counts add up to `processed_so_far`;
-`needs_review`, `not_found`, and `failed` appear in `attention_records` as they
-occur. The snapshot includes the run ID, start time, state, and book totals.
-`books_total` is independent of `processed_so_far`: a value of zero means the
-pre-count is unknown or has not been observed yet, while `processed_so_far`
-may still be positive. It is cleared when a run is canceled and is not
-persistent run history.
+Each processed book is counted once as `synced`, `already_current`, `skipped`,
+`needs_review`, `not_found`, `failed`, or dry-run `would_sync`. A total of zero
+means the number of books is not known yet, so the processed count may still
+increase. Status represents only the current run, is cleared when that run is
+canceled, and is not a persistent run history.
+
+For API clients, `GET /api/status` provides a lightweight snapshot with the run
+ID, start time, state, totals, and outcome counts, but no book-level records.
+Authenticated profile status and summary routes include the full current
+snapshot. Book-level outcomes are available from
+`GET /api/profiles/{id}/runs/{runId}/details`; stale, replaced, canceled, or
+unknown run IDs return `404`, so clients should refresh status and use the
+current run ID. Needs-review, not-found, and failed books appear in
+`attention_records` as they occur.
 
 ### Environment Variables (Multi-Profile)
 
@@ -496,17 +496,6 @@ export KEYCLOAK_REDIRECT_URI="https://your-app.example.com/auth/callback/oidc"
 - **Admin**: Full access, user management, system configuration
 - **User**: Sync functionality and read/write access to owned profiles
 - **Viewer**: Read-only access to owned profiles
-
-When authentication is enabled, a newly created profile is owned by the
-authenticated user. For authenticated `/api/profiles` APIs, users and viewers
-can only see their owned profiles; administrators can access all profiles.
-Viewer profile and sync-action mutations return `403`, while foreign or
-nonexistent profile requests return the same non-enumerating `404`. Viewer
-profile reads include metadata but omit both stored credentials. Profiles
-created before ownership was added are ownerless and administrator-only.
-The intentionally public `/api/status` endpoint remains scalar and redacted;
-with authentication disabled, existing unrestricted profile access is
-preserved.
 
 ### Security Features
 
