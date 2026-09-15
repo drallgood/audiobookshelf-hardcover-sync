@@ -216,11 +216,24 @@ func (h *Handler) writeSuccessResponse(w http.ResponseWriter, data interface{}) 
 
 // buildProfileResponse converts a database.ProfileWithTokens into a clean API response
 func (h *Handler) buildProfileResponse(p *database.ProfileWithTokens) map[string]interface{} {
+	return h.buildProfileResponseWithCredentials(p, true)
+}
+
+func (h *Handler) buildProfileResponseForRequest(p *database.ProfileWithTokens, r *http.Request) map[string]interface{} {
+	if !h.authEnabled {
+		return h.buildProfileResponse(p)
+	}
+	user := h.authenticatedUser(r)
+	includeCredentials := user != nil && auth.UserRole(user.Role).HasPermission(auth.PermissionWriteOwn)
+	return h.buildProfileResponseWithCredentials(p, includeCredentials)
+}
+
+func (h *Handler) buildProfileResponseWithCredentials(p *database.ProfileWithTokens, includeCredentials bool) map[string]interface{} {
 	if p == nil {
 		return map[string]interface{}{}
 	}
 	prof := p.Profile
-	return map[string]interface{}{
+	response := map[string]interface{}{
 		"profile": map[string]interface{}{
 			"id":         prof.ID,
 			"name":       prof.Name,
@@ -228,11 +241,14 @@ func (h *Handler) buildProfileResponse(p *database.ProfileWithTokens) map[string
 			"updated_at": prof.UpdatedAt,
 			"active":     prof.Active,
 		},
-		"audiobookshelf_url":   p.AudiobookshelfURL,
-		"audiobookshelf_token": p.AudiobookshelfToken,
-		"hardcover_token":      p.HardcoverToken,
-		"sync_config":          p.SyncConfig,
+		"audiobookshelf_url": p.AudiobookshelfURL,
+		"sync_config":        p.SyncConfig,
 	}
+	if includeCredentials {
+		response["audiobookshelf_token"] = p.AudiobookshelfToken
+		response["hardcover_token"] = p.HardcoverToken
+	}
+	return response
 }
 
 // GetProfiles handles GET /api/profiles
@@ -310,7 +326,7 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.log.Debug(fmt.Sprintf("Profile retrieved successfully: %s", profile.Profile.ID))
-	h.writeSuccessResponse(w, h.buildProfileResponse(profile))
+	h.writeSuccessResponse(w, h.buildProfileResponseForRequest(profile, r))
 }
 
 // CreateProfile handles POST /api/profiles
@@ -376,7 +392,7 @@ func (h *Handler) CreateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeSuccessResponse(w, h.buildProfileResponse(profile))
+	h.writeSuccessResponse(w, h.buildProfileResponseForRequest(profile, r))
 }
 
 // UpdateProfile handles PUT /api/profiles/{id}
@@ -413,7 +429,7 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeSuccessResponse(w, h.buildProfileResponse(profile))
+	h.writeSuccessResponse(w, h.buildProfileResponseForRequest(profile, r))
 }
 
 // UpdateProfileConfig handles PUT /api/profiles/{id}/config
@@ -494,7 +510,7 @@ func (h *Handler) UpdateProfileConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeSuccessResponse(w, h.buildProfileResponse(profile))
+	h.writeSuccessResponse(w, h.buildProfileResponseForRequest(profile, r))
 }
 
 // DeleteProfile handles DELETE /api/profiles/{id}

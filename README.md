@@ -495,12 +495,15 @@ export KEYCLOAK_REDIRECT_URI="https://your-app.example.com/auth/callback/oidc"
 - **Viewer**: Read-only access to owned profiles
 
 When authentication is enabled, a newly created profile is owned by the
-authenticated user. Users and viewers can only see their owned profiles;
-administrators can access all profiles. Viewer mutation and sync-action
-requests return `403`, while foreign or nonexistent profile requests return
-the same non-enumerating `404`. Profiles created before ownership was added
-are ownerless and administrator-only. With authentication disabled, existing
-unrestricted profile access is preserved.
+authenticated user. For authenticated `/api/profiles` APIs, users and viewers
+can only see their owned profiles; administrators can access all profiles.
+Viewer profile and sync-action mutations return `403`, while foreign or
+nonexistent profile requests return the same non-enumerating `404`. Viewer
+profile reads include metadata but omit both stored credentials. Profiles
+created before ownership was added are ownerless and administrator-only.
+The intentionally public `/api/status` endpoint remains scalar and redacted;
+with authentication disabled, existing unrestricted profile access is
+preserved.
 
 ### Security Features
 

@@ -128,6 +128,12 @@ func TestViewerProfileAuthorizationIsReadOnly(t *testing.T) {
 		viewer.user.ID,
 	))
 
+	listResponse := fixture.requestWithCookies(http.MethodGet, "/api/profiles", nil, []*http.Cookie{viewer.cookie})
+	require.Equal(t, http.StatusOK, listResponse.Code, listResponse.Body.String())
+	require.Contains(t, listResponse.Body.String(), "viewer-owned")
+	require.NotContains(t, listResponse.Body.String(), "viewer-sentinel-token")
+	require.NotContains(t, listResponse.Body.String(), "hardcover-viewer-sentinel-token")
+
 	createDenied := fixture.requestWithCookies(
 		http.MethodPost,
 		"/api/profiles",
@@ -141,7 +147,10 @@ func TestViewerProfileAuthorizationIsReadOnly(t *testing.T) {
 
 	readResponse := fixture.requestWithCookies(http.MethodGet, "/api/profiles/viewer-owned", nil, []*http.Cookie{viewer.cookie})
 	require.Equal(t, http.StatusOK, readResponse.Code, readResponse.Body.String())
-	require.Contains(t, readResponse.Body.String(), "viewer-sentinel-token")
+	require.Contains(t, readResponse.Body.String(), "viewer-owned")
+	require.Contains(t, readResponse.Body.String(), "audiobookshelf.invalid")
+	require.NotContains(t, readResponse.Body.String(), "viewer-sentinel-token")
+	require.NotContains(t, readResponse.Body.String(), "hardcover-viewer-sentinel-token")
 
 	for _, test := range []struct {
 		name   string

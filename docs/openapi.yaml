@@ -13,11 +13,13 @@ info:
     ```
 
     When authentication is enabled, newly created profiles belong to the
-    authenticated user. Users and viewers can access only their owned
-    profiles; viewers are read-only, administrators can access all profiles,
-    and legacy ownerless profiles are administrator-only. Foreign and
-    nonexistent profile requests return a non-enumerating `404`. Authentication
-    disabled preserves unrestricted profile access.
+    authenticated user. For authenticated `/api/profiles` APIs, users and
+    viewers can access only their owned profiles; viewers are read-only and
+    profile reads omit stored credentials, while administrators can access all
+    profiles. Legacy ownerless profiles are administrator-only. Foreign and
+    nonexistent profile requests return a non-enumerating `404`. The public
+    `/api/status` endpoint remains scalar and redacted. Authentication disabled
+    preserves unrestricted profile access.
     
     ## Rate Limiting
     
