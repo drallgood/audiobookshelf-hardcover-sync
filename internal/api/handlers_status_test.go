@@ -83,6 +83,31 @@ func (f *statusServiceFixture) waitForSyncs(t *testing.T) {
 	f.multiUser.WaitForSyncs()
 }
 
+func TestStartSyncRegistersWorkBeforeResponding(t *testing.T) {
+	absServer := newStatusAudiobookshelfServer()
+	t.Cleanup(absServer.Close)
+	hardcoverServer := newEmptyHardcoverServer(t)
+	t.Cleanup(hardcoverServer.Close)
+
+	fixture := newStatusServiceFixture(t, hardcoverServer.URL)
+	const profileID = "start-sync-profile"
+	fixture.createProfile(t, profileID, "Start sync profile", absServer.URL, profileID)
+	absServer.books[profileID] = statusBook(profileID, "Queued sync", "Test Author")
+
+	handler := NewHandler(fixture.multiUser, logger.Get())
+	routes := http.NewServeMux()
+	routes.HandleFunc("POST /api/profiles/{id}/sync", handler.StartSync)
+
+	recorder := requestJSONRoute(routes, http.MethodPost, "/api/profiles/"+profileID+"/sync")
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.NotNil(t, fixture.multiUser.GetProfileStatus(profileID))
+
+	fixture.waitForSyncs(t)
+	status := fixture.multiUser.GetProfileStatus(profileID)
+	require.NotNil(t, status)
+	require.NotEqual(t, "syncing", status.Status)
+}
+
 type statusHTTPResponse struct {
 	Success bool                        `json:"success"`
 	Data    multiuser.SyncProfileStatus `json:"data"`

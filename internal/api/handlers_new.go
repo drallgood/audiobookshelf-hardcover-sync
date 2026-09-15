@@ -646,12 +646,11 @@ func (h *Handler) StartSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Start sync in a goroutine
-	go func() {
-		if err := h.multiUserService.StartSync(profileID); err != nil {
-			h.log.Error(fmt.Sprintf("Failed to start sync for profile %s: %s", profileID, err.Error()))
-		}
-	}()
+	// StartSync registers the background sync before returning so lifecycle
+	// cleanup can reliably wait for every accepted request.
+	if err := h.multiUserService.StartSync(profileID); err != nil {
+		h.log.Error(fmt.Sprintf("Failed to start sync for profile %s: %s", profileID, err.Error()))
+	}
 
 	h.writeSuccessResponse(w, map[string]string{
 		"message": "Sync started",
