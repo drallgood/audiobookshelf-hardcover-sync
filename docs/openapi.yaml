@@ -115,7 +115,8 @@ components:
               example: ["exclusive"]
             state_file:
               type: string
-              description: Optional state-file path stem; the profile-specific filename component must fit the supported 255-byte baseline.
+              description: Optional relative state-file path. Absolute paths and relative paths that lexically escape the effective data directory are rejected; when paths.data_dir is empty, /data is used. The profile-specific filename component, including the encoded profile ID, must fit the supported 255-byte baseline.
+              pattern: '^(?!/).*$'
             dry_run:
               type: boolean
               example: false
@@ -436,6 +437,7 @@ paths:
                 id:
                   type: string
                   maxLength: 244
+                  pattern: '^(?!\.\.?$)[A-Za-z0-9._~-]+$'
                   description: Up to 244 ASCII RFC 3986 unreserved characters; "." and ".." are not valid profile IDs.
                   example: "profile-123"
                 name:

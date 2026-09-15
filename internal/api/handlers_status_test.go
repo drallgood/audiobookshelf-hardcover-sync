@@ -8,12 +8,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-	"unsafe"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/types"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
@@ -371,22 +369,35 @@ func TestProfileStateFilenameValidationAtHTTPBoundary(t *testing.T) {
 	routes.HandleFunc("POST /api/profiles", handler.CreateProfile)
 	routes.HandleFunc("PUT /api/profiles/{id}/config", handler.UpdateProfileConfig)
 
-	unsafeStateFile := strings.Repeat("s", 245) + ".json"
-	createPayload, err := json.Marshal(CreateProfileRequest{
-		ID:                  "new-profile",
-		Name:                "New profile",
-		AudiobookshelfURL:   "http://audiobookshelf.invalid",
-		AudiobookshelfToken: "abs-token",
-		HardcoverToken:      "hardcover-token",
-		SyncConfig:          database.SyncConfigData{StateFile: unsafeStateFile},
-	})
-	require.NoError(t, err)
-	createResponse := httptest.NewRecorder()
-	routes.ServeHTTP(createResponse, httptest.NewRequest(http.MethodPost, "/api/profiles", bytes.NewReader(createPayload)))
-	require.Equal(t, http.StatusBadRequest, createResponse.Code, createResponse.Body.String())
-	created, err := fixture.multiUser.GetProfile("new-profile")
-	require.NoError(t, err)
-	require.Nil(t, created)
+	unsafeStateFiles := []struct {
+		name string
+		path string
+	}{
+		{name: "encoded filename too long", path: strings.Repeat("s", 245) + ".json"},
+		{name: "absolute", path: "/absolute/state.json"},
+		{name: "parent", path: "../escape.json"},
+		{name: "nested parent", path: "nested/../../escape.json"},
+	}
+	for _, test := range unsafeStateFiles {
+		t.Run("create "+test.name, func(t *testing.T) {
+			profileID := "new-profile-" + strings.ReplaceAll(test.name, " ", "-")
+			createPayload, err := json.Marshal(CreateProfileRequest{
+				ID:                  profileID,
+				Name:                "New profile",
+				AudiobookshelfURL:   "http://audiobookshelf.invalid",
+				AudiobookshelfToken: "abs-token",
+				HardcoverToken:      "hardcover-token",
+				SyncConfig:          database.SyncConfigData{StateFile: test.path},
+			})
+			require.NoError(t, err)
+			createResponse := httptest.NewRecorder()
+			routes.ServeHTTP(createResponse, httptest.NewRequest(http.MethodPost, "/api/profiles", bytes.NewReader(createPayload)))
+			require.Equal(t, http.StatusBadRequest, createResponse.Code, createResponse.Body.String())
+			created, err := fixture.multiUser.GetProfile(profileID)
+			require.NoError(t, err)
+			require.Nil(t, created)
+		})
+	}
 
 	profileID := "configured-profile"
 	originalURL := "http://original.invalid"
@@ -399,23 +410,27 @@ func TestProfileStateFilenameValidationAtHTTPBoundary(t *testing.T) {
 		"hardcover-token",
 		database.SyncConfigData{StateFile: originalStateFile},
 	))
-	updatePayload, err := json.Marshal(UpdateProfileConfigRequest{
-		AudiobookshelfURL: "http://should-not-persist.invalid",
-		SyncConfig:        database.SyncConfigData{StateFile: unsafeStateFile},
-	})
-	require.NoError(t, err)
-	updateResponse := httptest.NewRecorder()
-	routes.ServeHTTP(updateResponse, httptest.NewRequest(
-		http.MethodPut,
-		"/api/profiles/"+profileID+"/config",
-		bytes.NewReader(updatePayload),
-	))
-	require.Equal(t, http.StatusBadRequest, updateResponse.Code, updateResponse.Body.String())
-	unchanged, err := fixture.multiUser.GetProfile(profileID)
-	require.NoError(t, err)
-	require.NotNil(t, unchanged)
-	require.Equal(t, originalURL, unchanged.AudiobookshelfURL)
-	require.Equal(t, originalStateFile, unchanged.SyncConfig.StateFile)
+	for _, test := range unsafeStateFiles {
+		t.Run("update "+test.name, func(t *testing.T) {
+			updatePayload, err := json.Marshal(UpdateProfileConfigRequest{
+				AudiobookshelfURL: "http://should-not-persist.invalid",
+				SyncConfig:        database.SyncConfigData{StateFile: test.path},
+			})
+			require.NoError(t, err)
+			updateResponse := httptest.NewRecorder()
+			routes.ServeHTTP(updateResponse, httptest.NewRequest(
+				http.MethodPut,
+				"/api/profiles/"+profileID+"/config",
+				bytes.NewReader(updatePayload),
+			))
+			require.Equal(t, http.StatusBadRequest, updateResponse.Code, updateResponse.Body.String())
+			unchanged, err := fixture.multiUser.GetProfile(profileID)
+			require.NoError(t, err)
+			require.NotNil(t, unchanged)
+			require.Equal(t, originalURL, unchanged.AudiobookshelfURL)
+			require.Equal(t, originalStateFile, unchanged.SyncConfig.StateFile)
+		})
+	}
 
 	legacyID := strings.Repeat("l", 245)
 	require.NoError(t, fixture.repo.CreateProfile(
@@ -492,102 +507,6 @@ func TestPublicAggregateOmitsRunErrorWhileProfileStatusRetainsIt(t *testing.T) {
 	require.Equal(t, terminal.Error, authenticatedStatus.Data.Error)
 	require.Contains(t, statusResponse.Body.String(), sentinel)
 	fixture.waitForSyncs(t)
-}
-
-func TestPublicAggregateStatusPreservesUnknownBooksTotal(t *testing.T) {
-	fixture := newStatusServiceFixture(t, "http://hardcover.invalid")
-	releaseUserProgress := make(chan struct{})
-	userProgressStarted := make(chan struct{})
-	var userProgressOnce sync.Once
-	absServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/me":
-			userProgressOnce.Do(func() { close(userProgressStarted) })
-			select {
-			case <-r.Context().Done():
-				return
-			case <-releaseUserProgress:
-			}
-			_, _ = io.WriteString(w, `{"mediaProgress":[],"listeningSessions":[]}`)
-		case "/api/libraries":
-			_, _ = io.WriteString(w, `{"libraries":[]}`)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(func() {
-		close(releaseUserProgress)
-		absServer.Close()
-	})
-
-	profileID := "unknown-total-profile"
-	fixture.createProfile(t, profileID, "Unknown total profile", absServer.URL, "hardcover-token")
-	require.NoError(t, fixture.multiUser.StartSync(profileID))
-	select {
-	case <-userProgressStarted:
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for user progress request")
-	}
-
-	var liveService *syncsvc.Service
-	deadline := time.Now().Add(10 * time.Second)
-	for liveService == nil && time.Now().Before(deadline) {
-		if service, ok := fixture.multiUser.GetSyncService(profileID); ok {
-			liveService = service
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	require.NotNil(t, liveService)
-	setSyncServiceSnapshotForTest(t, liveService, syncsvc.OutcomeCounts{NotFound: 3})
-
-	handler := NewHandler(fixture.multiUser, logger.Get())
-	routes := newMountedStatusRoutes(handler)
-	rawAggregate := requestJSONRoute(routes, http.MethodGet, "/api/status")
-	require.Equal(t, http.StatusOK, rawAggregate.Code, rawAggregate.Body.String())
-	var aggregateEnvelope struct {
-		Data []struct {
-			ProfileID string `json:"profile_id"`
-			Snapshot  struct {
-				BooksTotal     int32 `json:"books_total"`
-				ProcessedSoFar int32 `json:"processed_so_far"`
-			} `json:"snapshot"`
-		} `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(rawAggregate.Body.Bytes(), &aggregateEnvelope))
-	var aggregateProfile *struct {
-		ProfileID string `json:"profile_id"`
-		Snapshot  struct {
-			BooksTotal     int32 `json:"books_total"`
-			ProcessedSoFar int32 `json:"processed_so_far"`
-		} `json:"snapshot"`
-	}
-	for i := range aggregateEnvelope.Data {
-		if aggregateEnvelope.Data[i].ProfileID == profileID {
-			aggregateProfile = &aggregateEnvelope.Data[i]
-			break
-		}
-	}
-	require.NotNil(t, aggregateProfile)
-	require.Zero(t, aggregateProfile.Snapshot.BooksTotal)
-	require.Equal(t, int32(3), aggregateProfile.Snapshot.ProcessedSoFar)
-}
-
-func setSyncServiceSnapshotForTest(t *testing.T, service *syncsvc.Service, outcomes syncsvc.OutcomeCounts) {
-	t.Helper()
-	serviceValue := reflect.ValueOf(service).Elem()
-	summaryField := serviceValue.FieldByName("summary")
-	summaryValue := reflect.NewAt(summaryField.Type(), unsafe.Pointer(summaryField.UnsafeAddr())).Elem()
-	summary, ok := summaryValue.Interface().(*syncsvc.SyncSummary)
-	require.True(t, ok)
-
-	summary.Lock()
-	defer summary.Unlock()
-	summary.BooksTotal = 0
-	outcomeCountsField := serviceValue.FieldByName("outcomeCounts")
-	reflect.NewAt(outcomeCountsField.Type(), unsafe.Pointer(outcomeCountsField.UnsafeAddr())).Elem().Set(
-		reflect.ValueOf(outcomes),
-	)
 }
 
 func TestPublicStatusAndSummaryRoutesExposeLiveAttentionOutcomes(t *testing.T) {

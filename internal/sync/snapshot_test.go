@@ -85,3 +85,18 @@ func TestSnapshotStatusCopiesScalarsWithoutDetails(t *testing.T) {
 	require.Len(t, full.BooksNotFound, 1)
 	require.Len(t, full.Mismatches, 1)
 }
+
+func TestSnapshotStatusKeepsUnknownTotalSeparateFromProcessedOutcomes(t *testing.T) {
+	svc, _ := createTestService()
+	svc.beginOutcomeRun()
+
+	book := *toAudiobookshelfBook(createTestBook("unknown-total", "Unknown total", "Author", "", ""))
+	svc.recordBookOutcomeWithMatchMethod(book, OutcomeNotFound, "not found", nil, nil, "")
+
+	status := svc.GetSnapshotStatus()
+	require.Zero(t, status.BooksTotal, "the denominator remains unknown until a library count is observed")
+	require.Equal(t, int32(1), status.ProcessedSoFar)
+	require.Equal(t, int32(1), status.ProcessedCount)
+	require.Equal(t, OutcomeCounts{NotFound: 1}, status.OutcomeCounts)
+	require.Equal(t, int32(1), status.TotalBooksProcessed)
+}

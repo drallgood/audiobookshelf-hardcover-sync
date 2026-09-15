@@ -222,16 +222,7 @@ func (h *Handler) writeSuccessResponse(w http.ResponseWriter, data interface{}) 
 	})
 }
 
-func (h *Handler) buildProfileResponseForRequest(p *database.ProfileWithTokens, r *http.Request) map[string]interface{} {
-	if !h.authEnabled {
-		return h.buildProfileResponseWithCredentials(p, true)
-	}
-	user := h.authenticatedUser(r)
-	includeCredentials := user != nil && auth.UserRole(user.Role).HasPermission(auth.PermissionWriteOwn)
-	return h.buildProfileResponseWithCredentials(p, includeCredentials)
-}
-
-func (h *Handler) buildProfileResponseWithCredentials(p *database.ProfileWithTokens, includeCredentials bool) map[string]interface{} {
+func (h *Handler) buildProfileResponseForRequest(p *database.ProfileWithTokens, _ *http.Request) map[string]interface{} {
 	if p == nil {
 		return map[string]interface{}{}
 	}
@@ -246,10 +237,6 @@ func (h *Handler) buildProfileResponseWithCredentials(p *database.ProfileWithTok
 		},
 		"audiobookshelf_url": p.AudiobookshelfURL,
 		"sync_config":        p.SyncConfig,
-	}
-	if includeCredentials {
-		response["audiobookshelf_token"] = p.AudiobookshelfToken
-		response["hardcover_token"] = p.HardcoverToken
 	}
 	return response
 }
@@ -377,7 +364,8 @@ func (h *Handler) CreateProfile(w http.ResponseWriter, r *http.Request) {
 		ownerUserID,
 	)
 	if err != nil {
-		if errors.Is(err, multiuser.ErrProfileStateFileNameTooLong) {
+		if errors.Is(err, multiuser.ErrProfileStateFileNameTooLong) ||
+			errors.Is(err, multiuser.ErrProfileStateFilePathNotAllowed) {
 			h.writeErrorResponse(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -496,7 +484,8 @@ func (h *Handler) UpdateProfileConfig(w http.ResponseWriter, r *http.Request) {
 		hardcoverToken,
 		req.SyncConfig,
 	); err != nil {
-		if errors.Is(err, multiuser.ErrProfileStateFileNameTooLong) {
+		if errors.Is(err, multiuser.ErrProfileStateFileNameTooLong) ||
+			errors.Is(err, multiuser.ErrProfileStateFilePathNotAllowed) {
 			h.writeErrorResponse(w, http.StatusBadRequest, err.Error())
 			return
 		}

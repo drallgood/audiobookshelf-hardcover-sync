@@ -6,12 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-	"unsafe"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
@@ -225,54 +223,28 @@ func TestStatusAggregateOmitsErrorAndProfileStatusRetainsIt(t *testing.T) {
 	require.Equal(t, status.Error, direct.Error)
 }
 
-func TestApplySnapshotToStatusPreservesUnknownBooksTotal(t *testing.T) {
-	status := &SyncProfileStatus{BooksTotal: 99, BooksSynced: 4}
-	snapshot := syncsvc.SyncSnapshot{
-		BooksTotal:     0,
-		ProcessedSoFar: 3,
-		BooksSynced:    2,
-	}
-
-	applySnapshotToStatus(status, snapshot)
-
-	require.Zero(t, status.BooksTotal)
-	require.Equal(t, 2, status.BooksSynced)
-	require.NotNil(t, status.Snapshot)
-	require.Zero(t, status.Snapshot.BooksTotal)
-	require.Equal(t, int32(3), status.Snapshot.ProcessedSoFar)
-}
-
-func TestAggregateStatusPreservesUnknownBooksTotalFromActiveSnapshot(t *testing.T) {
+func TestAggregateStatusPreservesUnknownBooksTotalFromExplicitSnapshot(t *testing.T) {
 	service, _ := newStatusLookupService(t)
 	profileID := "profile-a"
 	require.NoError(t, service.repository.CreateProfile(
 		profileID, "Profile A", "http://audiobookshelf.invalid", "abs-token", "hc-token", database.SyncConfigData{},
 	))
 
-	dataDir := t.TempDir()
-	cfg := config.DefaultConfig()
-	cfg.Sync.StateFile = filepath.Join(dataDir, "state.json")
-	cfg.Paths.CacheDir = filepath.Join(dataDir, "cache")
-	cfg.Paths.MismatchOutputDir = filepath.Join(dataDir, "mismatches")
-	hcConfig := hardcover.DefaultClientConfig()
-	hcConfig.BaseURL = "http://hardcover.invalid"
-	liveService, err := syncsvc.NewService(
-		audiobookshelf.NewClient("http://audiobookshelf.invalid", "abs-token"),
-		hardcover.NewClientWithConfig(hcConfig, "hc-token", logger.Get()),
-		cfg,
-	)
-	require.NoError(t, err)
-	setSyncServiceSnapshotForTest(t, liveService, syncsvc.OutcomeCounts{NotFound: 3})
-
-	run := activeSyncRun{generation: 1, runID: "profile-a-run-1", startedAt: time.Now().UTC()}
-	service.syncMutex.Lock()
-	service.nextGeneration = run.generation
-	service.activeRuns[profileID] = run
-	service.syncMutex.Unlock()
-	require.True(t, service.registerSyncService(profileID, run.generation, liveService))
-	t.Cleanup(func() {
-		service.removeSyncService(profileID, run.generation, liveService)
-		service.finishActiveRun(profileID, run.generation)
+	snapshot := syncsvc.SyncSnapshot{
+		UserID:         profileID,
+		RunID:          "profile-a-run-1",
+		State:          "syncing",
+		BooksTotal:     0,
+		ProcessedSoFar: 3,
+		ProcessedCount: 3,
+		OutcomeCounts:  syncsvc.OutcomeCounts{NotFound: 3},
+	}
+	service.updateProfileStatus(profileID, &SyncProfileStatus{
+		ProfileID:   profileID,
+		ProfileName: "Profile A",
+		Status:      "syncing",
+		BooksTotal:  0,
+		Snapshot:    &snapshot,
 	})
 
 	statuses, err := service.GetAllProfileStatuses()
@@ -282,25 +254,6 @@ func TestAggregateStatusPreservesUnknownBooksTotalFromActiveSnapshot(t *testing.
 	require.NotNil(t, statuses[0].Snapshot)
 	require.Zero(t, statuses[0].Snapshot.BooksTotal)
 	require.Equal(t, int32(3), statuses[0].Snapshot.ProcessedSoFar)
-}
-
-func setSyncServiceSnapshotForTest(t *testing.T, service *syncsvc.Service, outcomes syncsvc.OutcomeCounts) {
-	t.Helper()
-	serviceValue := reflect.ValueOf(service).Elem()
-	summaryField := reflect.NewAt(
-		serviceValue.FieldByName("summary").Type(),
-		unsafe.Pointer(serviceValue.FieldByName("summary").UnsafeAddr()),
-	).Elem()
-	summary, ok := summaryField.Interface().(*syncsvc.SyncSummary)
-	require.True(t, ok)
-
-	summary.Lock()
-	defer summary.Unlock()
-	summary.BooksTotal = 0
-	outcomeCountsField := serviceValue.FieldByName("outcomeCounts")
-	reflect.NewAt(outcomeCountsField.Type(), unsafe.Pointer(outcomeCountsField.UnsafeAddr())).Elem().Set(
-		reflect.ValueOf(outcomes),
-	)
 }
 
 func TestAggregateStatusMapsLiveTerminalSnapshotState(t *testing.T) {
@@ -422,6 +375,183 @@ func TestCreateProfileValidatesComposedStateFilenameLength(t *testing.T) {
 			require.NotNil(t, profile)
 		})
 	}
+}
+
+func TestProfileStateFileValidationRejectsAbsoluteAndEscapingPaths(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	service.globalConfig.Paths.DataDir = t.TempDir()
+
+	for _, test := range []struct {
+		name string
+		path string
+	}{
+		{name: "absolute", path: filepath.Join(service.globalConfig.Paths.DataDir, "outside.json")},
+		{name: "parent", path: "../outside.json"},
+		{name: "nested parent", path: filepath.Join("nested", "..", "..", "outside.json")},
+	} {
+		t.Run("create "+test.name, func(t *testing.T) {
+			profileID := "unsafe-create-" + strings.ReplaceAll(test.name, " ", "-")
+			err := service.CreateProfile(
+				profileID,
+				"Profile",
+				"http://audiobookshelf",
+				"abs-token",
+				"hc-token",
+				database.SyncConfigData{StateFile: test.path},
+			)
+			require.Error(t, err)
+			profile, getErr := service.GetProfile(profileID)
+			require.NoError(t, getErr)
+			require.Nil(t, profile, "rejected state paths must not create a profile")
+		})
+	}
+
+	profileID := "unsafe-update"
+	const originalURL = "http://original.invalid"
+	require.NoError(t, service.CreateProfile(
+		profileID,
+		"Profile",
+		originalURL,
+		"abs-token",
+		"hc-token",
+		database.SyncConfigData{StateFile: "safe/state.json"},
+	))
+	for _, test := range []struct {
+		name string
+		path string
+	}{
+		{name: "absolute", path: filepath.Join(service.globalConfig.Paths.DataDir, "outside.json")},
+		{name: "escaping relative", path: "../../outside.json"},
+	} {
+		t.Run("update "+test.name, func(t *testing.T) {
+			err := service.UpdateProfileConfig(
+				profileID,
+				"http://should-not-persist.invalid",
+				"",
+				"",
+				database.SyncConfigData{StateFile: test.path},
+			)
+			require.Error(t, err)
+			profile, getErr := service.GetProfile(profileID)
+			require.NoError(t, getErr)
+			require.NotNil(t, profile)
+			require.Equal(t, originalURL, profile.AudiobookshelfURL)
+			require.Equal(t, "safe/state.json", profile.SyncConfig.StateFile)
+			require.Equal(t, "abs-token", profile.AudiobookshelfToken)
+			require.Equal(t, "hc-token", profile.HardcoverToken)
+		})
+	}
+}
+
+func TestProfileStateFileAcceptsSafeRelativePathsUnderDataDir(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	service.globalConfig.Paths.DataDir = t.TempDir()
+
+	for _, configuredPath := range []string{"state.json", filepath.Join("nested", "state.json")} {
+		t.Run(configuredPath, func(t *testing.T) {
+			profileID := "safe-" + strings.ReplaceAll(configuredPath, string(filepath.Separator), "-")
+			require.NoError(t, service.CreateProfile(
+				profileID,
+				"Profile",
+				"http://audiobookshelf",
+				"abs-token",
+				"hc-token",
+				database.SyncConfigData{StateFile: configuredPath},
+			))
+			profile, err := service.GetProfile(profileID)
+			require.NoError(t, err)
+			require.NotNil(t, profile)
+			require.Equal(t, configuredPath, profile.SyncConfig.StateFile)
+		})
+	}
+}
+
+func TestProfileStatePathKeepsTrustedAbsoluteAndLegacyIDsInOneDirectory(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	dataDir := t.TempDir()
+	service.globalConfig.Paths.DataDir = dataDir
+
+	for _, profileID := range []string{"legacy/profile", "legacy/../../escape"} {
+		derivedPath := service.profileSpecificStatePath(profileID, filepath.Join(dataDir, "migrated.json"))
+		require.Equal(t, dataDir, filepath.Dir(derivedPath))
+		require.NotEqual(t, ".", filepath.Base(derivedPath))
+		require.NotEqual(t, "..", filepath.Base(derivedPath))
+		require.NotContains(t, filepath.Base(derivedPath), string(filepath.Separator))
+		relative, err := filepath.Rel(dataDir, derivedPath)
+		require.NoError(t, err)
+		require.False(t, relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)))
+	}
+}
+
+func TestMigratedAbsoluteStateFileRemainsUsableForLegacyProfile(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	dataDir := t.TempDir()
+	service.globalConfig.Paths.DataDir = dataDir
+	service.globalConfig.Paths.CacheDir = filepath.Join(dataDir, "cache")
+	service.globalConfig.Paths.MismatchOutputDir = filepath.Join(dataDir, "mismatches")
+
+	absServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/me":
+			_, _ = io.WriteString(w, `{"mediaProgress":[],"listeningSessions":[]}`)
+		case "/api/libraries":
+			_, _ = io.WriteString(w, `{"libraries":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(absServer.Close)
+
+	profileID := "legacy/profile"
+	migratedStatePath := filepath.Join(dataDir, "migrated.json")
+	require.NoError(t, service.repository.CreateProfile(
+		profileID,
+		"Migrated profile",
+		absServer.URL,
+		"abs-token",
+		"hc-token",
+		database.SyncConfigData{StateFile: migratedStatePath},
+	))
+	require.NoError(t, service.StartSync(profileID))
+	service.WaitForSyncs()
+
+	status := service.GetProfileStatus(profileID)
+	require.NotNil(t, status)
+	require.Equal(t, "completed", status.Status)
+	require.NotNil(t, status.Snapshot)
+	require.Equal(t, "completed", status.Snapshot.State)
+	require.FileExists(t, filepath.Join(dataDir, "migrated.legacy%2Fprofile"))
+}
+
+func TestProfileStatePathUsesDataDefaultForLegacyIDs(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	service.globalConfig = nil
+
+	derivedPath := service.profileSpecificStatePath("legacy/../profile", "")
+	require.Equal(t, "/data", filepath.Dir(derivedPath))
+	require.NotEqual(t, ".", filepath.Base(derivedPath))
+	require.NotEqual(t, "..", filepath.Base(derivedPath))
+}
+
+func TestCreateProfileRejectsStateFilenameLengthAfterProfileIDEncoding(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	service.globalConfig.Paths.DataDir = t.TempDir()
+	profileID := strings.Repeat("/", 200)
+	derivedPath := service.profileSpecificStatePath(profileID, "state.json")
+	require.Greater(t, len([]byte(filepath.Base(derivedPath))), maxStateFileComponentBytes)
+
+	err := service.CreateProfile(
+		profileID,
+		"Profile",
+		"http://audiobookshelf",
+		"abs-token",
+		"hc-token",
+		database.SyncConfigData{StateFile: "state.json"},
+	)
+	require.ErrorIs(t, err, ErrProfileStateFileNameTooLong)
+	profile, getErr := service.GetProfile(profileID)
+	require.NoError(t, getErr)
+	require.Nil(t, profile)
 }
 
 func newStatusLookupService(t *testing.T) (*MultiUserService, *gorm.DB) {

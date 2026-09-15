@@ -21,8 +21,13 @@ import (
 const maxStateFileComponentBytes = 255
 
 // ErrProfileStateFileNameTooLong indicates that profile-specific state-file
-// composition exceeds the supported filename-component baseline.
+// composition, including the encoded profile ID, exceeds the supported
+// filename-component baseline.
 var ErrProfileStateFileNameTooLong = errors.New("profile-specific state filename exceeds 255 bytes")
+
+// ErrProfileStateFilePathNotAllowed indicates that an API-provided state-file
+// path is absolute or escapes the effective data directory.
+var ErrProfileStateFilePathNotAllowed = errors.New("profile-specific state file path must remain under the data directory")
 
 // SyncProfileStatus represents the sync status for a profile
 type SyncProfileStatus struct {
@@ -792,23 +797,69 @@ func (s *MultiUserService) createProfileSpecificConfig(profileConfig *database.P
 func (s *MultiUserService) profileSpecificStatePath(profileID, configuredPath string) string {
 	statePath := configuredPath
 	if statePath == "" {
-		if s.globalConfig != nil && s.globalConfig.Paths.DataDir != "" {
-			statePath = fmt.Sprintf("%s/sync_state.json", strings.TrimSuffix(s.globalConfig.Paths.DataDir, "/"))
-		} else {
-			statePath = "/data/sync_state.json"
-		}
-	} else if !filepath.IsAbs(statePath) && s.globalConfig != nil && s.globalConfig.Paths.DataDir != "" {
-		statePath = filepath.Join(s.globalConfig.Paths.DataDir, statePath)
+		statePath = filepath.Join(s.effectiveDataDir(), "sync_state.json")
+	} else if !filepath.IsAbs(statePath) {
+		statePath = filepath.Join(s.effectiveDataDir(), statePath)
 	}
-	return fmt.Sprintf("%s.%s", strings.TrimSuffix(statePath, ".json"), profileID)
+	return fmt.Sprintf("%s.%s", strings.TrimSuffix(statePath, ".json"), encodeProfileID(profileID))
 }
 
 func (s *MultiUserService) validateProfileStateFile(profileID, configuredPath string) error {
+	if configuredPath != "" {
+		if filepath.IsAbs(configuredPath) {
+			return fmt.Errorf("%w: absolute paths are not accepted: %q", ErrProfileStateFilePathNotAllowed, configuredPath)
+		}
+
+		dataDir, err := filepath.Abs(s.effectiveDataDir())
+		if err != nil {
+			return fmt.Errorf("%w: resolve data directory: %v", ErrProfileStateFilePathNotAllowed, err)
+		}
+		configured, err := filepath.Abs(filepath.Join(dataDir, configuredPath))
+		if err != nil {
+			return fmt.Errorf("%w: resolve path: %v", ErrProfileStateFilePathNotAllowed, err)
+		}
+		relative, err := filepath.Rel(dataDir, configured)
+		if err != nil {
+			return fmt.Errorf("%w: compare path with data directory: %v", ErrProfileStateFilePathNotAllowed, err)
+		}
+		if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("%w: path escapes data directory: %q", ErrProfileStateFilePathNotAllowed, configuredPath)
+		}
+	}
+
 	derivedPath := s.profileSpecificStatePath(profileID, configuredPath)
 	if len([]byte(filepath.Base(derivedPath))) > maxStateFileComponentBytes {
 		return fmt.Errorf("%w: %q", ErrProfileStateFileNameTooLong, filepath.Base(derivedPath))
 	}
 	return nil
+}
+
+func (s *MultiUserService) effectiveDataDir() string {
+	if s.globalConfig != nil && s.globalConfig.Paths.DataDir != "" {
+		return s.globalConfig.Paths.DataDir
+	}
+	return "/data"
+}
+
+// encodeProfileID turns every non-unreserved byte into a percent-encoded
+// sequence so even legacy IDs containing route delimiters remain one filename
+// component. New IDs are already restricted to the unreserved set.
+func encodeProfileID(profileID string) string {
+	const hex = "0123456789ABCDEF"
+	var encoded strings.Builder
+	encoded.Grow(len(profileID))
+	for i := 0; i < len(profileID); i++ {
+		char := profileID[i]
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || char == '-' || char == '.' || char == '_' || char == '~' {
+			encoded.WriteByte(char)
+			continue
+		}
+		encoded.WriteByte('%')
+		encoded.WriteByte(hex[char>>4])
+		encoded.WriteByte(hex[char&0x0f])
+	}
+	return encoded.String()
 }
 
 func cloneBookMismatch(record mismatch.BookMismatch) mismatch.BookMismatch {

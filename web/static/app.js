@@ -1411,6 +1411,9 @@ class SyncProfileApp {
         const selectedFilter = categories.some(category => category.key === open.filter) ? open.filter : 'all';
         open.filter = selectedFilter;
         const records = new Map((snapshot.book_outcomes || []).map(record => [record.book_id, record]));
+        const mismatches = new Map((snapshot.mismatches || [])
+            .filter(mismatch => mismatch && mismatch.book_id != null)
+            .map(mismatch => [String(mismatch.book_id), mismatch]));
         tabs.innerHTML = `<button class="tab-button active" type="button">${this.escapeHtml(this.statuses[open.profileId]?.profile_name || `Profile ${open.profileId}`)}</button>`;
         const snapshotState = String(snapshot.state || '').toLowerCase();
         const terminal = snapshotState === 'completed' || snapshotState === 'failed';
@@ -1422,7 +1425,10 @@ class SyncProfileApp {
         const groupsHtml = groups.filter(group => selectedFilter === 'all' || group.key === selectedFilter).map(group => `
             <details class="summary-section outcome-group" data-outcome="${group.key}" ${open.expandedOutcomes.has(group.key) ? 'open' : ''}>
                 <summary data-outcome-category="${group.key}"><span>${group.label}</span><span class="stat ${group.tone}">${group.count}</span></summary>
-                <div class="book-list">${group.records.length ? group.records.map(record => this.renderOutcomeRecord(record)).join('') : '<p class="empty-state">No books in this category.</p>'}</div>
+                <div class="book-list">${group.records.length ? group.records.map(record => this.renderOutcomeRecord(
+                    record,
+                    record.outcome === 'needs_review' ? mismatches.get(String(record.book_id)) : null
+                )).join('') : '<p class="empty-state">No books in this category.</p>'}</div>
             </details>`).join('');
         const cleanMessage = snapshotState === 'completed' && unresolved === 0
             ? 'This run completed without unresolved or failed outcomes.'
@@ -1457,13 +1463,81 @@ class SyncProfileApp {
         });
     }
 
-    renderOutcomeRecord(record) {
+    renderHardcoverCandidate(mismatch) {
+        if (!mismatch || typeof mismatch !== 'object') return '';
+
+        const value = (raw) => {
+            if (typeof raw === 'string') return raw.trim();
+            if (typeof raw === 'number' && Number.isFinite(raw)) return String(raw);
+            return '';
+        };
+        const title = value(mismatch.hardcover_title);
+        const author = value(mismatch.hardcover_author);
+        const publishedYear = value(mismatch.hardcover_published_year);
+        const publisher = value(mismatch.hardcover_publisher);
+        const asin = value(mismatch.hardcover_asin);
+        const isbn = value(mismatch.hardcover_isbn);
+        const slug = value(mismatch.hardcover_slug);
+        // BookMismatch exposes edition metadata without a hardcover_ prefix;
+        // keep the labels explicit because these fields describe the source
+        // edition, while the hardcover_* fields above describe the candidate.
+        const sourceFormat = value(mismatch.edition_format);
+        const sourceEdition = value(mismatch.edition_information);
+        const coverURL = value(mismatch.hardcover_cover_url);
+        const hardcoverURL = slug
+            ? `https://hardcover.app/books/${encodeURIComponent(slug)}`
+            : '';
+        const fields = [];
+        const addField = (label, rawValue) => {
+            const fieldValue = value(rawValue);
+            if (fieldValue) {
+                fields.push(`<span><strong>${label}:</strong> ${this.escapeHtml(fieldValue)}</span>`);
+            }
+        };
+
+        if (title) {
+            const titleHTML = hardcoverURL
+                ? `<a href="${this.escapeHtmlAttribute(hardcoverURL)}" target="_blank" rel="noopener noreferrer">${this.escapeHtml(title)}</a>`
+                : this.escapeHtml(title);
+            fields.push(`<span><strong>Title:</strong> ${titleHTML}</span>`);
+        }
+        addField('Author', author);
+        addField('Published', publishedYear);
+        addField('Publisher', publisher);
+        addField('ASIN', asin);
+        addField('ISBN', isbn);
+        addField('Slug', slug);
+        addField('Source format', sourceFormat);
+        addField('Source edition', sourceEdition);
+
+        const coverIsHTTP = /^https?:\/\//i.test(coverURL) && !coverURL.includes('|');
+        const coverHTML = coverIsHTTP
+            ? `<img src="${this.escapeHtmlAttribute(coverURL)}"
+                    data-fallbacks="${this.escapeHtmlAttribute(`${coverURL}|/cover-placeholder.svg`)}"
+                    data-fb-idx="0"
+                    alt="${this.escapeHtmlAttribute(`Hardcover cover${title ? ` for ${title}` : ''}`)}"
+                    class="book-cover"
+                    loading="lazy"
+                    decoding="async"
+                    onerror="window.__absHandleImageError && window.__absHandleImageError(this)">`
+            : '';
+
+        if (!fields.length && !coverHTML) return '';
+        return `<section class="hardcover-candidate" aria-label="Hardcover candidate">
+            <h4>Hardcover candidate</h4>
+            ${coverHTML ? `<div>${coverHTML}</div>` : ''}
+            ${fields.length ? `<div class="book-meta">${fields.join('')}</div>` : ''}
+        </section>`;
+    }
+
+    renderOutcomeRecord(record, mismatch = null) {
         const bookId = String(record.book_id || '');
         return `<article class="book-item" data-book-id="${this.escapeHtmlAttribute(bookId)}">
             <div class="book-title">${this.escapeHtml(record.title || 'Unknown title')}</div>
             ${record.author ? `<div><strong>Author:</strong> ${this.escapeHtml(record.author)}</div>` : ''}
             <div class="book-meta">${record.asin ? `<span><strong>ASIN:</strong> ${this.escapeHtml(record.asin)}</span>` : ''}${record.isbn ? `<span><strong>ISBN:</strong> ${this.escapeHtml(record.isbn)}</span>` : ''}</div>
             ${record.match_method ? `<div><strong>Match method:</strong> ${this.escapeHtml(record.match_method)}</div>` : ''}
+            ${mismatch ? this.renderHardcoverCandidate(mismatch) : ''}
             ${record.reason ? `<div class="book-reason"><strong>Reason:</strong> ${this.escapeHtml(record.reason)}</div>` : ''}
             ${record.error ? `<div class="book-error"><strong>Error:</strong> ${this.escapeHtml(record.error)}</div>` : ''}
         </article>`;

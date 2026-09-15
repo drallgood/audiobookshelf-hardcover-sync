@@ -53,8 +53,23 @@ func createRouteProfileAtURL(t *testing.T, fixture *routeTestFixture, session ro
         "audiobookshelf_token": "`+token+`",
         "hardcover_token": "hardcover-`+token+`",
         "sync_config": {"process_unread_books": true, "dry_run": true}
-    }`), []*http.Cookie{session.cookie})
+	    }`), []*http.Cookie{session.cookie})
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	assertProfileResponseRedactsCredentials(t, response, token, "hardcover-"+token)
+}
+
+func assertProfileResponseRedactsCredentials(t *testing.T, response *httptest.ResponseRecorder, tokens ...string) {
+	t.Helper()
+	var envelope struct {
+		Data map[string]interface{} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	require.NotContains(t, envelope.Data, "audiobookshelf_token")
+	require.NotContains(t, envelope.Data, "hardcover_token")
+	for _, token := range tokens {
+		require.NotEmpty(t, token)
+		require.NotContains(t, response.Body.String(), token)
+	}
 }
 
 func newRouteTestFixtureWithHardcoverURL(t *testing.T, hardcoverURL string) *routeTestFixture {
@@ -146,7 +161,7 @@ func TestProfileAuthorizationOwnershipAndAdminOverride(t *testing.T) {
 
 	ownerResponse := fixture.requestWithCookies(http.MethodGet, "/api/profiles/owned-a", nil, []*http.Cookie{ownerA.cookie})
 	require.Equal(t, http.StatusOK, ownerResponse.Code, ownerResponse.Body.String())
-	require.Contains(t, ownerResponse.Body.String(), "owner-a-sentinel-token")
+	assertProfileResponseRedactsCredentials(t, ownerResponse, "owner-a-sentinel-token", "hardcover-owner-a-sentinel-token")
 
 	foreignResponse := fixture.requestWithCookies(http.MethodGet, "/api/profiles/owned-b", nil, []*http.Cookie{ownerA.cookie})
 	require.Equal(t, http.StatusNotFound, foreignResponse.Code, foreignResponse.Body.String())
@@ -156,12 +171,60 @@ func TestProfileAuthorizationOwnershipAndAdminOverride(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, legacyResponse.Code, legacyResponse.Body.String())
 	adminLegacyResponse := fixture.requestWithCookies(http.MethodGet, "/api/profiles/legacy-ownerless", nil, []*http.Cookie{admin.cookie})
 	require.Equal(t, http.StatusOK, adminLegacyResponse.Code, adminLegacyResponse.Body.String())
+	assertProfileResponseRedactsCredentials(t, adminLegacyResponse, "legacy-token", "legacy-hc-token")
 
 	adminListResponse := fixture.requestWithCookies(http.MethodGet, "/api/profiles", nil, []*http.Cookie{admin.cookie})
 	require.Equal(t, http.StatusOK, adminListResponse.Code, adminListResponse.Body.String())
 	require.Contains(t, adminListResponse.Body.String(), "owned-a")
 	require.Contains(t, adminListResponse.Body.String(), "owned-b")
 	require.Contains(t, adminListResponse.Body.String(), "legacy-ownerless")
+}
+
+func TestAuthDisabledProfileResponsesRedactCredentialsAndPreserveUpdates(t *testing.T) {
+	fixture := newRouteTestFixture(t, false)
+	const (
+		profileID = "redacted-profile"
+		absToken  = "auth-disabled-abs-token"
+		hcToken   = "auth-disabled-hc-token"
+	)
+
+	createResponse := fixture.request(
+		http.MethodPost,
+		"/api/profiles",
+		[]byte(`{"id":"`+profileID+`","name":"Redacted","audiobookshelf_url":"http://audiobookshelf.invalid","audiobookshelf_token":"`+absToken+`","hardcover_token":"`+hcToken+`"}`),
+	)
+	require.Equal(t, http.StatusOK, createResponse.Code, createResponse.Body.String())
+	assertProfileResponseRedactsCredentials(t, createResponse, absToken, hcToken)
+
+	getResponse := fixture.request(http.MethodGet, "/api/profiles/"+profileID, nil)
+	require.Equal(t, http.StatusOK, getResponse.Code, getResponse.Body.String())
+	assertProfileResponseRedactsCredentials(t, getResponse, absToken, hcToken)
+
+	updateResponse := fixture.request(http.MethodPut, "/api/profiles/"+profileID, []byte(`{"name":"Updated"}`))
+	require.Equal(t, http.StatusOK, updateResponse.Code, updateResponse.Body.String())
+	assertProfileResponseRedactsCredentials(t, updateResponse, absToken, hcToken)
+
+	for _, test := range []struct {
+		name string
+		body string
+		url  string
+	}{
+		{name: "omitted tokens", body: `{"audiobookshelf_url":"http://omitted.invalid"}`, url: "http://omitted.invalid"},
+		{name: "empty tokens", body: `{"audiobookshelf_url":"http://empty.invalid","audiobookshelf_token":"","hardcover_token":""}`, url: "http://empty.invalid"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := fixture.request(http.MethodPut, "/api/profiles/"+profileID+"/config", []byte(test.body))
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			assertProfileResponseRedactsCredentials(t, response, absToken, hcToken)
+
+			profile, err := fixture.repo.GetProfile(profileID)
+			require.NoError(t, err)
+			require.NotNil(t, profile)
+			require.Equal(t, test.url, profile.AudiobookshelfURL)
+			require.Equal(t, absToken, profile.AudiobookshelfToken)
+			require.Equal(t, hcToken, profile.HardcoverToken)
+		})
+	}
 }
 
 func TestViewerProfileAuthorizationIsReadOnly(t *testing.T) {
