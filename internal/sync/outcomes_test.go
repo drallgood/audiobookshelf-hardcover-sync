@@ -567,7 +567,7 @@ func TestSyncReportsRetriedLibraryFetchFailure(t *testing.T) {
 
 	err := svc.Sync(context.Background())
 	require.Error(t, err)
-	assert.ErrorContains(t, err, retryErr.Error())
+	assert.ErrorIs(t, err, retryErr)
 	mockABS.AssertExpectations(t)
 	hc.AssertExpectations(t)
 }
