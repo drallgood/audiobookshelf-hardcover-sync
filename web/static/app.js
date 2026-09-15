@@ -432,7 +432,7 @@ class SyncProfileApp {
                     case 'delete': this.deleteProfile(profileId); break;
                     case 'start': this.startSync(profileId); break;
                     case 'cancel': this.cancelSync(profileId); break;
-                    case 'summary': this.showSyncSummary(profileId); break;
+                    case 'summary': this.toggleSyncSummary(profileId); break;
                     case 'dismiss-error':
                         this.actionErrors.delete(profileId);
                         this.renderStatuses();
@@ -1004,6 +1004,7 @@ class SyncProfileApp {
         const profileName = status.profile_name || status.profile_id || 'Unknown Profile';
         const actionError = this.actionErrors.get(profileId);
         const hasRun = Boolean(snapshot.run_id);
+        const detailsOpen = this.isSyncSummaryOpen(profileId, snapshot.run_id);
         const retryable = statusState === 'error' || statusState === 'failed';
         const categories = this.outcomeCategories(counts);
 
@@ -1057,8 +1058,8 @@ class SyncProfileApp {
                             </button>
                         `)}
                         ${hasRun ? `
-                            <button class="btn btn-secondary" data-profile-action="summary">
-                                View Details
+                            <button class="btn btn-secondary" data-profile-action="summary" aria-expanded="${detailsOpen}">
+                                ${detailsOpen ? 'Hide Details' : 'View Details'}
                             </button>
                         ` : ''}
                     </div>
@@ -1130,7 +1131,9 @@ class SyncProfileApp {
 
         statusArray.forEach(([profileId, status], index) => {
             let card = existingCards.get(profileId);
-            const signature = JSON.stringify([status, this.actionErrors.get(profileId), Boolean(this.statusRefreshError)]);
+            const snapshotRunId = status.snapshot?.run_id;
+            const detailsOpen = this.isSyncSummaryOpen(profileId, snapshotRunId);
+            const signature = JSON.stringify([status, this.actionErrors.get(profileId), Boolean(this.statusRefreshError), detailsOpen]);
             const focusInfo = card && activeElement && card.contains(activeElement)
                 ? {
                     id: activeElement.id,
@@ -1184,6 +1187,22 @@ class SyncProfileApp {
             window.scrollTo(scrollPosition.x, scrollPosition.y);
         }
     }
+
+    isSyncSummaryOpen(profileId, runId) {
+        return Boolean(runId)
+            && this.openSummary?.profileId === profileId
+            && this.openSummary?.runId === runId;
+    }
+
+    async toggleSyncSummary(profileId) {
+        const runId = this.statuses[profileId]?.snapshot?.run_id;
+        if (this.isSyncSummaryOpen(profileId, runId)) {
+            this.clearOpenSummary();
+            this.renderStatuses();
+            return;
+        }
+        await this.showSyncSummary(profileId);
+    }
     
     async showSyncSummary(profileId) {
         const status = this.statuses[profileId];
@@ -1207,9 +1226,11 @@ class SyncProfileApp {
             expandedOutcomes: sameRun && previous.expandedOutcomes instanceof Set ? previous.expandedOutcomes : new Set(),
             scrollTop: 0
         };
-        if (!sameRun) this.renderDetailsState('loading', this.openSummary);
-        await this.fetchAndRenderDetails({ open: this.openSummary });
-        if (!sameRun) container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        const open = this.openSummary;
+        this.renderStatuses();
+        if (!sameRun) this.renderDetailsState('loading', open);
+        await this.fetchAndRenderDetails({ open });
+        if (!sameRun && this.openSummary === open) container.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
     async refreshOpenSummary() {
