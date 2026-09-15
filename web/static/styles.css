@@ -512,39 +512,6 @@ header p {
 .details-state p { margin: 0; }
 .details-refresh-state { margin: 0 0 1rem; background: #fffaf0; border-color: #f6ad55; }
 
-.outcome-filters {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.45rem;
-    margin: 0 0 1rem;
-}
-
-.outcome-filter-label {
-    color: #4a5568;
-    font-size: 0.875rem;
-    font-weight: 600;
-    margin-right: 0.25rem;
-}
-
-.outcome-filter {
-    border: 1px solid #cbd5e0;
-    border-radius: 999px;
-    background: #fff;
-    color: #4a5568;
-    cursor: pointer;
-    font-size: 0.8rem;
-    padding: 0.25rem 0.65rem;
-}
-
-.outcome-filter:hover,
-.outcome-filter:focus-visible,
-.outcome-filter.active {
-    border-color: #667eea;
-    background: #ebf4ff;
-    color: #2c5282;
-}
-
 .stat-item.muted { border-left-color: #a0aec0; }
 
 .action-error {

@@ -1221,7 +1221,6 @@ class SyncProfileApp {
             profileId,
             runId,
             generation: (previous?.generation || 0) + 1,
-            filter: sameRun ? previous.filter : 'all',
             expandedIds: sameRun ? previous.expandedIds : new Set(),
             expandedOutcomes: sameRun && previous.expandedOutcomes instanceof Set ? previous.expandedOutcomes : new Set(),
             scrollTop: 0
@@ -1250,7 +1249,6 @@ class SyncProfileApp {
                 profileId: previous.profileId,
                 runId,
                 generation: previous.generation + 1,
-                filter: 'all',
                 expandedIds: new Set(),
                 expandedOutcomes: new Set(),
                 scrollTop: 0
@@ -1428,9 +1426,6 @@ class SyncProfileApp {
         if (!(open.expandedOutcomes instanceof Set)) open.expandedOutcomes = new Set();
         open.renderedRunId = snapshot.run_id;
         const categories = this.outcomeCategories(snapshot.outcome_counts || {});
-        open.snapshot = snapshot;
-        const selectedFilter = categories.some(category => category.key === open.filter) ? open.filter : 'all';
-        open.filter = selectedFilter;
         const records = new Map((snapshot.book_outcomes || []).map(record => [record.book_id, record]));
         const mismatches = new Map((snapshot.mismatches || [])
             .filter(mismatch => mismatch && mismatch.book_id != null)
@@ -1443,7 +1438,7 @@ class SyncProfileApp {
             const groupRecords = [...records.values()].filter(record => record.outcome === category.key);
             return { ...category, records: groupRecords };
         });
-        const groupsHtml = groups.filter(group => selectedFilter === 'all' || group.key === selectedFilter).map(group => `
+        const groupsHtml = groups.map(group => `
             <details class="summary-section outcome-group" data-outcome="${group.key}" ${open.expandedOutcomes.has(group.key) ? 'open' : ''}>
                 <summary data-outcome-category="${group.key}"><span>${group.label}</span><span class="stat ${group.tone}">${group.count}</span></summary>
                 <div class="book-list">${group.records.length ? group.records.map(record => this.renderOutcomeRecord(
@@ -1460,10 +1455,6 @@ class SyncProfileApp {
                 <div class="summary-header"><h3>Run details</h3><div class="last-sync">Started: ${new Date(snapshot.run_started_at).toLocaleString()}</div></div>
                 <p class="status-message">${cleanMessage}</p>
                 ${runError ? `<div class="status-message status-error" data-run-error><strong>Run error:</strong> ${this.escapeHtml(runError)}</div>` : ''}
-                <div class="outcome-filters" role="group" aria-label="Filter run details">
-                    <span class="outcome-filter-label">Show:</span>
-                    ${[{ key: 'all', label: 'All outcomes' }, ...categories].map(category => `<button type="button" class="outcome-filter ${selectedFilter === category.key ? 'active' : ''}" data-outcome-filter="${category.key}" aria-pressed="${selectedFilter === category.key}">${category.label}${category.key === 'all' ? '' : ` (${category.count})`}</button>`).join('')}
-                </div>
                 <div class="summary-stats">${groups.map(group => `<div class="stat-item ${group.tone}"><span class="stat-value">${group.count}</span><span class="stat-label">${group.label}</span></div>`).join('')}</div>
                 ${groupsHtml}
             </div>`;
@@ -1471,15 +1462,6 @@ class SyncProfileApp {
             group.addEventListener('toggle', () => {
                 if (group.open) open.expandedOutcomes.add(group.dataset.outcome);
                 else open.expandedOutcomes.delete(group.dataset.outcome);
-            });
-        });
-        content.querySelectorAll('[data-outcome-filter]').forEach(button => {
-            button.addEventListener('click', () => {
-                const viewport = this.captureDetailViewport(content);
-                open.filter = button.dataset.outcomeFilter || 'all';
-                this.renderDetailsSnapshot(open.snapshot);
-                this.restoreDetailViewport(content, viewport);
-                content.querySelector(`[data-outcome-filter="${open.filter}"]`)?.focus({ preventScroll: true });
             });
         });
     }
