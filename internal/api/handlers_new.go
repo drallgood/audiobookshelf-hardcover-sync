@@ -222,14 +222,9 @@ func (h *Handler) writeSuccessResponse(w http.ResponseWriter, data interface{}) 
 	})
 }
 
-// buildProfileResponse converts a database.ProfileWithTokens into a clean API response
-func (h *Handler) buildProfileResponse(p *database.ProfileWithTokens) map[string]interface{} {
-	return h.buildProfileResponseWithCredentials(p, true)
-}
-
 func (h *Handler) buildProfileResponseForRequest(p *database.ProfileWithTokens, r *http.Request) map[string]interface{} {
 	if !h.authEnabled {
-		return h.buildProfileResponse(p)
+		return h.buildProfileResponseWithCredentials(p, true)
 	}
 	user := h.authenticatedUser(r)
 	includeCredentials := user != nil && auth.UserRole(user.Role).HasPermission(auth.PermissionWriteOwn)
@@ -570,7 +565,7 @@ func (h *Handler) GetProfileStatus(w http.ResponseWriter, r *http.Request) {
 // fall through to the profile's newer current snapshot.
 func (h *Handler) GetRunDetails(w http.ResponseWriter, r *http.Request) {
 	profileID := profileIDFromRequest(r)
-	runID := runIDFromRequest(r)
+	runID := r.PathValue("runID")
 	if profileID == "" || runID == "" {
 		h.writeErrorResponse(w, http.StatusBadRequest, "Profile ID and run ID are required")
 		return
@@ -701,10 +696,6 @@ func (h *Handler) CancelSync(w http.ResponseWriter, r *http.Request) {
 // delimiters because PathValue returns the unescaped path segment.
 func profileIDFromRequest(r *http.Request) string {
 	return r.PathValue("id")
-}
-
-func runIDFromRequest(r *http.Request) string {
-	return r.PathValue("runID")
 }
 
 // isValidNewProfileID accepts up to 244 bytes of RFC 3986 unreserved ASCII
