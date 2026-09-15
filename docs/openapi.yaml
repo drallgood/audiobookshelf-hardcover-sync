@@ -104,7 +104,7 @@ components:
               items:
                 type: string
               example: ["exclusive"]
-            dryRun:
+            dry_run:
               type: boolean
               example: false
     
@@ -123,20 +123,233 @@ components:
           type: string
           enum: [idle, syncing, completed, error]
           example: "idle"
-        lastSync:
+        last_sync:
           type: string
           format: date-time
           nullable: true
           example: "2023-01-01T00:00:00Z"
         progress:
-          type: integer
-          minimum: 0
-          maximum: 100
-          example: 0
+          type: string
+          example: "Starting sync..."
         error:
           type: string
           nullable: true
           example: "Connection failed"
+        profile_id:
+          type: string
+        profile_name:
+          type: string
+        dry_run:
+          type: boolean
+        books_total:
+          type: integer
+          description: Number of candidates observed before processing limits.
+        books_synced:
+          type: integer
+          description: Legacy count retained for existing clients.
+        books_not_found:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookNotFoundInfo'
+        mismatches:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookMismatch'
+        last_sync_summary:
+          type: object
+          description: Legacy summary fields retained for existing clients.
+        snapshot:
+          $ref: '#/components/schemas/SyncSnapshot'
+
+    AggregateSyncStatus:
+      type: object
+      description: Baseline status exposed by the public aggregate status endpoint.
+      properties:
+        profile_id:
+          type: string
+        profile_name:
+          type: string
+        status:
+          type: string
+          enum: [idle, syncing, completed, error]
+          example: "idle"
+        dry_run:
+          type: boolean
+        last_sync:
+          type: string
+          format: date-time
+          nullable: true
+          example: "2023-01-01T00:00:00Z"
+        progress:
+          type: string
+          example: "Starting sync..."
+        books_total:
+          type: integer
+          description: Number of candidates observed before processing limits.
+        books_synced:
+          type: integer
+          description: Legacy count retained for existing clients.
+
+    OutcomeCounts:
+      type: object
+      required: [synced, already_current, skipped, needs_review, not_found, failed, would_sync]
+      properties:
+        synced: {type: integer}
+        already_current: {type: integer}
+        skipped: {type: integer}
+        needs_review: {type: integer}
+        not_found: {type: integer}
+        failed: {type: integer}
+        would_sync: {type: integer}
+
+    BookOutcomeRecord:
+      type: object
+      required: [book_id, outcome, updated_at]
+      properties:
+        book_id: {type: string}
+        outcome:
+          type: string
+          enum: [synced, already_current, skipped, needs_review, not_found, failed, would_sync]
+        title: {type: string}
+        author: {type: string}
+        asin: {type: string}
+        isbn: {type: string}
+        reason: {type: string}
+        error: {type: string}
+        match_method: {type: string}
+        hardcover_book_id: {type: string}
+        edition_id: {type: string}
+        updated_at: {type: string, format: date-time}
+
+    BookNotFoundInfo:
+      type: object
+      properties:
+        book_id: {type: string}
+        title: {type: string}
+        author: {type: string}
+        asin: {type: string}
+        isbn: {type: string}
+        error: {type: string}
+
+    BookMismatch:
+      type: object
+      properties:
+        book_id: {type: string}
+        title: {type: string}
+        subtitle: {type: string}
+        author: {type: string}
+        author_ids:
+          type: array
+          items: {type: integer}
+        narrator: {type: string}
+        narrator_ids:
+          type: array
+          items: {type: integer}
+        asin: {type: string}
+        isbn: {type: string}
+        isbn_10: {type: string}
+        isbn_13: {type: string}
+        library_id: {type: string}
+        folder_id: {type: string}
+        release_date: {type: string}
+        published_year: {type: string}
+        duration_seconds: {type: integer}
+        cover_url: {type: string}
+        image_url: {type: string}
+        edition_format: {type: string}
+        edition_information: {type: string}
+        language_id: {type: integer}
+        country_id: {type: integer}
+        publisher_id: {type: integer}
+        publisher: {type: string}
+        hardcover_book_id: {type: string}
+        hardcover_title: {type: string}
+        hardcover_author: {type: string}
+        hardcover_published_year: {type: string}
+        hardcover_cover_url: {type: string}
+        hardcover_publisher: {type: string}
+        hardcover_asin: {type: string}
+        hardcover_isbn: {type: string}
+        hardcover_slug: {type: string}
+        reason: {type: string}
+        timestamp: {type: integer, format: int64}
+        attempts: {type: integer}
+        created_at: {type: string, format: date-time}
+
+    SyncSnapshot:
+      type: object
+      required: [run_id, run_started_at, state, books_total, processed_so_far, processed_count, outcome_counts, book_outcomes, attention_records]
+      properties:
+        user_id: {type: string}
+        run_id: {type: string}
+        run_started_at: {type: string, format: date-time}
+        state:
+          type: string
+          enum: [idle, syncing, completed, failed]
+          description: Cancellation currently clears the live snapshot and returns the profile to idle.
+        books_total:
+          type: integer
+          description: Number of candidates observed before processing limits.
+        processed_so_far:
+          type: integer
+          description: Sum of all outcome_counts categories.
+        processed_count:
+          type: integer
+          description: Alias of processed_so_far for clients that prefer count terminology.
+        outcome_counts:
+          $ref: '#/components/schemas/OutcomeCounts'
+        book_outcomes:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookOutcomeRecord'
+        attention_records:
+          type: array
+          description: Needs-review, not-found, and failed records currently requiring attention.
+          items:
+            $ref: '#/components/schemas/BookOutcomeRecord'
+        total_books_processed: {type: integer}
+        books_synced: {type: integer}
+        books_not_found:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookNotFoundInfo'
+        mismatches:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookMismatch'
+
+    SyncSummary:
+      type: object
+      properties:
+        snapshot:
+          $ref: '#/components/schemas/SyncSnapshot'
+        user_id: {type: string}
+        run_id: {type: string}
+        run_started_at: {type: string, format: date-time}
+        state: {type: string}
+        books_total: {type: integer}
+        processed_so_far: {type: integer}
+        processed_count: {type: integer}
+        outcome_counts:
+          $ref: '#/components/schemas/OutcomeCounts'
+        book_outcomes:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookOutcomeRecord'
+        attention_records:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookOutcomeRecord'
+        total_books_processed: {type: integer}
+        books_synced: {type: integer}
+        books_not_found:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookNotFoundInfo'
+        mismatches:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookMismatch'
 
 security:
   - BearerAuth: []
@@ -354,6 +567,30 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
   
+  /profiles/{profileId}/summary:
+    get:
+      tags: [Status]
+      summary: Get the current-run sync summary for a profile
+      parameters:
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "profile-123"
+      responses:
+        '200':
+          description: Current run snapshot and legacy summary fields
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/SyncSummary'
   /profiles/{profileId}/status:
     get:
       tags: [Status]
@@ -389,6 +626,7 @@ paths:
     get:
       tags: [Status]
       summary: Get sync status for all profiles
+      security: []
       responses:
         '200':
           description: Sync status for all profiles
@@ -403,16 +641,7 @@ paths:
                   data:
                     type: array
                     items:
-                      type: object
-                      properties:
-                        profileId:
-                          type: string
-                          example: "profile-123"
-                        profileName:
-                          type: string
-                          example: "My Audiobooks"
-                        status:
-                          $ref: '#/components/schemas/SyncStatus'
+                      $ref: '#/components/schemas/AggregateSyncStatus'
   
   /profiles/{profileId}/sync:
     post:

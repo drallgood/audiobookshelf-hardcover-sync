@@ -17,8 +17,8 @@ import (
 // Handler provides HTTP handlers for the sync profile API
 type Handler struct {
 	multiUserService *multiuser.MultiUserService
-	syncService syncService // Interface for sync service to allow for testing
-	log        logger.Logger
+	syncService      syncService // Interface for sync service to allow for testing
+	log              logger.Logger
 }
 
 // syncService defines the interface for the sync service
@@ -53,7 +53,7 @@ func NewHandler(multiUserService *multiuser.MultiUserService, syncSvc syncServic
 		multiUserService: multiUserService,
 		syncService:      syncSvc,
 	}
-	
+
 	// Initialize logger if provided
 	if log != nil {
 		h.log = *log
@@ -61,18 +61,18 @@ func NewHandler(multiUserService *multiuser.MultiUserService, syncSvc syncServic
 		// Create a basic logger if none provided
 		h.log = logger.Logger{} // Assuming logger.Logger has a zero-value that's usable
 	}
-	
+
 	return h
 }
 
 // CreateProfileRequest represents the request body for creating a sync profile
 type CreateProfileRequest struct {
-	ID                  string                    `json:"id"`
-	Name                string                    `json:"name"`
-	AudiobookshelfURL   string                    `json:"audiobookshelf_url"`
-	AudiobookshelfToken string                    `json:"audiobookshelf_token"`
-	HardcoverToken      string                    `json:"hardcover_token"`
-	SyncConfig          database.SyncConfigData   `json:"sync_config"`
+	ID                  string                  `json:"id"`
+	Name                string                  `json:"name"`
+	AudiobookshelfURL   string                  `json:"audiobookshelf_url"`
+	AudiobookshelfToken string                  `json:"audiobookshelf_token"`
+	HardcoverToken      string                  `json:"hardcover_token"`
+	SyncConfig          database.SyncConfigData `json:"sync_config"`
 }
 
 // UpdateProfileRequest represents the request body for updating a sync profile
@@ -99,7 +99,7 @@ type APIResponse struct {
 func (h *Handler) writeJSONResponse(w http.ResponseWriter, statusCode int, response APIResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	
+
 	// Log the response before sending
 	jsonBytes, err := json.Marshal(response)
 	if err != nil {
@@ -112,7 +112,7 @@ func (h *Handler) writeJSONResponse(w http.ResponseWriter, statusCode int, respo
 			"response":    string(jsonBytes),
 		})
 	}
-	
+
 	// Write the response
 	if _, err := w.Write(jsonBytes); err != nil {
 		h.log.Error("Failed to write JSON response", map[string]interface{}{
@@ -160,43 +160,43 @@ func (h *Handler) buildProfileResponse(p *database.ProfileWithTokens) map[string
 
 // GetProfiles handles GET /api/profiles
 func (h *Handler) GetProfiles(w http.ResponseWriter, r *http.Request) {
-    profiles, err := h.multiUserService.ListProfiles()
-    if err != nil {
-        h.log.Error("Failed to list sync profiles: " + err.Error())
-        h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to retrieve sync profiles")
-        return
-    }
+	profiles, err := h.multiUserService.ListProfiles()
+	if err != nil {
+		h.log.Error("Failed to list sync profiles: " + err.Error())
+		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to retrieve sync profiles")
+		return
+	}
 
-    // Transform to include a top-level last_sync expected by the web UI
-    // Prefer the in-memory status' LastSync (reflects most recent sync),
-    // fall back to DB SyncState if present, else nil.
-    resp := make([]map[string]interface{}, 0, len(profiles))
-    for _, p := range profiles {
-        item := map[string]interface{}{
-            "id":         p.ID,
-            "name":       p.Name,
-            "active":     p.Active,
-            "created_at": p.CreatedAt,
-            "updated_at": p.UpdatedAt,
-        }
-        var lastSync interface{} = nil
-        if status := h.multiUserService.GetProfileStatus(p.ID); status != nil && status.LastSync != nil {
-            lastSync = status.LastSync
-        } else if p.SyncState != nil && p.SyncState.LastSync != nil {
-            lastSync = p.SyncState.LastSync
-        }
-        item["last_sync"] = lastSync
-        resp = append(resp, item)
-    }
+	// Transform to include a top-level last_sync expected by the web UI
+	// Prefer the in-memory status' LastSync (reflects most recent sync),
+	// fall back to DB SyncState if present, else nil.
+	resp := make([]map[string]interface{}, 0, len(profiles))
+	for _, p := range profiles {
+		item := map[string]interface{}{
+			"id":         p.ID,
+			"name":       p.Name,
+			"active":     p.Active,
+			"created_at": p.CreatedAt,
+			"updated_at": p.UpdatedAt,
+		}
+		var lastSync interface{} = nil
+		if status := h.multiUserService.GetProfileStatus(p.ID); status != nil && status.LastSync != nil {
+			lastSync = status.LastSync
+		} else if p.SyncState != nil && p.SyncState.LastSync != nil {
+			lastSync = p.SyncState.LastSync
+		}
+		item["last_sync"] = lastSync
+		resp = append(resp, item)
+	}
 
-    h.writeSuccessResponse(w, resp)
+	h.writeSuccessResponse(w, resp)
 }
 
 // GetProfile handles GET /api/profiles/{id}
 func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	profileID := h.extractProfileID(r.URL.Path)
 	h.log.Debug(fmt.Sprintf("GetProfile request for profileID: %s", profileID))
-	
+
 	if profileID == "" {
 		h.log.Error("Profile ID extraction failed: Invalid profile ID")
 		h.writeErrorResponse(w, http.StatusBadRequest, "Profile ID is required")
@@ -310,14 +310,14 @@ func (h *Handler) UpdateProfileConfig(w http.ResponseWriter, r *http.Request) {
 	// At least one field must be provided
 	if req.AudiobookshelfURL == "" && req.AudiobookshelfToken == "" && req.HardcoverToken == "" {
 		// Check if sync config has any actual values set
-		hasSyncConfig := !req.SyncConfig.IsEmpty() || 
+		hasSyncConfig := !req.SyncConfig.IsEmpty() ||
 			!req.SyncConfig.ProcessUnreadBooks || // Explicitly set to false
 			req.SyncConfig.Incremental || // Explicitly set to true
 			req.SyncConfig.SyncWantToRead || // Explicitly set to true
 			req.SyncConfig.SyncOwned || // Explicitly set to true
 			req.SyncConfig.IncludeEbooks || // Explicitly set to true
 			req.SyncConfig.DryRun // Explicitly set to true
-		
+
 		if !hasSyncConfig {
 			h.writeErrorResponse(w, http.StatusBadRequest, "At least one field must be provided")
 			return
@@ -509,6 +509,7 @@ func (h *Handler) HandleCurrentUser(w http.ResponseWriter, r *http.Request) {
 
 // GetSyncSummary handles GET /api/profiles/{id}/summary
 func (h *Handler) GetSyncSummary(w http.ResponseWriter, r *http.Request) {
+	// Snapshot-backed summary path keeps current status fields coherent.
 	// Extract profile ID from URL
 	profileID := h.extractProfileID(r.URL.Path)
 	if profileID == "" {
@@ -517,24 +518,38 @@ func (h *Handler) GetSyncSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var summary *sync.SyncSummary
+	var snapshot *sync.SyncSnapshot
+	status := h.multiUserService.GetProfileStatus(profileID)
+	if status != nil {
+		snapshot = status.Snapshot
+	}
 
-	// First try to get the sync service for this profile
-	syncSvc, exists := h.multiUserService.GetSyncService(profileID)
-	if exists && syncSvc != nil {
-		// Get the sync summary from the active sync service
-		summary = syncSvc.GetSummary()
+	if snapshot != nil {
+		summary = &sync.SyncSummary{
+			UserID:              snapshot.UserID,
+			TotalBooksProcessed: snapshot.TotalBooksProcessed,
+			BooksSynced:         snapshot.BooksSynced,
+			BooksTotal:          snapshot.BooksTotal,
+			BooksNotFound:       append([]sync.BookNotFoundInfo(nil), snapshot.BooksNotFound...),
+			Mismatches:          append([]mismatch.BookMismatch(nil), snapshot.Mismatches...),
+		}
 	} else {
 		// If no active sync service, try to get the last sync status
-		status := h.multiUserService.GetProfileStatus(profileID)
 		if summary = summaryFromProfileStatus(status); summary != nil {
 			// Log the summary reconstructed from the last sync status.
 			h.log.Debug("Created summary from profile status", map[string]interface{}{
 				"total_books_processed": summary.TotalBooksProcessed,
-				"books_synced":         summary.BooksSynced,
+				"books_synced":          summary.BooksSynced,
 				"books_not_found_count": len(summary.BooksNotFound),
-				"mismatches_count":     len(summary.Mismatches),
+				"mismatches_count":      len(summary.Mismatches),
 			})
 		}
+	}
+
+	// If neither a current snapshot nor a last sync status is available, use the stored
+	// legacy summary before constructing a compatibility response from flattened fields.
+	if summary == nil && status != nil && status.LastSyncSummary != nil {
+		summary = status.LastSyncSummary
 	}
 
 	// If still no summary, return a default empty one
@@ -549,24 +564,45 @@ func (h *Handler) GetSyncSummary(w http.ResponseWriter, r *http.Request) {
 
 	h.log.Debug("Sync summary from service", map[string]interface{}{
 		"total_books_processed": summary.TotalBooksProcessed,
-		"books_synced":         summary.BooksSynced,
+		"books_synced":          summary.BooksSynced,
 		"books_not_found_count": len(summary.BooksNotFound),
-		"mismatches_count":     len(summary.Mismatches),
+		"mismatches_count":      len(summary.Mismatches),
 	})
 
 	// Convert to API response
 	syncSummary := types.SyncSummaryResponse{
+		Snapshot:            cloneSnapshotForResponse(snapshot),
+		UserID:              summary.UserID,
+		BooksTotal:          summary.BooksTotal,
+		ProcessedSoFar:      summary.TotalBooksProcessed,
+		ProcessedCount:      summary.TotalBooksProcessed,
+		BookOutcomes:        make([]sync.BookOutcomeRecord, 0),
+		AttentionRecords:    make([]sync.BookOutcomeRecord, 0),
 		TotalBooksProcessed: summary.TotalBooksProcessed,
 		BooksSynced:         summary.BooksSynced,
 		BooksNotFound:       make([]types.BookNotFoundInfo, 0, len(summary.BooksNotFound)),
 		Mismatches:          make([]mismatch.BookMismatch, 0, len(summary.Mismatches)),
 	}
+	if syncSummary.UserID == "" {
+		syncSummary.UserID = "default"
+	}
+	if snapshot != nil {
+		syncSummary.RunID = snapshot.RunID
+		syncSummary.RunStartedAt = snapshot.RunStartedAt
+		syncSummary.State = snapshot.State
+		syncSummary.BooksTotal = snapshot.BooksTotal
+		syncSummary.ProcessedSoFar = snapshot.ProcessedSoFar
+		syncSummary.ProcessedCount = snapshot.ProcessedCount
+		syncSummary.OutcomeCounts = snapshot.OutcomeCounts
+		syncSummary.BookOutcomes = append(syncSummary.BookOutcomes, snapshot.BookOutcomes...)
+		syncSummary.AttentionRecords = append(syncSummary.AttentionRecords, snapshot.AttentionRecords...)
+	}
 
 	h.log.Debug("Created response struct", map[string]interface{}{
 		"total_books_processed": syncSummary.TotalBooksProcessed,
-		"books_synced":         syncSummary.BooksSynced,
+		"books_synced":          syncSummary.BooksSynced,
 		"books_not_found_count": len(syncSummary.BooksNotFound),
-		"mismatches_count":     len(syncSummary.Mismatches),
+		"mismatches_count":      len(syncSummary.Mismatches),
 	})
 
 	// Copy BooksNotFound
@@ -596,20 +632,34 @@ func (h *Handler) GetSyncSummary(w http.ResponseWriter, r *http.Request) {
 	// Create the final response with user_id and total_books_processed at the top level
 	// Always include mismatches in the response, even if empty
 	response := map[string]interface{}{
-		"user_id":              "default",
+		// Keep the legacy top-level identifier stable for existing clients. The
+		// profile-specific identifier remains available in the nested snapshot.
+		"user_id":               "default",
 		"total_books_processed": syncSummary.TotalBooksProcessed,
-		"books_synced":         syncSummary.BooksSynced,
-		"books_not_found":      syncSummary.BooksNotFound,
-		"mismatches":           syncSummary.Mismatches,
+		"books_synced":          syncSummary.BooksSynced,
+		"books_not_found":       syncSummary.BooksNotFound,
+		"mismatches":            syncSummary.Mismatches,
+	}
+	if snapshot != nil {
+		response["run_id"] = syncSummary.RunID
+		response["run_started_at"] = syncSummary.RunStartedAt
+		response["state"] = syncSummary.State
+		response["books_total"] = syncSummary.BooksTotal
+		response["processed_so_far"] = syncSummary.ProcessedSoFar
+		response["processed_count"] = syncSummary.ProcessedCount
+		response["outcome_counts"] = syncSummary.OutcomeCounts
+		response["book_outcomes"] = syncSummary.BookOutcomes
+		response["attention_records"] = syncSummary.AttentionRecords
+		response["snapshot"] = syncSummary.Snapshot
 	}
 
 	// Log the final response before sending
 	h.log.Debug("Sending sync summary response", map[string]interface{}{
-		"user_id":              "default",
+		"user_id":               syncSummary.UserID,
 		"total_books_processed": syncSummary.TotalBooksProcessed,
-		"books_synced":         syncSummary.BooksSynced,
+		"books_synced":          syncSummary.BooksSynced,
 		"books_not_found_count": len(syncSummary.BooksNotFound),
-		"mismatches_count":     len(syncSummary.Mismatches),
+		"mismatches_count":      len(syncSummary.Mismatches),
 	})
 
 	// Log the raw JSON response for debugging
@@ -623,4 +673,24 @@ func (h *Handler) GetSyncSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.writeSuccessResponse(w, response)
+}
+
+func cloneSnapshotForResponse(snapshot *sync.SyncSnapshot) *sync.SyncSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	copyOf := *snapshot
+	copyOf.BookOutcomes = make([]sync.BookOutcomeRecord, len(snapshot.BookOutcomes))
+	copy(copyOf.BookOutcomes, snapshot.BookOutcomes)
+	copyOf.AttentionRecords = make([]sync.BookOutcomeRecord, len(snapshot.AttentionRecords))
+	copy(copyOf.AttentionRecords, snapshot.AttentionRecords)
+	copyOf.BooksNotFound = make([]sync.BookNotFoundInfo, len(snapshot.BooksNotFound))
+	copy(copyOf.BooksNotFound, snapshot.BooksNotFound)
+	copyOf.Mismatches = make([]mismatch.BookMismatch, len(snapshot.Mismatches))
+	for i, book := range snapshot.Mismatches {
+		copyOf.Mismatches[i] = book
+		copyOf.Mismatches[i].AuthorIDs = append([]int(nil), book.AuthorIDs...)
+		copyOf.Mismatches[i].NarratorIDs = append([]int(nil), book.NarratorIDs...)
+	}
+	return &copyOf
 }

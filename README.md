@@ -67,10 +67,25 @@ Existing single-profile setups are **automatically migrated** on first startup:
 | `PUT` | `/api/profiles/{id}` | Update profile |
 | `DELETE` | `/api/profiles/{id}` | Delete profile |
 | `PUT` | `/api/profiles/{id}/config` | Update profile configuration |
-| `GET` | `/api/profiles/{id}/status` | Get sync status |
+| `GET` | `/api/profiles/{id}/status` | Get sync status and current-run snapshot |
+| `GET` | `/api/profiles/{id}/summary` | Get current-run outcomes and legacy summary |
 | `POST` | `/api/profiles/{id}/sync` | Start sync |
 | `DELETE` | `/api/profiles/{id}/sync` | Cancel sync |
 | `GET` | `/api/status` | All profile statuses |
+
+### Current-run sync status
+
+During a sync, when `AUTH_ENABLED=true`, authenticated
+`GET /api/profiles/{id}/status` includes a per-profile `snapshot`, and
+authenticated `GET /api/profiles/{id}/summary` exposes the same outcomes
+alongside legacy fields. Unauthenticated `GET /api/status` is an aggregate
+scalar status for all profiles; it does not include snapshots or book-level
+outcomes. Each processed book has one outcome:
+`synced`, `already_current`, `skipped`, `needs_review`, `not_found`, `failed`,
+or dry-run `would_sync`. Their counts add up to `processed_so_far`;
+`needs_review`, `not_found`, and `failed` appear in `attention_records` as they
+occur. The snapshot includes the run ID, start time, state, and book totals.
+It is cleared when a run is canceled and is not persistent run history.
 
 ### Environment Variables (Multi-Profile)
 

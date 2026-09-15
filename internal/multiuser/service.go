@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	stdSync "sync"
 	"strings"
+	stdSync "sync"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
@@ -19,18 +19,25 @@ import (
 
 // SyncProfileStatus represents the sync status for a profile
 type SyncProfileStatus struct {
-	ProfileID          string                 `json:"profile_id"`
-	ProfileName        string                 `json:"profile_name"`
-	Status             string                 `json:"status"` // "idle", "syncing", "error", "completed"
-	DryRun             bool                   `json:"dry_run,omitempty"`
-	LastSync           *time.Time             `json:"last_sync"`
-	Error              string                 `json:"error,omitempty"`
-	Progress           string                 `json:"progress,omitempty"`
-	BooksTotal         int                    `json:"books_total,omitempty"`
-	BooksSynced        int                    `json:"books_synced,omitempty"`
-	BooksNotFound      []sync.BookNotFoundInfo `json:"books_not_found,omitempty"`
-	Mismatches         []mismatch.BookMismatch `json:"mismatches,omitempty"`
-	LastSyncSummary    *sync.SyncSummary       `json:"last_sync_summary,omitempty"`
+	ProfileID       string                  `json:"profile_id"`
+	ProfileName     string                  `json:"profile_name"`
+	Status          string                  `json:"status"` // "idle", "syncing", "error", "completed"
+	DryRun          bool                    `json:"dry_run,omitempty"`
+	LastSync        *time.Time              `json:"last_sync"`
+	Error           string                  `json:"error,omitempty"`
+	Progress        string                  `json:"progress,omitempty"`
+	BooksTotal      int                     `json:"books_total,omitempty"`
+	BooksSynced     int                     `json:"books_synced,omitempty"`
+	BooksNotFound   []sync.BookNotFoundInfo `json:"books_not_found,omitempty"`
+	Mismatches      []mismatch.BookMismatch `json:"mismatches,omitempty"`
+	LastSyncSummary *sync.SyncSummary       `json:"last_sync_summary,omitempty"`
+	Snapshot        *sync.SyncSnapshot      `json:"snapshot,omitempty"`
+}
+
+type activeSyncRun struct {
+	generation uint64
+	runID      string
+	startedAt  time.Time
 }
 
 // MultiUserService manages sync operations for multiple users
@@ -41,8 +48,11 @@ type MultiUserService struct {
 	profileStatuses map[string]*SyncProfileStatus
 	statusMutex     stdSync.RWMutex
 	activeSyncs     map[string]context.CancelFunc
+	activeRuns      map[string]activeSyncRun
+	nextGeneration  uint64
 	syncMutex       stdSync.RWMutex
 	syncServices    map[string]*sync.Service // Maps profile ID to its sync service
+	serviceRuns     map[string]uint64
 	servicesMutex   stdSync.RWMutex
 }
 
@@ -54,7 +64,9 @@ func NewMultiUserService(repo *database.Repository, globalConfig *config.Config,
 		globalConfig:    globalConfig,
 		profileStatuses: make(map[string]*SyncProfileStatus),
 		activeSyncs:     make(map[string]context.CancelFunc),
+		activeRuns:      make(map[string]activeSyncRun),
 		syncServices:    make(map[string]*sync.Service),
+		serviceRuns:     make(map[string]uint64),
 	}
 }
 
@@ -92,12 +104,12 @@ func (s *MultiUserService) DeleteProfile(profileID string) error {
 			"error":     err,
 		})
 	}
-	
+
 	// Remove from status tracking
 	s.statusMutex.Lock()
 	delete(s.profileStatuses, profileID)
 	s.statusMutex.Unlock()
-	
+
 	return s.repository.DeleteProfile(profileID)
 }
 
@@ -109,337 +121,446 @@ func (s *MultiUserService) GetAllProfileStatuses() ([]*SyncProfileStatus, error)
 	}
 
 	statuses := make([]*SyncProfileStatus, 0, len(profiles))
-	
+
+	// The aggregate endpoint is intentionally scalar-only. Reading a full
+	// profile status here would copy every book outcome before redacting it.
 	s.statusMutex.RLock()
 	defer s.statusMutex.RUnlock()
 
 	for _, profile := range profiles {
-		status, exists := s.profileStatuses[profile.ID]
-		if !exists || status == nil {
-			// Create default status for profile
-			status = &SyncProfileStatus{
-				ProfileID:   profile.ID,
-				ProfileName: profile.Name,
-				Status:      "idle",
-				LastSync:    nil,
-			}
-		} else {
-			// Ensure we return a copy to avoid race conditions
-			status = &SyncProfileStatus{
-				ProfileID:   status.ProfileID,
-				ProfileName: status.ProfileName,
-				Status:      status.Status,
-				DryRun:      status.DryRun,
-				LastSync:    status.LastSync,
-				Error:       status.Error,
-				Progress:    status.Progress,
-				BooksTotal:  status.BooksTotal,
-				BooksSynced: status.BooksSynced,
-			}
-		}
-
-		// Ensure status is never empty
-		if status.Status == "" {
-			status.Status = "idle"
-		}
-
-		statuses = append(statuses, status)
+		statuses = append(statuses, aggregateProfileStatus(profile, s.profileStatuses[profile.ID]))
 	}
 
 	return statuses, nil
 }
 
+// aggregateProfileStatus projects a profile status for the unauthenticated
+// aggregate endpoint. Detailed book metadata belongs on the authenticated
+// per-profile status endpoint.
+func aggregateProfileStatus(profile database.SyncProfile, status *SyncProfileStatus) *SyncProfileStatus {
+	if status == nil {
+		return &SyncProfileStatus{
+			ProfileID:   profile.ID,
+			ProfileName: profile.Name,
+			Status:      "idle",
+		}
+	}
+
+	aggregate := &SyncProfileStatus{
+		ProfileID:   status.ProfileID,
+		ProfileName: status.ProfileName,
+		Status:      status.Status,
+		DryRun:      status.DryRun,
+		LastSync:    status.LastSync,
+		Progress:    status.Progress,
+		BooksTotal:  status.BooksTotal,
+		BooksSynced: status.BooksSynced,
+	}
+	if aggregate.Status == "" {
+		aggregate.Status = "idle"
+	}
+	return aggregate
+}
+
 // GetSyncService returns the sync service for a profile, if it exists
 func (s *MultiUserService) GetSyncService(profileID string) (*sync.Service, bool) {
-	s.servicesMutex.RLock()
-	defer s.servicesMutex.RUnlock()
-	service, exists := s.syncServices[profileID]
-	return service, exists
+	service, _ := s.currentSyncService(profileID)
+	return service, service != nil
 }
 
 // GetProfileStatus returns the sync status for a profile
 func (s *MultiUserService) GetProfileStatus(profileID string) *SyncProfileStatus {
-	s.statusMutex.RLock()
-	defer s.statusMutex.RUnlock()
-	
-	status, exists := s.profileStatuses[profileID]
-	if !exists {
-		// Check if profile exists in database
-		profile, err := s.GetProfile(profileID)
-		if err != nil {
-			return &SyncProfileStatus{
-				ProfileID:   profileID,
-				Status:      "error",
-				Error:       "Profile not found",
-				LastSync:    nil,
-			}
-		}
-		
-		// Create default status for existing profile
-		status = &SyncProfileStatus{
-			ProfileID:   profileID,
-			ProfileName: profile.Profile.Name,
-			Status:      "idle",
-			LastSync:    nil,
-		}
-	}
-	
-	// If we do not have an in-memory LastSync (e.g., after restart), hydrate from DB
-	if status.LastSync == nil {
-		if state, err := s.repository.GetSyncState(profileID); err == nil && state != nil && state.LastSync != nil {
-			status.LastSync = state.LastSync
-		}
-	}
-	
-	// If there's an active sync service, get the latest status from it
+	return s.getProfileStatus(profileID, nil, nil)
+}
+
+// currentSyncService returns only the service belonging to the active run.
+// A stale goroutine may remain briefly during cleanup, so its service must not
+// be exposed after a replacement run has started.
+func (s *MultiUserService) currentSyncService(profileID string) (*sync.Service, uint64) {
+	s.syncMutex.RLock()
+	defer s.syncMutex.RUnlock()
+	return s.currentSyncServiceLocked(profileID)
+}
+
+func (s *MultiUserService) currentSyncServiceLocked(profileID string) (*sync.Service, uint64) {
 	s.servicesMutex.RLock()
 	defer s.servicesMutex.RUnlock()
-	
-	if svc, exists := s.syncServices[profileID]; exists {
-		summary := svc.GetSummary()
-		if summary != nil {
-			if summary.BooksTotal > 0 {
-				status.BooksTotal = int(summary.BooksTotal)
-			} else {
-				status.BooksTotal = int(summary.TotalBooksProcessed)
+	service, exists := s.syncServices[profileID]
+	generation := s.serviceRuns[profileID]
+	activeRun, active := s.activeRuns[profileID]
+	if !exists || service == nil {
+		return nil, 0
+	}
+	if generation == 0 {
+		return service, 0
+	}
+	if !active || activeRun.generation != generation {
+		return nil, 0
+	}
+	return service, generation
+}
+
+func (s *MultiUserService) getProfileStatus(profileID string, profile *database.SyncProfile, profileState *database.ProfileSyncState) *SyncProfileStatus {
+	// A status lookup can hydrate its fallback from the database. Do that
+	// without holding syncMutex so a slow database cannot block a new run.
+	s.statusMutex.RLock()
+	status := cloneProfileStatus(s.profileStatuses[profileID])
+	s.statusMutex.RUnlock()
+
+	if status == nil {
+		if profile == nil {
+			if s.repository != nil {
+				loaded, _ := s.GetProfile(profileID)
+				if loaded != nil {
+					profile = &loaded.Profile
+					profileState = loaded.Profile.SyncState
+				}
 			}
-			status.BooksSynced = int(summary.BooksSynced)
-			
-			// Create proper copies of the slices to avoid race conditions
-			if len(summary.BooksNotFound) > 0 {
-				status.BooksNotFound = make([]sync.BookNotFoundInfo, len(summary.BooksNotFound))
-				copy(status.BooksNotFound, summary.BooksNotFound)
-			} else {
-				status.BooksNotFound = []sync.BookNotFoundInfo{}
-			}
-			
-			if len(summary.Mismatches) > 0 {
-				status.Mismatches = make([]mismatch.BookMismatch, len(summary.Mismatches))
-				copy(status.Mismatches, summary.Mismatches)
-			} else {
-				status.Mismatches = []mismatch.BookMismatch{}
-			}
-			
-			// Create a lightweight copy of the summary for last_sync_summary (counters only)
-			summaryCopy := &sync.SyncSummary{
-				UserID:              summary.UserID,
-				TotalBooksProcessed: summary.TotalBooksProcessed,
-				BooksSynced:         summary.BooksSynced,
-				BooksTotal:          summary.BooksTotal,
-				// Intentionally leave BooksNotFound and Mismatches empty to avoid duplication
-				BooksNotFound:       []sync.BookNotFoundInfo{},
-				Mismatches:          []mismatch.BookMismatch{},
-			}
-			status.LastSyncSummary = summaryCopy
 		}
 	}
-	
+	if (status == nil || status.LastSync == nil) && profileState == nil &&
+		s.repository != nil && (status != nil || profile != nil) {
+		profileState, _ = s.repository.GetSyncState(profileID)
+	}
+
+	// Re-read status and service state together after fallback I/O. A run can
+	// start while either lookup is in progress, and its status must win over a
+	// stale loaded fallback.
+	s.syncMutex.RLock()
+	defer s.syncMutex.RUnlock()
+
+	s.statusMutex.RLock()
+	status = cloneProfileStatus(s.profileStatuses[profileID])
+	s.statusMutex.RUnlock()
+	if status == nil {
+		if profile == nil {
+			return &SyncProfileStatus{ProfileID: profileID, Status: "error", Error: "Profile not found"}
+		}
+		status = &SyncProfileStatus{ProfileID: profileID, ProfileName: profile.Name, Status: "idle"}
+	}
+	if status.Status == "" {
+		status.Status = "idle"
+	}
+	if status.ProfileName == "" && profile != nil {
+		status.ProfileName = profile.Name
+	}
+	if status.LastSync == nil && profileState != nil && profileState.LastSync != nil {
+		lastSync := *profileState.LastSync
+		status.LastSync = &lastSync
+	}
+	service, generation := s.currentSyncServiceLocked(profileID)
+	if service == nil {
+		return status
+	}
+	snapshot := service.GetSnapshot()
+	if generation > 0 {
+		if run, ok := s.activeRuns[profileID]; ok && run.generation == generation {
+			snapshot.UserID = profileID
+			snapshot.RunID = run.runID
+			snapshot.RunStartedAt = run.startedAt
+			if snapshot.State == "" || snapshot.State == "idle" {
+				snapshot.State = "syncing"
+			}
+		}
+	}
+	if status.Snapshot == nil || status.Snapshot.RunID == "" || snapshot.RunID == "" || status.Snapshot.RunID == snapshot.RunID {
+		applySnapshotToStatus(status, snapshot)
+		if status.Snapshot.UserID == "" {
+			status.Snapshot.UserID = profileID
+		}
+	}
 	return status
 }
 
 // StartSync starts a sync operation for a specific profile
 func (s *MultiUserService) StartSync(profileID string) error {
-    s.syncMutex.Lock()
-    defer s.syncMutex.Unlock()
+	s.syncMutex.Lock()
+	defer s.syncMutex.Unlock()
 
-    if _, exists := s.activeSyncs[profileID]; exists {
-        return fmt.Errorf("sync already in progress for profile %s", profileID)
-    }
+	if _, exists := s.activeSyncs[profileID]; exists {
+		return fmt.Errorf("sync already in progress for profile %s", profileID)
+	}
 
-    // Get profile config
-    profileConfig, err := s.GetProfile(profileID)
-    if err != nil {
-        return fmt.Errorf("failed to get profile config: %w", err)
-    }
+	// Get profile config
+	profileConfig, err := s.GetProfile(profileID)
+	if err != nil {
+		return fmt.Errorf("failed to get profile config: %w", err)
+	}
 
-    // Create cancellable context and store cancel
-    ctx, cancel := context.WithCancel(context.Background())
-    s.activeSyncs[profileID] = cancel
+	// Create cancellable context and store cancel
+	ctx, cancel := context.WithCancel(context.Background())
+	s.nextGeneration++
+	run := activeSyncRun{
+		generation: s.nextGeneration,
+		startedAt:  time.Now().UTC(),
+	}
+	run.runID = fmt.Sprintf("%s-%d-%d", profileID, run.startedAt.UnixNano(), run.generation)
+	s.activeSyncs[profileID] = cancel
+	s.activeRuns[profileID] = run
 
-    // Update initial status
-    s.updateProfileStatus(profileID, &SyncProfileStatus{
-        ProfileID:   profileID,
-        ProfileName: profileConfig.Profile.Name,
-        Status:      "syncing",
-        DryRun:      profileConfig.SyncConfig.DryRun,
-        LastSync:    nil,
-        Progress:    "Starting sync...",
-    })
+	// Update initial status
+	initialStatus := &SyncProfileStatus{
+		ProfileID:   profileID,
+		ProfileName: profileConfig.Profile.Name,
+		Status:      "syncing",
+		DryRun:      profileConfig.SyncConfig.DryRun,
+		LastSync:    nil,
+		Progress:    "Starting sync...",
+	}
+	applySnapshotToStatus(initialStatus, newRunSnapshot(profileID, run, "syncing"))
+	s.updateProfileStatus(profileID, initialStatus)
 
-    // Start the sync in background
-    go s.performSync(ctx, profileID, profileConfig)
-    return nil
+	// Start the sync in background
+	go s.performSync(ctx, profileID, profileConfig, run.generation)
+	return nil
 }
 
 // CancelSync cancels a running sync operation for a profile
 func (s *MultiUserService) CancelSync(profileID string) error {
-    s.syncMutex.Lock()
-    defer s.syncMutex.Unlock()
+	s.syncMutex.Lock()
+	defer s.syncMutex.Unlock()
 
-    cancel, exists := s.activeSyncs[profileID]
-    if !exists {
-        return fmt.Errorf("no active sync for profile %s", profileID)
-    }
-    cancel()
-    delete(s.activeSyncs, profileID)
+	cancel, exists := s.activeSyncs[profileID]
+	if !exists {
+		return fmt.Errorf("no active sync for profile %s", profileID)
+	}
+	cancel()
+	delete(s.activeSyncs, profileID)
+	delete(s.activeRuns, profileID)
 
-    finalStatus := &SyncProfileStatus{
-        ProfileID: profileID,
-        Status:    "idle",
-        LastSync:  timePtr(time.Now()),
-        Progress:  "Sync canceled",
-    }
-    // Persist last_sync to DB so UI can show it across restarts
-    if state, err := s.repository.GetSyncState(profileID); err == nil {
-        if state == nil {
-            state = &database.ProfileSyncState{ProfileID: profileID, StateData: "{}"}
-        }
-        state.LastSync = finalStatus.LastSync
-        _ = s.repository.UpdateSyncState(state)
-    }
+	finalStatus := &SyncProfileStatus{
+		ProfileID: profileID,
+		Status:    "idle",
+		LastSync:  timePtr(time.Now()),
+		Progress:  "Sync canceled",
+	}
+	// Persist last_sync to DB so UI can show it across restarts
+	if state, err := s.repository.GetSyncState(profileID); err == nil {
+		if state == nil {
+			state = &database.ProfileSyncState{ProfileID: profileID, StateData: "{}"}
+		}
+		state.LastSync = finalStatus.LastSync
+		_ = s.repository.UpdateSyncState(state)
+	}
 
-    s.updateProfileStatus(profileID, finalStatus)
-    return nil
+	s.updateProfileStatus(profileID, finalStatus)
+	return nil
 }
 
 // performSync performs the actual sync operation for a profile
-func (s *MultiUserService) performSync(ctx context.Context, profileID string, profileConfig *database.ProfileWithTokens) {
-    // Ensure the active sync marker is cleared when this sync finishes
-    defer func() {
-        s.syncMutex.Lock()
-        delete(s.activeSyncs, profileID)
-        s.syncMutex.Unlock()
-    }()
-    // Create profile-specific config
-    config := s.createProfileSpecificConfig(profileConfig)
+func (s *MultiUserService) performSync(ctx context.Context, profileID string, profileConfig *database.ProfileWithTokens, generation uint64) {
+	// Ensure only this run's active marker is cleared when its goroutine ends.
+	defer s.finishActiveRun(profileID, generation)
+	// Create profile-specific config
+	config := s.createProfileSpecificConfig(profileConfig)
 
-    // Create clients
-    absClient := audiobookshelf.NewClient(profileConfig.AudiobookshelfURL, profileConfig.AudiobookshelfToken)
+	// Create clients
+	absClient := audiobookshelf.NewClient(profileConfig.AudiobookshelfURL, profileConfig.AudiobookshelfToken)
 
-    // Build Hardcover client config using global settings (rate limits/base URL)
-    hcCfg := hardcover.DefaultClientConfig()
-    if s.globalConfig != nil {
-        if s.globalConfig.Hardcover.BaseURL != "" {
-            hcCfg.BaseURL = s.globalConfig.Hardcover.BaseURL
-        }
-        if s.globalConfig.RateLimit.Rate > 0 {
-            hcCfg.RateLimit = s.globalConfig.RateLimit.Rate
-        }
-        if s.globalConfig.RateLimit.MaxConcurrent > 0 {
-            hcCfg.MaxConcurrent = s.globalConfig.RateLimit.MaxConcurrent
-        }
-    }
+	// Build Hardcover client config using global settings (rate limits/base URL)
+	hcCfg := hardcover.DefaultClientConfig()
+	if s.globalConfig != nil {
+		if s.globalConfig.Hardcover.BaseURL != "" {
+			hcCfg.BaseURL = s.globalConfig.Hardcover.BaseURL
+		}
+		if s.globalConfig.RateLimit.Rate > 0 {
+			hcCfg.RateLimit = s.globalConfig.RateLimit.Rate
+		}
+		if s.globalConfig.RateLimit.MaxConcurrent > 0 {
+			hcCfg.MaxConcurrent = s.globalConfig.RateLimit.MaxConcurrent
+		}
+	}
 
-    s.logger.Debug("Initializing Hardcover client (multi-user)", map[string]interface{}{
-        "profile_id":     profileID,
-        "base_url":       hcCfg.BaseURL,
-        "rate_limit":     hcCfg.RateLimit.String(),
-        "max_concurrent": hcCfg.MaxConcurrent,
-    })
+	s.logger.Debug("Initializing Hardcover client (multi-user)", map[string]interface{}{
+		"profile_id":     profileID,
+		"base_url":       hcCfg.BaseURL,
+		"rate_limit":     hcCfg.RateLimit.String(),
+		"max_concurrent": hcCfg.MaxConcurrent,
+	})
 
-    hcClient := hardcover.NewClientWithConfig(hcCfg, profileConfig.HardcoverToken, s.logger)
+	hcClient := hardcover.NewClientWithConfig(hcCfg, profileConfig.HardcoverToken, s.logger)
 
-    // Create sync service
-    syncService, err := sync.NewService(absClient, hcClient, config)
-    if err != nil {
-        s.updateProfileStatus(profileID, &SyncProfileStatus{
-            ProfileID:   profileID,
-            ProfileName: profileConfig.Profile.Name,
-            Status:      "error",
-            Error:       fmt.Sprintf("Failed to create sync service: %v", err),
-        })
-        return
-    }
+	// Create sync service
+	syncService, err := sync.NewService(absClient, hcClient, config)
+	if err != nil {
+		status := &SyncProfileStatus{
+			ProfileID:   profileID,
+			ProfileName: profileConfig.Profile.Name,
+			Status:      "error",
+			Error:       fmt.Sprintf("Failed to create sync service: %v", err),
+		}
+		if run, ok := s.activeRun(profileID, generation); ok {
+			applySnapshotToStatus(status, newRunSnapshot(profileID, run, "failed"))
+			s.publishFinalStatus(profileID, generation, status)
+		}
+		return
+	}
 
-    // Store the sync service for status access
-    s.servicesMutex.Lock()
-    s.syncServices[profileID] = syncService
-    s.servicesMutex.Unlock()
-    defer func() {
-        s.servicesMutex.Lock()
-        delete(s.syncServices, profileID)
-        s.servicesMutex.Unlock()
-    }()
+	// Store the sync service for status access
+	if !s.registerSyncService(profileID, generation, syncService) {
+		return
+	}
+	defer s.removeSyncService(profileID, generation, syncService)
 
-    // Run the sync
-    err = syncService.Sync(ctx)
+	// Run the sync
+	err = syncService.Sync(ctx)
 
-    // Obtain summary
-    summary := syncService.GetSummary()
+	// Obtain summary
+	summary := syncService.GetSummary()
+	snapshot := s.normalizeRunSnapshot(profileID, generation, syncService.GetSnapshot())
 
-    // Prepare final status
-    status := &SyncProfileStatus{
-        ProfileID:   profileID,
-        ProfileName: profileConfig.Profile.Name,
-        LastSync:    timePtr(time.Now()),
-    }
-	if summary.BooksTotal > 0 {
-		status.BooksTotal = int(summary.BooksTotal)
+	// Prepare final status
+	status := &SyncProfileStatus{
+		ProfileID:   profileID,
+		ProfileName: profileConfig.Profile.Name,
+		DryRun:      profileConfig.SyncConfig.DryRun,
+		LastSync:    timePtr(time.Now()),
+	}
+	applySnapshotToStatus(status, snapshot)
+	if status.Snapshot != nil && status.Snapshot.UserID == "" {
+		status.Snapshot.UserID = profileID
+	}
+
+	if err != nil {
+		status.Status = "error"
+		status.Error = err.Error()
+		s.logger.Error("Sync failed", map[string]interface{}{
+			"profileID": profileID,
+			"error":     err,
+		})
 	} else {
-		status.BooksTotal = int(summary.TotalBooksProcessed)
-	}
-	status.BooksSynced = int(summary.BooksSynced)
-	status.BooksNotFound = summary.BooksNotFound
-	status.Mismatches = summary.Mismatches
-	status.LastSyncSummary = &sync.SyncSummary{
-		UserID:              summary.UserID,
-		TotalBooksProcessed: summary.TotalBooksProcessed,
-		BooksSynced:         summary.BooksSynced,
-		BooksTotal:          summary.BooksTotal,
-		BooksNotFound:       []sync.BookNotFoundInfo{},
-		Mismatches:          []mismatch.BookMismatch{},
-	}
-
-    if err != nil {
-        status.Status = "error"
-        status.Error = err.Error()
-        s.logger.Error("Sync failed", map[string]interface{}{
-            "profileID": profileID,
-            "error":     err,
-        })
-} else {
 		status.Status = "completed"
 		status.Progress = "Sync completed successfully"
-        s.logger.Debug("Stored full sync summary in profile status", map[string]interface{}{
-            "profileID":       profileID,
-            "books_processed": summary.TotalBooksProcessed,
-            "books_synced":    summary.BooksSynced,
-            "books_not_found": len(summary.BooksNotFound),
-            "mismatches":      len(summary.Mismatches),
-        })
-    }
 
-    // Persist last_sync to DB so it's available across restarts
-    if state, err := s.repository.GetSyncState(profileID); err == nil {
-        if state == nil {
-            state = &database.ProfileSyncState{ProfileID: profileID, StateData: "{}"}
-        }
-        state.LastSync = status.LastSync
-        _ = s.repository.UpdateSyncState(state)
-    }
+		s.logger.Debug("Stored full sync summary in profile status", map[string]interface{}{
+			"profileID":       profileID,
+			"books_processed": summary.TotalBooksProcessed,
+			"books_synced":    summary.BooksSynced,
+			"books_not_found": len(summary.BooksNotFound),
+			"mismatches":      len(summary.Mismatches),
+		})
+	}
 
-    // Update final status atomically
-    s.statusMutex.Lock()
-    s.profileStatuses[profileID] = status
-    s.statusMutex.Unlock()
+	// Publish only if this run is still current. A stale run can finish after a
+	// replacement starts and must not overwrite its status.
+	s.publishFinalStatus(profileID, generation, status)
+}
+
+func newRunSnapshot(profileID string, run activeSyncRun, state string) sync.SyncSnapshot {
+	return sync.SyncSnapshot{
+		UserID:           profileID,
+		RunID:            run.runID,
+		RunStartedAt:     run.startedAt,
+		State:            state,
+		BookOutcomes:     make([]sync.BookOutcomeRecord, 0),
+		AttentionRecords: make([]sync.BookOutcomeRecord, 0),
+		BooksNotFound:    make([]sync.BookNotFoundInfo, 0),
+		Mismatches:       make([]mismatch.BookMismatch, 0),
+	}
+}
+
+func (s *MultiUserService) activeRun(profileID string, generation uint64) (activeSyncRun, bool) {
+	if generation == 0 {
+		return activeSyncRun{}, false
+	}
+	s.syncMutex.RLock()
+	run, ok := s.activeRuns[profileID]
+	s.syncMutex.RUnlock()
+	return run, ok && run.generation == generation
+}
+
+func (s *MultiUserService) normalizeRunSnapshot(profileID string, generation uint64, snapshot sync.SyncSnapshot) sync.SyncSnapshot {
+	s.syncMutex.RLock()
+	defer s.syncMutex.RUnlock()
+	if run, ok := s.activeRuns[profileID]; ok && run.generation == generation {
+		snapshot.UserID = profileID
+		snapshot.RunID = run.runID
+		snapshot.RunStartedAt = run.startedAt
+		if snapshot.State == "" || snapshot.State == "idle" {
+			snapshot.State = "syncing"
+		}
+	}
+	if snapshot.UserID == "" {
+		snapshot.UserID = profileID
+	}
+	return snapshot
+}
+
+func (s *MultiUserService) registerSyncService(profileID string, generation uint64, service *sync.Service) bool {
+	s.syncMutex.Lock()
+	defer s.syncMutex.Unlock()
+	run, ok := s.activeRuns[profileID]
+	if !ok || run.generation != generation {
+		return false
+	}
+	s.servicesMutex.Lock()
+	s.syncServices[profileID] = service
+	s.serviceRuns[profileID] = generation
+	s.servicesMutex.Unlock()
+	return true
+}
+
+func (s *MultiUserService) removeSyncService(profileID string, generation uint64, service *sync.Service) {
+	s.syncMutex.Lock()
+	defer s.syncMutex.Unlock()
+	s.servicesMutex.Lock()
+	if s.syncServices[profileID] == service && s.serviceRuns[profileID] == generation {
+		delete(s.syncServices, profileID)
+		delete(s.serviceRuns, profileID)
+	}
+	s.servicesMutex.Unlock()
+}
+
+func (s *MultiUserService) finishActiveRun(profileID string, generation uint64) {
+	s.syncMutex.Lock()
+	defer s.syncMutex.Unlock()
+	if run, ok := s.activeRuns[profileID]; ok && run.generation == generation {
+		delete(s.activeRuns, profileID)
+		delete(s.activeSyncs, profileID)
+	}
+}
+
+func (s *MultiUserService) publishFinalStatus(profileID string, generation uint64, status *SyncProfileStatus) bool {
+	s.syncMutex.Lock()
+	defer s.syncMutex.Unlock()
+	if status == nil {
+		return false
+	}
+	run, ok := s.activeRuns[profileID]
+	if !ok || run.generation != generation {
+		return false
+	}
+	if s.repository != nil {
+		if state, err := s.repository.GetSyncState(profileID); err == nil {
+			if state == nil {
+				state = &database.ProfileSyncState{ProfileID: profileID, StateData: "{}"}
+			}
+			state.LastSync = status.LastSync
+			_ = s.repository.UpdateSyncState(state)
+		}
+	}
+	s.statusMutex.Lock()
+	s.profileStatuses[profileID] = cloneProfileStatus(status)
+	s.statusMutex.Unlock()
+	return true
 }
 
 // createProfileSpecificConfig creates a config.Config instance for a specific profile
 func (s *MultiUserService) createProfileSpecificConfig(profileConfig *database.ProfileWithTokens) *config.Config {
 	// Create a copy of the global config
 	config := *s.globalConfig
-	
+
 	// Override with profile-specific settings
 	config.Audiobookshelf.URL = profileConfig.AudiobookshelfURL
 	config.Audiobookshelf.Token = profileConfig.AudiobookshelfToken
 	config.Hardcover.Token = profileConfig.HardcoverToken
-	
+
 	// Apply sync config from profile
 	syncConfig := profileConfig.SyncConfig
-	
+
 	// Always apply the sync config from the profile
 	// The config in the profile should already have the correct values (either defaults or explicitly set)
-	
+
 	// Parse sync interval if provided
 	if syncConfig.SyncInterval != "" {
 		duration, err := time.ParseDuration(syncConfig.SyncInterval)
@@ -453,7 +574,7 @@ func (s *MultiUserService) createProfileSpecificConfig(profileConfig *database.P
 		}
 		config.Sync.SyncInterval = duration
 	}
-	
+
 	// Apply all sync config values from the profile
 	config.Sync.Incremental = syncConfig.Incremental
 	// Make state file path profile-specific to avoid conflicts
@@ -485,23 +606,107 @@ func (s *MultiUserService) createProfileSpecificConfig(profileConfig *database.P
 	config.Sync.TestBookFilter = syncConfig.TestBookFilter
 	config.Sync.TestBookLimit = syncConfig.TestBookLimit
 	config.Audiobookshelf.AudnexusRegion = syncConfig.AudnexusRegion
-	
+
 	// Debug logging to verify the config is being applied correctly
 	s.logger.Debug("Applied sync config for profile", map[string]interface{}{
-		"profileID":             profileConfig.Profile.ID,
-		"process_unread_books":  config.Sync.ProcessUnreadBooks,
-		"incremental":           config.Sync.Incremental,
-		"sync_want_to_read":     config.Sync.SyncWantToRead,
+		"profileID":            profileConfig.Profile.ID,
+		"process_unread_books": config.Sync.ProcessUnreadBooks,
+		"incremental":          config.Sync.Incremental,
+		"sync_want_to_read":    config.Sync.SyncWantToRead,
 	})
-	
+
 	return &config
+}
+
+func cloneBookMismatch(record mismatch.BookMismatch) mismatch.BookMismatch {
+	copyOf := record
+	copyOf.AuthorIDs = append([]int(nil), record.AuthorIDs...)
+	copyOf.NarratorIDs = append([]int(nil), record.NarratorIDs...)
+	return copyOf
+}
+
+func cloneSyncSummary(summary *sync.SyncSummary) *sync.SyncSummary {
+	if summary == nil {
+		return nil
+	}
+	copyOf := &sync.SyncSummary{
+		UserID:              summary.UserID,
+		TotalBooksProcessed: summary.TotalBooksProcessed,
+		BooksSynced:         summary.BooksSynced,
+		BooksTotal:          summary.BooksTotal,
+		BooksNotFound:       append([]sync.BookNotFoundInfo(nil), summary.BooksNotFound...),
+		Mismatches:          make([]mismatch.BookMismatch, len(summary.Mismatches)),
+	}
+	for i, record := range summary.Mismatches {
+		copyOf.Mismatches[i] = cloneBookMismatch(record)
+	}
+	return copyOf
+}
+
+func cloneSyncSnapshot(snapshot sync.SyncSnapshot) *sync.SyncSnapshot {
+	copyOf := snapshot
+	copyOf.BookOutcomes = append([]sync.BookOutcomeRecord(nil), snapshot.BookOutcomes...)
+	copyOf.AttentionRecords = append([]sync.BookOutcomeRecord(nil), snapshot.AttentionRecords...)
+	copyOf.BooksNotFound = append([]sync.BookNotFoundInfo(nil), snapshot.BooksNotFound...)
+	copyOf.Mismatches = make([]mismatch.BookMismatch, len(snapshot.Mismatches))
+	for i, record := range snapshot.Mismatches {
+		copyOf.Mismatches[i] = cloneBookMismatch(record)
+	}
+	return &copyOf
+}
+
+func applySnapshotToStatus(status *SyncProfileStatus, snapshot sync.SyncSnapshot) {
+	if status == nil {
+		return
+	}
+	status.Snapshot = cloneSyncSnapshot(snapshot)
+	if snapshot.BooksTotal > 0 {
+		status.BooksTotal = int(snapshot.BooksTotal)
+	} else {
+		status.BooksTotal = int(snapshot.ProcessedSoFar)
+	}
+	status.BooksSynced = int(snapshot.BooksSynced)
+	status.BooksNotFound = append([]sync.BookNotFoundInfo(nil), snapshot.BooksNotFound...)
+	status.Mismatches = make([]mismatch.BookMismatch, len(snapshot.Mismatches))
+	for i, record := range snapshot.Mismatches {
+		status.Mismatches[i] = cloneBookMismatch(record)
+	}
+	status.LastSyncSummary = &sync.SyncSummary{
+		UserID:              snapshot.UserID,
+		TotalBooksProcessed: snapshot.TotalBooksProcessed,
+		BooksSynced:         snapshot.BooksSynced,
+		BooksTotal:          snapshot.BooksTotal,
+		BooksNotFound:       []sync.BookNotFoundInfo{},
+		Mismatches:          []mismatch.BookMismatch{},
+	}
+}
+
+func cloneProfileStatus(status *SyncProfileStatus) *SyncProfileStatus {
+	if status == nil {
+		return nil
+	}
+	copyOf := *status
+	if status.LastSync != nil {
+		lastSync := *status.LastSync
+		copyOf.LastSync = &lastSync
+	}
+	copyOf.BooksNotFound = append([]sync.BookNotFoundInfo(nil), status.BooksNotFound...)
+	copyOf.Mismatches = make([]mismatch.BookMismatch, len(status.Mismatches))
+	for i, record := range status.Mismatches {
+		copyOf.Mismatches[i] = cloneBookMismatch(record)
+	}
+	copyOf.LastSyncSummary = cloneSyncSummary(status.LastSyncSummary)
+	if status.Snapshot != nil {
+		copyOf.Snapshot = cloneSyncSnapshot(*status.Snapshot)
+	}
+	return &copyOf
 }
 
 // updateProfileStatus updates the status for a profile
 func (s *MultiUserService) updateProfileStatus(profileID string, status *SyncProfileStatus) {
 	s.statusMutex.Lock()
 	defer s.statusMutex.Unlock()
-	s.profileStatuses[profileID] = status
+	s.profileStatuses[profileID] = cloneProfileStatus(status)
 }
 
 // timePtr returns a pointer to a time.Time value
@@ -513,7 +718,7 @@ func timePtr(t time.Time) *time.Time {
 func (s *MultiUserService) IsProfileSyncing(profileID string) bool {
 	s.syncMutex.RLock()
 	defer s.syncMutex.RUnlock()
-	
+
 	_, exists := s.activeSyncs[profileID]
 	return exists
 }

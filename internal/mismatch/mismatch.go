@@ -19,9 +19,24 @@ import (
 )
 
 var (
-	mismatches   []BookMismatch
-	mismatchLock sync.Mutex
+	mismatchSaveLock sync.Mutex
+	mismatchLogLock  sync.Mutex
 )
+
+// Collector stores mismatches for one sync run. A collector is intentionally
+// independent from the package-level compatibility functions below so
+// concurrent profile runs cannot clear or combine one another's records.
+type Collector struct {
+	lock       sync.Mutex
+	mismatches []BookMismatch
+}
+
+var globalCollector = NewCollector()
+
+// NewCollector creates an empty mismatch collector.
+func NewCollector() *Collector {
+	return &Collector{}
+}
 
 // newAudnexClient is a factory for creating Audnex API clients.
 // It can be overridden in tests to inject mock clients.
@@ -29,10 +44,10 @@ var newAudnexClient = func(log *logger.Logger) *audnex.Client {
 	return audnex.NewClient(log)
 }
 
-// Add adds a new book mismatch to the collection
-func Add(book BookMismatch) {
-	mismatchLock.Lock()
-	defer mismatchLock.Unlock()
+// Add adds a new book mismatch to this collector.
+func (c *Collector) Add(book BookMismatch) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
 
 	// Set timestamp if not already set
 	if book.Timestamp == 0 {
@@ -45,31 +60,38 @@ func Add(book BookMismatch) {
 		book.CreatedAt = time.Now()
 	}
 
-	mismatches = append(mismatches, book)
+	c.mismatches = append(c.mismatches, book)
 
 	// Log the mismatch
 	log := logger.Get()
 	if log != nil {
+		mismatchLogLock.Lock()
 		log.Info("Mismatch recorded", map[string]interface{}{
 			"title":  book.Title,
 			"reason": book.Reason,
 		})
+		mismatchLogLock.Unlock()
 	}
 }
 
-// RecordMismatch records a new book mismatch
-func RecordMismatch(book *BookMismatch) error {
-	mismatchLock.Lock()
-	defer mismatchLock.Unlock()
+// Add adds a new book mismatch to the package-level compatibility collector.
+func Add(book BookMismatch) {
+	globalCollector.Add(book)
+}
+
+// RecordMismatch records a new book mismatch in this collector.
+func (c *Collector) RecordMismatch(book *BookMismatch) error {
+	c.lock.Lock()
+	defer c.lock.Unlock()
 
 	// Check if we already have this mismatch
 	key := book.BookID
-	for i, existing := range mismatches {
+	for i, existing := range c.mismatches {
 		if existing.BookID == key {
 			existing.Attempts++
 			existing.Timestamp = time.Now().Unix()
 			existing.Reason = book.Reason
-			mismatches[i] = existing
+			c.mismatches[i] = existing
 			return nil
 		}
 	}
@@ -79,13 +101,27 @@ func RecordMismatch(book *BookMismatch) error {
 	book.CreatedAt = time.Now()
 	book.Attempts = 1
 
-	mismatches = append(mismatches, *book)
+	c.mismatches = append(c.mismatches, *book)
 	return nil
 }
 
+// RecordMismatch records a new book mismatch in the package-level
+// compatibility collector.
+func RecordMismatch(book *BookMismatch) error {
+	return globalCollector.RecordMismatch(book)
+}
+
 // AddWithMetadata creates and adds a new book mismatch with enhanced metadata
-// If hc is provided, it will be used to look up publisher and other metadata
-func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, duration float64, audiobookShelfID string, hc hardcover.HardcoverClientInterface, audnexusRegion string) {
+// and returns the enriched record. If hc is provided, it will be used to look
+// up publisher and other metadata.
+func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, duration float64, audiobookShelfID string, hc hardcover.HardcoverClientInterface, audnexusRegion string) BookMismatch {
+	return globalCollector.AddWithMetadata(metadata, bookID, editionID, reason, duration, audiobookShelfID, hc, audnexusRegion)
+}
+
+// AddWithMetadata creates and adds a new book mismatch with enhanced metadata
+// to this collector and returns the enriched record. If hc is provided, it
+// will be used to look up publisher and other metadata.
+func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, duration float64, audiobookShelfID string, hc hardcover.HardcoverClientInterface, audnexusRegion string) BookMismatch {
 	// Create a logger
 	log := logger.Get()
 
@@ -651,31 +687,48 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 		})
 	}
 
-	Add(mismatch)
+	c.Add(mismatch)
+	return mismatch
 }
 
-// GetAll returns a copy of all collected mismatches
-func GetAll() []BookMismatch {
-	mismatchLock.Lock()
-	defer mismatchLock.Unlock()
+// GetAll returns a copy of all mismatches in this collector.
+func (c *Collector) GetAll() []BookMismatch {
+	c.lock.Lock()
+	defer c.lock.Unlock()
 
 	// Return a copy to avoid race conditions
-	result := make([]BookMismatch, len(mismatches))
-	copy(result, mismatches)
+	result := make([]BookMismatch, len(c.mismatches))
+	copy(result, c.mismatches)
 	return result
 }
 
-// Clear removes all collected mismatches
+// GetAll returns a copy of all mismatches in the package-level compatibility
+// collector.
+func GetAll() []BookMismatch {
+	return globalCollector.GetAll()
+}
+
+// Clear removes all mismatches from this collector.
+func (c *Collector) Clear() {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.mismatches = []BookMismatch{}
+}
+
+// Clear removes all mismatches from the package-level compatibility collector.
 func Clear() {
-	mismatchLock.Lock()
-	defer mismatchLock.Unlock()
-	mismatches = []BookMismatch{}
+	globalCollector.Clear()
 }
 
 // ExportJSON returns all mismatches as a JSON string
 func ExportJSON() (string, error) {
-	mismatchLock.Lock()
-	defer mismatchLock.Unlock()
+	return globalCollector.ExportJSON()
+}
+
+// ExportJSON returns all mismatches in this collector as a JSON string.
+func (c *Collector) ExportJSON() (string, error) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
 
 	// Create a struct that matches the expected JSON structure
 	type exportStruct struct {
@@ -685,8 +738,8 @@ func ExportJSON() (string, error) {
 	}
 
 	exportData := exportStruct{
-		Mismatches: mismatches,
-		Count:      len(mismatches),
+		Mismatches: c.mismatches,
+		Count:      len(c.mismatches),
 		Timestamp:  time.Now().Unix(),
 	}
 
@@ -698,12 +751,25 @@ func ExportJSON() (string, error) {
 	return string(jsonData), nil
 }
 
-// SaveToFile saves all mismatches as individual JSON files in the specified directory
-// in a format compatible with the edition import tool. If outputDir is empty, it will
-// use the directory from the provided config.
-// Note: This function should be called with a context that has a Hardcover client available
-// for proper author/narrator lookups.
+// SaveToFile saves all mismatches from the package-level compatibility
+// collector as individual JSON files in the specified directory.
 func SaveToFile(ctx context.Context, hc hardcover.HardcoverClientInterface, outputDir string, cfg *config.Config) error {
+	return globalCollector.SaveToFile(ctx, hc, outputDir, cfg)
+}
+
+// SaveToFile saves this collector's mismatches as individual JSON files in the
+// specified directory. The shared export lock keeps directory cleanup and
+// writes from interleaving when profiles use the same output directory.
+func (c *Collector) SaveToFile(ctx context.Context, hc hardcover.HardcoverClientInterface, outputDir string, cfg *config.Config) error {
+	mismatchSaveLock.Lock()
+	defer mismatchSaveLock.Unlock()
+
+	return saveToFile(ctx, hc, outputDir, cfg, c.GetAll())
+}
+
+// saveToFile writes a snapshot of mismatch records. Callers serialize access
+// when they share an output directory.
+func saveToFile(ctx context.Context, hc hardcover.HardcoverClientInterface, outputDir string, cfg *config.Config, mismatches []BookMismatch) error {
 	// Get logger instance
 	log := logger.Get()
 
@@ -738,8 +804,6 @@ func SaveToFile(ctx context.Context, hc hardcover.HardcoverClientInterface, outp
 		// Continue anyway, this isn't a fatal error
 	}
 
-	// Get all mismatches
-	mismatches := GetAll()
 	if len(mismatches) == 0 {
 		log.Info("No mismatches to save")
 		return nil
