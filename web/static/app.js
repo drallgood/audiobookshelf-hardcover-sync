@@ -1432,7 +1432,6 @@ class SyncProfileApp {
             .map(mismatch => [String(mismatch.book_id), mismatch]));
         tabs.innerHTML = `<button class="tab-button active" type="button">${this.escapeHtml(this.statuses[open.profileId]?.profile_name || `Profile ${open.profileId}`)}</button>`;
         const snapshotState = String(snapshot.state || '').toLowerCase();
-        const terminal = snapshotState === 'completed' || snapshotState === 'failed';
         const unresolved = Number(snapshot.outcome_counts?.needs_review || 0) + Number(snapshot.outcome_counts?.not_found || 0) + Number(snapshot.outcome_counts?.failed || 0);
         const groups = categories.map(category => {
             const groupRecords = [...records.values()].filter(record => record.outcome === category.key);
@@ -1446,14 +1445,19 @@ class SyncProfileApp {
                     record.outcome === 'needs_review' ? mismatches.get(String(record.book_id)) : null
                 )).join('') : '<p class="empty-state">No books in this category.</p>'}</div>
             </details>`).join('');
-        const cleanMessage = snapshotState === 'completed' && unresolved === 0
-            ? 'This run completed without unresolved or failed outcomes.'
-            : (terminal ? 'This run is finished and may need attention.' : 'Results are live for the current run.');
+        let statusMessage = 'Currently syncing.';
+        if (snapshotState === 'completed') {
+            statusMessage = unresolved === 0
+                ? 'This run completed without unresolved or failed outcomes.'
+                : `This run completed with ${unresolved} ${unresolved === 1 ? 'outcome that needs' : 'outcomes that need'} attention.`;
+        } else if (snapshotState === 'failed') {
+            statusMessage = 'This run failed before it could complete.';
+        }
         const runError = this.statuses[open.profileId]?.terminal_error || '';
         content.innerHTML = `
             <div class="sync-summary" data-run-id="${this.escapeHtmlAttribute(snapshot.run_id)}">
                 <div class="summary-header"><h3>Run details</h3><div class="last-sync">Started: ${new Date(snapshot.run_started_at).toLocaleString()}</div></div>
-                <p class="status-message">${cleanMessage}</p>
+                <p class="status-message">${statusMessage}</p>
                 ${runError ? `<div class="status-message status-error" data-run-error><strong>Run error:</strong> ${this.escapeHtml(runError)}</div>` : ''}
                 <div class="summary-stats">${groups.map(group => `<div class="stat-item ${group.tone}"><span class="stat-value">${group.count}</span><span class="stat-label">${group.label}</span></div>`).join('')}</div>
                 ${groupsHtml}
