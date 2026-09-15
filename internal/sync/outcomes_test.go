@@ -505,7 +505,7 @@ func TestSyncTestBookLimitCountsFailedBookAttempt(t *testing.T) {
 	}, nil).Once()
 	// The first library is pre-counted and then processed. The second library
 	// is only pre-counted because the failed first attempt consumes the limit.
-	mockABS.On("GetLibraryItems", mock.Anything, "library-a").Return([]models.AudiobookshelfBook{*failedBook}, nil)
+	mockABS.On("GetLibraryItems", mock.Anything, "library-a").Return([]models.AudiobookshelfBook{*failedBook}, nil).Once()
 	mockABS.On("GetLibraryItems", mock.Anything, "library-b").Return([]models.AudiobookshelfBook{*secondBook}, nil).Once()
 	hc.On("ClearUserBookCache").Return().Once()
 	hc.On("SearchBookByASIN", mock.Anything, "limit-failed-asin").Return(&models.HardcoverBook{
@@ -519,6 +519,55 @@ func TestSyncTestBookLimitCountsFailedBookAttempt(t *testing.T) {
 	assert.Equal(t, int32(2), svc.summary.BooksTotal)
 	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed)
 	assert.Equal(t, int32(1), svc.outcomeCounts.Failed)
+	mockABS.AssertExpectations(t)
+	hc.AssertExpectations(t)
+}
+
+func TestSyncRetriesLibraryFetchAfterPrecountFailure(t *testing.T) {
+	svc, hc := createTestService()
+	svc.config.Sync.ProcessUnreadBooks = false
+	svc.statePath = filepath.Join(t.TempDir(), "sync_state.json")
+	svc.config.Paths.MismatchOutputDir = t.TempDir()
+
+	book := toAudiobookshelfBook(createTestBook("retried-library-book", "Unread Book", "Author", "", ""))
+	precountErr := errors.New("temporary library failure")
+	mockABS := new(MockAudiobookshelfClient)
+	mockABS.On("GetUserProgress", mock.Anything).Return(&models.AudiobookshelfUserProgress{}, nil).Once()
+	mockABS.On("GetLibraries", mock.Anything).Return([]audiobookshelf.AudiobookshelfLibrary{
+		{ID: "library", Name: "Library"},
+	}, nil).Once()
+	mockABS.On("GetLibraryItems", mock.Anything, "library").Return(nil, precountErr).Once()
+	mockABS.On("GetLibraryItems", mock.Anything, "library").Return([]models.AudiobookshelfBook{*book}, nil).Once()
+	hc.On("ClearUserBookCache").Return().Once()
+	svc.audiobookshelf = mockABS
+
+	require.NoError(t, svc.Sync(context.Background()))
+	assert.Equal(t, int32(1), svc.summary.BooksTotal)
+	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed)
+	mockABS.AssertExpectations(t)
+	hc.AssertExpectations(t)
+}
+
+func TestSyncReportsRetriedLibraryFetchFailure(t *testing.T) {
+	svc, hc := createTestService()
+	svc.statePath = filepath.Join(t.TempDir(), "sync_state.json")
+	svc.config.Paths.MismatchOutputDir = t.TempDir()
+
+	precountErr := errors.New("temporary library failure")
+	retryErr := errors.New("library still unavailable")
+	mockABS := new(MockAudiobookshelfClient)
+	mockABS.On("GetUserProgress", mock.Anything).Return(&models.AudiobookshelfUserProgress{}, nil).Once()
+	mockABS.On("GetLibraries", mock.Anything).Return([]audiobookshelf.AudiobookshelfLibrary{
+		{ID: "library", Name: "Library"},
+	}, nil).Once()
+	mockABS.On("GetLibraryItems", mock.Anything, "library").Return(nil, precountErr).Once()
+	mockABS.On("GetLibraryItems", mock.Anything, "library").Return(nil, retryErr).Once()
+	hc.On("ClearUserBookCache").Return().Once()
+	svc.audiobookshelf = mockABS
+
+	err := svc.Sync(context.Background())
+	require.Error(t, err)
+	assert.ErrorContains(t, err, retryErr.Error())
 	mockABS.AssertExpectations(t)
 	hc.AssertExpectations(t)
 }

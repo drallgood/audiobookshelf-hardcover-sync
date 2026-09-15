@@ -1377,6 +1377,7 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 	// Track total books processed across all libraries
 	totalBooksProcessed := 0
 	attemptedLibraries := make(map[string]bool)
+	precountedItems := make(map[string][]models.AudiobookshelfBook, len(filteredLibraries))
 	// A library fetch failure means its candidates were never observed. Keep
 	// that run-level error separate instead of fabricating per-book outcomes.
 	libraryErrors := make(map[string]error)
@@ -1398,6 +1399,7 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 			)
 			continue
 		}
+		precountedItems[filteredLibraries[i].ID] = items
 		s.recordLibraryCandidateTotal(filteredLibraries[i].ID, len(items))
 	}
 
@@ -1421,7 +1423,15 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 
 		// Process the library and get the number of books processed
 		attemptedLibraries[filteredLibraries[i].ID] = true
-		processed, err := s.processLibrary(ctx, &filteredLibraries[i], totalBooksLimit-totalBooksProcessed, userProgress)
+		var processed int
+		var err error
+		if items, ok := precountedItems[filteredLibraries[i].ID]; ok {
+			processed, err = s.processLibraryWithItems(ctx, &filteredLibraries[i], items, totalBooksLimit-totalBooksProcessed, userProgress)
+		} else {
+			// A failed pre-count is retried through the established processing
+			// path so its existing run-level error behavior is preserved.
+			processed, err = s.processLibrary(ctx, &filteredLibraries[i], totalBooksLimit-totalBooksProcessed, userProgress)
+		}
 		if err != nil {
 			s.log.Error("Failed to process library", map[string]interface{}{
 				"error":      err,
@@ -1588,6 +1598,29 @@ func (s *Service) processLibrary(ctx context.Context, library *audiobookshelf.Au
 	if err != nil {
 		return 0, fmt.Errorf("failed to get library items: %w", err)
 	}
+
+	return s.processLibraryItems(ctx, library, items, maxBooks, userProgress)
+}
+
+// processLibraryWithItems processes a library using items already fetched by
+// Sync's pre-count pass. A failed pre-count does not call this helper; the
+// caller retries through processLibrary instead.
+func (s *Service) processLibraryWithItems(ctx context.Context, library *audiobookshelf.AudiobookshelfLibrary, items []models.AudiobookshelfBook, maxBooks int, userProgress *models.AudiobookshelfUserProgress) (int, error) {
+	libraryLog := s.log.With(map[string]interface{}{
+		"library_id":   library.ID,
+		"library_name": library.Name,
+	})
+
+	libraryLog.Info("Processing library", nil)
+	return s.processLibraryItems(ctx, library, items, maxBooks, userProgress)
+}
+
+func (s *Service) processLibraryItems(ctx context.Context, library *audiobookshelf.AudiobookshelfLibrary, items []models.AudiobookshelfBook, maxBooks int, userProgress *models.AudiobookshelfUserProgress) (int, error) {
+	// Create a logger with library context
+	libraryLog := s.log.With(map[string]interface{}{
+		"library_id":   library.ID,
+		"library_name": library.Name,
+	})
 
 	libraryLog.Info("Found items in library", map[string]interface{}{
 		"library_id":   library.ID,
