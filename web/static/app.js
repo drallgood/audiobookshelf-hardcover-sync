@@ -1300,7 +1300,7 @@ class SyncProfileApp {
         this.redirectToLogin();
     }
 
-    renderDetailsState(state, open, message = '') {
+    renderDetailsState(state, open) {
         if (!open || this.openSummary !== open) return;
         const container = document.getElementById('sync-summary-container');
         const content = document.getElementById('sync-summary-content');
@@ -1422,7 +1422,7 @@ class SyncProfileApp {
         const groupsHtml = groups.filter(group => selectedFilter === 'all' || group.key === selectedFilter).map(group => `
             <details class="summary-section outcome-group" data-outcome="${group.key}" ${open.expandedOutcomes.has(group.key) ? 'open' : ''}>
                 <summary data-outcome-category="${group.key}"><span>${group.label}</span><span class="stat ${group.tone}">${group.count}</span></summary>
-                <div class="book-list">${group.records.length ? group.records.map(record => this.renderOutcomeRecord(record, open)).join('') : '<p class="empty-state">No books in this category.</p>'}</div>
+                <div class="book-list">${group.records.length ? group.records.map(record => this.renderOutcomeRecord(record)).join('') : '<p class="empty-state">No books in this category.</p>'}</div>
             </details>`).join('');
         const cleanMessage = snapshotState === 'completed' && unresolved === 0
             ? 'This run completed without unresolved or failed outcomes.'
@@ -1457,7 +1457,7 @@ class SyncProfileApp {
         });
     }
 
-    renderOutcomeRecord(record, open) {
+    renderOutcomeRecord(record) {
         const bookId = String(record.book_id || '');
         return `<article class="book-item" data-book-id="${this.escapeHtmlAttribute(bookId)}">
             <div class="book-title">${this.escapeHtml(record.title || 'Unknown title')}</div>
@@ -1467,10 +1467,6 @@ class SyncProfileApp {
             ${record.reason ? `<div class="book-reason"><strong>Reason:</strong> ${this.escapeHtml(record.reason)}</div>` : ''}
             ${record.error ? `<div class="book-error"><strong>Error:</strong> ${this.escapeHtml(record.error)}</div>` : ''}
         </article>`;
-    }
-
-    renderSyncSummary() {
-        // Currently empty, but can be used to render a summary of all syncs
     }
 
     async handleAddProfile(event) {
