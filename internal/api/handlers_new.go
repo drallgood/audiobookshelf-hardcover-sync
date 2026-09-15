@@ -604,10 +604,7 @@ func (h *Handler) GetRunDetails(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// GetProfileSnapshot returns a deep copy. Clone once more at this API
-	// boundary so the response cannot expose mutable slices if that contract
-	// changes in the future.
-	h.writeSuccessResponse(w, cloneSnapshotForResponse(snapshot))
+	h.writeSuccessResponse(w, snapshot)
 }
 
 // GetAllProfileStatuses handles GET /api/status
@@ -802,7 +799,7 @@ func (h *Handler) GetSyncSummary(w http.ResponseWriter, r *http.Request) {
 
 	// Convert to API response
 	syncSummary := types.SyncSummaryResponse{
-		Snapshot:            cloneSnapshotForResponse(snapshot),
+		Snapshot:            snapshot,
 		UserID:              summary.UserID,
 		BooksTotal:          summary.BooksTotal,
 		ProcessedSoFar:      summary.TotalBooksProcessed,
@@ -894,24 +891,4 @@ func (h *Handler) GetSyncSummary(w http.ResponseWriter, r *http.Request) {
 	})
 
 	h.writeSuccessResponse(w, response)
-}
-
-func cloneSnapshotForResponse(snapshot *sync.SyncSnapshot) *sync.SyncSnapshot {
-	if snapshot == nil {
-		return nil
-	}
-	copyOf := *snapshot
-	copyOf.BookOutcomes = make([]sync.BookOutcomeRecord, len(snapshot.BookOutcomes))
-	copy(copyOf.BookOutcomes, snapshot.BookOutcomes)
-	copyOf.AttentionRecords = make([]sync.BookOutcomeRecord, len(snapshot.AttentionRecords))
-	copy(copyOf.AttentionRecords, snapshot.AttentionRecords)
-	copyOf.BooksNotFound = make([]sync.BookNotFoundInfo, len(snapshot.BooksNotFound))
-	copy(copyOf.BooksNotFound, snapshot.BooksNotFound)
-	copyOf.Mismatches = make([]mismatch.BookMismatch, len(snapshot.Mismatches))
-	for i, book := range snapshot.Mismatches {
-		copyOf.Mismatches[i] = book
-		copyOf.Mismatches[i].AuthorIDs = append([]int(nil), book.AuthorIDs...)
-		copyOf.Mismatches[i].NarratorIDs = append([]int(nil), book.NarratorIDs...)
-	}
-	return &copyOf
 }
