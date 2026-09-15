@@ -104,6 +104,9 @@ components:
               items:
                 type: string
               example: ["exclusive"]
+            state_file:
+              type: string
+              description: Optional state-file path stem; the profile-specific filename component must fit the supported 255-byte baseline.
             dry_run:
               type: boolean
               example: false
@@ -163,7 +166,7 @@ components:
 
     AggregateSyncStatus:
       type: object
-      description: Baseline status exposed by the public aggregate status endpoint.
+      description: Scalar status exposed by the public aggregate status endpoint. Per-book arrays are available from the authenticated run-details endpoint.
       properties:
         profile_id:
           type: string
@@ -189,6 +192,27 @@ components:
         books_synced:
           type: integer
           description: Legacy count retained for existing clients.
+        snapshot:
+          $ref: '#/components/schemas/AggregateSnapshot'
+
+    AggregateSnapshot:
+      type: object
+      description: Scalar current-run snapshot used for inexpensive aggregate polling.
+      required: [run_id, run_started_at, state, books_total, processed_so_far, processed_count, outcome_counts]
+      properties:
+        user_id: {type: string}
+        run_id: {type: string}
+        run_started_at: {type: string, format: date-time}
+        state:
+          type: string
+          enum: [idle, syncing, completed, failed]
+        books_total: {type: integer}
+        processed_so_far: {type: integer}
+        processed_count: {type: integer}
+        outcome_counts:
+          $ref: '#/components/schemas/OutcomeCounts'
+        total_books_processed: {type: integer}
+        books_synced: {type: integer}
 
     OutcomeCounts:
       type: object
@@ -394,6 +418,8 @@ paths:
               properties:
                 id:
                   type: string
+                  maxLength: 244
+                  description: Up to 244 ASCII RFC 3986 unreserved characters; "." and ".." are not valid profile IDs.
                   example: "profile-123"
                 name:
                   type: string
@@ -617,6 +643,44 @@ paths:
                     $ref: '#/components/schemas/SyncStatus'
         '404':
           description: Profile not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /profiles/{profileId}/runs/{runId}/details:
+    get:
+      tags: [Status]
+      summary: Get full details for the current run of a profile
+      description: Returns per-book outcomes and attention records only when runId identifies the profile's current snapshot. Stale, replaced, and unknown runs return 404.
+      parameters:
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "profile-123"
+        - name: runId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "profile-123-1700000000000000000-1"
+      responses:
+        '200':
+          description: Full current-run snapshot details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/SyncSnapshot'
+        '404':
+          description: Profile or current run not found
           content:
             application/json:
               schema:

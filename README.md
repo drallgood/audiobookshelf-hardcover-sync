@@ -69,18 +69,25 @@ Existing single-profile setups are **automatically migrated** on first startup:
 | `PUT` | `/api/profiles/{id}/config` | Update profile configuration |
 | `GET` | `/api/profiles/{id}/status` | Get sync status and current-run snapshot |
 | `GET` | `/api/profiles/{id}/summary` | Get current-run outcomes and legacy summary |
+| `GET` | `/api/profiles/{id}/runs/{runId}/details` | Get book-level details for the current run |
 | `POST` | `/api/profiles/{id}/sync` | Start sync |
 | `DELETE` | `/api/profiles/{id}/sync` | Cancel sync |
 | `GET` | `/api/status` | All profile statuses |
 
 ### Current-run sync status
 
-During a sync, when `AUTH_ENABLED=true`, authenticated
-`GET /api/profiles/{id}/status` includes a per-profile `snapshot`, and
-authenticated `GET /api/profiles/{id}/summary` exposes the same outcomes
-alongside legacy fields. Unauthenticated `GET /api/status` is an aggregate
-scalar status for all profiles; it does not include snapshots or book-level
-outcomes. Each processed book has one outcome:
+The Sync Status page shows one current run per profile: processed progress and
+a breakdown of its outcomes. Select **View Details** to load that run's
+book-level records on demand.
+
+`GET /api/status` supplies the scalar current-run snapshot used for aggregate
+polling (run ID, start time, state, totals, and outcome counts), without
+book-level records. When `AUTH_ENABLED=true`, the profile routes require
+authentication; their status and summary responses include the full current
+snapshot. `GET /api/profiles/{id}/runs/{runId}/details` returns the book-level
+outcomes and attention records for that exact current run. A stale, replaced,
+canceled, or unknown run ID returns `404`; refresh status and select the
+current run instead. Each processed book has one outcome:
 `synced`, `already_current`, `skipped`, `needs_review`, `not_found`, `failed`,
 or dry-run `would_sync`. Their counts add up to `processed_so_far`;
 `needs_review`, `not_found`, and `failed` appear in `attention_records` as they

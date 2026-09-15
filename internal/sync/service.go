@@ -864,6 +864,32 @@ func (s *Service) GetSnapshot() SyncSnapshot {
 	return snapshot
 }
 
+// GetSnapshotStatus returns one race-safe scalar copy of the current run.
+// Unlike GetSnapshot, it does not materialize per-book outcomes, attention
+// records, legacy not-found entries, or mismatches. This is the lightweight
+// read path for aggregate status polling.
+func (s *Service) GetSnapshotStatus() SyncSnapshot {
+	if s.summary == nil {
+		return SyncSnapshot{}
+	}
+
+	s.summary.RLock()
+	defer s.summary.RUnlock()
+
+	return SyncSnapshot{
+		UserID:              s.summary.UserID,
+		RunID:               s.runID,
+		RunStartedAt:        s.runStartedAt,
+		State:               s.runState,
+		BooksTotal:          s.summary.BooksTotal,
+		ProcessedSoFar:      s.outcomeCounts.Total(),
+		ProcessedCount:      s.outcomeCounts.Total(),
+		OutcomeCounts:       s.outcomeCounts,
+		TotalBooksProcessed: s.summary.TotalBooksProcessed,
+		BooksSynced:         s.summary.BooksSynced,
+	}
+}
+
 // GetSummary returns the current sync summary
 func (s *Service) GetSummary() *SyncSummary {
 	// If summary is nil, return a new empty summary

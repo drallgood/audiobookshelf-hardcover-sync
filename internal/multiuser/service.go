@@ -2,6 +2,7 @@ package multiuser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,12 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 )
+
+const maxStateFileComponentBytes = 255
+
+// ErrProfileStateFileNameTooLong indicates that profile-specific state-file
+// composition exceeds the supported filename-component baseline.
+var ErrProfileStateFileNameTooLong = errors.New("profile-specific state filename exceeds 255 bytes")
 
 // SyncProfileStatus represents the sync status for a profile
 type SyncProfileStatus struct {
@@ -51,6 +58,7 @@ type MultiUserService struct {
 	activeRuns      map[string]activeSyncRun
 	nextGeneration  uint64
 	syncMutex       stdSync.RWMutex
+	syncWaitGroup   stdSync.WaitGroup
 	syncServices    map[string]*sync.Service // Maps profile ID to its sync service
 	serviceRuns     map[string]uint64
 	servicesMutex   stdSync.RWMutex
@@ -82,6 +90,9 @@ func (s *MultiUserService) GetProfile(profileID string) (*database.ProfileWithTo
 
 // CreateProfile creates a new sync profile
 func (s *MultiUserService) CreateProfile(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig database.SyncConfigData) error {
+	if err := s.validateProfileStateFile(profileID, syncConfig.StateFile); err != nil {
+		return err
+	}
 	return s.repository.CreateProfile(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig)
 }
 
@@ -92,6 +103,11 @@ func (s *MultiUserService) UpdateProfile(profileID, name string) error {
 
 // UpdateProfileConfig updates profile configuration
 func (s *MultiUserService) UpdateProfileConfig(profileID, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig database.SyncConfigData) error {
+	if syncConfig.StateFile != "" {
+		if err := s.validateProfileStateFile(profileID, syncConfig.StateFile); err != nil {
+			return err
+		}
+	}
 	return s.repository.UpdateUserConfig(profileID, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig)
 }
 
@@ -122,16 +138,99 @@ func (s *MultiUserService) GetAllProfileStatuses() ([]*SyncProfileStatus, error)
 
 	statuses := make([]*SyncProfileStatus, 0, len(profiles))
 
-	// The aggregate endpoint is intentionally scalar-only. Reading a full
-	// profile status here would copy every book outcome before redacting it.
-	s.statusMutex.RLock()
-	defer s.statusMutex.RUnlock()
-
 	for _, profile := range profiles {
-		statuses = append(statuses, aggregateProfileStatus(profile, s.profileStatuses[profile.ID]))
+		statuses = append(statuses, s.getAggregateProfileStatus(profile))
 	}
 
 	return statuses, nil
+}
+
+// getAggregateProfileStatus reads the active service's scalar snapshot while
+// holding the profile-run lock that keeps service replacement from racing the
+// read. Stored status is used for inactive runs so terminal and setup errors
+// remain visible. This path deliberately avoids getProfileStatus because that
+// endpoint needs the full snapshot and legacy detail arrays.
+func (s *MultiUserService) getAggregateProfileStatus(profile database.SyncProfile) *SyncProfileStatus {
+	s.syncMutex.RLock()
+	defer s.syncMutex.RUnlock()
+
+	status := s.getStoredAggregateStatus(profile)
+	service, generation := s.currentSyncServiceLocked(profile.ID)
+	if service == nil {
+		return aggregateProfileStatus(profile, status)
+	}
+
+	snapshot := service.GetSnapshotStatus()
+	if run, ok := s.activeRuns[profile.ID]; ok && run.generation == generation {
+		snapshot.UserID = profile.ID
+		snapshot.RunID = run.runID
+		snapshot.RunStartedAt = run.startedAt
+		if snapshot.State == "" || snapshot.State == "idle" {
+			snapshot.State = "syncing"
+		}
+	}
+
+	if status == nil {
+		status = &SyncProfileStatus{
+			ProfileID:   profile.ID,
+			ProfileName: profile.Name,
+			Status:      "syncing",
+		}
+	}
+	if status.ProfileID == "" {
+		status.ProfileID = profile.ID
+	}
+	if status.ProfileName == "" {
+		status.ProfileName = profile.Name
+	}
+	switch snapshot.State {
+	case "completed":
+		status.Status = "completed"
+	case "failed":
+		status.Status = "error"
+	default:
+		status.Status = "syncing"
+	}
+	status.Snapshot = &snapshot
+	if snapshot.BooksTotal > 0 {
+		status.BooksTotal = int(snapshot.BooksTotal)
+	} else {
+		status.BooksTotal = int(snapshot.ProcessedSoFar)
+	}
+	status.BooksSynced = int(snapshot.BooksSynced)
+
+	return aggregateProfileStatus(profile, status)
+}
+
+// getStoredAggregateStatus copies only the scalar fields needed by aggregate
+// polling. In particular, terminal snapshots are reduced without copying
+// their per-book outcomes, attention records, not-found entries, or mismatches.
+func (s *MultiUserService) getStoredAggregateStatus(profile database.SyncProfile) *SyncProfileStatus {
+	s.statusMutex.RLock()
+	defer s.statusMutex.RUnlock()
+
+	stored := s.profileStatuses[profile.ID]
+	if stored == nil {
+		return nil
+	}
+
+	status := &SyncProfileStatus{
+		ProfileID:   stored.ProfileID,
+		ProfileName: stored.ProfileName,
+		Status:      stored.Status,
+		DryRun:      stored.DryRun,
+		Progress:    stored.Progress,
+		BooksTotal:  stored.BooksTotal,
+		BooksSynced: stored.BooksSynced,
+	}
+	if stored.LastSync != nil {
+		lastSync := *stored.LastSync
+		status.LastSync = &lastSync
+	}
+	if stored.Snapshot != nil {
+		status.Snapshot = scalarSnapshot(stored.Snapshot)
+	}
+	return status
 }
 
 // aggregateProfileStatus projects a profile status for the unauthenticated
@@ -156,10 +255,35 @@ func aggregateProfileStatus(profile database.SyncProfile, status *SyncProfileSta
 		BooksTotal:  status.BooksTotal,
 		BooksSynced: status.BooksSynced,
 	}
+	if status.Snapshot != nil {
+		aggregate.Snapshot = scalarSnapshot(status.Snapshot)
+	}
 	if aggregate.Status == "" {
 		aggregate.Status = "idle"
 	}
 	return aggregate
+}
+
+// scalarSnapshot keeps aggregate polling cheap and prevents the public
+// /api/status response from copying per-book outcome and attention records.
+// The full snapshot remains available on the authenticated profile status and
+// run-details endpoints.
+func scalarSnapshot(snapshot *sync.SyncSnapshot) *sync.SyncSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	return &sync.SyncSnapshot{
+		UserID:              snapshot.UserID,
+		RunID:               snapshot.RunID,
+		RunStartedAt:        snapshot.RunStartedAt,
+		State:               snapshot.State,
+		BooksTotal:          snapshot.BooksTotal,
+		ProcessedSoFar:      snapshot.ProcessedSoFar,
+		ProcessedCount:      snapshot.ProcessedCount,
+		OutcomeCounts:       snapshot.OutcomeCounts,
+		TotalBooksProcessed: snapshot.TotalBooksProcessed,
+		BooksSynced:         snapshot.BooksSynced,
+	}
 }
 
 // GetSyncService returns the sync service for a profile, if it exists
@@ -311,8 +435,19 @@ func (s *MultiUserService) StartSync(profileID string) error {
 	s.updateProfileStatus(profileID, initialStatus)
 
 	// Start the sync in background
-	go s.performSync(ctx, profileID, profileConfig, run.generation)
+	s.syncWaitGroup.Add(1)
+	go func() {
+		defer s.syncWaitGroup.Done()
+		s.performSync(ctx, profileID, profileConfig, run.generation)
+	}()
 	return nil
+}
+
+// WaitForSyncs waits for all sync goroutines started by this service to exit.
+// It is used by lifecycle owners that must release resources, such as the
+// logger and test databases, only after asynchronous work has stopped.
+func (s *MultiUserService) WaitForSyncs() {
+	s.syncWaitGroup.Wait()
 }
 
 // CancelSync cancels a running sync operation for a profile
@@ -577,23 +712,10 @@ func (s *MultiUserService) createProfileSpecificConfig(profileConfig *database.P
 
 	// Apply all sync config values from the profile
 	config.Sync.Incremental = syncConfig.Incremental
-	// Make state file path profile-specific to avoid conflicts
-	// Resolve state file path using paths.data_dir if not set or relative
-	statePath := syncConfig.StateFile
-	if statePath == "" {
-		// Use paths.data_dir for default state file location
-		if s.globalConfig != nil && s.globalConfig.Paths.DataDir != "" {
-			statePath = fmt.Sprintf("%s/sync_state.json", strings.TrimSuffix(s.globalConfig.Paths.DataDir, "/"))
-		} else {
-			statePath = "/data/sync_state.json" // Container-friendly default
-		}
-	} else if !filepath.IsAbs(statePath) {
-		// If relative, resolve it against paths.data_dir (preserving the relative filename).
-		if s.globalConfig != nil && s.globalConfig.Paths.DataDir != "" {
-			statePath = filepath.Join(s.globalConfig.Paths.DataDir, statePath)
-		}
-	}
-	config.Sync.StateFile = fmt.Sprintf("%s.%s", strings.TrimSuffix(statePath, ".json"), profileConfig.Profile.ID)
+	// Make state file path profile-specific to avoid conflicts. Keep this
+	// derivation centralized because profile creation/update validation must
+	// inspect the exact path used by runtime setup.
+	config.Sync.StateFile = s.profileSpecificStatePath(profileConfig.Profile.ID, syncConfig.StateFile)
 	config.Sync.MinChangeThreshold = syncConfig.MinChangeThreshold
 	config.Sync.Libraries.Include = syncConfig.Libraries.Include
 	config.Sync.Libraries.Exclude = syncConfig.Libraries.Exclude
@@ -616,6 +738,28 @@ func (s *MultiUserService) createProfileSpecificConfig(profileConfig *database.P
 	})
 
 	return &config
+}
+
+func (s *MultiUserService) profileSpecificStatePath(profileID, configuredPath string) string {
+	statePath := configuredPath
+	if statePath == "" {
+		if s.globalConfig != nil && s.globalConfig.Paths.DataDir != "" {
+			statePath = fmt.Sprintf("%s/sync_state.json", strings.TrimSuffix(s.globalConfig.Paths.DataDir, "/"))
+		} else {
+			statePath = "/data/sync_state.json"
+		}
+	} else if !filepath.IsAbs(statePath) && s.globalConfig != nil && s.globalConfig.Paths.DataDir != "" {
+		statePath = filepath.Join(s.globalConfig.Paths.DataDir, statePath)
+	}
+	return fmt.Sprintf("%s.%s", strings.TrimSuffix(statePath, ".json"), profileID)
+}
+
+func (s *MultiUserService) validateProfileStateFile(profileID, configuredPath string) error {
+	derivedPath := s.profileSpecificStatePath(profileID, configuredPath)
+	if len([]byte(filepath.Base(derivedPath))) > maxStateFileComponentBytes {
+		return fmt.Errorf("%w: %q", ErrProfileStateFileNameTooLong, filepath.Base(derivedPath))
+	}
+	return nil
 }
 
 func cloneBookMismatch(record mismatch.BookMismatch) mismatch.BookMismatch {

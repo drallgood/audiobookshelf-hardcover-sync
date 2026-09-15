@@ -48,3 +48,40 @@ func TestSnapshotDeepCopiesLegacyAttentionDetails(t *testing.T) {
 	require.Equal(t, []int{44}, second.Mismatches[0].NarratorIDs)
 	require.Equal(t, second.ProcessedSoFar, second.OutcomeCounts.Total())
 }
+
+func TestSnapshotStatusCopiesScalarsWithoutDetails(t *testing.T) {
+	svc, _ := createTestService()
+	svc.beginOutcomeRun()
+
+	svc.summary.Lock()
+	svc.summary.UserID = "profile-a"
+	svc.summary.BooksTotal = 2
+	svc.summary.Unlock()
+
+	needsReview := *toAudiobookshelfBook(createTestBook("snapshot-status-review", "Review", "Author", "", ""))
+	svc.recordBookOutcomeWithMatchMethod(needsReview, OutcomeNeedsReview, "manual review", nil, nil, "")
+	notFound := *toAudiobookshelfBook(createTestBook("snapshot-status-missing", "Missing", "Author", "", ""))
+	svc.recordBookOutcomeWithMatchMethod(notFound, OutcomeNotFound, "not found", nil, nil, "")
+
+	status := svc.GetSnapshotStatus()
+	require.Equal(t, "profile-a", status.UserID)
+	require.NotEmpty(t, status.RunID)
+	require.False(t, status.RunStartedAt.IsZero())
+	require.Equal(t, "syncing", status.State)
+	require.Equal(t, int32(2), status.BooksTotal)
+	require.Equal(t, int32(2), status.ProcessedSoFar)
+	require.Equal(t, int32(2), status.ProcessedCount)
+	require.Equal(t, OutcomeCounts{NeedsReview: 1, NotFound: 1}, status.OutcomeCounts)
+	require.Equal(t, int32(2), status.TotalBooksProcessed)
+	require.Zero(t, status.BooksSynced)
+	require.Nil(t, status.BookOutcomes)
+	require.Nil(t, status.AttentionRecords)
+	require.Nil(t, status.BooksNotFound)
+	require.Nil(t, status.Mismatches)
+
+	full := svc.GetSnapshot()
+	require.Len(t, full.BookOutcomes, 2)
+	require.Len(t, full.AttentionRecords, 2)
+	require.Len(t, full.BooksNotFound, 1)
+	require.Len(t, full.Mismatches, 1)
+}
