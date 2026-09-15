@@ -180,9 +180,6 @@ components:
           format: date-time
           nullable: true
           example: "2023-01-01T00:00:00Z"
-        error:
-          type: string
-          example: "Connection failed"
         progress:
           type: string
           example: "Starting sync..."

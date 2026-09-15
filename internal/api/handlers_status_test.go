@@ -448,7 +448,10 @@ func newStatusAudiobookshelfServer() *statusAudiobookshelfServer {
 
 func newEmptyHardcoverServer(t *testing.T) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, http.MethodPost, r.Method)
+		if r.Method != http.MethodPost {
+			http.Error(w, "unexpected method "+r.Method, http.StatusMethodNotAllowed)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"data": map[string]interface{}{
 				"search": map[string]interface{}{

@@ -104,6 +104,43 @@ func TestGetProfileStatusRechecksStatusAfterFallbackLookup(t *testing.T) {
 	}
 }
 
+func TestStatusAggregateOmitsErrorButProfileStatusRetainsIt(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	profileID := "profile-a"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Profile A", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
+	))
+
+	lastSync := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	status := &SyncProfileStatus{
+		ProfileID:   profileID,
+		ProfileName: "Profile A",
+		Status:      "error",
+		LastSync:    &lastSync,
+		Error:       "upstream response: sensitive details",
+		Progress:    "Processing books",
+		BooksTotal:  12,
+		BooksSynced: 7,
+	}
+	service.updateProfileStatus(profileID, status)
+
+	aggregate, err := service.GetAllProfileStatuses()
+	require.NoError(t, err)
+	require.Len(t, aggregate, 1)
+	require.Equal(t, profileID, aggregate[0].ProfileID)
+	require.Equal(t, status.ProfileName, aggregate[0].ProfileName)
+	require.Equal(t, status.Status, aggregate[0].Status)
+	require.Equal(t, status.LastSync, aggregate[0].LastSync)
+	require.Equal(t, status.Progress, aggregate[0].Progress)
+	require.Equal(t, status.BooksTotal, aggregate[0].BooksTotal)
+	require.Equal(t, status.BooksSynced, aggregate[0].BooksSynced)
+	require.Empty(t, aggregate[0].Error)
+
+	direct := service.GetProfileStatus(profileID)
+	require.NotNil(t, direct)
+	require.Equal(t, status.Error, direct.Error)
+}
+
 func newStatusLookupService(t *testing.T) (*MultiUserService, *gorm.DB) {
 	t.Helper()
 	logger.ForceSetup(logger.Config{Level: "error", Format: logger.FormatJSON, Output: io.Discard})

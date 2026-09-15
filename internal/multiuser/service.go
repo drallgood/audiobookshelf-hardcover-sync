@@ -152,7 +152,6 @@ func aggregateProfileStatus(profile database.SyncProfile, status *SyncProfileSta
 		Status:      status.Status,
 		DryRun:      status.DryRun,
 		LastSync:    status.LastSync,
-		Error:       status.Error,
 		Progress:    status.Progress,
 		BooksTotal:  status.BooksTotal,
 		BooksSynced: status.BooksSynced,
