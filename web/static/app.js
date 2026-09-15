@@ -1521,7 +1521,6 @@ class SyncProfileApp {
             if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
 
             if (data.success) {
-                if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
                 this.showToast('Profile created successfully!', 'success');
                 event.target.reset();
                 this.loadProfiles();
@@ -1708,7 +1707,6 @@ class SyncProfileApp {
             }
 
             // Update config
-            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             const configResponse = await fetch(this.profileUrl(userId, '/config'), {
                 method: 'PUT',
                 headers: {
@@ -1725,7 +1723,6 @@ class SyncProfileApp {
                 throw new Error(configData.error);
             }
 
-            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             this.showToast('Profile updated successfully!', 'success');
             this.closeEditModal();
             this.loadProfiles();
@@ -1759,7 +1756,6 @@ class SyncProfileApp {
             if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
 
             if (data.success) {
-                if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
                 this.actionErrors.delete(profileId);
                 this.showToast('Profile deleted successfully!', 'success');
                 if (this.openSummary?.profileId === profileId) {
@@ -1805,7 +1801,6 @@ class SyncProfileApp {
             if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             
             if (response.ok) {
-                if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
                 this.actionErrors.delete(profileId);
                 this.renderStatuses();
                 this.showToast('Sync started successfully', 'success');
@@ -1854,7 +1849,6 @@ class SyncProfileApp {
             if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             
             if (response.ok) {
-                if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
                 this.actionErrors.delete(profileId);
                 this.renderStatuses();
                 this.showToast('Sync cancelled', 'info');

@@ -876,14 +876,15 @@ func (s *Service) GetSnapshotStatus() SyncSnapshot {
 	s.summary.RLock()
 	defer s.summary.RUnlock()
 
+	processedCount := s.outcomeCounts.Total()
 	return SyncSnapshot{
 		UserID:              s.summary.UserID,
 		RunID:               s.runID,
 		RunStartedAt:        s.runStartedAt,
 		State:               s.runState,
 		BooksTotal:          s.summary.BooksTotal,
-		ProcessedSoFar:      s.outcomeCounts.Total(),
-		ProcessedCount:      s.outcomeCounts.Total(),
+		ProcessedSoFar:      processedCount,
+		ProcessedCount:      processedCount,
 		OutcomeCounts:       s.outcomeCounts,
 		TotalBooksProcessed: s.summary.TotalBooksProcessed,
 		BooksSynced:         s.summary.BooksSynced,
