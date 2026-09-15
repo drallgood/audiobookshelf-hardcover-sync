@@ -55,6 +55,8 @@ class SyncProfileApp {
         this.terminalErrorRetries = new Map();
         this.terminalErrorRequests = new Map();
         this.authSessionGeneration = 0;
+        this.editProfileRequest = null;
+        this.sessionMutationRequests = new Map();
 
         this.init();
     }
@@ -81,6 +83,33 @@ class SyncProfileApp {
     isViewer() {
         return Boolean(this.authEnabled && this.currentUser
             && String(this.currentUser.role || '').toLowerCase() === 'viewer');
+    }
+
+    beginSessionMutation(key) {
+        this.sessionMutationRequests.get(key)?.controller?.abort();
+        const request = {
+            generation: this.authSessionGeneration,
+            controller: typeof AbortController === 'undefined' ? null : new AbortController()
+        };
+        this.sessionMutationRequests.set(key, request);
+        return request;
+    }
+
+    isCurrentSessionMutation(key, request) {
+        return this.authSessionGeneration === request.generation
+            && this.sessionMutationRequests.get(key) === request
+            && !request.controller?.signal.aborted;
+    }
+
+    finishSessionMutation(key, request) {
+        if (this.sessionMutationRequests.get(key) !== request) return false;
+        this.sessionMutationRequests.delete(key);
+        return true;
+    }
+
+    abortSessionMutations() {
+        this.sessionMutationRequests.forEach(request => request.controller?.abort());
+        this.sessionMutationRequests.clear();
     }
 
     updateViewerControls() {
@@ -335,13 +364,11 @@ class SyncProfileApp {
     async logout() {
         try {
             // Clear local state first to update UI immediately
+            this.editProfileRequest?.controller?.abort();
+            this.editProfileRequest = null;
             this.currentUser = null;
             this.authEnabled = true;
-            this.authSessionGeneration += 1;
-            this.terminalErrorCache.clear();
-            this.terminalErrorRetries.clear();
-            this.actionErrors.clear();
-            this.statuses = Object.create(null);
+            this.resetSessionBoundState();
             this.updateUserInfo();
             
             // Show loading state
@@ -362,10 +389,6 @@ class SyncProfileApp {
             
             // Handle response
             if (response.ok) {
-                // Clear any remaining data
-                this.users = [];
-                this.statuses = Object.create(null);
-                
                 // Stop any auto-refresh
                 this.stopAutoRefresh();
                 
@@ -583,6 +606,7 @@ class SyncProfileApp {
     }
 
     async loadProfiles({ showLoading = true, statusOwned = false, signal } = {}) {
+        const authGeneration = this.authSessionGeneration;
         try {
             if (showLoading) this.showLoading();
             
@@ -602,6 +626,11 @@ class SyncProfileApp {
                 },
                 signal
             });
+
+            // A session switch may have happened while the request was in
+            // flight. Do not let the old response redirect or otherwise
+            // mutate the UI for the new session.
+            if (authGeneration !== this.authSessionGeneration) return;
             
             // Handle authentication errors specifically
             if (response.status === 401 || response.status === 403) {
@@ -628,10 +657,11 @@ class SyncProfileApp {
                 }
             }
         } catch (error) {
+            if (authGeneration !== this.authSessionGeneration) return;
             if (statusOwned) throw error;
             this.showToast('Error loading sync profiles: ' + error.message, 'error');
         } finally {
-            if (showLoading) this.hideLoading();
+            if (showLoading && authGeneration === this.authSessionGeneration) this.hideLoading();
         }
     }
 
@@ -686,13 +716,18 @@ class SyncProfileApp {
             if (!Array.isArray(statusData)) throw new Error('Status response was not an array');
 
             if (!isCurrentRequest()) return;
+            const authorizedProfileIds = this.authEnabled && this.currentUser
+                ? new Set(this.users.map(user => String(user?.id ?? '')))
+                : null;
             const statuses = Object.create(null);
             statusData.forEach((status) => {
                 if (!status || !status.profile_id) return;
+                const profileId = String(status.profile_id);
+                if (authorizedProfileIds && !authorizedProfileIds.has(profileId)) return;
                 const snapshot = status.snapshot || null;
                 const normalized = {
                     profile_id: status.profile_id,
-                    profile_name: status.profile_name || `Profile ${status.profile_id}`,
+                    profile_name: status.profile_name || `Profile ${profileId}`,
                     status: status.status || 'idle',
                     dry_run: this.toBool(status.dry_run, false),
                     last_sync: status.last_sync || null,
@@ -700,11 +735,11 @@ class SyncProfileApp {
                     books_total: snapshot?.books_total ?? status.books_total ?? 0,
                     snapshot
                 };
-                const errorKey = this.terminalErrorIdentity(status.profile_id, normalized);
+                const errorKey = this.terminalErrorIdentity(profileId, normalized);
                 if (errorKey && this.terminalErrorCache.has(errorKey)) {
                     normalized.terminal_error = this.terminalErrorCache.get(errorKey);
                 }
-                statuses[status.profile_id] = normalized;
+                statuses[profileId] = normalized;
             });
             this.statuses = statuses;
             this.pruneTerminalErrorState();
@@ -737,12 +772,15 @@ class SyncProfileApp {
             }
         } finally {
             this.activeStatusRequests -= 1;
+            const ownsLoadingUI = requestSequence === this.statusLoadSequence
+                && this.statusLoadController === controller
+                && !signal?.aborted;
             if (this.statusLoadController === controller) {
                 this.statusLoadController = null;
             }
             if (!silent) {
                 this.activeStatusLoads -= 1;
-                if (this.activeStatusLoads === 0) this.hideLoading();
+                if (this.activeStatusLoads === 0 && ownsLoadingUI) this.hideLoading();
             }
             if (this.activeStatusRequests === 0 && this.statusRefreshQueued) {
                 this.statusRefreshQueued = false;
@@ -882,7 +920,8 @@ class SyncProfileApp {
     }
 
     async validateSession(signal) {
-        const wasViewer = this.isViewer();
+        const previousUserId = this.currentUser?.id == null ? null : String(this.currentUser.id);
+        const previousRole = String(this.currentUser?.role || '').trim().toLowerCase();
         try {
             const { response, data } = await this.fetchJsonWithTimeout('/api/auth/me', {
                 credentials: 'include',
@@ -904,7 +943,18 @@ class SyncProfileApp {
             } else if (response.ok && data.authenticated && data.user) {
                 this.currentUser = data.user;
             }
-            if (wasViewer !== this.isViewer()) {
+            const currentUserId = this.currentUser?.id == null ? null : String(this.currentUser.id);
+            const currentRole = String(this.currentUser?.role || '').trim().toLowerCase();
+            const sessionBoundaryChanged = previousUserId !== currentUserId || previousRole !== currentRole;
+            if (sessionBoundaryChanged) {
+                this.resetSessionBoundState();
+                // This validation runs inside loadStatuses. Queue one fresh
+                // request after the stale request unwinds so profile access
+                // and status cards are rebuilt for the new authorization
+                // boundary.
+                this.statusRefreshQueued = true;
+            }
+            if (sessionBoundaryChanged) {
                 this.updateUserInfo();
             }
             return true;
@@ -914,6 +964,29 @@ class SyncProfileApp {
             // replace the last-good aggregate status snapshot.
             return true;
         }
+    }
+
+    resetSessionBoundState() {
+        this.abortSessionMutations();
+        this.editProfileRequest?.controller?.abort();
+        this.editProfileRequest = null;
+        this.users = [];
+        this.statuses = Object.create(null);
+        this.closeEditModal();
+        this.statusRefreshError = null;
+        this.actionErrors.clear();
+        this.terminalErrorCache.clear();
+        this.terminalErrorRetries.clear();
+        this.terminalErrorRequests.clear();
+        this.resetProfileRetry();
+        this.authSessionGeneration += 1;
+        this.statusLoadSequence += 1;
+        this.statusLoadController?.abort();
+        this.statusRefreshQueued = false;
+        this.statusRefreshWaiters.splice(0).forEach(resolve => resolve());
+        this.clearOpenSummary();
+        this.renderProfiles();
+        this.renderStatuses();
     }
     
     renderStatusCard(profileId, status) {
@@ -1217,16 +1290,8 @@ class SyncProfileApp {
     handleAuthExpiry() {
         this.authEnabled = true;
         this.currentUser = null;
-        this.statuses = Object.create(null);
-        this.authSessionGeneration += 1;
-        this.terminalErrorCache.clear();
-        this.terminalErrorRetries.clear();
-        this.statusLoadSequence += 1;
-        this.statusLoadController?.abort();
-        this.statusRefreshQueued = false;
-        this.statusRefreshWaiters.splice(0).forEach(resolve => resolve());
+        this.resetSessionBoundState();
         this.stopAutoRefresh();
-        this.clearOpenSummary();
         this.showToast('Authentication required. Please log in.', 'error');
         this.redirectToLogin();
     }
@@ -1437,6 +1502,8 @@ class SyncProfileApp {
                 audnexus_region: formData.get('audnexus_region') || ''
             }
         };
+        const mutationKey = 'create-profile';
+        const mutation = this.beginSessionMutation(mutationKey);
 
         try {
             this.showLoading();
@@ -1445,12 +1512,16 @@ class SyncProfileApp {
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify(profileData)
+                body: JSON.stringify(profileData),
+                ...(mutation.controller ? { signal: mutation.controller.signal } : {})
             });
 
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             const data = await response.json();
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
 
             if (data.success) {
+                if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
                 this.showToast('Profile created successfully!', 'success');
                 event.target.reset();
                 this.loadProfiles();
@@ -1459,14 +1530,26 @@ class SyncProfileApp {
                 this.showToast('Failed to create profile: ' + data.error, 'error');
             }
         } catch (error) {
+            if (!this.isCurrentSessionMutation(mutationKey, mutation) || error.name === 'AbortError') return;
             this.showToast('Error creating profile: ' + error.message, 'error');
         } finally {
-            this.hideLoading();
+            if (this.finishSessionMutation(mutationKey, mutation) && this.sessionMutationRequests.size === 0) {
+                this.hideLoading();
+            }
         }
     }
 
     async editProfile(profileId) {
         if (this.isViewer()) return;
+        const authGeneration = this.authSessionGeneration;
+        this.editProfileRequest?.controller?.abort();
+        const request = {
+            controller: typeof AbortController === 'undefined' ? null : new AbortController()
+        };
+        this.editProfileRequest = request;
+        const isCurrentRequest = () => this.authSessionGeneration === authGeneration
+            && this.editProfileRequest === request
+            && !request.controller?.signal.aborted;
         try {
             this.showLoading();
             
@@ -1482,8 +1565,11 @@ class SyncProfileApp {
                 credentials: 'include', // Include session cookies
                 headers: {
                     'Content-Type': 'application/json'
-                }
+                },
+                ...(request.controller ? { signal: request.controller.signal } : {})
             });
+
+            if (!isCurrentRequest()) return;
             
             // Handle authentication errors specifically
             if (response.status === 401 || response.status === 403) {
@@ -1492,7 +1578,9 @@ class SyncProfileApp {
                 return;
             }
             
+            if (!isCurrentRequest()) return;
             const data = await response.json();
+            if (!isCurrentRequest()) return;
 
             if (response.ok && data.success) {
                 this.currentEditUser = data.data;
@@ -1509,9 +1597,13 @@ class SyncProfileApp {
                 }
             }
         } catch (error) {
+            if (!isCurrentRequest() || error.name === 'AbortError') return;
             this.showToast('Error loading profile data: ' + error.message, 'error');
         } finally {
-            this.hideLoading();
+            if (this.editProfileRequest === request) {
+                this.editProfileRequest = null;
+                if (authGeneration === this.authSessionGeneration) this.hideLoading();
+            }
         }
     }
 
@@ -1592,6 +1684,8 @@ class SyncProfileApp {
                 audnexus_region: formData.get('audnexus_region') || ''
             }
         };
+        const mutationKey = 'edit-profile';
+        const mutation = this.beginSessionMutation(mutationKey);
 
         try {
             this.showLoading();
@@ -1602,35 +1696,46 @@ class SyncProfileApp {
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify(userUpdateData)
+                body: JSON.stringify(userUpdateData),
+                ...(mutation.controller ? { signal: mutation.controller.signal } : {})
             });
 
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             const userData = await userResponse.json();
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             if (!userData.success) {
                 throw new Error(userData.error);
             }
 
             // Update config
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             const configResponse = await fetch(this.profileUrl(userId, '/config'), {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify(configUpdateData)
+                body: JSON.stringify(configUpdateData),
+                ...(mutation.controller ? { signal: mutation.controller.signal } : {})
             });
 
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             const configData = await configResponse.json();
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             if (!configData.success) {
                 throw new Error(configData.error);
             }
 
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             this.showToast('Profile updated successfully!', 'success');
             this.closeEditModal();
             this.loadProfiles();
         } catch (error) {
+            if (!this.isCurrentSessionMutation(mutationKey, mutation) || error.name === 'AbortError') return;
             this.showToast('Error updating profile: ' + error.message, 'error');
         } finally {
-            this.hideLoading();
+            if (this.finishSessionMutation(mutationKey, mutation) && this.sessionMutationRequests.size === 0) {
+                this.hideLoading();
+            }
         }
     }
 
@@ -1639,16 +1744,22 @@ class SyncProfileApp {
         if (!confirm('Are you sure you want to delete this sync profile? This action cannot be undone.')) {
             return;
         }
+        const mutationKey = `delete-profile:${String(profileId)}`;
+        const mutation = this.beginSessionMutation(mutationKey);
 
         try {
             this.showLoading();
             const response = await fetch(this.profileUrl(profileId), {
-                method: 'DELETE'
+                method: 'DELETE',
+                ...(mutation.controller ? { signal: mutation.controller.signal } : {})
             });
 
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             const data = await response.json();
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
 
             if (data.success) {
+                if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
                 this.actionErrors.delete(profileId);
                 this.showToast('Profile deleted successfully!', 'success');
                 if (this.openSummary?.profileId === profileId) {
@@ -1660,9 +1771,12 @@ class SyncProfileApp {
                 this.showToast('Failed to delete profile: ' + (data.error || 'Unknown error'), 'error');
             }
         } catch (error) {
+            if (!this.isCurrentSessionMutation(mutationKey, mutation) || error.name === 'AbortError') return;
             this.showToast('Error deleting profile: ' + error.message, 'error');
         } finally {
-            this.hideLoading();
+            if (this.finishSessionMutation(mutationKey, mutation) && this.sessionMutationRequests.size === 0) {
+                this.hideLoading();
+            }
         }
     }
 
@@ -1673,6 +1787,8 @@ class SyncProfileApp {
             this.showToast('Error: No profile ID provided', 'error');
             return;
         }
+        const mutationKey = `start-sync:${String(profileId)}`;
+        const mutation = this.beginSessionMutation(mutationKey);
 
         try {
             this.showLoading();
@@ -1680,12 +1796,16 @@ class SyncProfileApp {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
-                }
+                },
+                ...(mutation.controller ? { signal: mutation.controller.signal } : {})
             });
 
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             const result = await response.json();
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             
             if (response.ok) {
+                if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
                 this.actionErrors.delete(profileId);
                 this.renderStatuses();
                 this.showToast('Sync started successfully', 'success');
@@ -1696,12 +1816,15 @@ class SyncProfileApp {
                 throw new Error(result.error || 'Failed to start sync');
             }
         } catch (error) {
+            if (!this.isCurrentSessionMutation(mutationKey, mutation) || error.name === 'AbortError') return;
             console.error('Error starting sync:', error);
             this.actionErrors.set(profileId, { action: 'Start sync', message: error.message });
             this.renderStatuses();
             this.showToast(`Error: ${error.message}`, 'error');
         } finally {
-            this.hideLoading();
+            if (this.finishSessionMutation(mutationKey, mutation) && this.sessionMutationRequests.size === 0) {
+                this.hideLoading();
+            }
         }
     }
 
@@ -1716,16 +1839,22 @@ class SyncProfileApp {
             this.showToast('Error: No profile ID provided', 'error');
             return;
         }
+        const mutationKey = `cancel-sync:${String(profileId)}`;
+        const mutation = this.beginSessionMutation(mutationKey);
 
         try {
             this.showLoading();
             const response = await fetch(this.profileUrl(profileId, '/sync'), {
-                method: 'DELETE'
+                method: 'DELETE',
+                ...(mutation.controller ? { signal: mutation.controller.signal } : {})
             });
 
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             const result = await response.json();
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             
             if (response.ok) {
+                if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
                 this.actionErrors.delete(profileId);
                 this.renderStatuses();
                 this.showToast('Sync cancelled', 'info');
@@ -1736,12 +1865,15 @@ class SyncProfileApp {
                 throw new Error(result.error || 'Failed to cancel sync');
             }
         } catch (error) {
+            if (!this.isCurrentSessionMutation(mutationKey, mutation) || error.name === 'AbortError') return;
             console.error('Error cancelling sync:', error);
             this.actionErrors.set(profileId, { action: 'Cancel sync', message: error.message });
             this.renderStatuses();
             this.showToast(`Error: ${error.message}`, 'error');
         } finally {
-            this.hideLoading();
+            if (this.finishSessionMutation(mutationKey, mutation) && this.sessionMutationRequests.size === 0) {
+                this.hideLoading();
+            }
         }
     }
 
