@@ -83,6 +83,16 @@ func (s *MultiUserService) ListProfiles() ([]database.SyncProfile, error) {
 	return s.repository.ListProfiles()
 }
 
+// ListProfilesForUser returns profiles visible to an authenticated user.
+func (s *MultiUserService) ListProfilesForUser(userID string, admin, authEnabled bool) ([]database.SyncProfile, error) {
+	return s.repository.ListProfilesForUser(userID, admin, authEnabled)
+}
+
+// GetProfileMetadata returns a profile without decrypting its credentials.
+func (s *MultiUserService) GetProfileMetadata(profileID string) (*database.SyncProfile, error) {
+	return s.repository.GetProfileMetadata(profileID)
+}
+
 // GetProfile returns a specific profile with decrypted tokens
 func (s *MultiUserService) GetProfile(profileID string) (*database.ProfileWithTokens, error) {
 	return s.repository.GetProfile(profileID)
@@ -90,10 +100,15 @@ func (s *MultiUserService) GetProfile(profileID string) (*database.ProfileWithTo
 
 // CreateProfile creates a new sync profile
 func (s *MultiUserService) CreateProfile(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig database.SyncConfigData) error {
+	return s.CreateProfileForUser(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig, "")
+}
+
+// CreateProfileForUser creates a profile owned by ownerUserID.
+func (s *MultiUserService) CreateProfileForUser(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig database.SyncConfigData, ownerUserID string) error {
 	if err := s.validateProfileStateFile(profileID, syncConfig.StateFile); err != nil {
 		return err
 	}
-	return s.repository.CreateProfile(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig)
+	return s.repository.CreateProfileForUser(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig, ownerUserID)
 }
 
 // UpdateProfile updates profile information

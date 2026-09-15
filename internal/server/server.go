@@ -29,6 +29,7 @@ type Server struct {
 // New creates a new HTTP server with multi-user and authentication support
 func New(addr string, multiUserService *multiuser.MultiUserService, authService *auth.AuthService, log *logger.Logger) *Server {
 	apiHandler := api.NewHandler(multiUserService, log)
+	apiHandler.SetAuthEnabled(authService != nil && authService.IsEnabled())
 
 	// Initialize authentication handlers and middleware
 	authHandlers := auth.NewAuthHandlers(authService, log)

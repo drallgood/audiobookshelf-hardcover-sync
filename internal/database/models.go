@@ -8,11 +8,12 @@ import (
 
 // SyncProfile represents a sync profile in the system
 type SyncProfile struct {
-	ID        string    `gorm:"primaryKey" json:"id"`
-	Name      string    `gorm:"not null" json:"name"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Active    bool      `gorm:"default:true" json:"active"`
+	ID          string    `gorm:"primaryKey" json:"id"`
+	Name        string    `gorm:"not null" json:"name"`
+	OwnerUserID *string   `gorm:"index" json:"-"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	Active      bool      `gorm:"default:true" json:"active"`
 
 	// Relationships
 	Config    *SyncProfileConfig `gorm:"foreignKey:ProfileID" json:"config,omitempty"`
@@ -21,13 +22,13 @@ type SyncProfile struct {
 
 // SyncProfileConfig holds the configuration for a specific sync profile
 type SyncProfileConfig struct {
-	ProfileID                  string `gorm:"primaryKey;column:profile_id" json:"profile_id"`
-	AudiobookshelfURL          string `json:"audiobookshelf_url"`
-	AudiobookshelfTokenEncrypted string `json:"-"` // Hidden from JSON serialization
-	HardcoverTokenEncrypted    string `json:"-"` // Hidden from JSON serialization
-	SyncConfig                 string `gorm:"type:text" json:"-"` // JSON string (hidden from API responses)
-	CreatedAt                  time.Time `json:"created_at"`
-	UpdatedAt                  time.Time `json:"updated_at"`
+	ProfileID                    string    `gorm:"primaryKey;column:profile_id" json:"profile_id"`
+	AudiobookshelfURL            string    `json:"audiobookshelf_url"`
+	AudiobookshelfTokenEncrypted string    `json:"-"`                  // Hidden from JSON serialization
+	HardcoverTokenEncrypted      string    `json:"-"`                  // Hidden from JSON serialization
+	SyncConfig                   string    `gorm:"type:text" json:"-"` // JSON string (hidden from API responses)
+	CreatedAt                    time.Time `json:"created_at"`
+	UpdatedAt                    time.Time `json:"updated_at"`
 
 	// Relationship
 	Profile SyncProfile `gorm:"foreignKey:ProfileID" json:"-"`
@@ -47,9 +48,9 @@ type ProfileSyncState struct {
 
 // SyncConfigData represents the structure of sync configuration
 type SyncConfigData struct {
-	Incremental        bool     `json:"incremental"`
-	StateFile          string   `json:"state_file"`
-	MinChangeThreshold int      `json:"min_change_threshold"`
+	Incremental        bool   `json:"incremental"`
+	StateFile          string `json:"state_file"`
+	MinChangeThreshold int    `json:"min_change_threshold"`
 	Libraries          struct {
 		Include []string `json:"include"`
 		Exclude []string `json:"exclude"`
