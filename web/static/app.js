@@ -29,7 +29,7 @@ window.__absHandleImageError = function(img) {
 class SyncProfileApp {
     constructor() {
         this.users = [];
-        this.statuses = {};
+        this.statuses = Object.create(null);
         this.actionErrors = new Map();
         this.currentEditUser = null;
         this.refreshInterval = null;
@@ -302,6 +302,11 @@ class SyncProfileApp {
             // Clear local state first to update UI immediately
             this.currentUser = null;
             this.authEnabled = true;
+            this.authSessionGeneration += 1;
+            this.terminalErrorCache.clear();
+            this.terminalErrorRetries.clear();
+            this.actionErrors.clear();
+            this.statuses = Object.create(null);
             this.updateUserInfo();
             
             // Show loading state
@@ -324,7 +329,7 @@ class SyncProfileApp {
             if (response.ok) {
                 // Clear any remaining data
                 this.users = [];
-                this.statuses = {};
+                this.statuses = Object.create(null);
                 
                 // Stop any auto-refresh
                 this.stopAutoRefresh();
@@ -623,7 +628,8 @@ class SyncProfileApp {
             // If no users, render empty status
             if (!this.users || this.users.length === 0) {
                 if (!isCurrentRequest()) return;
-                this.statuses = {};
+                this.statuses = Object.create(null);
+                this.pruneTerminalErrorState();
                 this.renderStatuses();
                 return;
             }
@@ -638,7 +644,7 @@ class SyncProfileApp {
             if (!Array.isArray(statusData)) throw new Error('Status response was not an array');
 
             if (!isCurrentRequest()) return;
-            const statuses = {};
+            const statuses = Object.create(null);
             statusData.forEach((status) => {
                 if (!status || !status.profile_id) return;
                 const snapshot = status.snapshot || null;
@@ -659,6 +665,7 @@ class SyncProfileApp {
                 statuses[status.profile_id] = normalized;
             });
             this.statuses = statuses;
+            this.pruneTerminalErrorState();
             this.statusRefreshError = null;
             this.renderStatuses();
             this.refreshOpenSummary();
@@ -672,6 +679,7 @@ class SyncProfileApp {
             // transient network failure. Only add a passive stale indicator.
             if (this.users.length > 0 && requestSequence === this.statusLoadSequence) {
                 this.renderStatuses({ unavailable: true });
+                this.renderDetailsStale(this.openSummary);
             }
             if (this.users.length === 0 && requestSequence === this.statusLoadSequence && error.name !== 'AbortError') {
                 this.profileLoadFailed = true;
@@ -679,6 +687,7 @@ class SyncProfileApp {
                 const retryDelay = Math.min(PROFILE_RETRY_BASE_MS * 2 ** (this.profileRetryFailures - 1), PROFILE_RETRY_MAX_MS);
                 this.nextProfileRetryAt = Date.now() + retryDelay;
                 this.renderStatuses({ unavailable: true });
+                this.renderDetailsStale(this.openSummary);
                 this.startAutoRefresh();
             }
             if (!silent && requestSequence === this.statusLoadSequence) {
@@ -713,6 +722,24 @@ class SyncProfileApp {
         // stable available run marker, falling back only when none exists.
         const marker = snapshot.run_started_at || status?.last_sync;
         return JSON.stringify([String(profileId), 'terminal', state, marker || '']);
+    }
+
+    pruneTerminalErrorState() {
+        const liveProfileIds = new Set(this.users.map(user => String(user?.id || '')));
+        const currentFailures = new Set();
+        Object.entries(this.statuses).forEach(([profileId, status]) => {
+            const identity = this.terminalErrorIdentity(profileId, status);
+            if (identity) currentFailures.add(identity);
+        });
+        for (const identity of this.terminalErrorCache.keys()) {
+            if (!currentFailures.has(identity)) this.terminalErrorCache.delete(identity);
+        }
+        for (const identity of this.terminalErrorRetries.keys()) {
+            if (!currentFailures.has(identity)) this.terminalErrorRetries.delete(identity);
+        }
+        for (const profileId of this.actionErrors.keys()) {
+            if (!liveProfileIds.has(String(profileId))) this.actionErrors.delete(profileId);
+        }
     }
 
     fetchTerminalErrorFallbacks(signal, authGeneration) {
@@ -1054,6 +1081,7 @@ class SyncProfileApp {
             generation: (previous?.generation || 0) + 1,
             filter: sameRun ? previous.filter : 'all',
             expandedIds: sameRun ? previous.expandedIds : new Set(),
+            expandedOutcomes: sameRun && previous.expandedOutcomes instanceof Set ? previous.expandedOutcomes : new Set(),
             scrollTop: 0
         };
         if (!sameRun) this.renderDetailsState('loading', this.openSummary);
@@ -1080,6 +1108,7 @@ class SyncProfileApp {
                 generation: previous.generation + 1,
                 filter: 'all',
                 expandedIds: new Set(),
+                expandedOutcomes: new Set(),
                 scrollTop: 0
             };
             this.renderDetailsState('loading', this.openSummary);
@@ -1089,6 +1118,8 @@ class SyncProfileApp {
 
     clearOpenSummary() {
         this.openSummary?.detailsController?.abort();
+        this.openSummary?.expandedIds?.clear();
+        this.openSummary?.expandedOutcomes?.clear();
         this.openSummary = null;
         const container = document.getElementById('sync-summary-container');
         const content = document.getElementById('sync-summary-content');
@@ -1140,11 +1171,10 @@ class SyncProfileApp {
     handleAuthExpiry() {
         this.authEnabled = true;
         this.currentUser = null;
-        this.statuses = {};
+        this.statuses = Object.create(null);
         this.authSessionGeneration += 1;
         this.terminalErrorCache.clear();
         this.terminalErrorRetries.clear();
-        this.terminalErrorRequests.clear();
         this.statusLoadSequence += 1;
         this.statusLoadController?.abort();
         this.statusRefreshQueued = false;
@@ -1259,6 +1289,7 @@ class SyncProfileApp {
         const content = document.getElementById('sync-summary-content');
         const tabs = document.getElementById('sync-summary-tabs');
         if (!open || !content || !tabs) return;
+        if (!(open.expandedOutcomes instanceof Set)) open.expandedOutcomes = new Set();
         open.renderedRunId = snapshot.run_id;
         const categories = this.outcomeCategories(snapshot.outcome_counts || {});
         open.snapshot = snapshot;
@@ -1274,7 +1305,7 @@ class SyncProfileApp {
             return { ...category, records: groupRecords };
         });
         const groupsHtml = groups.filter(group => selectedFilter === 'all' || group.key === selectedFilter).map(group => `
-            <details class="summary-section outcome-group" data-outcome="${group.key}" ${group.records.some(record => open.expandedIds.has(record.book_id)) ? 'open' : ''}>
+            <details class="summary-section outcome-group" data-outcome="${group.key}" ${open.expandedOutcomes.has(group.key) ? 'open' : ''}>
                 <summary data-outcome-category="${group.key}"><span>${group.label}</span><span class="stat ${group.tone}">${group.count}</span></summary>
                 <div class="book-list">${group.records.length ? group.records.map(record => this.renderOutcomeRecord(record, open)).join('') : '<p class="empty-state">No books in this category.</p>'}</div>
             </details>`).join('');
@@ -1296,10 +1327,8 @@ class SyncProfileApp {
             </div>`;
         content.querySelectorAll('details.outcome-group').forEach(group => {
             group.addEventListener('toggle', () => {
-                group.querySelectorAll('[data-book-id]').forEach(row => {
-                    if (group.open) open.expandedIds.add(row.dataset.bookId);
-                    else open.expandedIds.delete(row.dataset.bookId);
-                });
+                if (group.open) open.expandedOutcomes.add(group.dataset.outcome);
+                else open.expandedOutcomes.delete(group.dataset.outcome);
             });
         });
         content.querySelectorAll('[data-outcome-filter]').forEach(button => {
