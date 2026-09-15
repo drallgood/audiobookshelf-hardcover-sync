@@ -51,6 +51,7 @@ func TestSnapshotDeepCopiesLegacyAttentionDetails(t *testing.T) {
 
 func TestSnapshotStatusCopiesScalarsWithoutDetails(t *testing.T) {
 	svc, _ := createTestService()
+	svc.config.Audiobookshelf.URL = "https://audiobookshelf.example/base"
 	svc.beginOutcomeRun()
 
 	svc.summary.Lock()
@@ -78,8 +79,10 @@ func TestSnapshotStatusCopiesScalarsWithoutDetails(t *testing.T) {
 	require.Nil(t, status.AttentionRecords)
 	require.Nil(t, status.BooksNotFound)
 	require.Nil(t, status.Mismatches)
+	require.Empty(t, status.AudiobookshelfURL, "aggregate status snapshots omit profile configuration")
 
 	full := svc.GetSnapshot()
+	require.Equal(t, "https://audiobookshelf.example/base", full.AudiobookshelfURL)
 	require.Len(t, full.BookOutcomes, 2)
 	require.Len(t, full.AttentionRecords, 2)
 	require.Len(t, full.BooksNotFound, 1)

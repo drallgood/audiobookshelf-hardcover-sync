@@ -1437,12 +1437,14 @@ class SyncProfileApp {
             const groupRecords = [...records.values()].filter(record => record.outcome === category.key);
             return { ...category, records: groupRecords };
         });
+        const audiobookshelfURL = snapshot.audiobookshelf_url || '';
         const groupsHtml = groups.map(group => `
             <details class="summary-section outcome-group" data-outcome="${group.key}" ${open.expandedOutcomes.has(group.key) ? 'open' : ''}>
                 <summary data-outcome-category="${group.key}"><span>${group.label}</span><span class="stat ${group.tone}">${group.count}</span></summary>
                 <div class="book-list">${group.records.length ? group.records.map(record => this.renderOutcomeRecord(
                     record,
-                    record.outcome === 'needs_review' ? mismatches.get(String(record.book_id)) : null
+                    record.outcome === 'needs_review' ? mismatches.get(String(record.book_id)) : null,
+                    audiobookshelfURL
                 )).join('') : '<p class="empty-state">No books in this category.</p>'}</div>
             </details>`).join('');
         let statusMessage = 'Run status is unavailable.';
@@ -1540,10 +1542,46 @@ class SyncProfileApp {
         </section>`;
     }
 
-    renderOutcomeRecord(record, mismatch = null) {
+    buildAudiobookshelfItemURL(baseURL, bookId) {
+        const itemId = String(bookId || '').trim();
+        if (!baseURL || !itemId) return '';
+
+        try {
+            const url = new URL(String(baseURL).trim());
+            if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+            url.pathname = `${url.pathname.replace(/\/+$/, '')}/item/${encodeURIComponent(itemId)}`;
+            url.search = '';
+            url.hash = '';
+            return url.toString();
+        } catch (_) {
+            return '';
+        }
+    }
+
+    buildHardcoverBookURL(record, mismatch) {
+        const bookId = String(record?.hardcover_book_id || mismatch?.hardcover_book_id || '').trim();
+        if (bookId) return `https://hardcover.app/book/${encodeURIComponent(bookId)}`;
+
+        const slug = String(mismatch?.hardcover_slug || '').trim();
+        return slug ? `https://hardcover.app/books/${encodeURIComponent(slug)}` : '';
+    }
+
+    renderOutcomeRecord(record, mismatch = null, audiobookshelfBaseURL = '') {
         const bookId = String(record.book_id || '');
+        const title = this.escapeHtml(record.title || 'Unknown title');
+        const audiobookshelfURL = this.buildAudiobookshelfItemURL(audiobookshelfBaseURL, bookId);
+        const hardcoverURL = this.buildHardcoverBookURL(record, mismatch);
+        const titleHTML = audiobookshelfURL
+            ? `<a class="book-title-link" href="${this.escapeHtmlAttribute(audiobookshelfURL)}" target="_blank" rel="noopener noreferrer" title="Open in Audiobookshelf">${title} <span class="external-link-mark" aria-hidden="true">↗</span></a>`
+            : title;
+        const hardcoverLink = hardcoverURL
+            ? `<a class="book-service-link hardcover" href="${this.escapeHtmlAttribute(hardcoverURL)}" target="_blank" rel="noopener noreferrer" title="Open on Hardcover">Hardcover <span class="external-link-mark" aria-hidden="true">↗</span></a>`
+            : '';
         return `<article class="book-item" data-book-id="${this.escapeHtmlAttribute(bookId)}">
-            <div class="book-title">${this.escapeHtml(record.title || 'Unknown title')}</div>
+            <div class="book-heading">
+                <div class="book-title">${titleHTML}</div>
+                ${hardcoverLink ? `<div class="book-service-links">${hardcoverLink}</div>` : ''}
+            </div>
             ${record.author ? `<div><strong>Author:</strong> ${this.escapeHtml(record.author)}</div>` : ''}
             <div class="book-meta">${record.asin ? `<span><strong>ASIN:</strong> ${this.escapeHtml(record.asin)}</span>` : ''}${record.isbn ? `<span><strong>ISBN:</strong> ${this.escapeHtml(record.isbn)}</span>` : ''}</div>
             ${record.match_method ? `<div><strong>Match method:</strong> ${this.escapeHtml(record.match_method)}</div>` : ''}

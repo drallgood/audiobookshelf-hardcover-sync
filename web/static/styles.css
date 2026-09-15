@@ -512,6 +512,62 @@ header p {
     padding: 1.25rem 1.5rem;
 }
 
+.book-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.book-title-link {
+    color: #2b6cb0;
+    text-decoration: none;
+}
+
+.book-title-link:hover,
+.book-title-link:focus-visible {
+    text-decoration: underline;
+}
+
+.external-link-mark {
+    font-size: 0.72em;
+}
+
+.book-service-links {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.book-service-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.3rem 0.6rem;
+    border: 1px solid #4a5568;
+    border-radius: 999px;
+    color: #2d3748;
+    font-size: 0.8rem;
+    font-weight: 600;
+    line-height: 1.2;
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.book-service-link:hover,
+.book-service-link:focus-visible {
+    background: #edf2f7;
+    border-color: #2d3748;
+}
+
+@media (max-width: 480px) {
+    .book-heading {
+        align-items: stretch;
+        flex-direction: column;
+    }
+}
+
 .details-state,
 .details-refresh-state {
     display: flex;

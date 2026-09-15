@@ -319,6 +319,10 @@ components:
       required: [run_id, run_started_at, state, books_total, processed_so_far, processed_count, outcome_counts, book_outcomes, attention_records]
       properties:
         user_id: {type: string}
+        audiobookshelf_url:
+          type: string
+          format: uri
+          description: Base URL used to build Audiobookshelf item links in authenticated run details. Omitted from aggregate status responses.
         run_id: {type: string}
         run_started_at: {type: string, format: date-time}
         state:

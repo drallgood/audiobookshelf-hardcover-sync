@@ -102,16 +102,17 @@ type BookOutcomeRecord struct {
 // GetSnapshot returns deep-copied slices so callers can safely retain or
 // modify a response while the sync continues.
 type SyncSnapshot struct {
-	UserID           string              `json:"user_id,omitempty"`
-	RunID            string              `json:"run_id,omitempty"`
-	RunStartedAt     time.Time           `json:"run_started_at,omitempty"`
-	State            string              `json:"state,omitempty"`
-	BooksTotal       int32               `json:"books_total"`
-	ProcessedSoFar   int32               `json:"processed_so_far"`
-	ProcessedCount   int32               `json:"processed_count"`
-	OutcomeCounts    OutcomeCounts       `json:"outcome_counts"`
-	BookOutcomes     []BookOutcomeRecord `json:"book_outcomes"`
-	AttentionRecords []BookOutcomeRecord `json:"attention_records"`
+	UserID            string              `json:"user_id,omitempty"`
+	AudiobookshelfURL string              `json:"audiobookshelf_url,omitempty"`
+	RunID             string              `json:"run_id,omitempty"`
+	RunStartedAt      time.Time           `json:"run_started_at,omitempty"`
+	State             string              `json:"state,omitempty"`
+	BooksTotal        int32               `json:"books_total"`
+	ProcessedSoFar    int32               `json:"processed_so_far"`
+	ProcessedCount    int32               `json:"processed_count"`
+	OutcomeCounts     OutcomeCounts       `json:"outcome_counts"`
+	BookOutcomes      []BookOutcomeRecord `json:"book_outcomes"`
+	AttentionRecords  []BookOutcomeRecord `json:"attention_records"`
 
 	// Keep the legacy summary fields in the same snapshot for clients that
 	// have not migrated to the exclusive outcome fields.
@@ -817,10 +818,11 @@ func (s *Service) recordBookOutcomeWithMatchMethod(book models.AudiobookshelfBoo
 // counters, so callers never observe fields from different points in a run.
 func (s *Service) GetSnapshot() SyncSnapshot {
 	snapshot := SyncSnapshot{
-		BookOutcomes:     make([]BookOutcomeRecord, 0),
-		AttentionRecords: make([]BookOutcomeRecord, 0),
-		BooksNotFound:    make([]BookNotFoundInfo, 0),
-		Mismatches:       make([]mismatch.BookMismatch, 0),
+		AudiobookshelfURL: s.config.Audiobookshelf.URL,
+		BookOutcomes:      make([]BookOutcomeRecord, 0),
+		AttentionRecords:  make([]BookOutcomeRecord, 0),
+		BooksNotFound:     make([]BookNotFoundInfo, 0),
+		Mismatches:        make([]mismatch.BookMismatch, 0),
 	}
 	if s.summary == nil {
 		return snapshot

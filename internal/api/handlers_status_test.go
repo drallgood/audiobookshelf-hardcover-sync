@@ -568,6 +568,7 @@ func TestPublicStatusAndSummaryRoutesExposeLiveAttentionOutcomes(t *testing.T) {
 	require.True(t, statusResponse.Success)
 	require.NotNil(t, statusResponse.Data.Snapshot)
 	liveSnapshot := statusResponse.Data.Snapshot
+	require.Equal(t, absServer.Server.URL, liveSnapshot.AudiobookshelfURL)
 	require.Equal(t, "syncing", liveSnapshot.State)
 	require.Equal(t, int32(3), liveSnapshot.BooksTotal)
 	require.Equal(t, int32(2), liveSnapshot.ProcessedSoFar)
@@ -596,6 +597,7 @@ func TestPublicStatusAndSummaryRoutesExposeLiveAttentionOutcomes(t *testing.T) {
 	require.Equal(t, liveSnapshot.RunID, aggregateLiveStatus.Snapshot.RunID)
 	require.Equal(t, int32(2), aggregateLiveStatus.Snapshot.ProcessedSoFar)
 	require.Equal(t, liveSnapshot.OutcomeCounts, aggregateLiveStatus.Snapshot.OutcomeCounts)
+	require.Empty(t, aggregateLiveStatus.Snapshot.AudiobookshelfURL)
 	require.Empty(t, aggregateLiveStatus.Snapshot.BookOutcomes)
 	require.Empty(t, aggregateLiveStatus.Snapshot.AttentionRecords)
 
@@ -612,6 +614,7 @@ func TestPublicStatusAndSummaryRoutesExposeLiveAttentionOutcomes(t *testing.T) {
 	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/runs/"+liveSnapshot.RunID+"/details", &liveDetails)
 	require.True(t, liveDetails.Success)
 	require.Equal(t, liveSnapshot.RunID, liveDetails.Data.RunID)
+	require.Equal(t, absServer.Server.URL, liveDetails.Data.AudiobookshelfURL)
 	require.Equal(t, liveSnapshot.ProcessedSoFar, liveDetails.Data.ProcessedSoFar)
 	require.Len(t, liveDetails.Data.BookOutcomes, 2)
 	require.Len(t, liveDetails.Data.AttentionRecords, 2)
