@@ -222,11 +222,15 @@ type Service struct {
 	// pre-count and processing fetches.
 	libraryCandidateTotals map[string]int
 	// liveMismatches is profile-local. The package-global mismatch collector is
-	// used only by the separate mismatch-file export operation.
+	// retained only for compatibility with direct package callers; sync runs use
+	// mismatchCollector instead.
 	liveMismatches map[string]mismatch.BookMismatch
-	runID          string
-	runStartedAt   time.Time
-	runState       string
+	// mismatchCollector is created for each Sync run so mismatch-file export is
+	// isolated from other profiles and runs.
+	mismatchCollector *mismatch.Collector
+	runID             string
+	runStartedAt      time.Time
+	runState          string
 	// Per-run guard to prevent duplicate read inserts
 	createdReadsThisRun map[int64]struct{}
 	createdReadsMutex   sync.Mutex
@@ -603,6 +607,43 @@ func (s *Service) enrichLiveMismatch(record mismatch.BookMismatch) {
 	}
 	s.liveMismatches[record.BookID] = cloneBookMismatch(record)
 	s.replaceSummaryMismatchLocked(record)
+}
+
+func (s *Service) addMismatch(record mismatch.BookMismatch) {
+	if s.mismatchCollector != nil {
+		s.mismatchCollector.Add(record)
+		return
+	}
+	// Keep direct processBook callers and older integrations on the established
+	// package-level compatibility path. Sync always installs a run collector.
+	mismatch.Add(record)
+}
+
+func (s *Service) addMismatchWithMetadata(metadata mismatch.MediaMetadata, bookID, editionID, reason string, duration float64, audiobookShelfID string, audnexRegion string) mismatch.BookMismatch {
+	if s.mismatchCollector != nil {
+		return s.mismatchCollector.AddWithMetadata(
+			metadata,
+			bookID,
+			editionID,
+			reason,
+			duration,
+			audiobookShelfID,
+			s.hardcover,
+			audnexRegion,
+		)
+	}
+	// Keep direct processBook callers and older integrations on the established
+	// package-level compatibility path. Sync always installs a run collector.
+	return mismatch.AddWithMetadata(
+		metadata,
+		bookID,
+		editionID,
+		reason,
+		duration,
+		audiobookShelfID,
+		s.hardcover,
+		audnexRegion,
+	)
 }
 
 func cloneBookMismatch(record mismatch.BookMismatch) mismatch.BookMismatch {
@@ -1190,6 +1231,10 @@ func (s *Service) findExistingUserBookForBook(ctx context.Context, bookID int64)
 
 // Sync performs a full synchronization between Audiobookshelf and Hardcover
 func (s *Service) Sync(ctx context.Context) (err error) {
+	s.mismatchCollector = mismatch.NewCollector()
+	defer func() {
+		s.mismatchCollector = nil
+	}()
 	s.beginOutcomeRun()
 	defer func() {
 		runState := "completed"
@@ -1202,10 +1247,7 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 		s.setOutcomeRunState(runState)
 	}()
 
-	// Clear any existing mismatches at the start of each sync cycle
-	// This prevents accumulation of resolved mismatches in continuous sync mode
-	mismatch.Clear()
-	s.log.Info("Cleared previous mismatches at start of sync cycle", nil)
+	// Mismatches are collected in the run-local collector and exported below.
 
 	// Clear ASIN cache to ensure fresh lookups for this sync run
 	s.clearASINCache()
@@ -1440,16 +1482,14 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 		err = fmt.Errorf("one or more libraries could not be synchronized: %w", libraryRunError)
 	}
 
-	// Save any mismatches that occurred during sync
-	if err := mismatch.SaveToFile(ctx, s.hardcover, "", s.config); err != nil {
+	// Save only this run's mismatches. The collector serializes the shared
+	// output-directory cleanup/write lifecycle across profile runs.
+	if err := s.mismatchCollector.SaveToFile(ctx, s.hardcover, "", s.config); err != nil {
 		s.log.Error("Failed to save mismatch files", map[string]interface{}{
 			"error": err,
 		})
 		// Don't return error here as the sync itself completed successfully
 	}
-
-	// Per-profile status reads from the service-local outcome/mismatch store.
-	// The package-global collector above is used only for mismatch-file export.
 
 	// Update and save the state only after a real sync. Dry-run mutation
 	// wrappers return successful no-ops, so persisting this in-memory state
@@ -2060,8 +2100,8 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			// Log the complete mismatch data before recording
 			bookLog.Infof("Recording mismatch with data: %+v", mismatchData)
 			// Replace the initial lightweight record with any details already
-			// available from the title/author candidate. The global collector
-			// below remains only for mismatch-file export.
+			// available from the title/author candidate. The run collector below
+			// remains separate from the live status snapshot.
 			s.enrichLiveMismatch(mismatchData)
 
 			// Determine editionID from Hardcover result if available to improve enrichment accuracy
@@ -2073,10 +2113,10 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			// Keep an incomplete identifier lookup in the legacy mismatch report
 			// while its exclusive outcome remains a technical failure.
 			if errors.Is(findErr, errHardcoverLookupFailed) {
-				mismatch.Add(mismatchData)
+				s.addMismatch(mismatchData)
 			} else {
 				// Preserve the existing enrichment path for completed title-only lookups.
-				enrichedMismatch := mismatch.AddWithMetadata(
+				enrichedMismatch := s.addMismatchWithMetadata(
 					mismatch.MediaMetadata{
 						Title:         book.Media.Metadata.Title,
 						Subtitle:      book.Media.Metadata.Subtitle,
@@ -2096,7 +2136,6 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 					"Found by title/author only - manual verification required",
 					book.Media.Duration,
 					book.ID,
-					s.hardcover,
 					s.config.Audiobookshelf.AudnexusRegion,
 				)
 				enrichedMismatch.BookID = book.ID
@@ -2348,7 +2387,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		}
 
 		// Record mismatch with error details
-		enrichedMismatch := mismatch.AddWithMetadata(
+		enrichedMismatch := s.addMismatchWithMetadata(
 			mismatch.MediaMetadata{
 				Title:         book.Media.Metadata.Title,
 				Subtitle:      book.Media.Metadata.Subtitle,
@@ -2368,7 +2407,6 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			fmt.Sprintf("%s: %v", errMsg, findErr),
 			book.Media.Duration,
 			book.ID,
-			s.hardcover, // Pass the Hardcover client for publisher lookup
 			s.config.Audiobookshelf.AudnexusRegion,
 		)
 		enrichedMismatch.BookID = book.ID
@@ -2415,7 +2453,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		}
 
 		// Record mismatch for book without edition
-		enrichedMismatch := mismatch.AddWithMetadata(
+		enrichedMismatch := s.addMismatchWithMetadata(
 			mismatch.MediaMetadata{
 				Title:         book.Media.Metadata.Title,
 				Subtitle:      book.Media.Metadata.Subtitle,
@@ -2435,7 +2473,6 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			errMsg,
 			book.Media.Duration,
 			book.ID,
-			s.hardcover, // Pass the Hardcover client for publisher lookup
 			s.config.Audiobookshelf.AudnexusRegion,
 		)
 		enrichedMismatch.BookID = book.ID
@@ -2486,7 +2523,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		editionID := ""
 
 		// Record mismatch for book not found
-		mismatch.AddWithMetadata(
+		s.addMismatchWithMetadata(
 			mismatch.MediaMetadata{
 				Title:         book.Media.Metadata.Title,
 				Subtitle:      book.Media.Metadata.Subtitle,
@@ -2506,7 +2543,6 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			errMsg,
 			book.Media.Duration,
 			book.ID,
-			s.hardcover, // Pass the Hardcover client for publisher lookup
 			s.config.Audiobookshelf.AudnexusRegion,
 		)
 
@@ -2564,7 +2600,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		}
 
 		// Record mismatch with error details
-		mismatch.AddWithMetadata(
+		s.addMismatchWithMetadata(
 			mismatch.MediaMetadata{
 				Title:         book.Media.Metadata.Title,
 				Subtitle:      book.Media.Metadata.Subtitle,
@@ -2584,7 +2620,6 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			errMsg,
 			book.Media.Duration,
 			book.ID,
-			s.hardcover, // Pass the Hardcover client for publisher lookup
 			s.config.Audiobookshelf.AudnexusRegion,
 		)
 		bookProcessed = true // Count as processed since we recorded a mismatch

@@ -75,11 +75,12 @@ Existing single-profile setups are **automatically migrated** on first startup:
 
 ### Current-run sync status
 
-During a sync, authenticated `GET /api/profiles/{id}/status` includes a
-per-profile `snapshot`, and authenticated `GET /api/profiles/{id}/summary`
-exposes the same outcomes alongside legacy fields. Unauthenticated
-`GET /api/status` is an aggregate scalar status for all profiles; it does not
-include snapshots or book-level outcomes. Each processed book has one outcome:
+During a sync, when `AUTH_ENABLED=true`, authenticated
+`GET /api/profiles/{id}/status` includes a per-profile `snapshot`, and
+authenticated `GET /api/profiles/{id}/summary` exposes the same outcomes
+alongside legacy fields. Unauthenticated `GET /api/status` is an aggregate
+scalar status for all profiles; it does not include snapshots or book-level
+outcomes. Each processed book has one outcome:
 `synced`, `already_current`, `skipped`, `needs_review`, `not_found`, `failed`,
 or dry-run `would_sync`. Their counts add up to `processed_so_far`;
 `needs_review`, `not_found`, and `failed` appear in `attention_records` as they

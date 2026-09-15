@@ -202,34 +202,48 @@ func (s *MultiUserService) currentSyncServiceLocked(profileID string) (*sync.Ser
 }
 
 func (s *MultiUserService) getProfileStatus(profileID string, profile *database.SyncProfile, profileState *database.ProfileSyncState) *SyncProfileStatus {
-	// Hold syncMutex while reading the stored status and active service so a
-	// replacement cannot combine metadata from two runs.
+	// A status lookup can hydrate its fallback from the database. Do that
+	// without holding syncMutex so a slow database cannot block a new run.
+	s.statusMutex.RLock()
+	status := cloneProfileStatus(s.profileStatuses[profileID])
+	s.statusMutex.RUnlock()
+
+	if status == nil {
+		if profile == nil {
+			if s.repository != nil {
+				loaded, _ := s.GetProfile(profileID)
+				if loaded != nil {
+					profile = &loaded.Profile
+					profileState = loaded.Profile.SyncState
+				}
+			}
+		}
+	}
+	if (status == nil || status.LastSync == nil) && profileState == nil &&
+		s.repository != nil && (status != nil || profile != nil) {
+		profileState, _ = s.repository.GetSyncState(profileID)
+	}
+
+	// Re-read status and service state together after fallback I/O. A run can
+	// start while either lookup is in progress, and its status must win over a
+	// stale loaded fallback.
 	s.syncMutex.RLock()
 	defer s.syncMutex.RUnlock()
 
 	s.statusMutex.RLock()
-	status := cloneProfileStatus(s.profileStatuses[profileID])
+	status = cloneProfileStatus(s.profileStatuses[profileID])
 	s.statusMutex.RUnlock()
 	if status == nil {
 		if profile == nil {
-			loaded, err := s.GetProfile(profileID)
-			if err != nil || loaded == nil {
-				return &SyncProfileStatus{ProfileID: profileID, Status: "error", Error: "Profile not found"}
-			}
-			status = &SyncProfileStatus{ProfileID: profileID, ProfileName: loaded.Profile.Name, Status: "idle"}
-			profileState = loaded.Profile.SyncState
-		} else {
-			status = &SyncProfileStatus{ProfileID: profileID, ProfileName: profile.Name, Status: "idle"}
+			return &SyncProfileStatus{ProfileID: profileID, Status: "error", Error: "Profile not found"}
 		}
+		status = &SyncProfileStatus{ProfileID: profileID, ProfileName: profile.Name, Status: "idle"}
 	}
 	if status.Status == "" {
 		status.Status = "idle"
 	}
 	if status.ProfileName == "" && profile != nil {
 		status.ProfileName = profile.Name
-	}
-	if status.LastSync == nil && profileState == nil && s.repository != nil {
-		profileState, _ = s.repository.GetSyncState(profileID)
 	}
 	if status.LastSync == nil && profileState != nil && profileState.LastSync != nil {
 		lastSync := *profileState.LastSync
