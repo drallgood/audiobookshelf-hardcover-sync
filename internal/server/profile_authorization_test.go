@@ -3,12 +3,19 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/auth"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/crypto"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/multiuser"
 	"github.com/stretchr/testify/require"
 )
 
@@ -34,15 +41,57 @@ func newRouteSession(t *testing.T, fixture *routeTestFixture, username string, r
 }
 
 func createRouteProfile(t *testing.T, fixture *routeTestFixture, session routeSession, id, token string) {
+	createRouteProfileAtURL(t, fixture, session, id, "http://audiobookshelf.invalid", token)
+}
+
+func createRouteProfileAtURL(t *testing.T, fixture *routeTestFixture, session routeSession, id, audiobookshelfURL, token string) {
 	t.Helper()
 	response := fixture.requestWithCookies(http.MethodPost, "/api/profiles", []byte(`{
         "id": "`+id+`",
         "name": "`+id+`",
-        "audiobookshelf_url": "http://audiobookshelf.invalid",
+        "audiobookshelf_url": "`+audiobookshelfURL+`",
         "audiobookshelf_token": "`+token+`",
-        "hardcover_token": "hardcover-`+token+`"
+        "hardcover_token": "hardcover-`+token+`",
+        "sync_config": {"process_unread_books": true, "dry_run": true}
     }`), []*http.Cookie{session.cookie})
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+}
+
+func newRouteTestFixtureWithHardcoverURL(t *testing.T, hardcoverURL string) *routeTestFixture {
+	t.Helper()
+	logger.ForceSetup(logger.Config{Level: "error", Format: logger.FormatJSON, Output: io.Discard})
+
+	dataDir := t.TempDir()
+	db, err := database.NewDatabase(&database.DatabaseConfig{
+		Type: database.DatabaseTypeSQLite,
+		Path: filepath.Join(dataDir, "server-route-test.db"),
+	}, logger.Get())
+	require.NoError(t, err)
+
+	encryptor, err := crypto.NewEncryptionManagerWithDataDir(dataDir, logger.Get())
+	require.NoError(t, err)
+	repo := database.NewRepository(db, encryptor, logger.Get())
+	cfg := config.DefaultConfig()
+	cfg.Paths.DataDir = dataDir
+	cfg.Hardcover.BaseURL = hardcoverURL
+	cfg.RateLimit.Rate = time.Nanosecond
+	cfg.RateLimit.MaxConcurrent = 1
+	multiUserService := multiuser.NewMultiUserService(repo, cfg, logger.Get())
+
+	authConfig := auth.DefaultAuthConfig()
+	authConfig.Enabled = true
+	authService, err := auth.NewAuthService(db.GetDB(), authConfig, logger.Get())
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		multiUserService.WaitForSyncs()
+		require.NoError(t, db.Close())
+	})
+
+	return &routeTestFixture{
+		dataDir: dataDir,
+		repo:    repo,
+		server:  New("", multiUserService, authService, logger.Get()),
+	}
 }
 
 func TestProfileAuthorizationOwnershipAndAdminOverride(t *testing.T) {
@@ -180,10 +229,59 @@ func TestViewerProfileAuthorizationIsReadOnly(t *testing.T) {
 }
 
 func TestForeignProfileAuthorizationReturnsNotFoundForEveryRoute(t *testing.T) {
-	fixture := newRouteTestFixture(t, true)
+	const attentionSentinel = "foreign-attention-sentinel"
+	absServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/me":
+			_, _ = w.Write([]byte(`{"mediaProgress":[],"listeningSessions":[]}`))
+		case "/api/libraries":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"libraries": []map[string]string{{"id": "library", "name": "Library"}},
+			})
+		case "/api/libraries/library/items":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"results": []map[string]interface{}{{
+					"id":        "foreign-attention-book",
+					"libraryId": "library",
+					"mediaType": "book",
+					"media": map[string]interface{}{
+						"metadata": map[string]string{
+							"title":      attentionSentinel,
+							"authorName": "Foreign Author",
+						},
+						"duration": 100,
+					},
+				}},
+			})
+		default:
+			http.Error(w, "unexpected path", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(absServer.Close)
+	hardcoverServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"search": map[string]interface{}{
+					"error":   "",
+					"results": map[string]interface{}{"hits": []interface{}{}},
+				},
+			},
+		})
+	}))
+	t.Cleanup(hardcoverServer.Close)
+	fixture := newRouteTestFixtureWithHardcoverURL(t, hardcoverServer.URL)
 	owner := newRouteSession(t, fixture, "route-owner", auth.RoleUser)
 	foreign := newRouteSession(t, fixture, "route-foreign", auth.RoleUser)
-	createRouteProfile(t, fixture, owner, "foreign-target", "foreign-target-token")
+	createRouteProfileAtURL(t, fixture, owner, "foreign-target", absServer.URL, "foreign-target-token")
+
+	require.NoError(t, fixture.server.multiUserService.StartSync("foreign-target"))
+	fixture.server.multiUserService.WaitForSyncs()
+	status := fixture.server.multiUserService.GetProfileStatus("foreign-target")
+	require.NotNil(t, status)
+	require.NotNil(t, status.Snapshot)
+	require.Len(t, status.Snapshot.AttentionRecords, 1)
+	require.Equal(t, attentionSentinel, status.Snapshot.AttentionRecords[0].Title)
+	runDetailsPath := "/api/profiles/foreign-target/runs/" + status.Snapshot.RunID + "/details"
 
 	for _, test := range []struct {
 		name   string
@@ -197,7 +295,7 @@ func TestForeignProfileAuthorizationReturnsNotFoundForEveryRoute(t *testing.T) {
 		{name: "update config", method: http.MethodPut, path: "/api/profiles/foreign-target/config", body: `{"hardcover_token":"stolen"}`},
 		{name: "status", method: http.MethodGet, path: "/api/profiles/foreign-target/status"},
 		{name: "summary", method: http.MethodGet, path: "/api/profiles/foreign-target/summary"},
-		{name: "run details", method: http.MethodGet, path: "/api/profiles/foreign-target/runs/unknown/details"},
+		{name: "run details", method: http.MethodGet, path: runDetailsPath},
 		{name: "start sync", method: http.MethodPost, path: "/api/profiles/foreign-target/sync"},
 		{name: "cancel sync", method: http.MethodDelete, path: "/api/profiles/foreign-target/sync"},
 	} {
@@ -205,6 +303,7 @@ func TestForeignProfileAuthorizationReturnsNotFoundForEveryRoute(t *testing.T) {
 			response := fixture.requestWithCookies(test.method, test.path, []byte(test.body), []*http.Cookie{foreign.cookie})
 			require.Equal(t, http.StatusNotFound, response.Code, response.Body.String())
 			require.NotContains(t, response.Body.String(), "foreign-target-token")
+			require.NotContains(t, response.Body.String(), attentionSentinel)
 		})
 	}
 

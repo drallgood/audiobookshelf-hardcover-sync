@@ -160,37 +160,45 @@ func (h *Handler) writeJSONResponse(w http.ResponseWriter, statusCode int, respo
 // has populated the request context. Metadata is loaded without decrypting
 // tokens, and all denial responses intentionally use 404 for foreign profiles.
 func (h *Handler) authorizeProfile(w http.ResponseWriter, r *http.Request, profileID string, mutation bool) bool {
+	_, authorized := h.authorizeProfileMetadata(w, r, profileID, mutation)
+	return authorized
+}
+
+// authorizeProfileMetadata is the metadata-returning form of authorizeProfile
+// for handlers that need to confirm the profile exists without loading its
+// encrypted configuration.
+func (h *Handler) authorizeProfileMetadata(w http.ResponseWriter, r *http.Request, profileID string, mutation bool) (*database.SyncProfile, bool) {
 	if !h.authEnabled {
-		return true
+		return nil, true
 	}
 	user, authenticated := auth.GetUserFromRequest(r)
 	if !authenticated || user == nil {
 		h.writeErrorResponse(w, http.StatusUnauthorized, "Authentication required")
-		return false
+		return nil, false
 	}
 
 	profile, err := h.multiUserService.GetProfileMetadata(profileID)
 	if err != nil {
 		h.log.Error("Failed to authorize sync profile: " + err.Error())
 		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to retrieve sync profile")
-		return false
+		return nil, false
 	}
 	if profile == nil {
 		h.writeErrorResponse(w, http.StatusNotFound, "Sync profile not found")
-		return false
+		return nil, false
 	}
 
 	if auth.UserRole(user.Role) != auth.RoleAdmin {
 		if profile.OwnerUserID == nil || *profile.OwnerUserID != user.ID {
 			h.writeErrorResponse(w, http.StatusNotFound, "Sync profile not found")
-			return false
+			return nil, false
 		}
 		if mutation && !auth.UserRole(user.Role).HasPermission(auth.PermissionWriteOwn) {
 			h.writeErrorResponse(w, http.StatusForbidden, "Insufficient permissions")
-			return false
+			return nil, false
 		}
 	}
-	return true
+	return profile, true
 }
 
 func (h *Handler) authenticatedUser(r *http.Request) *auth.AuthUser {
@@ -567,32 +575,39 @@ func (h *Handler) GetRunDetails(w http.ResponseWriter, r *http.Request) {
 		h.writeErrorResponse(w, http.StatusBadRequest, "Profile ID and run ID are required")
 		return
 	}
-	if !h.authorizeProfile(w, r, profileID, false) {
+	profileMetadata, authorized := h.authorizeProfileMetadata(w, r, profileID, false)
+	if !authorized {
 		return
 	}
 
-	profile, err := h.multiUserService.GetProfile(profileID)
-	if err != nil {
-		h.log.Error("Failed to get sync profile for run details: " + err.Error())
-		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to retrieve sync profile")
-		return
-	}
-	if profile == nil {
-		h.writeErrorResponse(w, http.StatusNotFound, "Sync profile not found")
-		return
+	// Authentication-enabled requests already loaded metadata above. Preserve
+	// the legacy authentication-disabled existence check without decrypting
+	// profile credentials before consulting the in-memory run snapshot.
+	if profileMetadata == nil {
+		var err error
+		profileMetadata, err = h.multiUserService.GetProfileMetadata(profileID)
+		if err != nil {
+			h.log.Error("Failed to get sync profile for run details: " + err.Error())
+			h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to retrieve sync profile")
+			return
+		}
+		if profileMetadata == nil {
+			h.writeErrorResponse(w, http.StatusNotFound, "Sync profile not found")
+			return
+		}
 	}
 
-	status := h.multiUserService.GetProfileStatus(profileID)
-	if status == nil || status.Snapshot == nil || status.Snapshot.RunID != runID ||
-		(status.Snapshot.UserID != "" && status.Snapshot.UserID != profileID) {
+	snapshot := h.multiUserService.GetProfileSnapshot(profileID)
+	if snapshot == nil || snapshot.RunID != runID ||
+		(snapshot.UserID != "" && snapshot.UserID != profileID) {
 		h.writeErrorResponse(w, http.StatusNotFound, "Sync run not found")
 		return
 	}
 
-	// GetProfileStatus returns a deep copy. Clone once more at this API
+	// GetProfileSnapshot returns a deep copy. Clone once more at this API
 	// boundary so the response cannot expose mutable slices if that contract
 	// changes in the future.
-	h.writeSuccessResponse(w, cloneSnapshotForResponse(status.Snapshot))
+	h.writeSuccessResponse(w, cloneSnapshotForResponse(snapshot))
 }
 
 // GetAllProfileStatuses handles GET /api/status

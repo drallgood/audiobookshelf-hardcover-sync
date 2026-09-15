@@ -110,6 +110,59 @@ func TestGetProfileStatusRechecksStatusAfterFallbackLookup(t *testing.T) {
 	}
 }
 
+func TestGetProfileSnapshotUsesCurrentRunWithoutProfileHydration(t *testing.T) {
+	service, db := newStatusLookupService(t)
+	profileID := "profile-a"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Profile A", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
+	))
+
+	// Make any accidental fallback hydration fail at the database boundary.
+	require.NoError(t, db.Model(&database.SyncProfileConfig{}).Where("profile_id = ?", profileID).Updates(map[string]interface{}{
+		"audiobookshelf_token_encrypted": "invalid-encrypted-token",
+		"hardcover_token_encrypted":      "invalid-encrypted-token",
+	}).Error)
+	queryCallbackName := "multiuser_test_forbid_snapshot_profile_hydration"
+	require.NoError(t, db.Callback().Query().Before("gorm:query").Register(queryCallbackName, func(tx *gorm.DB) {
+		if tx.Statement.Schema != nil && tx.Statement.Schema.Name == "SyncProfile" {
+			t.Errorf("GetProfileSnapshot hydrated profile metadata from the database")
+		}
+	}))
+
+	cfg := config.DefaultConfig()
+	cfg.Sync.StateFile = filepath.Join(t.TempDir(), "state.json")
+	cfg.Paths.CacheDir = filepath.Join(t.TempDir(), "cache")
+	cfg.Paths.MismatchOutputDir = filepath.Join(t.TempDir(), "mismatches")
+	hcConfig := hardcover.DefaultClientConfig()
+	hcConfig.BaseURL = "http://hardcover.invalid"
+	liveService, err := syncsvc.NewService(
+		audiobookshelf.NewClient("http://audiobookshelf.invalid", "abs-token"),
+		hardcover.NewClientWithConfig(hcConfig, "hc-token", logger.Get()),
+		cfg,
+	)
+	require.NoError(t, err)
+
+	run := activeSyncRun{generation: 1, runID: "profile-a-run-1", startedAt: time.Now().UTC()}
+	_, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	service.syncMutex.Lock()
+	service.nextGeneration = run.generation
+	service.activeRuns[profileID] = run
+	service.activeSyncs[profileID] = cancel
+	service.syncMutex.Unlock()
+	require.True(t, service.registerSyncService(profileID, run.generation, liveService))
+	t.Cleanup(func() {
+		service.removeSyncService(profileID, run.generation, liveService)
+		service.finishActiveRun(profileID, run.generation)
+	})
+
+	snapshot := service.GetProfileSnapshot(profileID)
+	require.NotNil(t, snapshot)
+	require.Equal(t, run.runID, snapshot.RunID)
+	require.Equal(t, profileID, snapshot.UserID)
+	require.Equal(t, "syncing", snapshot.State)
+}
+
 func TestStatusAggregateOmitsErrorAndProfileStatusRetainsIt(t *testing.T) {
 	service, _ := newStatusLookupService(t)
 	profileID := "profile-a"

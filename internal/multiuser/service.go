@@ -312,6 +312,46 @@ func (s *MultiUserService) GetProfileStatus(profileID string) *SyncProfileStatus
 	return s.getProfileStatus(profileID, nil, nil)
 }
 
+// GetProfileSnapshot returns the current in-memory run snapshot for a profile
+// without hydrating profile configuration from the repository. It is intended
+// for callers that have already performed any required profile authorization.
+func (s *MultiUserService) GetProfileSnapshot(profileID string) *sync.SyncSnapshot {
+	s.syncMutex.RLock()
+	defer s.syncMutex.RUnlock()
+
+	s.statusMutex.RLock()
+	var storedSnapshot *sync.SyncSnapshot
+	if status := s.profileStatuses[profileID]; status != nil && status.Snapshot != nil {
+		storedSnapshot = cloneSyncSnapshot(*status.Snapshot)
+	}
+	s.statusMutex.RUnlock()
+
+	service, generation := s.currentSyncServiceLocked(profileID)
+	if service == nil {
+		return storedSnapshot
+	}
+
+	snapshot := service.GetSnapshot()
+	if generation > 0 {
+		if run, ok := s.activeRuns[profileID]; ok && run.generation == generation {
+			snapshot.UserID = profileID
+			snapshot.RunID = run.runID
+			snapshot.RunStartedAt = run.startedAt
+			if snapshot.State == "" || snapshot.State == "idle" {
+				snapshot.State = "syncing"
+			}
+		}
+	}
+	if snapshot.UserID == "" {
+		snapshot.UserID = profileID
+	}
+
+	if storedSnapshot == nil || storedSnapshot.RunID == "" || snapshot.RunID == "" || storedSnapshot.RunID == snapshot.RunID {
+		return &snapshot
+	}
+	return storedSnapshot
+}
+
 // currentSyncService returns only the service belonging to the active run.
 // A stale goroutine may remain briefly during cleanup, so its service must not
 // be exposed after a replacement run has started.

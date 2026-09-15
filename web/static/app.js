@@ -78,6 +78,40 @@ class SyncProfileApp {
         return `/api/profiles/${encodeURIComponent(String(profileId))}${suffix}`;
     }
 
+    isViewer() {
+        return Boolean(this.authEnabled && this.currentUser
+            && String(this.currentUser.role || '').toLowerCase() === 'viewer');
+    }
+
+    updateViewerControls() {
+        const viewer = this.isViewer();
+        const addProfileTab = [...document.querySelectorAll('.tab-button')]
+            .find(button => button.getAttribute('onclick') === "showTab('add-user')");
+        const addProfileContent = document.getElementById('add-user-tab');
+
+        if (viewer && addProfileContent?.classList.contains('active')) {
+            this.showTab('users');
+        }
+        if (addProfileTab) {
+            addProfileTab.hidden = viewer;
+            addProfileTab.setAttribute('aria-hidden', String(viewer));
+            addProfileTab.style.display = viewer ? 'none' : '';
+        }
+        if (addProfileContent) {
+            addProfileContent.hidden = viewer;
+            addProfileContent.setAttribute('aria-hidden', String(viewer));
+            addProfileContent.style.display = viewer ? 'none' : '';
+        }
+        if (viewer && document.getElementById('edit-user-modal')?.style.display === 'block') {
+            this.closeEditModal();
+        }
+
+        // Re-render already-loaded cards when the session role changes so a
+        // viewer never retains controls from a previous authenticated session.
+        if (this.users.length > 0) this.renderProfiles();
+        if (Object.keys(this.statuses).length > 0) this.renderStatuses();
+    }
+
     // Format a timestamp to relative time (e.g., "5 minutes ago") with fallback
     formatRelativeTime(ts) {
         try {
@@ -291,6 +325,7 @@ class SyncProfileApp {
             
             // Trigger a reflow to ensure UI updates
             userInfoElement.offsetHeight;
+            this.updateViewerControls();
             
         } catch (error) {
             console.error('Error updating user info:', error);
@@ -365,6 +400,10 @@ class SyncProfileApp {
                 if (!card || !container.contains(card)) return;
                 const profileId = card.dataset.profileId;
 
+                if (this.isViewer() && ['edit', 'delete', 'start', 'cancel'].includes(button.dataset.profileAction)) {
+                    return;
+                }
+
                 switch (button.dataset.profileAction) {
                     case 'edit': this.editProfile(profileId); break;
                     case 'delete': this.deleteProfile(profileId); break;
@@ -416,6 +455,9 @@ class SyncProfileApp {
     }
 
     showTab(tabName) {
+        if (this.isViewer() && tabName === 'add-user') {
+            tabName = 'users';
+        }
         // Update tab buttons
         document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
         document.querySelector(`[onclick="showTab('${tabName}')"]`).classList.add('active');
@@ -443,7 +485,7 @@ class SyncProfileApp {
             usersList.innerHTML = `
                 <div class="empty-state" style="grid-column: 1 / -1; text-align: center; padding: 2rem;">
                     <h3>No sync profiles found</h3>
-                    <p>Click on "Add Profile" to create a new sync profile.</p>
+                    <p>${this.isViewer() ? 'No profiles are available.' : 'Click on "Add Profile" to create a new sync profile.'}</p>
                 </div>
             `;
             return;
@@ -476,7 +518,7 @@ class SyncProfileApp {
                             </div>
                         </div>
                         
-                        <div class="user-card-actions">
+                        ${this.isViewer() ? '' : `<div class="user-card-actions">
                             <button class="btn btn-sm btn-icon" data-profile-action="edit" title="Edit Profile">
                                 <span class="icon">✏️</span> Edit
                             </button>
@@ -486,7 +528,7 @@ class SyncProfileApp {
                             <button class="btn btn-sm btn-primary" data-profile-action="start" ${user.active ? '' : 'disabled'}>
                                 <span class="icon">🔄</span> Sync Now
                             </button>
-                        </div>
+                        </div>`}
                     </div>
                 </div>
             `;
@@ -840,6 +882,7 @@ class SyncProfileApp {
     }
 
     async validateSession(signal) {
+        const wasViewer = this.isViewer();
         try {
             const { response, data } = await this.fetchJsonWithTimeout('/api/auth/me', {
                 credentials: 'include',
@@ -860,6 +903,9 @@ class SyncProfileApp {
                 this.currentUser = null;
             } else if (response.ok && data.authenticated && data.user) {
                 this.currentUser = data.user;
+            }
+            if (wasViewer !== this.isViewer()) {
+                this.updateUserInfo();
             }
             return true;
         } catch (error) {
@@ -924,7 +970,7 @@ class SyncProfileApp {
                         ` : ''}
                     </div>
                     <div class="status-actions">
-                        ${statusState.toLowerCase() === 'syncing' ? `
+                        ${this.isViewer() ? '' : (statusState.toLowerCase() === 'syncing' ? `
                             <button class="btn btn-warning" data-profile-action="cancel">
                                 Cancel Sync
                             </button>
@@ -932,7 +978,7 @@ class SyncProfileApp {
                             <button class="btn btn-primary" data-profile-action="start">
                                 ${retryable ? 'Retry Sync' : 'Start Sync'}
                             </button>
-                        `}
+                        `)}
                         ${hasRun ? `
                             <button class="btn btn-secondary" data-profile-action="summary">
                                 View Details
@@ -1359,6 +1405,7 @@ class SyncProfileApp {
     }
 
     async handleAddProfile(event) {
+        if (this.isViewer()) return;
         const formData = new FormData(event.target);
         const profileId = String(formData.get('id') || '');
         if (profileId.length > 244) {
@@ -1419,6 +1466,7 @@ class SyncProfileApp {
     }
 
     async editProfile(profileId) {
+        if (this.isViewer()) return;
         try {
             this.showLoading();
             
@@ -1511,6 +1559,7 @@ class SyncProfileApp {
     }
 
     async handleEditProfile(event) {
+        if (this.isViewer()) return;
         const formData = new FormData(event.target);
         const userId = formData.get('id');
         
@@ -1586,6 +1635,7 @@ class SyncProfileApp {
     }
 
     async deleteProfile(profileId) {
+        if (this.isViewer()) return;
         if (!confirm('Are you sure you want to delete this sync profile? This action cannot be undone.')) {
             return;
         }
@@ -1617,6 +1667,7 @@ class SyncProfileApp {
     }
 
     async startSync(profileId) {
+        if (this.isViewer()) return;
         if (!profileId) {
             console.error('No profile ID provided for sync');
             this.showToast('Error: No profile ID provided', 'error');
@@ -1655,6 +1706,7 @@ class SyncProfileApp {
     }
 
     async cancelSync(profileId) {
+        if (this.isViewer()) return;
         if (!confirm('Are you sure you want to cancel the sync?')) {
             return;
         }
