@@ -1489,11 +1489,9 @@ class SyncProfileApp {
         const asin = value(mismatch.hardcover_asin);
         const isbn = value(mismatch.hardcover_isbn);
         const slug = value(mismatch.hardcover_slug);
-        // BookMismatch exposes edition metadata without a hardcover_ prefix;
-        // keep the labels explicit because these fields describe the source
-        // edition, while the hardcover_* fields above describe the candidate.
+        // BookMismatch exposes the source format without a hardcover_ prefix;
+        // the hardcover_* fields above describe the candidate.
         const sourceFormat = value(mismatch.edition_format);
-        const sourceEdition = value(mismatch.edition_information);
         const coverURL = value(mismatch.hardcover_cover_url);
         const hardcoverURL = slug
             ? `https://hardcover.app/books/${encodeURIComponent(slug)}`
@@ -1519,7 +1517,6 @@ class SyncProfileApp {
         addField('ISBN', isbn);
         addField('Slug', slug);
         addField('Source format', sourceFormat);
-        addField('Source edition', sourceEdition);
 
         const coverIsHTTP = /^https?:\/\//i.test(coverURL) && !coverURL.includes('|');
         const coverHTML = coverIsHTTP
@@ -1536,8 +1533,10 @@ class SyncProfileApp {
         if (!fields.length && !coverHTML) return '';
         return `<section class="hardcover-candidate" aria-label="Hardcover candidate">
             <h4>Hardcover candidate</h4>
-            ${coverHTML ? `<div>${coverHTML}</div>` : ''}
-            ${fields.length ? `<div class="book-meta">${fields.join('')}</div>` : ''}
+            <div class="hardcover-candidate-content">
+                ${coverHTML ? `<div class="hardcover-candidate-cover">${coverHTML}</div>` : ''}
+                ${fields.length ? `<div class="book-meta">${fields.join('')}</div>` : ''}
+            </div>
         </section>`;
     }
 

@@ -1228,6 +1228,54 @@ header p {
     border: 1px solid #e2e8f0;
 }
 
+.hardcover-candidate {
+    margin-top: 1rem;
+    padding: 1rem;
+    border: 1px solid #cbd5e0;
+    border-left: 4px solid #667eea;
+    border-radius: 0.5rem;
+    background: #f7fafc;
+}
+
+.hardcover-candidate h4 {
+    margin: 0 0 1rem;
+    padding-bottom: 0.625rem;
+    border-bottom: 1px solid #cbd5e0;
+    color: #2d3748;
+    font-size: 1rem;
+}
+
+.hardcover-candidate-content {
+    display: grid;
+    grid-template-columns: minmax(0, 10rem) minmax(0, 1fr);
+    gap: 1rem;
+    align-items: start;
+}
+
+.hardcover-candidate-cover .book-cover {
+    display: block;
+    width: 10rem;
+    height: 15rem;
+    max-width: 100%;
+    margin: 0 auto;
+    object-fit: contain;
+    background: #fff;
+}
+
+.hardcover-candidate .book-meta {
+    margin: 0;
+}
+
+.hardcover-candidate-content > .book-meta:only-child {
+    grid-column: 1 / -1;
+}
+
+@media (max-width: 480px) {
+    .hardcover-candidate-content {
+        grid-template-columns: 1fr;
+    }
+}
+
 /* Make sure links are properly styled */
 .comparison-details a {
     color: #3182ce;
