@@ -1445,13 +1445,17 @@ class SyncProfileApp {
                     record.outcome === 'needs_review' ? mismatches.get(String(record.book_id)) : null
                 )).join('') : '<p class="empty-state">No books in this category.</p>'}</div>
             </details>`).join('');
-        let statusMessage = 'Currently syncing.';
+        let statusMessage = 'Run status is unavailable.';
         if (snapshotState === 'completed') {
             statusMessage = unresolved === 0
                 ? 'This run completed without unresolved or failed outcomes.'
                 : `This run completed with ${unresolved} ${unresolved === 1 ? 'outcome that needs' : 'outcomes that need'} attention.`;
         } else if (snapshotState === 'failed') {
             statusMessage = 'This run failed before it could complete.';
+        } else if (snapshotState === 'canceled') {
+            statusMessage = 'This run was canceled.';
+        } else if (snapshotState === 'syncing') {
+            statusMessage = 'Currently syncing.';
         }
         const runError = this.statuses[open.profileId]?.terminal_error || '';
         content.innerHTML = `
