@@ -92,7 +92,10 @@ current run instead. Each processed book has one outcome:
 or dry-run `would_sync`. Their counts add up to `processed_so_far`;
 `needs_review`, `not_found`, and `failed` appear in `attention_records` as they
 occur. The snapshot includes the run ID, start time, state, and book totals.
-It is cleared when a run is canceled and is not persistent run history.
+`books_total` is independent of `processed_so_far`: a value of zero means the
+pre-count is unknown or has not been observed yet, while `processed_so_far`
+may still be positive. It is cleared when a run is canceled and is not
+persistent run history.
 
 ### Environment Variables (Multi-Profile)
 

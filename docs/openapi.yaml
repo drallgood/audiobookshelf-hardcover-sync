@@ -155,7 +155,7 @@ components:
           type: boolean
         books_total:
           type: integer
-          description: Number of candidates observed before processing limits.
+          description: Number of candidates observed before processing limits; zero means the total is unknown or has not been observed yet. This is independent of processed_so_far.
         books_synced:
           type: integer
           description: Legacy count retained for existing clients.
@@ -197,7 +197,7 @@ components:
           example: "Starting sync..."
         books_total:
           type: integer
-          description: Number of candidates observed before processing limits.
+          description: Number of candidates observed before processing limits; zero means the total is unknown or has not been observed yet. This is independent of processed_so_far.
         books_synced:
           type: integer
           description: Legacy count retained for existing clients.
@@ -215,8 +215,12 @@ components:
         state:
           type: string
           enum: [idle, syncing, completed, failed]
-        books_total: {type: integer}
-        processed_so_far: {type: integer}
+        books_total:
+          type: integer
+          description: Number of candidates observed before processing limits; zero means the total is unknown or has not been observed yet.
+        processed_so_far:
+          type: integer
+          description: Number of books processed so far, independent of books_total.
         processed_count: {type: integer}
         outcome_counts:
           $ref: '#/components/schemas/OutcomeCounts'
@@ -322,10 +326,10 @@ components:
           description: Cancellation currently clears the live snapshot and returns the profile to idle.
         books_total:
           type: integer
-          description: Number of candidates observed before processing limits.
+          description: Number of candidates observed before processing limits; zero means the total is unknown or has not been observed yet. This is independent of processed_so_far.
         processed_so_far:
           type: integer
-          description: Sum of all outcome_counts categories.
+          description: Sum of all outcome_counts categories, independent of books_total.
         processed_count:
           type: integer
           description: Alias of processed_so_far for clients that prefer count terminology.
@@ -360,8 +364,12 @@ components:
         run_id: {type: string}
         run_started_at: {type: string, format: date-time}
         state: {type: string}
-        books_total: {type: integer}
-        processed_so_far: {type: integer}
+        books_total:
+          type: integer
+          description: Number of candidates observed before processing limits; zero means the total is unknown or has not been observed yet.
+        processed_so_far:
+          type: integer
+          description: Number of books processed so far, independent of books_total.
         processed_count: {type: integer}
         outcome_counts:
           $ref: '#/components/schemas/OutcomeCounts'

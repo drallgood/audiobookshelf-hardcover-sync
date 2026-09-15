@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
@@ -221,6 +223,84 @@ func TestStatusAggregateOmitsErrorAndProfileStatusRetainsIt(t *testing.T) {
 	direct := service.GetProfileStatus(profileID)
 	require.NotNil(t, direct)
 	require.Equal(t, status.Error, direct.Error)
+}
+
+func TestApplySnapshotToStatusPreservesUnknownBooksTotal(t *testing.T) {
+	status := &SyncProfileStatus{BooksTotal: 99, BooksSynced: 4}
+	snapshot := syncsvc.SyncSnapshot{
+		BooksTotal:     0,
+		ProcessedSoFar: 3,
+		BooksSynced:    2,
+	}
+
+	applySnapshotToStatus(status, snapshot)
+
+	require.Zero(t, status.BooksTotal)
+	require.Equal(t, 2, status.BooksSynced)
+	require.NotNil(t, status.Snapshot)
+	require.Zero(t, status.Snapshot.BooksTotal)
+	require.Equal(t, int32(3), status.Snapshot.ProcessedSoFar)
+}
+
+func TestAggregateStatusPreservesUnknownBooksTotalFromActiveSnapshot(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	profileID := "profile-a"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Profile A", "http://audiobookshelf.invalid", "abs-token", "hc-token", database.SyncConfigData{},
+	))
+
+	dataDir := t.TempDir()
+	cfg := config.DefaultConfig()
+	cfg.Sync.StateFile = filepath.Join(dataDir, "state.json")
+	cfg.Paths.CacheDir = filepath.Join(dataDir, "cache")
+	cfg.Paths.MismatchOutputDir = filepath.Join(dataDir, "mismatches")
+	hcConfig := hardcover.DefaultClientConfig()
+	hcConfig.BaseURL = "http://hardcover.invalid"
+	liveService, err := syncsvc.NewService(
+		audiobookshelf.NewClient("http://audiobookshelf.invalid", "abs-token"),
+		hardcover.NewClientWithConfig(hcConfig, "hc-token", logger.Get()),
+		cfg,
+	)
+	require.NoError(t, err)
+	setSyncServiceSnapshotForTest(t, liveService, syncsvc.OutcomeCounts{NotFound: 3})
+
+	run := activeSyncRun{generation: 1, runID: "profile-a-run-1", startedAt: time.Now().UTC()}
+	service.syncMutex.Lock()
+	service.nextGeneration = run.generation
+	service.activeRuns[profileID] = run
+	service.syncMutex.Unlock()
+	require.True(t, service.registerSyncService(profileID, run.generation, liveService))
+	t.Cleanup(func() {
+		service.removeSyncService(profileID, run.generation, liveService)
+		service.finishActiveRun(profileID, run.generation)
+	})
+
+	statuses, err := service.GetAllProfileStatuses()
+	require.NoError(t, err)
+	require.Len(t, statuses, 1)
+	require.Zero(t, statuses[0].BooksTotal)
+	require.NotNil(t, statuses[0].Snapshot)
+	require.Zero(t, statuses[0].Snapshot.BooksTotal)
+	require.Equal(t, int32(3), statuses[0].Snapshot.ProcessedSoFar)
+}
+
+func setSyncServiceSnapshotForTest(t *testing.T, service *syncsvc.Service, outcomes syncsvc.OutcomeCounts) {
+	t.Helper()
+	serviceValue := reflect.ValueOf(service).Elem()
+	summaryField := reflect.NewAt(
+		serviceValue.FieldByName("summary").Type(),
+		unsafe.Pointer(serviceValue.FieldByName("summary").UnsafeAddr()),
+	).Elem()
+	summary, ok := summaryField.Interface().(*syncsvc.SyncSummary)
+	require.True(t, ok)
+
+	summary.Lock()
+	defer summary.Unlock()
+	summary.BooksTotal = 0
+	outcomeCountsField := serviceValue.FieldByName("outcomeCounts")
+	reflect.NewAt(outcomeCountsField.Type(), unsafe.Pointer(outcomeCountsField.UnsafeAddr())).Elem().Set(
+		reflect.ValueOf(outcomes),
+	)
 }
 
 func TestAggregateStatusMapsLiveTerminalSnapshotState(t *testing.T) {

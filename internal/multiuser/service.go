@@ -207,11 +207,7 @@ func (s *MultiUserService) getAggregateProfileStatus(profile database.SyncProfil
 		status.Status = "syncing"
 	}
 	status.Snapshot = &snapshot
-	if snapshot.BooksTotal > 0 {
-		status.BooksTotal = int(snapshot.BooksTotal)
-	} else {
-		status.BooksTotal = int(snapshot.ProcessedSoFar)
-	}
+	status.BooksTotal = int(snapshot.BooksTotal)
 	status.BooksSynced = int(snapshot.BooksSynced)
 
 	return aggregateProfileStatus(profile, status)
@@ -859,11 +855,7 @@ func applySnapshotToStatus(status *SyncProfileStatus, snapshot sync.SyncSnapshot
 		return
 	}
 	status.Snapshot = cloneSyncSnapshot(snapshot)
-	if snapshot.BooksTotal > 0 {
-		status.BooksTotal = int(snapshot.BooksTotal)
-	} else {
-		status.BooksTotal = int(snapshot.ProcessedSoFar)
-	}
+	status.BooksTotal = int(snapshot.BooksTotal)
 	status.BooksSynced = int(snapshot.BooksSynced)
 	status.BooksNotFound = append([]sync.BookNotFoundInfo(nil), snapshot.BooksNotFound...)
 	status.Mismatches = make([]mismatch.BookMismatch, len(snapshot.Mismatches))

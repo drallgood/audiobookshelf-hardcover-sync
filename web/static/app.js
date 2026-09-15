@@ -995,6 +995,8 @@ class SyncProfileApp {
         const processed = Number(snapshot.processed_so_far || 0);
         const booksTotal = Number(snapshot.books_total ?? status.books_total ?? 0);
         const progressPercent = booksTotal > 0 ? Math.min(100, Math.round((processed / booksTotal) * 100)) : 0;
+        const hasKnownTotal = booksTotal > 0;
+        const hasProcessedBooks = processed > 0;
         const lastSync = status.last_sync || null;
         const statusState = (snapshot.state || status.status || 'idle').toLowerCase();
         const statusClass = statusState === 'failed' ? 'error' : statusState;
@@ -1015,11 +1017,13 @@ class SyncProfileApp {
                         ${lastSync ? `
                             <div><strong>Last Sync:</strong> <span class="relative-sync-time" title="${new Date(lastSync).toLocaleString()}">${this.formatRelativeTime(lastSync)}</span></div>
                         ` : ''}
-                        ${booksTotal > 0 || processed > 0 ? `
+                        ${hasKnownTotal ? `
                             <div><strong>Processed:</strong> ${processed} of ${booksTotal}</div>
                             <div class="progress-bar">
                                 <div class="progress-fill" style="width: ${progressPercent}%"></div>
                             </div>
+                        ` : hasProcessedBooks ? `
+                            <div><strong>Processed:</strong> ${processed} (total unknown)</div>
                         ` : ''}
                         ${hasRun ? `
                             <div class="sync-summary-stats outcome-counts" aria-label="Sync outcome counts">
