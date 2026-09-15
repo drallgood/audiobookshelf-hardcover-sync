@@ -49,10 +49,12 @@ class SyncProfileApp {
         this.statusRefreshQueued = false;
         this.statusRefreshWaiters = [];
         // The public aggregate intentionally omits raw run errors. A terminal
-        // card may hydrate its error once from the authenticated status route.
+        // card may hydrate its error from the authenticated status route with
+        // bounded retries for transient failures.
         this.terminalErrorCache = new Map();
-        this.terminalErrorSettled = new Set();
+        this.terminalErrorRetries = new Map();
         this.terminalErrorRequests = new Map();
+        this.authSessionGeneration = 0;
 
         this.init();
     }
@@ -660,7 +662,7 @@ class SyncProfileApp {
             this.statusRefreshError = null;
             this.renderStatuses();
             this.refreshOpenSummary();
-            this.fetchTerminalErrorFallbacks(signal);
+            this.fetchTerminalErrorFallbacks(signal, this.authSessionGeneration);
 
         } catch (error) {
             if (error.name === 'AbortError') return;
@@ -713,12 +715,13 @@ class SyncProfileApp {
         return JSON.stringify([String(profileId), 'terminal', state, marker || '']);
     }
 
-    fetchTerminalErrorFallbacks(signal) {
+    fetchTerminalErrorFallbacks(signal, authGeneration) {
         Object.entries(this.statuses).forEach(([profileId, status]) => {
             const identity = this.terminalErrorIdentity(profileId, status);
-            if (!identity || this.terminalErrorSettled.has(identity) || this.terminalErrorRequests.has(identity)) return;
-            this.terminalErrorSettled.add(identity);
-            const request = this.fetchTerminalError(profileId, identity, signal);
+            if (!identity || this.terminalErrorCache.has(identity) || this.terminalErrorRequests.has(identity)) return;
+            const retry = this.terminalErrorRetries.get(identity);
+            if (retry && retry.retryAt > Date.now()) return;
+            const request = this.fetchTerminalError(profileId, identity, signal, authGeneration);
             this.terminalErrorRequests.set(identity, request);
             request.finally(() => {
                 if (this.terminalErrorRequests.get(identity) === request) {
@@ -728,7 +731,16 @@ class SyncProfileApp {
         });
     }
 
-    async fetchTerminalError(profileId, identity, signal) {
+    scheduleTerminalErrorRetry(profileId, identity, authGeneration) {
+        if (authGeneration !== this.authSessionGeneration
+            || this.terminalErrorIdentity(profileId, this.statuses[profileId]) !== identity) return;
+        const previous = this.terminalErrorRetries.get(identity);
+        const failures = Math.min((previous?.failures || 0) + 1, 6);
+        const delay = Math.min(15000 * 2 ** (failures - 1), 300000);
+        this.terminalErrorRetries.set(identity, { failures, retryAt: Date.now() + delay });
+    }
+
+    async fetchTerminalError(profileId, identity, signal, authGeneration) {
         try {
             const { response, data: result } = await this.fetchJsonWithTimeout(
                 this.profileUrl(profileId, '/status'),
@@ -738,16 +750,31 @@ class SyncProfileApp {
                 this.handleAuthExpiry();
                 return;
             }
-            if (!response.ok) throw new Error(`Terminal status request failed (${response.status})`);
-            const status = result.success ? result.data : result;
-            if (status?.profile_id && String(status.profile_id) !== String(profileId)) return;
-            const runId = status?.snapshot?.run_id || status?.run_id;
+            if (response.status !== 200) throw new Error(`Terminal status request failed (${response.status})`);
+            if (!result || result.success !== true || !result.data || typeof result.data !== 'object') {
+                throw new Error('Terminal status response was invalid');
+            }
+            const status = result.data;
+            if (String(status.profile_id || '') !== String(profileId)) {
+                throw new Error('Terminal status response was for the wrong profile');
+            }
+            if (this.terminalErrorIdentity(profileId, status) !== identity) {
+                throw new Error('Terminal status response was for the wrong failure identity');
+            }
+            const runId = status.snapshot?.run_id || status.run_id;
             const requestedRunId = JSON.parse(identity)[1];
-            if (requestedRunId !== 'terminal' && runId && String(runId) !== requestedRunId) return;
+            if (requestedRunId !== 'terminal' && String(runId || '') !== requestedRunId) {
+                throw new Error('Terminal status response was for the wrong run');
+            }
+            if (Object.prototype.hasOwnProperty.call(status, 'error') && typeof status.error !== 'string') {
+                throw new Error('Terminal status response contained an invalid error');
+            }
+            if (authGeneration !== this.authSessionGeneration
+                || this.terminalErrorIdentity(profileId, this.statuses[profileId]) !== identity) return;
             const error = typeof status?.error === 'string' ? status.error : '';
             this.terminalErrorCache.set(identity, error);
+            this.terminalErrorRetries.delete(identity);
             const current = this.statuses[profileId];
-            if (this.terminalErrorIdentity(profileId, current) !== identity) return;
             current.terminal_error = error;
             this.renderStatuses();
             this.renderOpenSummaryError(profileId, identity, error);
@@ -755,6 +782,7 @@ class SyncProfileApp {
             if (error.name !== 'AbortError') {
                 console.error('Error loading terminal sync status:', error);
             }
+            this.scheduleTerminalErrorRetry(profileId, identity, authGeneration);
         }
     }
 
@@ -1113,8 +1141,9 @@ class SyncProfileApp {
         this.authEnabled = true;
         this.currentUser = null;
         this.statuses = {};
+        this.authSessionGeneration += 1;
         this.terminalErrorCache.clear();
-        this.terminalErrorSettled.clear();
+        this.terminalErrorRetries.clear();
         this.terminalErrorRequests.clear();
         this.statusLoadSequence += 1;
         this.statusLoadController?.abort();
