@@ -17,139 +17,91 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 )
 
-func TestGetProfileStatusRechecksStatusAfterProfileLookup(t *testing.T) {
-	service, db := newStatusLookupService(t)
-	profileID := "profile-a"
-	require.NoError(t, service.repository.CreateProfile(
-		profileID, "Stored profile", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
-	))
-
-	lookupStarted := make(chan struct{})
-	releaseLookup := make(chan struct{})
-	var blockOnce sync.Once
-	var releaseOnce sync.Once
-	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseLookup) }) })
-	require.NoError(t, db.Callback().Query().Before("gorm:query").Register(
-		"multiuser_test_block_profile_lookup", func(tx *gorm.DB) {
-			if tx.Statement.Schema == nil || tx.Statement.Schema.Name != "SyncProfile" {
-				return
-			}
-			blockOnce.Do(func() { close(lookupStarted) })
-			<-releaseLookup
+func TestGetProfileStatusRechecksStatusAfterFallbackLookup(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		blockedSchema string
+		initialStatus *SyncProfileStatus
+	}{
+		{name: "profile lookup", blockedSchema: "SyncProfile"},
+		{
+			name:          "state lookup",
+			blockedSchema: "ProfileSyncState",
+			initialStatus: &SyncProfileStatus{
+				ProfileID: "profile-a", ProfileName: "Stored profile", Status: "completed",
+			},
 		},
-	))
-
-	statusResult := make(chan *SyncProfileStatus, 1)
-	go func() { statusResult <- service.GetProfileStatus(profileID) }()
-	select {
-	case <-lookupStarted:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for profile lookup")
-	}
-
-	// A new run must be able to publish its status while the fallback lookup
-	// is blocked, and that status must win when the lookup completes.
-	run := activeSyncRun{generation: 1, runID: "profile-a-run-1", startedAt: time.Now().UTC()}
-	_, cancel := context.WithCancel(context.Background())
-	installDone := make(chan struct{})
-	go func() {
-		service.syncMutex.Lock()
-		service.nextGeneration = run.generation
-		service.activeRuns[profileID] = run
-		service.activeSyncs[profileID] = cancel
-		initialStatus := &SyncProfileStatus{ProfileID: profileID, ProfileName: "Current profile", Status: "syncing"}
-		applySnapshotToStatus(initialStatus, newRunSnapshot(profileID, run, "syncing"))
-		service.updateProfileStatus(profileID, initialStatus)
-		service.syncMutex.Unlock()
-		close(installDone)
-	}()
-	select {
-	case <-installDone:
-	case <-time.After(time.Second):
-		releaseOnce.Do(func() { close(releaseLookup) })
-		<-installDone
-		t.Fatal("sync lock remained held during profile lookup")
-	}
-
-	releaseOnce.Do(func() { close(releaseLookup) })
-	select {
-	case status := <-statusResult:
-		require.NotNil(t, status)
-		require.Equal(t, "syncing", status.Status)
-		require.NotNil(t, status.Snapshot)
-		require.Equal(t, run.runID, status.Snapshot.RunID)
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for profile status")
-	}
-	cancel()
-}
-
-func TestGetProfileStatusRechecksStatusAfterStateLookup(t *testing.T) {
-	service, db := newStatusLookupService(t)
-	profileID := "profile-a"
-	require.NoError(t, service.repository.CreateProfile(
-		profileID, "Stored profile", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
-	))
-	service.updateProfileStatus(profileID, &SyncProfileStatus{
-		ProfileID: profileID, ProfileName: "Stored profile", Status: "completed",
-	})
-
-	lookupStarted := make(chan struct{})
-	releaseLookup := make(chan struct{})
-	var blockOnce sync.Once
-	var releaseOnce sync.Once
-	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseLookup) }) })
-	require.NoError(t, db.Callback().Query().Before("gorm:query").Register(
-		"multiuser_test_block_state_lookup", func(tx *gorm.DB) {
-			if tx.Statement.Schema == nil || tx.Statement.Schema.Name != "ProfileSyncState" {
-				return
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			service, db := newStatusLookupService(t)
+			profileID := "profile-a"
+			require.NoError(t, service.repository.CreateProfile(
+				profileID, "Stored profile", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
+			))
+			if tt.initialStatus != nil {
+				service.updateProfileStatus(profileID, tt.initialStatus)
 			}
-			blockOnce.Do(func() { close(lookupStarted) })
-			<-releaseLookup
-		},
-	))
 
-	statusResult := make(chan *SyncProfileStatus, 1)
-	go func() { statusResult <- service.GetProfileStatus(profileID) }()
-	select {
-	case <-lookupStarted:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for state lookup")
-	}
+			lookupStarted := make(chan struct{})
+			releaseLookup := make(chan struct{})
+			var blockOnce sync.Once
+			var releaseOnce sync.Once
+			t.Cleanup(func() { releaseOnce.Do(func() { close(releaseLookup) }) })
+			require.NoError(t, db.Callback().Query().Before("gorm:query").Register(
+				"multiuser_test_block_fallback_lookup", func(tx *gorm.DB) {
+					if tx.Statement.Schema == nil || tx.Statement.Schema.Name != tt.blockedSchema {
+						return
+					}
+					blockOnce.Do(func() { close(lookupStarted) })
+					<-releaseLookup
+				},
+			))
 
-	run := activeSyncRun{generation: 1, runID: "profile-a-run-1", startedAt: time.Now().UTC()}
-	_, cancel := context.WithCancel(context.Background())
-	installDone := make(chan struct{})
-	go func() {
-		service.syncMutex.Lock()
-		service.nextGeneration = run.generation
-		service.activeRuns[profileID] = run
-		service.activeSyncs[profileID] = cancel
-		initialStatus := &SyncProfileStatus{ProfileID: profileID, ProfileName: "Current profile", Status: "syncing"}
-		applySnapshotToStatus(initialStatus, newRunSnapshot(profileID, run, "syncing"))
-		service.updateProfileStatus(profileID, initialStatus)
-		service.syncMutex.Unlock()
-		close(installDone)
-	}()
-	select {
-	case <-installDone:
-	case <-time.After(time.Second):
-		releaseOnce.Do(func() { close(releaseLookup) })
-		<-installDone
-		t.Fatal("sync lock remained held during state lookup")
-	}
+			statusResult := make(chan *SyncProfileStatus, 1)
+			go func() { statusResult <- service.GetProfileStatus(profileID) }()
+			select {
+			case <-lookupStarted:
+			case <-time.After(time.Second):
+				t.Fatalf("timed out waiting for %s", tt.name)
+			}
 
-	releaseOnce.Do(func() { close(releaseLookup) })
-	select {
-	case status := <-statusResult:
-		require.NotNil(t, status)
-		require.Equal(t, "syncing", status.Status)
-		require.NotNil(t, status.Snapshot)
-		require.Equal(t, run.runID, status.Snapshot.RunID)
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for profile status")
+			// A new run must be able to publish its status while fallback I/O is
+			// blocked, and that status must win when the lookup completes.
+			run := activeSyncRun{generation: 1, runID: "profile-a-run-1", startedAt: time.Now().UTC()}
+			_, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			installDone := make(chan struct{})
+			go func() {
+				service.syncMutex.Lock()
+				service.nextGeneration = run.generation
+				service.activeRuns[profileID] = run
+				service.activeSyncs[profileID] = cancel
+				currentStatus := &SyncProfileStatus{ProfileID: profileID, ProfileName: "Current profile", Status: "syncing"}
+				applySnapshotToStatus(currentStatus, newRunSnapshot(profileID, run, "syncing"))
+				service.updateProfileStatus(profileID, currentStatus)
+				service.syncMutex.Unlock()
+				close(installDone)
+			}()
+			select {
+			case <-installDone:
+			case <-time.After(time.Second):
+				releaseOnce.Do(func() { close(releaseLookup) })
+				<-installDone
+				t.Fatalf("sync lock remained held during %s", tt.name)
+			}
+
+			releaseOnce.Do(func() { close(releaseLookup) })
+			select {
+			case status := <-statusResult:
+				require.NotNil(t, status)
+				require.Equal(t, "syncing", status.Status)
+				require.NotNil(t, status.Snapshot)
+				require.Equal(t, run.runID, status.Snapshot.RunID)
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for profile status")
+			}
+		})
 	}
-	cancel()
 }
 
 func newStatusLookupService(t *testing.T) (*MultiUserService, *gorm.DB) {
