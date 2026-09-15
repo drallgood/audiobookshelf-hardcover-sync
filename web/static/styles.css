@@ -491,8 +491,25 @@ header p {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    min-height: 4rem;
+    padding: 1rem 1.5rem;
+    box-sizing: border-box;
     cursor: pointer;
     font-weight: 600;
+}
+
+.outcome-group.summary-section {
+    padding: 0;
+    overflow: hidden;
+}
+
+.outcome-group[open] summary {
+    border-bottom: 1px solid #e2e8f0;
+}
+
+.outcome-group .book-list {
+    margin: 0;
+    padding: 1.25rem 1.5rem;
 }
 
 .details-state,
