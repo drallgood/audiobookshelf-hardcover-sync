@@ -9,11 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Profile authorization**: When authentication is enabled, profiles are owned by their creator; users see and mutate only owned profiles, viewers have read-only access, administrators retain access to all profiles, and legacy ownerless profiles are administrator-only. Foreign profile requests return non-enumerating `404` responses.
 - **Account for per-run book outcomes**: Account for each attempted Audiobookshelf book with one per-run outcome so processed totals reconcile with the outcome categories. This prepares the backend for a subsequent live-status change while preserving the existing status API. By @Snuffy2 (#183)
 - **Current-run sync outcome status**: Per-profile status and summary responses now identify the run and its start time, state, candidate total, and processed count. Each processed item has one of seven mutually exclusive outcomes (`synced`, `already_current`, `skipped`, `needs_review`, `not_found`, `failed`, or dry-run `would_sync`), whose counts reconcile to the processed count. Needs-review, not-found, and failed records are available immediately as attention items. By @Snuffy2 (#184)
-- **On-demand current-run details**: Sync Status now shows each profile's current-run progress and outcome counts, then loads book-level results when **View Details** is selected. `GET /api/status` includes a scalar current-run snapshot for aggregate polling, while `GET /api/profiles/{id}/runs/{runId}/details` returns book-level records only for that current run; canceled, replaced, and unknown run IDs return `404`.
-- **Book links in sync details**: Book titles in every outcome category now open the corresponding Audiobookshelf item in a new tab. Records with a known Hardcover match also show a consistent Hardcover link, while needs-review records link the distinct candidate title instead.
+- **Secure on-demand sync details**: Sync Status now loads authorized, book-level results for the current run on demand, while aggregate polling remains lightweight and profile access follows owner, viewer, administrator, and legacy-ownerless permissions. Each result links to its Audiobookshelf item and, when a Hardcover book is known, Hardcover; needs-review results instead link the distinct Hardcover candidate title.
 
 ### Fixed
 
