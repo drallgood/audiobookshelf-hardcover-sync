@@ -48,6 +48,11 @@ class SyncProfileApp {
         this.openSummary = null;
         this.statusRefreshQueued = false;
         this.statusRefreshWaiters = [];
+        // The public aggregate intentionally omits raw run errors. A terminal
+        // card may hydrate its error once from the authenticated status route.
+        this.terminalErrorCache = new Map();
+        this.terminalErrorSettled = new Set();
+        this.terminalErrorRequests = new Map();
 
         this.init();
     }
@@ -635,7 +640,7 @@ class SyncProfileApp {
             statusData.forEach((status) => {
                 if (!status || !status.profile_id) return;
                 const snapshot = status.snapshot || null;
-                statuses[status.profile_id] = {
+                const normalized = {
                     profile_id: status.profile_id,
                     profile_name: status.profile_name || `Profile ${status.profile_id}`,
                     status: status.status || 'idle',
@@ -645,11 +650,17 @@ class SyncProfileApp {
                     books_total: snapshot?.books_total ?? status.books_total ?? 0,
                     snapshot
                 };
+                const errorKey = this.terminalErrorIdentity(status.profile_id, normalized);
+                if (errorKey && this.terminalErrorCache.has(errorKey)) {
+                    normalized.terminal_error = this.terminalErrorCache.get(errorKey);
+                }
+                statuses[status.profile_id] = normalized;
             });
             this.statuses = statuses;
             this.statusRefreshError = null;
             this.renderStatuses();
             this.refreshOpenSummary();
+            this.fetchTerminalErrorFallbacks(signal);
 
         } catch (error) {
             if (error.name === 'AbortError') return;
@@ -688,6 +699,89 @@ class SyncProfileApp {
                 });
             }
         }
+    }
+
+    terminalErrorIdentity(profileId, status) {
+        const snapshot = status?.snapshot || {};
+        const state = String(snapshot.state || status?.status || '').toLowerCase();
+        if (state !== 'failed' && state !== 'error') return null;
+        const runId = snapshot.run_id;
+        if (runId) return JSON.stringify([String(profileId), String(runId)]);
+        // Older terminal snapshots may not carry a run ID. Include the most
+        // stable available run marker, falling back only when none exists.
+        const marker = snapshot.run_started_at || status?.last_sync;
+        return JSON.stringify([String(profileId), 'terminal', state, marker || '']);
+    }
+
+    fetchTerminalErrorFallbacks(signal) {
+        Object.entries(this.statuses).forEach(([profileId, status]) => {
+            const identity = this.terminalErrorIdentity(profileId, status);
+            if (!identity || this.terminalErrorSettled.has(identity) || this.terminalErrorRequests.has(identity)) return;
+            this.terminalErrorSettled.add(identity);
+            const request = this.fetchTerminalError(profileId, identity, signal);
+            this.terminalErrorRequests.set(identity, request);
+            request.finally(() => {
+                if (this.terminalErrorRequests.get(identity) === request) {
+                    this.terminalErrorRequests.delete(identity);
+                }
+            });
+        });
+    }
+
+    async fetchTerminalError(profileId, identity, signal) {
+        try {
+            const { response, data: result } = await this.fetchJsonWithTimeout(
+                this.profileUrl(profileId, '/status'),
+                { signal }
+            );
+            if (response.status === 401 || response.status === 403) {
+                this.handleAuthExpiry();
+                return;
+            }
+            if (!response.ok) throw new Error(`Terminal status request failed (${response.status})`);
+            const status = result.success ? result.data : result;
+            if (status?.profile_id && String(status.profile_id) !== String(profileId)) return;
+            const runId = status?.snapshot?.run_id || status?.run_id;
+            const requestedRunId = JSON.parse(identity)[1];
+            if (requestedRunId !== 'terminal' && runId && String(runId) !== requestedRunId) return;
+            const error = typeof status?.error === 'string' ? status.error : '';
+            this.terminalErrorCache.set(identity, error);
+            const current = this.statuses[profileId];
+            if (this.terminalErrorIdentity(profileId, current) !== identity) return;
+            current.terminal_error = error;
+            this.renderStatuses();
+            this.renderOpenSummaryError(profileId, identity, error);
+        } catch (error) {
+            if (error.name !== 'AbortError') {
+                console.error('Error loading terminal sync status:', error);
+            }
+        }
+    }
+
+    renderOpenSummaryError(profileId, identity, error) {
+        const open = this.openSummary;
+        if (!open || open.profileId !== profileId) return;
+        const identityParts = JSON.parse(identity);
+        const runId = identityParts[1] === 'terminal' ? '' : identityParts[1];
+        if (!runId || open.runId !== runId) return;
+        const content = document.getElementById('sync-summary-content');
+        const summary = content?.querySelector('.sync-summary');
+        if (!content || !summary || summary.dataset.runId !== runId) return;
+        const viewport = this.captureDetailViewport(content);
+        let errorNode = summary.querySelector('[data-run-error]');
+        if (!error) {
+            errorNode?.remove();
+            this.restoreDetailViewport(content, viewport);
+            return;
+        }
+        if (!errorNode) {
+            errorNode = document.createElement('div');
+            errorNode.dataset.runError = 'true';
+            errorNode.className = 'status-message status-error';
+            summary.prepend(errorNode);
+        }
+        errorNode.innerHTML = `<strong>Run error:</strong> ${this.escapeHtml(error)}`;
+        this.restoreDetailViewport(content, viewport);
     }
 
     async validateSession(signal) {
@@ -760,6 +854,9 @@ class SyncProfileApp {
                         ` : ''}
                         ${status.message ? `
                             <div class="status-message">${this.escapeHtml(status.message)}</div>
+                        ` : ''}
+                        ${status.terminal_error ? `
+                            <div class="status-message status-error"><strong>Run error:</strong> ${this.escapeHtml(status.terminal_error)}</div>
                         ` : ''}
                         ${status.unavailable || this.statusRefreshError ? `
                             <div class="status-message" role="status">Status unavailable. Showing last known data.</div>
@@ -1016,6 +1113,9 @@ class SyncProfileApp {
         this.authEnabled = true;
         this.currentUser = null;
         this.statuses = {};
+        this.terminalErrorCache.clear();
+        this.terminalErrorSettled.clear();
+        this.terminalErrorRequests.clear();
         this.statusLoadSequence += 1;
         this.statusLoadController?.abort();
         this.statusRefreshQueued = false;
@@ -1152,10 +1252,12 @@ class SyncProfileApp {
         const cleanMessage = snapshotState === 'completed' && unresolved === 0
             ? 'This run completed without unresolved or failed outcomes.'
             : (terminal ? 'This run is finished and may need attention.' : 'Results are live for the current run.');
+        const runError = this.statuses[open.profileId]?.terminal_error || '';
         content.innerHTML = `
             <div class="sync-summary" data-run-id="${this.escapeHtmlAttribute(snapshot.run_id)}">
                 <div class="summary-header"><h3>Run details</h3><div class="last-sync">Started: ${new Date(snapshot.run_started_at).toLocaleString()}</div></div>
                 <p class="status-message">${cleanMessage}</p>
+                ${runError ? `<div class="status-message status-error" data-run-error><strong>Run error:</strong> ${this.escapeHtml(runError)}</div>` : ''}
                 <div class="outcome-filters" role="group" aria-label="Filter run details">
                     <span class="outcome-filter-label">Show:</span>
                     ${[{ key: 'all', label: 'All outcomes' }, ...categories].map(category => `<button type="button" class="outcome-filter ${selectedFilter === category.key ? 'active' : ''}" data-outcome-filter="${category.key}" aria-pressed="${selectedFilter === category.key}">${category.label}${category.key === 'all' ? '' : ` (${category.count})`}</button>`).join('')}
