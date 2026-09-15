@@ -1574,7 +1574,7 @@ class SyncProfileApp {
         const titleHTML = audiobookshelfURL
             ? `<a class="book-title-link" href="${this.escapeHtmlAttribute(audiobookshelfURL)}" target="_blank" rel="noopener noreferrer" title="Open in Audiobookshelf">${title} <span class="external-link-mark" aria-hidden="true">↗</span></a>`
             : title;
-        const hardcoverLink = hardcoverURL
+        const hardcoverLink = record.outcome !== 'needs_review' && hardcoverURL
             ? `<a class="book-service-link hardcover" href="${this.escapeHtmlAttribute(hardcoverURL)}" target="_blank" rel="noopener noreferrer" title="Open on Hardcover">Hardcover <span class="external-link-mark" aria-hidden="true">↗</span></a>`
             : '';
         return `<article class="book-item" data-book-id="${this.escapeHtmlAttribute(bookId)}">
