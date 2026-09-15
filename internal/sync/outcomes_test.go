@@ -532,13 +532,13 @@ func TestSyncRetriesLibraryFetchAfterPrecountFailure(t *testing.T) {
 	book := toAudiobookshelfBook(createTestBook("retried-library-book", "Unread Book", "Author", "", ""))
 	precountErr := errors.New("temporary library failure")
 	mockABS := new(MockAudiobookshelfClient)
-	mockABS.On("GetUserProgress", mock.Anything).Return(&models.AudiobookshelfUserProgress{}, nil).Once()
+	mockABS.On("GetUserProgress", mock.Anything).Return(&models.AudiobookshelfUserProgress{}, nil)
 	mockABS.On("GetLibraries", mock.Anything).Return([]audiobookshelf.AudiobookshelfLibrary{
 		{ID: "library", Name: "Library"},
-	}, nil).Once()
+	}, nil)
 	mockABS.On("GetLibraryItems", mock.Anything, "library").Return(nil, precountErr).Once()
 	mockABS.On("GetLibraryItems", mock.Anything, "library").Return([]models.AudiobookshelfBook{*book}, nil).Once()
-	hc.On("ClearUserBookCache").Return().Once()
+	hc.On("ClearUserBookCache").Return()
 	svc.audiobookshelf = mockABS
 
 	require.NoError(t, svc.Sync(context.Background()))
@@ -556,13 +556,13 @@ func TestSyncReportsRetriedLibraryFetchFailure(t *testing.T) {
 	precountErr := errors.New("temporary library failure")
 	retryErr := errors.New("library still unavailable")
 	mockABS := new(MockAudiobookshelfClient)
-	mockABS.On("GetUserProgress", mock.Anything).Return(&models.AudiobookshelfUserProgress{}, nil).Once()
+	mockABS.On("GetUserProgress", mock.Anything).Return(&models.AudiobookshelfUserProgress{}, nil)
 	mockABS.On("GetLibraries", mock.Anything).Return([]audiobookshelf.AudiobookshelfLibrary{
 		{ID: "library", Name: "Library"},
-	}, nil).Once()
+	}, nil)
 	mockABS.On("GetLibraryItems", mock.Anything, "library").Return(nil, precountErr).Once()
 	mockABS.On("GetLibraryItems", mock.Anything, "library").Return(nil, retryErr).Once()
-	hc.On("ClearUserBookCache").Return().Once()
+	hc.On("ClearUserBookCache").Return()
 	svc.audiobookshelf = mockABS
 
 	err := svc.Sync(context.Background())
