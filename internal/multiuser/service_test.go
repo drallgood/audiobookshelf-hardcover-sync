@@ -502,6 +502,60 @@ func TestMigratedAbsoluteStateFileRemainsUsableForLegacyProfile(t *testing.T) {
 	}
 }
 
+func TestStartSyncRejectsStoredStateFileOutsideDataDir(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		path func(dataDir, outsideDir string) string
+	}{
+		{
+			name: "relative traversal",
+			path: func(_, outsideDir string) string {
+				return filepath.Join("..", filepath.Base(outsideDir), "state.json")
+			},
+		},
+		{
+			name: "absolute outside",
+			path: func(_, outsideDir string) string {
+				return filepath.Join(outsideDir, "state.json")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service, _ := newStatusLookupService(t)
+			rootDir := t.TempDir()
+			dataDir := filepath.Join(rootDir, "data")
+			outsideDir := filepath.Join(rootDir, "outside")
+			service.globalConfig.Paths.DataDir = dataDir
+			configuredPath := test.path(dataDir, outsideDir)
+			profileID := "stored/profile"
+
+			legacyPath := service.legacyProfileStatePath(profileID, configuredPath)
+			legacyState := statepkg.NewState()
+			legacyState.UpdateBook("preserved-book", 0.5, "IN_PROGRESS")
+			require.NoError(t, legacyState.Save(legacyPath))
+			canonicalPath := service.profileSpecificStatePath(profileID, configuredPath)
+			require.NotEqual(t, legacyPath, canonicalPath)
+
+			require.NoError(t, service.repository.CreateProfile(
+				profileID,
+				"Stored unsafe profile",
+				"http://audiobookshelf.invalid",
+				"abs-token",
+				"hc-token",
+				database.SyncConfigData{StateFile: configuredPath},
+			))
+
+			err := service.StartSync(profileID)
+			require.ErrorIs(t, err, ErrProfileStateFilePathNotAllowed)
+			require.False(t, service.IsProfileSyncing(profileID))
+			require.Zero(t, service.nextGeneration)
+			require.FileExists(t, legacyPath)
+			require.NoFileExists(t, legacyPath+".migrated")
+			require.NoFileExists(t, canonicalPath)
+		})
+	}
+}
+
 func TestMigratesLegacyRawProfileStatePath(t *testing.T) {
 	service, _ := newStatusLookupService(t)
 	dataDir := t.TempDir()
