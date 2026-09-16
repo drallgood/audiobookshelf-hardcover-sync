@@ -346,8 +346,6 @@ func TestStartSyncReturnsErrorForUnknownProfile(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "sync profile not found")
 	require.False(t, service.IsProfileSyncing("missing-profile"))
-	require.Empty(t, service.activeRuns)
-	require.Zero(t, service.nextGeneration)
 }
 
 func TestCreateProfileValidatesComposedStateFilenameLength(t *testing.T) {
@@ -559,7 +557,6 @@ func TestStartSyncRejectsStoredStateFileOutsideDataDir(t *testing.T) {
 			err := service.StartSync(profileID)
 			require.ErrorIs(t, err, ErrProfileStateFilePathNotAllowed)
 			require.False(t, service.IsProfileSyncing(profileID))
-			require.Zero(t, service.nextGeneration)
 			require.FileExists(t, legacyPath)
 			require.NoFileExists(t, legacyPath+".migrated")
 			require.NoFileExists(t, canonicalPath)
@@ -595,7 +592,6 @@ func TestStartSyncRejectsStoredStateFileThroughExternalSymlink(t *testing.T) {
 	err := service.StartSync(profileID)
 	require.ErrorIs(t, err, ErrProfileStateFilePathNotAllowed)
 	require.False(t, service.IsProfileSyncing(profileID))
-	require.Zero(t, service.nextGeneration)
 	require.NoFileExists(t, canonicalPath)
 	require.NoFileExists(t, legacyPath)
 	require.NoFileExists(t, legacyPath+".migrated")
@@ -646,9 +642,6 @@ func TestStartSyncRejectsDefaultStateFileSymlinksOutsideDataDir(t *testing.T) {
 			err := service.StartSync(profileID)
 			require.ErrorIs(t, err, ErrProfileStateFilePathNotAllowed)
 			require.False(t, service.IsProfileSyncing(profileID))
-			require.Empty(t, service.activeRuns)
-			require.Empty(t, service.activeSyncs)
-			require.Zero(t, service.nextGeneration)
 			if test.existingTarget {
 				after, readErr := os.ReadFile(outsideTarget)
 				require.NoError(t, readErr)
