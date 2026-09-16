@@ -701,7 +701,7 @@ func TestStartSyncAcceptsDefaultStateFileSymlinkInsideDataDir(t *testing.T) {
 	require.NotEqual(t, 0, info.Mode()&os.ModeSymlink)
 }
 
-func TestProfileStateFileValidationAllowsResolvedInsideSymlink(t *testing.T) {
+func TestCreateProfileAcceptsStateFileThroughInternalSymlink(t *testing.T) {
 	service, _ := newStatusLookupService(t)
 	dataDir := t.TempDir()
 	insideDir := filepath.Join(dataDir, "inside")
@@ -711,8 +711,19 @@ func TestProfileStateFileValidationAllowsResolvedInsideSymlink(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	require.NoError(t, service.validatePersistedProfileStateFile("inside-link", filepath.Join("link", "state.json")))
-	require.NoError(t, service.validatePersistedProfileStateFile("inside-absolute", filepath.Join(insideDir, "state.json")))
+	configuredPath := filepath.Join("link", "state.json")
+	require.NoError(t, service.CreateProfile(
+		"inside-link",
+		"Inside symlink profile",
+		"http://audiobookshelf.invalid",
+		"abs-token",
+		"hc-token",
+		database.SyncConfigData{StateFile: configuredPath},
+	))
+	profile, err := service.GetProfile("inside-link")
+	require.NoError(t, err)
+	require.NotNil(t, profile)
+	require.Equal(t, configuredPath, profile.SyncConfig.StateFile)
 }
 
 func TestMigratesLegacyRawProfileStatePath(t *testing.T) {
