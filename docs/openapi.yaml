@@ -18,8 +18,8 @@ info:
     administrators can access all profiles. Profile API responses never echo
     `audiobookshelf_token` or `hardcover_token`, regardless of authentication
     or role. Legacy ownerless profiles are administrator-only: they are not
-    listed or accessible to ordinary users, and no supported claim or
-    reassignment workflow currently exists. Foreign and nonexistent profile
+    listed or accessible to ordinary users, and there is currently no way to
+    assign one of these profiles to a user. Foreign and nonexistent profile
     requests return a non-enumerating `404`. The public
     `/api/status` endpoint remains scalar and redacted. Authentication disabled
     preserves unrestricted profile access.

@@ -49,7 +49,7 @@ tokens.
 
 When authentication is enabled, pre-existing profiles without an owner are
 administrator-only. They are neither listed nor accessible to ordinary users.
-The application has no supported claim or reassignment workflow.
+There is currently no way to assign one of these profiles to a user.
 
 ### Removed Environment Variables
 

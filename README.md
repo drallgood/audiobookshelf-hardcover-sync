@@ -501,7 +501,7 @@ export KEYCLOAK_REDIRECT_URI="https://your-app.example.com/auth/callback/oidc"
 
 When authentication is enabled, profiles created before ownership was recorded
 are administrator-only. They are neither listed nor accessible to ordinary
-users, and the application has no supported claim or reassignment workflow.
+users, and there is currently no way to assign one of these profiles to a user.
 
 ### Security Features
 
