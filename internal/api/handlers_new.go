@@ -222,7 +222,7 @@ func (h *Handler) writeSuccessResponse(w http.ResponseWriter, data interface{}) 
 	})
 }
 
-func (h *Handler) buildProfileResponseForRequest(p *database.ProfileWithTokens, _ *http.Request) map[string]interface{} {
+func (h *Handler) buildProfileResponse(p *database.ProfileWithTokens) map[string]interface{} {
 	if p == nil {
 		return map[string]interface{}{}
 	}
@@ -316,7 +316,7 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.log.Debug(fmt.Sprintf("Profile retrieved successfully: %s", profile.Profile.ID))
-	h.writeSuccessResponse(w, h.buildProfileResponseForRequest(profile, r))
+	h.writeSuccessResponse(w, h.buildProfileResponse(profile))
 }
 
 // CreateProfile handles POST /api/profiles
@@ -383,7 +383,7 @@ func (h *Handler) CreateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeSuccessResponse(w, h.buildProfileResponseForRequest(profile, r))
+	h.writeSuccessResponse(w, h.buildProfileResponse(profile))
 }
 
 // UpdateProfile handles PUT /api/profiles/{id}
@@ -420,7 +420,7 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeSuccessResponse(w, h.buildProfileResponseForRequest(profile, r))
+	h.writeSuccessResponse(w, h.buildProfileResponse(profile))
 }
 
 // UpdateProfileConfig handles PUT /api/profiles/{id}/config
@@ -502,7 +502,7 @@ func (h *Handler) UpdateProfileConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeSuccessResponse(w, h.buildProfileResponseForRequest(profile, r))
+	h.writeSuccessResponse(w, h.buildProfileResponse(profile))
 }
 
 // DeleteProfile handles DELETE /api/profiles/{id}
