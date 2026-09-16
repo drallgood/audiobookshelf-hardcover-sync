@@ -80,7 +80,7 @@ The Sync Status page shows the current run for each profile, including its
 progress and outcome counts. Select **View Details** to see the books in each
 category. Audiobookshelf titles link to their library items, and known
 Hardcover books link to Hardcover; a needs-review result links the candidate
-title instead.
+title instead, while its Audiobookshelf ASIN links to Audible.
 
 Each processed book is counted once as `synced`, `already_current`, `skipped`,
 `needs_review`, `not_found`, `failed`, or dry-run `would_sync`. A total of zero

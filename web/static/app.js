@@ -1566,16 +1566,32 @@ class SyncProfileApp {
         return slug ? `https://hardcover.app/books/${encodeURIComponent(slug)}` : '';
     }
 
+    buildAudibleBookURL(asin) {
+        const normalizedASIN = String(asin || '').trim();
+        return normalizedASIN
+            ? `https://www.audible.com/pd?asin=${encodeURIComponent(normalizedASIN)}`
+            : '';
+    }
+
     renderOutcomeRecord(record, mismatch = null, audiobookshelfBaseURL = '') {
         const bookId = String(record.book_id || '');
         const title = this.escapeHtml(record.title || 'Unknown title');
         const audiobookshelfURL = this.buildAudiobookshelfItemURL(audiobookshelfBaseURL, bookId);
         const hardcoverURL = this.buildHardcoverBookURL(record, mismatch);
+        const asin = String(record.asin || '').trim();
+        const audibleURL = record.outcome === 'needs_review'
+            ? this.buildAudibleBookURL(asin)
+            : '';
         const titleHTML = audiobookshelfURL
             ? `<a class="book-title-link" href="${this.escapeHtmlAttribute(audiobookshelfURL)}" target="_blank" rel="noopener noreferrer" title="Open in Audiobookshelf">${title} <span class="external-link-mark" aria-hidden="true">↗</span></a>`
             : title;
         const hardcoverLink = record.outcome !== 'needs_review' && hardcoverURL
             ? `<a class="book-service-link hardcover" href="${this.escapeHtmlAttribute(hardcoverURL)}" target="_blank" rel="noopener noreferrer" title="Open on Hardcover">Hardcover <span class="external-link-mark" aria-hidden="true">↗</span></a>`
+            : '';
+        const asinHTML = asin
+            ? `<span><strong>ASIN:</strong> ${audibleURL
+                ? `<a href="${this.escapeHtmlAttribute(audibleURL)}" target="_blank" rel="noopener noreferrer" title="Open on Audible">${this.escapeHtml(asin)} <span class="external-link-mark" aria-hidden="true">↗</span></a>`
+                : this.escapeHtml(asin)}</span>`
             : '';
         return `<article class="book-item" data-book-id="${this.escapeHtmlAttribute(bookId)}">
             <div class="book-heading">
@@ -1583,7 +1599,7 @@ class SyncProfileApp {
                 ${hardcoverLink ? `<div class="book-service-links">${hardcoverLink}</div>` : ''}
             </div>
             ${record.author ? `<div><strong>Author:</strong> ${this.escapeHtml(record.author)}</div>` : ''}
-            <div class="book-meta">${record.asin ? `<span><strong>ASIN:</strong> ${this.escapeHtml(record.asin)}</span>` : ''}${record.isbn ? `<span><strong>ISBN:</strong> ${this.escapeHtml(record.isbn)}</span>` : ''}</div>
+            <div class="book-meta">${asinHTML}${record.isbn ? `<span><strong>ISBN:</strong> ${this.escapeHtml(record.isbn)}</span>` : ''}</div>
             ${record.match_method ? `<div><strong>Match method:</strong> ${this.escapeHtml(record.match_method)}</div>` : ''}
             ${mismatch ? this.renderHardcoverCandidate(mismatch) : ''}
             ${record.reason ? `<div class="book-reason"><strong>Reason:</strong> ${this.escapeHtml(record.reason)}</div>` : ''}
