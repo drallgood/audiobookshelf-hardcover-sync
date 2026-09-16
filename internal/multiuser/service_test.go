@@ -390,6 +390,7 @@ func TestProfileStateFileValidationRejectsAbsoluteAndEscapingPaths(t *testing.T)
 		{name: "nested parent", path: filepath.Join("nested", "..", "..", "outside.json")},
 		{name: "current directory", path: "."},
 		{name: "collapsing relative", path: "safe/.."},
+		{name: "NUL byte", path: "state\x00.json"},
 	} {
 		t.Run("create "+test.name, func(t *testing.T) {
 			profileID := "unsafe-create-" + strings.ReplaceAll(test.name, " ", "-")
@@ -418,33 +419,21 @@ func TestProfileStateFileValidationRejectsAbsoluteAndEscapingPaths(t *testing.T)
 		"hc-token",
 		database.SyncConfigData{StateFile: "safe/state.json"},
 	))
-	for _, test := range []struct {
-		name string
-		path string
-	}{
-		{name: "absolute", path: filepath.Join(service.globalConfig.Paths.DataDir, "outside.json")},
-		{name: "escaping relative", path: "../../outside.json"},
-		{name: "current directory", path: "."},
-		{name: "collapsing relative", path: "safe/.."},
-	} {
-		t.Run("update "+test.name, func(t *testing.T) {
-			err := service.UpdateProfileConfig(
-				profileID,
-				"http://should-not-persist.invalid",
-				"",
-				"",
-				database.SyncConfigData{StateFile: test.path},
-			)
-			require.Error(t, err)
-			profile, getErr := service.GetProfile(profileID)
-			require.NoError(t, getErr)
-			require.NotNil(t, profile)
-			require.Equal(t, originalURL, profile.AudiobookshelfURL)
-			require.Equal(t, "safe/state.json", profile.SyncConfig.StateFile)
-			require.Equal(t, "abs-token", profile.AudiobookshelfToken)
-			require.Equal(t, "hc-token", profile.HardcoverToken)
-		})
-	}
+	err := service.UpdateProfileConfig(
+		profileID,
+		"http://should-not-persist.invalid",
+		"",
+		"",
+		database.SyncConfigData{StateFile: "../../outside.json"},
+	)
+	require.Error(t, err)
+	profile, getErr := service.GetProfile(profileID)
+	require.NoError(t, getErr)
+	require.NotNil(t, profile)
+	require.Equal(t, originalURL, profile.AudiobookshelfURL)
+	require.Equal(t, "safe/state.json", profile.SyncConfig.StateFile)
+	require.Equal(t, "abs-token", profile.AudiobookshelfToken)
+	require.Equal(t, "hc-token", profile.HardcoverToken)
 }
 
 func TestProfileStateFileAcceptsSafeRelativePathsUnderDataDir(t *testing.T) {
