@@ -1487,7 +1487,6 @@ class SyncProfileApp {
         const title = value(mismatch.hardcover_title);
         const author = value(mismatch.hardcover_author);
         const publishedYear = value(mismatch.hardcover_published_year);
-        const publisher = value(mismatch.hardcover_publisher);
         const asin = value(mismatch.hardcover_asin);
         const isbn = value(mismatch.hardcover_isbn);
         const slug = value(mismatch.hardcover_slug);
@@ -1511,7 +1510,6 @@ class SyncProfileApp {
         }
         addField('Author', author);
         addField('Published', publishedYear);
-        addField('Publisher', publisher);
         addField('ASIN', asin);
         addField('ISBN', isbn);
         addField('Slug', slug);
