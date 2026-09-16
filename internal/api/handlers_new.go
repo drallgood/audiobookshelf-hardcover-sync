@@ -201,11 +201,6 @@ func (h *Handler) authorizeProfileMetadata(w http.ResponseWriter, r *http.Reques
 	return profile, true
 }
 
-func (h *Handler) authenticatedUser(r *http.Request) *auth.AuthUser {
-	user, _ := auth.GetUserFromRequest(r)
-	return user
-}
-
 // writeErrorResponse writes an error response
 func (h *Handler) writeErrorResponse(w http.ResponseWriter, statusCode int, message string) {
 	h.writeJSONResponse(w, statusCode, APIResponse{
@@ -243,7 +238,7 @@ func (h *Handler) buildProfileResponse(p *database.ProfileWithTokens) map[string
 
 // GetProfiles handles GET /api/profiles
 func (h *Handler) GetProfiles(w http.ResponseWriter, r *http.Request) {
-	user := h.authenticatedUser(r)
+	user, _ := auth.GetUserFromRequest(r)
 	authEnabled := h.authEnabled
 	if authEnabled && user == nil {
 		h.writeErrorResponse(w, http.StatusUnauthorized, "Authentication required")
@@ -323,7 +318,7 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) CreateProfile(w http.ResponseWriter, r *http.Request) {
 	var user *auth.AuthUser
 	if h.authEnabled {
-		user = h.authenticatedUser(r)
+		user, _ = auth.GetUserFromRequest(r)
 		if user == nil {
 			h.writeErrorResponse(w, http.StatusUnauthorized, "Authentication required")
 			return
