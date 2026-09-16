@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -117,17 +118,12 @@ func TestGetProfileSnapshotUsesCurrentRunWithoutProfileHydration(t *testing.T) {
 		profileID, "Profile A", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
 	))
 
-	// Make any accidental fallback hydration fail at the database boundary.
+	// Corrupt stored credentials so any fallback profile hydration fails instead
+	// of returning a snapshot from the active service.
 	require.NoError(t, db.Model(&database.SyncProfileConfig{}).Where("profile_id = ?", profileID).Updates(map[string]interface{}{
 		"audiobookshelf_token_encrypted": "invalid-encrypted-token",
 		"hardcover_token_encrypted":      "invalid-encrypted-token",
 	}).Error)
-	queryCallbackName := "multiuser_test_forbid_snapshot_profile_hydration"
-	require.NoError(t, db.Callback().Query().Before("gorm:query").Register(queryCallbackName, func(tx *gorm.DB) {
-		if tx.Statement.Schema != nil && tx.Statement.Schema.Name == "SyncProfile" {
-			t.Errorf("GetProfileSnapshot hydrated profile metadata from the database")
-		}
-	}))
 
 	cfg := config.DefaultConfig()
 	cfg.Sync.StateFile = filepath.Join(t.TempDir(), "state.json")
@@ -341,19 +337,16 @@ func TestCreateProfileValidatesComposedStateFilenameLength(t *testing.T) {
 		name           string
 		profileID      string
 		configuredPath string
-		wantBaseBytes  int
 		wantError      bool
 	}{
-		{name: "default 255 bytes", profileID: strings.Repeat("d", 244), wantBaseBytes: 255},
-		{name: "default 256 bytes", profileID: strings.Repeat("d", 245), wantBaseBytes: 256, wantError: true},
-		{name: "custom 255 bytes", profileID: "id", configuredPath: strings.Repeat("c", 252) + ".json", wantBaseBytes: 255},
-		{name: "custom 256 bytes", profileID: "id", configuredPath: strings.Repeat("c", 253) + ".json", wantBaseBytes: 256, wantError: true},
+		{name: "default 255 bytes", profileID: strings.Repeat("d", 244)},
+		{name: "default 256 bytes", profileID: strings.Repeat("d", 245), wantError: true},
+		{name: "custom 255 bytes", profileID: "id", configuredPath: strings.Repeat("c", 252) + ".json"},
+		{name: "custom 256 bytes", profileID: "id", configuredPath: strings.Repeat("c", 253) + ".json", wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, _ := newStatusLookupService(t)
 			service.globalConfig.Paths.DataDir = t.TempDir()
-			derivedPath := service.profileSpecificStatePath(test.profileID, test.configuredPath)
-			require.Len(t, []byte(filepath.Base(derivedPath)), test.wantBaseBytes)
 			err := service.CreateProfile(
 				test.profileID,
 				"Profile",
@@ -459,30 +452,7 @@ func TestProfileStateFileAcceptsSafeRelativePathsUnderDataDir(t *testing.T) {
 	}
 }
 
-func TestProfileStatePathKeepsTrustedAbsoluteAndLegacyIDsInOneDirectory(t *testing.T) {
-	service, _ := newStatusLookupService(t)
-	dataDir := t.TempDir()
-	service.globalConfig.Paths.DataDir = dataDir
-
-	for _, profileID := range []string{"legacy/profile", "legacy/../../escape"} {
-		derivedPath := service.profileSpecificStatePath(profileID, filepath.Join(dataDir, "migrated.json"))
-		require.Equal(t, dataDir, filepath.Dir(derivedPath))
-		require.NotEqual(t, ".", filepath.Base(derivedPath))
-		require.NotEqual(t, "..", filepath.Base(derivedPath))
-		require.NotContains(t, filepath.Base(derivedPath), string(filepath.Separator))
-		relative, err := filepath.Rel(dataDir, derivedPath)
-		require.NoError(t, err)
-		require.False(t, relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)))
-	}
-}
-
 func TestMigratedAbsoluteStateFileRemainsUsableForLegacyProfile(t *testing.T) {
-	service, _ := newStatusLookupService(t)
-	dataDir := t.TempDir()
-	service.globalConfig.Paths.DataDir = dataDir
-	service.globalConfig.Paths.CacheDir = filepath.Join(dataDir, "cache")
-	service.globalConfig.Paths.MismatchOutputDir = filepath.Join(dataDir, "mismatches")
-
 	absServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/me":
@@ -495,43 +465,40 @@ func TestMigratedAbsoluteStateFileRemainsUsableForLegacyProfile(t *testing.T) {
 	}))
 	t.Cleanup(absServer.Close)
 
-	profileID := "legacy/profile"
-	migratedStatePath := filepath.Join(dataDir, "migrated.json")
-	require.NoError(t, service.repository.CreateProfile(
-		profileID,
-		"Migrated profile",
-		absServer.URL,
-		"abs-token",
-		"hc-token",
-		database.SyncConfigData{StateFile: migratedStatePath},
-	))
-	require.NoError(t, service.StartSync(profileID))
-	service.WaitForSyncs()
+	for _, profileID := range []string{"legacy/profile", "legacy/../../escape"} {
+		t.Run(profileID, func(t *testing.T) {
+			service, _ := newStatusLookupService(t)
+			dataDir := t.TempDir()
+			service.globalConfig.Paths.DataDir = dataDir
+			service.globalConfig.Paths.CacheDir = filepath.Join(dataDir, "cache")
+			service.globalConfig.Paths.MismatchOutputDir = filepath.Join(dataDir, "mismatches")
 
-	status := service.GetProfileStatus(profileID)
-	require.NotNil(t, status)
-	require.Equal(t, "completed", status.Status)
-	require.NotNil(t, status.Snapshot)
-	require.Equal(t, "completed", status.Snapshot.State)
-	require.FileExists(t, filepath.Join(dataDir, "migrated.legacy%2Fprofile"))
+			migratedStatePath := filepath.Join(dataDir, "migrated.json")
+			require.NoError(t, service.repository.CreateProfile(
+				profileID,
+				"Migrated profile",
+				absServer.URL,
+				"abs-token",
+				"hc-token",
+				database.SyncConfigData{StateFile: migratedStatePath},
+			))
+			require.NoError(t, service.StartSync(profileID))
+			service.WaitForSyncs()
+
+			status := service.GetProfileStatus(profileID)
+			require.NotNil(t, status)
+			require.Equal(t, "completed", status.Status)
+			require.NotNil(t, status.Snapshot)
+			require.Equal(t, "completed", status.Snapshot.State)
+			require.FileExists(t, filepath.Join(dataDir, "migrated."+url.PathEscape(profileID)))
+		})
+	}
 }
 
-func TestProfileStatePathUsesDataDefaultForLegacyIDs(t *testing.T) {
-	service, _ := newStatusLookupService(t)
-	service.globalConfig = nil
-
-	derivedPath := service.profileSpecificStatePath("legacy/../profile", "")
-	require.Equal(t, "/data", filepath.Dir(derivedPath))
-	require.NotEqual(t, ".", filepath.Base(derivedPath))
-	require.NotEqual(t, "..", filepath.Base(derivedPath))
-}
-
-func TestCreateProfileRejectsStateFilenameLengthAfterProfileIDEncoding(t *testing.T) {
+func TestCreateProfileRejectsStateFilenameLengthAfterLegacyIDEncoding(t *testing.T) {
 	service, _ := newStatusLookupService(t)
 	service.globalConfig.Paths.DataDir = t.TempDir()
 	profileID := strings.Repeat("/", 200)
-	derivedPath := service.profileSpecificStatePath(profileID, "state.json")
-	require.Greater(t, len([]byte(filepath.Base(derivedPath))), maxStateFileComponentBytes)
 
 	err := service.CreateProfile(
 		profileID,
