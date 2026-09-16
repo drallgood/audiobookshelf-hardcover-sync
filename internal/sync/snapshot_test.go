@@ -88,6 +88,8 @@ func TestSnapshotStatusCopiesScalarsWithoutDetails(t *testing.T) {
 	for _, record := range full.BookOutcomes {
 		require.Equal(t, "https://audiobookshelf.example/base/api/items/"+record.BookID+"/cover", record.CoverURL)
 		require.Equal(t, "Audiobook", record.Format)
+		require.Equal(t, "Test Series", record.Series)
+		require.Equal(t, "2", record.SeriesNumber)
 	}
 	require.Len(t, full.BooksNotFound, 1)
 	require.Len(t, full.Mismatches, 1)

@@ -254,6 +254,8 @@ components:
         isbn: {type: string}
         cover_url: {type: string, format: uri}
         format: {type: string}
+        series: {type: string}
+        series_number: {type: string}
         reason: {type: string}
         error: {type: string}
         match_method: {type: string}
@@ -311,6 +313,8 @@ components:
         hardcover_asin: {type: string}
         hardcover_isbn: {type: string}
         hardcover_slug: {type: string}
+        hardcover_series: {type: string}
+        hardcover_series_number: {type: string}
         reason: {type: string}
         timestamp: {type: integer, format: int64}
         attempts: {type: integer}

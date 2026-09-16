@@ -621,7 +621,12 @@ func TestPublicStatusAndSummaryRoutesExposeLiveAttentionOutcomes(t *testing.T) {
 	for _, record := range liveDetails.Data.BookOutcomes {
 		require.Equal(t, absServer.Server.URL+"/api/items/"+record.BookID+"/cover", record.CoverURL)
 		require.Equal(t, "Audiobook", record.Format)
+		require.Equal(t, "Status Series", record.Series)
+		require.Equal(t, "2", record.SeriesNumber)
 	}
+	require.Len(t, liveDetails.Data.Mismatches, 1)
+	require.Equal(t, "Hardcover Series", liveDetails.Data.Mismatches[0].HardcoverSeries)
+	require.Equal(t, "3", liveDetails.Data.Mismatches[0].HardcoverSeriesNumber)
 
 	var summaryResponse summaryHTTPResponse
 	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/summary", &summaryResponse)
@@ -908,8 +913,18 @@ func newLiveStatusHardcoverServer() *liveStatusHardcoverServer {
 
 		if strings.Contains(request.Query, "GetBookByID") {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"data": map[string]interface{}{"books": []interface{}{}},
-			})
+				"data": map[string]interface{}{"books": []interface{}{map[string]interface{}{
+					"id":            101,
+					"title":         "Title Only",
+					"slug":          "title-only",
+					"contributions": []interface{}{},
+					"editions":      []interface{}{},
+					"book_series": []interface{}{map[string]interface{}{
+						"position": 3,
+						"series":   map[string]interface{}{"name": "Hardcover Series"},
+					}},
+				}},
+				}})
 			return
 		}
 
@@ -1055,6 +1070,10 @@ func statusBook(id, title, author string) map[string]interface{} {
 			"metadata": map[string]interface{}{
 				"title":      title,
 				"authorName": author,
+				"series": []map[string]interface{}{{
+					"name":     "Status Series",
+					"sequence": "2",
+				}},
 			},
 			"duration": 100,
 		},

@@ -78,10 +78,11 @@ Existing single-profile setups are **automatically migrated** on first startup:
 
 The Sync Status page shows the current run for each profile, including its
 progress and outcome counts. Select **View Details** to see the books in each
-category. Each result includes its Audiobookshelf cover and format, and its
-title links to the Audiobookshelf library item. Known Hardcover books link to
-Hardcover; a needs-review result instead links the candidate title, its ASIN
-to Audible, and its ISBN to a Goodreads search.
+category. Each result includes its Audiobookshelf cover, format, and series
+position when available, and its title links to the Audiobookshelf library
+item. Known Hardcover books link to Hardcover; a needs-review result instead
+shows the Hardcover candidate's series when available and links the candidate
+title, its ASIN to Audible, and its ISBN to a Goodreads search.
 
 Each processed book is counted once as `synced`, `already_current`, `skipped`,
 `needs_review`, `not_found`, `failed`, or dry-run `would_sync`. A total of zero

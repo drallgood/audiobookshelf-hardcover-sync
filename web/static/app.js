@@ -1490,6 +1490,8 @@ class SyncProfileApp {
         const asin = value(mismatch.hardcover_asin);
         const isbn = value(mismatch.hardcover_isbn);
         const slug = value(mismatch.hardcover_slug);
+        const series = value(mismatch.hardcover_series);
+        const seriesNumber = value(mismatch.hardcover_series_number);
         const coverURL = value(mismatch.hardcover_cover_url);
         const hardcoverURL = slug
             ? `https://hardcover.app/books/${encodeURIComponent(slug)}`
@@ -1513,6 +1515,7 @@ class SyncProfileApp {
         addField('ASIN', asin);
         addField('ISBN', isbn);
         addField('Slug', slug);
+        addField('Series', this.formatSeries(series, seriesNumber));
 
         const coverIsHTTP = /^https?:\/\//i.test(coverURL) && !coverURL.includes('|');
         const coverHTML = coverIsHTTP
@@ -1574,6 +1577,13 @@ class SyncProfileApp {
             : '';
     }
 
+    formatSeries(series, seriesNumber) {
+        const name = String(series || '').trim();
+        if (!name) return '';
+        const number = String(seriesNumber || '').trim().replace(/^#\s*/, '');
+        return number ? `${name} #${number}` : name;
+    }
+
     renderAudiobookshelfCover(record) {
         const coverURL = String(record?.cover_url || '').trim();
         const coverIsHTTP = /^https?:\/\//i.test(coverURL) && !coverURL.includes('|');
@@ -1600,6 +1610,7 @@ class SyncProfileApp {
         const asin = String(record.asin || '').trim();
         const isbn = String(record.isbn || '').trim();
         const format = String(record.format || '').trim();
+        const series = this.formatSeries(record.series, record.series_number);
         const audibleURL = record.outcome === 'needs_review'
             ? this.buildAudibleBookURL(asin)
             : '';
@@ -1631,7 +1642,7 @@ class SyncProfileApp {
                         ${hardcoverLink ? `<div class="book-service-links">${hardcoverLink}</div>` : ''}
                     </div>
                     ${record.author ? `<div><strong>Author:</strong> ${this.escapeHtml(record.author)}</div>` : ''}
-                    <div class="book-meta">${asinHTML}${isbnHTML}${format ? `<span><strong>ABS Format:</strong> ${this.escapeHtml(format)}</span>` : ''}</div>
+                    <div class="book-meta">${asinHTML}${isbnHTML}${format ? `<span><strong>ABS Format:</strong> ${this.escapeHtml(format)}</span>` : ''}${series ? `<span><strong>Series:</strong> ${this.escapeHtml(series)}</span>` : ''}</div>
                     ${record.match_method ? `<div><strong>Match method:</strong> ${this.escapeHtml(record.match_method)}</div>` : ''}
                     ${mismatch ? this.renderHardcoverCandidate(mismatch) : ''}
                     ${record.reason ? `<div class="book-reason"><strong>Reason:</strong> ${this.escapeHtml(record.reason)}</div>` : ''}

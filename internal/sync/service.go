@@ -92,6 +92,8 @@ type BookOutcomeRecord struct {
 	ISBN            string      `json:"isbn,omitempty"`
 	CoverURL        string      `json:"cover_url,omitempty"`
 	Format          string      `json:"format,omitempty"`
+	Series          string      `json:"series,omitempty"`
+	SeriesNumber    string      `json:"series_number,omitempty"`
 	Reason          string      `json:"reason,omitempty"`
 	Error           string      `json:"error,omitempty"`
 	MatchMethod     string      `json:"match_method,omitempty"`
@@ -690,6 +692,12 @@ func mergeMissingCandidateDetails(record, fallback mismatch.BookMismatch) mismat
 	if record.HardcoverSlug == "" {
 		record.HardcoverSlug = fallback.HardcoverSlug
 	}
+	if record.HardcoverSeries == "" {
+		record.HardcoverSeries = fallback.HardcoverSeries
+	}
+	if record.HardcoverSeries == fallback.HardcoverSeries && record.HardcoverSeriesNumber == "" {
+		record.HardcoverSeriesNumber = fallback.HardcoverSeriesNumber
+	}
 	return record
 }
 
@@ -728,17 +736,20 @@ func (s *Service) recordBookOutcomeWithMatchMethod(book models.AudiobookshelfBoo
 			reason = "invalid sync outcome"
 		}
 	}
+	series, seriesNumber := audiobookshelfSeries(book.Media.Metadata)
 	record := BookOutcomeRecord{
-		BookID:      book.ID,
-		Outcome:     outcome,
-		Title:       book.Media.Metadata.Title,
-		Author:      book.Media.Metadata.AuthorName,
-		ASIN:        book.Media.Metadata.ASIN,
-		ISBN:        book.Media.Metadata.ISBN,
-		Format:      "Audiobook",
-		Reason:      reason,
-		MatchMethod: matchMethod,
-		UpdatedAt:   time.Now().UTC(),
+		BookID:       book.ID,
+		Outcome:      outcome,
+		Title:        book.Media.Metadata.Title,
+		Author:       book.Media.Metadata.AuthorName,
+		ASIN:         book.Media.Metadata.ASIN,
+		ISBN:         book.Media.Metadata.ISBN,
+		Format:       "Audiobook",
+		Series:       series,
+		SeriesNumber: seriesNumber,
+		Reason:       reason,
+		MatchMethod:  matchMethod,
+		UpdatedAt:    time.Now().UTC(),
 	}
 	if book.Media.CoverPath != "" && strings.TrimSpace(s.config.Audiobookshelf.URL) != "" {
 		record.CoverURL = fmt.Sprintf("%s/api/items/%s/cover", strings.TrimRight(s.config.Audiobookshelf.URL, "/"), book.ID)
@@ -817,6 +828,17 @@ func (s *Service) recordBookOutcomeWithMatchMethod(book models.AudiobookshelfBoo
 	} else {
 		s.removeLegacyBookNotFoundLocked(book.ID)
 	}
+}
+
+func audiobookshelfSeries(metadata models.AudiobookshelfMetadataStruct) (string, string) {
+	seriesName := strings.TrimSpace(metadata.SeriesName)
+	if len(metadata.Series) == 0 {
+		return seriesName, ""
+	}
+	if name := strings.TrimSpace(metadata.Series[0].Name); name != "" {
+		seriesName = name
+	}
+	return seriesName, strings.TrimSpace(metadata.Series[0].Sequence)
 }
 
 // GetSnapshot returns one race-safe deep copy of the current run. Attention
