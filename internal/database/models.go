@@ -36,15 +36,54 @@ type SyncProfileConfig struct {
 
 // ProfileSyncState holds the sync state for a specific profile
 type ProfileSyncState struct {
-	ProfileID string     `gorm:"primaryKey;column:profile_id" json:"profile_id"`
-	StateData string     `gorm:"type:text" json:"state_data"` // JSON string
-	LastSync  *time.Time `json:"last_sync"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	ProfileID                string     `gorm:"primaryKey;column:profile_id" json:"profile_id"`
+	StateData                string     `gorm:"type:text" json:"state_data"` // JSON string
+	LastSync                 *time.Time `json:"last_sync"`
+	RunGeneration            uint64     `gorm:"not null;default:0" json:"run_generation"`
+	LastAttemptedAt          *time.Time `json:"last_attempted_at"`
+	LastAttemptedRunID       string     `json:"last_attempted_run_id"`
+	LastAttemptedGeneration  uint64     `gorm:"not null;default:0" json:"last_attempted_generation"`
+	LastSuccessfulAt         *time.Time `json:"last_successful_at"`
+	LastSuccessfulRunID      string     `json:"last_successful_run_id"`
+	LastSuccessfulGeneration uint64     `gorm:"not null;default:0" json:"last_successful_generation"`
+	CreatedAt                time.Time  `json:"created_at"`
+	UpdatedAt                time.Time  `json:"updated_at"`
 
 	// Relationship
 	Profile SyncProfile `gorm:"foreignKey:ProfileID" json:"profile,omitempty"`
 }
+
+// SyncRunReport is the durable, sanitized snapshot for one sync run.
+//
+// Run IDs are scoped to a profile. Generation is allocated monotonically per
+// profile and is indexed to make newest-report queries inexpensive.
+type SyncRunReport struct {
+	ProfileID           string     `gorm:"primaryKey;column:profile_id;index:idx_sync_run_reports_profile_generation,priority:1" json:"profile_id"`
+	RunID               string     `gorm:"primaryKey;column:run_id" json:"run_id"`
+	Generation          uint64     `gorm:"not null;index:idx_sync_run_reports_profile_generation,priority:2" json:"generation"`
+	Phase               string     `gorm:"not null" json:"phase"`
+	DryRun              bool       `json:"dry_run"`
+	QueuedAt            *time.Time `json:"queued_at"`
+	ProcessingStartedAt *time.Time `json:"processing_started_at"`
+	LastActivityAt      *time.Time `json:"last_activity_at"`
+	LastProcessedAt     *time.Time `json:"last_processed_at"`
+	FinishedAt          *time.Time `json:"finished_at"`
+	RunError            string     `gorm:"type:text" json:"run_error,omitempty"`
+	ReportVersion       int        `gorm:"not null;default:1" json:"report_version"`
+	SnapshotJSON        string     `gorm:"type:text" json:"snapshot_json"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+}
+
+const (
+	SyncRunReportVersion = 1
+
+	SyncRunPhaseQueued     = "queued"
+	SyncRunPhaseProcessing = "processing"
+	SyncRunPhaseCompleted  = "completed"
+	SyncRunPhaseFailed     = "failed"
+	SyncRunPhaseCanceled   = "canceled"
+)
 
 // SyncConfigData represents the structure of sync configuration
 type SyncConfigData struct {

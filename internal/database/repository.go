@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/crypto"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
@@ -36,6 +37,281 @@ type ProfileWithTokens struct {
 	AudiobookshelfToken string         `json:"audiobookshelf_token"`
 	HardcoverToken      string         `json:"hardcover_token"`
 	SyncConfig          SyncConfigData `json:"sync_config"`
+}
+
+const maxSyncRunReports = 10
+
+// ReserveSyncRun atomically reserves the next generation for a profile,
+// records its last-attempt metadata, and creates the initial queued report.
+// A zero queuedAt uses the current UTC time.
+func (r *Repository) ReserveSyncRun(profileID, runID string, dryRun bool, queuedAt time.Time) (*SyncRunReport, error) {
+	if profileID == "" {
+		return nil, errors.New("profile ID is required")
+	}
+	if runID == "" {
+		return nil, errors.New("run ID is required")
+	}
+	if queuedAt.IsZero() {
+		queuedAt = time.Now().UTC()
+	}
+
+	var report SyncRunReport
+	err := r.db.GetDB().Transaction(func(tx *gorm.DB) error {
+		state, err := loadOrCreateSyncStateForUpdate(tx, profileID)
+		if err != nil {
+			return err
+		}
+
+		// The state row is authoritative for normal operation. Taking the
+		// maximum from existing reports also prevents a manually restored or
+		// partially migrated database from reusing a generation.
+		var highestGeneration uint64
+		if err := tx.Model(&SyncRunReport{}).
+			Where("profile_id = ?", profileID).
+			Select("COALESCE(MAX(generation), 0)").
+			Scan(&highestGeneration).Error; err != nil {
+			return fmt.Errorf("failed to inspect sync run generations: %w", err)
+		}
+		generation := state.RunGeneration + 1
+		if state.LastAttemptedGeneration >= generation {
+			generation = state.LastAttemptedGeneration + 1
+		}
+		if state.LastSuccessfulGeneration >= generation {
+			generation = state.LastSuccessfulGeneration + 1
+		}
+		if highestGeneration >= generation {
+			generation = highestGeneration + 1
+		}
+
+		state.RunGeneration = generation
+		state.LastAttemptedAt = &queuedAt
+		state.LastAttemptedRunID = runID
+		state.LastAttemptedGeneration = generation
+		if err := tx.Save(state).Error; err != nil {
+			return fmt.Errorf("failed to reserve sync run generation: %w", err)
+		}
+
+		report = SyncRunReport{
+			ProfileID:     profileID,
+			RunID:         runID,
+			Generation:    generation,
+			Phase:         SyncRunPhaseQueued,
+			DryRun:        dryRun,
+			QueuedAt:      &queuedAt,
+			ReportVersion: SyncRunReportVersion,
+			SnapshotJSON:  "{}",
+		}
+		if err := tx.Create(&report).Error; err != nil {
+			return fmt.Errorf("failed to create queued sync run report: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &report, nil
+}
+
+// ReserveSyncRunGeneration is the generation-only form of ReserveSyncRun.
+// It keeps the reservation and queued report creation in the same transaction.
+func (r *Repository) ReserveSyncRunGeneration(profileID, runID string, dryRun bool, queuedAt time.Time) (uint64, error) {
+	report, err := r.ReserveSyncRun(profileID, runID, dryRun, queuedAt)
+	if err != nil {
+		return 0, err
+	}
+	return report.Generation, nil
+}
+
+// ReserveRunGeneration is retained as a concise alias for callers that refer
+// to the operation by its generation rather than its report.
+func (r *Repository) ReserveRunGeneration(profileID, runID string, dryRun bool, queuedAt time.Time) (uint64, error) {
+	return r.ReserveSyncRunGeneration(profileID, runID, dryRun, queuedAt)
+}
+
+// UpsertSyncRunReport transactionally stores a terminal run report, retains
+// only the newest ten reports for the profile, and advances success metadata
+// only for a newer completed non-dry run.
+func (r *Repository) UpsertSyncRunReport(report *SyncRunReport) error {
+	if report == nil {
+		return errors.New("sync run report is required")
+	}
+	if report.ProfileID == "" {
+		return errors.New("profile ID is required")
+	}
+	if report.RunID == "" {
+		return errors.New("run ID is required")
+	}
+	return r.db.GetDB().Transaction(func(tx *gorm.DB) error {
+		var existing SyncRunReport
+		findErr := tx.Where("profile_id = ? AND run_id = ?", report.ProfileID, report.RunID).First(&existing).Error
+		switch {
+		case findErr == nil:
+			mergeSyncRunReportDefaults(report, &existing)
+			if report.CreatedAt.IsZero() {
+				report.CreatedAt = existing.CreatedAt
+			}
+			if err := tx.Save(report).Error; err != nil {
+				return fmt.Errorf("failed to update sync run report: %w", err)
+			}
+		case errors.Is(findErr, gorm.ErrRecordNotFound):
+			if report.ReportVersion == 0 {
+				report.ReportVersion = SyncRunReportVersion
+			}
+			if report.SnapshotJSON == "" {
+				report.SnapshotJSON = "{}"
+			}
+			if err := tx.Create(report).Error; err != nil {
+				return fmt.Errorf("failed to create sync run report: %w", err)
+			}
+		default:
+			return fmt.Errorf("failed to find sync run report: %w", findErr)
+		}
+
+		if err := retainNewestSyncRunReports(tx, report.ProfileID); err != nil {
+			return err
+		}
+
+		if report.Phase != SyncRunPhaseCompleted || report.DryRun || report.Generation == 0 {
+			return nil
+		}
+		state, err := loadOrCreateSyncStateForUpdate(tx, report.ProfileID)
+		if err != nil {
+			return err
+		}
+		if report.Generation <= state.LastSuccessfulGeneration {
+			return nil
+		}
+		finishedAt := report.FinishedAt
+		if finishedAt == nil {
+			now := time.Now().UTC()
+			finishedAt = &now
+		}
+		state.LastSuccessfulAt = finishedAt
+		state.LastSuccessfulRunID = report.RunID
+		state.LastSuccessfulGeneration = report.Generation
+		if err := tx.Save(state).Error; err != nil {
+			return fmt.Errorf("failed to advance successful sync metadata: %w", err)
+		}
+		return nil
+	})
+}
+
+// mergeSyncRunReportDefaults preserves lifecycle data recorded by an initial
+// queued report when a terminal update only supplies the fields it changed.
+// It also keeps dry-run provenance immutable for a run.
+func mergeSyncRunReportDefaults(report, existing *SyncRunReport) {
+	if report.Generation == 0 {
+		report.Generation = existing.Generation
+	}
+	if report.Phase == "" {
+		report.Phase = existing.Phase
+	}
+	if !report.DryRun && existing.DryRun {
+		report.DryRun = true
+	}
+	if report.QueuedAt == nil {
+		report.QueuedAt = existing.QueuedAt
+	}
+	if report.ProcessingStartedAt == nil {
+		report.ProcessingStartedAt = existing.ProcessingStartedAt
+	}
+	if report.LastActivityAt == nil {
+		report.LastActivityAt = existing.LastActivityAt
+	}
+	if report.LastProcessedAt == nil {
+		report.LastProcessedAt = existing.LastProcessedAt
+	}
+	if report.FinishedAt == nil {
+		report.FinishedAt = existing.FinishedAt
+	}
+	if report.RunError == "" {
+		report.RunError = existing.RunError
+	}
+	if report.ReportVersion == 0 {
+		report.ReportVersion = existing.ReportVersion
+	}
+	if report.SnapshotJSON == "" {
+		report.SnapshotJSON = existing.SnapshotJSON
+	}
+}
+
+// GetSyncRunReport fetches one report in its profile scope.
+func (r *Repository) GetSyncRunReport(profileID, runID string) (*SyncRunReport, error) {
+	var report SyncRunReport
+	if err := r.db.GetDB().Where("profile_id = ? AND run_id = ?", profileID, runID).First(&report).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get sync run report: %w", err)
+	}
+	return &report, nil
+}
+
+// ListSyncRunReports returns newest reports for a profile, bounded to the
+// retention window even when a larger limit is requested.
+func (r *Repository) ListSyncRunReports(profileID string, limit int) ([]SyncRunReport, error) {
+	if limit <= 0 || limit > maxSyncRunReports {
+		limit = maxSyncRunReports
+	}
+	var reports []SyncRunReport
+	if err := r.db.GetDB().Where("profile_id = ?", profileID).
+		Order("generation DESC").Order("run_id DESC").Limit(limit).Find(&reports).Error; err != nil {
+		return nil, fmt.Errorf("failed to list sync run reports: %w", err)
+	}
+	return reports, nil
+}
+
+// GetLatestSyncRunReport returns the newest report for a profile.
+func (r *Repository) GetLatestSyncRunReport(profileID string) (*SyncRunReport, error) {
+	reports, err := r.ListSyncRunReports(profileID, 1)
+	if err != nil {
+		return nil, err
+	}
+	if len(reports) == 0 {
+		return nil, nil
+	}
+	return &reports[0], nil
+}
+
+// GetProfileSyncState is an explicit profile-oriented alias for the existing
+// state loader used by status callers.
+func (r *Repository) GetProfileSyncState(profileID string) (*ProfileSyncState, error) {
+	return r.GetSyncState(profileID)
+}
+
+func loadOrCreateSyncStateForUpdate(tx *gorm.DB, profileID string) (*ProfileSyncState, error) {
+	var state ProfileSyncState
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("profile_id = ?", profileID).First(&state).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		state = ProfileSyncState{ProfileID: profileID, StateData: "{}"}
+		if err := tx.Create(&state).Error; err != nil {
+			return nil, fmt.Errorf("failed to create sync state: %w", err)
+		}
+		return &state, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to load sync state: %w", err)
+	}
+	return &state, nil
+}
+
+func retainNewestSyncRunReports(tx *gorm.DB, profileID string) error {
+	var reports []SyncRunReport
+	if err := tx.Where("profile_id = ?", profileID).
+		Order("generation DESC").Order("run_id DESC").Find(&reports).Error; err != nil {
+		return fmt.Errorf("failed to list sync run reports for retention: %w", err)
+	}
+	if len(reports) <= maxSyncRunReports {
+		return nil
+	}
+	keepRunIDs := make([]string, maxSyncRunReports)
+	for i := range keepRunIDs {
+		keepRunIDs[i] = reports[i].RunID
+	}
+	if err := tx.Where("profile_id = ? AND run_id NOT IN ?", profileID, keepRunIDs).Delete(&SyncRunReport{}).Error; err != nil {
+		return fmt.Errorf("failed to retain newest sync run reports: %w", err)
+	}
+	return nil
 }
 
 // CreateProfile creates a new sync profile with encrypted configuration

@@ -65,12 +65,22 @@ func (d *Database) migrate() error {
 		&SyncProfile{},
 		&SyncProfileConfig{},
 		&ProfileSyncState{},
+		&SyncRunReport{},
 		&auth.AuthUser{},
 		&auth.AuthSession{},
 		&auth.AuthProvider{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to auto-migrate: %w", err)
+	}
+
+	// Older installations only recorded LastSync. Preserve that value while
+	// making it visible as a last attempt, but never infer a successful run
+	// from the legacy field. The NULL guard makes this safe to run repeatedly.
+	if err := d.db.Model(&ProfileSyncState{}).
+		Where("last_sync IS NOT NULL AND last_attempted_at IS NULL").
+		UpdateColumn("last_attempted_at", gorm.Expr("last_sync")).Error; err != nil {
+		return fmt.Errorf("failed to migrate legacy sync timestamps: %w", err)
 	}
 
 	if d.logger != nil {
