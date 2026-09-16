@@ -1710,7 +1710,7 @@ class SyncProfileApp {
                 this.showToast('Profile created successfully!', 'success');
                 event.target.reset();
                 this.loadProfiles();
-                this.showTab('profiles');
+                this.showTab('users');
             } else {
                 this.showToast('Failed to create profile: ' + data.error, 'error');
             }
