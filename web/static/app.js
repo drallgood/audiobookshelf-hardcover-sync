@@ -1848,8 +1848,8 @@ class SyncProfileApp {
         // Update user config with form data
         const configUpdateData = {
             audiobookshelf_url: formData.get('audiobookshelf_url'),
-            audiobookshelf_token: formData.get('audiobookshelf_token') || this.currentEditUser.audiobookshelf_token,
-            hardcover_token: formData.get('hardcover_token') || this.currentEditUser.hardcover_token,
+            audiobookshelf_token: formData.get('audiobookshelf_token'),
+            hardcover_token: formData.get('hardcover_token'),
                 sync_config: {
                     incremental: formData.get('incremental') === 'on',
                     min_change_threshold: 60,

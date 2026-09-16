@@ -111,7 +111,7 @@ current run ID. Needs-review, not-found, and failed books appear in
 - **Token Encryption**: All API tokens encrypted at rest
 - **Profile Management**: Full CRUD operations for sync profiles data
 - **Secure Key Management**: Auto-generated encryption keys
-- **Token Masking**: Sensitive data masked in API responses
+- **Token Redaction**: Profile API responses never return Audiobookshelf or Hardcover tokens
 - **Directory Protection**: Static file serving with traversal protection
 
 ---
@@ -498,6 +498,10 @@ export KEYCLOAK_REDIRECT_URI="https://your-app.example.com/auth/callback/oidc"
 - **Admin**: Full access, user management, system configuration
 - **User**: Sync functionality and read/write access to owned profiles
 - **Viewer**: Read-only access to owned profiles
+
+When authentication is enabled, profiles created before ownership was recorded
+are administrator-only. They are neither listed nor accessible to ordinary
+users, and the application has no supported claim or reassignment workflow.
 
 ### Security Features
 

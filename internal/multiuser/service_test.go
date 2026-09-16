@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	syncsvc "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
+	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 )
 
 func TestGetProfileStatusRechecksStatusAfterFallbackLookup(t *testing.T) {
@@ -498,6 +500,123 @@ func TestMigratedAbsoluteStateFileRemainsUsableForLegacyProfile(t *testing.T) {
 			require.FileExists(t, filepath.Join(dataDir, "migrated."+url.PathEscape(profileID)))
 		})
 	}
+}
+
+func TestMigratesLegacyRawProfileStatePath(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	dataDir := t.TempDir()
+	service.globalConfig.Paths.DataDir = dataDir
+
+	for _, profileID := range []string{"legacy profile", "legacy/profile"} {
+		t.Run(profileID, func(t *testing.T) {
+			configuredPath := "state.json"
+			legacyPath := service.legacyProfileStatePath(profileID, configuredPath)
+			canonicalPath := service.profileSpecificStatePath(profileID, configuredPath)
+			legacyState := statepkg.NewState()
+			legacyState.UpdateBook("preserved-book", 0.5, "IN_PROGRESS")
+			require.NoError(t, legacyState.Save(legacyPath))
+
+			require.NoError(t, service.migrateLegacyProfileStatePath(profileID, configuredPath))
+
+			migrated, err := statepkg.LoadState(canonicalPath)
+			require.NoError(t, err)
+			book, exists := migrated.GetBookState("preserved-book")
+			require.True(t, exists)
+			require.Equal(t, 0.5, book.LastProgress)
+			require.NoFileExists(t, legacyPath)
+			require.FileExists(t, legacyPath+".migrated")
+		})
+	}
+}
+
+func TestLegacyProfileStateMigrationSkipsUnsafeOrIneligibleCandidates(t *testing.T) {
+	t.Run("dot segments cannot alias another legacy profile", func(t *testing.T) {
+		service, _ := newStatusLookupService(t)
+		dataDir := t.TempDir()
+		service.globalConfig.Paths.DataDir = dataDir
+
+		victimID := "sync_state.victim"
+		victimPath := service.legacyProfileStatePath(victimID, "state.json")
+		victimState := statepkg.NewState()
+		victimState.UpdateBook("victim-book", 0.8, "IN_PROGRESS")
+		require.NoError(t, victimState.Save(victimPath))
+
+		attackerID := "foo/../sync_state.victim"
+		attackerCanonicalPath := service.profileSpecificStatePath(attackerID, "state.json")
+		require.NoError(t, service.migrateLegacyProfileStatePath(attackerID, "state.json"))
+
+		require.NoFileExists(t, attackerCanonicalPath)
+		require.FileExists(t, victimPath)
+		require.NoFileExists(t, victimPath+".migrated")
+		preserved, err := statepkg.LoadState(victimPath)
+		require.NoError(t, err)
+		_, exists := preserved.GetBookState("victim-book")
+		require.True(t, exists)
+	})
+
+	t.Run("path escapes state directory", func(t *testing.T) {
+		service, _ := newStatusLookupService(t)
+		rootDir := t.TempDir()
+		dataDir := filepath.Join(rootDir, "data")
+		service.globalConfig.Paths.DataDir = dataDir
+		require.NoError(t, os.MkdirAll(dataDir, 0755))
+
+		profileID := "../../../outside"
+		legacyPath := filepath.Clean(service.legacyProfileStatePath(profileID, "state.json"))
+		legacyState := statepkg.NewState()
+		require.NoError(t, legacyState.Save(legacyPath))
+		canonicalPath := service.profileSpecificStatePath(profileID, "state.json")
+
+		require.NoError(t, service.migrateLegacyProfileStatePath(profileID, "state.json"))
+		require.NoFileExists(t, canonicalPath)
+		require.FileExists(t, legacyPath)
+	})
+
+	t.Run("final path is a symlink", func(t *testing.T) {
+		service, _ := newStatusLookupService(t)
+		dataDir := t.TempDir()
+		service.globalConfig.Paths.DataDir = dataDir
+		outsidePath := filepath.Join(t.TempDir(), "outside-state.json")
+		legacyState := statepkg.NewState()
+		require.NoError(t, legacyState.Save(outsidePath))
+
+		profileID := "legacy profile"
+		legacyPath := service.legacyProfileStatePath(profileID, "state.json")
+		if err := os.Symlink(outsidePath, legacyPath); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		canonicalPath := service.profileSpecificStatePath(profileID, "state.json")
+
+		require.NoError(t, service.migrateLegacyProfileStatePath(profileID, "state.json"))
+		require.NoFileExists(t, canonicalPath)
+		_, err := os.Lstat(legacyPath)
+		require.NoError(t, err)
+	})
+
+	t.Run("canonical path already exists", func(t *testing.T) {
+		service, _ := newStatusLookupService(t)
+		dataDir := t.TempDir()
+		service.globalConfig.Paths.DataDir = dataDir
+		profileID := "legacy profile"
+		canonicalPath := service.profileSpecificStatePath(profileID, "state.json")
+		canonicalState := statepkg.NewState()
+		canonicalState.UpdateBook("canonical-book", 0.75, "IN_PROGRESS")
+		require.NoError(t, canonicalState.Save(canonicalPath))
+
+		legacyPath := service.legacyProfileStatePath(profileID, "state.json")
+		legacyState := statepkg.NewState()
+		legacyState.UpdateBook("legacy-book", 0.25, "IN_PROGRESS")
+		require.NoError(t, legacyState.Save(legacyPath))
+
+		require.NoError(t, service.migrateLegacyProfileStatePath(profileID, "state.json"))
+		migrated, err := statepkg.LoadState(canonicalPath)
+		require.NoError(t, err)
+		_, exists := migrated.GetBookState("canonical-book")
+		require.True(t, exists)
+		_, exists = migrated.GetBookState("legacy-book")
+		require.False(t, exists)
+		require.FileExists(t, legacyPath)
+	})
 }
 
 func TestCreateProfileRejectsStateFilenameLengthAfterLegacyIDEncoding(t *testing.T) {

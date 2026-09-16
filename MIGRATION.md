@@ -37,6 +37,20 @@ If you previously used environment variables for configuration, you will need to
 
 ## Breaking Changes
 
+### Profile API Credentials
+
+Profile API responses no longer echo `audiobookshelf_token` or
+`hardcover_token`, regardless of authentication or role. API clients that read
+credentials back from profile responses must retain their own values instead.
+Omitted or empty token fields in a configuration update preserve the stored
+tokens.
+
+### Authentication and Existing Profiles
+
+When authentication is enabled, pre-existing profiles without an owner are
+administrator-only. They are neither listed nor accessible to ordinary users.
+The application has no supported claim or reassignment workflow.
+
 ### Removed Environment Variables
 
 - **`HARDCOVER_SYNC_DELAY_MS`**: Replaced with request pacing and concurrency limiting

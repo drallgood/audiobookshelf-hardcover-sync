@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	stdSync "sync"
@@ -16,6 +17,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
+	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 )
 
 const maxStateFileComponentBytes = 255
@@ -542,6 +544,19 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
 	defer s.finishActiveRun(profileID, generation)
 	// Create profile-specific config
 	config := s.createProfileSpecificConfig(profileConfig)
+	if err := s.migrateLegacyProfileStatePath(profileID, profileConfig.SyncConfig.StateFile); err != nil {
+		status := &SyncProfileStatus{
+			ProfileID:   profileID,
+			ProfileName: profileConfig.Profile.Name,
+			Status:      "error",
+			Error:       fmt.Sprintf("Failed to migrate legacy sync state: %v", err),
+		}
+		if run, ok := s.activeRun(profileID, generation); ok {
+			applySnapshotToStatus(status, newRunSnapshot(profileID, run, "failed"))
+			s.publishFinalStatus(profileID, generation, status)
+		}
+		return
+	}
 
 	// Create clients
 	absClient := audiobookshelf.NewClient(profileConfig.AudiobookshelfURL, profileConfig.AudiobookshelfToken)
@@ -795,13 +810,148 @@ func (s *MultiUserService) createProfileSpecificConfig(profileConfig *database.P
 }
 
 func (s *MultiUserService) profileSpecificStatePath(profileID, configuredPath string) string {
+	return fmt.Sprintf("%s.%s", strings.TrimSuffix(s.profileStateBasePath(configuredPath), ".json"), encodeProfileID(profileID))
+}
+
+func (s *MultiUserService) legacyProfileStatePath(profileID, configuredPath string) string {
+	return fmt.Sprintf("%s.%s", strings.TrimSuffix(s.profileStateBasePath(configuredPath), ".json"), profileID)
+}
+
+func (s *MultiUserService) profileStateBasePath(configuredPath string) string {
 	statePath := configuredPath
 	if statePath == "" {
 		statePath = filepath.Join(s.effectiveDataDir(), "sync_state.json")
 	} else if !filepath.IsAbs(statePath) {
 		statePath = filepath.Join(s.effectiveDataDir(), statePath)
 	}
-	return fmt.Sprintf("%s.%s", strings.TrimSuffix(statePath, ".json"), encodeProfileID(profileID))
+	return statePath
+}
+
+// migrateLegacyProfileStatePath preserves state written before profile IDs were
+// encoded into a single filename component. It only reads a regular, non-symlink
+// file whose lexical and resolved parent paths remain under the canonical state
+// file directory. The canonical copy is written atomically by State.Save before
+// the old file is renamed to a recoverable .migrated backup.
+func (s *MultiUserService) migrateLegacyProfileStatePath(profileID, configuredPath string) error {
+	canonicalPath, err := filepath.Abs(s.profileSpecificStatePath(profileID, configuredPath))
+	if err != nil {
+		return fmt.Errorf("resolve canonical state path: %w", err)
+	}
+	if _, err := os.Lstat(canonicalPath); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect canonical state path: %w", err)
+	}
+	if !safeLegacyProfileIDPathSegments(profileID) {
+		return nil
+	}
+
+	legacyPath, err := filepath.Abs(s.legacyProfileStatePath(profileID, configuredPath))
+	if err != nil {
+		return fmt.Errorf("resolve legacy state path: %w", err)
+	}
+	if legacyPath == canonicalPath {
+		return nil
+	}
+
+	stateDir := filepath.Dir(canonicalPath)
+	if !pathWithinDirectory(stateDir, legacyPath) {
+		return nil
+	}
+	resolvedStateDir, err := filepath.EvalSymlinks(stateDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("resolve canonical state directory: %w", err)
+	}
+	resolvedLegacyDir, err := filepath.EvalSymlinks(filepath.Dir(legacyPath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("resolve legacy state directory: %w", err)
+	}
+	if !pathWithinDirectory(resolvedStateDir, resolvedLegacyDir) {
+		return nil
+	}
+
+	info, err := os.Lstat(legacyPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("inspect legacy state path: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil
+	}
+
+	legacyState, err := statepkg.LoadState(legacyPath)
+	if err != nil {
+		return fmt.Errorf("load legacy state file: %w", err)
+	}
+	if err := legacyState.Save(canonicalPath); err != nil {
+		return fmt.Errorf("save migrated state file: %w", err)
+	}
+
+	backupPath := legacyPath + ".migrated"
+	if _, err := os.Lstat(backupPath); err == nil {
+		if s.logger != nil {
+			s.logger.Warn("Migrated legacy sync state while preserving the existing backup", map[string]interface{}{
+				"profileID": profileID,
+				"path":      legacyPath,
+			})
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		if s.logger != nil {
+			s.logger.Warn("Migrated legacy sync state but could not inspect its backup path", map[string]interface{}{
+				"profileID": profileID,
+				"path":      legacyPath,
+				"error":     err.Error(),
+			})
+		}
+		return nil
+	}
+	if err := os.Rename(legacyPath, backupPath); err != nil && s.logger != nil {
+		s.logger.Warn("Migrated legacy sync state but could not rename the original", map[string]interface{}{
+			"profileID": profileID,
+			"path":      legacyPath,
+			"error":     err.Error(),
+		})
+	}
+	return nil
+}
+
+func pathWithinDirectory(directory, candidate string) bool {
+	relative, err := filepath.Rel(directory, candidate)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+// safeLegacyProfileIDPathSegments permits historical IDs containing directory
+// separators, but rejects empty and dot path components before the raw path is
+// constructed. Otherwise a value such as "foo/../other" could alias another
+// profile's legacy filename after filepath.Abs cleans it.
+func safeLegacyProfileIDPathSegments(profileID string) bool {
+	if profileID == "" || strings.ContainsRune(profileID, '\x00') {
+		return false
+	}
+
+	segmentStart := 0
+	for index := 0; index < len(profileID); index++ {
+		if !os.IsPathSeparator(profileID[index]) {
+			continue
+		}
+		segment := profileID[segmentStart:index]
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
+		segmentStart = index + 1
+	}
+
+	segment := profileID[segmentStart:]
+	return segment != "" && segment != "." && segment != ".."
 }
 
 func (s *MultiUserService) validateProfileStateFile(profileID, configuredPath string) error {

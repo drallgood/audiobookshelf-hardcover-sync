@@ -14,10 +14,13 @@ info:
 
     When authentication is enabled, newly created profiles belong to the
     authenticated user. For authenticated `/api/profiles` APIs, users and
-    viewers can access only their owned profiles; viewers are read-only and
-    profile reads omit stored credentials, while administrators can access all
-    profiles. Legacy ownerless profiles are administrator-only. Foreign and
-    nonexistent profile requests return a non-enumerating `404`. The public
+    viewers can access only their owned profiles; viewers are read-only, while
+    administrators can access all profiles. Profile API responses never echo
+    `audiobookshelf_token` or `hardcover_token`, regardless of authentication
+    or role. Legacy ownerless profiles are administrator-only: they are not
+    listed or accessible to ordinary users, and no supported claim or
+    reassignment workflow currently exists. Foreign and nonexistent profile
+    requests return a non-enumerating `404`. The public
     `/api/status` endpoint remains scalar and redacted. Authentication disabled
     preserves unrestricted profile access.
     
