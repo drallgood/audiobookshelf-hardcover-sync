@@ -1359,6 +1359,7 @@ class SyncProfileApp {
 
     async fetchAndRenderDetails({ open = this.openSummary, preservePosition = false } = {}) {
         if (!open || open.loading) return;
+        const authGeneration = this.authSessionGeneration;
         const requestGeneration = open.generation;
         const requestRunId = open.runId;
         const requestController = typeof AbortController === 'undefined' ? null : new AbortController();
@@ -1371,6 +1372,10 @@ class SyncProfileApp {
                 `${this.profileUrl(open.profileId)}/runs/${encodeURIComponent(requestRunId)}/details`,
                 { signal: requestController?.signal }
             );
+            // Ignore every response from an earlier authorization boundary,
+            // including authentication errors, so stale detail requests cannot
+            // expire a newly authenticated session.
+            if (authGeneration !== this.authSessionGeneration) return;
             const snapshot = result.success ? result.data : result;
             if (response.status === 401 || response.status === 403) {
                 this.handleAuthExpiry();

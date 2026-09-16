@@ -350,6 +350,8 @@ func TestCreateProfileValidatesComposedStateFilenameLength(t *testing.T) {
 		{name: "default 256 bytes", profileID: strings.Repeat("d", 245), wantError: true},
 		{name: "custom 255 bytes", profileID: "id", configuredPath: strings.Repeat("c", 252) + ".json"},
 		{name: "custom 256 bytes", profileID: "id", configuredPath: strings.Repeat("c", 253) + ".json", wantError: true},
+		{name: "parent component 255 bytes", profileID: "id", configuredPath: filepath.Join(strings.Repeat("p", 255), "state.json")},
+		{name: "parent component 256 bytes", profileID: "id", configuredPath: filepath.Join(strings.Repeat("p", 256), "state.json"), wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, _ := newStatusLookupService(t)
@@ -375,6 +377,24 @@ func TestCreateProfileValidatesComposedStateFilenameLength(t *testing.T) {
 			require.NotNil(t, profile)
 		})
 	}
+}
+
+func TestStartSyncRejectsStoredStateFileWithOverlongComponent(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	service.globalConfig.Paths.DataDir = t.TempDir()
+	profileID := "stored-overlong-component"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID,
+		"Stored overlong profile",
+		"http://audiobookshelf.invalid",
+		"abs-token",
+		"hc-token",
+		database.SyncConfigData{StateFile: filepath.Join(strings.Repeat("p", 256), "state.json")},
+	))
+
+	err := service.StartSync(profileID)
+	require.ErrorIs(t, err, ErrProfileStateFileNameTooLong)
+	require.False(t, service.IsProfileSyncing(profileID))
 }
 
 func TestProfileStateFileValidationRejectsAbsoluteAndEscapingPaths(t *testing.T) {

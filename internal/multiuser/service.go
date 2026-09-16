@@ -23,10 +23,9 @@ import (
 
 const maxStateFileComponentBytes = 255
 
-// ErrProfileStateFileNameTooLong indicates that profile-specific state-file
-// composition, including the encoded profile ID, exceeds the supported
-// filename-component baseline.
-var ErrProfileStateFileNameTooLong = errors.New("profile-specific state filename exceeds 255 bytes")
+// ErrProfileStateFileNameTooLong indicates that a profile-specific state-file
+// path component exceeds the supported filename-component baseline.
+var ErrProfileStateFileNameTooLong = errors.New("profile-specific state path component exceeds 255 bytes")
 
 // ErrProfileStateFilePathNotAllowed indicates that an API-provided state-file
 // path is absolute or escapes the effective data directory.
@@ -1011,6 +1010,15 @@ func safeLegacyProfileIDPathSegments(profileID string) bool {
 	return segment != "" && segment != "." && segment != ".."
 }
 
+func validateStatePathComponentLengths(relativePath string) error {
+	for _, component := range strings.Split(filepath.Clean(relativePath), string(filepath.Separator)) {
+		if len([]byte(component)) > maxStateFileComponentBytes {
+			return fmt.Errorf("%w: %q", ErrProfileStateFileNameTooLong, component)
+		}
+	}
+	return nil
+}
+
 func (s *MultiUserService) validateProfileStateFile(profileID, configuredPath string) error {
 	return s.validateProfileStateFileWithAbsolutePolicy(profileID, configuredPath, false)
 }
@@ -1061,15 +1069,19 @@ func (s *MultiUserService) validateProfileStateFileWithAbsolutePolicy(profileID,
 	if !pathWithinDirectory(dataDir, derived) {
 		return fmt.Errorf("%w: derived path escapes data directory: %q", ErrProfileStateFilePathNotAllowed, configuredPath)
 	}
+	derivedRelative, err := filepath.Rel(dataDir, derived)
+	if err != nil {
+		return fmt.Errorf("%w: compare derived path with data directory: %v", ErrProfileStateFilePathNotAllowed, err)
+	}
+	if err := validateStatePathComponentLengths(derivedRelative); err != nil {
+		return err
+	}
 	withinResolvedDataDir, err := pathWithinResolvedDirectory(dataDir, derivedPath)
 	if err != nil {
 		return fmt.Errorf("%w: resolve derived path: %v", ErrProfileStateFilePathNotAllowed, err)
 	}
 	if !withinResolvedDataDir {
 		return fmt.Errorf("%w: resolved derived path escapes data directory: %q", ErrProfileStateFilePathNotAllowed, configuredPath)
-	}
-	if len([]byte(filepath.Base(derivedPath))) > maxStateFileComponentBytes {
-		return fmt.Errorf("%w: %q", ErrProfileStateFileNameTooLong, filepath.Base(derivedPath))
 	}
 	return nil
 }

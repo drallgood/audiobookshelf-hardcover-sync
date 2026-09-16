@@ -412,6 +412,7 @@ func TestProfileStateFilenameValidationAtHTTPBoundary(t *testing.T) {
 		path string
 	}{
 		{name: "encoded filename too long", path: strings.Repeat("s", 245) + ".json"},
+		{name: "parent component too long", path: filepath.Join(strings.Repeat("p", 256), "state.json")},
 		{name: "NUL byte", path: "state\x00.json"},
 	}
 	for _, test := range unsafeStateFiles {
