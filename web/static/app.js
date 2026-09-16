@@ -679,11 +679,14 @@ class SyncProfileApp {
             this.statusRefreshQueued = true;
             return new Promise(resolve => this.statusRefreshWaiters.push(resolve));
         }
+        const authGeneration = this.authSessionGeneration;
         const requestSequence = ++this.statusLoadSequence;
         const controller = typeof AbortController === 'undefined' ? null : new AbortController();
         this.statusLoadController = controller;
         const signal = controller?.signal;
-        const isCurrentRequest = () => requestSequence === this.statusLoadSequence && !signal?.aborted;
+        const isCurrentRequest = () => authGeneration === this.authSessionGeneration
+            && requestSequence === this.statusLoadSequence
+            && !signal?.aborted;
         this.activeStatusRequests += 1;
         try {
             if (!silent) {
@@ -707,6 +710,10 @@ class SyncProfileApp {
             }
             if (this.authEnabled && !(await this.validateSession(signal))) return;
             const { response, data: result } = await this.fetchJsonWithTimeout('/api/status', { signal });
+            // Ignore every response from an earlier authorization boundary,
+            // including authentication errors, so stale aggregate requests
+            // cannot expire a newly authenticated session.
+            if (!isCurrentRequest()) return;
             if (response.status === 401 || response.status === 403) {
                 this.handleAuthExpiry();
                 return;
@@ -746,7 +753,7 @@ class SyncProfileApp {
             this.statusRefreshError = null;
             this.renderStatuses();
             this.refreshOpenSummary();
-            this.fetchTerminalErrorFallbacks(signal, this.authSessionGeneration);
+            this.fetchTerminalErrorFallbacks(signal, authGeneration);
 
         } catch (error) {
             if (error.name === 'AbortError') return;
