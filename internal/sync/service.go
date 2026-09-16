@@ -66,6 +66,32 @@ const (
 	OutcomeWouldSync      SyncOutcome = "would_sync"
 )
 
+// RunPhase is the canonical lifecycle phase for one synchronization run.
+// Phases are intentionally narrower than the legacy profile status values:
+// callers can distinguish a queued run from one actively processing books and
+// a run that is finalizing its report.
+type RunPhase string
+
+const (
+	RunPhaseQueued     RunPhase = "queued"
+	RunPhaseRunning    RunPhase = "running"
+	RunPhaseFinalizing RunPhase = "finalizing"
+	RunPhaseCompleted  RunPhase = "completed"
+	RunPhaseCanceled   RunPhase = "canceled"
+	RunPhaseFailed     RunPhase = "failed"
+)
+
+// Short aliases keep callers that prefer phase-oriented names readable while
+// the RunPhase-prefixed names remain the canonical exported constants.
+const (
+	PhaseQueued     = RunPhaseQueued
+	PhaseRunning    = RunPhaseRunning
+	PhaseFinalizing = RunPhaseFinalizing
+	PhaseCompleted  = RunPhaseCompleted
+	PhaseCanceled   = RunPhaseCanceled
+	PhaseFailed     = RunPhaseFailed
+)
+
 // OutcomeCounts contains exclusive category counts for a sync run.
 type OutcomeCounts struct {
 	Synced         int32 `json:"synced"`
@@ -107,17 +133,26 @@ type BookOutcomeRecord struct {
 // GetSnapshot returns deep-copied slices so callers can safely retain or
 // modify a response while the sync continues.
 type SyncSnapshot struct {
-	UserID            string              `json:"user_id,omitempty"`
-	AudiobookshelfURL string              `json:"audiobookshelf_url,omitempty"`
-	RunID             string              `json:"run_id,omitempty"`
-	RunStartedAt      time.Time           `json:"run_started_at,omitempty"`
-	State             string              `json:"state,omitempty"`
-	BooksTotal        int32               `json:"books_total"`
-	ProcessedSoFar    int32               `json:"processed_so_far"`
-	ProcessedCount    int32               `json:"processed_count"`
-	OutcomeCounts     OutcomeCounts       `json:"outcome_counts"`
-	BookOutcomes      []BookOutcomeRecord `json:"book_outcomes"`
-	AttentionRecords  []BookOutcomeRecord `json:"attention_records"`
+	UserID            string `json:"user_id,omitempty"`
+	AudiobookshelfURL string `json:"audiobookshelf_url,omitempty"`
+	RunID             string `json:"run_id,omitempty"`
+	// RunStartedAt is retained as a compatibility alias for QueuedAt.
+	RunStartedAt        time.Time           `json:"run_started_at,omitempty"`
+	QueuedAt            time.Time           `json:"queued_at,omitempty"`
+	ProcessingStartedAt time.Time           `json:"processing_started_at,omitempty"`
+	LastActivityAt      time.Time           `json:"last_activity_at,omitempty"`
+	LastProcessedAt     time.Time           `json:"last_processed_at,omitempty"`
+	FinishedAt          time.Time           `json:"finished_at,omitempty"`
+	DryRun              bool                `json:"dry_run"`
+	RunError            string              `json:"run_error,omitempty"`
+	UnattemptedCount    int32               `json:"unattempted_count"`
+	State               string              `json:"state,omitempty"`
+	BooksTotal          int32               `json:"books_total"`
+	ProcessedSoFar      int32               `json:"processed_so_far"`
+	ProcessedCount      int32               `json:"processed_count"`
+	OutcomeCounts       OutcomeCounts       `json:"outcome_counts"`
+	BookOutcomes        []BookOutcomeRecord `json:"book_outcomes"`
+	AttentionRecords    []BookOutcomeRecord `json:"attention_records"`
 
 	// Keep the legacy summary fields in the same snapshot for clients that
 	// have not migrated to the exclusive outcome fields.
@@ -233,10 +268,20 @@ type Service struct {
 	liveMismatches map[string]mismatch.BookMismatch
 	// mismatchCollector is created for each Sync run so mismatch-file export is
 	// isolated from other profiles and runs.
-	mismatchCollector *mismatch.Collector
-	runID             string
-	runStartedAt      time.Time
-	runState          string
+	mismatchCollector   *mismatch.Collector
+	runID               string
+	runStartedAt        time.Time
+	queuedAt            time.Time
+	processingStartedAt time.Time
+	lastActivityAt      time.Time
+	lastProcessedAt     time.Time
+	finishedAt          time.Time
+	runError            string
+	runState            string
+	// runIdentityInjected is true when an owner (currently MultiUserService)
+	// supplied the opaque run ID and queued timestamp. Such an identity is
+	// authoritative and must not be replaced when Sync begins.
+	runIdentityInjected bool
 	// Per-run guard to prevent duplicate read inserts
 	createdReadsThisRun map[int64]struct{}
 	createdReadsMutex   sync.Mutex
@@ -245,10 +290,27 @@ type Service struct {
 // Config is the configuration type for the sync service
 type Config = config.Config
 
-// NewService creates a new sync service
+// NewService creates a new sync service for callers that do not have an
+// external run identity. The service creates a compatibility identity when
+// Sync starts. Multi-user callers should use NewServiceWithRunIdentity so the
+// run ID and generation assigned at accepted-start remain authoritative.
 func NewService(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverClientInterface, cfg *Config) (*Service, error) {
+	return NewServiceWithRunIdentity(absClient, hcClient, cfg, "", time.Time{})
+}
+
+// NewServiceWithRunIdentity creates a sync service bound to an already
+// accepted run. runID is opaque and is retained exactly as supplied. queuedAt
+// is the accepted-start timestamp; when omitted for a non-empty run ID, the
+// current UTC time is used so a queued snapshot exists before execution.
+func NewServiceWithRunIdentity(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverClientInterface, cfg *Config, runID string, queuedAt time.Time) (*Service, error) {
 	if client, ok := hcClient.(*hardcover.Client); ok {
 		client.SetDryRun(cfg.Sync.DryRun)
+	}
+	if runID != "" && queuedAt.IsZero() {
+		queuedAt = time.Now().UTC()
+	}
+	if !queuedAt.IsZero() {
+		queuedAt = queuedAt.UTC()
 	}
 
 	svc := &Service{
@@ -267,9 +329,17 @@ func NewService(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverCl
 		},
 		outcomeRecords:         make(map[string]BookOutcomeRecord),
 		liveMismatches:         make(map[string]mismatch.BookMismatch),
+		runID:                  runID,
+		queuedAt:               queuedAt,
+		runStartedAt:           queuedAt,
 		runState:               "idle",
+		runIdentityInjected:    runID != "",
 		libraryCandidateTotals: make(map[string]int),
 		createdReadsThisRun:    make(map[int64]struct{}),
+	}
+	if svc.runIdentityInjected {
+		svc.runState = string(RunPhaseQueued)
+		svc.lastActivityAt = queuedAt
 	}
 
 	// Migrate old state file if it exists
@@ -316,6 +386,12 @@ func NewService(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverCl
 	}
 
 	return svc, nil
+}
+
+// NewServiceWithRunID is a compatibility spelling for callers that model the
+// accepted-start identity as an ID plus timestamp.
+func NewServiceWithRunID(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverClientInterface, cfg *Config, runID string, queuedAt time.Time) (*Service, error) {
+	return NewServiceWithRunIdentity(absClient, hcClient, cfg, runID, queuedAt)
 }
 
 // getASINFromCache retrieves a cached ASIN lookup result
@@ -412,20 +488,36 @@ func classifyBookLookupOutcome(err error) SyncOutcome {
 	return OutcomeFailed
 }
 
-// beginOutcomeRun starts a fresh, profile-local current-run partition. Run
-// metadata and outcome data are protected by the summary lock and can be
-// published as one coherent snapshot.
+// beginOutcomeRun starts a fresh, profile-local current-run partition. An
+// externally supplied identity is retained; otherwise this compatibility path
+// creates an opaque local ID for direct callers of Service.Sync. Run metadata
+// and outcome data are protected by the summary lock and can be published as
+// one coherent snapshot.
 func (s *Service) beginOutcomeRun() {
 	if s.summary == nil {
 		return
 	}
 	now := time.Now().UTC()
-	runID := strconv.FormatInt(now.UnixNano(), 10)
 	s.summary.Lock()
 	defer s.summary.Unlock()
-	s.runID = runID
-	s.runStartedAt = now
-	s.runState = "syncing"
+	if !s.runIdentityInjected || s.runID == "" {
+		s.runID = strconv.FormatInt(now.UnixNano(), 10)
+		s.queuedAt = now
+	}
+	// Consume the injected identity at the start of this run. If a direct
+	// caller reuses the service for a later run, that later run gets a fresh
+	// compatibility ID instead of accidentally reusing a terminal run ID.
+	s.runIdentityInjected = false
+	if s.queuedAt.IsZero() {
+		s.queuedAt = now
+	}
+	s.runStartedAt = s.queuedAt
+	s.processingStartedAt = time.Time{}
+	s.lastActivityAt = s.queuedAt
+	s.lastProcessedAt = time.Time{}
+	s.finishedAt = time.Time{}
+	s.runError = ""
+	s.runState = string(RunPhaseQueued)
 	s.outcomeCounts = OutcomeCounts{}
 	s.outcomeRecords = make(map[string]BookOutcomeRecord)
 	s.liveMismatches = make(map[string]mismatch.BookMismatch)
@@ -437,15 +529,73 @@ func (s *Service) beginOutcomeRun() {
 	s.summary.Mismatches = make([]mismatch.BookMismatch, 0)
 }
 
-// setOutcomeRunState records the terminal state without changing any item
-// outcome. This state is in-memory and run-scoped.
-func (s *Service) setOutcomeRunState(runState string) {
-	if s.summary == nil {
-		return
+func isTerminalRunPhase(phase RunPhase) bool {
+	return phase == RunPhaseCompleted || phase == RunPhaseCanceled || phase == RunPhaseFailed
+}
+
+func isLegalRunPhaseTransition(from, to RunPhase) bool {
+	switch from {
+	case RunPhaseQueued:
+		return to == RunPhaseRunning || to == RunPhaseCanceled || to == RunPhaseFailed
+	case RunPhaseRunning:
+		return to == RunPhaseFinalizing || to == RunPhaseCanceled || to == RunPhaseFailed
+	case RunPhaseFinalizing:
+		return isTerminalRunPhase(to)
+	default:
+		return false
 	}
+}
+
+func (s *Service) touchLastActivityLocked(now time.Time) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	now = now.UTC()
+	if s.lastActivityAt.IsZero() || now.After(s.lastActivityAt) {
+		s.lastActivityAt = now
+	}
+}
+
+// transitionRunPhase applies one legal lifecycle transition. Terminal phases
+// are immutable until beginOutcomeRun establishes a new run. Invalid or stale
+// transitions are ignored so an old goroutine cannot overwrite a newer
+// terminal snapshot.
+func (s *Service) transitionRunPhase(to RunPhase, runErr error) bool {
+	if s.summary == nil {
+		return false
+	}
+	now := time.Now().UTC()
 	s.summary.Lock()
-	s.runState = runState
-	s.summary.Unlock()
+	defer s.summary.Unlock()
+	from := RunPhase(s.runState)
+	if isTerminalRunPhase(from) || !isLegalRunPhaseTransition(from, to) {
+		return false
+	}
+	s.runState = string(to)
+	s.touchLastActivityLocked(now)
+	switch to {
+	case RunPhaseQueued:
+		if s.queuedAt.IsZero() {
+			s.queuedAt = now
+		}
+		s.runStartedAt = s.queuedAt
+	case RunPhaseRunning:
+		s.processingStartedAt = now
+	case RunPhaseCompleted, RunPhaseCanceled, RunPhaseFailed:
+		s.finishedAt = now
+		if runErr != nil {
+			s.runError = runErr.Error()
+		} else {
+			s.runError = ""
+		}
+	}
+	return true
+}
+
+// setOutcomeRunState is retained for the existing internal finalization seam;
+// new code should use transitionRunPhase so illegal transitions are rejected.
+func (s *Service) setOutcomeRunState(runState string, runErr error) {
+	_ = s.transitionRunPhase(RunPhase(runState), runErr)
 }
 
 // recordLibraryCandidateTotal keeps the largest observed library size. The
@@ -461,10 +611,12 @@ func (s *Service) recordLibraryCandidateTotal(libraryID string, total int) {
 		s.libraryCandidateTotals = make(map[string]int)
 	}
 	if prior, recorded := s.libraryCandidateTotals[libraryID]; recorded && total <= prior {
+		s.touchLastActivityLocked(time.Now().UTC())
 		return
 	}
 	s.summary.BooksTotal += int32(total - s.libraryCandidateTotals[libraryID])
 	s.libraryCandidateTotals[libraryID] = total
+	s.touchLastActivityLocked(time.Now().UTC())
 }
 
 // processedOutcomeTotal avoids cloning outcome details for progress logging.
@@ -613,6 +765,7 @@ func (s *Service) enrichLiveMismatch(record mismatch.BookMismatch) {
 	}
 	s.liveMismatches[record.BookID] = cloneBookMismatch(record)
 	s.replaceSummaryMismatchLocked(record)
+	s.touchLastActivityLocked(time.Now().UTC())
 }
 
 func (s *Service) addMismatch(record mismatch.BookMismatch) {
@@ -797,6 +950,14 @@ func (s *Service) recordBookOutcomeWithMatchMethod(book models.AudiobookshelfBoo
 		s.summary.BooksSynced++
 	}
 	s.summary.TotalBooksProcessed = int32(len(s.outcomeRecords))
+	now := record.UpdatedAt
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if s.lastProcessedAt.IsZero() || now.After(s.lastProcessedAt) {
+		s.lastProcessedAt = now.UTC()
+	}
+	s.touchLastActivityLocked(now)
 	if shouldPublishLegacyMismatch(outcome, err) {
 		s.upsertLiveMismatchLocked(book, record)
 	} else {
@@ -902,6 +1063,10 @@ func sanitizeSnapshotAudiobookshelfURLs(snapshot *SyncSnapshot) {
 	}
 }
 
+func (s *Service) dryRunEnabled() bool {
+	return s.config != nil && s.config.Sync.DryRun
+}
+
 // GetSnapshot returns one race-safe deep copy of the current run. Attention
 // records are derived from the same outcome map and lock acquisition as all
 // counters, so callers never observe fields from different points in a run.
@@ -923,10 +1088,18 @@ func (s *Service) GetSnapshot() SyncSnapshot {
 	snapshot.UserID = s.summary.UserID
 	snapshot.RunID = s.runID
 	snapshot.RunStartedAt = s.runStartedAt
+	snapshot.QueuedAt = s.queuedAt
+	snapshot.ProcessingStartedAt = s.processingStartedAt
+	snapshot.LastActivityAt = s.lastActivityAt
+	snapshot.LastProcessedAt = s.lastProcessedAt
+	snapshot.FinishedAt = s.finishedAt
+	snapshot.DryRun = s.dryRunEnabled()
+	snapshot.RunError = s.runError
 	snapshot.State = s.runState
 	snapshot.BooksTotal = s.summary.BooksTotal
 	snapshot.ProcessedSoFar = s.outcomeCounts.Total()
 	snapshot.ProcessedCount = snapshot.ProcessedSoFar
+	snapshot.UnattemptedCount = unattemptedCount(s.summary.BooksTotal, snapshot.ProcessedSoFar)
 	snapshot.OutcomeCounts = s.outcomeCounts
 	snapshot.TotalBooksProcessed = s.summary.TotalBooksProcessed
 	snapshot.BooksSynced = s.summary.BooksSynced
@@ -974,14 +1147,29 @@ func (s *Service) GetSnapshotStatus() SyncSnapshot {
 		UserID:              s.summary.UserID,
 		RunID:               s.runID,
 		RunStartedAt:        s.runStartedAt,
+		QueuedAt:            s.queuedAt,
+		ProcessingStartedAt: s.processingStartedAt,
+		LastActivityAt:      s.lastActivityAt,
+		LastProcessedAt:     s.lastProcessedAt,
+		FinishedAt:          s.finishedAt,
+		DryRun:              s.dryRunEnabled(),
+		RunError:            s.runError,
 		State:               s.runState,
 		BooksTotal:          s.summary.BooksTotal,
 		ProcessedSoFar:      processedCount,
 		ProcessedCount:      processedCount,
+		UnattemptedCount:    unattemptedCount(s.summary.BooksTotal, processedCount),
 		OutcomeCounts:       s.outcomeCounts,
 		TotalBooksProcessed: s.summary.TotalBooksProcessed,
 		BooksSynced:         s.summary.BooksSynced,
 	}
+}
+
+func unattemptedCount(candidateTotal, processedCount int32) int32 {
+	if candidateTotal <= processedCount {
+		return 0
+	}
+	return candidateTotal - processedCount
 }
 
 // GetSummary returns the current sync summary
@@ -1357,14 +1545,22 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 	}()
 	s.beginOutcomeRun()
 	defer func() {
-		runState := "completed"
-		if err != nil {
-			runState = "failed"
-			if errors.Is(err, context.Canceled) {
-				runState = "canceled"
+		if err == nil {
+			// The context may be canceled after the final persistence check but
+			// before the function returns. Prefer a truthful canceled terminal
+			// phase over claiming completion in that window.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				err = ctxErr
 			}
 		}
-		s.setOutcomeRunState(runState)
+		runState := RunPhaseCompleted
+		if err != nil {
+			runState = RunPhaseFailed
+			if errors.Is(err, context.Canceled) {
+				runState = RunPhaseCanceled
+			}
+		}
+		s.setOutcomeRunState(string(runState), err)
 	}()
 
 	// Mismatches are collected in the run-local collector and exported below.
@@ -1530,6 +1726,11 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 		})
 	}
 
+	// Setup and pre-counting remain queued. Once the processing loop is about
+	// to begin, publish the running phase even when no candidates were found so
+	// every successful run follows the legal queued -> running path.
+	s.transitionRunPhase(RunPhaseRunning, nil)
+
 	// Process each filtered library
 	for i := range filteredLibraries {
 		// Skip processing if we've reached the limit
@@ -1612,6 +1813,14 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 		err = fmt.Errorf("one or more libraries could not be synchronized: %w", libraryRunError)
 	}
 
+	// A cancellation observed before persistence must not be reported as a
+	// completed finalization. Later persistence failures still transition the
+	// run from finalizing to failed and retain the partial outcome snapshot.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	s.transitionRunPhase(RunPhaseFinalizing, nil)
+
 	// Save only this run's mismatches. The collector serializes the shared
 	// output-directory cleanup/write lifecycle across profile runs.
 	if err := s.mismatchCollector.SaveToFile(ctx, s.hardcover, "", s.config); err != nil {
@@ -1661,6 +1870,14 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 		}
 	} else {
 		s.log.Info("[DRY-RUN] Skipping persistent cache saves", nil)
+	}
+
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		if err != nil {
+			err = errors.Join(err, ctxErr)
+		} else {
+			err = ctxErr
+		}
 	}
 
 	// Log the sync summary

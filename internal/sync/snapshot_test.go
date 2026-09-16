@@ -68,7 +68,7 @@ func TestSnapshotStatusCopiesScalarsWithoutDetails(t *testing.T) {
 	require.Equal(t, "profile-a", status.UserID)
 	require.NotEmpty(t, status.RunID)
 	require.False(t, status.RunStartedAt.IsZero())
-	require.Equal(t, "syncing", status.State)
+	require.Equal(t, string(RunPhaseQueued), status.State)
 	require.Equal(t, int32(2), status.BooksTotal)
 	require.Equal(t, int32(2), status.ProcessedSoFar)
 	require.Equal(t, int32(2), status.ProcessedCount)
