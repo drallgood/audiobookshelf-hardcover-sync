@@ -500,8 +500,10 @@ export KEYCLOAK_REDIRECT_URI="https://your-app.example.com/auth/callback/oidc"
 - **Viewer**: Read-only access to owned profiles
 
 When authentication is enabled, profiles created before ownership was recorded
-are administrator-only. They are neither listed nor accessible to ordinary
-users, and there is currently no way to assign one of these profiles to a user.
+remain active and continue to run scheduled syncs. Administrators can still
+manage them, but regular users and viewers cannot see or use them. To give a
+regular user control of one, create a new profile while signed in as that user,
+then have an administrator remove the old profile to prevent duplicate syncs.
 
 ### Security Features
 

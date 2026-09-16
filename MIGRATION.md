@@ -47,9 +47,11 @@ tokens.
 
 ### Authentication and Existing Profiles
 
-When authentication is enabled, pre-existing profiles without an owner are
-administrator-only. They are neither listed nor accessible to ordinary users.
-There is currently no way to assign one of these profiles to a user.
+When authentication is enabled, pre-existing profiles without an owner remain
+active and continue to run scheduled syncs. Administrators can still manage
+them, but regular users and viewers cannot see or use them. To give a regular
+user control of one, create a new profile while signed in as that user, then
+have an administrator remove the old profile to prevent duplicate syncs.
 
 ### Removed Environment Variables
 
