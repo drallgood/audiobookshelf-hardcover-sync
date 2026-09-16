@@ -90,6 +90,8 @@ type BookOutcomeRecord struct {
 	Author          string      `json:"author,omitempty"`
 	ASIN            string      `json:"asin,omitempty"`
 	ISBN            string      `json:"isbn,omitempty"`
+	CoverURL        string      `json:"cover_url,omitempty"`
+	Format          string      `json:"format,omitempty"`
 	Reason          string      `json:"reason,omitempty"`
 	Error           string      `json:"error,omitempty"`
 	MatchMethod     string      `json:"match_method,omitempty"`
@@ -733,9 +735,13 @@ func (s *Service) recordBookOutcomeWithMatchMethod(book models.AudiobookshelfBoo
 		Author:      book.Media.Metadata.AuthorName,
 		ASIN:        book.Media.Metadata.ASIN,
 		ISBN:        book.Media.Metadata.ISBN,
+		Format:      "Audiobook",
 		Reason:      reason,
 		MatchMethod: matchMethod,
 		UpdatedAt:   time.Now().UTC(),
+	}
+	if book.Media.CoverPath != "" && strings.TrimSpace(s.config.Audiobookshelf.URL) != "" {
+		record.CoverURL = fmt.Sprintf("%s/api/items/%s/cover", strings.TrimRight(s.config.Audiobookshelf.URL, "/"), book.ID)
 	}
 	if err != nil {
 		record.Error = err.Error()

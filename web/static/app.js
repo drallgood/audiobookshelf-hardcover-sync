@@ -1491,9 +1491,6 @@ class SyncProfileApp {
         const asin = value(mismatch.hardcover_asin);
         const isbn = value(mismatch.hardcover_isbn);
         const slug = value(mismatch.hardcover_slug);
-        // BookMismatch exposes the source format without a hardcover_ prefix;
-        // the hardcover_* fields above describe the candidate.
-        const sourceFormat = value(mismatch.edition_format);
         const coverURL = value(mismatch.hardcover_cover_url);
         const hardcoverURL = slug
             ? `https://hardcover.app/books/${encodeURIComponent(slug)}`
@@ -1518,7 +1515,6 @@ class SyncProfileApp {
         addField('ASIN', asin);
         addField('ISBN', isbn);
         addField('Slug', slug);
-        addField('Source format', sourceFormat);
 
         const coverIsHTTP = /^https?:\/\//i.test(coverURL) && !coverURL.includes('|');
         const coverHTML = coverIsHTTP
@@ -1573,14 +1569,44 @@ class SyncProfileApp {
             : '';
     }
 
+    buildGoodreadsSearchURL(isbn) {
+        const normalizedISBN = String(isbn || '').trim();
+        return normalizedISBN
+            ? `https://www.goodreads.com/search?q=${encodeURIComponent(normalizedISBN)}`
+            : '';
+    }
+
+    renderAudiobookshelfCover(record) {
+        const coverURL = String(record?.cover_url || '').trim();
+        const coverIsHTTP = /^https?:\/\//i.test(coverURL) && !coverURL.includes('|');
+        const initialURL = coverIsHTTP ? coverURL : '/cover-placeholder.svg';
+        const fallbacks = coverIsHTTP ? `${coverURL}|/cover-placeholder.svg` : '/cover-placeholder.svg';
+        const title = String(record?.title || '').trim();
+        return `<div class="audiobookshelf-cover">
+            <img src="${this.escapeHtmlAttribute(initialURL)}"
+                data-fallbacks="${this.escapeHtmlAttribute(fallbacks)}"
+                data-fb-idx="0"
+                alt="${this.escapeHtmlAttribute(`Audiobookshelf cover${title ? ` for ${title}` : ''}`)}"
+                class="book-cover"
+                loading="lazy"
+                decoding="async"
+                onerror="window.__absHandleImageError && window.__absHandleImageError(this)">
+        </div>`;
+    }
+
     renderOutcomeRecord(record, mismatch = null, audiobookshelfBaseURL = '') {
         const bookId = String(record.book_id || '');
         const title = this.escapeHtml(record.title || 'Unknown title');
         const audiobookshelfURL = this.buildAudiobookshelfItemURL(audiobookshelfBaseURL, bookId);
         const hardcoverURL = this.buildHardcoverBookURL(record, mismatch);
         const asin = String(record.asin || '').trim();
+        const isbn = String(record.isbn || '').trim();
+        const format = String(record.format || '').trim();
         const audibleURL = record.outcome === 'needs_review'
             ? this.buildAudibleBookURL(asin)
+            : '';
+        const goodreadsURL = record.outcome === 'needs_review'
+            ? this.buildGoodreadsSearchURL(isbn)
             : '';
         const titleHTML = audiobookshelfURL
             ? `<a class="book-title-link" href="${this.escapeHtmlAttribute(audiobookshelfURL)}" target="_blank" rel="noopener noreferrer" title="Open in Audiobookshelf">${title} <span class="external-link-mark" aria-hidden="true">↗</span></a>`
@@ -1593,17 +1619,27 @@ class SyncProfileApp {
                 ? `<a href="${this.escapeHtmlAttribute(audibleURL)}" target="_blank" rel="noopener noreferrer" title="Open on Audible">${this.escapeHtml(asin)} <span class="external-link-mark" aria-hidden="true">↗</span></a>`
                 : this.escapeHtml(asin)}</span>`
             : '';
+        const isbnHTML = isbn
+            ? `<span><strong>ISBN:</strong> ${goodreadsURL
+                ? `<a href="${this.escapeHtmlAttribute(goodreadsURL)}" target="_blank" rel="noopener noreferrer" title="Search on Goodreads">${this.escapeHtml(isbn)} <span class="external-link-mark" aria-hidden="true">↗</span></a>`
+                : this.escapeHtml(isbn)}</span>`
+            : '';
         return `<article class="book-item" data-book-id="${this.escapeHtmlAttribute(bookId)}">
-            <div class="book-heading">
-                <div class="book-title">${titleHTML}</div>
-                ${hardcoverLink ? `<div class="book-service-links">${hardcoverLink}</div>` : ''}
+            <div class="book-item-content">
+                ${this.renderAudiobookshelfCover(record)}
+                <div class="book-item-details">
+                    <div class="book-heading">
+                        <div class="book-title">${titleHTML}</div>
+                        ${hardcoverLink ? `<div class="book-service-links">${hardcoverLink}</div>` : ''}
+                    </div>
+                    ${record.author ? `<div><strong>Author:</strong> ${this.escapeHtml(record.author)}</div>` : ''}
+                    <div class="book-meta">${asinHTML}${isbnHTML}${format ? `<span><strong>ABS Format:</strong> ${this.escapeHtml(format)}</span>` : ''}</div>
+                    ${record.match_method ? `<div><strong>Match method:</strong> ${this.escapeHtml(record.match_method)}</div>` : ''}
+                    ${mismatch ? this.renderHardcoverCandidate(mismatch) : ''}
+                    ${record.reason ? `<div class="book-reason"><strong>Reason:</strong> ${this.escapeHtml(record.reason)}</div>` : ''}
+                    ${record.error ? `<div class="book-error"><strong>Error:</strong> ${this.escapeHtml(record.error)}</div>` : ''}
+                </div>
             </div>
-            ${record.author ? `<div><strong>Author:</strong> ${this.escapeHtml(record.author)}</div>` : ''}
-            <div class="book-meta">${asinHTML}${record.isbn ? `<span><strong>ISBN:</strong> ${this.escapeHtml(record.isbn)}</span>` : ''}</div>
-            ${record.match_method ? `<div><strong>Match method:</strong> ${this.escapeHtml(record.match_method)}</div>` : ''}
-            ${mismatch ? this.renderHardcoverCandidate(mismatch) : ''}
-            ${record.reason ? `<div class="book-reason"><strong>Reason:</strong> ${this.escapeHtml(record.reason)}</div>` : ''}
-            ${record.error ? `<div class="book-error"><strong>Error:</strong> ${this.escapeHtml(record.error)}</div>` : ''}
         </article>`;
     }
 

@@ -1325,6 +1325,7 @@ header p {
     align-items: start;
 }
 
+.audiobookshelf-cover .book-cover,
 .hardcover-candidate-cover .book-cover {
     display: block;
     width: 10rem;
@@ -1333,6 +1334,17 @@ header p {
     margin: 0 auto;
     object-fit: contain;
     background: #fff;
+}
+
+.book-item-content {
+    display: grid;
+    grid-template-columns: minmax(0, 10rem) minmax(0, 1fr);
+    gap: 1rem;
+    align-items: start;
+}
+
+.book-item-details {
+    min-width: 0;
 }
 
 .hardcover-candidate .book-meta {
@@ -1344,6 +1356,7 @@ header p {
 }
 
 @media (max-width: 480px) {
+    .book-item-content,
     .hardcover-candidate-content {
         grid-template-columns: 1fr;
     }

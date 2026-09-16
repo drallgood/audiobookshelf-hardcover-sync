@@ -252,6 +252,8 @@ components:
         author: {type: string}
         asin: {type: string}
         isbn: {type: string}
+        cover_url: {type: string, format: uri}
+        format: {type: string}
         reason: {type: string}
         error: {type: string}
         match_method: {type: string}

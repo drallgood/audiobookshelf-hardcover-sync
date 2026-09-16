@@ -618,6 +618,10 @@ func TestPublicStatusAndSummaryRoutesExposeLiveAttentionOutcomes(t *testing.T) {
 	require.Equal(t, liveSnapshot.ProcessedSoFar, liveDetails.Data.ProcessedSoFar)
 	require.Len(t, liveDetails.Data.BookOutcomes, 2)
 	require.Len(t, liveDetails.Data.AttentionRecords, 2)
+	for _, record := range liveDetails.Data.BookOutcomes {
+		require.Equal(t, absServer.Server.URL+"/api/items/"+record.BookID+"/cover", record.CoverURL)
+		require.Equal(t, "Audiobook", record.Format)
+	}
 
 	var summaryResponse summaryHTTPResponse
 	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/summary", &summaryResponse)
@@ -1047,6 +1051,7 @@ func statusBook(id, title, author string) map[string]interface{} {
 		"libraryId": "library",
 		"mediaType": "book",
 		"media": map[string]interface{}{
+			"coverPath": "/covers/" + id + ".jpg",
 			"metadata": map[string]interface{}{
 				"title":      title,
 				"authorName": author,
