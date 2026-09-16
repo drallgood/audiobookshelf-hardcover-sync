@@ -118,12 +118,17 @@ func TestGetProfileSnapshotUsesCurrentRunWithoutProfileHydration(t *testing.T) {
 		profileID, "Profile A", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
 	))
 
-	// Corrupt stored credentials so any fallback profile hydration fails instead
-	// of returning a snapshot from the active service.
-	require.NoError(t, db.Model(&database.SyncProfileConfig{}).Where("profile_id = ?", profileID).Updates(map[string]interface{}{
-		"audiobookshelf_token_encrypted": "invalid-encrypted-token",
-		"hardcover_token_encrypted":      "invalid-encrypted-token",
-	}).Error)
+	const queryCallbackName = "multiuser_test_forbid_snapshot_profile_hydration"
+	require.NoError(t, db.Callback().Query().Before("gorm:query").Register(queryCallbackName, func(tx *gorm.DB) {
+		if tx.Statement.Schema == nil || tx.Statement.Schema.Name != "SyncProfile" {
+			return
+		}
+		t.Errorf("GetProfileSnapshot hydrated profile metadata from the database")
+		tx.AddError(gorm.ErrInvalidValue)
+	}))
+	t.Cleanup(func() {
+		require.NoError(t, db.Callback().Query().Remove(queryCallbackName))
+	})
 
 	cfg := config.DefaultConfig()
 	cfg.Sync.StateFile = filepath.Join(t.TempDir(), "state.json")

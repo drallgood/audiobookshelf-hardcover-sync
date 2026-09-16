@@ -136,6 +136,12 @@ func TestSnapshotSanitizesAudiobookshelfURLs(t *testing.T) {
 			wantCoverURL:   "https://audiobookshelf.example/base/api/items/snapshot-sanitize/cover",
 		},
 		{
+			name:           "omits credential-bearing opaque URL",
+			audiobookshelf: "https:reader:secret@audiobookshelf.example/base",
+			wantURL:        "",
+			wantCoverURL:   "",
+		},
+		{
 			name:           "omits unparsable URL",
 			audiobookshelf: "https://reader:%zz@audiobookshelf.example/base",
 		},

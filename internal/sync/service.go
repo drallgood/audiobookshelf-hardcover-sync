@@ -863,6 +863,9 @@ func sanitizeAudiobookshelfURL(raw string) string {
 	if err != nil {
 		return ""
 	}
+	if parsed.Opaque != "" {
+		return ""
+	}
 	parsed.User = nil
 	parsed.RawQuery = ""
 	parsed.ForceQuery = false
