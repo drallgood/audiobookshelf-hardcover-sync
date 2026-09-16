@@ -466,6 +466,8 @@ func TestProfileStateFilenameValidationAtHTTPBoundary(t *testing.T) {
 		{name: "absolute", path: "/absolute/state.json"},
 		{name: "parent", path: "../escape.json"},
 		{name: "nested parent", path: "nested/../../escape.json"},
+		{name: "current directory", path: "."},
+		{name: "collapsing relative", path: "safe/.."},
 		{name: "NUL byte", path: "state\x00.json"},
 	}
 	for _, test := range unsafeStateFiles {

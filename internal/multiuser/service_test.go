@@ -388,6 +388,8 @@ func TestProfileStateFileValidationRejectsAbsoluteAndEscapingPaths(t *testing.T)
 		{name: "absolute", path: filepath.Join(service.globalConfig.Paths.DataDir, "outside.json")},
 		{name: "parent", path: "../outside.json"},
 		{name: "nested parent", path: filepath.Join("nested", "..", "..", "outside.json")},
+		{name: "current directory", path: "."},
+		{name: "collapsing relative", path: "safe/.."},
 	} {
 		t.Run("create "+test.name, func(t *testing.T) {
 			profileID := "unsafe-create-" + strings.ReplaceAll(test.name, " ", "-")
@@ -422,6 +424,8 @@ func TestProfileStateFileValidationRejectsAbsoluteAndEscapingPaths(t *testing.T)
 	}{
 		{name: "absolute", path: filepath.Join(service.globalConfig.Paths.DataDir, "outside.json")},
 		{name: "escaping relative", path: "../../outside.json"},
+		{name: "current directory", path: "."},
+		{name: "collapsing relative", path: "safe/.."},
 	} {
 		t.Run("update "+test.name, func(t *testing.T) {
 			err := service.UpdateProfileConfig(
