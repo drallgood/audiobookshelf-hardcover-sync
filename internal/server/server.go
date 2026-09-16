@@ -23,18 +23,18 @@ type Server struct {
 	authService      *auth.AuthService
 	authHandlers     *auth.AuthHandlers
 	authMiddleware   *auth.AuthMiddleware
-	syncService      api.SyncService
 	logger           *logger.Logger
 }
 
 // New creates a new HTTP server with multi-user and authentication support
-func New(addr string, multiUserService *multiuser.MultiUserService, authService *auth.AuthService, syncService api.SyncService, log *logger.Logger) *Server {
-	apiHandler := api.NewHandler(multiUserService, syncService, log)
-	
+func New(addr string, multiUserService *multiuser.MultiUserService, authService *auth.AuthService, log *logger.Logger) *Server {
+	apiHandler := api.NewHandler(multiUserService, log)
+	apiHandler.SetAuthEnabled(authService != nil && authService.IsEnabled())
+
 	// Initialize authentication handlers and middleware
 	authHandlers := auth.NewAuthHandlers(authService, log)
 	authMiddleware := authService.GetMiddleware()
-	
+
 	s := &Server{
 		server: &http.Server{
 			Addr: addr,
@@ -44,44 +44,47 @@ func New(addr string, multiUserService *multiuser.MultiUserService, authService 
 		authService:      authService,
 		authHandlers:     authHandlers,
 		authMiddleware:   authMiddleware,
-		syncService:      syncService,
 		logger:           log,
 	}
 
 	// Set up routes
 	handler := http.NewServeMux()
-	
+
 	// Health check (no auth required)
 	handler.HandleFunc("GET /health", s.handleHealthCheck)
-	
+
 	// Authentication endpoints (no auth required for login)
-	handler.HandleFunc("GET /login", s.authHandlers.HandleLogin)  // Serve login page
-	handler.HandleFunc("POST /api/auth/login", s.authHandlers.HandleLogin)  // Handle login form submission
-	handler.HandleFunc("GET /api/auth/me", s.handleAPICurrentUser)  // Check auth status (no auth required)
+	handler.HandleFunc("GET /login", s.authHandlers.HandleLogin)           // Serve login page
+	handler.HandleFunc("POST /api/auth/login", s.authHandlers.HandleLogin) // Handle login form submission
+	handler.HandleFunc("GET /api/auth/me", s.handleAPICurrentUser)         // Check auth status (no auth required)
 	handler.HandleFunc("GET /auth/callback/{provider}", s.authHandlers.HandleOAuthCallback)
 	handler.HandleFunc("GET /auth/oauth/{provider}", s.authHandlers.HandleOAuthLogin)
 	handler.HandleFunc("POST /api/auth/logout", s.authHandlers.HandleLogout)
-	
+
 	// Public API endpoints (no auth required)
-	handler.HandleFunc("GET /api/status", s.handleAPIStatus)  // General status check
-	handler.HandleFunc("POST /api/sync", s.handleSync)  // Legacy sync endpoint
+	handler.HandleFunc("GET /api/status", s.handleAPIStatus) // General status check
+	handler.HandleFunc("POST /api/sync", s.handleSync)       // Legacy sync endpoint
 
 	// API v1 routes with authentication
 	apiMux := http.NewServeMux()
-	apiMux.HandleFunc("GET /profiles", s.handleAPIProfiles)
-	apiMux.HandleFunc("POST /profiles", s.handleAPIProfiles)
-	apiMux.HandleFunc("GET /profiles/{id}", s.handleAPIProfilesWithID)
-	apiMux.HandleFunc("PUT /profiles/{id}", s.handleAPIProfilesWithID)
-	apiMux.HandleFunc("DELETE /profiles/{id}", s.handleAPIProfilesWithID)
-	apiMux.HandleFunc("PUT /profiles/{id}/config", s.handleAPIProfilesWithID)
-	apiMux.HandleFunc("GET /profiles/{id}/status", s.handleAPIProfilesWithID)
-	apiMux.HandleFunc("POST /profiles/{id}/sync", s.handleAPIProfilesWithID)
-	apiMux.HandleFunc("DELETE /profiles/{id}/sync", s.handleAPIProfilesWithID)
-	apiMux.HandleFunc("GET /profiles/{id}/summary", s.handleAPISummary)  // Add summary endpoint
+	apiMux.HandleFunc("GET /api/profiles", s.apiHandler.GetProfiles)
+	apiMux.HandleFunc("POST /api/profiles", s.apiHandler.CreateProfile)
+	apiMux.HandleFunc("GET /api/profiles/{id}", s.apiHandler.GetProfile)
+	apiMux.HandleFunc("PUT /api/profiles/{id}", s.apiHandler.UpdateProfile)
+	apiMux.HandleFunc("DELETE /api/profiles/{id}", s.apiHandler.DeleteProfile)
+	apiMux.HandleFunc("PUT /api/profiles/{id}/config", s.apiHandler.UpdateProfileConfig)
+	apiMux.HandleFunc("GET /api/profiles/{id}/status", s.apiHandler.GetProfileStatus)
+	apiMux.HandleFunc("POST /api/profiles/{id}/sync", s.apiHandler.StartSync)
+	apiMux.HandleFunc("DELETE /api/profiles/{id}/sync", s.apiHandler.CancelSync)
+	apiMux.HandleFunc("GET /api/profiles/{id}/summary", s.apiHandler.GetSyncSummary)
+	apiMux.HandleFunc("GET /api/profiles/{id}/runs/{runID}/details", s.apiHandler.GetRunDetails)
 
-	// Mount API routes under /api with auth middleware
-	handler.Handle("/api/", s.authMiddleware.RequireAuth(http.StripPrefix("/api", apiMux)))
-	
+	// Mount profile API routes under /api with auth middleware. Keep the /api
+	// prefix in the mux patterns: StripPrefix would operate on URL.Path after
+	// decoding escaped delimiters and could make legacy IDs containing an
+	// encoded slash unrouteable.
+	handler.Handle("/api/", s.authMiddleware.RequireAuth(apiMux))
+
 	// Static web UI files (no auth required)
 	handler.Handle("/", http.HandlerFunc(s.handleStaticFiles))
 
@@ -155,98 +158,6 @@ func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 	s.apiHandler.GetAllProfileStatuses(w, r)
 }
 
-// handleAPIProfiles handles /api/profiles endpoint
-func (s *Server) handleAPIProfiles(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.apiHandler.GetProfiles(w, r)
-	case http.MethodPost:
-		s.apiHandler.CreateProfile(w, r)
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-// handleAPIProfilesWithID handles /api/profiles/{id} and related endpoints
-func (s *Server) handleAPIProfilesWithID(w http.ResponseWriter, r *http.Request) {
-	// Debug logging for path parsing
-	s.logger.Debug("handleAPIProfilesWithID processing request", map[string]interface{}{
-		"original_path": r.URL.Path,
-		"method":        r.Method,
-	})
-
-	// Extract profile ID from URL path
-	trimmedPath := strings.Trim(r.URL.Path, "/")
-	pathParts := strings.Split(trimmedPath, "/")
-	
-	s.logger.Debug("Path parsing details", map[string]interface{}{
-		"original_path":  r.URL.Path,
-		"trimmed_path":   trimmedPath,
-		"path_parts":     pathParts,
-		"parts_count":    len(pathParts),
-		"parts_needed":   2,
-	})
-
-	// After StripPrefix("/api"), path becomes "/profiles/{id}", so we need at least 2 parts
-	if len(pathParts) < 2 {
-		s.logger.Debug("Returning 400: Invalid profile ID", map[string]interface{}{
-			"path_parts":  pathParts,
-			"parts_count": len(pathParts),
-		})
-		http.Error(w, "Invalid profile ID", http.StatusBadRequest)
-		return
-	}
-
-	profileID := pathParts[1]
-	if profileID == "" {
-		http.Error(w, "Profile ID is required", http.StatusBadRequest)
-		return
-	}
-
-	// Handle different resource types under /profiles/{id}
-	if len(pathParts) > 2 {
-		// Handle nested resources like /profiles/{id}/config, /profiles/{id}/status, etc.
-		switch pathParts[2] {
-		case "config":
-			if r.Method == http.MethodPut {
-				s.apiHandler.UpdateProfileConfig(w, r)
-			} else {
-				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			}
-		case "status":
-			if r.Method == http.MethodGet {
-				s.apiHandler.GetProfileStatus(w, r)
-			} else {
-				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			}
-		case "sync":
-			switch r.Method {
-			case http.MethodPost:
-				s.apiHandler.StartSync(w, r)
-			case http.MethodDelete:
-				s.apiHandler.CancelSync(w, r)
-			default:
-				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			}
-		default:
-			http.Error(w, "Not found", http.StatusNotFound)
-		}
-		return
-	}
-
-	// Handle direct profile access (/profiles/{id})
-	switch r.Method {
-	case http.MethodGet:
-		s.apiHandler.GetProfile(w, r)
-	case http.MethodPut:
-		s.apiHandler.UpdateProfile(w, r)
-	case http.MethodDelete:
-		s.apiHandler.DeleteProfile(w, r)
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
 // handleAPICurrentUser handles /auth/me endpoint
 func (s *Server) handleAPICurrentUser(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -279,7 +190,7 @@ func (s *Server) handleAPICurrentUser(w http.ResponseWriter, r *http.Request) {
 	// Since this endpoint is outside auth middleware, we need to check session manually
 	sessionManager := s.authService.GetSessionManager().(*auth.DefaultSessionManager)
 	token := sessionManager.GetSessionFromRequest(r)
-	
+
 	if token == "" {
 		// No session token found
 		s.logger.Debug("Auth status check: no session token found", nil)
@@ -322,7 +233,7 @@ func (s *Server) handleAPICurrentUser(w http.ResponseWriter, r *http.Request) {
 
 	// User is authenticated
 	s.logger.Debug("Auth status check: user authenticated", map[string]interface{}{
-		"user_id": user.ID,
+		"user_id":  user.ID,
 		"username": user.Username,
 	})
 	response := map[string]interface{}{
@@ -347,12 +258,6 @@ func (s *Server) handleAPICurrentUser(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleAPISummary handles GET /api/profiles/{id}/summary
-func (s *Server) handleAPISummary(w http.ResponseWriter, r *http.Request) {
-	// Get the sync summary using the API handler
-	s.apiHandler.GetSyncSummary(w, r)
-}
-
 // handleStaticFiles serves static web UI files
 func (s *Server) handleStaticFiles(w http.ResponseWriter, r *http.Request) {
 	// Skip if this is an API route
@@ -363,22 +268,22 @@ func (s *Server) handleStaticFiles(w http.ResponseWriter, r *http.Request) {
 
 	// Serve static files from web/static directory
 	staticDir := "./web/static"
-	
+
 	// Default to index.html for root path
 	filePath := r.URL.Path
 	if filePath == "/" {
 		filePath = "/index.html"
 	}
-	
+
 	// Security: prevent directory traversal
 	if strings.Contains(filePath, "..") {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
-	
+
 	// Ensure we join a relative path so staticDir isn't ignored
-    relPath := strings.TrimPrefix(filePath, "/")
-    fullPath := filepath.Join(staticDir, relPath)
+	relPath := strings.TrimPrefix(filePath, "/")
+	fullPath := filepath.Join(staticDir, relPath)
 
 	// Set content type and cache control headers based on file extension
 	switch filepath.Ext(fullPath) {
@@ -422,7 +327,7 @@ func (s *Server) handleStaticFiles(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 	}
-	
+
 	// Serve the file
 	http.ServeFile(w, r, fullPath)
 }

@@ -2,20 +2,27 @@ package models
 
 // AudiobookshelfMetadata represents the metadata for an Audiobookshelf book
 type AudiobookshelfMetadataStruct struct {
-	Title             string   `json:"title"`
-	TitleIgnorePrefix string   `json:"titleIgnorePrefix"`
-	Subtitle          string   `json:"subtitle"`
-	AuthorName        string   `json:"authorName"`
-	AuthorNameLF      string   `json:"authorNameLF"`
-	NarratorName      string   `json:"narratorName"`
-	SeriesName        string   `json:"seriesName"`
-	Genres            []string `json:"genres"`
-	PublishedYear     string   `json:"publishedYear"`
-	Publisher         string   `json:"publisher"`
-	Description       string   `json:"description"`
-	ISBN              string   `json:"isbn"`
-	ASIN              string   `json:"asin"`
-	Language          string   `json:"language"`
+	Title             string                 `json:"title"`
+	TitleIgnorePrefix string                 `json:"titleIgnorePrefix"`
+	Subtitle          string                 `json:"subtitle"`
+	AuthorName        string                 `json:"authorName"`
+	AuthorNameLF      string                 `json:"authorNameLF"`
+	NarratorName      string                 `json:"narratorName"`
+	SeriesName        string                 `json:"seriesName"`
+	Series            []AudiobookshelfSeries `json:"series"`
+	Genres            []string               `json:"genres"`
+	PublishedYear     string                 `json:"publishedYear"`
+	Publisher         string                 `json:"publisher"`
+	Description       string                 `json:"description"`
+	ISBN              string                 `json:"isbn"`
+	ASIN              string                 `json:"asin"`
+	Language          string                 `json:"language"`
+}
+
+// AudiobookshelfSeries describes a book's membership and position in a series.
+type AudiobookshelfSeries struct {
+	Name     string `json:"name"`
+	Sequence string `json:"sequence"`
 }
 
 // GetTitle returns the book's title
@@ -45,10 +52,10 @@ type AudiobookshelfBook struct {
 	Path      string `json:"path"`
 	MediaType string `json:"mediaType"`
 	Media     struct {
-		ID       string                      `json:"id"`
-		Metadata AudiobookshelfMetadataStruct `json:"metadata"`
-		CoverPath string                     `json:"coverPath"`
-		Duration  float64                    `json:"duration"`
+		ID        string                       `json:"id"`
+		Metadata  AudiobookshelfMetadataStruct `json:"metadata"`
+		CoverPath string                       `json:"coverPath"`
+		Duration  float64                      `json:"duration"`
 	} `json:"media"`
 	// Progress tracks the user's progress through the book
 	Progress struct {

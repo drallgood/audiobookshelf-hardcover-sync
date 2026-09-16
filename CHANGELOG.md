@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Account for per-run book outcomes**: Account for each attempted Audiobookshelf book with one per-run outcome so processed totals reconcile with the outcome categories. This prepares the backend for a subsequent live-status change while preserving the existing status API. By @Snuffy2 (#183)
 - **Current-run sync outcome status**: Per-profile status and summary responses now identify the run and its start time, state, candidate total, and processed count. Each processed item has one of seven mutually exclusive outcomes (`synced`, `already_current`, `skipped`, `needs_review`, `not_found`, `failed`, or dry-run `would_sync`), whose counts reconcile to the processed count. Needs-review, not-found, and failed records are available immediately as attention items. By @Snuffy2 (#184)
+- **Secure on-demand sync details**: Sync Status now loads authorized, book-level results for the current run on demand, while aggregate polling remains lightweight and profile access follows owner, viewer, administrator, and legacy-ownerless permissions. Each result includes its Audiobookshelf cover, format, and available series position and links to its Audiobookshelf item and, when known, Hardcover; needs-review results also show the candidate's available series position and link the distinct candidate title, Audiobookshelf ASIN to Audible, and Audiobookshelf ISBN to Goodreads. By @Snuffy2. (#185)
 
 ### Fixed
 

@@ -11,6 +11,15 @@ info:
     ```
     Authorization: Bearer <token>
     ```
+
+    When authentication is enabled, newly created profiles belong to the
+    authenticated user. For authenticated `/api/profiles` APIs, users and
+    viewers can access only their owned profiles; viewers are read-only and
+    profile reads omit stored credentials, while administrators can access all
+    profiles. Legacy ownerless profiles are administrator-only. Foreign and
+    nonexistent profile requests return a non-enumerating `404`. The public
+    `/api/status` endpoint remains scalar and redacted. Authentication disabled
+    preserves unrestricted profile access.
     
     ## Rate Limiting
     
@@ -104,6 +113,10 @@ components:
               items:
                 type: string
               example: ["exclusive"]
+            state_file:
+              type: string
+              description: Optional relative state-file path. Absolute paths and relative paths that lexically escape the effective data directory are rejected; when paths.data_dir is empty, /data is used. The profile-specific filename component, including the encoded profile ID, must fit the supported 255-byte baseline.
+              pattern: '^(?!/).*$'
             dry_run:
               type: boolean
               example: false
@@ -143,7 +156,7 @@ components:
           type: boolean
         books_total:
           type: integer
-          description: Number of candidates observed before processing limits.
+          description: Number of candidates observed before processing limits; zero means the total is unknown or has not been observed yet. This is independent of processed_so_far.
         books_synced:
           type: integer
           description: Legacy count retained for existing clients.
@@ -163,7 +176,7 @@ components:
 
     AggregateSyncStatus:
       type: object
-      description: Baseline status exposed by the public aggregate status endpoint.
+      description: Scalar status exposed by the public aggregate status endpoint. Per-book arrays are available from the authenticated run-details endpoint.
       properties:
         profile_id:
           type: string
@@ -185,10 +198,35 @@ components:
           example: "Starting sync..."
         books_total:
           type: integer
-          description: Number of candidates observed before processing limits.
+          description: Number of candidates observed before processing limits; zero means the total is unknown or has not been observed yet. This is independent of processed_so_far.
         books_synced:
           type: integer
           description: Legacy count retained for existing clients.
+        snapshot:
+          $ref: '#/components/schemas/AggregateSnapshot'
+
+    AggregateSnapshot:
+      type: object
+      description: Scalar current-run snapshot used for inexpensive aggregate polling.
+      required: [run_id, run_started_at, state, books_total, processed_so_far, processed_count, outcome_counts]
+      properties:
+        user_id: {type: string}
+        run_id: {type: string}
+        run_started_at: {type: string, format: date-time}
+        state:
+          type: string
+          enum: [idle, syncing, completed, failed]
+        books_total:
+          type: integer
+          description: Number of candidates observed before processing limits; zero means the total is unknown or has not been observed yet.
+        processed_so_far:
+          type: integer
+          description: Number of books processed so far, independent of books_total.
+        processed_count: {type: integer}
+        outcome_counts:
+          $ref: '#/components/schemas/OutcomeCounts'
+        total_books_processed: {type: integer}
+        books_synced: {type: integer}
 
     OutcomeCounts:
       type: object
@@ -214,6 +252,10 @@ components:
         author: {type: string}
         asin: {type: string}
         isbn: {type: string}
+        cover_url: {type: string, format: uri}
+        format: {type: string}
+        series: {type: string}
+        series_number: {type: string}
         reason: {type: string}
         error: {type: string}
         match_method: {type: string}
@@ -271,6 +313,8 @@ components:
         hardcover_asin: {type: string}
         hardcover_isbn: {type: string}
         hardcover_slug: {type: string}
+        hardcover_series: {type: string}
+        hardcover_series_number: {type: string}
         reason: {type: string}
         timestamp: {type: integer, format: int64}
         attempts: {type: integer}
@@ -281,6 +325,10 @@ components:
       required: [run_id, run_started_at, state, books_total, processed_so_far, processed_count, outcome_counts, book_outcomes, attention_records]
       properties:
         user_id: {type: string}
+        audiobookshelf_url:
+          type: string
+          format: uri
+          description: Base URL used to build Audiobookshelf item links in authenticated run details. Omitted from aggregate status responses.
         run_id: {type: string}
         run_started_at: {type: string, format: date-time}
         state:
@@ -289,10 +337,10 @@ components:
           description: Cancellation currently clears the live snapshot and returns the profile to idle.
         books_total:
           type: integer
-          description: Number of candidates observed before processing limits.
+          description: Number of candidates observed before processing limits; zero means the total is unknown or has not been observed yet. This is independent of processed_so_far.
         processed_so_far:
           type: integer
-          description: Sum of all outcome_counts categories.
+          description: Sum of all outcome_counts categories, independent of books_total.
         processed_count:
           type: integer
           description: Alias of processed_so_far for clients that prefer count terminology.
@@ -327,8 +375,12 @@ components:
         run_id: {type: string}
         run_started_at: {type: string, format: date-time}
         state: {type: string}
-        books_total: {type: integer}
-        processed_so_far: {type: integer}
+        books_total:
+          type: integer
+          description: Number of candidates observed before processing limits; zero means the total is unknown or has not been observed yet.
+        processed_so_far:
+          type: integer
+          description: Number of books processed so far, independent of books_total.
         processed_count: {type: integer}
         outcome_counts:
           $ref: '#/components/schemas/OutcomeCounts'
@@ -394,6 +446,9 @@ paths:
               properties:
                 id:
                   type: string
+                  maxLength: 244
+                  pattern: '^(?!\.\.?$)[A-Za-z0-9._~-]+$'
+                  description: Up to 244 ASCII RFC 3986 unreserved characters; "." and ".." are not valid profile IDs.
                   example: "profile-123"
                 name:
                   type: string
@@ -617,6 +672,44 @@ paths:
                     $ref: '#/components/schemas/SyncStatus'
         '404':
           description: Profile not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /profiles/{profileId}/runs/{runId}/details:
+    get:
+      tags: [Status]
+      summary: Get full details for the current run of a profile
+      description: Returns per-book outcomes and attention records only when runId identifies the profile's current snapshot. Stale, replaced, and unknown runs return 404.
+      parameters:
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "profile-123"
+        - name: runId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "profile-123-1700000000000000000-1"
+      responses:
+        '200':
+          description: Full current-run snapshot details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/SyncSnapshot'
+        '404':
+          description: Profile or current run not found
           content:
             application/json:
               schema:

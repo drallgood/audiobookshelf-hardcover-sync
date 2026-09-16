@@ -2,11 +2,13 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
-	"strings"
+	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/types"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/auth"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
@@ -14,16 +16,13 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 )
 
+const maxNewProfileIDBytes = 244
+
 // Handler provides HTTP handlers for the sync profile API
 type Handler struct {
 	multiUserService *multiuser.MultiUserService
-	syncService      syncService // Interface for sync service to allow for testing
 	log              logger.Logger
-}
-
-// syncService defines the interface for the sync service
-type syncService interface {
-	GetSummary() *sync.SyncSummary
+	authEnabled      bool
 }
 
 // summaryFromProfileStatus reconstructs a summary after an inactive sync
@@ -47,11 +46,13 @@ func summaryFromProfileStatus(status *multiuser.SyncProfileStatus) *sync.SyncSum
 	}
 }
 
-// NewHandler creates a new API handler
-func NewHandler(multiUserService *multiuser.MultiUserService, syncSvc syncService, log *logger.Logger) *Handler {
+// NewHandler creates a new API handler.
+//
+// Sync services are owned by MultiUserService for profile-scoped operations;
+// the HTTP layer does not need a separate single-user service reference.
+func NewHandler(multiUserService *multiuser.MultiUserService, log *logger.Logger) *Handler {
 	h := &Handler{
 		multiUserService: multiUserService,
-		syncService:      syncSvc,
 	}
 
 	// Initialize logger if provided
@@ -63,6 +64,13 @@ func NewHandler(multiUserService *multiuser.MultiUserService, syncSvc syncServic
 	}
 
 	return h
+}
+
+// SetAuthEnabled configures whether profile handlers require request user
+// context and enforce ownership. It is set by the mounted HTTP server; direct
+// handler callers retain the legacy authentication-disabled behavior.
+func (h *Handler) SetAuthEnabled(enabled bool) {
+	h.authEnabled = enabled
 }
 
 // CreateProfileRequest represents the request body for creating a sync profile
@@ -95,12 +103,40 @@ type APIResponse struct {
 	Error   string      `json:"error,omitempty"`
 }
 
+// aggregateSnapshotResponse is intentionally separate from sync.SyncSnapshot:
+// aggregate polling must not serialize the potentially large per-book arrays.
+type aggregateSnapshotResponse struct {
+	UserID              string             `json:"user_id,omitempty"`
+	RunID               string             `json:"run_id,omitempty"`
+	RunStartedAt        time.Time          `json:"run_started_at,omitempty"`
+	State               string             `json:"state,omitempty"`
+	BooksTotal          int32              `json:"books_total"`
+	ProcessedSoFar      int32              `json:"processed_so_far"`
+	ProcessedCount      int32              `json:"processed_count"`
+	OutcomeCounts       sync.OutcomeCounts `json:"outcome_counts"`
+	TotalBooksProcessed int32              `json:"total_books_processed"`
+	BooksSynced         int32              `json:"books_synced,omitempty"`
+}
+
+type aggregateStatusResponse struct {
+	ProfileID   string                     `json:"profile_id"`
+	ProfileName string                     `json:"profile_name"`
+	Status      string                     `json:"status"`
+	DryRun      bool                       `json:"dry_run,omitempty"`
+	LastSync    *time.Time                 `json:"last_sync"`
+	Progress    string                     `json:"progress,omitempty"`
+	BooksTotal  int                        `json:"books_total,omitempty"`
+	BooksSynced int                        `json:"books_synced,omitempty"`
+	Snapshot    *aggregateSnapshotResponse `json:"snapshot,omitempty"`
+}
+
 // writeJSONResponse writes a JSON response
 func (h *Handler) writeJSONResponse(w http.ResponseWriter, statusCode int, response APIResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 
-	// Log the response before sending
+	// Do not log the serialized response: profile responses contain decrypted
+	// credentials and status responses may contain sensitive book metadata.
 	jsonBytes, err := json.Marshal(response)
 	if err != nil {
 		h.log.Error("Failed to marshal response to JSON", map[string]interface{}{
@@ -109,7 +145,6 @@ func (h *Handler) writeJSONResponse(w http.ResponseWriter, statusCode int, respo
 	} else {
 		h.log.Debug("Sending JSON response", map[string]interface{}{
 			"status_code": statusCode,
-			"response":    string(jsonBytes),
 		})
 	}
 
@@ -119,6 +154,56 @@ func (h *Handler) writeJSONResponse(w http.ResponseWriter, statusCode int, respo
 			"error": err.Error(),
 		})
 	}
+}
+
+// authorizeProfile enforces profile ownership after authentication middleware
+// has populated the request context. Metadata is loaded without decrypting
+// tokens, and all denial responses intentionally use 404 for foreign profiles.
+func (h *Handler) authorizeProfile(w http.ResponseWriter, r *http.Request, profileID string, mutation bool) bool {
+	_, authorized := h.authorizeProfileMetadata(w, r, profileID, mutation)
+	return authorized
+}
+
+// authorizeProfileMetadata is the metadata-returning form of authorizeProfile
+// for handlers that need to confirm the profile exists without loading its
+// encrypted configuration.
+func (h *Handler) authorizeProfileMetadata(w http.ResponseWriter, r *http.Request, profileID string, mutation bool) (*database.SyncProfile, bool) {
+	if !h.authEnabled {
+		return nil, true
+	}
+	user, authenticated := auth.GetUserFromRequest(r)
+	if !authenticated || user == nil {
+		h.writeErrorResponse(w, http.StatusUnauthorized, "Authentication required")
+		return nil, false
+	}
+
+	profile, err := h.multiUserService.GetProfileMetadata(profileID)
+	if err != nil {
+		h.log.Error("Failed to authorize sync profile: " + err.Error())
+		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to retrieve sync profile")
+		return nil, false
+	}
+	if profile == nil {
+		h.writeErrorResponse(w, http.StatusNotFound, "Sync profile not found")
+		return nil, false
+	}
+
+	if auth.UserRole(user.Role) != auth.RoleAdmin {
+		if profile.OwnerUserID == nil || *profile.OwnerUserID != user.ID {
+			h.writeErrorResponse(w, http.StatusNotFound, "Sync profile not found")
+			return nil, false
+		}
+		if mutation && !auth.UserRole(user.Role).HasPermission(auth.PermissionWriteOwn) {
+			h.writeErrorResponse(w, http.StatusForbidden, "Insufficient permissions")
+			return nil, false
+		}
+	}
+	return profile, true
+}
+
+func (h *Handler) authenticatedUser(r *http.Request) *auth.AuthUser {
+	user, _ := auth.GetUserFromRequest(r)
+	return user
 }
 
 // writeErrorResponse writes an error response
@@ -137,13 +222,12 @@ func (h *Handler) writeSuccessResponse(w http.ResponseWriter, data interface{}) 
 	})
 }
 
-// buildProfileResponse converts a database.ProfileWithTokens into a clean API response
-func (h *Handler) buildProfileResponse(p *database.ProfileWithTokens) map[string]interface{} {
+func (h *Handler) buildProfileResponseForRequest(p *database.ProfileWithTokens, _ *http.Request) map[string]interface{} {
 	if p == nil {
 		return map[string]interface{}{}
 	}
 	prof := p.Profile
-	return map[string]interface{}{
+	response := map[string]interface{}{
 		"profile": map[string]interface{}{
 			"id":         prof.ID,
 			"name":       prof.Name,
@@ -151,16 +235,28 @@ func (h *Handler) buildProfileResponse(p *database.ProfileWithTokens) map[string
 			"updated_at": prof.UpdatedAt,
 			"active":     prof.Active,
 		},
-		"audiobookshelf_url":   p.AudiobookshelfURL,
-		"audiobookshelf_token": p.AudiobookshelfToken,
-		"hardcover_token":      p.HardcoverToken,
-		"sync_config":          p.SyncConfig,
+		"audiobookshelf_url": p.AudiobookshelfURL,
+		"sync_config":        p.SyncConfig,
 	}
+	return response
 }
 
 // GetProfiles handles GET /api/profiles
 func (h *Handler) GetProfiles(w http.ResponseWriter, r *http.Request) {
-	profiles, err := h.multiUserService.ListProfiles()
+	user := h.authenticatedUser(r)
+	authEnabled := h.authEnabled
+	if authEnabled && user == nil {
+		h.writeErrorResponse(w, http.StatusUnauthorized, "Authentication required")
+		return
+	}
+	admin := authEnabled && auth.UserRole(user.Role) == auth.RoleAdmin
+	var profiles []database.SyncProfile
+	var err error
+	if authEnabled {
+		profiles, err = h.multiUserService.ListProfilesForUser(user.ID, admin, true)
+	} else {
+		profiles, err = h.multiUserService.ListProfiles()
+	}
 	if err != nil {
 		h.log.Error("Failed to list sync profiles: " + err.Error())
 		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to retrieve sync profiles")
@@ -194,12 +290,15 @@ func (h *Handler) GetProfiles(w http.ResponseWriter, r *http.Request) {
 
 // GetProfile handles GET /api/profiles/{id}
 func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
-	profileID := h.extractProfileID(r.URL.Path)
+	profileID := profileIDFromRequest(r)
 	h.log.Debug(fmt.Sprintf("GetProfile request for profileID: %s", profileID))
 
 	if profileID == "" {
 		h.log.Error("Profile ID extraction failed: Invalid profile ID")
 		h.writeErrorResponse(w, http.StatusBadRequest, "Profile ID is required")
+		return
+	}
+	if !h.authorizeProfile(w, r, profileID, false) {
 		return
 	}
 
@@ -217,31 +316,59 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.log.Debug(fmt.Sprintf("Profile retrieved successfully: %s", profile.Profile.ID))
-	h.writeSuccessResponse(w, h.buildProfileResponse(profile))
+	h.writeSuccessResponse(w, h.buildProfileResponseForRequest(profile, r))
 }
 
 // CreateProfile handles POST /api/profiles
 func (h *Handler) CreateProfile(w http.ResponseWriter, r *http.Request) {
+	var user *auth.AuthUser
+	if h.authEnabled {
+		user = h.authenticatedUser(r)
+		if user == nil {
+			h.writeErrorResponse(w, http.StatusUnauthorized, "Authentication required")
+			return
+		}
+		if !auth.UserRole(user.Role).HasPermission(auth.PermissionWriteOwn) {
+			h.writeErrorResponse(w, http.StatusForbidden, "Insufficient permissions")
+			return
+		}
+	}
+
 	var req CreateProfileRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeErrorResponse(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	if req.ID == "" || req.Name == "" || req.AudiobookshelfURL == "" || req.AudiobookshelfToken == "" || req.HardcoverToken == "" {
+	if !isValidNewProfileID(req.ID) {
+		h.writeErrorResponse(w, http.StatusBadRequest, "Invalid profile ID")
+		return
+	}
+
+	if req.Name == "" || req.AudiobookshelfURL == "" || req.AudiobookshelfToken == "" || req.HardcoverToken == "" {
 		h.writeErrorResponse(w, http.StatusBadRequest, "Missing required fields")
 		return
 	}
 
-	err := h.multiUserService.CreateProfile(
+	ownerUserID := ""
+	if user != nil {
+		ownerUserID = user.ID
+	}
+	err := h.multiUserService.CreateProfileForUser(
 		req.ID,
 		req.Name,
 		req.AudiobookshelfURL,
 		req.AudiobookshelfToken,
 		req.HardcoverToken,
 		req.SyncConfig,
+		ownerUserID,
 	)
 	if err != nil {
+		if errors.Is(err, multiuser.ErrProfileStateFileNameTooLong) ||
+			errors.Is(err, multiuser.ErrProfileStateFilePathNotAllowed) {
+			h.writeErrorResponse(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		h.log.Error("Failed to create sync profile: " + err.Error())
 		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to create sync profile")
 		return
@@ -256,14 +383,17 @@ func (h *Handler) CreateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeSuccessResponse(w, h.buildProfileResponse(profile))
+	h.writeSuccessResponse(w, h.buildProfileResponseForRequest(profile, r))
 }
 
 // UpdateProfile handles PUT /api/profiles/{id}
 func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
-	profileID := h.extractProfileID(r.URL.Path)
+	profileID := profileIDFromRequest(r)
 	if profileID == "" {
 		h.writeErrorResponse(w, http.StatusBadRequest, "Profile ID is required")
+		return
+	}
+	if !h.authorizeProfile(w, r, profileID, true) {
 		return
 	}
 
@@ -290,14 +420,17 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeSuccessResponse(w, h.buildProfileResponse(profile))
+	h.writeSuccessResponse(w, h.buildProfileResponseForRequest(profile, r))
 }
 
 // UpdateProfileConfig handles PUT /api/profiles/{id}/config
 func (h *Handler) UpdateProfileConfig(w http.ResponseWriter, r *http.Request) {
-	profileID := h.extractProfileIDFromConfigPath(r.URL.Path)
+	profileID := profileIDFromRequest(r)
 	if profileID == "" {
 		h.writeErrorResponse(w, http.StatusBadRequest, "Profile ID is required")
+		return
+	}
+	if !h.authorizeProfile(w, r, profileID, true) {
 		return
 	}
 
@@ -351,6 +484,11 @@ func (h *Handler) UpdateProfileConfig(w http.ResponseWriter, r *http.Request) {
 		hardcoverToken,
 		req.SyncConfig,
 	); err != nil {
+		if errors.Is(err, multiuser.ErrProfileStateFileNameTooLong) ||
+			errors.Is(err, multiuser.ErrProfileStateFilePathNotAllowed) {
+			h.writeErrorResponse(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		h.log.Error(fmt.Sprintf("Failed to update sync profile config %s: %s", profileID, err.Error()))
 		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to update sync profile configuration")
 		return
@@ -364,14 +502,17 @@ func (h *Handler) UpdateProfileConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeSuccessResponse(w, h.buildProfileResponse(profile))
+	h.writeSuccessResponse(w, h.buildProfileResponseForRequest(profile, r))
 }
 
 // DeleteProfile handles DELETE /api/profiles/{id}
 func (h *Handler) DeleteProfile(w http.ResponseWriter, r *http.Request) {
-	profileID := h.extractProfileID(r.URL.Path)
+	profileID := profileIDFromRequest(r)
 	if profileID == "" {
 		h.writeErrorResponse(w, http.StatusBadRequest, "Profile ID is required")
+		return
+	}
+	if !h.authorizeProfile(w, r, profileID, true) {
 		return
 	}
 
@@ -395,14 +536,59 @@ func (h *Handler) DeleteProfile(w http.ResponseWriter, r *http.Request) {
 
 // GetProfileStatus handles GET /api/profiles/{id}/status
 func (h *Handler) GetProfileStatus(w http.ResponseWriter, r *http.Request) {
-	profileID := h.extractProfileIDFromStatusPath(r.URL.Path)
+	profileID := profileIDFromRequest(r)
 	if profileID == "" {
 		h.writeErrorResponse(w, http.StatusBadRequest, "Profile ID is required")
+		return
+	}
+	if !h.authorizeProfile(w, r, profileID, false) {
 		return
 	}
 
 	status := h.multiUserService.GetProfileStatus(profileID)
 	h.writeSuccessResponse(w, status)
+}
+
+// GetRunDetails handles GET /api/profiles/{id}/runs/{runID}/details. Details
+// are deliberately run-scoped: a request for a stale or unknown run must not
+// fall through to the profile's newer current snapshot.
+func (h *Handler) GetRunDetails(w http.ResponseWriter, r *http.Request) {
+	profileID := profileIDFromRequest(r)
+	runID := r.PathValue("runID")
+	if profileID == "" || runID == "" {
+		h.writeErrorResponse(w, http.StatusBadRequest, "Profile ID and run ID are required")
+		return
+	}
+	profileMetadata, authorized := h.authorizeProfileMetadata(w, r, profileID, false)
+	if !authorized {
+		return
+	}
+
+	// Authentication-enabled requests already loaded metadata above. Preserve
+	// the legacy authentication-disabled existence check without decrypting
+	// profile credentials before consulting the in-memory run snapshot.
+	if profileMetadata == nil {
+		var err error
+		profileMetadata, err = h.multiUserService.GetProfileMetadata(profileID)
+		if err != nil {
+			h.log.Error("Failed to get sync profile for run details: " + err.Error())
+			h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to retrieve sync profile")
+			return
+		}
+		if profileMetadata == nil {
+			h.writeErrorResponse(w, http.StatusNotFound, "Sync profile not found")
+			return
+		}
+	}
+
+	snapshot := h.multiUserService.GetProfileSnapshot(profileID)
+	if snapshot == nil || snapshot.RunID != runID ||
+		(snapshot.UserID != "" && snapshot.UserID != profileID) {
+		h.writeErrorResponse(w, http.StatusNotFound, "Sync run not found")
+		return
+	}
+
+	h.writeSuccessResponse(w, snapshot)
 }
 
 // GetAllProfileStatuses handles GET /api/status
@@ -414,23 +600,59 @@ func (h *Handler) GetAllProfileStatuses(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	h.writeSuccessResponse(w, statuses)
+	responses := make([]aggregateStatusResponse, 0, len(statuses))
+	for _, status := range statuses {
+		if status == nil {
+			continue
+		}
+		response := aggregateStatusResponse{
+			ProfileID:   status.ProfileID,
+			ProfileName: status.ProfileName,
+			Status:      status.Status,
+			DryRun:      status.DryRun,
+			LastSync:    status.LastSync,
+			Progress:    status.Progress,
+			BooksTotal:  status.BooksTotal,
+			BooksSynced: status.BooksSynced,
+		}
+		if status.Snapshot != nil {
+			response.Snapshot = &aggregateSnapshotResponse{
+				UserID:              status.Snapshot.UserID,
+				RunID:               status.Snapshot.RunID,
+				RunStartedAt:        status.Snapshot.RunStartedAt,
+				State:               status.Snapshot.State,
+				BooksTotal:          status.Snapshot.BooksTotal,
+				ProcessedSoFar:      status.Snapshot.ProcessedSoFar,
+				ProcessedCount:      status.Snapshot.ProcessedCount,
+				OutcomeCounts:       status.Snapshot.OutcomeCounts,
+				TotalBooksProcessed: status.Snapshot.TotalBooksProcessed,
+				BooksSynced:         status.Snapshot.BooksSynced,
+			}
+		}
+		responses = append(responses, response)
+	}
+
+	h.writeSuccessResponse(w, responses)
 }
 
 // StartSync handles POST /api/profiles/{id}/sync
 func (h *Handler) StartSync(w http.ResponseWriter, r *http.Request) {
-	profileID := h.extractProfileIDFromSyncPath(r.URL.Path)
+	profileID := profileIDFromRequest(r)
 	if profileID == "" {
 		h.writeErrorResponse(w, http.StatusBadRequest, "Profile ID is required")
 		return
 	}
+	if !h.authorizeProfile(w, r, profileID, true) {
+		return
+	}
 
-	// Start sync in a goroutine
-	go func() {
-		if err := h.multiUserService.StartSync(profileID); err != nil {
-			h.log.Error(fmt.Sprintf("Failed to start sync for profile %s: %s", profileID, err.Error()))
-		}
-	}()
+	// StartSync registers the background sync before returning so lifecycle
+	// cleanup can reliably wait for every accepted request.
+	if err := h.multiUserService.StartSync(profileID); err != nil {
+		h.log.Error(fmt.Sprintf("Failed to start sync for profile %s: %s", profileID, err.Error()))
+		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to start sync")
+		return
+	}
 
 	h.writeSuccessResponse(w, map[string]string{
 		"message": "Sync started",
@@ -439,9 +661,12 @@ func (h *Handler) StartSync(w http.ResponseWriter, r *http.Request) {
 
 // CancelSync handles DELETE /api/profiles/{id}/sync
 func (h *Handler) CancelSync(w http.ResponseWriter, r *http.Request) {
-	profileID := h.extractProfileIDFromSyncPath(r.URL.Path)
+	profileID := profileIDFromRequest(r)
 	if profileID == "" {
 		h.writeErrorResponse(w, http.StatusBadRequest, "Profile ID is required")
+		return
+	}
+	if !h.authorizeProfile(w, r, profileID, true) {
 		return
 	}
 
@@ -456,46 +681,28 @@ func (h *Handler) CancelSync(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Helper functions to extract profile ID from URL paths
-
-func (h *Handler) extractProfileID(path string) string {
-	parts := strings.Split(path, "/")
-	for i, part := range parts {
-		if part == "profiles" && i+1 < len(parts) {
-			return parts[i+1]
-		}
-	}
-	return ""
+// profileIDFromRequest reads the path variable installed by the ServeMux
+// profile routes. Mounted routes preserve encoded legacy IDs containing route
+// delimiters because PathValue returns the unescaped path segment.
+func profileIDFromRequest(r *http.Request) string {
+	return r.PathValue("id")
 }
 
-func (h *Handler) extractProfileIDFromConfigPath(path string) string {
-	parts := strings.Split(path, "/")
-	for i, part := range parts {
-		if part == "profiles" && i+2 < len(parts) && parts[i+2] == "config" {
-			return parts[i+1]
-		}
+// isValidNewProfileID accepts up to 244 bytes of RFC 3986 unreserved ASCII
+// characters. Existing profiles are not revalidated at read/update/delete
+// time so legacy IDs remain addressable when their delimiters are URL-encoded.
+func isValidNewProfileID(id string) bool {
+	if id == "" || id == "." || id == ".." || len(id) > maxNewProfileIDBytes {
+		return false
 	}
-	return ""
-}
-
-func (h *Handler) extractProfileIDFromStatusPath(path string) string {
-	parts := strings.Split(path, "/")
-	for i, part := range parts {
-		if part == "profiles" && i+2 < len(parts) && parts[i+2] == "status" {
-			return parts[i+1]
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '-' || r == '.' || r == '_' || r == '~' {
+			continue
 		}
+		return false
 	}
-	return ""
-}
-
-func (h *Handler) extractProfileIDFromSyncPath(path string) string {
-	parts := strings.Split(path, "/")
-	for i, part := range parts {
-		if part == "profiles" && i+2 < len(parts) && parts[i+2] == "sync" {
-			return parts[i+1]
-		}
-	}
-	return ""
+	return true
 }
 
 // HandleCurrentUser returns information about the current sync profile
@@ -510,10 +717,12 @@ func (h *Handler) HandleCurrentUser(w http.ResponseWriter, r *http.Request) {
 // GetSyncSummary handles GET /api/profiles/{id}/summary
 func (h *Handler) GetSyncSummary(w http.ResponseWriter, r *http.Request) {
 	// Snapshot-backed summary path keeps current status fields coherent.
-	// Extract profile ID from URL
-	profileID := h.extractProfileID(r.URL.Path)
+	profileID := profileIDFromRequest(r)
 	if profileID == "" {
 		h.writeErrorResponse(w, http.StatusBadRequest, "Profile ID is required")
+		return
+	}
+	if !h.authorizeProfile(w, r, profileID, false) {
 		return
 	}
 
@@ -571,7 +780,7 @@ func (h *Handler) GetSyncSummary(w http.ResponseWriter, r *http.Request) {
 
 	// Convert to API response
 	syncSummary := types.SyncSummaryResponse{
-		Snapshot:            cloneSnapshotForResponse(snapshot),
+		Snapshot:            snapshot,
 		UserID:              summary.UserID,
 		BooksTotal:          summary.BooksTotal,
 		ProcessedSoFar:      summary.TotalBooksProcessed,
@@ -662,35 +871,5 @@ func (h *Handler) GetSyncSummary(w http.ResponseWriter, r *http.Request) {
 		"mismatches_count":      len(syncSummary.Mismatches),
 	})
 
-	// Log the raw JSON response for debugging
-	jsonData, err := json.MarshalIndent(response, "", "  ")
-	if err != nil {
-		h.log.Error("Failed to marshal response to JSON", map[string]interface{}{
-			"error": err.Error(),
-		})
-	} else {
-		h.log.Debug("Raw JSON response:\n" + string(jsonData))
-	}
-
 	h.writeSuccessResponse(w, response)
-}
-
-func cloneSnapshotForResponse(snapshot *sync.SyncSnapshot) *sync.SyncSnapshot {
-	if snapshot == nil {
-		return nil
-	}
-	copyOf := *snapshot
-	copyOf.BookOutcomes = make([]sync.BookOutcomeRecord, len(snapshot.BookOutcomes))
-	copy(copyOf.BookOutcomes, snapshot.BookOutcomes)
-	copyOf.AttentionRecords = make([]sync.BookOutcomeRecord, len(snapshot.AttentionRecords))
-	copy(copyOf.AttentionRecords, snapshot.AttentionRecords)
-	copyOf.BooksNotFound = make([]sync.BookNotFoundInfo, len(snapshot.BooksNotFound))
-	copy(copyOf.BooksNotFound, snapshot.BooksNotFound)
-	copyOf.Mismatches = make([]mismatch.BookMismatch, len(snapshot.Mismatches))
-	for i, book := range snapshot.Mismatches {
-		copyOf.Mismatches[i] = book
-		copyOf.Mismatches[i].AuthorIDs = append([]int(nil), book.AuthorIDs...)
-		copyOf.Mismatches[i].NarratorIDs = append([]int(nil), book.NarratorIDs...)
-	}
-	return &copyOf
 }
