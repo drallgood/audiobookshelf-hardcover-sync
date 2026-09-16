@@ -745,7 +745,7 @@ func (s *Service) recordBookOutcomeWithMatchMethod(book models.AudiobookshelfBoo
 		Author:       book.Media.Metadata.AuthorName,
 		ASIN:         book.Media.Metadata.ASIN,
 		ISBN:         book.Media.Metadata.ISBN,
-		Format:       "Audiobook",
+		Format:       audiobookshelfDisplayFormat(book.MediaType),
 		Series:       series,
 		SeriesNumber: seriesNumber,
 		Reason:       reason,
@@ -829,6 +829,16 @@ func (s *Service) recordBookOutcomeWithMatchMethod(book models.AudiobookshelfBoo
 	} else {
 		s.removeLegacyBookNotFoundLocked(book.ID)
 	}
+}
+
+// audiobookshelfDisplayFormat maps source media types to the format labels
+// shown in sync details. Audiobookshelf uses "book" for its audiobook library
+// items, so unknown values retain the historical audiobook fallback.
+func audiobookshelfDisplayFormat(mediaType string) string {
+	if strings.EqualFold(strings.TrimSpace(mediaType), "ebook") {
+		return "Ebook"
+	}
+	return "Audiobook"
 }
 
 func audiobookshelfSeries(metadata models.AudiobookshelfMetadataStruct) (string, string) {

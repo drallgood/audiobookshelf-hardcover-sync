@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	stdSync "sync"
+	"syscall"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
@@ -932,6 +933,56 @@ func pathWithinDirectory(directory, candidate string) bool {
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
+// pathWithinResolvedDirectory checks containment after resolving every
+// existing component. The final state file (and any newly-created suffix) is
+// allowed not to exist yet, while an existing symlinked parent is still
+// accounted for.
+func pathWithinResolvedDirectory(directory, candidate string) (bool, error) {
+	resolvedDirectory, err := resolvePathWithExistingComponents(directory)
+	if err != nil {
+		return false, fmt.Errorf("resolve directory: %w", err)
+	}
+	resolvedCandidate, err := resolvePathWithExistingComponents(candidate)
+	if err != nil {
+		return false, fmt.Errorf("resolve candidate: %w", err)
+	}
+	return pathWithinDirectory(resolvedDirectory, resolvedCandidate), nil
+}
+
+// resolvePathWithExistingComponents resolves the existing prefix of a path,
+// then appends its possibly-missing suffix. This avoids requiring the state
+// file or its new parent directories to exist before validation.
+func resolvePathWithExistingComponents(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+
+	current := absPath
+	missing := make([]string, 0)
+	for {
+		if _, err := os.Lstat(current); err == nil {
+			resolved, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", err
+			}
+			for index := len(missing) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, missing[index])
+			}
+			return resolved, nil
+		} else if !os.IsNotExist(err) && !errors.Is(err, syscall.ENAMETOOLONG) {
+			return "", err
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("no existing ancestor for %q", path)
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
+}
+
 // safeLegacyProfileIDPathSegments permits historical IDs containing directory
 // separators, but rejects empty and dot path components before the raw path is
 // constructed. Otherwise a value such as "foo/../other" could alias another
@@ -991,6 +1042,13 @@ func (s *MultiUserService) validateProfileStateFileWithAbsolutePolicy(profileID,
 		if !pathWithinDirectory(dataDir, configured) {
 			return fmt.Errorf("%w: path escapes data directory: %q", ErrProfileStateFilePathNotAllowed, configuredPath)
 		}
+		withinResolvedDataDir, err := pathWithinResolvedDirectory(dataDir, configured)
+		if err != nil {
+			return fmt.Errorf("%w: resolve configured path: %v", ErrProfileStateFilePathNotAllowed, err)
+		}
+		if !withinResolvedDataDir {
+			return fmt.Errorf("%w: resolved path escapes data directory: %q", ErrProfileStateFilePathNotAllowed, configuredPath)
+		}
 	}
 
 	derivedPath := s.profileSpecificStatePath(profileID, configuredPath)
@@ -1001,6 +1059,13 @@ func (s *MultiUserService) validateProfileStateFileWithAbsolutePolicy(profileID,
 		}
 		if !pathWithinDirectory(dataDir, derived) {
 			return fmt.Errorf("%w: derived path escapes data directory: %q", ErrProfileStateFilePathNotAllowed, configuredPath)
+		}
+		withinResolvedDataDir, err := pathWithinResolvedDirectory(dataDir, derivedPath)
+		if err != nil {
+			return fmt.Errorf("%w: resolve derived path: %v", ErrProfileStateFilePathNotAllowed, err)
+		}
+		if !withinResolvedDataDir {
+			return fmt.Errorf("%w: resolved derived path escapes data directory: %q", ErrProfileStateFilePathNotAllowed, configuredPath)
 		}
 	}
 	if len([]byte(filepath.Base(derivedPath))) > maxStateFileComponentBytes {

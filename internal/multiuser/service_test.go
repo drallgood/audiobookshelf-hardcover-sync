@@ -556,6 +556,56 @@ func TestStartSyncRejectsStoredStateFileOutsideDataDir(t *testing.T) {
 	}
 }
 
+func TestStartSyncRejectsStoredStateFileThroughExternalSymlink(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	rootDir := t.TempDir()
+	dataDir := filepath.Join(rootDir, "data")
+	outsideDir := filepath.Join(rootDir, "outside")
+	service.globalConfig.Paths.DataDir = dataDir
+	require.NoError(t, os.MkdirAll(dataDir, 0755))
+	require.NoError(t, os.MkdirAll(outsideDir, 0755))
+	if err := os.Symlink(outsideDir, filepath.Join(dataDir, "escape")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	profileID := "stored/symlink"
+	configuredPath := filepath.Join("escape", "state.json")
+	canonicalPath := service.profileSpecificStatePath(profileID, configuredPath)
+	legacyPath := service.legacyProfileStatePath(profileID, configuredPath)
+	require.NoError(t, service.repository.CreateProfile(
+		profileID,
+		"Stored symlink profile",
+		"http://audiobookshelf.invalid",
+		"abs-token",
+		"hc-token",
+		database.SyncConfigData{StateFile: configuredPath},
+	))
+
+	err := service.StartSync(profileID)
+	require.ErrorIs(t, err, ErrProfileStateFilePathNotAllowed)
+	require.False(t, service.IsProfileSyncing(profileID))
+	require.Zero(t, service.nextGeneration)
+	require.NoFileExists(t, canonicalPath)
+	require.NoFileExists(t, legacyPath)
+	require.NoFileExists(t, legacyPath+".migrated")
+	require.NoFileExists(t, filepath.Join(outsideDir, "state."+encodeProfileID(profileID)))
+	require.NoFileExists(t, filepath.Join(outsideDir, "state."+profileID))
+}
+
+func TestProfileStateFileValidationAllowsResolvedInsideSymlink(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	dataDir := t.TempDir()
+	insideDir := filepath.Join(dataDir, "inside")
+	service.globalConfig.Paths.DataDir = dataDir
+	require.NoError(t, os.MkdirAll(insideDir, 0755))
+	if err := os.Symlink(insideDir, filepath.Join(dataDir, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	require.NoError(t, service.validatePersistedProfileStateFile("inside-link", filepath.Join("link", "state.json")))
+	require.NoError(t, service.validatePersistedProfileStateFile("inside-absolute", filepath.Join(insideDir, "state.json")))
+}
+
 func TestMigratesLegacyRawProfileStatePath(t *testing.T) {
 	service, _ := newStatusLookupService(t)
 	dataDir := t.TempDir()
