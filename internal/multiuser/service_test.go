@@ -689,7 +689,7 @@ func TestStartSyncAcceptsDefaultStateFileSymlinkInsideDataDir(t *testing.T) {
 	require.FileExists(t, insideTarget)
 	info, err := os.Lstat(canonicalPath)
 	require.NoError(t, err)
-	require.NotEqual(t, 0, info.Mode()&os.ModeSymlink)
+	require.NotEqual(t, os.FileMode(0), info.Mode()&os.ModeSymlink)
 }
 
 func TestCreateProfileAcceptsStateFileThroughInternalSymlink(t *testing.T) {
