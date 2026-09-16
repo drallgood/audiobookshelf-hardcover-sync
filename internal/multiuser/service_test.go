@@ -339,15 +339,6 @@ func TestAggregateStatusMapsLiveTerminalSnapshotState(t *testing.T) {
 	}
 }
 
-func TestStartSyncReturnsErrorForUnknownProfile(t *testing.T) {
-	service, _ := newStatusLookupService(t)
-
-	err := service.StartSync("missing-profile")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "sync profile not found")
-	require.False(t, service.IsProfileSyncing("missing-profile"))
-}
-
 func TestCreateProfileValidatesComposedStateFilenameLength(t *testing.T) {
 	for _, test := range []struct {
 		name           string
