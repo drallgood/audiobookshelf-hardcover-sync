@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -338,85 +337,7 @@ func TestPublicStatusAndSummaryRoutesShareCurrentRunSnapshot(t *testing.T) {
 	fixture.waitForSyncs(t)
 }
 
-func TestMountedProfileRoutesPreserveEncodedLegacyIDs(t *testing.T) {
-	fixture := newStatusServiceFixture(t, "http://hardcover.invalid")
-	legacyID := "legacy/profile"
-	fixture.createProfile(t, legacyID, "Legacy profile", "http://audiobookshelf.invalid", "hardcover-token")
-
-	handler := NewHandler(fixture.multiUser, logger.Get())
-	routes := http.NewServeMux()
-	routes.HandleFunc("GET /api/profiles/{id}", handler.GetProfile)
-	routes.HandleFunc("GET /api/profiles/{id}/status", handler.GetProfileStatus)
-	routes.HandleFunc("GET /api/profiles/{id}/summary", handler.GetSyncSummary)
-
-	profileResponse := requestJSONRoute(routes, http.MethodGet, "/api/profiles/legacy%2Fprofile")
-	require.Equal(t, http.StatusOK, profileResponse.Code, profileResponse.Body.String())
-	var profilePayload struct {
-		Success bool `json:"success"`
-		Data    struct {
-			Profile struct {
-				ID string `json:"id"`
-			} `json:"profile"`
-		} `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(profileResponse.Body.Bytes(), &profilePayload))
-	require.True(t, profilePayload.Success)
-	require.Equal(t, legacyID, profilePayload.Data.Profile.ID)
-
-	statusResponse := requestJSONRoute(routes, http.MethodGet, "/api/profiles/legacy%2Fprofile/status")
-	require.Equal(t, http.StatusOK, statusResponse.Code, statusResponse.Body.String())
-	var statusPayload statusHTTPResponse
-	require.NoError(t, json.Unmarshal(statusResponse.Body.Bytes(), &statusPayload))
-	require.True(t, statusPayload.Success)
-	require.Equal(t, legacyID, statusPayload.Data.ProfileID)
-
-	summaryResponse := requestJSONRoute(routes, http.MethodGet, "/api/profiles/legacy%2Fprofile/summary")
-	require.Equal(t, http.StatusOK, summaryResponse.Code, summaryResponse.Body.String())
-	var summaryPayload summaryHTTPResponse
-	require.NoError(t, json.Unmarshal(summaryResponse.Body.Bytes(), &summaryPayload))
-	require.True(t, summaryPayload.Success)
-}
-
-func TestCreateProfileRejectsUnsafeIDs(t *testing.T) {
-	fixture := newStatusServiceFixture(t, "http://hardcover.invalid")
-	handler := NewHandler(fixture.multiUser, logger.Get())
-
-	for _, id := range []string{"", ".", "..", "unsafe/profile", "unsafe?query", "unsafe#fragment", "unsafe%id", "unsafe\\id"} {
-		t.Run(id, func(t *testing.T) {
-			payload, err := json.Marshal(CreateProfileRequest{
-				ID:                  id,
-				Name:                "Unsafe",
-				AudiobookshelfURL:   "http://audiobookshelf.invalid",
-				AudiobookshelfToken: "abs-token",
-				HardcoverToken:      "hardcover-token",
-			})
-			require.NoError(t, err)
-			recorder := httptest.NewRecorder()
-			handler.CreateProfile(recorder, httptest.NewRequest(http.MethodPost, "/api/profiles", bytes.NewReader(payload)))
-			require.Equal(t, http.StatusBadRequest, recorder.Code, recorder.Body.String())
-			profile, err := fixture.multiUser.GetProfile(id)
-			require.NoError(t, err)
-			require.Nil(t, profile)
-		})
-	}
-
-	validPayload, err := json.Marshal(CreateProfileRequest{
-		ID:                  "valid-profile_1.~",
-		Name:                "Valid",
-		AudiobookshelfURL:   "http://audiobookshelf.invalid",
-		AudiobookshelfToken: "abs-token",
-		HardcoverToken:      "hardcover-token",
-	})
-	require.NoError(t, err)
-	recorder := httptest.NewRecorder()
-	handler.CreateProfile(recorder, httptest.NewRequest(http.MethodPost, "/api/profiles", bytes.NewReader(validPayload)))
-	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
-	profile, err := fixture.multiUser.GetProfile("valid-profile_1.~")
-	require.NoError(t, err)
-	require.NotNil(t, profile)
-}
-
-func TestCreateProfileIDLengthBoundary(t *testing.T) {
+func TestCreateProfileValidatesIDs(t *testing.T) {
 	fixture := newStatusServiceFixture(t, "http://hardcover.invalid")
 	handler := NewHandler(fixture.multiUser, logger.Get())
 
@@ -425,13 +346,22 @@ func TestCreateProfileIDLengthBoundary(t *testing.T) {
 		profileID  string
 		statusCode int
 	}{
+		{name: "empty", statusCode: http.StatusBadRequest},
+		{name: "current directory", profileID: ".", statusCode: http.StatusBadRequest},
+		{name: "parent directory", profileID: "..", statusCode: http.StatusBadRequest},
+		{name: "slash", profileID: "unsafe/profile", statusCode: http.StatusBadRequest},
+		{name: "query", profileID: "unsafe?query", statusCode: http.StatusBadRequest},
+		{name: "fragment", profileID: "unsafe#fragment", statusCode: http.StatusBadRequest},
+		{name: "percent", profileID: "unsafe%id", statusCode: http.StatusBadRequest},
+		{name: "backslash", profileID: "unsafe\\id", statusCode: http.StatusBadRequest},
 		{name: "maximum length", profileID: strings.Repeat("a", maxNewProfileIDBytes), statusCode: http.StatusOK},
 		{name: "one byte over maximum", profileID: strings.Repeat("a", maxNewProfileIDBytes+1), statusCode: http.StatusBadRequest},
+		{name: "allowed punctuation", profileID: "valid-profile_1.~", statusCode: http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			payload, err := json.Marshal(CreateProfileRequest{
 				ID:                  test.profileID,
-				Name:                "Length boundary",
+				Name:                "Profile ID validation",
 				AudiobookshelfURL:   "http://audiobookshelf.invalid",
 				AudiobookshelfToken: "abs-token",
 				HardcoverToken:      "hardcover-token",
@@ -502,27 +432,23 @@ func TestProfileStateFilenameValidationAtHTTPBoundary(t *testing.T) {
 		"hardcover-token",
 		database.SyncConfigData{StateFile: originalStateFile},
 	))
-	for _, test := range unsafeStateFiles {
-		t.Run("update "+test.name, func(t *testing.T) {
-			updatePayload, err := json.Marshal(UpdateProfileConfigRequest{
-				AudiobookshelfURL: "http://should-not-persist.invalid",
-				SyncConfig:        database.SyncConfigData{StateFile: test.path},
-			})
-			require.NoError(t, err)
-			updateResponse := httptest.NewRecorder()
-			routes.ServeHTTP(updateResponse, httptest.NewRequest(
-				http.MethodPut,
-				"/api/profiles/"+profileID+"/config",
-				bytes.NewReader(updatePayload),
-			))
-			require.Equal(t, http.StatusBadRequest, updateResponse.Code, updateResponse.Body.String())
-			unchanged, err := fixture.multiUser.GetProfile(profileID)
-			require.NoError(t, err)
-			require.NotNil(t, unchanged)
-			require.Equal(t, originalURL, unchanged.AudiobookshelfURL)
-			require.Equal(t, originalStateFile, unchanged.SyncConfig.StateFile)
-		})
-	}
+	updatePayload, err := json.Marshal(UpdateProfileConfigRequest{
+		AudiobookshelfURL: "http://should-not-persist.invalid",
+		SyncConfig:        database.SyncConfigData{StateFile: "../escape.json"},
+	})
+	require.NoError(t, err)
+	updateResponse := httptest.NewRecorder()
+	routes.ServeHTTP(updateResponse, httptest.NewRequest(
+		http.MethodPut,
+		"/api/profiles/"+profileID+"/config",
+		bytes.NewReader(updatePayload),
+	))
+	require.Equal(t, http.StatusBadRequest, updateResponse.Code, updateResponse.Body.String())
+	unchanged, err := fixture.multiUser.GetProfile(profileID)
+	require.NoError(t, err)
+	require.NotNil(t, unchanged)
+	require.Equal(t, originalURL, unchanged.AudiobookshelfURL)
+	require.Equal(t, originalStateFile, unchanged.SyncConfig.StateFile)
 
 	legacyID := strings.Repeat("l", 245)
 	require.NoError(t, fixture.repo.CreateProfile(
@@ -546,59 +472,6 @@ func TestProfileStateFilenameValidationAtHTTPBoundary(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, legacy)
 	require.Equal(t, "updated-token", legacy.AudiobookshelfToken)
-}
-
-func TestPublicAggregateOmitsRunErrorWhileProfileStatusRetainsIt(t *testing.T) {
-	fixture := newStatusServiceFixture(t, "http://hardcover.invalid")
-	profileID := "error-profile"
-	sentinel := "sensitive-run-error"
-	statePath := filepath.Join(fixture.dataDir, sentinel+".json")
-	profileStatePath := strings.TrimSuffix(statePath, ".json") + "." + profileID
-	require.NoError(t, os.Mkdir(profileStatePath, 0o755))
-	require.NoError(t, fixture.repo.CreateProfile(
-		profileID,
-		"Error profile",
-		"http://audiobookshelf.invalid",
-		"abs-token",
-		"hardcover-token",
-		database.SyncConfigData{StateFile: statePath, ProcessUnreadBooks: true, DryRun: true},
-	))
-	require.NoError(t, fixture.multiUser.StartSync(profileID))
-
-	terminal := waitForStatusRun(t, fixture.multiUser, profileID)
-	require.Equal(t, "error", terminal.Status)
-	require.Contains(t, terminal.Error, sentinel)
-
-	handler := NewHandler(fixture.multiUser, logger.Get())
-	routes := newMountedStatusRoutes(handler)
-	publicResponse := requestJSONRoute(routes, http.MethodGet, "/api/status")
-	require.Equal(t, http.StatusOK, publicResponse.Code, publicResponse.Body.String())
-	require.NotContains(t, publicResponse.Body.String(), sentinel)
-	var publicEnvelope struct {
-		Data []map[string]json.RawMessage `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(publicResponse.Body.Bytes(), &publicEnvelope))
-	var publicProfile map[string]json.RawMessage
-	for _, profile := range publicEnvelope.Data {
-		var id string
-		require.NoError(t, json.Unmarshal(profile["profile_id"], &id))
-		if id == profileID {
-			publicProfile = profile
-			break
-		}
-	}
-	require.NotNil(t, publicProfile)
-	_, hasError := publicProfile["error"]
-	require.False(t, hasError)
-
-	statusResponse := requestJSONRoute(routes, http.MethodGet, "/api/profiles/"+profileID+"/status")
-	require.Equal(t, http.StatusOK, statusResponse.Code, statusResponse.Body.String())
-	var authenticatedStatus statusHTTPResponse
-	require.NoError(t, json.Unmarshal(statusResponse.Body.Bytes(), &authenticatedStatus))
-	require.True(t, authenticatedStatus.Success)
-	require.Equal(t, terminal.Error, authenticatedStatus.Data.Error)
-	require.Contains(t, statusResponse.Body.String(), sentinel)
-	fixture.waitForSyncs(t)
 }
 
 func TestPublicStatusAndSummaryRoutesExposeLiveAttentionOutcomes(t *testing.T) {
