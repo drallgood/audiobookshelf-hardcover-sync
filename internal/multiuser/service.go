@@ -806,6 +806,9 @@ func (s *MultiUserService) profileSpecificStatePath(profileID, configuredPath st
 
 func (s *MultiUserService) validateProfileStateFile(profileID, configuredPath string) error {
 	if configuredPath != "" {
+		if strings.ContainsRune(configuredPath, '\x00') {
+			return fmt.Errorf("%w: NUL bytes are not accepted: %q", ErrProfileStateFilePathNotAllowed, configuredPath)
+		}
 		if filepath.IsAbs(configuredPath) {
 			return fmt.Errorf("%w: absolute paths are not accepted: %q", ErrProfileStateFilePathNotAllowed, configuredPath)
 		}

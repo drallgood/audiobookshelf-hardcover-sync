@@ -130,6 +130,12 @@ func TestSnapshotSanitizesAudiobookshelfURLs(t *testing.T) {
 			wantCoverURL:   "https://audiobookshelf.example/base/api/items/snapshot-sanitize/cover",
 		},
 		{
+			name:           "strips query and fragment",
+			audiobookshelf: "https://reader:secret@audiobookshelf.example/base?token=query-secret#fragment",
+			wantURL:        "https://audiobookshelf.example/base",
+			wantCoverURL:   "https://audiobookshelf.example/base/api/items/snapshot-sanitize/cover",
+		},
+		{
 			name:           "omits unparsable URL",
 			audiobookshelf: "https://reader:%zz@audiobookshelf.example/base",
 		},

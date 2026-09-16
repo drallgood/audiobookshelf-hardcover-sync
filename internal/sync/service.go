@@ -521,7 +521,7 @@ func (s *Service) upsertLiveMismatchLocked(book models.AudiobookshelfBook, recor
 		Attempts:        1,
 	}
 	if book.Media.CoverPath != "" {
-		mismatchRecord.CoverURL = fmt.Sprintf("%s/api/items/%s/cover", s.config.Audiobookshelf.URL, book.ID)
+		mismatchRecord.CoverURL = audiobookshelfCoverURL(s.config.Audiobookshelf.URL, book.ID)
 		mismatchRecord.ImageURL = mismatchRecord.CoverURL
 	}
 	if mismatchRecord.Reason == "" {
@@ -753,7 +753,7 @@ func (s *Service) recordBookOutcomeWithMatchMethod(book models.AudiobookshelfBoo
 		UpdatedAt:    time.Now().UTC(),
 	}
 	if book.Media.CoverPath != "" && strings.TrimSpace(s.config.Audiobookshelf.URL) != "" {
-		record.CoverURL = fmt.Sprintf("%s/api/items/%s/cover", strings.TrimRight(s.config.Audiobookshelf.URL, "/"), book.ID)
+		record.CoverURL = audiobookshelfCoverURL(s.config.Audiobookshelf.URL, book.ID)
 	}
 	if err != nil {
 		record.Error = err.Error()
@@ -842,9 +842,18 @@ func audiobookshelfSeries(metadata models.AudiobookshelfMetadataStruct) (string,
 	return seriesName, strings.TrimSpace(metadata.Series[0].Sequence)
 }
 
-// sanitizeAudiobookshelfURL removes credentials before an Audiobookshelf URL
-// is exposed in a sync snapshot. Invalid URLs are omitted rather than echoed
-// back, since they may contain credentials that cannot be safely parsed.
+func audiobookshelfCoverURL(baseURL, bookID string) string {
+	baseURL = sanitizeAudiobookshelfURL(baseURL)
+	if baseURL == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s/api/items/%s/cover", strings.TrimRight(baseURL, "/"), bookID)
+}
+
+// sanitizeAudiobookshelfURL removes credentials, query data, and fragments
+// before an Audiobookshelf URL is exposed in a sync snapshot. Invalid URLs are
+// omitted rather than echoed back, since they may contain credentials that
+// cannot be safely parsed.
 func sanitizeAudiobookshelfURL(raw string) string {
 	if raw == "" {
 		return ""
@@ -854,10 +863,11 @@ func sanitizeAudiobookshelfURL(raw string) string {
 	if err != nil {
 		return ""
 	}
-	if parsed.User == nil {
-		return raw
-	}
 	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
 	return parsed.String()
 }
 
@@ -2099,7 +2109,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			// Build cover URL if cover path is available
 			coverURL := ""
 			if book.Media.CoverPath != "" {
-				coverURL = fmt.Sprintf("%s/api/items/%s/cover", s.config.Audiobookshelf.URL, book.ID)
+				coverURL = audiobookshelfCoverURL(s.config.Audiobookshelf.URL, book.ID)
 			}
 
 			mismatchReason := "Found by title/author only - manual verification required"
@@ -2475,7 +2485,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		// Build cover URL if cover path is available
 		coverURL := ""
 		if book.Media.CoverPath != "" {
-			coverURL = fmt.Sprintf("%s/api/items/%s/cover", s.config.Audiobookshelf.URL, book.ID)
+			coverURL = audiobookshelfCoverURL(s.config.Audiobookshelf.URL, book.ID)
 		}
 
 		// Get book ID from hcBook if available, otherwise try to get from BookError
@@ -2559,7 +2569,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		// Build cover URL if cover path is available
 		coverURL := ""
 		if book.Media.CoverPath != "" {
-			coverURL = fmt.Sprintf("%s/api/items/%s/cover", s.config.Audiobookshelf.URL, book.ID)
+			coverURL = audiobookshelfCoverURL(s.config.Audiobookshelf.URL, book.ID)
 		}
 
 		// Record mismatch for book without edition
@@ -2625,7 +2635,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		// Build cover URL if cover path is available
 		coverURL := ""
 		if book.Media.CoverPath != "" {
-			coverURL = fmt.Sprintf("%s/api/items/%s/cover", s.config.Audiobookshelf.URL, book.ID)
+			coverURL = audiobookshelfCoverURL(s.config.Audiobookshelf.URL, book.ID)
 		}
 
 		// Initialize with empty IDs since hcBook is nil
@@ -2694,7 +2704,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		// Build cover URL if cover path is available
 		coverURL := ""
 		if book.Media.CoverPath != "" {
-			coverURL = fmt.Sprintf("%s/api/items/%s/cover", s.config.Audiobookshelf.URL, book.ID)
+			coverURL = audiobookshelfCoverURL(s.config.Audiobookshelf.URL, book.ID)
 		}
 
 		// Get book ID from error if available
