@@ -953,8 +953,6 @@ class SyncProfileApp {
                 // and status cards are rebuilt for the new authorization
                 // boundary.
                 this.statusRefreshQueued = true;
-            }
-            if (sessionBoundaryChanged) {
                 this.updateUserInfo();
             }
             return true;
