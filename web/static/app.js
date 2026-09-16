@@ -853,6 +853,11 @@ class SyncProfileApp {
                 this.profileUrl(profileId, '/status'),
                 { signal }
             );
+            // A terminal-error request can outlive the status load that
+            // started it. Ignore every response from an earlier authorization
+            // boundary, including authentication errors, so it cannot expire
+            // a newly authenticated session.
+            if (authGeneration !== this.authSessionGeneration) return;
             if (response.status === 401 || response.status === 403) {
                 this.handleAuthExpiry();
                 return;

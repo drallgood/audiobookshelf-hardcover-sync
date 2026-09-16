@@ -124,7 +124,7 @@ func TestGetProfileSnapshotUsesCurrentRunWithoutProfileHydration(t *testing.T) {
 			return
 		}
 		t.Errorf("GetProfileSnapshot hydrated profile metadata from the database")
-		tx.AddError(gorm.ErrInvalidValue)
+		require.ErrorIs(t, tx.AddError(gorm.ErrInvalidValue), gorm.ErrInvalidValue)
 	}))
 	t.Cleanup(func() {
 		require.NoError(t, db.Callback().Query().Remove(queryCallbackName))
