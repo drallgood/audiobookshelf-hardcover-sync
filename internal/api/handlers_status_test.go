@@ -134,6 +134,25 @@ func TestStartSyncReturnsErrorWhenProfileConfigurationCannotBeLoaded(t *testing.
 	require.False(t, fixture.multiUser.IsProfileSyncing(profileID))
 }
 
+func TestStartSyncReturnsControlledErrorForUnknownPublicProfile(t *testing.T) {
+	fixture := newStatusServiceFixture(t, "http://hardcover.invalid")
+	handler := NewHandler(fixture.multiUser, logger.Get())
+	handler.SetAuthEnabled(false)
+	routes := http.NewServeMux()
+	routes.HandleFunc("POST /api/profiles/{id}/sync", handler.StartSync)
+
+	recorder := requestJSONRoute(routes, http.MethodPost, "/api/profiles/missing-profile/sync")
+	require.Equal(t, http.StatusInternalServerError, recorder.Code, recorder.Body.String())
+	var response struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	require.False(t, response.Success)
+	require.Equal(t, "Failed to start sync", response.Error)
+	require.False(t, fixture.multiUser.IsProfileSyncing("missing-profile"))
+}
+
 func TestStartSyncReturnsErrorWhenProfileIsAlreadySyncing(t *testing.T) {
 	absServer := newLiveStatusAudiobookshelfServer([]map[string]interface{}{
 		statusBook("blocked-book", "Blocked Until Released", "Author"),

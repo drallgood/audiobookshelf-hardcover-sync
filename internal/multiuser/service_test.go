@@ -339,6 +339,17 @@ func TestAggregateStatusMapsLiveTerminalSnapshotState(t *testing.T) {
 	}
 }
 
+func TestStartSyncReturnsErrorForUnknownProfile(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+
+	err := service.StartSync("missing-profile")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "sync profile not found")
+	require.False(t, service.IsProfileSyncing("missing-profile"))
+	require.Empty(t, service.activeRuns)
+	require.Zero(t, service.nextGeneration)
+}
+
 func TestCreateProfileValidatesComposedStateFilenameLength(t *testing.T) {
 	for _, test := range []struct {
 		name           string
@@ -590,6 +601,111 @@ func TestStartSyncRejectsStoredStateFileThroughExternalSymlink(t *testing.T) {
 	require.NoFileExists(t, legacyPath+".migrated")
 	require.NoFileExists(t, filepath.Join(outsideDir, "state."+encodeProfileID(profileID)))
 	require.NoFileExists(t, filepath.Join(outsideDir, "state."+profileID))
+}
+
+func TestStartSyncRejectsDefaultStateFileSymlinksOutsideDataDir(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		existingTarget bool
+	}{
+		{name: "existing outside target", existingTarget: true},
+		{name: "dangling outside target"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service, _ := newStatusLookupService(t)
+			rootDir := t.TempDir()
+			dataDir := filepath.Join(rootDir, "data")
+			outsideDir := filepath.Join(rootDir, "outside")
+			service.globalConfig.Paths.DataDir = dataDir
+			require.NoError(t, os.MkdirAll(dataDir, 0755))
+			require.NoError(t, os.MkdirAll(outsideDir, 0755))
+
+			profileID := "default-symlink-" + strings.ReplaceAll(test.name, " ", "-")
+			canonicalPath := service.profileSpecificStatePath(profileID, "")
+			outsideTarget := filepath.Join(outsideDir, "state.json")
+			if test.existingTarget {
+				require.NoError(t, statepkg.NewState().Save(outsideTarget))
+			}
+			if err := os.Symlink(outsideTarget, canonicalPath); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+
+			require.NoError(t, service.repository.CreateProfile(
+				profileID,
+				"Default symlink profile",
+				"http://audiobookshelf.invalid",
+				"abs-token",
+				"hc-token",
+				database.SyncConfigData{},
+			))
+
+			var before []byte
+			if test.existingTarget {
+				before, _ = os.ReadFile(outsideTarget)
+			}
+			err := service.StartSync(profileID)
+			require.ErrorIs(t, err, ErrProfileStateFilePathNotAllowed)
+			require.False(t, service.IsProfileSyncing(profileID))
+			require.Empty(t, service.activeRuns)
+			require.Empty(t, service.activeSyncs)
+			require.Zero(t, service.nextGeneration)
+			if test.existingTarget {
+				after, readErr := os.ReadFile(outsideTarget)
+				require.NoError(t, readErr)
+				require.Equal(t, before, after)
+			} else {
+				require.NoFileExists(t, outsideTarget)
+			}
+		})
+	}
+}
+
+func TestStartSyncAcceptsDefaultStateFileSymlinkInsideDataDir(t *testing.T) {
+	absServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/me":
+			_, _ = io.WriteString(w, `{"mediaProgress":[],"listeningSessions":[]}`)
+		case "/api/libraries":
+			_, _ = io.WriteString(w, `{"libraries":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(absServer.Close)
+
+	service, _ := newStatusLookupService(t)
+	dataDir := t.TempDir()
+	insideDir := filepath.Join(dataDir, "inside")
+	service.globalConfig.Paths.DataDir = dataDir
+	service.globalConfig.Paths.CacheDir = filepath.Join(dataDir, "cache")
+	service.globalConfig.Paths.MismatchOutputDir = filepath.Join(dataDir, "mismatches")
+	require.NoError(t, os.MkdirAll(insideDir, 0755))
+
+	profileID := "default-inside-symlink"
+	canonicalPath := service.profileSpecificStatePath(profileID, "")
+	insideTarget := filepath.Join(insideDir, "state.json")
+	require.NoError(t, statepkg.NewState().Save(insideTarget))
+	if err := os.Symlink(insideTarget, canonicalPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	require.NoError(t, service.repository.CreateProfile(
+		profileID,
+		"Default inside symlink profile",
+		absServer.URL,
+		"abs-token",
+		"hc-token",
+		database.SyncConfigData{},
+	))
+
+	require.NoError(t, service.StartSync(profileID))
+	service.WaitForSyncs()
+	status := service.GetProfileStatus(profileID)
+	require.NotNil(t, status)
+	require.Equal(t, "completed", status.Status)
+	require.FileExists(t, insideTarget)
+	info, err := os.Lstat(canonicalPath)
+	require.NoError(t, err)
+	require.NotEqual(t, 0, info.Mode()&os.ModeSymlink)
 }
 
 func TestProfileStateFileValidationAllowsResolvedInsideSymlink(t *testing.T) {

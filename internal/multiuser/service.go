@@ -467,6 +467,9 @@ func (s *MultiUserService) StartSync(profileID string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get profile config: %w", err)
 	}
+	if profileConfig == nil {
+		return fmt.Errorf("failed to get profile config: sync profile not found: %s", profileID)
+	}
 	if err := s.validatePersistedProfileStateFile(profileID, profileConfig.SyncConfig.StateFile); err != nil {
 		return fmt.Errorf("invalid persisted state file for profile %s: %w", profileID, err)
 	}
@@ -1017,7 +1020,11 @@ func (s *MultiUserService) validatePersistedProfileStateFile(profileID, configur
 }
 
 func (s *MultiUserService) validateProfileStateFileWithAbsolutePolicy(profileID, configuredPath string, allowAbsolute bool) error {
-	var dataDir string
+	dataDir, err := filepath.Abs(s.effectiveDataDir())
+	if err != nil {
+		return fmt.Errorf("%w: resolve data directory: %v", ErrProfileStateFilePathNotAllowed, err)
+	}
+
 	if configuredPath != "" {
 		if strings.ContainsRune(configuredPath, '\x00') {
 			return fmt.Errorf("%w: NUL bytes are not accepted: %q", ErrProfileStateFilePathNotAllowed, configuredPath)
@@ -1026,11 +1033,6 @@ func (s *MultiUserService) validateProfileStateFileWithAbsolutePolicy(profileID,
 			return fmt.Errorf("%w: absolute paths are not accepted: %q", ErrProfileStateFilePathNotAllowed, configuredPath)
 		}
 
-		var err error
-		dataDir, err = filepath.Abs(s.effectiveDataDir())
-		if err != nil {
-			return fmt.Errorf("%w: resolve data directory: %v", ErrProfileStateFilePathNotAllowed, err)
-		}
 		configured := configuredPath
 		if !filepath.IsAbs(configured) {
 			configured = filepath.Join(dataDir, configured)
@@ -1052,21 +1054,19 @@ func (s *MultiUserService) validateProfileStateFileWithAbsolutePolicy(profileID,
 	}
 
 	derivedPath := s.profileSpecificStatePath(profileID, configuredPath)
-	if configuredPath != "" {
-		derived, err := filepath.Abs(derivedPath)
-		if err != nil {
-			return fmt.Errorf("%w: resolve derived path: %v", ErrProfileStateFilePathNotAllowed, err)
-		}
-		if !pathWithinDirectory(dataDir, derived) {
-			return fmt.Errorf("%w: derived path escapes data directory: %q", ErrProfileStateFilePathNotAllowed, configuredPath)
-		}
-		withinResolvedDataDir, err := pathWithinResolvedDirectory(dataDir, derivedPath)
-		if err != nil {
-			return fmt.Errorf("%w: resolve derived path: %v", ErrProfileStateFilePathNotAllowed, err)
-		}
-		if !withinResolvedDataDir {
-			return fmt.Errorf("%w: resolved derived path escapes data directory: %q", ErrProfileStateFilePathNotAllowed, configuredPath)
-		}
+	derived, err := filepath.Abs(derivedPath)
+	if err != nil {
+		return fmt.Errorf("%w: resolve derived path: %v", ErrProfileStateFilePathNotAllowed, err)
+	}
+	if !pathWithinDirectory(dataDir, derived) {
+		return fmt.Errorf("%w: derived path escapes data directory: %q", ErrProfileStateFilePathNotAllowed, configuredPath)
+	}
+	withinResolvedDataDir, err := pathWithinResolvedDirectory(dataDir, derivedPath)
+	if err != nil {
+		return fmt.Errorf("%w: resolve derived path: %v", ErrProfileStateFilePathNotAllowed, err)
+	}
+	if !withinResolvedDataDir {
+		return fmt.Errorf("%w: resolved derived path escapes data directory: %q", ErrProfileStateFilePathNotAllowed, configuredPath)
 	}
 	if len([]byte(filepath.Base(derivedPath))) > maxStateFileComponentBytes {
 		return fmt.Errorf("%w: %q", ErrProfileStateFileNameTooLong, filepath.Base(derivedPath))
