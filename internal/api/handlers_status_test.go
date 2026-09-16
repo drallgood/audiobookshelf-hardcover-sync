@@ -25,6 +25,7 @@ import (
 
 type statusServiceFixture struct {
 	dataDir   string
+	db        *database.Database
 	repo      *database.Repository
 	multiUser *multiuser.MultiUserService
 }
@@ -57,6 +58,7 @@ func newStatusServiceFixture(t *testing.T, hardcoverURL string) *statusServiceFi
 
 	return &statusServiceFixture{
 		dataDir:   dataDir,
+		db:        db,
 		repo:      repo,
 		multiUser: multiUser,
 	}
@@ -106,6 +108,68 @@ func TestStartSyncRegistersWorkBeforeResponding(t *testing.T) {
 	status := fixture.multiUser.GetProfileStatus(profileID)
 	require.NotNil(t, status)
 	require.NotEqual(t, "syncing", status.Status)
+}
+
+func TestStartSyncReturnsErrorWhenProfileConfigurationCannotBeLoaded(t *testing.T) {
+	fixture := newStatusServiceFixture(t, "http://hardcover.invalid")
+	const profileID = "invalid-start-profile"
+	fixture.createProfile(t, profileID, "Invalid start profile", "http://audiobookshelf.invalid", profileID)
+	result := fixture.db.GetDB().Model(&database.SyncProfileConfig{}).
+		Where("profile_id = ?", profileID).
+		Update("audiobookshelf_token_encrypted", "invalid-encrypted-token")
+	require.NoError(t, result.Error)
+
+	handler := NewHandler(fixture.multiUser, logger.Get())
+	routes := http.NewServeMux()
+	routes.HandleFunc("POST /api/profiles/{id}/sync", handler.StartSync)
+
+	recorder := requestJSONRoute(routes, http.MethodPost, "/api/profiles/"+profileID+"/sync")
+	require.Equal(t, http.StatusInternalServerError, recorder.Code, recorder.Body.String())
+	var response struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	require.False(t, response.Success)
+	require.Equal(t, "Failed to start sync", response.Error)
+	require.False(t, fixture.multiUser.IsProfileSyncing(profileID))
+}
+
+func TestStartSyncReturnsErrorWhenProfileIsAlreadySyncing(t *testing.T) {
+	absServer := newLiveStatusAudiobookshelfServer([]map[string]interface{}{
+		statusBook("blocked-book", "Blocked Until Released", "Author"),
+	})
+	t.Cleanup(absServer.Server.Close)
+	hardcoverServer := newLiveStatusHardcoverServer()
+	fixture := newStatusServiceFixture(t, hardcoverServer.URL)
+	t.Cleanup(func() {
+		hardcoverServer.releaseBlocked()
+		hardcoverServer.Server.Close()
+	})
+	const profileID = "already-syncing-profile"
+	fixture.createProfile(t, profileID, "Already syncing profile", absServer.URL, profileID)
+	require.NoError(t, fixture.multiUser.StartSync(profileID))
+	select {
+	case <-hardcoverServer.blockedStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for initial sync to become active")
+	}
+
+	handler := NewHandler(fixture.multiUser, logger.Get())
+	routes := http.NewServeMux()
+	routes.HandleFunc("POST /api/profiles/{id}/sync", handler.StartSync)
+	recorder := requestJSONRoute(routes, http.MethodPost, "/api/profiles/"+profileID+"/sync")
+	require.Equal(t, http.StatusInternalServerError, recorder.Code, recorder.Body.String())
+	var response struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	require.False(t, response.Success)
+	require.Equal(t, "Failed to start sync", response.Error)
+
+	hardcoverServer.releaseBlocked()
+	fixture.waitForSyncs(t)
 }
 
 type statusHTTPResponse struct {

@@ -109,3 +109,49 @@ func TestSnapshotStatusKeepsUnknownTotalSeparateFromProcessedOutcomes(t *testing
 	require.Equal(t, OutcomeCounts{NotFound: 1}, status.OutcomeCounts)
 	require.Equal(t, int32(1), status.TotalBooksProcessed)
 }
+
+func TestSnapshotSanitizesAudiobookshelfURLs(t *testing.T) {
+	tests := []struct {
+		name           string
+		audiobookshelf string
+		wantURL        string
+		wantCoverURL   string
+	}{
+		{
+			name:           "strips userinfo",
+			audiobookshelf: "https://reader:secret@audiobookshelf.example/base",
+			wantURL:        "https://audiobookshelf.example/base",
+			wantCoverURL:   "https://audiobookshelf.example/base/api/items/snapshot-sanitize/cover",
+		},
+		{
+			name:           "preserves credential-free URL",
+			audiobookshelf: "https://audiobookshelf.example/base",
+			wantURL:        "https://audiobookshelf.example/base",
+			wantCoverURL:   "https://audiobookshelf.example/base/api/items/snapshot-sanitize/cover",
+		},
+		{
+			name:           "omits unparsable URL",
+			audiobookshelf: "https://reader:%zz@audiobookshelf.example/base",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, _ := createTestService()
+			svc.config.Audiobookshelf.URL = tt.audiobookshelf
+			svc.beginOutcomeRun()
+			book := *toAudiobookshelfBook(createTestBook("snapshot-sanitize", "Snapshot", "Author", "", ""))
+			svc.recordBookOutcomeWithMatchMethod(book, OutcomeNeedsReview, "manual review", nil, nil, "")
+
+			snapshot := svc.GetSnapshot()
+			require.Equal(t, tt.wantURL, snapshot.AudiobookshelfURL)
+			require.Len(t, snapshot.BookOutcomes, 1)
+			require.Len(t, snapshot.AttentionRecords, 1)
+			require.Len(t, snapshot.Mismatches, 1)
+			require.Equal(t, tt.wantCoverURL, snapshot.BookOutcomes[0].CoverURL)
+			require.Equal(t, tt.wantCoverURL, snapshot.AttentionRecords[0].CoverURL)
+			require.Equal(t, tt.wantCoverURL, snapshot.Mismatches[0].CoverURL)
+			require.Equal(t, tt.wantCoverURL, snapshot.Mismatches[0].ImageURL)
+		})
+	}
+}

@@ -650,6 +650,8 @@ func (h *Handler) StartSync(w http.ResponseWriter, r *http.Request) {
 	// cleanup can reliably wait for every accepted request.
 	if err := h.multiUserService.StartSync(profileID); err != nil {
 		h.log.Error(fmt.Sprintf("Failed to start sync for profile %s: %s", profileID, err.Error()))
+		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to start sync")
+		return
 	}
 
 	h.writeSuccessResponse(w, map[string]string{

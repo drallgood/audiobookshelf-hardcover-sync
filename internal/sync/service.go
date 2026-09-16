@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -841,6 +842,43 @@ func audiobookshelfSeries(metadata models.AudiobookshelfMetadataStruct) (string,
 	return seriesName, strings.TrimSpace(metadata.Series[0].Sequence)
 }
 
+// sanitizeAudiobookshelfURL removes credentials before an Audiobookshelf URL
+// is exposed in a sync snapshot. Invalid URLs are omitted rather than echoed
+// back, since they may contain credentials that cannot be safely parsed.
+func sanitizeAudiobookshelfURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	if parsed.User == nil {
+		return raw
+	}
+	parsed.User = nil
+	return parsed.String()
+}
+
+func sanitizeSnapshotAudiobookshelfURLs(snapshot *SyncSnapshot) {
+	if snapshot == nil {
+		return
+	}
+
+	snapshot.AudiobookshelfURL = sanitizeAudiobookshelfURL(snapshot.AudiobookshelfURL)
+	for i := range snapshot.BookOutcomes {
+		snapshot.BookOutcomes[i].CoverURL = sanitizeAudiobookshelfURL(snapshot.BookOutcomes[i].CoverURL)
+	}
+	for i := range snapshot.AttentionRecords {
+		snapshot.AttentionRecords[i].CoverURL = sanitizeAudiobookshelfURL(snapshot.AttentionRecords[i].CoverURL)
+	}
+	for i := range snapshot.Mismatches {
+		snapshot.Mismatches[i].CoverURL = sanitizeAudiobookshelfURL(snapshot.Mismatches[i].CoverURL)
+		snapshot.Mismatches[i].ImageURL = sanitizeAudiobookshelfURL(snapshot.Mismatches[i].ImageURL)
+	}
+}
+
 // GetSnapshot returns one race-safe deep copy of the current run. Attention
 // records are derived from the same outcome map and lock acquisition as all
 // counters, so callers never observe fields from different points in a run.
@@ -853,6 +891,7 @@ func (s *Service) GetSnapshot() SyncSnapshot {
 		Mismatches:        make([]mismatch.BookMismatch, 0),
 	}
 	if s.summary == nil {
+		sanitizeSnapshotAudiobookshelfURLs(&snapshot)
 		return snapshot
 	}
 
@@ -891,6 +930,7 @@ func (s *Service) GetSnapshot() SyncSnapshot {
 			snapshot.AttentionRecords = append(snapshot.AttentionRecords, record)
 		}
 	}
+	sanitizeSnapshotAudiobookshelfURLs(&snapshot)
 	return snapshot
 }
 
