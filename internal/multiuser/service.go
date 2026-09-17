@@ -82,9 +82,15 @@ type activeSyncRun struct {
 
 // profileRunGate serializes lifecycle decisions for one profile without
 // serializing unrelated profiles. Repository operations may block while this
-// gate is held, but they never hold the service-wide map lock.
+// gate is held, but they never hold the service-wide map lock. Workers receive
+// FIFO execution tickets while holding the same short-lived lifecycle lock;
+// waiting for a ticket never holds that lock, so cancellation can accept a
+// replacement while an older worker is still unwinding.
 type profileRunGate struct {
-	mu stdSync.Mutex
+	mu                     stdSync.Mutex
+	executionCond          *stdSync.Cond
+	nextExecutionTicket    uint64
+	servingExecutionTicket uint64
 }
 
 // MultiUserService manages sync operations for multiple users
@@ -367,8 +373,37 @@ func (s *MultiUserService) profileGate(profileID string) *profileRunGate {
 		return gate
 	}
 	gate := &profileRunGate{}
+	gate.executionCond = stdSync.NewCond(&gate.mu)
 	s.profileGates[profileID] = gate
 	return gate
+}
+
+// enqueueExecutionLocked reserves a FIFO execution position. The caller must
+// hold gate.mu, which is already held by StartSyncWithAcceptedRun while it
+// performs the acceptance transition.
+func (gate *profileRunGate) enqueueExecutionLocked() uint64 {
+	ticket := gate.nextExecutionTicket
+	gate.nextExecutionTicket++
+	return ticket
+}
+
+// waitForExecution waits for this worker's FIFO position without retaining the
+// lifecycle mutex during worker execution or external I/O.
+func (gate *profileRunGate) waitForExecution(ticket uint64) {
+	gate.mu.Lock()
+	for ticket != gate.servingExecutionTicket {
+		gate.executionCond.Wait()
+	}
+	gate.mu.Unlock()
+}
+
+func (gate *profileRunGate) releaseExecution(ticket uint64) {
+	gate.mu.Lock()
+	if ticket == gate.servingExecutionTicket {
+		gate.servingExecutionTicket++
+		gate.executionCond.Broadcast()
+	}
+	gate.mu.Unlock()
 }
 
 func (s *MultiUserService) latestRunIsCurrent(profileID, runID string, generation uint64) bool {
@@ -1091,11 +1126,18 @@ func (s *MultiUserService) StartSyncWithAcceptedRun(profileID string) (AcceptedS
 	applySnapshotToStatus(initialStatus, queuedSnapshot)
 	s.updateProfileStatus(profileID, initialStatus)
 
-	// Start the sync in background
+	// Reserve the worker's profile-local execution position before launching it.
+	// A replacement accepted after cancellation therefore cannot overtake this
+	// worker even if this goroutine has not been scheduled yet.
+	executionTicket := gate.enqueueExecutionLocked()
+
+	// Start the sync in background.
 	s.syncWaitGroup.Add(1)
 	go func() {
 		defer s.syncWaitGroup.Done()
-		s.performSync(ctx, profileID, profileConfig, run.generation)
+		s.runSyncWorker(profileID, run.runID, run.generation, gate, executionTicket, func() {
+			s.performSync(ctx, profileID, profileConfig, run.generation)
+		})
 	}()
 	return accepted, nil
 }
@@ -1174,6 +1216,18 @@ func (s *MultiUserService) CancelSync(profileID string) error {
 	}
 	s.publishStatusIfLatest(profileID, run, finalStatus)
 	return nil
+}
+
+// runSyncWorker owns one profile's execution ticket for the complete worker
+// lifetime. A canceled or replaced run is rejected after acquiring its turn,
+// before migration, client setup, cache loading, or state-file work.
+func (s *MultiUserService) runSyncWorker(profileID, runID string, generation uint64, gate *profileRunGate, executionTicket uint64, work func()) {
+	gate.waitForExecution(executionTicket)
+	defer gate.releaseExecution(executionTicket)
+	if !s.latestRunIsCurrent(profileID, runID, generation) {
+		return
+	}
+	work()
 }
 
 // performSync performs the actual sync operation for a profile

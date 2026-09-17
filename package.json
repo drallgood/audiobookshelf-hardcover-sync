@@ -1,0 +1,11 @@
+{
+  "name": "audiobookshelf-hardcover-sync-ui-tests",
+  "private": true,
+  "scripts": {
+    "test:ui": "node --test web/static/app.test.js",
+    "check:ui": "node --check web/static/app.js"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
+  }
+}

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -566,6 +567,105 @@ func TestStartSyncWithAcceptedRunKeepsIdentityWhenWorkerFinishesImmediately(t *t
 	require.NotNil(t, status.Snapshot)
 	require.Equal(t, accepted.RunID, status.Snapshot.RunID)
 	require.Equal(t, accepted.QueuedAt, status.Snapshot.QueuedAt)
+}
+
+func TestCanceledProfileWorkersRunInAcceptanceOrder(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	var requestOnce sync.Once
+	var requestCount atomic.Int32
+	absServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/me":
+			requestCount.Add(1)
+			requestOnce.Do(func() { close(requestStarted) })
+			<-releaseRequest
+			_, _ = io.WriteString(w, `{}`)
+		case "/api/libraries":
+			_, _ = io.WriteString(w, `{"libraries":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(func() {
+		select {
+		case <-releaseRequest:
+		default:
+			close(releaseRequest)
+		}
+		absServer.Close()
+	})
+
+	service, _ := newStatusLookupService(t)
+	dataDir := t.TempDir()
+	service.globalConfig.Paths.DataDir = dataDir
+	service.globalConfig.Paths.CacheDir = filepath.Join(dataDir, "cache")
+	service.globalConfig.Paths.MismatchOutputDir = filepath.Join(dataDir, "mismatches")
+	const profileID = "profile-gated-workers"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Gated workers", absServer.URL, "abs-token", "hc-token", database.SyncConfigData{},
+	))
+
+	// Reserve the first execution position with a worker that blocks before its
+	// filesystem work. Cancellation must return while this worker is blocked.
+	oldRun := installAcceptedTestRun(t, service, profileID, "run-old", false)
+	gate := service.profileGate(profileID)
+	gate.mu.Lock()
+	oldTicket := gate.enqueueExecutionLocked()
+	gate.mu.Unlock()
+	oldEntered := make(chan struct{})
+	oldRelease := make(chan struct{})
+	oldDone := make(chan struct{})
+	go func() {
+		service.runSyncWorker(profileID, oldRun.runID, oldRun.generation, gate, oldTicket, func() {
+			close(oldEntered)
+			<-oldRelease
+		})
+		close(oldDone)
+	}()
+	select {
+	case <-oldEntered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the old worker")
+	}
+
+	require.NoError(t, service.CancelSync(profileID))
+	firstReplacement, err := service.StartSyncWithAcceptedRun(profileID)
+	require.NoError(t, err)
+	require.NoError(t, service.CancelSync(profileID))
+	secondReplacement, err := service.StartSyncWithAcceptedRun(profileID)
+	require.NoError(t, err)
+
+	// Both replacements are queued behind the blocked old worker. The first
+	// replacement was canceled while queued and must not enter Sync at all.
+	select {
+	case <-requestStarted:
+		t.Fatal("replacement worker overtook the blocked old worker")
+	default:
+	}
+
+	close(oldRelease)
+	select {
+	case <-requestStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the non-stale replacement worker")
+	}
+	close(releaseRequest)
+	service.WaitForSyncs()
+	select {
+	case <-oldDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the old worker to exit")
+	}
+
+	require.Equal(t, int32(1), requestCount.Load(), "the queued canceled replacement must not initialize a sync client")
+	firstReport, err := service.repository.GetSyncRunReport(profileID, firstReplacement.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, firstReport)
+	require.Equal(t, database.SyncRunPhaseCanceled, firstReport.Phase)
+	secondReport, err := service.repository.GetSyncRunReport(profileID, secondReplacement.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, secondReport)
 }
 
 func TestPublishFinalStatusRejectsCanceledRunBeforeDurableSuccess(t *testing.T) {
