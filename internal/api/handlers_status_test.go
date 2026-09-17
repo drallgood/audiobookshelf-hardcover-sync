@@ -161,14 +161,14 @@ func TestStartSyncReturnsControlledErrorForUnknownPublicProfile(t *testing.T) {
 	routes.HandleFunc("POST /api/profiles/{id}/sync", handler.StartSync)
 
 	recorder := requestJSONRoute(routes, http.MethodPost, "/api/profiles/missing-profile/sync")
-	require.Equal(t, http.StatusInternalServerError, recorder.Code, recorder.Body.String())
+	require.Equal(t, http.StatusNotFound, recorder.Code, recorder.Body.String())
 	var response struct {
 		Success bool   `json:"success"`
 		Error   string `json:"error"`
 	}
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
 	require.False(t, response.Success)
-	require.Equal(t, "Failed to start sync", response.Error)
+	require.Equal(t, "Sync profile not found", response.Error)
 	require.False(t, fixture.multiUser.IsProfileSyncing("missing-profile"))
 }
 
@@ -196,14 +196,14 @@ func TestStartSyncReturnsErrorWhenProfileIsAlreadySyncing(t *testing.T) {
 	routes := http.NewServeMux()
 	routes.HandleFunc("POST /api/profiles/{id}/sync", handler.StartSync)
 	recorder := requestJSONRoute(routes, http.MethodPost, "/api/profiles/"+profileID+"/sync")
-	require.Equal(t, http.StatusInternalServerError, recorder.Code, recorder.Body.String())
+	require.Equal(t, http.StatusConflict, recorder.Code, recorder.Body.String())
 	var response struct {
 		Success bool   `json:"success"`
 		Error   string `json:"error"`
 	}
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
 	require.False(t, response.Success)
-	require.Equal(t, "Failed to start sync", response.Error)
+	require.Equal(t, "Sync already in progress", response.Error)
 
 	hardcoverServer.releaseBlocked()
 	fixture.waitForSyncs(t)

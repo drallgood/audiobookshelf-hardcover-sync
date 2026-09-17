@@ -735,8 +735,15 @@ func (h *Handler) StartSync(w http.ResponseWriter, r *http.Request) {
 	// reservation that installed the queued run, before the worker starts.
 	accepted, err := h.multiUserService.StartSyncWithAcceptedRun(profileID)
 	if err != nil {
-		h.log.Error(fmt.Sprintf("Failed to start sync for profile %s: %s", profileID, err.Error()))
-		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to start sync")
+		switch {
+		case errors.Is(err, multiuser.ErrProfileNotFound):
+			h.writeErrorResponse(w, http.StatusNotFound, "Sync profile not found")
+		case errors.Is(err, multiuser.ErrSyncAlreadyActive):
+			h.writeErrorResponse(w, http.StatusConflict, "Sync already in progress")
+		default:
+			h.log.Error(fmt.Sprintf("Failed to start sync for profile %s: %s", profileID, err.Error()))
+			h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to start sync")
+		}
 		return
 	}
 
