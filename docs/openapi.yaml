@@ -393,72 +393,6 @@ components:
           items:
             $ref: '#/components/schemas/BookOutcomeRecord'
 
-    SyncSummary:
-      type: object
-      properties:
-        snapshot:
-          $ref: '#/components/schemas/SyncSnapshot'
-        user_id: {type: string}
-        run_id: {type: string}
-        run_started_at: {type: string, format: date-time}
-        queued_at: {type: string, format: date-time}
-        processing_started_at:
-          type: string
-          format: date-time
-          description: Zero timestamp until the worker begins processing.
-        last_activity_at:
-          type: string
-          format: date-time
-          description: Zero timestamp until the run records worker activity.
-        last_processed_at:
-          type: string
-          format: date-time
-          description: Zero timestamp until a candidate receives an outcome.
-        finished_at:
-          type: string
-          format: date-time
-          description: Zero timestamp until a terminal phase is recorded.
-        dry_run:
-          type: boolean
-          description: True when the run planned changes without mutating Hardcover.
-        run_error:
-          type: string
-          nullable: true
-          description: Run-level error for failed or canceled runs.
-        unattempted_count:
-          type: integer
-          description: Candidates not yet assigned an outcome.
-        state:
-          type: string
-          enum: [queued, running, finalizing, completed, canceled, failed]
-        last_attempted_at:
-          type: string
-          format: date-time
-          nullable: true
-          description: Time the most recent run was accepted, including dry-run, failed, or canceled runs.
-        last_successful_at:
-          type: string
-          format: date-time
-          nullable: true
-          description: Time the most recent non-dry-run run completed successfully; null when no such run exists.
-        books_total:
-          type: integer
-          description: Number of candidates observed before processing limits; zero means the total is unknown or has not been observed yet.
-        processed_so_far:
-          type: integer
-          description: Number of books processed so far, independent of books_total.
-        processed_count: {type: integer}
-        outcome_counts:
-          $ref: '#/components/schemas/OutcomeCounts'
-        book_outcomes:
-          type: array
-          items:
-            $ref: '#/components/schemas/BookOutcomeRecord'
-        attention_records:
-          type: array
-          items:
-            $ref: '#/components/schemas/BookOutcomeRecord'
-
 security:
   - BearerAuth: []
 
@@ -678,30 +612,6 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
   
-  /profiles/{profileId}/summary:
-    get:
-      tags: [Status]
-      summary: Get the current-run sync summary for a profile
-      parameters:
-        - name: profileId
-          in: path
-          required: true
-          schema:
-            type: string
-          example: "profile-123"
-      responses:
-        '200':
-          description: Current run snapshot and legacy summary fields
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  data:
-                    $ref: '#/components/schemas/SyncSummary'
   /profiles/{profileId}/status:
     get:
       tags: [Status]

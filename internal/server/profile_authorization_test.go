@@ -358,7 +358,6 @@ func TestForeignProfileAuthorizationReturnsNotFoundForEveryRoute(t *testing.T) {
 		{name: "delete profile", method: http.MethodDelete, path: "/api/profiles/foreign-target"},
 		{name: "update config", method: http.MethodPut, path: "/api/profiles/foreign-target/config", body: `{"hardcover_token":"stolen"}`},
 		{name: "status", method: http.MethodGet, path: "/api/profiles/foreign-target/status"},
-		{name: "summary", method: http.MethodGet, path: "/api/profiles/foreign-target/summary"},
 		{name: "run details", method: http.MethodGet, path: runDetailsPath},
 		{name: "start sync", method: http.MethodPost, path: "/api/profiles/foreign-target/sync"},
 		{name: "cancel sync", method: http.MethodDelete, path: "/api/profiles/foreign-target/sync"},

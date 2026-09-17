@@ -63,7 +63,6 @@ func New(addr string, multiUserService *multiuser.MultiUserService, authService 
 
 	// Public API endpoints (no auth required)
 	handler.HandleFunc("GET /api/status", s.handleAPIStatus) // General status check
-	handler.HandleFunc("POST /api/sync", s.handleSync)       // Legacy sync endpoint
 
 	// API v1 routes with authentication
 	apiMux := http.NewServeMux()
@@ -76,7 +75,6 @@ func New(addr string, multiUserService *multiuser.MultiUserService, authService 
 	apiMux.HandleFunc("GET /api/profiles/{id}/status", s.apiHandler.GetProfileStatus)
 	apiMux.HandleFunc("POST /api/profiles/{id}/sync", s.apiHandler.StartSync)
 	apiMux.HandleFunc("DELETE /api/profiles/{id}/sync", s.apiHandler.CancelSync)
-	apiMux.HandleFunc("GET /api/profiles/{id}/summary", s.apiHandler.GetSyncSummary)
 	apiMux.HandleFunc("GET /api/profiles/{id}/runs/{runID}/details", s.apiHandler.GetRunDetails)
 
 	// Mount profile API routes under /api with auth middleware. Keep the /api
@@ -130,23 +128,6 @@ func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, `{"status":"ok"}`)
-}
-
-// handleSync handles sync requests (legacy endpoint for backwards compatibility)
-func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// TODO: Implement legacy sync logic or redirect to multi-user API
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write([]byte(`{"status": "sync started"}`)); err != nil {
-		s.logger.Error("Failed to write sync response", map[string]interface{}{
-			"error": err,
-		})
-	}
 }
 
 // handleAPIStatus handles /api/status endpoint

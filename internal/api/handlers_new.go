@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/types"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/auth"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
@@ -532,8 +531,6 @@ func statusForSnapshotPhase(state string) string {
 
 // canonicalProfileStatus replaces the compatibility projection used by the
 // multi-user status accessor with the canonical run snapshot for HTTP clients.
-// The accessor returns a coherent deep copy and does not expose profile
-// configuration when no active run exists.
 func (h *Handler) canonicalProfileStatus(profileID string, status *multiuser.SyncProfileStatus) *multiuser.SyncProfileStatus {
 	if status == nil {
 		return nil
@@ -582,7 +579,7 @@ func aggregateSnapshotFrom(snapshot *sync.SyncSnapshot) *aggregateSnapshotRespon
 	}
 }
 
-// GetProfileStatus handles GET /api/profiles/{id}/status
+// GetProfileStatus handles GET /api/profiles/{id}/status.
 func (h *Handler) GetProfileStatus(w http.ResponseWriter, r *http.Request) {
 	profileID := profileIDFromRequest(r)
 	if profileID == "" {
@@ -771,60 +768,4 @@ func isValidNewProfileID(id string) bool {
 		return false
 	}
 	return true
-}
-
-// HandleCurrentUser returns information about the current sync profile
-// This is a placeholder for future authentication integration
-func (h *Handler) HandleCurrentUser(w http.ResponseWriter, r *http.Request) {
-	h.writeSuccessResponse(w, map[string]interface{}{
-		"id":   "current-user",
-		"name": "Current User",
-	})
-}
-
-// GetSyncSummary handles GET /api/profiles/{id}/summary
-func (h *Handler) GetSyncSummary(w http.ResponseWriter, r *http.Request) {
-	profileID := profileIDFromRequest(r)
-	if profileID == "" {
-		h.writeErrorResponse(w, http.StatusBadRequest, "Profile ID is required")
-		return
-	}
-	if !h.authorizeProfile(w, r, profileID, false) {
-		return
-	}
-
-	status := h.canonicalProfileStatus(profileID, h.multiUserService.GetProfileStatus(profileID))
-	response := types.SyncSummaryResponse{
-		UserID:           profileID,
-		LastAttemptedAt:  nil,
-		LastSuccessfulAt: nil,
-		BookOutcomes:     make([]sync.BookOutcomeRecord, 0),
-		AttentionRecords: make([]sync.BookOutcomeRecord, 0),
-	}
-	if status != nil {
-		response.LastAttemptedAt = status.LastAttemptedAt
-		response.LastSuccessfulAt = status.LastSuccessfulAt
-		response.Snapshot = status.Snapshot
-	}
-	if snapshot := response.Snapshot; snapshot != nil {
-		response.UserID = snapshot.UserID
-		response.RunID = snapshot.RunID
-		response.RunStartedAt = snapshot.RunStartedAt
-		response.QueuedAt = snapshot.QueuedAt
-		response.ProcessingStartedAt = snapshot.ProcessingStartedAt
-		response.LastActivityAt = snapshot.LastActivityAt
-		response.LastProcessedAt = snapshot.LastProcessedAt
-		response.FinishedAt = snapshot.FinishedAt
-		response.DryRun = snapshot.DryRun
-		response.RunError = snapshot.RunError
-		response.UnattemptedCount = snapshot.UnattemptedCount
-		response.State = snapshot.State
-		response.BooksTotal = snapshot.BooksTotal
-		response.ProcessedSoFar = snapshot.ProcessedSoFar
-		response.ProcessedCount = snapshot.ProcessedCount
-		response.OutcomeCounts = snapshot.OutcomeCounts
-		response.BookOutcomes = append(response.BookOutcomes, snapshot.BookOutcomes...)
-		response.AttentionRecords = append(response.AttentionRecords, snapshot.AttentionRecords...)
-	}
-	h.writeSuccessResponse(w, response)
 }

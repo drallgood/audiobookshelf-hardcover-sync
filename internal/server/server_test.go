@@ -119,8 +119,6 @@ func TestServerRoutesPreserveEncodedLegacyProfileIDForCRUD(t *testing.T) {
 	require.True(t, statusPayload.Success)
 	require.Equal(t, legacyID, statusPayload.Data.ProfileID)
 
-	summaryResponse := fixture.request(http.MethodGet, "/api/profiles/"+escapedID+"/summary", nil)
-	require.Equal(t, http.StatusOK, summaryResponse.Code, summaryResponse.Body.String())
 	detailsResponse := fixture.request(http.MethodGet, "/api/profiles/"+escapedID+"/runs/unknown/details", nil)
 	require.Equal(t, http.StatusNotFound, detailsResponse.Code, detailsResponse.Body.String())
 

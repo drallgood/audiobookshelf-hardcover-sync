@@ -824,14 +824,10 @@ class SyncProfileApp {
 
     terminalErrorIdentity(profileId, status) {
         const snapshot = status?.snapshot || {};
-        const state = String(snapshot.state || status?.status || '').toLowerCase();
-        if (state !== 'failed' && state !== 'error') return null;
+        const state = String(snapshot.state || '').toLowerCase();
+        if (state !== 'failed') return null;
         const runId = snapshot.run_id;
-        if (runId) return JSON.stringify([String(profileId), String(runId)]);
-        // Older terminal snapshots may not carry a run ID. Include the most
-        // stable available run marker, falling back only when none exists.
-        const marker = snapshot.run_started_at || status?.last_sync;
-        return JSON.stringify([String(profileId), 'terminal', state, marker || '']);
+        return runId ? JSON.stringify([String(profileId), String(runId)]) : null;
     }
 
     pruneTerminalErrorState() {
@@ -878,9 +874,10 @@ class SyncProfileApp {
     }
 
     async fetchTerminalError(profileId, identity, signal, authGeneration) {
+        const runId = JSON.parse(identity)[1];
         try {
             const { response, data: result } = await this.fetchJsonWithTimeout(
-                this.profileUrl(profileId, '/status'),
+                `${this.profileUrl(profileId)}/runs/${encodeURIComponent(runId)}/details`,
                 { signal }
             );
             // A terminal-error request can outlive the status load that
@@ -892,28 +889,20 @@ class SyncProfileApp {
                 this.handleAuthExpiry();
                 return;
             }
-            if (response.status !== 200) throw new Error(`Terminal status request failed (${response.status})`);
+            if (response.status !== 200) throw new Error(`Terminal details request failed (${response.status})`);
             if (!result || result.success !== true || !result.data || typeof result.data !== 'object') {
-                throw new Error('Terminal status response was invalid');
+                throw new Error('Terminal details response was invalid');
             }
-            const status = result.data;
-            if (String(status.profile_id || '') !== String(profileId)) {
-                throw new Error('Terminal status response was for the wrong profile');
+            const snapshot = result.data;
+            if (String(snapshot.run_id || '') !== runId) {
+                throw new Error('Terminal details response was for the wrong run');
             }
-            if (this.terminalErrorIdentity(profileId, status) !== identity) {
-                throw new Error('Terminal status response was for the wrong failure identity');
-            }
-            const runId = status.snapshot?.run_id || status.run_id;
-            const requestedRunId = JSON.parse(identity)[1];
-            if (requestedRunId !== 'terminal' && String(runId || '') !== requestedRunId) {
-                throw new Error('Terminal status response was for the wrong run');
-            }
-            if (Object.prototype.hasOwnProperty.call(status, 'error') && typeof status.error !== 'string') {
-                throw new Error('Terminal status response contained an invalid error');
+            if (Object.prototype.hasOwnProperty.call(snapshot, 'run_error') && typeof snapshot.run_error !== 'string') {
+                throw new Error('Terminal details response contained an invalid error');
             }
             if (authGeneration !== this.authSessionGeneration
                 || this.terminalErrorIdentity(profileId, this.statuses[profileId]) !== identity) return;
-            const error = typeof status?.error === 'string' ? status.error : '';
+            const error = typeof snapshot.run_error === 'string' ? snapshot.run_error : '';
             this.terminalErrorCache.set(identity, error);
             this.terminalErrorRetries.delete(identity);
             const current = this.statuses[profileId];
@@ -932,7 +921,7 @@ class SyncProfileApp {
         const open = this.openSummary;
         if (!open || open.profileId !== profileId) return;
         const identityParts = JSON.parse(identity);
-        const runId = identityParts[1] === 'terminal' ? '' : identityParts[1];
+        const runId = identityParts[1];
         if (!runId || open.runId !== runId) return;
         const content = document.getElementById('sync-summary-content');
         const summary = content?.querySelector('.sync-summary');
