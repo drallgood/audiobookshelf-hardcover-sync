@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/stretchr/testify/require"
 )
 
@@ -110,7 +109,7 @@ func TestSnapshotActivityAndProcessedTimestampsFollowTheirEvents(t *testing.T) {
 	require.True(t, processed.LastProcessedAt.After(candidate.LastProcessedAt))
 
 	time.Sleep(time.Millisecond)
-	svc.enrichLiveMismatch(bookMismatchForLifecycle(book))
+	svc.enrichLiveMismatch(mismatch.BookMismatch{BookID: book.ID, Reason: "enriched"})
 	enriched := svc.GetSnapshotStatus()
 	require.True(t, enriched.LastActivityAt.After(processed.LastActivityAt))
 	require.Equal(t, processed.LastProcessedAt, enriched.LastProcessedAt)
@@ -162,8 +161,4 @@ func TestNewServiceWithRunIdentityRetainsOpaqueAcceptedRun(t *testing.T) {
 	snapshot = svc.GetSnapshotStatus()
 	require.Equal(t, runID, snapshot.RunID)
 	require.Equal(t, queuedAt.UTC(), snapshot.QueuedAt)
-}
-
-func bookMismatchForLifecycle(book models.AudiobookshelfBook) mismatch.BookMismatch {
-	return mismatch.BookMismatch{BookID: book.ID, Reason: "enriched"}
 }
