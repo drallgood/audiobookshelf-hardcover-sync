@@ -586,7 +586,7 @@ func (s *MultiUserService) restoreProfileStatus(profileID string, profile *datab
 			return nil, err
 		}
 	}
-	state, err := s.repository.GetProfileSyncState(profileID)
+	state, err := s.repository.GetSyncState(profileID)
 	if err != nil {
 		return nil, err
 	}
@@ -655,7 +655,7 @@ func (s *MultiUserService) restoreAggregateProfileStatus(profileID string, profi
 	if s.repository == nil {
 		return nil, nil
 	}
-	state, err := s.repository.GetProfileSyncState(profileID)
+	state, err := s.repository.GetSyncState(profileID)
 	if err != nil {
 		return nil, err
 	}

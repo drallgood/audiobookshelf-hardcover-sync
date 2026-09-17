@@ -174,8 +174,7 @@ func TestGetProfileSnapshotRestoresRetainedRunWithoutProfileHydration(t *testing
 		profileID, "Profile", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
 	))
 	queuedAt := time.Date(2026, time.September, 16, 12, 0, 0, 0, time.UTC)
-	report, err := service.repository.ReserveSyncRun(profileID, "run-retained", false, queuedAt)
-	require.NoError(t, err)
+	report := acceptTestSyncRun(t, service.repository, profileID, "run-retained", false, queuedAt)
 	report.Phase = database.SyncRunPhaseCompleted
 	report.FinishedAt = timePtrForMultiuserTest(queuedAt.Add(time.Minute))
 	report.SnapshotJSON = `{"run_id":"run-retained","state":"completed"}`
@@ -205,8 +204,7 @@ func TestGetSyncRunSnapshotLooksUpOnlyTheRequestedRetainedRun(t *testing.T) {
 		profileID, "Profile", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
 	))
 	queuedAt := time.Date(2026, time.September, 16, 12, 0, 0, 0, time.UTC)
-	report, err := service.repository.ReserveSyncRun(profileID, "run-exact", false, queuedAt)
-	require.NoError(t, err)
+	report := acceptTestSyncRun(t, service.repository, profileID, "run-exact", false, queuedAt)
 	report.Phase = database.SyncRunPhaseFailed
 	report.FinishedAt = timePtrForMultiuserTest(queuedAt.Add(time.Minute))
 	report.RunError = "retained failure"
@@ -228,6 +226,17 @@ func TestGetSyncRunSnapshotLooksUpOnlyTheRequestedRetainedRun(t *testing.T) {
 
 func timePtrForMultiuserTest(value time.Time) *time.Time {
 	return &value
+}
+
+func acceptTestSyncRun(t *testing.T, repo *database.Repository, profileID, runID string, dryRun bool, queuedAt time.Time) *database.SyncRunReport {
+	t.Helper()
+	report, err := repo.AcceptSyncRun(&database.SyncRunReport{
+		ProfileID: profileID, RunID: runID, Phase: database.SyncRunPhaseQueued,
+		DryRun: dryRun, QueuedAt: &queuedAt, ReportVersion: database.SyncRunReportVersion,
+		SnapshotJSON: "{}",
+	})
+	require.NoError(t, err)
+	return report
 }
 
 func TestStatusAggregateOmitsErrorAndProfileStatusRetainsIt(t *testing.T) {
@@ -406,8 +415,7 @@ func TestAggregateStatusMapsLiveTerminalSnapshotState(t *testing.T) {
 func installAcceptedTestRun(t *testing.T, service *MultiUserService, profileID, runID string, dryRun bool) activeSyncRun {
 	t.Helper()
 	queuedAt := time.Date(2026, time.September, 16, 12, 0, 0, 0, time.UTC)
-	report, err := service.repository.ReserveSyncRun(profileID, runID, dryRun, queuedAt)
-	require.NoError(t, err)
+	report := acceptTestSyncRun(t, service.repository, profileID, runID, dryRun, queuedAt)
 	run := activeSyncRun{
 		generation:  report.Generation,
 		runID:       runID,
@@ -466,7 +474,7 @@ func TestStartSyncWithAcceptedRunMatchesQueuedDurableAndStatusIdentity(t *testin
 	require.Equal(t, string(syncsvc.RunPhaseQueued), accepted.State)
 	require.False(t, accepted.DryRun)
 	require.Equal(t, accepted.QueuedAt, accepted.RunStartedAt)
-	report, err := service.repository.GetLatestSyncRunReport(profileID)
+	report, err := service.repository.GetSyncRunReport(profileID, accepted.RunID)
 	require.NoError(t, err)
 	require.NotNil(t, report)
 	require.Equal(t, database.SyncRunPhaseQueued, report.Phase)
@@ -503,9 +511,11 @@ func TestStartSyncWithAcceptedRunRejectsAtomicAcceptanceFailure(t *testing.T) {
 	_, err := service.StartSyncWithAcceptedRun(profileID)
 	require.ErrorIs(t, err, writeErr)
 	require.False(t, service.IsProfileSyncing(profileID))
-	report, reportErr := service.repository.GetLatestSyncRunReport(profileID)
-	require.NoError(t, reportErr)
-	require.Nil(t, report)
+	var reportCount int64
+	require.NoError(t, db.Model(&database.SyncRunReport{}).
+		Where("profile_id = ?", profileID).
+		Count(&reportCount).Error)
+	require.Zero(t, reportCount)
 	state, stateErr := service.repository.GetSyncState(profileID)
 	require.NoError(t, stateErr)
 	require.Zero(t, state.RunGeneration)
@@ -830,8 +840,7 @@ func TestRestartRestoresNewestTerminalWhenQueuedReportFollowsTenTerminals(t *tes
 	queuedAt := time.Date(2026, time.September, 16, 12, 0, 0, 0, time.UTC)
 	for generation := 1; generation <= 10; generation++ {
 		runID := fmt.Sprintf("terminal-%d", generation)
-		report, err := service.repository.ReserveSyncRun(profileID, runID, false, queuedAt.Add(time.Duration(generation)*time.Minute))
-		require.NoError(t, err)
+		report := acceptTestSyncRun(t, service.repository, profileID, runID, false, queuedAt.Add(time.Duration(generation)*time.Minute))
 		report.Phase = database.SyncRunPhaseCompleted
 		report.FinishedAt = timePtrForMultiuserTest(queuedAt.Add(time.Duration(generation) * time.Minute))
 		report.SnapshotJSON = fmt.Sprintf(`{"run_id":%q,"state":"completed"}`, runID)
@@ -861,19 +870,15 @@ func TestRestartRestoresTerminalWhenQueuedReportsExceedLookupLimit(t *testing.T)
 		profileID, "Terminal before queued", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
 	))
 	queuedAt := time.Date(2026, time.September, 16, 12, 0, 0, 0, time.UTC)
-	terminal, err := service.repository.ReserveSyncRun(profileID, "terminal-retained", false, queuedAt)
-	require.NoError(t, err)
+	terminal := acceptTestSyncRun(t, service.repository, profileID, "terminal-retained", false, queuedAt)
 	terminal.Phase = database.SyncRunPhaseCompleted
 	terminal.FinishedAt = timePtrForMultiuserTest(queuedAt.Add(time.Minute))
 	terminal.SnapshotJSON = `{"state":"completed"}`
 	require.NoError(t, service.repository.UpsertSyncRunReport(terminal))
 
 	for generation := 1; generation <= 10; generation++ {
-		_, err := service.repository.ReserveSyncRun(
-			profileID, fmt.Sprintf("queued-%d", generation), false,
-			queuedAt.Add(time.Duration(generation+1)*time.Minute),
-		)
-		require.NoError(t, err)
+		acceptTestSyncRun(t, service.repository, profileID, fmt.Sprintf("queued-%d", generation), false,
+			queuedAt.Add(time.Duration(generation+1)*time.Minute))
 	}
 
 	restarted := NewMultiUserService(service.repository, config.DefaultConfig(), logger.Get())
@@ -891,8 +896,7 @@ func TestAggregateStatusRestoresTerminalScalarsWithoutDetails(t *testing.T) {
 		profileID, "Aggregate restart", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
 	))
 	queuedAt := time.Date(2026, time.September, 16, 12, 0, 0, 0, time.UTC)
-	report, err := service.repository.ReserveSyncRun(profileID, "run-aggregate", false, queuedAt)
-	require.NoError(t, err)
+	report := acceptTestSyncRun(t, service.repository, profileID, "run-aggregate", false, queuedAt)
 	report.Phase = database.SyncRunPhaseCompleted
 	report.FinishedAt = timePtrForMultiuserTest(queuedAt.Add(time.Minute))
 	report.SnapshotJSON = `{"books_total":12,"processed_so_far":7,"processed_count":7,"unattempted_count":5,"books_synced":5,"book_outcomes":[{"book_id":"book-1"}],"attention_records":[{"book_id":"book-1"}]}`

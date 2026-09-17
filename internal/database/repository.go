@@ -131,19 +131,6 @@ func deleteStaleQueuedSyncRunReports(tx *gorm.DB, profileID, currentRunID string
 	return nil
 }
 
-// ReserveSyncRun is the compatibility form of AcceptSyncRun for callers that
-// do not have a queued snapshot to persist.
-func (r *Repository) ReserveSyncRun(profileID, runID string, dryRun bool, queuedAt time.Time) (*SyncRunReport, error) {
-	if queuedAt.IsZero() {
-		queuedAt = time.Now().UTC()
-	}
-	return r.AcceptSyncRun(&SyncRunReport{
-		ProfileID: profileID, RunID: runID, Phase: SyncRunPhaseQueued,
-		DryRun: dryRun, QueuedAt: &queuedAt, ReportVersion: SyncRunReportVersion,
-		SnapshotJSON: "{}",
-	})
-}
-
 // UpsertSyncRunReport transactionally stores a terminal run report, retains
 // only the newest ten reports for the profile, and advances success metadata
 // only for a newer completed non-dry run.
@@ -272,20 +259,6 @@ func (r *Repository) GetSyncRunReport(profileID, runID string) (*SyncRunReport, 
 	return &report, nil
 }
 
-// ListSyncRunReports returns newest reports for a profile, bounded to the
-// retention window even when a larger limit is requested.
-func (r *Repository) ListSyncRunReports(profileID string, limit int) ([]SyncRunReport, error) {
-	if limit <= 0 || limit > maxSyncRunReports {
-		limit = maxSyncRunReports
-	}
-	var reports []SyncRunReport
-	if err := r.db.GetDB().Where("profile_id = ?", profileID).
-		Order("generation DESC").Order("run_id DESC").Limit(limit).Find(&reports).Error; err != nil {
-		return nil, fmt.Errorf("failed to list sync run reports: %w", err)
-	}
-	return reports, nil
-}
-
 // ListTerminalSyncRunReports returns newest terminal reports for a profile,
 // bounded to the retention window. Filtering before the limit keeps abandoned
 // queued reports from hiding the newest retained terminal report at restart.
@@ -300,24 +273,6 @@ func (r *Repository) ListTerminalSyncRunReports(profileID string, limit int) ([]
 		return nil, fmt.Errorf("failed to list terminal sync run reports: %w", err)
 	}
 	return reports, nil
-}
-
-// GetLatestSyncRunReport returns the newest report for a profile.
-func (r *Repository) GetLatestSyncRunReport(profileID string) (*SyncRunReport, error) {
-	reports, err := r.ListSyncRunReports(profileID, 1)
-	if err != nil {
-		return nil, err
-	}
-	if len(reports) == 0 {
-		return nil, nil
-	}
-	return &reports[0], nil
-}
-
-// GetProfileSyncState is an explicit profile-oriented alias for the existing
-// state loader used by status callers.
-func (r *Repository) GetProfileSyncState(profileID string) (*ProfileSyncState, error) {
-	return r.GetSyncState(profileID)
 }
 
 func loadOrCreateSyncStateForUpdate(tx *gorm.DB, profileID string) (*ProfileSyncState, error) {
