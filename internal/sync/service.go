@@ -126,7 +126,7 @@ type BookOutcomeRecord struct {
 // GetSnapshot returns deep-copied slices so callers can safely retain or
 // modify a response while the sync continues.
 type SyncSnapshot struct {
-	UserID              string              `json:"user_id,omitempty"`
+	ProfileID           string              `json:"profile_id,omitempty"`
 	AudiobookshelfURL   string              `json:"audiobookshelf_url,omitempty"`
 	RunID               string              `json:"run_id,omitempty"`
 	QueuedAt            time.Time           `json:"queued_at,omitempty"`

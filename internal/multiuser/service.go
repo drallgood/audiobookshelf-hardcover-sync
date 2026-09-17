@@ -245,7 +245,7 @@ func (s *MultiUserService) getAggregateProfileStatus(profile database.SyncProfil
 
 	snapshot := service.GetSnapshotStatus()
 	if run, ok := s.activeRuns[profile.ID]; ok && run.generation == generation {
-		snapshot.UserID = profile.ID
+		snapshot.ProfileID = profile.ID
 		snapshot.RunID = run.runID
 		if snapshot.State == "" || snapshot.State == "idle" {
 			snapshot.State = string(sync.RunPhaseQueued)
@@ -328,7 +328,7 @@ func scalarSnapshot(snapshot *sync.SyncSnapshot) *sync.SyncSnapshot {
 		return nil
 	}
 	return &sync.SyncSnapshot{
-		UserID:              snapshot.UserID,
+		ProfileID:           snapshot.ProfileID,
 		RunID:               snapshot.RunID,
 		QueuedAt:            snapshot.QueuedAt,
 		ProcessingStartedAt: snapshot.ProcessingStartedAt,
@@ -568,7 +568,7 @@ func scalarSnapshotFromRetainedReport(profileID string, report *database.SyncRun
 		}
 	}
 	snapshot := &sync.SyncSnapshot{
-		UserID: profileID, RunID: report.RunID, State: reportPhaseToSyncPhase(report.Phase),
+		ProfileID: profileID, RunID: report.RunID, State: reportPhaseToSyncPhase(report.Phase),
 		DryRun: report.DryRun, RunError: report.RunError,
 		UnattemptedCount: scalar.UnattemptedCount, BooksTotal: scalar.BooksTotal,
 		ProcessedSoFar: scalar.ProcessedSoFar,
@@ -615,7 +615,7 @@ func snapshotFromRetainedReport(profileID string, report *database.SyncRunReport
 			return nil, fmt.Errorf("decode retained sync report %s: %w", report.RunID, err)
 		}
 	}
-	snapshot.UserID = profileID
+	snapshot.ProfileID = profileID
 	snapshot.RunID = report.RunID
 	snapshot.State = reportPhaseToSyncPhase(report.Phase)
 	snapshot.DryRun = report.DryRun
@@ -657,7 +657,7 @@ func (s *MultiUserService) GetSyncRunSnapshot(profileID, runID string) (*sync.Sy
 	if service != nil {
 		snapshot := service.GetSnapshot()
 		if run, ok := s.activeRuns[profileID]; ok && run.generation == generation {
-			snapshot.UserID = profileID
+			snapshot.ProfileID = profileID
 			snapshot.RunID = run.runID
 			if snapshot.State == "" || snapshot.State == "idle" {
 				snapshot.State = string(sync.RunPhaseQueued)
@@ -1038,8 +1038,8 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
 	// Prepare final status
 	status := s.statusForTerminalRun(profileID, run, snapshot)
 	applySnapshotToStatus(status, snapshot)
-	if status.Snapshot != nil && status.Snapshot.UserID == "" {
-		status.Snapshot.UserID = profileID
+	if status.Snapshot != nil && status.Snapshot.ProfileID == "" {
+		status.Snapshot.ProfileID = profileID
 	}
 
 	if err != nil {
@@ -1067,7 +1067,7 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
 
 func newRunSnapshot(profileID string, run activeSyncRun, state string) sync.SyncSnapshot {
 	snapshot := sync.SyncSnapshot{
-		UserID:         profileID,
+		ProfileID:      profileID,
 		RunID:          run.runID,
 		QueuedAt:       run.startedAt,
 		LastActivityAt: run.startedAt,
@@ -1116,7 +1116,7 @@ func (s *MultiUserService) snapshotForCanceledRun(profileID string, run activeSy
 		}
 		s.statusMutex.RUnlock()
 	}
-	snapshot.UserID = profileID
+	snapshot.ProfileID = profileID
 	snapshot.RunID = run.runID
 	if snapshot.QueuedAt.IsZero() {
 		snapshot.QueuedAt = run.startedAt
@@ -1194,14 +1194,14 @@ func (s *MultiUserService) normalizeRunSnapshot(profileID string, generation uin
 	s.syncMutex.RLock()
 	defer s.syncMutex.RUnlock()
 	if run, ok := s.activeRuns[profileID]; ok && run.generation == generation {
-		snapshot.UserID = profileID
+		snapshot.ProfileID = profileID
 		snapshot.RunID = run.runID
 		if snapshot.State == "" || snapshot.State == "idle" {
 			snapshot.State = string(sync.RunPhaseQueued)
 		}
 	}
-	if snapshot.UserID == "" {
-		snapshot.UserID = profileID
+	if snapshot.ProfileID == "" {
+		snapshot.ProfileID = profileID
 	}
 	return snapshot
 }

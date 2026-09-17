@@ -301,7 +301,7 @@ func TestAggregateStatusAndRunDetailsShareCurrentRunIdentity(t *testing.T) {
 	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/profile-a/runs/"+statusSnapshot.RunID+"/details", &detailsResponse)
 	require.True(t, detailsResponse.Success)
 	require.Equal(t, statusSnapshot.RunID, detailsResponse.Data.RunID)
-	require.Equal(t, "profile-a", detailsResponse.Data.UserID)
+	require.Equal(t, "profile-a", detailsResponse.Data.ProfileID)
 	require.Len(t, detailsResponse.Data.BookOutcomes, 1)
 	require.Equal(t, "Missing A", detailsResponse.Data.BookOutcomes[0].Title)
 
@@ -327,7 +327,7 @@ func TestAggregateStatusAndRunDetailsShareCurrentRunIdentity(t *testing.T) {
 		snapshot, ok := item["snapshot"].(map[string]interface{})
 		require.True(t, ok)
 		require.NotContains(t, snapshot, "book_outcomes")
-		for _, removed := range []string{"user_id", "run_started_at", "processed_count", "attention_records"} {
+		for _, removed := range []string{"user_id", "profile_id", "run_started_at", "processed_count", "attention_records"} {
 			require.NotContains(t, snapshot, removed)
 		}
 		counts, ok := snapshot["outcome_counts"].(map[string]interface{})
@@ -744,7 +744,7 @@ func TestRunDetailsExposeTechnicalTimeoutAsFailedOutcome(t *testing.T) {
 	var detailsResponse runDetailsHTTPResponse
 	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/runs/"+completed.Snapshot.RunID+"/details", &detailsResponse)
 	require.True(t, detailsResponse.Success)
-	require.Equal(t, profileID, detailsResponse.Data.UserID)
+	require.Equal(t, profileID, detailsResponse.Data.ProfileID)
 	require.Equal(t, completed.Snapshot.RunID, detailsResponse.Data.RunID)
 	require.Equal(t, completed.Snapshot.OutcomeCounts, detailsResponse.Data.OutcomeCounts)
 	require.Equal(t, int32(1), detailsResponse.Data.OutcomeCounts.Failed)

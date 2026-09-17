@@ -271,7 +271,7 @@ components:
       type: object
       required: [run_id, queued_at, processing_started_at, last_activity_at, last_processed_at, finished_at, state, dry_run, unattempted_count, books_total, processed_so_far, outcome_counts, book_outcomes]
       properties:
-        user_id: {type: string}
+        profile_id: {type: string}
         audiobookshelf_url:
           type: string
           format: uri

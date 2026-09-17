@@ -560,7 +560,7 @@ func (h *Handler) GetRunDetails(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if snapshot == nil || snapshot.RunID != runID ||
-		(snapshot.UserID != "" && snapshot.UserID != profileID) {
+		(snapshot.ProfileID != "" && snapshot.ProfileID != profileID) {
 		h.writeErrorResponse(w, http.StatusNotFound, "Sync run not found")
 		return
 	}

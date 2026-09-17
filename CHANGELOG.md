@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Serialize replacement sync filesystem work**: Keep canceled workers and their immediate same-profile replacements from overlapping state, cache, or mismatch-file writes while still accepting the replacement as queued immediately.
 - **Isolate profile mismatch exports**: Store multi-profile mismatch JSON in encoded profile-specific directories so one profile's cleanup cannot delete another profile's reports.
+- **Graceful sync shutdown**: Stop accepting new runs, cancel active runs, and drain sync workers before closing persistent resources.
+- **Preserve terminal unattempted counts**: Keep `unattempted_count` intact across cached and restart-restored aggregate status polls.
 - **Keep aggregate status polling lightweight**: Reuse scalar lifecycle snapshots in `/api/status` instead of deep-copying per-book outcome and attention records before discarding them.
 - **Make sync status refresh unobtrusive**: Refresh Sync Status without page flashing or interrupting interaction, and retry temporary profile-load failures. By @Snuffy2. (#180)
 - **Sync Status fetch errors**: Remove misplaced Hardcover mismatch-display code from status loading so successful profile status requests no longer log an undefined-variable error by @Snuffy2. (#178)
@@ -28,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Canonical sync status API**: Removed the no-op global sync route and the redundant per-profile status and summary routes. Aggregate polling now returns profile identity, attempt/success timestamps, and one scalar canonical snapshot; exact authenticated run details provide `run_error` and `book_outcomes`. Removed the duplicated top-level status fields and the `run_started_at`, `processed_count`, and `attention_records` aliases. Clients should use `snapshot.state`, `queued_at`, `processed_so_far`, `outcome_counts`, and `book_outcomes`.
+- **Run-detail profile identity**: Renamed the incorrectly labeled `user_id` snapshot field to `profile_id`.
 - **Sync status internals**: Removed obsolete full-status lookup paths, the process-global mismatch collector, unused incremental-state and lifecycle fields, dead startup helpers, and the write-only run-report version. Existing databases still migrate legacy `last_sync` timestamps into canonical attempt metadata.
 - Moved and updated repository guidance from `.github/copilot-instructions.md` to root `AGENTS.md`, including contributor workflow and behavior-focused testing guidance by @Snuffy2. (#177)
 - **Incremental sync checkpoints**: Persist per-book sync state after each processed book so completed work survives cancellation or process termination before the full library run finishes. State-file replacement is now atomic, dry runs remain non-persistent, and checkpoint failures stop the sync instead of reporting false success. Failed Hardcover status updates leave the affected book uncheckpointed for retry, even if its read progress was saved; a persistent status failure can therefore recur while other books continue. An unavailable status on an existing read is not blindly changed or checkpointed after a read update. By @Snuffy2. (#179)

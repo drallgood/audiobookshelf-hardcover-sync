@@ -268,10 +268,12 @@ func RunOneTimeSync(flags *configFlags) {
 
 	// Create sync service with detailed logging
 	log.Info("Initializing sync service...", nil)
-	syncService, err := sync.NewService(
+	syncService, err := sync.NewServiceWithRunIdentity(
 		audiobookshelfClient,
 		hardcoverClient,
 		cfg,
+		"",
+		time.Time{},
 	)
 	if err != nil {
 		log.Error("Failed to initialize sync service", map[string]interface{}{

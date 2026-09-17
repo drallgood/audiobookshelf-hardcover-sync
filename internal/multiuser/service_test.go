@@ -122,7 +122,7 @@ func TestGetSyncRunSnapshotUsesCurrentRunWithoutProfileHydration(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, snapshot)
 	require.Equal(t, run.runID, snapshot.RunID)
-	require.Equal(t, profileID, snapshot.UserID)
+	require.Equal(t, profileID, snapshot.ProfileID)
 	require.Equal(t, string(syncsvc.RunPhaseQueued), snapshot.State)
 }
 
@@ -152,7 +152,7 @@ func TestGetSyncRunSnapshotRestoresRetainedRunWithoutProfileHydration(t *testing
 	snapshot, err := service.GetSyncRunSnapshot(profileID, report.RunID)
 	require.NoError(t, err)
 	require.NotNil(t, snapshot)
-	require.Equal(t, profileID, snapshot.UserID)
+	require.Equal(t, profileID, snapshot.ProfileID)
 	require.Equal(t, "run-retained", snapshot.RunID)
 	require.Equal(t, string(syncsvc.RunPhaseCompleted), snapshot.State)
 }
@@ -174,7 +174,7 @@ func TestGetSyncRunSnapshotLooksUpOnlyTheRequestedRetainedRun(t *testing.T) {
 	snapshot, err := service.GetSyncRunSnapshot(profileID, "run-exact")
 	require.NoError(t, err)
 	require.NotNil(t, snapshot)
-	require.Equal(t, profileID, snapshot.UserID)
+	require.Equal(t, profileID, snapshot.ProfileID)
 	require.Equal(t, "run-exact", snapshot.RunID)
 	require.Equal(t, string(syncsvc.RunPhaseFailed), snapshot.State)
 	require.Equal(t, "retained failure", snapshot.RunError)
@@ -255,7 +255,7 @@ func TestAggregateStatusPreservesUnknownBooksTotalFromExplicitSnapshot(t *testin
 	))
 
 	snapshot := syncsvc.SyncSnapshot{
-		UserID:         profileID,
+		ProfileID:      profileID,
 		RunID:          "profile-a-run-1",
 		State:          string(syncsvc.RunPhaseRunning),
 		BooksTotal:     0,
