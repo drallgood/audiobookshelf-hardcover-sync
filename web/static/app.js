@@ -1028,11 +1028,35 @@ class SyncProfileApp {
         const detailsOpen = this.isSyncSummaryOpen(profileId, snapshot.run_id);
         const retryable = statusState === 'failed';
         const categories = this.outcomeCategories(counts);
+        const isActiveRun = this.isActiveRunPhase(statusState);
+        const isDryRun = this.toBool(snapshot.dry_run, false);
         const runStartedAt = this.timestampOrNull(snapshot.queued_at);
         const lastActivityAt = this.timestampOrNull(snapshot.last_activity_at)
             || this.timestampOrNull(snapshot.last_processed_at);
+        const finishedAt = this.timestampOrNull(snapshot.finished_at);
         const lastAttemptedAt = this.timestampOrNull(status.last_attempted_at);
         const lastSuccessfulAt = this.timestampOrNull(status.last_successful_at);
+        const fallbackAttemptedAt = runStartedAt ? null : lastAttemptedAt;
+        let terminalLabel = '';
+        let terminalAt = null;
+        if (statusState === 'completed') {
+            terminalLabel = isDryRun ? 'Dry run completed' : 'Completed';
+            terminalAt = finishedAt || (!isDryRun ? lastSuccessfulAt : null);
+        } else if (statusState === 'failed') {
+            terminalLabel = 'Failed';
+            terminalAt = finishedAt;
+        } else if (statusState === 'canceled') {
+            terminalLabel = 'Canceled';
+            terminalAt = finishedAt;
+        }
+        const historicalSuccessLabel = isActiveRun ? 'Previous successful sync' : 'Last successful';
+        const showHistoricalSuccess = lastSuccessfulAt && (
+            isActiveRun
+            || !hasRun
+            || statusState === 'failed'
+            || statusState === 'canceled'
+            || (statusState === 'completed' && isDryRun)
+        );
 
         return `
                 <div class="status-card ${statusClass}" data-profile-id="${this.escapeHtmlAttribute(profileId)}">
@@ -1044,14 +1068,17 @@ class SyncProfileApp {
                         ${runStartedAt ? `
                             <div><strong>Run started:</strong> <span class="relative-sync-time" data-timestamp="${this.escapeHtmlAttribute(runStartedAt)}" title="${new Date(runStartedAt).toLocaleString()}">${this.formatRelativeTime(runStartedAt)}</span></div>
                         ` : ''}
-                        ${this.isActiveRunPhase(statusState) && lastActivityAt ? `
+                        ${isActiveRun && lastActivityAt ? `
                             <div><strong>Last activity:</strong> <span class="relative-sync-time" data-timestamp="${this.escapeHtmlAttribute(lastActivityAt)}" title="${new Date(lastActivityAt).toLocaleString()}">${this.formatRelativeTime(lastActivityAt)}</span></div>
                         ` : ''}
-                        ${lastAttemptedAt ? `
-                            <div><strong>Last attempted:</strong> <span class="relative-sync-time" data-timestamp="${this.escapeHtmlAttribute(lastAttemptedAt)}" title="${new Date(lastAttemptedAt).toLocaleString()}">${this.formatRelativeTime(lastAttemptedAt)}</span></div>
+                        ${terminalAt ? `
+                            <div><strong>${terminalLabel}:</strong> <span class="relative-sync-time" data-timestamp="${this.escapeHtmlAttribute(terminalAt)}" title="${new Date(terminalAt).toLocaleString()}">${this.formatRelativeTime(terminalAt)}</span></div>
                         ` : ''}
-                        ${lastSuccessfulAt ? `
-                            <div><strong>Last successful:</strong> <span class="relative-sync-time" data-timestamp="${this.escapeHtmlAttribute(lastSuccessfulAt)}" title="${new Date(lastSuccessfulAt).toLocaleString()}">${this.formatRelativeTime(lastSuccessfulAt)}</span></div>
+                        ${fallbackAttemptedAt ? `
+                            <div><strong>Last attempted:</strong> <span class="relative-sync-time" data-timestamp="${this.escapeHtmlAttribute(fallbackAttemptedAt)}" title="${new Date(fallbackAttemptedAt).toLocaleString()}">${this.formatRelativeTime(fallbackAttemptedAt)}</span></div>
+                        ` : ''}
+                        ${showHistoricalSuccess ? `
+                            <div><strong>${historicalSuccessLabel}:</strong> <span class="relative-sync-time" data-timestamp="${this.escapeHtmlAttribute(lastSuccessfulAt)}" title="${new Date(lastSuccessfulAt).toLocaleString()}">${this.formatRelativeTime(lastSuccessfulAt)}</span></div>
                         ` : ''}
                         ${hasKnownTotal ? `
                             <div><strong>Processed:</strong> ${processed} of ${booksTotal}</div>

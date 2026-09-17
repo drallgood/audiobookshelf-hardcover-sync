@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Clarify Sync Status timestamps**: Show current-run start, activity, and terminal times without repeating the same timestamp as the last attempt, while retaining the previous successful real sync for active, failed, canceled, and dry-run statuses.
 - **Serialize replacement sync filesystem work**: Keep canceled workers and their immediate same-profile replacements from overlapping state, cache, or mismatch-file writes while still accepting the replacement as queued immediately.
 - **Isolate profile mismatch exports**: Store multi-profile mismatch JSON in encoded profile-specific directories so one profile's cleanup cannot delete another profile's reports.
 - **Graceful sync shutdown**: Stop accepting new runs, cancel active runs, and drain sync workers before closing persistent resources.
