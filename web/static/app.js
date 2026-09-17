@@ -58,7 +58,9 @@ class SyncProfileApp {
         this.editProfileRequest = null;
         this.sessionMutationRequests = new Map();
         // A successful start response is authoritative immediately, even if
-        // the next aggregate poll still contains the replaced run.
+        // an aggregate request that was already in flight still contains the
+        // replaced run. Each entry records the latest status request sequence
+        // that was in flight when the start was accepted.
         this.trackedRunIds = new Map();
 
         this.init();
@@ -735,16 +737,22 @@ class SyncProfileApp {
                 const profileId = String(status.profile_id);
                 if (authorizedProfileIds && !authorizedProfileIds.has(profileId)) return;
                 const snapshot = status.snapshot || null;
-                const trackedRunId = this.trackedRunIds.get(profileId);
+                const trackedRun = this.trackedRunIds.get(profileId);
                 const incomingRunId = snapshot?.run_id ? String(snapshot.run_id) : '';
-                // Do not let a poll that raced the accepted-start response
-                // replace the queued run with the previous terminal report.
-                if (trackedRunId && incomingRunId !== trackedRunId) {
+                // Do not let a status request that started before the
+                // accepted-start response replace the queued run with the
+                // previous terminal report. Once a request started after
+                // acceptance responds, its different run (including no run
+                // after a server restart) is authoritative and clears the
+                // one-shot guard.
+                const requestStartedBeforeAcceptance = trackedRun
+                    && requestSequence <= trackedRun.acceptedAfterSequence;
+                if (requestStartedBeforeAcceptance && incomingRunId !== trackedRun.runId) {
                     const previous = this.statuses[profileId];
-                    if (previous?.snapshot?.run_id === trackedRunId) statuses[profileId] = previous;
+                    if (previous?.snapshot?.run_id === trackedRun.runId) statuses[profileId] = previous;
                     return;
                 }
-                if (trackedRunId && incomingRunId === trackedRunId) this.trackedRunIds.delete(profileId);
+                if (trackedRun) this.trackedRunIds.delete(profileId);
                 const normalized = {
                     profile_id: status.profile_id,
                     profile_name: status.profile_name || `Profile ${profileId}`,
@@ -2076,7 +2084,10 @@ class SyncProfileApp {
             
             if (response.status === 202 && result.success && result.data?.run_id && result.data?.state === 'queued') {
                 const accepted = result.data;
-                this.trackedRunIds.set(String(profileId), String(accepted.run_id));
+                this.trackedRunIds.set(String(profileId), {
+                    runId: String(accepted.run_id),
+                    acceptedAfterSequence: this.statusLoadSequence
+                });
                 this.actionErrors.delete(profileId);
                 this.applyAcceptedRun(profileId, accepted);
                 this.renderStatuses();
