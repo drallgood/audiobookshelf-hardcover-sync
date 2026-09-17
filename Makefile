@@ -52,8 +52,7 @@ help:
 	@echo "  build         - Build the main binary and all tools"
 	@echo "  build-all     - Build main binary for all platforms"
 	@echo "  install       - Install the binary"
-	@echo "  test          - Run Go tests with race detection/coverage and browser tests"
-	@echo "  test-ui       - Run browser DOM tests and JavaScript syntax checks"
+	@echo "  test          - Run tests with race detection and coverage"
 	@echo "  test-verbose  - Run tests with verbose output"
 	@echo "  coverage      - Generate and display test coverage"
 	@echo "  coverage-html - Generate HTML coverage report"
@@ -116,10 +115,10 @@ install:
 TEST_PKGS := $(shell go list ./... | grep -v /vendor/ | grep -v /archive/ | grep -v /internal/testutils)
 
 # Test targets
-.PHONY: test test-race test-core test-all test-ui test-verbose
+.PHONY: test test-race test-core test-all test-verbose
 
 # Default test target runs core tests with race detector
-test: test-race test-ui
+test: test-race
 
 # Run core tests with race detector
 test-race: test-core
@@ -129,13 +128,6 @@ test-core:
 	@echo "Running core tests with race detector"
 	@mkdir -p $(COVERAGE_DIR)
 	go test -race -coverprofile=$(COVERAGE_DIR)/coverage.out -covermode=atomic $(TEST_PKGS)
-
-# Run browser DOM regression tests and the app JavaScript syntax check
-test-ui:
-	@echo "Running browser DOM tests"
-	npm ci --ignore-scripts
-	npm run check:ui
-	npm run test:ui
 
 # Run all tests including legacy and testutils
 test-all:

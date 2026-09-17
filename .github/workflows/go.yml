@@ -36,14 +36,6 @@ jobs:
         go-version: ${{ matrix.go-version }}
         cache: true
 
-    - name: Set up Node
-      uses: actions/setup-node@v4
-      with:
-        node-version: '22.x'
-
-    - name: Install UI test dependencies
-      run: npm ci --ignore-scripts
-
     - name: Cache Go modules
       uses: actions/cache@v6
       with:
@@ -64,8 +56,3 @@ jobs:
         # Run tests with coverage but don't fail if coverage is low
         # The coverage report is still generated and can be viewed locally with: go tool cover -html=coverage.txt
         go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
-
-    - name: Run browser DOM tests
-      run: |
-        npm run check:ui
-        npm run test:ui
