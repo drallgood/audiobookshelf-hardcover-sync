@@ -71,32 +71,6 @@ func (c *Collector) Add(book BookMismatch) {
 	}
 }
 
-// RecordMismatch records a new book mismatch in this collector.
-func (c *Collector) RecordMismatch(book *BookMismatch) error {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-
-	// Check if we already have this mismatch
-	key := book.BookID
-	for i, existing := range c.mismatches {
-		if existing.BookID == key {
-			existing.Attempts++
-			existing.Timestamp = time.Now().Unix()
-			existing.Reason = book.Reason
-			c.mismatches[i] = existing
-			return nil
-		}
-	}
-
-	// Add timestamp and initialize attempts
-	book.Timestamp = time.Now().Unix()
-	book.CreatedAt = time.Now()
-	book.Attempts = 1
-
-	c.mismatches = append(c.mismatches, *book)
-	return nil
-}
-
 // AddWithMetadata creates and adds a new book mismatch with enhanced metadata
 // to this collector and returns the enriched record. If hc is provided, it
 // will be used to look up publisher and other metadata.
@@ -689,39 +663,6 @@ func (c *Collector) GetAll() []BookMismatch {
 	result := make([]BookMismatch, len(c.mismatches))
 	copy(result, c.mismatches)
 	return result
-}
-
-// Clear removes all mismatches from this collector.
-func (c *Collector) Clear() {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	c.mismatches = []BookMismatch{}
-}
-
-// ExportJSON returns all mismatches in this collector as a JSON string.
-func (c *Collector) ExportJSON() (string, error) {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-
-	// Create a struct that matches the expected JSON structure
-	type exportStruct struct {
-		Mismatches []BookMismatch `json:"mismatches"`
-		Count      int            `json:"count"`
-		Timestamp  int64          `json:"timestamp"`
-	}
-
-	exportData := exportStruct{
-		Mismatches: c.mismatches,
-		Count:      len(c.mismatches),
-		Timestamp:  time.Now().Unix(),
-	}
-
-	jsonData, err := json.MarshalIndent(exportData, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal mismatches to JSON: %w", err)
-	}
-
-	return string(jsonData), nil
 }
 
 // SaveToFile saves this collector's mismatches as individual JSON files in the

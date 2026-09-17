@@ -1209,6 +1209,14 @@ func (s *MultiUserService) publishFinalStatus(profileID string, generation uint6
 func (s *MultiUserService) createProfileSpecificConfig(profileConfig *database.ProfileWithTokens) *config.Config {
 	// Create a copy of the global config
 	config := *s.globalConfig
+	// Scope mismatch exports to this profile so one profile's cleanup cannot
+	// remove another profile's reports when they share the global base path.
+	if config.Paths.MismatchOutputDir != "" {
+		config.Paths.MismatchOutputDir = filepath.Join(
+			config.Paths.MismatchOutputDir,
+			encodeProfileID(profileConfig.Profile.ID),
+		)
+	}
 
 	// Override with profile-specific settings
 	config.Audiobookshelf.URL = profileConfig.AudiobookshelfURL

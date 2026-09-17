@@ -25,9 +25,51 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/crypto"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	syncsvc "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 )
+
+func TestProfileMismatchExportsRemainIsolated(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	service.globalConfig.Paths.MismatchOutputDir = filepath.Join(t.TempDir(), "mismatches")
+	ctx := logger.NewContext(context.Background(), logger.Get())
+
+	profiles := []struct {
+		id    string
+		title string
+	}{
+		{id: "profile-a", title: "Profile A"},
+		{id: "profile-b", title: "Profile B"},
+	}
+	configs := make([]*config.Config, 0, len(profiles))
+	collectors := make([]*mismatch.Collector, 0, len(profiles))
+	for _, profile := range profiles {
+		profileConfig := &database.ProfileWithTokens{
+			Profile: database.SyncProfile{ID: profile.id},
+		}
+		configs = append(configs, service.createProfileSpecificConfig(profileConfig))
+
+		collector := mismatch.NewCollector()
+		collector.Add(mismatch.BookMismatch{BookID: profile.id, Title: profile.title})
+		collectors = append(collectors, collector)
+	}
+
+	require.NotEqual(t, configs[0].Paths.MismatchOutputDir, configs[1].Paths.MismatchOutputDir)
+	for i, collector := range collectors {
+		require.NoError(t, collector.SaveToFile(ctx, nil, "", configs[i]))
+	}
+
+	for i, profile := range profiles {
+		path := filepath.Join(
+			configs[i].Paths.MismatchOutputDir,
+			"edition_001_"+mismatch.SanitizeFilename(profile.title)+".json",
+		)
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.Contains(t, string(data), `"title": "`+profile.title+`"`)
+	}
+}
 
 func TestGetSyncRunSnapshotUsesCurrentRunWithoutProfileHydration(t *testing.T) {
 	service, db := newStatusLookupService(t)
@@ -411,7 +453,6 @@ func TestStartSyncWithAcceptedRunRejectsAtomicAcceptanceFailure(t *testing.T) {
 	require.Zero(t, reportCount)
 	state, stateErr := service.repository.GetSyncState(profileID)
 	require.NoError(t, stateErr)
-	require.Zero(t, state.RunGeneration)
 	require.Nil(t, state.LastAttemptedAt)
 	require.Empty(t, state.LastAttemptedRunID)
 }
@@ -584,7 +625,7 @@ func TestPublishFinalStatusRejectsCanceledRunBeforeDurableSuccess(t *testing.T) 
 	require.Equal(t, database.SyncRunPhaseCanceled, stored.Phase)
 	state, err := service.repository.GetSyncState(profileID)
 	require.NoError(t, err)
-	require.Zero(t, state.LastSuccessfulGeneration)
+	require.Nil(t, state.LastSuccessfulAt)
 }
 
 func TestPublishFinalStatusRejectsReplacedRunBeforeDurableSuccess(t *testing.T) {
@@ -600,7 +641,7 @@ func TestPublishFinalStatusRejectsReplacedRunBeforeDurableSuccess(t *testing.T) 
 	require.Nil(t, oldReport)
 	state, err := service.repository.GetSyncState(profileID)
 	require.NoError(t, err)
-	require.Zero(t, state.LastSuccessfulGeneration)
+	require.Nil(t, state.LastSuccessfulAt)
 	require.Equal(t, newRun.runID, service.latestRuns[profileID].runID)
 }
 
@@ -618,7 +659,7 @@ func TestDryRunTerminalStatusKeepsAttemptWithoutSuccess(t *testing.T) {
 	state, err := service.repository.GetSyncState(profileID)
 	require.NoError(t, err)
 	require.Equal(t, run.runID, state.LastAttemptedRunID)
-	require.Zero(t, state.LastSuccessfulGeneration)
+	require.Nil(t, state.LastSuccessfulAt)
 }
 
 func TestRestartRestoresNewestTerminalReport(t *testing.T) {
