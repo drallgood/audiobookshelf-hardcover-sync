@@ -37,6 +37,17 @@ If you previously used environment variables for configuration, you will need to
 
 ## Breaking Changes
 
+### Sync Status and Summary Fields
+
+Status and summary responses no longer include the legacy flattened
+`total_books_processed`, `books_synced`, `books_not_found`, `mismatches`, or
+`last_sync_summary` fields. Use `processed_count` (or `processed_so_far`) for
+the processed total, `outcome_counts.synced` for synced items, and the
+canonical `book_outcomes` and `attention_records` arrays for per-book
+not-found and needs-review details. Needs-review records include their
+Hardcover candidate fields directly. Existing persisted snapshot JSON remains
+readable; unknown legacy keys are ignored during restore.
+
 ### Profile API Credentials
 
 Profile API responses no longer echo `audiobookshelf_token` or

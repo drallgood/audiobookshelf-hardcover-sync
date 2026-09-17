@@ -39,7 +39,7 @@ func TestProcessBookRecordsSkipAndIncrementalNoChange(t *testing.T) {
 		err := svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{})
 		require.NoError(t, err)
 		assert.Equal(t, OutcomeSkipped, recordedOutcome(svc, book.ID).Outcome)
-		assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed)
+		assert.Equal(t, int32(1), svc.outcomeCounts.Total())
 		hc.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
 	})
 
@@ -177,7 +177,7 @@ func TestProcessBookThresholdSkipRecordsSkipped(t *testing.T) {
 
 	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
 	assert.Equal(t, OutcomeSkipped, recordedOutcome(svc, book.ID).Outcome)
-	assert.Equal(t, int32(0), svc.summary.BooksSynced)
+	assert.Equal(t, int32(0), svc.outcomeCounts.Synced)
 	assert.Equal(t, int32(1), svc.outcomeCounts.Skipped)
 	hc.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
 	hc.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
@@ -197,8 +197,8 @@ func TestRecordBookOutcomeReplacementClearsPreviousError(t *testing.T) {
 	assert.Empty(t, record.Error)
 	assert.Equal(t, int32(1), svc.outcomeCounts.Synced)
 	assert.Equal(t, int32(0), svc.outcomeCounts.Failed)
-	assert.Equal(t, int32(1), svc.summary.BooksSynced)
-	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed)
+	assert.Equal(t, int32(1), svc.outcomeCounts.Synced)
+	assert.Equal(t, int32(1), svc.outcomeCounts.Total())
 }
 
 func TestProcessBookSeparatesNotFoundAndTechnicalLookupFailure(t *testing.T) {
@@ -262,8 +262,8 @@ func TestProcessBookKeepsIdentifierFailureWhenTitleSearchFindsCandidate(t *testi
 	assert.Equal(t, "possible-match", matches[0].HardcoverSlug)
 	assert.Contains(t, matches[0].Reason, lookupErr.Error())
 	snapshot := svc.GetSnapshot()
-	require.Len(t, snapshot.Mismatches, 1)
-	assert.Contains(t, snapshot.Mismatches[0].Reason, lookupErr.Error())
+	require.Len(t, snapshot.AttentionRecords, 1)
+	assert.Contains(t, snapshot.AttentionRecords[0].Reason, lookupErr.Error())
 	hc.AssertExpectations(t)
 }
 
@@ -295,10 +295,9 @@ func TestProcessBookSnapshotKeepsTitleOnlyEnrichment(t *testing.T) {
 	require.NoError(t, svc.processBook(context.Background(), *absBook, &models.AudiobookshelfUserProgress{}))
 
 	snapshot := svc.GetSnapshot()
-	require.Len(t, snapshot.Mismatches, 1)
-	got := snapshot.Mismatches[0]
+	require.Len(t, snapshot.AttentionRecords, 1)
+	got := snapshot.AttentionRecords[0]
 	assert.Equal(t, absBook.ID, got.BookID)
-	assert.Equal(t, book.Media.Metadata.ISBN, got.ISBN13)
 	assert.Equal(t, "904", got.HardcoverBookID)
 	assert.Empty(t, got.HardcoverSlug, "candidate metadata from a different Hardcover book must not be mixed")
 	assert.Equal(t, "Enriched Author", got.HardcoverAuthor)
@@ -341,16 +340,13 @@ func TestProcessBookSnapshotKeepsEnrichedSecondLookupFailure(t *testing.T) {
 	require.ErrorIs(t, err, ErrSkippedBook)
 
 	snapshot := svc.GetSnapshot()
-	require.Len(t, snapshot.Mismatches, 1)
-	got := snapshot.Mismatches[0]
+	require.Len(t, snapshot.AttentionRecords, 1)
+	got := snapshot.AttentionRecords[0]
 	assert.Equal(t, absBook.ID, got.BookID)
 	assert.Equal(t, "Hardcover Second Lookup", got.HardcoverTitle)
 	assert.Equal(t, "Hardcover Author", got.HardcoverAuthor)
 	assert.Equal(t, "https://example.test/cover.jpg", got.HardcoverCoverURL)
 	assert.Equal(t, "2021", got.HardcoverPublishedYear)
-	assert.Equal(t, "2023-01-01", got.ReleaseDate)
-	assert.Equal(t, book.Media.Metadata.ISBN, got.ISBN13)
-	assert.Equal(t, 777, got.PublisherID)
 	assert.Equal(t, OutcomeFailed, snapshot.BookOutcomes[0].Outcome)
 	hc.AssertExpectations(t)
 }
@@ -387,9 +383,8 @@ func TestProcessBookSnapshotKeepsSecondLookupNotFoundOutOfMismatches(t *testing.
 	require.ErrorIs(t, svc.processBook(context.Background(), *absBook, &models.AudiobookshelfUserProgress{}), ErrSkippedBook)
 
 	snapshot := svc.GetSnapshot()
-	require.Len(t, snapshot.BooksNotFound, 1)
-	assert.Equal(t, absBook.ID, snapshot.BooksNotFound[0].BookID)
-	assert.Empty(t, snapshot.Mismatches)
+	require.Len(t, snapshot.AttentionRecords, 1)
+	assert.Equal(t, absBook.ID, snapshot.AttentionRecords[0].BookID)
 	assert.Equal(t, OutcomeNotFound, snapshot.BookOutcomes[0].Outcome)
 
 	global := mismatch.GetAll()
@@ -421,15 +416,13 @@ func TestProcessBookSnapshotKeepsEnrichedNoEditionMismatch(t *testing.T) {
 	require.ErrorIs(t, err, ErrSkippedBook)
 
 	snapshot := svc.GetSnapshot()
-	require.Len(t, snapshot.Mismatches, 1)
-	got := snapshot.Mismatches[0]
+	require.Len(t, snapshot.AttentionRecords, 1)
+	got := snapshot.AttentionRecords[0]
 	assert.Equal(t, absBook.ID, got.BookID)
 	assert.Equal(t, "Hardcover No Edition", got.HardcoverTitle)
 	assert.Equal(t, "Hardcover Author", got.HardcoverAuthor)
 	assert.Equal(t, "https://example.test/no-edition-cover.jpg", got.HardcoverCoverURL)
 	assert.Equal(t, "2020", got.HardcoverPublishedYear)
-	assert.Equal(t, "2023-01-01", got.ReleaseDate)
-	assert.Equal(t, 1, got.Attempts)
 	assert.Equal(t, OutcomeNeedsReview, snapshot.BookOutcomes[0].Outcome)
 	global := mismatch.GetAll()
 	require.Len(t, global, 1)
@@ -451,7 +444,7 @@ func TestProcessLibraryCandidateDenominatorIgnoresLimit(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, processed)
 	assert.Equal(t, int32(2), svc.summary.BooksTotal)
-	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed)
+	assert.Equal(t, int32(1), svc.outcomeCounts.Total())
 	hc.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
 }
 
@@ -474,7 +467,7 @@ func TestProcessLibrarySkipsMissingIDAndReconcilesOutcomes(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, processed)
 	assert.Equal(t, int32(3), svc.summary.BooksTotal)
-	assert.Equal(t, int32(2), svc.summary.TotalBooksProcessed)
+	assert.Equal(t, int32(2), svc.outcomeCounts.Total())
 	assert.Equal(t, int32(2), svc.outcomeCounts.Total())
 	assert.Equal(t, int32(1), svc.outcomeCounts.Skipped)
 	assert.Equal(t, int32(1), svc.outcomeCounts.NotFound)
@@ -502,8 +495,8 @@ func TestSyncTestBookLimitIgnoresUnattemptedLibraryPrecountError(t *testing.T) {
 	svc.audiobookshelf = mockABS
 
 	require.NoError(t, svc.Sync(context.Background()))
-	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed)
-	assert.Equal(t, int32(0), svc.summary.BooksSynced)
+	assert.Equal(t, int32(1), svc.outcomeCounts.Total())
+	assert.Equal(t, int32(0), svc.outcomeCounts.Synced)
 	mockABS.AssertExpectations(t)
 	hc.AssertExpectations(t)
 }
@@ -547,7 +540,7 @@ func TestSyncTestBookLimitCountsFailedBookAttempt(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, int32(2), svc.summary.BooksTotal)
-	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed)
+	assert.Equal(t, int32(1), svc.outcomeCounts.Total())
 	assert.Equal(t, int32(1), svc.outcomeCounts.Failed)
 	mockABS.AssertExpectations(t)
 	hc.AssertExpectations(t)
@@ -573,7 +566,7 @@ func TestSyncRetriesLibraryFetchAfterPrecountFailure(t *testing.T) {
 
 	require.NoError(t, svc.Sync(context.Background()))
 	assert.Equal(t, int32(1), svc.summary.BooksTotal)
-	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed)
+	assert.Equal(t, int32(1), svc.outcomeCounts.Total())
 	mockABS.AssertExpectations(t)
 	hc.AssertExpectations(t)
 }

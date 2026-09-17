@@ -197,20 +197,6 @@ components:
         books_total:
           type: integer
           description: Number of candidates observed before processing limits; zero means the total is unknown or has not been observed yet. This is independent of processed_so_far.
-        books_synced:
-          type: integer
-          description: Legacy count retained for existing clients.
-        books_not_found:
-          type: array
-          items:
-            $ref: '#/components/schemas/BookNotFoundInfo'
-        mismatches:
-          type: array
-          items:
-            $ref: '#/components/schemas/BookMismatch'
-        last_sync_summary:
-          type: object
-          description: Legacy summary fields retained for existing clients.
         snapshot:
           $ref: '#/components/schemas/SyncSnapshot'
 
@@ -251,9 +237,6 @@ components:
         books_total:
           type: integer
           description: Number of candidates observed before processing limits; zero means the total is unknown or has not been observed yet. This is independent of processed_so_far.
-        books_synced:
-          type: integer
-          description: Legacy count retained for existing clients.
         snapshot:
           $ref: '#/components/schemas/AggregateSnapshot'
 
@@ -301,8 +284,6 @@ components:
         processed_count: {type: integer}
         outcome_counts:
           $ref: '#/components/schemas/OutcomeCounts'
-        total_books_processed: {type: integer}
-        books_synced: {type: integer}
 
     OutcomeCounts:
       type: object
@@ -337,64 +318,17 @@ components:
         match_method: {type: string}
         hardcover_book_id: {type: string}
         edition_id: {type: string}
-        updated_at: {type: string, format: date-time}
-
-    BookNotFoundInfo:
-      type: object
-      properties:
-        book_id: {type: string}
-        title: {type: string}
-        author: {type: string}
-        asin: {type: string}
-        isbn: {type: string}
-        error: {type: string}
-
-    BookMismatch:
-      type: object
-      properties:
-        book_id: {type: string}
-        title: {type: string}
-        subtitle: {type: string}
-        author: {type: string}
-        author_ids:
-          type: array
-          items: {type: integer}
-        narrator: {type: string}
-        narrator_ids:
-          type: array
-          items: {type: integer}
-        asin: {type: string}
-        isbn: {type: string}
-        isbn_10: {type: string}
-        isbn_13: {type: string}
-        library_id: {type: string}
-        folder_id: {type: string}
-        release_date: {type: string}
-        published_year: {type: string}
-        duration_seconds: {type: integer}
-        cover_url: {type: string}
-        image_url: {type: string}
-        edition_format: {type: string}
-        edition_information: {type: string}
-        language_id: {type: integer}
-        country_id: {type: integer}
-        publisher_id: {type: integer}
-        publisher: {type: string}
-        hardcover_book_id: {type: string}
         hardcover_title: {type: string}
         hardcover_author: {type: string}
         hardcover_published_year: {type: string}
-        hardcover_cover_url: {type: string}
+        hardcover_cover_url: {type: string, format: uri}
         hardcover_publisher: {type: string}
         hardcover_asin: {type: string}
         hardcover_isbn: {type: string}
         hardcover_slug: {type: string}
         hardcover_series: {type: string}
         hardcover_series_number: {type: string}
-        reason: {type: string}
-        timestamp: {type: integer, format: int64}
-        attempts: {type: integer}
-        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
 
     SyncSnapshot:
       type: object
@@ -458,16 +392,6 @@ components:
           description: Needs-review, not-found, and failed records currently requiring attention.
           items:
             $ref: '#/components/schemas/BookOutcomeRecord'
-        total_books_processed: {type: integer}
-        books_synced: {type: integer}
-        books_not_found:
-          type: array
-          items:
-            $ref: '#/components/schemas/BookNotFoundInfo'
-        mismatches:
-          type: array
-          items:
-            $ref: '#/components/schemas/BookMismatch'
 
     SyncSummary:
       type: object
@@ -534,16 +458,6 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/BookOutcomeRecord'
-        total_books_processed: {type: integer}
-        books_synced: {type: integer}
-        books_not_found:
-          type: array
-          items:
-            $ref: '#/components/schemas/BookNotFoundInfo'
-        mismatches:
-          type: array
-          items:
-            $ref: '#/components/schemas/BookMismatch'
 
 security:
   - BearerAuth: []

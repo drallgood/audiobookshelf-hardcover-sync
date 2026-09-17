@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/types"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/crypto"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
@@ -343,7 +342,11 @@ func TestPublicStatusAndSummaryRoutesShareCurrentRunSnapshot(t *testing.T) {
 	var summaryResponse summaryHTTPResponse
 	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/profile-a/summary", &summaryResponse)
 	require.True(t, summaryResponse.Success)
-	require.Equal(t, "default", summaryResponse.Data.UserID)
+	require.Equal(t, "profile-a", summaryResponse.Data.UserID)
+	rawSummary := requestJSONRoute(routes, http.MethodGet, "/api/profiles/profile-a/summary")
+	for _, retired := range []string{"total_books_processed", "books_synced", "books_not_found", "mismatches", "last_sync_summary"} {
+		require.NotContains(t, rawSummary.Body.String(), retired)
+	}
 
 	statusSnapshot := statusResponse.Data.Snapshot
 	summarySnapshot := summaryResponse.Data.Snapshot
@@ -352,26 +355,18 @@ func TestPublicStatusAndSummaryRoutesShareCurrentRunSnapshot(t *testing.T) {
 	require.Equal(t, "profile-a", summarySnapshot.UserID)
 	require.Equal(t, statusSnapshot.AttentionRecords[0].BookID, "profile-a")
 
-	// Existing consumers can continue using the flattened fields while moving
-	// to the run-scoped snapshot contract.
-	require.Equal(t, int32(1), summaryResponse.Data.TotalBooksProcessed)
-	require.Equal(t, int32(0), summaryResponse.Data.BooksSynced)
-	require.Len(t, summaryResponse.Data.BooksNotFound, 1)
-	require.Equal(t, "Missing A", summaryResponse.Data.BooksNotFound[0].Title)
-	require.Empty(t, summaryResponse.Data.Mismatches)
-	require.Equal(t, int32(1), statusResponse.Data.Snapshot.TotalBooksProcessed)
-	require.Len(t, statusResponse.Data.BooksNotFound, 1)
-	require.Equal(t, "Missing A", statusResponse.Data.BooksNotFound[0].Title)
-	require.Empty(t, statusResponse.Data.Mismatches)
+	require.Equal(t, int32(1), summaryResponse.Data.ProcessedCount)
+	require.Equal(t, int32(1), summaryResponse.Data.OutcomeCounts.Total())
+	require.Len(t, summaryResponse.Data.AttentionRecords, 1)
+	require.Equal(t, "Missing A", summaryResponse.Data.AttentionRecords[0].Title)
 
 	var unknownSummaryResponse summaryHTTPResponse
 	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/unknown/summary", &unknownSummaryResponse)
 	require.True(t, unknownSummaryResponse.Success)
-	require.Equal(t, "default", unknownSummaryResponse.Data.UserID)
+	require.Equal(t, "unknown", unknownSummaryResponse.Data.UserID)
 	require.Nil(t, unknownSummaryResponse.Data.Snapshot)
-	require.Zero(t, unknownSummaryResponse.Data.TotalBooksProcessed)
-	require.Empty(t, unknownSummaryResponse.Data.BooksNotFound)
-	require.Empty(t, unknownSummaryResponse.Data.Mismatches)
+	require.Zero(t, unknownSummaryResponse.Data.ProcessedCount)
+	require.Empty(t, unknownSummaryResponse.Data.AttentionRecords)
 
 	var allStatusesResponse allStatusHTTPResponse
 	callJSONRoute(t, routes, http.MethodGet, "/api/status", &allStatusesResponse)
@@ -425,12 +420,6 @@ func TestPublicStatusAndSummaryRoutesShareCurrentRunSnapshot(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, recorder.Code, recorder.Body.String())
 	recorder = requestJSONRoute(routes, http.MethodGet, "/api/profiles/unknown/runs/"+statusSnapshot.RunID+"/details")
 	require.Equal(t, http.StatusNotFound, recorder.Code, recorder.Body.String())
-	require.Nil(t, byID["profile-a"].LastSyncSummary)
-	require.Nil(t, byID["profile-b"].LastSyncSummary)
-	require.Empty(t, byID["profile-a"].BooksNotFound)
-	require.Empty(t, byID["profile-b"].BooksNotFound)
-	require.Empty(t, byID["profile-a"].Mismatches)
-	require.Empty(t, byID["profile-b"].Mismatches)
 	require.Equal(t, 1, byID["profile-a"].BooksTotal)
 	require.Equal(t, 1, byID["profile-b"].BooksTotal)
 	fixture.waitForSyncs(t)
@@ -619,8 +608,6 @@ func TestPublicStatusAndSummaryRoutesExposeLiveAttentionOutcomes(t *testing.T) {
 	require.Equal(t, int32(1), liveSnapshot.OutcomeCounts.NotFound)
 	require.Len(t, liveSnapshot.BookOutcomes, 2)
 	require.Len(t, liveSnapshot.AttentionRecords, 2)
-	require.Len(t, liveSnapshot.BooksNotFound, 1)
-	require.Len(t, liveSnapshot.Mismatches, 1)
 
 	// Aggregate polling must observe the active service snapshot as outcomes
 	// arrive, while omitting the potentially large per-book detail arrays.
@@ -672,19 +659,20 @@ func TestPublicStatusAndSummaryRoutesExposeLiveAttentionOutcomes(t *testing.T) {
 		require.Equal(t, "Status Series", record.Series)
 		require.Equal(t, "2", record.SeriesNumber)
 	}
-	require.Len(t, liveDetails.Data.Mismatches, 1)
-	require.Equal(t, "Hardcover Series", liveDetails.Data.Mismatches[0].HardcoverSeries)
-	require.Equal(t, "3", liveDetails.Data.Mismatches[0].HardcoverSeriesNumber)
+	detailAttentionByID := make(map[string]syncsvc.BookOutcomeRecord, len(liveDetails.Data.AttentionRecords))
+	for _, record := range liveDetails.Data.AttentionRecords {
+		detailAttentionByID[record.BookID] = record
+	}
+	require.Equal(t, "Hardcover Series", detailAttentionByID["title-only-book"].HardcoverSeries)
+	require.Equal(t, "3", detailAttentionByID["title-only-book"].HardcoverSeriesNumber)
 
 	var summaryResponse summaryHTTPResponse
 	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/summary", &summaryResponse)
 	require.True(t, summaryResponse.Success)
 	requireSnapshotMatchesSummary(t, liveSnapshot, summaryResponse.Data)
-	require.Equal(t, "default", summaryResponse.Data.UserID)
+	require.Equal(t, profileID, summaryResponse.Data.UserID)
 	require.Equal(t, profileID, summaryResponse.Data.Snapshot.UserID)
 	require.Len(t, summaryResponse.Data.AttentionRecords, 2)
-	require.Len(t, summaryResponse.Data.BooksNotFound, 1)
-	require.Len(t, summaryResponse.Data.Mismatches, 1)
 	require.Equal(t, liveSnapshot.ProcessedSoFar, summaryResponse.Data.OutcomeCounts.Total())
 	require.Equal(t, "running", summaryResponse.Data.State)
 	require.True(t, summaryResponse.Data.DryRun)
@@ -745,8 +733,8 @@ func TestPublicStatusPublishesSecondLookupOutcomeBeforeEnrichment(t *testing.T) 
 	require.Equal(t, "running", status.Snapshot.State)
 	require.Equal(t, int32(1), status.Snapshot.ProcessedSoFar)
 	require.Equal(t, int32(1), status.Snapshot.OutcomeCounts.NotFound)
-	require.Len(t, status.Snapshot.BooksNotFound, 1)
-	require.Equal(t, "delayed-book", status.Snapshot.BooksNotFound[0].BookID)
+	require.Len(t, status.Snapshot.AttentionRecords, 1)
+	require.Equal(t, "delayed-book", status.Snapshot.AttentionRecords[0].BookID)
 
 	hardcoverServer.releaseEnrichment()
 	completed := waitForMountedStatusRun(t, routes, profileID, status.Snapshot.RunID)
@@ -858,7 +846,7 @@ func TestPublicStatusAndSummaryRoutesExposeTechnicalTimeoutAsFailedOutcome(t *te
 	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/summary", &summaryResponse)
 	require.True(t, summaryResponse.Success)
 	require.NotNil(t, summaryResponse.Data.Snapshot)
-	require.Equal(t, "default", summaryResponse.Data.UserID)
+	require.Equal(t, profileID, summaryResponse.Data.UserID)
 	require.Equal(t, profileID, summaryResponse.Data.Snapshot.UserID)
 	require.Equal(t, completed.Snapshot.RunID, summaryResponse.Data.RunID)
 	require.Equal(t, completed.Snapshot.OutcomeCounts, summaryResponse.Data.OutcomeCounts)
@@ -886,12 +874,9 @@ type statusSummaryPayload struct {
 	UnattemptedCount    int32                       `json:"unattempted_count"`
 	BooksTotal          int32                       `json:"books_total"`
 	ProcessedSoFar      int32                       `json:"processed_so_far"`
+	ProcessedCount      int32                       `json:"processed_count"`
 	OutcomeCounts       syncsvc.OutcomeCounts       `json:"outcome_counts"`
 	AttentionRecords    []syncsvc.BookOutcomeRecord `json:"attention_records"`
-	TotalBooksProcessed int32                       `json:"total_books_processed"`
-	BooksSynced         int32                       `json:"books_synced"`
-	BooksNotFound       []types.BookNotFoundInfo    `json:"books_not_found"`
-	Mismatches          []map[string]interface{}    `json:"mismatches"`
 }
 
 type statusAudiobookshelfServer struct {

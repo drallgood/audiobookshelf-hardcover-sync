@@ -109,7 +109,7 @@ func TestSnapshotActivityAndProcessedTimestampsFollowTheirEvents(t *testing.T) {
 	require.True(t, processed.LastProcessedAt.After(candidate.LastProcessedAt))
 
 	time.Sleep(time.Millisecond)
-	svc.enrichLiveMismatch(mismatch.BookMismatch{BookID: book.ID, Reason: "enriched"})
+	svc.enrichAttentionCandidate(mismatch.BookMismatch{BookID: book.ID, Reason: "enriched"})
 	enriched := svc.GetSnapshotStatus()
 	require.True(t, enriched.LastActivityAt.After(processed.LastActivityAt))
 	require.Equal(t, processed.LastProcessedAt, enriched.LastProcessedAt)

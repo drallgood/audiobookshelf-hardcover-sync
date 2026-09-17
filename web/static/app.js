@@ -1514,9 +1514,6 @@ class SyncProfileApp {
         open.renderedRunId = snapshot.run_id;
         const categories = this.outcomeCategories(snapshot.outcome_counts || {});
         const records = new Map((snapshot.book_outcomes || []).map(record => [record.book_id, record]));
-        const mismatches = new Map((snapshot.mismatches || [])
-            .filter(mismatch => mismatch && mismatch.book_id != null)
-            .map(mismatch => [String(mismatch.book_id), mismatch]));
         tabs.innerHTML = `<button class="tab-button active" type="button">${this.escapeHtml(this.statuses[open.profileId]?.profile_name || `Profile ${open.profileId}`)}</button>`;
         const rawSnapshotState = String(snapshot.state || '').toLowerCase();
         const snapshotState = rawSnapshotState === 'syncing' ? 'running' : rawSnapshotState;
@@ -1535,11 +1532,7 @@ class SyncProfileApp {
             return `
             <details class="summary-section outcome-group" data-outcome="${group.key}" ${open.expandedOutcomes.has(group.key) ? 'open' : ''}>
                 <summary data-outcome-category="${group.key}"><span>${group.label}</span><span class="stat ${group.tone}">${group.count}</span></summary>
-                <div class="book-list">${group.records.length ? group.records.map(record => this.renderOutcomeRecord(
-                    record,
-                    record.outcome === 'needs_review' ? mismatches.get(String(record.book_id)) : null,
-                    audiobookshelfURL
-                )).join('') : `<p class="empty-state">${emptyMessage}</p>`}</div>
+                <div class="book-list">${group.records.length ? group.records.map(record => this.renderOutcomeRecord(record, audiobookshelfURL)).join('') : `<p class="empty-state">${emptyMessage}</p>`}</div>
             </details>`;
         }).join('');
         let statusMessage = 'Run status is unavailable.';
@@ -1575,23 +1568,23 @@ class SyncProfileApp {
         });
     }
 
-    renderHardcoverCandidate(mismatch) {
-        if (!mismatch || typeof mismatch !== 'object') return '';
+    renderHardcoverCandidate(record) {
+        if (!record || typeof record !== 'object') return '';
 
         const value = (raw) => {
             if (typeof raw === 'string') return raw.trim();
             if (typeof raw === 'number' && Number.isFinite(raw)) return String(raw);
             return '';
         };
-        const title = value(mismatch.hardcover_title);
-        const author = value(mismatch.hardcover_author);
-        const publishedYear = value(mismatch.hardcover_published_year);
-        const asin = value(mismatch.hardcover_asin);
-        const isbn = value(mismatch.hardcover_isbn);
-        const slug = value(mismatch.hardcover_slug);
-        const series = value(mismatch.hardcover_series);
-        const seriesNumber = value(mismatch.hardcover_series_number);
-        const coverURL = value(mismatch.hardcover_cover_url);
+        const title = value(record.hardcover_title);
+        const author = value(record.hardcover_author);
+        const publishedYear = value(record.hardcover_published_year);
+        const asin = value(record.hardcover_asin);
+        const isbn = value(record.hardcover_isbn);
+        const slug = value(record.hardcover_slug);
+        const series = value(record.hardcover_series);
+        const seriesNumber = value(record.hardcover_series_number);
+        const coverURL = value(record.hardcover_cover_url);
         const hardcoverURL = slug
             ? `https://hardcover.app/books/${encodeURIComponent(slug)}`
             : '';
@@ -1654,11 +1647,11 @@ class SyncProfileApp {
         }
     }
 
-    buildHardcoverBookURL(record, mismatch) {
-        const bookId = String(record?.hardcover_book_id || mismatch?.hardcover_book_id || '').trim();
+    buildHardcoverBookURL(record) {
+        const bookId = String(record?.hardcover_book_id || '').trim();
         if (bookId) return `https://hardcover.app/book/${encodeURIComponent(bookId)}`;
 
-        const slug = String(mismatch?.hardcover_slug || '').trim();
+        const slug = String(record?.hardcover_slug || '').trim();
         return slug ? `https://hardcover.app/books/${encodeURIComponent(slug)}` : '';
     }
 
@@ -1701,11 +1694,11 @@ class SyncProfileApp {
         </div>`;
     }
 
-    renderOutcomeRecord(record, mismatch = null, audiobookshelfBaseURL = '') {
+    renderOutcomeRecord(record, audiobookshelfBaseURL = '') {
         const bookId = String(record.book_id || '');
         const title = this.escapeHtml(record.title || 'Unknown title');
         const audiobookshelfURL = this.buildAudiobookshelfItemURL(audiobookshelfBaseURL, bookId);
-        const hardcoverURL = this.buildHardcoverBookURL(record, mismatch);
+        const hardcoverURL = this.buildHardcoverBookURL(record);
         const asin = String(record.asin || '').trim();
         const isbn = String(record.isbn || '').trim();
         const format = String(record.format || '').trim();
@@ -1743,7 +1736,7 @@ class SyncProfileApp {
                     ${record.author ? `<div><strong>Author:</strong> ${this.escapeHtml(record.author)}</div>` : ''}
                     <div class="book-meta">${asinHTML}${isbnHTML}${format ? `<span><strong>Format:</strong> ${this.escapeHtml(format)}</span>` : ''}${series ? `<span><strong>Series:</strong> ${this.escapeHtml(series)}</span>` : ''}</div>
                     ${record.match_method ? `<div><strong>Match method:</strong> ${this.escapeHtml(record.match_method)}</div>` : ''}
-                    ${mismatch ? this.renderHardcoverCandidate(mismatch) : ''}
+                    ${record.outcome === 'needs_review' ? this.renderHardcoverCandidate(record) : ''}
                     ${record.reason ? `<div class="book-reason"><strong>Reason:</strong> ${this.escapeHtml(record.reason)}</div>` : ''}
                     ${record.error ? `<div class="book-error"><strong>Error:</strong> ${this.escapeHtml(record.error)}</div>` : ''}
                 </div>

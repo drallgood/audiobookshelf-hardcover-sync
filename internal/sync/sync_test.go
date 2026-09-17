@@ -83,13 +83,13 @@ func TestSync(t *testing.T) {
 	// Setup mocks
 	mockABS := new(MockAudiobookshelfClient)
 	mockHC := new(MockHardcoverClient)
-	
+
 	// Create a temporary state file
 	testState := state.NewState()
-	
+
 	// Create test config with default values and update sync settings
 	testConfig := config.DefaultConfig()
-	
+
 	// Configure sync settings - all sync-related settings are now consolidated under Sync
 	testConfig.Sync.Incremental = false
 	testConfig.Sync.StateFile = "/tmp/sync_state_test.json"
@@ -99,22 +99,22 @@ func TestSync(t *testing.T) {
 	testConfig.Sync.SyncWantToRead = true
 	testConfig.Sync.SyncOwned = true
 	testConfig.Sync.DryRun = true
-	
+
 	// Initialize libraries include/exclude
 	testConfig.Sync.Libraries.Include = []string{}
 	testConfig.Sync.Libraries.Exclude = []string{}
-	
+
 	// Set test-specific app settings
 	testConfig.App.TestBookFilter = ""
 	testConfig.App.TestBookLimit = 0
-	
+
 	// Clear deprecated sync fields in App
 	testConfig.App.SyncInterval = 0
 	testConfig.App.MinimumProgress = 0
 	testConfig.App.SyncWantToRead = false
 	testConfig.App.SyncOwned = false
 	testConfig.App.DryRun = false
-	
+
 	// Set test service configurations
 	testConfig.Audiobookshelf.URL = "https://abs.example.com"
 	testConfig.Audiobookshelf.Token = "test-token"
@@ -122,12 +122,12 @@ func TestSync(t *testing.T) {
 
 	// Create the service with mocked clients
 	svc := &Service{
-		audiobookshelf: nil, // Will be replaced with mock
-		hardcover:      mockHC,
-		config:         testConfig,
-		log:            log,
-		state:          testState,
-		statePath:      "",
+		audiobookshelf:      nil, // Will be replaced with mock
+		hardcover:           mockHC,
+		config:              testConfig,
+		log:                 log,
+		state:               testState,
+		statePath:           "",
 		lastProgressUpdates: make(map[string]progressUpdateInfo),
 		asinCache:           make(map[string]*models.HardcoverBook),
 		persistentCache:     NewPersistentASINCache("/tmp"),
@@ -137,16 +137,16 @@ func TestSync(t *testing.T) {
 	// We need to use a reflection trick to inject our mock into the service
 	// since audiobookshelf.Client is a concrete type in the Service struct
 	// For testing purposes, we'll create a function to inject the mock
-	
+
 	// Create test library for reference
 	testLibrary := &audiobookshelf.AudiobookshelfLibrary{
 		ID:   "lib1",
 		Name: "Test Library",
 	}
-	
+
 	// Create test user progress
 	testUserProgress := &models.AudiobookshelfUserProgress{
-		ID: "user1",
+		ID:       "user1",
 		Username: "testuser",
 		MediaProgress: []struct {
 			ID            string  `json:"id"`
@@ -178,29 +178,29 @@ func TestSync(t *testing.T) {
 			UpdatedAt   int64   `json:"updatedAt"`
 		}{},
 	}
-	
+
 	// Create empty library items list
 	emptyLibraryItems := []models.AudiobookshelfBook{}
-	
+
 	// Setup mock expectations - only include what's used in the processLibrary test
 	mockABS.On("GetLibraryItems", mock.Anything, "lib1").Return(emptyLibraryItems, nil)
-	
+
 	// Replace the audiobookshelf client in the service with our mock
 	svc.audiobookshelf = mockABS
-	
+
 	// For test purposes, we'll test processLibrary directly
 	t.Run("Empty library - should complete without errors", func(t *testing.T) {
 		// Create a context with a timeout
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		
+
 		// Call processLibrary directly
 		processed, err := svc.processLibrary(ctx, testLibrary, 0, testUserProgress)
-		
+
 		// Verify results
 		assert.NoError(t, err)
 		assert.Equal(t, 0, processed)
-		
+
 		// Verify mock expectations
 		mockABS.AssertExpectations(t)
 	})
@@ -218,13 +218,13 @@ func TestProcessLibrary(t *testing.T) {
 	// Setup mocks
 	mockABS := new(MockAudiobookshelfClient)
 	mockHC := new(MockHardcoverClient)
-	
+
 	// Create a temporary state file
 	testState := state.NewState()
-	
+
 	// Create test config with default values and update sync settings
 	testConfig := config.DefaultConfig()
-	
+
 	// Configure sync settings - all sync-related settings are now consolidated under Sync
 	testConfig.Sync.Incremental = false
 	testConfig.Sync.StateFile = "/tmp/sync_state_test.json"
@@ -234,22 +234,22 @@ func TestProcessLibrary(t *testing.T) {
 	testConfig.Sync.SyncWantToRead = true
 	testConfig.Sync.SyncOwned = true
 	testConfig.Sync.DryRun = true
-	
+
 	// Initialize libraries include/exclude
 	testConfig.Sync.Libraries.Include = []string{}
 	testConfig.Sync.Libraries.Exclude = []string{}
-	
+
 	// Set test-specific app settings
 	testConfig.App.TestBookFilter = ""
 	testConfig.App.TestBookLimit = 0
-	
+
 	// Clear deprecated sync fields in App
 	testConfig.App.SyncInterval = 0
 	testConfig.App.MinimumProgress = 0
 	testConfig.App.SyncWantToRead = false
 	testConfig.App.SyncOwned = false
 	testConfig.App.DryRun = false
-	
+
 	// Set test service configurations
 	testConfig.Audiobookshelf.URL = "https://abs.example.com"
 	testConfig.Audiobookshelf.Token = "test-token"
@@ -257,28 +257,28 @@ func TestProcessLibrary(t *testing.T) {
 
 	// Create the service with mocked clients
 	svc := &Service{
-		audiobookshelf: nil, // Will be replaced with mock
-		hardcover:      mockHC,
-		config:         testConfig,
-		log:            log,
-		state:          testState,
-		statePath:      "",
+		audiobookshelf:      nil, // Will be replaced with mock
+		hardcover:           mockHC,
+		config:              testConfig,
+		log:                 log,
+		state:               testState,
+		statePath:           "",
 		lastProgressUpdates: make(map[string]progressUpdateInfo),
 		asinCache:           make(map[string]*models.HardcoverBook),
 		persistentCache:     NewPersistentASINCache("/tmp"),
 		userBookCache:       NewPersistentUserBookCache("/tmp"),
 		summary:             &SyncSummary{},
 	}
-	
+
 	// Create test library
 	testLibrary := &audiobookshelf.AudiobookshelfLibrary{
 		ID:   "lib1",
 		Name: "Test Library",
 	}
-	
+
 	// Create test user progress
 	testUserProgress := &models.AudiobookshelfUserProgress{
-		ID: "user1",
+		ID:       "user1",
 		Username: "testuser",
 		MediaProgress: []struct {
 			ID            string  `json:"id"`
@@ -310,29 +310,29 @@ func TestProcessLibrary(t *testing.T) {
 			UpdatedAt   int64   `json:"updatedAt"`
 		}{},
 	}
-	
+
 	// Test with an empty library
 	t.Run("Empty library", func(t *testing.T) {
 		// Create empty library items list
 		emptyLibraryItems := []models.AudiobookshelfBook{}
-		
+
 		// Setup mock expectations
 		mockABS.On("GetLibraryItems", mock.Anything, "lib1").Return(emptyLibraryItems, nil).Once()
-		
+
 		// Replace the audiobookshelf client in the service with our mock
 		svc.audiobookshelf = mockABS
-		
+
 		// Call processLibrary
 		processed, err := svc.processLibrary(context.Background(), testLibrary, 0, testUserProgress)
-		
+
 		// Verify results
 		assert.NoError(t, err)
 		assert.Equal(t, 0, processed)
-		
+
 		// Verify mock expectations
 		mockABS.AssertExpectations(t)
 	})
-	
+
 	// Test with a non-empty library but with a limit
 	t.Run("Library with items and limit", func(t *testing.T) {
 		// Create test books
@@ -340,7 +340,7 @@ func TestProcessLibrary(t *testing.T) {
 			{
 				ID: "book1",
 				Media: struct {
-					ID        string                               `json:"id"`
+					ID        string                              `json:"id"`
 					Metadata  models.AudiobookshelfMetadataStruct `json:"metadata"`
 					CoverPath string                              `json:"coverPath"`
 					Duration  float64                             `json:"duration"`
@@ -368,13 +368,13 @@ func TestProcessLibrary(t *testing.T) {
 				},
 			},
 		}
-		
+
 		// Setup mock expectations
 		mockABS.On("GetLibraryItems", mock.Anything, "lib1").Return(testBooks, nil).Once()
-		
+
 		// Setup mock for SearchBookByASIN
 		testBook := &models.HardcoverBook{
-			ID: "test-book-id",
+			ID:    "test-book-id",
 			Title: "Test Book 1",
 			Authors: []models.Author{
 				{Name: "Test Author 1"},
@@ -386,21 +386,21 @@ func TestProcessLibrary(t *testing.T) {
 		mockHC.On("SearchBookByISBN13", mock.Anything, "9781234567890").Return((*models.HardcoverBook)(nil), nil).Maybe()
 		// Enrichment may fall back to a title/author search; stub it as returning no results
 		mockHC.On("SearchBooks", mock.Anything, "Test Book 1", "Test Author 1").Return([]*TestHardcoverBook{}, nil).Maybe()
-		
+
 		// Replace the clients in the service with our mocks
 		svc.audiobookshelf = mockABS
 		svc.hardcover = mockHC
-		
+
 		// Set a limit of 1 book
 		testConfig.Sync.TestBookLimit = 1
-		
+
 		// Call processLibrary
 		processed, err := svc.processLibrary(context.Background(), testLibrary, 0, testUserProgress)
-		
+
 		// Verify results
 		assert.NoError(t, err)
 		assert.Equal(t, 1, processed)
-		
+
 		// Verify mock expectations
 		mockABS.AssertExpectations(t)
 	})
@@ -527,7 +527,7 @@ func TestProcessLibraryCheckpointsOnceThenReturnsCancellation(t *testing.T) {
 	)
 
 	assert.ErrorIs(t, err, context.Canceled)
-	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed, "cancellation must stop before the second book")
+	assert.Equal(t, int32(1), svc.outcomeCounts.Total(), "cancellation must stop before the second book")
 	loadedState, loadErr := state.LoadState(svc.statePath)
 	require.NoError(t, loadErr)
 	bookState, exists := loadedState.GetBookState("book1")
@@ -562,7 +562,7 @@ func TestProcessLibraryStopsBeforeBookWhenAlreadyCanceled(t *testing.T) {
 	)
 
 	assert.ErrorIs(t, err, context.Canceled)
-	assert.Zero(t, svc.summary.TotalBooksProcessed, "an already-canceled run must not enter a book")
+	assert.Zero(t, svc.outcomeCounts.Total(), "an already-canceled run must not enter a book")
 	_, statErr := os.Stat(svc.statePath)
 	assert.ErrorIs(t, statErr, os.ErrNotExist)
 	mockABS.AssertExpectations(t)

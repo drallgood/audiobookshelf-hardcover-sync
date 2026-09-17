@@ -18,7 +18,6 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 )
@@ -41,21 +40,17 @@ var ErrSyncAlreadyActive = errors.New("sync already active")
 
 // SyncProfileStatus represents the sync status for a profile
 type SyncProfileStatus struct {
-	ProfileID        string                  `json:"profile_id"`
-	ProfileName      string                  `json:"profile_name"`
-	Status           string                  `json:"status"` // "idle", "syncing", "error", "completed"
-	DryRun           bool                    `json:"dry_run,omitempty"`
-	LastSync         *time.Time              `json:"last_sync"`
-	LastAttemptedAt  *time.Time              `json:"last_attempted_at,omitempty"`
-	LastSuccessfulAt *time.Time              `json:"last_successful_at,omitempty"`
-	Error            string                  `json:"error,omitempty"`
-	Progress         string                  `json:"progress,omitempty"`
-	BooksTotal       int                     `json:"books_total,omitempty"`
-	BooksSynced      int                     `json:"books_synced,omitempty"`
-	BooksNotFound    []sync.BookNotFoundInfo `json:"books_not_found,omitempty"`
-	Mismatches       []mismatch.BookMismatch `json:"mismatches,omitempty"`
-	LastSyncSummary  *sync.SyncSummary       `json:"last_sync_summary,omitempty"`
-	Snapshot         *sync.SyncSnapshot      `json:"snapshot,omitempty"`
+	ProfileID        string             `json:"profile_id"`
+	ProfileName      string             `json:"profile_name"`
+	Status           string             `json:"status"` // "idle", "syncing", "error", "completed"
+	DryRun           bool               `json:"dry_run,omitempty"`
+	LastSync         *time.Time         `json:"last_sync"`
+	LastAttemptedAt  *time.Time         `json:"last_attempted_at,omitempty"`
+	LastSuccessfulAt *time.Time         `json:"last_successful_at,omitempty"`
+	Error            string             `json:"error,omitempty"`
+	Progress         string             `json:"progress,omitempty"`
+	BooksTotal       int                `json:"books_total,omitempty"`
+	Snapshot         *sync.SyncSnapshot `json:"snapshot,omitempty"`
 }
 
 // AcceptedSyncRun is the immutable identity returned for a successfully
@@ -262,7 +257,6 @@ func (s *MultiUserService) getAggregateProfileStatus(profile database.SyncProfil
 	// per-profile status handler.
 	status.Snapshot = &snapshot
 	status.BooksTotal = int(snapshot.BooksTotal)
-	status.BooksSynced = int(snapshot.BooksSynced)
 
 	return aggregateProfileStatus(profile, status)
 }
@@ -286,7 +280,6 @@ func (s *MultiUserService) getStoredAggregateStatus(profile database.SyncProfile
 		DryRun:      stored.DryRun,
 		Progress:    stored.Progress,
 		BooksTotal:  stored.BooksTotal,
-		BooksSynced: stored.BooksSynced,
 	}
 	if stored.LastSync != nil {
 		lastSync := *stored.LastSync
@@ -328,7 +321,6 @@ func aggregateProfileStatus(profile database.SyncProfile, status *SyncProfileSta
 		LastSuccessfulAt: status.LastSuccessfulAt,
 		Progress:         status.Progress,
 		BooksTotal:       status.BooksTotal,
-		BooksSynced:      status.BooksSynced,
 	}
 	aggregate.Snapshot = status.Snapshot
 	if aggregate.Status == "" {
@@ -360,8 +352,6 @@ func scalarSnapshot(snapshot *sync.SyncSnapshot) *sync.SyncSnapshot {
 		ProcessedSoFar:      snapshot.ProcessedSoFar,
 		ProcessedCount:      snapshot.ProcessedCount,
 		OutcomeCounts:       snapshot.OutcomeCounts,
-		TotalBooksProcessed: snapshot.TotalBooksProcessed,
-		BooksSynced:         snapshot.BooksSynced,
 	}
 }
 
@@ -493,20 +483,13 @@ func sanitizedSnapshot(snapshot sync.SyncSnapshot) sync.SyncSnapshot {
 	copyOf.AudiobookshelfURL = sanitizeReportURL(snapshot.AudiobookshelfURL)
 	copyOf.BookOutcomes = append([]sync.BookOutcomeRecord(nil), snapshot.BookOutcomes...)
 	copyOf.AttentionRecords = append([]sync.BookOutcomeRecord(nil), snapshot.AttentionRecords...)
-	copyOf.BooksNotFound = append([]sync.BookNotFoundInfo(nil), snapshot.BooksNotFound...)
-	copyOf.Mismatches = make([]mismatch.BookMismatch, len(snapshot.Mismatches))
-	for i, record := range snapshot.Mismatches {
-		copyOf.Mismatches[i] = cloneBookMismatch(record)
-	}
 	for i := range copyOf.BookOutcomes {
 		copyOf.BookOutcomes[i].CoverURL = sanitizeReportURL(copyOf.BookOutcomes[i].CoverURL)
+		copyOf.BookOutcomes[i].HardcoverCoverURL = sanitizeReportURL(copyOf.BookOutcomes[i].HardcoverCoverURL)
 	}
 	for i := range copyOf.AttentionRecords {
 		copyOf.AttentionRecords[i].CoverURL = sanitizeReportURL(copyOf.AttentionRecords[i].CoverURL)
-	}
-	for i := range copyOf.Mismatches {
-		copyOf.Mismatches[i].CoverURL = sanitizeReportURL(copyOf.Mismatches[i].CoverURL)
-		copyOf.Mismatches[i].ImageURL = sanitizeReportURL(copyOf.Mismatches[i].ImageURL)
+		copyOf.AttentionRecords[i].HardcoverCoverURL = sanitizeReportURL(copyOf.AttentionRecords[i].HardcoverCoverURL)
 	}
 	return copyOf
 }
@@ -689,7 +672,6 @@ func (s *MultiUserService) restoreAggregateProfileStatus(profileID string, profi
 	status.Status = statusForSnapshot(snapshot)
 	status.DryRun = snapshot.DryRun
 	status.BooksTotal = int(snapshot.BooksTotal)
-	status.BooksSynced = int(snapshot.BooksSynced)
 	if status.LastAttemptedAt == nil {
 		status.LastAttemptedAt = copyTime(report.QueuedAt)
 	}
@@ -708,13 +690,11 @@ func scalarSnapshotFromRetainedReport(profileID string, report *database.SyncRun
 		return nil, nil
 	}
 	var scalar struct {
-		BooksTotal          int32              `json:"books_total"`
-		ProcessedSoFar      int32              `json:"processed_so_far"`
-		ProcessedCount      int32              `json:"processed_count"`
-		UnattemptedCount    int32              `json:"unattempted_count"`
-		OutcomeCounts       sync.OutcomeCounts `json:"outcome_counts"`
-		TotalBooksProcessed int32              `json:"total_books_processed"`
-		BooksSynced         int32              `json:"books_synced"`
+		BooksTotal       int32              `json:"books_total"`
+		ProcessedSoFar   int32              `json:"processed_so_far"`
+		ProcessedCount   int32              `json:"processed_count"`
+		UnattemptedCount int32              `json:"unattempted_count"`
+		OutcomeCounts    sync.OutcomeCounts `json:"outcome_counts"`
 	}
 	if report.SnapshotJSON != "" && report.SnapshotJSON != "{}" {
 		if err := json.Unmarshal([]byte(report.SnapshotJSON), &scalar); err != nil {
@@ -727,7 +707,6 @@ func scalarSnapshotFromRetainedReport(profileID string, report *database.SyncRun
 		UnattemptedCount: scalar.UnattemptedCount, BooksTotal: scalar.BooksTotal,
 		ProcessedSoFar: scalar.ProcessedSoFar,
 		ProcessedCount: scalar.ProcessedCount, OutcomeCounts: scalar.OutcomeCounts,
-		TotalBooksProcessed: scalar.TotalBooksProcessed, BooksSynced: scalar.BooksSynced,
 	}
 	if report.QueuedAt != nil {
 		snapshot.QueuedAt = report.QueuedAt.UTC()
@@ -1276,8 +1255,6 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
 	// Run the sync
 	err = syncService.Sync(ctx)
 
-	// Obtain summary
-	summary := syncService.GetSummary()
 	snapshot := s.normalizeRunSnapshot(profileID, generation, syncService.GetSnapshot())
 
 	// Prepare final status
@@ -1300,10 +1277,10 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
 
 		s.logger.Debug("Stored full sync summary in profile status", map[string]interface{}{
 			"profileID":       profileID,
-			"books_processed": summary.TotalBooksProcessed,
-			"books_synced":    summary.BooksSynced,
-			"books_not_found": len(summary.BooksNotFound),
-			"mismatches":      len(summary.Mismatches),
+			"books_processed": snapshot.ProcessedCount,
+			"synced_count":     snapshot.OutcomeCounts.Synced,
+			"needs_review":    snapshot.OutcomeCounts.NeedsReview,
+			"not_found":       snapshot.OutcomeCounts.NotFound,
 		})
 	}
 
@@ -1323,8 +1300,6 @@ func newRunSnapshot(profileID string, run activeSyncRun, state string) sync.Sync
 		DryRun:           run.dryRun,
 		BookOutcomes:     make([]sync.BookOutcomeRecord, 0),
 		AttentionRecords: make([]sync.BookOutcomeRecord, 0),
-		BooksNotFound:    make([]sync.BookNotFoundInfo, 0),
-		Mismatches:       make([]mismatch.BookMismatch, 0),
 	}
 	if state == string(sync.RunPhaseCompleted) || state == string(sync.RunPhaseCanceled) || state == string(sync.RunPhaseFailed) {
 		snapshot.FinishedAt = time.Now().UTC()
@@ -1917,40 +1892,10 @@ func encodeProfileID(profileID string) string {
 	return encoded.String()
 }
 
-func cloneBookMismatch(record mismatch.BookMismatch) mismatch.BookMismatch {
-	copyOf := record
-	copyOf.AuthorIDs = append([]int(nil), record.AuthorIDs...)
-	copyOf.NarratorIDs = append([]int(nil), record.NarratorIDs...)
-	return copyOf
-}
-
-func cloneSyncSummary(summary *sync.SyncSummary) *sync.SyncSummary {
-	if summary == nil {
-		return nil
-	}
-	copyOf := &sync.SyncSummary{
-		UserID:              summary.UserID,
-		TotalBooksProcessed: summary.TotalBooksProcessed,
-		BooksSynced:         summary.BooksSynced,
-		BooksTotal:          summary.BooksTotal,
-		BooksNotFound:       append([]sync.BookNotFoundInfo(nil), summary.BooksNotFound...),
-		Mismatches:          make([]mismatch.BookMismatch, len(summary.Mismatches)),
-	}
-	for i, record := range summary.Mismatches {
-		copyOf.Mismatches[i] = cloneBookMismatch(record)
-	}
-	return copyOf
-}
-
 func cloneSyncSnapshot(snapshot sync.SyncSnapshot) *sync.SyncSnapshot {
 	copyOf := snapshot
 	copyOf.BookOutcomes = append([]sync.BookOutcomeRecord(nil), snapshot.BookOutcomes...)
 	copyOf.AttentionRecords = append([]sync.BookOutcomeRecord(nil), snapshot.AttentionRecords...)
-	copyOf.BooksNotFound = append([]sync.BookNotFoundInfo(nil), snapshot.BooksNotFound...)
-	copyOf.Mismatches = make([]mismatch.BookMismatch, len(snapshot.Mismatches))
-	for i, record := range snapshot.Mismatches {
-		copyOf.Mismatches[i] = cloneBookMismatch(record)
-	}
 	return &copyOf
 }
 
@@ -1960,20 +1905,6 @@ func applySnapshotToStatus(status *SyncProfileStatus, snapshot sync.SyncSnapshot
 	}
 	status.Snapshot = cloneSyncSnapshot(snapshot)
 	status.BooksTotal = int(snapshot.BooksTotal)
-	status.BooksSynced = int(snapshot.BooksSynced)
-	status.BooksNotFound = append([]sync.BookNotFoundInfo(nil), snapshot.BooksNotFound...)
-	status.Mismatches = make([]mismatch.BookMismatch, len(snapshot.Mismatches))
-	for i, record := range snapshot.Mismatches {
-		status.Mismatches[i] = cloneBookMismatch(record)
-	}
-	status.LastSyncSummary = &sync.SyncSummary{
-		UserID:              snapshot.UserID,
-		TotalBooksProcessed: snapshot.TotalBooksProcessed,
-		BooksSynced:         snapshot.BooksSynced,
-		BooksTotal:          snapshot.BooksTotal,
-		BooksNotFound:       []sync.BookNotFoundInfo{},
-		Mismatches:          []mismatch.BookMismatch{},
-	}
 }
 
 func cloneProfileStatus(status *SyncProfileStatus) *SyncProfileStatus {
@@ -1993,12 +1924,6 @@ func cloneProfileStatus(status *SyncProfileStatus) *SyncProfileStatus {
 		lastSuccessful := *status.LastSuccessfulAt
 		copyOf.LastSuccessfulAt = &lastSuccessful
 	}
-	copyOf.BooksNotFound = append([]sync.BookNotFoundInfo(nil), status.BooksNotFound...)
-	copyOf.Mismatches = make([]mismatch.BookMismatch, len(status.Mismatches))
-	for i, record := range status.Mismatches {
-		copyOf.Mismatches[i] = cloneBookMismatch(record)
-	}
-	copyOf.LastSyncSummary = cloneSyncSummary(status.LastSyncSummary)
 	if status.Snapshot != nil {
 		copyOf.Snapshot = cloneSyncSnapshot(*status.Snapshot)
 	}

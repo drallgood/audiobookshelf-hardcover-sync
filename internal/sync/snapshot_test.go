@@ -7,12 +7,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSnapshotDeepCopiesLegacyAttentionDetails(t *testing.T) {
+func TestSnapshotDeepCopiesCanonicalOutcomeDetails(t *testing.T) {
 	svc, _ := createTestService()
 	svc.beginOutcomeRun()
 	book := *toAudiobookshelfBook(createTestBook("snapshot-copy", "Snapshot Copy", "Author", "", ""))
 	svc.recordBookOutcomeWithMatchMethod(book, OutcomeNeedsReview, "manual review", nil, nil, "")
-	svc.enrichLiveMismatch(mismatch.BookMismatch{
+	svc.enrichAttentionCandidate(mismatch.BookMismatch{
 		BookID:      book.ID,
 		AuthorIDs:   []int{11},
 		NarratorIDs: []int{22},
@@ -21,31 +21,26 @@ func TestSnapshotDeepCopiesLegacyAttentionDetails(t *testing.T) {
 	svc.recordBookOutcomeWithMatchMethod(book, OutcomeNotFound, "not found", nil, nil, "")
 
 	first := svc.GetSnapshot()
-	require.Len(t, first.Mismatches, 0, "replacing attention with not_found removes its mismatch")
-	require.Len(t, first.BooksNotFound, 1)
-	first.BooksNotFound[0].Title = "caller mutation"
+	require.Len(t, first.AttentionRecords, 1)
+	first.BookOutcomes[0].Title = "caller mutation"
 
 	// A distinct needs-review item exercises deep-copying of mismatch-owned
 	// slices while the outcome and legacy stores are read together.
 	otherBook := *toAudiobookshelfBook(createTestBook("snapshot-mismatch", "Mismatch", "Author", "", ""))
 	svc.recordBookOutcomeWithMatchMethod(otherBook, OutcomeNeedsReview, "review", nil, nil, "")
-	svc.enrichLiveMismatch(mismatch.BookMismatch{
+	svc.enrichAttentionCandidate(mismatch.BookMismatch{
 		BookID:      otherBook.ID,
 		AuthorIDs:   []int{33},
 		NarratorIDs: []int{44},
 		Reason:      "review",
 	})
 	first = svc.GetSnapshot()
-	require.Len(t, first.Mismatches, 1)
-	first.Mismatches[0].AuthorIDs[0] = 99
-	first.Mismatches[0].NarratorIDs[0] = 98
+	require.Len(t, first.AttentionRecords, 2)
+	first.BookOutcomes[0].Title = "changed"
 
 	second := svc.GetSnapshot()
-	require.Len(t, second.BooksNotFound, 1)
-	require.Equal(t, "Snapshot Copy", second.BooksNotFound[0].Title)
-	require.Len(t, second.Mismatches, 1)
-	require.Equal(t, []int{33}, second.Mismatches[0].AuthorIDs)
-	require.Equal(t, []int{44}, second.Mismatches[0].NarratorIDs)
+	require.Len(t, second.AttentionRecords, 2)
+	require.Equal(t, "Snapshot Copy", second.BookOutcomes[0].Title)
 	require.Equal(t, second.ProcessedSoFar, second.OutcomeCounts.Total())
 }
 
@@ -73,12 +68,8 @@ func TestSnapshotStatusCopiesScalarsWithoutDetails(t *testing.T) {
 	require.Equal(t, int32(2), status.ProcessedSoFar)
 	require.Equal(t, int32(2), status.ProcessedCount)
 	require.Equal(t, OutcomeCounts{NeedsReview: 1, NotFound: 1}, status.OutcomeCounts)
-	require.Equal(t, int32(2), status.TotalBooksProcessed)
-	require.Zero(t, status.BooksSynced)
 	require.Nil(t, status.BookOutcomes)
 	require.Nil(t, status.AttentionRecords)
-	require.Nil(t, status.BooksNotFound)
-	require.Nil(t, status.Mismatches)
 	require.Empty(t, status.AudiobookshelfURL, "aggregate status snapshots omit profile configuration")
 
 	full := svc.GetSnapshot()
@@ -91,8 +82,6 @@ func TestSnapshotStatusCopiesScalarsWithoutDetails(t *testing.T) {
 		require.Equal(t, "Test Series", record.Series)
 		require.Equal(t, "2", record.SeriesNumber)
 	}
-	require.Len(t, full.BooksNotFound, 1)
-	require.Len(t, full.Mismatches, 1)
 }
 
 func TestSnapshotStatusKeepsUnknownTotalSeparateFromProcessedOutcomes(t *testing.T) {
@@ -107,7 +96,7 @@ func TestSnapshotStatusKeepsUnknownTotalSeparateFromProcessedOutcomes(t *testing
 	require.Equal(t, int32(1), status.ProcessedSoFar)
 	require.Equal(t, int32(1), status.ProcessedCount)
 	require.Equal(t, OutcomeCounts{NotFound: 1}, status.OutcomeCounts)
-	require.Equal(t, int32(1), status.TotalBooksProcessed)
+	require.Equal(t, int32(1), status.ProcessedSoFar)
 }
 
 func TestSnapshotSanitizesAudiobookshelfURLs(t *testing.T) {
@@ -159,11 +148,8 @@ func TestSnapshotSanitizesAudiobookshelfURLs(t *testing.T) {
 			require.Equal(t, tt.wantURL, snapshot.AudiobookshelfURL)
 			require.Len(t, snapshot.BookOutcomes, 1)
 			require.Len(t, snapshot.AttentionRecords, 1)
-			require.Len(t, snapshot.Mismatches, 1)
 			require.Equal(t, tt.wantCoverURL, snapshot.BookOutcomes[0].CoverURL)
 			require.Equal(t, tt.wantCoverURL, snapshot.AttentionRecords[0].CoverURL)
-			require.Equal(t, tt.wantCoverURL, snapshot.Mismatches[0].CoverURL)
-			require.Equal(t, tt.wantCoverURL, snapshot.Mismatches[0].ImageURL)
 		})
 	}
 }

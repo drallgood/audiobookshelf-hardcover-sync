@@ -255,7 +255,6 @@ func TestStatusAggregateOmitsErrorAndProfileStatusRetainsIt(t *testing.T) {
 		Error:       "upstream response: sensitive details",
 		Progress:    "Processing books",
 		BooksTotal:  12,
-		BooksSynced: 7,
 		Snapshot: &syncsvc.SyncSnapshot{
 			RunID:          "profile-a-run-1",
 			State:          "failed",
@@ -284,15 +283,12 @@ func TestStatusAggregateOmitsErrorAndProfileStatusRetainsIt(t *testing.T) {
 	require.Equal(t, status.LastSync, aggregate[0].LastSync)
 	require.Equal(t, status.Progress, aggregate[0].Progress)
 	require.Equal(t, status.BooksTotal, aggregate[0].BooksTotal)
-	require.Equal(t, status.BooksSynced, aggregate[0].BooksSynced)
 	require.Empty(t, aggregate[0].Error)
 	require.NotNil(t, aggregate[0].Snapshot)
 	require.Equal(t, status.Snapshot.RunID, aggregate[0].Snapshot.RunID)
 	require.Equal(t, status.Snapshot.OutcomeCounts, aggregate[0].Snapshot.OutcomeCounts)
 	require.Nil(t, aggregate[0].Snapshot.BookOutcomes)
 	require.Nil(t, aggregate[0].Snapshot.AttentionRecords)
-	require.Nil(t, aggregate[0].Snapshot.BooksNotFound)
-	require.Nil(t, aggregate[0].Snapshot.Mismatches)
 
 	direct := service.GetProfileStatus(profileID)
 	require.NotNil(t, direct)
@@ -899,7 +895,7 @@ func TestAggregateStatusRestoresTerminalScalarsWithoutDetails(t *testing.T) {
 	report := acceptTestSyncRun(t, service.repository, profileID, "run-aggregate", false, queuedAt)
 	report.Phase = database.SyncRunPhaseCompleted
 	report.FinishedAt = timePtrForMultiuserTest(queuedAt.Add(time.Minute))
-	report.SnapshotJSON = `{"books_total":12,"processed_so_far":7,"processed_count":7,"unattempted_count":5,"books_synced":5,"book_outcomes":[{"book_id":"book-1"}],"attention_records":[{"book_id":"book-1"}]}`
+	report.SnapshotJSON = `{"books_total":12,"processed_so_far":7,"processed_count":7,"unattempted_count":5,"outcome_counts":{"synced":5},"total_books_processed":99,"books_synced":99,"books_not_found":[],"mismatches":[],"last_sync_summary":{"books_synced":99},"book_outcomes":[{"book_id":"book-1"}],"attention_records":[{"book_id":"book-1"}]}`
 	require.NoError(t, service.repository.UpsertSyncRunReport(report))
 
 	restarted := NewMultiUserService(service.repository, config.DefaultConfig(), logger.Get())
@@ -914,11 +910,9 @@ func TestAggregateStatusRestoresTerminalScalarsWithoutDetails(t *testing.T) {
 	require.Equal(t, int32(5), status.Snapshot.UnattemptedCount)
 	require.Equal(t, int32(12), status.Snapshot.BooksTotal)
 	require.Equal(t, int32(7), status.Snapshot.ProcessedSoFar)
-	require.Equal(t, int32(5), status.Snapshot.BooksSynced)
+	require.Equal(t, int32(5), status.Snapshot.OutcomeCounts.Synced)
 	require.Empty(t, status.Snapshot.BookOutcomes)
 	require.Empty(t, status.Snapshot.AttentionRecords)
-	require.Empty(t, status.Snapshot.BooksNotFound)
-	require.Empty(t, status.Snapshot.Mismatches)
 }
 
 func TestPublishFinalStatusSurfacesTerminalPersistenceFailure(t *testing.T) {

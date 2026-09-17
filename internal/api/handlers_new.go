@@ -11,7 +11,6 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/auth"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/multiuser"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 )
@@ -23,27 +22,6 @@ type Handler struct {
 	multiUserService *multiuser.MultiUserService
 	log              logger.Logger
 	authEnabled      bool
-}
-
-// summaryFromProfileStatus reconstructs a summary after an inactive sync
-// service has been removed. LastSyncSummary preserves the processed count for
-// partial runs; BooksTotal remains the fallback for older status records.
-func summaryFromProfileStatus(status *multiuser.SyncProfileStatus) *sync.SyncSummary {
-	if status == nil || status.LastSync == nil {
-		return nil
-	}
-
-	totalBooksProcessed := int32(status.BooksTotal)
-	if status.LastSyncSummary != nil {
-		totalBooksProcessed = status.LastSyncSummary.TotalBooksProcessed
-	}
-
-	return &sync.SyncSummary{
-		TotalBooksProcessed: totalBooksProcessed,
-		BooksSynced:         int32(status.BooksSynced),
-		BooksNotFound:       status.BooksNotFound,
-		Mismatches:          status.Mismatches,
-	}
 }
 
 // NewHandler creates a new API handler.
@@ -121,8 +99,6 @@ type aggregateSnapshotResponse struct {
 	ProcessedSoFar      int32              `json:"processed_so_far"`
 	ProcessedCount      int32              `json:"processed_count"`
 	OutcomeCounts       sync.OutcomeCounts `json:"outcome_counts"`
-	TotalBooksProcessed int32              `json:"total_books_processed"`
-	BooksSynced         int32              `json:"books_synced,omitempty"`
 }
 
 type aggregateStatusResponse struct {
@@ -135,7 +111,6 @@ type aggregateStatusResponse struct {
 	LastSuccessfulAt *time.Time                 `json:"last_successful_at,omitempty"`
 	Progress         string                     `json:"progress,omitempty"`
 	BooksTotal       int                        `json:"books_total,omitempty"`
-	BooksSynced      int                        `json:"books_synced,omitempty"`
 	Snapshot         *aggregateSnapshotResponse `json:"snapshot,omitempty"`
 }
 
@@ -573,7 +548,6 @@ func (h *Handler) canonicalProfileStatus(profileID string, status *multiuser.Syn
 	response.Status = statusForSnapshotPhase(canonical.State)
 	response.DryRun = canonical.DryRun
 	response.BooksTotal = int(canonical.BooksTotal)
-	response.BooksSynced = int(canonical.BooksSynced)
 	attemptedAt := canonical.QueuedAt
 	if attemptedAt.IsZero() {
 		attemptedAt = canonical.RunStartedAt
@@ -605,8 +579,6 @@ func aggregateSnapshotFrom(snapshot *sync.SyncSnapshot) *aggregateSnapshotRespon
 		ProcessedSoFar:      snapshot.ProcessedSoFar,
 		ProcessedCount:      snapshot.ProcessedCount,
 		OutcomeCounts:       snapshot.OutcomeCounts,
-		TotalBooksProcessed: snapshot.TotalBooksProcessed,
-		BooksSynced:         snapshot.BooksSynced,
 	}
 }
 
@@ -701,13 +673,11 @@ func (h *Handler) GetAllProfileStatuses(w http.ResponseWriter, r *http.Request) 
 			LastSuccessfulAt: status.LastSuccessfulAt,
 			Progress:         status.Progress,
 			BooksTotal:       status.BooksTotal,
-			BooksSynced:      status.BooksSynced,
 		}
 		if status.Snapshot != nil {
 			response.Status = statusForSnapshotPhase(status.Snapshot.State)
 			response.DryRun = status.Snapshot.DryRun
 			response.BooksTotal = int(status.Snapshot.BooksTotal)
-			response.BooksSynced = int(status.Snapshot.BooksSynced)
 			response.Snapshot = aggregateSnapshotFrom(status.Snapshot)
 		}
 		responses = append(responses, response)
@@ -814,7 +784,6 @@ func (h *Handler) HandleCurrentUser(w http.ResponseWriter, r *http.Request) {
 
 // GetSyncSummary handles GET /api/profiles/{id}/summary
 func (h *Handler) GetSyncSummary(w http.ResponseWriter, r *http.Request) {
-	// Snapshot-backed summary path keeps current status fields coherent.
 	profileID := profileIDFromRequest(r)
 	if profileID == "" {
 		h.writeErrorResponse(w, http.StatusBadRequest, "Profile ID is required")
@@ -824,177 +793,38 @@ func (h *Handler) GetSyncSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var summary *sync.SyncSummary
-	var snapshot *sync.SyncSnapshot
 	status := h.canonicalProfileStatus(profileID, h.multiUserService.GetProfileStatus(profileID))
+	response := types.SyncSummaryResponse{
+		UserID:           profileID,
+		LastAttemptedAt:  nil,
+		LastSuccessfulAt: nil,
+		BookOutcomes:     make([]sync.BookOutcomeRecord, 0),
+		AttentionRecords: make([]sync.BookOutcomeRecord, 0),
+	}
 	if status != nil {
-		snapshot = status.Snapshot
+		response.LastAttemptedAt = status.LastAttemptedAt
+		response.LastSuccessfulAt = status.LastSuccessfulAt
+		response.Snapshot = status.Snapshot
 	}
-
-	if snapshot != nil {
-		summary = &sync.SyncSummary{
-			UserID:              snapshot.UserID,
-			TotalBooksProcessed: snapshot.TotalBooksProcessed,
-			BooksSynced:         snapshot.BooksSynced,
-			BooksTotal:          snapshot.BooksTotal,
-			BooksNotFound:       append([]sync.BookNotFoundInfo(nil), snapshot.BooksNotFound...),
-			Mismatches:          append([]mismatch.BookMismatch(nil), snapshot.Mismatches...),
-		}
-	} else {
-		// If no active sync service, try to get the last sync status
-		if summary = summaryFromProfileStatus(status); summary != nil {
-			// Log the summary reconstructed from the last sync status.
-			h.log.Debug("Created summary from profile status", map[string]interface{}{
-				"total_books_processed": summary.TotalBooksProcessed,
-				"books_synced":          summary.BooksSynced,
-				"books_not_found_count": len(summary.BooksNotFound),
-				"mismatches_count":      len(summary.Mismatches),
-			})
-		}
+	if snapshot := response.Snapshot; snapshot != nil {
+		response.UserID = snapshot.UserID
+		response.RunID = snapshot.RunID
+		response.RunStartedAt = snapshot.RunStartedAt
+		response.QueuedAt = snapshot.QueuedAt
+		response.ProcessingStartedAt = snapshot.ProcessingStartedAt
+		response.LastActivityAt = snapshot.LastActivityAt
+		response.LastProcessedAt = snapshot.LastProcessedAt
+		response.FinishedAt = snapshot.FinishedAt
+		response.DryRun = snapshot.DryRun
+		response.RunError = snapshot.RunError
+		response.UnattemptedCount = snapshot.UnattemptedCount
+		response.State = snapshot.State
+		response.BooksTotal = snapshot.BooksTotal
+		response.ProcessedSoFar = snapshot.ProcessedSoFar
+		response.ProcessedCount = snapshot.ProcessedCount
+		response.OutcomeCounts = snapshot.OutcomeCounts
+		response.BookOutcomes = append(response.BookOutcomes, snapshot.BookOutcomes...)
+		response.AttentionRecords = append(response.AttentionRecords, snapshot.AttentionRecords...)
 	}
-
-	// If neither a current snapshot nor a last sync status is available, use the stored
-	// legacy summary before constructing a compatibility response from flattened fields.
-	if summary == nil && status != nil && status.LastSyncSummary != nil {
-		summary = status.LastSyncSummary
-	}
-
-	// If still no summary, return a default empty one
-	if summary == nil {
-		summary = &sync.SyncSummary{
-			TotalBooksProcessed: 0,
-			BooksSynced:         0,
-			BooksNotFound:       []sync.BookNotFoundInfo{},
-			Mismatches:          []mismatch.BookMismatch{},
-		}
-	}
-
-	h.log.Debug("Sync summary from service", map[string]interface{}{
-		"total_books_processed": summary.TotalBooksProcessed,
-		"books_synced":          summary.BooksSynced,
-		"books_not_found_count": len(summary.BooksNotFound),
-		"mismatches_count":      len(summary.Mismatches),
-	})
-
-	// Convert to API response
-	var lastAttemptedAt, lastSuccessfulAt *time.Time
-	if status != nil {
-		lastAttemptedAt = status.LastAttemptedAt
-		lastSuccessfulAt = status.LastSuccessfulAt
-	}
-	syncSummary := types.SyncSummaryResponse{
-		Snapshot:            snapshot,
-		UserID:              summary.UserID,
-		LastAttemptedAt:     lastAttemptedAt,
-		LastSuccessfulAt:    lastSuccessfulAt,
-		BooksTotal:          summary.BooksTotal,
-		ProcessedSoFar:      summary.TotalBooksProcessed,
-		ProcessedCount:      summary.TotalBooksProcessed,
-		BookOutcomes:        make([]sync.BookOutcomeRecord, 0),
-		AttentionRecords:    make([]sync.BookOutcomeRecord, 0),
-		TotalBooksProcessed: summary.TotalBooksProcessed,
-		BooksSynced:         summary.BooksSynced,
-		BooksNotFound:       make([]types.BookNotFoundInfo, 0, len(summary.BooksNotFound)),
-		Mismatches:          make([]mismatch.BookMismatch, 0, len(summary.Mismatches)),
-	}
-	if syncSummary.UserID == "" {
-		syncSummary.UserID = "default"
-	}
-	if snapshot != nil {
-		syncSummary.RunID = snapshot.RunID
-		syncSummary.RunStartedAt = snapshot.RunStartedAt
-		syncSummary.QueuedAt = snapshot.QueuedAt
-		syncSummary.ProcessingStartedAt = snapshot.ProcessingStartedAt
-		syncSummary.LastActivityAt = snapshot.LastActivityAt
-		syncSummary.LastProcessedAt = snapshot.LastProcessedAt
-		syncSummary.FinishedAt = snapshot.FinishedAt
-		syncSummary.DryRun = snapshot.DryRun
-		syncSummary.RunError = snapshot.RunError
-		syncSummary.UnattemptedCount = snapshot.UnattemptedCount
-		syncSummary.State = snapshot.State
-		syncSummary.BooksTotal = snapshot.BooksTotal
-		syncSummary.ProcessedSoFar = snapshot.ProcessedSoFar
-		syncSummary.ProcessedCount = snapshot.ProcessedCount
-		syncSummary.OutcomeCounts = snapshot.OutcomeCounts
-		syncSummary.BookOutcomes = append(syncSummary.BookOutcomes, snapshot.BookOutcomes...)
-		syncSummary.AttentionRecords = append(syncSummary.AttentionRecords, snapshot.AttentionRecords...)
-	}
-
-	h.log.Debug("Created response struct", map[string]interface{}{
-		"total_books_processed": syncSummary.TotalBooksProcessed,
-		"books_synced":          syncSummary.BooksSynced,
-		"books_not_found_count": len(syncSummary.BooksNotFound),
-		"mismatches_count":      len(syncSummary.Mismatches),
-	})
-
-	// Copy BooksNotFound
-	for _, book := range summary.BooksNotFound {
-		syncSummary.BooksNotFound = append(syncSummary.BooksNotFound, types.BookNotFoundInfo{
-			Title:  book.Title,
-			Author: book.Author,
-		})
-	}
-
-	h.log.Debug("Copied BooksNotFound", map[string]interface{}{
-		"count": len(syncSummary.BooksNotFound),
-	})
-
-	// Copy Mismatches
-	h.log.Debug("Copying mismatches", map[string]interface{}{
-		"source_mismatches_count": len(summary.Mismatches),
-	})
-	// Always copy mismatches, even if the slice is empty
-	syncSummary.Mismatches = make([]mismatch.BookMismatch, len(summary.Mismatches))
-	copy(syncSummary.Mismatches, summary.Mismatches)
-
-	h.log.Debug("Copied Mismatches", map[string]interface{}{
-		"count": len(syncSummary.Mismatches),
-	})
-
-	// Create the final response with user_id and total_books_processed at the top level
-	// Always include mismatches in the response, even if empty
-	response := map[string]interface{}{
-		// Keep the legacy top-level identifier stable for existing clients. The
-		// profile-specific identifier remains available in the nested snapshot.
-		"user_id":               "default",
-		"total_books_processed": syncSummary.TotalBooksProcessed,
-		"books_synced":          syncSummary.BooksSynced,
-		"books_not_found":       syncSummary.BooksNotFound,
-		"mismatches":            syncSummary.Mismatches,
-	}
-	if snapshot != nil {
-		response["run_id"] = syncSummary.RunID
-		response["run_started_at"] = syncSummary.RunStartedAt
-		response["queued_at"] = syncSummary.QueuedAt
-		response["processing_started_at"] = syncSummary.ProcessingStartedAt
-		response["last_activity_at"] = syncSummary.LastActivityAt
-		response["last_processed_at"] = syncSummary.LastProcessedAt
-		response["finished_at"] = syncSummary.FinishedAt
-		response["dry_run"] = syncSummary.DryRun
-		response["unattempted_count"] = syncSummary.UnattemptedCount
-		if syncSummary.RunError != "" {
-			response["run_error"] = syncSummary.RunError
-		}
-		response["state"] = syncSummary.State
-		response["books_total"] = syncSummary.BooksTotal
-		response["processed_so_far"] = syncSummary.ProcessedSoFar
-		response["processed_count"] = syncSummary.ProcessedCount
-		response["outcome_counts"] = syncSummary.OutcomeCounts
-		response["book_outcomes"] = syncSummary.BookOutcomes
-		response["attention_records"] = syncSummary.AttentionRecords
-		response["snapshot"] = syncSummary.Snapshot
-	}
-	response["last_attempted_at"] = syncSummary.LastAttemptedAt
-	response["last_successful_at"] = syncSummary.LastSuccessfulAt
-
-	// Log the final response before sending
-	h.log.Debug("Sending sync summary response", map[string]interface{}{
-		"user_id":               syncSummary.UserID,
-		"total_books_processed": syncSummary.TotalBooksProcessed,
-		"books_synced":          syncSummary.BooksSynced,
-		"books_not_found_count": len(syncSummary.BooksNotFound),
-		"mismatches_count":      len(syncSummary.Mismatches),
-	})
-
 	h.writeSuccessResponse(w, response)
 }
