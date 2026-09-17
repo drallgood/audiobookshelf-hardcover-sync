@@ -1154,6 +1154,25 @@ class SyncProfileApp {
         return dryRun && this.isActiveRunPhase(state) ? `${label} (dry run)` : label;
     }
 
+    detailsStatusTimestamp(snapshot = {}) {
+        const state = String(snapshot.state || '').toLowerCase();
+        const timestampCandidates = {
+            queued: [snapshot.queued_at],
+            running: [snapshot.processing_started_at, snapshot.last_activity_at, snapshot.queued_at],
+            finalizing: [snapshot.last_activity_at, snapshot.processing_started_at, snapshot.queued_at],
+            completed: [snapshot.finished_at, snapshot.last_activity_at, snapshot.processing_started_at, snapshot.queued_at],
+            canceled: [snapshot.finished_at, snapshot.last_activity_at, snapshot.processing_started_at, snapshot.queued_at],
+            failed: [snapshot.finished_at, snapshot.last_activity_at, snapshot.processing_started_at, snapshot.queued_at]
+        };
+        const timestamp = (timestampCandidates[state] || [snapshot.queued_at])
+            .map(value => this.timestampOrNull(value))
+            .find(Boolean);
+        return {
+            label: this.formatStatusLabel(state, snapshot.dry_run),
+            timestamp
+        };
+    }
+
     timestampOrNull(value) {
         if (!value) return null;
         const date = value instanceof Date ? value : new Date(value);
@@ -1524,6 +1543,7 @@ class SyncProfileApp {
         const records = new Map((snapshot.book_outcomes || []).map(record => [record.book_id, record]));
         tabs.innerHTML = `<button class="tab-button active" type="button">${this.escapeHtml(this.statuses[open.profileId]?.profile_name || `Profile ${open.profileId}`)}</button>`;
         const snapshotState = String(snapshot.state || '').toLowerCase();
+        const statusTimestamp = this.detailsStatusTimestamp(snapshot);
         const unresolved = Number(snapshot.outcome_counts?.needs_review || 0) + Number(snapshot.outcome_counts?.not_found || 0) + Number(snapshot.outcome_counts?.failed || 0);
         const groups = categories.map(category => {
             const groupRecords = [...records.values()].filter(record => record.outcome === category.key);
@@ -1561,7 +1581,7 @@ class SyncProfileApp {
         const runError = snapshot.run_error || this.statuses[open.profileId]?.terminal_error || '';
         content.innerHTML = `
             <div class="sync-summary" data-run-id="${this.escapeHtmlAttribute(snapshot.run_id)}">
-                <div class="summary-header"><h3>Run details</h3><div class="last-sync">Queued: ${new Date(snapshot.queued_at).toLocaleString()}</div></div>
+                <div class="summary-header"><h3>Run details</h3><div class="last-sync">${this.escapeHtml(statusTimestamp.label)}${statusTimestamp.timestamp ? `: ${new Date(statusTimestamp.timestamp).toLocaleString()}` : ''}</div></div>
                 <p class="status-message">${statusMessage}</p>
                 ${runError ? `<div class="status-message status-error" data-run-error><strong>Run error:</strong> ${this.escapeHtml(runError)}</div>` : ''}
                 <div class="summary-stats">${groups.map(group => `<div class="stat-item ${group.tone}"><span class="stat-value">${group.count}</span><span class="stat-label">${group.label}</span></div>`).join('')}</div>

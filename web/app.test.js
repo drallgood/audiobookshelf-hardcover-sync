@@ -136,3 +136,40 @@ test('attempt and success timestamps remain as fallbacks without retained run de
     assert.match(html, /<strong>Last successful:<\/strong>/);
     assert.doesNotMatch(html, /<strong>Run started:<\/strong>/);
 });
+
+test('run details use the timestamp for the current lifecycle phase', () => {
+    const app = createApp();
+    const base = {
+        queued_at: '2026-09-17T12:00:00Z',
+        processing_started_at: '2026-09-17T12:01:00Z',
+        last_activity_at: '2026-09-17T12:05:00Z',
+        finished_at: '2026-09-17T12:10:00Z'
+    };
+
+    for (const expected of [
+        { state: 'queued', label: 'Queued', timestamp: base.queued_at },
+        { state: 'running', label: 'Running', timestamp: base.processing_started_at },
+        { state: 'finalizing', label: 'Finalizing', timestamp: base.last_activity_at },
+        { state: 'completed', label: 'Completed', timestamp: base.finished_at },
+        { state: 'canceled', label: 'Canceled', timestamp: base.finished_at },
+        { state: 'failed', label: 'Failed', timestamp: base.finished_at }
+    ]) {
+        assert.deepEqual(
+            app.detailsStatusTimestamp({ ...base, state: expected.state }),
+            { label: expected.label, timestamp: expected.timestamp }
+        );
+    }
+});
+
+test('run details fall back to the latest available earlier phase timestamp', () => {
+    const app = createApp();
+
+    assert.deepEqual(app.detailsStatusTimestamp({
+        state: 'completed',
+        queued_at: '2026-09-17T12:00:00Z',
+        processing_started_at: '2026-09-17T12:01:00Z'
+    }), {
+        label: 'Completed',
+        timestamp: '2026-09-17T12:01:00Z'
+    });
+});
