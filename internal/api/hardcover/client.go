@@ -858,6 +858,10 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 	    canonical_id
 	    image { url }
 	    contributions(limit: 50) { contribution author { id name } }
+	    book_series(order_by: [{ featured: desc }, { position: asc }], limit: 1) {
+	      position
+	      series { name }
+	    }
 	    editions(limit: 10) {
 	      id
 	      asin
@@ -944,6 +948,25 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 	if img, ok := bookObj["image"].(map[string]interface{}); ok && img != nil {
 		if s, ok := img["url"].(string); ok && s != "" {
 			hcBook.CoverImageURL = s
+		}
+	}
+
+	// Primary series (featured first) and the book's position within it.
+	if memberships, ok := bookObj["book_series"].([]interface{}); ok && len(memberships) > 0 {
+		if membership, ok := memberships[0].(map[string]interface{}); ok {
+			if series, ok := membership["series"].(map[string]interface{}); ok {
+				if name, ok := series["name"].(string); ok {
+					hcBook.SeriesName = strings.TrimSpace(name)
+				}
+			}
+			switch position := membership["position"].(type) {
+			case json.Number:
+				hcBook.SeriesNumber = position.String()
+			case float64:
+				hcBook.SeriesNumber = strconv.FormatFloat(position, 'f', -1, 64)
+			case string:
+				hcBook.SeriesNumber = strings.TrimSpace(position)
+			}
 		}
 	}
 
@@ -1057,6 +1080,8 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 		"slug":             hcBook.Slug,
 		"edition_id":       hcBook.EditionID,
 		"has_cover":        hcBook.CoverImageURL != "",
+		"series":           hcBook.SeriesName,
+		"series_number":    hcBook.SeriesNumber,
 	})
 
 	return hcBook, nil

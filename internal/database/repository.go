@@ -40,6 +40,12 @@ type ProfileWithTokens struct {
 
 // CreateProfile creates a new sync profile with encrypted configuration
 func (r *Repository) CreateProfile(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig SyncConfigData) error {
+	return r.CreateProfileForUser(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig, "")
+}
+
+// CreateProfileForUser creates a sync profile owned by the given user. An
+// empty owner preserves the ownerless legacy profile behavior.
+func (r *Repository) CreateProfileForUser(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig SyncConfigData, ownerUserID string) error {
 	// Encrypt tokens
 	encryptedABSToken, err := r.encryptor.Encrypt(audiobookshelfToken)
 	if err != nil {
@@ -76,6 +82,9 @@ func (r *Repository) CreateProfile(profileID, name, audiobookshelfURL, audiobook
 			ID:     profileID,
 			Name:   name,
 			Active: true,
+		}
+		if ownerUserID != "" {
+			profile.OwnerUserID = &ownerUserID
 		}
 		if err := tx.Create(&profile).Error; err != nil {
 			return fmt.Errorf("failed to create sync profile: %w", err)
@@ -176,10 +185,33 @@ func (r *Repository) GetProfile(profileID string) (*ProfileWithTokens, error) {
 	}, nil
 }
 
+// GetProfileMetadata retrieves an active profile without loading its config or
+// decrypting its tokens. It is used for authorization decisions.
+func (r *Repository) GetProfileMetadata(profileID string) (*SyncProfile, error) {
+	var profile SyncProfile
+	if err := r.db.GetDB().Where("id = ? AND active = ?", profileID, true).First(&profile).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get sync profile metadata: %w", err)
+	}
+	return &profile, nil
+}
+
 // ListProfiles retrieves all active sync profiles
 func (r *Repository) ListProfiles() ([]SyncProfile, error) {
+	return r.ListProfilesForUser("", false, false)
+}
+
+// ListProfilesForUser lists active profiles visible to an authenticated user.
+// Ownerless profiles remain visible only to administrators when auth is on.
+func (r *Repository) ListProfilesForUser(userID string, admin, authEnabled bool) ([]SyncProfile, error) {
 	var profiles []SyncProfile
-	if err := r.db.GetDB().Preload("Config").Preload("SyncState").Where("active = ?", true).Find(&profiles).Error; err != nil {
+	query := r.db.GetDB().Preload("Config").Preload("SyncState").Where("active = ?", true)
+	if authEnabled && !admin {
+		query = query.Where("owner_user_id = ?", userID)
+	}
+	if err := query.Find(&profiles).Error; err != nil {
 		return nil, fmt.Errorf("failed to list sync profiles: %w", err)
 	}
 	return profiles, nil
@@ -239,7 +271,7 @@ func (r *Repository) UpdateUserConfig(profileID, audiobookshelfURL, audiobookshe
 			return fmt.Errorf("failed to unmarshal existing sync config: %w", err)
 		}
 	}
-	
+
 	// Only update sync config if it's not empty (has at least one field set)
 	// This prevents clearing all values when only updating tokens
 	finalSyncConfig := existingSyncConfig

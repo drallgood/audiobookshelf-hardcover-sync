@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -90,6 +91,10 @@ type BookOutcomeRecord struct {
 	Author          string      `json:"author,omitempty"`
 	ASIN            string      `json:"asin,omitempty"`
 	ISBN            string      `json:"isbn,omitempty"`
+	CoverURL        string      `json:"cover_url,omitempty"`
+	Format          string      `json:"format,omitempty"`
+	Series          string      `json:"series,omitempty"`
+	SeriesNumber    string      `json:"series_number,omitempty"`
 	Reason          string      `json:"reason,omitempty"`
 	Error           string      `json:"error,omitempty"`
 	MatchMethod     string      `json:"match_method,omitempty"`
@@ -102,16 +107,17 @@ type BookOutcomeRecord struct {
 // GetSnapshot returns deep-copied slices so callers can safely retain or
 // modify a response while the sync continues.
 type SyncSnapshot struct {
-	UserID           string              `json:"user_id,omitempty"`
-	RunID            string              `json:"run_id,omitempty"`
-	RunStartedAt     time.Time           `json:"run_started_at,omitempty"`
-	State            string              `json:"state,omitempty"`
-	BooksTotal       int32               `json:"books_total"`
-	ProcessedSoFar   int32               `json:"processed_so_far"`
-	ProcessedCount   int32               `json:"processed_count"`
-	OutcomeCounts    OutcomeCounts       `json:"outcome_counts"`
-	BookOutcomes     []BookOutcomeRecord `json:"book_outcomes"`
-	AttentionRecords []BookOutcomeRecord `json:"attention_records"`
+	UserID            string              `json:"user_id,omitempty"`
+	AudiobookshelfURL string              `json:"audiobookshelf_url,omitempty"`
+	RunID             string              `json:"run_id,omitempty"`
+	RunStartedAt      time.Time           `json:"run_started_at,omitempty"`
+	State             string              `json:"state,omitempty"`
+	BooksTotal        int32               `json:"books_total"`
+	ProcessedSoFar    int32               `json:"processed_so_far"`
+	ProcessedCount    int32               `json:"processed_count"`
+	OutcomeCounts     OutcomeCounts       `json:"outcome_counts"`
+	BookOutcomes      []BookOutcomeRecord `json:"book_outcomes"`
+	AttentionRecords  []BookOutcomeRecord `json:"attention_records"`
 
 	// Keep the legacy summary fields in the same snapshot for clients that
 	// have not migrated to the exclusive outcome fields.
@@ -515,7 +521,7 @@ func (s *Service) upsertLiveMismatchLocked(book models.AudiobookshelfBook, recor
 		Attempts:        1,
 	}
 	if book.Media.CoverPath != "" {
-		mismatchRecord.CoverURL = fmt.Sprintf("%s/api/items/%s/cover", s.config.Audiobookshelf.URL, book.ID)
+		mismatchRecord.CoverURL = audiobookshelfCoverURL(s.config.Audiobookshelf.URL, book.ID)
 		mismatchRecord.ImageURL = mismatchRecord.CoverURL
 	}
 	if mismatchRecord.Reason == "" {
@@ -687,6 +693,12 @@ func mergeMissingCandidateDetails(record, fallback mismatch.BookMismatch) mismat
 	if record.HardcoverSlug == "" {
 		record.HardcoverSlug = fallback.HardcoverSlug
 	}
+	if record.HardcoverSeries == "" {
+		record.HardcoverSeries = fallback.HardcoverSeries
+	}
+	if record.HardcoverSeries == fallback.HardcoverSeries && record.HardcoverSeriesNumber == "" {
+		record.HardcoverSeriesNumber = fallback.HardcoverSeriesNumber
+	}
 	return record
 }
 
@@ -725,16 +737,23 @@ func (s *Service) recordBookOutcomeWithMatchMethod(book models.AudiobookshelfBoo
 			reason = "invalid sync outcome"
 		}
 	}
+	series, seriesNumber := audiobookshelfSeries(book.Media.Metadata)
 	record := BookOutcomeRecord{
-		BookID:      book.ID,
-		Outcome:     outcome,
-		Title:       book.Media.Metadata.Title,
-		Author:      book.Media.Metadata.AuthorName,
-		ASIN:        book.Media.Metadata.ASIN,
-		ISBN:        book.Media.Metadata.ISBN,
-		Reason:      reason,
-		MatchMethod: matchMethod,
-		UpdatedAt:   time.Now().UTC(),
+		BookID:       book.ID,
+		Outcome:      outcome,
+		Title:        book.Media.Metadata.Title,
+		Author:       book.Media.Metadata.AuthorName,
+		ASIN:         book.Media.Metadata.ASIN,
+		ISBN:         book.Media.Metadata.ISBN,
+		Format:       audiobookshelfDisplayFormat(book.MediaType),
+		Series:       series,
+		SeriesNumber: seriesNumber,
+		Reason:       reason,
+		MatchMethod:  matchMethod,
+		UpdatedAt:    time.Now().UTC(),
+	}
+	if book.Media.CoverPath != "" && strings.TrimSpace(s.config.Audiobookshelf.URL) != "" {
+		record.CoverURL = audiobookshelfCoverURL(s.config.Audiobookshelf.URL, book.ID)
 	}
 	if err != nil {
 		record.Error = err.Error()
@@ -812,17 +831,90 @@ func (s *Service) recordBookOutcomeWithMatchMethod(book models.AudiobookshelfBoo
 	}
 }
 
+// audiobookshelfDisplayFormat maps source media types to the format labels
+// shown in sync details. Audiobookshelf uses "book" for its audiobook library
+// items, so unknown values retain the historical audiobook fallback.
+func audiobookshelfDisplayFormat(mediaType string) string {
+	if strings.EqualFold(strings.TrimSpace(mediaType), "ebook") {
+		return "Ebook"
+	}
+	return "Audiobook"
+}
+
+func audiobookshelfSeries(metadata models.AudiobookshelfMetadataStruct) (string, string) {
+	seriesName := strings.TrimSpace(metadata.SeriesName)
+	if len(metadata.Series) == 0 {
+		return seriesName, ""
+	}
+	if name := strings.TrimSpace(metadata.Series[0].Name); name != "" {
+		seriesName = name
+	}
+	return seriesName, strings.TrimSpace(metadata.Series[0].Sequence)
+}
+
+func audiobookshelfCoverURL(baseURL, bookID string) string {
+	baseURL = sanitizeAudiobookshelfURL(baseURL)
+	if baseURL == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s/api/items/%s/cover", strings.TrimRight(baseURL, "/"), bookID)
+}
+
+// sanitizeAudiobookshelfURL removes credentials, query data, and fragments
+// before an Audiobookshelf URL is exposed in a sync snapshot. Invalid URLs are
+// omitted rather than echoed back, since they may contain credentials that
+// cannot be safely parsed.
+func sanitizeAudiobookshelfURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	if parsed.Opaque != "" {
+		return ""
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
+	return parsed.String()
+}
+
+func sanitizeSnapshotAudiobookshelfURLs(snapshot *SyncSnapshot) {
+	if snapshot == nil {
+		return
+	}
+
+	snapshot.AudiobookshelfURL = sanitizeAudiobookshelfURL(snapshot.AudiobookshelfURL)
+	for i := range snapshot.BookOutcomes {
+		snapshot.BookOutcomes[i].CoverURL = sanitizeAudiobookshelfURL(snapshot.BookOutcomes[i].CoverURL)
+	}
+	for i := range snapshot.AttentionRecords {
+		snapshot.AttentionRecords[i].CoverURL = sanitizeAudiobookshelfURL(snapshot.AttentionRecords[i].CoverURL)
+	}
+	for i := range snapshot.Mismatches {
+		snapshot.Mismatches[i].CoverURL = sanitizeAudiobookshelfURL(snapshot.Mismatches[i].CoverURL)
+		snapshot.Mismatches[i].ImageURL = sanitizeAudiobookshelfURL(snapshot.Mismatches[i].ImageURL)
+	}
+}
+
 // GetSnapshot returns one race-safe deep copy of the current run. Attention
 // records are derived from the same outcome map and lock acquisition as all
 // counters, so callers never observe fields from different points in a run.
 func (s *Service) GetSnapshot() SyncSnapshot {
 	snapshot := SyncSnapshot{
-		BookOutcomes:     make([]BookOutcomeRecord, 0),
-		AttentionRecords: make([]BookOutcomeRecord, 0),
-		BooksNotFound:    make([]BookNotFoundInfo, 0),
-		Mismatches:       make([]mismatch.BookMismatch, 0),
+		AudiobookshelfURL: s.config.Audiobookshelf.URL,
+		BookOutcomes:      make([]BookOutcomeRecord, 0),
+		AttentionRecords:  make([]BookOutcomeRecord, 0),
+		BooksNotFound:     make([]BookNotFoundInfo, 0),
+		Mismatches:        make([]mismatch.BookMismatch, 0),
 	}
 	if s.summary == nil {
+		sanitizeSnapshotAudiobookshelfURLs(&snapshot)
 		return snapshot
 	}
 
@@ -861,7 +953,35 @@ func (s *Service) GetSnapshot() SyncSnapshot {
 			snapshot.AttentionRecords = append(snapshot.AttentionRecords, record)
 		}
 	}
+	sanitizeSnapshotAudiobookshelfURLs(&snapshot)
 	return snapshot
+}
+
+// GetSnapshotStatus returns one race-safe scalar copy of the current run.
+// Unlike GetSnapshot, it does not materialize per-book outcomes, attention
+// records, legacy not-found entries, or mismatches. This is the lightweight
+// read path for aggregate status polling.
+func (s *Service) GetSnapshotStatus() SyncSnapshot {
+	if s.summary == nil {
+		return SyncSnapshot{}
+	}
+
+	s.summary.RLock()
+	defer s.summary.RUnlock()
+
+	processedCount := s.outcomeCounts.Total()
+	return SyncSnapshot{
+		UserID:              s.summary.UserID,
+		RunID:               s.runID,
+		RunStartedAt:        s.runStartedAt,
+		State:               s.runState,
+		BooksTotal:          s.summary.BooksTotal,
+		ProcessedSoFar:      processedCount,
+		ProcessedCount:      processedCount,
+		OutcomeCounts:       s.outcomeCounts,
+		TotalBooksProcessed: s.summary.TotalBooksProcessed,
+		BooksSynced:         s.summary.BooksSynced,
+	}
 }
 
 // GetSummary returns the current sync summary
@@ -2002,7 +2122,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			// Build cover URL if cover path is available
 			coverURL := ""
 			if book.Media.CoverPath != "" {
-				coverURL = fmt.Sprintf("%s/api/items/%s/cover", s.config.Audiobookshelf.URL, book.ID)
+				coverURL = audiobookshelfCoverURL(s.config.Audiobookshelf.URL, book.ID)
 			}
 
 			mismatchReason := "Found by title/author only - manual verification required"
@@ -2378,7 +2498,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		// Build cover URL if cover path is available
 		coverURL := ""
 		if book.Media.CoverPath != "" {
-			coverURL = fmt.Sprintf("%s/api/items/%s/cover", s.config.Audiobookshelf.URL, book.ID)
+			coverURL = audiobookshelfCoverURL(s.config.Audiobookshelf.URL, book.ID)
 		}
 
 		// Get book ID from hcBook if available, otherwise try to get from BookError
@@ -2462,7 +2582,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		// Build cover URL if cover path is available
 		coverURL := ""
 		if book.Media.CoverPath != "" {
-			coverURL = fmt.Sprintf("%s/api/items/%s/cover", s.config.Audiobookshelf.URL, book.ID)
+			coverURL = audiobookshelfCoverURL(s.config.Audiobookshelf.URL, book.ID)
 		}
 
 		// Record mismatch for book without edition
@@ -2528,7 +2648,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		// Build cover URL if cover path is available
 		coverURL := ""
 		if book.Media.CoverPath != "" {
-			coverURL = fmt.Sprintf("%s/api/items/%s/cover", s.config.Audiobookshelf.URL, book.ID)
+			coverURL = audiobookshelfCoverURL(s.config.Audiobookshelf.URL, book.ID)
 		}
 
 		// Initialize with empty IDs since hcBook is nil
@@ -2597,7 +2717,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		// Build cover URL if cover path is available
 		coverURL := ""
 		if book.Media.CoverPath != "" {
-			coverURL = fmt.Sprintf("%s/api/items/%s/cover", s.config.Audiobookshelf.URL, book.ID)
+			coverURL = audiobookshelfCoverURL(s.config.Audiobookshelf.URL, book.ID)
 		}
 
 		// Get book ID from error if available

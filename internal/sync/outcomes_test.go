@@ -128,6 +128,36 @@ func TestProcessBookClassifiesProgressMutationOutcomes(t *testing.T) {
 	}
 }
 
+func TestProcessBookRecordsEbookOutcomeFormat(t *testing.T) {
+	svc, hc := createTestService()
+	svc.config.Sync.SyncOwned = false
+	svc.config.Sync.IncludeEbooks = true
+
+	testBook := createTestBook("outcome-ebook", "Ebook", "Author", "outcome-ebook-asin", "")
+	testBook.MediaType = "ebook"
+	testBook.Media.Duration = 1000
+	testBook.Progress.CurrentTime = 300
+	book := toAudiobookshelfBook(testBook)
+	expectASINMatch(hc, testBook.Media.Metadata.ASIN, "100", "200", 300)
+	hc.On("GetUserBook", mock.Anything, "300").Return(&models.HardcoverBook{
+		ID: "100", EditionID: "200", BookStatusID: 2,
+	}, nil).Once()
+	editionID := int64(200)
+	progress := 100
+	hc.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: 300}).Return([]hardcover.UserBookRead{{
+		ID: 400, EditionID: &editionID, ProgressSeconds: &progress,
+	}}, nil).Once()
+	hc.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		return input.ID == 400 && input.Object["progress_seconds"] == int64(300)
+	})).Return(true, nil).Once()
+
+	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
+	record := recordedOutcome(svc, book.ID)
+	assert.Equal(t, OutcomeSynced, record.Outcome)
+	assert.Equal(t, "Ebook", record.Format)
+	hc.AssertExpectations(t)
+}
+
 func TestProcessBookThresholdSkipRecordsSkipped(t *testing.T) {
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false

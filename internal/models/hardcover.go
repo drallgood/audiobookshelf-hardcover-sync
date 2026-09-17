@@ -17,6 +17,8 @@ type HardcoverBook struct {
 	Publisher     string   `json:"publisher,omitempty"`
 	ISBN          string   `json:"isbn,omitempty"`
 	ASIN          string   `json:"asin,omitempty"`
+	SeriesName    string   `json:"series_name,omitempty"`
+	SeriesNumber  string   `json:"series_number,omitempty"`
 	// Additional fields from GraphQL response
 	BookStatusID int  `json:"book_status_id"`
 	CanonicalID  *int `json:"canonical_id,omitempty"`
@@ -59,15 +61,15 @@ type SearchResult struct {
 
 // Edition represents a book edition in the Hardcover API
 type Edition struct {
-	ID              string         `json:"id"`
-	BookID          string         `json:"book_id"`
-	Title           string         `json:"title,omitempty"`
-	ISBN10          string         `json:"isbn_10,omitempty"`
-	ISBN13          string         `json:"isbn_13,omitempty"`
-	ASIN            string         `json:"asin,omitempty"`
-	ReleaseDate     string         `json:"release_date,omitempty"`
-	ReadingFormatID string         `json:"reading_format_id,omitempty"`
-	BookMappings    []BookMapping  `json:"book_mappings,omitempty"`
+	ID              string        `json:"id"`
+	BookID          string        `json:"book_id"`
+	Title           string        `json:"title,omitempty"`
+	ISBN10          string        `json:"isbn_10,omitempty"`
+	ISBN13          string        `json:"isbn_13,omitempty"`
+	ASIN            string        `json:"asin,omitempty"`
+	ReleaseDate     string        `json:"release_date,omitempty"`
+	ReadingFormatID string        `json:"reading_format_id,omitempty"`
+	BookMappings    []BookMapping `json:"book_mappings,omitempty"`
 }
 
 // BookMappingPlatform represents a platform in a book mapping

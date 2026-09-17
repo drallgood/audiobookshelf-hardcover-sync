@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Audiobookshelf-Hardcover Sync - Sync Profile Management</title>
     <link rel="icon" type="image/x-icon" href="favicon.ico">
-    <link rel="stylesheet" href="styles.css?v=20240815-3">
+    <link rel="stylesheet" href="styles.css?v=20260915">
 </head>
 <body>
     <div class="container">
@@ -73,8 +73,8 @@
             <form id="add-user-form" class="user-form">
                 <div class="form-group">
                     <label for="user-id">User ID:</label>
-                    <input type="text" id="user-id" name="id" required placeholder="unique-user-id">
-                    <small>Must be unique and contain only letters, numbers, hyphens, and underscores</small>
+                    <input type="text" id="user-id" name="id" required maxlength="244" placeholder="unique-user-id">
+                    <small>Must be unique, up to 244 characters, and contain only letters, numbers, hyphens, underscores, dots, and tildes</small>
                 </div>
 
                 <div class="form-group">
@@ -326,6 +326,6 @@
     <!-- Toast Notifications -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="app.js?v=20250817-003757"></script>
+    <script src="app.js?v=20260915"></script>
 </body>
 </html>

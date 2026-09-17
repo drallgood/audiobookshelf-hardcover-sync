@@ -456,6 +456,14 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 			if mismatch.HardcoverCoverURL == "" && hcBook.CoverImageURL != "" {
 				mismatch.HardcoverCoverURL = hcBook.CoverImageURL
 			}
+			if hcBook.SeriesName != "" {
+				if mismatch.HardcoverSeries == "" {
+					mismatch.HardcoverSeries = hcBook.SeriesName
+				}
+				if mismatch.HardcoverSeries == hcBook.SeriesName && mismatch.HardcoverSeriesNumber == "" {
+					mismatch.HardcoverSeriesNumber = hcBook.SeriesNumber
+				}
+			}
 			// Only apply publisher when we have a confirmed edition match via identifiers (ASIN/ISBN)
 			if mismatch.HardcoverPublisher == "" && hcBook.Publisher != "" {
 				asinMatch := hcBook.EditionASIN != "" && mismatch.ASIN != "" && strings.EqualFold(hcBook.EditionASIN, mismatch.ASIN)
@@ -684,6 +692,8 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 			"hc_isbn":      mismatch.HardcoverISBN,
 			"hc_cover":     mismatch.HardcoverCoverURL != "",
 			"hc_year":      mismatch.HardcoverPublishedYear,
+			"hc_series":    mismatch.HardcoverSeries,
+			"hc_series_no": mismatch.HardcoverSeriesNumber,
 		})
 	}
 

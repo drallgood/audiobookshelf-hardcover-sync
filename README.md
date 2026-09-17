@@ -69,23 +69,35 @@ Existing single-profile setups are **automatically migrated** on first startup:
 | `PUT` | `/api/profiles/{id}/config` | Update profile configuration |
 | `GET` | `/api/profiles/{id}/status` | Get sync status and current-run snapshot |
 | `GET` | `/api/profiles/{id}/summary` | Get current-run outcomes and legacy summary |
+| `GET` | `/api/profiles/{id}/runs/{runId}/details` | Get book-level details for the current run |
 | `POST` | `/api/profiles/{id}/sync` | Start sync |
 | `DELETE` | `/api/profiles/{id}/sync` | Cancel sync |
 | `GET` | `/api/status` | All profile statuses |
 
 ### Current-run sync status
 
-During a sync, when `AUTH_ENABLED=true`, authenticated
-`GET /api/profiles/{id}/status` includes a per-profile `snapshot`, and
-authenticated `GET /api/profiles/{id}/summary` exposes the same outcomes
-alongside legacy fields. Unauthenticated `GET /api/status` is an aggregate
-scalar status for all profiles; it does not include snapshots or book-level
-outcomes. Each processed book has one outcome:
-`synced`, `already_current`, `skipped`, `needs_review`, `not_found`, `failed`,
-or dry-run `would_sync`. Their counts add up to `processed_so_far`;
-`needs_review`, `not_found`, and `failed` appear in `attention_records` as they
-occur. The snapshot includes the run ID, start time, state, and book totals.
-It is cleared when a run is canceled and is not persistent run history.
+The Sync Status page shows the current run for each profile, including its
+progress and outcome counts. Select **View Details** to see the books in each
+category. Each result includes its Audiobookshelf cover, format, and series
+position when available, and its title links to the Audiobookshelf library
+item. Known Hardcover books link to Hardcover; a needs-review result instead
+shows the Hardcover candidate's series when available and links the candidate
+title, its ASIN to Audible, and its ISBN to a Goodreads search.
+
+Each processed book is counted once as `synced`, `already_current`, `skipped`,
+`needs_review`, `not_found`, `failed`, or dry-run `would_sync`. A total of zero
+means the number of books is not known yet, so the processed count may still
+increase. Status represents only the current run, is cleared when that run is
+canceled, and is not a persistent run history.
+
+For API clients, `GET /api/status` provides a lightweight snapshot with the run
+ID, start time, state, totals, and outcome counts, but no book-level records.
+Authenticated profile status and summary routes include the full current
+snapshot. Book-level outcomes are available from
+`GET /api/profiles/{id}/runs/{runId}/details`; stale, replaced, canceled, or
+unknown run IDs return `404`, so clients should refresh status and use the
+current run ID. Needs-review, not-found, and failed books appear in
+`attention_records` as they occur.
 
 ### Environment Variables (Multi-Profile)
 
@@ -99,7 +111,7 @@ It is cleared when a run is canceled and is not persistent run history.
 - **Token Encryption**: All API tokens encrypted at rest
 - **Profile Management**: Full CRUD operations for sync profiles data
 - **Secure Key Management**: Auto-generated encryption keys
-- **Token Masking**: Sensitive data masked in API responses
+- **Token Redaction**: Profile API responses never return Audiobookshelf or Hardcover tokens
 - **Directory Protection**: Static file serving with traversal protection
 
 ---
@@ -484,8 +496,14 @@ export KEYCLOAK_REDIRECT_URI="https://your-app.example.com/auth/callback/oidc"
 ### User Roles
 
 - **Admin**: Full access, user management, system configuration
-- **User**: Sync functionality, personal configurations
-- **Viewer**: Read-only access to sync status
+- **User**: Sync functionality and read/write access to owned profiles
+- **Viewer**: Read-only access to owned profiles
+
+When authentication is enabled, profiles created before ownership was recorded
+remain active and continue to run scheduled syncs. Administrators can still
+manage them, but regular users and viewers cannot see or use them. To give a
+regular user control of one, create a new profile while signed in as that user,
+then have an administrator remove the old profile to prevent duplicate syncs.
 
 ### Security Features
 

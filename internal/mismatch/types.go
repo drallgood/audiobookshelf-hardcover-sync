@@ -401,6 +401,8 @@ type BookMismatch struct {
 	HardcoverASIN          string `json:"hardcover_asin,omitempty"`
 	HardcoverISBN          string `json:"hardcover_isbn,omitempty"`
 	HardcoverSlug          string `json:"hardcover_slug,omitempty"`
+	HardcoverSeries        string `json:"hardcover_series,omitempty"`
+	HardcoverSeriesNumber  string `json:"hardcover_series_number,omitempty"`
 
 	// Tracking
 	Reason    string    `json:"reason"`

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 
 type statusServiceFixture struct {
 	dataDir   string
+	db        *database.Database
 	repo      *database.Repository
 	multiUser *multiuser.MultiUserService
 }
@@ -37,8 +39,6 @@ func newStatusServiceFixture(t *testing.T, hardcoverURL string) *statusServiceFi
 		Path: filepath.Join(dataDir, "status-test.db"),
 	}, logger.Get())
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
-
 	encryptor, err := crypto.NewEncryptionManagerWithDataDir(dataDir, logger.Get())
 	require.NoError(t, err)
 	repo := database.NewRepository(db, encryptor, logger.Get())
@@ -49,11 +49,17 @@ func newStatusServiceFixture(t *testing.T, hardcoverURL string) *statusServiceFi
 	cfg.RateLimit.Rate = time.Nanosecond
 	cfg.RateLimit.MaxConcurrent = 1
 	cfg.Hardcover.BaseURL = hardcoverURL
+	multiUser := multiuser.NewMultiUserService(repo, cfg, logger.Get())
+	t.Cleanup(func() {
+		multiUser.WaitForSyncs()
+		require.NoError(t, db.Close())
+	})
 
 	return &statusServiceFixture{
 		dataDir:   dataDir,
+		db:        db,
 		repo:      repo,
-		multiUser: multiuser.NewMultiUserService(repo, cfg, logger.Get()),
+		multiUser: multiUser,
 	}
 }
 
@@ -73,6 +79,117 @@ func (f *statusServiceFixture) createProfile(t *testing.T, id, name, absURL, tok
 	))
 }
 
+func (f *statusServiceFixture) waitForSyncs(t *testing.T) {
+	t.Helper()
+	f.multiUser.WaitForSyncs()
+}
+
+func TestStartSyncRegistersWorkBeforeResponding(t *testing.T) {
+	absServer := newStatusAudiobookshelfServer()
+	t.Cleanup(absServer.Close)
+	hardcoverServer := newEmptyHardcoverServer(t)
+	t.Cleanup(hardcoverServer.Close)
+
+	fixture := newStatusServiceFixture(t, hardcoverServer.URL)
+	const profileID = "start-sync-profile"
+	fixture.createProfile(t, profileID, "Start sync profile", absServer.URL, profileID)
+	absServer.books[profileID] = statusBook(profileID, "Queued sync", "Test Author")
+
+	handler := NewHandler(fixture.multiUser, logger.Get())
+	routes := http.NewServeMux()
+	routes.HandleFunc("POST /api/profiles/{id}/sync", handler.StartSync)
+
+	recorder := requestJSONRoute(routes, http.MethodPost, "/api/profiles/"+profileID+"/sync")
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.NotNil(t, fixture.multiUser.GetProfileStatus(profileID))
+
+	fixture.waitForSyncs(t)
+	status := fixture.multiUser.GetProfileStatus(profileID)
+	require.NotNil(t, status)
+	require.NotEqual(t, "syncing", status.Status)
+}
+
+func TestStartSyncReturnsErrorWhenProfileConfigurationCannotBeLoaded(t *testing.T) {
+	fixture := newStatusServiceFixture(t, "http://hardcover.invalid")
+	const profileID = "invalid-start-profile"
+	fixture.createProfile(t, profileID, "Invalid start profile", "http://audiobookshelf.invalid", profileID)
+	result := fixture.db.GetDB().Model(&database.SyncProfileConfig{}).
+		Where("profile_id = ?", profileID).
+		Update("audiobookshelf_token_encrypted", "invalid-encrypted-token")
+	require.NoError(t, result.Error)
+
+	handler := NewHandler(fixture.multiUser, logger.Get())
+	routes := http.NewServeMux()
+	routes.HandleFunc("POST /api/profiles/{id}/sync", handler.StartSync)
+
+	recorder := requestJSONRoute(routes, http.MethodPost, "/api/profiles/"+profileID+"/sync")
+	require.Equal(t, http.StatusInternalServerError, recorder.Code, recorder.Body.String())
+	var response struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	require.False(t, response.Success)
+	require.Equal(t, "Failed to start sync", response.Error)
+	require.False(t, fixture.multiUser.IsProfileSyncing(profileID))
+}
+
+func TestStartSyncReturnsControlledErrorForUnknownPublicProfile(t *testing.T) {
+	fixture := newStatusServiceFixture(t, "http://hardcover.invalid")
+	handler := NewHandler(fixture.multiUser, logger.Get())
+	handler.SetAuthEnabled(false)
+	routes := http.NewServeMux()
+	routes.HandleFunc("POST /api/profiles/{id}/sync", handler.StartSync)
+
+	recorder := requestJSONRoute(routes, http.MethodPost, "/api/profiles/missing-profile/sync")
+	require.Equal(t, http.StatusInternalServerError, recorder.Code, recorder.Body.String())
+	var response struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	require.False(t, response.Success)
+	require.Equal(t, "Failed to start sync", response.Error)
+	require.False(t, fixture.multiUser.IsProfileSyncing("missing-profile"))
+}
+
+func TestStartSyncReturnsErrorWhenProfileIsAlreadySyncing(t *testing.T) {
+	absServer := newLiveStatusAudiobookshelfServer([]map[string]interface{}{
+		statusBook("blocked-book", "Blocked Until Released", "Author"),
+	})
+	t.Cleanup(absServer.Server.Close)
+	hardcoverServer := newLiveStatusHardcoverServer()
+	fixture := newStatusServiceFixture(t, hardcoverServer.URL)
+	t.Cleanup(func() {
+		hardcoverServer.releaseBlocked()
+		hardcoverServer.Server.Close()
+	})
+	const profileID = "already-syncing-profile"
+	fixture.createProfile(t, profileID, "Already syncing profile", absServer.URL, profileID)
+	require.NoError(t, fixture.multiUser.StartSync(profileID))
+	select {
+	case <-hardcoverServer.blockedStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for initial sync to become active")
+	}
+
+	handler := NewHandler(fixture.multiUser, logger.Get())
+	routes := http.NewServeMux()
+	routes.HandleFunc("POST /api/profiles/{id}/sync", handler.StartSync)
+	recorder := requestJSONRoute(routes, http.MethodPost, "/api/profiles/"+profileID+"/sync")
+	require.Equal(t, http.StatusInternalServerError, recorder.Code, recorder.Body.String())
+	var response struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	require.False(t, response.Success)
+	require.Equal(t, "Failed to start sync", response.Error)
+
+	hardcoverServer.releaseBlocked()
+	fixture.waitForSyncs(t)
+}
+
 type statusHTTPResponse struct {
 	Success bool                        `json:"success"`
 	Data    multiuser.SyncProfileStatus `json:"data"`
@@ -86,6 +203,11 @@ type allStatusHTTPResponse struct {
 type summaryHTTPResponse struct {
 	Success bool                 `json:"success"`
 	Data    statusSummaryPayload `json:"data"`
+}
+
+type runDetailsHTTPResponse struct {
+	Success bool                 `json:"success"`
+	Data    syncsvc.SyncSnapshot `json:"data"`
 }
 
 func requireSnapshotMatchesSummary(t *testing.T, snapshot *syncsvc.SyncSnapshot, summary statusSummaryPayload) {
@@ -131,14 +253,15 @@ func TestPublicStatusAndSummaryRoutesShareCurrentRunSnapshot(t *testing.T) {
 		require.Len(t, status.Snapshot.AttentionRecords, 1)
 	}
 
-	handler := NewHandler(fixture.multiUser, nil, logger.Get())
+	handler := NewHandler(fixture.multiUser, logger.Get())
+	routes := newMountedStatusRoutes(handler)
 	var statusResponse statusHTTPResponse
-	callJSONHandler(t, handler.GetProfileStatus, "/api/profiles/profile-a/status", &statusResponse)
+	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/profile-a/status", &statusResponse)
 	require.True(t, statusResponse.Success)
 	require.NotNil(t, statusResponse.Data.Snapshot)
 
 	var summaryResponse summaryHTTPResponse
-	callJSONHandler(t, handler.GetSyncSummary, "/api/profiles/profile-a/summary", &summaryResponse)
+	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/profile-a/summary", &summaryResponse)
 	require.True(t, summaryResponse.Success)
 	require.Equal(t, "default", summaryResponse.Data.UserID)
 
@@ -162,7 +285,6 @@ func TestPublicStatusAndSummaryRoutesShareCurrentRunSnapshot(t *testing.T) {
 	require.Empty(t, statusResponse.Data.Mismatches)
 
 	var unknownSummaryResponse summaryHTTPResponse
-	routes := newMountedStatusRoutes(handler)
 	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/unknown/summary", &unknownSummaryResponse)
 	require.True(t, unknownSummaryResponse.Success)
 	require.Equal(t, "default", unknownSummaryResponse.Data.UserID)
@@ -179,10 +301,50 @@ func TestPublicStatusAndSummaryRoutesShareCurrentRunSnapshot(t *testing.T) {
 	for _, status := range allStatusesResponse.Data {
 		byID[status.ProfileID] = status
 	}
+	rawAggregate := requestJSONRoute(routes, http.MethodGet, "/api/status")
+	require.Equal(t, http.StatusOK, rawAggregate.Code, rawAggregate.Body.String())
+	var aggregateEnvelope struct {
+		Data []map[string]interface{} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rawAggregate.Body.Bytes(), &aggregateEnvelope))
+	require.Len(t, aggregateEnvelope.Data, 2)
+	for _, item := range aggregateEnvelope.Data {
+		snapshot, ok := item["snapshot"].(map[string]interface{})
+		require.True(t, ok)
+		require.NotContains(t, snapshot, "book_outcomes")
+		require.NotContains(t, snapshot, "attention_records")
+		counts, ok := snapshot["outcome_counts"].(map[string]interface{})
+		require.True(t, ok)
+		expectedCounts := map[string]float64{
+			"synced": 0, "already_current": 0, "skipped": 0,
+			"needs_review": 0, "not_found": 1, "failed": 0, "would_sync": 0,
+		}
+		for key, expected := range expectedCounts {
+			value, exists := counts[key]
+			require.True(t, exists, "missing outcome count %q", key)
+			require.Equal(t, expected, value, "unexpected outcome count %q", key)
+		}
+	}
 	require.Contains(t, byID, "profile-a")
 	require.Contains(t, byID, "profile-b")
-	require.Nil(t, byID["profile-a"].Snapshot)
-	require.Nil(t, byID["profile-b"].Snapshot)
+	require.NotNil(t, byID["profile-a"].Snapshot)
+	require.NotNil(t, byID["profile-b"].Snapshot)
+	require.Equal(t, statusSnapshot.RunID, byID["profile-a"].Snapshot.RunID)
+	require.Equal(t, statusSnapshot.State, byID["profile-a"].Snapshot.State)
+	require.Equal(t, statusSnapshot.RunStartedAt, byID["profile-a"].Snapshot.RunStartedAt)
+	require.Equal(t, statusSnapshot.BooksTotal, byID["profile-a"].Snapshot.BooksTotal)
+	require.Equal(t, statusSnapshot.ProcessedSoFar, byID["profile-a"].Snapshot.ProcessedSoFar)
+	require.Equal(t, statusSnapshot.ProcessedCount, byID["profile-a"].Snapshot.ProcessedCount)
+	require.Equal(t, statusSnapshot.OutcomeCounts, byID["profile-a"].Snapshot.OutcomeCounts)
+	require.Empty(t, byID["profile-a"].Snapshot.BookOutcomes)
+	require.Empty(t, byID["profile-a"].Snapshot.AttentionRecords)
+	require.Empty(t, byID["profile-b"].Snapshot.BookOutcomes)
+	require.Empty(t, byID["profile-b"].Snapshot.AttentionRecords)
+	profileBRunID := fixture.multiUser.GetProfileStatus("profile-b").Snapshot.RunID
+	recorder := requestJSONRoute(routes, http.MethodGet, "/api/profiles/profile-a/runs/"+profileBRunID+"/details")
+	require.Equal(t, http.StatusNotFound, recorder.Code, recorder.Body.String())
+	recorder = requestJSONRoute(routes, http.MethodGet, "/api/profiles/unknown/runs/"+statusSnapshot.RunID+"/details")
+	require.Equal(t, http.StatusNotFound, recorder.Code, recorder.Body.String())
 	require.Nil(t, byID["profile-a"].LastSyncSummary)
 	require.Nil(t, byID["profile-b"].LastSyncSummary)
 	require.Empty(t, byID["profile-a"].BooksNotFound)
@@ -191,6 +353,140 @@ func TestPublicStatusAndSummaryRoutesShareCurrentRunSnapshot(t *testing.T) {
 	require.Empty(t, byID["profile-b"].Mismatches)
 	require.Equal(t, 1, byID["profile-a"].BooksTotal)
 	require.Equal(t, 1, byID["profile-b"].BooksTotal)
+	fixture.waitForSyncs(t)
+}
+
+func TestCreateProfileValidatesIDs(t *testing.T) {
+	fixture := newStatusServiceFixture(t, "http://hardcover.invalid")
+	handler := NewHandler(fixture.multiUser, logger.Get())
+
+	for _, test := range []struct {
+		name       string
+		profileID  string
+		statusCode int
+	}{
+		{name: "empty", statusCode: http.StatusBadRequest},
+		{name: "current directory", profileID: ".", statusCode: http.StatusBadRequest},
+		{name: "parent directory", profileID: "..", statusCode: http.StatusBadRequest},
+		{name: "slash", profileID: "unsafe/profile", statusCode: http.StatusBadRequest},
+		{name: "query", profileID: "unsafe?query", statusCode: http.StatusBadRequest},
+		{name: "fragment", profileID: "unsafe#fragment", statusCode: http.StatusBadRequest},
+		{name: "percent", profileID: "unsafe%id", statusCode: http.StatusBadRequest},
+		{name: "backslash", profileID: "unsafe\\id", statusCode: http.StatusBadRequest},
+		{name: "maximum length", profileID: strings.Repeat("a", maxNewProfileIDBytes), statusCode: http.StatusOK},
+		{name: "one byte over maximum", profileID: strings.Repeat("a", maxNewProfileIDBytes+1), statusCode: http.StatusBadRequest},
+		{name: "allowed punctuation", profileID: "valid-profile_1.~", statusCode: http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			payload, err := json.Marshal(CreateProfileRequest{
+				ID:                  test.profileID,
+				Name:                "Profile ID validation",
+				AudiobookshelfURL:   "http://audiobookshelf.invalid",
+				AudiobookshelfToken: "abs-token",
+				HardcoverToken:      "hardcover-token",
+			})
+			require.NoError(t, err)
+			recorder := httptest.NewRecorder()
+			handler.CreateProfile(recorder, httptest.NewRequest(http.MethodPost, "/api/profiles", bytes.NewReader(payload)))
+			require.Equal(t, test.statusCode, recorder.Code, recorder.Body.String())
+			profile, err := fixture.multiUser.GetProfile(test.profileID)
+			require.NoError(t, err)
+			if test.statusCode == http.StatusOK {
+				require.NotNil(t, profile)
+			} else {
+				require.Nil(t, profile)
+			}
+		})
+	}
+}
+
+func TestProfileStateFilenameValidationAtHTTPBoundary(t *testing.T) {
+	fixture := newStatusServiceFixture(t, "http://hardcover.invalid")
+	handler := NewHandler(fixture.multiUser, logger.Get())
+	routes := http.NewServeMux()
+	routes.HandleFunc("POST /api/profiles", handler.CreateProfile)
+	routes.HandleFunc("PUT /api/profiles/{id}/config", handler.UpdateProfileConfig)
+
+	unsafeStateFiles := []struct {
+		name string
+		path string
+	}{
+		{name: "encoded filename too long", path: strings.Repeat("s", 245) + ".json"},
+		{name: "parent component too long", path: filepath.Join(strings.Repeat("p", 256), "state.json")},
+		{name: "NUL byte", path: "state\x00.json"},
+	}
+	for _, test := range unsafeStateFiles {
+		t.Run("create "+test.name, func(t *testing.T) {
+			profileID := "new-profile-" + strings.ReplaceAll(test.name, " ", "-")
+			createPayload, err := json.Marshal(CreateProfileRequest{
+				ID:                  profileID,
+				Name:                "New profile",
+				AudiobookshelfURL:   "http://audiobookshelf.invalid",
+				AudiobookshelfToken: "abs-token",
+				HardcoverToken:      "hardcover-token",
+				SyncConfig:          database.SyncConfigData{StateFile: test.path},
+			})
+			require.NoError(t, err)
+			createResponse := httptest.NewRecorder()
+			routes.ServeHTTP(createResponse, httptest.NewRequest(http.MethodPost, "/api/profiles", bytes.NewReader(createPayload)))
+			require.Equal(t, http.StatusBadRequest, createResponse.Code, createResponse.Body.String())
+			created, err := fixture.multiUser.GetProfile(profileID)
+			require.NoError(t, err)
+			require.Nil(t, created)
+		})
+	}
+
+	profileID := "configured-profile"
+	originalURL := "http://original.invalid"
+	originalStateFile := "original.json"
+	require.NoError(t, fixture.repo.CreateProfile(
+		profileID,
+		"Configured profile",
+		originalURL,
+		"abs-token",
+		"hardcover-token",
+		database.SyncConfigData{StateFile: originalStateFile},
+	))
+	updatePayload, err := json.Marshal(UpdateProfileConfigRequest{
+		AudiobookshelfURL: "http://should-not-persist.invalid",
+		SyncConfig:        database.SyncConfigData{StateFile: "../escape.json"},
+	})
+	require.NoError(t, err)
+	updateResponse := httptest.NewRecorder()
+	routes.ServeHTTP(updateResponse, httptest.NewRequest(
+		http.MethodPut,
+		"/api/profiles/"+profileID+"/config",
+		bytes.NewReader(updatePayload),
+	))
+	require.Equal(t, http.StatusBadRequest, updateResponse.Code, updateResponse.Body.String())
+	unchanged, err := fixture.multiUser.GetProfile(profileID)
+	require.NoError(t, err)
+	require.NotNil(t, unchanged)
+	require.Equal(t, originalURL, unchanged.AudiobookshelfURL)
+	require.Equal(t, originalStateFile, unchanged.SyncConfig.StateFile)
+
+	legacyID := strings.Repeat("l", 245)
+	require.NoError(t, fixture.repo.CreateProfile(
+		legacyID,
+		"Legacy profile",
+		"http://legacy.invalid",
+		"abs-token",
+		"hardcover-token",
+		database.SyncConfigData{},
+	))
+	legacyPayload, err := json.Marshal(UpdateProfileConfigRequest{AudiobookshelfToken: "updated-token"})
+	require.NoError(t, err)
+	legacyResponse := httptest.NewRecorder()
+	routes.ServeHTTP(legacyResponse, httptest.NewRequest(
+		http.MethodPut,
+		"/api/profiles/"+legacyID+"/config",
+		bytes.NewReader(legacyPayload),
+	))
+	require.Equal(t, http.StatusOK, legacyResponse.Code, legacyResponse.Body.String())
+	legacy, err := fixture.multiUser.GetProfile(legacyID)
+	require.NoError(t, err)
+	require.NotNil(t, legacy)
+	require.Equal(t, "updated-token", legacy.AudiobookshelfToken)
 }
 
 func TestPublicStatusAndSummaryRoutesExposeLiveAttentionOutcomes(t *testing.T) {
@@ -201,11 +497,11 @@ func TestPublicStatusAndSummaryRoutesExposeLiveAttentionOutcomes(t *testing.T) {
 	})
 	t.Cleanup(absServer.Server.Close)
 	hardcoverServer := newLiveStatusHardcoverServer()
+	fixture := newStatusServiceFixture(t, hardcoverServer.Server.URL)
 	t.Cleanup(func() {
 		hardcoverServer.releaseBlocked()
 		hardcoverServer.Server.Close()
 	})
-	fixture := newStatusServiceFixture(t, hardcoverServer.Server.URL)
 
 	profileID := "live-profile"
 	fixture.createProfile(t, profileID, "Live profile", absServer.Server.URL, "hardcover-token")
@@ -220,12 +516,14 @@ func TestPublicStatusAndSummaryRoutesExposeLiveAttentionOutcomes(t *testing.T) {
 		t.Fatal("timed out waiting for the third Hardcover lookup")
 	}
 
-	handler := NewHandler(fixture.multiUser, nil, logger.Get())
+	handler := NewHandler(fixture.multiUser, logger.Get())
+	routes := newMountedStatusRoutes(handler)
 	var statusResponse statusHTTPResponse
-	callJSONHandler(t, handler.GetProfileStatus, "/api/profiles/"+profileID+"/status", &statusResponse)
+	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/status", &statusResponse)
 	require.True(t, statusResponse.Success)
 	require.NotNil(t, statusResponse.Data.Snapshot)
 	liveSnapshot := statusResponse.Data.Snapshot
+	require.Equal(t, absServer.Server.URL, liveSnapshot.AudiobookshelfURL)
 	require.Equal(t, "syncing", liveSnapshot.State)
 	require.Equal(t, int32(3), liveSnapshot.BooksTotal)
 	require.Equal(t, int32(2), liveSnapshot.ProcessedSoFar)
@@ -237,6 +535,27 @@ func TestPublicStatusAndSummaryRoutesExposeLiveAttentionOutcomes(t *testing.T) {
 	require.Len(t, liveSnapshot.BooksNotFound, 1)
 	require.Len(t, liveSnapshot.Mismatches, 1)
 
+	// Aggregate polling must observe the active service snapshot as outcomes
+	// arrive, while omitting the potentially large per-book detail arrays.
+	var aggregateResponse allStatusHTTPResponse
+	callJSONRoute(t, routes, http.MethodGet, "/api/status", &aggregateResponse)
+	require.True(t, aggregateResponse.Success)
+	var aggregateLiveStatus *multiuser.SyncProfileStatus
+	for i := range aggregateResponse.Data {
+		if aggregateResponse.Data[i].ProfileID == profileID {
+			aggregateLiveStatus = &aggregateResponse.Data[i]
+			break
+		}
+	}
+	require.NotNil(t, aggregateLiveStatus)
+	require.NotNil(t, aggregateLiveStatus.Snapshot)
+	require.Equal(t, liveSnapshot.RunID, aggregateLiveStatus.Snapshot.RunID)
+	require.Equal(t, int32(2), aggregateLiveStatus.Snapshot.ProcessedSoFar)
+	require.Equal(t, liveSnapshot.OutcomeCounts, aggregateLiveStatus.Snapshot.OutcomeCounts)
+	require.Empty(t, aggregateLiveStatus.Snapshot.AudiobookshelfURL)
+	require.Empty(t, aggregateLiveStatus.Snapshot.BookOutcomes)
+	require.Empty(t, aggregateLiveStatus.Snapshot.AttentionRecords)
+
 	attentionByID := make(map[string]syncsvc.BookOutcomeRecord, len(liveSnapshot.AttentionRecords))
 	for _, record := range liveSnapshot.AttentionRecords {
 		attentionByID[record.BookID] = record
@@ -246,8 +565,26 @@ func TestPublicStatusAndSummaryRoutesExposeLiveAttentionOutcomes(t *testing.T) {
 	require.Equal(t, syncsvc.OutcomeNotFound, attentionByID["no-result-book"].Outcome)
 	require.NotContains(t, attentionByID, "blocked-book")
 
+	var liveDetails runDetailsHTTPResponse
+	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/runs/"+liveSnapshot.RunID+"/details", &liveDetails)
+	require.True(t, liveDetails.Success)
+	require.Equal(t, liveSnapshot.RunID, liveDetails.Data.RunID)
+	require.Equal(t, absServer.Server.URL, liveDetails.Data.AudiobookshelfURL)
+	require.Equal(t, liveSnapshot.ProcessedSoFar, liveDetails.Data.ProcessedSoFar)
+	require.Len(t, liveDetails.Data.BookOutcomes, 2)
+	require.Len(t, liveDetails.Data.AttentionRecords, 2)
+	for _, record := range liveDetails.Data.BookOutcomes {
+		require.Equal(t, absServer.Server.URL+"/api/items/"+record.BookID+"/cover", record.CoverURL)
+		require.Equal(t, "Audiobook", record.Format)
+		require.Equal(t, "Status Series", record.Series)
+		require.Equal(t, "2", record.SeriesNumber)
+	}
+	require.Len(t, liveDetails.Data.Mismatches, 1)
+	require.Equal(t, "Hardcover Series", liveDetails.Data.Mismatches[0].HardcoverSeries)
+	require.Equal(t, "3", liveDetails.Data.Mismatches[0].HardcoverSeriesNumber)
+
 	var summaryResponse summaryHTTPResponse
-	callJSONHandler(t, handler.GetSyncSummary, "/api/profiles/"+profileID+"/summary", &summaryResponse)
+	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/summary", &summaryResponse)
 	require.True(t, summaryResponse.Success)
 	requireSnapshotMatchesSummary(t, liveSnapshot, summaryResponse.Data)
 	require.Equal(t, "default", summaryResponse.Data.UserID)
@@ -266,6 +603,12 @@ func TestPublicStatusAndSummaryRoutesExposeLiveAttentionOutcomes(t *testing.T) {
 	require.Equal(t, int32(3), completed.Snapshot.OutcomeCounts.Total())
 	require.Equal(t, int32(1), completed.Snapshot.OutcomeCounts.NeedsReview)
 	require.Equal(t, int32(2), completed.Snapshot.OutcomeCounts.NotFound)
+	var terminalDetails runDetailsHTTPResponse
+	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/runs/"+completed.Snapshot.RunID+"/details", &terminalDetails)
+	require.True(t, terminalDetails.Success)
+	require.Equal(t, completed.Snapshot.RunID, terminalDetails.Data.RunID)
+	require.Len(t, terminalDetails.Data.BookOutcomes, 3)
+	fixture.waitForSyncs(t)
 }
 
 func TestPublicStatusPublishesSecondLookupOutcomeBeforeEnrichment(t *testing.T) {
@@ -273,11 +616,11 @@ func TestPublicStatusPublishesSecondLookupOutcomeBeforeEnrichment(t *testing.T) 
 	absServer := newLiveStatusAudiobookshelfServer([]map[string]interface{}{book})
 	t.Cleanup(absServer.Server.Close)
 	hardcoverServer := newDelayedSecondLookupHardcoverServer()
+	fixture := newStatusServiceFixture(t, hardcoverServer.Server.URL)
 	t.Cleanup(func() {
 		hardcoverServer.releaseEnrichment()
 		hardcoverServer.Server.Close()
 	})
-	fixture := newStatusServiceFixture(t, hardcoverServer.Server.URL)
 	profileID := "delayed-profile"
 	fixture.createProfile(t, profileID, "Delayed profile", absServer.Server.URL, "hardcover-token")
 	require.NoError(t, fixture.multiUser.StartSync(profileID))
@@ -288,7 +631,7 @@ func TestPublicStatusPublishesSecondLookupOutcomeBeforeEnrichment(t *testing.T) 
 		t.Fatal("timed out waiting for delayed enrichment")
 	}
 
-	handler := NewHandler(fixture.multiUser, nil, logger.Get())
+	handler := NewHandler(fixture.multiUser, logger.Get())
 	routes := newMountedStatusRoutes(handler)
 	var statusResponse statusHTTPResponse
 	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/status", &statusResponse)
@@ -304,6 +647,7 @@ func TestPublicStatusPublishesSecondLookupOutcomeBeforeEnrichment(t *testing.T) 
 	hardcoverServer.releaseEnrichment()
 	completed := waitForMountedStatusRun(t, routes, profileID, status.Snapshot.RunID)
 	require.Equal(t, "completed", completed.Status)
+	fixture.waitForSyncs(t)
 }
 
 func TestPublicStatusRunReplacementKeepsNewRunCurrent(t *testing.T) {
@@ -311,11 +655,11 @@ func TestPublicStatusRunReplacementKeepsNewRunCurrent(t *testing.T) {
 	absServer := newLiveStatusAudiobookshelfServer([]map[string]interface{}{book})
 	t.Cleanup(absServer.Server.Close)
 	hardcoverServer := newDelayedSecondLookupHardcoverServer()
+	fixture := newStatusServiceFixture(t, hardcoverServer.Server.URL)
 	t.Cleanup(func() {
 		hardcoverServer.releaseEnrichment()
 		hardcoverServer.Server.Close()
 	})
-	fixture := newStatusServiceFixture(t, hardcoverServer.Server.URL)
 	profileID := "replacement-profile"
 	fixture.createProfile(t, profileID, "Replacement profile", absServer.Server.URL, "hardcover-token")
 	require.NoError(t, fixture.multiUser.StartSync(profileID))
@@ -325,7 +669,7 @@ func TestPublicStatusRunReplacementKeepsNewRunCurrent(t *testing.T) {
 		t.Fatal("timed out waiting for first run to block in enrichment")
 	}
 
-	handler := NewHandler(fixture.multiUser, nil, logger.Get())
+	handler := NewHandler(fixture.multiUser, logger.Get())
 	routes := newMountedStatusRoutes(handler)
 	var oldStatusResponse statusHTTPResponse
 	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/status", &oldStatusResponse)
@@ -340,6 +684,15 @@ func TestPublicStatusRunReplacementKeepsNewRunCurrent(t *testing.T) {
 	require.NotNil(t, newStatusResponse.Data.Snapshot)
 	newRunID := newStatusResponse.Data.Snapshot.RunID
 	require.NotEqual(t, oldRunID, newRunID)
+
+	for _, runID := range []string{oldRunID, "unknown-run"} {
+		recorder := requestJSONRoute(routes, http.MethodGet, "/api/profiles/"+profileID+"/runs/"+runID+"/details")
+		require.Equal(t, http.StatusNotFound, recorder.Code, recorder.Body.String())
+	}
+	var currentDetails runDetailsHTTPResponse
+	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/runs/"+newRunID+"/details", &currentDetails)
+	require.True(t, currentDetails.Success)
+	require.Equal(t, newRunID, currentDetails.Data.RunID)
 
 	// Release the canceled run's blocked upstream request and wait until its
 	// handler has returned before asserting the replacement remains current.
@@ -356,6 +709,7 @@ func TestPublicStatusRunReplacementKeepsNewRunCurrent(t *testing.T) {
 	require.True(t, finalStatusResponse.Success)
 	require.NotNil(t, finalStatusResponse.Data.Snapshot)
 	require.Equal(t, newRunID, finalStatusResponse.Data.Snapshot.RunID)
+	fixture.waitForSyncs(t)
 }
 
 func TestPublicStatusAndSummaryRoutesExposeTechnicalTimeoutAsFailedOutcome(t *testing.T) {
@@ -381,16 +735,17 @@ func TestPublicStatusAndSummaryRoutesExposeTechnicalTimeoutAsFailedOutcome(t *te
 	require.Equal(t, syncsvc.OutcomeFailed, completed.Snapshot.AttentionRecords[0].Outcome)
 	require.Equal(t, "timeout-book", completed.Snapshot.AttentionRecords[0].BookID)
 
-	handler := NewHandler(fixture.multiUser, nil, logger.Get())
+	handler := NewHandler(fixture.multiUser, logger.Get())
+	routes := newMountedStatusRoutes(handler)
 	var statusResponse statusHTTPResponse
-	callJSONHandler(t, handler.GetProfileStatus, "/api/profiles/"+profileID+"/status", &statusResponse)
+	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/status", &statusResponse)
 	require.True(t, statusResponse.Success)
 	require.NotNil(t, statusResponse.Data.Snapshot)
 	require.Equal(t, completed.Snapshot.RunID, statusResponse.Data.Snapshot.RunID)
 	require.Equal(t, syncsvc.OutcomeFailed, statusResponse.Data.Snapshot.AttentionRecords[0].Outcome)
 
 	var summaryResponse summaryHTTPResponse
-	callJSONHandler(t, handler.GetSyncSummary, "/api/profiles/"+profileID+"/summary", &summaryResponse)
+	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/summary", &summaryResponse)
 	require.True(t, summaryResponse.Success)
 	require.NotNil(t, summaryResponse.Data.Snapshot)
 	require.Equal(t, "default", summaryResponse.Data.UserID)
@@ -400,6 +755,7 @@ func TestPublicStatusAndSummaryRoutesExposeTechnicalTimeoutAsFailedOutcome(t *te
 	require.Equal(t, int32(1), summaryResponse.Data.OutcomeCounts.Failed)
 	require.Len(t, summaryResponse.Data.AttentionRecords, 1)
 	require.Equal(t, syncsvc.OutcomeFailed, summaryResponse.Data.AttentionRecords[0].Outcome)
+	fixture.waitForSyncs(t)
 }
 
 type statusSummaryPayload struct {
@@ -512,8 +868,18 @@ func newLiveStatusHardcoverServer() *liveStatusHardcoverServer {
 
 		if strings.Contains(request.Query, "GetBookByID") {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"data": map[string]interface{}{"books": []interface{}{}},
-			})
+				"data": map[string]interface{}{"books": []interface{}{map[string]interface{}{
+					"id":            101,
+					"title":         "Title Only",
+					"slug":          "title-only",
+					"contributions": []interface{}{},
+					"editions":      []interface{}{},
+					"book_series": []interface{}{map[string]interface{}{
+						"position": 3,
+						"series":   map[string]interface{}{"name": "Hardcover Series"},
+					}},
+				}},
+				}})
 			return
 		}
 
@@ -655,9 +1021,14 @@ func statusBook(id, title, author string) map[string]interface{} {
 		"libraryId": "library",
 		"mediaType": "book",
 		"media": map[string]interface{}{
+			"coverPath": "/covers/" + id + ".jpg",
 			"metadata": map[string]interface{}{
 				"title":      title,
 				"authorName": author,
+				"series": []map[string]interface{}{{
+					"name":     "Status Series",
+					"sequence": "2",
+				}},
 			},
 			"duration": 100,
 		},
@@ -688,12 +1059,13 @@ func waitForStatusRun(t *testing.T, service *multiuser.MultiUserService, profile
 
 func newMountedStatusRoutes(handler *Handler) http.Handler {
 	apiMux := http.NewServeMux()
-	apiMux.HandleFunc("GET /profiles/{id}/status", handler.GetProfileStatus)
-	apiMux.HandleFunc("GET /profiles/{id}/summary", handler.GetSyncSummary)
+	apiMux.HandleFunc("GET /api/profiles/{id}/status", handler.GetProfileStatus)
+	apiMux.HandleFunc("GET /api/profiles/{id}/summary", handler.GetSyncSummary)
+	apiMux.HandleFunc("GET /api/profiles/{id}/runs/{runID}/details", handler.GetRunDetails)
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /api/status", handler.GetAllProfileStatuses)
-	root.Handle("/api/", http.StripPrefix("/api", apiMux))
+	root.Handle("/api/", apiMux)
 	return root
 }
 
@@ -715,16 +1087,14 @@ func waitForMountedStatusRun(t *testing.T, routes http.Handler, profileID, runID
 	return nil
 }
 
-func callJSONHandler(t *testing.T, handler http.HandlerFunc, path string, target interface{}) {
-	recorder := httptest.NewRecorder()
-	handler(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+func callJSONRoute(t *testing.T, routes http.Handler, method, path string, target interface{}) {
+	recorder := requestJSONRoute(routes, method, path)
 	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), target))
 }
 
-func callJSONRoute(t *testing.T, routes http.Handler, method, path string, target interface{}) {
+func requestJSONRoute(routes http.Handler, method, path string) *httptest.ResponseRecorder {
 	recorder := httptest.NewRecorder()
 	routes.ServeHTTP(recorder, httptest.NewRequest(method, path, nil))
-	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
-	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), target))
+	return recorder
 }

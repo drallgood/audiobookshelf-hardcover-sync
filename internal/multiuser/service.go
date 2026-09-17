@@ -2,10 +2,13 @@ package multiuser
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	stdSync "sync"
+	"syscall"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
@@ -15,7 +18,18 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
+	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 )
+
+const maxStateFileComponentBytes = 255
+
+// ErrProfileStateFileNameTooLong indicates that a profile-specific state-file
+// path component exceeds the supported filename-component baseline.
+var ErrProfileStateFileNameTooLong = errors.New("profile-specific state path component exceeds 255 bytes")
+
+// ErrProfileStateFilePathNotAllowed indicates that an API-provided state-file
+// path is absolute or escapes the effective data directory.
+var ErrProfileStateFilePathNotAllowed = errors.New("profile-specific state file path must remain under the data directory")
 
 // SyncProfileStatus represents the sync status for a profile
 type SyncProfileStatus struct {
@@ -51,6 +65,7 @@ type MultiUserService struct {
 	activeRuns      map[string]activeSyncRun
 	nextGeneration  uint64
 	syncMutex       stdSync.RWMutex
+	syncWaitGroup   stdSync.WaitGroup
 	syncServices    map[string]*sync.Service // Maps profile ID to its sync service
 	serviceRuns     map[string]uint64
 	servicesMutex   stdSync.RWMutex
@@ -75,6 +90,16 @@ func (s *MultiUserService) ListProfiles() ([]database.SyncProfile, error) {
 	return s.repository.ListProfiles()
 }
 
+// ListProfilesForUser returns profiles visible to an authenticated user.
+func (s *MultiUserService) ListProfilesForUser(userID string, admin, authEnabled bool) ([]database.SyncProfile, error) {
+	return s.repository.ListProfilesForUser(userID, admin, authEnabled)
+}
+
+// GetProfileMetadata returns a profile without decrypting its credentials.
+func (s *MultiUserService) GetProfileMetadata(profileID string) (*database.SyncProfile, error) {
+	return s.repository.GetProfileMetadata(profileID)
+}
+
 // GetProfile returns a specific profile with decrypted tokens
 func (s *MultiUserService) GetProfile(profileID string) (*database.ProfileWithTokens, error) {
 	return s.repository.GetProfile(profileID)
@@ -82,7 +107,15 @@ func (s *MultiUserService) GetProfile(profileID string) (*database.ProfileWithTo
 
 // CreateProfile creates a new sync profile
 func (s *MultiUserService) CreateProfile(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig database.SyncConfigData) error {
-	return s.repository.CreateProfile(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig)
+	return s.CreateProfileForUser(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig, "")
+}
+
+// CreateProfileForUser creates a profile owned by ownerUserID.
+func (s *MultiUserService) CreateProfileForUser(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig database.SyncConfigData, ownerUserID string) error {
+	if err := s.validateProfileStateFile(profileID, syncConfig.StateFile); err != nil {
+		return err
+	}
+	return s.repository.CreateProfileForUser(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig, ownerUserID)
 }
 
 // UpdateProfile updates profile information
@@ -92,6 +125,11 @@ func (s *MultiUserService) UpdateProfile(profileID, name string) error {
 
 // UpdateProfileConfig updates profile configuration
 func (s *MultiUserService) UpdateProfileConfig(profileID, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig database.SyncConfigData) error {
+	if syncConfig.StateFile != "" {
+		if err := s.validateProfileStateFile(profileID, syncConfig.StateFile); err != nil {
+			return err
+		}
+	}
 	return s.repository.UpdateUserConfig(profileID, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig)
 }
 
@@ -122,16 +160,95 @@ func (s *MultiUserService) GetAllProfileStatuses() ([]*SyncProfileStatus, error)
 
 	statuses := make([]*SyncProfileStatus, 0, len(profiles))
 
-	// The aggregate endpoint is intentionally scalar-only. Reading a full
-	// profile status here would copy every book outcome before redacting it.
-	s.statusMutex.RLock()
-	defer s.statusMutex.RUnlock()
-
 	for _, profile := range profiles {
-		statuses = append(statuses, aggregateProfileStatus(profile, s.profileStatuses[profile.ID]))
+		statuses = append(statuses, s.getAggregateProfileStatus(profile))
 	}
 
 	return statuses, nil
+}
+
+// getAggregateProfileStatus reads the active service's scalar snapshot while
+// holding the profile-run lock that keeps service replacement from racing the
+// read. Stored status is used for inactive runs so terminal and setup errors
+// remain visible. This path deliberately avoids getProfileStatus because that
+// endpoint needs the full snapshot and legacy detail arrays.
+func (s *MultiUserService) getAggregateProfileStatus(profile database.SyncProfile) *SyncProfileStatus {
+	s.syncMutex.RLock()
+	defer s.syncMutex.RUnlock()
+
+	status := s.getStoredAggregateStatus(profile)
+	service, generation := s.currentSyncServiceLocked(profile.ID)
+	if service == nil {
+		return aggregateProfileStatus(profile, status)
+	}
+
+	snapshot := service.GetSnapshotStatus()
+	if run, ok := s.activeRuns[profile.ID]; ok && run.generation == generation {
+		snapshot.UserID = profile.ID
+		snapshot.RunID = run.runID
+		snapshot.RunStartedAt = run.startedAt
+		if snapshot.State == "" || snapshot.State == "idle" {
+			snapshot.State = "syncing"
+		}
+	}
+
+	if status == nil {
+		status = &SyncProfileStatus{
+			ProfileID:   profile.ID,
+			ProfileName: profile.Name,
+			Status:      "syncing",
+		}
+	}
+	if status.ProfileID == "" {
+		status.ProfileID = profile.ID
+	}
+	if status.ProfileName == "" {
+		status.ProfileName = profile.Name
+	}
+	switch snapshot.State {
+	case "completed":
+		status.Status = "completed"
+	case "failed":
+		status.Status = "error"
+	default:
+		status.Status = "syncing"
+	}
+	status.Snapshot = &snapshot
+	status.BooksTotal = int(snapshot.BooksTotal)
+	status.BooksSynced = int(snapshot.BooksSynced)
+
+	return aggregateProfileStatus(profile, status)
+}
+
+// getStoredAggregateStatus copies only the scalar fields needed by aggregate
+// polling. In particular, terminal snapshots are reduced without copying
+// their per-book outcomes, attention records, not-found entries, or mismatches.
+func (s *MultiUserService) getStoredAggregateStatus(profile database.SyncProfile) *SyncProfileStatus {
+	s.statusMutex.RLock()
+	defer s.statusMutex.RUnlock()
+
+	stored := s.profileStatuses[profile.ID]
+	if stored == nil {
+		return nil
+	}
+
+	status := &SyncProfileStatus{
+		ProfileID:   stored.ProfileID,
+		ProfileName: stored.ProfileName,
+		Status:      stored.Status,
+		DryRun:      stored.DryRun,
+		Progress:    stored.Progress,
+		BooksTotal:  stored.BooksTotal,
+		BooksSynced: stored.BooksSynced,
+	}
+	if stored.LastSync != nil {
+		lastSync := *stored.LastSync
+		status.LastSync = &lastSync
+	}
+	if stored.Snapshot != nil {
+		status.Snapshot = scalarSnapshot(stored.Snapshot)
+	}
+	return status
 }
 
 // aggregateProfileStatus projects a profile status for the unauthenticated
@@ -156,10 +273,33 @@ func aggregateProfileStatus(profile database.SyncProfile, status *SyncProfileSta
 		BooksTotal:  status.BooksTotal,
 		BooksSynced: status.BooksSynced,
 	}
+	aggregate.Snapshot = status.Snapshot
 	if aggregate.Status == "" {
 		aggregate.Status = "idle"
 	}
 	return aggregate
+}
+
+// scalarSnapshot keeps aggregate polling cheap and prevents the public
+// /api/status response from copying per-book outcome and attention records.
+// The full snapshot remains available on the authenticated profile status and
+// run-details endpoints.
+func scalarSnapshot(snapshot *sync.SyncSnapshot) *sync.SyncSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	return &sync.SyncSnapshot{
+		UserID:              snapshot.UserID,
+		RunID:               snapshot.RunID,
+		RunStartedAt:        snapshot.RunStartedAt,
+		State:               snapshot.State,
+		BooksTotal:          snapshot.BooksTotal,
+		ProcessedSoFar:      snapshot.ProcessedSoFar,
+		ProcessedCount:      snapshot.ProcessedCount,
+		OutcomeCounts:       snapshot.OutcomeCounts,
+		TotalBooksProcessed: snapshot.TotalBooksProcessed,
+		BooksSynced:         snapshot.BooksSynced,
+	}
 }
 
 // GetSyncService returns the sync service for a profile, if it exists
@@ -171,6 +311,46 @@ func (s *MultiUserService) GetSyncService(profileID string) (*sync.Service, bool
 // GetProfileStatus returns the sync status for a profile
 func (s *MultiUserService) GetProfileStatus(profileID string) *SyncProfileStatus {
 	return s.getProfileStatus(profileID, nil, nil)
+}
+
+// GetProfileSnapshot returns the current in-memory run snapshot for a profile
+// without hydrating profile configuration from the repository. It is intended
+// for callers that have already performed any required profile authorization.
+func (s *MultiUserService) GetProfileSnapshot(profileID string) *sync.SyncSnapshot {
+	s.syncMutex.RLock()
+	defer s.syncMutex.RUnlock()
+
+	s.statusMutex.RLock()
+	var storedSnapshot *sync.SyncSnapshot
+	if status := s.profileStatuses[profileID]; status != nil && status.Snapshot != nil {
+		storedSnapshot = cloneSyncSnapshot(*status.Snapshot)
+	}
+	s.statusMutex.RUnlock()
+
+	service, generation := s.currentSyncServiceLocked(profileID)
+	if service == nil {
+		return storedSnapshot
+	}
+
+	snapshot := service.GetSnapshot()
+	if generation > 0 {
+		if run, ok := s.activeRuns[profileID]; ok && run.generation == generation {
+			snapshot.UserID = profileID
+			snapshot.RunID = run.runID
+			snapshot.RunStartedAt = run.startedAt
+			if snapshot.State == "" || snapshot.State == "idle" {
+				snapshot.State = "syncing"
+			}
+		}
+	}
+	if snapshot.UserID == "" {
+		snapshot.UserID = profileID
+	}
+
+	if storedSnapshot == nil || storedSnapshot.RunID == "" || snapshot.RunID == "" || storedSnapshot.RunID == snapshot.RunID {
+		return &snapshot
+	}
+	return storedSnapshot
 }
 
 // currentSyncService returns only the service belonging to the active run.
@@ -286,6 +466,12 @@ func (s *MultiUserService) StartSync(profileID string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get profile config: %w", err)
 	}
+	if profileConfig == nil {
+		return fmt.Errorf("failed to get profile config: sync profile not found: %s", profileID)
+	}
+	if err := s.validatePersistedProfileStateFile(profileID, profileConfig.SyncConfig.StateFile); err != nil {
+		return fmt.Errorf("invalid persisted state file for profile %s: %w", profileID, err)
+	}
 
 	// Create cancellable context and store cancel
 	ctx, cancel := context.WithCancel(context.Background())
@@ -311,8 +497,19 @@ func (s *MultiUserService) StartSync(profileID string) error {
 	s.updateProfileStatus(profileID, initialStatus)
 
 	// Start the sync in background
-	go s.performSync(ctx, profileID, profileConfig, run.generation)
+	s.syncWaitGroup.Add(1)
+	go func() {
+		defer s.syncWaitGroup.Done()
+		s.performSync(ctx, profileID, profileConfig, run.generation)
+	}()
 	return nil
+}
+
+// WaitForSyncs waits for all sync goroutines started by this service to exit.
+// It is used by lifecycle owners that must release resources, such as the
+// logger and test databases, only after asynchronous work has stopped.
+func (s *MultiUserService) WaitForSyncs() {
+	s.syncWaitGroup.Wait()
 }
 
 // CancelSync cancels a running sync operation for a profile
@@ -353,6 +550,19 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
 	defer s.finishActiveRun(profileID, generation)
 	// Create profile-specific config
 	config := s.createProfileSpecificConfig(profileConfig)
+	if err := s.migrateLegacyProfileStatePath(profileID, profileConfig.SyncConfig.StateFile); err != nil {
+		status := &SyncProfileStatus{
+			ProfileID:   profileID,
+			ProfileName: profileConfig.Profile.Name,
+			Status:      "error",
+			Error:       fmt.Sprintf("Failed to migrate legacy sync state: %v", err),
+		}
+		if run, ok := s.activeRun(profileID, generation); ok {
+			applySnapshotToStatus(status, newRunSnapshot(profileID, run, "failed"))
+			s.publishFinalStatus(profileID, generation, status)
+		}
+		return
+	}
 
 	// Create clients
 	absClient := audiobookshelf.NewClient(profileConfig.AudiobookshelfURL, profileConfig.AudiobookshelfToken)
@@ -577,23 +787,10 @@ func (s *MultiUserService) createProfileSpecificConfig(profileConfig *database.P
 
 	// Apply all sync config values from the profile
 	config.Sync.Incremental = syncConfig.Incremental
-	// Make state file path profile-specific to avoid conflicts
-	// Resolve state file path using paths.data_dir if not set or relative
-	statePath := syncConfig.StateFile
-	if statePath == "" {
-		// Use paths.data_dir for default state file location
-		if s.globalConfig != nil && s.globalConfig.Paths.DataDir != "" {
-			statePath = fmt.Sprintf("%s/sync_state.json", strings.TrimSuffix(s.globalConfig.Paths.DataDir, "/"))
-		} else {
-			statePath = "/data/sync_state.json" // Container-friendly default
-		}
-	} else if !filepath.IsAbs(statePath) {
-		// If relative, resolve it against paths.data_dir (preserving the relative filename).
-		if s.globalConfig != nil && s.globalConfig.Paths.DataDir != "" {
-			statePath = filepath.Join(s.globalConfig.Paths.DataDir, statePath)
-		}
-	}
-	config.Sync.StateFile = fmt.Sprintf("%s.%s", strings.TrimSuffix(statePath, ".json"), profileConfig.Profile.ID)
+	// Make state file path profile-specific to avoid conflicts. Keep this
+	// derivation centralized because profile creation/update validation must
+	// inspect the exact path used by runtime setup.
+	config.Sync.StateFile = s.profileSpecificStatePath(profileConfig.Profile.ID, syncConfig.StateFile)
 	config.Sync.MinChangeThreshold = syncConfig.MinChangeThreshold
 	config.Sync.Libraries.Include = syncConfig.Libraries.Include
 	config.Sync.Libraries.Exclude = syncConfig.Libraries.Exclude
@@ -616,6 +813,305 @@ func (s *MultiUserService) createProfileSpecificConfig(profileConfig *database.P
 	})
 
 	return &config
+}
+
+func (s *MultiUserService) profileSpecificStatePath(profileID, configuredPath string) string {
+	return fmt.Sprintf("%s.%s", strings.TrimSuffix(s.profileStateBasePath(configuredPath), ".json"), encodeProfileID(profileID))
+}
+
+func (s *MultiUserService) legacyProfileStatePath(profileID, configuredPath string) string {
+	return fmt.Sprintf("%s.%s", strings.TrimSuffix(s.profileStateBasePath(configuredPath), ".json"), profileID)
+}
+
+func (s *MultiUserService) profileStateBasePath(configuredPath string) string {
+	statePath := configuredPath
+	if statePath == "" {
+		statePath = filepath.Join(s.effectiveDataDir(), "sync_state.json")
+	} else if !filepath.IsAbs(statePath) {
+		statePath = filepath.Join(s.effectiveDataDir(), statePath)
+	}
+	return statePath
+}
+
+// migrateLegacyProfileStatePath preserves state written before profile IDs were
+// encoded into a single filename component. It only reads a regular, non-symlink
+// file whose lexical and resolved parent paths remain under the canonical state
+// file directory. The canonical copy is written atomically by State.Save before
+// the old file is renamed to a recoverable .migrated backup.
+func (s *MultiUserService) migrateLegacyProfileStatePath(profileID, configuredPath string) error {
+	canonicalPath, err := filepath.Abs(s.profileSpecificStatePath(profileID, configuredPath))
+	if err != nil {
+		return fmt.Errorf("resolve canonical state path: %w", err)
+	}
+	if _, err := os.Lstat(canonicalPath); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect canonical state path: %w", err)
+	}
+	if !safeLegacyProfileIDPathSegments(profileID) {
+		return nil
+	}
+
+	legacyPath, err := filepath.Abs(s.legacyProfileStatePath(profileID, configuredPath))
+	if err != nil {
+		return fmt.Errorf("resolve legacy state path: %w", err)
+	}
+	if legacyPath == canonicalPath {
+		return nil
+	}
+
+	stateDir := filepath.Dir(canonicalPath)
+	if !pathWithinDirectory(stateDir, legacyPath) {
+		return nil
+	}
+	resolvedStateDir, err := filepath.EvalSymlinks(stateDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("resolve canonical state directory: %w", err)
+	}
+	resolvedLegacyDir, err := filepath.EvalSymlinks(filepath.Dir(legacyPath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("resolve legacy state directory: %w", err)
+	}
+	if !pathWithinDirectory(resolvedStateDir, resolvedLegacyDir) {
+		return nil
+	}
+
+	info, err := os.Lstat(legacyPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("inspect legacy state path: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil
+	}
+
+	legacyState, err := statepkg.LoadState(legacyPath)
+	if err != nil {
+		return fmt.Errorf("load legacy state file: %w", err)
+	}
+	if err := legacyState.Save(canonicalPath); err != nil {
+		return fmt.Errorf("save migrated state file: %w", err)
+	}
+
+	backupPath := legacyPath + ".migrated"
+	if _, err := os.Lstat(backupPath); err == nil {
+		if s.logger != nil {
+			s.logger.Warn("Migrated legacy sync state while preserving the existing backup", map[string]interface{}{
+				"profileID": profileID,
+				"path":      legacyPath,
+			})
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		if s.logger != nil {
+			s.logger.Warn("Migrated legacy sync state but could not inspect its backup path", map[string]interface{}{
+				"profileID": profileID,
+				"path":      legacyPath,
+				"error":     err.Error(),
+			})
+		}
+		return nil
+	}
+	if err := os.Rename(legacyPath, backupPath); err != nil && s.logger != nil {
+		s.logger.Warn("Migrated legacy sync state but could not rename the original", map[string]interface{}{
+			"profileID": profileID,
+			"path":      legacyPath,
+			"error":     err.Error(),
+		})
+	}
+	return nil
+}
+
+func pathWithinDirectory(directory, candidate string) bool {
+	relative, err := filepath.Rel(directory, candidate)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+// pathWithinResolvedDirectory checks containment after resolving every
+// existing component. The final state file (and any newly-created suffix) is
+// allowed not to exist yet, while an existing symlinked parent is still
+// accounted for.
+func pathWithinResolvedDirectory(directory, candidate string) (bool, error) {
+	resolvedDirectory, err := resolvePathWithExistingComponents(directory)
+	if err != nil {
+		return false, fmt.Errorf("resolve directory: %w", err)
+	}
+	resolvedCandidate, err := resolvePathWithExistingComponents(candidate)
+	if err != nil {
+		return false, fmt.Errorf("resolve candidate: %w", err)
+	}
+	return pathWithinDirectory(resolvedDirectory, resolvedCandidate), nil
+}
+
+// resolvePathWithExistingComponents resolves the existing prefix of a path,
+// then appends its possibly-missing suffix. This avoids requiring the state
+// file or its new parent directories to exist before validation.
+func resolvePathWithExistingComponents(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+
+	current := absPath
+	missing := make([]string, 0)
+	for {
+		if _, err := os.Lstat(current); err == nil {
+			resolved, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", err
+			}
+			for index := len(missing) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, missing[index])
+			}
+			return resolved, nil
+		} else if !os.IsNotExist(err) && !errors.Is(err, syscall.ENAMETOOLONG) {
+			return "", err
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("no existing ancestor for %q", path)
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
+}
+
+// safeLegacyProfileIDPathSegments permits historical IDs containing directory
+// separators, but rejects empty and dot path components before the raw path is
+// constructed. Otherwise a value such as "foo/../other" could alias another
+// profile's legacy filename after filepath.Abs cleans it.
+func safeLegacyProfileIDPathSegments(profileID string) bool {
+	if profileID == "" || strings.ContainsRune(profileID, '\x00') {
+		return false
+	}
+
+	segmentStart := 0
+	for index := 0; index < len(profileID); index++ {
+		if !os.IsPathSeparator(profileID[index]) {
+			continue
+		}
+		segment := profileID[segmentStart:index]
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
+		segmentStart = index + 1
+	}
+
+	segment := profileID[segmentStart:]
+	return segment != "" && segment != "." && segment != ".."
+}
+
+func validateStatePathComponentLengths(relativePath string) error {
+	for _, component := range strings.Split(filepath.Clean(relativePath), string(filepath.Separator)) {
+		if len([]byte(component)) > maxStateFileComponentBytes {
+			return fmt.Errorf("%w: %q", ErrProfileStateFileNameTooLong, component)
+		}
+	}
+	return nil
+}
+
+func (s *MultiUserService) validateProfileStateFile(profileID, configuredPath string) error {
+	return s.validateProfileStateFileWithAbsolutePolicy(profileID, configuredPath, false)
+}
+
+func (s *MultiUserService) validatePersistedProfileStateFile(profileID, configuredPath string) error {
+	return s.validateProfileStateFileWithAbsolutePolicy(profileID, configuredPath, true)
+}
+
+func (s *MultiUserService) validateProfileStateFileWithAbsolutePolicy(profileID, configuredPath string, allowAbsolute bool) error {
+	dataDir, err := filepath.Abs(s.effectiveDataDir())
+	if err != nil {
+		return fmt.Errorf("%w: resolve data directory: %v", ErrProfileStateFilePathNotAllowed, err)
+	}
+
+	if configuredPath != "" {
+		if strings.ContainsRune(configuredPath, '\x00') {
+			return fmt.Errorf("%w: NUL bytes are not accepted: %q", ErrProfileStateFilePathNotAllowed, configuredPath)
+		}
+		if filepath.IsAbs(configuredPath) && !allowAbsolute {
+			return fmt.Errorf("%w: absolute paths are not accepted: %q", ErrProfileStateFilePathNotAllowed, configuredPath)
+		}
+
+		configured := configuredPath
+		if !filepath.IsAbs(configured) {
+			configured = filepath.Join(dataDir, configured)
+		}
+		configured, err = filepath.Abs(configured)
+		if err != nil {
+			return fmt.Errorf("%w: resolve path: %v", ErrProfileStateFilePathNotAllowed, err)
+		}
+		if !pathWithinDirectory(dataDir, configured) {
+			return fmt.Errorf("%w: path escapes data directory: %q", ErrProfileStateFilePathNotAllowed, configuredPath)
+		}
+		withinResolvedDataDir, err := pathWithinResolvedDirectory(dataDir, configured)
+		if err != nil {
+			return fmt.Errorf("%w: resolve configured path: %v", ErrProfileStateFilePathNotAllowed, err)
+		}
+		if !withinResolvedDataDir {
+			return fmt.Errorf("%w: resolved path escapes data directory: %q", ErrProfileStateFilePathNotAllowed, configuredPath)
+		}
+	}
+
+	derivedPath := s.profileSpecificStatePath(profileID, configuredPath)
+	derived, err := filepath.Abs(derivedPath)
+	if err != nil {
+		return fmt.Errorf("%w: resolve derived path: %v", ErrProfileStateFilePathNotAllowed, err)
+	}
+	if !pathWithinDirectory(dataDir, derived) {
+		return fmt.Errorf("%w: derived path escapes data directory: %q", ErrProfileStateFilePathNotAllowed, configuredPath)
+	}
+	derivedRelative, err := filepath.Rel(dataDir, derived)
+	if err != nil {
+		return fmt.Errorf("%w: compare derived path with data directory: %v", ErrProfileStateFilePathNotAllowed, err)
+	}
+	if err := validateStatePathComponentLengths(derivedRelative); err != nil {
+		return err
+	}
+	withinResolvedDataDir, err := pathWithinResolvedDirectory(dataDir, derivedPath)
+	if err != nil {
+		return fmt.Errorf("%w: resolve derived path: %v", ErrProfileStateFilePathNotAllowed, err)
+	}
+	if !withinResolvedDataDir {
+		return fmt.Errorf("%w: resolved derived path escapes data directory: %q", ErrProfileStateFilePathNotAllowed, configuredPath)
+	}
+	return nil
+}
+
+func (s *MultiUserService) effectiveDataDir() string {
+	if s.globalConfig != nil && s.globalConfig.Paths.DataDir != "" {
+		return s.globalConfig.Paths.DataDir
+	}
+	return "/data"
+}
+
+// encodeProfileID turns every non-unreserved byte into a percent-encoded
+// sequence so even legacy IDs containing route delimiters remain one filename
+// component. New IDs are already restricted to the unreserved set.
+func encodeProfileID(profileID string) string {
+	const hex = "0123456789ABCDEF"
+	var encoded strings.Builder
+	encoded.Grow(len(profileID))
+	for i := 0; i < len(profileID); i++ {
+		char := profileID[i]
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || char == '-' || char == '.' || char == '_' || char == '~' {
+			encoded.WriteByte(char)
+			continue
+		}
+		encoded.WriteByte('%')
+		encoded.WriteByte(hex[char>>4])
+		encoded.WriteByte(hex[char&0x0f])
+	}
+	return encoded.String()
 }
 
 func cloneBookMismatch(record mismatch.BookMismatch) mismatch.BookMismatch {
@@ -660,11 +1156,7 @@ func applySnapshotToStatus(status *SyncProfileStatus, snapshot sync.SyncSnapshot
 		return
 	}
 	status.Snapshot = cloneSyncSnapshot(snapshot)
-	if snapshot.BooksTotal > 0 {
-		status.BooksTotal = int(snapshot.BooksTotal)
-	} else {
-		status.BooksTotal = int(snapshot.ProcessedSoFar)
-	}
+	status.BooksTotal = int(snapshot.BooksTotal)
 	status.BooksSynced = int(snapshot.BooksSynced)
 	status.BooksNotFound = append([]sync.BookNotFoundInfo(nil), snapshot.BooksNotFound...)
 	status.Mismatches = make([]mismatch.BookMismatch, len(snapshot.Mismatches))
