@@ -461,7 +461,10 @@ func main() {
 			"timeout": cfg.Server.ShutdownTimeout.String(),
 		})
 
-		if err := srv.Shutdown(shutdownCtx); err != nil {
+		serverShutdownCtx, serverCancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
+		err := srv.Shutdown(serverShutdownCtx)
+		serverCancel()
+		if err != nil {
 			log.Error("Error during server shutdown", map[string]interface{}{
 				"error": err.Error(),
 			})

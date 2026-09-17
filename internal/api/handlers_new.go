@@ -197,13 +197,18 @@ func (h *Handler) buildProfileResponse(p *database.ProfileWithTokens) map[string
 		return map[string]interface{}{}
 	}
 	prof := p.Profile
+	var lastSuccessful interface{}
+	if prof.SyncState != nil && prof.SyncState.LastSuccessfulAt != nil {
+		lastSuccessful = prof.SyncState.LastSuccessfulAt
+	}
 	response := map[string]interface{}{
 		"profile": map[string]interface{}{
-			"id":         prof.ID,
-			"name":       prof.Name,
-			"created_at": prof.CreatedAt,
-			"updated_at": prof.UpdatedAt,
-			"active":     prof.Active,
+			"id":                 prof.ID,
+			"name":               prof.Name,
+			"created_at":         prof.CreatedAt,
+			"updated_at":         prof.UpdatedAt,
+			"active":             prof.Active,
+			"last_successful_at": lastSuccessful,
 		},
 		"audiobookshelf_url": p.AudiobookshelfURL,
 		"sync_config":        p.SyncConfig,

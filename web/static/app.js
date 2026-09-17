@@ -2101,6 +2101,7 @@ class SyncProfileApp {
         this.statusRefreshError = null;
         this.statuses[id] = {
             ...previous,
+            terminal_error: '',
             profile_id: profileId,
             profile_name: previous.profile_name || profile?.name || `Profile ${id}`,
             last_attempted_at: queuedAt,
@@ -2264,6 +2265,10 @@ class SyncProfileApp {
     escapeHtmlAttribute(text) {
         return this.escapeHtml(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { SyncProfileApp };
 }
 
 // Global functions for HTML onclick handlers

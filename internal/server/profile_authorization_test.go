@@ -227,6 +227,53 @@ func TestAuthDisabledProfileResponsesRedactCredentialsAndPreserveUpdates(t *test
 	}
 }
 
+func TestGetProfileIncludesPersistedLastSuccessfulAt(t *testing.T) {
+	fixture := newRouteTestFixture(t, false)
+	const profileID = "profile-with-success"
+	require.NoError(t, fixture.repo.CreateProfile(
+		profileID,
+		"Profile with success",
+		"http://audiobookshelf.invalid",
+		"audiobookshelf-token",
+		"hardcover-token",
+		database.SyncConfigData{},
+	))
+
+	queuedAt := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	accepted, err := fixture.repo.AcceptSyncRun(&database.SyncRunReport{
+		ProfileID:    profileID,
+		RunID:        "successful-run",
+		Phase:        database.SyncRunPhaseQueued,
+		QueuedAt:     &queuedAt,
+		SnapshotJSON: "{}",
+	})
+	require.NoError(t, err)
+	finishedAt := queuedAt.Add(time.Hour)
+	require.NoError(t, fixture.repo.UpsertSyncRunReportContext(context.Background(), &database.SyncRunReport{
+		ProfileID:    profileID,
+		RunID:        accepted.RunID,
+		Generation:   accepted.Generation,
+		Phase:        database.SyncRunPhaseCompleted,
+		FinishedAt:   &finishedAt,
+		SnapshotJSON: "{}",
+	}))
+
+	response := fixture.request(http.MethodGet, "/api/profiles/"+profileID, nil)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	assertProfileResponseRedactsCredentials(t, response, "audiobookshelf-token", "hardcover-token")
+
+	var payload struct {
+		Data struct {
+			Profile struct {
+				LastSuccessfulAt *time.Time `json:"last_successful_at"`
+			} `json:"profile"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &payload))
+	require.NotNil(t, payload.Data.Profile.LastSuccessfulAt)
+	require.Equal(t, finishedAt, *payload.Data.Profile.LastSuccessfulAt)
+}
+
 func TestViewerProfileAuthorizationIsReadOnly(t *testing.T) {
 	fixture := newRouteTestFixture(t, true)
 	viewer := newRouteSession(t, fixture, "viewer", auth.RoleViewer)
