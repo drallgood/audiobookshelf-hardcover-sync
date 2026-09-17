@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/auth"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
@@ -50,7 +52,7 @@ func newRouteTestFixture(t *testing.T, authEnabled bool) *routeTestFixture {
 	authService, err := auth.NewAuthService(db.GetDB(), authConfig, logger.Get())
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		multiUserService.WaitForSyncs()
+		require.NoError(t, multiUserService.Shutdown(context.Background()))
 		require.NoError(t, db.Close())
 	})
 
@@ -192,9 +194,7 @@ func TestServerAggregateOmitsErrorWhileAuthenticatedStatusRetainsIt(t *testing.T
 	))
 	_, err := fixture.server.multiUserService.StartSyncWithAcceptedRun(profileID)
 	require.NoError(t, err)
-	fixture.server.multiUserService.WaitForSyncs()
-
-	terminal := profileStatusForServerTest(t, fixture.server.multiUserService, profileID)
+	terminal := waitForTerminalProfileStatusForServerTest(t, fixture.server.multiUserService, profileID)
 	require.NotNil(t, terminal)
 	require.NotNil(t, terminal.Snapshot)
 	require.Equal(t, "failed", terminal.Snapshot.State)
@@ -259,4 +259,25 @@ func profileStatusForServerTest(t *testing.T, service *multiuser.MultiUserServic
 		}
 	}
 	return nil
+}
+
+func waitForTerminalProfileStatusForServerTest(t *testing.T, service *multiuser.MultiUserService, profileID string) *multiuser.SyncProfileStatus {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		statuses, err := service.GetAllProfileStatuses()
+		if err != nil {
+			return false
+		}
+		for _, status := range statuses {
+			if status == nil || status.ProfileID != profileID || status.Snapshot == nil {
+				continue
+			}
+			switch status.Snapshot.State {
+			case "completed", "failed", "canceled":
+				return true
+			}
+		}
+		return false
+	}, 10*time.Second, 10*time.Millisecond)
+	return profileStatusForServerTest(t, service, profileID)
 }

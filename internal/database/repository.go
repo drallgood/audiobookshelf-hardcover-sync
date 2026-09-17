@@ -122,15 +122,10 @@ func deleteStaleQueuedSyncRunReports(tx *gorm.DB, profileID, currentRunID string
 	return nil
 }
 
-// UpsertSyncRunReport transactionally stores a terminal run report, retains
-// only the newest ten reports for the profile, and advances success metadata
-// only for a newer completed non-dry run.
-func (r *Repository) UpsertSyncRunReport(report *SyncRunReport) error {
-	return r.UpsertSyncRunReportContext(context.Background(), report)
-}
-
-// UpsertSyncRunReportContext stores a terminal run report with cancellation
-// propagated to the database transaction.
+// UpsertSyncRunReportContext transactionally stores a terminal run report,
+// retains only the newest ten reports for the profile, advances success
+// metadata only for a newer completed non-dry run, and propagates cancellation
+// to the database transaction.
 func (r *Repository) UpsertSyncRunReportContext(ctx context.Context, report *SyncRunReport) error {
 	if report == nil {
 		return errors.New("sync run report is required")

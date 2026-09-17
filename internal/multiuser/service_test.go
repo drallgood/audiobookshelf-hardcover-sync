@@ -30,6 +30,10 @@ import (
 	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 )
 
+func waitForSyncs(service *MultiUserService) {
+	service.syncWaitGroup.Wait()
+}
+
 func TestProfileMismatchExportsRemainIsolated(t *testing.T) {
 	service, _ := newStatusLookupService(t)
 	service.globalConfig.Paths.MismatchOutputDir = filepath.Join(t.TempDir(), "mismatches")
@@ -137,7 +141,7 @@ func TestGetSyncRunSnapshotRestoresRetainedRunWithoutProfileHydration(t *testing
 	report.Phase = database.SyncRunPhaseCompleted
 	report.FinishedAt = timePtrForMultiuserTest(queuedAt.Add(time.Minute))
 	report.SnapshotJSON = `{"run_id":"run-retained","state":"completed"}`
-	require.NoError(t, service.repository.UpsertSyncRunReport(report))
+	require.NoError(t, service.repository.UpsertSyncRunReportContext(context.Background(), report))
 
 	const queryCallbackName = "multiuser_test_forbid_retained_snapshot_profile_hydration"
 	require.NoError(t, db.Callback().Query().Before("gorm:query").Register(queryCallbackName, func(tx *gorm.DB) {
@@ -169,7 +173,7 @@ func TestGetSyncRunSnapshotLooksUpOnlyTheRequestedRetainedRun(t *testing.T) {
 	report.FinishedAt = timePtrForMultiuserTest(queuedAt.Add(time.Minute))
 	report.RunError = "retained failure"
 	report.SnapshotJSON = `{"run_id":"run-exact","state":"failed"}`
-	require.NoError(t, service.repository.UpsertSyncRunReport(report))
+	require.NoError(t, service.repository.UpsertSyncRunReportContext(context.Background(), report))
 
 	snapshot, err := service.GetSyncRunSnapshot(profileID, "run-exact")
 	require.NoError(t, err)
@@ -430,7 +434,7 @@ func TestStartSyncWithAcceptedRunMatchesQueuedDurableAndStatusIdentity(t *testin
 
 	require.NoError(t, service.CancelSync(profileID))
 	close(releaseRequest)
-	service.WaitForSyncs()
+	waitForSyncs(service)
 }
 
 func TestStartSyncWithAcceptedRunRejectsAtomicAcceptanceFailure(t *testing.T) {
@@ -600,7 +604,7 @@ func TestStartSyncWithAcceptedRunKeepsIdentityWhenWorkerFinishesImmediately(t *t
 
 	accepted, err := service.StartSyncWithAcceptedRun(profileID)
 	require.NoError(t, err)
-	service.WaitForSyncs()
+	waitForSyncs(service)
 
 	report, err := service.repository.GetSyncRunReport(profileID, accepted.RunID)
 	require.NoError(t, err)
@@ -696,7 +700,7 @@ func TestCanceledProfileWorkersRunInAcceptanceOrder(t *testing.T) {
 		t.Fatal("timed out waiting for the non-stale replacement worker")
 	}
 	close(releaseRequest)
-	service.WaitForSyncs()
+	waitForSyncs(service)
 	select {
 	case <-oldDone:
 	case <-time.After(time.Second):
@@ -809,7 +813,7 @@ func TestRestartRestoresNormalSyncFailureRunError(t *testing.T) {
 
 	accepted, err := service.StartSyncWithAcceptedRun(profileID)
 	require.NoError(t, err)
-	service.WaitForSyncs()
+	waitForSyncs(service)
 
 	requireFailedRunRestoration(t, service, profileID, accepted.RunID)
 }
@@ -832,7 +836,7 @@ func TestRestartRestoresPreServiceSetupFailureRunError(t *testing.T) {
 
 	accepted, err := service.StartSyncWithAcceptedRun(profileID)
 	require.NoError(t, err)
-	service.WaitForSyncs()
+	waitForSyncs(service)
 
 	requireFailedRunRestoration(t, service, profileID, accepted.RunID)
 }
@@ -875,7 +879,7 @@ func TestRestartRestoresNewestTerminalWhenQueuedReportFollowsTenTerminals(t *tes
 		report.Phase = database.SyncRunPhaseCompleted
 		report.FinishedAt = timePtrForMultiuserTest(queuedAt.Add(time.Duration(generation) * time.Minute))
 		report.SnapshotJSON = fmt.Sprintf(`{"run_id":%q,"state":"completed"}`, runID)
-		require.NoError(t, service.repository.UpsertSyncRunReport(report))
+		require.NoError(t, service.repository.UpsertSyncRunReportContext(context.Background(), report))
 	}
 	_, err := service.repository.AcceptSyncRun(&database.SyncRunReport{
 		ProfileID: profileID, RunID: "queued-after-history", Phase: database.SyncRunPhaseQueued,
@@ -905,7 +909,7 @@ func TestRestartRestoresTerminalWhenQueuedReportsExceedLookupLimit(t *testing.T)
 	terminal.Phase = database.SyncRunPhaseCompleted
 	terminal.FinishedAt = timePtrForMultiuserTest(queuedAt.Add(time.Minute))
 	terminal.SnapshotJSON = `{"state":"completed"}`
-	require.NoError(t, service.repository.UpsertSyncRunReport(terminal))
+	require.NoError(t, service.repository.UpsertSyncRunReportContext(context.Background(), terminal))
 
 	for generation := 1; generation <= 10; generation++ {
 		acceptTestSyncRun(t, service.repository, profileID, fmt.Sprintf("queued-%d", generation), false,
@@ -931,7 +935,7 @@ func TestAggregateStatusRestoresTerminalScalarsWithoutDetails(t *testing.T) {
 	report.Phase = database.SyncRunPhaseCompleted
 	report.FinishedAt = timePtrForMultiuserTest(queuedAt.Add(time.Minute))
 	report.SnapshotJSON = `{"books_total":12,"processed_so_far":7,"processed_count":7,"unattempted_count":5,"outcome_counts":{"synced":5},"total_books_processed":99,"books_synced":99,"books_not_found":[],"mismatches":[],"last_sync_summary":{"books_synced":99},"book_outcomes":[{"book_id":"book-1"}],"attention_records":[{"book_id":"book-1"}]}`
-	require.NoError(t, service.repository.UpsertSyncRunReport(report))
+	require.NoError(t, service.repository.UpsertSyncRunReportContext(context.Background(), report))
 
 	restarted := NewMultiUserService(service.repository, config.DefaultConfig(), logger.Get())
 	for poll := 0; poll < 2; poll++ {
@@ -1243,7 +1247,7 @@ func TestMigratedAbsoluteStateFileRemainsUsableForLegacyProfile(t *testing.T) {
 			))
 			_, err := service.StartSyncWithAcceptedRun(profileID)
 			require.NoError(t, err)
-			service.WaitForSyncs()
+			waitForSyncs(service)
 
 			status := profileStatusForTest(t, service, profileID)
 			require.NotNil(t, status)
@@ -1435,7 +1439,7 @@ func TestStartSyncAcceptsDefaultStateFileSymlinkInsideDataDir(t *testing.T) {
 
 	_, err := service.StartSyncWithAcceptedRun(profileID)
 	require.NoError(t, err)
-	service.WaitForSyncs()
+	waitForSyncs(service)
 	status := profileStatusForTest(t, service, profileID)
 	require.NotNil(t, status)
 	require.Equal(t, string(syncsvc.RunPhaseCompleted), status.Snapshot.State)

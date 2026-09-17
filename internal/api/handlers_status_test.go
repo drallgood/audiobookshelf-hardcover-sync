@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -50,7 +51,7 @@ func newStatusServiceFixture(t *testing.T, hardcoverURL string) *statusServiceFi
 	cfg.Hardcover.BaseURL = hardcoverURL
 	multiUser := multiuser.NewMultiUserService(repo, cfg, logger.Get())
 	t.Cleanup(func() {
-		multiUser.WaitForSyncs()
+		require.NoError(t, multiUser.Shutdown(context.Background()))
 		require.NoError(t, db.Close())
 	})
 
@@ -76,11 +77,6 @@ func (f *statusServiceFixture) createProfile(t *testing.T, id, name, absURL, tok
 			DryRun:             true,
 		},
 	))
-}
-
-func (f *statusServiceFixture) waitForSyncs(t *testing.T) {
-	t.Helper()
-	f.multiUser.WaitForSyncs()
 }
 
 func TestStartSyncRegistersWorkBeforeResponding(t *testing.T) {
@@ -119,8 +115,7 @@ func TestStartSyncRegistersWorkBeforeResponding(t *testing.T) {
 	require.True(t, response.Data.DryRun)
 	require.NotNil(t, profileStatusForAPITest(t, fixture.multiUser, profileID))
 
-	fixture.waitForSyncs(t)
-	status := profileStatusForAPITest(t, fixture.multiUser, profileID)
+	status := waitForStatusRun(t, fixture.multiUser, profileID)
 	require.NotNil(t, status)
 	require.Equal(t, string(syncsvc.RunPhaseCompleted), status.Snapshot.State)
 }
@@ -182,7 +177,7 @@ func TestStartSyncReturnsErrorWhenProfileIsAlreadySyncing(t *testing.T) {
 	})
 	const profileID = "already-syncing-profile"
 	fixture.createProfile(t, profileID, "Already syncing profile", absServer.URL, profileID)
-	_, err := fixture.multiUser.StartSyncWithAcceptedRun(profileID)
+	accepted, err := fixture.multiUser.StartSyncWithAcceptedRun(profileID)
 	require.NoError(t, err)
 	select {
 	case <-hardcoverServer.blockedStarted:
@@ -204,7 +199,8 @@ func TestStartSyncReturnsErrorWhenProfileIsAlreadySyncing(t *testing.T) {
 	require.Equal(t, "Sync already in progress", response.Error)
 
 	hardcoverServer.releaseBlocked()
-	fixture.waitForSyncs(t)
+	status := waitForStatusRun(t, fixture.multiUser, profileID)
+	require.Equal(t, accepted.RunID, status.Snapshot.RunID)
 }
 
 func TestStatusAndRunDetailsExposeSeparateSuccessfulAndAttemptedTimes(t *testing.T) {
@@ -236,9 +232,7 @@ func TestStatusAndRunDetailsExposeSeparateSuccessfulAndAttemptedTimes(t *testing
 	routes := newMountedStatusRoutes(handler)
 	accepted := requestJSONRoute(routes, http.MethodPost, "/api/profiles/"+profileID+"/sync")
 	require.Equal(t, http.StatusAccepted, accepted.Code, accepted.Body.String())
-	fixture.waitForSyncs(t)
-
-	status := aggregateStatusForProfile(t, routes, profileID)
+	status := waitForStatusRun(t, fixture.multiUser, profileID)
 	require.NotNil(t, status.LastAttemptedAt)
 	require.NotNil(t, status.LastSuccessfulAt)
 	require.False(t, status.Snapshot.DryRun)
@@ -361,7 +355,6 @@ func TestAggregateStatusAndRunDetailsShareCurrentRunIdentity(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, recorder.Code, recorder.Body.String())
 	require.Equal(t, int32(1), byID["profile-a"].Snapshot.BooksTotal)
 	require.Equal(t, int32(1), byID["profile-b"].Snapshot.BooksTotal)
-	fixture.waitForSyncs(t)
 }
 
 func TestCreateProfileValidatesIDs(t *testing.T) {
@@ -613,7 +606,6 @@ func TestAggregateStatusAndRunDetailsExposeLiveAttentionOutcomes(t *testing.T) {
 	require.True(t, terminalDetails.Success)
 	require.Equal(t, completed.Snapshot.RunID, terminalDetails.Data.RunID)
 	require.Len(t, terminalDetails.Data.BookOutcomes, 3)
-	fixture.waitForSyncs(t)
 }
 
 func TestPublicStatusPublishesSecondLookupOutcomeBeforeEnrichment(t *testing.T) {
@@ -651,7 +643,6 @@ func TestPublicStatusPublishesSecondLookupOutcomeBeforeEnrichment(t *testing.T) 
 	hardcoverServer.releaseEnrichment()
 	completed := waitForMountedStatusRun(t, routes, profileID, accepted.RunID)
 	require.Equal(t, string(syncsvc.RunPhaseCompleted), completed.Snapshot.State)
-	fixture.waitForSyncs(t)
 }
 
 func TestPublicStatusRunReplacementKeepsNewRunCurrent(t *testing.T) {
@@ -712,7 +703,6 @@ func TestPublicStatusRunReplacementKeepsNewRunCurrent(t *testing.T) {
 	finalStatus := aggregateStatusForProfile(t, routes, profileID)
 	require.NotNil(t, finalStatus.Snapshot)
 	require.Equal(t, newRunID, finalStatus.Snapshot.RunID)
-	fixture.waitForSyncs(t)
 }
 
 func TestRunDetailsExposeTechnicalTimeoutAsFailedOutcome(t *testing.T) {
@@ -750,7 +740,6 @@ func TestRunDetailsExposeTechnicalTimeoutAsFailedOutcome(t *testing.T) {
 	require.Equal(t, int32(1), detailsResponse.Data.OutcomeCounts.Failed)
 	require.Len(t, detailsResponse.Data.BookOutcomes, 1)
 	require.Equal(t, syncsvc.OutcomeFailed, detailsResponse.Data.BookOutcomes[0].Outcome)
-	fixture.waitForSyncs(t)
 }
 
 type statusAudiobookshelfServer struct {

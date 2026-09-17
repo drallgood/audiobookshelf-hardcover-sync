@@ -818,13 +818,6 @@ func (s *MultiUserService) StartSyncWithAcceptedRun(profileID string) (AcceptedS
 	return accepted, nil
 }
 
-// WaitForSyncs waits for all sync goroutines started by this service to exit.
-// It is used by lifecycle owners that must release resources, such as the
-// logger and test databases, only after asynchronous work has stopped.
-func (s *MultiUserService) WaitForSyncs() {
-	s.syncWaitGroup.Wait()
-}
-
 // Shutdown closes admission to new starts, cancels every active profile run,
 // and waits for accepted workers to exit until ctx is done. It is safe to call
 // more than once; a later call can continue draining after an earlier timeout.

@@ -2117,8 +2117,7 @@ class SyncProfileApp {
                 books_total: 0,
                 processed_so_far: 0,
                 unattempted_count: 0,
-                outcome_counts: zeroCounts,
-                book_outcomes: []
+                outcome_counts: zeroCounts
             }
         };
     }

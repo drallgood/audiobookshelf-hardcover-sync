@@ -98,7 +98,7 @@ func newRouteTestFixtureWithHardcoverURL(t *testing.T, hardcoverURL string) *rou
 	authService, err := auth.NewAuthService(db.GetDB(), authConfig, logger.Get())
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		multiUserService.WaitForSyncs()
+		require.NoError(t, multiUserService.Shutdown(context.Background()))
 		require.NoError(t, db.Close())
 	})
 
@@ -338,8 +338,7 @@ func TestForeignProfileAuthorizationReturnsNotFoundForEveryRoute(t *testing.T) {
 
 	_, err := fixture.server.multiUserService.StartSyncWithAcceptedRun("foreign-target")
 	require.NoError(t, err)
-	fixture.server.multiUserService.WaitForSyncs()
-	status := profileStatusForServerTest(t, fixture.server.multiUserService, "foreign-target")
+	status := waitForTerminalProfileStatusForServerTest(t, fixture.server.multiUserService, "foreign-target")
 	require.NotNil(t, status)
 	require.NotNil(t, status.Snapshot)
 	require.Len(t, status.Snapshot.BookOutcomes, 1)

@@ -88,7 +88,7 @@ have an administrator remove the old profile to prevent duplicate syncs.
 - **`sync.min_change_threshold`**: Minimum progress change threshold in seconds (default: 60)
 - **`app.sync_owned`**: Enable ownership syncing between platforms (default: true)
 - **`paths.cache_dir`**: Directory for cache files (default: "./cache")
-- **`app.mismatch_output_dir`**: Directory to store mismatch files (default: "./mismatches")
+- **`paths.mismatch_output_dir`**: Directory to store mismatch files (default: "./mismatches")
 - **`rate_limit`**: Configuration section for rate limiting
 
 Note: The Hardcover client now uses a unified configuration builder in both single-user and multi-user modes. It honors `hardcover.base_url` (defaulting to the official endpoint) and all `rate_limit.*` settings.
@@ -99,7 +99,7 @@ Note: The Hardcover client now uses a unified configuration builder in both sing
   - **Configuration**: Set via `sync.state_file` in config.yaml
 - **Mismatch Files**: Mismatches are now stored as individual files in a dedicated directory
   - **Migration**: Ensure the mismatch directory exists (default: "./mismatches")
-  - **Configuration**: Set via `app.mismatch_output_dir` in config.yaml
+  - **Configuration**: Set via `paths.mismatch_output_dir` in config.yaml
 
 ## Docker Changes
 
@@ -217,7 +217,7 @@ sync:
 ### Missing Mismatches
 - Verify that the mismatch output directory is correctly set in config.yaml:
   ```yaml
-  app:
+  paths:
     mismatch_output_dir: "./mismatches"
   ```
 - Check that the directory exists and has proper write permissions
