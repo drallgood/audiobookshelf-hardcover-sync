@@ -19,8 +19,7 @@ import (
 )
 
 var (
-	mismatchSaveLock sync.Mutex
-	mismatchLogLock  sync.Mutex
+	mismatchLogLock sync.Mutex
 )
 
 // Collector stores mismatches for one sync run so concurrent profile runs
@@ -666,17 +665,13 @@ func (c *Collector) GetAll() []BookMismatch {
 }
 
 // SaveToFile saves this collector's mismatches as individual JSON files in the
-// specified directory. The shared export lock keeps directory cleanup and
-// writes from interleaving when profiles use the same output directory.
+// specified directory. Production callers scope output directories per profile
+// and serialize runs for the same profile.
 func (c *Collector) SaveToFile(ctx context.Context, hc hardcover.HardcoverClientInterface, outputDir string, cfg *config.Config) error {
-	mismatchSaveLock.Lock()
-	defer mismatchSaveLock.Unlock()
-
 	return saveToFile(ctx, hc, outputDir, cfg, c.GetAll())
 }
 
-// saveToFile writes a snapshot of mismatch records. Callers serialize access
-// when they share an output directory.
+// saveToFile writes a snapshot of mismatch records.
 func saveToFile(ctx context.Context, hc hardcover.HardcoverClientInterface, outputDir string, cfg *config.Config, mismatches []BookMismatch) error {
 	// Get logger instance
 	log := logger.Get()

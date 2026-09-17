@@ -40,7 +40,6 @@ func TestNewState(t *testing.T) {
 	t.Parallel()
 
 	state := NewState()
-	assert.Equal(t, CurrentVersion, state.Version)
 	assert.NotZero(t, state.Books)
 }
 
@@ -52,7 +51,7 @@ func TestLoadState_NewFile(t *testing.T) {
 
 	state, err := LoadState(statePath)
 	require.NoError(t, err)
-	assert.Equal(t, CurrentVersion, state.Version)
+	assert.NotNil(t, state.Books)
 }
 
 func TestLoadState_IgnoresRetiredTimestampMetadata(t *testing.T) {
@@ -101,13 +100,13 @@ func TestSaveAndLoad(t *testing.T) {
 	assert.NotContains(t, string(saved), "lastSync")
 	assert.NotContains(t, string(saved), "lastFullSync")
 	assert.NotContains(t, string(saved), "libraries")
+	assert.NotContains(t, string(saved), "version")
 
 	// Load state
 	state2, err := LoadState(statePath)
 	require.NoError(t, err)
 
 	// Verify data
-	assert.Equal(t, state1.Version, state2.Version)
 	assert.Len(t, state2.Books, 1)
 
 	// Verify book data

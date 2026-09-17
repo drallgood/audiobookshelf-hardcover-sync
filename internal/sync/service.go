@@ -259,14 +259,6 @@ type Service struct {
 // Config is the configuration type for the sync service
 type Config = config.Config
 
-// NewService creates a new sync service for callers that do not have an
-// external run identity. The service creates its own identity when
-// Sync starts. Multi-user callers should use NewServiceWithRunIdentity so the
-// run ID and generation assigned at accepted-start remain authoritative.
-func NewService(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverClientInterface, cfg *Config) (*Service, error) {
-	return NewServiceWithRunIdentity(absClient, hcClient, cfg, "", time.Time{})
-}
-
 // NewServiceWithRunIdentity creates a sync service bound to an already
 // accepted run. runID is opaque and is retained exactly as supplied. queuedAt
 // is the accepted-start timestamp; when omitted for a non-empty run ID, the

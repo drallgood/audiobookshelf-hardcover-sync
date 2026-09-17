@@ -12,16 +12,12 @@ import (
 	"time"
 )
 
-const (
-	CurrentVersion   = "2.0"
-	DefaultStateFile = "./data/sync_state.json"
-)
+const DefaultStateFile = "./data/sync_state.json"
 
 type State struct {
-	Version string          `json:"version"`
-	Books   map[string]Book `json:"books,omitempty"`
-	mu      sync.RWMutex    `json:"-"`
-	dirty   bool            `json:"-"`
+	Books map[string]Book `json:"books,omitempty"`
+	mu    sync.RWMutex    `json:"-"`
+	dirty bool            `json:"-"`
 }
 
 type Book struct {
@@ -34,8 +30,7 @@ type Book struct {
 
 func NewState() *State {
 	return &State{
-		Version: CurrentVersion,
-		Books:   make(map[string]Book),
+		Books: make(map[string]Book),
 	}
 }
 
@@ -56,8 +51,6 @@ func LoadState(path string) (*State, error) {
 	if state.Books == nil {
 		state.Books = make(map[string]Book)
 	}
-	state.Version = CurrentVersion
-
 	return &state, nil
 }
 
