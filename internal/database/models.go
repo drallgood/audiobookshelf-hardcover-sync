@@ -36,16 +36,11 @@ type SyncProfileConfig struct {
 
 // ProfileSyncState holds the sync state for a specific profile
 type ProfileSyncState struct {
-	ProfileID                string     `gorm:"primaryKey;column:profile_id" json:"profile_id"`
-	RunGeneration            uint64     `gorm:"not null;default:0" json:"run_generation"`
-	LastAttemptedAt          *time.Time `json:"last_attempted_at"`
-	LastAttemptedRunID       string     `json:"last_attempted_run_id"`
-	LastAttemptedGeneration  uint64     `gorm:"not null;default:0" json:"last_attempted_generation"`
-	LastSuccessfulAt         *time.Time `json:"last_successful_at"`
-	LastSuccessfulRunID      string     `json:"last_successful_run_id"`
-	LastSuccessfulGeneration uint64     `gorm:"not null;default:0" json:"last_successful_generation"`
-	CreatedAt                time.Time  `json:"created_at"`
-	UpdatedAt                time.Time  `json:"updated_at"`
+	ProfileID               string     `gorm:"primaryKey;column:profile_id" json:"profile_id"`
+	LastAttemptedAt         *time.Time `json:"last_attempted_at"`
+	LastAttemptedRunID      string     `json:"last_attempted_run_id"`
+	LastAttemptedGeneration uint64     `gorm:"not null;default:0" json:"last_attempted_generation"`
+	LastSuccessfulAt        *time.Time `json:"last_successful_at"`
 
 	// Relationship
 	Profile SyncProfile `gorm:"foreignKey:ProfileID" json:"profile,omitempty"`
@@ -68,8 +63,6 @@ type SyncRunReport struct {
 	FinishedAt          *time.Time `json:"finished_at"`
 	RunError            string     `gorm:"type:text" json:"run_error,omitempty"`
 	SnapshotJSON        string     `gorm:"type:text" json:"snapshot_json"`
-	CreatedAt           time.Time  `json:"created_at"`
-	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
 const (
@@ -152,23 +145,5 @@ func (c *SyncProfileConfig) BeforeCreate(tx *gorm.DB) error {
 // BeforeUpdate hook for SyncProfileConfig
 func (c *SyncProfileConfig) BeforeUpdate(tx *gorm.DB) error {
 	c.UpdatedAt = time.Now()
-	return nil
-}
-
-// BeforeCreate hook for ProfileSyncState
-func (s *ProfileSyncState) BeforeCreate(tx *gorm.DB) error {
-	now := time.Now()
-	if s.CreatedAt.IsZero() {
-		s.CreatedAt = now
-	}
-	if s.UpdatedAt.IsZero() {
-		s.UpdatedAt = now
-	}
-	return nil
-}
-
-// BeforeUpdate hook for ProfileSyncState
-func (s *ProfileSyncState) BeforeUpdate(tx *gorm.DB) error {
-	s.UpdatedAt = time.Now()
 	return nil
 }

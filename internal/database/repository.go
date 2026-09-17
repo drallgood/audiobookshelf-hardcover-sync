@@ -82,18 +82,11 @@ func (r *Repository) AcceptSyncRun(report *SyncRunReport) (*SyncRunReport, error
 			Scan(&highestGeneration).Error; err != nil {
 			return fmt.Errorf("failed to inspect sync run generations: %w", err)
 		}
-		generation := state.RunGeneration + 1
-		if state.LastAttemptedGeneration >= generation {
-			generation = state.LastAttemptedGeneration + 1
-		}
-		if state.LastSuccessfulGeneration >= generation {
-			generation = state.LastSuccessfulGeneration + 1
-		}
+		generation := state.LastAttemptedGeneration + 1
 		if highestGeneration >= generation {
 			generation = highestGeneration + 1
 		}
 
-		state.RunGeneration = generation
 		state.LastAttemptedAt = &queuedAt
 		state.LastAttemptedRunID = report.RunID
 		state.LastAttemptedGeneration = generation
@@ -143,13 +136,12 @@ func (r *Repository) UpsertSyncRunReport(report *SyncRunReport) error {
 	}
 	return r.db.GetDB().Transaction(func(tx *gorm.DB) error {
 		var existing SyncRunReport
+		alreadyCompleted := false
 		findErr := tx.Where("profile_id = ? AND run_id = ?", report.ProfileID, report.RunID).First(&existing).Error
 		switch {
 		case findErr == nil:
+			alreadyCompleted = existing.Phase == SyncRunPhaseCompleted && !existing.DryRun
 			mergeSyncRunReportDefaults(report, &existing)
-			if report.CreatedAt.IsZero() {
-				report.CreatedAt = existing.CreatedAt
-			}
 			if err := tx.Save(report).Error; err != nil {
 				return fmt.Errorf("failed to update sync run report: %w", err)
 			}
@@ -168,7 +160,7 @@ func (r *Repository) UpsertSyncRunReport(report *SyncRunReport) error {
 			return err
 		}
 
-		if report.Phase != SyncRunPhaseCompleted || report.DryRun || report.Generation == 0 {
+		if report.Phase != SyncRunPhaseCompleted || report.DryRun || report.Generation == 0 || alreadyCompleted {
 			return nil
 		}
 		state, err := loadOrCreateSyncStateForUpdate(tx, report.ProfileID)
@@ -183,17 +175,12 @@ func (r *Repository) UpsertSyncRunReport(report *SyncRunReport) error {
 			report.RunID != state.LastAttemptedRunID {
 			return nil
 		}
-		if report.Generation <= state.LastSuccessfulGeneration {
-			return nil
-		}
 		finishedAt := report.FinishedAt
 		if finishedAt == nil {
 			now := time.Now().UTC()
 			finishedAt = &now
 		}
 		state.LastSuccessfulAt = finishedAt
-		state.LastSuccessfulRunID = report.RunID
-		state.LastSuccessfulGeneration = report.Generation
 		if err := tx.Save(state).Error; err != nil {
 			return fmt.Errorf("failed to advance successful sync metadata: %w", err)
 		}
@@ -638,13 +625,7 @@ func (r *Repository) GetSyncState(profileID string) (*ProfileSyncState, error) {
 	var state ProfileSyncState
 	if err := r.db.GetDB().Where("profile_id = ?", profileID).First(&state).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			// Return default state if not found
-			now := time.Now()
-			return &ProfileSyncState{
-				ProfileID: profileID,
-				CreatedAt: now,
-				UpdatedAt: now,
-			}, nil
+			return &ProfileSyncState{ProfileID: profileID}, nil
 		}
 		return nil, fmt.Errorf("failed to get sync state: %w", err)
 	}
