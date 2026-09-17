@@ -57,6 +57,9 @@ class SyncProfileApp {
         this.authSessionGeneration = 0;
         this.editProfileRequest = null;
         this.sessionMutationRequests = new Map();
+        // A successful start response is authoritative immediately, even if
+        // the next aggregate poll still contains the replaced run.
+        this.trackedRunIds = new Map();
 
         this.init();
     }
@@ -732,12 +735,24 @@ class SyncProfileApp {
                 const profileId = String(status.profile_id);
                 if (authorizedProfileIds && !authorizedProfileIds.has(profileId)) return;
                 const snapshot = status.snapshot || null;
+                const trackedRunId = this.trackedRunIds.get(profileId);
+                const incomingRunId = snapshot?.run_id ? String(snapshot.run_id) : '';
+                // Do not let a poll that raced the accepted-start response
+                // replace the queued run with the previous terminal report.
+                if (trackedRunId && incomingRunId !== trackedRunId) {
+                    const previous = this.statuses[profileId];
+                    if (previous?.snapshot?.run_id === trackedRunId) statuses[profileId] = previous;
+                    return;
+                }
+                if (trackedRunId && incomingRunId === trackedRunId) this.trackedRunIds.delete(profileId);
                 const normalized = {
                     profile_id: status.profile_id,
                     profile_name: status.profile_name || `Profile ${profileId}`,
                     status: status.status || 'idle',
                     dry_run: this.toBool(status.dry_run, false),
                     last_sync: status.last_sync || null,
+                    last_attempted_at: status.last_attempted_at || null,
+                    last_successful_at: status.last_successful_at || null,
                     progress: status.progress || '',
                     books_total: snapshot?.books_total ?? status.books_total ?? 0,
                     snapshot
@@ -988,6 +1003,7 @@ class SyncProfileApp {
         this.terminalErrorCache.clear();
         this.terminalErrorRetries.clear();
         this.terminalErrorRequests.clear();
+        this.trackedRunIds.clear();
         this.resetProfileRetry();
         this.authSessionGeneration += 1;
         this.statusLoadSequence += 1;
@@ -1007,16 +1023,25 @@ class SyncProfileApp {
         const progressPercent = booksTotal > 0 ? Math.min(100, Math.round((processed / booksTotal) * 100)) : 0;
         const hasKnownTotal = booksTotal > 0;
         const hasProcessedBooks = processed > 0;
-        const lastSync = status.last_sync || null;
-        const statusState = (snapshot.state || status.status || 'idle').toLowerCase();
-        const statusClass = statusState === 'failed' ? 'error' : statusState;
-        const statusText = statusState === 'syncing' && status.dry_run ? 'Syncing (dry run)' : this.formatStatusLabel(statusState);
+        const statusState = this.statusPhase(status);
+        const statusClass = this.isActiveRunPhase(statusState)
+            ? 'syncing'
+            : statusState === 'completed'
+                ? 'completed'
+                : statusState === 'failed' || statusState === 'canceled' ? 'error' : 'idle';
+        const statusText = this.formatStatusLabel(statusState, status.dry_run);
         const profileName = status.profile_name || status.profile_id || 'Unknown Profile';
         const actionError = this.actionErrors.get(profileId);
         const hasRun = Boolean(snapshot.run_id);
         const detailsOpen = this.isSyncSummaryOpen(profileId, snapshot.run_id);
-        const retryable = statusState === 'error' || statusState === 'failed';
+        const retryable = statusState === 'failed';
         const categories = this.outcomeCategories(counts);
+        const runStartedAt = this.timestampOrNull(snapshot.run_started_at);
+        const lastActivityAt = this.timestampOrNull(snapshot.last_activity_at)
+            || this.timestampOrNull(snapshot.last_processed_at);
+        const lastAttemptedAt = this.timestampOrNull(status.last_attempted_at)
+            || this.timestampOrNull(status.last_sync);
+        const lastSuccessfulAt = this.timestampOrNull(status.last_successful_at);
 
         return `
                 <div class="status-card ${statusClass}" data-profile-id="${this.escapeHtmlAttribute(profileId)}">
@@ -1025,8 +1050,17 @@ class SyncProfileApp {
                         <span class="status-badge">${this.escapeHtml(statusText)}</span>
                     </div>
                     <div class="status-info">
-                        ${lastSync ? `
-                            <div><strong>Last Sync:</strong> <span class="relative-sync-time" title="${new Date(lastSync).toLocaleString()}">${this.formatRelativeTime(lastSync)}</span></div>
+                        ${runStartedAt ? `
+                            <div><strong>Run started:</strong> <span class="relative-sync-time" data-timestamp="${this.escapeHtmlAttribute(runStartedAt)}" title="${new Date(runStartedAt).toLocaleString()}">${this.formatRelativeTime(runStartedAt)}</span></div>
+                        ` : ''}
+                        ${this.isActiveRunPhase(statusState) && lastActivityAt ? `
+                            <div><strong>Last activity:</strong> <span class="relative-sync-time" data-timestamp="${this.escapeHtmlAttribute(lastActivityAt)}" title="${new Date(lastActivityAt).toLocaleString()}">${this.formatRelativeTime(lastActivityAt)}</span></div>
+                        ` : ''}
+                        ${lastAttemptedAt ? `
+                            <div><strong>Last attempted:</strong> <span class="relative-sync-time" data-timestamp="${this.escapeHtmlAttribute(lastAttemptedAt)}" title="${new Date(lastAttemptedAt).toLocaleString()}">${this.formatRelativeTime(lastAttemptedAt)}</span></div>
+                        ` : ''}
+                        ${lastSuccessfulAt ? `
+                            <div><strong>Last successful:</strong> <span class="relative-sync-time" data-timestamp="${this.escapeHtmlAttribute(lastSuccessfulAt)}" title="${new Date(lastSuccessfulAt).toLocaleString()}">${this.formatRelativeTime(lastSuccessfulAt)}</span></div>
                         ` : ''}
                         ${hasKnownTotal ? `
                             <div><strong>Processed:</strong> ${processed} of ${booksTotal}</div>
@@ -1058,7 +1092,7 @@ class SyncProfileApp {
                         ` : ''}
                     </div>
                     <div class="status-actions">
-                        ${this.isViewer() ? '' : (statusState.toLowerCase() === 'syncing' ? `
+                        ${this.isViewer() ? '' : (this.isActiveRunPhase(statusState) ? `
                             <button class="btn btn-warning" data-profile-action="cancel">
                                 Cancel Sync
                             </button>
@@ -1077,8 +1111,37 @@ class SyncProfileApp {
             `;
     }
 
-    formatStatusLabel(state) {
-        return state ? state.charAt(0).toUpperCase() + state.slice(1) : 'Idle';
+    statusPhase(status) {
+        const state = String(status?.snapshot?.state || status?.status || 'idle').toLowerCase();
+        if (state === 'syncing') return 'running';
+        if (state === 'error') return 'failed';
+        return ['queued', 'running', 'finalizing', 'completed', 'canceled', 'failed'].includes(state)
+            ? state
+            : 'idle';
+    }
+
+    isActiveRunPhase(state) {
+        return ['queued', 'running', 'finalizing'].includes(state);
+    }
+
+    formatStatusLabel(state, dryRun = false) {
+        const labels = {
+            queued: 'Queued',
+            running: 'Running',
+            finalizing: 'Finalizing',
+            completed: 'Completed',
+            canceled: 'Canceled',
+            failed: 'Failed',
+            idle: 'Idle'
+        };
+        const label = labels[state] || 'Idle';
+        return dryRun && this.isActiveRunPhase(state) ? `${label} (dry run)` : label;
+    }
+
+    timestampOrNull(value) {
+        if (!value) return null;
+        const date = value instanceof Date ? value : new Date(value);
+        return Number.isFinite(date.getTime()) && date.getUTCFullYear() > 1 ? value : null;
     }
 
     outcomeCategories(counts = {}) {
@@ -1093,12 +1156,13 @@ class SyncProfileApp {
         ].map(category => ({ ...category, count: Number(counts[category.key] || 0) }));
     }
 
-    updateRelativeSyncTime(card, lastSync) {
-        const relativeTime = card.querySelector('.relative-sync-time');
-        if (!relativeTime || !lastSync) return;
-
-        relativeTime.textContent = this.formatRelativeTime(lastSync);
-        relativeTime.title = new Date(lastSync).toLocaleString();
+    updateRelativeSyncTime(card) {
+        card.querySelectorAll('.relative-sync-time[data-timestamp]').forEach((relativeTime) => {
+            const timestamp = relativeTime.dataset.timestamp;
+            if (!timestamp) return;
+            relativeTime.textContent = this.formatRelativeTime(timestamp);
+            relativeTime.title = new Date(timestamp).toLocaleString();
+        });
     }
 
     renderStatuses({ unavailable = false } = {}) {
@@ -1178,7 +1242,7 @@ class SyncProfileApp {
             }
 
             retainedProfiles.add(profileId);
-            this.updateRelativeSyncTime(card, status.last_sync || status.lastSync);
+            this.updateRelativeSyncTime(card);
             const cardAtPosition = container.children[index];
             if (cardAtPosition !== card) {
                 container.insertBefore(card, cardAtPosition || null);
@@ -1446,22 +1510,30 @@ class SyncProfileApp {
             .filter(mismatch => mismatch && mismatch.book_id != null)
             .map(mismatch => [String(mismatch.book_id), mismatch]));
         tabs.innerHTML = `<button class="tab-button active" type="button">${this.escapeHtml(this.statuses[open.profileId]?.profile_name || `Profile ${open.profileId}`)}</button>`;
-        const snapshotState = String(snapshot.state || '').toLowerCase();
+        const rawSnapshotState = String(snapshot.state || '').toLowerCase();
+        const snapshotState = rawSnapshotState === 'syncing' ? 'running' : rawSnapshotState;
         const unresolved = Number(snapshot.outcome_counts?.needs_review || 0) + Number(snapshot.outcome_counts?.not_found || 0) + Number(snapshot.outcome_counts?.failed || 0);
         const groups = categories.map(category => {
             const groupRecords = [...records.values()].filter(record => record.outcome === category.key);
             return { ...category, records: groupRecords };
         });
         const audiobookshelfURL = snapshot.audiobookshelf_url || '';
-        const groupsHtml = groups.map(group => `
+        const groupsHtml = groups.map(group => {
+            const emptyMessage = group.key === 'not_found'
+                ? this.isActiveRunPhase(snapshotState)
+                    ? 'No missing books reported in this run so far.'
+                    : 'No missing books reported in this run.'
+                : 'No books in this category.';
+            return `
             <details class="summary-section outcome-group" data-outcome="${group.key}" ${open.expandedOutcomes.has(group.key) ? 'open' : ''}>
                 <summary data-outcome-category="${group.key}"><span>${group.label}</span><span class="stat ${group.tone}">${group.count}</span></summary>
                 <div class="book-list">${group.records.length ? group.records.map(record => this.renderOutcomeRecord(
                     record,
                     record.outcome === 'needs_review' ? mismatches.get(String(record.book_id)) : null,
                     audiobookshelfURL
-                )).join('') : '<p class="empty-state">No books in this category.</p>'}</div>
-            </details>`).join('');
+                )).join('') : `<p class="empty-state">${emptyMessage}</p>`}</div>
+            </details>`;
+        }).join('');
         let statusMessage = 'Run status is unavailable.';
         if (snapshotState === 'completed') {
             statusMessage = unresolved === 0
@@ -1471,10 +1543,14 @@ class SyncProfileApp {
             statusMessage = 'This run failed before it could complete.';
         } else if (snapshotState === 'canceled') {
             statusMessage = 'This run was canceled.';
-        } else if (snapshotState === 'syncing') {
+        } else if (snapshotState === 'queued') {
+            statusMessage = 'Sync accepted and queued; processing has not started yet.';
+        } else if (snapshotState === 'running') {
             statusMessage = 'Currently syncing.';
+        } else if (snapshotState === 'finalizing') {
+            statusMessage = 'Finalizing sync results.';
         }
-        const runError = this.statuses[open.profileId]?.terminal_error || '';
+        const runError = snapshot.run_error || this.statuses[open.profileId]?.terminal_error || '';
         content.innerHTML = `
             <div class="sync-summary" data-run-id="${this.escapeHtmlAttribute(snapshot.run_id)}">
                 <div class="summary-header"><h3>Run details</h3><div class="last-sync">Started: ${new Date(snapshot.run_started_at).toLocaleString()}</div></div>
@@ -1998,12 +2074,15 @@ class SyncProfileApp {
             const result = await response.json();
             if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             
-            if (response.ok) {
+            if (response.status === 202 && result.success && result.data?.run_id && result.data?.state === 'queued') {
+                const accepted = result.data;
+                this.trackedRunIds.set(String(profileId), String(accepted.run_id));
                 this.actionErrors.delete(profileId);
+                this.applyAcceptedRun(profileId, accepted);
                 this.renderStatuses();
-                this.showToast('Sync started successfully', 'success');
-                // The action acknowledgement only contains a message; reload
-                // the authoritative status before updating the card.
+                this.showToast('Sync accepted and queued', 'success');
+                // Follow the authoritative run ID; processing may not have
+                // started by the time this refresh returns.
                 await this.loadStatuses();
             } else {
                 throw new Error(result.error || 'Failed to start sync');
@@ -2019,6 +2098,50 @@ class SyncProfileApp {
                 this.hideLoading();
             }
         }
+    }
+
+    applyAcceptedRun(profileId, accepted) {
+        const id = String(profileId);
+        const queuedAt = accepted.queued_at || accepted.run_started_at;
+        const profile = this.users.find(user => String(user?.id || '') === id);
+        const zeroCounts = {
+            synced: 0,
+            already_current: 0,
+            skipped: 0,
+            needs_review: 0,
+            not_found: 0,
+            failed: 0,
+            would_sync: 0
+        };
+        const previous = this.statuses[id] || {};
+        this.statusRefreshError = null;
+        this.statuses[id] = {
+            ...previous,
+            profile_id: profileId,
+            profile_name: previous.profile_name || profile?.name || `Profile ${id}`,
+            status: 'syncing',
+            dry_run: this.toBool(accepted.dry_run, false),
+            last_attempted_at: queuedAt,
+            message: accepted.message || '',
+            snapshot: {
+                run_id: accepted.run_id,
+                run_started_at: accepted.run_started_at || queuedAt,
+                queued_at: queuedAt,
+                processing_started_at: null,
+                last_activity_at: null,
+                last_processed_at: null,
+                finished_at: null,
+                dry_run: this.toBool(accepted.dry_run, false),
+                state: 'queued',
+                books_total: 0,
+                processed_so_far: 0,
+                processed_count: 0,
+                unattempted_count: 0,
+                outcome_counts: zeroCounts,
+                book_outcomes: [],
+                attention_records: []
+            }
+        };
     }
 
     async cancelSync(profileId) {

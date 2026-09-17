@@ -69,7 +69,7 @@ Existing single-profile setups are **automatically migrated** on first startup:
 | `PUT` | `/api/profiles/{id}/config` | Update profile configuration |
 | `GET` | `/api/profiles/{id}/status` | Get sync status and current-run snapshot |
 | `GET` | `/api/profiles/{id}/summary` | Get current-run outcomes and legacy summary |
-| `GET` | `/api/profiles/{id}/runs/{runId}/details` | Get book-level details for the current run |
+| `GET` | `/api/profiles/{id}/runs/{runId}/details` | Get book-level details for a retained sync run |
 | `POST` | `/api/profiles/{id}/sync` | Start sync |
 | `DELETE` | `/api/profiles/{id}/sync` | Cancel sync |
 | `GET` | `/api/status` | All profile statuses |
@@ -87,17 +87,28 @@ title, its ASIN to Audible, and its ISBN to a Goodreads search.
 Each processed book is counted once as `synced`, `already_current`, `skipped`,
 `needs_review`, `not_found`, `failed`, or dry-run `would_sync`. A total of zero
 means the number of books is not known yet, so the processed count may still
-increase. Status represents only the current run, is cleared when that run is
-canceled, and is not a persistent run history.
+increase. A sync start is acknowledged as an accepted `queued` run before
+processing begins; the status card then follows that run through `running`,
+`finalizing`, and its terminal phase. Canceled and failed runs retain their
+partial counts, including unattempted candidates. The card distinguishes the
+last attempted run from the last successful non-dry-run run, and labels active
+dry runs without implying that Hardcover was changed.
+
+The service retains the newest 10 terminal run reports per profile. View Details can open
+the report for an exact run ID, including a completed, canceled, or failed run,
+so the latest report remains available after a restart. While a run is active,
+an empty missing-books category means `No missing books reported in this run
+so far`; after a terminal run it means `No missing books reported in this run`.
 
 For API clients, `GET /api/status` provides a lightweight snapshot with the run
 ID, start time, state, totals, and outcome counts, but no book-level records.
 Authenticated profile status and summary routes include the full current
 snapshot. Book-level outcomes are available from
-`GET /api/profiles/{id}/runs/{runId}/details`; stale, replaced, canceled, or
-unknown run IDs return `404`, so clients should refresh status and use the
-current run ID. Needs-review, not-found, and failed books appear in
-`attention_records` as they occur.
+`GET /api/profiles/{id}/runs/{runId}/details`; run IDs outside the retained
+history return `404`. Needs-review, not-found, and failed books appear in
+`attention_records` as they occur. `last_attempted_at` includes dry-run,
+failed, and canceled attempts; `last_successful_at` is updated only by a
+successful non-dry-run completion.
 
 ### Environment Variables (Multi-Profile)
 
