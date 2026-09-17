@@ -87,8 +87,8 @@ title, its ASIN to Audible, and its ISBN to a Goodreads search.
 Each processed book is counted once as `synced`, `already_current`, `skipped`,
 `needs_review`, `not_found`, `failed`, or dry-run `would_sync`. A total of zero
 means the number of books is not known yet, so the processed count may still
-increase. A sync start is acknowledged as an accepted `queued` run before
-processing begins; the status card then follows that run through `running`,
+increase. A sync start durably reserves an accepted `queued` run before worker
+launch; the HTTP response may race processing. The status card then follows that run through `running`,
 `finalizing`, and its terminal phase. Canceled and failed runs retain their
 partial counts, including unattempted candidates. The card distinguishes the
 last attempted run from the last successful non-dry-run run, and labels active

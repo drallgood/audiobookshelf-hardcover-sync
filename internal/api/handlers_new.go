@@ -728,7 +728,8 @@ func (h *Handler) StartSync(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// StartSyncWithAcceptedRun returns the identity from the same durable
-	// reservation that installed the queued run, before the worker starts.
+	// reservation that installed the queued run before worker launch. The
+	// response may be written after worker processing has begun.
 	accepted, err := h.multiUserService.StartSyncWithAcceptedRun(profileID)
 	if err != nil {
 		switch {

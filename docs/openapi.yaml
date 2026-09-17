@@ -87,7 +87,7 @@ components:
         state:
           type: string
           enum: [queued]
-          description: Accepted runs are acknowledged before worker processing begins.
+          description: The accepted run is durably queued before worker launch; response delivery may race worker processing.
         run_started_at:
           type: string
           format: date-time

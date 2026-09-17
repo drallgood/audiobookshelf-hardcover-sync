@@ -109,6 +109,9 @@ func (r *Repository) AcceptSyncRun(report *SyncRunReport) (*SyncRunReport, error
 		if err := tx.Create(report).Error; err != nil {
 			return fmt.Errorf("failed to create queued sync run report: %w", err)
 		}
+		if err := deleteStaleQueuedSyncRunReports(tx, report.ProfileID, report.RunID); err != nil {
+			return err
+		}
 		if err := retainNewestSyncRunReports(tx, report.ProfileID); err != nil {
 			return err
 		}
@@ -118,6 +121,14 @@ func (r *Repository) AcceptSyncRun(report *SyncRunReport) (*SyncRunReport, error
 		return nil, err
 	}
 	return report, nil
+}
+
+func deleteStaleQueuedSyncRunReports(tx *gorm.DB, profileID, currentRunID string) error {
+	if err := tx.Where("profile_id = ? AND phase = ? AND run_id <> ?", profileID, SyncRunPhaseQueued, currentRunID).
+		Delete(&SyncRunReport{}).Error; err != nil {
+		return fmt.Errorf("failed to remove stale queued sync run reports: %w", err)
+	}
+	return nil
 }
 
 // ReserveSyncRun is the compatibility form of AcceptSyncRun for callers that

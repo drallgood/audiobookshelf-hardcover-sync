@@ -597,7 +597,7 @@ func TestPublishFinalStatusRejectsReplacedRunBeforeDurableSuccess(t *testing.T) 
 	require.False(t, service.publishFinalStatus(profileID, oldRun.generation, acceptedTerminalStatus(profileID, oldRun, string(syncsvc.RunPhaseCompleted))))
 	oldReport, err := service.repository.GetSyncRunReport(profileID, oldRun.runID)
 	require.NoError(t, err)
-	require.Equal(t, database.SyncRunPhaseQueued, oldReport.Phase)
+	require.Nil(t, oldReport)
 	state, err := service.repository.GetSyncState(profileID)
 	require.NoError(t, err)
 	require.Zero(t, state.LastSuccessfulGeneration)
@@ -841,6 +841,37 @@ func TestPublishFinalStatusSurfacesTerminalPersistenceFailure(t *testing.T) {
 	require.Contains(t, status.Error, "failed to persist sync report")
 	require.NotNil(t, status.Snapshot)
 	require.Equal(t, string(syncsvc.RunPhaseFailed), status.Snapshot.State)
+}
+
+func TestCancelSyncReturnsPersistenceFailureAfterPublishingCanceledRunError(t *testing.T) {
+	service, db := newStatusLookupService(t)
+	const profileID = "profile-cancel-persist-failure"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Cancel persistence failure", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
+	))
+	run := installAcceptedTestRun(t, service, profileID, "run-cancel-persist-failure", false)
+
+	writeErr := errors.New("canceled report persistence unavailable")
+	const callbackName = "multiuser_test_fail_canceled_report_update"
+	require.NoError(t, db.Callback().Update().Before("gorm:update").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Schema != nil && tx.Statement.Schema.Name == "SyncRunReport" {
+			require.ErrorIs(t, tx.AddError(writeErr), writeErr)
+		}
+	}))
+	t.Cleanup(func() { require.NoError(t, db.Callback().Update().Remove(callbackName)) })
+
+	err := service.CancelSync(profileID)
+	require.ErrorIs(t, err, writeErr)
+	require.False(t, service.IsProfileSyncing(profileID))
+
+	status := service.GetProfileStatus(profileID)
+	require.NotNil(t, status)
+	require.Equal(t, "error", status.Status)
+	require.Contains(t, status.Error, "failed to persist canceled sync report")
+	require.NotNil(t, status.Snapshot)
+	require.Equal(t, run.runID, status.Snapshot.RunID)
+	require.Equal(t, string(syncsvc.RunPhaseFailed), status.Snapshot.State)
+	require.Equal(t, status.Error, status.Snapshot.RunError)
 }
 
 func TestBlockedProfilePersistenceDoesNotBlockOtherProfileStatus(t *testing.T) {

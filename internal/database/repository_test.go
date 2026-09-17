@@ -232,6 +232,53 @@ func TestQueuedAcceptanceDoesNotEvictTerminalReports(t *testing.T) {
 	}
 }
 
+func TestQueuedAcceptanceRemovesStaleQueuedReportsAndRetainsTerminalHistory(t *testing.T) {
+	db, repo := newRepositoryForTest(t)
+	createTestProfile(t, db, "profile-a")
+	queuedAt := time.Date(2026, time.September, 16, 12, 0, 0, 0, time.UTC)
+
+	for generation := 1; generation <= maxSyncRunReports; generation++ {
+		report, err := repo.ReserveSyncRun(
+			"profile-a", "terminal-"+string(rune('a'+generation-1)), false,
+			queuedAt.Add(time.Duration(generation)*time.Minute),
+		)
+		require.NoError(t, err)
+		report.Phase = SyncRunPhaseCompleted
+		report.FinishedAt = timePtrForDatabaseTest(queuedAt.Add(time.Duration(generation) * time.Minute))
+		require.NoError(t, repo.UpsertSyncRunReport(report))
+	}
+
+	for generation := 1; generation <= 12; generation++ {
+		_, err := repo.ReserveSyncRun(
+			"profile-a", "queued-"+string(rune('a'+generation-1)), false,
+			queuedAt.Add(time.Duration(maxSyncRunReports+generation)*time.Minute),
+		)
+		require.NoError(t, err)
+	}
+
+	var queuedCount int64
+	require.NoError(t, db.GetDB().Model(&SyncRunReport{}).
+		Where("profile_id = ? AND phase = ?", "profile-a", SyncRunPhaseQueued).
+		Count(&queuedCount).Error)
+	require.EqualValues(t, 1, queuedCount)
+
+	stale, err := repo.GetSyncRunReport("profile-a", "queued-a")
+	require.NoError(t, err)
+	require.Nil(t, stale)
+	latest, err := repo.GetSyncRunReport("profile-a", "queued-l")
+	require.NoError(t, err)
+	require.NotNil(t, latest)
+
+	terminals, err := repo.ListTerminalSyncRunReports("profile-a", 0)
+	require.NoError(t, err)
+	require.Len(t, terminals, maxSyncRunReports)
+	for generation := 1; generation <= maxSyncRunReports; generation++ {
+		report, err := repo.GetSyncRunReport("profile-a", "terminal-"+string(rune('a'+generation-1)))
+		require.NoError(t, err)
+		require.NotNil(t, report)
+	}
+}
+
 func TestMigrateLegacyLastSyncToLastAttemptedAtIdempotently(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "legacy.db")
 	legacy := time.Date(2026, time.September, 15, 8, 0, 0, 0, time.UTC)

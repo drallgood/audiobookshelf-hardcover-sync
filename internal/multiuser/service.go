@@ -60,8 +60,9 @@ type SyncProfileStatus struct {
 
 // AcceptedSyncRun is the immutable identity returned for a successfully
 // accepted start. Its value fields are copied from the durable queued
-// reservation before the sync worker is started, so callers never need to
-// infer the accepted run from a later status read.
+// reservation before worker launch, so callers never need to infer the
+// accepted run from a later status read. The HTTP response may race worker
+// execution; response delivery ordering is not part of this contract.
 type AcceptedSyncRun struct {
 	RunID        string    `json:"run_id"`
 	QueuedAt     time.Time `json:"queued_at"`
@@ -990,7 +991,8 @@ func (s *MultiUserService) StartSync(profileID string) error {
 
 // StartSyncWithAcceptedRun starts a sync and returns the durable queued run
 // identity accepted for it. The returned record is constructed from the same
-// reservation that installed the queued report, before its worker is started.
+// durable reservation that installed the queued report before worker launch;
+// response delivery may race worker execution.
 func (s *MultiUserService) StartSyncWithAcceptedRun(profileID string) (AcceptedSyncRun, error) {
 	gate := s.profileGate(profileID)
 	gate.mu.Lock()
@@ -1167,6 +1169,8 @@ func (s *MultiUserService) CancelSync(profileID string) error {
 		snapshot.RunError = finalStatus.Error
 		applySnapshotToStatus(finalStatus, snapshot)
 		finalStatus.Status = "error"
+		s.publishStatusIfLatest(profileID, run, finalStatus)
+		return fmt.Errorf("failed to persist canceled sync report: %w", err)
 	}
 	s.publishStatusIfLatest(profileID, run, finalStatus)
 	return nil
