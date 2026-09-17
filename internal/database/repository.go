@@ -291,6 +291,22 @@ func (r *Repository) ListSyncRunReports(profileID string, limit int) ([]SyncRunR
 	return reports, nil
 }
 
+// ListTerminalSyncRunReports returns newest terminal reports for a profile,
+// bounded to the retention window. Filtering before the limit keeps abandoned
+// queued reports from hiding the newest retained terminal report at restart.
+func (r *Repository) ListTerminalSyncRunReports(profileID string, limit int) ([]SyncRunReport, error) {
+	if limit <= 0 || limit > maxSyncRunReports {
+		limit = maxSyncRunReports
+	}
+	var reports []SyncRunReport
+	if err := r.db.GetDB().Where("profile_id = ? AND phase IN ?", profileID, []string{
+		SyncRunPhaseCompleted, SyncRunPhaseCanceled, SyncRunPhaseFailed,
+	}).Order("generation DESC").Order("run_id DESC").Limit(limit).Find(&reports).Error; err != nil {
+		return nil, fmt.Errorf("failed to list terminal sync run reports: %w", err)
+	}
+	return reports, nil
+}
+
 // GetLatestSyncRunReport returns the newest report for a profile.
 func (r *Repository) GetLatestSyncRunReport(profileID string) (*SyncRunReport, error) {
 	reports, err := r.ListSyncRunReports(profileID, 1)

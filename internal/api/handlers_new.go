@@ -691,10 +691,6 @@ func (h *Handler) GetAllProfileStatuses(w http.ResponseWriter, r *http.Request) 
 		if status == nil {
 			continue
 		}
-		canonical := h.multiUserService.GetProfileSnapshot(status.ProfileID)
-		if canonical == nil {
-			canonical = status.Snapshot
-		}
 		response := aggregateStatusResponse{
 			ProfileID:        status.ProfileID,
 			ProfileName:      status.ProfileName,
@@ -707,12 +703,12 @@ func (h *Handler) GetAllProfileStatuses(w http.ResponseWriter, r *http.Request) 
 			BooksTotal:       status.BooksTotal,
 			BooksSynced:      status.BooksSynced,
 		}
-		if canonical != nil {
-			response.Status = statusForSnapshotPhase(canonical.State)
-			response.DryRun = canonical.DryRun
-			response.BooksTotal = int(canonical.BooksTotal)
-			response.BooksSynced = int(canonical.BooksSynced)
-			response.Snapshot = aggregateSnapshotFrom(canonical)
+		if status.Snapshot != nil {
+			response.Status = statusForSnapshotPhase(status.Snapshot.State)
+			response.DryRun = status.Snapshot.DryRun
+			response.BooksTotal = int(status.Snapshot.BooksTotal)
+			response.BooksSynced = int(status.Snapshot.BooksSynced)
+			response.Snapshot = aggregateSnapshotFrom(status.Snapshot)
 		}
 		responses = append(responses, response)
 	}

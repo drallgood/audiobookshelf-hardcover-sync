@@ -212,10 +212,10 @@ func (s *MultiUserService) getAggregateProfileStatus(profile database.SyncProfil
 	status := s.getStoredAggregateStatus(profile)
 	if status == nil {
 		// A freshly constructed service has no in-memory status yet. Restore
-		// only the durable terminal report; this is intentionally outside the
+		// only scalar fields from the durable terminal report; this is intentionally outside the
 		// lifecycle map lock in normal callers, and cacheStatusIfAbsent avoids
 		// replacing a run accepted concurrently with this lookup.
-		if restored, err := s.restoreProfileStatus(profile.ID, &profile); err == nil && restored != nil {
+		if restored, err := s.restoreAggregateProfileStatus(profile.ID, &profile); err == nil && restored != nil {
 			status = s.cacheStatusIfAbsent(profile.ID, restored)
 		}
 	}
@@ -236,9 +236,6 @@ func (s *MultiUserService) getAggregateProfileStatus(profile database.SyncProfil
 		}
 	}
 	s.syncMutex.RUnlock()
-	projectedSnapshot := snapshot
-	projectedSnapshot.State = legacySnapshotState(snapshot.State)
-
 	if status == nil {
 		status = &SyncProfileStatus{
 			ProfileID:   profile.ID,
@@ -253,7 +250,11 @@ func (s *MultiUserService) getAggregateProfileStatus(profile database.SyncProfil
 		status.ProfileName = profile.Name
 	}
 	status.Status = statusForSnapshot(&snapshot)
-	status.Snapshot = &projectedSnapshot
+	// Aggregate callers consume the canonical lifecycle phase directly. Keep
+	// the legacy "syncing" projection confined to GetProfileStatus, whose
+	// compatibility payload is replaced with a full canonical snapshot by the
+	// per-profile status handler.
+	status.Snapshot = &snapshot
 	status.BooksTotal = int(snapshot.BooksTotal)
 	status.BooksSynced = int(snapshot.BooksSynced)
 
@@ -524,7 +525,7 @@ func (s *MultiUserService) restoreLatestTerminalSnapshot(profileID string) (*syn
 	if s.repository == nil {
 		return nil, nil
 	}
-	reports, err := s.repository.ListSyncRunReports(profileID, 0)
+	reports, err := s.repository.ListTerminalSyncRunReports(profileID, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -554,7 +555,7 @@ func (s *MultiUserService) restoreProfileStatus(profileID string, profile *datab
 	if err != nil {
 		return nil, err
 	}
-	reports, err := s.repository.ListSyncRunReports(profileID, 0)
+	reports, err := s.repository.ListTerminalSyncRunReports(profileID, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -609,6 +610,107 @@ func (s *MultiUserService) restoreProfileStatus(profileID string, profile *datab
 		status.LastSync = copyTime(report.FinishedAt)
 	}
 	return status, nil
+}
+
+// restoreAggregateProfileStatus rebuilds only the scalar status needed by
+// aggregate polling. Retained per-book arrays are deliberately excluded from
+// SnapshotJSON decoding; authenticated profile status restores the full report
+// through restoreProfileStatus instead.
+func (s *MultiUserService) restoreAggregateProfileStatus(profileID string, profile *database.SyncProfile) (*SyncProfileStatus, error) {
+	if s.repository == nil {
+		return nil, nil
+	}
+	state, err := s.repository.GetProfileSyncState(profileID)
+	if err != nil {
+		return nil, err
+	}
+	reports, err := s.repository.ListTerminalSyncRunReports(profileID, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	status := &SyncProfileStatus{ProfileID: profileID, Status: "idle"}
+	if profile != nil {
+		status.ProfileName = profile.Name
+	}
+	if state != nil {
+		status.LastSync = copyTime(state.LastSync)
+		status.LastAttemptedAt = copyTime(state.LastAttemptedAt)
+		status.LastSuccessfulAt = copyTime(state.LastSuccessfulAt)
+		if status.LastAttemptedAt == nil {
+			status.LastAttemptedAt = copyTime(state.LastSync)
+		}
+	}
+	if len(reports) == 0 {
+		return status, nil
+	}
+
+	report := &reports[0]
+	snapshot, err := scalarSnapshotFromRetainedReport(profileID, report)
+	if err != nil {
+		return nil, err
+	}
+	status.Snapshot = snapshot
+	status.Status = statusForSnapshot(snapshot)
+	status.DryRun = snapshot.DryRun
+	status.BooksTotal = int(snapshot.BooksTotal)
+	status.BooksSynced = int(snapshot.BooksSynced)
+	if status.LastAttemptedAt == nil {
+		status.LastAttemptedAt = copyTime(report.QueuedAt)
+	}
+	if report.Phase == database.SyncRunPhaseCompleted && !report.DryRun && status.LastSuccessfulAt == nil {
+		status.LastSuccessfulAt = copyTime(report.FinishedAt)
+		status.LastSync = copyTime(report.FinishedAt)
+	}
+	return status, nil
+}
+
+// scalarSnapshotFromRetainedReport decodes only aggregate fields from a
+// retained report. Unknown per-book fields in SnapshotJSON are ignored by the
+// narrow wire type and are never materialized.
+func scalarSnapshotFromRetainedReport(profileID string, report *database.SyncRunReport) (*sync.SyncSnapshot, error) {
+	if report == nil {
+		return nil, nil
+	}
+	var scalar struct {
+		BooksTotal          int32              `json:"books_total"`
+		ProcessedSoFar      int32              `json:"processed_so_far"`
+		ProcessedCount      int32              `json:"processed_count"`
+		UnattemptedCount    int32              `json:"unattempted_count"`
+		OutcomeCounts       sync.OutcomeCounts `json:"outcome_counts"`
+		TotalBooksProcessed int32              `json:"total_books_processed"`
+		BooksSynced         int32              `json:"books_synced"`
+	}
+	if report.SnapshotJSON != "" && report.SnapshotJSON != "{}" {
+		if err := json.Unmarshal([]byte(report.SnapshotJSON), &scalar); err != nil {
+			return nil, fmt.Errorf("decode retained sync report %s: %w", report.RunID, err)
+		}
+	}
+	snapshot := &sync.SyncSnapshot{
+		UserID: profileID, RunID: report.RunID, State: reportPhaseToSyncPhase(report.Phase),
+		DryRun: report.DryRun, RunError: report.RunError,
+		UnattemptedCount: scalar.UnattemptedCount, BooksTotal: scalar.BooksTotal,
+		ProcessedSoFar: scalar.ProcessedSoFar,
+		ProcessedCount: scalar.ProcessedCount, OutcomeCounts: scalar.OutcomeCounts,
+		TotalBooksProcessed: scalar.TotalBooksProcessed, BooksSynced: scalar.BooksSynced,
+	}
+	if report.QueuedAt != nil {
+		snapshot.QueuedAt = report.QueuedAt.UTC()
+		snapshot.RunStartedAt = snapshot.QueuedAt
+	}
+	if report.ProcessingStartedAt != nil {
+		snapshot.ProcessingStartedAt = report.ProcessingStartedAt.UTC()
+	}
+	if report.LastActivityAt != nil {
+		snapshot.LastActivityAt = report.LastActivityAt.UTC()
+	}
+	if report.LastProcessedAt != nil {
+		snapshot.LastProcessedAt = report.LastProcessedAt.UTC()
+	}
+	if report.FinishedAt != nil {
+		snapshot.FinishedAt = report.FinishedAt.UTC()
+	}
+	return snapshot, nil
 }
 
 func reportPhaseToSyncPhase(phase string) string {

@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Keep aggregate status polling lightweight**: Reuse scalar lifecycle snapshots in `/api/status` instead of deep-copying per-book outcome and attention records before discarding them.
 - **Make sync status refresh unobtrusive**: Refresh Sync Status without page flashing or interrupting interaction, and retry temporary profile-load failures. By @Snuffy2. (#180)
 - **Sync Status fetch errors**: Remove misplaced Hardcover mismatch-display code from status loading so successful profile status requests no longer log an undefined-variable error by @Snuffy2. (#178)
 - **Limit raw API response logging to debug**: Routes the full Audiobookshelf library-items API response through debug logging instead of writing it directly to standard error. (#174)

@@ -757,6 +757,69 @@ func TestRestartRestoresNewestTerminalWhenQueuedReportFollowsTenTerminals(t *tes
 	require.Equal(t, string(syncsvc.RunPhaseCompleted), status.Snapshot.State)
 }
 
+func TestRestartRestoresTerminalWhenQueuedReportsExceedLookupLimit(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	const profileID = "profile-terminal-before-queued"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Terminal before queued", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
+	))
+	queuedAt := time.Date(2026, time.September, 16, 12, 0, 0, 0, time.UTC)
+	terminal, err := service.repository.ReserveSyncRun(profileID, "terminal-retained", false, queuedAt)
+	require.NoError(t, err)
+	terminal.Phase = database.SyncRunPhaseCompleted
+	terminal.FinishedAt = timePtrForMultiuserTest(queuedAt.Add(time.Minute))
+	terminal.SnapshotJSON = `{"state":"completed"}`
+	require.NoError(t, service.repository.UpsertSyncRunReport(terminal))
+
+	for generation := 1; generation <= 10; generation++ {
+		_, err := service.repository.ReserveSyncRun(
+			profileID, fmt.Sprintf("queued-%d", generation), false,
+			queuedAt.Add(time.Duration(generation+1)*time.Minute),
+		)
+		require.NoError(t, err)
+	}
+
+	restarted := NewMultiUserService(service.repository, config.DefaultConfig(), logger.Get())
+	status := restarted.GetProfileStatus(profileID)
+	require.NotNil(t, status)
+	require.NotNil(t, status.Snapshot)
+	require.Equal(t, "terminal-retained", status.Snapshot.RunID)
+	require.Equal(t, string(syncsvc.RunPhaseCompleted), status.Snapshot.State)
+}
+
+func TestAggregateStatusRestoresTerminalScalarsWithoutDetails(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	const profileID = "profile-aggregate-restart"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Aggregate restart", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
+	))
+	queuedAt := time.Date(2026, time.September, 16, 12, 0, 0, 0, time.UTC)
+	report, err := service.repository.ReserveSyncRun(profileID, "run-aggregate", false, queuedAt)
+	require.NoError(t, err)
+	report.Phase = database.SyncRunPhaseCompleted
+	report.FinishedAt = timePtrForMultiuserTest(queuedAt.Add(time.Minute))
+	report.SnapshotJSON = `{"books_total":12,"processed_so_far":7,"processed_count":7,"unattempted_count":5,"books_synced":5,"book_outcomes":[{"book_id":"book-1"}],"attention_records":[{"book_id":"book-1"}]}`
+	require.NoError(t, service.repository.UpsertSyncRunReport(report))
+
+	restarted := NewMultiUserService(service.repository, config.DefaultConfig(), logger.Get())
+	statuses, err := restarted.GetAllProfileStatuses()
+	require.NoError(t, err)
+	require.Len(t, statuses, 1)
+	status := statuses[0]
+	require.Equal(t, "completed", status.Status)
+	require.NotNil(t, status.Snapshot)
+	require.Equal(t, "run-aggregate", status.Snapshot.RunID)
+	require.Equal(t, string(syncsvc.RunPhaseCompleted), status.Snapshot.State)
+	require.Equal(t, int32(5), status.Snapshot.UnattemptedCount)
+	require.Equal(t, int32(12), status.Snapshot.BooksTotal)
+	require.Equal(t, int32(7), status.Snapshot.ProcessedSoFar)
+	require.Equal(t, int32(5), status.Snapshot.BooksSynced)
+	require.Empty(t, status.Snapshot.BookOutcomes)
+	require.Empty(t, status.Snapshot.AttentionRecords)
+	require.Empty(t, status.Snapshot.BooksNotFound)
+	require.Empty(t, status.Snapshot.Mismatches)
+}
+
 func TestPublishFinalStatusSurfacesTerminalPersistenceFailure(t *testing.T) {
 	service, db := newStatusLookupService(t)
 	profileID := "profile-persist-failure"
