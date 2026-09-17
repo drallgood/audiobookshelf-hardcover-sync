@@ -565,7 +565,6 @@ sync:
   include_ebooks: false    # Include items with media type "ebook" in sync
   process_unread_books: false  # Process books with 0% progress for mismatches and want-to-read status
   preserve_dnf: true      # Preserve books marked as "Did Not Finish" in Hardcover
-  mismatch_output_dir: "./mismatches"  # Directory to store mismatch JSON files
   dry_run: false           # Enable dry run mode (no changes will be made)
   test_book_filter: ""    # Filter books by title for testing
   test_book_limit: 0       # Limit number of books to process for testing (0 = no limit)
@@ -650,7 +649,7 @@ paths:
 | `RATE_LIMIT_RATE` | Minimum time between Hardcover API requests | unset | `2s` (30 rpm) |
 | `RATE_LIMIT_MAX_CONCURRENT` | Max concurrent requests | unset | `1` |
 
-**Single-User Mode (Legacy)** - For backwards compatibility (web UI disabled):
+**Headless Mode** - Existing configuration-file and environment-variable setup (web UI disabled):
 
 ### Configuration Modes
 
@@ -663,7 +662,7 @@ The application supports two distinct operating modes controlled by the `enable_
 - **Real-time monitoring** and control
 - **No token requirements** at startup (tokens configured via web UI)
 
-#### Single-User Mode (Legacy) - `enable_web_ui: false` (default)
+#### Headless Mode - `enable_web_ui: false` (default)
 - **Backward compatible** with existing setups
 - **Environment variable/configuration file** based token management
 - **No web interface** - runs as a service only
@@ -913,7 +912,7 @@ Use this workflow:
 
 1. **Find the mismatch details**
   - Open the sync summary in the web UI and inspect the mismatch entries.
-  - Optionally review JSON mismatch files in your configured `sync.mismatch_output_dir` (default: `./mismatches`).
+  - Optionally review JSON mismatch files in your configured `paths.mismatch_output_dir` (default: `./mismatches`). Multi-profile runs use an encoded profile-specific subdirectory beneath it.
 
 2. **Identify why matching failed**
   - Missing or incorrect identifiers in AudiobookShelf (ASIN/ISBN)
