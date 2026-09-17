@@ -516,6 +516,52 @@ func TestShutdownClosesAdmissionCancelsActiveRunsAndDrainsWorkers(t *testing.T) 
 	require.ErrorIs(t, err, ErrServiceShuttingDown)
 }
 
+func TestShutdownDeadlineBoundsBlockedCancellationPersistence(t *testing.T) {
+	service, db := newStatusLookupService(t)
+	const profileID = "profile-shutdown-timeout"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Shutdown timeout", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
+	))
+	_ = installAcceptedTestRun(t, service, profileID, "run-shutdown-timeout", false)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	const callbackName = "multiuser_test_block_shutdown_report"
+	require.NoError(t, db.Callback().Update().Before("gorm:update").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Schema == nil || tx.Statement.Schema.Name != "SyncRunReport" {
+			return
+		}
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		<-release
+	}))
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(release) })
+		require.NoError(t, db.Callback().Update().Remove(callbackName))
+	})
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- service.Shutdown(shutdownCtx) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for cancellation persistence")
+	}
+	select {
+	case err := <-shutdownDone:
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	case <-time.After(time.Second):
+		t.Fatal("shutdown exceeded its context deadline")
+	}
+	releaseOnce.Do(func() { close(release) })
+}
+
 func TestStartSyncWithAcceptedRunKeepsIdentityWhenWorkerFinishesImmediately(t *testing.T) {
 	absServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

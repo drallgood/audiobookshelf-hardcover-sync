@@ -841,19 +841,32 @@ func (s *MultiUserService) Shutdown(ctx context.Context) error {
 		return fmt.Errorf("wait for sync starts to finish: %w", err)
 	}
 
-	for _, profileID := range s.activeProfileIDs() {
-		if err := s.CancelSync(profileID); err != nil && s.logger != nil {
-			s.logger.Warn("Failed to cancel sync during service shutdown", map[string]interface{}{
-				"profile_id": profileID,
-				"error":      err,
-			})
-		}
+	if err := s.cancelActiveSyncs(ctx); err != nil {
+		return fmt.Errorf("cancel active syncs: %w", err)
 	}
 
 	if err := waitForSyncGroup(ctx, &s.syncWaitGroup); err != nil {
 		return fmt.Errorf("wait for sync workers to finish: %w", err)
 	}
 	return nil
+}
+
+func (s *MultiUserService) cancelActiveSyncs(ctx context.Context) error {
+	profileIDs := s.activeProfileIDs()
+	var cancellations stdSync.WaitGroup
+	cancellations.Add(len(profileIDs))
+	for _, profileID := range profileIDs {
+		go func() {
+			defer cancellations.Done()
+			if err := s.cancelSync(ctx, profileID); err != nil && s.logger != nil {
+				s.logger.Warn("Failed to cancel sync during service shutdown", map[string]interface{}{
+					"profile_id": profileID,
+					"error":      err,
+				})
+			}
+		}()
+	}
+	return waitForSyncGroup(ctx, &cancellations)
 }
 
 func waitForSyncGroup(ctx context.Context, group *stdSync.WaitGroup) error {
@@ -882,6 +895,10 @@ func (s *MultiUserService) activeProfileIDs() []string {
 
 // CancelSync cancels a running sync operation for a profile.
 func (s *MultiUserService) CancelSync(profileID string) error {
+	return s.cancelSync(context.Background(), profileID)
+}
+
+func (s *MultiUserService) cancelSync(ctx context.Context, profileID string) error {
 	gate := s.profileGate(profileID)
 	gate.mu.Lock()
 	defer gate.mu.Unlock()
@@ -934,7 +951,7 @@ func (s *MultiUserService) CancelSync(profileID string) error {
 
 	snapshot := s.snapshotForCanceledRun(profileID, run, service)
 	finalStatus := s.statusForTerminalRun(profileID, run, snapshot)
-	if err := s.persistTerminalSnapshot(profileID, run.generation, snapshot); err != nil {
+	if err := s.persistTerminalSnapshotContext(ctx, profileID, run.generation, snapshot); err != nil {
 		snapshot.State = string(sync.RunPhaseFailed)
 		snapshot.RunError = fmt.Sprintf("failed to persist canceled sync report: %v", err)
 		applySnapshotToStatus(finalStatus, snapshot)
@@ -1144,6 +1161,10 @@ func (s *MultiUserService) statusForTerminalRun(profileID string, run activeSync
 }
 
 func (s *MultiUserService) persistTerminalSnapshot(profileID string, generation uint64, snapshot sync.SyncSnapshot) error {
+	return s.persistTerminalSnapshotContext(context.Background(), profileID, generation, snapshot)
+}
+
+func (s *MultiUserService) persistTerminalSnapshotContext(ctx context.Context, profileID string, generation uint64, snapshot sync.SyncSnapshot) error {
 	if s.repository == nil {
 		return nil
 	}
@@ -1151,7 +1172,7 @@ func (s *MultiUserService) persistTerminalSnapshot(profileID string, generation 
 	if err != nil {
 		return err
 	}
-	return s.repository.UpsertSyncRunReport(report)
+	return s.repository.UpsertSyncRunReportContext(ctx, report)
 }
 
 func (s *MultiUserService) publishStatusIfLatest(profileID string, run activeSyncRun, status *SyncProfileStatus) bool {

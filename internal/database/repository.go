@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -125,6 +126,12 @@ func deleteStaleQueuedSyncRunReports(tx *gorm.DB, profileID, currentRunID string
 // only the newest ten reports for the profile, and advances success metadata
 // only for a newer completed non-dry run.
 func (r *Repository) UpsertSyncRunReport(report *SyncRunReport) error {
+	return r.UpsertSyncRunReportContext(context.Background(), report)
+}
+
+// UpsertSyncRunReportContext stores a terminal run report with cancellation
+// propagated to the database transaction.
+func (r *Repository) UpsertSyncRunReportContext(ctx context.Context, report *SyncRunReport) error {
 	if report == nil {
 		return errors.New("sync run report is required")
 	}
@@ -134,7 +141,10 @@ func (r *Repository) UpsertSyncRunReport(report *SyncRunReport) error {
 	if report.RunID == "" {
 		return errors.New("run ID is required")
 	}
-	return r.db.GetDB().Transaction(func(tx *gorm.DB) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return r.db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing SyncRunReport
 		alreadyCompleted := false
 		findErr := tx.Where("profile_id = ? AND run_id = ?", report.ProfileID, report.RunID).First(&existing).Error
