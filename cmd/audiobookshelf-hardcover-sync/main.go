@@ -44,16 +44,13 @@ import (
 //   DATA_DIR                (optional) Directory for database and encryption key files (default: ./data)
 //
 // Endpoints:
-//   GET /healthz           # Health check
-//   POST/GET /sync         # Trigger a sync (legacy single-user mode)
-//   GET /                  # Multi-user web interface
-//   GET /api/users         # List all users
-//   POST /api/users        # Create a new user
-//   PUT /api/users/:id     # Update user configuration
-//   DELETE /api/users/:id  # Delete a user
-//   POST /api/users/:id/sync/start  # Start sync for a user
-//   POST /api/users/:id/sync/cancel # Cancel sync for a user
-//   GET /api/users/:id/sync/status  # Get sync status for a user
+//   GET /health                                  # Health check
+//   GET /                                       # Web interface
+//   GET /api/status                             # Aggregate sync status
+//   GET/POST /api/profiles                      # List or create profiles
+//   GET/PUT/DELETE /api/profiles/{id}           # Manage a profile
+//   POST/DELETE /api/profiles/{id}/sync         # Start or cancel a sync
+//   GET /api/profiles/{id}/runs/{runID}/details # Exact run details
 
 var (
 	version = "dev" // Set during build

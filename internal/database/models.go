@@ -37,8 +37,6 @@ type SyncProfileConfig struct {
 // ProfileSyncState holds the sync state for a specific profile
 type ProfileSyncState struct {
 	ProfileID                string     `gorm:"primaryKey;column:profile_id" json:"profile_id"`
-	StateData                string     `gorm:"type:text" json:"state_data"` // JSON string
-	LastSync                 *time.Time `json:"last_sync"`
 	RunGeneration            uint64     `gorm:"not null;default:0" json:"run_generation"`
 	LastAttemptedAt          *time.Time `json:"last_attempted_at"`
 	LastAttemptedRunID       string     `json:"last_attempted_run_id"`
@@ -69,15 +67,12 @@ type SyncRunReport struct {
 	LastProcessedAt     *time.Time `json:"last_processed_at"`
 	FinishedAt          *time.Time `json:"finished_at"`
 	RunError            string     `gorm:"type:text" json:"run_error,omitempty"`
-	ReportVersion       int        `gorm:"not null;default:1" json:"report_version"`
 	SnapshotJSON        string     `gorm:"type:text" json:"snapshot_json"`
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
 const (
-	SyncRunReportVersion = 1
-
 	SyncRunPhaseQueued    = "queued"
 	SyncRunPhaseCompleted = "completed"
 	SyncRunPhaseFailed    = "failed"

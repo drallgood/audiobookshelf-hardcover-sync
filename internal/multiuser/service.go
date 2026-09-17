@@ -464,7 +464,6 @@ func runReportFromSnapshot(profileID string, generation uint64, snapshot sync.Sy
 		LastProcessedAt:     timeValue(snapshot.LastProcessedAt),
 		FinishedAt:          timeValue(snapshot.FinishedAt),
 		RunError:            snapshot.RunError,
-		ReportVersion:       database.SyncRunReportVersion,
 		SnapshotJSON:        string(snapshotJSON),
 	}, nil
 }
@@ -505,9 +504,6 @@ func (s *MultiUserService) restoreAggregateProfileStatus(profileID string, profi
 	if state != nil {
 		status.LastAttemptedAt = copyTime(state.LastAttemptedAt)
 		status.LastSuccessfulAt = copyTime(state.LastSuccessfulAt)
-		if status.LastAttemptedAt == nil {
-			status.LastAttemptedAt = copyTime(state.LastSync)
-		}
 	}
 	if len(reports) == 0 {
 		return status, nil
@@ -726,7 +722,7 @@ func (s *MultiUserService) StartSyncWithAcceptedRun(profileID string) (AcceptedS
 	queuedReport, err := s.repository.AcceptSyncRun(&database.SyncRunReport{
 		ProfileID: profileID, RunID: runID, Phase: database.SyncRunPhaseQueued,
 		DryRun: profileConfig.SyncConfig.DryRun, QueuedAt: timeValue(queuedAt),
-		ReportVersion: database.SyncRunReportVersion, SnapshotJSON: queuedSnapshotJSON,
+		SnapshotJSON: queuedSnapshotJSON,
 	})
 	if err != nil {
 		return AcceptedSyncRun{}, fmt.Errorf("failed to accept sync run for profile %s: %w", profileID, err)

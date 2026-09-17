@@ -61,9 +61,6 @@ func (r *Repository) AcceptSyncRun(report *SyncRunReport) (*SyncRunReport, error
 		now := time.Now().UTC()
 		report.QueuedAt = &now
 	}
-	if report.ReportVersion == 0 {
-		report.ReportVersion = SyncRunReportVersion
-	}
 	if report.SnapshotJSON == "" {
 		return nil, errors.New("accepted sync run report snapshot is required")
 	}
@@ -157,9 +154,6 @@ func (r *Repository) UpsertSyncRunReport(report *SyncRunReport) error {
 				return fmt.Errorf("failed to update sync run report: %w", err)
 			}
 		case errors.Is(findErr, gorm.ErrRecordNotFound):
-			if report.ReportVersion == 0 {
-				report.ReportVersion = SyncRunReportVersion
-			}
 			if report.SnapshotJSON == "" {
 				report.SnapshotJSON = "{}"
 			}
@@ -238,9 +232,6 @@ func mergeSyncRunReportDefaults(report, existing *SyncRunReport) {
 	if report.RunError == "" {
 		report.RunError = existing.RunError
 	}
-	if report.ReportVersion == 0 {
-		report.ReportVersion = existing.ReportVersion
-	}
 	if report.SnapshotJSON == "" {
 		report.SnapshotJSON = existing.SnapshotJSON
 	}
@@ -278,7 +269,7 @@ func loadOrCreateSyncStateForUpdate(tx *gorm.DB, profileID string) (*ProfileSync
 	var state ProfileSyncState
 	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("profile_id = ?", profileID).First(&state).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		state = ProfileSyncState{ProfileID: profileID, StateData: "{}"}
+		state = ProfileSyncState{ProfileID: profileID}
 		if err := tx.Create(&state).Error; err != nil {
 			return nil, fmt.Errorf("failed to create sync state: %w", err)
 		}
@@ -378,10 +369,7 @@ func (r *Repository) CreateProfileForUser(profileID, name, audiobookshelfURL, au
 		}
 
 		// Create empty sync state
-		syncState := ProfileSyncState{
-			ProfileID: profileID,
-			StateData: "{}",
-		}
+		syncState := ProfileSyncState{ProfileID: profileID}
 		if err := tx.Create(&syncState).Error; err != nil {
 			return fmt.Errorf("failed to create sync state: %w", err)
 		}
@@ -654,7 +642,6 @@ func (r *Repository) GetSyncState(profileID string) (*ProfileSyncState, error) {
 			now := time.Now()
 			return &ProfileSyncState{
 				ProfileID: profileID,
-				StateData: "{}",
 				CreatedAt: now,
 				UpdatedAt: now,
 			}, nil
@@ -662,48 +649,6 @@ func (r *Repository) GetSyncState(profileID string) (*ProfileSyncState, error) {
 		return nil, fmt.Errorf("failed to get sync state: %w", err)
 	}
 	return &state, nil
-}
-
-// UpdateSyncState updates the sync state for a sync profile
-func (r *Repository) UpdateSyncState(state *ProfileSyncState) error {
-	state.UpdatedAt = time.Now()
-
-	// Check if state exists
-	var existingState ProfileSyncState
-	result := r.db.GetDB().Where("profile_id = ?", state.ProfileID).First(&existingState)
-
-	if result.Error == nil {
-		// Update existing state - use the existing CreatedAt
-		state.CreatedAt = existingState.CreatedAt
-
-		// Update the existing record
-		if err := r.db.GetDB().Model(&existingState).Updates(state).Error; err != nil {
-			r.logger.Error("Failed to update sync state", map[string]interface{}{
-				"profile_id": state.ProfileID,
-				"error":      err.Error(),
-			})
-			return fmt.Errorf("failed to update sync state: %w", err)
-		}
-	} else if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-		// Create new state
-		state.CreatedAt = time.Now()
-
-		if err := r.db.GetDB().Create(state).Error; err != nil {
-			r.logger.Error("Failed to create sync state", map[string]interface{}{
-				"profile_id": state.ProfileID,
-				"error":      err.Error(),
-			})
-			return fmt.Errorf("failed to create sync state: %w", err)
-		}
-	} else {
-		return fmt.Errorf("failed to check for existing sync state: %w", result.Error)
-	}
-
-	r.logger.Info("Updated sync state", map[string]interface{}{
-		"profile_id": state.ProfileID,
-	})
-
-	return nil
 }
 
 // UserExists checks if a sync profile exists and is active

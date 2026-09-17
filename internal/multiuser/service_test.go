@@ -148,7 +148,7 @@ func acceptTestSyncRun(t *testing.T, repo *database.Repository, profileID, runID
 	t.Helper()
 	report, err := repo.AcceptSyncRun(&database.SyncRunReport{
 		ProfileID: profileID, RunID: runID, Phase: database.SyncRunPhaseQueued,
-		DryRun: dryRun, QueuedAt: &queuedAt, ReportVersion: database.SyncRunReportVersion,
+		DryRun: dryRun, QueuedAt: &queuedAt,
 		SnapshotJSON: "{}",
 	})
 	require.NoError(t, err)

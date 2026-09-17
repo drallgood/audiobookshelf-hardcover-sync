@@ -22,7 +22,6 @@ Automatically syncs your Audiobookshelf library with Hardcover, including readin
 - **📊 Real-Time Monitoring**: Live sync status with quiet auto-refresh and automatic retry after a temporary profile-load failure
 - **🔧 REST API**: Complete programmatic control via RESTful endpoints
 - **⬆️ Automatic Migration**: Seamless upgrade from single-profile setups
-- **🔙 Backwards Compatible**: All existing functionality preserved
 - **🚀 Cache Busting**: Automatic cache invalidation ensures profiles always get the latest UI updates
 
 ### Browser support
@@ -198,7 +197,6 @@ The project follows standard Go project layout:
 - **📊 Real-Time Monitoring**: Live sync status with quiet auto-refresh and automatic retry after a temporary profile-load failure
 - **🔧 REST API**: Complete programmatic control via RESTful endpoints
 - **⬆️ Automatic Migration**: Seamless upgrade from single-user setups
-- **🔙 Backwards Compatible**: All existing functionality preserved
 
 ### 📚 Core Sync Features
 - **Full Library Sync**: Syncs your entire Audiobookshelf library with Hardcover
