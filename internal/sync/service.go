@@ -260,7 +260,7 @@ type Service struct {
 type Config = config.Config
 
 // NewService creates a new sync service for callers that do not have an
-// external run identity. The service creates a compatibility identity when
+// external run identity. The service creates its own identity when
 // Sync starts. Multi-user callers should use NewServiceWithRunIdentity so the
 // run ID and generation assigned at accepted-start remain authoritative.
 func NewService(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverClientInterface, cfg *Config) (*Service, error) {
@@ -308,16 +308,8 @@ func NewServiceWithRunIdentity(absClient *audiobookshelf.Client, hcClient hardco
 		svc.lastActivityAt = queuedAt
 	}
 
-	// Migrate old state file if it exists
-	_, err := state.MigrateOldState("", svc.statePath)
-	if err != nil {
-		svc.log.Error("Failed to migrate old state file", map[string]interface{}{
-			"error": err,
-		})
-		return nil, fmt.Errorf("failed to migrate old state: %w", err)
-	}
-
 	// Load or create state
+	var err error
 	svc.state, err = state.LoadState(svc.statePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load state: %w", err)
@@ -449,7 +441,7 @@ func classifyBookLookupOutcome(err error) SyncOutcome {
 }
 
 // beginOutcomeRun starts a fresh, profile-local current-run partition. An
-// externally supplied identity is retained; otherwise this compatibility path
+// externally supplied identity is retained; otherwise the service
 // creates an opaque local ID for direct callers of Service.Sync. Run metadata
 // and outcome data are protected by the summary lock and can be published as
 // one coherent snapshot.
@@ -466,7 +458,7 @@ func (s *Service) beginOutcomeRun() {
 	}
 	// Consume the injected identity at the start of this run. If a direct
 	// caller reuses the service for a later run, that later run gets a fresh
-	// compatibility ID instead of accidentally reusing a terminal run ID.
+	// local ID instead of accidentally reusing a terminal run ID.
 	s.runIdentityInjected = false
 	if s.queuedAt.IsZero() {
 		s.queuedAt = now
@@ -714,11 +706,11 @@ func (s *Service) enrichAttentionCandidate(record mismatch.BookMismatch) {
 }
 
 func (s *Service) addMismatch(record mismatch.BookMismatch) {
-	s.getMismatchCollector().Add(record)
+	s.mismatchCollector.Add(record)
 }
 
 func (s *Service) addMismatchWithMetadata(metadata mismatch.MediaMetadata, bookID, editionID, reason string, duration float64, audiobookShelfID string, audnexRegion string) mismatch.BookMismatch {
-	return s.getMismatchCollector().AddWithMetadata(
+	return s.mismatchCollector.AddWithMetadata(
 		metadata,
 		bookID,
 		editionID,
@@ -728,13 +720,6 @@ func (s *Service) addMismatchWithMetadata(metadata mismatch.MediaMetadata, bookI
 		s.hardcover,
 		audnexRegion,
 	)
-}
-
-func (s *Service) getMismatchCollector() *mismatch.Collector {
-	if s.mismatchCollector == nil {
-		s.mismatchCollector = mismatch.NewCollector()
-	}
-	return s.mismatchCollector
 }
 
 func cloneBookMismatch(record mismatch.BookMismatch) mismatch.BookMismatch {
@@ -1064,8 +1049,8 @@ func (s *Service) GetSnapshot() SyncSnapshot {
 }
 
 // GetSnapshotStatus returns one race-safe scalar copy of the current run.
-// Unlike GetSnapshot, it does not materialize per-book outcomes or mismatch
-// records. This is the lightweight read path for aggregate status polling.
+// Unlike GetSnapshot, it does not materialize per-book outcomes. This is the
+// lightweight read path for aggregate status polling.
 func (s *Service) GetSnapshotStatus() SyncSnapshot {
 	if s.summary == nil {
 		return SyncSnapshot{}
@@ -1440,13 +1425,6 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 	s.log.Info("STARTING FULL SYNCHRONIZATION", nil)
 	s.log.Info("========================================", nil)
 
-	// Update the last sync start time only for real syncs. A dry run must not
-	// leave persisted state that could make a later real incremental run skip
-	// mutations that were never applied.
-	if !s.config.Sync.DryRun {
-		s.state.UpdateLibrary("sync") // Using "sync" as a special library ID for global sync state
-	}
-
 	// Log service configuration (without accessing unexported fields directly)
 	s.log.Info("SYNC CONFIGURATION", nil)
 	s.log.Info("========================================", nil)
@@ -1689,7 +1667,6 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 	// wrappers return successful no-ops, so persisting this in-memory state
 	// would incorrectly mark skipped Hardcover mutations as applied.
 	if !s.config.Sync.DryRun {
-		s.state.SetFullSync()
 		if saveErr := s.state.Save(s.statePath); saveErr != nil {
 			s.log.Error("Failed to save sync state", map[string]interface{}{
 				"error": saveErr.Error(),
@@ -1999,9 +1976,9 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		"author":  authorName,
 	})
 
-	// The legacy success flag remains for caller compatibility while the
-	// outcome hint drives one exclusive per-item record. Mutations discovered
-	// while matching are tracked separately so a later no-op cannot hide them.
+	// Track whether processing reached a countable result while the outcome
+	// hint drives one exclusive per-item record. Mutations discovered while
+	// matching are tracked separately so a later no-op cannot hide them.
 	var bookProcessed bool
 	var outcomeHint SyncOutcome
 	var outcomeReason string
@@ -2364,7 +2341,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			lookupOutcome := classifyBookLookupOutcome(findErr)
 			setOutcome(lookupOutcome, findErr.Error())
 			// Publish the lookup result before mismatch enrichment so status
-			// readers observe the outcome and legacy list atomically.
+			// readers observe the outcome and attention candidate atomically.
 			s.recordBookOutcomeWithMatchMethod(book, lookupOutcome, findErr.Error(), findErr, hcBook, matchMethod)
 			bookLog.Warn("Book lookup did not produce a usable match", map[string]interface{}{
 				"error": findErr.Error(),
@@ -2618,7 +2595,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		if shouldPublishMismatchRecord(lookupOutcome, findErr) {
 			s.enrichAttentionCandidate(enrichedMismatch)
 		}
-		// Keep the legacy checkpoint for this attempted item. The SKIPPED status
+		// Keep the incremental checkpoint for this attempted item. The SKIPPED status
 		// does not suppress a retry because the next run's target status differs;
 		// the outcome record retains the more precise technical failure.
 		if stateKey == "" {
@@ -2702,8 +2679,8 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	if hcBook == nil {
 		const reason = "no suitable Hardcover book found"
 		setOutcome(OutcomeNotFound, reason)
-		// Keep the conclusive no-result visible even if the compatibility
-		// enrichment/file-export path below is slow.
+		// Keep the conclusive no-result visible even if the attention enrichment
+		// and file-export path below is slow.
 		s.recordBookOutcomeWithMatchMethod(book, OutcomeNotFound, reason, findErr, nil, matchMethod)
 		errMsg := "could not find book in Hardcover"
 		if book.Media.Metadata.Title == "" {
@@ -2751,7 +2728,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			s.config.Audiobookshelf.AudnexusRegion,
 		)
 
-		// Preserve the legacy checkpoint while the outcome store carries the
+		// Preserve the incremental checkpoint while the outcome store carries the
 		// conclusive not-found result.
 		if stateKey == "" {
 			stateKey = book.ID

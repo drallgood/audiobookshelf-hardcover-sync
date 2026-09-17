@@ -11,6 +11,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 	"github.com/stretchr/testify/assert"
@@ -132,6 +133,7 @@ func TestSync(t *testing.T) {
 		asinCache:           make(map[string]*models.HardcoverBook),
 		persistentCache:     NewPersistentASINCache("/tmp"),
 		userBookCache:       NewPersistentUserBookCache("/tmp"),
+		mismatchCollector:   mismatch.NewCollector(),
 	}
 
 	// We need to use a reflection trick to inject our mock into the service
@@ -268,6 +270,7 @@ func TestProcessLibrary(t *testing.T) {
 		persistentCache:     NewPersistentASINCache("/tmp"),
 		userBookCache:       NewPersistentUserBookCache("/tmp"),
 		summary:             &SyncSummary{},
+		mismatchCollector:   mismatch.NewCollector(),
 	}
 
 	// Create test library

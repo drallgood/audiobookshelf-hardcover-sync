@@ -13,8 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/auth"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/crypto"
@@ -22,7 +20,6 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/multiuser"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/server"
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 )
 
 // Package main is the entry point for the Audiobookshelf to Hardcover sync service.
@@ -30,9 +27,9 @@ import (
 // reading progress, book status, and ownership information.
 //
 // Environment Variables:
-//   AUDIOBOOKSHELF_URL      URL to your AudiobookShelf server (legacy single-user mode)
-//   AUDIOBOOKSHELF_TOKEN    API token for AudiobookShelf (legacy single-user mode)
-//   HARDCOVER_TOKEN         API token for Hardcover (legacy single-user mode)
+//   AUDIOBOOKSHELF_URL      URL for the default Audiobookshelf profile
+//   AUDIOBOOKSHELF_TOKEN    API token for the default Audiobookshelf profile
+//   HARDCOVER_TOKEN         API token for the default Hardcover profile
 //   SYNC_INTERVAL           (optional) Go duration string for periodic sync (e.g., "10m", "1h")
 //   LOG_LEVEL               (optional) Log level (debug, info, warn, error, fatal, panic)
 //   DRY_RUN                 (optional) If set to true, no changes will be made to Hardcover
@@ -302,40 +299,6 @@ func main() {
 	} else {
 		log.Info("Authentication system disabled", nil)
 	}
-	if !cfg.Server.EnableWebUI {
-		// Simple mode: Create clients from config
-		audiobookshelfClient := audiobookshelf.NewClient(cfg.Audiobookshelf.URL, cfg.Audiobookshelf.Token)
-
-		// Build Hardcover client config from global settings
-		hcCfg := hardcover.DefaultClientConfig()
-		if cfg.Hardcover.BaseURL != "" {
-			hcCfg.BaseURL = cfg.Hardcover.BaseURL
-		}
-		if cfg.RateLimit.Rate > 0 {
-			hcCfg.RateLimit = cfg.RateLimit.Rate
-		}
-		if cfg.RateLimit.MaxConcurrent > 0 {
-			hcCfg.MaxConcurrent = cfg.RateLimit.MaxConcurrent
-		}
-
-		log.Debug("Initializing Hardcover client (single-user)", map[string]interface{}{
-			"base_url":       hcCfg.BaseURL,
-			"rate_limit":     hcCfg.RateLimit.String(),
-			"max_concurrent": hcCfg.MaxConcurrent,
-		})
-
-		hardcoverClient := hardcover.NewClientWithConfig(hcCfg, cfg.Hardcover.Token, log)
-
-		// Create sync service with config
-		_, err = sync.NewService(audiobookshelfClient, hardcoverClient, cfg)
-		if err != nil {
-			log.Error("Failed to create sync service", map[string]interface{}{
-				"error": err.Error(),
-			})
-			os.Exit(1)
-		}
-	}
-
 	// Conditionally launch web UI based on configuration
 	var srv *server.Server
 	if cfg.Server.EnableWebUI {

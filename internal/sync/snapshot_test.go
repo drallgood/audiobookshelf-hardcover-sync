@@ -25,7 +25,7 @@ func TestSnapshotDeepCopiesCanonicalOutcomeDetails(t *testing.T) {
 	first.BookOutcomes[0].Title = "caller mutation"
 
 	// A distinct needs-review item exercises deep-copying of mismatch-owned
-	// slices while the outcome and legacy stores are read together.
+	// slices while outcome and attention data are read together.
 	otherBook := *toAudiobookshelfBook(createTestBook("snapshot-mismatch", "Mismatch", "Author", "", ""))
 	svc.recordBookOutcomeWithMatchMethod(otherBook, OutcomeNeedsReview, "review", nil, nil, "")
 	svc.enrichAttentionCandidate(mismatch.BookMismatch{
