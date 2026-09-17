@@ -2,8 +2,10 @@ package multiuser
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,25 +35,37 @@ var ErrProfileStateFilePathNotAllowed = errors.New("profile-specific state file 
 
 // SyncProfileStatus represents the sync status for a profile
 type SyncProfileStatus struct {
-	ProfileID       string                  `json:"profile_id"`
-	ProfileName     string                  `json:"profile_name"`
-	Status          string                  `json:"status"` // "idle", "syncing", "error", "completed"
-	DryRun          bool                    `json:"dry_run,omitempty"`
-	LastSync        *time.Time              `json:"last_sync"`
-	Error           string                  `json:"error,omitempty"`
-	Progress        string                  `json:"progress,omitempty"`
-	BooksTotal      int                     `json:"books_total,omitempty"`
-	BooksSynced     int                     `json:"books_synced,omitempty"`
-	BooksNotFound   []sync.BookNotFoundInfo `json:"books_not_found,omitempty"`
-	Mismatches      []mismatch.BookMismatch `json:"mismatches,omitempty"`
-	LastSyncSummary *sync.SyncSummary       `json:"last_sync_summary,omitempty"`
-	Snapshot        *sync.SyncSnapshot      `json:"snapshot,omitempty"`
+	ProfileID        string                  `json:"profile_id"`
+	ProfileName      string                  `json:"profile_name"`
+	Status           string                  `json:"status"` // "idle", "syncing", "error", "completed"
+	DryRun           bool                    `json:"dry_run,omitempty"`
+	LastSync         *time.Time              `json:"last_sync"`
+	LastAttemptedAt  *time.Time              `json:"last_attempted_at,omitempty"`
+	LastSuccessfulAt *time.Time              `json:"last_successful_at,omitempty"`
+	Error            string                  `json:"error,omitempty"`
+	Progress         string                  `json:"progress,omitempty"`
+	BooksTotal       int                     `json:"books_total,omitempty"`
+	BooksSynced      int                     `json:"books_synced,omitempty"`
+	BooksNotFound    []sync.BookNotFoundInfo `json:"books_not_found,omitempty"`
+	Mismatches       []mismatch.BookMismatch `json:"mismatches,omitempty"`
+	LastSyncSummary  *sync.SyncSummary       `json:"last_sync_summary,omitempty"`
+	Snapshot         *sync.SyncSnapshot      `json:"snapshot,omitempty"`
 }
 
 type activeSyncRun struct {
-	generation uint64
-	runID      string
-	startedAt  time.Time
+	generation  uint64
+	runID       string
+	startedAt   time.Time
+	profileName string
+	dryRun      bool
+	canceled    bool
+}
+
+// profileRunGate serializes lifecycle decisions for one profile without
+// serializing unrelated profiles. Repository operations may block while this
+// gate is held, but they never hold the service-wide map lock.
+type profileRunGate struct {
+	mu stdSync.Mutex
 }
 
 // MultiUserService manages sync operations for multiple users
@@ -68,6 +82,8 @@ type MultiUserService struct {
 	syncWaitGroup   stdSync.WaitGroup
 	syncServices    map[string]*sync.Service // Maps profile ID to its sync service
 	serviceRuns     map[string]uint64
+	latestRuns      map[string]activeSyncRun
+	profileGates    map[string]*profileRunGate
 	servicesMutex   stdSync.RWMutex
 }
 
@@ -82,6 +98,8 @@ func NewMultiUserService(repo *database.Repository, globalConfig *config.Config,
 		activeRuns:      make(map[string]activeSyncRun),
 		syncServices:    make(map[string]*sync.Service),
 		serviceRuns:     make(map[string]uint64),
+		latestRuns:      make(map[string]activeSyncRun),
+		profileGates:    make(map[string]*profileRunGate),
 	}
 }
 
@@ -173,12 +191,20 @@ func (s *MultiUserService) GetAllProfileStatuses() ([]*SyncProfileStatus, error)
 // remain visible. This path deliberately avoids getProfileStatus because that
 // endpoint needs the full snapshot and legacy detail arrays.
 func (s *MultiUserService) getAggregateProfileStatus(profile database.SyncProfile) *SyncProfileStatus {
-	s.syncMutex.RLock()
-	defer s.syncMutex.RUnlock()
-
 	status := s.getStoredAggregateStatus(profile)
+	if status == nil {
+		// A freshly constructed service has no in-memory status yet. Restore
+		// only the durable terminal report; this is intentionally outside the
+		// lifecycle map lock in normal callers, and cacheStatusIfAbsent avoids
+		// replacing a run accepted concurrently with this lookup.
+		if restored, err := s.restoreProfileStatus(profile.ID, &profile); err == nil && restored != nil {
+			status = s.cacheStatusIfAbsent(profile.ID, restored)
+		}
+	}
+	s.syncMutex.RLock()
 	service, generation := s.currentSyncServiceLocked(profile.ID)
 	if service == nil {
+		s.syncMutex.RUnlock()
 		return aggregateProfileStatus(profile, status)
 	}
 
@@ -191,6 +217,9 @@ func (s *MultiUserService) getAggregateProfileStatus(profile database.SyncProfil
 			snapshot.State = "syncing"
 		}
 	}
+	s.syncMutex.RUnlock()
+	projectedSnapshot := snapshot
+	projectedSnapshot.State = legacySnapshotState(snapshot.State)
 
 	if status == nil {
 		status = &SyncProfileStatus{
@@ -205,15 +234,8 @@ func (s *MultiUserService) getAggregateProfileStatus(profile database.SyncProfil
 	if status.ProfileName == "" {
 		status.ProfileName = profile.Name
 	}
-	switch snapshot.State {
-	case "completed":
-		status.Status = "completed"
-	case "failed":
-		status.Status = "error"
-	default:
-		status.Status = "syncing"
-	}
-	status.Snapshot = &snapshot
+	status.Status = statusForSnapshot(&snapshot)
+	status.Snapshot = &projectedSnapshot
 	status.BooksTotal = int(snapshot.BooksTotal)
 	status.BooksSynced = int(snapshot.BooksSynced)
 
@@ -245,6 +267,14 @@ func (s *MultiUserService) getStoredAggregateStatus(profile database.SyncProfile
 		lastSync := *stored.LastSync
 		status.LastSync = &lastSync
 	}
+	if stored.LastAttemptedAt != nil {
+		lastAttempted := *stored.LastAttemptedAt
+		status.LastAttemptedAt = &lastAttempted
+	}
+	if stored.LastSuccessfulAt != nil {
+		lastSuccessful := *stored.LastSuccessfulAt
+		status.LastSuccessfulAt = &lastSuccessful
+	}
 	if stored.Snapshot != nil {
 		status.Snapshot = scalarSnapshot(stored.Snapshot)
 	}
@@ -264,14 +294,16 @@ func aggregateProfileStatus(profile database.SyncProfile, status *SyncProfileSta
 	}
 
 	aggregate := &SyncProfileStatus{
-		ProfileID:   status.ProfileID,
-		ProfileName: status.ProfileName,
-		Status:      status.Status,
-		DryRun:      status.DryRun,
-		LastSync:    status.LastSync,
-		Progress:    status.Progress,
-		BooksTotal:  status.BooksTotal,
-		BooksSynced: status.BooksSynced,
+		ProfileID:        status.ProfileID,
+		ProfileName:      status.ProfileName,
+		Status:           status.Status,
+		DryRun:           status.DryRun,
+		LastSync:         status.LastSync,
+		LastAttemptedAt:  status.LastAttemptedAt,
+		LastSuccessfulAt: status.LastSuccessfulAt,
+		Progress:         status.Progress,
+		BooksTotal:       status.BooksTotal,
+		BooksSynced:      status.BooksSynced,
 	}
 	aggregate.Snapshot = status.Snapshot
 	if aggregate.Status == "" {
@@ -292,6 +324,12 @@ func scalarSnapshot(snapshot *sync.SyncSnapshot) *sync.SyncSnapshot {
 		UserID:              snapshot.UserID,
 		RunID:               snapshot.RunID,
 		RunStartedAt:        snapshot.RunStartedAt,
+		QueuedAt:            snapshot.QueuedAt,
+		ProcessingStartedAt: snapshot.ProcessingStartedAt,
+		LastActivityAt:      snapshot.LastActivityAt,
+		LastProcessedAt:     snapshot.LastProcessedAt,
+		FinishedAt:          snapshot.FinishedAt,
+		DryRun:              snapshot.DryRun,
 		State:               snapshot.State,
 		BooksTotal:          snapshot.BooksTotal,
 		ProcessedSoFar:      snapshot.ProcessedSoFar,
@@ -299,6 +337,315 @@ func scalarSnapshot(snapshot *sync.SyncSnapshot) *sync.SyncSnapshot {
 		OutcomeCounts:       snapshot.OutcomeCounts,
 		TotalBooksProcessed: snapshot.TotalBooksProcessed,
 		BooksSynced:         snapshot.BooksSynced,
+	}
+}
+
+func (s *MultiUserService) profileGate(profileID string) *profileRunGate {
+	s.syncMutex.Lock()
+	defer s.syncMutex.Unlock()
+	if gate := s.profileGates[profileID]; gate != nil {
+		return gate
+	}
+	gate := &profileRunGate{}
+	s.profileGates[profileID] = gate
+	return gate
+}
+
+func (s *MultiUserService) latestRunIsCurrent(profileID, runID string, generation uint64) bool {
+	s.syncMutex.RLock()
+	defer s.syncMutex.RUnlock()
+	latest, ok := s.latestRuns[profileID]
+	if ok {
+		return !latest.canceled && latest.runID == runID && latest.generation == generation
+	}
+	active, ok := s.activeRuns[profileID]
+	return ok && !active.canceled && active.runID == runID && active.generation == generation
+}
+
+// latestRunWasCanceled reports whether this exact run was explicitly canceled.
+// A worker may finish with a generic failure after its context is canceled; the
+// cancellation decision remains the truthful terminal outcome and must not be
+// overwritten by that late worker report.
+func (s *MultiUserService) latestRunWasCanceled(profileID, runID string, generation uint64) bool {
+	s.syncMutex.RLock()
+	defer s.syncMutex.RUnlock()
+	latest, ok := s.latestRuns[profileID]
+	if !ok {
+		latest, ok = s.activeRuns[profileID]
+	}
+	return ok && latest.canceled && latest.runID == runID && latest.generation == generation
+}
+
+func terminalReportPhase(phase string) bool {
+	return phase == database.SyncRunPhaseCompleted ||
+		phase == database.SyncRunPhaseCanceled ||
+		phase == database.SyncRunPhaseFailed
+}
+
+func statusForSnapshot(snapshot *sync.SyncSnapshot) string {
+	if snapshot == nil {
+		return "idle"
+	}
+	switch snapshot.State {
+	case string(sync.RunPhaseCompleted):
+		return "completed"
+	case string(sync.RunPhaseCanceled), string(sync.RunPhaseFailed):
+		return "error"
+	case string(sync.RunPhaseQueued), string(sync.RunPhaseRunning), string(sync.RunPhaseFinalizing):
+		return "syncing"
+	default:
+		return "syncing"
+	}
+}
+
+func copyTime(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	copyOf := value.UTC()
+	return &copyOf
+}
+
+func timeValue(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	copyOf := value.UTC()
+	return &copyOf
+}
+
+// sanitizeReportURL strips credentials and query/fragment data before a
+// snapshot is retained. Sync snapshots are already sanitized at their source,
+// but keeping this boundary defensive prevents future fields from leaking
+// profile credentials into durable reports.
+func sanitizeReportURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
+	return parsed.String()
+}
+
+func sanitizedSnapshot(snapshot sync.SyncSnapshot) sync.SyncSnapshot {
+	copyOf := snapshot
+	copyOf.AudiobookshelfURL = sanitizeReportURL(snapshot.AudiobookshelfURL)
+	copyOf.BookOutcomes = append([]sync.BookOutcomeRecord(nil), snapshot.BookOutcomes...)
+	copyOf.AttentionRecords = append([]sync.BookOutcomeRecord(nil), snapshot.AttentionRecords...)
+	copyOf.BooksNotFound = append([]sync.BookNotFoundInfo(nil), snapshot.BooksNotFound...)
+	copyOf.Mismatches = make([]mismatch.BookMismatch, len(snapshot.Mismatches))
+	for i, record := range snapshot.Mismatches {
+		copyOf.Mismatches[i] = cloneBookMismatch(record)
+	}
+	for i := range copyOf.BookOutcomes {
+		copyOf.BookOutcomes[i].CoverURL = sanitizeReportURL(copyOf.BookOutcomes[i].CoverURL)
+	}
+	for i := range copyOf.AttentionRecords {
+		copyOf.AttentionRecords[i].CoverURL = sanitizeReportURL(copyOf.AttentionRecords[i].CoverURL)
+	}
+	for i := range copyOf.Mismatches {
+		copyOf.Mismatches[i].CoverURL = sanitizeReportURL(copyOf.Mismatches[i].CoverURL)
+		copyOf.Mismatches[i].ImageURL = sanitizeReportURL(copyOf.Mismatches[i].ImageURL)
+	}
+	return copyOf
+}
+
+func runReportFromSnapshot(profileID string, generation uint64, snapshot sync.SyncSnapshot) (*database.SyncRunReport, error) {
+	snapshot = sanitizedSnapshot(snapshot)
+	snapshotJSON, err := json.Marshal(snapshot)
+	if err != nil {
+		return nil, fmt.Errorf("marshal sync snapshot: %w", err)
+	}
+	phase := database.SyncRunPhaseFailed
+	switch snapshot.State {
+	case string(sync.RunPhaseCompleted):
+		phase = database.SyncRunPhaseCompleted
+	case string(sync.RunPhaseCanceled):
+		phase = database.SyncRunPhaseCanceled
+	case string(sync.RunPhaseFailed):
+		phase = database.SyncRunPhaseFailed
+	}
+	return &database.SyncRunReport{
+		ProfileID:           profileID,
+		RunID:               snapshot.RunID,
+		Generation:          generation,
+		Phase:               phase,
+		DryRun:              snapshot.DryRun,
+		QueuedAt:            timeValue(snapshot.QueuedAt),
+		ProcessingStartedAt: timeValue(snapshot.ProcessingStartedAt),
+		LastActivityAt:      timeValue(snapshot.LastActivityAt),
+		LastProcessedAt:     timeValue(snapshot.LastProcessedAt),
+		FinishedAt:          timeValue(snapshot.FinishedAt),
+		RunError:            snapshot.RunError,
+		ReportVersion:       database.SyncRunReportVersion,
+		SnapshotJSON:        string(snapshotJSON),
+	}, nil
+}
+
+func (s *MultiUserService) cacheStatusIfAbsent(profileID string, status *SyncProfileStatus) *SyncProfileStatus {
+	if status == nil {
+		return nil
+	}
+	s.statusMutex.Lock()
+	defer s.statusMutex.Unlock()
+	if existing := s.profileStatuses[profileID]; existing != nil {
+		return cloneProfileStatus(existing)
+	}
+	s.profileStatuses[profileID] = cloneProfileStatus(status)
+	return cloneProfileStatus(status)
+}
+
+func (s *MultiUserService) restoreLatestTerminalSnapshot(profileID string) (*sync.SyncSnapshot, error) {
+	if s.repository == nil {
+		return nil, nil
+	}
+	reports, err := s.repository.ListSyncRunReports(profileID, 0)
+	if err != nil {
+		return nil, err
+	}
+	for index := range reports {
+		if terminalReportPhase(reports[index].Phase) {
+			return snapshotFromRetainedReport(profileID, &reports[index])
+		}
+	}
+	return nil, nil
+}
+
+// restoreProfileStatus rebuilds a non-active status from the newest retained
+// terminal report. Queued/processing reports can be left behind by a process
+// restart and must never be presented as an active run.
+func (s *MultiUserService) restoreProfileStatus(profileID string, profile *database.SyncProfile) (*SyncProfileStatus, error) {
+	if s.repository == nil {
+		return nil, nil
+	}
+	if profile == nil {
+		var err error
+		profile, err = s.repository.GetProfileMetadata(profileID)
+		if err != nil || profile == nil {
+			return nil, err
+		}
+	}
+	state, err := s.repository.GetProfileSyncState(profileID)
+	if err != nil {
+		return nil, err
+	}
+	reports, err := s.repository.ListSyncRunReports(profileID, 0)
+	if err != nil {
+		return nil, err
+	}
+	var report *database.SyncRunReport
+	for index := range reports {
+		if terminalReportPhase(reports[index].Phase) {
+			report = &reports[index]
+			break
+		}
+	}
+
+	if profile == nil {
+		return nil, nil
+	}
+
+	status := &SyncProfileStatus{
+		ProfileID:   profile.ID,
+		ProfileName: profile.Name,
+		Status:      "idle",
+	}
+	if state != nil {
+		status.LastSync = copyTime(state.LastSync)
+		status.LastAttemptedAt = copyTime(state.LastAttemptedAt)
+		status.LastSuccessfulAt = copyTime(state.LastSuccessfulAt)
+		if status.LastAttemptedAt == nil {
+			// Legacy state only has LastSync. It is an attempted timestamp,
+			// not evidence of successful synchronization.
+			status.LastAttemptedAt = copyTime(state.LastSync)
+		}
+	}
+	if report == nil {
+		return status, nil
+	}
+
+	snapshot, err := snapshotFromRetainedReport(profile.ID, report)
+	if err != nil {
+		return nil, err
+	}
+	if snapshot == nil {
+		return status, nil
+	}
+	applySnapshotToStatus(status, *snapshot)
+	status.Status = statusForSnapshot(snapshot)
+	if status.LastAttemptedAt == nil {
+		status.LastAttemptedAt = copyTime(report.QueuedAt)
+	}
+	if report.Phase == database.SyncRunPhaseCompleted && !report.DryRun && status.LastSuccessfulAt == nil {
+		status.LastSuccessfulAt = copyTime(report.FinishedAt)
+		status.LastSync = copyTime(report.FinishedAt)
+	}
+	return status, nil
+}
+
+func reportPhaseToSyncPhase(phase string) string {
+	switch phase {
+	case database.SyncRunPhaseCompleted:
+		return string(sync.RunPhaseCompleted)
+	case database.SyncRunPhaseCanceled:
+		return string(sync.RunPhaseCanceled)
+	case database.SyncRunPhaseFailed:
+		return string(sync.RunPhaseFailed)
+	default:
+		return string(sync.RunPhaseFailed)
+	}
+}
+
+func snapshotFromRetainedReport(profileID string, report *database.SyncRunReport) (*sync.SyncSnapshot, error) {
+	if report == nil || !terminalReportPhase(report.Phase) {
+		return nil, nil
+	}
+	var snapshot sync.SyncSnapshot
+	if report.SnapshotJSON != "" && report.SnapshotJSON != "{}" {
+		if err := json.Unmarshal([]byte(report.SnapshotJSON), &snapshot); err != nil {
+			return nil, fmt.Errorf("decode retained sync report %s: %w", report.RunID, err)
+		}
+	}
+	snapshot.UserID = profileID
+	snapshot.RunID = report.RunID
+	snapshot.State = reportPhaseToSyncPhase(report.Phase)
+	snapshot.DryRun = report.DryRun
+	if report.QueuedAt != nil {
+		snapshot.QueuedAt = report.QueuedAt.UTC()
+		snapshot.RunStartedAt = snapshot.QueuedAt
+	}
+	if report.ProcessingStartedAt != nil {
+		snapshot.ProcessingStartedAt = report.ProcessingStartedAt.UTC()
+	}
+	if report.LastActivityAt != nil {
+		snapshot.LastActivityAt = report.LastActivityAt.UTC()
+	}
+	if report.LastProcessedAt != nil {
+		snapshot.LastProcessedAt = report.LastProcessedAt.UTC()
+	}
+	if report.FinishedAt != nil {
+		snapshot.FinishedAt = report.FinishedAt.UTC()
+	}
+	snapshot.RunError = report.RunError
+	return &snapshot, nil
+}
+
+// legacySnapshotState retains the pre-lifecycle status payload spelling for
+// active runs. The canonical phase remains in durable reports and direct
+// snapshot accessors; only the legacy profile-status projection uses this.
+func legacySnapshotState(state string) string {
+	switch state {
+	case string(sync.RunPhaseQueued), string(sync.RunPhaseRunning), string(sync.RunPhaseFinalizing):
+		return "syncing"
+	default:
+		return state
 	}
 }
 
@@ -317,18 +664,21 @@ func (s *MultiUserService) GetProfileStatus(profileID string) *SyncProfileStatus
 // without hydrating profile configuration from the repository. It is intended
 // for callers that have already performed any required profile authorization.
 func (s *MultiUserService) GetProfileSnapshot(profileID string) *sync.SyncSnapshot {
-	s.syncMutex.RLock()
-	defer s.syncMutex.RUnlock()
-
 	s.statusMutex.RLock()
 	var storedSnapshot *sync.SyncSnapshot
 	if status := s.profileStatuses[profileID]; status != nil && status.Snapshot != nil {
 		storedSnapshot = cloneSyncSnapshot(*status.Snapshot)
 	}
 	s.statusMutex.RUnlock()
-
+	s.syncMutex.RLock()
 	service, generation := s.currentSyncServiceLocked(profileID)
 	if service == nil {
+		s.syncMutex.RUnlock()
+		if storedSnapshot == nil {
+			if restored, err := s.restoreLatestTerminalSnapshot(profileID); err == nil {
+				storedSnapshot = restored
+			}
+		}
 		return storedSnapshot
 	}
 
@@ -348,9 +698,45 @@ func (s *MultiUserService) GetProfileSnapshot(profileID string) *sync.SyncSnapsh
 	}
 
 	if storedSnapshot == nil || storedSnapshot.RunID == "" || snapshot.RunID == "" || storedSnapshot.RunID == snapshot.RunID {
+		s.syncMutex.RUnlock()
 		return &snapshot
 	}
+	s.syncMutex.RUnlock()
 	return storedSnapshot
+}
+
+// GetActiveOrLatestSnapshot returns the active run snapshot when one exists,
+// otherwise the newest retained terminal report restored from the database.
+func (s *MultiUserService) GetActiveOrLatestSnapshot(profileID string) *sync.SyncSnapshot {
+	return s.GetProfileSnapshot(profileID)
+}
+
+// GetSyncRunReport returns an exact profile-scoped retained report. It does
+// not fall back to the profile's latest report when runID is unknown.
+func (s *MultiUserService) GetSyncRunReport(profileID, runID string) (*database.SyncRunReport, error) {
+	if s.repository == nil {
+		return nil, nil
+	}
+	return s.repository.GetSyncRunReport(profileID, runID)
+}
+
+// GetRetainedSyncRunSnapshot returns the exact retained snapshot for runID.
+// Active snapshots are intentionally not synthesized here; callers that need
+// the live run should use GetActiveOrLatestSnapshot.
+func (s *MultiUserService) GetRetainedSyncRunSnapshot(profileID, runID string) (*sync.SyncSnapshot, error) {
+	report, err := s.GetSyncRunReport(profileID, runID)
+	if err != nil || report == nil {
+		return nil, err
+	}
+	if !terminalReportPhase(report.Phase) {
+		return nil, nil
+	}
+	return snapshotFromRetainedReport(profileID, report)
+}
+
+// GetSyncRunSnapshot is a concise alias for exact retained run lookup.
+func (s *MultiUserService) GetSyncRunSnapshot(profileID, runID string) (*sync.SyncSnapshot, error) {
+	return s.GetRetainedSyncRunSnapshot(profileID, runID)
 }
 
 // currentSyncService returns only the service belonging to the active run.
@@ -388,6 +774,11 @@ func (s *MultiUserService) getProfileStatus(profileID string, profile *database.
 	s.statusMutex.RUnlock()
 
 	if status == nil {
+		if restored, err := s.restoreProfileStatus(profileID, profile); err == nil && restored != nil {
+			status = s.cacheStatusIfAbsent(profileID, restored)
+		}
+	}
+	if status == nil {
 		if profile == nil {
 			if s.repository != nil {
 				loaded, _ := s.GetProfile(profileID)
@@ -398,7 +789,7 @@ func (s *MultiUserService) getProfileStatus(profileID string, profile *database.
 			}
 		}
 	}
-	if (status == nil || status.LastSync == nil) && profileState == nil &&
+	if (status == nil || status.LastSync == nil || status.LastAttemptedAt == nil || status.LastSuccessfulAt == nil) && profileState == nil &&
 		s.repository != nil && (status != nil || profile != nil) {
 		profileState, _ = s.repository.GetSyncState(profileID)
 	}
@@ -428,8 +819,19 @@ func (s *MultiUserService) getProfileStatus(profileID string, profile *database.
 		lastSync := *profileState.LastSync
 		status.LastSync = &lastSync
 	}
+	if status.LastAttemptedAt == nil && profileState != nil && profileState.LastAttemptedAt != nil {
+		lastAttempted := *profileState.LastAttemptedAt
+		status.LastAttemptedAt = &lastAttempted
+	}
+	if status.LastSuccessfulAt == nil && profileState != nil && profileState.LastSuccessfulAt != nil {
+		lastSuccessful := *profileState.LastSuccessfulAt
+		status.LastSuccessfulAt = &lastSuccessful
+	}
 	service, generation := s.currentSyncServiceLocked(profileID)
 	if service == nil {
+		if status.Status == "" {
+			status.Status = "idle"
+		}
 		return status
 	}
 	snapshot := service.GetSnapshot()
@@ -443,21 +845,28 @@ func (s *MultiUserService) getProfileStatus(profileID string, profile *database.
 			}
 		}
 	}
+	projectedSnapshot := snapshot
+	projectedSnapshot.State = legacySnapshotState(snapshot.State)
 	if status.Snapshot == nil || status.Snapshot.RunID == "" || snapshot.RunID == "" || status.Snapshot.RunID == snapshot.RunID {
-		applySnapshotToStatus(status, snapshot)
+		applySnapshotToStatus(status, projectedSnapshot)
 		if status.Snapshot.UserID == "" {
 			status.Snapshot.UserID = profileID
 		}
 	}
+	status.Status = statusForSnapshot(status.Snapshot)
 	return status
 }
 
 // StartSync starts a sync operation for a specific profile
 func (s *MultiUserService) StartSync(profileID string) error {
-	s.syncMutex.Lock()
-	defer s.syncMutex.Unlock()
+	gate := s.profileGate(profileID)
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
 
-	if _, exists := s.activeSyncs[profileID]; exists {
+	s.syncMutex.RLock()
+	_, alreadyActive := s.activeSyncs[profileID]
+	s.syncMutex.RUnlock()
+	if alreadyActive {
 		return fmt.Errorf("sync already in progress for profile %s", profileID)
 	}
 
@@ -473,27 +882,71 @@ func (s *MultiUserService) StartSync(profileID string) error {
 		return fmt.Errorf("invalid persisted state file for profile %s: %w", profileID, err)
 	}
 
-	// Create cancellable context and store cancel
-	ctx, cancel := context.WithCancel(context.Background())
-	s.nextGeneration++
-	run := activeSyncRun{
-		generation: s.nextGeneration,
-		startedAt:  time.Now().UTC(),
+	// Reserve the accepted-start identity in the database before exposing the
+	// run. The repository allocates the authoritative generation atomically,
+	// so restarts and multiple service instances cannot reuse it.
+	queuedAt := time.Now().UTC()
+	runID := fmt.Sprintf("%s-%d", profileID, queuedAt.UnixNano())
+	queuedReport, err := s.repository.ReserveSyncRun(profileID, runID, profileConfig.SyncConfig.DryRun, queuedAt)
+	if err != nil {
+		return fmt.Errorf("failed to reserve sync run for profile %s: %w", profileID, err)
 	}
-	run.runID = fmt.Sprintf("%s-%d-%d", profileID, run.startedAt.UnixNano(), run.generation)
+	if queuedReport == nil {
+		return fmt.Errorf("failed to reserve sync run for profile %s: empty reservation", profileID)
+	}
+	queuedSnapshot := newRunSnapshot(profileID, activeSyncRun{
+		generation:  queuedReport.Generation,
+		runID:       runID,
+		startedAt:   queuedAt,
+		profileName: profileConfig.Profile.Name,
+		dryRun:      profileConfig.SyncConfig.DryRun,
+	}, string(sync.RunPhaseQueued))
+	queuedReport.SnapshotJSON, err = marshalSanitizedSnapshot(queuedSnapshot)
+	if err != nil {
+		return fmt.Errorf("failed to prepare queued sync report for profile %s: %w", profileID, err)
+	}
+	if err := s.repository.UpsertSyncRunReport(queuedReport); err != nil {
+		return fmt.Errorf("failed to install queued sync report for profile %s: %w", profileID, err)
+	}
+
+	// Create cancellable context and install lifecycle state only after the
+	// durable reservation and queued report are complete. Every map mutation is
+	// brief; repository calls above never hold syncMutex.
+	ctx, cancel := context.WithCancel(context.Background())
+	run := activeSyncRun{
+		generation:  queuedReport.Generation,
+		startedAt:   queuedAt,
+		profileName: profileConfig.Profile.Name,
+		dryRun:      profileConfig.SyncConfig.DryRun,
+	}
+	run.runID = runID
+	s.syncMutex.Lock()
+	if _, exists := s.activeSyncs[profileID]; exists {
+		s.syncMutex.Unlock()
+		cancel()
+		return fmt.Errorf("sync already in progress for profile %s", profileID)
+	}
 	s.activeSyncs[profileID] = cancel
 	s.activeRuns[profileID] = run
+	s.latestRuns[profileID] = run
+	if run.generation > s.nextGeneration {
+		s.nextGeneration = run.generation
+	}
+	s.syncMutex.Unlock()
 
 	// Update initial status
+	lastSync, lastSuccessful := s.priorRunTimes(profileID, profileConfig.Profile.SyncState)
 	initialStatus := &SyncProfileStatus{
-		ProfileID:   profileID,
-		ProfileName: profileConfig.Profile.Name,
-		Status:      "syncing",
-		DryRun:      profileConfig.SyncConfig.DryRun,
-		LastSync:    nil,
-		Progress:    "Starting sync...",
+		ProfileID:        profileID,
+		ProfileName:      profileConfig.Profile.Name,
+		Status:           "syncing",
+		DryRun:           profileConfig.SyncConfig.DryRun,
+		LastSync:         lastSync,
+		LastAttemptedAt:  timeValue(queuedAt),
+		LastSuccessfulAt: lastSuccessful,
+		Progress:         "Starting sync...",
 	}
-	applySnapshotToStatus(initialStatus, newRunSnapshot(profileID, run, "syncing"))
+	applySnapshotToStatus(initialStatus, queuedSnapshot)
 	s.updateProfileStatus(profileID, initialStatus)
 
 	// Start the sync in background
@@ -512,35 +965,70 @@ func (s *MultiUserService) WaitForSyncs() {
 	s.syncWaitGroup.Wait()
 }
 
-// CancelSync cancels a running sync operation for a profile
+// CancelSync cancels a running sync operation for a profile.
 func (s *MultiUserService) CancelSync(profileID string) error {
-	s.syncMutex.Lock()
-	defer s.syncMutex.Unlock()
+	gate := s.profileGate(profileID)
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
 
+	s.syncMutex.RLock()
 	cancel, exists := s.activeSyncs[profileID]
+	run, runExists := s.activeRuns[profileID]
+	service, serviceGeneration := s.currentSyncServiceLocked(profileID)
+	s.syncMutex.RUnlock()
 	if !exists {
 		return fmt.Errorf("no active sync for profile %s", profileID)
 	}
-	cancel()
+	if !runExists {
+		return fmt.Errorf("active sync identity missing for profile %s", profileID)
+	}
+
+	// Mark the latest run canceled before signaling the worker. This closes the
+	// publication race: a worker that observes cancellation late may retain its
+	// report, but cannot replace the canceled/current status.
+	s.syncMutex.Lock()
+	if current, ok := s.activeRuns[profileID]; !ok || current.runID != run.runID || current.generation != run.generation {
+		s.syncMutex.Unlock()
+		return fmt.Errorf("no active sync for profile %s", profileID)
+	}
+	run.canceled = true
+	s.activeRuns[profileID] = run
+	if latest, ok := s.latestRuns[profileID]; ok && latest.runID == run.runID && latest.generation == run.generation {
+		latest.canceled = true
+		s.latestRuns[profileID] = latest
+	}
 	delete(s.activeSyncs, profileID)
-	delete(s.activeRuns, profileID)
+	s.syncMutex.Unlock()
+	cancel()
 
-	finalStatus := &SyncProfileStatus{
-		ProfileID: profileID,
-		Status:    "idle",
-		LastSync:  timePtr(time.Now()),
-		Progress:  "Sync canceled",
+	// Remove active markers so a replacement can be accepted immediately. The
+	// old worker's final publication is generation-checked and cannot win.
+	s.syncMutex.Lock()
+	if current, ok := s.activeRuns[profileID]; ok && current.runID == run.runID && current.generation == run.generation {
+		delete(s.activeRuns, profileID)
 	}
-	// Persist last_sync to DB so UI can show it across restarts
-	if state, err := s.repository.GetSyncState(profileID); err == nil {
-		if state == nil {
-			state = &database.ProfileSyncState{ProfileID: profileID, StateData: "{}"}
+	if service != nil && serviceGeneration == run.generation {
+		s.servicesMutex.Lock()
+		if s.serviceRuns[profileID] == run.generation && s.syncServices[profileID] == service {
+			delete(s.syncServices, profileID)
+			delete(s.serviceRuns, profileID)
 		}
-		state.LastSync = finalStatus.LastSync
-		_ = s.repository.UpdateSyncState(state)
+		s.servicesMutex.Unlock()
 	}
+	s.syncMutex.Unlock()
 
-	s.updateProfileStatus(profileID, finalStatus)
+	snapshot := s.snapshotForCanceledRun(profileID, run, service)
+	finalStatus := s.statusForTerminalRun(profileID, run, snapshot)
+	finalStatus.Status = "error"
+	finalStatus.Progress = "Sync canceled"
+	if err := s.persistTerminalSnapshot(profileID, run.generation, snapshot); err != nil {
+		finalStatus.Error = fmt.Sprintf("failed to persist canceled sync report: %v", err)
+		snapshot.State = string(sync.RunPhaseFailed)
+		snapshot.RunError = finalStatus.Error
+		applySnapshotToStatus(finalStatus, snapshot)
+		finalStatus.Status = "error"
+	}
+	s.publishStatusIfLatest(profileID, run, finalStatus)
 	return nil
 }
 
@@ -590,8 +1078,13 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
 
 	hcClient := hardcover.NewClientWithConfig(hcCfg, profileConfig.HardcoverToken, s.logger)
 
-	// Create sync service
-	syncService, err := sync.NewService(absClient, hcClient, config)
+	// Create sync service bound to the accepted run identity. This preserves the
+	// queued run ID/timestamp through service initialization and Sync startup.
+	run, runCurrent := s.activeRun(profileID, generation)
+	if !runCurrent {
+		return
+	}
+	syncService, err := sync.NewServiceWithRunIdentity(absClient, hcClient, config, run.runID, run.startedAt)
 	if err != nil {
 		status := &SyncProfileStatus{
 			ProfileID:   profileID,
@@ -620,12 +1113,7 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
 	snapshot := s.normalizeRunSnapshot(profileID, generation, syncService.GetSnapshot())
 
 	// Prepare final status
-	status := &SyncProfileStatus{
-		ProfileID:   profileID,
-		ProfileName: profileConfig.Profile.Name,
-		DryRun:      profileConfig.SyncConfig.DryRun,
-		LastSync:    timePtr(time.Now()),
-	}
+	status := s.statusForTerminalRun(profileID, run, snapshot)
 	applySnapshotToStatus(status, snapshot)
 	if status.Snapshot != nil && status.Snapshot.UserID == "" {
 		status.Snapshot.UserID = profileID
@@ -651,22 +1139,137 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
 		})
 	}
 
-	// Publish only if this run is still current. A stale run can finish after a
-	// replacement starts and must not overwrite its status.
+	// Persist the terminal report without holding the service-wide lifecycle
+	// lock, then publish in memory only if run ID and generation are current.
 	s.publishFinalStatus(profileID, generation, status)
 }
 
 func newRunSnapshot(profileID string, run activeSyncRun, state string) sync.SyncSnapshot {
-	return sync.SyncSnapshot{
+	snapshot := sync.SyncSnapshot{
 		UserID:           profileID,
 		RunID:            run.runID,
 		RunStartedAt:     run.startedAt,
+		QueuedAt:         run.startedAt,
+		LastActivityAt:   run.startedAt,
 		State:            state,
+		DryRun:           run.dryRun,
 		BookOutcomes:     make([]sync.BookOutcomeRecord, 0),
 		AttentionRecords: make([]sync.BookOutcomeRecord, 0),
 		BooksNotFound:    make([]sync.BookNotFoundInfo, 0),
 		Mismatches:       make([]mismatch.BookMismatch, 0),
 	}
+	if state == string(sync.RunPhaseCompleted) || state == string(sync.RunPhaseCanceled) || state == string(sync.RunPhaseFailed) {
+		snapshot.FinishedAt = time.Now().UTC()
+	}
+	return snapshot
+}
+
+func marshalSanitizedSnapshot(snapshot sync.SyncSnapshot) (string, error) {
+	data, err := json.Marshal(sanitizedSnapshot(snapshot))
+	if err != nil {
+		return "", fmt.Errorf("marshal sync snapshot: %w", err)
+	}
+	return string(data), nil
+}
+
+func (s *MultiUserService) priorRunTimes(profileID string, profileState *database.ProfileSyncState) (*time.Time, *time.Time) {
+	s.statusMutex.RLock()
+	stored := s.profileStatuses[profileID]
+	var lastSync, lastSuccessful *time.Time
+	if stored != nil {
+		lastSync = copyTime(stored.LastSync)
+		lastSuccessful = copyTime(stored.LastSuccessfulAt)
+	}
+	s.statusMutex.RUnlock()
+	if profileState != nil {
+		if lastSync == nil {
+			lastSync = copyTime(profileState.LastSync)
+		}
+		if lastSuccessful == nil {
+			lastSuccessful = copyTime(profileState.LastSuccessfulAt)
+		}
+	}
+	return lastSync, lastSuccessful
+}
+
+func (s *MultiUserService) snapshotForCanceledRun(profileID string, run activeSyncRun, service *sync.Service) sync.SyncSnapshot {
+	var snapshot sync.SyncSnapshot
+	if service != nil {
+		snapshot = service.GetSnapshot()
+	} else {
+		s.statusMutex.RLock()
+		if status := s.profileStatuses[profileID]; status != nil && status.Snapshot != nil {
+			snapshot = *cloneSyncSnapshot(*status.Snapshot)
+		}
+		s.statusMutex.RUnlock()
+	}
+	snapshot.UserID = profileID
+	snapshot.RunID = run.runID
+	snapshot.RunStartedAt = run.startedAt
+	if snapshot.QueuedAt.IsZero() {
+		snapshot.QueuedAt = run.startedAt
+	}
+	if snapshot.LastActivityAt.IsZero() {
+		snapshot.LastActivityAt = run.startedAt
+	}
+	snapshot.State = string(sync.RunPhaseCanceled)
+	snapshot.RunError = context.Canceled.Error()
+	snapshot.FinishedAt = time.Now().UTC()
+	snapshot.DryRun = run.dryRun
+	return snapshot
+}
+
+func (s *MultiUserService) statusForTerminalRun(profileID string, run activeSyncRun, snapshot sync.SyncSnapshot) *SyncProfileStatus {
+	lastSync, lastSuccessful := s.priorRunTimes(profileID, nil)
+	status := &SyncProfileStatus{
+		ProfileID:        profileID,
+		ProfileName:      run.profileName,
+		DryRun:           run.dryRun,
+		LastSync:         lastSync,
+		LastAttemptedAt:  timeValue(run.startedAt),
+		LastSuccessfulAt: lastSuccessful,
+	}
+	applySnapshotToStatus(status, snapshot)
+	status.Status = statusForSnapshot(&snapshot)
+	return status
+}
+
+func (s *MultiUserService) persistTerminalSnapshot(profileID string, generation uint64, snapshot sync.SyncSnapshot) error {
+	if s.repository == nil {
+		return nil
+	}
+	report, err := runReportFromSnapshot(profileID, generation, snapshot)
+	if err != nil {
+		return err
+	}
+	return s.repository.UpsertSyncRunReport(report)
+}
+
+func (s *MultiUserService) publishStatusIfLatest(profileID string, run activeSyncRun, status *SyncProfileStatus) bool {
+	if status == nil {
+		return false
+	}
+	s.syncMutex.RLock()
+	latest, latestExists := s.latestRuns[profileID]
+	if !latestExists {
+		latest, latestExists = s.activeRuns[profileID]
+	}
+	s.syncMutex.RUnlock()
+	if !latestExists || latest.runID != run.runID || latest.generation != run.generation {
+		return false
+	}
+	if latest.canceled && status.Snapshot != nil && status.Snapshot.State != string(sync.RunPhaseCanceled) && status.Snapshot.State != string(sync.RunPhaseFailed) {
+		return false
+	}
+	if status.Snapshot != nil && status.Snapshot.State == string(sync.RunPhaseCompleted) && !status.DryRun {
+		finishedAt := status.Snapshot.FinishedAt
+		if !finishedAt.IsZero() {
+			status.LastSync = copyTime(&finishedAt)
+			status.LastSuccessfulAt = copyTime(&finishedAt)
+		}
+	}
+	s.updateProfileStatus(profileID, status)
+	return true
 }
 
 func (s *MultiUserService) activeRun(profileID string, generation uint64) (activeSyncRun, bool) {
@@ -731,28 +1334,57 @@ func (s *MultiUserService) finishActiveRun(profileID string, generation uint64) 
 }
 
 func (s *MultiUserService) publishFinalStatus(profileID string, generation uint64, status *SyncProfileStatus) bool {
-	s.syncMutex.Lock()
-	defer s.syncMutex.Unlock()
 	if status == nil {
 		return false
 	}
-	run, ok := s.activeRuns[profileID]
-	if !ok || run.generation != generation {
+	if status.Snapshot == nil {
 		return false
 	}
-	if s.repository != nil {
-		if state, err := s.repository.GetSyncState(profileID); err == nil {
-			if state == nil {
-				state = &database.ProfileSyncState{ProfileID: profileID, StateData: "{}"}
-			}
-			state.LastSync = status.LastSync
-			_ = s.repository.UpdateSyncState(state)
+	runID := status.Snapshot.RunID
+	if runID == "" {
+		s.syncMutex.RLock()
+		run, ok := s.activeRuns[profileID]
+		s.syncMutex.RUnlock()
+		if !ok || run.generation != generation {
+			return false
 		}
+		runID = run.runID
+		status.Snapshot.RunID = runID
 	}
-	s.statusMutex.Lock()
-	s.profileStatuses[profileID] = cloneProfileStatus(status)
-	s.statusMutex.Unlock()
-	return true
+	// Serialize same-profile terminal persistence with start/cancel decisions.
+	// This does not serialize unrelated profiles and lets us reject an older
+	// successful worker before it can advance durable success metadata.
+	gate := s.profileGate(profileID)
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	if status.Snapshot.State == string(sync.RunPhaseCompleted) && !s.latestRunIsCurrent(profileID, runID, generation) {
+		return false
+	}
+	if s.latestRunWasCanceled(profileID, runID, generation) {
+		return false
+	}
+
+	// Durable report persistence is deliberately outside syncMutex. A blocked
+	// database operation for one profile must not stall status or start/cancel
+	// operations for another profile.
+	if err := s.persistTerminalSnapshot(profileID, generation, *status.Snapshot); err != nil {
+		status = cloneProfileStatus(status)
+		status.Status = "error"
+		status.Error = fmt.Sprintf("failed to persist sync report: %v", err)
+		status.Snapshot.State = string(sync.RunPhaseFailed)
+		status.Snapshot.RunError = status.Error
+		s.publishStatusIfLatest(profileID, activeSyncRun{generation: generation, runID: runID}, status)
+		if s.logger != nil {
+			s.logger.Error("Failed to persist terminal sync report", map[string]interface{}{
+				"profileID":  profileID,
+				"generation": generation,
+				"error":      err,
+			})
+		}
+		return false
+	}
+
+	return s.publishStatusIfLatest(profileID, activeSyncRun{generation: generation, runID: runID}, status)
 }
 
 // createProfileSpecificConfig creates a config.Config instance for a specific profile
@@ -1181,6 +1813,14 @@ func cloneProfileStatus(status *SyncProfileStatus) *SyncProfileStatus {
 	if status.LastSync != nil {
 		lastSync := *status.LastSync
 		copyOf.LastSync = &lastSync
+	}
+	if status.LastAttemptedAt != nil {
+		lastAttempted := *status.LastAttemptedAt
+		copyOf.LastAttemptedAt = &lastAttempted
+	}
+	if status.LastSuccessfulAt != nil {
+		lastSuccessful := *status.LastSuccessfulAt
+		copyOf.LastSuccessfulAt = &lastSuccessful
 	}
 	copyOf.BooksNotFound = append([]sync.BookNotFoundInfo(nil), status.BooksNotFound...)
 	copyOf.Mismatches = make([]mismatch.BookMismatch, len(status.Mismatches))

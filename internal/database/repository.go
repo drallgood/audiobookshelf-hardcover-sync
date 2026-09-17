@@ -178,6 +178,14 @@ func (r *Repository) UpsertSyncRunReport(report *SyncRunReport) error {
 		if err != nil {
 			return err
 		}
+		// A completion can advance durable success only for the run that is
+		// still the newest accepted attempt. Reports from a canceled or
+		// replaced worker may be retained for truthful history, but they must
+		// never make a stale run look successful after a newer reservation.
+		if report.Generation != state.LastAttemptedGeneration ||
+			report.RunID != state.LastAttemptedRunID {
+			return nil
+		}
 		if report.Generation <= state.LastSuccessfulGeneration {
 			return nil
 		}

@@ -2,6 +2,7 @@ package multiuser
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -164,6 +165,69 @@ func TestGetProfileSnapshotUsesCurrentRunWithoutProfileHydration(t *testing.T) {
 	require.Equal(t, run.runID, snapshot.RunID)
 	require.Equal(t, profileID, snapshot.UserID)
 	require.Equal(t, "syncing", snapshot.State)
+}
+
+func TestGetProfileSnapshotRestoresRetainedRunWithoutProfileHydration(t *testing.T) {
+	service, db := newStatusLookupService(t)
+	profileID := "profile-retained"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Profile", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
+	))
+	queuedAt := time.Date(2026, time.September, 16, 12, 0, 0, 0, time.UTC)
+	report, err := service.repository.ReserveSyncRun(profileID, "run-retained", false, queuedAt)
+	require.NoError(t, err)
+	report.Phase = database.SyncRunPhaseCompleted
+	report.FinishedAt = timePtrForMultiuserTest(queuedAt.Add(time.Minute))
+	report.SnapshotJSON = `{"run_id":"run-retained","state":"completed"}`
+	require.NoError(t, service.repository.UpsertSyncRunReport(report))
+
+	const queryCallbackName = "multiuser_test_forbid_retained_snapshot_profile_hydration"
+	require.NoError(t, db.Callback().Query().Before("gorm:query").Register(queryCallbackName, func(tx *gorm.DB) {
+		if tx.Statement.Schema == nil || tx.Statement.Schema.Name != "SyncProfile" {
+			return
+		}
+		t.Errorf("GetProfileSnapshot hydrated profile metadata from the database")
+		tx.AddError(gorm.ErrInvalidValue)
+	}))
+	t.Cleanup(func() { require.NoError(t, db.Callback().Query().Remove(queryCallbackName)) })
+
+	snapshot := service.GetProfileSnapshot(profileID)
+	require.NotNil(t, snapshot)
+	require.Equal(t, profileID, snapshot.UserID)
+	require.Equal(t, "run-retained", snapshot.RunID)
+	require.Equal(t, string(syncsvc.RunPhaseCompleted), snapshot.State)
+}
+
+func TestGetSyncRunSnapshotLooksUpOnlyTheRequestedRetainedRun(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	const profileID = "profile-exact-report"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Profile", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
+	))
+	queuedAt := time.Date(2026, time.September, 16, 12, 0, 0, 0, time.UTC)
+	report, err := service.repository.ReserveSyncRun(profileID, "run-exact", false, queuedAt)
+	require.NoError(t, err)
+	report.Phase = database.SyncRunPhaseFailed
+	report.FinishedAt = timePtrForMultiuserTest(queuedAt.Add(time.Minute))
+	report.RunError = "retained failure"
+	report.SnapshotJSON = `{"run_id":"run-exact","state":"failed"}`
+	require.NoError(t, service.repository.UpsertSyncRunReport(report))
+
+	snapshot, err := service.GetSyncRunSnapshot(profileID, "run-exact")
+	require.NoError(t, err)
+	require.NotNil(t, snapshot)
+	require.Equal(t, profileID, snapshot.UserID)
+	require.Equal(t, "run-exact", snapshot.RunID)
+	require.Equal(t, string(syncsvc.RunPhaseFailed), snapshot.State)
+	require.Equal(t, "retained failure", snapshot.RunError)
+
+	missing, err := service.GetSyncRunSnapshot(profileID, "does-not-exist")
+	require.NoError(t, err)
+	require.Nil(t, missing)
+}
+
+func timePtrForMultiuserTest(value time.Time) *time.Time {
+	return &value
 }
 
 func TestStatusAggregateOmitsErrorAndProfileStatusRetainsIt(t *testing.T) {
@@ -337,6 +401,246 @@ func TestAggregateStatusMapsLiveTerminalSnapshotState(t *testing.T) {
 			service.finishActiveRun(profileID, run.generation)
 		})
 	}
+}
+
+func installAcceptedTestRun(t *testing.T, service *MultiUserService, profileID, runID string, dryRun bool) activeSyncRun {
+	t.Helper()
+	queuedAt := time.Date(2026, time.September, 16, 12, 0, 0, 0, time.UTC)
+	report, err := service.repository.ReserveSyncRun(profileID, runID, dryRun, queuedAt)
+	require.NoError(t, err)
+	run := activeSyncRun{
+		generation:  report.Generation,
+		runID:       runID,
+		startedAt:   queuedAt,
+		profileName: profileID,
+		dryRun:      dryRun,
+	}
+	_, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	service.syncMutex.Lock()
+	service.activeSyncs[profileID] = cancel
+	service.activeRuns[profileID] = run
+	service.latestRuns[profileID] = run
+	service.syncMutex.Unlock()
+	return run
+}
+
+func acceptedTerminalStatus(profileID string, run activeSyncRun, phase string) *SyncProfileStatus {
+	snapshot := newRunSnapshot(profileID, run, phase)
+	snapshot.FinishedAt = run.startedAt.Add(time.Minute)
+	return &SyncProfileStatus{
+		ProfileID:       profileID,
+		Status:          "completed",
+		DryRun:          run.dryRun,
+		LastAttemptedAt: timeValue(run.startedAt),
+		Snapshot:        &snapshot,
+	}
+}
+
+func TestStartSyncQueuesAuthoritativeRunBeforeWorkerFinishes(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	absServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-requestStarted:
+		default:
+			close(requestStarted)
+		}
+		<-releaseRequest
+	}))
+	t.Cleanup(absServer.Close)
+
+	service, _ := newStatusLookupService(t)
+	dataDir := t.TempDir()
+	service.globalConfig.Paths.DataDir = dataDir
+	service.globalConfig.Paths.CacheDir = filepath.Join(dataDir, "cache")
+	service.globalConfig.Paths.MismatchOutputDir = filepath.Join(dataDir, "mismatches")
+	const profileID = "profile-queued"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Queued profile", absServer.URL, "abs-token", "hc-token", database.SyncConfigData{},
+	))
+
+	require.NoError(t, service.StartSync(profileID))
+	report, err := service.repository.GetLatestSyncRunReport(profileID)
+	require.NoError(t, err)
+	require.NotNil(t, report)
+	require.Equal(t, database.SyncRunPhaseQueued, report.Phase)
+	require.NotEmpty(t, report.RunID)
+
+	status := service.GetProfileStatus(profileID)
+	require.NotNil(t, status)
+	require.NotNil(t, status.Snapshot)
+	require.Equal(t, report.RunID, status.Snapshot.RunID)
+	require.Equal(t, uint64(report.Generation), service.nextGeneration)
+
+	require.NoError(t, service.CancelSync(profileID))
+	close(releaseRequest)
+	service.WaitForSyncs()
+}
+
+func TestPublishFinalStatusRejectsCanceledRunBeforeDurableSuccess(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	profileID := "profile-a"
+	require.NoError(t, service.repository.CreateProfile(profileID, "Profile A", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{}))
+	run := installAcceptedTestRun(t, service, profileID, "run-a", false)
+
+	// Make cancellation win the lifecycle decision before a worker that was
+	// already returning a completed snapshot reaches final publication.
+	require.NoError(t, service.CancelSync(profileID))
+	require.False(t, service.publishFinalStatus(profileID, run.generation, acceptedTerminalStatus(profileID, run, string(syncsvc.RunPhaseCompleted))))
+	require.False(t, service.publishFinalStatus(profileID, run.generation, acceptedTerminalStatus(profileID, run, string(syncsvc.RunPhaseFailed))))
+	stored, err := service.repository.GetSyncRunReport(profileID, run.runID)
+	require.NoError(t, err)
+	require.Equal(t, database.SyncRunPhaseCanceled, stored.Phase)
+	state, err := service.repository.GetSyncState(profileID)
+	require.NoError(t, err)
+	require.Zero(t, state.LastSuccessfulGeneration)
+}
+
+func TestPublishFinalStatusRejectsReplacedRunBeforeDurableSuccess(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	profileID := "profile-a"
+	require.NoError(t, service.repository.CreateProfile(profileID, "Profile A", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{}))
+	oldRun := installAcceptedTestRun(t, service, profileID, "run-old", false)
+	newRun := installAcceptedTestRun(t, service, profileID, "run-new", false)
+
+	require.False(t, service.publishFinalStatus(profileID, oldRun.generation, acceptedTerminalStatus(profileID, oldRun, string(syncsvc.RunPhaseCompleted))))
+	oldReport, err := service.repository.GetSyncRunReport(profileID, oldRun.runID)
+	require.NoError(t, err)
+	require.Equal(t, database.SyncRunPhaseQueued, oldReport.Phase)
+	state, err := service.repository.GetSyncState(profileID)
+	require.NoError(t, err)
+	require.Zero(t, state.LastSuccessfulGeneration)
+	require.Equal(t, newRun.runID, service.latestRuns[profileID].runID)
+}
+
+func TestDryRunTerminalStatusKeepsAttemptWithoutSuccess(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	profileID := "profile-dry"
+	require.NoError(t, service.repository.CreateProfile(profileID, "Dry profile", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{}))
+	run := installAcceptedTestRun(t, service, profileID, "run-dry", true)
+
+	require.True(t, service.publishFinalStatus(profileID, run.generation, acceptedTerminalStatus(profileID, run, string(syncsvc.RunPhaseCompleted))))
+	status := service.GetProfileStatus(profileID)
+	require.NotNil(t, status)
+	require.Nil(t, status.LastSync)
+	require.NotNil(t, status.LastAttemptedAt)
+	require.Nil(t, status.LastSuccessfulAt)
+	state, err := service.repository.GetSyncState(profileID)
+	require.NoError(t, err)
+	require.Equal(t, run.runID, state.LastAttemptedRunID)
+	require.Zero(t, state.LastSuccessfulGeneration)
+}
+
+func TestRestartRestoresNewestTerminalReport(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	profileID := "profile-restart"
+	require.NoError(t, service.repository.CreateProfile(profileID, "Restart profile", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{}))
+	first := installAcceptedTestRun(t, service, profileID, "run-first", false)
+	require.True(t, service.publishFinalStatus(profileID, first.generation, acceptedTerminalStatus(profileID, first, string(syncsvc.RunPhaseCompleted))))
+	second := installAcceptedTestRun(t, service, profileID, "run-second", false)
+	secondStatus := acceptedTerminalStatus(profileID, second, string(syncsvc.RunPhaseCanceled))
+	secondStatus.Status = "error"
+	require.True(t, service.publishFinalStatus(profileID, second.generation, secondStatus))
+
+	restarted := NewMultiUserService(service.repository, config.DefaultConfig(), logger.Get())
+	status := restarted.GetProfileStatus(profileID)
+	require.NotNil(t, status)
+	require.Equal(t, second.runID, status.Snapshot.RunID)
+	require.Equal(t, string(syncsvc.RunPhaseCanceled), status.Snapshot.State)
+	require.Equal(t, "error", status.Status)
+}
+
+func TestPublishFinalStatusSurfacesTerminalPersistenceFailure(t *testing.T) {
+	service, db := newStatusLookupService(t)
+	profileID := "profile-persist-failure"
+	require.NoError(t, service.repository.CreateProfile(profileID, "Failure profile", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{}))
+	run := installAcceptedTestRun(t, service, profileID, "run-failure", false)
+
+	const callbackName = "multiuser_test_fail_terminal_report_update"
+	require.NoError(t, db.Callback().Update().Before("gorm:update").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Schema != nil && tx.Statement.Schema.Name == "SyncRunReport" {
+			tx.AddError(errors.New("terminal persistence unavailable"))
+		}
+	}))
+	t.Cleanup(func() { require.NoError(t, db.Callback().Update().Remove(callbackName)) })
+
+	require.False(t, service.publishFinalStatus(profileID, run.generation, acceptedTerminalStatus(profileID, run, string(syncsvc.RunPhaseCompleted))))
+	status := service.GetProfileStatus(profileID)
+	require.NotNil(t, status)
+	require.Equal(t, "error", status.Status)
+	require.Contains(t, status.Error, "failed to persist sync report")
+	require.NotNil(t, status.Snapshot)
+	require.Equal(t, string(syncsvc.RunPhaseFailed), status.Snapshot.State)
+}
+
+func TestBlockedProfilePersistenceDoesNotBlockOtherProfileStatus(t *testing.T) {
+	service, db := newStatusLookupService(t)
+	for _, profileID := range []string{"profile-a", "profile-b"} {
+		require.NoError(t, service.repository.CreateProfile(profileID, profileID, "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{}))
+	}
+	runA := installAcceptedTestRun(t, service, "profile-a", "run-a", false)
+	_ = installAcceptedTestRun(t, service, "profile-b", "run-b", false)
+	lastSync := runA.startedAt.Add(-time.Minute)
+	service.updateProfileStatus("profile-b", &SyncProfileStatus{
+		ProfileID: "profile-b", ProfileName: "profile-b", Status: "syncing", LastSync: &lastSync,
+		LastAttemptedAt: &lastSync, LastSuccessfulAt: &lastSync,
+	})
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	const callbackName = "multiuser_test_block_profile_a_report"
+	require.NoError(t, db.Callback().Update().Before("gorm:update").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Schema == nil || tx.Statement.Schema.Name != "SyncRunReport" {
+			return
+		}
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		<-release
+	}))
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(release) })
+		require.NoError(t, db.Callback().Update().Remove(callbackName))
+	})
+
+	persistDone := make(chan bool, 1)
+	go func() {
+		persistDone <- service.publishFinalStatus("profile-a", runA.generation, acceptedTerminalStatus("profile-a", runA, string(syncsvc.RunPhaseCompleted)))
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for profile A persistence")
+	}
+	progressDone := make(chan struct{})
+	go func() {
+		service.updateProfileStatus("profile-b", &SyncProfileStatus{
+			ProfileID: "profile-b", ProfileName: "profile-b", Status: "syncing", Progress: "advanced while profile A persists",
+			LastSync: &lastSync, LastAttemptedAt: &lastSync, LastSuccessfulAt: &lastSync,
+		})
+		close(progressDone)
+	}()
+	select {
+	case <-progressDone:
+	case <-time.After(time.Second):
+		t.Fatal("profile B progress update blocked behind profile A persistence")
+	}
+	statusDone := make(chan *SyncProfileStatus, 1)
+	go func() { statusDone <- service.GetProfileStatus("profile-b") }()
+	select {
+	case status := <-statusDone:
+		require.NotNil(t, status)
+		require.Equal(t, "profile-b", status.ProfileID)
+		require.Equal(t, "advanced while profile A persists", status.Progress)
+	case <-time.After(time.Second):
+		t.Fatal("profile B status blocked behind profile A persistence")
+	}
+	releaseOnce.Do(func() { close(release) })
+	require.True(t, <-persistDone)
 }
 
 func TestCreateProfileValidatesComposedStateFilenameLength(t *testing.T) {

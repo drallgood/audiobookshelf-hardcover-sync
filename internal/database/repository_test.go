@@ -105,6 +105,13 @@ func TestUpsertSyncRunReportAdvancesOnlyNewerCompletedNonDryRun(t *testing.T) {
 		}
 	}
 
+	// Reports can only advance success after their run was accepted by a
+	// reservation. Reserve two runs so generation two is current when it
+	// completes.
+	_, err := repo.ReserveSyncRun("profile-a", "run-1", false, finish.Add(-2*time.Minute))
+	require.NoError(t, err)
+	_, err = repo.ReserveSyncRun("profile-a", "run-2", false, finish.Add(-time.Minute))
+	require.NoError(t, err)
 	require.NoError(t, repo.UpsertSyncRunReport(completed(2, "run-2", false, SyncRunPhaseCompleted)))
 	state, err := repo.GetSyncState("profile-a")
 	require.NoError(t, err)
@@ -112,24 +119,34 @@ func TestUpsertSyncRunReportAdvancesOnlyNewerCompletedNonDryRun(t *testing.T) {
 	require.Equal(t, "run-2", state.LastSuccessfulRunID)
 	require.Equal(t, finish, *state.LastSuccessfulAt)
 
-	for _, report := range []*SyncRunReport{
-		completed(3, "run-failed", false, SyncRunPhaseFailed),
-		completed(4, "run-canceled", false, SyncRunPhaseCanceled),
-		completed(5, "run-dry", true, SyncRunPhaseCompleted),
-		completed(1, "run-old", false, SyncRunPhaseCompleted),
+	for _, test := range []struct {
+		generation uint64
+		runID      string
+		dryRun     bool
+		phase      string
+	}{
+		{generation: 3, runID: "run-failed", phase: SyncRunPhaseFailed},
+		{generation: 4, runID: "run-canceled", phase: SyncRunPhaseCanceled},
+		{generation: 5, runID: "run-dry", dryRun: true, phase: SyncRunPhaseCompleted},
 	} {
-		require.NoError(t, repo.UpsertSyncRunReport(report))
+		_, err := repo.ReserveSyncRun("profile-a", test.runID, test.dryRun, finish.Add(time.Duration(test.generation)*time.Minute))
+		require.NoError(t, err)
+		require.NoError(t, repo.UpsertSyncRunReport(completed(test.generation, test.runID, test.dryRun, test.phase)))
 	}
+	// The first run is retained as history but is no longer the accepted
+	// attempt, so a late completion must not move the success pointer back.
+	require.NoError(t, repo.UpsertSyncRunReport(completed(1, "run-1", false, SyncRunPhaseCompleted)))
 	state, err = repo.GetSyncState("profile-a")
 	require.NoError(t, err)
 	require.Equal(t, uint64(2), state.LastSuccessfulGeneration)
 	require.Equal(t, "run-2", state.LastSuccessfulRunID)
 
+	_, err = repo.ReserveSyncRun("profile-a", "run-6", false, finish.Add(6*time.Minute))
+	require.NoError(t, err)
 	newFinish := finish.Add(time.Hour)
-	require.NoError(t, repo.UpsertSyncRunReport(&SyncRunReport{
-		ProfileID: "profile-a", RunID: "run-6", Generation: 6,
-		Phase: SyncRunPhaseCompleted, FinishedAt: &newFinish,
-	}))
+	newReport := completed(6, "run-6", false, SyncRunPhaseCompleted)
+	newReport.FinishedAt = &newFinish
+	require.NoError(t, repo.UpsertSyncRunReport(newReport))
 	state, err = repo.GetSyncState("profile-a")
 	require.NoError(t, err)
 	require.Equal(t, uint64(6), state.LastSuccessfulGeneration)
