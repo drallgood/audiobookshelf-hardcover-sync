@@ -23,15 +23,12 @@ var (
 	mismatchLogLock  sync.Mutex
 )
 
-// Collector stores mismatches for one sync run. A collector is intentionally
-// independent from the package-level compatibility functions below so
-// concurrent profile runs cannot clear or combine one another's records.
+// Collector stores mismatches for one sync run so concurrent profile runs
+// cannot clear or combine one another's records.
 type Collector struct {
 	lock       sync.Mutex
 	mismatches []BookMismatch
 }
-
-var globalCollector = NewCollector()
 
 // NewCollector creates an empty mismatch collector.
 func NewCollector() *Collector {
@@ -74,11 +71,6 @@ func (c *Collector) Add(book BookMismatch) {
 	}
 }
 
-// Add adds a new book mismatch to the package-level compatibility collector.
-func Add(book BookMismatch) {
-	globalCollector.Add(book)
-}
-
 // RecordMismatch records a new book mismatch in this collector.
 func (c *Collector) RecordMismatch(book *BookMismatch) error {
 	c.lock.Lock()
@@ -103,19 +95,6 @@ func (c *Collector) RecordMismatch(book *BookMismatch) error {
 
 	c.mismatches = append(c.mismatches, *book)
 	return nil
-}
-
-// RecordMismatch records a new book mismatch in the package-level
-// compatibility collector.
-func RecordMismatch(book *BookMismatch) error {
-	return globalCollector.RecordMismatch(book)
-}
-
-// AddWithMetadata creates and adds a new book mismatch with enhanced metadata
-// and returns the enriched record. If hc is provided, it will be used to look
-// up publisher and other metadata.
-func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, duration float64, audiobookShelfID string, hc hardcover.HardcoverClientInterface, audnexusRegion string) BookMismatch {
-	return globalCollector.AddWithMetadata(metadata, bookID, editionID, reason, duration, audiobookShelfID, hc, audnexusRegion)
 }
 
 // AddWithMetadata creates and adds a new book mismatch with enhanced metadata
@@ -712,27 +691,11 @@ func (c *Collector) GetAll() []BookMismatch {
 	return result
 }
 
-// GetAll returns a copy of all mismatches in the package-level compatibility
-// collector.
-func GetAll() []BookMismatch {
-	return globalCollector.GetAll()
-}
-
 // Clear removes all mismatches from this collector.
 func (c *Collector) Clear() {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	c.mismatches = []BookMismatch{}
-}
-
-// Clear removes all mismatches from the package-level compatibility collector.
-func Clear() {
-	globalCollector.Clear()
-}
-
-// ExportJSON returns all mismatches as a JSON string
-func ExportJSON() (string, error) {
-	return globalCollector.ExportJSON()
 }
 
 // ExportJSON returns all mismatches in this collector as a JSON string.
@@ -759,12 +722,6 @@ func (c *Collector) ExportJSON() (string, error) {
 	}
 
 	return string(jsonData), nil
-}
-
-// SaveToFile saves all mismatches from the package-level compatibility
-// collector as individual JSON files in the specified directory.
-func SaveToFile(ctx context.Context, hc hardcover.HardcoverClientInterface, outputDir string, cfg *config.Config) error {
-	return globalCollector.SaveToFile(ctx, hc, outputDir, cfg)
 }
 
 // SaveToFile saves this collector's mismatches as individual JSON files in the

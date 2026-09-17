@@ -12,6 +12,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/edition"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 	"github.com/stretchr/testify/assert"
@@ -728,6 +729,7 @@ func createTestService() (*Service, *MockHardcoverClient) {
 		persistentCache:     persistentCache,
 		userBookCache:       userBookCache,
 		createdReadsThisRun: make(map[int64]struct{}),
+		mismatchCollector:   mismatch.NewCollector(),
 	}
 
 	return svc, mockClient

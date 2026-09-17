@@ -43,8 +43,7 @@ type progressUpdateInfo struct {
 
 // SyncSummary tracks the results of a sync operation
 type SyncSummary struct {
-	UserID       string `json:"user_id,omitempty"`
-	BooksTotal   int32  `json:"books_total"`
+	BooksTotal   int32 `json:"books_total"`
 	sync.RWMutex `json:"-"`
 }
 
@@ -241,7 +240,6 @@ type Service struct {
 	// isolated from other profiles and runs.
 	mismatchCollector   *mismatch.Collector
 	runID               string
-	runStartedAt        time.Time
 	queuedAt            time.Time
 	processingStartedAt time.Time
 	lastActivityAt      time.Time
@@ -295,11 +293,11 @@ func NewServiceWithRunIdentity(absClient *audiobookshelf.Client, hcClient hardco
 		persistentCache:        NewPersistentASINCache(cfg.Paths.CacheDir),
 		userBookCache:          NewPersistentUserBookCache(cfg.Paths.CacheDir),
 		summary:                &SyncSummary{},
+		mismatchCollector:      mismatch.NewCollector(),
 		outcomeRecords:         make(map[string]BookOutcomeRecord),
 		attentionCandidates:    make(map[string]mismatch.BookMismatch),
 		runID:                  runID,
 		queuedAt:               queuedAt,
-		runStartedAt:           queuedAt,
 		runState:               "idle",
 		runIdentityInjected:    runID != "",
 		libraryCandidateTotals: make(map[string]int),
@@ -473,7 +471,6 @@ func (s *Service) beginOutcomeRun() {
 	if s.queuedAt.IsZero() {
 		s.queuedAt = now
 	}
-	s.runStartedAt = s.queuedAt
 	s.processingStartedAt = time.Time{}
 	s.lastActivityAt = s.queuedAt
 	s.lastProcessedAt = time.Time{}
@@ -536,7 +533,6 @@ func (s *Service) transitionRunPhase(to RunPhase, runErr error) bool {
 		if s.queuedAt.IsZero() {
 			s.queuedAt = now
 		}
-		s.runStartedAt = s.queuedAt
 	case RunPhaseRunning:
 		s.processingStartedAt = now
 	case RunPhaseCompleted, RunPhaseCanceled, RunPhaseFailed:
@@ -718,31 +714,11 @@ func (s *Service) enrichAttentionCandidate(record mismatch.BookMismatch) {
 }
 
 func (s *Service) addMismatch(record mismatch.BookMismatch) {
-	if s.mismatchCollector != nil {
-		s.mismatchCollector.Add(record)
-		return
-	}
-	// Keep direct processBook callers and older integrations on the established
-	// package-level compatibility path. Sync always installs a run collector.
-	mismatch.Add(record)
+	s.getMismatchCollector().Add(record)
 }
 
 func (s *Service) addMismatchWithMetadata(metadata mismatch.MediaMetadata, bookID, editionID, reason string, duration float64, audiobookShelfID string, audnexRegion string) mismatch.BookMismatch {
-	if s.mismatchCollector != nil {
-		return s.mismatchCollector.AddWithMetadata(
-			metadata,
-			bookID,
-			editionID,
-			reason,
-			duration,
-			audiobookShelfID,
-			s.hardcover,
-			audnexRegion,
-		)
-	}
-	// Keep direct processBook callers and older integrations on the established
-	// package-level compatibility path. Sync always installs a run collector.
-	return mismatch.AddWithMetadata(
+	return s.getMismatchCollector().AddWithMetadata(
 		metadata,
 		bookID,
 		editionID,
@@ -752,6 +728,13 @@ func (s *Service) addMismatchWithMetadata(metadata mismatch.MediaMetadata, bookI
 		s.hardcover,
 		audnexRegion,
 	)
+}
+
+func (s *Service) getMismatchCollector() *mismatch.Collector {
+	if s.mismatchCollector == nil {
+		s.mismatchCollector = mismatch.NewCollector()
+	}
+	return s.mismatchCollector
 }
 
 func cloneBookMismatch(record mismatch.BookMismatch) mismatch.BookMismatch {
@@ -1054,7 +1037,6 @@ func (s *Service) GetSnapshot() SyncSnapshot {
 
 	s.summary.RLock()
 	defer s.summary.RUnlock()
-	snapshot.UserID = s.summary.UserID
 	snapshot.RunID = s.runID
 	snapshot.QueuedAt = s.queuedAt
 	snapshot.ProcessingStartedAt = s.processingStartedAt
@@ -1082,9 +1064,8 @@ func (s *Service) GetSnapshot() SyncSnapshot {
 }
 
 // GetSnapshotStatus returns one race-safe scalar copy of the current run.
-// Unlike GetSnapshot, it does not materialize per-book outcomes, attention
-// records, legacy not-found entries, or mismatches. This is the lightweight
-// read path for aggregate status polling.
+// Unlike GetSnapshot, it does not materialize per-book outcomes or mismatch
+// records. This is the lightweight read path for aggregate status polling.
 func (s *Service) GetSnapshotStatus() SyncSnapshot {
 	if s.summary == nil {
 		return SyncSnapshot{}
@@ -1095,7 +1076,6 @@ func (s *Service) GetSnapshotStatus() SyncSnapshot {
 
 	processedCount := s.outcomeCounts.Total()
 	return SyncSnapshot{
-		UserID:              s.summary.UserID,
 		RunID:               s.runID,
 		QueuedAt:            s.queuedAt,
 		ProcessingStartedAt: s.processingStartedAt,
@@ -1418,9 +1398,6 @@ func (s *Service) findExistingUserBookForBook(ctx context.Context, bookID int64)
 // Sync performs a full synchronization between Audiobookshelf and Hardcover
 func (s *Service) Sync(ctx context.Context) (err error) {
 	s.mismatchCollector = mismatch.NewCollector()
-	defer func() {
-		s.mismatchCollector = nil
-	}()
 	s.beginOutcomeRun()
 	defer func() {
 		if err == nil {

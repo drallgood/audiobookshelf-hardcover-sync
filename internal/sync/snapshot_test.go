@@ -50,7 +50,6 @@ func TestSnapshotStatusCopiesScalarsWithoutDetails(t *testing.T) {
 	svc.beginOutcomeRun()
 
 	svc.summary.Lock()
-	svc.summary.UserID = "profile-a"
 	svc.summary.BooksTotal = 2
 	svc.summary.Unlock()
 
@@ -60,7 +59,6 @@ func TestSnapshotStatusCopiesScalarsWithoutDetails(t *testing.T) {
 	svc.recordBookOutcomeWithMatchMethod(notFound, OutcomeNotFound, "not found", nil, nil, "")
 
 	status := svc.GetSnapshotStatus()
-	require.Equal(t, "profile-a", status.UserID)
 	require.NotEmpty(t, status.RunID)
 	require.False(t, status.QueuedAt.IsZero())
 	require.Equal(t, string(RunPhaseQueued), status.State)

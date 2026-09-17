@@ -8,7 +8,6 @@ import (
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -234,8 +233,6 @@ func TestProcessBookSeparatesNotFoundAndTechnicalLookupFailure(t *testing.T) {
 }
 
 func TestProcessBookKeepsIdentifierFailureWhenTitleSearchFindsCandidate(t *testing.T) {
-	mismatch.Clear()
-	t.Cleanup(mismatch.Clear)
 	svc, hc := createTestService()
 	book := createTestBook("outcome-incomplete-lookup", "Possible Match", "Author", "failed-asin", "")
 	book.Progress.CurrentTime = 300
@@ -254,7 +251,7 @@ func TestProcessBookKeepsIdentifierFailureWhenTitleSearchFindsCandidate(t *testi
 	assert.Equal(t, OutcomeFailed, record.Outcome)
 	assert.Contains(t, record.Error, lookupErr.Error())
 	assert.Empty(t, record.MatchMethod, "title candidate cannot verify an incomplete identifier search")
-	matches := mismatch.GetAll()
+	matches := svc.mismatchCollector.GetAll()
 	require.Len(t, matches, 1)
 	assert.Equal(t, absBook.ID, matches[0].BookID)
 	assert.Equal(t, "901", matches[0].HardcoverBookID)
@@ -268,8 +265,6 @@ func TestProcessBookKeepsIdentifierFailureWhenTitleSearchFindsCandidate(t *testi
 }
 
 func TestProcessBookSnapshotKeepsTitleOnlyEnrichment(t *testing.T) {
-	mismatch.Clear()
-	t.Cleanup(mismatch.Clear)
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
 	book := createTestBook("snapshot-title-only", "Title Only", "Author", "", "9781234567890")
@@ -306,8 +301,6 @@ func TestProcessBookSnapshotKeepsTitleOnlyEnrichment(t *testing.T) {
 }
 
 func TestProcessBookSnapshotKeepsEnrichedSecondLookupFailure(t *testing.T) {
-	mismatch.Clear()
-	t.Cleanup(mismatch.Clear)
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
 	book := createTestBook("snapshot-second-lookup", "Second Lookup", "Author", "", "9781234567890")
@@ -352,8 +345,6 @@ func TestProcessBookSnapshotKeepsEnrichedSecondLookupFailure(t *testing.T) {
 }
 
 func TestProcessBookSnapshotKeepsSecondLookupNotFoundOutOfMismatches(t *testing.T) {
-	mismatch.Clear()
-	t.Cleanup(mismatch.Clear)
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
 	book := createTestBook("snapshot-second-lookup-not-found", "Second Lookup Not Found", "Author", "", "9781234567890")
@@ -362,7 +353,7 @@ func TestProcessBookSnapshotKeepsSecondLookupNotFoundOutOfMismatches(t *testing.
 	absBook.Media.Metadata.Publisher = "Test Publisher"
 
 	// The first lookup succeeds, but the later lookup used before mutation no
-	// longer finds the book. The compatibility mismatch export still runs for
+	// longer finds the book. The mismatch export still runs for
 	// that conclusive result.
 	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return(&models.HardcoverBook{
 		ID: "901", EditionID: "902",
@@ -374,7 +365,7 @@ func TestProcessBookSnapshotKeepsSecondLookupNotFoundOutOfMismatches(t *testing.
 	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return((*models.HardcoverBook)(nil), nil).Once()
 	hc.On("SearchBookByISBN10", mock.Anything, book.Media.Metadata.ISBN).Return((*models.HardcoverBook)(nil), nil).Once()
 	hc.On("SearchBooks", mock.Anything, "Second Lookup Not Found Author", "").Return([]models.HardcoverBook{}, nil).Once()
-	// AddWithMetadata enriches the global mismatch export after the not-found
+	// AddWithMetadata enriches the run-local mismatch export after the not-found
 	// outcome has been published.
 	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return(&models.HardcoverBook{
 		ID: "904", Title: "Hardcover Second Lookup Not Found", Authors: []models.Author{{Name: "Hardcover Author"}},
@@ -387,15 +378,13 @@ func TestProcessBookSnapshotKeepsSecondLookupNotFoundOutOfMismatches(t *testing.
 	assert.Equal(t, absBook.ID, snapshot.BookOutcomes[0].BookID)
 	assert.Equal(t, OutcomeNotFound, snapshot.BookOutcomes[0].Outcome)
 
-	global := mismatch.GetAll()
-	require.Len(t, global, 1)
-	assert.Equal(t, absBook.ID, global[0].BookID)
+	records := svc.mismatchCollector.GetAll()
+	require.Len(t, records, 1)
+	assert.Equal(t, absBook.ID, records[0].BookID)
 	hc.AssertExpectations(t)
 }
 
 func TestProcessBookSnapshotKeepsEnrichedNoEditionMismatch(t *testing.T) {
-	mismatch.Clear()
-	t.Cleanup(mismatch.Clear)
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
 	book := createTestBook("snapshot-no-edition", "No Edition", "Author", "", "9781234567890")
@@ -424,10 +413,10 @@ func TestProcessBookSnapshotKeepsEnrichedNoEditionMismatch(t *testing.T) {
 	assert.Equal(t, "https://example.test/no-edition-cover.jpg", got.HardcoverCoverURL)
 	assert.Equal(t, "2020", got.HardcoverPublishedYear)
 	assert.Equal(t, OutcomeNeedsReview, snapshot.BookOutcomes[0].Outcome)
-	global := mismatch.GetAll()
-	require.Len(t, global, 1)
-	assert.Equal(t, "905", global[0].BookID, "global mismatch export keeps its established Hardcover identifier")
-	assert.Equal(t, 1, global[0].Attempts)
+	records := svc.mismatchCollector.GetAll()
+	require.Len(t, records, 1)
+	assert.Equal(t, "905", records[0].BookID, "mismatch export keeps its established Hardcover identifier")
+	assert.Equal(t, 1, records[0].Attempts)
 	hc.AssertExpectations(t)
 }
 
