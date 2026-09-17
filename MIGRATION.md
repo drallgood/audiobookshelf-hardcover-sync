@@ -37,16 +37,17 @@ If you previously used environment variables for configuration, you will need to
 
 ## Breaking Changes
 
-### Sync Status and Summary Fields
+### Sync Status API
 
-Status and summary responses no longer include the legacy flattened
-`total_books_processed`, `books_synced`, `books_not_found`, `mismatches`, or
-`last_sync_summary` fields. Use `processed_count` (or `processed_so_far`) for
-the processed total, `outcome_counts.synced` for synced items, and the
-canonical `book_outcomes` and `attention_records` arrays for per-book
-not-found and needs-review details. Needs-review records include their
-Hardcover candidate fields directly. Existing persisted snapshot JSON remains
-readable; unknown legacy keys are ignored during restore.
+The legacy global sync, per-profile status, and summary endpoints were removed.
+Use `GET /api/status` for lightweight profile lifecycle/count snapshots and
+`GET /api/profiles/{id}/runs/{runId}/details` for authenticated full run details.
+The canonical schema uses `queued_at`, `processed_so_far`, and `book_outcomes`;
+the `run_started_at`, `processed_count`, and `attention_records` aliases were
+removed. Filter `book_outcomes` for `needs_review`, `not_found`, and `failed`
+records. The legacy top-level `status`, `dry_run`, `books_total`, `error`,
+`progress`, and `last_sync` fields were also removed in favor of the nested
+snapshot and `last_attempted_at`/`last_successful_at`.
 
 ### Profile API Credentials
 

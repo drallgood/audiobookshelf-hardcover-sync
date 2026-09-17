@@ -21,7 +21,7 @@ func TestSnapshotDeepCopiesCanonicalOutcomeDetails(t *testing.T) {
 	svc.recordBookOutcomeWithMatchMethod(book, OutcomeNotFound, "not found", nil, nil, "")
 
 	first := svc.GetSnapshot()
-	require.Len(t, first.AttentionRecords, 1)
+	require.Len(t, first.BookOutcomes, 1)
 	first.BookOutcomes[0].Title = "caller mutation"
 
 	// A distinct needs-review item exercises deep-copying of mismatch-owned
@@ -35,11 +35,11 @@ func TestSnapshotDeepCopiesCanonicalOutcomeDetails(t *testing.T) {
 		Reason:      "review",
 	})
 	first = svc.GetSnapshot()
-	require.Len(t, first.AttentionRecords, 2)
+	require.Len(t, first.BookOutcomes, 2)
 	first.BookOutcomes[0].Title = "changed"
 
 	second := svc.GetSnapshot()
-	require.Len(t, second.AttentionRecords, 2)
+	require.Len(t, second.BookOutcomes, 2)
 	require.Equal(t, "Snapshot Copy", second.BookOutcomes[0].Title)
 	require.Equal(t, second.ProcessedSoFar, second.OutcomeCounts.Total())
 }
@@ -62,20 +62,17 @@ func TestSnapshotStatusCopiesScalarsWithoutDetails(t *testing.T) {
 	status := svc.GetSnapshotStatus()
 	require.Equal(t, "profile-a", status.UserID)
 	require.NotEmpty(t, status.RunID)
-	require.False(t, status.RunStartedAt.IsZero())
+	require.False(t, status.QueuedAt.IsZero())
 	require.Equal(t, string(RunPhaseQueued), status.State)
 	require.Equal(t, int32(2), status.BooksTotal)
 	require.Equal(t, int32(2), status.ProcessedSoFar)
-	require.Equal(t, int32(2), status.ProcessedCount)
 	require.Equal(t, OutcomeCounts{NeedsReview: 1, NotFound: 1}, status.OutcomeCounts)
 	require.Nil(t, status.BookOutcomes)
-	require.Nil(t, status.AttentionRecords)
 	require.Empty(t, status.AudiobookshelfURL, "aggregate status snapshots omit profile configuration")
 
 	full := svc.GetSnapshot()
 	require.Equal(t, "https://audiobookshelf.example/base", full.AudiobookshelfURL)
 	require.Len(t, full.BookOutcomes, 2)
-	require.Len(t, full.AttentionRecords, 2)
 	for _, record := range full.BookOutcomes {
 		require.Equal(t, "https://audiobookshelf.example/base/api/items/"+record.BookID+"/cover", record.CoverURL)
 		require.Equal(t, "Audiobook", record.Format)
@@ -94,7 +91,6 @@ func TestSnapshotStatusKeepsUnknownTotalSeparateFromProcessedOutcomes(t *testing
 	status := svc.GetSnapshotStatus()
 	require.Zero(t, status.BooksTotal, "the denominator remains unknown until a library count is observed")
 	require.Equal(t, int32(1), status.ProcessedSoFar)
-	require.Equal(t, int32(1), status.ProcessedCount)
 	require.Equal(t, OutcomeCounts{NotFound: 1}, status.OutcomeCounts)
 	require.Equal(t, int32(1), status.ProcessedSoFar)
 }
@@ -147,9 +143,7 @@ func TestSnapshotSanitizesAudiobookshelfURLs(t *testing.T) {
 			snapshot := svc.GetSnapshot()
 			require.Equal(t, tt.wantURL, snapshot.AudiobookshelfURL)
 			require.Len(t, snapshot.BookOutcomes, 1)
-			require.Len(t, snapshot.AttentionRecords, 1)
 			require.Equal(t, tt.wantCoverURL, snapshot.BookOutcomes[0].CoverURL)
-			require.Equal(t, tt.wantCoverURL, snapshot.AttentionRecords[0].CoverURL)
 		})
 	}
 }

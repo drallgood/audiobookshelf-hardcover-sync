@@ -63,8 +63,7 @@ const (
 )
 
 // RunPhase is the canonical lifecycle phase for one synchronization run.
-// Phases are intentionally narrower than the legacy profile status values:
-// callers can distinguish a queued run from one actively processing books and
+// Callers can distinguish a queued run from one actively processing books and
 // a run that is finalizing its report.
 type RunPhase string
 
@@ -128,11 +127,9 @@ type BookOutcomeRecord struct {
 // GetSnapshot returns deep-copied slices so callers can safely retain or
 // modify a response while the sync continues.
 type SyncSnapshot struct {
-	UserID            string `json:"user_id,omitempty"`
-	AudiobookshelfURL string `json:"audiobookshelf_url,omitempty"`
-	RunID             string `json:"run_id,omitempty"`
-	// RunStartedAt is retained as a compatibility alias for QueuedAt.
-	RunStartedAt        time.Time           `json:"run_started_at,omitempty"`
+	UserID              string              `json:"user_id,omitempty"`
+	AudiobookshelfURL   string              `json:"audiobookshelf_url,omitempty"`
+	RunID               string              `json:"run_id,omitempty"`
 	QueuedAt            time.Time           `json:"queued_at,omitempty"`
 	ProcessingStartedAt time.Time           `json:"processing_started_at,omitempty"`
 	LastActivityAt      time.Time           `json:"last_activity_at,omitempty"`
@@ -144,10 +141,8 @@ type SyncSnapshot struct {
 	State               string              `json:"state,omitempty"`
 	BooksTotal          int32               `json:"books_total"`
 	ProcessedSoFar      int32               `json:"processed_so_far"`
-	ProcessedCount      int32               `json:"processed_count"`
 	OutcomeCounts       OutcomeCounts       `json:"outcome_counts"`
 	BookOutcomes        []BookOutcomeRecord `json:"book_outcomes"`
-	AttentionRecords    []BookOutcomeRecord `json:"attention_records"`
 }
 
 // processBookOutcomeReporterKey carries a best-effort outcome callback through
@@ -1040,10 +1035,6 @@ func sanitizeSnapshotAudiobookshelfURLs(snapshot *SyncSnapshot) {
 	for i := range snapshot.BookOutcomes {
 		snapshot.BookOutcomes[i].CoverURL = sanitizeAudiobookshelfURL(snapshot.BookOutcomes[i].CoverURL)
 	}
-	for i := range snapshot.AttentionRecords {
-		snapshot.AttentionRecords[i].CoverURL = sanitizeAudiobookshelfURL(snapshot.AttentionRecords[i].CoverURL)
-		snapshot.AttentionRecords[i].HardcoverCoverURL = sanitizeAudiobookshelfURL(snapshot.AttentionRecords[i].HardcoverCoverURL)
-	}
 	for i := range snapshot.BookOutcomes {
 		snapshot.BookOutcomes[i].HardcoverCoverURL = sanitizeAudiobookshelfURL(snapshot.BookOutcomes[i].HardcoverCoverURL)
 	}
@@ -1053,14 +1044,11 @@ func (s *Service) dryRunEnabled() bool {
 	return s.config != nil && s.config.Sync.DryRun
 }
 
-// GetSnapshot returns one race-safe deep copy of the current run. Attention
-// records are derived from the same outcome map and lock acquisition as all
-// counters, so callers never observe fields from different points in a run.
+// GetSnapshot returns one race-safe deep copy of the current run.
 func (s *Service) GetSnapshot() SyncSnapshot {
 	snapshot := SyncSnapshot{
 		AudiobookshelfURL: s.config.Audiobookshelf.URL,
 		BookOutcomes:      make([]BookOutcomeRecord, 0),
-		AttentionRecords:  make([]BookOutcomeRecord, 0),
 	}
 	if s.summary == nil {
 		sanitizeSnapshotAudiobookshelfURLs(&snapshot)
@@ -1071,7 +1059,6 @@ func (s *Service) GetSnapshot() SyncSnapshot {
 	defer s.summary.RUnlock()
 	snapshot.UserID = s.summary.UserID
 	snapshot.RunID = s.runID
-	snapshot.RunStartedAt = s.runStartedAt
 	snapshot.QueuedAt = s.queuedAt
 	snapshot.ProcessingStartedAt = s.processingStartedAt
 	snapshot.LastActivityAt = s.lastActivityAt
@@ -1082,7 +1069,6 @@ func (s *Service) GetSnapshot() SyncSnapshot {
 	snapshot.State = s.runState
 	snapshot.BooksTotal = s.summary.BooksTotal
 	snapshot.ProcessedSoFar = s.outcomeCounts.Total()
-	snapshot.ProcessedCount = snapshot.ProcessedSoFar
 	snapshot.UnattemptedCount = unattemptedCount(s.summary.BooksTotal, snapshot.ProcessedSoFar)
 	snapshot.OutcomeCounts = s.outcomeCounts
 	bookIDs := make([]string, 0, len(s.outcomeRecords))
@@ -1093,9 +1079,6 @@ func (s *Service) GetSnapshot() SyncSnapshot {
 	for _, bookID := range bookIDs {
 		record := s.outcomeRecords[bookID]
 		snapshot.BookOutcomes = append(snapshot.BookOutcomes, record)
-		if isAttentionOutcome(record.Outcome) {
-			snapshot.AttentionRecords = append(snapshot.AttentionRecords, record)
-		}
 	}
 	sanitizeSnapshotAudiobookshelfURLs(&snapshot)
 	return snapshot
@@ -1117,7 +1100,6 @@ func (s *Service) GetSnapshotStatus() SyncSnapshot {
 	return SyncSnapshot{
 		UserID:              s.summary.UserID,
 		RunID:               s.runID,
-		RunStartedAt:        s.runStartedAt,
 		QueuedAt:            s.queuedAt,
 		ProcessingStartedAt: s.processingStartedAt,
 		LastActivityAt:      s.lastActivityAt,
@@ -1128,7 +1110,6 @@ func (s *Service) GetSnapshotStatus() SyncSnapshot {
 		State:               s.runState,
 		BooksTotal:          s.summary.BooksTotal,
 		ProcessedSoFar:      processedCount,
-		ProcessedCount:      processedCount,
 		UnattemptedCount:    unattemptedCount(s.summary.BooksTotal, processedCount),
 		OutcomeCounts:       s.outcomeCounts,
 	}
@@ -2111,8 +2092,8 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		}
 		s.recordBookOutcomeWithMatchMethod(book, outcomeHint, outcomeReason, outcomeError, hcBook, matchMethod)
 		bookLog.Debug("Book processing outcome recorded", map[string]interface{}{
-			"outcome":         outcomeHint,
-			"processed_count": s.processedOutcomeTotal(),
+			"outcome":          outcomeHint,
+			"processed_so_far": s.processedOutcomeTotal(),
 		})
 	}()
 

@@ -85,7 +85,6 @@ type APIResponse struct {
 type aggregateSnapshotResponse struct {
 	UserID              string             `json:"user_id,omitempty"`
 	RunID               string             `json:"run_id,omitempty"`
-	RunStartedAt        time.Time          `json:"run_started_at,omitempty"`
 	QueuedAt            time.Time          `json:"queued_at,omitempty"`
 	ProcessingStartedAt time.Time          `json:"processing_started_at,omitempty"`
 	LastActivityAt      time.Time          `json:"last_activity_at,omitempty"`
@@ -96,20 +95,14 @@ type aggregateSnapshotResponse struct {
 	UnattemptedCount    int32              `json:"unattempted_count"`
 	BooksTotal          int32              `json:"books_total"`
 	ProcessedSoFar      int32              `json:"processed_so_far"`
-	ProcessedCount      int32              `json:"processed_count"`
 	OutcomeCounts       sync.OutcomeCounts `json:"outcome_counts"`
 }
 
 type aggregateStatusResponse struct {
 	ProfileID        string                     `json:"profile_id"`
 	ProfileName      string                     `json:"profile_name"`
-	Status           string                     `json:"status"`
-	DryRun           bool                       `json:"dry_run,omitempty"`
-	LastSync         *time.Time                 `json:"last_sync"`
 	LastAttemptedAt  *time.Time                 `json:"last_attempted_at,omitempty"`
 	LastSuccessfulAt *time.Time                 `json:"last_successful_at,omitempty"`
-	Progress         string                     `json:"progress,omitempty"`
-	BooksTotal       int                        `json:"books_total,omitempty"`
 	Snapshot         *aggregateSnapshotResponse `json:"snapshot,omitempty"`
 }
 
@@ -241,9 +234,7 @@ func (h *Handler) GetProfiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Transform to include a top-level last_sync expected by the web UI
-	// Prefer the in-memory status' LastSync (reflects most recent sync),
-	// fall back to DB SyncState if present, else nil.
+	// Include the canonical last-successful timestamp used by the web UI.
 	resp := make([]map[string]interface{}, 0, len(profiles))
 	for _, p := range profiles {
 		item := map[string]interface{}{
@@ -253,13 +244,13 @@ func (h *Handler) GetProfiles(w http.ResponseWriter, r *http.Request) {
 			"created_at": p.CreatedAt,
 			"updated_at": p.UpdatedAt,
 		}
-		var lastSync interface{} = nil
-		if status := h.multiUserService.GetProfileStatus(p.ID); status != nil && status.LastSync != nil {
-			lastSync = status.LastSync
-		} else if p.SyncState != nil && p.SyncState.LastSync != nil {
-			lastSync = p.SyncState.LastSync
+		var lastSuccessful interface{} = nil
+		if status := h.multiUserService.GetProfileStatus(p.ID); status != nil && status.LastSuccessfulAt != nil {
+			lastSuccessful = status.LastSuccessfulAt
+		} else if p.SyncState != nil && p.SyncState.LastSuccessfulAt != nil {
+			lastSuccessful = p.SyncState.LastSuccessfulAt
 		}
-		item["last_sync"] = lastSync
+		item["last_successful_at"] = lastSuccessful
 		resp = append(resp, item)
 	}
 
@@ -512,50 +503,6 @@ func (h *Handler) DeleteProfile(w http.ResponseWriter, r *http.Request) {
 	h.writeSuccessResponse(w, nil)
 }
 
-// statusForSnapshotPhase keeps the profile-status response's legacy outer
-// status contract while exposing the lifecycle phase in snapshot.state.
-func statusForSnapshotPhase(state string) string {
-	switch state {
-	case "idle":
-		return "idle"
-	case string(sync.RunPhaseCompleted):
-		return "completed"
-	case string(sync.RunPhaseCanceled), string(sync.RunPhaseFailed):
-		return "error"
-	case string(sync.RunPhaseQueued), string(sync.RunPhaseRunning), string(sync.RunPhaseFinalizing):
-		return "syncing"
-	default:
-		return "syncing"
-	}
-}
-
-// canonicalProfileStatus replaces the compatibility projection used by the
-// multi-user status accessor with the canonical run snapshot for HTTP clients.
-func (h *Handler) canonicalProfileStatus(profileID string, status *multiuser.SyncProfileStatus) *multiuser.SyncProfileStatus {
-	if status == nil {
-		return nil
-	}
-	canonical := h.multiUserService.GetProfileSnapshot(profileID)
-	if canonical == nil {
-		return status
-	}
-
-	response := *status
-	response.Snapshot = canonical
-	response.Status = statusForSnapshotPhase(canonical.State)
-	response.DryRun = canonical.DryRun
-	response.BooksTotal = int(canonical.BooksTotal)
-	attemptedAt := canonical.QueuedAt
-	if attemptedAt.IsZero() {
-		attemptedAt = canonical.RunStartedAt
-	}
-	if !attemptedAt.IsZero() {
-		queuedAt := attemptedAt
-		response.LastAttemptedAt = &queuedAt
-	}
-	return &response
-}
-
 func aggregateSnapshotFrom(snapshot *sync.SyncSnapshot) *aggregateSnapshotResponse {
 	if snapshot == nil {
 		return nil
@@ -563,7 +510,6 @@ func aggregateSnapshotFrom(snapshot *sync.SyncSnapshot) *aggregateSnapshotRespon
 	return &aggregateSnapshotResponse{
 		UserID:              snapshot.UserID,
 		RunID:               snapshot.RunID,
-		RunStartedAt:        snapshot.RunStartedAt,
 		QueuedAt:            snapshot.QueuedAt,
 		ProcessingStartedAt: snapshot.ProcessingStartedAt,
 		LastActivityAt:      snapshot.LastActivityAt,
@@ -574,24 +520,8 @@ func aggregateSnapshotFrom(snapshot *sync.SyncSnapshot) *aggregateSnapshotRespon
 		UnattemptedCount:    snapshot.UnattemptedCount,
 		BooksTotal:          snapshot.BooksTotal,
 		ProcessedSoFar:      snapshot.ProcessedSoFar,
-		ProcessedCount:      snapshot.ProcessedCount,
 		OutcomeCounts:       snapshot.OutcomeCounts,
 	}
-}
-
-// GetProfileStatus handles GET /api/profiles/{id}/status.
-func (h *Handler) GetProfileStatus(w http.ResponseWriter, r *http.Request) {
-	profileID := profileIDFromRequest(r)
-	if profileID == "" {
-		h.writeErrorResponse(w, http.StatusBadRequest, "Profile ID is required")
-		return
-	}
-	if !h.authorizeProfile(w, r, profileID, false) {
-		return
-	}
-
-	status := h.canonicalProfileStatus(profileID, h.multiUserService.GetProfileStatus(profileID))
-	h.writeSuccessResponse(w, status)
 }
 
 // GetRunDetails handles GET /api/profiles/{id}/runs/{runID}/details. Details
@@ -663,18 +593,10 @@ func (h *Handler) GetAllProfileStatuses(w http.ResponseWriter, r *http.Request) 
 		response := aggregateStatusResponse{
 			ProfileID:        status.ProfileID,
 			ProfileName:      status.ProfileName,
-			Status:           status.Status,
-			DryRun:           status.DryRun,
-			LastSync:         status.LastSync,
 			LastAttemptedAt:  status.LastAttemptedAt,
 			LastSuccessfulAt: status.LastSuccessfulAt,
-			Progress:         status.Progress,
-			BooksTotal:       status.BooksTotal,
 		}
 		if status.Snapshot != nil {
-			response.Status = statusForSnapshotPhase(status.Snapshot.State)
-			response.DryRun = status.Snapshot.DryRun
-			response.BooksTotal = int(status.Snapshot.BooksTotal)
 			response.Snapshot = aggregateSnapshotFrom(status.Snapshot)
 		}
 		responses = append(responses, response)
@@ -714,12 +636,11 @@ func (h *Handler) StartSync(w http.ResponseWriter, r *http.Request) {
 	h.writeJSONResponse(w, http.StatusAccepted, APIResponse{
 		Success: true,
 		Data: map[string]interface{}{
-			"message":        "Sync started",
-			"run_id":         accepted.RunID,
-			"state":          accepted.State,
-			"run_started_at": accepted.RunStartedAt,
-			"queued_at":      accepted.QueuedAt,
-			"dry_run":        accepted.DryRun,
+			"message":   "Sync started",
+			"run_id":    accepted.RunID,
+			"state":     accepted.State,
+			"queued_at": accepted.QueuedAt,
+			"dry_run":   accepted.DryRun,
 		},
 	})
 }

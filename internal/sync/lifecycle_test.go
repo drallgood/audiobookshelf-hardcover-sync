@@ -17,7 +17,6 @@ func TestRunPhaseTransitionsAreLegalAndTerminalPhasesAreImmutable(t *testing.T) 
 	snapshot := svc.GetSnapshotStatus()
 	require.Equal(t, string(RunPhaseQueued), snapshot.State)
 	require.False(t, snapshot.QueuedAt.IsZero())
-	require.Equal(t, snapshot.QueuedAt, snapshot.RunStartedAt)
 
 	require.False(t, svc.transitionRunPhase(RunPhaseFinalizing, nil))
 	require.Equal(t, string(RunPhaseQueued), svc.GetSnapshotStatus().State)
@@ -153,7 +152,6 @@ func TestNewServiceWithRunIdentityRetainsOpaqueAcceptedRun(t *testing.T) {
 	require.Equal(t, runID, snapshot.RunID)
 	require.Equal(t, string(RunPhaseQueued), snapshot.State)
 	require.Equal(t, queuedAt.UTC(), snapshot.QueuedAt)
-	require.Equal(t, snapshot.QueuedAt, snapshot.RunStartedAt)
 
 	// beginOutcomeRun is called by Sync and must not replace the owner-issued
 	// opaque ID or accepted-start timestamp.

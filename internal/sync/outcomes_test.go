@@ -262,8 +262,8 @@ func TestProcessBookKeepsIdentifierFailureWhenTitleSearchFindsCandidate(t *testi
 	assert.Equal(t, "possible-match", matches[0].HardcoverSlug)
 	assert.Contains(t, matches[0].Reason, lookupErr.Error())
 	snapshot := svc.GetSnapshot()
-	require.Len(t, snapshot.AttentionRecords, 1)
-	assert.Contains(t, snapshot.AttentionRecords[0].Reason, lookupErr.Error())
+	require.Len(t, snapshot.BookOutcomes, 1)
+	assert.Contains(t, snapshot.BookOutcomes[0].Reason, lookupErr.Error())
 	hc.AssertExpectations(t)
 }
 
@@ -295,8 +295,8 @@ func TestProcessBookSnapshotKeepsTitleOnlyEnrichment(t *testing.T) {
 	require.NoError(t, svc.processBook(context.Background(), *absBook, &models.AudiobookshelfUserProgress{}))
 
 	snapshot := svc.GetSnapshot()
-	require.Len(t, snapshot.AttentionRecords, 1)
-	got := snapshot.AttentionRecords[0]
+	require.Len(t, snapshot.BookOutcomes, 1)
+	got := snapshot.BookOutcomes[0]
 	assert.Equal(t, absBook.ID, got.BookID)
 	assert.Equal(t, "904", got.HardcoverBookID)
 	assert.Empty(t, got.HardcoverSlug, "candidate metadata from a different Hardcover book must not be mixed")
@@ -340,8 +340,8 @@ func TestProcessBookSnapshotKeepsEnrichedSecondLookupFailure(t *testing.T) {
 	require.ErrorIs(t, err, ErrSkippedBook)
 
 	snapshot := svc.GetSnapshot()
-	require.Len(t, snapshot.AttentionRecords, 1)
-	got := snapshot.AttentionRecords[0]
+	require.Len(t, snapshot.BookOutcomes, 1)
+	got := snapshot.BookOutcomes[0]
 	assert.Equal(t, absBook.ID, got.BookID)
 	assert.Equal(t, "Hardcover Second Lookup", got.HardcoverTitle)
 	assert.Equal(t, "Hardcover Author", got.HardcoverAuthor)
@@ -383,8 +383,8 @@ func TestProcessBookSnapshotKeepsSecondLookupNotFoundOutOfMismatches(t *testing.
 	require.ErrorIs(t, svc.processBook(context.Background(), *absBook, &models.AudiobookshelfUserProgress{}), ErrSkippedBook)
 
 	snapshot := svc.GetSnapshot()
-	require.Len(t, snapshot.AttentionRecords, 1)
-	assert.Equal(t, absBook.ID, snapshot.AttentionRecords[0].BookID)
+	require.Len(t, snapshot.BookOutcomes, 1)
+	assert.Equal(t, absBook.ID, snapshot.BookOutcomes[0].BookID)
 	assert.Equal(t, OutcomeNotFound, snapshot.BookOutcomes[0].Outcome)
 
 	global := mismatch.GetAll()
@@ -416,8 +416,8 @@ func TestProcessBookSnapshotKeepsEnrichedNoEditionMismatch(t *testing.T) {
 	require.ErrorIs(t, err, ErrSkippedBook)
 
 	snapshot := svc.GetSnapshot()
-	require.Len(t, snapshot.AttentionRecords, 1)
-	got := snapshot.AttentionRecords[0]
+	require.Len(t, snapshot.BookOutcomes, 1)
+	got := snapshot.BookOutcomes[0]
 	assert.Equal(t, absBook.ID, got.BookID)
 	assert.Equal(t, "Hardcover No Edition", got.HardcoverTitle)
 	assert.Equal(t, "Hardcover Author", got.HardcoverAuthor)

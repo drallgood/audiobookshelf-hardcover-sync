@@ -40,7 +40,7 @@ func TestGetProfileStatusRechecksStatusAfterFallbackLookup(t *testing.T) {
 			name:          "state lookup",
 			blockedSchema: "ProfileSyncState",
 			initialStatus: &SyncProfileStatus{
-				ProfileID: "profile-a", ProfileName: "Stored profile", Status: "completed",
+				ProfileID: "profile-a", ProfileName: "Stored profile",
 			},
 		},
 	} {
@@ -87,7 +87,7 @@ func TestGetProfileStatusRechecksStatusAfterFallbackLookup(t *testing.T) {
 				service.syncMutex.Lock()
 				service.activeRuns[profileID] = run
 				service.activeSyncs[profileID] = cancel
-				currentStatus := &SyncProfileStatus{ProfileID: profileID, ProfileName: "Current profile", Status: "syncing"}
+				currentStatus := &SyncProfileStatus{ProfileID: profileID, ProfileName: "Current profile"}
 				applySnapshotToStatus(currentStatus, newRunSnapshot(profileID, run, string(syncsvc.RunPhaseQueued)))
 				service.updateProfileStatus(profileID, currentStatus)
 				service.syncMutex.Unlock()
@@ -105,7 +105,6 @@ func TestGetProfileStatusRechecksStatusAfterFallbackLookup(t *testing.T) {
 			select {
 			case status := <-statusResult:
 				require.NotNil(t, status)
-				require.Equal(t, "syncing", status.Status)
 				require.NotNil(t, status.Snapshot)
 				require.Equal(t, run.runID, status.Snapshot.RunID)
 				require.Equal(t, string(syncsvc.RunPhaseQueued), status.Snapshot.State)
@@ -168,7 +167,6 @@ func TestGetProfileSnapshotUsesCurrentRunWithoutProfileHydration(t *testing.T) {
 	require.Equal(t, string(syncsvc.RunPhaseQueued), snapshot.State)
 	status := service.getProfileStatus(profileID, &database.SyncProfile{ID: profileID, Name: "Profile A"}, nil)
 	require.NotNil(t, status)
-	require.Equal(t, "syncing", status.Status)
 	require.NotNil(t, status.Snapshot)
 	require.Equal(t, string(syncsvc.RunPhaseQueued), status.Snapshot.State)
 }
@@ -245,7 +243,7 @@ func acceptTestSyncRun(t *testing.T, repo *database.Repository, profileID, runID
 	return report
 }
 
-func TestStatusAggregateOmitsErrorAndProfileStatusRetainsIt(t *testing.T) {
+func TestStatusAggregateOmitsRunErrorAndDetailsRetainIt(t *testing.T) {
 	service, _ := newStatusLookupService(t)
 	profileID := "profile-a"
 	require.NoError(t, service.repository.CreateProfile(
@@ -254,25 +252,18 @@ func TestStatusAggregateOmitsErrorAndProfileStatusRetainsIt(t *testing.T) {
 
 	lastSync := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
 	status := &SyncProfileStatus{
-		ProfileID:   profileID,
-		ProfileName: "Profile A",
-		Status:      "error",
-		LastSync:    &lastSync,
-		Error:       "upstream response: sensitive details",
-		Progress:    "Processing books",
-		BooksTotal:  12,
+		ProfileID:        profileID,
+		ProfileName:      "Profile A",
+		LastAttemptedAt:  &lastSync,
+		LastSuccessfulAt: &lastSync,
 		Snapshot: &syncsvc.SyncSnapshot{
 			RunID:          "profile-a-run-1",
 			State:          "failed",
+			RunError:       "upstream response: sensitive details",
 			BooksTotal:     12,
 			ProcessedSoFar: 1,
-			ProcessedCount: 1,
 			OutcomeCounts:  syncsvc.OutcomeCounts{Failed: 1},
 			BookOutcomes: []syncsvc.BookOutcomeRecord{{
-				BookID:  "book-1",
-				Outcome: syncsvc.OutcomeFailed,
-			}},
-			AttentionRecords: []syncsvc.BookOutcomeRecord{{
 				BookID:  "book-1",
 				Outcome: syncsvc.OutcomeFailed,
 			}},
@@ -285,20 +276,17 @@ func TestStatusAggregateOmitsErrorAndProfileStatusRetainsIt(t *testing.T) {
 	require.Len(t, aggregate, 1)
 	require.Equal(t, profileID, aggregate[0].ProfileID)
 	require.Equal(t, status.ProfileName, aggregate[0].ProfileName)
-	require.Equal(t, status.Status, aggregate[0].Status)
-	require.Equal(t, status.LastSync, aggregate[0].LastSync)
-	require.Equal(t, status.Progress, aggregate[0].Progress)
-	require.Equal(t, status.BooksTotal, aggregate[0].BooksTotal)
-	require.Empty(t, aggregate[0].Error)
+	require.Equal(t, status.LastAttemptedAt, aggregate[0].LastAttemptedAt)
+	require.Equal(t, status.LastSuccessfulAt, aggregate[0].LastSuccessfulAt)
 	require.NotNil(t, aggregate[0].Snapshot)
 	require.Equal(t, status.Snapshot.RunID, aggregate[0].Snapshot.RunID)
 	require.Equal(t, status.Snapshot.OutcomeCounts, aggregate[0].Snapshot.OutcomeCounts)
+	require.Empty(t, aggregate[0].Snapshot.RunError)
 	require.Nil(t, aggregate[0].Snapshot.BookOutcomes)
-	require.Nil(t, aggregate[0].Snapshot.AttentionRecords)
 
 	direct := service.GetProfileStatus(profileID)
 	require.NotNil(t, direct)
-	require.Equal(t, status.Error, direct.Error)
+	require.Equal(t, status.Snapshot.RunError, direct.Snapshot.RunError)
 }
 
 func TestAggregateStatusPreservesUnknownBooksTotalFromExplicitSnapshot(t *testing.T) {
@@ -314,21 +302,17 @@ func TestAggregateStatusPreservesUnknownBooksTotalFromExplicitSnapshot(t *testin
 		State:          string(syncsvc.RunPhaseRunning),
 		BooksTotal:     0,
 		ProcessedSoFar: 3,
-		ProcessedCount: 3,
 		OutcomeCounts:  syncsvc.OutcomeCounts{NotFound: 3},
 	}
 	service.updateProfileStatus(profileID, &SyncProfileStatus{
 		ProfileID:   profileID,
 		ProfileName: "Profile A",
-		Status:      "syncing",
-		BooksTotal:  0,
 		Snapshot:    &snapshot,
 	})
 
 	statuses, err := service.GetAllProfileStatuses()
 	require.NoError(t, err)
 	require.Len(t, statuses, 1)
-	require.Zero(t, statuses[0].BooksTotal)
 	require.NotNil(t, statuses[0].Snapshot)
 	require.Zero(t, statuses[0].Snapshot.BooksTotal)
 	require.Equal(t, int32(3), statuses[0].Snapshot.ProcessedSoFar)
@@ -338,12 +322,11 @@ func TestAggregateStatusMapsLiveTerminalSnapshotState(t *testing.T) {
 	for _, test := range []struct {
 		name          string
 		librariesCode int
-		wantStatus    string
 		wantState     string
 		wantSyncError bool
 	}{
-		{name: "completed", librariesCode: http.StatusOK, wantStatus: "completed", wantState: "completed"},
-		{name: "failed", librariesCode: http.StatusInternalServerError, wantStatus: "error", wantState: "failed", wantSyncError: true},
+		{name: "completed", librariesCode: http.StatusOK, wantState: "completed"},
+		{name: "failed", librariesCode: http.StatusInternalServerError, wantState: "failed", wantSyncError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, _ := newStatusLookupService(t)
@@ -404,7 +387,6 @@ func TestAggregateStatusMapsLiveTerminalSnapshotState(t *testing.T) {
 			statuses, err := service.GetAllProfileStatuses()
 			require.NoError(t, err)
 			require.Len(t, statuses, 1)
-			require.Equal(t, test.wantStatus, statuses[0].Status)
 			require.NotNil(t, statuses[0].Snapshot)
 			require.Equal(t, test.wantState, statuses[0].Snapshot.State)
 
@@ -440,8 +422,6 @@ func acceptedTerminalStatus(profileID string, run activeSyncRun, phase string) *
 	snapshot.FinishedAt = run.startedAt.Add(time.Minute)
 	return &SyncProfileStatus{
 		ProfileID:       profileID,
-		Status:          "completed",
-		DryRun:          run.dryRun,
 		LastAttemptedAt: timeValue(run.startedAt),
 		Snapshot:        &snapshot,
 	}
@@ -475,7 +455,6 @@ func TestStartSyncWithAcceptedRunMatchesQueuedDurableAndStatusIdentity(t *testin
 	require.NotEmpty(t, accepted.RunID)
 	require.Equal(t, string(syncsvc.RunPhaseQueued), accepted.State)
 	require.False(t, accepted.DryRun)
-	require.Equal(t, accepted.QueuedAt, accepted.RunStartedAt)
 	report, err := service.repository.GetSyncRunReport(profileID, accepted.RunID)
 	require.NoError(t, err)
 	require.NotNil(t, report)
@@ -722,7 +701,6 @@ func TestDryRunTerminalStatusKeepsAttemptWithoutSuccess(t *testing.T) {
 	require.True(t, service.publishFinalStatus(profileID, run.generation, acceptedTerminalStatus(profileID, run, string(syncsvc.RunPhaseCompleted))))
 	status := service.GetProfileStatus(profileID)
 	require.NotNil(t, status)
-	require.Nil(t, status.LastSync)
 	require.NotNil(t, status.LastAttemptedAt)
 	require.Nil(t, status.LastSuccessfulAt)
 	state, err := service.repository.GetSyncState(profileID)
@@ -739,7 +717,6 @@ func TestRestartRestoresNewestTerminalReport(t *testing.T) {
 	require.True(t, service.publishFinalStatus(profileID, first.generation, acceptedTerminalStatus(profileID, first, string(syncsvc.RunPhaseCompleted))))
 	second := installAcceptedTestRun(t, service, profileID, "run-second", false)
 	secondStatus := acceptedTerminalStatus(profileID, second, string(syncsvc.RunPhaseCanceled))
-	secondStatus.Status = "error"
 	require.True(t, service.publishFinalStatus(profileID, second.generation, secondStatus))
 
 	restarted := NewMultiUserService(service.repository, config.DefaultConfig(), logger.Get())
@@ -747,7 +724,6 @@ func TestRestartRestoresNewestTerminalReport(t *testing.T) {
 	require.NotNil(t, status)
 	require.Equal(t, second.runID, status.Snapshot.RunID)
 	require.Equal(t, string(syncsvc.RunPhaseCanceled), status.Snapshot.State)
-	require.Equal(t, "error", status.Status)
 }
 
 func TestRestartRestoresNormalSyncFailureRunError(t *testing.T) {
@@ -819,16 +795,12 @@ func requireFailedRunRestoration(t *testing.T, service *MultiUserService, profil
 
 	status := service.GetProfileStatus(profileID)
 	require.NotNil(t, status)
-	require.Equal(t, "error", status.Status)
-	require.Equal(t, report.RunError, status.Error)
 	require.NotNil(t, status.Snapshot)
 	require.Equal(t, report.RunError, status.Snapshot.RunError)
 
 	restarted := NewMultiUserService(service.repository, config.DefaultConfig(), logger.Get())
 	restored := restarted.GetProfileStatus(profileID)
 	require.NotNil(t, restored)
-	require.Equal(t, "error", restored.Status)
-	require.Equal(t, report.RunError, restored.Error)
 	require.NotNil(t, restored.Snapshot)
 	require.Equal(t, report.RunError, restored.Snapshot.RunError)
 }
@@ -909,7 +881,6 @@ func TestAggregateStatusRestoresTerminalScalarsWithoutDetails(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, statuses, 1)
 	status := statuses[0]
-	require.Equal(t, "completed", status.Status)
 	require.NotNil(t, status.Snapshot)
 	require.Equal(t, "run-aggregate", status.Snapshot.RunID)
 	require.Equal(t, string(syncsvc.RunPhaseCompleted), status.Snapshot.State)
@@ -918,7 +889,6 @@ func TestAggregateStatusRestoresTerminalScalarsWithoutDetails(t *testing.T) {
 	require.Equal(t, int32(7), status.Snapshot.ProcessedSoFar)
 	require.Equal(t, int32(5), status.Snapshot.OutcomeCounts.Synced)
 	require.Empty(t, status.Snapshot.BookOutcomes)
-	require.Empty(t, status.Snapshot.AttentionRecords)
 }
 
 func TestPublishFinalStatusSurfacesTerminalPersistenceFailure(t *testing.T) {
@@ -938,10 +908,9 @@ func TestPublishFinalStatusSurfacesTerminalPersistenceFailure(t *testing.T) {
 	require.False(t, service.publishFinalStatus(profileID, run.generation, acceptedTerminalStatus(profileID, run, string(syncsvc.RunPhaseCompleted))))
 	status := service.GetProfileStatus(profileID)
 	require.NotNil(t, status)
-	require.Equal(t, "error", status.Status)
-	require.Contains(t, status.Error, "failed to persist sync report")
 	require.NotNil(t, status.Snapshot)
 	require.Equal(t, string(syncsvc.RunPhaseFailed), status.Snapshot.State)
+	require.Contains(t, status.Snapshot.RunError, "failed to persist sync report")
 }
 
 func TestCancelSyncReturnsPersistenceFailureAfterPublishingCanceledRunError(t *testing.T) {
@@ -967,12 +936,10 @@ func TestCancelSyncReturnsPersistenceFailureAfterPublishingCanceledRunError(t *t
 
 	status := service.GetProfileStatus(profileID)
 	require.NotNil(t, status)
-	require.Equal(t, "error", status.Status)
-	require.Contains(t, status.Error, "failed to persist canceled sync report")
 	require.NotNil(t, status.Snapshot)
 	require.Equal(t, run.runID, status.Snapshot.RunID)
 	require.Equal(t, string(syncsvc.RunPhaseFailed), status.Snapshot.State)
-	require.Equal(t, status.Error, status.Snapshot.RunError)
+	require.Contains(t, status.Snapshot.RunError, "failed to persist canceled sync report")
 }
 
 func TestBlockedProfilePersistenceDoesNotBlockOtherProfileStatus(t *testing.T) {
@@ -984,7 +951,7 @@ func TestBlockedProfilePersistenceDoesNotBlockOtherProfileStatus(t *testing.T) {
 	_ = installAcceptedTestRun(t, service, "profile-b", "run-b", false)
 	lastSync := runA.startedAt.Add(-time.Minute)
 	service.updateProfileStatus("profile-b", &SyncProfileStatus{
-		ProfileID: "profile-b", ProfileName: "profile-b", Status: "syncing", LastSync: &lastSync,
+		ProfileID: "profile-b", ProfileName: "profile-b",
 		LastAttemptedAt: &lastSync, LastSuccessfulAt: &lastSync,
 	})
 
@@ -1018,10 +985,11 @@ func TestBlockedProfilePersistenceDoesNotBlockOtherProfileStatus(t *testing.T) {
 		t.Fatal("timed out waiting for profile A persistence")
 	}
 	progressDone := make(chan struct{})
+	advanced := lastSync.Add(time.Second)
 	go func() {
 		service.updateProfileStatus("profile-b", &SyncProfileStatus{
-			ProfileID: "profile-b", ProfileName: "profile-b", Status: "syncing", Progress: "advanced while profile A persists",
-			LastSync: &lastSync, LastAttemptedAt: &lastSync, LastSuccessfulAt: &lastSync,
+			ProfileID: "profile-b", ProfileName: "profile-b",
+			LastAttemptedAt: &advanced, LastSuccessfulAt: &lastSync,
 		})
 		close(progressDone)
 	}()
@@ -1036,7 +1004,7 @@ func TestBlockedProfilePersistenceDoesNotBlockOtherProfileStatus(t *testing.T) {
 	case status := <-statusDone:
 		require.NotNil(t, status)
 		require.Equal(t, "profile-b", status.ProfileID)
-		require.Equal(t, "advanced while profile A persists", status.Progress)
+		require.Equal(t, advanced, *status.LastAttemptedAt)
 	case <-time.After(time.Second):
 		t.Fatal("profile B status blocked behind profile A persistence")
 	}
@@ -1220,7 +1188,6 @@ func TestMigratedAbsoluteStateFileRemainsUsableForLegacyProfile(t *testing.T) {
 
 			status := service.GetProfileStatus(profileID)
 			require.NotNil(t, status)
-			require.Equal(t, "completed", status.Status)
 			require.NotNil(t, status.Snapshot)
 			require.Equal(t, "completed", status.Snapshot.State)
 			require.FileExists(t, filepath.Join(dataDir, "migrated."+url.PathEscape(profileID)))
@@ -1412,7 +1379,7 @@ func TestStartSyncAcceptsDefaultStateFileSymlinkInsideDataDir(t *testing.T) {
 	service.WaitForSyncs()
 	status := service.GetProfileStatus(profileID)
 	require.NotNil(t, status)
-	require.Equal(t, "completed", status.Status)
+	require.Equal(t, string(syncsvc.RunPhaseCompleted), status.Snapshot.State)
 	require.FileExists(t, insideTarget)
 	info, err := os.Lstat(canonicalPath)
 	require.NoError(t, err)

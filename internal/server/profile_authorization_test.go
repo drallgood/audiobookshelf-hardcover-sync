@@ -287,8 +287,7 @@ func TestViewerProfileAuthorizationIsReadOnly(t *testing.T) {
 	require.NotNil(t, metadata)
 	require.True(t, metadata.Active)
 	require.Equal(t, "viewer-owned", metadata.Name)
-	_, running := fixture.server.multiUserService.GetSyncService("viewer-owned")
-	require.False(t, running)
+	require.False(t, fixture.server.multiUserService.IsProfileSyncing("viewer-owned"))
 }
 
 func TestForeignProfileAuthorizationReturnsNotFoundForEveryRoute(t *testing.T) {
@@ -343,8 +342,8 @@ func TestForeignProfileAuthorizationReturnsNotFoundForEveryRoute(t *testing.T) {
 	status := fixture.server.multiUserService.GetProfileStatus("foreign-target")
 	require.NotNil(t, status)
 	require.NotNil(t, status.Snapshot)
-	require.Len(t, status.Snapshot.AttentionRecords, 1)
-	require.Equal(t, attentionSentinel, status.Snapshot.AttentionRecords[0].Title)
+	require.Len(t, status.Snapshot.BookOutcomes, 1)
+	require.Equal(t, attentionSentinel, status.Snapshot.BookOutcomes[0].Title)
 	runDetailsPath := "/api/profiles/foreign-target/runs/" + status.Snapshot.RunID + "/details"
 
 	for _, test := range []struct {
@@ -357,7 +356,6 @@ func TestForeignProfileAuthorizationReturnsNotFoundForEveryRoute(t *testing.T) {
 		{name: "update profile", method: http.MethodPut, path: "/api/profiles/foreign-target", body: `{"name":"stolen"}`},
 		{name: "delete profile", method: http.MethodDelete, path: "/api/profiles/foreign-target"},
 		{name: "update config", method: http.MethodPut, path: "/api/profiles/foreign-target/config", body: `{"hardcover_token":"stolen"}`},
-		{name: "status", method: http.MethodGet, path: "/api/profiles/foreign-target/status"},
 		{name: "run details", method: http.MethodGet, path: runDetailsPath},
 		{name: "start sync", method: http.MethodPost, path: "/api/profiles/foreign-target/sync"},
 		{name: "cancel sync", method: http.MethodDelete, path: "/api/profiles/foreign-target/sync"},
@@ -374,8 +372,7 @@ func TestForeignProfileAuthorizationReturnsNotFoundForEveryRoute(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, metadata)
 	require.True(t, metadata.Active)
-	_, running := fixture.server.multiUserService.GetSyncService("foreign-target")
-	require.False(t, running)
+	require.False(t, fixture.server.multiUserService.IsProfileSyncing("foreign-target"))
 }
 
 // Keep the test fixture's legacy profile creation concise without exposing the

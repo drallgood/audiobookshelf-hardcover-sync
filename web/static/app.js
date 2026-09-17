@@ -520,7 +520,7 @@ class SyncProfileApp {
         }
 
         usersList.innerHTML = this.users.map(user => {
-            const lastSyncISO = user.last_sync || null;
+            const lastSyncISO = user.last_successful_at || null;
             const lastSync = lastSyncISO ? this.formatRelativeTime(lastSyncISO) : 'Never';
             const statusClass = user.active ? 'active' : 'inactive';
             const statusIcon = user.active ? '✓' : '✗';
@@ -756,13 +756,8 @@ class SyncProfileApp {
                 const normalized = {
                     profile_id: status.profile_id,
                     profile_name: status.profile_name || `Profile ${profileId}`,
-                    status: status.status || 'idle',
-                    dry_run: this.toBool(status.dry_run, false),
-                    last_sync: status.last_sync || null,
                     last_attempted_at: status.last_attempted_at || null,
                     last_successful_at: status.last_successful_at || null,
-                    progress: status.progress || '',
-                    books_total: snapshot?.books_total ?? status.books_total ?? 0,
                     snapshot
                 };
                 const errorKey = this.terminalErrorIdentity(profileId, normalized);
@@ -1016,7 +1011,7 @@ class SyncProfileApp {
         const snapshot = status.snapshot || {};
         const counts = snapshot.outcome_counts || {};
         const processed = Number(snapshot.processed_so_far || 0);
-        const booksTotal = Number(snapshot.books_total ?? status.books_total ?? 0);
+        const booksTotal = Number(snapshot.books_total || 0);
         const progressPercent = booksTotal > 0 ? Math.min(100, Math.round((processed / booksTotal) * 100)) : 0;
         const hasKnownTotal = booksTotal > 0;
         const hasProcessedBooks = processed > 0;
@@ -1026,18 +1021,17 @@ class SyncProfileApp {
             : statusState === 'completed'
                 ? 'completed'
                 : statusState === 'failed' || statusState === 'canceled' ? 'error' : 'idle';
-        const statusText = this.formatStatusLabel(statusState, status.dry_run);
+        const statusText = this.formatStatusLabel(statusState, snapshot.dry_run);
         const profileName = status.profile_name || status.profile_id || 'Unknown Profile';
         const actionError = this.actionErrors.get(profileId);
         const hasRun = Boolean(snapshot.run_id);
         const detailsOpen = this.isSyncSummaryOpen(profileId, snapshot.run_id);
         const retryable = statusState === 'failed';
         const categories = this.outcomeCategories(counts);
-        const runStartedAt = this.timestampOrNull(snapshot.run_started_at);
+        const runStartedAt = this.timestampOrNull(snapshot.queued_at);
         const lastActivityAt = this.timestampOrNull(snapshot.last_activity_at)
             || this.timestampOrNull(snapshot.last_processed_at);
-        const lastAttemptedAt = this.timestampOrNull(status.last_attempted_at)
-            || this.timestampOrNull(status.last_sync);
+        const lastAttemptedAt = this.timestampOrNull(status.last_attempted_at);
         const lastSuccessfulAt = this.timestampOrNull(status.last_successful_at);
 
         return `
@@ -1109,9 +1103,7 @@ class SyncProfileApp {
     }
 
     statusPhase(status) {
-        const state = String(status?.snapshot?.state || status?.status || 'idle').toLowerCase();
-        if (state === 'syncing') return 'running';
-        if (state === 'error') return 'failed';
+        const state = String(status?.snapshot?.state || 'idle').toLowerCase();
         return ['queued', 'running', 'finalizing', 'completed', 'canceled', 'failed'].includes(state)
             ? state
             : 'idle';
@@ -1504,8 +1496,7 @@ class SyncProfileApp {
         const categories = this.outcomeCategories(snapshot.outcome_counts || {});
         const records = new Map((snapshot.book_outcomes || []).map(record => [record.book_id, record]));
         tabs.innerHTML = `<button class="tab-button active" type="button">${this.escapeHtml(this.statuses[open.profileId]?.profile_name || `Profile ${open.profileId}`)}</button>`;
-        const rawSnapshotState = String(snapshot.state || '').toLowerCase();
-        const snapshotState = rawSnapshotState === 'syncing' ? 'running' : rawSnapshotState;
+        const snapshotState = String(snapshot.state || '').toLowerCase();
         const unresolved = Number(snapshot.outcome_counts?.needs_review || 0) + Number(snapshot.outcome_counts?.not_found || 0) + Number(snapshot.outcome_counts?.failed || 0);
         const groups = categories.map(category => {
             const groupRecords = [...records.values()].filter(record => record.outcome === category.key);
@@ -1543,7 +1534,7 @@ class SyncProfileApp {
         const runError = snapshot.run_error || this.statuses[open.profileId]?.terminal_error || '';
         content.innerHTML = `
             <div class="sync-summary" data-run-id="${this.escapeHtmlAttribute(snapshot.run_id)}">
-                <div class="summary-header"><h3>Run details</h3><div class="last-sync">Started: ${new Date(snapshot.run_started_at).toLocaleString()}</div></div>
+                <div class="summary-header"><h3>Run details</h3><div class="last-sync">Queued: ${new Date(snapshot.queued_at).toLocaleString()}</div></div>
                 <p class="status-message">${statusMessage}</p>
                 ${runError ? `<div class="status-message status-error" data-run-error><strong>Run error:</strong> ${this.escapeHtml(runError)}</div>` : ''}
                 <div class="summary-stats">${groups.map(group => `<div class="stat-item ${group.tone}"><span class="stat-value">${group.count}</span><span class="stat-label">${group.label}</span></div>`).join('')}</div>
@@ -2095,7 +2086,7 @@ class SyncProfileApp {
 
     applyAcceptedRun(profileId, accepted) {
         const id = String(profileId);
-        const queuedAt = accepted.queued_at || accepted.run_started_at;
+        const queuedAt = accepted.queued_at;
         const profile = this.users.find(user => String(user?.id || '') === id);
         const zeroCounts = {
             synced: 0,
@@ -2112,13 +2103,10 @@ class SyncProfileApp {
             ...previous,
             profile_id: profileId,
             profile_name: previous.profile_name || profile?.name || `Profile ${id}`,
-            status: 'syncing',
-            dry_run: this.toBool(accepted.dry_run, false),
             last_attempted_at: queuedAt,
             message: accepted.message || '',
             snapshot: {
                 run_id: accepted.run_id,
-                run_started_at: accepted.run_started_at || queuedAt,
                 queued_at: queuedAt,
                 processing_started_at: null,
                 last_activity_at: null,
@@ -2128,11 +2116,9 @@ class SyncProfileApp {
                 state: 'queued',
                 books_total: 0,
                 processed_so_far: 0,
-                processed_count: 0,
                 unattempted_count: 0,
                 outcome_counts: zeroCounts,
-                book_outcomes: [],
-                attention_records: []
+                book_outcomes: []
             }
         };
     }

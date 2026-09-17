@@ -67,7 +67,6 @@ Existing single-profile setups are **automatically migrated** on first startup:
 | `PUT` | `/api/profiles/{id}` | Update profile |
 | `DELETE` | `/api/profiles/{id}` | Delete profile |
 | `PUT` | `/api/profiles/{id}/config` | Update profile configuration |
-| `GET` | `/api/profiles/{id}/status` | Get sync status and current-run snapshot |
 | `GET` | `/api/profiles/{id}/runs/{runId}/details` | Get book-level details for a retained sync run |
 | `POST` | `/api/profiles/{id}/sync` | Start sync |
 | `DELETE` | `/api/profiles/{id}/sync` | Cancel sync |
@@ -101,11 +100,10 @@ so far`; after a terminal run it means `No missing books reported in this run`.
 
 For API clients, `GET /api/status` provides a lightweight snapshot with the run
 ID, start time, state, totals, and outcome counts, but no book-level records.
-Authenticated profile status and summary routes include the full current
-snapshot. Book-level outcomes are available from
-`GET /api/profiles/{id}/runs/{runId}/details`; run IDs outside the retained
-history return `404`. Needs-review, not-found, and failed books appear in
-`attention_records` as they occur. `last_attempted_at` includes dry-run,
+Book-level outcomes and unredacted run errors are available from the authenticated
+`GET /api/profiles/{id}/runs/{runId}/details` route; run IDs outside the retained
+history return `404`. Clients can filter `book_outcomes` for `needs_review`,
+`not_found`, and `failed` records. `last_attempted_at` includes dry-run,
 failed, and canceled attempts; `last_successful_at` is updated only by a
 successful non-dry-run completion.
 

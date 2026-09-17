@@ -107,17 +107,18 @@ func TestServerRoutesPreserveEncodedLegacyProfileIDForCRUD(t *testing.T) {
 	require.True(t, profilePayload.Success)
 	require.Equal(t, legacyID, profilePayload.Data.Profile.ID)
 
-	statusResponse := fixture.request(http.MethodGet, "/api/profiles/"+escapedID+"/status", nil)
+	statusResponse := fixture.request(http.MethodGet, "/api/status", nil)
 	require.Equal(t, http.StatusOK, statusResponse.Code, statusResponse.Body.String())
 	var statusPayload struct {
 		Success bool `json:"success"`
-		Data    struct {
+		Data    []struct {
 			ProfileID string `json:"profile_id"`
 		} `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(statusResponse.Body.Bytes(), &statusPayload))
 	require.True(t, statusPayload.Success)
-	require.Equal(t, legacyID, statusPayload.Data.ProfileID)
+	require.Len(t, statusPayload.Data, 1)
+	require.Equal(t, legacyID, statusPayload.Data[0].ProfileID)
 
 	detailsResponse := fixture.request(http.MethodGet, "/api/profiles/"+escapedID+"/runs/unknown/details", nil)
 	require.Equal(t, http.StatusNotFound, detailsResponse.Code, detailsResponse.Body.String())
@@ -180,8 +181,9 @@ func TestServerAggregateOmitsErrorWhileAuthenticatedStatusRetainsIt(t *testing.T
 
 	terminal := fixture.server.multiUserService.GetProfileStatus(profileID)
 	require.NotNil(t, terminal)
-	require.Equal(t, "error", terminal.Status)
-	require.Contains(t, terminal.Error, sentinel)
+	require.NotNil(t, terminal.Snapshot)
+	require.Equal(t, "failed", terminal.Snapshot.State)
+	require.Contains(t, terminal.Snapshot.RunError, sentinel)
 
 	publicResponse := fixture.request(http.MethodGet, "/api/status", nil)
 	require.Equal(t, http.StatusOK, publicResponse.Code, publicResponse.Body.String())
@@ -211,14 +213,16 @@ func TestServerAggregateOmitsErrorWhileAuthenticatedStatusRetainsIt(t *testing.T
 	require.Equal(t, http.StatusOK, loginResponse.Code, loginResponse.Body.String())
 	cookies := loginResponse.Result().Cookies()
 	require.NotEmpty(t, cookies)
-	statusResponse := fixture.requestWithCookies(http.MethodGet, "/api/profiles/"+profileID+"/status", nil, cookies)
+	statusResponse := fixture.requestWithCookies(http.MethodGet, "/api/profiles/"+profileID+"/runs/"+terminal.Snapshot.RunID+"/details", nil, cookies)
 	require.Equal(t, http.StatusOK, statusResponse.Code, statusResponse.Body.String())
 	var authenticatedStatus struct {
-		Success bool                        `json:"success"`
-		Data    multiuser.SyncProfileStatus `json:"data"`
+		Success bool `json:"success"`
+		Data    struct {
+			RunError string `json:"run_error"`
+		} `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(statusResponse.Body.Bytes(), &authenticatedStatus))
 	require.True(t, authenticatedStatus.Success)
-	require.Equal(t, terminal.Error, authenticatedStatus.Data.Error)
+	require.Equal(t, terminal.Snapshot.RunError, authenticatedStatus.Data.RunError)
 	require.Contains(t, statusResponse.Body.String(), sentinel)
 }
