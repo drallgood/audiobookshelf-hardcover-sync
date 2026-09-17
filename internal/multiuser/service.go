@@ -83,23 +83,25 @@ type profileRunGate struct {
 
 // MultiUserService manages sync operations for multiple users
 type MultiUserService struct {
-	repository      *database.Repository
-	logger          *logger.Logger
-	globalConfig    *config.Config
-	profileStatuses map[string]*SyncProfileStatus
-	statusMutex     stdSync.RWMutex
-	activeSyncs     map[string]context.CancelFunc
-	activeRuns      map[string]activeSyncRun
-	syncMutex       stdSync.RWMutex
-	syncWaitGroup   stdSync.WaitGroup
-	syncServices    map[string]*sync.Service // Maps profile ID to its sync service
-	serviceRuns     map[string]uint64
-	latestRuns      map[string]activeSyncRun
-	profileGates    map[string]*profileRunGate
-	servicesMutex   stdSync.RWMutex
-	admissionMutex  stdSync.Mutex
-	startWaitGroup  stdSync.WaitGroup
-	shuttingDown    bool
+	repository            *database.Repository
+	logger                *logger.Logger
+	globalConfig          *config.Config
+	profileStatuses       map[string]*SyncProfileStatus
+	statusMutex           stdSync.RWMutex
+	activeSyncs           map[string]context.CancelFunc
+	activeRuns            map[string]activeSyncRun
+	syncMutex             stdSync.RWMutex
+	syncWaitGroup         stdSync.WaitGroup
+	syncServices          map[string]*sync.Service // Maps profile ID to its sync service
+	serviceRuns           map[string]uint64
+	latestRuns            map[string]activeSyncRun
+	profileGates          map[string]*profileRunGate
+	servicesMutex         stdSync.RWMutex
+	admissionMutex        stdSync.Mutex
+	startWaitGroup        stdSync.WaitGroup
+	shutdownMutex         stdSync.Mutex
+	cancellationWaitGroup stdSync.WaitGroup
+	shuttingDown          bool
 }
 
 // NewMultiUserService creates a new multi-user service
@@ -832,6 +834,8 @@ func (s *MultiUserService) Shutdown(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	s.shutdownMutex.Lock()
+	defer s.shutdownMutex.Unlock()
 
 	s.admissionMutex.Lock()
 	s.shuttingDown = true
@@ -839,6 +843,9 @@ func (s *MultiUserService) Shutdown(ctx context.Context) error {
 
 	if err := waitForSyncGroup(ctx, &s.startWaitGroup); err != nil {
 		return fmt.Errorf("wait for sync starts to finish: %w", err)
+	}
+	if err := waitForSyncGroup(ctx, &s.cancellationWaitGroup); err != nil {
+		return fmt.Errorf("wait for prior sync cancellations: %w", err)
 	}
 
 	if err := s.cancelActiveSyncs(ctx); err != nil {
@@ -853,11 +860,10 @@ func (s *MultiUserService) Shutdown(ctx context.Context) error {
 
 func (s *MultiUserService) cancelActiveSyncs(ctx context.Context) error {
 	profileIDs := s.activeProfileIDs()
-	var cancellations stdSync.WaitGroup
-	cancellations.Add(len(profileIDs))
+	s.cancellationWaitGroup.Add(len(profileIDs))
 	for _, profileID := range profileIDs {
 		go func() {
-			defer cancellations.Done()
+			defer s.cancellationWaitGroup.Done()
 			if err := s.cancelSync(ctx, profileID); err != nil && s.logger != nil {
 				s.logger.Warn("Failed to cancel sync during service shutdown", map[string]interface{}{
 					"profile_id": profileID,
@@ -866,7 +872,7 @@ func (s *MultiUserService) cancelActiveSyncs(ctx context.Context) error {
 			}
 		}()
 	}
-	return waitForSyncGroup(ctx, &cancellations)
+	return waitForSyncGroup(ctx, &s.cancellationWaitGroup)
 }
 
 func waitForSyncGroup(ctx context.Context, group *stdSync.WaitGroup) error {

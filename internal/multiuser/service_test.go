@@ -559,7 +559,20 @@ func TestShutdownDeadlineBoundsBlockedCancellationPersistence(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("shutdown exceeded its context deadline")
 	}
+	drainDone := make(chan error, 1)
+	go func() { drainDone <- service.Shutdown(context.Background()) }()
+	select {
+	case err := <-drainDone:
+		t.Fatalf("shutdown retry returned before cancellation drained: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
 	releaseOnce.Do(func() { close(release) })
+	select {
+	case err := <-drainDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("shutdown retry did not drain cancellation")
+	}
 }
 
 func TestStartSyncWithAcceptedRunKeepsIdentityWhenWorkerFinishesImmediately(t *testing.T) {

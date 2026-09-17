@@ -192,7 +192,12 @@ func main() {
 		})
 		os.Exit(1)
 	}
-	defer db.Close()
+	closeDatabase := true
+	defer func() {
+		if closeDatabase {
+			db.Close()
+		}
+	}()
 
 	// Set up encryption
 	encryptor, err := crypto.NewEncryptionManagerWithDataDir(encryptionDataDir, log)
@@ -441,6 +446,9 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 	defer cancel()
 	if err := multiUserService.Shutdown(shutdownCtx); err != nil {
+		// Do not explicitly close the database while a timed-out cancellation may
+		// still be unwinding. Process exit will reclaim it safely.
+		closeDatabase = false
 		log.Error("Error during sync service shutdown", map[string]interface{}{
 			"error": err.Error(),
 		})
