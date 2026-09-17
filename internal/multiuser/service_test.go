@@ -641,6 +641,89 @@ func TestRestartRestoresNewestTerminalReport(t *testing.T) {
 	require.Equal(t, "error", status.Status)
 }
 
+func TestRestartRestoresNormalSyncFailureRunError(t *testing.T) {
+	absServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/me":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+		case "/api/libraries":
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(absServer.Close)
+
+	service, _ := newStatusLookupService(t)
+	dataDir := t.TempDir()
+	service.globalConfig.Paths.DataDir = dataDir
+	service.globalConfig.Paths.CacheDir = filepath.Join(dataDir, "cache")
+	service.globalConfig.Paths.MismatchOutputDir = filepath.Join(dataDir, "mismatches")
+	const profileID = "profile-normal-failure"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Normal failure", absServer.URL, "abs-token", "hc-token", database.SyncConfigData{},
+	))
+
+	accepted, err := service.StartSyncWithAcceptedRun(profileID)
+	require.NoError(t, err)
+	service.WaitForSyncs()
+
+	requireFailedRunRestoration(t, service, profileID, accepted.RunID)
+}
+
+func TestRestartRestoresPreServiceSetupFailureRunError(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	dataDir := t.TempDir()
+	service.globalConfig.Paths.DataDir = dataDir
+	service.globalConfig.Paths.CacheDir = filepath.Join(dataDir, "cache")
+	service.globalConfig.Paths.MismatchOutputDir = filepath.Join(dataDir, "mismatches")
+	const profileID = "setup/failure"
+	const stateFile = "state.json"
+	legacyPath := service.legacyProfileStatePath(profileID, stateFile)
+	require.NoError(t, os.MkdirAll(filepath.Dir(legacyPath), 0755))
+	require.NoError(t, os.WriteFile(legacyPath, []byte(`{not valid JSON`), 0600))
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Setup failure", "http://audiobookshelf.invalid", "abs-token", "hc-token",
+		database.SyncConfigData{StateFile: stateFile},
+	))
+
+	accepted, err := service.StartSyncWithAcceptedRun(profileID)
+	require.NoError(t, err)
+	service.WaitForSyncs()
+
+	requireFailedRunRestoration(t, service, profileID, accepted.RunID)
+}
+
+func requireFailedRunRestoration(t *testing.T, service *MultiUserService, profileID, runID string) {
+	t.Helper()
+	report, err := service.repository.GetSyncRunReport(profileID, runID)
+	require.NoError(t, err)
+	require.NotNil(t, report)
+	require.Equal(t, database.SyncRunPhaseFailed, report.Phase)
+	require.NotEmpty(t, report.RunError)
+
+	snapshot, err := service.GetSyncRunSnapshot(profileID, runID)
+	require.NoError(t, err)
+	require.NotNil(t, snapshot)
+	require.Equal(t, report.RunError, snapshot.RunError)
+
+	status := service.GetProfileStatus(profileID)
+	require.NotNil(t, status)
+	require.Equal(t, "error", status.Status)
+	require.Equal(t, report.RunError, status.Error)
+	require.NotNil(t, status.Snapshot)
+	require.Equal(t, report.RunError, status.Snapshot.RunError)
+
+	restarted := NewMultiUserService(service.repository, config.DefaultConfig(), logger.Get())
+	restored := restarted.GetProfileStatus(profileID)
+	require.NotNil(t, restored)
+	require.Equal(t, "error", restored.Status)
+	require.Equal(t, report.RunError, restored.Error)
+	require.NotNil(t, restored.Snapshot)
+	require.Equal(t, report.RunError, restored.Snapshot.RunError)
+}
+
 func TestRestartRestoresNewestTerminalWhenQueuedReportFollowsTenTerminals(t *testing.T) {
 	service, _ := newStatusLookupService(t)
 	const profileID = "profile-terminal-history"

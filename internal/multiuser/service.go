@@ -598,6 +598,9 @@ func (s *MultiUserService) restoreProfileStatus(profileID string, profile *datab
 	}
 	applySnapshotToStatus(status, *snapshot)
 	status.Status = statusForSnapshot(snapshot)
+	if snapshot.State == string(sync.RunPhaseFailed) {
+		status.Error = snapshot.RunError
+	}
 	if status.LastAttemptedAt == nil {
 		status.LastAttemptedAt = copyTime(report.QueuedAt)
 	}
@@ -1397,6 +1400,9 @@ func (s *MultiUserService) publishFinalStatus(profileID string, generation uint6
 	}
 	if s.latestRunWasCanceled(profileID, runID, generation) {
 		return false
+	}
+	if status.Snapshot.State == string(sync.RunPhaseFailed) && status.Snapshot.RunError == "" {
+		status.Snapshot.RunError = status.Error
 	}
 
 	// Durable report persistence is deliberately outside syncMutex. A blocked
