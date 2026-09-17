@@ -205,33 +205,6 @@ func TestUpsertSyncRunReportRetainsNewestTenAcrossTerminalPhases(t *testing.T) {
 	require.Equal(t, uint64(11), latest.Generation)
 }
 
-func TestQueuedAcceptanceDoesNotEvictTerminalReports(t *testing.T) {
-	db, repo := newRepositoryForTest(t)
-	createTestProfile(t, db, "profile-a")
-	queuedAt := time.Date(2026, time.September, 16, 12, 0, 0, 0, time.UTC)
-	for generation := 1; generation <= 10; generation++ {
-		runID := "terminal-" + string(rune('a'+generation-1))
-		report, err := repo.ReserveSyncRun("profile-a", runID, false, queuedAt.Add(time.Duration(generation)*time.Minute))
-		require.NoError(t, err)
-		report.Phase = SyncRunPhaseCompleted
-		report.FinishedAt = timePtrForDatabaseTest(queuedAt.Add(time.Duration(generation) * time.Minute))
-		require.NoError(t, repo.UpsertSyncRunReport(report))
-	}
-	queued, err := repo.AcceptSyncRun(&SyncRunReport{
-		ProfileID: "profile-a", RunID: "queued", Phase: SyncRunPhaseQueued,
-		QueuedAt:     timePtrForDatabaseTest(queuedAt.Add(11 * time.Minute)),
-		SnapshotJSON: `{"state":"queued"}`,
-	})
-	require.NoError(t, err)
-	require.Equal(t, uint64(11), queued.Generation)
-
-	for generation := 1; generation <= 10; generation++ {
-		report, err := repo.GetSyncRunReport("profile-a", "terminal-"+string(rune('a'+generation-1)))
-		require.NoError(t, err)
-		require.NotNil(t, report)
-	}
-}
-
 func TestQueuedAcceptanceRemovesStaleQueuedReportsAndRetainsTerminalHistory(t *testing.T) {
 	db, repo := newRepositoryForTest(t)
 	createTestProfile(t, db, "profile-a")
@@ -248,13 +221,19 @@ func TestQueuedAcceptanceRemovesStaleQueuedReportsAndRetainsTerminalHistory(t *t
 		require.NoError(t, repo.UpsertSyncRunReport(report))
 	}
 
+	var firstQueued *SyncRunReport
 	for generation := 1; generation <= 12; generation++ {
-		_, err := repo.ReserveSyncRun(
+		report, err := repo.ReserveSyncRun(
 			"profile-a", "queued-"+string(rune('a'+generation-1)), false,
 			queuedAt.Add(time.Duration(maxSyncRunReports+generation)*time.Minute),
 		)
 		require.NoError(t, err)
+		if generation == 1 {
+			firstQueued = report
+		}
 	}
+	require.NotNil(t, firstQueued)
+	require.Equal(t, uint64(11), firstQueued.Generation)
 
 	var queuedCount int64
 	require.NoError(t, db.GetDB().Model(&SyncRunReport{}).
