@@ -135,7 +135,6 @@ func main() {
 	defer stop()
 
 	// Initialize services
-	abortCh := make(chan struct{})
 	errCh := make(chan error, 1)
 
 	// Initialize multi-user system
@@ -347,7 +346,11 @@ func main() {
 		// Periodic sync
 		go func() {
 			// Initial sync after delay
-			<-initialSyncTicker.C
+			select {
+			case <-initialSyncTicker.C:
+			case <-ctx.Done():
+				return
+			}
 			profiles, err := multiUserService.ListProfiles()
 			if err != nil {
 				log.Error("Failed to list profiles for initial sync", map[string]interface{}{
@@ -433,14 +436,18 @@ func main() {
 	// Cancel any ongoing operations
 	stop()
 
-	// Signal any background goroutines to stop
-	close(abortCh)
+	// Close sync admission, cancel active runs, and drain workers before the
+	// database deferred cleanup runs.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
+	defer cancel()
+	if err := multiUserService.Shutdown(shutdownCtx); err != nil {
+		log.Error("Error during sync service shutdown", map[string]interface{}{
+			"error": err.Error(),
+		})
+	}
 
 	// Shutdown HTTP server with configured timeout (only if web UI is enabled)
 	if cfg.Server.EnableWebUI && srv != nil {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
-		defer cancel()
-
 		log.Info("Initiating graceful shutdown...", map[string]interface{}{
 			"timeout": cfg.Server.ShutdownTimeout.String(),
 		})

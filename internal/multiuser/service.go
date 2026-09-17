@@ -97,6 +97,9 @@ type MultiUserService struct {
 	latestRuns      map[string]activeSyncRun
 	profileGates    map[string]*profileRunGate
 	servicesMutex   stdSync.RWMutex
+	admissionMutex  stdSync.Mutex
+	startWaitGroup  stdSync.WaitGroup
+	shuttingDown    bool
 }
 
 // NewMultiUserService creates a new multi-user service
@@ -113,6 +116,27 @@ func NewMultiUserService(repo *database.Repository, globalConfig *config.Config,
 		latestRuns:      make(map[string]activeSyncRun),
 		profileGates:    make(map[string]*profileRunGate),
 	}
+}
+
+// ErrServiceShuttingDown indicates that a new sync was rejected because the
+// service is closing its admission gate.
+var ErrServiceShuttingDown = errors.New("multi-user service is shutting down")
+
+// beginSyncStart admits one start operation and tracks it until its worker is
+// registered. The admission lock is held only for this state transition; all
+// repository operations remain outside global lifecycle locks.
+func (s *MultiUserService) beginSyncStart() error {
+	s.admissionMutex.Lock()
+	defer s.admissionMutex.Unlock()
+	if s.shuttingDown {
+		return ErrServiceShuttingDown
+	}
+	s.startWaitGroup.Add(1)
+	return nil
+}
+
+func (s *MultiUserService) endSyncStart() {
+	s.startWaitGroup.Done()
 }
 
 // ListProfiles returns all active sync profiles
@@ -315,6 +339,7 @@ func scalarSnapshot(snapshot *sync.SyncSnapshot) *sync.SyncSnapshot {
 		State:               snapshot.State,
 		BooksTotal:          snapshot.BooksTotal,
 		ProcessedSoFar:      snapshot.ProcessedSoFar,
+		UnattemptedCount:    snapshot.UnattemptedCount,
 		OutcomeCounts:       snapshot.OutcomeCounts,
 	}
 }
@@ -681,6 +706,11 @@ func (s *MultiUserService) currentSyncServiceLocked(profileID string) (*sync.Ser
 // durable reservation that installed the queued report before worker launch;
 // response delivery may race worker execution.
 func (s *MultiUserService) StartSyncWithAcceptedRun(profileID string) (AcceptedSyncRun, error) {
+	if err := s.beginSyncStart(); err != nil {
+		return AcceptedSyncRun{}, fmt.Errorf("cannot start sync for profile %s: %w", profileID, err)
+	}
+	defer s.endSyncStart()
+
 	gate := s.profileGate(profileID)
 	gate.mu.Lock()
 	defer gate.mu.Unlock()
@@ -791,6 +821,63 @@ func (s *MultiUserService) StartSyncWithAcceptedRun(profileID string) (AcceptedS
 // logger and test databases, only after asynchronous work has stopped.
 func (s *MultiUserService) WaitForSyncs() {
 	s.syncWaitGroup.Wait()
+}
+
+// Shutdown closes admission to new starts, cancels every active profile run,
+// and waits for accepted workers to exit until ctx is done. It is safe to call
+// more than once; a later call can continue draining after an earlier timeout.
+// Repository operations performed while canceling runs are profile-scoped and
+// never hold the service-wide lifecycle lock.
+func (s *MultiUserService) Shutdown(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	s.admissionMutex.Lock()
+	s.shuttingDown = true
+	s.admissionMutex.Unlock()
+
+	if err := waitForSyncGroup(ctx, &s.startWaitGroup); err != nil {
+		return fmt.Errorf("wait for sync starts to finish: %w", err)
+	}
+
+	for _, profileID := range s.activeProfileIDs() {
+		if err := s.CancelSync(profileID); err != nil && s.logger != nil {
+			s.logger.Warn("Failed to cancel sync during service shutdown", map[string]interface{}{
+				"profile_id": profileID,
+				"error":      err,
+			})
+		}
+	}
+
+	if err := waitForSyncGroup(ctx, &s.syncWaitGroup); err != nil {
+		return fmt.Errorf("wait for sync workers to finish: %w", err)
+	}
+	return nil
+}
+
+func waitForSyncGroup(ctx context.Context, group *stdSync.WaitGroup) error {
+	done := make(chan struct{})
+	go func() {
+		group.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *MultiUserService) activeProfileIDs() []string {
+	s.syncMutex.RLock()
+	defer s.syncMutex.RUnlock()
+	profileIDs := make([]string, 0, len(s.activeSyncs))
+	for profileID := range s.activeSyncs {
+		profileIDs = append(profileIDs, profileID)
+	}
+	return profileIDs
 }
 
 // CancelSync cancels a running sync operation for a profile.

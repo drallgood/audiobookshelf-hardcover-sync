@@ -96,10 +96,12 @@ func TestGetSyncRunSnapshotUsesCurrentRunWithoutProfileHydration(t *testing.T) {
 	cfg.Paths.MismatchOutputDir = filepath.Join(t.TempDir(), "mismatches")
 	hcConfig := hardcover.DefaultClientConfig()
 	hcConfig.BaseURL = "http://hardcover.invalid"
-	liveService, err := syncsvc.NewService(
+	liveService, err := syncsvc.NewServiceWithRunIdentity(
 		audiobookshelf.NewClient("http://audiobookshelf.invalid", "abs-token"),
 		hardcover.NewClientWithConfig(hcConfig, "hc-token", logger.Get()),
 		cfg,
+		"",
+		time.Time{},
 	)
 	require.NoError(t, err)
 
@@ -211,12 +213,13 @@ func TestStatusAggregateOmitsRunErrorAndDetailsRetainIt(t *testing.T) {
 		LastAttemptedAt:  &lastSync,
 		LastSuccessfulAt: &lastSync,
 		Snapshot: &syncsvc.SyncSnapshot{
-			RunID:          "profile-a-run-1",
-			State:          "failed",
-			RunError:       "upstream response: sensitive details",
-			BooksTotal:     12,
-			ProcessedSoFar: 1,
-			OutcomeCounts:  syncsvc.OutcomeCounts{Failed: 1},
+			RunID:            "profile-a-run-1",
+			State:            "failed",
+			RunError:         "upstream response: sensitive details",
+			BooksTotal:       12,
+			ProcessedSoFar:   1,
+			UnattemptedCount: 11,
+			OutcomeCounts:    syncsvc.OutcomeCounts{Failed: 1},
 			BookOutcomes: []syncsvc.BookOutcomeRecord{{
 				BookID:  "book-1",
 				Outcome: syncsvc.OutcomeFailed,
@@ -235,6 +238,7 @@ func TestStatusAggregateOmitsRunErrorAndDetailsRetainIt(t *testing.T) {
 	require.NotNil(t, aggregate[0].Snapshot)
 	require.Equal(t, status.Snapshot.RunID, aggregate[0].Snapshot.RunID)
 	require.Equal(t, status.Snapshot.OutcomeCounts, aggregate[0].Snapshot.OutcomeCounts)
+	require.Equal(t, status.Snapshot.UnattemptedCount, aggregate[0].Snapshot.UnattemptedCount)
 	require.Empty(t, aggregate[0].Snapshot.RunError)
 	require.Nil(t, aggregate[0].Snapshot.BookOutcomes)
 
@@ -316,10 +320,12 @@ func TestAggregateStatusMapsLiveTerminalSnapshotState(t *testing.T) {
 			cfg.Paths.MismatchOutputDir = filepath.Join(dataDir, "mismatches")
 			hcConfig := hardcover.DefaultClientConfig()
 			hcConfig.BaseURL = "http://hardcover.invalid"
-			liveService, err := syncsvc.NewService(
+			liveService, err := syncsvc.NewServiceWithRunIdentity(
 				audiobookshelf.NewClient(absServer.URL, "abs-token"),
 				hardcover.NewClientWithConfig(hcConfig, "hc-token", logger.Get()),
 				cfg,
+				"",
+				time.Time{},
 			)
 			require.NoError(t, err)
 
@@ -469,6 +475,45 @@ func TestStartSyncReturnsTypedProfileAndActiveErrors(t *testing.T) {
 	installAcceptedTestRun(t, service, profileID, "run-active", false)
 	_, err = service.StartSyncWithAcceptedRun(profileID)
 	require.ErrorIs(t, err, ErrSyncAlreadyActive)
+}
+
+func TestShutdownClosesAdmissionCancelsActiveRunsAndDrainsWorkers(t *testing.T) {
+	requestStarted := make(chan struct{})
+	var requestStartedOnce sync.Once
+	absServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/me" {
+			http.NotFound(w, r)
+			return
+		}
+		requestStartedOnce.Do(func() { close(requestStarted) })
+		<-r.Context().Done()
+	}))
+	t.Cleanup(absServer.Close)
+
+	service, _ := newStatusLookupService(t)
+	dataDir := t.TempDir()
+	service.globalConfig.Paths.DataDir = dataDir
+	service.globalConfig.Paths.CacheDir = filepath.Join(dataDir, "cache")
+	service.globalConfig.Paths.MismatchOutputDir = filepath.Join(dataDir, "mismatches")
+	const profileID = "profile-shutdown"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Shutdown profile", absServer.URL, "abs-token", "hc-token", database.SyncConfigData{},
+	))
+
+	_, err := service.StartSyncWithAcceptedRun(profileID)
+	require.NoError(t, err)
+	select {
+	case <-requestStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for active sync request")
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	t.Cleanup(cancel)
+	require.NoError(t, service.Shutdown(shutdownCtx))
+	require.False(t, service.IsProfileSyncing(profileID))
+	_, err = service.StartSyncWithAcceptedRun(profileID)
+	require.ErrorIs(t, err, ErrServiceShuttingDown)
 }
 
 func TestStartSyncWithAcceptedRunKeepsIdentityWhenWorkerFinishesImmediately(t *testing.T) {
@@ -830,18 +875,20 @@ func TestAggregateStatusRestoresTerminalScalarsWithoutDetails(t *testing.T) {
 	require.NoError(t, service.repository.UpsertSyncRunReport(report))
 
 	restarted := NewMultiUserService(service.repository, config.DefaultConfig(), logger.Get())
-	statuses, err := restarted.GetAllProfileStatuses()
-	require.NoError(t, err)
-	require.Len(t, statuses, 1)
-	status := statuses[0]
-	require.NotNil(t, status.Snapshot)
-	require.Equal(t, "run-aggregate", status.Snapshot.RunID)
-	require.Equal(t, string(syncsvc.RunPhaseCompleted), status.Snapshot.State)
-	require.Equal(t, int32(5), status.Snapshot.UnattemptedCount)
-	require.Equal(t, int32(12), status.Snapshot.BooksTotal)
-	require.Equal(t, int32(7), status.Snapshot.ProcessedSoFar)
-	require.Equal(t, int32(5), status.Snapshot.OutcomeCounts.Synced)
-	require.Empty(t, status.Snapshot.BookOutcomes)
+	for poll := 0; poll < 2; poll++ {
+		statuses, err := restarted.GetAllProfileStatuses()
+		require.NoError(t, err)
+		require.Len(t, statuses, 1)
+		status := statuses[0]
+		require.NotNil(t, status.Snapshot)
+		require.Equal(t, "run-aggregate", status.Snapshot.RunID)
+		require.Equal(t, string(syncsvc.RunPhaseCompleted), status.Snapshot.State)
+		require.Equal(t, int32(5), status.Snapshot.UnattemptedCount)
+		require.Equal(t, int32(12), status.Snapshot.BooksTotal)
+		require.Equal(t, int32(7), status.Snapshot.ProcessedSoFar)
+		require.Equal(t, int32(5), status.Snapshot.OutcomeCounts.Synced)
+		require.Empty(t, status.Snapshot.BookOutcomes)
+	}
 }
 
 func TestPublishFinalStatusSurfacesTerminalPersistenceFailure(t *testing.T) {
