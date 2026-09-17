@@ -83,7 +83,6 @@ type APIResponse struct {
 // aggregateSnapshotResponse is intentionally separate from sync.SyncSnapshot:
 // aggregate polling must not serialize the potentially large per-book arrays.
 type aggregateSnapshotResponse struct {
-	UserID              string             `json:"user_id,omitempty"`
 	RunID               string             `json:"run_id,omitempty"`
 	QueuedAt            time.Time          `json:"queued_at,omitempty"`
 	ProcessingStartedAt time.Time          `json:"processing_started_at,omitempty"`
@@ -245,9 +244,7 @@ func (h *Handler) GetProfiles(w http.ResponseWriter, r *http.Request) {
 			"updated_at": p.UpdatedAt,
 		}
 		var lastSuccessful interface{} = nil
-		if status := h.multiUserService.GetProfileStatus(p.ID); status != nil && status.LastSuccessfulAt != nil {
-			lastSuccessful = status.LastSuccessfulAt
-		} else if p.SyncState != nil && p.SyncState.LastSuccessfulAt != nil {
+		if p.SyncState != nil && p.SyncState.LastSuccessfulAt != nil {
 			lastSuccessful = p.SyncState.LastSuccessfulAt
 		}
 		item["last_successful_at"] = lastSuccessful
@@ -508,7 +505,6 @@ func aggregateSnapshotFrom(snapshot *sync.SyncSnapshot) *aggregateSnapshotRespon
 		return nil
 	}
 	return &aggregateSnapshotResponse{
-		UserID:              snapshot.UserID,
 		RunID:               snapshot.RunID,
 		QueuedAt:            snapshot.QueuedAt,
 		ProcessingStartedAt: snapshot.ProcessingStartedAt,
@@ -557,15 +553,11 @@ func (h *Handler) GetRunDetails(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	snapshot := h.multiUserService.GetProfileSnapshot(profileID)
-	if snapshot == nil || snapshot.RunID != runID {
-		var err error
-		snapshot, err = h.multiUserService.GetSyncRunSnapshot(profileID, runID)
-		if err != nil {
-			h.log.Error("Failed to get retained sync run details: " + err.Error())
-			h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to retrieve sync run details")
-			return
-		}
+	snapshot, err := h.multiUserService.GetSyncRunSnapshot(profileID, runID)
+	if err != nil {
+		h.log.Error("Failed to get sync run details: " + err.Error())
+		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to retrieve sync run details")
+		return
 	}
 	if snapshot == nil || snapshot.RunID != runID ||
 		(snapshot.UserID != "" && snapshot.UserID != profileID) {

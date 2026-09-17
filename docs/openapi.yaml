@@ -185,7 +185,6 @@ components:
       description: Scalar current-run snapshot used for inexpensive aggregate polling.
       required: [run_id, queued_at, processing_started_at, last_activity_at, last_processed_at, finished_at, state, dry_run, books_total, processed_so_far, outcome_counts, unattempted_count]
       properties:
-        user_id: {type: string}
         run_id: {type: string}
         queued_at: {type: string, format: date-time}
         processing_started_at:

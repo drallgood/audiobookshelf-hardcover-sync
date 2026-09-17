@@ -29,93 +29,7 @@ import (
 	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 )
 
-func TestGetProfileStatusRechecksStatusAfterFallbackLookup(t *testing.T) {
-	for _, tt := range []struct {
-		name          string
-		blockedSchema string
-		initialStatus *SyncProfileStatus
-	}{
-		{name: "profile lookup", blockedSchema: "SyncProfile"},
-		{
-			name:          "state lookup",
-			blockedSchema: "ProfileSyncState",
-			initialStatus: &SyncProfileStatus{
-				ProfileID: "profile-a", ProfileName: "Stored profile",
-			},
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			service, db := newStatusLookupService(t)
-			profileID := "profile-a"
-			require.NoError(t, service.repository.CreateProfile(
-				profileID, "Stored profile", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
-			))
-			if tt.initialStatus != nil {
-				service.updateProfileStatus(profileID, tt.initialStatus)
-			}
-
-			lookupStarted := make(chan struct{})
-			releaseLookup := make(chan struct{})
-			var blockOnce sync.Once
-			var releaseOnce sync.Once
-			t.Cleanup(func() { releaseOnce.Do(func() { close(releaseLookup) }) })
-			require.NoError(t, db.Callback().Query().Before("gorm:query").Register(
-				"multiuser_test_block_fallback_lookup", func(tx *gorm.DB) {
-					if tx.Statement.Schema == nil || tx.Statement.Schema.Name != tt.blockedSchema {
-						return
-					}
-					blockOnce.Do(func() { close(lookupStarted) })
-					<-releaseLookup
-				},
-			))
-
-			statusResult := make(chan *SyncProfileStatus, 1)
-			go func() { statusResult <- service.GetProfileStatus(profileID) }()
-			select {
-			case <-lookupStarted:
-			case <-time.After(time.Second):
-				t.Fatalf("timed out waiting for %s", tt.name)
-			}
-
-			// A new run must be able to publish its status while fallback I/O is
-			// blocked, and that status must win when the lookup completes.
-			run := activeSyncRun{generation: 1, runID: "profile-a-run-1", startedAt: time.Now().UTC()}
-			_, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			installDone := make(chan struct{})
-			go func() {
-				service.syncMutex.Lock()
-				service.activeRuns[profileID] = run
-				service.activeSyncs[profileID] = cancel
-				currentStatus := &SyncProfileStatus{ProfileID: profileID, ProfileName: "Current profile"}
-				applySnapshotToStatus(currentStatus, newRunSnapshot(profileID, run, string(syncsvc.RunPhaseQueued)))
-				service.updateProfileStatus(profileID, currentStatus)
-				service.syncMutex.Unlock()
-				close(installDone)
-			}()
-			select {
-			case <-installDone:
-			case <-time.After(time.Second):
-				releaseOnce.Do(func() { close(releaseLookup) })
-				<-installDone
-				t.Fatalf("sync lock remained held during %s", tt.name)
-			}
-
-			releaseOnce.Do(func() { close(releaseLookup) })
-			select {
-			case status := <-statusResult:
-				require.NotNil(t, status)
-				require.NotNil(t, status.Snapshot)
-				require.Equal(t, run.runID, status.Snapshot.RunID)
-				require.Equal(t, string(syncsvc.RunPhaseQueued), status.Snapshot.State)
-			case <-time.After(time.Second):
-				t.Fatal("timed out waiting for profile status")
-			}
-		})
-	}
-}
-
-func TestGetProfileSnapshotUsesCurrentRunWithoutProfileHydration(t *testing.T) {
+func TestGetSyncRunSnapshotUsesCurrentRunWithoutProfileHydration(t *testing.T) {
 	service, db := newStatusLookupService(t)
 	profileID := "profile-a"
 	require.NoError(t, service.repository.CreateProfile(
@@ -127,7 +41,7 @@ func TestGetProfileSnapshotUsesCurrentRunWithoutProfileHydration(t *testing.T) {
 		if tx.Statement.Schema == nil || tx.Statement.Schema.Name != "SyncProfile" {
 			return
 		}
-		t.Errorf("GetProfileSnapshot hydrated profile metadata from the database")
+		t.Errorf("GetSyncRunSnapshot hydrated profile metadata from the database")
 		require.ErrorIs(t, tx.AddError(gorm.ErrInvalidValue), gorm.ErrInvalidValue)
 	}))
 	t.Cleanup(func() {
@@ -160,18 +74,15 @@ func TestGetProfileSnapshotUsesCurrentRunWithoutProfileHydration(t *testing.T) {
 		service.finishActiveRun(profileID, run.generation)
 	})
 
-	snapshot := service.GetProfileSnapshot(profileID)
+	snapshot, err := service.GetSyncRunSnapshot(profileID, run.runID)
+	require.NoError(t, err)
 	require.NotNil(t, snapshot)
 	require.Equal(t, run.runID, snapshot.RunID)
 	require.Equal(t, profileID, snapshot.UserID)
 	require.Equal(t, string(syncsvc.RunPhaseQueued), snapshot.State)
-	status := service.getProfileStatus(profileID, &database.SyncProfile{ID: profileID, Name: "Profile A"}, nil)
-	require.NotNil(t, status)
-	require.NotNil(t, status.Snapshot)
-	require.Equal(t, string(syncsvc.RunPhaseQueued), status.Snapshot.State)
 }
 
-func TestGetProfileSnapshotRestoresRetainedRunWithoutProfileHydration(t *testing.T) {
+func TestGetSyncRunSnapshotRestoresRetainedRunWithoutProfileHydration(t *testing.T) {
 	service, db := newStatusLookupService(t)
 	profileID := "profile-retained"
 	require.NoError(t, service.repository.CreateProfile(
@@ -189,12 +100,13 @@ func TestGetProfileSnapshotRestoresRetainedRunWithoutProfileHydration(t *testing
 		if tx.Statement.Schema == nil || tx.Statement.Schema.Name != "SyncProfile" {
 			return
 		}
-		t.Errorf("GetProfileSnapshot hydrated profile metadata from the database")
+		t.Errorf("GetSyncRunSnapshot hydrated profile metadata from the database")
 		require.ErrorIs(t, tx.AddError(gorm.ErrInvalidValue), gorm.ErrInvalidValue)
 	}))
 	t.Cleanup(func() { require.NoError(t, db.Callback().Query().Remove(queryCallbackName)) })
 
-	snapshot := service.GetProfileSnapshot(profileID)
+	snapshot, err := service.GetSyncRunSnapshot(profileID, report.RunID)
+	require.NoError(t, err)
 	require.NotNil(t, snapshot)
 	require.Equal(t, profileID, snapshot.UserID)
 	require.Equal(t, "run-retained", snapshot.RunID)
@@ -284,7 +196,7 @@ func TestStatusAggregateOmitsRunErrorAndDetailsRetainIt(t *testing.T) {
 	require.Empty(t, aggregate[0].Snapshot.RunError)
 	require.Nil(t, aggregate[0].Snapshot.BookOutcomes)
 
-	direct := service.GetProfileStatus(profileID)
+	direct := profileStatusForTest(t, service, profileID)
 	require.NotNil(t, direct)
 	require.Equal(t, status.Snapshot.RunError, direct.Snapshot.RunError)
 }
@@ -463,7 +375,7 @@ func TestStartSyncWithAcceptedRunMatchesQueuedDurableAndStatusIdentity(t *testin
 	require.Equal(t, accepted.QueuedAt, *report.QueuedAt)
 	require.Contains(t, report.SnapshotJSON, accepted.RunID)
 
-	status := service.GetProfileStatus(profileID)
+	status := profileStatusForTest(t, service, profileID)
 	require.NotNil(t, status)
 	require.NotNil(t, status.Snapshot)
 	require.Equal(t, accepted.RunID, status.Snapshot.RunID)
@@ -550,7 +462,7 @@ func TestStartSyncWithAcceptedRunKeepsIdentityWhenWorkerFinishesImmediately(t *t
 	require.NotNil(t, report)
 	require.Equal(t, accepted.RunID, report.RunID)
 	require.Equal(t, accepted.QueuedAt, *report.QueuedAt)
-	status := service.GetProfileStatus(profileID)
+	status := profileStatusForTest(t, service, profileID)
 	require.NotNil(t, status)
 	require.NotNil(t, status.Snapshot)
 	require.Equal(t, accepted.RunID, status.Snapshot.RunID)
@@ -699,7 +611,7 @@ func TestDryRunTerminalStatusKeepsAttemptWithoutSuccess(t *testing.T) {
 	run := installAcceptedTestRun(t, service, profileID, "run-dry", true)
 
 	require.True(t, service.publishFinalStatus(profileID, run.generation, acceptedTerminalStatus(profileID, run, string(syncsvc.RunPhaseCompleted))))
-	status := service.GetProfileStatus(profileID)
+	status := profileStatusForTest(t, service, profileID)
 	require.NotNil(t, status)
 	require.NotNil(t, status.LastAttemptedAt)
 	require.Nil(t, status.LastSuccessfulAt)
@@ -720,7 +632,7 @@ func TestRestartRestoresNewestTerminalReport(t *testing.T) {
 	require.True(t, service.publishFinalStatus(profileID, second.generation, secondStatus))
 
 	restarted := NewMultiUserService(service.repository, config.DefaultConfig(), logger.Get())
-	status := restarted.GetProfileStatus(profileID)
+	status := profileStatusForTest(t, restarted, profileID)
 	require.NotNil(t, status)
 	require.Equal(t, second.runID, status.Snapshot.RunID)
 	require.Equal(t, string(syncsvc.RunPhaseCanceled), status.Snapshot.State)
@@ -793,16 +705,16 @@ func requireFailedRunRestoration(t *testing.T, service *MultiUserService, profil
 	require.NotNil(t, snapshot)
 	require.Equal(t, report.RunError, snapshot.RunError)
 
-	status := service.GetProfileStatus(profileID)
+	status := profileStatusForTest(t, service, profileID)
 	require.NotNil(t, status)
 	require.NotNil(t, status.Snapshot)
 	require.Equal(t, report.RunError, status.Snapshot.RunError)
 
 	restarted := NewMultiUserService(service.repository, config.DefaultConfig(), logger.Get())
-	restored := restarted.GetProfileStatus(profileID)
+	restored, err := restarted.GetSyncRunSnapshot(profileID, runID)
+	require.NoError(t, err)
 	require.NotNil(t, restored)
-	require.NotNil(t, restored.Snapshot)
-	require.Equal(t, report.RunError, restored.Snapshot.RunError)
+	require.Equal(t, report.RunError, restored.RunError)
 }
 
 func TestRestartRestoresNewestTerminalWhenQueuedReportFollowsTenTerminals(t *testing.T) {
@@ -830,7 +742,7 @@ func TestRestartRestoresNewestTerminalWhenQueuedReportFollowsTenTerminals(t *tes
 	require.NotNil(t, oldest)
 
 	restarted := NewMultiUserService(service.repository, config.DefaultConfig(), logger.Get())
-	status := restarted.GetProfileStatus(profileID)
+	status := profileStatusForTest(t, restarted, profileID)
 	require.NotNil(t, status)
 	require.NotNil(t, status.Snapshot)
 	require.Equal(t, "terminal-10", status.Snapshot.RunID)
@@ -856,7 +768,7 @@ func TestRestartRestoresTerminalWhenQueuedReportsExceedLookupLimit(t *testing.T)
 	}
 
 	restarted := NewMultiUserService(service.repository, config.DefaultConfig(), logger.Get())
-	status := restarted.GetProfileStatus(profileID)
+	status := profileStatusForTest(t, restarted, profileID)
 	require.NotNil(t, status)
 	require.NotNil(t, status.Snapshot)
 	require.Equal(t, "terminal-retained", status.Snapshot.RunID)
@@ -906,7 +818,7 @@ func TestPublishFinalStatusSurfacesTerminalPersistenceFailure(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, db.Callback().Update().Remove(callbackName)) })
 
 	require.False(t, service.publishFinalStatus(profileID, run.generation, acceptedTerminalStatus(profileID, run, string(syncsvc.RunPhaseCompleted))))
-	status := service.GetProfileStatus(profileID)
+	status := profileStatusForTest(t, service, profileID)
 	require.NotNil(t, status)
 	require.NotNil(t, status.Snapshot)
 	require.Equal(t, string(syncsvc.RunPhaseFailed), status.Snapshot.State)
@@ -934,7 +846,7 @@ func TestCancelSyncReturnsPersistenceFailureAfterPublishingCanceledRunError(t *t
 	require.ErrorIs(t, err, writeErr)
 	require.False(t, service.IsProfileSyncing(profileID))
 
-	status := service.GetProfileStatus(profileID)
+	status := profileStatusForTest(t, service, profileID)
 	require.NotNil(t, status)
 	require.NotNil(t, status.Snapshot)
 	require.Equal(t, run.runID, status.Snapshot.RunID)
@@ -999,7 +911,7 @@ func TestBlockedProfilePersistenceDoesNotBlockOtherProfileStatus(t *testing.T) {
 		t.Fatal("profile B progress update blocked behind profile A persistence")
 	}
 	statusDone := make(chan *SyncProfileStatus, 1)
-	go func() { statusDone <- service.GetProfileStatus("profile-b") }()
+	go func() { statusDone <- profileStatusForTest(t, service, "profile-b") }()
 	select {
 	case status := <-statusDone:
 		require.NotNil(t, status)
@@ -1186,7 +1098,7 @@ func TestMigratedAbsoluteStateFileRemainsUsableForLegacyProfile(t *testing.T) {
 			require.NoError(t, err)
 			service.WaitForSyncs()
 
-			status := service.GetProfileStatus(profileID)
+			status := profileStatusForTest(t, service, profileID)
 			require.NotNil(t, status)
 			require.NotNil(t, status.Snapshot)
 			require.Equal(t, "completed", status.Snapshot.State)
@@ -1377,7 +1289,7 @@ func TestStartSyncAcceptsDefaultStateFileSymlinkInsideDataDir(t *testing.T) {
 	_, err := service.StartSyncWithAcceptedRun(profileID)
 	require.NoError(t, err)
 	service.WaitForSyncs()
-	status := service.GetProfileStatus(profileID)
+	status := profileStatusForTest(t, service, profileID)
 	require.NotNil(t, status)
 	require.Equal(t, string(syncsvc.RunPhaseCompleted), status.Snapshot.State)
 	require.FileExists(t, insideTarget)
@@ -1545,6 +1457,31 @@ func TestCreateProfileRejectsStateFilenameLengthAfterLegacyIDEncoding(t *testing
 	profile, getErr := service.GetProfile(profileID)
 	require.NoError(t, getErr)
 	require.Nil(t, profile)
+}
+
+func profileStatusForTest(t *testing.T, service *MultiUserService, profileID string) *SyncProfileStatus {
+	t.Helper()
+	service.statusMutex.RLock()
+	status := cloneProfileStatus(service.profileStatuses[profileID])
+	service.statusMutex.RUnlock()
+	if status != nil {
+		return status
+	}
+	statuses, err := service.GetAllProfileStatuses()
+	require.NoError(t, err)
+	for _, candidate := range statuses {
+		if candidate != nil && candidate.ProfileID == profileID {
+			if candidate.Snapshot != nil && candidate.Snapshot.RunID != "" {
+				snapshot, snapshotErr := service.GetSyncRunSnapshot(profileID, candidate.Snapshot.RunID)
+				require.NoError(t, snapshotErr)
+				if snapshot != nil {
+					candidate.Snapshot = snapshot
+				}
+			}
+			return candidate
+		}
+	}
+	return nil
 }
 
 func newStatusLookupService(t *testing.T) (*MultiUserService, *gorm.DB) {

@@ -117,10 +117,10 @@ func TestStartSyncRegistersWorkBeforeResponding(t *testing.T) {
 	require.Equal(t, "queued", response.Data.State)
 	require.False(t, response.Data.QueuedAt.IsZero())
 	require.True(t, response.Data.DryRun)
-	require.NotNil(t, fixture.multiUser.GetProfileStatus(profileID))
+	require.NotNil(t, profileStatusForAPITest(t, fixture.multiUser, profileID))
 
 	fixture.waitForSyncs(t)
-	status := fixture.multiUser.GetProfileStatus(profileID)
+	status := profileStatusForAPITest(t, fixture.multiUser, profileID)
 	require.NotNil(t, status)
 	require.Equal(t, string(syncsvc.RunPhaseCompleted), status.Snapshot.State)
 }
@@ -327,7 +327,7 @@ func TestAggregateStatusAndRunDetailsShareCurrentRunIdentity(t *testing.T) {
 		snapshot, ok := item["snapshot"].(map[string]interface{})
 		require.True(t, ok)
 		require.NotContains(t, snapshot, "book_outcomes")
-		for _, removed := range []string{"run_started_at", "processed_count", "attention_records"} {
+		for _, removed := range []string{"user_id", "run_started_at", "processed_count", "attention_records"} {
 			require.NotContains(t, snapshot, removed)
 		}
 		counts, ok := snapshot["outcome_counts"].(map[string]interface{})
@@ -354,7 +354,7 @@ func TestAggregateStatusAndRunDetailsShareCurrentRunIdentity(t *testing.T) {
 	require.Equal(t, statusSnapshot.OutcomeCounts, byID["profile-a"].Snapshot.OutcomeCounts)
 	require.Empty(t, byID["profile-a"].Snapshot.BookOutcomes)
 	require.Empty(t, byID["profile-b"].Snapshot.BookOutcomes)
-	profileBRunID := fixture.multiUser.GetProfileStatus("profile-b").Snapshot.RunID
+	profileBRunID := profileStatusForAPITest(t, fixture.multiUser, "profile-b").Snapshot.RunID
 	recorder := requestJSONRoute(routes, http.MethodGet, "/api/profiles/profile-a/runs/"+profileBRunID+"/details")
 	require.Equal(t, http.StatusNotFound, recorder.Code, recorder.Body.String())
 	recorder = requestJSONRoute(routes, http.MethodGet, "/api/profiles/unknown/runs/"+statusSnapshot.RunID+"/details")
@@ -1026,7 +1026,7 @@ func statusBookWithEnrichment(id, title, author string) map[string]interface{} {
 func waitForStatusRun(t *testing.T, service *multiuser.MultiUserService, profileID string) *multiuser.SyncProfileStatus {
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		status := service.GetProfileStatus(profileID)
+		status := profileStatusForAPITest(t, service, profileID)
 		if status != nil && status.Snapshot != nil && status.Snapshot.RunID != "" &&
 			!isActiveTestPhase(status.Snapshot.State) {
 			return status
@@ -1034,6 +1034,25 @@ func waitForStatusRun(t *testing.T, service *multiuser.MultiUserService, profile
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for profile %q sync status", profileID)
+	return nil
+}
+
+func profileStatusForAPITest(t *testing.T, service *multiuser.MultiUserService, profileID string) *multiuser.SyncProfileStatus {
+	t.Helper()
+	statuses, err := service.GetAllProfileStatuses()
+	require.NoError(t, err)
+	for _, status := range statuses {
+		if status != nil && status.ProfileID == profileID {
+			if status.Snapshot != nil && status.Snapshot.RunID != "" {
+				snapshot, snapshotErr := service.GetSyncRunSnapshot(profileID, status.Snapshot.RunID)
+				require.NoError(t, snapshotErr)
+				if snapshot != nil {
+					status.Snapshot = snapshot
+				}
+			}
+			return status
+		}
+	}
 	return nil
 }
 

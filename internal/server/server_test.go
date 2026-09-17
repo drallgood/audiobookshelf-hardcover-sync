@@ -194,7 +194,7 @@ func TestServerAggregateOmitsErrorWhileAuthenticatedStatusRetainsIt(t *testing.T
 	require.NoError(t, err)
 	fixture.server.multiUserService.WaitForSyncs()
 
-	terminal := fixture.server.multiUserService.GetProfileStatus(profileID)
+	terminal := profileStatusForServerTest(t, fixture.server.multiUserService, profileID)
 	require.NotNil(t, terminal)
 	require.NotNil(t, terminal.Snapshot)
 	require.Equal(t, "failed", terminal.Snapshot.State)
@@ -240,4 +240,23 @@ func TestServerAggregateOmitsErrorWhileAuthenticatedStatusRetainsIt(t *testing.T
 	require.True(t, authenticatedStatus.Success)
 	require.Equal(t, terminal.Snapshot.RunError, authenticatedStatus.Data.RunError)
 	require.Contains(t, statusResponse.Body.String(), sentinel)
+}
+
+func profileStatusForServerTest(t *testing.T, service *multiuser.MultiUserService, profileID string) *multiuser.SyncProfileStatus {
+	t.Helper()
+	statuses, err := service.GetAllProfileStatuses()
+	require.NoError(t, err)
+	for _, status := range statuses {
+		if status != nil && status.ProfileID == profileID {
+			if status.Snapshot != nil && status.Snapshot.RunID != "" {
+				snapshot, snapshotErr := service.GetSyncRunSnapshot(profileID, status.Snapshot.RunID)
+				require.NoError(t, snapshotErr)
+				if snapshot != nil {
+					status.Snapshot = snapshot
+				}
+			}
+			return status
+		}
+	}
+	return nil
 }

@@ -339,7 +339,7 @@ func TestForeignProfileAuthorizationReturnsNotFoundForEveryRoute(t *testing.T) {
 	_, err := fixture.server.multiUserService.StartSyncWithAcceptedRun("foreign-target")
 	require.NoError(t, err)
 	fixture.server.multiUserService.WaitForSyncs()
-	status := fixture.server.multiUserService.GetProfileStatus("foreign-target")
+	status := profileStatusForServerTest(t, fixture.server.multiUserService, "foreign-target")
 	require.NotNil(t, status)
 	require.NotNil(t, status.Snapshot)
 	require.Len(t, status.Snapshot.BookOutcomes, 1)
