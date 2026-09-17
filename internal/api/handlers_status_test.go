@@ -321,10 +321,15 @@ func TestAggregateStatusAndRunDetailsShareCurrentRunIdentity(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rawAggregate.Body.Bytes(), &aggregateEnvelope))
 	require.Len(t, aggregateEnvelope.Data, 2)
 	for _, item := range aggregateEnvelope.Data {
+		for _, removed := range []string{"status", "dry_run", "last_sync", "progress", "books_total", "error"} {
+			require.NotContains(t, item, removed)
+		}
 		snapshot, ok := item["snapshot"].(map[string]interface{})
 		require.True(t, ok)
 		require.NotContains(t, snapshot, "book_outcomes")
-		require.NotContains(t, snapshot, "attention_records")
+		for _, removed := range []string{"run_started_at", "processed_count", "attention_records"} {
+			require.NotContains(t, snapshot, removed)
+		}
 		counts, ok := snapshot["outcome_counts"].(map[string]interface{})
 		require.True(t, ok)
 		expectedCounts := map[string]float64{

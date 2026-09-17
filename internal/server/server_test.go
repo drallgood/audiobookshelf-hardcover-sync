@@ -80,6 +80,21 @@ func (f *routeTestFixture) requestWithCookies(method, path string, body []byte, 
 	return recorder
 }
 
+func TestRemovedLegacySyncRoutesReturnNotFound(t *testing.T) {
+	fixture := newRouteTestFixture(t, false)
+	for _, request := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodPost, path: "/api/sync"},
+		{method: http.MethodGet, path: "/api/profiles/profile-a/status"},
+		{method: http.MethodGet, path: "/api/profiles/profile-a/summary"},
+	} {
+		response := fixture.request(request.method, request.path, nil)
+		require.Equal(t, http.StatusNotFound, response.Code, response.Body.String())
+	}
+}
+
 func TestServerRoutesPreserveEncodedLegacyProfileIDForCRUD(t *testing.T) {
 	fixture := newRouteTestFixture(t, false)
 	legacyID := "legacy/profile;id"

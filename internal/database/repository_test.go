@@ -71,7 +71,7 @@ func TestAcceptSyncRunAllocatesPerProfileGenerationAndAttemptMetadata(t *testing
 	require.Equal(t, second.RunID, state.LastAttemptedRunID)
 	require.Equal(t, uint64(2), state.LastAttemptedGeneration)
 	require.Equal(t, queuedAt.Add(time.Minute), *state.LastAttemptedAt)
-	require.Equal(t, queuedAt.Add(time.Minute), *state.LastSync)
+	require.Equal(t, legacyLastSync, *state.LastSync)
 	require.Equal(t, uint64(1), state.LastSuccessfulGeneration)
 }
 
@@ -155,10 +155,10 @@ func TestUpsertSyncRunReportAdvancesOnlyNewerCompletedNonDryRun(t *testing.T) {
 	require.Equal(t, uint64(6), state.LastSuccessfulGeneration)
 	require.Equal(t, "run-6", state.LastSuccessfulRunID)
 	require.Equal(t, newFinish, *state.LastSuccessfulAt)
-	require.Equal(t, newFinish, *state.LastSync)
+	require.Nil(t, state.LastSync)
 }
 
-func TestCompletedReportAdvancesLegacyLastSyncAfterRestart(t *testing.T) {
+func TestCompletedReportPreservesCanonicalSuccessAfterRestart(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sync.db")
 	db, err := NewDatabase(&DatabaseConfig{Type: DatabaseTypeSQLite, Path: dbPath}, logger.Get())
 	require.NoError(t, err)
@@ -177,7 +177,7 @@ func TestCompletedReportAdvancesLegacyLastSyncAfterRestart(t *testing.T) {
 	state, err := NewRepository(db, nil, logger.Get()).GetSyncState("profile-a")
 	require.NoError(t, err)
 	require.Equal(t, finishedAt, *state.LastSuccessfulAt)
-	require.Equal(t, finishedAt, *state.LastSync)
+	require.Nil(t, state.LastSync)
 }
 
 func TestUpsertSyncRunReportRetainsNewestTenAcrossTerminalPhases(t *testing.T) {

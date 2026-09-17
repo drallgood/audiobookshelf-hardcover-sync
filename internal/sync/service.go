@@ -581,12 +581,9 @@ func (s *Service) processedOutcomeTotal() int32 {
 	return s.outcomeCounts.Total()
 }
 
-func isAttentionOutcome(outcome SyncOutcome) bool {
-	return outcome == OutcomeNeedsReview || outcome == OutcomeNotFound || outcome == OutcomeFailed
-}
-
-// Lookup failures still require attention even though their primary outcome is Failed.
-func shouldPublishAttentionRecord(outcome SyncOutcome, err error) bool {
+// Lookup failures still belong in the mismatch export even though their
+// canonical outcome is Failed.
+func shouldPublishMismatchRecord(outcome SyncOutcome, err error) bool {
 	return outcome == OutcomeNeedsReview ||
 		(outcome == OutcomeFailed && errors.Is(err, errHardcoverLookupFailed))
 }
@@ -922,7 +919,7 @@ func (s *Service) recordBookOutcomeWithMatchMethod(book models.AudiobookshelfBoo
 		s.lastProcessedAt = now.UTC()
 	}
 	s.touchLastActivityLocked(now)
-	if shouldPublishAttentionRecord(outcome, err) {
+	if shouldPublishMismatchRecord(outcome, err) {
 		s.upsertAttentionCandidateLocked(book, record)
 	} else {
 		s.removeAttentionCandidateLocked(book.ID)
@@ -2641,7 +2638,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			s.config.Audiobookshelf.AudnexusRegion,
 		)
 		enrichedMismatch.BookID = book.ID
-		if shouldPublishAttentionRecord(lookupOutcome, findErr) {
+		if shouldPublishMismatchRecord(lookupOutcome, findErr) {
 			s.enrichAttentionCandidate(enrichedMismatch)
 		}
 		// Keep the legacy checkpoint for this attempted item. The SKIPPED status

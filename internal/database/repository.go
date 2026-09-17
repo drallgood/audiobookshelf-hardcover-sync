@@ -198,7 +198,6 @@ func (r *Repository) UpsertSyncRunReport(report *SyncRunReport) error {
 			finishedAt = &now
 		}
 		state.LastSuccessfulAt = finishedAt
-		state.LastSync = finishedAt
 		state.LastSuccessfulRunID = report.RunID
 		state.LastSuccessfulGeneration = report.Generation
 		if err := tx.Save(state).Error; err != nil {
