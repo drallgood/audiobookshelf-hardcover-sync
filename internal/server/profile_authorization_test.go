@@ -337,7 +337,8 @@ func TestForeignProfileAuthorizationReturnsNotFoundForEveryRoute(t *testing.T) {
 	foreign := newRouteSession(t, fixture, "route-foreign", auth.RoleUser)
 	createRouteProfileAtURL(t, fixture, owner, "foreign-target", absServer.URL, "foreign-target-token")
 
-	require.NoError(t, fixture.server.multiUserService.StartSync("foreign-target"))
+	_, err := fixture.server.multiUserService.StartSyncWithAcceptedRun("foreign-target")
+	require.NoError(t, err)
 	fixture.server.multiUserService.WaitForSyncs()
 	status := fixture.server.multiUserService.GetProfileStatus("foreign-target")
 	require.NotNil(t, status)

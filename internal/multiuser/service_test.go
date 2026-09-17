@@ -1097,7 +1097,7 @@ func TestStartSyncRejectsStoredStateFileWithOverlongComponent(t *testing.T) {
 		database.SyncConfigData{StateFile: filepath.Join(strings.Repeat("p", 256), "state.json")},
 	))
 
-	err := service.StartSync(profileID)
+	_, err := service.StartSyncWithAcceptedRun(profileID)
 	require.ErrorIs(t, err, ErrProfileStateFileNameTooLong)
 	require.False(t, service.IsProfileSyncing(profileID))
 }
@@ -1214,7 +1214,8 @@ func TestMigratedAbsoluteStateFileRemainsUsableForLegacyProfile(t *testing.T) {
 				"hc-token",
 				database.SyncConfigData{StateFile: migratedStatePath},
 			))
-			require.NoError(t, service.StartSync(profileID))
+			_, err := service.StartSyncWithAcceptedRun(profileID)
+			require.NoError(t, err)
 			service.WaitForSyncs()
 
 			status := service.GetProfileStatus(profileID)
@@ -1270,7 +1271,7 @@ func TestStartSyncRejectsStoredStateFileOutsideDataDir(t *testing.T) {
 				database.SyncConfigData{StateFile: configuredPath},
 			))
 
-			err := service.StartSync(profileID)
+			_, err := service.StartSyncWithAcceptedRun(profileID)
 			require.ErrorIs(t, err, ErrProfileStateFilePathNotAllowed)
 			require.False(t, service.IsProfileSyncing(profileID))
 			require.FileExists(t, legacyPath)
@@ -1305,7 +1306,7 @@ func TestStartSyncRejectsStoredStateFileThroughExternalSymlink(t *testing.T) {
 		database.SyncConfigData{StateFile: configuredPath},
 	))
 
-	err := service.StartSync(profileID)
+	_, err := service.StartSyncWithAcceptedRun(profileID)
 	require.ErrorIs(t, err, ErrProfileStateFilePathNotAllowed)
 	require.False(t, service.IsProfileSyncing(profileID))
 	require.NoFileExists(t, canonicalPath)
@@ -1355,7 +1356,7 @@ func TestStartSyncRejectsDefaultStateFileSymlinksOutsideDataDir(t *testing.T) {
 			if test.existingTarget {
 				before, _ = os.ReadFile(outsideTarget)
 			}
-			err := service.StartSync(profileID)
+			_, err := service.StartSyncWithAcceptedRun(profileID)
 			require.ErrorIs(t, err, ErrProfileStateFilePathNotAllowed)
 			require.False(t, service.IsProfileSyncing(profileID))
 			if test.existingTarget {
@@ -1406,7 +1407,8 @@ func TestStartSyncAcceptsDefaultStateFileSymlinkInsideDataDir(t *testing.T) {
 		database.SyncConfigData{},
 	))
 
-	require.NoError(t, service.StartSync(profileID))
+	_, err := service.StartSyncWithAcceptedRun(profileID)
+	require.NoError(t, err)
 	service.WaitForSyncs()
 	status := service.GetProfileStatus(profileID)
 	require.NotNil(t, status)

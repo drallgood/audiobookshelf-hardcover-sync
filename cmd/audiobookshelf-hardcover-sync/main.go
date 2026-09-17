@@ -402,7 +402,7 @@ func main() {
 						log.Info("Starting initial sync for profile", map[string]interface{}{
 							"profile_id": profileID,
 						})
-						if err := multiUserService.StartSync(profileID); err != nil {
+						if _, err := multiUserService.StartSyncWithAcceptedRun(profileID); err != nil {
 							log.Error("Failed to start sync for profile", map[string]interface{}{
 								"profile_id": profileID,
 								"error":      err.Error(),
@@ -439,7 +439,7 @@ func main() {
 						})
 
 						go func(profileID string) {
-							if err := multiUserService.StartSync(profileID); err != nil {
+							if _, err := multiUserService.StartSyncWithAcceptedRun(profileID); err != nil {
 								log.Error("Failed to start sync for profile", map[string]interface{}{
 									"profile_id": profileID,
 									"error":      err.Error(),

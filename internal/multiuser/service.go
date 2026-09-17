@@ -997,14 +997,6 @@ func (s *MultiUserService) getProfileStatus(profileID string, profile *database.
 	return status
 }
 
-// StartSync starts a sync operation for a specific profile. It retains the
-// legacy error-only contract; callers that need the accepted identity should
-// use StartSyncWithAcceptedRun.
-func (s *MultiUserService) StartSync(profileID string) error {
-	_, err := s.StartSyncWithAcceptedRun(profileID)
-	return err
-}
-
 // StartSyncWithAcceptedRun starts a sync and returns the durable queued run
 // identity accepted for it. The returned record is constructed from the same
 // durable reservation that installed the queued report before worker launch;

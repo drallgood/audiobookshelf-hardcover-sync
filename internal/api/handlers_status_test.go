@@ -185,7 +185,8 @@ func TestStartSyncReturnsErrorWhenProfileIsAlreadySyncing(t *testing.T) {
 	})
 	const profileID = "already-syncing-profile"
 	fixture.createProfile(t, profileID, "Already syncing profile", absServer.URL, profileID)
-	require.NoError(t, fixture.multiUser.StartSync(profileID))
+	_, err := fixture.multiUser.StartSyncWithAcceptedRun(profileID)
+	require.NoError(t, err)
 	select {
 	case <-hardcoverServer.blockedStarted:
 	case <-time.After(10 * time.Second):
@@ -322,7 +323,8 @@ func TestPublicStatusAndSummaryRoutesShareCurrentRunSnapshot(t *testing.T) {
 	}
 
 	for _, profileID := range []string{"profile-a", "profile-b"} {
-		require.NoError(t, fixture.multiUser.StartSync(profileID))
+		_, err := fixture.multiUser.StartSyncWithAcceptedRun(profileID)
+		require.NoError(t, err)
 		status := waitForStatusRun(t, fixture.multiUser, profileID)
 		require.Equal(t, "completed", status.Status)
 		require.NotNil(t, status.Snapshot)
@@ -583,7 +585,8 @@ func TestPublicStatusAndSummaryRoutesExposeLiveAttentionOutcomes(t *testing.T) {
 
 	profileID := "live-profile"
 	fixture.createProfile(t, profileID, "Live profile", absServer.Server.URL, "hardcover-token")
-	require.NoError(t, fixture.multiUser.StartSync(profileID))
+	_, err := fixture.multiUser.StartSyncWithAcceptedRun(profileID)
+	require.NoError(t, err)
 
 	// The third lookup cannot complete until released. Since processing is
 	// serial for one library, this signal proves the first two outcomes were
@@ -723,7 +726,8 @@ func TestPublicStatusPublishesSecondLookupOutcomeBeforeEnrichment(t *testing.T) 
 	})
 	profileID := "delayed-profile"
 	fixture.createProfile(t, profileID, "Delayed profile", absServer.Server.URL, "hardcover-token")
-	require.NoError(t, fixture.multiUser.StartSync(profileID))
+	_, err := fixture.multiUser.StartSyncWithAcceptedRun(profileID)
+	require.NoError(t, err)
 
 	select {
 	case <-hardcoverServer.enrichmentStarted:
@@ -762,7 +766,8 @@ func TestPublicStatusRunReplacementKeepsNewRunCurrent(t *testing.T) {
 	})
 	profileID := "replacement-profile"
 	fixture.createProfile(t, profileID, "Replacement profile", absServer.Server.URL, "hardcover-token")
-	require.NoError(t, fixture.multiUser.StartSync(profileID))
+	_, err := fixture.multiUser.StartSyncWithAcceptedRun(profileID)
+	require.NoError(t, err)
 	select {
 	case <-hardcoverServer.enrichmentStarted:
 	case <-time.After(10 * time.Second):
@@ -777,7 +782,8 @@ func TestPublicStatusRunReplacementKeepsNewRunCurrent(t *testing.T) {
 	require.NotNil(t, oldStatusResponse.Data.Snapshot)
 	oldRunID := oldStatusResponse.Data.Snapshot.RunID
 	require.NoError(t, fixture.multiUser.CancelSync(profileID))
-	require.NoError(t, fixture.multiUser.StartSync(profileID))
+	_, err = fixture.multiUser.StartSyncWithAcceptedRun(profileID)
+	require.NoError(t, err)
 	var newStatusResponse statusHTTPResponse
 	callJSONRoute(t, routes, http.MethodGet, "/api/profiles/"+profileID+"/status", &newStatusResponse)
 	require.True(t, newStatusResponse.Success)
@@ -825,7 +831,8 @@ func TestPublicStatusAndSummaryRoutesExposeTechnicalTimeoutAsFailedOutcome(t *te
 	fixture := newStatusServiceFixture(t, hardcoverServer.URL)
 	profileID := "timeout-profile"
 	fixture.createProfile(t, profileID, "Timeout profile", absServer.Server.URL, "hardcover-token")
-	require.NoError(t, fixture.multiUser.StartSync(profileID))
+	_, err := fixture.multiUser.StartSyncWithAcceptedRun(profileID)
+	require.NoError(t, err)
 
 	completed := waitForStatusRun(t, fixture.multiUser, profileID)
 	require.Equal(t, "completed", completed.Status)

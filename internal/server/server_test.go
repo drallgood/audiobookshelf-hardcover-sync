@@ -176,7 +176,8 @@ func TestServerAggregateOmitsErrorWhileAuthenticatedStatusRetainsIt(t *testing.T
 		"hardcover-token",
 		database.SyncConfigData{StateFile: statePath, ProcessUnreadBooks: true, DryRun: true},
 	))
-	require.NoError(t, fixture.server.multiUserService.StartSync(profileID))
+	_, err := fixture.server.multiUserService.StartSyncWithAcceptedRun(profileID)
+	require.NoError(t, err)
 	fixture.server.multiUserService.WaitForSyncs()
 
 	terminal := fixture.server.multiUserService.GetProfileStatus(profileID)
