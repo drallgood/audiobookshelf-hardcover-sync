@@ -81,17 +81,6 @@ const (
 	RunPhaseFailed     RunPhase = "failed"
 )
 
-// Short aliases keep callers that prefer phase-oriented names readable while
-// the RunPhase-prefixed names remain the canonical exported constants.
-const (
-	PhaseQueued     = RunPhaseQueued
-	PhaseRunning    = RunPhaseRunning
-	PhaseFinalizing = RunPhaseFinalizing
-	PhaseCompleted  = RunPhaseCompleted
-	PhaseCanceled   = RunPhaseCanceled
-	PhaseFailed     = RunPhaseFailed
-)
-
 // OutcomeCounts contains exclusive category counts for a sync run.
 type OutcomeCounts struct {
 	Synced         int32 `json:"synced"`
@@ -388,12 +377,6 @@ func NewServiceWithRunIdentity(absClient *audiobookshelf.Client, hcClient hardco
 	return svc, nil
 }
 
-// NewServiceWithRunID is a compatibility spelling for callers that model the
-// accepted-start identity as an ID plus timestamp.
-func NewServiceWithRunID(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverClientInterface, cfg *Config, runID string, queuedAt time.Time) (*Service, error) {
-	return NewServiceWithRunIdentity(absClient, hcClient, cfg, runID, queuedAt)
-}
-
 // getASINFromCache retrieves a cached ASIN lookup result
 // Checks in-memory cache first, then persistent cache
 func (s *Service) getASINFromCache(asin string) (*models.HardcoverBook, bool) {
@@ -590,12 +573,6 @@ func (s *Service) transitionRunPhase(to RunPhase, runErr error) bool {
 		}
 	}
 	return true
-}
-
-// setOutcomeRunState is retained for the existing internal finalization seam;
-// new code should use transitionRunPhase so illegal transitions are rejected.
-func (s *Service) setOutcomeRunState(runState string, runErr error) {
-	_ = s.transitionRunPhase(RunPhase(runState), runErr)
 }
 
 // recordLibraryCandidateTotal keeps the largest observed library size. The
@@ -1560,7 +1537,7 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 				runState = RunPhaseCanceled
 			}
 		}
-		s.setOutcomeRunState(string(runState), err)
+		s.transitionRunPhase(runState, err)
 	}()
 
 	// Mismatches are collected in the run-local collector and exported below.

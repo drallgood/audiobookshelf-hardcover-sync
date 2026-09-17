@@ -102,7 +102,6 @@ type MultiUserService struct {
 	statusMutex     stdSync.RWMutex
 	activeSyncs     map[string]context.CancelFunc
 	activeRuns      map[string]activeSyncRun
-	nextGeneration  uint64
 	syncMutex       stdSync.RWMutex
 	syncWaitGroup   stdSync.WaitGroup
 	syncServices    map[string]*sync.Service // Maps profile ID to its sync service
@@ -864,26 +863,13 @@ func (s *MultiUserService) GetProfileSnapshot(profileID string) *sync.SyncSnapsh
 	return storedSnapshot
 }
 
-// GetActiveOrLatestSnapshot returns the active run snapshot when one exists,
-// otherwise the newest retained terminal report restored from the database.
-func (s *MultiUserService) GetActiveOrLatestSnapshot(profileID string) *sync.SyncSnapshot {
-	return s.GetProfileSnapshot(profileID)
-}
-
-// GetSyncRunReport returns an exact profile-scoped retained report. It does
-// not fall back to the profile's latest report when runID is unknown.
-func (s *MultiUserService) GetSyncRunReport(profileID, runID string) (*database.SyncRunReport, error) {
+// GetSyncRunSnapshot returns the exact retained terminal snapshot for runID.
+// Active snapshots are intentionally not synthesized here.
+func (s *MultiUserService) GetSyncRunSnapshot(profileID, runID string) (*sync.SyncSnapshot, error) {
 	if s.repository == nil {
 		return nil, nil
 	}
-	return s.repository.GetSyncRunReport(profileID, runID)
-}
-
-// GetRetainedSyncRunSnapshot returns the exact retained snapshot for runID.
-// Active snapshots are intentionally not synthesized here; callers that need
-// the live run should use GetActiveOrLatestSnapshot.
-func (s *MultiUserService) GetRetainedSyncRunSnapshot(profileID, runID string) (*sync.SyncSnapshot, error) {
-	report, err := s.GetSyncRunReport(profileID, runID)
+	report, err := s.repository.GetSyncRunReport(profileID, runID)
 	if err != nil || report == nil {
 		return nil, err
 	}
@@ -891,11 +877,6 @@ func (s *MultiUserService) GetRetainedSyncRunSnapshot(profileID, runID string) (
 		return nil, nil
 	}
 	return snapshotFromRetainedReport(profileID, report)
-}
-
-// GetSyncRunSnapshot is a concise alias for exact retained run lookup.
-func (s *MultiUserService) GetSyncRunSnapshot(profileID, runID string) (*sync.SyncSnapshot, error) {
-	return s.GetRetainedSyncRunSnapshot(profileID, runID)
 }
 
 // currentSyncService returns only the service belonging to the active run.
@@ -1106,9 +1087,6 @@ func (s *MultiUserService) StartSyncWithAcceptedRun(profileID string) (AcceptedS
 	s.activeSyncs[profileID] = cancel
 	s.activeRuns[profileID] = run
 	s.latestRuns[profileID] = run
-	if run.generation > s.nextGeneration {
-		s.nextGeneration = run.generation
-	}
 	s.syncMutex.Unlock()
 
 	// Update initial status

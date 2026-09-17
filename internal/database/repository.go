@@ -144,22 +144,6 @@ func (r *Repository) ReserveSyncRun(profileID, runID string, dryRun bool, queued
 	})
 }
 
-// ReserveSyncRunGeneration is the generation-only form of ReserveSyncRun.
-// It keeps the reservation and queued report creation in the same transaction.
-func (r *Repository) ReserveSyncRunGeneration(profileID, runID string, dryRun bool, queuedAt time.Time) (uint64, error) {
-	report, err := r.ReserveSyncRun(profileID, runID, dryRun, queuedAt)
-	if err != nil {
-		return 0, err
-	}
-	return report.Generation, nil
-}
-
-// ReserveRunGeneration is retained as a concise alias for callers that refer
-// to the operation by its generation rather than its report.
-func (r *Repository) ReserveRunGeneration(profileID, runID string, dryRun bool, queuedAt time.Time) (uint64, error) {
-	return r.ReserveSyncRunGeneration(profileID, runID, dryRun, queuedAt)
-}
-
 // UpsertSyncRunReport transactionally stores a terminal run report, retains
 // only the newest ten reports for the profile, and advances success metadata
 // only for a newer completed non-dry run.

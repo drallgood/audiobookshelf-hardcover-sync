@@ -78,11 +78,10 @@ type SyncRunReport struct {
 const (
 	SyncRunReportVersion = 1
 
-	SyncRunPhaseQueued     = "queued"
-	SyncRunPhaseProcessing = "processing"
-	SyncRunPhaseCompleted  = "completed"
-	SyncRunPhaseFailed     = "failed"
-	SyncRunPhaseCanceled   = "canceled"
+	SyncRunPhaseQueued    = "queued"
+	SyncRunPhaseCompleted = "completed"
+	SyncRunPhaseFailed    = "failed"
+	SyncRunPhaseCanceled  = "canceled"
 )
 
 // SyncConfigData represents the structure of sync configuration

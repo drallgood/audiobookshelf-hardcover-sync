@@ -85,7 +85,6 @@ func TestGetProfileStatusRechecksStatusAfterFallbackLookup(t *testing.T) {
 			installDone := make(chan struct{})
 			go func() {
 				service.syncMutex.Lock()
-				service.nextGeneration = run.generation
 				service.activeRuns[profileID] = run
 				service.activeSyncs[profileID] = cancel
 				currentStatus := &SyncProfileStatus{ProfileID: profileID, ProfileName: "Current profile", Status: "syncing"}
@@ -152,7 +151,6 @@ func TestGetProfileSnapshotUsesCurrentRunWithoutProfileHydration(t *testing.T) {
 	_, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	service.syncMutex.Lock()
-	service.nextGeneration = run.generation
 	service.activeRuns[profileID] = run
 	service.activeSyncs[profileID] = cancel
 	service.syncMutex.Unlock()
@@ -480,7 +478,6 @@ func TestStartSyncWithAcceptedRunMatchesQueuedDurableAndStatusIdentity(t *testin
 	require.NotNil(t, status)
 	require.NotNil(t, status.Snapshot)
 	require.Equal(t, accepted.RunID, status.Snapshot.RunID)
-	require.Equal(t, uint64(report.Generation), service.nextGeneration)
 
 	require.NoError(t, service.CancelSync(profileID))
 	close(releaseRequest)
