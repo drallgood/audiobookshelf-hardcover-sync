@@ -437,7 +437,7 @@ func acceptedTerminalStatus(profileID string, run activeSyncRun, phase string) *
 	}
 }
 
-func TestStartSyncQueuesAuthoritativeRunBeforeWorkerFinishes(t *testing.T) {
+func TestStartSyncWithAcceptedRunMatchesQueuedDurableAndStatusIdentity(t *testing.T) {
 	requestStarted := make(chan struct{})
 	releaseRequest := make(chan struct{})
 	absServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -460,22 +460,67 @@ func TestStartSyncQueuesAuthoritativeRunBeforeWorkerFinishes(t *testing.T) {
 		profileID, "Queued profile", absServer.URL, "abs-token", "hc-token", database.SyncConfigData{},
 	))
 
-	require.NoError(t, service.StartSync(profileID))
+	accepted, err := service.StartSyncWithAcceptedRun(profileID)
+	require.NoError(t, err)
+	require.NotEmpty(t, accepted.RunID)
+	require.Equal(t, string(syncsvc.RunPhaseQueued), accepted.State)
+	require.False(t, accepted.DryRun)
+	require.Equal(t, accepted.QueuedAt, accepted.RunStartedAt)
 	report, err := service.repository.GetLatestSyncRunReport(profileID)
 	require.NoError(t, err)
 	require.NotNil(t, report)
 	require.Equal(t, database.SyncRunPhaseQueued, report.Phase)
-	require.NotEmpty(t, report.RunID)
+	require.Equal(t, accepted.RunID, report.RunID)
+	require.Equal(t, accepted.QueuedAt, *report.QueuedAt)
 
 	status := service.GetProfileStatus(profileID)
 	require.NotNil(t, status)
 	require.NotNil(t, status.Snapshot)
-	require.Equal(t, report.RunID, status.Snapshot.RunID)
+	require.Equal(t, accepted.RunID, status.Snapshot.RunID)
 	require.Equal(t, uint64(report.Generation), service.nextGeneration)
 
 	require.NoError(t, service.CancelSync(profileID))
 	close(releaseRequest)
 	service.WaitForSyncs()
+}
+
+func TestStartSyncWithAcceptedRunKeepsIdentityWhenWorkerFinishesImmediately(t *testing.T) {
+	absServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/me":
+			_, _ = io.WriteString(w, `{"mediaProgress":[],"listeningSessions":[]}`)
+		case "/api/libraries":
+			_, _ = io.WriteString(w, `{"libraries":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(absServer.Close)
+
+	service, _ := newStatusLookupService(t)
+	dataDir := t.TempDir()
+	service.globalConfig.Paths.DataDir = dataDir
+	service.globalConfig.Paths.CacheDir = filepath.Join(dataDir, "cache")
+	service.globalConfig.Paths.MismatchOutputDir = filepath.Join(dataDir, "mismatches")
+	const profileID = "profile-immediate"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Immediate profile", absServer.URL, "abs-token", "hc-token", database.SyncConfigData{},
+	))
+
+	accepted, err := service.StartSyncWithAcceptedRun(profileID)
+	require.NoError(t, err)
+	service.WaitForSyncs()
+
+	report, err := service.repository.GetSyncRunReport(profileID, accepted.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, report)
+	require.Equal(t, accepted.RunID, report.RunID)
+	require.Equal(t, accepted.QueuedAt, *report.QueuedAt)
+	status := service.GetProfileStatus(profileID)
+	require.NotNil(t, status)
+	require.NotNil(t, status.Snapshot)
+	require.Equal(t, accepted.RunID, status.Snapshot.RunID)
+	require.Equal(t, accepted.QueuedAt, status.Snapshot.QueuedAt)
 }
 
 func TestPublishFinalStatusRejectsCanceledRunBeforeDurableSuccess(t *testing.T) {
