@@ -63,7 +63,7 @@ func TestReserveSyncRunAllocatesPerProfileGenerationAndAttemptMetadata(t *testin
 	require.Equal(t, second.RunID, state.LastAttemptedRunID)
 	require.Equal(t, uint64(2), state.LastAttemptedGeneration)
 	require.Equal(t, queuedAt.Add(time.Minute), *state.LastAttemptedAt)
-	require.Equal(t, legacyLastSync, *state.LastSync)
+	require.Equal(t, queuedAt.Add(time.Minute), *state.LastSync)
 	require.Equal(t, uint64(1), state.LastSuccessfulGeneration)
 }
 
@@ -152,6 +152,30 @@ func TestUpsertSyncRunReportAdvancesOnlyNewerCompletedNonDryRun(t *testing.T) {
 	require.Equal(t, uint64(6), state.LastSuccessfulGeneration)
 	require.Equal(t, "run-6", state.LastSuccessfulRunID)
 	require.Equal(t, newFinish, *state.LastSuccessfulAt)
+	require.Equal(t, newFinish, *state.LastSync)
+}
+
+func TestCompletedReportAdvancesLegacyLastSyncAfterRestart(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sync.db")
+	db, err := NewDatabase(&DatabaseConfig{Type: DatabaseTypeSQLite, Path: dbPath}, logger.Get())
+	require.NoError(t, err)
+	createTestProfile(t, db, "profile-a")
+	repo := NewRepository(db, nil, logger.Get())
+	finishedAt := time.Date(2026, time.September, 16, 12, 30, 0, 0, time.UTC)
+	report, err := repo.ReserveSyncRun("profile-a", "run-completed", false, finishedAt.Add(-time.Minute))
+	require.NoError(t, err)
+	report.Phase = SyncRunPhaseCompleted
+	report.FinishedAt = timePtrForDatabaseTest(finishedAt)
+	require.NoError(t, repo.UpsertSyncRunReport(report))
+	require.NoError(t, db.Close())
+
+	db, err = NewDatabase(&DatabaseConfig{Type: DatabaseTypeSQLite, Path: dbPath}, logger.Get())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	state, err := NewRepository(db, nil, logger.Get()).GetSyncState("profile-a")
+	require.NoError(t, err)
+	require.Equal(t, finishedAt, *state.LastSuccessfulAt)
+	require.Equal(t, finishedAt, *state.LastSync)
 }
 
 func TestUpsertSyncRunReportRetainsNewestTenAcrossTerminalPhases(t *testing.T) {
@@ -179,6 +203,33 @@ func TestUpsertSyncRunReportRetainsNewestTenAcrossTerminalPhases(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, latest)
 	require.Equal(t, uint64(11), latest.Generation)
+}
+
+func TestQueuedAcceptanceDoesNotEvictTerminalReports(t *testing.T) {
+	db, repo := newRepositoryForTest(t)
+	createTestProfile(t, db, "profile-a")
+	queuedAt := time.Date(2026, time.September, 16, 12, 0, 0, 0, time.UTC)
+	for generation := 1; generation <= 10; generation++ {
+		runID := "terminal-" + string(rune('a'+generation-1))
+		report, err := repo.ReserveSyncRun("profile-a", runID, false, queuedAt.Add(time.Duration(generation)*time.Minute))
+		require.NoError(t, err)
+		report.Phase = SyncRunPhaseCompleted
+		report.FinishedAt = timePtrForDatabaseTest(queuedAt.Add(time.Duration(generation) * time.Minute))
+		require.NoError(t, repo.UpsertSyncRunReport(report))
+	}
+	queued, err := repo.AcceptSyncRun(&SyncRunReport{
+		ProfileID: "profile-a", RunID: "queued", Phase: SyncRunPhaseQueued,
+		QueuedAt:     timePtrForDatabaseTest(queuedAt.Add(11 * time.Minute)),
+		SnapshotJSON: `{"state":"queued"}`,
+	})
+	require.NoError(t, err)
+	require.Equal(t, uint64(11), queued.Generation)
+
+	for generation := 1; generation <= 10; generation++ {
+		report, err := repo.GetSyncRunReport("profile-a", "terminal-"+string(rune('a'+generation-1)))
+		require.NoError(t, err)
+		require.NotNil(t, report)
+	}
 }
 
 func TestMigrateLegacyLastSyncToLastAttemptedAtIdempotently(t *testing.T) {

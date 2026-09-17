@@ -33,6 +33,12 @@ var ErrProfileStateFileNameTooLong = errors.New("profile-specific state path com
 // path is absolute or escapes the effective data directory.
 var ErrProfileStateFilePathNotAllowed = errors.New("profile-specific state file path must remain under the data directory")
 
+// ErrProfileNotFound indicates that a requested active sync profile is absent.
+var ErrProfileNotFound = errors.New("sync profile not found")
+
+// ErrSyncAlreadyActive indicates that a profile already has an active sync.
+var ErrSyncAlreadyActive = errors.New("sync already active")
+
 // SyncProfileStatus represents the sync status for a profile
 type SyncProfileStatus struct {
 	ProfileID        string                  `json:"profile_id"`
@@ -889,7 +895,7 @@ func (s *MultiUserService) StartSyncWithAcceptedRun(profileID string) (AcceptedS
 	_, alreadyActive := s.activeSyncs[profileID]
 	s.syncMutex.RUnlock()
 	if alreadyActive {
-		return AcceptedSyncRun{}, fmt.Errorf("sync already in progress for profile %s", profileID)
+		return AcceptedSyncRun{}, fmt.Errorf("%w for profile %s", ErrSyncAlreadyActive, profileID)
 	}
 
 	// Get profile config
@@ -898,26 +904,37 @@ func (s *MultiUserService) StartSyncWithAcceptedRun(profileID string) (AcceptedS
 		return AcceptedSyncRun{}, fmt.Errorf("failed to get profile config: %w", err)
 	}
 	if profileConfig == nil {
-		return AcceptedSyncRun{}, fmt.Errorf("failed to get profile config: sync profile not found: %s", profileID)
+		return AcceptedSyncRun{}, fmt.Errorf("failed to get profile config: %w: %s", ErrProfileNotFound, profileID)
 	}
 	if err := s.validatePersistedProfileStateFile(profileID, profileConfig.SyncConfig.StateFile); err != nil {
 		return AcceptedSyncRun{}, fmt.Errorf("invalid persisted state file for profile %s: %w", profileID, err)
 	}
 
-	// Reserve the accepted-start identity in the database before exposing the
-	// run. The repository allocates the authoritative generation atomically,
-	// so restarts and multiple service instances cannot reuse it.
+	// Prepare the full queued report before accepting the start. The repository
+	// assigns its authoritative generation and persists attempt metadata plus
+	// this sanitized report in one transaction.
 	queuedAt := time.Now().UTC()
 	runID := fmt.Sprintf("%s-%d", profileID, queuedAt.UnixNano())
-	queuedReport, err := s.repository.ReserveSyncRun(profileID, runID, profileConfig.SyncConfig.DryRun, queuedAt)
+	queuedSnapshot := newRunSnapshot(profileID, activeSyncRun{
+		runID:       runID,
+		startedAt:   queuedAt,
+		profileName: profileConfig.Profile.Name,
+		dryRun:      profileConfig.SyncConfig.DryRun,
+	}, string(sync.RunPhaseQueued))
+	queuedSnapshotJSON, err := marshalSanitizedSnapshot(queuedSnapshot)
 	if err != nil {
-		return AcceptedSyncRun{}, fmt.Errorf("failed to reserve sync run for profile %s: %w", profileID, err)
+		return AcceptedSyncRun{}, fmt.Errorf("failed to prepare queued sync report for profile %s: %w", profileID, err)
 	}
-	if queuedReport == nil {
-		return AcceptedSyncRun{}, fmt.Errorf("failed to reserve sync run for profile %s: empty reservation", profileID)
+	queuedReport, err := s.repository.AcceptSyncRun(&database.SyncRunReport{
+		ProfileID: profileID, RunID: runID, Phase: database.SyncRunPhaseQueued,
+		DryRun: profileConfig.SyncConfig.DryRun, QueuedAt: timeValue(queuedAt),
+		ReportVersion: database.SyncRunReportVersion, SnapshotJSON: queuedSnapshotJSON,
+	})
+	if err != nil {
+		return AcceptedSyncRun{}, fmt.Errorf("failed to accept sync run for profile %s: %w", profileID, err)
 	}
-	if queuedReport.QueuedAt == nil {
-		return AcceptedSyncRun{}, fmt.Errorf("failed to reserve sync run for profile %s: missing queued timestamp", profileID)
+	if queuedReport == nil || queuedReport.QueuedAt == nil {
+		return AcceptedSyncRun{}, fmt.Errorf("failed to accept sync run for profile %s: incomplete acceptance", profileID)
 	}
 	accepted := AcceptedSyncRun{
 		RunID:        queuedReport.RunID,
@@ -925,20 +942,6 @@ func (s *MultiUserService) StartSyncWithAcceptedRun(profileID string) (AcceptedS
 		RunStartedAt: queuedReport.QueuedAt.UTC(),
 		State:        string(sync.RunPhaseQueued),
 		DryRun:       queuedReport.DryRun,
-	}
-	queuedSnapshot := newRunSnapshot(profileID, activeSyncRun{
-		generation:  queuedReport.Generation,
-		runID:       accepted.RunID,
-		startedAt:   accepted.QueuedAt,
-		profileName: profileConfig.Profile.Name,
-		dryRun:      accepted.DryRun,
-	}, string(sync.RunPhaseQueued))
-	queuedReport.SnapshotJSON, err = marshalSanitizedSnapshot(queuedSnapshot)
-	if err != nil {
-		return AcceptedSyncRun{}, fmt.Errorf("failed to prepare queued sync report for profile %s: %w", profileID, err)
-	}
-	if err := s.repository.UpsertSyncRunReport(queuedReport); err != nil {
-		return AcceptedSyncRun{}, fmt.Errorf("failed to install queued sync report for profile %s: %w", profileID, err)
 	}
 
 	// Create cancellable context and install lifecycle state only after the
@@ -956,7 +959,7 @@ func (s *MultiUserService) StartSyncWithAcceptedRun(profileID string) (AcceptedS
 	if _, exists := s.activeSyncs[profileID]; exists {
 		s.syncMutex.Unlock()
 		cancel()
-		return AcceptedSyncRun{}, fmt.Errorf("sync already in progress for profile %s", profileID)
+		return AcceptedSyncRun{}, fmt.Errorf("%w for profile %s", ErrSyncAlreadyActive, profileID)
 	}
 	s.activeSyncs[profileID] = cancel
 	s.activeRuns[profileID] = run
@@ -1871,11 +1874,6 @@ func (s *MultiUserService) updateProfileStatus(profileID string, status *SyncPro
 	s.statusMutex.Lock()
 	defer s.statusMutex.Unlock()
 	s.profileStatuses[profileID] = cloneProfileStatus(status)
-}
-
-// timePtr returns a pointer to a time.Time value
-func timePtr(t time.Time) *time.Time {
-	return &t
 }
 
 // IsProfileSyncing checks if a profile is currently syncing
