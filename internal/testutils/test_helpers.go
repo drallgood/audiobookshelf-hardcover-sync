@@ -3,7 +3,6 @@ package testutils
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/url"
 	"os"
 	"regexp"
@@ -30,16 +29,6 @@ func formatDuration(hours float64) string {
 		return fmt.Sprintf("%dh %02dm %02ds", h, m, s)
 	}
 	return fmt.Sprintf("%02dh %02dm %02ds", h, m, s)
-}
-
-// debugMode indicates if debug mode is enabled
-var debugMode = true
-
-// debugLog logs a debug message if debug mode is enabled
-func debugLog(format string, v ...interface{}) {
-	if debugMode {
-		log.Printf("[DEBUG] "+format, v...)
-	}
 }
 
 // formatReleaseDate formats a date string to a consistent format
