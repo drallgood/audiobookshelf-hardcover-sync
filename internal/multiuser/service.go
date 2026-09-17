@@ -233,7 +233,7 @@ func (s *MultiUserService) getAggregateProfileStatus(profile database.SyncProfil
 		snapshot.RunID = run.runID
 		snapshot.RunStartedAt = run.startedAt
 		if snapshot.State == "" || snapshot.State == "idle" {
-			snapshot.State = "syncing"
+			snapshot.State = string(sync.RunPhaseQueued)
 		}
 	}
 	s.syncMutex.RUnlock()
@@ -251,10 +251,8 @@ func (s *MultiUserService) getAggregateProfileStatus(profile database.SyncProfil
 		status.ProfileName = profile.Name
 	}
 	status.Status = statusForSnapshot(&snapshot)
-	// Aggregate callers consume the canonical lifecycle phase directly. Keep
-	// the legacy "syncing" projection confined to GetProfileStatus, whose
-	// compatibility payload is replaced with a full canonical snapshot by the
-	// per-profile status handler.
+	// Aggregate callers consume the canonical lifecycle phase directly. The
+	// outer status retains the coarse compatibility value derived above.
 	status.Snapshot = &snapshot
 	status.BooksTotal = int(snapshot.BooksTotal)
 
@@ -774,18 +772,6 @@ func snapshotFromRetainedReport(profileID string, report *database.SyncRunReport
 	return &snapshot, nil
 }
 
-// legacySnapshotState retains the pre-lifecycle status payload spelling for
-// active runs. The canonical phase remains in durable reports and direct
-// snapshot accessors; only the legacy profile-status projection uses this.
-func legacySnapshotState(state string) string {
-	switch state {
-	case string(sync.RunPhaseQueued), string(sync.RunPhaseRunning), string(sync.RunPhaseFinalizing):
-		return "syncing"
-	default:
-		return state
-	}
-}
-
 // GetSyncService returns the sync service for a profile, if it exists
 func (s *MultiUserService) GetSyncService(profileID string) (*sync.Service, bool) {
 	service, _ := s.currentSyncService(profileID)
@@ -826,7 +812,7 @@ func (s *MultiUserService) GetProfileSnapshot(profileID string) *sync.SyncSnapsh
 			snapshot.RunID = run.runID
 			snapshot.RunStartedAt = run.startedAt
 			if snapshot.State == "" || snapshot.State == "idle" {
-				snapshot.State = "syncing"
+				snapshot.State = string(sync.RunPhaseQueued)
 			}
 		}
 	}
@@ -960,14 +946,12 @@ func (s *MultiUserService) getProfileStatus(profileID string, profile *database.
 			snapshot.RunID = run.runID
 			snapshot.RunStartedAt = run.startedAt
 			if snapshot.State == "" || snapshot.State == "idle" {
-				snapshot.State = "syncing"
+				snapshot.State = string(sync.RunPhaseQueued)
 			}
 		}
 	}
-	projectedSnapshot := snapshot
-	projectedSnapshot.State = legacySnapshotState(snapshot.State)
 	if status.Snapshot == nil || status.Snapshot.RunID == "" || snapshot.RunID == "" || status.Snapshot.RunID == snapshot.RunID {
-		applySnapshotToStatus(status, projectedSnapshot)
+		applySnapshotToStatus(status, snapshot)
 		if status.Snapshot.UserID == "" {
 			status.Snapshot.UserID = profileID
 		}
@@ -1278,7 +1262,7 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
 		s.logger.Debug("Stored full sync summary in profile status", map[string]interface{}{
 			"profileID":       profileID,
 			"books_processed": snapshot.ProcessedCount,
-			"synced_count":     snapshot.OutcomeCounts.Synced,
+			"synced_count":    snapshot.OutcomeCounts.Synced,
 			"needs_review":    snapshot.OutcomeCounts.NeedsReview,
 			"not_found":       snapshot.OutcomeCounts.NotFound,
 		})
@@ -1433,7 +1417,7 @@ func (s *MultiUserService) normalizeRunSnapshot(profileID string, generation uin
 		snapshot.RunID = run.runID
 		snapshot.RunStartedAt = run.startedAt
 		if snapshot.State == "" || snapshot.State == "idle" {
-			snapshot.State = "syncing"
+			snapshot.State = string(sync.RunPhaseQueued)
 		}
 	}
 	if snapshot.UserID == "" {

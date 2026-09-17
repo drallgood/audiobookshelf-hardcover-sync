@@ -88,7 +88,7 @@ func TestGetProfileStatusRechecksStatusAfterFallbackLookup(t *testing.T) {
 				service.activeRuns[profileID] = run
 				service.activeSyncs[profileID] = cancel
 				currentStatus := &SyncProfileStatus{ProfileID: profileID, ProfileName: "Current profile", Status: "syncing"}
-				applySnapshotToStatus(currentStatus, newRunSnapshot(profileID, run, "syncing"))
+				applySnapshotToStatus(currentStatus, newRunSnapshot(profileID, run, string(syncsvc.RunPhaseQueued)))
 				service.updateProfileStatus(profileID, currentStatus)
 				service.syncMutex.Unlock()
 				close(installDone)
@@ -108,6 +108,7 @@ func TestGetProfileStatusRechecksStatusAfterFallbackLookup(t *testing.T) {
 				require.Equal(t, "syncing", status.Status)
 				require.NotNil(t, status.Snapshot)
 				require.Equal(t, run.runID, status.Snapshot.RunID)
+				require.Equal(t, string(syncsvc.RunPhaseQueued), status.Snapshot.State)
 			case <-time.After(time.Second):
 				t.Fatal("timed out waiting for profile status")
 			}
@@ -164,7 +165,12 @@ func TestGetProfileSnapshotUsesCurrentRunWithoutProfileHydration(t *testing.T) {
 	require.NotNil(t, snapshot)
 	require.Equal(t, run.runID, snapshot.RunID)
 	require.Equal(t, profileID, snapshot.UserID)
-	require.Equal(t, "syncing", snapshot.State)
+	require.Equal(t, string(syncsvc.RunPhaseQueued), snapshot.State)
+	status := service.getProfileStatus(profileID, &database.SyncProfile{ID: profileID, Name: "Profile A"}, nil)
+	require.NotNil(t, status)
+	require.Equal(t, "syncing", status.Status)
+	require.NotNil(t, status.Snapshot)
+	require.Equal(t, string(syncsvc.RunPhaseQueued), status.Snapshot.State)
 }
 
 func TestGetProfileSnapshotRestoresRetainedRunWithoutProfileHydration(t *testing.T) {
@@ -305,7 +311,7 @@ func TestAggregateStatusPreservesUnknownBooksTotalFromExplicitSnapshot(t *testin
 	snapshot := syncsvc.SyncSnapshot{
 		UserID:         profileID,
 		RunID:          "profile-a-run-1",
-		State:          "syncing",
+		State:          string(syncsvc.RunPhaseRunning),
 		BooksTotal:     0,
 		ProcessedSoFar: 3,
 		ProcessedCount: 3,
