@@ -1717,12 +1717,3 @@ func (s *MultiUserService) updateProfileStatus(profileID string, status *SyncPro
 	defer s.statusMutex.Unlock()
 	s.profileStatuses[profileID] = cloneProfileStatus(status)
 }
-
-// IsProfileSyncing checks if a profile is currently syncing
-func (s *MultiUserService) IsProfileSyncing(profileID string) bool {
-	s.syncMutex.RLock()
-	defer s.syncMutex.RUnlock()
-
-	_, exists := s.activeSyncs[profileID]
-	return exists
-}

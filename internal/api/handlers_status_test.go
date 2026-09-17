@@ -142,7 +142,6 @@ func TestStartSyncReturnsErrorWhenProfileConfigurationCannotBeLoaded(t *testing.
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
 	require.False(t, response.Success)
 	require.Equal(t, "Failed to start sync", response.Error)
-	require.False(t, fixture.multiUser.IsProfileSyncing(profileID))
 }
 
 func TestStartSyncReturnsControlledErrorForUnknownPublicProfile(t *testing.T) {
@@ -161,7 +160,6 @@ func TestStartSyncReturnsControlledErrorForUnknownPublicProfile(t *testing.T) {
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
 	require.False(t, response.Success)
 	require.Equal(t, "Sync profile not found", response.Error)
-	require.False(t, fixture.multiUser.IsProfileSyncing("missing-profile"))
 }
 
 func TestStartSyncReturnsErrorWhenProfileIsAlreadySyncing(t *testing.T) {
@@ -232,9 +230,13 @@ func TestStatusAndRunDetailsExposeSeparateSuccessfulAndAttemptedTimes(t *testing
 	routes := newMountedStatusRoutes(handler)
 	accepted := requestJSONRoute(routes, http.MethodPost, "/api/profiles/"+profileID+"/sync")
 	require.Equal(t, http.StatusAccepted, accepted.Code, accepted.Body.String())
-	status := waitForStatusRun(t, fixture.multiUser, profileID)
+	var status *multiuser.SyncProfileStatus
+	require.Eventually(t, func() bool {
+		status = profileStatusForAPITest(t, fixture.multiUser, profileID)
+		return status != nil && status.Snapshot != nil && status.Snapshot.RunID != "" &&
+			!isActiveTestPhase(status.Snapshot.State) && status.LastSuccessfulAt != nil
+	}, 10*time.Second, time.Millisecond)
 	require.NotNil(t, status.LastAttemptedAt)
-	require.NotNil(t, status.LastSuccessfulAt)
 	require.False(t, status.Snapshot.DryRun)
 	require.Equal(t, status.Snapshot.FinishedAt, *status.LastSuccessfulAt)
 

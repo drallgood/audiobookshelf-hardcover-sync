@@ -287,7 +287,6 @@ func TestViewerProfileAuthorizationIsReadOnly(t *testing.T) {
 	require.NotNil(t, metadata)
 	require.True(t, metadata.Active)
 	require.Equal(t, "viewer-owned", metadata.Name)
-	require.False(t, fixture.server.multiUserService.IsProfileSyncing("viewer-owned"))
 }
 
 func TestForeignProfileAuthorizationReturnsNotFoundForEveryRoute(t *testing.T) {
@@ -371,7 +370,6 @@ func TestForeignProfileAuthorizationReturnsNotFoundForEveryRoute(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, metadata)
 	require.True(t, metadata.Active)
-	require.False(t, fixture.server.multiUserService.IsProfileSyncing("foreign-target"))
 }
 
 // Keep the test fixture's legacy profile creation concise without exposing the

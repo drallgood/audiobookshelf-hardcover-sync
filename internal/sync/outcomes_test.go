@@ -15,9 +15,12 @@ import (
 )
 
 func recordedOutcome(svc *Service, bookID string) BookOutcomeRecord {
-	svc.summary.RLock()
-	defer svc.summary.RUnlock()
-	return svc.outcomeRecords[bookID]
+	for _, record := range svc.GetSnapshot().BookOutcomes {
+		if record.BookID == bookID {
+			return record
+		}
+	}
+	return BookOutcomeRecord{}
 }
 
 func expectASINMatch(mockClient *MockHardcoverClient, asin string, bookID, editionID string, userBookID int) {
@@ -432,7 +435,7 @@ func TestProcessLibraryCandidateDenominatorIgnoresLimit(t *testing.T) {
 	processed, err := svc.processLibrary(context.Background(), &audiobookshelf.AudiobookshelfLibrary{ID: "library", Name: "Library"}, 1, &models.AudiobookshelfUserProgress{})
 	require.NoError(t, err)
 	assert.Equal(t, 1, processed)
-	assert.Equal(t, int32(2), svc.summary.BooksTotal)
+	assert.Equal(t, int32(2), svc.GetSnapshotStatus().BooksTotal)
 	assert.Equal(t, int32(1), svc.outcomeCounts.Total())
 	hc.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
 }
@@ -455,7 +458,7 @@ func TestProcessLibrarySkipsMissingIDAndReconcilesOutcomes(t *testing.T) {
 	processed, err := svc.processLibrary(context.Background(), &audiobookshelf.AudiobookshelfLibrary{ID: "library", Name: "Library"}, 0, &models.AudiobookshelfUserProgress{})
 	require.NoError(t, err)
 	assert.Equal(t, 2, processed)
-	assert.Equal(t, int32(3), svc.summary.BooksTotal)
+	assert.Equal(t, int32(3), svc.GetSnapshotStatus().BooksTotal)
 	assert.Equal(t, int32(2), svc.outcomeCounts.Total())
 	assert.Equal(t, int32(2), svc.outcomeCounts.Total())
 	assert.Equal(t, int32(1), svc.outcomeCounts.Skipped)
@@ -528,7 +531,7 @@ func TestSyncTestBookLimitCountsFailedBookAttempt(t *testing.T) {
 	err := svc.Sync(context.Background())
 
 	require.NoError(t, err)
-	assert.Equal(t, int32(2), svc.summary.BooksTotal)
+	assert.Equal(t, int32(2), svc.GetSnapshotStatus().BooksTotal)
 	assert.Equal(t, int32(1), svc.outcomeCounts.Total())
 	assert.Equal(t, int32(1), svc.outcomeCounts.Failed)
 	mockABS.AssertExpectations(t)
@@ -554,7 +557,7 @@ func TestSyncRetriesLibraryFetchAfterPrecountFailure(t *testing.T) {
 	svc.audiobookshelf = mockABS
 
 	require.NoError(t, svc.Sync(context.Background()))
-	assert.Equal(t, int32(1), svc.summary.BooksTotal)
+	assert.Equal(t, int32(1), svc.GetSnapshotStatus().BooksTotal)
 	assert.Equal(t, int32(1), svc.outcomeCounts.Total())
 	mockABS.AssertExpectations(t)
 	hc.AssertExpectations(t)

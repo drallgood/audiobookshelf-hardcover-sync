@@ -41,12 +41,6 @@ type progressUpdateInfo struct {
 	progress  float64
 }
 
-// SyncSummary tracks the results of a sync operation
-type SyncSummary struct {
-	BooksTotal   int32 `json:"books_total"`
-	sync.RWMutex `json:"-"`
-}
-
 // SyncOutcome is the one final, mutually exclusive result assigned to an
 // attempted Audiobookshelf item in a sync run.
 type SyncOutcome string
@@ -215,7 +209,7 @@ type Service struct {
 	audiobookshelf                  audiobookshelf.AudiobookshelfClientInterface
 	hardcover                       hardcover.HardcoverClientInterface
 	findExistingUserBookForBookFunc func(context.Context, int64) (int64, error)
-	config                          *Config
+	config                          *config.Config
 	log                             *logger.Logger
 	state                           *state.State
 	statePath                       string
@@ -225,9 +219,10 @@ type Service struct {
 	asinCacheMutex                  sync.RWMutex                     // Mutex to protect ASIN cache
 	persistentCache                 *PersistentASINCache             // Persistent ASIN cache across runs
 	userBookCache                   *PersistentUserBookCache         // Persistent user book cache
-	summary                         *SyncSummary                     // Tracks sync operation results
+	runStateMutex                   sync.RWMutex
+	booksTotal                      int32
 	// Outcome state is scoped to this service instance and protected by the
-	// summary lock.
+	// run-state lock.
 	outcomeCounts  OutcomeCounts
 	outcomeRecords map[string]BookOutcomeRecord
 	// libraryCandidateTotals tracks the largest observed library size across
@@ -256,14 +251,11 @@ type Service struct {
 	createdReadsMutex   sync.Mutex
 }
 
-// Config is the configuration type for the sync service
-type Config = config.Config
-
 // NewServiceWithRunIdentity creates a sync service bound to an already
 // accepted run. runID is opaque and is retained exactly as supplied. queuedAt
 // is the accepted-start timestamp; when omitted for a non-empty run ID, the
 // current UTC time is used so a queued snapshot exists before execution.
-func NewServiceWithRunIdentity(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverClientInterface, cfg *Config, runID string, queuedAt time.Time) (*Service, error) {
+func NewServiceWithRunIdentity(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverClientInterface, cfg *config.Config, runID string, queuedAt time.Time) (*Service, error) {
 	if client, ok := hcClient.(*hardcover.Client); ok {
 		client.SetDryRun(cfg.Sync.DryRun)
 	}
@@ -284,7 +276,6 @@ func NewServiceWithRunIdentity(absClient *audiobookshelf.Client, hcClient hardco
 		asinCache:              make(map[string]*models.HardcoverBook),
 		persistentCache:        NewPersistentASINCache(cfg.Paths.CacheDir),
 		userBookCache:          NewPersistentUserBookCache(cfg.Paths.CacheDir),
-		summary:                &SyncSummary{},
 		mismatchCollector:      mismatch.NewCollector(),
 		outcomeRecords:         make(map[string]BookOutcomeRecord),
 		attentionCandidates:    make(map[string]mismatch.BookMismatch),
@@ -435,15 +426,12 @@ func classifyBookLookupOutcome(err error) SyncOutcome {
 // beginOutcomeRun starts a fresh, profile-local current-run partition. An
 // externally supplied identity is retained; otherwise the service
 // creates an opaque local ID for direct callers of Service.Sync. Run metadata
-// and outcome data are protected by the summary lock and can be published as
+// and outcome data are protected by the run-state lock and can be published as
 // one coherent snapshot.
 func (s *Service) beginOutcomeRun() {
-	if s.summary == nil {
-		return
-	}
 	now := time.Now().UTC()
-	s.summary.Lock()
-	defer s.summary.Unlock()
+	s.runStateMutex.Lock()
+	defer s.runStateMutex.Unlock()
 	if !s.runIdentityInjected || s.runID == "" {
 		s.runID = strconv.FormatInt(now.UnixNano(), 10)
 		s.queuedAt = now
@@ -465,7 +453,7 @@ func (s *Service) beginOutcomeRun() {
 	s.outcomeRecords = make(map[string]BookOutcomeRecord)
 	s.attentionCandidates = make(map[string]mismatch.BookMismatch)
 	s.libraryCandidateTotals = make(map[string]int)
-	s.summary.BooksTotal = 0
+	s.booksTotal = 0
 }
 
 func isTerminalRunPhase(phase RunPhase) bool {
@@ -500,12 +488,9 @@ func (s *Service) touchLastActivityLocked(now time.Time) {
 // transitions are ignored so an old goroutine cannot overwrite a newer
 // terminal snapshot.
 func (s *Service) transitionRunPhase(to RunPhase, runErr error) bool {
-	if s.summary == nil {
-		return false
-	}
 	now := time.Now().UTC()
-	s.summary.Lock()
-	defer s.summary.Unlock()
+	s.runStateMutex.Lock()
+	defer s.runStateMutex.Unlock()
 	from := RunPhase(s.runState)
 	if isTerminalRunPhase(from) || !isLegalRunPhaseTransition(from, to) {
 		return false
@@ -534,11 +519,11 @@ func (s *Service) transitionRunPhase(to RunPhase, runErr error) bool {
 // count occurs before processLibrary applies maxBooks so the denominator
 // remains the library size rather than the test limit.
 func (s *Service) recordLibraryCandidateTotal(libraryID string, total int) {
-	if s.summary == nil || libraryID == "" {
+	if libraryID == "" {
 		return
 	}
-	s.summary.Lock()
-	defer s.summary.Unlock()
+	s.runStateMutex.Lock()
+	defer s.runStateMutex.Unlock()
 	if s.libraryCandidateTotals == nil {
 		s.libraryCandidateTotals = make(map[string]int)
 	}
@@ -546,18 +531,15 @@ func (s *Service) recordLibraryCandidateTotal(libraryID string, total int) {
 		s.touchLastActivityLocked(time.Now().UTC())
 		return
 	}
-	s.summary.BooksTotal += int32(total - s.libraryCandidateTotals[libraryID])
+	s.booksTotal += int32(total - s.libraryCandidateTotals[libraryID])
 	s.libraryCandidateTotals[libraryID] = total
 	s.touchLastActivityLocked(time.Now().UTC())
 }
 
 // processedOutcomeTotal avoids cloning outcome details for progress logging.
 func (s *Service) processedOutcomeTotal() int32 {
-	if s.summary == nil {
-		return 0
-	}
-	s.summary.RLock()
-	defer s.summary.RUnlock()
+	s.runStateMutex.RLock()
+	defer s.runStateMutex.RUnlock()
 	return s.outcomeCounts.Total()
 }
 
@@ -668,11 +650,11 @@ func (s *Service) upsertAttentionCandidateLocked(book models.AudiobookshelfBook,
 // enrichAttentionCandidate updates details for an already published attention item.
 // Enrichment never changes its primary outcome or count.
 func (s *Service) enrichAttentionCandidate(record mismatch.BookMismatch) {
-	if s.summary == nil || record.BookID == "" {
+	if record.BookID == "" {
 		return
 	}
-	s.summary.Lock()
-	defer s.summary.Unlock()
+	s.runStateMutex.Lock()
+	defer s.runStateMutex.Unlock()
 	s.ensureOutcomeStateLocked()
 	if previous, exists := s.attentionCandidates[record.BookID]; exists {
 		record = mergeMissingCandidateDetails(record, previous)
@@ -807,7 +789,7 @@ func firstNonEmpty(value, fallback string) string {
 // item and its category count. Repeated calls adjust the old category without
 // inflating processed totals.
 func (s *Service) recordBookOutcomeWithMatchMethod(book models.AudiobookshelfBook, outcome SyncOutcome, reason string, err error, hcBook *models.HardcoverBook, matchMethod string) {
-	if s.summary == nil || book.ID == "" {
+	if book.ID == "" {
 		return
 	}
 	if outcomeCountPointer(&OutcomeCounts{}, outcome) == nil {
@@ -843,8 +825,8 @@ func (s *Service) recordBookOutcomeWithMatchMethod(book models.AudiobookshelfBoo
 		populateHardcoverCandidate(&record, hcBook)
 	}
 
-	s.summary.Lock()
-	defer s.summary.Unlock()
+	s.runStateMutex.Lock()
+	defer s.runStateMutex.Unlock()
 	if s.outcomeRecords == nil {
 		s.outcomeRecords = make(map[string]BookOutcomeRecord)
 	}
@@ -1007,13 +989,8 @@ func (s *Service) GetSnapshot() SyncSnapshot {
 		AudiobookshelfURL: s.config.Audiobookshelf.URL,
 		BookOutcomes:      make([]BookOutcomeRecord, 0),
 	}
-	if s.summary == nil {
-		sanitizeSnapshotAudiobookshelfURLs(&snapshot)
-		return snapshot
-	}
-
-	s.summary.RLock()
-	defer s.summary.RUnlock()
+	s.runStateMutex.RLock()
+	defer s.runStateMutex.RUnlock()
 	snapshot.RunID = s.runID
 	snapshot.QueuedAt = s.queuedAt
 	snapshot.ProcessingStartedAt = s.processingStartedAt
@@ -1023,9 +1000,9 @@ func (s *Service) GetSnapshot() SyncSnapshot {
 	snapshot.DryRun = s.dryRunEnabled()
 	snapshot.RunError = s.runError
 	snapshot.State = s.runState
-	snapshot.BooksTotal = s.summary.BooksTotal
+	snapshot.BooksTotal = s.booksTotal
 	snapshot.ProcessedSoFar = s.outcomeCounts.Total()
-	snapshot.UnattemptedCount = unattemptedCount(s.summary.BooksTotal, snapshot.ProcessedSoFar)
+	snapshot.UnattemptedCount = unattemptedCount(s.booksTotal, snapshot.ProcessedSoFar)
 	snapshot.OutcomeCounts = s.outcomeCounts
 	bookIDs := make([]string, 0, len(s.outcomeRecords))
 	for bookID := range s.outcomeRecords {
@@ -1044,12 +1021,8 @@ func (s *Service) GetSnapshot() SyncSnapshot {
 // Unlike GetSnapshot, it does not materialize per-book outcomes. This is the
 // lightweight read path for aggregate status polling.
 func (s *Service) GetSnapshotStatus() SyncSnapshot {
-	if s.summary == nil {
-		return SyncSnapshot{}
-	}
-
-	s.summary.RLock()
-	defer s.summary.RUnlock()
+	s.runStateMutex.RLock()
+	defer s.runStateMutex.RUnlock()
 
 	processedCount := s.outcomeCounts.Total()
 	return SyncSnapshot{
@@ -1062,9 +1035,9 @@ func (s *Service) GetSnapshotStatus() SyncSnapshot {
 		DryRun:              s.dryRunEnabled(),
 		RunError:            s.runError,
 		State:               s.runState,
-		BooksTotal:          s.summary.BooksTotal,
+		BooksTotal:          s.booksTotal,
 		ProcessedSoFar:      processedCount,
-		UnattemptedCount:    unattemptedCount(s.summary.BooksTotal, processedCount),
+		UnattemptedCount:    unattemptedCount(s.booksTotal, processedCount),
 		OutcomeCounts:       s.outcomeCounts,
 	}
 }
@@ -1078,8 +1051,8 @@ func unattemptedCount(candidateTotal, processedCount int32) int32 {
 
 // logSyncSummary logs a summary of the sync operation
 func (s *Service) logSyncSummary() {
-	s.summary.RLock()
-	defer s.summary.RUnlock()
+	s.runStateMutex.RLock()
+	defer s.runStateMutex.RUnlock()
 
 	processedCount := s.outcomeCounts.Total()
 	booksSynced := s.outcomeCounts.Synced

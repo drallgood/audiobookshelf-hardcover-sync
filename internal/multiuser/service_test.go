@@ -34,6 +34,13 @@ func waitForSyncs(service *MultiUserService) {
 	service.syncWaitGroup.Wait()
 }
 
+func isProfileSyncing(service *MultiUserService, profileID string) bool {
+	service.syncMutex.RLock()
+	defer service.syncMutex.RUnlock()
+	_, exists := service.activeSyncs[profileID]
+	return exists
+}
+
 func TestProfileMismatchExportsRemainIsolated(t *testing.T) {
 	service, _ := newStatusLookupService(t)
 	service.globalConfig.Paths.MismatchOutputDir = filepath.Join(t.TempDir(), "mismatches")
@@ -455,7 +462,7 @@ func TestStartSyncWithAcceptedRunRejectsAtomicAcceptanceFailure(t *testing.T) {
 
 	_, err := service.StartSyncWithAcceptedRun(profileID)
 	require.ErrorIs(t, err, writeErr)
-	require.False(t, service.IsProfileSyncing(profileID))
+	require.False(t, isProfileSyncing(service, profileID))
 	var reportCount int64
 	require.NoError(t, db.Model(&database.SyncRunReport{}).
 		Where("profile_id = ?", profileID).
@@ -515,7 +522,7 @@ func TestShutdownClosesAdmissionCancelsActiveRunsAndDrainsWorkers(t *testing.T) 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	t.Cleanup(cancel)
 	require.NoError(t, service.Shutdown(shutdownCtx))
-	require.False(t, service.IsProfileSyncing(profileID))
+	require.False(t, isProfileSyncing(service, profileID))
 	_, err = service.StartSyncWithAcceptedRun(profileID)
 	require.ErrorIs(t, err, ErrServiceShuttingDown)
 }
@@ -995,7 +1002,7 @@ func TestCancelSyncReturnsPersistenceFailureAfterPublishingCanceledRunError(t *t
 
 	err := service.CancelSync(profileID)
 	require.ErrorIs(t, err, writeErr)
-	require.False(t, service.IsProfileSyncing(profileID))
+	require.False(t, isProfileSyncing(service, profileID))
 
 	status := profileStatusForTest(t, service, profileID)
 	require.NotNil(t, status)
@@ -1130,7 +1137,7 @@ func TestStartSyncRejectsStoredStateFileWithOverlongComponent(t *testing.T) {
 
 	_, err := service.StartSyncWithAcceptedRun(profileID)
 	require.ErrorIs(t, err, ErrProfileStateFileNameTooLong)
-	require.False(t, service.IsProfileSyncing(profileID))
+	require.False(t, isProfileSyncing(service, profileID))
 }
 
 func TestProfileStateFileValidationRejectsAbsoluteAndEscapingPaths(t *testing.T) {
@@ -1303,7 +1310,7 @@ func TestStartSyncRejectsStoredStateFileOutsideDataDir(t *testing.T) {
 
 			_, err := service.StartSyncWithAcceptedRun(profileID)
 			require.ErrorIs(t, err, ErrProfileStateFilePathNotAllowed)
-			require.False(t, service.IsProfileSyncing(profileID))
+			require.False(t, isProfileSyncing(service, profileID))
 			require.FileExists(t, legacyPath)
 			require.NoFileExists(t, legacyPath+".migrated")
 			require.NoFileExists(t, canonicalPath)
@@ -1338,7 +1345,7 @@ func TestStartSyncRejectsStoredStateFileThroughExternalSymlink(t *testing.T) {
 
 	_, err := service.StartSyncWithAcceptedRun(profileID)
 	require.ErrorIs(t, err, ErrProfileStateFilePathNotAllowed)
-	require.False(t, service.IsProfileSyncing(profileID))
+	require.False(t, isProfileSyncing(service, profileID))
 	require.NoFileExists(t, canonicalPath)
 	require.NoFileExists(t, legacyPath)
 	require.NoFileExists(t, legacyPath+".migrated")
@@ -1388,7 +1395,7 @@ func TestStartSyncRejectsDefaultStateFileSymlinksOutsideDataDir(t *testing.T) {
 			}
 			_, err := service.StartSyncWithAcceptedRun(profileID)
 			require.ErrorIs(t, err, ErrProfileStateFilePathNotAllowed)
-			require.False(t, service.IsProfileSyncing(profileID))
+			require.False(t, isProfileSyncing(service, profileID))
 			if test.existingTarget {
 				after, readErr := os.ReadFile(outsideTarget)
 				require.NoError(t, readErr)

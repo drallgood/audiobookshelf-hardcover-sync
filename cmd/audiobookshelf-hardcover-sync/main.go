@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -394,25 +395,25 @@ func main() {
 					}
 
 					for _, profile := range profiles {
-						// Skip if profile is already syncing
-						if multiUserService.IsProfileSyncing(profile.ID) {
-							log.Debug("Sync already in progress for profile, skipping", map[string]interface{}{
-								"profile_id": profile.ID,
-							})
-							continue
-						}
-
-						log.Info("Starting periodic sync for profile", map[string]interface{}{
-							"profile_id": profile.ID,
-						})
-
 						go func(profileID string) {
-							if _, err := multiUserService.StartSyncWithAcceptedRun(profileID); err != nil {
+							accepted, err := multiUserService.StartSyncWithAcceptedRun(profileID)
+							if errors.Is(err, multiuser.ErrSyncAlreadyActive) {
+								log.Debug("Sync already in progress for profile, skipping", map[string]interface{}{
+									"profile_id": profileID,
+								})
+								return
+							}
+							if err != nil {
 								log.Error("Failed to start sync for profile", map[string]interface{}{
 									"profile_id": profileID,
 									"error":      err.Error(),
 								})
+								return
 							}
+							log.Info("Started periodic sync for profile", map[string]interface{}{
+								"profile_id": profileID,
+								"run_id":     accepted.RunID,
+							})
 						}(profile.ID)
 					}
 

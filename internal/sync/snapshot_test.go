@@ -49,9 +49,7 @@ func TestSnapshotStatusCopiesScalarsWithoutDetails(t *testing.T) {
 	svc.config.Audiobookshelf.URL = "https://audiobookshelf.example/base"
 	svc.beginOutcomeRun()
 
-	svc.summary.Lock()
-	svc.summary.BooksTotal = 2
-	svc.summary.Unlock()
+	svc.recordLibraryCandidateTotal("snapshot-library", 2)
 
 	needsReview := *toAudiobookshelfBook(createTestBook("snapshot-status-review", "Review", "Author", "", ""))
 	svc.recordBookOutcomeWithMatchMethod(needsReview, OutcomeNeedsReview, "manual review", nil, nil, "")

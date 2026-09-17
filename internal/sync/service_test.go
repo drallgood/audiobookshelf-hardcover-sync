@@ -723,7 +723,6 @@ func createTestService() (*Service, *MockHardcoverClient) {
 		config:              cfg,
 		log:                 logger.Get(),
 		state:               state,
-		summary:             &SyncSummary{},
 		lastProgressUpdates: make(map[string]progressUpdateInfo),
 		asinCache:           make(map[string]*models.HardcoverBook),
 		persistentCache:     persistentCache,
