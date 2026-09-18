@@ -1327,19 +1327,28 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 		return int64(userBookID), nil
 	}
 
-	// Create a new user book with the specified status
+	// Creating a user book as FINISHED causes Hardcover to add a completed
+	// read dated today. Create it as WANT_TO_READ instead so HandleFinishedBook
+	// can add the Audiobookshelf-dated read before moving it to FINISHED.
+	creationStatus := status
+	if status == "FINISHED" {
+		creationStatus = "WANT_TO_READ"
+	}
+
+	// Create a new user book with the requested creation status.
 	logCtx.Info("Attempting to create new user book", map[string]interface{}{
-		"status": status,
+		"status":        creationStatus,
+		"target_status": status,
 	})
 
-	newUserBookID, err := s.hardcover.CreateUserBook(ctx, editionID, status)
+	newUserBookID, err := s.hardcover.CreateUserBook(ctx, editionID, creationStatus)
 	if err != nil {
 		reportProcessBookUserBookCreation(ctx, OutcomeFailed, "failed to create Hardcover user book", err)
 		errMsg := fmt.Sprintf("Failed to create user book: %v", err)
 		s.log.Error(errMsg, map[string]interface{}{
 			"error":     err,
 			"editionID": editionIDInt,
-			"status":    status,
+			"status":    creationStatus,
 		})
 		return 0, fmt.Errorf("failed to create user book: %w", err)
 	}
@@ -1358,7 +1367,7 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 	s.log.Info("Successfully created new user book with status", map[string]interface{}{
 		"editionID":  editionIDInt,
 		"userBookID": userBookID64,
-		"status":     status,
+		"status":     creationStatus,
 	})
 	reportProcessBookUserBookCreation(ctx, OutcomeSynced, "created Hardcover user book", nil)
 
