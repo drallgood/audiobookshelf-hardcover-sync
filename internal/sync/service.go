@@ -1285,11 +1285,20 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 		"editionID": editionID,
 	})
 
+	// Creating a user book as FINISHED causes Hardcover to add a completed
+	// read dated today. Create it as WANT_TO_READ instead so HandleFinishedBook
+	// can add the Audiobookshelf-dated read before moving it to FINISHED.
+	creationStatus := status
+	if status == "FINISHED" {
+		creationStatus = "WANT_TO_READ"
+	}
+
 	// If dry-run mode is enabled, log and return early without creating
 	if s.config.Sync.DryRun {
-		dryRunMsg := fmt.Sprintf("[DRY-RUN] Would create new user book with status: %s", status)
+		dryRunMsg := fmt.Sprintf("[DRY-RUN] Would create new user book with status: %s", creationStatus)
 		logCtx.Info(dryRunMsg, map[string]interface{}{
-			"status": status,
+			"status":        creationStatus,
+			"target_status": status,
 		})
 		reportProcessBookUserBookCreation(ctx, OutcomeWouldSync, "would create Hardcover user book", nil)
 		// CreateUserBook uses the same -1 sentinel; it must not be treated as a real user-book ID.
@@ -1297,11 +1306,13 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 	}
 
 	logCtx.Info("Creating new user book with status", map[string]interface{}{
-		"status": status,
+		"status":        creationStatus,
+		"target_status": status,
 	})
 
 	logCtx.Info("Creating new user book with status", map[string]interface{}{
-		"status": status,
+		"status":        creationStatus,
+		"target_status": status,
 	})
 
 	// Double-check if the user book exists to prevent race conditions
@@ -1325,14 +1336,6 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 			"userBookID":   userBookID,
 		})
 		return int64(userBookID), nil
-	}
-
-	// Creating a user book as FINISHED causes Hardcover to add a completed
-	// read dated today. Create it as WANT_TO_READ instead so HandleFinishedBook
-	// can add the Audiobookshelf-dated read before moving it to FINISHED.
-	creationStatus := status
-	if status == "FINISHED" {
-		creationStatus = "WANT_TO_READ"
 	}
 
 	// Create a new user book with the requested creation status.
@@ -3036,6 +3039,13 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 	// findOrCreateUserBookID uses -1 to represent a user book that would be
 	// created in dry-run mode. It is never a real Hardcover ID.
 	if s.config.Sync.DryRun && userBookID == -1 {
+		if book.Progress.FinishedAt <= 0 {
+			reportProcessBookOutcome(ctx, OutcomeSkipped, "finished read has no Audiobookshelf finished_at")
+			log.Info("[DRY-RUN] Would create a user book but not mark it finished without an Audiobookshelf completion date", map[string]interface{}{
+				"edition_id": editionID,
+			})
+			return nil
+		}
 		reportProcessBookOutcome(ctx, OutcomeWouldSync, "would create and finish a new Hardcover user book")
 		log.Info("[DRY-RUN] Would create user book and mark it as finished", map[string]interface{}{
 			"edition_id": editionID,
