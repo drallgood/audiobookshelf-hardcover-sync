@@ -479,20 +479,6 @@ func (s *MultiUserService) latestRunIsCurrent(profileID, runID string, generatio
 	return ok && !active.canceled && active.runID == runID && active.generation == generation
 }
 
-// latestRunWasCanceled reports whether this exact run was explicitly canceled.
-// A worker may finish with a generic failure after its context is canceled; the
-// cancellation decision remains the truthful terminal outcome and must not be
-// overwritten by that late worker report.
-func (s *MultiUserService) latestRunWasCanceled(profileID, runID string, generation uint64) bool {
-	s.syncMutex.RLock()
-	defer s.syncMutex.RUnlock()
-	latest, ok := s.latestRuns[profileID]
-	if !ok {
-		latest, ok = s.activeRuns[profileID]
-	}
-	return ok && latest.canceled && latest.runID == runID && latest.generation == generation
-}
-
 func terminalReportPhase(phase string) bool {
 	return phase == database.SyncRunPhaseCompleted ||
 		phase == database.SyncRunPhaseCanceled ||
