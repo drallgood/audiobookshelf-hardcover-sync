@@ -268,10 +268,12 @@ func RunOneTimeSync(flags *configFlags) {
 
 	// Create sync service with detailed logging
 	log.Info("Initializing sync service...", nil)
-	syncService, err := sync.NewService(
+	syncService, err := sync.NewServiceWithRunIdentity(
 		audiobookshelfClient,
 		hardcoverClient,
 		cfg,
+		"",
+		time.Time{},
 	)
 	if err != nil {
 		log.Error("Failed to initialize sync service", map[string]interface{}{
@@ -331,41 +333,4 @@ func RunOneTimeSync(flags *configFlags) {
 		"duration_seconds": duration.Seconds(),
 	})
 	log.Info("========================================")
-}
-
-// startPeriodicSync starts the periodic sync service
-// StartPeriodicSync starts a periodic sync service with the specified interval
-// Note: The interval is assumed to be valid (positive) as it should have been validated by config
-func StartPeriodicSync(ctx context.Context, syncService *sync.Service, abortCh <-chan struct{}, interval time.Duration) {
-	log := logger.Get()
-
-	log.Info("Starting periodic sync service", map[string]interface{}{
-		"interval": interval.String(),
-	})
-
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
-		// Initial sync
-		if err := syncService.Sync(ctx); err != nil {
-			log.Error("Initial sync failed", map[string]interface{}{
-				"error": err.Error(),
-			})
-		}
-
-		for {
-			select {
-			case <-ticker.C:
-				if err := syncService.Sync(ctx); err != nil {
-					log.Error("Periodic sync failed", map[string]interface{}{
-						"error": err.Error(),
-					})
-				}
-			case <-abortCh:
-				log.Info("Received shutdown signal, stopping periodic sync", nil)
-				return
-			}
-		}
-	}()
 }

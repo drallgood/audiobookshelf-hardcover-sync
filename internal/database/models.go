@@ -4,7 +4,28 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
 )
+
+// SyncSnapshotJSON stores a serialized sync snapshot. Large libraries can
+// produce snapshots that exceed MySQL's regular TEXT limit, while SQLite and
+// PostgreSQL do not need a vendor-specific large-text type.
+type SyncSnapshotJSON string
+
+// GormDataType identifies the portable Go-side data type for GORM plugins and
+// schema inspection.
+func (SyncSnapshotJSON) GormDataType() string {
+	return "string"
+}
+
+// GormDBDataType selects a database-native large text type. MariaDB uses the
+// MySQL dialector in this project, so it receives the same LONGTEXT mapping.
+func (SyncSnapshotJSON) GormDBDataType(db *gorm.DB, _ *schema.Field) string {
+	if db != nil && db.Dialector != nil && db.Dialector.Name() == "mysql" {
+		return "LONGTEXT"
+	}
+	return "TEXT"
+}
 
 // SyncProfile represents a sync profile in the system
 type SyncProfile struct {
@@ -36,15 +57,43 @@ type SyncProfileConfig struct {
 
 // ProfileSyncState holds the sync state for a specific profile
 type ProfileSyncState struct {
-	ProfileID string     `gorm:"primaryKey;column:profile_id" json:"profile_id"`
-	StateData string     `gorm:"type:text" json:"state_data"` // JSON string
-	LastSync  *time.Time `json:"last_sync"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	ProfileID               string     `gorm:"primaryKey;column:profile_id" json:"profile_id"`
+	LastAttemptedAt         *time.Time `json:"last_attempted_at"`
+	LastAttemptedRunID      string     `json:"last_attempted_run_id"`
+	LastAttemptedGeneration uint64     `gorm:"not null;default:0" json:"last_attempted_generation"`
+	LastSuccessfulAt        *time.Time `json:"last_successful_at"`
 
 	// Relationship
 	Profile SyncProfile `gorm:"foreignKey:ProfileID" json:"profile,omitempty"`
 }
+
+// SyncRunReport is the durable, sanitized snapshot for one sync run.
+//
+// Run IDs are scoped to a profile. Generation is allocated monotonically per
+// profile and is indexed to make newest-report queries inexpensive.
+type SyncRunReport struct {
+	ProfileID           string           `gorm:"primaryKey;column:profile_id;index:idx_sync_run_reports_profile_generation,priority:1" json:"profile_id"`
+	RunID               string           `gorm:"primaryKey;column:run_id" json:"run_id"`
+	Generation          uint64           `gorm:"not null;index:idx_sync_run_reports_profile_generation,priority:2" json:"generation"`
+	Phase               string           `gorm:"not null" json:"phase"`
+	DryRun              bool             `json:"dry_run"`
+	QueuedAt            *time.Time       `json:"queued_at"`
+	ProcessingStartedAt *time.Time       `json:"processing_started_at"`
+	LastActivityAt      *time.Time       `json:"last_activity_at"`
+	LastProcessedAt     *time.Time       `json:"last_processed_at"`
+	FinishedAt          *time.Time       `json:"finished_at"`
+	RunError            string           `gorm:"type:text" json:"run_error,omitempty"`
+	SnapshotJSON        SyncSnapshotJSON `gorm:"column:snapshot_json" json:"snapshot_json"`
+}
+
+const (
+	SyncRunPhaseQueued     = "queued"
+	SyncRunPhaseRunning    = "running"
+	SyncRunPhaseFinalizing = "finalizing"
+	SyncRunPhaseCompleted  = "completed"
+	SyncRunPhaseFailed     = "failed"
+	SyncRunPhaseCanceled   = "canceled"
+)
 
 // SyncConfigData represents the structure of sync configuration
 type SyncConfigData struct {
@@ -119,23 +168,5 @@ func (c *SyncProfileConfig) BeforeCreate(tx *gorm.DB) error {
 // BeforeUpdate hook for SyncProfileConfig
 func (c *SyncProfileConfig) BeforeUpdate(tx *gorm.DB) error {
 	c.UpdatedAt = time.Now()
-	return nil
-}
-
-// BeforeCreate hook for ProfileSyncState
-func (s *ProfileSyncState) BeforeCreate(tx *gorm.DB) error {
-	now := time.Now()
-	if s.CreatedAt.IsZero() {
-		s.CreatedAt = now
-	}
-	if s.UpdatedAt.IsZero() {
-		s.UpdatedAt = now
-	}
-	return nil
-}
-
-// BeforeUpdate hook for ProfileSyncState
-func (s *ProfileSyncState) BeforeUpdate(tx *gorm.DB) error {
-	s.UpdatedAt = time.Now()
 	return nil
 }

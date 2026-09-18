@@ -72,6 +72,28 @@ components:
         data:
           type: object
           description: Response data
+
+    AcceptedSyncRun:
+      type: object
+      required: [message, run_id, state, queued_at, dry_run]
+      properties:
+        message:
+          type: string
+          example: Sync started
+        run_id:
+          type: string
+          description: Authoritative ID assigned to the accepted run.
+          example: profile-123-1700000000000000000
+        state:
+          type: string
+          enum: [queued]
+          description: The accepted run is durably queued before worker launch; response delivery may race worker processing.
+        queued_at:
+          type: string
+          format: date-time
+        dry_run:
+          type: boolean
+          description: True when the accepted run will not perform Hardcover mutations.
     
     Profile:
       type: object
@@ -93,6 +115,11 @@ components:
           type: string
           format: date-time
           example: "2023-01-01T00:00:00Z"
+        last_successful_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Time the most recent non-dry-run run completed successfully.
     
     ProfileConfig:
       type: object
@@ -132,51 +159,6 @@ components:
             config:
               $ref: '#/components/schemas/ProfileConfig'
     
-    SyncStatus:
-      type: object
-      properties:
-        status:
-          type: string
-          enum: [idle, syncing, completed, error]
-          example: "idle"
-        last_sync:
-          type: string
-          format: date-time
-          nullable: true
-          example: "2023-01-01T00:00:00Z"
-        progress:
-          type: string
-          example: "Starting sync..."
-        error:
-          type: string
-          nullable: true
-          example: "Connection failed"
-        profile_id:
-          type: string
-        profile_name:
-          type: string
-        dry_run:
-          type: boolean
-        books_total:
-          type: integer
-          description: Number of candidates observed before processing limits; zero means the total is unknown or has not been observed yet. This is independent of processed_so_far.
-        books_synced:
-          type: integer
-          description: Legacy count retained for existing clients.
-        books_not_found:
-          type: array
-          items:
-            $ref: '#/components/schemas/BookNotFoundInfo'
-        mismatches:
-          type: array
-          items:
-            $ref: '#/components/schemas/BookMismatch'
-        last_sync_summary:
-          type: object
-          description: Legacy summary fields retained for existing clients.
-        snapshot:
-          $ref: '#/components/schemas/SyncSnapshot'
-
     AggregateSyncStatus:
       type: object
       description: Scalar status exposed by the public aggregate status endpoint. Per-book arrays are available from the authenticated run-details endpoint.
@@ -185,51 +167,60 @@ components:
           type: string
         profile_name:
           type: string
-        status:
-          type: string
-          enum: [idle, syncing, completed, error]
-          example: "idle"
-        dry_run:
-          type: boolean
-        last_sync:
+        last_attempted_at:
           type: string
           format: date-time
           nullable: true
-          example: "2023-01-01T00:00:00Z"
-        progress:
+          description: Time the most recent run was accepted, including dry-run, failed, or canceled runs.
+        last_successful_at:
           type: string
-          example: "Starting sync..."
-        books_total:
-          type: integer
-          description: Number of candidates observed before processing limits; zero means the total is unknown or has not been observed yet. This is independent of processed_so_far.
-        books_synced:
-          type: integer
-          description: Legacy count retained for existing clients.
+          format: date-time
+          nullable: true
+          description: Time the most recent non-dry-run run completed successfully; null when no such run exists.
         snapshot:
           $ref: '#/components/schemas/AggregateSnapshot'
 
     AggregateSnapshot:
       type: object
       description: Scalar current-run snapshot used for inexpensive aggregate polling.
-      required: [run_id, run_started_at, state, books_total, processed_so_far, processed_count, outcome_counts]
+      required: [run_id, queued_at, processing_started_at, last_activity_at, last_processed_at, finished_at, state, dry_run, books_total, processed_so_far, outcome_counts, unattempted_count]
       properties:
-        user_id: {type: string}
         run_id: {type: string}
-        run_started_at: {type: string, format: date-time}
+        queued_at: {type: string, format: date-time}
+        processing_started_at:
+          type: string
+          format: date-time
+          description: Zero timestamp until the worker begins processing.
+        last_activity_at:
+          type: string
+          format: date-time
+          description: Zero timestamp until the run records worker activity.
+        last_processed_at:
+          type: string
+          format: date-time
+          description: Zero timestamp until a candidate receives an outcome.
+        finished_at:
+          type: string
+          format: date-time
+          description: Zero timestamp until a terminal phase is recorded.
+        dry_run:
+          type: boolean
+          description: True when no Hardcover mutations are performed and a would_sync outcome represents planned work.
         state:
           type: string
-          enum: [idle, syncing, completed, failed]
+          enum: [queued, running, finalizing, completed, canceled, failed]
+          description: Canonical lifecycle phase for this run.
+        unattempted_count:
+          type: integer
+          description: Candidates not yet assigned an outcome; zero when processed_so_far reaches books_total or the total is unknown.
         books_total:
           type: integer
           description: Number of candidates observed before processing limits; zero means the total is unknown or has not been observed yet.
         processed_so_far:
           type: integer
           description: Number of books processed so far, independent of books_total.
-        processed_count: {type: integer}
         outcome_counts:
           $ref: '#/components/schemas/OutcomeCounts'
-        total_books_processed: {type: integer}
-        books_synced: {type: integer}
 
     OutcomeCounts:
       type: object
@@ -264,147 +255,71 @@ components:
         match_method: {type: string}
         hardcover_book_id: {type: string}
         edition_id: {type: string}
-        updated_at: {type: string, format: date-time}
-
-    BookNotFoundInfo:
-      type: object
-      properties:
-        book_id: {type: string}
-        title: {type: string}
-        author: {type: string}
-        asin: {type: string}
-        isbn: {type: string}
-        error: {type: string}
-
-    BookMismatch:
-      type: object
-      properties:
-        book_id: {type: string}
-        title: {type: string}
-        subtitle: {type: string}
-        author: {type: string}
-        author_ids:
-          type: array
-          items: {type: integer}
-        narrator: {type: string}
-        narrator_ids:
-          type: array
-          items: {type: integer}
-        asin: {type: string}
-        isbn: {type: string}
-        isbn_10: {type: string}
-        isbn_13: {type: string}
-        library_id: {type: string}
-        folder_id: {type: string}
-        release_date: {type: string}
-        published_year: {type: string}
-        duration_seconds: {type: integer}
-        cover_url: {type: string}
-        image_url: {type: string}
-        edition_format: {type: string}
-        edition_information: {type: string}
-        language_id: {type: integer}
-        country_id: {type: integer}
-        publisher_id: {type: integer}
-        publisher: {type: string}
-        hardcover_book_id: {type: string}
         hardcover_title: {type: string}
         hardcover_author: {type: string}
         hardcover_published_year: {type: string}
-        hardcover_cover_url: {type: string}
+        hardcover_cover_url: {type: string, format: uri}
         hardcover_publisher: {type: string}
         hardcover_asin: {type: string}
         hardcover_isbn: {type: string}
         hardcover_slug: {type: string}
         hardcover_series: {type: string}
         hardcover_series_number: {type: string}
-        reason: {type: string}
-        timestamp: {type: integer, format: int64}
-        attempts: {type: integer}
-        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
 
     SyncSnapshot:
       type: object
-      required: [run_id, run_started_at, state, books_total, processed_so_far, processed_count, outcome_counts, book_outcomes, attention_records]
+      required: [run_id, queued_at, processing_started_at, last_activity_at, last_processed_at, finished_at, state, dry_run, unattempted_count, books_total, processed_so_far, outcome_counts, book_outcomes]
       properties:
-        user_id: {type: string}
+        profile_id: {type: string}
         audiobookshelf_url:
           type: string
           format: uri
           description: Base URL used to build Audiobookshelf item links in authenticated run details. Omitted from aggregate status responses.
         run_id: {type: string}
-        run_started_at: {type: string, format: date-time}
+        queued_at: {type: string, format: date-time}
+        processing_started_at:
+          type: string
+          format: date-time
+          description: Zero timestamp until the worker begins processing.
+        last_activity_at:
+          type: string
+          format: date-time
+          description: Zero timestamp until the run records worker activity.
+        last_processed_at:
+          type: string
+          format: date-time
+          description: Zero timestamp until a candidate receives an outcome.
+        finished_at:
+          type: string
+          format: date-time
+          description: Zero timestamp until a terminal phase is recorded.
+        dry_run:
+          type: boolean
+          description: True when no Hardcover mutations are performed and would_sync records indicate planned changes.
+        run_error:
+          type: string
+          nullable: true
+          description: Run-level error for failed or canceled runs; absent when no run error was recorded.
+        unattempted_count:
+          type: integer
+          description: Candidates not yet assigned an outcome; when books_total is unknown this remains zero until a denominator is observed.
         state:
           type: string
-          enum: [idle, syncing, completed, failed]
-          description: Cancellation currently clears the live snapshot and returns the profile to idle.
+          enum: [queued, running, finalizing, completed, canceled, failed]
+          description: Canonical lifecycle phase. A canceled run retains its partial snapshot; it does not become idle or completed.
         books_total:
           type: integer
           description: Number of candidates observed before processing limits; zero means the total is unknown or has not been observed yet. This is independent of processed_so_far.
         processed_so_far:
           type: integer
           description: Sum of all outcome_counts categories, independent of books_total.
-        processed_count:
-          type: integer
-          description: Alias of processed_so_far for clients that prefer count terminology.
         outcome_counts:
           $ref: '#/components/schemas/OutcomeCounts'
         book_outcomes:
           type: array
           items:
             $ref: '#/components/schemas/BookOutcomeRecord'
-        attention_records:
-          type: array
-          description: Needs-review, not-found, and failed records currently requiring attention.
-          items:
-            $ref: '#/components/schemas/BookOutcomeRecord'
-        total_books_processed: {type: integer}
-        books_synced: {type: integer}
-        books_not_found:
-          type: array
-          items:
-            $ref: '#/components/schemas/BookNotFoundInfo'
-        mismatches:
-          type: array
-          items:
-            $ref: '#/components/schemas/BookMismatch'
-
-    SyncSummary:
-      type: object
-      properties:
-        snapshot:
-          $ref: '#/components/schemas/SyncSnapshot'
-        user_id: {type: string}
-        run_id: {type: string}
-        run_started_at: {type: string, format: date-time}
-        state: {type: string}
-        books_total:
-          type: integer
-          description: Number of candidates observed before processing limits; zero means the total is unknown or has not been observed yet.
-        processed_so_far:
-          type: integer
-          description: Number of books processed so far, independent of books_total.
-        processed_count: {type: integer}
-        outcome_counts:
-          $ref: '#/components/schemas/OutcomeCounts'
-        book_outcomes:
-          type: array
-          items:
-            $ref: '#/components/schemas/BookOutcomeRecord'
-        attention_records:
-          type: array
-          items:
-            $ref: '#/components/schemas/BookOutcomeRecord'
-        total_books_processed: {type: integer}
-        books_synced: {type: integer}
-        books_not_found:
-          type: array
-          items:
-            $ref: '#/components/schemas/BookNotFoundInfo'
-        mismatches:
-          type: array
-          items:
-            $ref: '#/components/schemas/BookMismatch'
 
 security:
   - BearerAuth: []
@@ -625,66 +540,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
   
-  /profiles/{profileId}/summary:
-    get:
-      tags: [Status]
-      summary: Get the current-run sync summary for a profile
-      parameters:
-        - name: profileId
-          in: path
-          required: true
-          schema:
-            type: string
-          example: "profile-123"
-      responses:
-        '200':
-          description: Current run snapshot and legacy summary fields
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  data:
-                    $ref: '#/components/schemas/SyncSummary'
-  /profiles/{profileId}/status:
-    get:
-      tags: [Status]
-      summary: Get sync status for a profile
-      parameters:
-        - name: profileId
-          in: path
-          required: true
-          schema:
-            type: string
-          example: "profile-123"
-      responses:
-        '200':
-          description: Current sync status
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  data:
-                    $ref: '#/components/schemas/SyncStatus'
-        '404':
-          description: Profile not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
   /profiles/{profileId}/runs/{runId}/details:
     get:
       tags: [Status]
-      summary: Get full details for the current run of a profile
-      description: Returns per-book outcomes and attention records only when runId identifies the profile's current snapshot. Stale, replaced, and unknown runs return 404.
+      summary: Get full details for an active or retained run of a profile
+      description: Returns per-book outcomes when runId identifies the profile's active run or an exact retained terminal report. Unknown, other-profile, and evicted run IDs return 404; the endpoint never substitutes a newer run.
       parameters:
         - name: profileId
           in: path
@@ -700,7 +560,7 @@ paths:
           example: "profile-123-1700000000000000000-1"
       responses:
         '200':
-          description: Full current-run snapshot details
+          description: Full active or retained run snapshot details
           content:
             application/json:
               schema:
@@ -712,7 +572,7 @@ paths:
                   data:
                     $ref: '#/components/schemas/SyncSnapshot'
         '404':
-          description: Profile or current run not found
+          description: Profile, active run, or retained run not found
           content:
             application/json:
               schema:
@@ -752,11 +612,17 @@ paths:
           example: "profile-123"
       responses:
         '202':
-          description: Sync started successfully
+          description: Sync accepted and queued successfully
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SuccessResponse'
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/AcceptedSyncRun'
         '404':
           description: Profile not found
           content:

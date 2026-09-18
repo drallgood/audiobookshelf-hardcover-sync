@@ -98,7 +98,7 @@ func newRouteTestFixtureWithHardcoverURL(t *testing.T, hardcoverURL string) *rou
 	authService, err := auth.NewAuthService(db.GetDB(), authConfig, logger.Get())
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		multiUserService.WaitForSyncs()
+		require.NoError(t, multiUserService.Shutdown(context.Background()))
 		require.NoError(t, db.Close())
 	})
 
@@ -227,6 +227,53 @@ func TestAuthDisabledProfileResponsesRedactCredentialsAndPreserveUpdates(t *test
 	}
 }
 
+func TestGetProfileIncludesPersistedLastSuccessfulAt(t *testing.T) {
+	fixture := newRouteTestFixture(t, false)
+	const profileID = "profile-with-success"
+	require.NoError(t, fixture.repo.CreateProfile(
+		profileID,
+		"Profile with success",
+		"http://audiobookshelf.invalid",
+		"audiobookshelf-token",
+		"hardcover-token",
+		database.SyncConfigData{},
+	))
+
+	queuedAt := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	accepted, err := fixture.repo.AcceptSyncRun(&database.SyncRunReport{
+		ProfileID:    profileID,
+		RunID:        "successful-run",
+		Phase:        database.SyncRunPhaseQueued,
+		QueuedAt:     &queuedAt,
+		SnapshotJSON: "{}",
+	})
+	require.NoError(t, err)
+	finishedAt := queuedAt.Add(time.Hour)
+	require.NoError(t, fixture.repo.UpsertSyncRunReportContext(context.Background(), &database.SyncRunReport{
+		ProfileID:    profileID,
+		RunID:        accepted.RunID,
+		Generation:   accepted.Generation,
+		Phase:        database.SyncRunPhaseCompleted,
+		FinishedAt:   &finishedAt,
+		SnapshotJSON: "{}",
+	}))
+
+	response := fixture.request(http.MethodGet, "/api/profiles/"+profileID, nil)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	assertProfileResponseRedactsCredentials(t, response, "audiobookshelf-token", "hardcover-token")
+
+	var payload struct {
+		Data struct {
+			Profile struct {
+				LastSuccessfulAt *time.Time `json:"last_successful_at"`
+			} `json:"profile"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &payload))
+	require.NotNil(t, payload.Data.Profile.LastSuccessfulAt)
+	require.Equal(t, finishedAt, *payload.Data.Profile.LastSuccessfulAt)
+}
+
 func TestViewerProfileAuthorizationIsReadOnly(t *testing.T) {
 	fixture := newRouteTestFixture(t, true)
 	viewer := newRouteSession(t, fixture, "viewer", auth.RoleViewer)
@@ -287,8 +334,6 @@ func TestViewerProfileAuthorizationIsReadOnly(t *testing.T) {
 	require.NotNil(t, metadata)
 	require.True(t, metadata.Active)
 	require.Equal(t, "viewer-owned", metadata.Name)
-	_, running := fixture.server.multiUserService.GetSyncService("viewer-owned")
-	require.False(t, running)
 }
 
 func TestForeignProfileAuthorizationReturnsNotFoundForEveryRoute(t *testing.T) {
@@ -337,13 +382,13 @@ func TestForeignProfileAuthorizationReturnsNotFoundForEveryRoute(t *testing.T) {
 	foreign := newRouteSession(t, fixture, "route-foreign", auth.RoleUser)
 	createRouteProfileAtURL(t, fixture, owner, "foreign-target", absServer.URL, "foreign-target-token")
 
-	require.NoError(t, fixture.server.multiUserService.StartSync("foreign-target"))
-	fixture.server.multiUserService.WaitForSyncs()
-	status := fixture.server.multiUserService.GetProfileStatus("foreign-target")
+	_, err := fixture.server.multiUserService.StartSyncWithAcceptedRun("foreign-target")
+	require.NoError(t, err)
+	status := waitForTerminalProfileStatusForServerTest(t, fixture.server.multiUserService, "foreign-target")
 	require.NotNil(t, status)
 	require.NotNil(t, status.Snapshot)
-	require.Len(t, status.Snapshot.AttentionRecords, 1)
-	require.Equal(t, attentionSentinel, status.Snapshot.AttentionRecords[0].Title)
+	require.Len(t, status.Snapshot.BookOutcomes, 1)
+	require.Equal(t, attentionSentinel, status.Snapshot.BookOutcomes[0].Title)
 	runDetailsPath := "/api/profiles/foreign-target/runs/" + status.Snapshot.RunID + "/details"
 
 	for _, test := range []struct {
@@ -356,8 +401,6 @@ func TestForeignProfileAuthorizationReturnsNotFoundForEveryRoute(t *testing.T) {
 		{name: "update profile", method: http.MethodPut, path: "/api/profiles/foreign-target", body: `{"name":"stolen"}`},
 		{name: "delete profile", method: http.MethodDelete, path: "/api/profiles/foreign-target"},
 		{name: "update config", method: http.MethodPut, path: "/api/profiles/foreign-target/config", body: `{"hardcover_token":"stolen"}`},
-		{name: "status", method: http.MethodGet, path: "/api/profiles/foreign-target/status"},
-		{name: "summary", method: http.MethodGet, path: "/api/profiles/foreign-target/summary"},
 		{name: "run details", method: http.MethodGet, path: runDetailsPath},
 		{name: "start sync", method: http.MethodPost, path: "/api/profiles/foreign-target/sync"},
 		{name: "cancel sync", method: http.MethodDelete, path: "/api/profiles/foreign-target/sync"},
@@ -374,8 +417,6 @@ func TestForeignProfileAuthorizationReturnsNotFoundForEveryRoute(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, metadata)
 	require.True(t, metadata.Active)
-	_, running := fixture.server.multiUserService.GetSyncService("foreign-target")
-	require.False(t, running)
 }
 
 // Keep the test fixture's legacy profile creation concise without exposing the

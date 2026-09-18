@@ -12,6 +12,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/edition"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 	"github.com/stretchr/testify/assert"
@@ -194,18 +195,18 @@ func (m *MockHardcoverClient) GetUserBook(ctx context.Context, userBookID string
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	
+
 	// Check if the returned value is already a *models.HardcoverBook
 	if book, ok := args.Get(0).(*models.HardcoverBook); ok {
 		return book, args.Error(1)
 	}
-	
+
 	// Otherwise, try to convert from *TestHardcoverBook
 	testBook, ok := args.Get(0).(*TestHardcoverBook)
 	if !ok {
 		panic("GetUserBook mock return value must be either *models.HardcoverBook or *TestHardcoverBook")
 	}
-	
+
 	// Convert TestHardcoverBook to models.HardcoverBook
 	return &models.HardcoverBook{
 		ID:            testBook.ID,
@@ -253,87 +254,87 @@ func (m *MockHardcoverClient) GetBookByID(ctx context.Context, bookID string) (*
 
 // SearchBookByISBN13 mocks the SearchBookByISBN13 method
 func (m *MockHardcoverClient) SearchBookByISBN13(ctx context.Context, isbn13 string) (*models.HardcoverBook, error) {
-    args := m.Called(ctx, isbn13)
-    // Accept typed-nil values safely
-    if b, ok := args.Get(0).(*models.HardcoverBook); ok {
-        if b == nil {
-            return nil, args.Error(1)
-        }
-        return b, args.Error(1)
-    }
-    if tb, ok := args.Get(0).(*TestHardcoverBook); ok {
-        if tb == nil {
-            return nil, args.Error(1)
-        }
-        // Convert TestHardcoverBook to models.HardcoverBook
-        return &models.HardcoverBook{
-            ID:            tb.ID,
-            UserBookID:    tb.UserBookID,
-            EditionID:     tb.EditionID,
-            Title:         tb.Title,
-            Subtitle:      tb.Subtitle,
-            Authors:       tb.Authors,
-            Narrators:     tb.Narrators,
-            CoverImageURL: tb.CoverImageURL,
-            Description:   tb.Description,
-            PageCount:     tb.PageCount,
-            ReleaseDate:   tb.ReleaseDate,
-            Publisher:     tb.Publisher,
-            ISBN:          tb.ISBN,
-            ASIN:          tb.ASIN,
-            BookStatusID:  tb.BookStatusID,
-            CanonicalID:   tb.CanonicalID,
-            EditionASIN:   tb.EditionASIN,
-            EditionISBN10: tb.EditionISBN10,
-            EditionISBN13: tb.EditionISBN13,
-        }, args.Error(1)
-    }
-    if args.Get(0) == nil {
-        return nil, args.Error(1)
-    }
-    panic("SearchBookByASIN mock return must be *models.HardcoverBook, *TestHardcoverBook or nil")
+	args := m.Called(ctx, isbn13)
+	// Accept typed-nil values safely
+	if b, ok := args.Get(0).(*models.HardcoverBook); ok {
+		if b == nil {
+			return nil, args.Error(1)
+		}
+		return b, args.Error(1)
+	}
+	if tb, ok := args.Get(0).(*TestHardcoverBook); ok {
+		if tb == nil {
+			return nil, args.Error(1)
+		}
+		// Convert TestHardcoverBook to models.HardcoverBook
+		return &models.HardcoverBook{
+			ID:            tb.ID,
+			UserBookID:    tb.UserBookID,
+			EditionID:     tb.EditionID,
+			Title:         tb.Title,
+			Subtitle:      tb.Subtitle,
+			Authors:       tb.Authors,
+			Narrators:     tb.Narrators,
+			CoverImageURL: tb.CoverImageURL,
+			Description:   tb.Description,
+			PageCount:     tb.PageCount,
+			ReleaseDate:   tb.ReleaseDate,
+			Publisher:     tb.Publisher,
+			ISBN:          tb.ISBN,
+			ASIN:          tb.ASIN,
+			BookStatusID:  tb.BookStatusID,
+			CanonicalID:   tb.CanonicalID,
+			EditionASIN:   tb.EditionASIN,
+			EditionISBN10: tb.EditionISBN10,
+			EditionISBN13: tb.EditionISBN13,
+		}, args.Error(1)
+	}
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	panic("SearchBookByASIN mock return must be *models.HardcoverBook, *TestHardcoverBook or nil")
 }
 
 // SearchBookByASIN mocks the SearchBookByASIN method
 func (m *MockHardcoverClient) SearchBookByASIN(ctx context.Context, asin string) (*models.HardcoverBook, error) {
-    args := m.Called(ctx, asin)
-    // Accept typed-nil values safely
-    if b, ok := args.Get(0).(*models.HardcoverBook); ok {
-        if b == nil {
-            return nil, args.Error(1)
-        }
-        return b, args.Error(1)
-    }
-    if tb, ok := args.Get(0).(*TestHardcoverBook); ok {
-        if tb == nil {
-            return nil, args.Error(1)
-        }
-        return &models.HardcoverBook{
-            ID:            tb.ID,
-            UserBookID:    tb.UserBookID,
-            EditionID:     tb.EditionID,
-            Title:         tb.Title,
-            Subtitle:      tb.Subtitle,
-            Authors:       tb.Authors,
-            Narrators:     tb.Narrators,
-            CoverImageURL: tb.CoverImageURL,
-            Description:   tb.Description,
-            PageCount:     tb.PageCount,
-            ReleaseDate:   tb.ReleaseDate,
-            Publisher:     tb.Publisher,
-            ISBN:          tb.ISBN,
-            ASIN:          tb.ASIN,
-            BookStatusID:  tb.BookStatusID,
-            CanonicalID:   tb.CanonicalID,
-            EditionASIN:   tb.EditionASIN,
-            EditionISBN10: tb.EditionISBN10,
-            EditionISBN13: tb.EditionISBN13,
-        }, args.Error(1)
-    }
-    if args.Get(0) == nil {
-        return nil, args.Error(1)
-    }
-    panic("SearchBookByASIN mock return must be *models.HardcoverBook, *TestHardcoverBook or nil")
+	args := m.Called(ctx, asin)
+	// Accept typed-nil values safely
+	if b, ok := args.Get(0).(*models.HardcoverBook); ok {
+		if b == nil {
+			return nil, args.Error(1)
+		}
+		return b, args.Error(1)
+	}
+	if tb, ok := args.Get(0).(*TestHardcoverBook); ok {
+		if tb == nil {
+			return nil, args.Error(1)
+		}
+		return &models.HardcoverBook{
+			ID:            tb.ID,
+			UserBookID:    tb.UserBookID,
+			EditionID:     tb.EditionID,
+			Title:         tb.Title,
+			Subtitle:      tb.Subtitle,
+			Authors:       tb.Authors,
+			Narrators:     tb.Narrators,
+			CoverImageURL: tb.CoverImageURL,
+			Description:   tb.Description,
+			PageCount:     tb.PageCount,
+			ReleaseDate:   tb.ReleaseDate,
+			Publisher:     tb.Publisher,
+			ISBN:          tb.ISBN,
+			ASIN:          tb.ASIN,
+			BookStatusID:  tb.BookStatusID,
+			CanonicalID:   tb.CanonicalID,
+			EditionASIN:   tb.EditionASIN,
+			EditionISBN10: tb.EditionISBN10,
+			EditionISBN13: tb.EditionISBN13,
+		}, args.Error(1)
+	}
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	panic("SearchBookByASIN mock return must be *models.HardcoverBook, *TestHardcoverBook or nil")
 }
 
 // SearchBookByISBN10 mocks the SearchBookByISBN10 method
@@ -384,13 +385,13 @@ func (m *MockHardcoverClient) SearchBooks(ctx context.Context, title, author str
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	
+
 	// Handle both []models.HardcoverBook and []*TestHardcoverBook types
 	switch books := args.Get(0).(type) {
 	case []models.HardcoverBook:
 		// Already the correct type, return as is
 		return books, args.Error(1)
-		
+
 	case []*TestHardcoverBook:
 		// Convert []*TestHardcoverBook to []models.HardcoverBook
 		result := make([]models.HardcoverBook, len(books))
@@ -400,12 +401,12 @@ func (m *MockHardcoverClient) SearchBooks(ctx context.Context, title, author str
 			result[i] = *hcBook
 		}
 		return result, args.Error(1)
-		
+
 	case *models.HardcoverBook:
 		// Single book provided, return as a slice with one element
 		return []models.HardcoverBook{*books}, args.Error(1)
 	}
-	
+
 	return nil, fmt.Errorf("unsupported type for SearchBooks mock")
 
 }
@@ -415,7 +416,7 @@ func (m *MockHardcoverClient) SearchBooks(ctx context.Context, title, author str
 func createTestConfig(syncOwned bool) *config.Config {
 	// Start with default config
 	cfg := config.DefaultConfig()
-	
+
 	// Configure sync settings - all sync-related settings are now consolidated under Sync
 	cfg.Sync.Incremental = false
 	cfg.Sync.StateFile = "/tmp/sync_state_test.json"
@@ -425,11 +426,11 @@ func createTestConfig(syncOwned bool) *config.Config {
 	cfg.Sync.SyncWantToRead = true
 	cfg.Sync.SyncOwned = syncOwned
 	cfg.Sync.DryRun = false
-	
+
 	// Initialize libraries include/exclude
 	cfg.Sync.Libraries.Include = []string{}
 	cfg.Sync.Libraries.Exclude = []string{}
-	
+
 	// Other configuration
 	cfg.RateLimit.Rate = 100 * time.Millisecond
 	cfg.RateLimit.MaxConcurrent = 5
@@ -437,7 +438,7 @@ func createTestConfig(syncOwned bool) *config.Config {
 	cfg.Logging.Format = "console"
 	cfg.Server.Port = "8080"
 	cfg.Server.ShutdownTimeout = 30 * time.Second
-	
+
 	// Clear deprecated fields in App
 	cfg.App = struct {
 		TestBookFilter string `yaml:"test_book_filter" env:"TEST_BOOK_FILTER"`
@@ -452,7 +453,7 @@ func createTestConfig(syncOwned bool) *config.Config {
 		TestBookFilter: "",
 		TestBookLimit:  0,
 	}
-	
+
 	return cfg
 }
 
@@ -469,8 +470,8 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 		verifyResult func(*testing.T, *models.HardcoverBook, error)
 	}{
 		{
-			name:        "should mark as owned when sync_owned is true and not owned",
-			syncOwned:   true,
+			name:      "should mark as owned when sync_owned is true and not owned",
+			syncOwned: true,
 			hcBook: &TestHardcoverBook{
 				ID:        "123",
 				EditionID: "456",
@@ -495,8 +496,8 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 			},
 		},
 		{
-			name:        "should not mark as owned when sync_owned is false",
-			syncOwned:   false,
+			name:      "should not mark as owned when sync_owned is false",
+			syncOwned: false,
 			hcBook: &TestHardcoverBook{
 				ID:        "123",
 				EditionID: "456",
@@ -518,8 +519,8 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 			},
 		},
 		{
-			name:        "should not mark as owned when already owned",
-			syncOwned:   true,
+			name:      "should not mark as owned when already owned",
+			syncOwned: true,
 			hcBook: &TestHardcoverBook{
 				ID:        "123",
 				EditionID: "456",
@@ -543,8 +544,8 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 			},
 		},
 		{
-			name:        "should handle invalid edition ID format",
-			syncOwned:   true,
+			name:      "should handle invalid edition ID format",
+			syncOwned: true,
 			hcBook: &TestHardcoverBook{
 				ID:        "123",
 				EditionID: "invalid",
@@ -562,8 +563,8 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 			},
 		},
 		{
-			name:        "should handle zero edition ID",
-			syncOwned:   true,
+			name:      "should handle zero edition ID",
+			syncOwned: true,
 			hcBook: &TestHardcoverBook{
 				ID:        "123",
 				EditionID: "0",
@@ -593,8 +594,8 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 			},
 		},
 		{
-			name:        "should handle CheckBookOwnership error",
-			syncOwned:   true,
+			name:      "should handle CheckBookOwnership error",
+			syncOwned: true,
 			hcBook: &TestHardcoverBook{
 				ID:        "123",
 				EditionID: "456",
@@ -618,8 +619,8 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 			},
 		},
 		{
-			name:        "should handle MarkEditionAsOwned error",
-			syncOwned:   true,
+			name:      "should handle MarkEditionAsOwned error",
+			syncOwned: true,
 			hcBook: &TestHardcoverBook{
 				ID:        "123",
 				EditionID: "456",
@@ -711,23 +712,23 @@ func createTestService() (*Service, *MockHardcoverClient) {
 	// Create and initialize caches
 	persistentCache := NewPersistentASINCache("/tmp/test-cache")
 	_ = persistentCache.Load() // Load cache (will create empty if doesn't exist)
-	
+
 	userBookCache := NewPersistentUserBookCache("/tmp/test-cache")
 	_ = userBookCache.Load()
 	userBookCache.Clear() // Load cache (will create empty if doesn't exist)
 
 	// Create and return a test service with the mock client
 	svc := &Service{
-		hardcover: mockClient,
-		config:    cfg,
-		log:       logger.Get(),
-		state:     state,
-		summary:             &SyncSummary{},
+		hardcover:           mockClient,
+		config:              cfg,
+		log:                 logger.Get(),
+		state:               state,
 		lastProgressUpdates: make(map[string]progressUpdateInfo),
 		asinCache:           make(map[string]*models.HardcoverBook),
 		persistentCache:     persistentCache,
 		userBookCache:       userBookCache,
 		createdReadsThisRun: make(map[int64]struct{}),
+		mismatchCollector:   mismatch.NewCollector(),
 	}
 
 	return svc, mockClient
@@ -748,8 +749,8 @@ func TestProcessBookSkipsUnreadBeforeHardcoverLookup(t *testing.T) {
 	mockClient.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
 	mockClient.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
 	mockClient.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
-	assert.Equal(t, int32(0), svc.summary.BooksSynced, "skipped unread book must not count as synced")
-	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed)
+	assert.Equal(t, int32(0), svc.outcomeCounts.Synced, "skipped unread book must not count as synced")
+	assert.Equal(t, int32(1), svc.outcomeCounts.Total())
 }
 
 // addMediaProgress appends a mediaProgress entry to a user progress fixture.
@@ -936,7 +937,7 @@ func TestProcessFoundBook_WithBook_NoEditionID(t *testing.T) {
 		// since we didn't set up the search mock to be called
 		assert.NoError(t, err, "processFoundBook should not return an error when book has no edition ID")
 		assert.NotNil(t, result, "result should not be nil")
-		
+
 		// The function should return the original book with no edition ID
 		// since we didn't set up the search mock to be called
 		assert.Equal(t, "123", result.ID, "book ID should be the same as the input")
@@ -988,7 +989,7 @@ func TestProcessFoundBook_NoEditionFound(t *testing.T) {
 	mockClient.On("MarkEditionAsOwned", mock.Anything, editionIDInt).Return(nil).Maybe()
 
 	// GetUserBookID should NOT be called because GetEdition fails and findOrCreateUserBookID returns early
-	
+
 	// Call the function
 	result, err := svc.processFoundBook(context.Background(), hcBook, *audiobook)
 
@@ -998,41 +999,41 @@ func TestProcessFoundBook_NoEditionFound(t *testing.T) {
 	assert.Equal(t, "123", result.ID, "Result should have the correct book ID")
 	assert.Equal(t, "Test Book", result.Title, "Result should have the correct title")
 	assert.Equal(t, "", result.UserBookID, "User book ID should be empty since findOrCreateUserBookID failed")
-	
+
 	// Use mock.Anything for the context parameter to make the test more flexible
 	mockClient.AssertExpectations(t)
 }
 
 func TestProcessFoundBook_OwnershipSync_DryRun(t *testing.T) {
-    // Config: SyncOwned enabled, DryRun enabled
-    cfg := createTestConfig(true)
-    cfg.Sync.DryRun = true
+	// Config: SyncOwned enabled, DryRun enabled
+	cfg := createTestConfig(true)
+	cfg.Sync.DryRun = true
 
-    // Mock client and service
-    mockClient := new(MockHardcoverClient)
-    svc := &Service{
-        hardcover: mockClient,
-        config:    cfg,
-        log:       logger.Get(),
-    }
+	// Mock client and service
+	mockClient := new(MockHardcoverClient)
+	svc := &Service{
+		hardcover: mockClient,
+		config:    cfg,
+		log:       logger.Get(),
+	}
 
-    // Test data
-    testHc := &TestHardcoverBook{ID: "123", EditionID: "456"}
-    hcBook := toHardcoverBook(testHc)
-    testAbs := createTestBook("test-book-1", "Test Book", "Test Author", "", "")
-    absBook := toAudiobookshelfBook(testAbs)
+	// Test data
+	testHc := &TestHardcoverBook{ID: "123", EditionID: "456"}
+	hcBook := toHardcoverBook(testHc)
+	testAbs := createTestBook("test-book-1", "Test Book", "Test Author", "", "")
+	absBook := toAudiobookshelfBook(testAbs)
 
-    // Expectations: ownership checked by BOOK ID, but MarkEditionAsOwned must NOT be called due to DryRun
-    mockClient.On("GetUserBookID", mock.Anything, 456).Return(789, nil).Once()
-    mockClient.On("GetEdition", mock.Anything, "456").Return(&models.Edition{ID: "456", BookID: "123"}, nil).Once()
-    mockClient.On("CheckBookOwnership", mock.Anything, 123).Return(false, nil).Once()
+	// Expectations: ownership checked by BOOK ID, but MarkEditionAsOwned must NOT be called due to DryRun
+	mockClient.On("GetUserBookID", mock.Anything, 456).Return(789, nil).Once()
+	mockClient.On("GetEdition", mock.Anything, "456").Return(&models.Edition{ID: "456", BookID: "123"}, nil).Once()
+	mockClient.On("CheckBookOwnership", mock.Anything, 123).Return(false, nil).Once()
 
-    // Execute
-    result, err := svc.processFoundBook(context.Background(), hcBook, *absBook)
+	// Execute
+	result, err := svc.processFoundBook(context.Background(), hcBook, *absBook)
 
-    // Verify
-    assert.NoError(t, err)
-    assert.NotNil(t, result)
-    mockClient.AssertNotCalled(t, "MarkEditionAsOwned", mock.Anything, mock.AnythingOfType("int"))
-    mockClient.AssertExpectations(t)
+	// Verify
+	assert.NoError(t, err)
+	assert.NotNil(t, result)
+	mockClient.AssertNotCalled(t, "MarkEditionAsOwned", mock.Anything, mock.AnythingOfType("int"))
+	mockClient.AssertExpectations(t)
 }

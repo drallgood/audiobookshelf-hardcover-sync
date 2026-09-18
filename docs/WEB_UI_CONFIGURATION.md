@@ -1,12 +1,12 @@
 # Web UI Configuration Guide
 
-This guide explains how to configure the optional web UI for audiobookshelf-hardcover-sync, allowing you to choose between single-user mode and multi-user mode.
+This guide explains how to configure the optional web UI for audiobookshelf-hardcover-sync, allowing you to choose between headless mode and multi-user web UI mode.
 
 ## Overview
 
-The application supports two distinct operating modes:
+The application supports two distinct operating modes. The existing headless configuration remains supported and is still the default:
 
-1. **Single-User Mode** (legacy) - `enable_web_ui: false` (default)
+1. **Headless Mode** - `enable_web_ui: false` (default)
 2. **Web UI Mode** (multi-user) - `enable_web_ui: true`
 
 ## Configuration Methods
@@ -17,8 +17,8 @@ The application supports two distinct operating modes:
 |----------|-------------|---------|----------|
 | `ENABLE_WEB_UI` | Enable/disable web UI | `false` | No |
 | `AUDIOBOOKSHELF_URL` | Audiobookshelf server URL | - | Yes |
-| `AUDIOBOOKSHELF_TOKEN` | Audiobookshelf API token | - | Only for single-user mode |
-| `HARDCOVER_TOKEN` | Hardcover API token | - | Only for single-user mode |
+| `AUDIOBOOKSHELF_TOKEN` | Audiobookshelf API token | - | Only for headless mode |
+| `HARDCOVER_TOKEN` | Hardcover API token | - | Only for headless mode |
 
 ### Configuration File
 
@@ -30,7 +30,7 @@ server:
   enable_web_ui: true          # Enable web UI (default: false)
   shutdown_timeout: 30s        # Graceful shutdown timeout
 
-# Single-user mode configuration (when enable_web_ui: false)
+# Headless mode configuration (when enable_web_ui: false)
 audiobookshelf:
   url: "https://audiobookshelf.example.com"
   token: "your-audiobookshelf-token"
@@ -41,10 +41,10 @@ hardcover:
 
 ## Mode Comparison
 
-### Single-User Mode (`enable_web_ui: false`)
+### Headless Mode (`enable_web_ui: false`)
 
 **Characteristics:**
-- Backward compatible with existing setups
+- Preserves the existing configuration and startup behavior
 - No web interface
 - Requires tokens at startup
 - Uses environment variables or config file for configuration
@@ -54,7 +54,7 @@ hardcover:
 - Simple deployments
 - Docker containers with environment variables
 - Automated scripts
-- Legacy compatibility
+- Background service deployments
 
 **Required Configuration:**
 ```bash
@@ -88,7 +88,7 @@ AUDIOBOOKSHELF_URL=https://audiobookshelf.example.com
 
 ## Migration Guide
 
-### Upgrading from Single-User to Web UI Mode
+### Upgrading from Headless to Web UI Mode
 
 1. **Update Configuration:**
    ```yaml
@@ -106,7 +106,7 @@ AUDIOBOOKSHELF_URL=https://audiobookshelf.example.com
    - Your existing configuration is automatically migrated
    - Create users with their individual tokens
 
-### Downgrading from Web UI to Single-User Mode
+### Downgrading from Web UI to Headless Mode
 
 1. **Update Configuration:**
    ```yaml
@@ -144,7 +144,7 @@ services:
       - ./data:/app/data
 ```
 
-### Docker with Single-User Mode
+### Docker with Headless Mode
 
 ```yaml
 version: '3.8'
@@ -170,7 +170,7 @@ ENABLE_WEB_UI=true ./audiobookshelf-hardcover-sync --audiobookshelf-url https://
 ./audiobookshelf-hardcover-sync --config config.yaml --server-only
 ```
 
-**Single-User Mode:**
+**Headless Mode:**
 ```bash
 # Using environment variables
 ./audiobookshelf-hardcover-sync \
@@ -187,7 +187,7 @@ ENABLE_WEB_UI=true ./audiobookshelf-hardcover-sync --audiobookshelf-url https://
 ### Common Issues
 
 1. **"Required configuration values are missing"**
-   - Single-user mode: Ensure both tokens are provided
+   - Headless mode: Ensure both tokens are provided
    - Web UI mode: Only requires `AUDIOBOOKSHELF_URL`
 
 2. **"Web UI disabled" message**
@@ -200,7 +200,7 @@ ENABLE_WEB_UI=true ./audiobookshelf-hardcover-sync --audiobookshelf-url https://
 
 The application validates configuration based on the selected mode:
 
-- **Single-user mode:** Requires `AUDIOBOOKSHELF_URL`, `AUDIOBOOKSHELF_TOKEN`, and `HARDCOVER_TOKEN`
+- **Headless mode:** Requires `AUDIOBOOKSHELF_URL`, `AUDIOBOOKSHELF_TOKEN`, and `HARDCOVER_TOKEN`
 - **Web UI mode:** Requires only `AUDIOBOOKSHELF_URL` (tokens configured via web UI)
 
 ### Debug Mode
@@ -214,6 +214,6 @@ LOG_LEVEL=debug ./audiobookshelf-hardcover-sync --config config.yaml
 ## Security Considerations
 
 - **Web UI Mode:** Tokens are encrypted at rest using AES-256-GCM
-- **Single-User Mode:** Tokens are stored in environment variables or config files
+- **Headless Mode:** Tokens are stored in environment variables or config files
 - **HTTPS:** Use HTTPS in production (configure reverse proxy)
 - **Authentication:** Consider enabling authentication for web UI mode

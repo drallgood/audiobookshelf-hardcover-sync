@@ -40,9 +40,8 @@ func TestNewState(t *testing.T) {
 	t.Parallel()
 
 	state := NewState()
-	assert.Equal(t, CurrentVersion, state.Version)
-	assert.NotZero(t, state.Libraries)
 	assert.NotZero(t, state.Books)
+	assert.Equal(t, CurrentVersion, state.Version)
 }
 
 func TestLoadState_NewFile(t *testing.T) {
@@ -53,32 +52,66 @@ func TestLoadState_NewFile(t *testing.T) {
 
 	state, err := LoadState(statePath)
 	require.NoError(t, err)
-	assert.Equal(t, CurrentVersion, state.Version)
+	assert.NotNil(t, state.Books)
 }
 
-func TestLoadState_V1(t *testing.T) {
+func TestLoadState_IgnoresRetiredTimestampMetadata(t *testing.T) {
 	t.Parallel()
 
 	tempDir := t.TempDir()
 	statePath := filepath.Join(tempDir, "state_v1.json")
 
-	// Create a v1 state file
-	v1State := `{
+	legacyState := `{
 		"lastSyncTimestamp": 1751108977166,
 		"lastFullSync": 1751108977166,
 		"version": "1.0"
 	}`
-	require.NoError(t, os.WriteFile(statePath, []byte(v1State), 0644))
+	require.NoError(t, os.WriteFile(statePath, []byte(legacyState), 0644))
 
-	// Load and migrate
 	state, err := LoadState(statePath)
 	require.NoError(t, err)
-
-	// Verify migration
-	expectedTime := int64(1751108977) // Converted from ms to s
+	assert.Empty(t, state.Books)
 	assert.Equal(t, CurrentVersion, state.Version)
-	assert.Equal(t, expectedTime, state.LastSync)
-	assert.Equal(t, expectedTime, state.LastFullSync)
+}
+
+func TestLoadState_NormalizesUnversionedAndV2Books(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name    string
+		version string
+	}{
+		{name: "unversioned", version: ""},
+		{name: "v2", version: "2.0"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state.json")
+			contents := `{"books":{"book":{"lastProgress":0.5,"lastUpdated":42}}}`
+			if test.version != "" {
+				contents = `{"version":"` + test.version + `","books":{"book":{"lastProgress":0.5,"lastUpdated":42}}}`
+			}
+			require.NoError(t, os.WriteFile(path, []byte(contents), 0644))
+
+			state, err := LoadState(path)
+			require.NoError(t, err)
+			require.Equal(t, CurrentVersion, state.Version)
+			require.Equal(t, Book{LastProgress: 0.5, LastUpdated: 42}, state.Books["book"])
+			require.NoError(t, state.Save(path))
+			saved, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Contains(t, string(saved), `"version": "`+CurrentVersion+`"`)
+		})
+	}
+}
+
+func TestLoadState_RejectsUnknownVersion(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "state.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"version":"4.0","books":{}}`), 0644))
+	_, err := LoadState(path)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported state version")
 }
 
 func TestLoadState_InvalidJSON(t *testing.T) {
@@ -102,20 +135,20 @@ func TestSaveAndLoad(t *testing.T) {
 	// Create and save state
 	state1 := NewState()
 	state1.UpdateBook("book1", 0.5, "IN_PROGRESS")
-	state1.UpdateLibrary("lib1")
-	state1.SetFullSync()
 
 	require.NoError(t, state1.Save(statePath))
+	saved, err := os.ReadFile(statePath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(saved), "lastSync")
+	assert.NotContains(t, string(saved), "lastFullSync")
+	assert.NotContains(t, string(saved), "libraries")
+	assert.Contains(t, string(saved), `"version": "`+CurrentVersion+`"`)
 
 	// Load state
 	state2, err := LoadState(statePath)
 	require.NoError(t, err)
 
 	// Verify data
-	assert.Equal(t, state1.Version, state2.Version)
-	assert.Equal(t, state1.LastSync, state2.LastSync)
-	assert.Equal(t, state1.LastFullSync, state2.LastFullSync)
-	assert.Len(t, state2.Libraries, 1)
 	assert.Len(t, state2.Books, 1)
 
 	// Verify book data
@@ -353,13 +386,6 @@ func TestStateDirtyTracking(t *testing.T) {
 	assert.False(t, state.UpdateBook("book1", 0.5, "IN_PROGRESS"))
 	assert.False(t, state.IsDirty())
 
-	state.UpdateLibrary("library")
-	assert.True(t, state.IsDirty())
-	require.NoError(t, state.Save(filepath.Join(t.TempDir(), "state.json")))
-	state.SetFullSync()
-	assert.True(t, state.IsDirty())
-	require.NoError(t, state.Save(filepath.Join(t.TempDir(), "state.json")))
-
 	state.UpdateBookWithUserBookID("book1", 0.5, "IN_PROGRESS", "user-book")
 	assert.True(t, state.IsDirty())
 	require.NoError(t, state.Save(filepath.Join(t.TempDir(), "state.json")))
@@ -382,14 +408,11 @@ func TestUpdateBookWithUserBookIDNoOpPreservesTimestamps(t *testing.T) {
 		UserBookID:         "user-book",
 		HasProgressSeconds: true,
 	}
-	state.LastSync = initialTimestamp
-
 	state.UpdateBookWithUserBookID("book1", 0.5, "IN_PROGRESS", "user-book")
 
 	book, exists := state.Books["book1"]
 	require.True(t, exists)
 	assert.Equal(t, initialTimestamp, book.LastUpdated)
-	assert.Equal(t, initialTimestamp, state.LastSync)
 	assert.False(t, state.IsDirty())
 
 	state.UpdateBookWithUserBookID("book1", 0.5, "FINISHED", "user-book")
@@ -398,7 +421,6 @@ func TestUpdateBookWithUserBookIDNoOpPreservesTimestamps(t *testing.T) {
 	require.True(t, exists)
 	assert.Equal(t, "FINISHED", book.Status)
 	assert.Greater(t, book.LastUpdated, initialTimestamp)
-	assert.Greater(t, state.LastSync, initialTimestamp)
 	assert.True(t, state.IsDirty())
 }
 
@@ -448,35 +470,6 @@ func TestBookUpdates(t *testing.T) {
 	book = state.Books["book1"]
 	assert.Equal(t, 0.5, book.LastProgress)
 	assert.GreaterOrEqual(t, book.LastUpdated, now, "timestamp should be greater than or equal to the previous one")
-}
-
-func TestLibraryUpdates(t *testing.T) {
-	t.Parallel()
-
-	state := NewState()
-	now := time.Now().Unix()
-
-	// First update
-	state.UpdateLibrary("lib1")
-	lib, exists := state.Libraries["lib1"]
-	require.True(t, exists)
-	assert.GreaterOrEqual(t, lib.LastUpdated, now)
-
-	// Update again
-	time.Sleep(10 * time.Millisecond) // Ensure timestamps are different
-	state.UpdateLibrary("lib1")
-	lib = state.Libraries["lib1"]
-	assert.GreaterOrEqual(t, lib.LastUpdated, now, "timestamp should be greater than or equal to the previous one")
-}
-
-func TestSetFullSync(t *testing.T) {
-	t.Parallel()
-
-	state := NewState()
-	now := time.Now().Unix()
-
-	state.SetFullSync()
-	assert.GreaterOrEqual(t, state.LastFullSync, now)
 }
 
 func TestCustomStatePath(t *testing.T) {

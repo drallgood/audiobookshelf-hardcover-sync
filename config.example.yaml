@@ -108,6 +108,9 @@ app:
 database:
   # Database type: sqlite, postgresql, mysql, mariadb
   type: "sqlite"
+
+  # Number of terminal sync reports retained per profile (default: 10)
+  sync_run_report_retention: 10
   
   # SQLite configuration (default)
   path: ""  # Uses default path if empty: ./data/database.db

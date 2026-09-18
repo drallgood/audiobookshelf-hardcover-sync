@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/auth"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
@@ -50,7 +52,7 @@ func newRouteTestFixture(t *testing.T, authEnabled bool) *routeTestFixture {
 	authService, err := auth.NewAuthService(db.GetDB(), authConfig, logger.Get())
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		multiUserService.WaitForSyncs()
+		require.NoError(t, multiUserService.Shutdown(context.Background()))
 		require.NoError(t, db.Close())
 	})
 
@@ -80,6 +82,21 @@ func (f *routeTestFixture) requestWithCookies(method, path string, body []byte, 
 	return recorder
 }
 
+func TestRemovedLegacySyncRoutesReturnNotFound(t *testing.T) {
+	fixture := newRouteTestFixture(t, false)
+	for _, request := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodPost, path: "/api/sync"},
+		{method: http.MethodGet, path: "/api/profiles/profile-a/status"},
+		{method: http.MethodGet, path: "/api/profiles/profile-a/summary"},
+	} {
+		response := fixture.request(request.method, request.path, nil)
+		require.Equal(t, http.StatusNotFound, response.Code, response.Body.String())
+	}
+}
+
 func TestServerRoutesPreserveEncodedLegacyProfileIDForCRUD(t *testing.T) {
 	fixture := newRouteTestFixture(t, false)
 	legacyID := "legacy/profile;id"
@@ -107,20 +124,19 @@ func TestServerRoutesPreserveEncodedLegacyProfileIDForCRUD(t *testing.T) {
 	require.True(t, profilePayload.Success)
 	require.Equal(t, legacyID, profilePayload.Data.Profile.ID)
 
-	statusResponse := fixture.request(http.MethodGet, "/api/profiles/"+escapedID+"/status", nil)
+	statusResponse := fixture.request(http.MethodGet, "/api/status", nil)
 	require.Equal(t, http.StatusOK, statusResponse.Code, statusResponse.Body.String())
 	var statusPayload struct {
 		Success bool `json:"success"`
-		Data    struct {
+		Data    []struct {
 			ProfileID string `json:"profile_id"`
 		} `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(statusResponse.Body.Bytes(), &statusPayload))
 	require.True(t, statusPayload.Success)
-	require.Equal(t, legacyID, statusPayload.Data.ProfileID)
+	require.Len(t, statusPayload.Data, 1)
+	require.Equal(t, legacyID, statusPayload.Data[0].ProfileID)
 
-	summaryResponse := fixture.request(http.MethodGet, "/api/profiles/"+escapedID+"/summary", nil)
-	require.Equal(t, http.StatusOK, summaryResponse.Code, summaryResponse.Body.String())
 	detailsResponse := fixture.request(http.MethodGet, "/api/profiles/"+escapedID+"/runs/unknown/details", nil)
 	require.Equal(t, http.StatusNotFound, detailsResponse.Code, detailsResponse.Body.String())
 
@@ -176,13 +192,13 @@ func TestServerAggregateOmitsErrorWhileAuthenticatedStatusRetainsIt(t *testing.T
 		"hardcover-token",
 		database.SyncConfigData{StateFile: statePath, ProcessUnreadBooks: true, DryRun: true},
 	))
-	require.NoError(t, fixture.server.multiUserService.StartSync(profileID))
-	fixture.server.multiUserService.WaitForSyncs()
-
-	terminal := fixture.server.multiUserService.GetProfileStatus(profileID)
+	_, err := fixture.server.multiUserService.StartSyncWithAcceptedRun(profileID)
+	require.NoError(t, err)
+	terminal := waitForTerminalProfileStatusForServerTest(t, fixture.server.multiUserService, profileID)
 	require.NotNil(t, terminal)
-	require.Equal(t, "error", terminal.Status)
-	require.Contains(t, terminal.Error, sentinel)
+	require.NotNil(t, terminal.Snapshot)
+	require.Equal(t, "failed", terminal.Snapshot.State)
+	require.Contains(t, terminal.Snapshot.RunError, sentinel)
 
 	publicResponse := fixture.request(http.MethodGet, "/api/status", nil)
 	require.Equal(t, http.StatusOK, publicResponse.Code, publicResponse.Body.String())
@@ -212,14 +228,56 @@ func TestServerAggregateOmitsErrorWhileAuthenticatedStatusRetainsIt(t *testing.T
 	require.Equal(t, http.StatusOK, loginResponse.Code, loginResponse.Body.String())
 	cookies := loginResponse.Result().Cookies()
 	require.NotEmpty(t, cookies)
-	statusResponse := fixture.requestWithCookies(http.MethodGet, "/api/profiles/"+profileID+"/status", nil, cookies)
+	statusResponse := fixture.requestWithCookies(http.MethodGet, "/api/profiles/"+profileID+"/runs/"+terminal.Snapshot.RunID+"/details", nil, cookies)
 	require.Equal(t, http.StatusOK, statusResponse.Code, statusResponse.Body.String())
 	var authenticatedStatus struct {
-		Success bool                        `json:"success"`
-		Data    multiuser.SyncProfileStatus `json:"data"`
+		Success bool `json:"success"`
+		Data    struct {
+			RunError string `json:"run_error"`
+		} `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(statusResponse.Body.Bytes(), &authenticatedStatus))
 	require.True(t, authenticatedStatus.Success)
-	require.Equal(t, terminal.Error, authenticatedStatus.Data.Error)
+	require.Equal(t, terminal.Snapshot.RunError, authenticatedStatus.Data.RunError)
 	require.Contains(t, statusResponse.Body.String(), sentinel)
+}
+
+func profileStatusForServerTest(t *testing.T, service *multiuser.MultiUserService, profileID string) *multiuser.SyncProfileStatus {
+	t.Helper()
+	statuses, err := service.GetAllProfileStatuses()
+	require.NoError(t, err)
+	for _, status := range statuses {
+		if status != nil && status.ProfileID == profileID {
+			if status.Snapshot != nil && status.Snapshot.RunID != "" {
+				snapshot, snapshotErr := service.GetSyncRunSnapshot(profileID, status.Snapshot.RunID)
+				require.NoError(t, snapshotErr)
+				if snapshot != nil {
+					status.Snapshot = snapshot
+				}
+			}
+			return status
+		}
+	}
+	return nil
+}
+
+func waitForTerminalProfileStatusForServerTest(t *testing.T, service *multiuser.MultiUserService, profileID string) *multiuser.SyncProfileStatus {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		statuses, err := service.GetAllProfileStatuses()
+		if err != nil {
+			return false
+		}
+		for _, status := range statuses {
+			if status == nil || status.ProfileID != profileID || status.Snapshot == nil {
+				continue
+			}
+			switch status.Snapshot.State {
+			case "completed", "failed", "canceled":
+				return true
+			}
+		}
+		return false
+	}, 10*time.Second, 10*time.Millisecond)
+	return profileStatusForServerTest(t, service, profileID)
 }

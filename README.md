@@ -22,7 +22,6 @@ Automatically syncs your Audiobookshelf library with Hardcover, including readin
 - **📊 Real-Time Monitoring**: Live sync status with quiet auto-refresh and automatic retry after a temporary profile-load failure
 - **🔧 REST API**: Complete programmatic control via RESTful endpoints
 - **⬆️ Automatic Migration**: Seamless upgrade from single-profile setups
-- **🔙 Backwards Compatible**: All existing functionality preserved
 - **🚀 Cache Busting**: Automatic cache invalidation ensures profiles always get the latest UI updates
 
 ### Browser support
@@ -67,9 +66,7 @@ Existing single-profile setups are **automatically migrated** on first startup:
 | `PUT` | `/api/profiles/{id}` | Update profile |
 | `DELETE` | `/api/profiles/{id}` | Delete profile |
 | `PUT` | `/api/profiles/{id}/config` | Update profile configuration |
-| `GET` | `/api/profiles/{id}/status` | Get sync status and current-run snapshot |
-| `GET` | `/api/profiles/{id}/summary` | Get current-run outcomes and legacy summary |
-| `GET` | `/api/profiles/{id}/runs/{runId}/details` | Get book-level details for the current run |
+| `GET` | `/api/profiles/{id}/runs/{runId}/details` | Get book-level details for a retained sync run |
 | `POST` | `/api/profiles/{id}/sync` | Start sync |
 | `DELETE` | `/api/profiles/{id}/sync` | Cancel sync |
 | `GET` | `/api/status` | All profile statuses |
@@ -87,17 +84,29 @@ title, its ASIN to Audible, and its ISBN to a Goodreads search.
 Each processed book is counted once as `synced`, `already_current`, `skipped`,
 `needs_review`, `not_found`, `failed`, or dry-run `would_sync`. A total of zero
 means the number of books is not known yet, so the processed count may still
-increase. Status represents only the current run, is cleared when that run is
-canceled, and is not a persistent run history.
+increase. A sync start durably reserves an accepted `queued` run before worker
+launch; the HTTP response may race processing. The status card then follows that run through `running`,
+`finalizing`, and its terminal phase. Canceled and failed runs retain their
+partial counts, including unattempted candidates. The card distinguishes the
+last attempted run from the last successful non-dry-run run, and labels active
+dry runs without implying that Hardcover was changed.
+
+The service retains the newest 10 terminal run reports per profile by default. Set
+`database.sync_run_report_retention` or `DATABASE_SYNC_RUN_REPORT_RETENTION` to change
+the retention window. View Details can open
+the report for an exact run ID, including a completed, canceled, or failed run,
+so the latest report remains available after a restart. While a run is active,
+an empty missing-books category means `No missing books reported in this run
+so far`; after a terminal run it means `No missing books reported in this run`.
 
 For API clients, `GET /api/status` provides a lightweight snapshot with the run
 ID, start time, state, totals, and outcome counts, but no book-level records.
-Authenticated profile status and summary routes include the full current
-snapshot. Book-level outcomes are available from
-`GET /api/profiles/{id}/runs/{runId}/details`; stale, replaced, canceled, or
-unknown run IDs return `404`, so clients should refresh status and use the
-current run ID. Needs-review, not-found, and failed books appear in
-`attention_records` as they occur.
+Book-level outcomes and unredacted run errors are available from the authenticated
+`GET /api/profiles/{id}/runs/{runId}/details` route; run IDs outside the retained
+history return `404`. Clients can filter `book_outcomes` for `needs_review`,
+`not_found`, and `failed` records. `last_attempted_at` includes dry-run,
+failed, and canceled attempts; `last_successful_at` is updated only by a
+successful non-dry-run completion.
 
 ### Environment Variables (Multi-Profile)
 
@@ -105,6 +114,7 @@ current run ID. Needs-review, not-found, and failed books appear in
 |----------|-------------|:-------:|
 | `ENCRYPTION_KEY` | Base64-encoded 32-byte encryption key (auto-generated if not set) | Auto-generated |
 | `DATA_DIR` | Directory for database and encryption files | `./data` |
+| `DATABASE_SYNC_RUN_REPORT_RETENTION` | Terminal run reports retained per profile | `10` |
 
 ### Security Features
 
@@ -190,7 +200,6 @@ The project follows standard Go project layout:
 - **📊 Real-Time Monitoring**: Live sync status with quiet auto-refresh and automatic retry after a temporary profile-load failure
 - **🔧 REST API**: Complete programmatic control via RESTful endpoints
 - **⬆️ Automatic Migration**: Seamless upgrade from single-user setups
-- **🔙 Backwards Compatible**: All existing functionality preserved
 
 ### 📚 Core Sync Features
 - **Full Library Sync**: Syncs your entire Audiobookshelf library with Hardcover
@@ -559,7 +568,6 @@ sync:
   include_ebooks: false    # Include items with media type "ebook" in sync
   process_unread_books: false  # Process books with 0% progress for mismatches and want-to-read status
   preserve_dnf: true      # Preserve books marked as "Did Not Finish" in Hardcover
-  mismatch_output_dir: "./mismatches"  # Directory to store mismatch JSON files
   dry_run: false           # Enable dry run mode (no changes will be made)
   test_book_filter: ""    # Filter books by title for testing
   test_book_limit: 0       # Limit number of books to process for testing (0 = no limit)
@@ -644,7 +652,7 @@ paths:
 | `RATE_LIMIT_RATE` | Minimum time between Hardcover API requests | unset | `2s` (30 rpm) |
 | `RATE_LIMIT_MAX_CONCURRENT` | Max concurrent requests | unset | `1` |
 
-**Single-User Mode (Legacy)** - For backwards compatibility (web UI disabled):
+**Headless Mode** - Existing configuration-file and environment-variable setup (web UI disabled):
 
 ### Configuration Modes
 
@@ -657,7 +665,7 @@ The application supports two distinct operating modes controlled by the `enable_
 - **Real-time monitoring** and control
 - **No token requirements** at startup (tokens configured via web UI)
 
-#### Single-User Mode (Legacy) - `enable_web_ui: false` (default)
+#### Headless Mode - `enable_web_ui: false` (default)
 - **Backward compatible** with existing setups
 - **Environment variable/configuration file** based token management
 - **No web interface** - runs as a service only
@@ -907,7 +915,7 @@ Use this workflow:
 
 1. **Find the mismatch details**
   - Open the sync summary in the web UI and inspect the mismatch entries.
-  - Optionally review JSON mismatch files in your configured `sync.mismatch_output_dir` (default: `./mismatches`).
+  - Optionally review JSON mismatch files in your configured `paths.mismatch_output_dir` (default: `./mismatches`). Multi-profile runs use an encoded profile-specific subdirectory beneath it.
 
 2. **Identify why matching failed**
   - Missing or incorrect identifiers in AudiobookShelf (ASIN/ISBN)

@@ -8,7 +8,6 @@ import (
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -16,9 +15,12 @@ import (
 )
 
 func recordedOutcome(svc *Service, bookID string) BookOutcomeRecord {
-	svc.summary.RLock()
-	defer svc.summary.RUnlock()
-	return svc.outcomeRecords[bookID]
+	for _, record := range svc.GetSnapshot().BookOutcomes {
+		if record.BookID == bookID {
+			return record
+		}
+	}
+	return BookOutcomeRecord{}
 }
 
 func expectASINMatch(mockClient *MockHardcoverClient, asin string, bookID, editionID string, userBookID int) {
@@ -39,7 +41,7 @@ func TestProcessBookRecordsSkipAndIncrementalNoChange(t *testing.T) {
 		err := svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{})
 		require.NoError(t, err)
 		assert.Equal(t, OutcomeSkipped, recordedOutcome(svc, book.ID).Outcome)
-		assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed)
+		assert.Equal(t, int32(1), svc.outcomeCounts.Total())
 		hc.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
 	})
 
@@ -177,7 +179,7 @@ func TestProcessBookThresholdSkipRecordsSkipped(t *testing.T) {
 
 	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
 	assert.Equal(t, OutcomeSkipped, recordedOutcome(svc, book.ID).Outcome)
-	assert.Equal(t, int32(0), svc.summary.BooksSynced)
+	assert.Equal(t, int32(0), svc.outcomeCounts.Synced)
 	assert.Equal(t, int32(1), svc.outcomeCounts.Skipped)
 	hc.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
 	hc.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
@@ -197,8 +199,8 @@ func TestRecordBookOutcomeReplacementClearsPreviousError(t *testing.T) {
 	assert.Empty(t, record.Error)
 	assert.Equal(t, int32(1), svc.outcomeCounts.Synced)
 	assert.Equal(t, int32(0), svc.outcomeCounts.Failed)
-	assert.Equal(t, int32(1), svc.summary.BooksSynced)
-	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed)
+	assert.Equal(t, int32(1), svc.outcomeCounts.Synced)
+	assert.Equal(t, int32(1), svc.outcomeCounts.Total())
 }
 
 func TestProcessBookSeparatesNotFoundAndTechnicalLookupFailure(t *testing.T) {
@@ -234,8 +236,6 @@ func TestProcessBookSeparatesNotFoundAndTechnicalLookupFailure(t *testing.T) {
 }
 
 func TestProcessBookKeepsIdentifierFailureWhenTitleSearchFindsCandidate(t *testing.T) {
-	mismatch.Clear()
-	t.Cleanup(mismatch.Clear)
 	svc, hc := createTestService()
 	book := createTestBook("outcome-incomplete-lookup", "Possible Match", "Author", "failed-asin", "")
 	book.Progress.CurrentTime = 300
@@ -254,7 +254,7 @@ func TestProcessBookKeepsIdentifierFailureWhenTitleSearchFindsCandidate(t *testi
 	assert.Equal(t, OutcomeFailed, record.Outcome)
 	assert.Contains(t, record.Error, lookupErr.Error())
 	assert.Empty(t, record.MatchMethod, "title candidate cannot verify an incomplete identifier search")
-	matches := mismatch.GetAll()
+	matches := svc.mismatchCollector.GetAll()
 	require.Len(t, matches, 1)
 	assert.Equal(t, absBook.ID, matches[0].BookID)
 	assert.Equal(t, "901", matches[0].HardcoverBookID)
@@ -262,14 +262,12 @@ func TestProcessBookKeepsIdentifierFailureWhenTitleSearchFindsCandidate(t *testi
 	assert.Equal(t, "possible-match", matches[0].HardcoverSlug)
 	assert.Contains(t, matches[0].Reason, lookupErr.Error())
 	snapshot := svc.GetSnapshot()
-	require.Len(t, snapshot.Mismatches, 1)
-	assert.Contains(t, snapshot.Mismatches[0].Reason, lookupErr.Error())
+	require.Len(t, snapshot.BookOutcomes, 1)
+	assert.Contains(t, snapshot.BookOutcomes[0].Reason, lookupErr.Error())
 	hc.AssertExpectations(t)
 }
 
 func TestProcessBookSnapshotKeepsTitleOnlyEnrichment(t *testing.T) {
-	mismatch.Clear()
-	t.Cleanup(mismatch.Clear)
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
 	book := createTestBook("snapshot-title-only", "Title Only", "Author", "", "9781234567890")
@@ -295,10 +293,9 @@ func TestProcessBookSnapshotKeepsTitleOnlyEnrichment(t *testing.T) {
 	require.NoError(t, svc.processBook(context.Background(), *absBook, &models.AudiobookshelfUserProgress{}))
 
 	snapshot := svc.GetSnapshot()
-	require.Len(t, snapshot.Mismatches, 1)
-	got := snapshot.Mismatches[0]
+	require.Len(t, snapshot.BookOutcomes, 1)
+	got := snapshot.BookOutcomes[0]
 	assert.Equal(t, absBook.ID, got.BookID)
-	assert.Equal(t, book.Media.Metadata.ISBN, got.ISBN13)
 	assert.Equal(t, "904", got.HardcoverBookID)
 	assert.Empty(t, got.HardcoverSlug, "candidate metadata from a different Hardcover book must not be mixed")
 	assert.Equal(t, "Enriched Author", got.HardcoverAuthor)
@@ -307,8 +304,6 @@ func TestProcessBookSnapshotKeepsTitleOnlyEnrichment(t *testing.T) {
 }
 
 func TestProcessBookSnapshotKeepsEnrichedSecondLookupFailure(t *testing.T) {
-	mismatch.Clear()
-	t.Cleanup(mismatch.Clear)
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
 	book := createTestBook("snapshot-second-lookup", "Second Lookup", "Author", "", "9781234567890")
@@ -341,23 +336,18 @@ func TestProcessBookSnapshotKeepsEnrichedSecondLookupFailure(t *testing.T) {
 	require.ErrorIs(t, err, ErrSkippedBook)
 
 	snapshot := svc.GetSnapshot()
-	require.Len(t, snapshot.Mismatches, 1)
-	got := snapshot.Mismatches[0]
+	require.Len(t, snapshot.BookOutcomes, 1)
+	got := snapshot.BookOutcomes[0]
 	assert.Equal(t, absBook.ID, got.BookID)
 	assert.Equal(t, "Hardcover Second Lookup", got.HardcoverTitle)
 	assert.Equal(t, "Hardcover Author", got.HardcoverAuthor)
 	assert.Equal(t, "https://example.test/cover.jpg", got.HardcoverCoverURL)
 	assert.Equal(t, "2021", got.HardcoverPublishedYear)
-	assert.Equal(t, "2023-01-01", got.ReleaseDate)
-	assert.Equal(t, book.Media.Metadata.ISBN, got.ISBN13)
-	assert.Equal(t, 777, got.PublisherID)
 	assert.Equal(t, OutcomeFailed, snapshot.BookOutcomes[0].Outcome)
 	hc.AssertExpectations(t)
 }
 
 func TestProcessBookSnapshotKeepsSecondLookupNotFoundOutOfMismatches(t *testing.T) {
-	mismatch.Clear()
-	t.Cleanup(mismatch.Clear)
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
 	book := createTestBook("snapshot-second-lookup-not-found", "Second Lookup Not Found", "Author", "", "9781234567890")
@@ -366,7 +356,7 @@ func TestProcessBookSnapshotKeepsSecondLookupNotFoundOutOfMismatches(t *testing.
 	absBook.Media.Metadata.Publisher = "Test Publisher"
 
 	// The first lookup succeeds, but the later lookup used before mutation no
-	// longer finds the book. The compatibility mismatch export still runs for
+	// longer finds the book. The mismatch export still runs for
 	// that conclusive result.
 	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return(&models.HardcoverBook{
 		ID: "901", EditionID: "902",
@@ -378,7 +368,7 @@ func TestProcessBookSnapshotKeepsSecondLookupNotFoundOutOfMismatches(t *testing.
 	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return((*models.HardcoverBook)(nil), nil).Once()
 	hc.On("SearchBookByISBN10", mock.Anything, book.Media.Metadata.ISBN).Return((*models.HardcoverBook)(nil), nil).Once()
 	hc.On("SearchBooks", mock.Anything, "Second Lookup Not Found Author", "").Return([]models.HardcoverBook{}, nil).Once()
-	// AddWithMetadata enriches the global mismatch export after the not-found
+	// AddWithMetadata enriches the run-local mismatch export after the not-found
 	// outcome has been published.
 	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return(&models.HardcoverBook{
 		ID: "904", Title: "Hardcover Second Lookup Not Found", Authors: []models.Author{{Name: "Hardcover Author"}},
@@ -387,20 +377,17 @@ func TestProcessBookSnapshotKeepsSecondLookupNotFoundOutOfMismatches(t *testing.
 	require.ErrorIs(t, svc.processBook(context.Background(), *absBook, &models.AudiobookshelfUserProgress{}), ErrSkippedBook)
 
 	snapshot := svc.GetSnapshot()
-	require.Len(t, snapshot.BooksNotFound, 1)
-	assert.Equal(t, absBook.ID, snapshot.BooksNotFound[0].BookID)
-	assert.Empty(t, snapshot.Mismatches)
+	require.Len(t, snapshot.BookOutcomes, 1)
+	assert.Equal(t, absBook.ID, snapshot.BookOutcomes[0].BookID)
 	assert.Equal(t, OutcomeNotFound, snapshot.BookOutcomes[0].Outcome)
 
-	global := mismatch.GetAll()
-	require.Len(t, global, 1)
-	assert.Equal(t, absBook.ID, global[0].BookID)
+	records := svc.mismatchCollector.GetAll()
+	require.Len(t, records, 1)
+	assert.Equal(t, absBook.ID, records[0].BookID)
 	hc.AssertExpectations(t)
 }
 
 func TestProcessBookSnapshotKeepsEnrichedNoEditionMismatch(t *testing.T) {
-	mismatch.Clear()
-	t.Cleanup(mismatch.Clear)
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
 	book := createTestBook("snapshot-no-edition", "No Edition", "Author", "", "9781234567890")
@@ -421,20 +408,18 @@ func TestProcessBookSnapshotKeepsEnrichedNoEditionMismatch(t *testing.T) {
 	require.ErrorIs(t, err, ErrSkippedBook)
 
 	snapshot := svc.GetSnapshot()
-	require.Len(t, snapshot.Mismatches, 1)
-	got := snapshot.Mismatches[0]
+	require.Len(t, snapshot.BookOutcomes, 1)
+	got := snapshot.BookOutcomes[0]
 	assert.Equal(t, absBook.ID, got.BookID)
 	assert.Equal(t, "Hardcover No Edition", got.HardcoverTitle)
 	assert.Equal(t, "Hardcover Author", got.HardcoverAuthor)
 	assert.Equal(t, "https://example.test/no-edition-cover.jpg", got.HardcoverCoverURL)
 	assert.Equal(t, "2020", got.HardcoverPublishedYear)
-	assert.Equal(t, "2023-01-01", got.ReleaseDate)
-	assert.Equal(t, 1, got.Attempts)
 	assert.Equal(t, OutcomeNeedsReview, snapshot.BookOutcomes[0].Outcome)
-	global := mismatch.GetAll()
-	require.Len(t, global, 1)
-	assert.Equal(t, "905", global[0].BookID, "global mismatch export keeps its established Hardcover identifier")
-	assert.Equal(t, 1, global[0].Attempts)
+	records := svc.mismatchCollector.GetAll()
+	require.Len(t, records, 1)
+	assert.Equal(t, "905", records[0].BookID, "mismatch export keeps its established Hardcover identifier")
+	assert.Equal(t, 1, records[0].Attempts)
 	hc.AssertExpectations(t)
 }
 
@@ -450,8 +435,8 @@ func TestProcessLibraryCandidateDenominatorIgnoresLimit(t *testing.T) {
 	processed, err := svc.processLibrary(context.Background(), &audiobookshelf.AudiobookshelfLibrary{ID: "library", Name: "Library"}, 1, &models.AudiobookshelfUserProgress{})
 	require.NoError(t, err)
 	assert.Equal(t, 1, processed)
-	assert.Equal(t, int32(2), svc.summary.BooksTotal)
-	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed)
+	assert.Equal(t, int32(2), svc.GetSnapshotStatus().BooksTotal)
+	assert.Equal(t, int32(1), svc.outcomeCounts.Total())
 	hc.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
 }
 
@@ -473,8 +458,8 @@ func TestProcessLibrarySkipsMissingIDAndReconcilesOutcomes(t *testing.T) {
 	processed, err := svc.processLibrary(context.Background(), &audiobookshelf.AudiobookshelfLibrary{ID: "library", Name: "Library"}, 0, &models.AudiobookshelfUserProgress{})
 	require.NoError(t, err)
 	assert.Equal(t, 2, processed)
-	assert.Equal(t, int32(3), svc.summary.BooksTotal)
-	assert.Equal(t, int32(2), svc.summary.TotalBooksProcessed)
+	assert.Equal(t, int32(3), svc.GetSnapshotStatus().BooksTotal)
+	assert.Equal(t, int32(2), svc.outcomeCounts.Total())
 	assert.Equal(t, int32(2), svc.outcomeCounts.Total())
 	assert.Equal(t, int32(1), svc.outcomeCounts.Skipped)
 	assert.Equal(t, int32(1), svc.outcomeCounts.NotFound)
@@ -502,8 +487,8 @@ func TestSyncTestBookLimitIgnoresUnattemptedLibraryPrecountError(t *testing.T) {
 	svc.audiobookshelf = mockABS
 
 	require.NoError(t, svc.Sync(context.Background()))
-	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed)
-	assert.Equal(t, int32(0), svc.summary.BooksSynced)
+	assert.Equal(t, int32(1), svc.outcomeCounts.Total())
+	assert.Equal(t, int32(0), svc.outcomeCounts.Synced)
 	mockABS.AssertExpectations(t)
 	hc.AssertExpectations(t)
 }
@@ -546,8 +531,8 @@ func TestSyncTestBookLimitCountsFailedBookAttempt(t *testing.T) {
 	err := svc.Sync(context.Background())
 
 	require.NoError(t, err)
-	assert.Equal(t, int32(2), svc.summary.BooksTotal)
-	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed)
+	assert.Equal(t, int32(2), svc.GetSnapshotStatus().BooksTotal)
+	assert.Equal(t, int32(1), svc.outcomeCounts.Total())
 	assert.Equal(t, int32(1), svc.outcomeCounts.Failed)
 	mockABS.AssertExpectations(t)
 	hc.AssertExpectations(t)
@@ -572,8 +557,8 @@ func TestSyncRetriesLibraryFetchAfterPrecountFailure(t *testing.T) {
 	svc.audiobookshelf = mockABS
 
 	require.NoError(t, svc.Sync(context.Background()))
-	assert.Equal(t, int32(1), svc.summary.BooksTotal)
-	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed)
+	assert.Equal(t, int32(1), svc.GetSnapshotStatus().BooksTotal)
+	assert.Equal(t, int32(1), svc.outcomeCounts.Total())
 	mockABS.AssertExpectations(t)
 	hc.AssertExpectations(t)
 }

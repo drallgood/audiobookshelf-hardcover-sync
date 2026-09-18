@@ -12,23 +12,18 @@ import (
 	"time"
 )
 
-const (
-	CurrentVersion   = "2.0"
-	DefaultStateFile = "./data/sync_state.json"
-)
+const DefaultStateFile = "./data/sync_state.json"
+
+// CurrentVersion is the explicit state schema version written by Save. Legacy
+// v1 files only carried retired timestamp metadata; v2 and unversioned files
+// with Books use the current checkpoint shape and need no field conversion.
+const CurrentVersion = "3.0"
 
 type State struct {
-	Version      string             `json:"version"`
-	LastSync     int64              `json:"lastSync"`
-	LastFullSync int64              `json:"lastFullSync"`
-	Libraries    map[string]Library `json:"libraries,omitempty"`
-	Books        map[string]Book    `json:"books,omitempty"`
-	mu           sync.RWMutex       `json:"-"`
-	dirty        bool               `json:"-"`
-}
-
-type Library struct {
-	LastUpdated int64 `json:"lastUpdated"`
+	Version string          `json:"version"`
+	Books   map[string]Book `json:"books,omitempty"`
+	mu      sync.RWMutex    `json:"-"`
+	dirty   bool            `json:"-"`
 }
 
 type Book struct {
@@ -41,11 +36,8 @@ type Book struct {
 
 func NewState() *State {
 	return &State{
-		Version:      CurrentVersion,
-		LastSync:     0,
-		LastFullSync: 0,
-		Libraries:    make(map[string]Library),
-		Books:        make(map[string]Book),
+		Version: CurrentVersion,
+		Books:   make(map[string]Book),
 	}
 }
 
@@ -58,33 +50,22 @@ func LoadState(path string) (*State, error) {
 		return nil, fmt.Errorf("failed to read state file: %w", err)
 	}
 
-	var raw map[string]interface{}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("failed to parse state file: %w", err)
-	}
-
-	version, _ := raw["version"].(string)
-	if version == "" || version == "1.0" {
-		log.Println("INFO - Migrating state from v1 to v2")
-		var v1 v1State
-		if err := json.Unmarshal(data, &v1); err != nil {
-			return nil, fmt.Errorf("failed to parse v1 state: %w", err)
-		}
-		return migrateV1ToV2(v1), nil
-	}
-
 	var state State
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("failed to parse state: %w", err)
 	}
+	if state.Version != "" && state.Version != "1.0" && state.Version != "2.0" && state.Version != CurrentVersion {
+		return nil, fmt.Errorf("unsupported state version %q", state.Version)
+	}
+	// Unversioned legacy Books files and v1/v2 checkpoint files are compatible
+	// with the current shape. Normalize their in-memory version so the next
+	// persistence writes an explicit current schema version. v1 timestamp-only
+	// files intentionally remain empty so the first run rebuilds checkpoints.
+	state.Version = CurrentVersion
 
 	if state.Books == nil {
 		state.Books = make(map[string]Book)
 	}
-	if state.Libraries == nil {
-		state.Libraries = make(map[string]Library)
-	}
-
 	return &state, nil
 }
 
@@ -406,36 +387,9 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 	}
 
 	if updated {
-		s.LastSync = now
 		s.dirty = true
 	}
 	return updated
-}
-
-func (s *State) UpdateLibrary(libraryID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := time.Now().Unix()
-	updated := Library{
-		LastUpdated: now,
-	}
-	if existing, exists := s.Libraries[libraryID]; !exists || existing != updated {
-		s.Libraries[libraryID] = updated
-		s.LastSync = now
-		s.dirty = true
-	}
-}
-
-func (s *State) SetFullSync() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	lastFullSync := time.Now().Unix()
-	if s.LastFullSync != lastFullSync {
-		s.LastFullSync = lastFullSync
-		s.dirty = true
-	}
 }
 
 func (s *State) NeedsSync(bookID string, currentProgress float64, currentStatus string, minChangeThreshold float64) bool {
@@ -476,22 +430,6 @@ func (s *State) GetBookState(bookID string) (Book, bool) {
 	return book, exists
 }
 
-func (s *State) GetStaleBooks(maxAge time.Duration) []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	cutoff := time.Now().Add(-maxAge).Unix()
-	var staleBooks []string
-
-	for bookID, book := range s.Books {
-		if book.LastUpdated < cutoff {
-			staleBooks = append(staleBooks, bookID)
-		}
-	}
-
-	return staleBooks
-}
-
 func (s *State) UpdateBookWithUserBookID(bookID string, progress float64, status string, userBookID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -517,7 +455,6 @@ func (s *State) UpdateBookWithUserBookID(bookID string, progress float64, status
 	}
 	updated.LastUpdated = now
 	s.Books[bookID] = updated
-	s.LastSync = now
 	s.dirty = true
 }
 
@@ -529,22 +466,6 @@ func normalizeProgress(progress float64) float64 {
 		return 0
 	}
 	return progress
-}
-
-type v1State struct {
-	LastSyncTimestamp int64  `json:"lastSyncTimestamp"`
-	LastFullSync      int64  `json:"lastFullSync"`
-	Version           string `json:"version"`
-}
-
-func migrateV1ToV2(v1 v1State) *State {
-	return &State{
-		Version:      CurrentVersion,
-		LastSync:     v1.LastSyncTimestamp / 1000,
-		LastFullSync: v1.LastFullSync / 1000,
-		Libraries:    make(map[string]Library),
-		Books:        make(map[string]Book),
-	}
 }
 
 func (s *State) SetHasProgressSeconds(bookID string) {
