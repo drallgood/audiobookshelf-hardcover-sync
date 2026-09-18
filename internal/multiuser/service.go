@@ -38,6 +38,9 @@ var ErrProfileNotFound = errors.New("sync profile not found")
 // ErrSyncAlreadyActive indicates that a profile already has an active sync.
 var ErrSyncAlreadyActive = errors.New("sync already active")
 
+// ErrProfileDeleting indicates that profile lifecycle teardown is in progress.
+var ErrProfileDeleting = errors.New("sync profile is being deleted")
+
 // SyncProfileStatus represents the sync status for a profile
 type SyncProfileStatus struct {
 	ProfileID        string             `json:"profile_id"`
@@ -79,25 +82,32 @@ type profileRunGate struct {
 	executionCond          *stdSync.Cond
 	nextExecutionTicket    uint64
 	servingExecutionTicket uint64
+	startWaitGroup         stdSync.WaitGroup
+	workerWaitGroup        stdSync.WaitGroup
+	deleted                bool
 }
 
 // MultiUserService manages sync operations for multiple users
 type MultiUserService struct {
-	repository            *database.Repository
-	logger                *logger.Logger
-	globalConfig          *config.Config
-	profileStatuses       map[string]*SyncProfileStatus
-	statusMutex           stdSync.RWMutex
-	activeSyncs           map[string]context.CancelFunc
-	activeRuns            map[string]activeSyncRun
-	syncMutex             stdSync.RWMutex
-	syncWaitGroup         stdSync.WaitGroup
-	syncServices          map[string]*sync.Service // Maps profile ID to its sync service
-	serviceRuns           map[string]uint64
-	latestRuns            map[string]activeSyncRun
-	profileGates          map[string]*profileRunGate
-	servicesMutex         stdSync.RWMutex
-	admissionMutex        stdSync.Mutex
+	repository       *database.Repository
+	logger           *logger.Logger
+	globalConfig     *config.Config
+	profileStatuses  map[string]*SyncProfileStatus
+	statusMutex      stdSync.RWMutex
+	activeSyncs      map[string]context.CancelFunc
+	activeRuns       map[string]activeSyncRun
+	syncMutex        stdSync.RWMutex
+	syncWaitGroup    stdSync.WaitGroup
+	syncServices     map[string]*sync.Service // Maps profile ID to its sync service
+	serviceRuns      map[string]uint64
+	latestRuns       map[string]activeSyncRun
+	profileGates     map[string]*profileRunGate
+	servicesMutex    stdSync.RWMutex
+	admissionMutex   stdSync.Mutex
+	deletingProfiles map[string]struct{}
+	// deletedProfiles are lifecycle tombstones: they prevent late callbacks or
+	// new admissions from recreating a removed profile's gate after cleanup.
+	deletedProfiles       map[string]struct{}
 	startWaitGroup        stdSync.WaitGroup
 	shutdownMutex         stdSync.Mutex
 	cancellationWaitGroup stdSync.WaitGroup
@@ -107,17 +117,28 @@ type MultiUserService struct {
 // NewMultiUserService creates a new multi-user service
 func NewMultiUserService(repo *database.Repository, globalConfig *config.Config, log *logger.Logger) *MultiUserService {
 	return &MultiUserService{
-		repository:      repo,
-		logger:          log,
-		globalConfig:    globalConfig,
-		profileStatuses: make(map[string]*SyncProfileStatus),
-		activeSyncs:     make(map[string]context.CancelFunc),
-		activeRuns:      make(map[string]activeSyncRun),
-		syncServices:    make(map[string]*sync.Service),
-		serviceRuns:     make(map[string]uint64),
-		latestRuns:      make(map[string]activeSyncRun),
-		profileGates:    make(map[string]*profileRunGate),
+		repository:       repo,
+		logger:           log,
+		globalConfig:     globalConfig,
+		profileStatuses:  make(map[string]*SyncProfileStatus),
+		activeSyncs:      make(map[string]context.CancelFunc),
+		activeRuns:       make(map[string]activeSyncRun),
+		syncServices:     make(map[string]*sync.Service),
+		serviceRuns:      make(map[string]uint64),
+		latestRuns:       make(map[string]activeSyncRun),
+		profileGates:     make(map[string]*profileRunGate),
+		deletingProfiles: make(map[string]struct{}),
+		deletedProfiles:  make(map[string]struct{}),
 	}
+}
+
+// ReconcileInterruptedSyncRuns marks durable queued or otherwise non-terminal
+// reports failed before normal multi-user work is admitted after a restart.
+func (s *MultiUserService) ReconcileInterruptedSyncRuns() error {
+	if s.repository == nil {
+		return errors.New("database repository is required")
+	}
+	return s.repository.ReconcileInterruptedSyncRunReports()
 }
 
 // ErrServiceShuttingDown indicates that a new sync was rejected because the
@@ -127,17 +148,26 @@ var ErrServiceShuttingDown = errors.New("multi-user service is shutting down")
 // beginSyncStart admits one start operation and tracks it until its worker is
 // registered. The admission lock is held only for this state transition; all
 // repository operations remain outside global lifecycle locks.
-func (s *MultiUserService) beginSyncStart() error {
+func (s *MultiUserService) beginSyncStart(profileID string) (*profileRunGate, error) {
 	s.admissionMutex.Lock()
 	defer s.admissionMutex.Unlock()
 	if s.shuttingDown {
-		return ErrServiceShuttingDown
+		return nil, ErrServiceShuttingDown
 	}
+	if _, deleting := s.deletingProfiles[profileID]; deleting {
+		return nil, ErrProfileDeleting
+	}
+	if _, deleted := s.deletedProfiles[profileID]; deleted {
+		return nil, ErrProfileNotFound
+	}
+	gate := s.profileGate(profileID)
 	s.startWaitGroup.Add(1)
-	return nil
+	gate.startWaitGroup.Add(1)
+	return gate, nil
 }
 
-func (s *MultiUserService) endSyncStart() {
+func (s *MultiUserService) endSyncStart(gate *profileRunGate) {
+	gate.startWaitGroup.Done()
 	s.startWaitGroup.Done()
 }
 
@@ -171,7 +201,13 @@ func (s *MultiUserService) CreateProfileForUser(profileID, name, audiobookshelfU
 	if err := s.validateProfileStateFile(profileID, syncConfig.StateFile); err != nil {
 		return err
 	}
-	return s.repository.CreateProfileForUser(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig, ownerUserID)
+	if err := s.repository.CreateProfileForUser(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig, ownerUserID); err != nil {
+		return err
+	}
+	s.admissionMutex.Lock()
+	delete(s.deletedProfiles, profileID)
+	s.admissionMutex.Unlock()
+	return nil
 }
 
 // UpdateProfile updates profile information
@@ -191,20 +227,66 @@ func (s *MultiUserService) UpdateProfileConfig(profileID, audiobookshelfURL, aud
 
 // DeleteProfile deletes a sync profile
 func (s *MultiUserService) DeleteProfile(profileID string) error {
-	// Cancel any active sync for this profile
-	if err := s.CancelSync(profileID); err != nil {
-		s.logger.Warn("Failed to cancel sync during profile deletion", map[string]interface{}{
-			"profileID": profileID,
-			"error":     err,
-		})
+	s.admissionMutex.Lock()
+	if _, deleting := s.deletingProfiles[profileID]; deleting {
+		s.admissionMutex.Unlock()
+		return ErrProfileDeleting
 	}
+	if _, deleted := s.deletedProfiles[profileID]; deleted {
+		s.admissionMutex.Unlock()
+		return ErrProfileNotFound
+	}
+	s.deletingProfiles[profileID] = struct{}{}
+	gate := s.profileGate(profileID)
+	s.admissionMutex.Unlock()
 
-	// Remove from status tracking
+	gate.mu.Lock()
+	cancelErr := s.cancelSyncLocked(context.Background(), profileID, gate)
+	if cancelErr != nil && !strings.Contains(cancelErr.Error(), "no active sync") {
+		if s.logger != nil {
+			s.logger.Warn("Failed to cancel sync during profile deletion", map[string]interface{}{
+				"profileID": profileID,
+				"error":     cancelErr,
+			})
+		}
+	}
+	gate.deleted = true
+	deleteErr := s.repository.DeleteProfile(profileID)
+	if deleteErr != nil {
+		gate.deleted = false
+		gate.mu.Unlock()
+		s.admissionMutex.Lock()
+		delete(s.deletingProfiles, profileID)
+		s.admissionMutex.Unlock()
+		return deleteErr
+	}
+	gate.mu.Unlock()
+
+	// Starts admitted before the deletion marker wait at the gate; workers are
+	// drained before removing lifecycle maps so late terminal callbacks observe
+	// the deleted gate and cannot persist a report for the deleted profile.
+	gate.startWaitGroup.Wait()
+	gate.workerWaitGroup.Wait()
 	s.statusMutex.Lock()
 	delete(s.profileStatuses, profileID)
 	s.statusMutex.Unlock()
-
-	return s.repository.DeleteProfile(profileID)
+	s.syncMutex.Lock()
+	delete(s.activeRuns, profileID)
+	delete(s.activeSyncs, profileID)
+	delete(s.latestRuns, profileID)
+	s.syncMutex.Unlock()
+	s.servicesMutex.Lock()
+	delete(s.syncServices, profileID)
+	delete(s.serviceRuns, profileID)
+	s.servicesMutex.Unlock()
+	s.syncMutex.Lock()
+	delete(s.profileGates, profileID)
+	s.syncMutex.Unlock()
+	s.admissionMutex.Lock()
+	delete(s.deletingProfiles, profileID)
+	s.deletedProfiles[profileID] = struct{}{}
+	s.admissionMutex.Unlock()
+	return nil
 }
 
 // GetAllProfileStatuses returns the sync status for all profiles
@@ -708,14 +790,17 @@ func (s *MultiUserService) currentSyncServiceLocked(profileID string) (*sync.Ser
 // durable reservation that installed the queued report before worker launch;
 // response delivery may race worker execution.
 func (s *MultiUserService) StartSyncWithAcceptedRun(profileID string) (AcceptedSyncRun, error) {
-	if err := s.beginSyncStart(); err != nil {
+	gate, err := s.beginSyncStart(profileID)
+	if err != nil {
 		return AcceptedSyncRun{}, fmt.Errorf("cannot start sync for profile %s: %w", profileID, err)
 	}
-	defer s.endSyncStart()
+	defer s.endSyncStart(gate)
 
-	gate := s.profileGate(profileID)
 	gate.mu.Lock()
 	defer gate.mu.Unlock()
+	if gate.deleted {
+		return AcceptedSyncRun{}, fmt.Errorf("cannot start sync for profile %s: %w", profileID, ErrProfileDeleting)
+	}
 
 	s.syncMutex.RLock()
 	_, alreadyActive := s.activeSyncs[profileID]
@@ -808,8 +893,10 @@ func (s *MultiUserService) StartSyncWithAcceptedRun(profileID string) (AcceptedS
 	executionTicket := gate.enqueueExecutionLocked()
 
 	// Start the sync in background.
+	gate.workerWaitGroup.Add(1)
 	s.syncWaitGroup.Add(1)
 	go func() {
+		defer gate.workerWaitGroup.Done()
 		defer s.syncWaitGroup.Done()
 		s.runSyncWorker(profileID, run.runID, run.generation, gate, executionTicket, func() {
 			s.performSync(ctx, profileID, profileConfig, run.generation)
@@ -898,10 +985,23 @@ func (s *MultiUserService) CancelSync(profileID string) error {
 }
 
 func (s *MultiUserService) cancelSync(ctx context.Context, profileID string) error {
+	s.admissionMutex.Lock()
+	if _, deleting := s.deletingProfiles[profileID]; deleting {
+		s.admissionMutex.Unlock()
+		return ErrProfileDeleting
+	}
+	if _, deleted := s.deletedProfiles[profileID]; deleted {
+		s.admissionMutex.Unlock()
+		return ErrProfileNotFound
+	}
 	gate := s.profileGate(profileID)
+	s.admissionMutex.Unlock()
 	gate.mu.Lock()
 	defer gate.mu.Unlock()
+	return s.cancelSyncLocked(ctx, profileID, gate)
+}
 
+func (s *MultiUserService) cancelSyncLocked(ctx context.Context, profileID string, gate *profileRunGate) error {
 	s.syncMutex.RLock()
 	cancel, exists := s.activeSyncs[profileID]
 	run, runExists := s.activeRuns[profileID]
@@ -1279,15 +1379,24 @@ func (s *MultiUserService) publishFinalStatus(profileID string, generation uint6
 		status.Snapshot.RunID = runID
 	}
 	// Serialize same-profile terminal persistence with start/cancel decisions.
-	// This does not serialize unrelated profiles and lets us reject an older
-	// successful worker before it can advance durable success metadata.
-	gate := s.profileGate(profileID)
-	gate.mu.Lock()
-	defer gate.mu.Unlock()
-	if status.Snapshot.State == string(sync.RunPhaseCompleted) && !s.latestRunIsCurrent(profileID, runID, generation) {
+	// This does not serialize unrelated profiles. Every terminal report must
+	// still belong to the current, uncanceled accepted run before persistence;
+	// otherwise a stale failed/canceled worker could overwrite its durable row
+	// after a replacement has been accepted.
+	s.admissionMutex.Lock()
+	if _, deleting := s.deletingProfiles[profileID]; deleting {
+		s.admissionMutex.Unlock()
 		return false
 	}
-	if s.latestRunWasCanceled(profileID, runID, generation) {
+	if _, deleted := s.deletedProfiles[profileID]; deleted {
+		s.admissionMutex.Unlock()
+		return false
+	}
+	gate := s.profileGate(profileID)
+	s.admissionMutex.Unlock()
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	if gate.deleted || !s.latestRunIsCurrent(profileID, runID, generation) {
 		return false
 	}
 	// Durable report persistence is deliberately outside syncMutex. A blocked

@@ -211,6 +211,7 @@ func main() {
 
 	// Set up repository
 	repo := database.NewRepository(db, encryptor, log)
+	repo.SetSyncRunReportRetention(cfg.Database.SyncRunReportRetention)
 
 	// Perform automatic migration from single-user config if needed
 	// Use the actual config path that was loaded, not default search paths
@@ -229,9 +230,14 @@ func main() {
 		})
 		os.Exit(1)
 	}
-
 	// Create multi-user service
 	multiUserService := multiuser.NewMultiUserService(repo, cfg, log)
+	if err := multiUserService.ReconcileInterruptedSyncRuns(); err != nil {
+		log.Error("Failed to reconcile interrupted sync runs", map[string]interface{}{
+			"error": err.Error(),
+		})
+		os.Exit(1)
+	}
 
 	// Initialize authentication system
 	log.Info("Initializing authentication system", nil)

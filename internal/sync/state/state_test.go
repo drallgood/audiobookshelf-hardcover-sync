@@ -41,6 +41,7 @@ func TestNewState(t *testing.T) {
 
 	state := NewState()
 	assert.NotZero(t, state.Books)
+	assert.Equal(t, CurrentVersion, state.Version)
 }
 
 func TestLoadState_NewFile(t *testing.T) {
@@ -70,6 +71,47 @@ func TestLoadState_IgnoresRetiredTimestampMetadata(t *testing.T) {
 	state, err := LoadState(statePath)
 	require.NoError(t, err)
 	assert.Empty(t, state.Books)
+	assert.Equal(t, CurrentVersion, state.Version)
+}
+
+func TestLoadState_NormalizesUnversionedAndV2Books(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name    string
+		version string
+	}{
+		{name: "unversioned", version: ""},
+		{name: "v2", version: "2.0"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state.json")
+			contents := `{"books":{"book":{"lastProgress":0.5,"lastUpdated":42}}}`
+			if test.version != "" {
+				contents = `{"version":"` + test.version + `","books":{"book":{"lastProgress":0.5,"lastUpdated":42}}}`
+			}
+			require.NoError(t, os.WriteFile(path, []byte(contents), 0644))
+
+			state, err := LoadState(path)
+			require.NoError(t, err)
+			require.Equal(t, CurrentVersion, state.Version)
+			require.Equal(t, Book{LastProgress: 0.5, LastUpdated: 42}, state.Books["book"])
+			require.NoError(t, state.Save(path))
+			saved, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Contains(t, string(saved), `"version": "`+CurrentVersion+`"`)
+		})
+	}
+}
+
+func TestLoadState_RejectsUnknownVersion(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "state.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"version":"4.0","books":{}}`), 0644))
+	_, err := LoadState(path)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported state version")
 }
 
 func TestLoadState_InvalidJSON(t *testing.T) {
@@ -100,7 +142,7 @@ func TestSaveAndLoad(t *testing.T) {
 	assert.NotContains(t, string(saved), "lastSync")
 	assert.NotContains(t, string(saved), "lastFullSync")
 	assert.NotContains(t, string(saved), "libraries")
-	assert.NotContains(t, string(saved), "version")
+	assert.Contains(t, string(saved), `"version": "`+CurrentVersion+`"`)
 
 	// Load state
 	state2, err := LoadState(statePath)

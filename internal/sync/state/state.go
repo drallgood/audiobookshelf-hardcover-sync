@@ -14,10 +14,16 @@ import (
 
 const DefaultStateFile = "./data/sync_state.json"
 
+// CurrentVersion is the explicit state schema version written by Save. Legacy
+// v1 files only carried retired timestamp metadata; v2 and unversioned files
+// with Books use the current checkpoint shape and need no field conversion.
+const CurrentVersion = "3.0"
+
 type State struct {
-	Books map[string]Book `json:"books,omitempty"`
-	mu    sync.RWMutex    `json:"-"`
-	dirty bool            `json:"-"`
+	Version string          `json:"version"`
+	Books   map[string]Book `json:"books,omitempty"`
+	mu      sync.RWMutex    `json:"-"`
+	dirty   bool            `json:"-"`
 }
 
 type Book struct {
@@ -30,7 +36,8 @@ type Book struct {
 
 func NewState() *State {
 	return &State{
-		Books: make(map[string]Book),
+		Version: CurrentVersion,
+		Books:   make(map[string]Book),
 	}
 }
 
@@ -47,6 +54,14 @@ func LoadState(path string) (*State, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("failed to parse state: %w", err)
 	}
+	if state.Version != "" && state.Version != "1.0" && state.Version != "2.0" && state.Version != CurrentVersion {
+		return nil, fmt.Errorf("unsupported state version %q", state.Version)
+	}
+	// Unversioned legacy Books files and v1/v2 checkpoint files are compatible
+	// with the current shape. Normalize their in-memory version so the next
+	// persistence writes an explicit current schema version. v1 timestamp-only
+	// files intentionally remain empty so the first run rebuilds checkpoints.
+	state.Version = CurrentVersion
 
 	if state.Books == nil {
 		state.Books = make(map[string]Book)

@@ -91,7 +91,9 @@ partial counts, including unattempted candidates. The card distinguishes the
 last attempted run from the last successful non-dry-run run, and labels active
 dry runs without implying that Hardcover was changed.
 
-The service retains the newest 10 terminal run reports per profile. View Details can open
+The service retains the newest 10 terminal run reports per profile by default. Set
+`database.sync_run_report_retention` or `DATABASE_SYNC_RUN_REPORT_RETENTION` to change
+the retention window. View Details can open
 the report for an exact run ID, including a completed, canceled, or failed run,
 so the latest report remains available after a restart. While a run is active,
 an empty missing-books category means `No missing books reported in this run
@@ -112,6 +114,7 @@ successful non-dry-run completion.
 |----------|-------------|:-------:|
 | `ENCRYPTION_KEY` | Base64-encoded 32-byte encryption key (auto-generated if not set) | Auto-generated |
 | `DATA_DIR` | Directory for database and encryption files | `./data` |
+| `DATABASE_SYNC_RUN_REPORT_RETENTION` | Terminal run reports retained per profile | `10` |
 
 ### Security Features
 

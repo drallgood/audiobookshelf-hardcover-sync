@@ -388,6 +388,77 @@ func installAcceptedTestRun(t *testing.T, service *MultiUserService, profileID, 
 	return run
 }
 
+func TestDeleteProfileDrainsWorkerAndClearsLifecycleCaches(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	const profileID = "profile-delete"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Delete profile", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
+	))
+	run := installAcceptedTestRun(t, service, profileID, "run-delete", false)
+	gate := service.profileGate(profileID)
+	gate.workerWaitGroup.Add(1)
+	workerRelease := make(chan struct{})
+	go func() {
+		defer gate.workerWaitGroup.Done()
+		<-workerRelease
+	}()
+
+	deleteDone := make(chan error, 1)
+	go func() { deleteDone <- service.DeleteProfile(profileID) }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		service.admissionMutex.Lock()
+		_, deleting := service.deletingProfiles[profileID]
+		service.admissionMutex.Unlock()
+		if deleting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for profile deletion admission")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	late := acceptedTerminalStatus(profileID, run, string(syncsvc.RunPhaseFailed))
+	lateDone := make(chan bool, 1)
+	go func() { lateDone <- service.publishFinalStatus(profileID, run.generation, late) }()
+	close(workerRelease)
+	require.NoError(t, <-deleteDone)
+	require.False(t, <-lateDone)
+
+	service.syncMutex.RLock()
+	_, latestExists := service.latestRuns[profileID]
+	_, gateExists := service.profileGates[profileID]
+	service.syncMutex.RUnlock()
+	require.False(t, latestExists)
+	require.False(t, gateExists)
+	report, err := service.repository.GetSyncRunReport(profileID, run.runID)
+	require.NoError(t, err)
+	require.Equal(t, database.SyncRunPhaseCanceled, report.Phase)
+}
+
+func TestReconcileInterruptedSyncRunsMarksDurableQueuedRunFailed(t *testing.T) {
+	service, db := newStatusLookupService(t)
+	const profileID = "profile-restart-reconcile"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Restart reconcile", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
+	))
+	queuedAt := time.Date(2026, time.September, 18, 12, 0, 0, 0, time.UTC)
+	report := acceptTestSyncRun(t, service.repository, profileID, "run-restart", false, queuedAt)
+	report.SnapshotJSON = `{"state":"queued","processed_so_far":2}`
+	require.NoError(t, db.Save(report).Error)
+	require.NoError(t, db.Model(&database.SyncRunReport{}).
+		Where("profile_id = ? AND run_id = ?", profileID, report.RunID).
+		Update("phase", "running").Error)
+
+	require.NoError(t, service.ReconcileInterruptedSyncRuns())
+	restored, err := service.repository.GetSyncRunReport(profileID, report.RunID)
+	require.NoError(t, err)
+	require.Equal(t, database.SyncRunPhaseFailed, restored.Phase)
+	require.Equal(t, "sync run interrupted by application restart", restored.RunError)
+	require.Contains(t, restored.SnapshotJSON, "processed_so_far")
+}
+
 func acceptedTerminalStatus(profileID string, run activeSyncRun, phase string) *SyncProfileStatus {
 	snapshot := newRunSnapshot(profileID, run, phase)
 	snapshot.FinishedAt = run.startedAt.Add(time.Minute)

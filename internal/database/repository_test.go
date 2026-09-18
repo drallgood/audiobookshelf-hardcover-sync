@@ -129,7 +129,10 @@ func TestUpsertSyncRunReportAdvancesOnlyNewerCompletedNonDryRun(t *testing.T) {
 
 	// Reports can only advance success after their run was accepted. Accept two
 	// runs so generation two is current when it completes.
-	acceptTestSyncRun(t, repo, "profile-a", "run-1", false, finish.Add(-2*time.Minute))
+	firstAccepted := acceptTestSyncRun(t, repo, "profile-a", "run-1", false, finish.Add(-2*time.Minute))
+	firstAccepted.Phase = SyncRunPhaseCanceled
+	firstAccepted.FinishedAt = timePtrForDatabaseTest(finish.Add(-90 * time.Second))
+	require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), firstAccepted))
 	acceptTestSyncRun(t, repo, "profile-a", "run-2", false, finish.Add(-time.Minute))
 	require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), completed(2, "run-2", false, SyncRunPhaseCompleted)))
 	state, err := repo.GetSyncState("profile-a")
@@ -149,9 +152,13 @@ func TestUpsertSyncRunReportAdvancesOnlyNewerCompletedNonDryRun(t *testing.T) {
 		acceptTestSyncRun(t, repo, "profile-a", test.runID, test.dryRun, finish.Add(time.Duration(test.generation)*time.Minute))
 		require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), completed(test.generation, test.runID, test.dryRun, test.phase)))
 	}
-	// The first run is retained as history but is no longer the accepted
-	// attempt, so a late completion must not move the success pointer back.
-	require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), completed(1, "run-1", false, SyncRunPhaseCompleted)))
+	// The first run is no longer the accepted attempt, so a late terminal
+	// report is rejected before it can overwrite durable history.
+	err = repo.UpsertSyncRunReportContext(context.Background(), completed(1, "run-1", false, SyncRunPhaseCompleted))
+	require.ErrorIs(t, err, ErrStaleSyncRunReport)
+	require.ErrorIs(t, repo.UpsertSyncRunReportContext(context.Background(), &SyncRunReport{
+		ProfileID: "profile-a", RunID: "run-1", Phase: SyncRunPhaseFailed, SnapshotJSON: "{}",
+	}), ErrStaleSyncRunReport)
 	state, err = repo.GetSyncState("profile-a")
 	require.NoError(t, err)
 	require.Equal(t, finish, *state.LastSuccessfulAt)
@@ -171,6 +178,75 @@ func TestUpsertSyncRunReportAdvancesOnlyNewerCompletedNonDryRun(t *testing.T) {
 	state, err = repo.GetSyncState("profile-a")
 	require.NoError(t, err)
 	require.Equal(t, newFinish, *state.LastSuccessfulAt)
+}
+
+func TestSyncRunReportRetentionIsConfigurableForPersistenceAndLookup(t *testing.T) {
+	db, repo := newRepositoryForTest(t)
+	createTestProfile(t, db, "profile-a")
+	repo.SetSyncRunReportRetention(2)
+	for generation := uint64(1); generation <= 3; generation++ {
+		require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), &SyncRunReport{
+			ProfileID: "profile-a", RunID: "run-" + string(rune('a'+generation-1)),
+			Generation: generation, Phase: SyncRunPhaseFailed, SnapshotJSON: "{}",
+		}))
+	}
+	reports, err := repo.ListTerminalSyncRunReports("profile-a", 100)
+	require.NoError(t, err)
+	require.Len(t, reports, 2)
+	reports, err = repo.ListTerminalSyncRunReports("profile-a", 0)
+	require.NoError(t, err)
+	require.Len(t, reports, 2)
+}
+
+func TestReconcileInterruptedSyncRunReportsPreservesHistory(t *testing.T) {
+	db, repo := newRepositoryForTest(t)
+	createTestProfile(t, db, "profile-a")
+	queuedAt := time.Date(2026, time.September, 18, 12, 0, 0, 0, time.UTC)
+	queued := acceptTestSyncRun(t, repo, "profile-a", "run-queued", false, queuedAt)
+	queued.SnapshotJSON = `{"state":"queued","book_outcomes":[{"book_id":"book"}]}`
+	require.NoError(t, db.GetDB().Save(queued).Error)
+	require.NoError(t, db.GetDB().Exec("UPDATE sync_run_reports SET phase = ? WHERE profile_id = ? AND run_id = ?", "running", "profile-a", "run-queued").Error)
+	require.NoError(t, repo.ReconcileInterruptedSyncRunReports())
+
+	report, err := repo.GetSyncRunReport("profile-a", "run-queued")
+	require.NoError(t, err)
+	require.Equal(t, SyncRunPhaseFailed, report.Phase)
+	require.Equal(t, interruptedSyncRunError, report.RunError)
+	require.Contains(t, report.SnapshotJSON, "book_outcomes")
+	require.NotNil(t, report.FinishedAt)
+}
+
+func TestReconcilePrunesExistingTerminalHistoryAfterRetentionDecrease(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sync.db")
+	db, err := NewDatabase(&DatabaseConfig{Type: DatabaseTypeSQLite, Path: dbPath}, logger.Get())
+	require.NoError(t, err)
+	createTestProfile(t, db, "profile-a")
+	repo := NewRepository(db, nil, logger.Get())
+	repo.SetSyncRunReportRetention(5)
+	for generation := uint64(1); generation <= 5; generation++ {
+		require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), &SyncRunReport{
+			ProfileID: "profile-a", RunID: "history-" + string(rune('a'+generation-1)),
+			Generation: generation, Phase: SyncRunPhaseFailed, SnapshotJSON: "{}",
+		}))
+	}
+	require.NoError(t, db.Close())
+
+	db, err = NewDatabase(&DatabaseConfig{Type: DatabaseTypeSQLite, Path: dbPath}, logger.Get())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	repo = NewRepository(db, nil, logger.Get())
+	repo.SetSyncRunReportRetention(2)
+	require.NoError(t, repo.ReconcileInterruptedSyncRunReports())
+
+	reports, err := repo.ListTerminalSyncRunReports("profile-a", 0)
+	require.NoError(t, err)
+	require.Len(t, reports, 2)
+	oldest, err := repo.GetSyncRunReport("profile-a", "history-a")
+	require.NoError(t, err)
+	require.Nil(t, oldest)
+	newest, err := repo.GetSyncRunReport("profile-a", "history-e")
+	require.NoError(t, err)
+	require.NotNil(t, newest)
 }
 
 func TestCompletedReportPreservesCanonicalSuccessAfterRestart(t *testing.T) {
@@ -199,11 +275,11 @@ func TestUpsertSyncRunReportRetainsNewestTenAcrossTerminalPhases(t *testing.T) {
 	createTestProfile(t, db, "profile-a")
 	phases := []string{SyncRunPhaseCompleted, SyncRunPhaseFailed, SyncRunPhaseCanceled}
 	for generation := uint64(1); generation <= 11; generation++ {
-		require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), &SyncRunReport{
-			ProfileID: "profile-a", RunID: "run-" + string(rune('a'+generation-1)),
-			Generation: generation, Phase: phases[(generation-1)%uint64(len(phases))],
-			SnapshotJSON: `{"terminal":true}`,
-		}))
+		runID := "run-" + string(rune('a'+generation-1))
+		report := acceptTestSyncRun(t, repo, "profile-a", runID, false, time.Now().UTC())
+		report.Phase = phases[(generation-1)%uint64(len(phases))]
+		report.SnapshotJSON = `{"terminal":true}`
+		require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), report))
 	}
 
 	reports, err := repo.ListTerminalSyncRunReports("profile-a", 100)

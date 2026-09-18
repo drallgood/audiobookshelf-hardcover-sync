@@ -133,6 +133,9 @@ type Config struct {
 		Path string `yaml:"path" env:"DATABASE_PATH"`
 		// SSLMode specifies the SSL mode for PostgreSQL connections
 		SSLMode string `yaml:"ssl_mode" env:"DATABASE_SSL_MODE"`
+		// SyncRunReportRetention is the number of terminal sync reports retained per profile.
+		// The default preserves the historical ten-report window.
+		SyncRunReportRetention int `yaml:"sync_run_report_retention" env:"DATABASE_SYNC_RUN_REPORT_RETENTION"`
 		// Connection pool settings (for non-SQLite databases)
 		ConnectionPool struct {
 			// MaxOpenConns is the maximum number of open connections
@@ -240,6 +243,7 @@ func DefaultConfig() *Config {
 	cfg.Database.Password = ""
 	cfg.Database.Path = "./data/audiobookshelf-hardcover-sync.db"
 	cfg.Database.SSLMode = "disable"
+	cfg.Database.SyncRunReportRetention = 10
 	cfg.Database.ConnectionPool.MaxOpenConns = 10
 	cfg.Database.ConnectionPool.MaxIdleConns = 5
 	cfg.Database.ConnectionPool.ConnMaxLifetime = 30 // minutes
@@ -675,6 +679,11 @@ func loadFromEnv(cfg *Config) {
 	if syncMinChangeThreshold := os.Getenv("SYNC_MIN_CHANGE_THRESHOLD"); syncMinChangeThreshold != "" {
 		if i, err := strconv.Atoi(syncMinChangeThreshold); err == nil {
 			cfg.Sync.MinChangeThreshold = i
+		}
+	}
+	if retention := os.Getenv("DATABASE_SYNC_RUN_REPORT_RETENTION"); retention != "" {
+		if i, err := strconv.Atoi(retention); err == nil && i > 0 {
+			cfg.Database.SyncRunReportRetention = i
 		}
 	}
 	// Include ebooks option

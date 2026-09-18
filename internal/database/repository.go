@@ -17,17 +17,19 @@ import (
 
 // Repository provides database operations for users and configurations
 type Repository struct {
-	db        *Database
-	encryptor *crypto.EncryptionManager
-	logger    *logger.Logger
+	db                *Database
+	encryptor         *crypto.EncryptionManager
+	logger            *logger.Logger
+	maxSyncRunReports int
 }
 
 // NewRepository creates a new repository instance
 func NewRepository(db *Database, encryptor *crypto.EncryptionManager, log *logger.Logger) *Repository {
 	return &Repository{
-		db:        db,
-		encryptor: encryptor,
-		logger:    log,
+		db:                db,
+		encryptor:         encryptor,
+		logger:            log,
+		maxSyncRunReports: maxSyncRunReports,
 	}
 }
 
@@ -41,6 +43,21 @@ type ProfileWithTokens struct {
 }
 
 const maxSyncRunReports = 10
+
+// ErrStaleSyncRunReport indicates that a terminal report belongs to a run
+// that is no longer the profile's current accepted attempt.
+var ErrStaleSyncRunReport = errors.New("stale sync run report")
+
+const interruptedSyncRunError = "sync run interrupted by application restart"
+
+// SetSyncRunReportRetention configures the number of terminal reports retained
+// per profile. Non-positive values preserve the historical default.
+func (r *Repository) SetSyncRunReportRetention(limit int) {
+	if limit <= 0 {
+		limit = maxSyncRunReports
+	}
+	r.maxSyncRunReports = limit
+}
 
 // AcceptSyncRun atomically assigns a generation, advances attempt metadata,
 // and writes a complete queued report. Callers must prepare the sanitized
@@ -103,7 +120,7 @@ func (r *Repository) AcceptSyncRun(report *SyncRunReport) (*SyncRunReport, error
 		if err := deleteStaleQueuedSyncRunReports(tx, report.ProfileID, report.RunID); err != nil {
 			return err
 		}
-		if err := retainNewestSyncRunReports(tx, report.ProfileID); err != nil {
+		if err := r.retainNewestSyncRunReports(tx, report.ProfileID); err != nil {
 			return err
 		}
 		return nil
@@ -123,7 +140,7 @@ func deleteStaleQueuedSyncRunReports(tx *gorm.DB, profileID, currentRunID string
 }
 
 // UpsertSyncRunReportContext transactionally stores a terminal run report,
-// retains only the newest ten reports for the profile, advances success
+// retains only the newest configured reports for the profile, advances success
 // metadata only for a newer completed non-dry run, and propagates cancellation
 // to the database transaction.
 func (r *Repository) UpsertSyncRunReportContext(ctx context.Context, report *SyncRunReport) error {
@@ -141,8 +158,31 @@ func (r *Repository) UpsertSyncRunReportContext(ctx context.Context, report *Syn
 	}
 	return r.db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing SyncRunReport
-		alreadyCompleted := false
 		findErr := tx.Where("profile_id = ? AND run_id = ?", report.ProfileID, report.RunID).First(&existing).Error
+		effectiveGeneration := report.Generation
+		effectivePhase := report.Phase
+		if findErr == nil {
+			if effectiveGeneration == 0 {
+				effectiveGeneration = existing.Generation
+			}
+			if effectivePhase == "" {
+				effectivePhase = existing.Phase
+			}
+		} else if !errors.Is(findErr, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("failed to find sync run report: %w", findErr)
+		}
+		if isTerminalSyncRunPhase(effectivePhase) && effectiveGeneration > 0 {
+			var state ProfileSyncState
+			stateErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("profile_id = ?", report.ProfileID).First(&state).Error
+			if stateErr == nil && (state.LastAttemptedRunID != report.RunID || state.LastAttemptedGeneration != effectiveGeneration) {
+				return fmt.Errorf("%w: profile %s run %s generation %d is not current", ErrStaleSyncRunReport, report.ProfileID, report.RunID, effectiveGeneration)
+			}
+			if stateErr != nil && !errors.Is(stateErr, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("failed to inspect current sync run: %w", stateErr)
+			}
+		}
+		alreadyCompleted := false
 		switch {
 		case findErr == nil:
 			alreadyCompleted = existing.Phase == SyncRunPhaseCompleted && !existing.DryRun
@@ -161,7 +201,7 @@ func (r *Repository) UpsertSyncRunReportContext(ctx context.Context, report *Syn
 			return fmt.Errorf("failed to find sync run report: %w", findErr)
 		}
 
-		if err := retainNewestSyncRunReports(tx, report.ProfileID); err != nil {
+		if err := r.retainNewestSyncRunReports(tx, report.ProfileID); err != nil {
 			return err
 		}
 
@@ -245,8 +285,9 @@ func (r *Repository) GetSyncRunReport(profileID, runID string) (*SyncRunReport, 
 // bounded to the retention window. Filtering before the limit keeps abandoned
 // queued reports from hiding the newest retained terminal report at restart.
 func (r *Repository) ListTerminalSyncRunReports(profileID string, limit int) ([]SyncRunReport, error) {
-	if limit <= 0 || limit > maxSyncRunReports {
-		limit = maxSyncRunReports
+	retention := r.syncRunReportRetention()
+	if limit <= 0 || limit > retention {
+		limit = retention
 	}
 	var reports []SyncRunReport
 	if err := r.db.GetDB().Where("profile_id = ? AND phase IN ?", profileID, []string{
@@ -273,7 +314,7 @@ func loadOrCreateSyncStateForUpdate(tx *gorm.DB, profileID string) (*ProfileSync
 	return &state, nil
 }
 
-func retainNewestSyncRunReports(tx *gorm.DB, profileID string) error {
+func (r *Repository) retainNewestSyncRunReports(tx *gorm.DB, profileID string) error {
 	var reports []SyncRunReport
 	if err := tx.Where("profile_id = ? AND phase IN ?", profileID, []string{
 		SyncRunPhaseCompleted, SyncRunPhaseCanceled, SyncRunPhaseFailed,
@@ -281,10 +322,11 @@ func retainNewestSyncRunReports(tx *gorm.DB, profileID string) error {
 		Order("generation DESC").Order("run_id DESC").Find(&reports).Error; err != nil {
 		return fmt.Errorf("failed to list sync run reports for retention: %w", err)
 	}
-	if len(reports) <= maxSyncRunReports {
+	retention := r.syncRunReportRetention()
+	if len(reports) <= retention {
 		return nil
 	}
-	keepRunIDs := make([]string, maxSyncRunReports)
+	keepRunIDs := make([]string, retention)
 	for i := range keepRunIDs {
 		keepRunIDs[i] = reports[i].RunID
 	}
@@ -294,6 +336,65 @@ func retainNewestSyncRunReports(tx *gorm.DB, profileID string) error {
 		return fmt.Errorf("failed to retain newest sync run reports: %w", err)
 	}
 	return nil
+}
+
+func (r *Repository) syncRunReportRetention() int {
+	if r.maxSyncRunReports <= 0 {
+		return maxSyncRunReports
+	}
+	return r.maxSyncRunReports
+}
+
+func isTerminalSyncRunPhase(phase string) bool {
+	switch phase {
+	case SyncRunPhaseCompleted, SyncRunPhaseCanceled, SyncRunPhaseFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// ReconcileInterruptedSyncRunReports converts durable non-terminal reports to
+// failed before workers are admitted after a process restart. Unknown legacy
+// phases are treated as interrupted as well; report snapshots and history are
+// preserved while the terminal error explains why completion was unavailable.
+func (r *Repository) ReconcileInterruptedSyncRunReports() error {
+	return r.db.GetDB().Transaction(func(tx *gorm.DB) error {
+		var reports []SyncRunReport
+		if err := tx.Where("phase NOT IN ? OR phase IS NULL", []string{
+			SyncRunPhaseCompleted, SyncRunPhaseCanceled, SyncRunPhaseFailed,
+		}).Find(&reports).Error; err != nil {
+			return fmt.Errorf("failed to find interrupted sync run reports: %w", err)
+		}
+		for i := range reports {
+			now := time.Now().UTC()
+			reports[i].Phase = SyncRunPhaseFailed
+			reports[i].RunError = interruptedSyncRunError
+			reports[i].FinishedAt = &now
+			if err := tx.Save(&reports[i]).Error; err != nil {
+				return fmt.Errorf("failed to reconcile interrupted sync run report %s: %w", reports[i].RunID, err)
+			}
+		}
+		profiles := make(map[string]struct{}, len(reports))
+		for _, report := range reports {
+			profiles[report.ProfileID] = struct{}{}
+		}
+		var terminalProfileIDs []string
+		if err := tx.Model(&SyncRunReport{}).
+			Where("phase IN ?", []string{SyncRunPhaseCompleted, SyncRunPhaseCanceled, SyncRunPhaseFailed}).
+			Distinct("profile_id").Pluck("profile_id", &terminalProfileIDs).Error; err != nil {
+			return fmt.Errorf("failed to find profiles with terminal sync run reports: %w", err)
+		}
+		for _, profileID := range terminalProfileIDs {
+			profiles[profileID] = struct{}{}
+		}
+		for profileID := range profiles {
+			if err := r.retainNewestSyncRunReports(tx, profileID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // CreateProfile creates a new sync profile with encrypted configuration

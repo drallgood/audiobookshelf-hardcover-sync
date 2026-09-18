@@ -97,6 +97,7 @@ Note: The Hardcover client now uses a unified configuration builder in both sing
 - **State File**: The application now maintains state between runs in a JSON file
   - **Migration**: Ensure the directory for state files exists (default: "./data")
   - **Configuration**: Set via `sync.state_file` in config.yaml
+  - **Compatibility**: Legacy v1 timestamp-only files are accepted with empty checkpoints so the first run rebuilds them. Unversioned legacy `books` files and v2 checkpoint files are retained and normalized to the current explicit state version on their next save; no book-field conversion is required.
 - **Mismatch Files**: Mismatches are now stored as individual files in a dedicated directory
   - **Migration**: Ensure the mismatch directory exists (default: "./mismatches")
   - **Configuration**: Set via `paths.mismatch_output_dir` in config.yaml
