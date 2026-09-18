@@ -1295,10 +1295,6 @@ func (s *MultiUserService) statusForTerminalRun(profileID string, run activeSync
 	return status
 }
 
-func (s *MultiUserService) persistTerminalSnapshot(profileID string, generation uint64, snapshot sync.SyncSnapshot) error {
-	return s.persistTerminalSnapshotContext(context.Background(), profileID, generation, snapshot)
-}
-
 func (s *MultiUserService) persistTerminalSnapshotContext(ctx context.Context, profileID string, generation uint64, snapshot sync.SyncSnapshot) error {
 	if s.repository == nil {
 		return nil
@@ -1486,7 +1482,7 @@ func (s *MultiUserService) publishFinalStatus(profileID string, generation uint6
 	// Durable report persistence is deliberately outside syncMutex. A blocked
 	// database operation for one profile must not stall status or start/cancel
 	// operations for another profile.
-	if err := s.persistTerminalSnapshot(profileID, generation, *status.Snapshot); err != nil {
+	if err := s.persistTerminalSnapshotContext(context.Background(), profileID, generation, *status.Snapshot); err != nil {
 		status = cloneProfileStatus(status)
 		reportError := fmt.Sprintf("failed to persist sync report: %v", err)
 		status.Snapshot.State = string(sync.RunPhaseFailed)
