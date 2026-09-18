@@ -58,6 +58,34 @@ func TestProcessBookRecordsSkipAndIncrementalNoChange(t *testing.T) {
 	})
 }
 
+func TestProcessBookFinishedWithoutFinishedAtSkipsHardcoverReadingState(t *testing.T) {
+	svc, hc := createTestService()
+	svc.config.Sync.SyncOwned = false
+
+	book := toAudiobookshelfBook(createTestFinishedBook(
+		"outcome-finished-without-date", "Finished Without Date", "Author", "missing-date-asin", "",
+	))
+	book.Progress.FinishedAt = 0
+
+	hc.On("SearchBookByASIN", mock.Anything, book.Media.Metadata.ASIN).Return(&models.HardcoverBook{
+		ID: "100", EditionID: "200",
+	}, nil).Once()
+
+	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
+
+	record := recordedOutcome(svc, book.ID)
+	assert.Equal(t, OutcomeSkipped, record.Outcome)
+	assert.Equal(t, "finished book has no Audiobookshelf finished_at", record.Reason)
+	hc.AssertNotCalled(t, "GetUserBookID", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "CreateUserBook", mock.Anything, mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+	_, exists := svc.state.GetBookState(book.ID + ":200")
+	assert.False(t, exists, "a skipped missing date must remain eligible for a later sync")
+	hc.AssertExpectations(t)
+}
+
 func TestProcessBookClassifiesProgressMutationOutcomes(t *testing.T) {
 	readErr := errors.New("progress endpoint unavailable")
 	writeErr := errors.New("progress mutation rejected")
