@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/stretchr/testify/require"
 )
 
@@ -97,34 +98,45 @@ func TestSnapshotSanitizesAudiobookshelfURLs(t *testing.T) {
 		audiobookshelf string
 		wantURL        string
 		wantCoverURL   string
+		hardcoverCover string
+		wantHardcover  string
 	}{
 		{
 			name:           "strips userinfo",
 			audiobookshelf: "https://reader:secret@audiobookshelf.example/base",
 			wantURL:        "https://audiobookshelf.example/base",
 			wantCoverURL:   "https://audiobookshelf.example/base/api/items/snapshot-sanitize/cover",
+			hardcoverCover: "https://reader:secret@hardcover.example/cover",
+			wantHardcover:  "https://hardcover.example/cover",
 		},
 		{
 			name:           "preserves credential-free URL",
 			audiobookshelf: "https://audiobookshelf.example/base",
 			wantURL:        "https://audiobookshelf.example/base",
 			wantCoverURL:   "https://audiobookshelf.example/base/api/items/snapshot-sanitize/cover",
+			hardcoverCover: "https://hardcover.example/cover",
+			wantHardcover:  "https://hardcover.example/cover",
 		},
 		{
 			name:           "strips query and fragment",
 			audiobookshelf: "https://reader:secret@audiobookshelf.example/base?token=query-secret#fragment",
 			wantURL:        "https://audiobookshelf.example/base",
 			wantCoverURL:   "https://audiobookshelf.example/base/api/items/snapshot-sanitize/cover",
+			hardcoverCover: "https://reader:secret@hardcover.example/cover?token=query-secret#fragment",
+			wantHardcover:  "https://hardcover.example/cover",
 		},
 		{
 			name:           "omits credential-bearing opaque URL",
 			audiobookshelf: "https:reader:secret@audiobookshelf.example/base",
 			wantURL:        "",
 			wantCoverURL:   "",
+			hardcoverCover: "https:reader:secret@hardcover.example/cover",
+			wantHardcover:  "",
 		},
 		{
 			name:           "omits unparsable URL",
 			audiobookshelf: "https://reader:%zz@audiobookshelf.example/base",
+			hardcoverCover: "https://reader:%zz@hardcover.example/cover",
 		},
 	}
 
@@ -134,12 +146,13 @@ func TestSnapshotSanitizesAudiobookshelfURLs(t *testing.T) {
 			svc.config.Audiobookshelf.URL = tt.audiobookshelf
 			svc.beginOutcomeRun()
 			book := *toAudiobookshelfBook(createTestBook("snapshot-sanitize", "Snapshot", "Author", "", ""))
-			svc.recordBookOutcomeWithMatchMethod(book, OutcomeNeedsReview, "manual review", nil, nil, "")
+			svc.recordBookOutcomeWithMatchMethod(book, OutcomeNeedsReview, "manual review", nil, &models.HardcoverBook{CoverImageURL: tt.hardcoverCover}, "")
 
 			snapshot := svc.GetSnapshot()
 			require.Equal(t, tt.wantURL, snapshot.AudiobookshelfURL)
 			require.Len(t, snapshot.BookOutcomes, 1)
 			require.Equal(t, tt.wantCoverURL, snapshot.BookOutcomes[0].CoverURL)
+			require.Equal(t, tt.wantHardcover, snapshot.BookOutcomes[0].HardcoverCoverURL)
 		})
 	}
 }

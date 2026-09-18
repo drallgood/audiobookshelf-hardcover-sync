@@ -1006,8 +1006,6 @@ func sanitizeSnapshotAudiobookshelfURLs(snapshot *SyncSnapshot) {
 	snapshot.AudiobookshelfURL = sanitizeAudiobookshelfURL(snapshot.AudiobookshelfURL)
 	for i := range snapshot.BookOutcomes {
 		snapshot.BookOutcomes[i].CoverURL = sanitizeAudiobookshelfURL(snapshot.BookOutcomes[i].CoverURL)
-	}
-	for i := range snapshot.BookOutcomes {
 		snapshot.BookOutcomes[i].HardcoverCoverURL = sanitizeAudiobookshelfURL(snapshot.BookOutcomes[i].HardcoverCoverURL)
 	}
 }
