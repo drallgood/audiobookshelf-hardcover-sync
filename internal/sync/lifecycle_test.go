@@ -38,19 +38,32 @@ func TestRunPhaseTransitionsAreLegalAndTerminalPhasesAreImmutable(t *testing.T) 
 }
 
 func TestCancellationReservationWinsTerminalTransition(t *testing.T) {
-	svc, _ := createTestService()
-	svc.beginOutcomeRun()
-	require.True(t, svc.transitionRunPhase(RunPhaseRunning, nil))
-	require.True(t, svc.RequestCancellation())
+	t.Run("cancellation reservation rejects finalization", func(t *testing.T) {
+		svc, _ := createTestService()
+		svc.beginOutcomeRun()
+		require.True(t, svc.transitionRunPhase(RunPhaseRunning, nil))
+		require.True(t, svc.RequestCancellation())
+		require.False(t, svc.transitionRunPhase(RunPhaseFinalizing, nil))
+		require.True(t, svc.transitionRunPhase(RunPhaseCanceled, context.Canceled))
+		require.False(t, svc.RequestCancellation())
 
-	// This models a worker terminalizing immediately after cancellation won the
-	// shared run-state decision point. Finalizing remains an active phase, so
-	// the terminal transition is still accepted and must honor cancellation.
-	require.True(t, svc.transitionRunPhase(RunPhaseFinalizing, nil))
-	require.True(t, svc.transitionRunPhase(RunPhaseCompleted, errors.New("late completion")))
-	snapshot := svc.GetSnapshotStatus()
-	require.Equal(t, string(RunPhaseCanceled), snapshot.State)
-	require.Equal(t, context.Canceled.Error(), snapshot.RunError)
+		snapshot := svc.GetSnapshotStatus()
+		require.Equal(t, string(RunPhaseCanceled), snapshot.State)
+		require.Equal(t, context.Canceled.Error(), snapshot.RunError)
+	})
+
+	t.Run("finalization reservation rejects later cancellation", func(t *testing.T) {
+		svc, _ := createTestService()
+		svc.beginOutcomeRun()
+		require.True(t, svc.transitionRunPhase(RunPhaseRunning, nil))
+		require.True(t, svc.transitionRunPhase(RunPhaseFinalizing, nil))
+		require.False(t, svc.RequestCancellation())
+		require.True(t, svc.transitionRunPhase(RunPhaseCompleted, errors.New("late completion")))
+
+		snapshot := svc.GetSnapshotStatus()
+		require.Equal(t, string(RunPhaseCompleted), snapshot.State)
+		require.Equal(t, "late completion", snapshot.RunError)
+	})
 }
 
 func TestTerminalTransitionWinsCancellationReservation(t *testing.T) {

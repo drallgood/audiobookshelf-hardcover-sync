@@ -264,12 +264,14 @@ func (s *Service) SetSnapshotCheckpoint(callback func(SyncSnapshot) error) {
 }
 
 // RequestCancellation atomically reserves cancellation against lifecycle
-// terminalization. A false result means a terminal phase already won the
-// boundary and the caller must not alter its lifecycle markers or report.
+// terminalization. A false result means finalization or a terminal phase
+// already won the boundary and the caller must not alter its lifecycle markers
+// or report.
 func (s *Service) RequestCancellation() bool {
 	s.runStateMutex.Lock()
 	defer s.runStateMutex.Unlock()
-	if isTerminalRunPhase(RunPhase(s.runState)) {
+	phase := RunPhase(s.runState)
+	if phase == RunPhaseFinalizing || isTerminalRunPhase(phase) {
 		return false
 	}
 	s.cancellationRequested = true
@@ -521,6 +523,9 @@ func (s *Service) transitionRunPhase(to RunPhase, runErr error) bool {
 	defer s.runStateMutex.Unlock()
 	from := RunPhase(s.runState)
 	if isTerminalRunPhase(from) || !isLegalRunPhaseTransition(from, to) {
+		return false
+	}
+	if s.cancellationRequested && to == RunPhaseFinalizing {
 		return false
 	}
 	if s.cancellationRequested && isTerminalRunPhase(to) && to != RunPhaseCanceled {
@@ -1662,7 +1667,9 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
 	}
-	s.transitionRunPhase(RunPhaseFinalizing, nil)
+	if !s.transitionRunPhase(RunPhaseFinalizing, nil) {
+		return context.Canceled
+	}
 	if checkpointErr := s.checkpointSnapshot(); checkpointErr != nil {
 		return fmt.Errorf("%w before finalization: %w", errSnapshotCheckpoint, checkpointErr)
 	}
