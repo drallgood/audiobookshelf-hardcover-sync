@@ -3,8 +3,14 @@ package database
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/stretchr/testify/require"
@@ -29,6 +35,13 @@ func createTestProfile(t *testing.T, db *Database, profileID string) {
 func TestFreshLifecycleSchemaOmitsRetiredColumns(t *testing.T) {
 	db, _ := newRepositoryForTest(t)
 	migrator := db.GetDB().Migrator()
+	columns, err := migrator.ColumnTypes(&SyncRunReport{})
+	require.NoError(t, err)
+	for _, column := range columns {
+		if strings.EqualFold(column.Name(), "snapshot_json") {
+			require.Equal(t, "TEXT", strings.ToUpper(column.DatabaseTypeName()))
+		}
+	}
 
 	for _, column := range []string{
 		"run_generation",
@@ -41,6 +54,25 @@ func TestFreshLifecycleSchemaOmitsRetiredColumns(t *testing.T) {
 	}
 	for _, column := range []string{"created_at", "updated_at"} {
 		require.False(t, migrator.HasColumn(&SyncRunReport{}, column), column)
+	}
+}
+
+func TestSyncSnapshotJSONUsesDialectLargeTextType(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		dialector gorm.Dialector
+		wantType  string
+	}{
+		{name: "mysql", dialector: mysql.Open(""), wantType: "LONGTEXT"},
+		{name: "mariadb via mysql dialector", dialector: mysql.Open(""), wantType: "LONGTEXT"},
+		{name: "postgres", dialector: postgres.Open(""), wantType: "TEXT"},
+		{name: "sqlite", dialector: sqlite.Open(":memory:"), wantType: "TEXT"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db := &gorm.DB{Config: &gorm.Config{Dialector: test.dialector}}
+			require.Equal(t, "string", SyncSnapshotJSON("").GormDataType())
+			require.Equal(t, test.wantType, SyncSnapshotJSON("").GormDBDataType(db, nil))
+		})
 	}
 }
 
@@ -73,7 +105,7 @@ func TestAcceptSyncRunAllocatesPerProfileGenerationAndAttemptMetadata(t *testing
 	stored, err := repo.GetSyncRunReport("profile-a", "run-a-1")
 	require.NoError(t, err)
 	require.Equal(t, queuedAt, *stored.QueuedAt)
-	require.Equal(t, `{"finished":true}`, stored.SnapshotJSON)
+	require.Equal(t, `{"finished":true}`, string(stored.SnapshotJSON))
 
 	second := acceptTestSyncRun(t, repo, "profile-a", "run-a-2", true, queuedAt.Add(time.Minute))
 	require.Equal(t, uint64(2), second.Generation)
@@ -108,7 +140,7 @@ func TestSyncRunReportLookupIsScopedToProfile(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, retrieved)
 	require.Equal(t, "profile-b", retrieved.ProfileID)
-	require.Equal(t, `{"profile":"b"}`, retrieved.SnapshotJSON)
+	require.Equal(t, `{"profile":"b"}`, string(retrieved.SnapshotJSON))
 
 	missing, err := repo.GetSyncRunReport("profile-c", "same-run")
 	require.NoError(t, err)
@@ -203,6 +235,12 @@ func TestReconcileInterruptedSyncRunReportsPreservesHistory(t *testing.T) {
 	createTestProfile(t, db, "profile-a")
 	queuedAt := time.Date(2026, time.September, 18, 12, 0, 0, 0, time.UTC)
 	queued := acceptTestSyncRun(t, repo, "profile-a", "run-queued", false, queuedAt)
+	processingStarted := queuedAt.Add(time.Second)
+	lastActivity := queuedAt.Add(2 * time.Second)
+	lastProcessed := queuedAt.Add(3 * time.Second)
+	queued.ProcessingStartedAt = &processingStarted
+	queued.LastActivityAt = &lastActivity
+	queued.LastProcessedAt = &lastProcessed
 	queued.SnapshotJSON = `{"state":"queued","book_outcomes":[{"book_id":"book"}]}`
 	require.NoError(t, db.GetDB().Save(queued).Error)
 	require.NoError(t, db.GetDB().Exec("UPDATE sync_run_reports SET phase = ? WHERE profile_id = ? AND run_id = ?", "running", "profile-a", "run-queued").Error)
@@ -213,7 +251,47 @@ func TestReconcileInterruptedSyncRunReportsPreservesHistory(t *testing.T) {
 	require.Equal(t, SyncRunPhaseFailed, report.Phase)
 	require.Equal(t, interruptedSyncRunError, report.RunError)
 	require.Contains(t, report.SnapshotJSON, "book_outcomes")
+	require.Equal(t, processingStarted, *report.ProcessingStartedAt)
+	require.Equal(t, lastActivity, *report.LastActivityAt)
+	require.Equal(t, lastProcessed, *report.LastProcessedAt)
 	require.NotNil(t, report.FinishedAt)
+}
+
+func TestActiveCheckpointPreservesSuccessAndRejectsTerminalDemotion(t *testing.T) {
+	db, repo := newRepositoryForTest(t)
+	createTestProfile(t, db, "profile-a")
+	queuedAt := time.Date(2026, time.September, 18, 12, 0, 0, 0, time.UTC)
+	first := acceptTestSyncRun(t, repo, "profile-a", "run-first", false, queuedAt)
+	first.Phase = SyncRunPhaseCompleted
+	first.FinishedAt = timePtrForDatabaseTest(queuedAt.Add(time.Minute))
+	require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), first))
+
+	second := acceptTestSyncRun(t, repo, "profile-a", "run-second", false, queuedAt.Add(2*time.Minute))
+	checkpoint := &SyncRunReport{
+		ProfileID: "profile-a", RunID: second.RunID, Generation: second.Generation,
+		Phase: SyncRunPhaseRunning, SnapshotJSON: `{"state":"running","processed_so_far":2}`,
+		ProcessingStartedAt: timePtrForDatabaseTest(queuedAt.Add(3 * time.Minute)),
+		LastProcessedAt:     timePtrForDatabaseTest(queuedAt.Add(4 * time.Minute)),
+	}
+	require.NoError(t, repo.UpsertSyncRunCheckpointContext(context.Background(), checkpoint))
+
+	stored, err := repo.GetSyncRunReport("profile-a", second.RunID)
+	require.NoError(t, err)
+	require.Equal(t, SyncRunPhaseRunning, stored.Phase)
+	require.Contains(t, string(stored.SnapshotJSON), "processed_so_far")
+	state, err := repo.GetSyncState("profile-a")
+	require.NoError(t, err)
+	require.Equal(t, *first.FinishedAt, *state.LastSuccessfulAt)
+
+	checkpoint.Phase = SyncRunPhaseCompleted
+	checkpoint.FinishedAt = timePtrForDatabaseTest(queuedAt.Add(5 * time.Minute))
+	require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), checkpoint))
+	checkpoint.Phase = SyncRunPhaseFinalizing
+	err = repo.UpsertSyncRunCheckpointContext(context.Background(), checkpoint)
+	require.ErrorIs(t, err, ErrStaleSyncRunReport)
+	stored, err = repo.GetSyncRunReport("profile-a", second.RunID)
+	require.NoError(t, err)
+	require.Equal(t, SyncRunPhaseCompleted, stored.Phase)
 }
 
 func TestReconcilePrunesExistingTerminalHistoryAfterRetentionDecrease(t *testing.T) {

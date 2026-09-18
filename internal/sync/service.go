@@ -24,8 +24,9 @@ import (
 
 // Error definitions
 var (
-	ErrSkippedBook     = errors.New("book was skipped")
-	errStateCheckpoint = errors.New("failed to checkpoint sync state")
+	ErrSkippedBook        = errors.New("book was skipped")
+	errStateCheckpoint    = errors.New("failed to checkpoint sync state")
+	errSnapshotCheckpoint = errors.New("failed to checkpoint sync snapshot")
 
 	// These errors preserve the distinction between a completed search with no
 	// result and a lookup that could not be completed. Callers should use
@@ -233,15 +234,16 @@ type Service struct {
 	attentionCandidates map[string]mismatch.BookMismatch
 	// mismatchCollector is created for each Sync run so mismatch-file export is
 	// isolated from other profiles and runs.
-	mismatchCollector   *mismatch.Collector
-	runID               string
-	queuedAt            time.Time
-	processingStartedAt time.Time
-	lastActivityAt      time.Time
-	lastProcessedAt     time.Time
-	finishedAt          time.Time
-	runError            string
-	runState            string
+	mismatchCollector     *mismatch.Collector
+	runID                 string
+	queuedAt              time.Time
+	processingStartedAt   time.Time
+	lastActivityAt        time.Time
+	lastProcessedAt       time.Time
+	finishedAt            time.Time
+	runError              string
+	runState              string
+	cancellationRequested bool
 	// runIdentityInjected is true when an owner (currently MultiUserService)
 	// supplied the opaque run ID and queued timestamp. Such an identity is
 	// authoritative and must not be replaced when Sync begins.
@@ -249,6 +251,29 @@ type Service struct {
 	// Per-run guard to prevent duplicate read inserts
 	createdReadsThisRun map[int64]struct{}
 	createdReadsMutex   sync.Mutex
+	snapshotCheckpoint  func(SyncSnapshot) error
+}
+
+// SetSnapshotCheckpoint installs a narrow callback for durable lifecycle
+// snapshots. The callback is invoked after each attempted-book checkpoint,
+// including dry runs, and receives an independent snapshot copy.
+func (s *Service) SetSnapshotCheckpoint(callback func(SyncSnapshot) error) {
+	s.runStateMutex.Lock()
+	s.snapshotCheckpoint = callback
+	s.runStateMutex.Unlock()
+}
+
+// RequestCancellation atomically reserves cancellation against lifecycle
+// terminalization. A false result means a terminal phase already won the
+// boundary and the caller must not alter its lifecycle markers or report.
+func (s *Service) RequestCancellation() bool {
+	s.runStateMutex.Lock()
+	defer s.runStateMutex.Unlock()
+	if isTerminalRunPhase(RunPhase(s.runState)) {
+		return false
+	}
+	s.cancellationRequested = true
+	return true
 }
 
 // NewServiceWithRunIdentity creates a sync service bound to an already
@@ -436,6 +461,9 @@ func (s *Service) beginOutcomeRun() {
 		s.runID = strconv.FormatInt(now.UnixNano(), 10)
 		s.queuedAt = now
 	}
+	if !s.runIdentityInjected {
+		s.cancellationRequested = false
+	}
 	// Consume the injected identity at the start of this run. If a direct
 	// caller reuses the service for a later run, that later run gets a fresh
 	// local ID instead of accidentally reusing a terminal run ID.
@@ -495,6 +523,10 @@ func (s *Service) transitionRunPhase(to RunPhase, runErr error) bool {
 	if isTerminalRunPhase(from) || !isLegalRunPhaseTransition(from, to) {
 		return false
 	}
+	if s.cancellationRequested && isTerminalRunPhase(to) && to != RunPhaseCanceled {
+		to = RunPhaseCanceled
+		runErr = context.Canceled
+	}
 	s.runState = string(to)
 	s.touchLastActivityLocked(now)
 	switch to {
@@ -505,6 +537,7 @@ func (s *Service) transitionRunPhase(to RunPhase, runErr error) bool {
 	case RunPhaseRunning:
 		s.processingStartedAt = now
 	case RunPhaseCompleted, RunPhaseCanceled, RunPhaseFailed:
+		s.cancellationRequested = false
 		s.finishedAt = now
 		if runErr != nil {
 			s.runError = runErr.Error()
@@ -1042,6 +1075,16 @@ func (s *Service) GetSnapshotStatus() SyncSnapshot {
 	}
 }
 
+func (s *Service) checkpointSnapshot() error {
+	s.runStateMutex.RLock()
+	callback := s.snapshotCheckpoint
+	s.runStateMutex.RUnlock()
+	if callback == nil {
+		return nil
+	}
+	return callback(s.GetSnapshot())
+}
+
 func unattemptedCount(candidateTotal, processedCount int32) int32 {
 	if candidateTotal <= processedCount {
 		return 0
@@ -1528,6 +1571,9 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 	// to begin, publish the running phase even when no candidates were found so
 	// every successful run follows the legal queued -> running path.
 	s.transitionRunPhase(RunPhaseRunning, nil)
+	if checkpointErr := s.checkpointSnapshot(); checkpointErr != nil {
+		return fmt.Errorf("%w before processing: %w", errSnapshotCheckpoint, checkpointErr)
+	}
 
 	// Process each filtered library
 	for i := range filteredLibraries {
@@ -1557,6 +1603,7 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 				"library_id": filteredLibraries[i].ID,
 			})
 			if errors.Is(err, errStateCheckpoint) ||
+				errors.Is(err, errSnapshotCheckpoint) ||
 				errors.Is(err, context.Canceled) ||
 				errors.Is(err, context.DeadlineExceeded) {
 				return err
@@ -1618,6 +1665,9 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 		return ctxErr
 	}
 	s.transitionRunPhase(RunPhaseFinalizing, nil)
+	if checkpointErr := s.checkpointSnapshot(); checkpointErr != nil {
+		return fmt.Errorf("%w before finalization: %w", errSnapshotCheckpoint, checkpointErr)
+	}
 
 	// Save only this run's mismatches. The collector serializes the shared
 	// output-directory cleanup/write lifecycle across profile runs.
@@ -1811,22 +1861,28 @@ func (s *Service) processLibraryItems(ctx context.Context, library *audiobookshe
 // checkpointState persists progress after each book so completed work survives
 // cancellation or process termination before the full sync finishes.
 func (s *Service) checkpointState(bookID string) error {
-	if s.config.Sync.DryRun {
-		return nil
-	}
-	if !s.state.IsDirty() {
-		return nil
-	}
-
-	if err := s.state.Save(s.statePath); err != nil {
-		s.log.Error("Failed to checkpoint sync state", map[string]interface{}{
-			"book_id":    bookID,
-			"state_path": s.statePath,
-			"error":      err.Error(),
-		})
-		return fmt.Errorf("%w after book %s: %w", errStateCheckpoint, bookID, err)
+	var stateErr error
+	if !s.config.Sync.DryRun && s.state.IsDirty() {
+		if err := s.state.Save(s.statePath); err != nil {
+			s.log.Error("Failed to checkpoint sync state", map[string]interface{}{
+				"book_id":    bookID,
+				"state_path": s.statePath,
+				"error":      err.Error(),
+			})
+			stateErr = fmt.Errorf("%w after book %s: %w", errStateCheckpoint, bookID, err)
+		}
 	}
 
+	snapshotErr := s.checkpointSnapshot()
+	if stateErr != nil {
+		if snapshotErr != nil {
+			return errors.Join(stateErr, fmt.Errorf("%w after book %s: %w", errSnapshotCheckpoint, bookID, snapshotErr))
+		}
+		return stateErr
+	}
+	if snapshotErr != nil {
+		return fmt.Errorf("%w after book %s: %w", errSnapshotCheckpoint, bookID, snapshotErr)
+	}
 	return nil
 }
 

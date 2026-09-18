@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -461,6 +462,35 @@ func TestCheckpointStateSkipsDryRun(t *testing.T) {
 	assert.ErrorIs(t, err, os.ErrNotExist)
 	_, exists := svc.state.GetBookState("book1")
 	assert.True(t, exists, "dry-run state should remain available in memory")
+}
+
+func TestCheckpointStateInvokesSnapshotCallbackForDryRun(t *testing.T) {
+	svc, _ := createTestService()
+	svc.config.Sync.DryRun = true
+	svc.beginOutcomeRun()
+	require.True(t, svc.transitionRunPhase(RunPhaseRunning, nil))
+
+	var checkpointed SyncSnapshot
+	var callbackCount int
+	svc.SetSnapshotCheckpoint(func(snapshot SyncSnapshot) error {
+		callbackCount++
+		checkpointed = snapshot
+		return nil
+	})
+	require.NoError(t, svc.checkpointState("book1"))
+	require.Equal(t, 1, callbackCount)
+	require.Equal(t, string(RunPhaseRunning), checkpointed.State)
+	require.Equal(t, svc.GetSnapshot().RunID, checkpointed.RunID)
+}
+
+func TestCheckpointStatePropagatesSnapshotCallbackFailure(t *testing.T) {
+	svc, _ := createTestService()
+	expected := errors.New("snapshot persistence failed")
+	svc.SetSnapshotCheckpoint(func(SyncSnapshot) error { return expected })
+
+	err := svc.checkpointState("book1")
+	require.ErrorIs(t, err, errSnapshotCheckpoint)
+	require.ErrorIs(t, err, expected)
 }
 
 func TestProcessLibraryReturnsCheckpointFailure(t *testing.T) {

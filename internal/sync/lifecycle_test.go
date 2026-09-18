@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -34,6 +35,59 @@ func TestRunPhaseTransitionsAreLegalAndTerminalPhasesAreImmutable(t *testing.T) 
 	require.Equal(t, completed.State, terminal.State)
 	require.Equal(t, completed.FinishedAt, terminal.FinishedAt)
 	require.Empty(t, terminal.RunError)
+}
+
+func TestCancellationReservationWinsTerminalTransition(t *testing.T) {
+	svc, _ := createTestService()
+	svc.beginOutcomeRun()
+	require.True(t, svc.transitionRunPhase(RunPhaseRunning, nil))
+	require.True(t, svc.RequestCancellation())
+
+	// This models a worker terminalizing immediately after cancellation won the
+	// shared run-state decision point. Finalizing remains an active phase, so
+	// the terminal transition is still accepted and must honor cancellation.
+	require.True(t, svc.transitionRunPhase(RunPhaseFinalizing, nil))
+	require.True(t, svc.transitionRunPhase(RunPhaseCompleted, errors.New("late completion")))
+	snapshot := svc.GetSnapshotStatus()
+	require.Equal(t, string(RunPhaseCanceled), snapshot.State)
+	require.Equal(t, context.Canceled.Error(), snapshot.RunError)
+}
+
+func TestTerminalTransitionWinsCancellationReservation(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		terminalize func(*Service) bool
+		wantState   RunPhase
+		wantError   string
+	}{
+		{
+			name: "completed",
+			terminalize: func(svc *Service) bool {
+				return svc.transitionRunPhase(RunPhaseFinalizing, nil) &&
+					svc.transitionRunPhase(RunPhaseCompleted, nil)
+			},
+			wantState: RunPhaseCompleted,
+		},
+		{
+			name: "failed",
+			terminalize: func(svc *Service) bool {
+				return svc.transitionRunPhase(RunPhaseFailed, errors.New("terminal failure"))
+			},
+			wantState: RunPhaseFailed,
+			wantError: "terminal failure",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			svc, _ := createTestService()
+			svc.beginOutcomeRun()
+			require.True(t, svc.transitionRunPhase(RunPhaseRunning, nil))
+			require.True(t, test.terminalize(svc))
+			require.False(t, svc.RequestCancellation())
+			snapshot := svc.GetSnapshotStatus()
+			require.Equal(t, string(test.wantState), snapshot.State)
+			require.Equal(t, test.wantError, snapshot.RunError)
+		})
+	}
 }
 
 func TestRunPhaseAllowsOnlyDocumentedTerminalPaths(t *testing.T) {

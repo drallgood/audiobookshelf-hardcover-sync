@@ -233,6 +233,65 @@ func (r *Repository) UpsertSyncRunReportContext(ctx context.Context, report *Syn
 	})
 }
 
+// UpsertSyncRunCheckpointContext stores an in-progress snapshot for the
+// currently accepted run. Active checkpoints deliberately do not participate
+// in terminal retention or successful-sync metadata updates. A stale,
+// canceled, replaced, or already-terminal run is rejected so an old worker
+// cannot demote durable history.
+func (r *Repository) UpsertSyncRunCheckpointContext(ctx context.Context, report *SyncRunReport) error {
+	if report == nil {
+		return errors.New("sync run report is required")
+	}
+	if report.ProfileID == "" {
+		return errors.New("profile ID is required")
+	}
+	if report.RunID == "" {
+		return errors.New("run ID is required")
+	}
+	if report.Generation == 0 {
+		return errors.New("sync run generation is required")
+	}
+	if !isActiveSyncRunPhase(report.Phase) {
+		return fmt.Errorf("sync run checkpoint phase must be active, got %q", report.Phase)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	return r.db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing SyncRunReport
+		if err := tx.Where("profile_id = ? AND run_id = ?", report.ProfileID, report.RunID).
+			First(&existing).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("%w: sync run %s is not accepted", ErrStaleSyncRunReport, report.RunID)
+			}
+			return fmt.Errorf("failed to find sync run report: %w", err)
+		}
+		if existing.Generation != report.Generation || isTerminalSyncRunPhase(existing.Phase) ||
+			!isCheckpointableSyncRunPhase(existing.Phase) {
+			return fmt.Errorf("%w: sync run %s is no longer active", ErrStaleSyncRunReport, report.RunID)
+		}
+
+		var state ProfileSyncState
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("profile_id = ?", report.ProfileID).First(&state).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("%w: profile %s has no accepted sync run", ErrStaleSyncRunReport, report.ProfileID)
+			}
+			return fmt.Errorf("failed to inspect current sync run: %w", err)
+		}
+		if state.LastAttemptedRunID != report.RunID || state.LastAttemptedGeneration != report.Generation {
+			return fmt.Errorf("%w: profile %s run %s generation %d is not current", ErrStaleSyncRunReport, report.ProfileID, report.RunID, report.Generation)
+		}
+
+		mergeSyncRunReportDefaults(report, &existing)
+		if err := tx.Save(report).Error; err != nil {
+			return fmt.Errorf("failed to update sync run checkpoint: %w", err)
+		}
+		return nil
+	})
+}
+
 // mergeSyncRunReportDefaults preserves lifecycle data recorded by an initial
 // queued report when a terminal update only supplies the fields it changed.
 // It also keeps dry-run provenance immutable for a run.
@@ -352,6 +411,14 @@ func isTerminalSyncRunPhase(phase string) bool {
 	default:
 		return false
 	}
+}
+
+func isActiveSyncRunPhase(phase string) bool {
+	return phase == SyncRunPhaseRunning || phase == SyncRunPhaseFinalizing
+}
+
+func isCheckpointableSyncRunPhase(phase string) bool {
+	return phase == SyncRunPhaseQueued || isActiveSyncRunPhase(phase)
 }
 
 // ReconcileInterruptedSyncRunReports converts durable non-terminal reports to

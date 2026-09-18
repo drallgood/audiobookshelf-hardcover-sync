@@ -161,6 +161,21 @@ test('run details use the timestamp for the current lifecycle phase', () => {
     }
 });
 
+test('completed dry-run details use the completed dry-run label', () => {
+    const app = createApp();
+    const snapshot = {
+        state: 'completed',
+        dry_run: true,
+        queued_at: '2026-09-17T12:00:00Z',
+        finished_at: '2026-09-17T12:10:00Z'
+    };
+
+    assert.deepEqual(app.detailsStatusTimestamp(snapshot), {
+        label: 'Dry run completed',
+        timestamp: snapshot.finished_at
+    });
+});
+
 test('run details fall back to the latest available earlier phase timestamp', () => {
     const app = createApp();
 

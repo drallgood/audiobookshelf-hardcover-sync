@@ -459,6 +459,90 @@ func TestReconcileInterruptedSyncRunsMarksDurableQueuedRunFailed(t *testing.T) {
 	require.Contains(t, restored.SnapshotJSON, "processed_so_far")
 }
 
+func TestActiveSnapshotCheckpointSurvivesRestartReconcile(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	const profileID = "profile-active-checkpoint"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Active checkpoint", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
+	))
+	run := installAcceptedTestRun(t, service, profileID, "run-active-checkpoint", false)
+	processingStarted := run.startedAt.Add(time.Second)
+	lastActivity := run.startedAt.Add(2 * time.Second)
+	lastProcessed := run.startedAt.Add(3 * time.Second)
+	snapshot := syncsvc.SyncSnapshot{
+		ProfileID: profileID, RunID: run.runID, State: string(syncsvc.RunPhaseRunning),
+		QueuedAt: run.startedAt, ProcessingStartedAt: processingStarted,
+		LastActivityAt: lastActivity, LastProcessedAt: lastProcessed,
+		BooksTotal: 2, ProcessedSoFar: 1, UnattemptedCount: 1,
+		OutcomeCounts: syncsvc.OutcomeCounts{Skipped: 1},
+		BookOutcomes:  []syncsvc.BookOutcomeRecord{{BookID: "book-1", Outcome: syncsvc.OutcomeSkipped, Title: "Skipped"}},
+	}
+	require.NoError(t, service.persistActiveSnapshot(profileID, run.generation, snapshot))
+
+	report, err := service.repository.GetSyncRunReport(profileID, run.runID)
+	require.NoError(t, err)
+	require.Equal(t, database.SyncRunPhaseRunning, report.Phase)
+	require.Equal(t, &processingStarted, report.ProcessingStartedAt)
+	require.Equal(t, &lastProcessed, report.LastProcessedAt)
+	require.Contains(t, string(report.SnapshotJSON), "book-1")
+
+	require.NoError(t, service.ReconcileInterruptedSyncRuns())
+	report, err = service.repository.GetSyncRunReport(profileID, run.runID)
+	require.NoError(t, err)
+	require.Equal(t, database.SyncRunPhaseFailed, report.Phase)
+	require.Equal(t, "sync run interrupted by application restart", report.RunError)
+	restored, err := NewMultiUserService(service.repository, config.DefaultConfig(), logger.Get()).GetSyncRunSnapshot(profileID, run.runID)
+	require.NoError(t, err)
+	require.NotNil(t, restored)
+	require.Equal(t, int32(1), restored.ProcessedSoFar)
+	require.Len(t, restored.BookOutcomes, 1)
+	require.Equal(t, lastActivity, restored.LastActivityAt)
+	require.Equal(t, lastProcessed, restored.LastProcessedAt)
+	require.Equal(t, string(syncsvc.RunPhaseFailed), restored.State)
+}
+
+func TestActiveSnapshotCheckpointIgnoresReplacedRun(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	const profileID = "profile-replaced-checkpoint"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Replaced checkpoint", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
+	))
+	oldRun := installAcceptedTestRun(t, service, profileID, "run-old-checkpoint", false)
+	newRun := installAcceptedTestRun(t, service, profileID, "run-new-checkpoint", false)
+	oldSnapshot := syncsvc.SyncSnapshot{
+		ProfileID: profileID, RunID: oldRun.runID, State: string(syncsvc.RunPhaseRunning),
+		ProcessedSoFar: 1, OutcomeCounts: syncsvc.OutcomeCounts{Failed: 1},
+		BookOutcomes: []syncsvc.BookOutcomeRecord{{BookID: "old-book", Outcome: syncsvc.OutcomeFailed}},
+	}
+	require.NoError(t, service.persistActiveSnapshot(profileID, oldRun.generation, oldSnapshot))
+	newReport, err := service.repository.GetSyncRunReport(profileID, newRun.runID)
+	require.NoError(t, err)
+	require.Equal(t, database.SyncRunPhaseQueued, newReport.Phase)
+	require.NotContains(t, string(newReport.SnapshotJSON), "old-book")
+}
+
+func TestDryRunActiveSnapshotCheckpointDoesNotAdvanceSuccess(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	const profileID = "profile-dry-checkpoint"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Dry checkpoint", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
+	))
+	run := installAcceptedTestRun(t, service, profileID, "run-dry-checkpoint", true)
+	snapshot := syncsvc.SyncSnapshot{
+		ProfileID: profileID, RunID: run.runID, State: string(syncsvc.RunPhaseRunning),
+		DryRun: true, ProcessedSoFar: 1, OutcomeCounts: syncsvc.OutcomeCounts{WouldSync: 1},
+		BookOutcomes: []syncsvc.BookOutcomeRecord{{BookID: "dry-book", Outcome: syncsvc.OutcomeWouldSync}},
+	}
+	require.NoError(t, service.persistActiveSnapshot(profileID, run.generation, snapshot))
+	stored, err := service.repository.GetSyncRunReport(profileID, run.runID)
+	require.NoError(t, err)
+	require.Equal(t, database.SyncRunPhaseRunning, stored.Phase)
+	require.True(t, stored.DryRun)
+	state, err := service.repository.GetSyncState(profileID)
+	require.NoError(t, err)
+	require.Nil(t, state.LastSuccessfulAt)
+}
+
 func acceptedTerminalStatus(profileID string, run activeSyncRun, phase string) *SyncProfileStatus {
 	snapshot := newRunSnapshot(profileID, run, phase)
 	snapshot.FinishedAt = run.startedAt.Add(time.Minute)
@@ -814,6 +898,85 @@ func TestPublishFinalStatusRejectsCanceledRunBeforeDurableSuccess(t *testing.T) 
 	require.Nil(t, state.LastSuccessfulAt)
 }
 
+func TestCancelSyncRejectsTerminalServiceSnapshots(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		librariesCode int
+		wantPhase     syncsvc.RunPhase
+	}{
+		{name: "completed", librariesCode: http.StatusOK, wantPhase: syncsvc.RunPhaseCompleted},
+		{name: "failed", librariesCode: http.StatusInternalServerError, wantPhase: syncsvc.RunPhaseFailed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service, _ := newStatusLookupService(t)
+			profileID := "profile-terminal-cancel-" + test.name
+			require.NoError(t, service.repository.CreateProfile(profileID, "Profile", "http://unused", "abs-token", "hc-token", database.SyncConfigData{}))
+
+			absServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/me":
+					_, _ = io.WriteString(w, `{}`)
+				case "/api/libraries":
+					if test.librariesCode != http.StatusOK {
+						w.WriteHeader(test.librariesCode)
+						return
+					}
+					_, _ = io.WriteString(w, `{"libraries":[]}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(absServer.Close)
+
+			dataDir := t.TempDir()
+			cfg := config.DefaultConfig()
+			cfg.Audiobookshelf.URL = absServer.URL
+			cfg.Sync.StateFile = filepath.Join(dataDir, "state.json")
+			cfg.Paths.CacheDir = filepath.Join(dataDir, "cache")
+			cfg.Paths.MismatchOutputDir = filepath.Join(dataDir, "mismatches")
+			hcConfig := hardcover.DefaultClientConfig()
+			hcConfig.BaseURL = "http://hardcover.invalid"
+			liveService, err := syncsvc.NewServiceWithRunIdentity(
+				audiobookshelf.NewClient(absServer.URL, "abs-token"),
+				hardcover.NewClientWithConfig(hcConfig, "hc-token", logger.Get()),
+				cfg, "run-terminal-race", time.Now().UTC(),
+			)
+			require.NoError(t, err)
+
+			queuedAt := time.Now().UTC()
+			report := acceptTestSyncRun(t, service.repository, profileID, "run-terminal-race", false, queuedAt)
+			run := activeSyncRun{generation: report.Generation, runID: report.RunID, startedAt: queuedAt, profileName: "Profile"}
+			_, cancel := context.WithCancel(context.Background())
+			service.syncMutex.Lock()
+			service.activeSyncs[profileID] = cancel
+			service.activeRuns[profileID] = run
+			service.latestRuns[profileID] = run
+			service.syncMutex.Unlock()
+			require.True(t, service.registerSyncService(profileID, run.generation, liveService))
+			t.Cleanup(func() {
+				cancel()
+				service.removeSyncService(profileID, run.generation, liveService)
+				service.finishActiveRun(profileID, run.generation)
+			})
+
+			syncErr := liveService.Sync(context.Background())
+			if test.wantPhase == syncsvc.RunPhaseCompleted {
+				require.NoError(t, syncErr)
+			} else {
+				require.Error(t, syncErr)
+			}
+			require.Equal(t, string(test.wantPhase), liveService.GetSnapshotStatus().State)
+
+			err = service.CancelSync(profileID)
+			require.ErrorIs(t, err, ErrSyncAlreadyTerminal)
+			require.True(t, isProfileSyncing(service, profileID))
+			stored, getErr := service.repository.GetSyncRunReport(profileID, run.runID)
+			require.NoError(t, getErr)
+			require.Equal(t, database.SyncRunPhaseQueued, stored.Phase)
+		})
+	}
+}
+
 func TestPublishFinalStatusRejectsReplacedRunBeforeDurableSuccess(t *testing.T) {
 	service, _ := newStatusLookupService(t)
 	profileID := "profile-a"
@@ -956,7 +1119,7 @@ func TestRestartRestoresNewestTerminalWhenQueuedReportFollowsTenTerminals(t *tes
 		report := acceptTestSyncRun(t, service.repository, profileID, runID, false, queuedAt.Add(time.Duration(generation)*time.Minute))
 		report.Phase = database.SyncRunPhaseCompleted
 		report.FinishedAt = timePtrForMultiuserTest(queuedAt.Add(time.Duration(generation) * time.Minute))
-		report.SnapshotJSON = fmt.Sprintf(`{"run_id":%q,"state":"completed"}`, runID)
+		report.SnapshotJSON = database.SyncSnapshotJSON(fmt.Sprintf(`{"run_id":%q,"state":"completed"}`, runID))
 		require.NoError(t, service.repository.UpsertSyncRunReportContext(context.Background(), report))
 	}
 	_, err := service.repository.AcceptSyncRun(&database.SyncRunReport{

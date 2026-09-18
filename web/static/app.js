@@ -1168,7 +1168,9 @@ class SyncProfileApp {
             .map(value => this.timestampOrNull(value))
             .find(Boolean);
         return {
-            label: this.formatStatusLabel(state, snapshot.dry_run),
+            label: state === 'completed' && this.toBool(snapshot.dry_run, false)
+                ? 'Dry run completed'
+                : this.formatStatusLabel(state, snapshot.dry_run),
             timestamp
         };
     }

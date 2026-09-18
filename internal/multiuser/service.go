@@ -38,6 +38,10 @@ var ErrProfileNotFound = errors.New("sync profile not found")
 // ErrSyncAlreadyActive indicates that a profile already has an active sync.
 var ErrSyncAlreadyActive = errors.New("sync already active")
 
+// ErrSyncAlreadyTerminal indicates that cancellation lost a race with the
+// service reaching a terminal lifecycle phase.
+var ErrSyncAlreadyTerminal = errors.New("sync already terminal")
+
 // ErrProfileDeleting indicates that profile lifecycle teardown is in progress.
 var ErrProfileDeleting = errors.New("sync profile is being deleted")
 
@@ -513,6 +517,9 @@ func sanitizeReportURL(raw string) string {
 	if err != nil {
 		return ""
 	}
+	if parsed.Opaque != "" {
+		return ""
+	}
 	parsed.User = nil
 	parsed.RawQuery = ""
 	parsed.ForceQuery = false
@@ -540,6 +547,12 @@ func runReportFromSnapshot(profileID string, generation uint64, snapshot sync.Sy
 	}
 	phase := database.SyncRunPhaseFailed
 	switch snapshot.State {
+	case string(sync.RunPhaseQueued):
+		phase = database.SyncRunPhaseQueued
+	case string(sync.RunPhaseRunning):
+		phase = database.SyncRunPhaseRunning
+	case string(sync.RunPhaseFinalizing):
+		phase = database.SyncRunPhaseFinalizing
 	case string(sync.RunPhaseCompleted):
 		phase = database.SyncRunPhaseCompleted
 	case string(sync.RunPhaseCanceled):
@@ -559,7 +572,7 @@ func runReportFromSnapshot(profileID string, generation uint64, snapshot sync.Sy
 		LastProcessedAt:     timeValue(snapshot.LastProcessedAt),
 		FinishedAt:          timeValue(snapshot.FinishedAt),
 		RunError:            snapshot.RunError,
-		SnapshotJSON:        string(snapshotJSON),
+		SnapshotJSON:        database.SyncSnapshotJSON(snapshotJSON),
 	}, nil
 }
 
@@ -825,7 +838,7 @@ func (s *MultiUserService) StartSyncWithAcceptedRun(profileID string) (AcceptedS
 	queuedReport, err := s.repository.AcceptSyncRun(&database.SyncRunReport{
 		ProfileID: profileID, RunID: runID, Phase: database.SyncRunPhaseQueued,
 		DryRun: profileConfig.SyncConfig.DryRun, QueuedAt: timeValue(queuedAt),
-		SnapshotJSON: queuedSnapshotJSON,
+		SnapshotJSON: database.SyncSnapshotJSON(queuedSnapshotJSON),
 	})
 	if err != nil {
 		return AcceptedSyncRun{}, fmt.Errorf("failed to accept sync run for profile %s: %w", profileID, err)
@@ -988,22 +1001,47 @@ func (s *MultiUserService) cancelSync(ctx context.Context, profileID string) err
 }
 
 func (s *MultiUserService) cancelSyncLocked(ctx context.Context, profileID string, gate *profileRunGate) error {
-	s.syncMutex.RLock()
+	// Keep the lifecycle map lock while reserving cancellation at the sync
+	// service boundary. This prevents a worker from registering a service
+	// between the lookup and the atomic terminal/cancellation decision.
+	s.syncMutex.Lock()
 	cancel, exists := s.activeSyncs[profileID]
 	run, runExists := s.activeRuns[profileID]
 	service, serviceGeneration := s.currentSyncServiceLocked(profileID)
-	s.syncMutex.RUnlock()
 	if !exists {
+		s.syncMutex.Unlock()
 		return fmt.Errorf("no active sync for profile %s", profileID)
 	}
 	if !runExists {
+		s.syncMutex.Unlock()
 		return fmt.Errorf("active sync identity missing for profile %s", profileID)
 	}
 
-	// Mark the latest run canceled before signaling the worker. This closes the
-	// publication race: a worker that observes cancellation late may retain its
-	// report, but cannot replace the canceled/current status.
-	s.syncMutex.Lock()
+	// RequestCancellation and terminal phase transitions share the sync
+	// service's run-state lock. Exactly one side wins: a terminal snapshot
+	// rejects cancellation; an accepted cancellation is honored by the
+	// service's eventual terminal transition.
+	if service != nil && serviceGeneration == run.generation && !service.RequestCancellation() {
+		s.syncMutex.Unlock()
+		return fmt.Errorf("%w for profile %s", ErrSyncAlreadyTerminal, profileID)
+	} else {
+		// A terminal worker may have already removed its service while its active
+		// marker is being drained. Preserve the same rejection from the published
+		// in-memory status in that narrow handoff window.
+		s.statusMutex.RLock()
+		stored := s.profileStatuses[profileID]
+		storedTerminal := stored != nil && stored.Snapshot != nil && stored.Snapshot.RunID == run.runID && isTerminalSnapshotState(stored.Snapshot.State)
+		s.statusMutex.RUnlock()
+		if storedTerminal {
+			s.syncMutex.Unlock()
+			return fmt.Errorf("%w for profile %s", ErrSyncAlreadyTerminal, profileID)
+		}
+	}
+
+	// Mark the latest run canceled before signaling the worker. The service
+	// cancellation reservation above makes this map transition part of the same
+	// decision: a worker that observes cancellation late may retain its report,
+	// but cannot replace the canceled/current status.
 	if current, ok := s.activeRuns[profileID]; !ok || current.runID != run.runID || current.generation != run.generation {
 		s.syncMutex.Unlock()
 		return fmt.Errorf("no active sync for profile %s", profileID)
@@ -1045,6 +1083,15 @@ func (s *MultiUserService) cancelSyncLocked(ctx context.Context, profileID strin
 	}
 	s.publishStatusIfLatest(profileID, run, finalStatus)
 	return nil
+}
+
+func isTerminalSnapshotState(state string) bool {
+	switch state {
+	case string(sync.RunPhaseCompleted), string(sync.RunPhaseCanceled), string(sync.RunPhaseFailed):
+		return true
+	default:
+		return false
+	}
 }
 
 // runSyncWorker owns one profile's execution ticket for the complete worker
@@ -1131,6 +1178,9 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
 		return
 	}
 	defer s.removeSyncService(profileID, generation, syncService)
+	syncService.SetSnapshotCheckpoint(func(snapshot sync.SyncSnapshot) error {
+		return s.persistActiveSnapshot(profileID, generation, snapshot)
+	})
 
 	// Run the sync
 	err = syncService.Sync(ctx)
@@ -1258,6 +1308,54 @@ func (s *MultiUserService) persistTerminalSnapshotContext(ctx context.Context, p
 		return err
 	}
 	return s.repository.UpsertSyncRunReportContext(ctx, report)
+}
+
+// persistActiveSnapshot durably checkpoints an in-progress run without
+// changing terminal retention or profile success metadata. The profile gate
+// serializes this update with cancellation, replacement, and final terminal
+// publication; stale callbacks become no-ops rather than failing the old
+// worker.
+func (s *MultiUserService) persistActiveSnapshot(profileID string, generation uint64, snapshot sync.SyncSnapshot) error {
+	if s.repository == nil || (snapshot.State != string(sync.RunPhaseRunning) && snapshot.State != string(sync.RunPhaseFinalizing)) {
+		return nil
+	}
+
+	s.admissionMutex.Lock()
+	if _, deleting := s.deletingProfiles[profileID]; deleting {
+		s.admissionMutex.Unlock()
+		return nil
+	}
+	if _, deleted := s.deletedProfiles[profileID]; deleted {
+		s.admissionMutex.Unlock()
+		return nil
+	}
+	gate := s.profileGate(profileID)
+	s.admissionMutex.Unlock()
+
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	if gate.deleted || !s.latestRunIsCurrent(profileID, snapshot.RunID, generation) {
+		return nil
+	}
+
+	s.syncMutex.RLock()
+	run, current := s.activeRuns[profileID]
+	s.syncMutex.RUnlock()
+	if !current || run.generation != generation || run.runID == "" {
+		return nil
+	}
+	snapshot.ProfileID = profileID
+	snapshot.RunID = run.runID
+	snapshot.DryRun = run.dryRun
+	report, err := runReportFromSnapshot(profileID, generation, snapshot)
+	if err != nil {
+		return err
+	}
+	err = s.repository.UpsertSyncRunCheckpointContext(context.Background(), report)
+	if errors.Is(err, database.ErrStaleSyncRunReport) {
+		return nil
+	}
+	return err
 }
 
 func (s *MultiUserService) publishStatusIfLatest(profileID string, run activeSyncRun, status *SyncProfileStatus) bool {
