@@ -86,6 +86,42 @@ func TestProcessBookFinishedWithoutFinishedAtSkipsHardcoverReadingState(t *testi
 	hc.AssertExpectations(t)
 }
 
+func TestProcessBookSkipsComputedFinishedWithoutFinishedAt(t *testing.T) {
+	svc, hc := createTestService()
+	svc.config.Sync.SyncOwned = false
+
+	book := toAudiobookshelfBook(createTestBook(
+		"outcome-computed-finished-without-date", "Computed Finished Without Date", "Author", "computed-finished-asin", "",
+	))
+	book.Media.Duration = 1000
+	book.Progress.CurrentTime = 1000
+	book.Progress.IsFinished = false
+	book.Progress.FinishedAt = 0
+
+	hc.On("SearchBookByASIN", mock.Anything, book.Media.Metadata.ASIN).Return(&models.HardcoverBook{
+		ID: "101", EditionID: "201",
+	}, nil).Once()
+
+	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
+
+	record := recordedOutcome(svc, book.ID)
+	assert.Equal(t, OutcomeSkipped, record.Outcome)
+	assert.Equal(t, "finished book has no Audiobookshelf finished_at", record.Reason)
+	hc.AssertNotCalled(t, "GetEdition", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "GetUserBookID", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "CreateUserBook", mock.Anything, mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "GetUserBook", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "GetUserBookReads", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+	_, compositeStateExists := svc.state.GetBookState(book.ID + ":201")
+	assert.False(t, compositeStateExists, "a skipped missing date must not checkpoint sync state")
+	_, baseStateExists := svc.state.GetBookState(book.ID)
+	assert.False(t, baseStateExists, "a skipped missing date must not checkpoint base sync state")
+	hc.AssertExpectations(t)
+}
+
 func TestProcessBookClassifiesProgressMutationOutcomes(t *testing.T) {
 	readErr := errors.New("progress endpoint unavailable")
 	writeErr := errors.New("progress mutation rejected")
