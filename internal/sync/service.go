@@ -4533,6 +4533,29 @@ func (s *Service) processFoundBook(ctx context.Context, hcBook *models.Hardcover
 	}
 	log := s.log.With(logCtx)
 
+	// Calculate the target status before any ownership or user-book lookup.
+	// A missing completion date cannot be represented safely in Hardcover:
+	// creating a FINISHED user book would create a read dated today. Leave the
+	// matched reading state untouched so this book remains eligible for a later
+	// sync with a date.
+	progress := 0.0
+	isFinished := book.Progress.IsFinished
+	finishedAt := book.Progress.FinishedAt
+	if book.Media.Duration > 0 {
+		// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
+		// because Audiobookshelf sometimes reports CurrentTime as 0 for finished books.
+		if isFinished {
+			progress = 1.0
+		} else {
+			progress = book.Progress.CurrentTime / book.Media.Duration
+		}
+	}
+	status := s.determineBookStatus(progress, isFinished, finishedAt)
+	if isFinishedWithoutFinishedAt(status, finishedAt) {
+		log.Info("Skipping ownership and user-book lookup because Audiobookshelf finished_at is missing", nil)
+		return hcBook, nil
+	}
+
 	// Mark book as owned if sync_owned is enabled
 	if s.config.Sync.SyncOwned && hcBook.EditionID != "" && hcBook.EditionID != "0" {
 		editionID, err := strconv.Atoi(hcBook.EditionID)
@@ -4615,29 +4638,7 @@ func (s *Service) processFoundBook(ctx context.Context, hcBook *models.Hardcover
 		}
 	}
 
-	// Calculate progress
-	progress := 0.0
-	isFinished := book.Progress.IsFinished
-	finishedAt := book.Progress.FinishedAt
-	if book.Media.Duration > 0 {
-		// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
-		// because Audiobookshelf sometimes reports CurrentTime as 0 for finished books
-		if isFinished {
-			progress = 1.0
-		} else {
-			progress = book.Progress.CurrentTime / book.Media.Duration
-		}
-	}
-
-	// Determine the status based on progress and isFinished flag
-	status := s.determineBookStatus(progress, isFinished, finishedAt)
-
-	// Do not create a user book for a finished item without its completion
-	// date. This is the same no-mutation behavior used for an already matched
-	// user book in HandleFinishedBook.
-	if isFinishedWithoutFinishedAt(status, finishedAt) {
-		log.Info("Skipping user-book lookup because Audiobookshelf finished_at is missing", nil)
-	} else if hcBook.EditionID != "" && hcBook.EditionID != "0" {
+	if hcBook.EditionID != "" && hcBook.EditionID != "0" {
 		userBookID, err := s.findOrCreateUserBookID(ctx, hcBook.EditionID, status)
 		if err != nil {
 			fields := map[string]interface{}{

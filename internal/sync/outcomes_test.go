@@ -122,6 +122,54 @@ func TestProcessBookSkipsComputedFinishedWithoutFinishedAt(t *testing.T) {
 	hc.AssertExpectations(t)
 }
 
+func TestProcessBookSkipsComputedFinishedWithoutFinishedAtBeforeISBNOwnership(t *testing.T) {
+	svc, hc := createTestService()
+	svc.config.Sync.SyncOwned = true
+
+	book := toAudiobookshelfBook(createTestBook(
+		"outcome-isbn-computed-finished-without-date", "Computed Finished Without Date", "Author", "", "9781234567890",
+	))
+	book.Media.Duration = 1000
+	book.Progress.CurrentTime = book.Media.Duration
+	book.Progress.IsFinished = false
+	book.Progress.FinishedAt = 0
+
+	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return(&models.HardcoverBook{
+		ID: "102", EditionID: "202",
+	}, nil).Once()
+
+	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
+
+	record := recordedOutcome(svc, book.ID)
+	assert.Equal(t, OutcomeSkipped, record.Outcome)
+	assert.Equal(t, "finished book has no Audiobookshelf finished_at", record.Reason)
+	for _, call := range []struct {
+		method string
+		args   []interface{}
+	}{
+		{method: "CheckBookOwnership", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "MarkEditionAsOwned", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "GetUserBookID", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "CreateUserBook", args: []interface{}{mock.Anything, mock.Anything, mock.Anything}},
+		{method: "UpdateUserBookEdition", args: []interface{}{mock.Anything, mock.Anything, mock.Anything}},
+		{method: "GetUserBook", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "GetUserBookReads", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "CheckExistingUserBookRead", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "InsertUserBookRead", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "UpdateUserBookRead", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "DeleteUserBookRead", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "UpdateUserBookStatus", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "UpdateReadingProgress", args: []interface{}{mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything}},
+	} {
+		hc.AssertNotCalled(t, call.method, call.args...)
+	}
+	_, compositeStateExists := svc.state.GetBookState(book.ID + ":202")
+	assert.False(t, compositeStateExists, "a skipped missing date must not checkpoint sync state")
+	_, baseStateExists := svc.state.GetBookState(book.ID)
+	assert.False(t, baseStateExists, "a skipped missing date must not checkpoint base sync state")
+	hc.AssertExpectations(t)
+}
+
 func TestProcessBookClassifiesProgressMutationOutcomes(t *testing.T) {
 	readErr := errors.New("progress endpoint unavailable")
 	writeErr := errors.New("progress mutation rejected")
