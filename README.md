@@ -209,6 +209,8 @@ The project follows standard Go project layout:
   - Tracks sync state between runs
   - Configurable minimum change threshold
   - Checkpoints changed state after each processed book (except dry runs); each run still scans the library from the beginning
+  - Finished books without an Audiobookshelf finished date are not synced to Hardcover.
+
 - **Smart Caching**: Intelligent caching of author/narrator lookups with cross-role discovery
 - **Enhanced Progress Detection**: Uses `/api/me` endpoint for accurate finished book detection, preventing false re-read scenarios
 

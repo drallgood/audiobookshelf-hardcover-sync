@@ -86,6 +86,53 @@ func TestProcessBookFinishedWithoutFinishedAtSkipsHardcoverReadingState(t *testi
 	hc.AssertExpectations(t)
 }
 
+func TestProcessBookExplicitlyFinishedWithoutFinishedAtAndDurationSkipsFreshASINMatch(t *testing.T) {
+	svc, hc := createTestService()
+	svc.config.Sync.SyncOwned = true
+
+	book := toAudiobookshelfBook(createTestBook(
+		"outcome-finished-without-date-zero-duration", "Finished Without Date", "Author", "missing-date-zero-duration-asin", "",
+	))
+	book.Media.Duration = 0
+	book.Progress.IsFinished = true
+	book.Progress.FinishedAt = 0
+
+	hc.On("SearchBookByASIN", mock.Anything, book.Media.Metadata.ASIN).Return(&models.HardcoverBook{
+		ID: "103", EditionID: "203",
+	}, nil).Once()
+
+	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
+
+	record := recordedOutcome(svc, book.ID)
+	assert.Equal(t, OutcomeSkipped, record.Outcome)
+	assert.Equal(t, "finished book has no Audiobookshelf finished_at", record.Reason)
+	for _, call := range []struct {
+		method string
+		args   []interface{}
+	}{
+		{method: "CheckBookOwnership", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "MarkEditionAsOwned", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "GetUserBookID", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "CreateUserBook", args: []interface{}{mock.Anything, mock.Anything, mock.Anything}},
+		{method: "UpdateUserBookEdition", args: []interface{}{mock.Anything, mock.Anything, mock.Anything}},
+		{method: "GetUserBook", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "GetUserBookReads", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "CheckExistingUserBookRead", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "InsertUserBookRead", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "UpdateUserBookRead", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "DeleteUserBookRead", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "UpdateUserBookStatus", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "UpdateReadingProgress", args: []interface{}{mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything}},
+	} {
+		hc.AssertNotCalled(t, call.method, call.args...)
+	}
+	_, compositeStateExists := svc.state.GetBookState(book.ID + ":203")
+	assert.False(t, compositeStateExists, "a skipped missing date must not checkpoint composite sync state")
+	_, baseStateExists := svc.state.GetBookState(book.ID)
+	assert.False(t, baseStateExists, "a skipped missing date must not checkpoint base sync state")
+	hc.AssertExpectations(t)
+}
+
 func TestProcessBookSkipsComputedFinishedWithoutFinishedAt(t *testing.T) {
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
