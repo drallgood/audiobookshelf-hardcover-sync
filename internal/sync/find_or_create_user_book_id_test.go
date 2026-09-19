@@ -288,6 +288,24 @@ func TestFindOrCreateUserBookID_Success(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
+func TestFindOrCreateUserBookID_FinishedBookCreatesWantToReadFirst(t *testing.T) {
+	svc, mockClient := createTestService()
+
+	const editionID = "456"
+	mockClient.On("GetEdition", mock.Anything, editionID).Return(&models.Edition{
+		ID:     editionID,
+		BookID: "432575",
+	}, nil).Once()
+	mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, nil).Twice()
+	mockClient.On("CreateUserBook", mock.Anything, editionID, "WANT_TO_READ").Return("789", nil).Once()
+
+	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "FINISHED")
+
+	assert.NoError(t, err)
+	assert.Equal(t, int64(789), userBookID)
+	mockClient.AssertExpectations(t)
+}
+
 // TestFindOrCreateUserBookID_FindsExistingUserBookForDifferentEdition tests that the function
 // finds an existing user book for the same book even when it has a different edition
 func TestFindOrCreateUserBookID_FindsExistingUserBookForDifferentEdition(t *testing.T) {
