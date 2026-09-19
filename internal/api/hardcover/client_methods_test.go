@@ -59,7 +59,7 @@ func newTestClient(t *testing.T) (*Client, *httptest.Server) {
 			}
 			return
 		}
-		
+
 		// Prepare the response based on the query
 		// Always initialize response with an empty books array by default
 		response := map[string]interface{}{
@@ -226,7 +226,7 @@ func TestClient_AddWithMetadata(t *testing.T) {
 	key := "test-key"
 	value := "test-value"
 	metadata := map[string]interface{}{
-		"source": "audiobookshelf",
+		"source":    "audiobookshelf",
 		"timestamp": time.Now().Unix(),
 	}
 

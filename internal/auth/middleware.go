@@ -200,14 +200,14 @@ func (am *AuthMiddleware) isAPIRequest(r *http.Request) bool {
 func (am *AuthMiddleware) writeJSONError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	
+
 	response := map[string]interface{}{
 		"error": map[string]string{
 			"code":    code,
 			"message": message,
 		},
 	}
-	
+
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		// Log error but can't do much else at this point
 		logger.Get().Error("Failed to encode middleware error response", map[string]interface{}{

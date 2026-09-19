@@ -8,11 +8,12 @@ import (
 
 // TestCaseHeaderKey is the context key for test case headers
 type testCaseHeaderKeyType string
+
 var TestCaseHeaderKey = testCaseHeaderKeyType("test-case-header")
 
 // TestHelpers provides access to unexported methods for testing
 type TestHelpers struct {
-	creator *Creator
+	creator       *Creator
 	testServerURL string // URL of the test server for replacing hardcoded URLs
 }
 
@@ -42,28 +43,28 @@ func (h *TestHelpers) UploadImageToGCS(ctx context.Context, editionID int, image
 			testCaseValue = val
 		}
 	}
-	
+
 	// Create a custom HTTP client for this request that redirects all hardcover.app URLs
 	// to our test server and adds the test case header
 	testClient := &http.Client{
 		Transport: &testRoundTripper{
-			base: http.DefaultTransport,
+			base:          http.DefaultTransport,
 			testServerURL: h.testServerURL,
-			testCase: testCaseValue,
+			testCase:      testCaseValue,
 		},
 	}
-	
+
 	// Save the original client
 	originalClient := h.creator.httpClient
-	
+
 	// Replace with our test client
 	h.creator.httpClient = testClient
-	
+
 	// Ensure we restore the original client when we're done
 	defer func() {
 		h.creator.httpClient = originalClient
 	}()
-	
+
 	// Call the original method with our modified HTTP client
 	return h.creator.uploadImageToGCS(ctx, editionID, imageURL)
 }
@@ -83,38 +84,38 @@ func (h *TestHelpers) CreateEdition(ctx context.Context, input *EditionInput, im
 // testRoundTripper is a custom http.RoundTripper that redirects hardcover.app URLs
 // to the test server and can also set special test case headers
 type testRoundTripper struct {
-	base http.RoundTripper
+	base          http.RoundTripper
 	testServerURL string
-	testCase string      // Optional test case identifier
+	testCase      string // Optional test case identifier
 }
 
 // RoundTrip implements the http.RoundTripper interface
 func (t *testRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Clone the request so we can modify it
 	reqCopy := req.Clone(req.Context())
-	
+
 	// If we have a test case identifier, set it as a header
 	if t.testCase != "" {
 		reqCopy.Header.Set("X-Test-Case", t.testCase)
 	}
-	
+
 	// Replace any URL with the test server URL for test isolation
 	// This includes both hardcover.app URLs and the image URLs in tests
 	if t.testServerURL != "" && req.URL.String() != "" {
 		// Check if this is an image URL or API URL we need to redirect
 		if strings.Contains(reqCopy.URL.String(), "{{TEST_SERVER_URL}}") ||
-		   strings.Contains(reqCopy.URL.Host, "hardcover.app") ||
-		   strings.Contains(reqCopy.URL.String(), "hardcover.app") {
+			strings.Contains(reqCopy.URL.Host, "hardcover.app") ||
+			strings.Contains(reqCopy.URL.String(), "hardcover.app") {
 			// Extract the path and query from the original URL
 			path := reqCopy.URL.Path
 			query := reqCopy.URL.RawQuery
-			
+
 			// Parse the test server URL
 			testURL := t.testServerURL
 			if !strings.HasSuffix(testURL, "/") {
 				testURL += "/"
 			}
-			
+
 			// Create a new URL using the test server as base
 			newURL := testURL
 			if !strings.HasPrefix(path, "/") {
@@ -122,12 +123,12 @@ func (t *testRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 			} else {
 				newURL += strings.TrimPrefix(path, "/")
 			}
-			
+
 			// Add the query string if present
 			if query != "" {
 				newURL += "?" + query
 			}
-			
+
 			// Parse the new URL
 			parsedURL, err := req.URL.Parse(newURL)
 			if err == nil {
@@ -137,7 +138,7 @@ func (t *testRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 			}
 		}
 	}
-	
+
 	// Use the base transport to perform the actual request
 	// Ensure base is never nil to avoid panics
 	if t.base == nil {

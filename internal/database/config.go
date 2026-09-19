@@ -26,7 +26,7 @@ type DatabaseConfig struct {
 	Password string       `json:"password,omitempty" yaml:"password,omitempty"`
 	SSLMode  string       `json:"ssl_mode,omitempty" yaml:"ssl_mode,omitempty"`
 	Path     string       `json:"path,omitempty" yaml:"path,omitempty"` // For SQLite
-	
+
 	// Connection pool settings
 	MaxOpenConns    int `json:"max_open_conns,omitempty" yaml:"max_open_conns,omitempty"`
 	MaxIdleConns    int `json:"max_idle_conns,omitempty" yaml:"max_idle_conns,omitempty"`
@@ -64,7 +64,7 @@ func GetDatabaseConfigFromEnv() *DatabaseConfig {
 		config.Username = getEnvWithDefault("DATABASE_USER", "")
 		config.Password = os.Getenv("DATABASE_PASSWORD")
 		config.SSLMode = getEnvWithDefault("DATABASE_SSL_MODE", "prefer")
-		
+
 		// Set default ports based on database type
 		switch config.Type {
 		case DatabaseTypePostgreSQL:
@@ -72,7 +72,7 @@ func GetDatabaseConfigFromEnv() *DatabaseConfig {
 		case DatabaseTypeMySQL, DatabaseTypeMariaDB:
 			config.Port = getEnvIntWithDefault("DATABASE_PORT", 3306)
 		}
-		
+
 		// Connection pool settings
 		config.MaxOpenConns = getEnvIntWithDefault("DATABASE_MAX_OPEN_CONNS", 25)
 		config.MaxIdleConns = getEnvIntWithDefault("DATABASE_MAX_IDLE_CONNS", 5)
@@ -175,7 +175,7 @@ func DatabaseConfigFromAppConfig(appConfig interface{}) *DatabaseConfig {
 	if appConfig == nil {
 		return GetDatabaseConfigFromEnv()
 	}
-	
+
 	// Try to extract database configuration using interface{} and type assertions
 	// This avoids circular imports between config and database packages
 	if configMap, ok := appConfig.(map[string]interface{}); ok {
@@ -183,7 +183,7 @@ func DatabaseConfigFromAppConfig(appConfig interface{}) *DatabaseConfig {
 			return parseDatabaseConfigFromMap(dbConfig)
 		}
 	}
-	
+
 	// Fallback to environment-based configuration
 	return GetDatabaseConfigFromEnv()
 }
@@ -194,12 +194,12 @@ func parseDatabaseConfigFromMap(dbConfigInterface interface{}) *DatabaseConfig {
 	if !ok {
 		return GetDatabaseConfigFromEnv()
 	}
-	
+
 	config := &DatabaseConfig{
 		Type: DatabaseTypeSQLite, // Default fallback
 		Path: GetDefaultDatabasePath(),
 	}
-	
+
 	// Parse database type
 	if dbType, ok := dbMap["type"].(string); ok && dbType != "" {
 		switch strings.ToLower(dbType) {
@@ -213,7 +213,7 @@ func parseDatabaseConfigFromMap(dbConfigInterface interface{}) *DatabaseConfig {
 			config.Type = DatabaseTypeSQLite
 		}
 	}
-	
+
 	// Parse connection parameters for non-SQLite databases
 	if config.Type != DatabaseTypeSQLite {
 		if host, ok := dbMap["host"].(string); ok {
@@ -234,7 +234,7 @@ func parseDatabaseConfigFromMap(dbConfigInterface interface{}) *DatabaseConfig {
 		if sslMode, ok := dbMap["ssl_mode"].(string); ok {
 			config.SSLMode = sslMode
 		}
-		
+
 		// Parse connection pool settings
 		if poolConfig, ok := dbMap["connection_pool"].(map[string]interface{}); ok {
 			if maxOpen, ok := poolConfig["max_open_conns"].(int); ok {
@@ -247,7 +247,7 @@ func parseDatabaseConfigFromMap(dbConfigInterface interface{}) *DatabaseConfig {
 				config.ConnMaxLifetime = lifetime
 			}
 		}
-		
+
 		// Set defaults if not specified
 		if config.MaxOpenConns == 0 {
 			config.MaxOpenConns = 25
@@ -262,14 +262,14 @@ func parseDatabaseConfigFromMap(dbConfigInterface interface{}) *DatabaseConfig {
 			config.SSLMode = "prefer"
 		}
 	}
-	
+
 	// Parse SQLite path
 	if config.Type == DatabaseTypeSQLite {
 		if path, ok := dbMap["path"].(string); ok && path != "" {
 			config.Path = path
 		}
 	}
-	
+
 	// Override with environment variables if they exist (env takes precedence)
 	envConfig := GetDatabaseConfigFromEnv()
 	if os.Getenv("DATABASE_TYPE") != "" {
@@ -296,6 +296,6 @@ func parseDatabaseConfigFromMap(dbConfigInterface interface{}) *DatabaseConfig {
 	if os.Getenv("DATABASE_SSL_MODE") != "" {
 		config.SSLMode = envConfig.SSLMode
 	}
-	
+
 	return config
 }

@@ -31,11 +31,11 @@ func TestClient_CheckExistingUserBookRead(t *testing.T) {
 					"data": map[string]interface{}{
 						"user_book_reads": []map[string]interface{}{
 							{
-								"id":               456,
-								"edition_id":       789,
+								"id":                456,
+								"edition_id":        789,
 								"reading_format_id": 2,
-								"progress_seconds": 300,
-								"started_at":       "2023-01-01",
+								"progress_seconds":  300,
+								"started_at":        "2023-01-01",
 							},
 						},
 					},
@@ -102,7 +102,7 @@ func TestClient_CheckExistingUserBookRead(t *testing.T) {
 				tt.mockHandler(t, w, r)
 			}))
 			defer server.Close()
-			
+
 			// Create client using helper
 			client := CreateTestClient(server)
 

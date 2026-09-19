@@ -268,7 +268,7 @@ func connectSQLiteFallback(log *appLogger.Logger) (*gorm.DB, *DatabaseConfig, er
 	// Use smart data directory detection
 	dataDir := getDataDirForFallback()
 	fallbackPath := fmt.Sprintf("%s/audiobookshelf-hardcover-sync.db", dataDir)
-	
+
 	fallbackConfig := &DatabaseConfig{
 		Type: DatabaseTypeSQLite,
 		Path: fallbackPath,
@@ -293,7 +293,7 @@ func connectSQLiteFallback(log *appLogger.Logger) (*gorm.DB, *DatabaseConfig, er
 func connectPureSQLiteFallback(log *appLogger.Logger) (*gorm.DB, *DatabaseConfig, error) {
 	// Use the same path resolution as GetDefaultDatabasePath for consistency
 	fallbackPath := GetDefaultDatabasePath()
-	
+
 	fallbackConfig := &DatabaseConfig{
 		Type: DatabaseTypeSQLite,
 		Path: fallbackPath,

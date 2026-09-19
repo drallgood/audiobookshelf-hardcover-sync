@@ -34,10 +34,10 @@ func TestBookError(t *testing.T) {
 				Err:    tt.err,
 				BookID: tt.bookID,
 			}
-			
+
 			// Test Error() method
 			assert.Equal(t, tt.expectedMsg, bookErr.Error())
-			
+
 			// Test Unwrap() method
 			assert.Equal(t, tt.err, bookErr.Unwrap())
 		})
@@ -77,18 +77,18 @@ func TestWithBookID(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			wrappedErr := WithBookID(tt.err, tt.bookID)
-			
+
 			if tt.err == nil {
 				assert.Nil(t, wrappedErr)
 				return
 			}
-			
+
 			assert.NotNil(t, wrappedErr)
-			
+
 			// Check if the wrapped error is a BookError
 			bookID, hasBookID := GetBookID(wrappedErr)
 			assert.Equal(t, tt.expectBookID, hasBookID)
-			
+
 			if tt.expectBookID {
 				assert.Equal(t, tt.expectedBookID, bookID)
 			} else {
@@ -132,7 +132,7 @@ func TestGetBookID(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			bookID, hasBookID := GetBookID(tt.err)
-			
+
 			assert.Equal(t, tt.expectBookID, hasBookID)
 			assert.Equal(t, tt.expectedBookID, bookID)
 		})

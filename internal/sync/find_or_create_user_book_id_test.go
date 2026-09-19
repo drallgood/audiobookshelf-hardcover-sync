@@ -72,7 +72,7 @@ func TestFindOrCreateUserBookID_GetUserBookIDError(t *testing.T) {
 
 	// Mock the findExistingUserBookForBook to return no existing user book
 	// This requires type asserting to the concrete client, so we'll handle it differently
-	
+
 	// Mock the GetUserBookID call to return an error
 	expectedErr := errors.New("API error")
 	mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, expectedErr).Once()
@@ -303,18 +303,18 @@ func TestFindOrCreateUserBookID_FindsExistingUserBookForDifferentEdition(t *test
 	mockClient.On("GetEdition", mock.Anything, editionID).Return(mockEdition, nil).Once()
 
 	// The function should call findExistingUserBookForBook first
-	// Since we can't easily mock the concrete method in this test structure, 
+	// Since we can't easily mock the concrete method in this test structure,
 	// we'll just verify it doesn't error out and continues to check for the specific edition
-	
+
 	// Mock the GetUserBookID call (this will be called after findExistingUserBookForBook)
 	mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, nil).Once()
-	
+
 	// Mock the second GetUserBookID call (for race condition check)
 	mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, nil).Once()
-	
+
 	// Mock the CreateUserBook call (since no existing user book is found)
 	mockClient.On("CreateUserBook", mock.Anything, editionID, "WANT_TO_READ").Return("789", nil).Once()
-	
+
 	// Call the function
 	_, err := svc.findOrCreateUserBookID(context.Background(), editionID, "WANT_TO_READ")
 
@@ -327,24 +327,24 @@ func TestFindOrCreateUserBookID_FindsExistingUserBookForDifferentEdition(t *test
 func createTestServiceWithConfig(cfg *config.Config) (*Service, *MockHardcoverClient) {
 	// Create a mock client
 	mockClient := new(MockHardcoverClient)
-	
+
 	// Create and initialize caches
 	persistentCache := NewPersistentASINCache("/tmp/test-cache")
 	_ = persistentCache.Load() // Load cache (will create empty if doesn't exist)
-	
+
 	userBookCache := NewPersistentUserBookCache("/tmp/test-cache")
 	_ = userBookCache.Load() // Load cache (will create empty if doesn't exist)
-	
+
 	// Create and return a test service with the mock client
 	svc := &Service{
-		hardcover:          mockClient,
-		config:             cfg,
-		log:                logger.Get(),
+		hardcover:           mockClient,
+		config:              cfg,
+		log:                 logger.Get(),
 		lastProgressUpdates: make(map[string]progressUpdateInfo),
 		asinCache:           make(map[string]*models.HardcoverBook),
 		persistentCache:     persistentCache,
 		userBookCache:       userBookCache,
 	}
-	
+
 	return svc, mockClient
 }

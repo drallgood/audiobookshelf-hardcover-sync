@@ -13,16 +13,16 @@ import (
 
 // ASINCacheEntry represents a cached ASIN lookup result with metadata
 type ASINCacheEntry struct {
-	ASIN      string                   `json:"asin"`
-	Book      *models.HardcoverBook    `json:"book,omitempty"` // nil for failed lookups
-	Timestamp time.Time                `json:"timestamp"`
-	TTL       time.Duration            `json:"ttl"` // Time to live
+	ASIN      string                `json:"asin"`
+	Book      *models.HardcoverBook `json:"book,omitempty"` // nil for failed lookups
+	Timestamp time.Time             `json:"timestamp"`
+	TTL       time.Duration         `json:"ttl"` // Time to live
 }
 
 // PersistentASINCache manages persistent ASIN cache storage
 type PersistentASINCache struct {
-	cacheFile string
-	entries   map[string]*ASINCacheEntry
+	cacheFile  string
+	entries    map[string]*ASINCacheEntry
 	defaultTTL time.Duration
 }
 
@@ -158,23 +158,23 @@ func (c *PersistentASINCache) Stats() (total, successful, failed int) {
 func (c *PersistentASINCache) CleanExpired() int {
 	now := time.Now()
 	expiredCount := 0
-	
+
 	for asin, entry := range c.entries {
 		if now.Sub(entry.Timestamp) > entry.TTL {
 			delete(c.entries, asin)
 			expiredCount++
 		}
 	}
-	
+
 	return expiredCount
 }
 
 // UserBookCacheEntry represents a cached user book lookup result
 type UserBookCacheEntry struct {
-	Key       string                 `json:"key"`
-	UserBook  *models.HardcoverBook  `json:"user_book,omitempty"` // nil for failed lookups
-	Timestamp time.Time              `json:"timestamp"`
-	TTL       time.Duration          `json:"ttl"`
+	Key       string                `json:"key"`
+	UserBook  *models.HardcoverBook `json:"user_book,omitempty"` // nil for failed lookups
+	Timestamp time.Time             `json:"timestamp"`
+	TTL       time.Duration         `json:"ttl"`
 }
 
 // PersistentUserBookCache manages persistent user book cache storage

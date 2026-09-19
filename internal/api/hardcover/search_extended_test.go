@@ -33,19 +33,19 @@ func TestClient_SearchBookByTitleAuthor(t *testing.T) {
 				// Parse the request body to determine which GraphQL query is being made
 				body, _ := io.ReadAll(r.Body)
 				r.Body.Close()
-				
+
 				// Recreate the body for further reading
 				r.Body = io.NopCloser(bytes.NewBuffer(body))
-				
+
 				// Parse the GraphQL request
 				var req map[string]interface{}
 				if err := json.Unmarshal(body, &req); err != nil {
 					http.Error(w, err.Error(), http.StatusBadRequest)
 					return
 				}
-				
+
 				query, _ := req["query"].(string)
-				
+
 				// Handle GetCurrentUserID query
 				if strings.Contains(query, "GetCurrentUserID") {
 					// Use the test helper function
@@ -104,19 +104,19 @@ func TestClient_SearchBookByTitleAuthor(t *testing.T) {
 				// Parse the request body to determine which GraphQL query is being made
 				body, _ := io.ReadAll(r.Body)
 				r.Body.Close()
-				
+
 				// Recreate the body for further reading
 				r.Body = io.NopCloser(bytes.NewBuffer(body))
-				
+
 				// Parse the GraphQL request
 				var req map[string]interface{}
 				if err := json.Unmarshal(body, &req); err != nil {
 					http.Error(w, err.Error(), http.StatusBadRequest)
 					return
 				}
-				
+
 				query, _ := req["query"].(string)
-				
+
 				// Handle GetCurrentUserID query
 				if strings.Contains(query, "GetCurrentUserID") {
 					// Use the test helper function
@@ -133,7 +133,7 @@ func TestClient_SearchBookByTitleAuthor(t *testing.T) {
 					}
 					return
 				}
-				
+
 				// Handle search query
 				response := map[string]interface{}{
 					"data": map[string]interface{}{
@@ -164,25 +164,25 @@ func TestClient_SearchBookByTitleAuthor(t *testing.T) {
 				// Parse the request body to determine which GraphQL query is being made
 				body, _ := io.ReadAll(r.Body)
 				r.Body.Close()
-				
+
 				// Recreate the body for further reading
 				r.Body = io.NopCloser(bytes.NewBuffer(body))
-				
+
 				// Parse the GraphQL request
 				var req map[string]interface{}
 				if err := json.Unmarshal(body, &req); err != nil {
 					http.Error(w, err.Error(), http.StatusBadRequest)
 					return
 				}
-				
+
 				query, _ := req["query"].(string)
-				
+
 				// Handle GetCurrentUserID query
 				if strings.Contains(query, "GetCurrentUserID") {
 					HandleGetCurrentUserIDQuery(t, w, r)
 					return
 				}
-				
+
 				// Handle search query - return a successful response with one book
 				response := map[string]interface{}{
 					"data": map[string]interface{}{
@@ -262,10 +262,10 @@ func TestClient_SearchPublishers(t *testing.T) {
 				// Check for GetCurrentUserID query and respond properly
 				body, _ := io.ReadAll(r.Body)
 				r.Body.Close()
-				
+
 				// Recreate the body for further reading
 				r.Body = io.NopCloser(bytes.NewBuffer(body))
-				
+
 				// Parse the GraphQL request
 				var req map[string]interface{}
 				if err := json.Unmarshal(body, &req); err != nil {
@@ -276,9 +276,9 @@ func TestClient_SearchPublishers(t *testing.T) {
 					}
 					return
 				}
-				
+
 				query, _ := req["query"].(string)
-				
+
 				// Handle GetCurrentUserID query
 				if strings.Contains(query, "GetCurrentUserID") {
 					// Use the test helper function
@@ -295,14 +295,14 @@ func TestClient_SearchPublishers(t *testing.T) {
 					}
 					return
 				}
-				
+
 				// Regular response for publisher search
 				response := map[string]interface{}{
 					"data": map[string]interface{}{
 						"publishers": []map[string]interface{}{
 							{
-								"id":        123,
-								"name":      "Test Publisher",
+								"id":   123,
+								"name": "Test Publisher",
 							},
 						},
 					},
@@ -323,10 +323,10 @@ func TestClient_SearchPublishers(t *testing.T) {
 				// Check for GetCurrentUserID query and respond properly
 				body, _ := io.ReadAll(r.Body)
 				r.Body.Close()
-				
+
 				// Recreate the body for further reading
 				r.Body = io.NopCloser(bytes.NewBuffer(body))
-				
+
 				// Parse the GraphQL request
 				var req map[string]interface{}
 				if err := json.Unmarshal(body, &req); err != nil {
@@ -337,9 +337,9 @@ func TestClient_SearchPublishers(t *testing.T) {
 					}
 					return
 				}
-				
+
 				query, _ := req["query"].(string)
-				
+
 				// Handle GetCurrentUserID query
 				if strings.Contains(query, "GetCurrentUserID") {
 					// Use the test helper function
@@ -356,7 +356,7 @@ func TestClient_SearchPublishers(t *testing.T) {
 					}
 					return
 				}
-				
+
 				response := map[string]interface{}{
 					"data": map[string]interface{}{
 						"publishers": []map[string]interface{}{},
@@ -429,10 +429,10 @@ func TestClient_GetPersonByID(t *testing.T) {
 				// Check for GetCurrentUserID query and respond properly
 				body, _ := io.ReadAll(r.Body)
 				r.Body.Close()
-				
+
 				// Recreate the body for further reading
 				r.Body = io.NopCloser(bytes.NewBuffer(body))
-				
+
 				// Parse the GraphQL request
 				var req map[string]interface{}
 				if err := json.Unmarshal(body, &req); err != nil {
@@ -443,9 +443,9 @@ func TestClient_GetPersonByID(t *testing.T) {
 					}
 					return
 				}
-				
+
 				query, _ := req["query"].(string)
-				
+
 				// Handle GetCurrentUserID query
 				if strings.Contains(query, "GetCurrentUserID") {
 					// Use the test helper function
@@ -462,14 +462,14 @@ func TestClient_GetPersonByID(t *testing.T) {
 					}
 					return
 				}
-				
+
 				response := map[string]interface{}{
 					"data": map[string]interface{}{
 						"authors": []map[string]interface{}{
 							{
-								"id":           123,
-								"name":         "Test Author",
-								"book_count":   10,
+								"id":         123,
+								"name":       "Test Author",
+								"book_count": 10,
 							},
 						},
 					},
@@ -489,10 +489,10 @@ func TestClient_GetPersonByID(t *testing.T) {
 				// Check for GetCurrentUserID query and respond properly
 				body, _ := io.ReadAll(r.Body)
 				r.Body.Close()
-				
+
 				// Recreate the body for further reading
 				r.Body = io.NopCloser(bytes.NewBuffer(body))
-				
+
 				// Parse the GraphQL request
 				var req map[string]interface{}
 				if err := json.Unmarshal(body, &req); err != nil {
@@ -503,9 +503,9 @@ func TestClient_GetPersonByID(t *testing.T) {
 					}
 					return
 				}
-				
+
 				query, _ := req["query"].(string)
-				
+
 				// Handle GetCurrentUserID query
 				if strings.Contains(query, "GetCurrentUserID") {
 					// Use the test helper function
@@ -522,7 +522,7 @@ func TestClient_GetPersonByID(t *testing.T) {
 					}
 					return
 				}
-				
+
 				response := map[string]interface{}{
 					"data": map[string]interface{}{
 						"authors": []map[string]interface{}{},
@@ -579,10 +579,10 @@ func TestClient_SearchBooks(t *testing.T) {
 				// Parse the request body to check if it's using the SearchBooks query
 				body, _ := io.ReadAll(r.Body)
 				r.Body.Close()
-				
+
 				// Recreate the body for further reading
 				r.Body = io.NopCloser(bytes.NewBuffer(body))
-				
+
 				// Parse the GraphQL request
 				var req map[string]interface{}
 				if err := json.Unmarshal(body, &req); err != nil {
@@ -593,9 +593,9 @@ func TestClient_SearchBooks(t *testing.T) {
 					}
 					return
 				}
-				
+
 				query, _ := req["query"].(string)
-				
+
 				// Handle GetCurrentUserID query
 				if strings.Contains(query, "GetCurrentUserID") {
 					// Use the test helper function
@@ -612,7 +612,7 @@ func TestClient_SearchBooks(t *testing.T) {
 					}
 					return
 				}
-				
+
 				// Check if it's a SearchBooks query
 				if strings.Contains(query, "SearchBooks") {
 					// Return multiple books with the structure expected by searchBooksWithLimit
@@ -674,10 +674,10 @@ func TestClient_SearchBooks(t *testing.T) {
 				// Parse the request body to check if it's using the SearchBooks query
 				body, _ := io.ReadAll(r.Body)
 				r.Body.Close()
-				
+
 				// Recreate the body for further reading
 				r.Body = io.NopCloser(bytes.NewBuffer(body))
-				
+
 				// Parse the GraphQL request
 				var req map[string]interface{}
 				if err := json.Unmarshal(body, &req); err != nil {
@@ -688,9 +688,9 @@ func TestClient_SearchBooks(t *testing.T) {
 					}
 					return
 				}
-				
+
 				query, _ := req["query"].(string)
-				
+
 				// Handle GetCurrentUserID query
 				if strings.Contains(query, "GetCurrentUserID") {
 					// Use the test helper function
@@ -707,7 +707,7 @@ func TestClient_SearchBooks(t *testing.T) {
 					}
 					return
 				}
-				
+
 				// Check if it's a SearchBooks query
 				if strings.Contains(query, "SearchBooks") {
 					// Return empty results
@@ -744,10 +744,10 @@ func TestClient_SearchBooks(t *testing.T) {
 				// Check for GetCurrentUserID query and respond properly
 				body, _ := io.ReadAll(r.Body)
 				r.Body.Close()
-				
+
 				// Recreate the body for further reading
 				r.Body = io.NopCloser(bytes.NewBuffer(body))
-				
+
 				// Parse the GraphQL request
 				var req map[string]interface{}
 				if err := json.Unmarshal(body, &req); err != nil {
@@ -758,9 +758,9 @@ func TestClient_SearchBooks(t *testing.T) {
 					}
 					return
 				}
-				
+
 				query, _ := req["query"].(string)
-				
+
 				// Handle GetCurrentUserID query
 				if strings.Contains(query, "GetCurrentUserID") {
 					// Use the test helper function
@@ -777,7 +777,7 @@ func TestClient_SearchBooks(t *testing.T) {
 					}
 					return
 				}
-				
+
 				// For this test case, we need to return a GraphQL error
 				response := map[string]interface{}{
 					"errors": []map[string]interface{}{
