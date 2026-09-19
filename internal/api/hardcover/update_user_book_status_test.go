@@ -38,7 +38,7 @@ func TestClient_UpdateUserBookStatus(t *testing.T) {
 			mockResponse: map[string]interface{}{
 				"data": map[string]interface{}{
 					"update_user_book": map[string]interface{}{
-						"id":            123,
+						"id":             123,
 						"book_status_id": 3, // FINISHED status
 					},
 				},
@@ -53,7 +53,7 @@ func TestClient_UpdateUserBookStatus(t *testing.T) {
 			mockResponse: map[string]interface{}{
 				"data": map[string]interface{}{
 					"update_user_book": map[string]interface{}{
-						"id":            456,
+						"id":             456,
 						"book_status_id": 2, // READING status
 					},
 				},
@@ -137,7 +137,7 @@ func TestClient_UpdateUserBookStatus(t *testing.T) {
 					}
 					return
 				}
-				
+
 				// Set the status code
 				w.WriteHeader(tt.mockStatusCode)
 
@@ -176,14 +176,14 @@ func TestClient_UpdateUserBookStatus(t *testing.T) {
 				retryDelay:  time.Millisecond * 100,
 				rateLimiter: util.NewRateLimiter(10*time.Millisecond, 10, log), // Initialize rate limiter with reasonable test values
 			}
-			
+
 			// Prepare the expected input that the server should receive
 			input := UpdateUserBookStatusInput{
 				ID:       tt.userBookID,
 				StatusID: 1, // Using a dummy status ID for testing
 				Status:   tt.status,
 			}
-			
+
 			// Call the method being tested
 			statusErr := client.UpdateUserBookStatus(context.Background(), input)
 

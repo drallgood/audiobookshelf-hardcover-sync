@@ -25,25 +25,25 @@ type Author struct {
 
 // Book represents a book from the Audnex API
 type Book struct {
-	ASIN         string    `json:"asin"`
-	Title        string    `json:"title"`
-	Subtitle     string    `json:"subtitle,omitempty"`
-	Authors      interface{}  `json:"authors,omitempty"` // Accept any type to handle both array and object
-	Narrators    interface{}  `json:"narrators,omitempty"` // Accept any type to handle both array and object
-	PublisherName string   `json:"publisherName,omitempty"`
-	Summary      string    `json:"summary,omitempty"`
-	ReleaseDate  string    `json:"releaseDate,omitempty"`
-	Image        string    `json:"image,omitempty"`
-	ISBN         string    `json:"isbn,omitempty"`
-	Language     string    `json:"language,omitempty"`
-	RuntimeLengthMin int   `json:"runtimeLengthMin,omitempty"`
-	FormatType   string    `json:"formatType,omitempty"`
+	ASIN             string      `json:"asin"`
+	Title            string      `json:"title"`
+	Subtitle         string      `json:"subtitle,omitempty"`
+	Authors          interface{} `json:"authors,omitempty"`   // Accept any type to handle both array and object
+	Narrators        interface{} `json:"narrators,omitempty"` // Accept any type to handle both array and object
+	PublisherName    string      `json:"publisherName,omitempty"`
+	Summary          string      `json:"summary,omitempty"`
+	ReleaseDate      string      `json:"releaseDate,omitempty"`
+	Image            string      `json:"image,omitempty"`
+	ISBN             string      `json:"isbn,omitempty"`
+	Language         string      `json:"language,omitempty"`
+	RuntimeLengthMin int         `json:"runtimeLengthMin,omitempty"`
+	FormatType       string      `json:"formatType,omitempty"`
 }
 
 // GetAuthorsAsStrings returns a slice of author names regardless of the format they were provided in
 func (b *Book) GetAuthorsAsStrings() []string {
 	var authors []string
-	
+
 	switch v := b.Authors.(type) {
 	case []interface{}:
 		// Handle array of objects or strings
@@ -66,14 +66,14 @@ func (b *Book) GetAuthorsAsStrings() []string {
 		// Handle single string
 		authors = append(authors, v)
 	}
-	
+
 	return authors
 }
 
 // GetNarratorsAsStrings returns a slice of narrator names regardless of the format they were provided in
 func (b *Book) GetNarratorsAsStrings() []string {
 	var narrators []string
-	
+
 	switch v := b.Narrators.(type) {
 	case []interface{}:
 		// Handle array of objects or strings
@@ -96,7 +96,7 @@ func (b *Book) GetNarratorsAsStrings() []string {
 		// Handle single string
 		narrators = append(narrators, v)
 	}
-	
+
 	return narrators
 }
 
@@ -151,11 +151,11 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 		if attempt > 0 {
 			backoff := initialBackoff * time.Duration(1<<uint(attempt-1))
 			c.logger.Debug("Retrying Audnex API request", map[string]interface{}{
-				"attempt":   attempt + 1,
-				"max":       maxRetries,
-				"asin":      asin,
+				"attempt":    attempt + 1,
+				"max":        maxRetries,
+				"asin":       asin,
 				"backoff_ms": backoff.Milliseconds(),
-				"error":     lastErr.Error(),
+				"error":      lastErr.Error(),
 			})
 
 			// Check if context is cancelled before sleeping
@@ -236,10 +236,10 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 
 	// If we get here, we've exhausted all retries
 	c.logger.Error("Exhausted all retries for Audnex API request", map[string]interface{}{
-		"method":     "GetBookByASIN",
-		"asin":       asin,
+		"method":      "GetBookByASIN",
+		"asin":        asin,
 		"max_retries": maxRetries,
-		"error":      lastErr.Error(),
+		"error":       lastErr.Error(),
 	})
 	return nil, fmt.Errorf("failed after %d retries: %w", maxRetries, lastErr)
 }

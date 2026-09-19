@@ -1,17 +1,17 @@
 package hardcover
 
 import (
-"context"
-"encoding/json"
-"net/http"
-"net/http/httptest"
-"testing"
-"time"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
 
-"github.com/drallgood/audiobookshelf-hardcover-sync/internal/cache"
-"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
-"github.com/drallgood/audiobookshelf-hardcover-sync/internal/util"
-"github.com/stretchr/testify/assert"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/cache"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/util"
+	"github.com/stretchr/testify/assert"
 )
 
 // TestGetCurrentUserID tests the GetCurrentUserID function
@@ -52,9 +52,9 @@ func TestGetCurrentUserID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-// Set up a test server to mock the Hardcover API
-server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-w.Header().Set("Content-Type", "application/json")
+			// Set up a test server to mock the Hardcover API
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tt.mockStatusCode)
 
 				respBytes, err := json.Marshal(tt.mockResponse)
@@ -69,9 +69,9 @@ w.Header().Set("Content-Type", "application/json")
 
 			// Set up logger with error level to reduce noise in tests
 			logger.Setup(logger.Config{
-Level:  "error",
-Format: "json",
-})
+				Level:  "error",
+				Format: "json",
+			})
 			log := logger.Get()
 
 			// Create client

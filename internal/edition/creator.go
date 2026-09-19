@@ -323,7 +323,7 @@ func (c *Creator) uploadImageToGCS(ctx context.Context, editionID int, imageURL 
 		defer gzipReader.Close()
 		reader = gzipReader
 	}
-	
+
 	var uploadInfo GoogleUploadInfo
 	if err := json.NewDecoder(reader).Decode(&uploadInfo); err != nil {
 		log.Error("Failed to parse upload credentials", map[string]interface{}{"error": err.Error()})

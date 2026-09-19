@@ -44,8 +44,6 @@ func CreateTestClient(server *httptest.Server) *Client {
 	}
 }
 
-
-
 // CreateTestClientWithHandler creates a test client with the provided handler
 func CreateTestClientWithHandler(handler http.HandlerFunc) (*Client, *httptest.Server) {
 	server := httptest.NewServer(handler)
@@ -69,6 +67,7 @@ func HandleGetCurrentUserIDRequest(w http.ResponseWriter, userID int) {
 		http.Error(w, fmt.Sprintf("Failed to encode response: %v", err), http.StatusInternalServerError)
 	}
 }
+
 // HandleGetCurrentUserIDQuery checks if the request is a GetCurrentUserID query and handles it if it is.
 // Returns true if the request was handled, false otherwise.
 // This helps ensure all test handlers properly respond to user ID requests.

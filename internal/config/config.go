@@ -81,9 +81,9 @@ type Config struct {
 	// Audiobookshelf configuration
 	Audiobookshelf struct {
 		// URL is the base URL of the Audiobookshelf server
-		URL            string `yaml:"url" env:"AUDIOBOOKSHELF_URL"`
+		URL string `yaml:"url" env:"AUDIOBOOKSHELF_URL"`
 		// Token is the API token for Audiobookshelf
-		Token          string `yaml:"token" env:"AUDIOBOOKSHELF_TOKEN"`
+		Token string `yaml:"token" env:"AUDIOBOOKSHELF_TOKEN"`
 		// AudnexusRegion is the region for Audnexus API calls (ca, uk, au, de, fr, us)
 		AudnexusRegion string `yaml:"audnexus_region" env:"AUDIOBOOKSHELF_AUDNEXUS_REGION"`
 	} `yaml:"audiobookshelf"`
@@ -102,7 +102,7 @@ type Config struct {
 		TestBookFilter string `yaml:"test_book_filter" env:"TEST_BOOK_FILTER"`
 		// TestBookLimit limits the number of books to process for testing
 		TestBookLimit int `yaml:"test_book_limit" env:"TEST_BOOK_LIMIT"`
-		
+
 		// Deprecated: Moved to Sync section
 		SyncInterval time.Duration `yaml:"sync_interval,omitempty" env:"-"`
 		// Deprecated: Moved to Sync section
@@ -207,7 +207,7 @@ type Config struct {
 
 // DefaultConfig returns the default configuration
 func DefaultConfig() *Config {
-    cfg := &Config{}
+	cfg := &Config{}
 
 	// Set default values
 	cfg.Server.Port = "8080"
@@ -276,7 +276,7 @@ func DefaultConfig() *Config {
 	// Official GraphQL endpoint, can be overridden via HARDCOVER_BASE_URL or config
 	cfg.Hardcover.BaseURL = "https://api.hardcover.app/v1/graphql"
 
-    return cfg
+	return cfg
 }
 
 func Load(configPath string) (*Config, error) {
@@ -285,7 +285,7 @@ func Load(configPath string) (*Config, error) {
 
 	// Note: Debug logging removed to prevent early logger initialization
 	// which would override the format specified in the config file
-	
+
 	// Note: Debug logging removed to prevent early logger initialization
 
 	// Load from file if path is provided
@@ -323,25 +323,25 @@ func Load(configPath string) (*Config, error) {
 
 	// Log the final configuration
 	fmt.Println("Final configuration after validation and migration:")
-	fmt.Printf("Server:\n  port: %s\n  shutdown_timeout: %s\n  enable_web_ui: %v\n", 
+	fmt.Printf("Server:\n  port: %s\n  shutdown_timeout: %s\n  enable_web_ui: %v\n",
 		cfg.Server.Port, cfg.Server.ShutdownTimeout, cfg.Server.EnableWebUI)
-	fmt.Printf("Audiobookshelf:\n  url: %s\n  has_token: %v\n  audnexus_region: %s\n", 
+	fmt.Printf("Audiobookshelf:\n  url: %s\n  has_token: %v\n  audnexus_region: %s\n",
 		cfg.Audiobookshelf.URL, cfg.Audiobookshelf.Token != "", cfg.Audiobookshelf.AudnexusRegion)
 	fmt.Printf("Hardcover:\n  has_token: %v\n  base_url: %s\n", cfg.Hardcover.Token != "", cfg.Hardcover.BaseURL)
 	fmt.Printf("Sync:\n  incremental: %v\n  state_file: %s\n  min_change_threshold: %d\n  sync_interval: %s\n  minimum_progress: %f\n  sync_want_to_read: %v\n  process_unread_books: %v\n  sync_owned: %v\n  dry_run: %v\n  single_user_mode: %v\n  single_user_username: %s\n  test_book_filter: %s\n  test_book_limit: %d\n  include_ebooks: %v\n",
-		cfg.Sync.Incremental, cfg.Sync.StateFile, cfg.Sync.MinChangeThreshold, 
+		cfg.Sync.Incremental, cfg.Sync.StateFile, cfg.Sync.MinChangeThreshold,
 		cfg.Sync.SyncInterval, cfg.Sync.MinimumProgress, cfg.Sync.SyncWantToRead,
 		cfg.Sync.ProcessUnreadBooks, cfg.Sync.SyncOwned, cfg.Sync.DryRun,
 		cfg.Sync.SingleUserMode, cfg.Sync.SingleUserUsername, cfg.Sync.TestBookFilter,
 		cfg.Sync.TestBookLimit, cfg.Sync.IncludeEbooks)
 	fmt.Printf("Rate Limiting:\n  rate: %s\n  max_concurrent: %d\n",
 		cfg.RateLimit.Rate, cfg.RateLimit.MaxConcurrent)
-	fmt.Printf("Logging:\n  level: %s\n  format: %s\n", 
+	fmt.Printf("Logging:\n  level: %s\n  format: %s\n",
 		cfg.Logging.Level, cfg.Logging.Format)
-	fmt.Printf("Database:\n  type: %s\n  path: %s\n", 
+	fmt.Printf("Database:\n  type: %s\n  path: %s\n",
 		cfg.Database.Type, cfg.Database.Path)
 	fmt.Printf("Authentication:\n  enabled: %v\n  session_cookie_name: %s\n  session_max_age: %d\n  session_secure: %v\n  session_http_only: %v\n  session_same_site: %s\n  default_admin_username: %s\n  default_admin_email: %s\n  has_default_admin_password: %v\n  keycloak_enabled: %v\n  keycloak_issuer: %s\n  keycloak_client_id: %s\n",
-		cfg.Authentication.Enabled, 
+		cfg.Authentication.Enabled,
 		cfg.Authentication.Session.CookieName,
 		cfg.Authentication.Session.MaxAge,
 		cfg.Authentication.Session.Secure,
@@ -441,7 +441,7 @@ func (c *Config) Validate() error {
 	// Note: Logger initialization deferred to prevent early initialization with JSON format
 	// Check for deprecated app-level settings, migrate them to sync section, and log warnings
 	var deprecatedFields []string
-	
+
 	// Check if any app.* fields are set and need migration
 	appFieldsSet := false
 
@@ -462,13 +462,13 @@ func (c *Config) Validate() error {
 	// Migration logic for deprecated app.* fields to sync.* fields
 	// We migrate deprecated values if they appear to be set in the config file
 	// This provides backward compatibility for users still using the old app section
-	
+
 	// For non-zero values (durations, floats), we can detect if they were set
 	// For boolean values, we use a simpler approach: if any app boolean is set to true,
 	// or if the entire app section has values, we migrate all app booleans
-	
+
 	// Check if any app values are set (indicating the app section is being used)
-	appSectionInUse := (c.App.SyncInterval > 0 || c.App.MinimumProgress > 0 || 
+	appSectionInUse := (c.App.SyncInterval > 0 || c.App.MinimumProgress > 0 ||
 		c.App.SyncWantToRead || c.App.SyncOwned || c.App.DryRun ||
 		c.App.TestBookFilter != "" || c.App.TestBookLimit > 0)
 
@@ -501,7 +501,7 @@ func (c *Config) Validate() error {
 
 	// Note: Deprecation warnings and sync configuration logging deferred to prevent early logger initialization
 	// These will be logged by the main application after the logger is properly configured
-	
+
 	// Store deprecation info for later logging (after logger is configured)
 	if appFieldsSet && len(deprecatedFields) > 0 {
 		// Deprecation warnings will be logged by main application
@@ -539,17 +539,17 @@ func parseCommaSeparatedList(value string) []string {
 // loadFromEnv loads configuration from environment variables
 func loadFromEnv(cfg *Config) {
 	// Debug logging removed to prevent early logger initialization
-	
+
 	// Track if values were explicitly set via environment variables
 	dryRunSet := false
-	
+
 	// Handle deprecated app.* environment variables first
 	if val := os.Getenv("TEST_BOOK_FILTER"); val != "" && cfg.Sync.TestBookFilter == "" {
 		// Only set from deprecated env var if not already set in sync section
 		cfg.Sync.TestBookFilter = val
 		fmt.Printf("WARNING: 'TEST_BOOK_FILTER' environment variable is deprecated. Use 'SYNC_TEST_BOOK_FILTER' instead.\n")
 	}
-	
+
 	if val := os.Getenv("TEST_BOOK_LIMIT"); val != "" && cfg.Sync.TestBookLimit == 0 {
 		if limit, err := strconv.Atoi(val); err == nil && limit > 0 {
 			// Only set from deprecated env var if not already set in sync section
@@ -557,18 +557,18 @@ func loadFromEnv(cfg *Config) {
 			fmt.Printf("WARNING: 'TEST_BOOK_LIMIT' environment variable is deprecated. Use 'SYNC_TEST_BOOK_LIMIT' instead.\n")
 		}
 	}
-	
+
 	// Load sync settings from environment variables - only if not already set in config
 	if val := os.Getenv("SYNC_TEST_BOOK_FILTER"); val != "" {
 		cfg.Sync.TestBookFilter = val
 	}
-	
+
 	if val := os.Getenv("SYNC_TEST_BOOK_LIMIT"); val != "" {
 		if limit, err := strconv.Atoi(val); err == nil && limit > 0 {
 			cfg.Sync.TestBookLimit = limit
 		}
 	}
-	
+
 	// Handle dry run from environment variables
 	if val := os.Getenv("DRY_RUN"); val != "" {
 		if dryRun, err := strconv.ParseBool(val); err == nil {
@@ -577,7 +577,7 @@ func loadFromEnv(cfg *Config) {
 			dryRunSet = true
 		}
 	}
-	
+
 	// Only override with SYNC_DRY_RUN if DRY_RUN wasn't set
 	if val := os.Getenv("SYNC_DRY_RUN"); val != "" && !dryRunSet {
 		if dryRun, err := strconv.ParseBool(val); err == nil {
@@ -707,8 +707,8 @@ func loadFromEnv(cfg *Config) {
 
 // mergeConfigs merges non-zero values from src into dst
 func mergeConfigs(dst, src *Config) {
-    dstVal := reflect.ValueOf(dst).Elem()
-    srcVal := reflect.ValueOf(src).Elem()
+	dstVal := reflect.ValueOf(dst).Elem()
+	srcVal := reflect.ValueOf(src).Elem()
 
 	// Handle deprecated app.* fields first
 	if src.App.TestBookFilter != "" && dst.Sync.TestBookFilter == "" {
@@ -722,17 +722,17 @@ func mergeConfigs(dst, src *Config) {
 		fmt.Printf("WARNING: 'app.test_book_limit' is deprecated and will be removed in a future version. Use 'sync.test_book_limit' instead.\n")
 	}
 
-    for i := 0; i < dstVal.NumField(); i++ {
-        dstField := dstVal.Field(i)
-        srcField := srcVal.Field(i)
+	for i := 0; i < dstVal.NumField(); i++ {
+		dstField := dstVal.Field(i)
+		srcField := srcVal.Field(i)
 
-        // Skip unexported fields
-        if !dstField.CanSet() {
-            continue
-        }
+		// Skip unexported fields
+		if !dstField.CanSet() {
+			continue
+		}
 
-        mergeValues(dstField, srcField)
-    }
+		mergeValues(dstField, srcField)
+	}
 }
 
 // mergeValues recursively merges src into dst following these rules:
@@ -740,40 +740,40 @@ func mergeConfigs(dst, src *Config) {
 // - Bools: always copy (false is a valid explicit value in config)
 // - Structs: recurse into fields
 func mergeValues(dst, src reflect.Value) {
-    if !dst.CanSet() {
-        return
-    }
+	if !dst.CanSet() {
+		return
+	}
 
-    switch dst.Kind() {
-    case reflect.Struct:
-        for j := 0; j < dst.NumField(); j++ {
-            d := dst.Field(j)
-            s := src.Field(j)
-            if !d.CanSet() {
-                continue
-            }
-            mergeValues(d, s)
-        }
-    case reflect.String:
-        if src.String() != "" {
-            dst.SetString(src.String())
-        }
-    case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-        if src.Int() != 0 {
-            dst.SetInt(src.Int())
-        }
-    case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-        if src.Uint() != 0 {
-            dst.SetUint(src.Uint())
-        }
-    case reflect.Float32, reflect.Float64:
-        if src.Float() != 0 {
-            dst.SetFloat(src.Float())
-        }
-    case reflect.Bool:
-        // Always set boolean values from config (explicit false is valid)
-        dst.SetBool(src.Bool())
-    }
+	switch dst.Kind() {
+	case reflect.Struct:
+		for j := 0; j < dst.NumField(); j++ {
+			d := dst.Field(j)
+			s := src.Field(j)
+			if !d.CanSet() {
+				continue
+			}
+			mergeValues(d, s)
+		}
+	case reflect.String:
+		if src.String() != "" {
+			dst.SetString(src.String())
+		}
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if src.Int() != 0 {
+			dst.SetInt(src.Int())
+		}
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		if src.Uint() != 0 {
+			dst.SetUint(src.Uint())
+		}
+	case reflect.Float32, reflect.Float64:
+		if src.Float() != 0 {
+			dst.SetFloat(src.Float())
+		}
+	case reflect.Bool:
+		// Always set boolean values from config (explicit false is valid)
+		dst.SetBool(src.Bool())
+	}
 }
 
 // getEnv returns the value of an environment variable or a default value

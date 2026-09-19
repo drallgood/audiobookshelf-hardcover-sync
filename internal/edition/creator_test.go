@@ -774,24 +774,24 @@ func TestEditionCreator_CreateImageRecord(t *testing.T) {
 	})
 
 	tests := []struct {
-		name           string
-		editionID      int
-		imageURL       string
-		useZeroIDMock  bool // Flag to indicate that we should use the ZeroIDMockHardcoverClient
-		setupMock      func(interface{}, *testing.T) // Change parameter to interface{} to handle both mock types
+		name            string
+		editionID       int
+		imageURL        string
+		useZeroIDMock   bool                          // Flag to indicate that we should use the ZeroIDMockHardcoverClient
+		setupMock       func(interface{}, *testing.T) // Change parameter to interface{} to handle both mock types
 		expectedImageID int
-		expectError    bool
-		errorContains string
+		expectError     bool
+		errorContains   string
 	}{
 		{
-			name:      "successful image record creation",
-			editionID: 123,
-			imageURL:  "https://example.com/test.jpg",
+			name:          "successful image record creation",
+			editionID:     123,
+			imageURL:      "https://example.com/test.jpg",
 			useZeroIDMock: false,
 			setupMock: func(m interface{}, t *testing.T) {
 				// Cast to MockHardcoverClient
 				mockClient := m.(*MockHardcoverClient)
-				
+
 				// Our mock now uses reflection to handle response
 				mockClient.On("GraphQLMutation",
 					mock.Anything,
@@ -803,36 +803,36 @@ func TestEditionCreator_CreateImageRecord(t *testing.T) {
 				).Return(nil)
 			},
 			expectedImageID: 456, // The default mock sets this ID
-			expectError:    false,
+			expectError:     false,
 		},
 		{
-			name:      "graphql mutation error",
-			editionID: 123,
-			imageURL:  "https://example.com/test.jpg",
+			name:          "graphql mutation error",
+			editionID:     123,
+			imageURL:      "https://example.com/test.jpg",
 			useZeroIDMock: false,
 			setupMock: func(m interface{}, t *testing.T) {
 				// Cast to MockHardcoverClient
 				mockClient := m.(*MockHardcoverClient)
-				
-				mockClient.On("GraphQLMutation", 
-					mock.Anything, 
+
+				mockClient.On("GraphQLMutation",
+					mock.Anything,
 					mock.AnythingOfType("string"),
 					mock.AnythingOfType("map[string]interface {}"),
 					mock.Anything,
 				).Return(errors.New("graphql mutation failed"))
 			},
-			expectError:    true,
+			expectError:   true,
 			errorContains: "graphql mutation failed",
 		},
 		{
-			name:      "invalid response format",
-			editionID: 123,
-			imageURL:  "https://example.com/test.jpg",
+			name:          "invalid response format",
+			editionID:     123,
+			imageURL:      "https://example.com/test.jpg",
 			useZeroIDMock: true, // Use our specialized mock that sets ID to 0
 			setupMock: func(m interface{}, t *testing.T) {
 				// Cast to ZeroIDMockHardcoverClient
 				mockClient := m.(*ZeroIDMockHardcoverClient)
-				
+
 				// Setup the expectation - ZeroIDMockHardcoverClient.GraphQLMutation will set ID to 0
 				mockClient.On("GraphQLMutation",
 					mock.Anything,
@@ -841,7 +841,7 @@ func TestEditionCreator_CreateImageRecord(t *testing.T) {
 					mock.Anything,
 				).Return(nil)
 			},
-			expectError:    true,
+			expectError:   true,
 			errorContains: "API response did not contain a valid image ID",
 		},
 	}
@@ -850,12 +850,12 @@ func TestEditionCreator_CreateImageRecord(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create the appropriate mock client based on the test case
 			var clientInterface edition.HardcoverClient
-			
+
 			if tt.useZeroIDMock {
 				// Use our specialized mock that always sets ID to 0
 				mockClient := new(ZeroIDMockHardcoverClient)
 				clientInterface = mockClient
-				
+
 				// Setup mock expectations
 				if tt.setupMock != nil {
 					tt.setupMock(mockClient, t)
@@ -864,7 +864,7 @@ func TestEditionCreator_CreateImageRecord(t *testing.T) {
 				// Use the standard mock
 				mockClient := new(MockHardcoverClient)
 				clientInterface = mockClient
-				
+
 				// Setup mock expectations
 				if tt.setupMock != nil {
 					tt.setupMock(mockClient, t)
@@ -916,16 +916,16 @@ func TestEditionCreator_uploadImageToGCS(t *testing.T) {
 			// Extract test case from header
 			testCase := r.Header.Get("X-Test-Case")
 
-			fmt.Printf("Test server received request: %s %s, Test Case: %s\n", 
+			fmt.Printf("Test server received request: %s %s, Test Case: %s\n",
 				r.Method, r.URL.Path, testCase)
-			
+
 			// Print info about the request to help with debugging
 			fmt.Printf("Processing request: %s %s, with test case: %s\n", r.Method, r.URL.Path, testCase)
 
 			// First, handle direct image requests
 			if r.Method == http.MethodGet && (r.URL.Path == "/test.jpg" || r.URL.Path == "/nonexistent.jpg" || r.URL.Path == "/corrupt.jpg") {
 				// Handle cover image requests based on test case and path
-				if testCase == "fetch_error" || r.URL.Path == "/nonexistent.jpg" {  
+				if testCase == "fetch_error" || r.URL.Path == "/nonexistent.jpg" {
 					// Return error for fetch_error test case
 					w.WriteHeader(http.StatusNotFound)
 					_, _ = fmt.Fprint(w, "failed to fetch image")
@@ -935,8 +935,8 @@ func TestEditionCreator_uploadImageToGCS(t *testing.T) {
 					// Small valid JPEG - a 1x1 black pixel
 					_, err := w.Write([]byte{0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43, 0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08, 0x07, 0x07, 0x07, 0x09, 0x09, 0x08, 0x0a, 0x0c, 0x14, 0x0d, 0x0c, 0x0b, 0x0b, 0x0c, 0x19, 0x12, 0x13, 0x0f, 0x14, 0x1d, 0x1a, 0x1f, 0x1e, 0x1d, 0x1a, 0x1c, 0x1c, 0x20, 0x24, 0x2e, 0x27, 0x20, 0x22, 0x2c, 0x23, 0x1c, 0x1c, 0x28, 0x37, 0x29, 0x2c, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1f, 0x27, 0x39, 0x3d, 0x38, 0x32, 0x3c, 0x2e, 0x33, 0x34, 0x32, 0xff, 0xdb, 0x00, 0x43, 0x01, 0x09, 0x09, 0x09, 0x0c, 0x0b, 0x0c, 0x18, 0x0d, 0x0d, 0x18, 0x32, 0x21, 0x1c, 0x21, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x01, 0x00, 0x01, 0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01, 0xff, 0xc4, 0x00, 0x1f, 0x00, 0x00, 0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0xff, 0xc4, 0x00, 0xb5, 0x10, 0x00, 0x02, 0x01, 0x03, 0x03, 0x02, 0x04, 0x03, 0x05, 0x05, 0x04, 0x04, 0x00, 0x00, 0x01, 0x7d, 0x00, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07, 0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xa1, 0x08, 0x23, 0x42, 0xb1, 0xc1, 0x15, 0x52, 0xd1, 0xf0, 0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0a, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7a, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa, 0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00, 0xfd, 0xfc, 0xa2, 0x8a, 0x28, 0xff, 0xd9})
 					if err != nil {
-					t.Fatalf("Failed to write JPEG data: %v", err)
-				}
+						t.Fatalf("Failed to write JPEG data: %v", err)
+					}
 				}
 				return // Important to return here to prevent falling through
 			}
@@ -945,17 +945,17 @@ func TestEditionCreator_uploadImageToGCS(t *testing.T) {
 			if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/covers/editions/") {
 				// Handle cover image requests based on path and test case
 				switch testCase {
-					case "fetch_error":  
-						// Return error for fetch_error test case
-						w.WriteHeader(http.StatusNotFound)
-						_, _ = fmt.Fprint(w, "failed to fetch image")
-					case "image_download_failed":
-						// Test image download error cases
-						w.WriteHeader(http.StatusNotFound)
-						_, _ = fmt.Fprint(w, "failed to read image")
-					default:
-						// Return a valid image for successful case
-						w.Header().Set("Content-Type", "image/jpeg")
+				case "fetch_error":
+					// Return error for fetch_error test case
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = fmt.Fprint(w, "failed to fetch image")
+				case "image_download_failed":
+					// Test image download error cases
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = fmt.Fprint(w, "failed to read image")
+				default:
+					// Return a valid image for successful case
+					w.Header().Set("Content-Type", "image/jpeg")
 					// Small valid JPEG - a 1x1 black pixel
 					_, err := w.Write([]byte{0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43, 0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08, 0x07, 0x07, 0x07, 0x09, 0x09, 0x08, 0x0a, 0x0c, 0x14, 0x0d, 0x0c, 0x0b, 0x0b, 0x0c, 0x19, 0x12, 0x13, 0x0f, 0x14, 0x1d, 0x1a, 0x1f, 0x1e, 0x1d, 0x1a, 0x1c, 0x1c, 0x20, 0x24, 0x2e, 0x27, 0x20, 0x22, 0x2c, 0x23, 0x1c, 0x1c, 0x28, 0x37, 0x29, 0x2c, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1f, 0x27, 0x39, 0x3d, 0x38, 0x32, 0x3c, 0x2e, 0x33, 0x34, 0x32, 0xff, 0xdb, 0x00, 0x43, 0x01, 0x09, 0x09, 0x09, 0x0c, 0x0b, 0x0c, 0x18, 0x0d, 0x0d, 0x18, 0x32, 0x21, 0x1c, 0x21, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0x32, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x01, 0x00, 0x01, 0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01, 0xff, 0xc4, 0x00, 0x1f, 0x00, 0x00, 0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0xff, 0xc4, 0x00, 0xb5, 0x10, 0x00, 0x02, 0x01, 0x03, 0x03, 0x02, 0x04, 0x03, 0x05, 0x05, 0x04, 0x04, 0x00, 0x00, 0x01, 0x7d, 0x00, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07, 0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xa1, 0x08, 0x23, 0x42, 0xb1, 0xc1, 0x15, 0x52, 0xd1, 0xf0, 0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0a, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7a, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa, 0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00, 0xfd, 0xfc, 0xa2, 0x8a, 0x28, 0xff, 0xd9})
 					if err != nil {
@@ -966,7 +966,7 @@ func TestEditionCreator_uploadImageToGCS(t *testing.T) {
 			}
 
 			// Handle upload credentials endpoint - the test is using /api/upload/google
-			if (r.Method == http.MethodGet || r.Method == http.MethodPost) && 
+			if (r.Method == http.MethodGet || r.Method == http.MethodPost) &&
 				(strings.Contains(r.URL.Path, "/api/google_upload_credentials") || strings.Contains(r.URL.Path, "/api/upload/google")) {
 				// Handle invalid credentials test case
 				if testCase == "invalid_credentials" || testCase == "credentials_error" {
@@ -982,12 +982,12 @@ func TestEditionCreator_uploadImageToGCS(t *testing.T) {
 					// This must match exactly what's expected in the test
 					"fileURL": "https://storage.googleapis.com/hardcover/test-key",
 					"fields": map[string]string{
-						"key": "uploads/covers/test-key.jpg",
-						"x-goog-algorithm": "test-algo",
+						"key":               "uploads/covers/test-key.jpg",
+						"x-goog-algorithm":  "test-algo",
 						"x-goog-credential": "test-cred",
-						"x-goog-date": "20230101T000000Z",
-						"x-goog-signature": "test-sig", 
-						"policy": "test-policy",
+						"x-goog-date":       "20230101T000000Z",
+						"x-goog-signature":  "test-sig",
+						"policy":            "test-policy",
 					},
 				}
 				if err := json.NewEncoder(w).Encode(response); err != nil {
@@ -995,7 +995,7 @@ func TestEditionCreator_uploadImageToGCS(t *testing.T) {
 				}
 				return
 			}
-			
+
 			// Handle GCS upload endpoint
 			if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/upload") {
 				// Handle GCS upload based on test case
@@ -1004,21 +1004,21 @@ func TestEditionCreator_uploadImageToGCS(t *testing.T) {
 					_, _ = fmt.Fprint(w, "Upload failed")
 					return
 				}
-				
+
 				// For image_download_failed test case, we need to check this after the credentials are obtained
 				if testCase == "image_download_failed" {
 					w.WriteHeader(http.StatusBadRequest)
 					_, _ = fmt.Fprint(w, "failed to read image")
 					return
 				}
-				
+
 				// Default: successful upload - HTTP 200 for success (not 201 Created)
 				w.WriteHeader(http.StatusOK)
 				// Empty response body for successful upload
 				_, _ = fmt.Fprint(w, "")
 				return
 			}
-				
+
 			// Handle any other request paths - default case
 			fmt.Printf("Unhandled request in test server: %s %s\n", r.Method, r.URL.String())
 			http.Error(w, "Not found", http.StatusNotFound)
@@ -1027,11 +1027,11 @@ func TestEditionCreator_uploadImageToGCS(t *testing.T) {
 	}
 
 	tests := []struct {
-		name         string
-		editionID    int
-		imageURLPath string
-		expectedURL  string
-		expectError  bool
+		name          string
+		editionID     int
+		imageURLPath  string
+		expectedURL   string
+		expectError   bool
 		errorContains string
 	}{
 		{
@@ -1042,24 +1042,24 @@ func TestEditionCreator_uploadImageToGCS(t *testing.T) {
 			expectError:  false,
 		},
 		{
-			name:         "credentials_error",
-			editionID:    123,
-			imageURLPath: "/test.jpg",
-			expectError: true,
+			name:          "credentials_error",
+			editionID:     123,
+			imageURLPath:  "/test.jpg",
+			expectError:   true,
 			errorContains: "failed to get upload credentials: HTTP 401",
 		},
 		{
-			name:         "image_fetch_error",
-			editionID:    123,
-			imageURLPath: "/nonexistent.jpg",
-			expectError:  true,
+			name:          "image_fetch_error",
+			editionID:     123,
+			imageURLPath:  "/nonexistent.jpg",
+			expectError:   true,
 			errorContains: "failed to fetch image",
 		},
 		{
-			name:         "image_download_failed",
-			editionID:    123,
-			imageURLPath: "/corrupt.jpg", // Special path that will return corrupt image data
-			expectError:  true,
+			name:          "image_download_failed",
+			editionID:     123,
+			imageURLPath:  "/corrupt.jpg", // Special path that will return corrupt image data
+			expectError:   true,
 			errorContains: "failed to read image",
 		},
 	}
@@ -1073,30 +1073,30 @@ func TestEditionCreator_uploadImageToGCS(t *testing.T) {
 			// Create mock client for this test case
 			// We still need some mocks for internal method calls
 			mockClient := new(MockHardcoverClient)
-			
+
 			// Setup necessary mock expectations
 			// These are called regardless of the test case
 			mockClient.On("GetAuthHeader").Return("Bearer test-token")
-			
+
 			// Setup context with test case identifier
 			ctx := context.WithValue(context.Background(), edition.TestCaseHeaderKey, tt.name)
-			
+
 			// Add expectations specific to test cases that need credentials
 			if tt.name != "credentials_error" {
-				mockClient.On("GetGoogleUploadCredentials", 
-					mock.Anything, // ctx
+				mockClient.On("GetGoogleUploadCredentials",
+					mock.Anything,                 // ctx
 					mock.AnythingOfType("string"), // filename
-					mock.AnythingOfType("int"), // editionID
+					mock.AnythingOfType("int"),    // editionID
 				).Return(&edition.GoogleUploadInfo{
 					// URL will be replaced by WithTestServer
 					URL: "{{TEST_SERVER_URL}}/upload",
 					Fields: map[string]string{
-						"key": "test-key",
-						"x-goog-algorithm": "test-algo",
+						"key":               "test-key",
+						"x-goog-algorithm":  "test-algo",
 						"x-goog-credential": "test-cred",
-						"x-goog-date": "20230101T000000Z",
-						"x-goog-signature": "test-sig",
-						"policy": "test-policy",
+						"x-goog-date":       "20230101T000000Z",
+						"x-goog-signature":  "test-sig",
+						"policy":            "test-policy",
 					},
 				}, nil)
 			}
@@ -1107,10 +1107,10 @@ func TestEditionCreator_uploadImageToGCS(t *testing.T) {
 			// Use the test helper to access the private method
 			// Configure it with the test server URL for proper URL redirection
 			helper := edition.NewTestHelpers(creator).WithTestServer(server.URL)
-			
+
 			// Combine server URL with path for complete image URL
 			imageURL := server.URL + tt.imageURLPath
-			
+
 			// The ctx was already created above, now map test names to the appropriate test case values
 			switch tt.name {
 			case "image_download_failed":
@@ -1120,7 +1120,7 @@ func TestEditionCreator_uploadImageToGCS(t *testing.T) {
 			case "image_fetch_error":
 				ctx = context.WithValue(context.Background(), edition.TestCaseHeaderKey, "fetch_error")
 			}
-			
+
 			// Call the helper method
 			url, err := helper.UploadImageToGCS(ctx, tt.editionID, imageURL)
 
@@ -1133,7 +1133,7 @@ func TestEditionCreator_uploadImageToGCS(t *testing.T) {
 				assert.Nil(t, err)
 				assert.Equal(t, tt.expectedURL, url)
 			}
-			
+
 			// We don't need to verify mock expectations since we're not using mocks
 		})
 	}
@@ -1141,8 +1141,8 @@ func TestEditionCreator_uploadImageToGCS(t *testing.T) {
 
 // mockImageTransport is a custom http.RoundTripper that mocks image download responses
 type mockImageTransport struct {
-	expectedURL string
-	test        string
+	expectedURL   string
+	test          string
 	testServerURL string
 }
 
@@ -1152,24 +1152,24 @@ func (m *mockImageTransport) RoundTrip(req *http.Request) (*http.Response, error
 	if req.URL.Host == "hardcover.app" && m.testServerURL != "" {
 		// Clone the request
 		reqCopy := req.Clone(req.Context())
-		
+
 		// Parse the test server URL
 		testURL, err := url.Parse(m.testServerURL)
 		if err != nil {
 			return nil, err
 		}
-		
+
 		// Preserve the path and query
 		reqCopy.URL.Scheme = testURL.Scheme
 		reqCopy.URL.Host = testURL.Host
-		
+
 		// Add test case header for the test server to identify which test case is running
 		reqCopy.Header.Set("X-Test-Case", m.test)
-		
+
 		// Use default transport to send to our test server
 		return http.DefaultTransport.RoundTrip(reqCopy)
 	}
-	
+
 	// Check if this is an image download request
 	if req.Method == http.MethodGet {
 		// For the upload_image_error test, we want the image download to succeed
@@ -1186,7 +1186,7 @@ func (m *mockImageTransport) RoundTrip(req *http.Request) (*http.Response, error
 		// For all other cases, return a mock image response
 		header := make(http.Header)
 		header.Set("Content-Type", "image/jpeg")
-		
+
 		// Return a small fake image (just some bytes that look like an image header)
 		fakeImageBytes := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46}
 		return &http.Response{
@@ -1223,15 +1223,15 @@ func TestEditionCreator_UploadEditionImage(t *testing.T) {
 		if r.URL.Path == "/api/upload/google" {
 			// Check the test case from the request headers
 			testCase := r.Header.Get("X-Test-Case")
-			
+
 			switch testCase {
 			case "upload_image_error":
 				// Return an error response
 				w.WriteHeader(http.StatusInternalServerError)
-				_, err := w.Write([]byte(`{"error":"upload credentials error"}`)) 
+				_, err := w.Write([]byte(`{"error":"upload credentials error"}`))
 				if err != nil {
 					t.Fatalf("Failed to write error response: %v", err)
-				} 
+				}
 			default:
 				// Return a valid response for successful cases
 				w.Header().Set("Content-Type", "application/json")
@@ -1251,13 +1251,13 @@ func TestEditionCreator_UploadEditionImage(t *testing.T) {
 			}
 			return
 		}
-		
+
 		// For image upload endpoint, always return success
 		if r.URL.Host == "upload.example.com" {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		
+
 		// For image download requests
 		w.Header().Set("Content-Type", "image/jpeg")
 		_, err := w.Write([]byte("test image data"))
@@ -1390,8 +1390,8 @@ func TestEditionCreator_UploadEditionImage(t *testing.T) {
 
 			// Create a mock RoundTripper to handle image downloads
 			mockTransport := &mockImageTransport{
-				expectedURL: tt.imageURL,
-				test:        tt.name,
+				expectedURL:   tt.imageURL,
+				test:          tt.name,
 				testServerURL: testServer.URL,
 			}
 
@@ -1635,19 +1635,19 @@ func TestEditionCreator_createEdition(t *testing.T) {
 		{
 			name: "success_case",
 			input: &edition.EditionInput{
-				BookID:       123,
-				Title:        "Test Edition",
-				Subtitle:     "A Test",
-				ASIN:         "B123456789",
-				ISBN13:       "9781234567890",
-				AuthorIDs:    []int{1, 2},
-				NarratorIDs:  []int{3, 4},
-				PublisherID:  5,
-				LanguageID:   6,
-				CountryID:    7,
-				AudioLength:  3600, // 1 hour
-				ReleaseDate:  "2023-01-01",
-				EditionInfo:  "First Edition",
+				BookID:      123,
+				Title:       "Test Edition",
+				Subtitle:    "A Test",
+				ASIN:        "B123456789",
+				ISBN13:      "9781234567890",
+				AuthorIDs:   []int{1, 2},
+				NarratorIDs: []int{3, 4},
+				PublisherID: 5,
+				LanguageID:  6,
+				CountryID:   7,
+				AudioLength: 3600, // 1 hour
+				ReleaseDate: "2023-01-01",
+				EditionInfo: "First Edition",
 			},
 			imageID: 456,
 			setupMock: func(t *testing.T, m *MockHardcoverClient) {
@@ -1821,20 +1821,20 @@ func TestEditionCreator_createEdition(t *testing.T) {
 		{
 			name: "all_optional_fields",
 			input: &edition.EditionInput{
-				BookID:       123,
-				Title:        "Test Edition",
-				Subtitle:     "A Test",
-				ASIN:         "B123456789",
-				ISBN13:       "9781234567890",
-				ISBN10:       "1234567890",
-				AuthorIDs:    []int{1, 2},
-				NarratorIDs:  []int{3, 4},
-				PublisherID:  5,
-				LanguageID:   6,
-				CountryID:    7,
-				AudioLength:  3600, // 1 hour
-				ReleaseDate:  "2023-01-01",
-				EditionInfo:  "First Edition",
+				BookID:      123,
+				Title:       "Test Edition",
+				Subtitle:    "A Test",
+				ASIN:        "B123456789",
+				ISBN13:      "9781234567890",
+				ISBN10:      "1234567890",
+				AuthorIDs:   []int{1, 2},
+				NarratorIDs: []int{3, 4},
+				PublisherID: 5,
+				LanguageID:  6,
+				CountryID:   7,
+				AudioLength: 3600, // 1 hour
+				ReleaseDate: "2023-01-01",
+				EditionInfo: "First Edition",
 			},
 			imageID: 456,
 			setupMock: func(t *testing.T, m *MockHardcoverClient) {
@@ -1864,18 +1864,18 @@ func TestEditionCreator_createEdition(t *testing.T) {
 
 						// Verify all optional fields
 						fields := map[string]interface{}{
-							"title":              "Test Edition",
-							"subtitle":           "A Test",
-							"asin":               "B123456789",
-							"isbn_13":            "9781234567890",
-							"isbn_10":            "1234567890",
-							"publisher_id":       5,
-							"language_id":        6,
-							"country_id":         7,
-							"audio_seconds":      3600,
-							"release_date":       "2023-01-01",
+							"title":               "Test Edition",
+							"subtitle":            "A Test",
+							"asin":                "B123456789",
+							"isbn_13":             "9781234567890",
+							"isbn_10":             "1234567890",
+							"publisher_id":        5,
+							"language_id":         6,
+							"country_id":          7,
+							"audio_seconds":       3600,
+							"release_date":        "2023-01-01",
 							"edition_information": "First Edition",
-							"image_id":           456,
+							"image_id":            456,
 						}
 
 						// Check all fields are present in the DTO
@@ -1958,35 +1958,35 @@ func TestNewCreator(t *testing.T) {
 	log := logger.Get()
 
 	tests := []struct {
-		name               string
-		client             edition.HardcoverClient
-		dryRun             bool
+		name                string
+		client              edition.HardcoverClient
+		dryRun              bool
 		audiobookshelfToken string
 		customHTTPClient    *http.Client
 		useCustomClient     bool
 		expectedTimeout     time.Duration
 	}{
 		{
-			name:               "with_default_config",
-			client:             new(MockHardcoverClient),
-			dryRun:             false,
+			name:                "with_default_config",
+			client:              new(MockHardcoverClient),
+			dryRun:              false,
 			audiobookshelfToken: "test-token",
 			useCustomClient:     false,
 			expectedTimeout:     90 * time.Second, // Default IdleConnTimeout from NewCreator
 		},
 		{
-			name:               "with_custom_client",
-			client:             new(MockHardcoverClient),
-			dryRun:             true,
+			name:                "with_custom_client",
+			client:              new(MockHardcoverClient),
+			dryRun:              true,
 			audiobookshelfToken: "custom-token",
 			customHTTPClient:    &http.Client{Timeout: 30 * time.Second},
 			useCustomClient:     true,
 			expectedTimeout:     30 * time.Second,
 		},
 		{
-			name:               "with_dry_run",
-			client:             new(MockHardcoverClient),
-			dryRun:             true,
+			name:                "with_dry_run",
+			client:              new(MockHardcoverClient),
+			dryRun:              true,
 			audiobookshelfToken: "dry-run-token",
 			useCustomClient:     false,
 			expectedTimeout:     90 * time.Second, // Default IdleConnTimeout from NewCreator

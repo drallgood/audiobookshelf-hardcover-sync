@@ -10,7 +10,7 @@ import (
 	"gorm.io/gorm/logger"
 
 	appLogger "github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
-	
+
 	// Pure Go SQLite driver (no CGO required)
 	"gorm.io/driver/sqlite"
 	_ "modernc.org/sqlite"

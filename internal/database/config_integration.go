@@ -83,7 +83,7 @@ func NewDatabaseConfigFromConfig(configDB *ConfigDatabase) *DatabaseConfig {
 
 	// Environment variables take precedence over config file
 	envConfig := GetDatabaseConfigFromEnv()
-	
+
 	// Only override if environment variable is explicitly set
 	if envConfig.Type != DatabaseTypeSQLite || isEnvSet("DATABASE_TYPE") {
 		config.Type = envConfig.Type

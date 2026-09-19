@@ -14,7 +14,7 @@ func TestWithContext_NilLogger(t *testing.T) {
 	// Test that With handles nil logger gracefully
 	var l *Logger
 	fields := map[string]interface{}{"test": "value"}
-	
+
 	// With should return a new logger even when called on a nil logger
 	// This matches the behavior of zerolog's With() method
 	result := l.With(fields)
@@ -28,11 +28,11 @@ func TestWith_EmptyFields(t *testing.T) {
 	logger := &Logger{
 		Logger: zerolog.New(&buf).With().Logger(),
 	}
-	
+
 	result := logger.With(nil)
 	assert.NotNil(t, result, "Expected non-nil logger")
 	assert.Equal(t, logger, result, "Expected same logger when fields is nil")
-	
+
 	result = logger.With(map[string]interface{}{})
 	assert.NotNil(t, result, "Expected non-nil logger")
 	assert.Equal(t, logger, result, "Expected same logger when fields is empty")
@@ -44,12 +44,12 @@ func TestWith_WithFields(t *testing.T) {
 	logger := &Logger{
 		Logger: zerolog.New(&buf).With().Logger(),
 	}
-	
+
 	fields := map[string]interface{}{
 		"field1": "value1",
 		"field2": 42,
 	}
-	
+
 	result := logger.With(fields)
 	assert.NotNil(t, result, "Expected non-nil logger")
 	assert.NotEqual(t, logger, result, "Expected new logger instance")
@@ -74,15 +74,15 @@ func TestWithLogger_NilContext(t *testing.T) {
 	logger := &Logger{
 		Logger: zerolog.New(&buf).With().Logger(),
 	}
-	
+
 	// Create a context with a cancel function
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel the context
-	
+
 	// Test with a canceled context - should not panic
 	resultCtx := WithLogger(ctx, logger)
 	assert.NotNil(t, resultCtx, "Expected non-nil context")
-	
+
 	// Test with a fresh context - should not panic
 	resultCtx = WithLogger(context.TODO(), logger)
 	assert.NotNil(t, resultCtx, "Expected non-nil context")
@@ -94,10 +94,10 @@ func TestWithLogger_NilLogger(t *testing.T) {
 	// and FromContext should return nil
 	ctx := context.Background()
 	result := WithLogger(ctx, nil)
-	
+
 	// The result should be the same context since logger is nil
 	assert.Equal(t, ctx, result, "Expected same context when logger is nil")
-	
+
 	// The logger from the context should be nil
 	loggerFromCtx := FromContext(result)
 	assert.Nil(t, loggerFromCtx, "Expected nil logger from context")
@@ -109,10 +109,10 @@ func TestNewContext_NilLogger(t *testing.T) {
 	// and FromContext should return nil
 	ctx := context.Background()
 	result := NewContext(ctx, nil)
-	
+
 	// The result should be the same context since logger is nil
 	assert.Equal(t, ctx, result, "Expected same context when logger is nil")
-	
+
 	// The logger from the context should be nil
 	loggerFromCtx := FromContext(result)
 	assert.Nil(t, loggerFromCtx, "Expected nil logger from context")
@@ -121,27 +121,27 @@ func TestNewContext_NilLogger(t *testing.T) {
 func TestContextChain(t *testing.T) {
 	// Test chaining of context operations
 	var buf1, buf2 bytes.Buffer
-	
+
 	// Create first logger
 	logger1 := &Logger{
 		Logger: zerolog.New(&buf1).With().Str("logger", "first").Logger(),
 	}
-	
+
 	// Create second logger
 	logger2 := &Logger{
 		Logger: zerolog.New(&buf2).With().Str("logger", "second").Logger(),
 	}
-	
+
 	// Create context with first logger
 	ctx1 := NewContext(context.Background(), logger1)
 	fromCtx1 := FromContext(ctx1)
 	assert.Equal(t, logger1, fromCtx1, "Expected to get first logger from context")
-	
+
 	// Update context with second logger
 	ctx2 := WithLogger(ctx1, logger2)
 	fromCtx2 := FromContext(ctx2)
 	assert.Equal(t, logger2, fromCtx2, "Expected to get second logger from updated context")
-	
+
 	// Original context should still have first logger
 	fromCtx1Again := FromContext(ctx1)
 	assert.Equal(t, logger1, fromCtx1Again, "Expected first logger to remain in original context")
@@ -153,21 +153,21 @@ func TestWith_Logging(t *testing.T) {
 	logger := &Logger{
 		Logger: zerolog.New(&buf).With().Logger(),
 	}
-	
+
 	// Add context fields
 	fields := map[string]interface{}{
 		"request_id": "12345",
 		"user_id":    "user1",
 	}
-	
+
 	loggerWithFields := logger.With(fields)
 	loggerWithFields.Info("test message")
-	
+
 	// Parse the log output
 	var logEntry map[string]interface{}
 	err := json.Unmarshal(buf.Bytes(), &logEntry)
 	assert.NoError(t, err, "Failed to unmarshal log entry")
-	
+
 	// Verify the fields were added to the log entry
 	assert.Equal(t, "12345", logEntry["request_id"], "Expected request_id in log entry")
 	assert.Equal(t, "user1", logEntry["user_id"], "Expected user_id in log entry")

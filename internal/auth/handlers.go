@@ -44,11 +44,11 @@ type LoginRequest struct {
 
 // LoginResponse represents a login response
 type LoginResponse struct {
-	Success   bool      `json:"success"`
-	User      *AuthUser `json:"user,omitempty"`
-	Token     string    `json:"token,omitempty"`
-	Error     string    `json:"error,omitempty"`
-	RedirectURL string  `json:"redirect_url,omitempty"`
+	Success     bool      `json:"success"`
+	User        *AuthUser `json:"user,omitempty"`
+	Token       string    `json:"token,omitempty"`
+	Error       string    `json:"error,omitempty"`
+	RedirectURL string    `json:"redirect_url,omitempty"`
 }
 
 // HandleLogin handles login requests
@@ -72,7 +72,7 @@ func (h *AuthHandlers) HandleLogin(w http.ResponseWriter, r *http.Request) {
 func (h *AuthHandlers) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	// Get available providers
 	providers := h.service.GetProviders()
-	
+
 	// Always serve login page - don't check authentication status here
 	// The frontend will handle redirects after successful authentication
 	h.logger.Debug("Serving login page", nil)
@@ -82,7 +82,7 @@ func (h *AuthHandlers) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 // handleLoginSubmit handles login form submission
 func (h *AuthHandlers) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	var req LoginRequest
-	
+
 	// Parse request based on content type
 	contentType := r.Header.Get("Content-Type")
 	isJSONRequest := strings.Contains(contentType, "application/json")
@@ -106,11 +106,11 @@ func (h *AuthHandlers) handleLoginSubmit(w http.ResponseWriter, r *http.Request)
 			http.Redirect(w, r, "/login?error=invalid_request", http.StatusFound)
 			return
 		}
-		
+
 		req.Provider = r.FormValue("provider")
 		req.Username = r.FormValue("username")
 		req.Password = r.FormValue("password")
-		
+
 		if req.Credentials == nil {
 			req.Credentials = make(map[string]string)
 		}
@@ -207,7 +207,7 @@ func (h *AuthHandlers) HandleLogout(w http.ResponseWriter, r *http.Request) {
 	// Get session token
 	sessionManager := h.service.sessionManager.(*DefaultSessionManager)
 	token := sessionManager.GetSessionFromRequest(r)
-	
+
 	if token != "" {
 		// Destroy session
 		if err := h.service.Logout(r.Context(), token); err != nil {
@@ -241,7 +241,7 @@ func (h *AuthHandlers) HandleOAuthCallback(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "Invalid callback URL", http.StatusBadRequest)
 		return
 	}
-	
+
 	providerName := pathParts[2] // /auth/callback/{provider}
 
 	// Handle callback
@@ -297,7 +297,7 @@ func (h *AuthHandlers) HandleOAuthLogin(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "Invalid OAuth URL", http.StatusBadRequest)
 		return
 	}
-	
+
 	providerName := pathParts[2] // /auth/oauth/{provider}
 
 	// Get redirect URL from query parameter
@@ -323,17 +323,17 @@ func (h *AuthHandlers) HandleOAuthLogin(w http.ResponseWriter, r *http.Request) 
 
 // serveLoginHTML serves the login page HTML
 func (h *AuthHandlers) serveLoginHTML(w http.ResponseWriter, r *http.Request, providers map[string]IAuthProvider) {
-    // Build dynamic sections based on available providers
-    hasLocal := false
-    for _, p := range providers {
-        if p.GetType() == "local" && p.IsEnabled() {
-            hasLocal = true
-            break
-        }
-    }
+	// Build dynamic sections based on available providers
+	hasLocal := false
+	for _, p := range providers {
+		if p.GetType() == "local" && p.IsEnabled() {
+			hasLocal = true
+			break
+		}
+	}
 
-    // Simple login page HTML (no provider dropdown; local form + separate OAuth buttons)
-    pageHTML := `<!DOCTYPE html>
+	// Simple login page HTML (no provider dropdown; local form + separate OAuth buttons)
+	pageHTML := `<!DOCTYPE html>
 <html>
 <head>
     <title>Login - Audiobookshelf Hardcover Sync</title>
@@ -457,8 +457,8 @@ func (h *AuthHandlers) serveLoginHTML(w http.ResponseWriter, r *http.Request, pr
 </body>
 </html>`
 
-    // Build error message
-    errorMsg := ""
+	// Build error message
+	errorMsg := ""
 	if errorParam := r.URL.Query().Get("error"); errorParam != "" {
 		switch errorParam {
 		case "callback_failed":
@@ -478,18 +478,18 @@ func (h *AuthHandlers) serveLoginHTML(w http.ResponseWriter, r *http.Request, pr
 
 	// Keep error message as HTML (safe because it's static text we control)
 
-	    oauthLinks := ""
-    
-    for name, provider := range providers {
-        if provider.GetType() != "local" {
-            redirectURL := r.URL.Query().Get("redirect")
-            if redirectURL == "" {
-                redirectURL = "/"
-            }
-            oauthURL := fmt.Sprintf("/auth/oauth/%s?redirect=%s", name, url.QueryEscape(redirectURL))
-            oauthLinks += fmt.Sprintf(`<a href="%s" class="oauth-btn">Login with %s</a>`, oauthURL, simpleTitle(name))
-        }
-    }
+	oauthLinks := ""
+
+	for name, provider := range providers {
+		if provider.GetType() != "local" {
+			redirectURL := r.URL.Query().Get("redirect")
+			if redirectURL == "" {
+				redirectURL = "/"
+			}
+			oauthURL := fmt.Sprintf("/auth/oauth/%s?redirect=%s", name, url.QueryEscape(redirectURL))
+			oauthLinks += fmt.Sprintf(`<a href="%s" class="oauth-btn">Login with %s</a>`, oauthURL, simpleTitle(name))
+		}
+	}
 
 	redirectURL := r.URL.Query().Get("redirect")
 	if redirectURL == "" {
@@ -499,10 +499,10 @@ func (h *AuthHandlers) serveLoginHTML(w http.ResponseWriter, r *http.Request, pr
 	// Escape redirect value for safe HTML embedding
 	escapedRedirect := html.EscapeString(redirectURL)
 
-	    // Build local form (only if local provider is available)
-    localForm := ""
-    if hasLocal {
-        localForm = fmt.Sprintf(`
+	// Build local form (only if local provider is available)
+	localForm := ""
+	if hasLocal {
+		localForm = fmt.Sprintf(`
         <form method="post" action="/api/auth/login">
             <input type="hidden" name="redirect" value="%s">
             <input type="hidden" name="provider" value="local">
@@ -517,18 +517,18 @@ func (h *AuthHandlers) serveLoginHTML(w http.ResponseWriter, r *http.Request, pr
             <button type="submit" class="btn">Login</button>
         </form>
         `, escapedRedirect)
-    }
+	}
 
-    // Render HTML by replacing placeholders (error, localForm, oauthLinks)
-    finalHTML := pageHTML
-    finalHTML = strings.Replace(finalHTML, "%s", errorMsg, 1)
-    finalHTML = strings.Replace(finalHTML, "%s", localForm, 1)
-    finalHTML = strings.Replace(finalHTML, "%s", oauthLinks, 1)
-    
-    w.Header().Set("Content-Type", "text/html; charset=utf-8")
-    w.WriteHeader(http.StatusOK)
-    if _, err := w.Write([]byte(finalHTML)); err != nil {
-        h.logger.Error("Failed to write HTML response", map[string]interface{}{
+	// Render HTML by replacing placeholders (error, localForm, oauthLinks)
+	finalHTML := pageHTML
+	finalHTML = strings.Replace(finalHTML, "%s", errorMsg, 1)
+	finalHTML = strings.Replace(finalHTML, "%s", localForm, 1)
+	finalHTML = strings.Replace(finalHTML, "%s", oauthLinks, 1)
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write([]byte(finalHTML)); err != nil {
+		h.logger.Error("Failed to write HTML response", map[string]interface{}{
 			"error": err,
 		})
 	}
@@ -548,14 +548,14 @@ func (h *AuthHandlers) writeJSON(w http.ResponseWriter, data interface{}) {
 func (h *AuthHandlers) writeError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	
+
 	response := map[string]interface{}{
 		"error": map[string]string{
 			"code":    code,
 			"message": message,
 		},
 	}
-	
+
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		h.logger.Error("Failed to encode error response", map[string]interface{}{
 			"error": err,

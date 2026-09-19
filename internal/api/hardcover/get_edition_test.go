@@ -159,7 +159,7 @@ func TestClient_GetEdition(t *testing.T) {
 					7*24*time.Hour, // 7 days TTL
 				),
 			}
-			
+
 			// Create our test client with mock edition data
 			client := &TestClient{
 				Client: baseClient,

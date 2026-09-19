@@ -8,16 +8,16 @@ import (
 
 // AuthUser represents a user for authentication purposes
 type AuthUser struct {
-	ID           string    `gorm:"primaryKey" json:"id"`
-	Username     string    `gorm:"uniqueIndex;not null" json:"username"`
-	Email        string    `gorm:"uniqueIndex" json:"email,omitempty"`
-	PasswordHash string    `gorm:"not null" json:"-"` // Never serialize password hash
-	Role         string    `gorm:"not null;default:user" json:"role"`
-	Provider     string    `gorm:"not null;default:local" json:"provider"`
-	ProviderID   string    `gorm:"index" json:"provider_id,omitempty"`
-	Active       bool      `gorm:"not null;default:true" json:"active"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           string     `gorm:"primaryKey" json:"id"`
+	Username     string     `gorm:"uniqueIndex;not null" json:"username"`
+	Email        string     `gorm:"uniqueIndex" json:"email,omitempty"`
+	PasswordHash string     `gorm:"not null" json:"-"` // Never serialize password hash
+	Role         string     `gorm:"not null;default:user" json:"role"`
+	Provider     string     `gorm:"not null;default:local" json:"provider"`
+	ProviderID   string     `gorm:"index" json:"provider_id,omitempty"`
+	Active       bool       `gorm:"not null;default:true" json:"active"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
 }
 
@@ -40,11 +40,11 @@ type AuthSession struct {
 
 // AuthProvider represents an authentication provider configuration
 type AuthProvider struct {
-	ID       string    `gorm:"primaryKey" json:"id"`
-	Name     string    `gorm:"uniqueIndex;not null" json:"name"`
-	Type     string    `gorm:"not null" json:"type"` // local, oidc, oauth2
-	Enabled  bool      `gorm:"default:true" json:"enabled"`
-	Config   string    `gorm:"type:text" json:"config"` // JSON configuration
+	ID        string    `gorm:"primaryKey" json:"id"`
+	Name      string    `gorm:"uniqueIndex;not null" json:"name"`
+	Type      string    `gorm:"not null" json:"type"` // local, oidc, oauth2
+	Enabled   bool      `gorm:"default:true" json:"enabled"`
+	Config    string    `gorm:"type:text" json:"config"` // JSON configuration
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -86,10 +86,10 @@ func (r UserRole) HasPermission(permission Permission) bool {
 type Permission string
 
 const (
-	PermissionReadAll   Permission = "read_all"
-	PermissionWriteAll  Permission = "write_all"
-	PermissionReadOwn   Permission = "read_own"
-	PermissionWriteOwn  Permission = "write_own"
+	PermissionReadAll    Permission = "read_all"
+	PermissionWriteAll   Permission = "write_all"
+	PermissionReadOwn    Permission = "read_own"
+	PermissionWriteOwn   Permission = "write_own"
 	PermissionManageAuth Permission = "manage_auth"
 )
 
@@ -126,5 +126,3 @@ func (s *AuthSession) BeforeUpdate(tx *gorm.DB) error {
 	s.UpdatedAt = time.Now()
 	return nil
 }
-
-

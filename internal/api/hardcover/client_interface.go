@@ -35,18 +35,17 @@ type HardcoverClientInterface interface {
 	// ClearUserBookCache clears the user book ID cache
 	ClearUserBookCache()
 
-    // SearchBookByISBN13 searches for a book by ISBN-13
-    SearchBookByISBN13(ctx context.Context, isbn13 string) (*models.HardcoverBook, error)
+	// SearchBookByISBN13 searches for a book by ISBN-13
+	SearchBookByISBN13(ctx context.Context, isbn13 string) (*models.HardcoverBook, error)
 
-    // SearchBookByASIN searches for a book by ASIN
-    SearchBookByASIN(ctx context.Context, asin string) (*models.HardcoverBook, error)
+	// SearchBookByASIN searches for a book by ASIN
+	SearchBookByASIN(ctx context.Context, asin string) (*models.HardcoverBook, error)
 
-    // SearchBookByISBN10 searches for a book by ISBN-10
-    SearchBookByISBN10(ctx context.Context, isbn10 string) (*models.HardcoverBook, error)
+	// SearchBookByISBN10 searches for a book by ISBN-10
+	SearchBookByISBN10(ctx context.Context, isbn10 string) (*models.HardcoverBook, error)
 
-    // SearchBooks searches for books by title and author
-    SearchBooks(ctx context.Context, title, author string) ([]models.HardcoverBook, error)
-
+	// SearchBooks searches for books by title and author
+	SearchBooks(ctx context.Context, title, author string) ([]models.HardcoverBook, error)
 
 	// GetEditionByASIN gets an edition by its ASIN
 	GetEditionByASIN(ctx context.Context, asin string) (*models.Edition, error)
@@ -55,7 +54,6 @@ type HardcoverClientInterface interface {
 	GetEditionByISBN13(ctx context.Context, isbn13 string) (*models.Edition, error)
 
 	// NOTE: GetGoogleUploadCredentials was removed as it's now handled directly in edition.Creator.uploadImageToGCS
-
 
 	// GetUserBook gets user book information by ID
 	GetUserBook(ctx context.Context, userBookID string) (*models.HardcoverBook, error)
@@ -90,6 +88,6 @@ type HardcoverClientInterface interface {
 	// CreateUserBook creates a new user book entry
 	CreateUserBook(ctx context.Context, editionID, status string) (string, error)
 
-    // GetBookByID retrieves a book and basic related details by its Hardcover book ID
-    GetBookByID(ctx context.Context, bookID string) (*models.HardcoverBook, error)
+	// GetBookByID retrieves a book and basic related details by its Hardcover book ID
+	GetBookByID(ctx context.Context, bookID string) (*models.HardcoverBook, error)
 }

@@ -27,19 +27,19 @@ type OIDCProvider struct {
 	redirectURI  string
 	scopes       []string
 	roleClaim    string
-	
+
 	// OIDC library components
 	provider     *oidc.Provider
 	verifier     *oidc.IDTokenVerifier
 	oauth2Config *oauth2.Config
-	
+
 	// State storage for OAuth flow (in production, use Redis or database)
 	// Stores both PKCE verifier and redirect URL for each state
-	stateData    map[string]*oauthStateData // state -> state data
-	statesMutex   sync.RWMutex
+	stateData   map[string]*oauthStateData // state -> state data
+	statesMutex sync.RWMutex
 
 	// Logger for debug information
-	logger       *logger.Logger
+	logger *logger.Logger
 }
 
 // oauthStateData holds all data associated with an OAuth state parameter
@@ -118,14 +118,14 @@ func NewOIDCProvider(name string, config map[string]string, log *logger.Logger) 
 
 	// Create OIDC provider using coreos/go-oidc
 	ctx := context.Background()
-	
+
 	if log != nil {
 		log.Debug("Attempting to create OIDC provider", map[string]interface{}{
 			"provider": name,
 			"issuer":   issuer,
 		})
 	}
-	
+
 	provider, err := oidc.NewProvider(ctx, issuer)
 	if err != nil {
 		if log != nil {
@@ -137,13 +137,13 @@ func NewOIDCProvider(name string, config map[string]string, log *logger.Logger) 
 		}
 		return nil, fmt.Errorf("failed to create OIDC provider for %s: %w", issuer, err)
 	}
-	
+
 	if log != nil {
 		log.Debug("Successfully created OIDC provider", map[string]interface{}{
-			"provider":              name,
-			"issuer":                issuer,
+			"provider":               name,
+			"issuer":                 issuer,
 			"authorization_endpoint": provider.Endpoint().AuthURL,
-			"token_endpoint":        provider.Endpoint().TokenURL,
+			"token_endpoint":         provider.Endpoint().TokenURL,
 		})
 	}
 
@@ -174,10 +174,10 @@ func NewOIDCProvider(name string, config map[string]string, log *logger.Logger) 
 		provider:     provider,
 		verifier:     verifier,
 		oauth2Config: oauth2Config,
-		stateData:   make(map[string]*oauthStateData),
+		stateData:    make(map[string]*oauthStateData),
 		logger:       log,
 	}
-	
+
 	if log != nil {
 		log.Info("OIDC provider initialized successfully", map[string]interface{}{
 			"provider":     name,
@@ -188,7 +188,7 @@ func NewOIDCProvider(name string, config map[string]string, log *logger.Logger) 
 			"role_claim":   roleClaim,
 		})
 	}
-	
+
 	return oidcProvider, nil
 }
 
@@ -372,8 +372,8 @@ func (p *OIDCProvider) HandleCallback(ctx context.Context, r *http.Request) (*Au
 		p.statesMutex.Unlock()
 		if p.logger != nil {
 			p.logger.Error("State parameter has expired", map[string]interface{}{
-				"provider":   p.name,
-				"state":      state,
+				"provider":    p.name,
+				"state":       state,
 				"age_seconds": time.Since(data.createdAt).Seconds(),
 			})
 		}
@@ -441,9 +441,9 @@ func (p *OIDCProvider) HandleCallback(ctx context.Context, r *http.Request) (*Au
 
 	if p.logger != nil {
 		p.logger.Debug("Extracted ID token from OAuth2 response", map[string]interface{}{
-			"provider":    p.name,
-			"state":       state,
-			"id_token":    rawIDToken[:20] + "...", // Only log first 20 chars for security
+			"provider": p.name,
+			"state":    state,
+			"id_token": rawIDToken[:20] + "...", // Only log first 20 chars for security
 		})
 	}
 
@@ -500,7 +500,7 @@ func (p *OIDCProvider) HandleCallback(ctx context.Context, r *http.Request) (*Au
 
 	// Map claims to AuthUser
 	user := p.mapClaimsToUser(&claims)
-	
+
 	if p.logger != nil {
 		p.logger.Info("Successfully authenticated user via OIDC", map[string]interface{}{
 			"provider": p.name,
@@ -511,7 +511,7 @@ func (p *OIDCProvider) HandleCallback(ctx context.Context, r *http.Request) (*Au
 			"role":     user.Role,
 		})
 	}
-	
+
 	return user, nil
 }
 
@@ -639,7 +639,7 @@ func (p *OIDCProvider) cleanupExpiredStates() {
 	}
 	if expiredCount > 0 && p.logger != nil {
 		p.logger.Debug("Cleaned up expired OAuth states", map[string]interface{}{
-			"provider":       p.name,
+			"provider":      p.name,
 			"expired_count": expiredCount,
 		})
 	}
@@ -650,7 +650,7 @@ func (p *OIDCProvider) cleanupExpiredStates() {
 func (p *OIDCProvider) GetRedirectURL(state string) (string, bool) {
 	p.statesMutex.RLock()
 	defer p.statesMutex.RUnlock()
-	
+
 	data, exists := p.stateData[state]
 	if !exists {
 		return "", false

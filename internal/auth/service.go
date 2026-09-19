@@ -31,29 +31,29 @@ func NewAuthService(db *gorm.DB, config AuthConfig, log *logger.Logger) (*AuthSe
 			"session_enabled": config.Session.Secret != "",
 		})
 	}
-	
+
 	// Create repository
 	repository := NewAuthRepository(db)
 	if log != nil {
 		log.Debug("Created auth repository", nil)
 	}
-	
+
 	// Create session manager
 	sessionManager := NewSessionManager(db, config.Session)
 	if log != nil {
 		log.Debug("Created session manager", nil)
 	}
-	
+
 	// Initialize providers
 	providers := make(map[string]IAuthProvider)
-	
+
 	if log != nil {
 		log.Debug("Creating authentication service", map[string]interface{}{
 			"enabled":         config.Enabled,
 			"provider_count":  len(config.Providers),
 			"session_enabled": config.Session.Secret != "",
 		})
-		
+
 		// Log each provider config for debugging
 		for i, provider := range config.Providers {
 			log.Debug("Provider configuration", map[string]interface{}{
@@ -74,12 +74,12 @@ func NewAuthService(db *gorm.DB, config AuthConfig, log *logger.Logger) (*AuthSe
 		enabled:        config.Enabled,
 		logger:         log,
 	}
-	
+
 	// Initialize providers
 	if err := service.initializeProviders(); err != nil {
 		return nil, fmt.Errorf("failed to initialize providers: %w", err)
 	}
-	
+
 	// Initialize default admin user if needed
 	if err := service.InitializeDefaultUser(context.Background()); err != nil {
 		if log != nil {
@@ -88,7 +88,7 @@ func NewAuthService(db *gorm.DB, config AuthConfig, log *logger.Logger) (*AuthSe
 			})
 		}
 	}
-	
+
 	return service, nil
 }
 
@@ -99,7 +99,7 @@ func (s *AuthService) initializeProviders() error {
 			"total_providers": len(s.config.Providers),
 		})
 	}
-	
+
 	for i, providerConfig := range s.config.Providers {
 		if s.logger != nil {
 			s.logger.Debug("Processing provider", map[string]interface{}{
@@ -109,7 +109,7 @@ func (s *AuthService) initializeProviders() error {
 				"enabled": providerConfig.Enabled,
 			})
 		}
-		
+
 		if !providerConfig.Enabled {
 			if s.logger != nil {
 				s.logger.Debug("Skipping disabled provider", map[string]interface{}{
@@ -119,17 +119,17 @@ func (s *AuthService) initializeProviders() error {
 			}
 			continue
 		}
-		
+
 		var provider IAuthProvider
 		var err error
-		
+
 		if s.logger != nil {
 			s.logger.Info("Creating enabled provider", map[string]interface{}{
 				"name": providerConfig.Name,
 				"type": providerConfig.Type,
 			})
 		}
-		
+
 		switch providerConfig.Type {
 		case "local":
 			provider = NewLocalAuthProvider(providerConfig.Name, providerConfig.Config, s.logger, s.repository)
@@ -168,7 +168,7 @@ func (s *AuthService) initializeProviders() error {
 			}
 			return fmt.Errorf("unsupported provider type: %s", providerConfig.Type)
 		}
-		
+
 		s.providers[providerConfig.Name] = provider
 		if s.logger != nil {
 			s.logger.Debug("Provider added to service", map[string]interface{}{
@@ -177,13 +177,13 @@ func (s *AuthService) initializeProviders() error {
 			})
 		}
 	}
-	
+
 	if s.logger != nil {
 		s.logger.Info("Provider initialization completed", map[string]interface{}{
 			"active_providers": len(s.providers),
 		})
 	}
-	
+
 	return nil
 }
 
@@ -210,7 +210,7 @@ func (s *AuthService) Login(ctx context.Context, providerName string, credential
 		}
 		return nil, fmt.Errorf("authentication is disabled")
 	}
-	
+
 	provider, exists := s.providers[providerName]
 	if !exists {
 		if s.logger != nil {
@@ -219,13 +219,13 @@ func (s *AuthService) Login(ctx context.Context, providerName string, credential
 				availableProviders = append(availableProviders, name)
 			}
 			s.logger.Error("Authentication login failed: provider not found", map[string]interface{}{
-				"provider":           providerName,
+				"provider":            providerName,
 				"available_providers": availableProviders,
 			})
 		}
 		return nil, fmt.Errorf("provider %s not found", providerName)
 	}
-	
+
 	if !provider.IsEnabled() {
 		if s.logger != nil {
 			s.logger.Warn("Authentication login failed: provider disabled", map[string]interface{}{
@@ -235,12 +235,12 @@ func (s *AuthService) Login(ctx context.Context, providerName string, credential
 		}
 		return nil, fmt.Errorf("provider %s is disabled", providerName)
 	}
-	
+
 	// For local authentication, we need to handle it specially
 	if provider.GetType() == "local" {
 		return s.handleLocalLogin(ctx, credentials, r)
 	}
-	
+
 	// For other providers, use the provider's authenticate method
 	user, err := provider.Authenticate(ctx, credentials)
 	if err != nil {
@@ -249,7 +249,7 @@ func (s *AuthService) Login(ctx context.Context, providerName string, credential
 			Error:   err.Error(),
 		}, nil
 	}
-	
+
 	// Create or update user in database
 	dbUser, err := s.createOrUpdateUser(ctx, user)
 	if err != nil {
@@ -258,7 +258,7 @@ func (s *AuthService) Login(ctx context.Context, providerName string, credential
 			Error:   "Failed to create user session",
 		}, nil
 	}
-	
+
 	// Create session
 	session, err := s.sessionManager.CreateSession(ctx, dbUser.ID, r)
 	if err != nil {
@@ -267,7 +267,7 @@ func (s *AuthService) Login(ctx context.Context, providerName string, credential
 			Error:   "Failed to create session",
 		}, nil
 	}
-	
+
 	return &AuthResult{
 		User:    dbUser,
 		Token:   session.Token,
@@ -284,7 +284,7 @@ func (s *AuthService) handleLocalLogin(ctx context.Context, credentials map[stri
 			Error:   "Username is required",
 		}, nil
 	}
-	
+
 	password, ok := credentials["password"]
 	if !ok || password == "" {
 		return &AuthResult{
@@ -292,7 +292,7 @@ func (s *AuthService) handleLocalLogin(ctx context.Context, credentials map[stri
 			Error:   "Password is required",
 		}, nil
 	}
-	
+
 	// Get user from database
 	user, err := s.repository.GetUserByUsername(ctx, username)
 	if err != nil {
@@ -301,7 +301,7 @@ func (s *AuthService) handleLocalLogin(ctx context.Context, credentials map[stri
 			Error:   "Invalid username or password",
 		}, nil
 	}
-	
+
 	// Verify password
 	if err := VerifyPassword(password, user.PasswordHash); err != nil {
 		return &AuthResult{
@@ -309,7 +309,7 @@ func (s *AuthService) handleLocalLogin(ctx context.Context, credentials map[stri
 			Error:   "Invalid username or password",
 		}, nil
 	}
-	
+
 	// Check if user is active
 	if !user.Active {
 		return &AuthResult{
@@ -317,7 +317,7 @@ func (s *AuthService) handleLocalLogin(ctx context.Context, credentials map[stri
 			Error:   "User account is disabled",
 		}, nil
 	}
-	
+
 	// Create session
 	session, err := s.sessionManager.CreateSession(ctx, user.ID, r)
 	if err != nil {
@@ -326,7 +326,7 @@ func (s *AuthService) handleLocalLogin(ctx context.Context, credentials map[stri
 			Error:   "Failed to create session",
 		}, nil
 	}
-	
+
 	return &AuthResult{
 		User:    user,
 		Token:   session.Token,
@@ -339,7 +339,7 @@ func (s *AuthService) Logout(ctx context.Context, token string) error {
 	if !s.enabled {
 		return nil
 	}
-	
+
 	return s.sessionManager.DestroySession(ctx, token)
 }
 
@@ -348,7 +348,7 @@ func (s *AuthService) ValidateSession(ctx context.Context, token string) (*AuthU
 	if !s.enabled {
 		return nil, fmt.Errorf("authentication is disabled")
 	}
-	
+
 	return s.sessionManager.ValidateSession(ctx, token)
 }
 
@@ -357,19 +357,19 @@ func (s *AuthService) CreateUser(ctx context.Context, username, email, password 
 	if !s.enabled {
 		return nil, fmt.Errorf("authentication is disabled")
 	}
-	
+
 	// Check if user already exists
 	exists, err := s.repository.UserExists(ctx, username, email)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check user existence: %w", err)
 	}
-	
+
 	if exists {
 		return nil, fmt.Errorf("user with username or email already exists")
 	}
-	
+
 	var user *AuthUser
-	
+
 	if provider == "local" {
 		user, err = CreateLocalUser(username, email, password, role)
 		if err != nil {
@@ -386,11 +386,11 @@ func (s *AuthService) CreateUser(ctx context.Context, username, email, password 
 			Active:   true,
 		}
 	}
-	
+
 	if err := s.repository.CreateUser(ctx, user); err != nil {
 		return nil, fmt.Errorf("failed to save user: %w", err)
 	}
-	
+
 	return user, nil
 }
 
@@ -410,7 +410,7 @@ func (s *AuthService) createOrUpdateUser(ctx context.Context, user *AuthUser) (*
 			return existingUser, nil
 		}
 	}
-	
+
 	// Try to find by email
 	if user.Email != "" {
 		existingUser, err := s.repository.GetUserByEmail(ctx, user.Email)
@@ -425,12 +425,12 @@ func (s *AuthService) createOrUpdateUser(ctx context.Context, user *AuthUser) (*
 			return existingUser, nil
 		}
 	}
-	
+
 	// Create new user
 	if err := s.repository.CreateUser(ctx, user); err != nil {
 		return nil, err
 	}
-	
+
 	return user, nil
 }
 
@@ -439,7 +439,7 @@ func (s *AuthService) GetAuthURL(providerName, redirectURL string) (string, erro
 	if !s.enabled {
 		return "", fmt.Errorf("authentication is disabled")
 	}
-	
+
 	provider, exists := s.providers[providerName]
 	if !exists {
 		provider = s.findProviderByType(providerName)
@@ -456,8 +456,8 @@ func (s *AuthService) HandleCallback(ctx context.Context, providerName string, r
 	if !s.enabled {
 		return nil, fmt.Errorf("authentication is disabled")
 	}
-	
-provider, exists := s.providers[providerName]
+
+	provider, exists := s.providers[providerName]
 	if !exists {
 		provider = s.findProviderByType(providerName)
 		if provider == nil {
@@ -472,7 +472,7 @@ provider, exists := s.providers[providerName]
 			Error:   err.Error(),
 		}, nil
 	}
-	
+
 	// Get redirect URL from OIDC provider if applicable
 	var redirectURL string
 	if oidcProvider, ok := provider.(*OIDCProvider); ok {
@@ -483,7 +483,7 @@ provider, exists := s.providers[providerName]
 			}
 		}
 	}
-	
+
 	// Create or update user in database
 	dbUser, err := s.createOrUpdateUser(ctx, user)
 	if err != nil {
@@ -492,7 +492,7 @@ provider, exists := s.providers[providerName]
 			Error:   "Failed to create user",
 		}, nil
 	}
-	
+
 	// Create session
 	session, err := s.sessionManager.CreateSession(ctx, dbUser.ID, r)
 	if err != nil {
@@ -501,7 +501,7 @@ provider, exists := s.providers[providerName]
 			Error:   "Failed to create session",
 		}, nil
 	}
-	
+
 	return &AuthResult{
 		User:        dbUser,
 		Token:       session.Token,
@@ -515,7 +515,7 @@ func (s *AuthService) GetProviders() map[string]IAuthProvider {
 	if !s.enabled {
 		return make(map[string]IAuthProvider)
 	}
-	
+
 	enabled := make(map[string]IAuthProvider)
 	for name, provider := range s.providers {
 		if provider.IsEnabled() {
@@ -529,7 +529,7 @@ func (s *AuthService) InitializeDefaultUser(ctx context.Context) error {
 	if !s.enabled {
 		return nil
 	}
-	
+
 	// Check if any users exist
 	count, err := s.repository.GetUserCount(ctx)
 	if err != nil {
@@ -558,7 +558,7 @@ func (s *AuthService) InitializeDefaultUser(ctx context.Context) error {
 			username = localProvider.Config["default_admin_username"]
 		}
 	}
-	
+
 	email := os.Getenv("AUTH_DEFAULT_ADMIN_EMAIL")
 	if email == "" {
 		// Try top-level config first
@@ -568,7 +568,7 @@ func (s *AuthService) InitializeDefaultUser(ctx context.Context) error {
 			email = localProvider.Config["default_admin_email"]
 		}
 	}
-	
+
 	password := os.Getenv("AUTH_DEFAULT_ADMIN_PASSWORD")
 	if password == "" {
 		// Try top-level config first
@@ -578,7 +578,7 @@ func (s *AuthService) InitializeDefaultUser(ctx context.Context) error {
 			password = localProvider.Config["default_admin_password"]
 		}
 	}
-	
+
 	// Set defaults if still empty
 	if username == "" {
 		username = "admin"
@@ -589,7 +589,7 @@ func (s *AuthService) InitializeDefaultUser(ctx context.Context) error {
 	if password == "" {
 		password = "admin" // This should be changed in production
 	}
-	
+
 	if s.logger != nil {
 		action := "creating"
 		if count > 0 {
@@ -601,51 +601,51 @@ func (s *AuthService) InitializeDefaultUser(ctx context.Context) error {
 			"email":    email,
 		})
 	}
-	
+
 	// Create default admin user
 	err = s.repository.CreateDefaultAdminUser(ctx, username, email, password)
 	if err != nil {
 		return fmt.Errorf("failed to create default admin user: %w", err)
 	}
-	
+
 	if s.logger != nil {
 		s.logger.Info("Default admin user ensured successfully", map[string]interface{}{
 			"username": username,
 			"email":    email,
 		})
 	}
-	
+
 	return nil
 }
 
 // GetSessionManager returns the session manager for direct session operations
 func (s *AuthService) GetSessionManager() SessionManager {
-    return s.sessionManager
+	return s.sessionManager
 }
 
 // GetMiddleware constructs an AuthMiddleware tied to this service's session manager and config
 func (s *AuthService) GetMiddleware() *AuthMiddleware {
-    return NewAuthMiddleware(s.sessionManager, s.config)
+	return NewAuthMiddleware(s.sessionManager, s.config)
 }
 
 // LoadConfigFromEnv loads authentication configuration from environment variables
 func LoadConfigFromEnv() AuthConfig {
 	config := DefaultAuthConfig()
-	
+
 	// Check if auth is enabled
 	if enabled := os.Getenv("AUTH_ENABLED"); enabled != "" {
 		config.Enabled = strings.ToLower(enabled) == "true"
 	}
-	
+
 	// Session configuration
 	if secret := os.Getenv("AUTH_SESSION_SECRET"); secret != "" {
 		config.Session.Secret = secret
 	}
-	
+
 	if cookieName := os.Getenv("AUTH_COOKIE_NAME"); cookieName != "" {
 		config.Session.CookieName = cookieName
 	}
-	
+
 	// OIDC/Keycloak configuration
 	if issuer := os.Getenv("KEYCLOAK_ISSUER"); issuer != "" {
 		oidcProvider := AuthProviderConfig{
@@ -661,7 +661,7 @@ func LoadConfigFromEnv() AuthConfig {
 				"role_claim":    os.Getenv("KEYCLOAK_ROLE_CLAIM"),
 			},
 		}
-		
+
 		// Replace or add OIDC provider
 		found := false
 		for i, provider := range config.Providers {
@@ -675,7 +675,7 @@ func LoadConfigFromEnv() AuthConfig {
 			config.Providers = append(config.Providers, oidcProvider)
 		}
 	}
-	
+
 	return config
 }
 
