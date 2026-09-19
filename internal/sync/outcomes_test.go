@@ -33,6 +33,14 @@ func expectASINMatch(mockClient *MockHardcoverClient, asin string, bookID, editi
 	mockClient.On("GetUserBookID", mock.Anything, mock.AnythingOfType("int")).Return(userBookID, nil)
 }
 
+func assertNoHardcoverBookSearches(t *testing.T, mockClient *MockHardcoverClient) {
+	t.Helper()
+	mockClient.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "SearchBooks", mock.Anything, mock.Anything, mock.Anything)
+}
+
 func TestProcessBookRecordsSkipAndIncrementalNoChange(t *testing.T) {
 	t.Run("skip", func(t *testing.T) {
 		svc, hc := createTestService()
@@ -58,7 +66,7 @@ func TestProcessBookRecordsSkipAndIncrementalNoChange(t *testing.T) {
 	})
 }
 
-func TestProcessBookFinishedWithoutFinishedAtSkipsHardcoverReadingState(t *testing.T) {
+func TestProcessBookFinishedWithoutFinishedAtSkipsHardcoverMatching(t *testing.T) {
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
 
@@ -67,15 +75,12 @@ func TestProcessBookFinishedWithoutFinishedAtSkipsHardcoverReadingState(t *testi
 	))
 	book.Progress.FinishedAt = 0
 
-	hc.On("SearchBookByASIN", mock.Anything, book.Media.Metadata.ASIN).Return(&models.HardcoverBook{
-		ID: "100", EditionID: "200",
-	}, nil).Once()
-
 	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
 
 	record := recordedOutcome(svc, book.ID)
 	assert.Equal(t, OutcomeSkipped, record.Outcome)
 	assert.Equal(t, "finished book has no Audiobookshelf finished_at", record.Reason)
+	assertNoHardcoverBookSearches(t, hc)
 	hc.AssertNotCalled(t, "GetUserBookID", mock.Anything, mock.Anything)
 	hc.AssertNotCalled(t, "CreateUserBook", mock.Anything, mock.Anything, mock.Anything)
 	hc.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
@@ -86,7 +91,75 @@ func TestProcessBookFinishedWithoutFinishedAtSkipsHardcoverReadingState(t *testi
 	hc.AssertExpectations(t)
 }
 
-func TestProcessBookExplicitlyFinishedWithoutFinishedAtAndDurationSkipsFreshASINMatch(t *testing.T) {
+func TestProcessBookDryRunFinishedWithoutFinishedAtSkipsHardcoverMatching(t *testing.T) {
+	svc, hc := createTestService()
+	svc.config.Sync.DryRun = true
+	svc.config.Sync.SyncOwned = false
+
+	book := toAudiobookshelfBook(createTestFinishedBook(
+		"outcome-dry-run-finished-without-date", "Dry Run Finished Without Date", "Author", "", "9781234567890",
+	))
+	book.Progress.FinishedAt = 0
+
+	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
+
+	record := recordedOutcome(svc, book.ID)
+	assert.Equal(t, OutcomeSkipped, record.Outcome)
+	assert.Equal(t, "finished book has no Audiobookshelf finished_at", record.Reason)
+	assertNoHardcoverBookSearches(t, hc)
+	for _, call := range []struct {
+		method string
+		args   []interface{}
+	}{
+		{method: "MarkEditionAsOwned", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "GetUserBookID", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "CreateUserBook", args: []interface{}{mock.Anything, mock.Anything, mock.Anything}},
+		{method: "UpdateUserBookEdition", args: []interface{}{mock.Anything, mock.Anything, mock.Anything}},
+		{method: "GetUserBook", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "GetUserBookReads", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "CheckExistingUserBookRead", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "InsertUserBookRead", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "UpdateUserBookRead", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "DeleteUserBookRead", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "UpdateUserBookStatus", args: []interface{}{mock.Anything, mock.Anything}},
+		{method: "UpdateReadingProgress", args: []interface{}{mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything}},
+	} {
+		hc.AssertNotCalled(t, call.method, call.args...)
+	}
+	_, compositeStateExists := svc.state.GetBookState(book.ID + ":204")
+	assert.False(t, compositeStateExists, "a skipped missing date must not checkpoint composite sync state")
+	_, baseStateExists := svc.state.GetBookState(book.ID)
+	assert.False(t, baseStateExists, "a skipped missing date must not checkpoint base sync state")
+	hc.AssertExpectations(t)
+}
+
+func TestProcessBookFinishedWithoutFinishedAtSkipsBeforeEditionDiagnostics(t *testing.T) {
+	svc, hc := createTestService()
+	svc.config.Sync.SyncOwned = false
+
+	book := toAudiobookshelfBook(createTestBook(
+		"outcome-finished-without-date-no-edition", "Finished Without Date", "Author", "", "9781234567890",
+	))
+	book.Progress.CurrentTime = book.Media.Duration
+	book.Progress.FinishedAt = 0
+
+	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
+
+	record := recordedOutcome(svc, book.ID)
+	assert.Equal(t, OutcomeSkipped, record.Outcome)
+	assert.Equal(t, "finished book has no Audiobookshelf finished_at", record.Reason)
+	assertNoHardcoverBookSearches(t, hc)
+	assert.Empty(t, svc.mismatchCollector.GetAll())
+	_, baseStateExists := svc.state.GetBookState(book.ID)
+	assert.False(t, baseStateExists, "an undated finished mismatch must remain eligible for a later sync")
+	hc.AssertNotCalled(t, "GetUserBookID", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+	hc.AssertExpectations(t)
+}
+
+func TestProcessBookExplicitlyFinishedWithoutFinishedAtAndDurationSkipsHardcoverMatching(t *testing.T) {
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = true
 
@@ -97,21 +170,16 @@ func TestProcessBookExplicitlyFinishedWithoutFinishedAtAndDurationSkipsFreshASIN
 	book.Progress.IsFinished = true
 	book.Progress.FinishedAt = 0
 
-	hc.On("SearchBookByASIN", mock.Anything, book.Media.Metadata.ASIN).Return(&models.HardcoverBook{
-		ID: "103", EditionID: "203",
-	}, nil).Once()
-
 	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
 
 	record := recordedOutcome(svc, book.ID)
 	assert.Equal(t, OutcomeSkipped, record.Outcome)
 	assert.Equal(t, "finished book has no Audiobookshelf finished_at", record.Reason)
+	assertNoHardcoverBookSearches(t, hc)
 	for _, call := range []struct {
 		method string
 		args   []interface{}
 	}{
-		{method: "CheckBookOwnership", args: []interface{}{mock.Anything, mock.Anything}},
-		{method: "MarkEditionAsOwned", args: []interface{}{mock.Anything, mock.Anything}},
 		{method: "GetUserBookID", args: []interface{}{mock.Anything, mock.Anything}},
 		{method: "CreateUserBook", args: []interface{}{mock.Anything, mock.Anything, mock.Anything}},
 		{method: "UpdateUserBookEdition", args: []interface{}{mock.Anything, mock.Anything, mock.Anything}},
@@ -145,15 +213,12 @@ func TestProcessBookSkipsComputedFinishedWithoutFinishedAt(t *testing.T) {
 	book.Progress.IsFinished = false
 	book.Progress.FinishedAt = 0
 
-	hc.On("SearchBookByASIN", mock.Anything, book.Media.Metadata.ASIN).Return(&models.HardcoverBook{
-		ID: "101", EditionID: "201",
-	}, nil).Once()
-
 	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
 
 	record := recordedOutcome(svc, book.ID)
 	assert.Equal(t, OutcomeSkipped, record.Outcome)
 	assert.Equal(t, "finished book has no Audiobookshelf finished_at", record.Reason)
+	assertNoHardcoverBookSearches(t, hc)
 	hc.AssertNotCalled(t, "GetEdition", mock.Anything, mock.Anything)
 	hc.AssertNotCalled(t, "GetUserBookID", mock.Anything, mock.Anything)
 	hc.AssertNotCalled(t, "CreateUserBook", mock.Anything, mock.Anything, mock.Anything)
@@ -169,7 +234,46 @@ func TestProcessBookSkipsComputedFinishedWithoutFinishedAt(t *testing.T) {
 	hc.AssertExpectations(t)
 }
 
-func TestProcessBookSkipsComputedFinishedWithoutFinishedAtBeforeISBNOwnership(t *testing.T) {
+func TestProcessBookEnhancedComputedFinishedWithoutFinishedAtSkipsHardcoverMatching(t *testing.T) {
+	svc, hc := createTestService()
+	svc.config.Sync.SyncOwned = true
+
+	book := toAudiobookshelfBook(createTestBook(
+		"outcome-enhanced-computed-finished-without-date", "Enhanced Computed Finished Without Date", "Author", "enhanced-computed-finished-asin", "",
+	))
+	userProgress := &models.AudiobookshelfUserProgress{}
+	userProgress.MediaProgress = append(userProgress.MediaProgress, struct {
+		ID            string  `json:"id"`
+		LibraryItemID string  `json:"libraryItemId"`
+		UserID        string  `json:"userId"`
+		IsFinished    bool    `json:"isFinished"`
+		Progress      float64 `json:"progress"`
+		CurrentTime   float64 `json:"currentTime"`
+		Duration      float64 `json:"duration"`
+		StartedAt     int64   `json:"startedAt"`
+		FinishedAt    int64   `json:"finishedAt"`
+		LastUpdate    int64   `json:"lastUpdate"`
+		TimeListening float64 `json:"timeListening"`
+	}{
+		LibraryItemID: book.ID,
+		CurrentTime:   book.Media.Duration,
+		LastUpdate:    1,
+	})
+
+	require.NoError(t, svc.processBook(context.Background(), *book, userProgress))
+
+	record := recordedOutcome(svc, book.ID)
+	assert.Equal(t, OutcomeSkipped, record.Outcome)
+	assert.Equal(t, "finished book has no Audiobookshelf finished_at", record.Reason)
+	assertNoHardcoverBookSearches(t, hc)
+	hc.AssertNotCalled(t, "CheckBookOwnership", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "MarkEditionAsOwned", mock.Anything, mock.Anything)
+	_, stateExists := svc.state.GetBookState(book.ID)
+	assert.False(t, stateExists, "an enhanced missing date must not checkpoint sync state")
+	hc.AssertExpectations(t)
+}
+
+func TestProcessBookComputedFinishedWithoutFinishedAtSkipsBeforeISBNOwnership(t *testing.T) {
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = true
 
@@ -181,15 +285,12 @@ func TestProcessBookSkipsComputedFinishedWithoutFinishedAtBeforeISBNOwnership(t 
 	book.Progress.IsFinished = false
 	book.Progress.FinishedAt = 0
 
-	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return(&models.HardcoverBook{
-		ID: "102", EditionID: "202",
-	}, nil).Once()
-
 	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
 
 	record := recordedOutcome(svc, book.ID)
 	assert.Equal(t, OutcomeSkipped, record.Outcome)
 	assert.Equal(t, "finished book has no Audiobookshelf finished_at", record.Reason)
+	assertNoHardcoverBookSearches(t, hc)
 	for _, call := range []struct {
 		method string
 		args   []interface{}

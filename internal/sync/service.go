@@ -1310,11 +1310,6 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 		"target_status": status,
 	})
 
-	logCtx.Info("Creating new user book with status", map[string]interface{}{
-		"status":        creationStatus,
-		"target_status": status,
-	})
-
 	// Double-check if the user book exists to prevent race conditions
 	logCtx.Debug("Performing second check for existing user book ID to prevent race conditions", nil)
 
@@ -2105,6 +2100,31 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	// book.Progress.CurrentTime is always 0 unless enhanced here.
 	bookLog = s.enhanceBookProgressFromUserData(&book, userProgress, bookLog)
 
+	// A missing completion date cannot be represented safely in Hardcover. In
+	// particular, creating a FINISHED user book makes Hardcover create a read
+	// dated today. Exclude these books before matching so no ownership, edition,
+	// mismatch, mutation, or state-checkpoint work occurs until a date is
+	// available.
+	progress := 0.0
+	if book.Media.Duration > 0 {
+		// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
+		// because Audiobookshelf sometimes reports CurrentTime as 0 for finished
+		// books.
+		if book.Progress.IsFinished {
+			progress = 1.0
+		} else {
+			progress = book.Progress.CurrentTime / book.Media.Duration
+		}
+	}
+	targetStatus := s.determineBookStatus(progress, book.Progress.IsFinished, book.Progress.FinishedAt)
+	finishedWithoutFinishedAt := isFinishedWithoutFinishedAt(targetStatus, book.Progress.IsFinished, book.Progress.FinishedAt)
+	if finishedWithoutFinishedAt {
+		bookProcessed = false
+		setOutcome(OutcomeSkipped, "finished book has no Audiobookshelf finished_at")
+		bookLog.Warn("Skipping Hardcover matching because Audiobookshelf finished_at is missing", nil)
+		return nil
+	}
+
 	// Apply test book filter if configured - do this before any expensive lookups
 	if s.config.Sync.TestBookFilter != "" {
 		// Check if the book title contains the filter string (case-insensitive)
@@ -2395,30 +2415,6 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		}
 	}
 
-	// Calculate the target status before the user-book lookup. A missing
-	// completion date cannot be represented safely in Hardcover. In particular,
-	// creating a FINISHED user book makes Hardcover create a read dated today.
-	// Matching has already completed, but leave the reading state unchanged so
-	// this book remains eligible for a later sync with a date.
-	progress := 0.0
-	if book.Media.Duration > 0 {
-		// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
-		// because Audiobookshelf sometimes reports CurrentTime as 0 for finished
-		// books.
-		if book.Progress.IsFinished {
-			progress = 1.0
-		} else {
-			progress = book.Progress.CurrentTime / book.Media.Duration
-		}
-	}
-	targetStatus := s.determineBookStatus(progress, book.Progress.IsFinished, book.Progress.FinishedAt)
-	if isFinishedWithoutFinishedAt(targetStatus, book.Progress.IsFinished, book.Progress.FinishedAt) {
-		bookProcessed = false
-		setOutcome(OutcomeSkipped, "finished book has no Audiobookshelf finished_at")
-		bookLog.Warn("Skipping Hardcover reading-state update because Audiobookshelf finished_at is missing", nil)
-		return nil
-	}
-
 	// Create a composite key for state tracking: bookID:editionID
 	stateKey = book.ID
 	if editionID != "" {
@@ -2653,7 +2649,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		if book.Media.Duration > 0 {
 			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
 		}
-		if !s.config.Sync.DryRun {
+		if !s.config.Sync.DryRun && !finishedWithoutFinishedAt {
 			if updated := s.state.UpdateBook(stateKey, progressPct, "SKIPPED"); updated {
 				s.state.SetHasProgressSeconds(stateKey)
 				bookLog.Debug("Updated book state to SKIPPED", map[string]interface{}{
@@ -2713,7 +2709,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		if book.Media.Duration > 0 {
 			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
 		}
-		if !s.config.Sync.DryRun {
+		if !s.config.Sync.DryRun && !finishedWithoutFinishedAt {
 			if updated := s.state.UpdateBook(stateKey, progressPct, "NO_EDITION"); updated {
 				s.state.SetHasProgressSeconds(stateKey)
 				bookLog.Debug("Updated book state to NO_EDITION", map[string]interface{}{
@@ -2785,7 +2781,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		if book.Media.Duration > 0 {
 			progressPct = (book.Progress.CurrentTime / book.Media.Duration) * 100
 		}
-		if !s.config.Sync.DryRun {
+		if !s.config.Sync.DryRun && !finishedWithoutFinishedAt {
 			if updated := s.state.UpdateBook(stateKey, progressPct, "NOT_FOUND"); updated {
 				s.state.SetHasProgressSeconds(stateKey)
 				bookLog.Debug("Updated book state to NOT_FOUND", map[string]interface{}{
@@ -2794,6 +2790,13 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			}
 		}
 		bookProcessed = false
+		return nil
+	}
+
+	if finishedWithoutFinishedAt {
+		bookProcessed = false
+		setOutcome(OutcomeSkipped, "finished book has no Audiobookshelf finished_at")
+		bookLog.Warn("Skipping Hardcover reading-state update because Audiobookshelf finished_at is missing", nil)
 		return nil
 	}
 
