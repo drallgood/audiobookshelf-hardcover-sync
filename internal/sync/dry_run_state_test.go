@@ -38,6 +38,28 @@ func TestHandleFinishedBookDryRunDoesNotAdvanceState(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
+func TestHandleFinishedBookDryRunNewUserBookWithoutFinishedAtIsSkipped(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.config.Sync.DryRun = true
+
+	book := convertTestBookToModel(createTestFinishedBook("dry-run-missing-date", "Dry Run Missing Date", "Test Author", "DRYRUN-MISSING", ""))
+	book.Progress.FinishedAt = 0
+	var outcome SyncOutcome
+	var reason string
+	ctx := context.WithValue(context.Background(), processBookOutcomeReporterKey{}, processBookOutcomeReporter(func(reportOutcome SyncOutcome, reportReason string) {
+		outcome = reportOutcome
+		reason = reportReason
+	}))
+
+	require.NoError(t, svc.HandleFinishedBook(ctx, book, "456", -1))
+
+	assert.Equal(t, OutcomeSkipped, outcome)
+	assert.Equal(t, "finished read has no Audiobookshelf finished_at", reason)
+	mockClient.AssertNotCalled(t, "GetUserBook", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+}
+
 func TestProcessWantToReadDryRunDoesNotAdvanceState(t *testing.T) {
 	svc, mockClient := createTestService()
 	svc.config.Sync.DryRun = true
