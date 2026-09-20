@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
@@ -155,4 +156,21 @@ func TestSnapshotSanitizesAudiobookshelfURLs(t *testing.T) {
 			require.Equal(t, tt.wantHardcover, snapshot.BookOutcomes[0].HardcoverCoverURL)
 		})
 	}
+}
+
+func TestOutcomeRecordFormatReflectsMediaContent(t *testing.T) {
+	svc, _ := createTestService()
+	svc.beginOutcomeRun()
+
+	var audiobook, ebook models.AudiobookshelfBook
+	require.NoError(t, json.Unmarshal([]byte(`{"id":"fmt-audio","mediaType":"book","media":{"duration":3600,"audioFiles":[{}]}}`), &audiobook))
+	require.NoError(t, json.Unmarshal([]byte(`{"id":"fmt-ebook","mediaType":"book","media":{"ebookFile":{"ebookFormat":"epub"}}}`), &ebook))
+	svc.recordBookOutcomeWithMatchMethod(audiobook, OutcomeNotFound, "missing", nil, nil, "")
+	svc.recordBookOutcomeWithMatchMethod(ebook, OutcomeNotFound, "missing", nil, nil, "")
+
+	formats := map[string]string{}
+	for _, record := range svc.GetSnapshot().BookOutcomes {
+		formats[record.BookID] = record.Format
+	}
+	require.Equal(t, map[string]string{"fmt-audio": "Audiobook", "fmt-ebook": "Ebook"}, formats)
 }

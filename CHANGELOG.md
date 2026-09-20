@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Sync Status format for ebooks**: Sync Status showed "Audiobook" for every item because Audiobookshelf reports `book` as the media type for ebooks too. The format is now derived from the item's media (audio content versus an ebook file). By @Snuffy2
 - **Finished read dates for newly matched books**: Create new Hardcover user books as `WANT_TO_READ` before adding the Audiobookshelf-dated finished read, preventing Hardcover from auto-creating a completion dated at sync time. For a book that would be newly matched, an item explicitly marked finished or computed at 100% progress without `finished_at` is excluded from Hardcover matching until a finished date is available. This fix applies to new matches and does not repair existing reads created with the old sync-time synthetic date. Dry runs report this case as skipped rather than as a planned finish. By @Snuffy2 (#188)
 - **Make sync status refresh unobtrusive**: Refresh Sync Status without page flashing or interrupting interaction, and retry temporary profile-load failures. By @Snuffy2. (#180)
 - **Sync Status fetch errors**: Remove misplaced Hardcover mismatch-display code from status loading so successful profile status requests no longer log an undefined-variable error by @Snuffy2. (#178)

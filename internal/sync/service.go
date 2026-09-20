@@ -844,7 +844,7 @@ func (s *Service) recordBookOutcomeWithMatchMethod(book models.AudiobookshelfBoo
 		Author:       book.Media.Metadata.AuthorName,
 		ASIN:         book.Media.Metadata.ASIN,
 		ISBN:         book.Media.Metadata.ISBN,
-		Format:       audiobookshelfDisplayFormat(book.MediaType),
+		Format:       audiobookshelfDisplayFormat(book),
 		Series:       series,
 		SeriesNumber: seriesNumber,
 		Reason:       reason,
@@ -950,11 +950,11 @@ func mergeHardcoverCandidate(record, fallback *BookOutcomeRecord) {
 	record.HardcoverSeriesNumber = firstNonEmpty(record.HardcoverSeriesNumber, fallback.HardcoverSeriesNumber)
 }
 
-// audiobookshelfDisplayFormat maps source media types to the format labels
-// shown in sync details. Audiobookshelf uses "book" for its audiobook library
-// items, so unknown values retain the historical audiobook fallback.
-func audiobookshelfDisplayFormat(mediaType string) string {
-	if strings.EqualFold(strings.TrimSpace(mediaType), "ebook") {
+// audiobookshelfDisplayFormat maps a library item to the format label shown in
+// sync details. Audiobookshelf reports "book" as the media type for audiobooks
+// and ebooks alike, so the media payload decides (see IsEbook).
+func audiobookshelfDisplayFormat(book models.AudiobookshelfBook) string {
+	if book.IsEbook() {
 		return "Ebook"
 	}
 	return "Audiobook"

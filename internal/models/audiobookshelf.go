@@ -1,5 +1,11 @@
 package models
 
+import (
+	"bytes"
+	"encoding/json"
+	"strings"
+)
+
 // AudiobookshelfMetadata represents the metadata for an Audiobookshelf book
 type AudiobookshelfMetadataStruct struct {
 	Title             string                 `json:"title"`
@@ -57,6 +63,9 @@ type AudiobookshelfBook struct {
 		CoverPath string                       `json:"coverPath"`
 		Duration  float64                      `json:"duration"`
 	} `json:"media"`
+	// content describes the media files, which Audiobookshelf reports in the
+	// media payload rather than in mediaType. It is populated by UnmarshalJSON.
+	content mediaContent
 	// Progress tracks the user's progress through the book
 	Progress struct {
 		CurrentTime float64 `json:"currentTime"`
@@ -64,6 +73,51 @@ type AudiobookshelfBook struct {
 		StartedAt   int64   `json:"startedAt"`
 		FinishedAt  int64   `json:"finishedAt"`
 	} `json:"progress,omitempty"`
+}
+
+// mediaContent records which media files an Audiobookshelf item carries.
+// Expanded library items list audioFiles and an ebookFile object; minified
+// ones report numAudioFiles and ebookFormat instead.
+type mediaContent struct {
+	hasAudio bool
+	hasEbook bool
+}
+
+// UnmarshalJSON decodes the item and records its media content, which the
+// exported fields do not capture.
+func (b *AudiobookshelfBook) UnmarshalJSON(data []byte) error {
+	type plain AudiobookshelfBook
+	if err := json.Unmarshal(data, (*plain)(b)); err != nil {
+		return err
+	}
+	var raw struct {
+		Media struct {
+			AudioFiles    []json.RawMessage `json:"audioFiles"`
+			NumAudioFiles int               `json:"numAudioFiles"`
+			EbookFile     json.RawMessage   `json:"ebookFile"`
+			EbookFormat   string            `json:"ebookFormat"`
+		} `json:"media"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	ebookFile := bytes.TrimSpace(raw.Media.EbookFile)
+	b.content = mediaContent{
+		hasAudio: b.Media.Duration > 0 || raw.Media.NumAudioFiles > 0 || len(raw.Media.AudioFiles) > 0,
+		hasEbook: (len(ebookFile) > 0 && !bytes.Equal(ebookFile, []byte("null"))) || strings.TrimSpace(raw.Media.EbookFormat) != "",
+	}
+	return nil
+}
+
+// IsEbook reports whether the item is an ebook-only library item. Audiobookshelf
+// reports "book" as the media type for audiobooks and ebooks alike, so the media
+// content decides: an item with audio is an audiobook even if it also carries
+// an ebook file. Items not decoded from JSON fall back to the media type alone.
+func (b *AudiobookshelfBook) IsEbook() bool {
+	if strings.EqualFold(strings.TrimSpace(b.MediaType), "ebook") {
+		return true
+	}
+	return b.content.hasEbook && !b.content.hasAudio && b.Media.Duration <= 0
 }
 
 // GetID returns the book's unique identifier
