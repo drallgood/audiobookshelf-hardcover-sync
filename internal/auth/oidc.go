@@ -179,7 +179,7 @@ func NewOIDCProvider(name string, config map[string]string, log *logger.Logger) 
 	}
 
 	if log != nil {
-		log.Info("OIDC provider initialized successfully", map[string]interface{}{
+		log.Debug("OIDC provider initialized successfully", map[string]interface{}{
 			"provider":     name,
 			"issuer":       issuer,
 			"client_id":    clientID,
@@ -278,7 +278,7 @@ func (p *OIDCProvider) GetAuthURL(redirectURL string) (string, error) {
 	)
 
 	if p.logger != nil {
-		p.logger.Info("Generated OAuth2 authorization URL", map[string]interface{}{
+		p.logger.Debug("Generated OAuth2 authorization URL", map[string]interface{}{
 			"provider":     p.name,
 			"state_length": len(state),
 			"auth_url":     authURL,
