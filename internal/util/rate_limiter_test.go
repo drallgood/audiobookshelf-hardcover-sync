@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/testutils"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -837,9 +838,7 @@ func TestRateLimiterRecoversFromHeaderDrivenSlowdown(t *testing.T) {
 }
 
 func TestRateLimiterDoesNotLogPacingRecoveryDuringDailyPause(t *testing.T) {
-	previousLevel := zerolog.GlobalLevel()
-	zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	t.Cleanup(func() { zerolog.SetGlobalLevel(previousLevel) })
+	testutils.SetGlobalLogLevel(t, zerolog.InfoLevel)
 
 	var logs bytes.Buffer
 	testLogger := &logger.Logger{Logger: zerolog.New(&logs).Level(zerolog.InfoLevel)}

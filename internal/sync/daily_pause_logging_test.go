@@ -9,6 +9,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/testutils"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/mock"
 )
@@ -21,9 +22,7 @@ type dailyPauseMockClient struct {
 func (c *dailyPauseMockClient) DailyQuotaPaused() bool { return c.paused }
 
 func TestHardcoverSearchIntentLogsOnlyOutsideDailyPause(t *testing.T) {
-	previousLevel := zerolog.GlobalLevel()
-	zerolog.SetGlobalLevel(zerolog.DebugLevel)
-	t.Cleanup(func() { zerolog.SetGlobalLevel(previousLevel) })
+	testutils.SetGlobalLogLevel(t, zerolog.DebugLevel)
 
 	for _, tc := range []struct {
 		name    string

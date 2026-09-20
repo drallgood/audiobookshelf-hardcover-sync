@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/testutils"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/util"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
@@ -192,9 +193,7 @@ func TestGraphQLRequestLogsWaitForAdmissionDuringDailyPause(t *testing.T) {
 	defer server.Close()
 
 	client := CreateTestClient(server)
-	previousLevel := zerolog.GlobalLevel()
-	zerolog.SetGlobalLevel(zerolog.DebugLevel)
-	t.Cleanup(func() { zerolog.SetGlobalLevel(previousLevel) })
+	testutils.SetGlobalLogLevel(t, zerolog.DebugLevel)
 	var logs bytes.Buffer
 	log := &logger.Logger{Logger: zerolog.New(&logs).Level(zerolog.DebugLevel)}
 	client.logger = log
