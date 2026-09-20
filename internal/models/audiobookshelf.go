@@ -1,5 +1,10 @@
 package models
 
+import (
+	"encoding/json"
+	"strings"
+)
+
 // AudiobookshelfMetadata represents the metadata for an Audiobookshelf book
 type AudiobookshelfMetadataStruct struct {
 	Title             string                 `json:"title"`
@@ -56,6 +61,12 @@ type AudiobookshelfBook struct {
 		Metadata  AudiobookshelfMetadataStruct `json:"metadata"`
 		CoverPath string                       `json:"coverPath"`
 		Duration  float64                      `json:"duration"`
+		// NumTracks counts the audio files not marked excluded, and is present in
+		// both minified and expanded items. EbookFile is set (non-nil) for an ebook
+		// and EbookFormat names its format. IsEbook reads all three.
+		NumTracks   int              `json:"numTracks"`
+		EbookFile   *json.RawMessage `json:"ebookFile"`
+		EbookFormat string           `json:"ebookFormat"`
 	} `json:"media"`
 	// Progress tracks the user's progress through the book
 	Progress struct {
@@ -64,6 +75,22 @@ type AudiobookshelfBook struct {
 		StartedAt   int64   `json:"startedAt"`
 		FinishedAt  int64   `json:"finishedAt"`
 	} `json:"progress,omitempty"`
+}
+
+// IsEbook reports whether the item is an ebook-only library item. Audiobookshelf
+// reports "book" as the media type for audiobooks and ebooks alike, so the media
+// content decides: an item with audio is an audiobook even if it also carries an
+// ebook file. Audio follows Audiobookshelf's own hasAudioTracks rule (numTracks
+// counts the non-excluded audio files, or there is a duration). An ebook is an
+// ebookFile object (any object, as in Audiobookshelf's own truthiness check) or
+// an ebookFormat. The legacy "ebook" media type is still honored.
+func (b *AudiobookshelfBook) IsEbook() bool {
+	if strings.EqualFold(strings.TrimSpace(b.MediaType), "ebook") {
+		return true
+	}
+	hasAudio := b.Media.Duration > 0 || b.Media.NumTracks > 0
+	hasEbook := b.Media.EbookFile != nil || strings.TrimSpace(b.Media.EbookFormat) != ""
+	return hasEbook && !hasAudio
 }
 
 // GetID returns the book's unique identifier

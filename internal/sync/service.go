@@ -844,7 +844,7 @@ func (s *Service) recordBookOutcomeWithMatchMethod(book models.AudiobookshelfBoo
 		Author:       book.Media.Metadata.AuthorName,
 		ASIN:         book.Media.Metadata.ASIN,
 		ISBN:         book.Media.Metadata.ISBN,
-		Format:       audiobookshelfDisplayFormat(book.MediaType),
+		Format:       audiobookshelfDisplayFormat(book),
 		Series:       series,
 		SeriesNumber: seriesNumber,
 		Reason:       reason,
@@ -950,14 +950,23 @@ func mergeHardcoverCandidate(record, fallback *BookOutcomeRecord) {
 	record.HardcoverSeriesNumber = firstNonEmpty(record.HardcoverSeriesNumber, fallback.HardcoverSeriesNumber)
 }
 
-// audiobookshelfDisplayFormat maps source media types to the format labels
-// shown in sync details. Audiobookshelf uses "book" for its audiobook library
-// items, so unknown values retain the historical audiobook fallback.
-func audiobookshelfDisplayFormat(mediaType string) string {
-	if strings.EqualFold(strings.TrimSpace(mediaType), "ebook") {
+// audiobookshelfDisplayFormat maps a library item to the format label shown in
+// sync details. Audiobookshelf reports "book" as the media type for audiobooks
+// and ebooks alike, so the media payload decides (see IsEbook).
+func audiobookshelfDisplayFormat(book models.AudiobookshelfBook) string {
+	if book.IsEbook() {
 		return "Ebook"
 	}
 	return "Audiobook"
+}
+
+// hardcoverReadingFormat returns the Hardcover reading format ("ebook" or
+// "audiobook") that editions matching the item must have.
+func hardcoverReadingFormat(book models.AudiobookshelfBook) string {
+	if book.IsEbook() {
+		return "ebook"
+	}
+	return "audiobook"
 }
 
 func audiobookshelfSeries(metadata models.AudiobookshelfMetadataStruct) (string, string) {
@@ -2084,8 +2093,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	bookLog.Debug("Starting book processing")
 
 	// Media type filtering: skip ebooks unless explicitly enabled
-	mediaType := strings.ToLower(book.MediaType)
-	if mediaType == "ebook" && !s.config.Sync.IncludeEbooks {
+	if book.IsEbook() && !s.config.Sync.IncludeEbooks {
 		bookLog.Info("Skipping ebook because include_ebooks is disabled", map[string]interface{}{
 			"media_type":     book.MediaType,
 			"include_ebooks": s.config.Sync.IncludeEbooks,
@@ -2094,6 +2102,10 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		setOutcome(OutcomeSkipped, "ebook excluded by configuration")
 		return ErrSkippedBook
 	}
+
+	// Every Hardcover lookup for this item, including mismatch enrichment,
+	// must resolve editions of the item's own reading format.
+	ctx = hardcover.WithReadingFormat(ctx, hardcoverReadingFormat(book))
 
 	// Enhance book progress from the /api/me endpoint before any sync checks.
 	// The library items endpoint does not include per-user progress, so
@@ -2376,6 +2388,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 						Duration:      book.Media.Duration,
 						LibraryID:     book.LibraryID,
 						FolderID:      "",
+						ReadingFormat: hardcoverReadingFormat(book),
 					},
 					book.ID,
 					edID,
@@ -2633,6 +2646,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				Duration:      book.Media.Duration,
 				LibraryID:     book.LibraryID,
 				FolderID:      "",
+				ReadingFormat: hardcoverReadingFormat(book),
 			},
 			bookID,    // Use the book ID if available
 			editionID, // Use the edition ID if available
@@ -2699,6 +2713,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				Duration:      book.Media.Duration,
 				LibraryID:     book.LibraryID,
 				FolderID:      "",
+				ReadingFormat: hardcoverReadingFormat(book),
 			},
 			hcBook.ID, // Use the book ID we found
 			"",        // No edition ID
@@ -2769,6 +2784,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				Duration:      book.Media.Duration,
 				LibraryID:     book.LibraryID,
 				FolderID:      "",
+				ReadingFormat: hardcoverReadingFormat(book),
 			},
 			bookID,    // Use the book ID if available
 			editionID, // Use the edition ID if available
@@ -2846,6 +2862,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				Duration:      book.Media.Duration,
 				LibraryID:     book.LibraryID,
 				FolderID:      "",
+				ReadingFormat: hardcoverReadingFormat(book),
 			},
 			bookID,    // Use the book ID from BookError if available
 			editionID, // Empty since we don't have an edition ID
@@ -4937,16 +4954,9 @@ func (s *Service) findBookInHardcoverByTitleAuthor(ctx context.Context, book mod
 // findBookInHardcover finds a book in Hardcover by various methods
 // It first tries ASIN, then ISBN-13, then ISBN-10
 // Title/author search is only used for mismatches and should be called separately
+// Callers must carry the item's reading format on ctx via hardcover.WithReadingFormat.
 func (s *Service) findBookInHardcover(ctx context.Context, book models.AudiobookshelfBook) (*models.HardcoverBook, error) {
 	var lookupErr error
-	// Derive desired reading format from source media type
-	mediaType := strings.ToLower(strings.TrimSpace(book.MediaType))
-	desiredFormat := "audiobook"
-	if mediaType == "ebook" {
-		desiredFormat = "ebook"
-	}
-	// Attach to context for client to respect
-	ctx = hardcover.WithReadingFormat(ctx, desiredFormat)
 	// Create a logger with book context
 	logCtx := map[string]interface{}{
 		"book_id": book.ID,

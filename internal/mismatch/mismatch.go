@@ -378,7 +378,8 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 			"author":     metadata.AuthorName,
 		})
 
-		ctx, cancel := context.WithTimeout(hardcover.WithAudnexRegion(context.Background(), audnexusRegion), 10*time.Second)
+		// The lookups below must resolve editions of the source item's own format.
+		ctx, cancel := context.WithTimeout(hardcover.WithReadingFormat(hardcover.WithAudnexRegion(context.Background(), audnexusRegion), metadata.ReadingFormat), 10*time.Second)
 		defer cancel()
 
 		// Helper to apply Hardcover book details to mismatch
@@ -859,4 +860,7 @@ type MediaMetadata struct {
 	Duration      float64 `json:"duration,omitempty"`
 	LibraryID     string  // Audiobookshelf library ID
 	FolderID      string  // Source folder ID (if available)
+	// ReadingFormat is the Hardcover reading format ("ebook" or "audiobook") that
+	// editions matching the source item must have. Empty means audiobook.
+	ReadingFormat string
 }

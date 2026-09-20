@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -418,6 +419,26 @@ func TestProcessBookRecordsEbookOutcomeFormat(t *testing.T) {
 	assert.Equal(t, OutcomeSynced, record.Outcome)
 	assert.Equal(t, "Ebook", record.Format)
 	hc.AssertExpectations(t)
+}
+
+func TestProcessBookSkipsAudiobookshelfEbooksUnlessIncluded(t *testing.T) {
+	// Audiobookshelf reports mediaType "book" for ebooks; only the media
+	// payload distinguishes them.
+	var book models.AudiobookshelfBook
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"id": "outcome-ebook-excluded",
+		"mediaType": "book",
+		"media": {"metadata": {"title": "Ebook", "authorName": "Author", "asin": "outcome-ebook-excluded-asin"}, "ebookFile": {"ebookFormat": "epub"}}
+	}`), &book))
+
+	svc, hc := createTestService()
+	svc.config.Sync.IncludeEbooks = false
+
+	err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+	require.ErrorIs(t, err, ErrSkippedBook)
+	assert.Equal(t, OutcomeSkipped, recordedOutcome(svc, book.ID).Outcome)
+	assert.Equal(t, "Ebook", recordedOutcome(svc, book.ID).Format)
+	hc.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
 }
 
 func TestProcessBookThresholdSkipRecordsSkipped(t *testing.T) {
