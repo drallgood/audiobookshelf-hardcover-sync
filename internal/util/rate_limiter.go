@@ -644,7 +644,7 @@ func (r *RateLimiter) applyIETFHeaders(remaining, reset map[string]int, h http.H
 				pause = boundedSecondsDuration(resetSec, 1.2, r.maxBackoff)
 			}
 			if pause > 0 || desiredRate > r.minRate {
-				r.logger.Debug("Rate limit window nearly exhausted, slowing down", map[string]interface{}{
+				r.logger.Info("Rate limit window nearly exhausted, slowing down", map[string]interface{}{
 					"component":  "rate_limiter",
 					"bucket":     name,
 					"remaining":  rem,
@@ -701,7 +701,7 @@ func (r *RateLimiter) applyLegacyHeaders(h http.Header) {
 			} else {
 				desiredRate = max(desiredRate, r.minRate*2)
 			}
-			r.logger.Debug("Approaching rate limit (legacy headers), being more conservative", map[string]interface{}{
+			r.logger.Info("Approaching rate limit (legacy headers), being more conservative", map[string]interface{}{
 				"component":     "rate_limiter",
 				"remaining":     remaining,
 				"limit":         limit,
@@ -862,7 +862,7 @@ func (r *RateLimiter) setRate(rate time.Duration) {
 	if rate > r.rate {
 		r.metrics.BackoffEvents++
 	} else {
-		r.logger.Debug("Rate limiter pacing recovered", map[string]interface{}{
+		r.logger.Info("Rate limiter pacing recovered", map[string]interface{}{
 			"component":     "rate_limiter",
 			"previous_rate": r.rate.String(),
 			"new_rate":      rate.String(),

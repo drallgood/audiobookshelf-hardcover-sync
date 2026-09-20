@@ -318,7 +318,7 @@ func main() {
 
 		// Start the HTTP server
 		go func() {
-			log.Debug("Starting HTTP server with web UI", map[string]interface{}{
+			log.Info("Starting HTTP server with web UI", map[string]interface{}{
 				"port":   cfg.Server.Port,
 				"web_ui": true,
 			})
