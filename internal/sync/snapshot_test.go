@@ -163,7 +163,7 @@ func TestOutcomeRecordFormatReflectsMediaContent(t *testing.T) {
 	svc.beginOutcomeRun()
 
 	var audiobook, ebook models.AudiobookshelfBook
-	require.NoError(t, json.Unmarshal([]byte(`{"id":"fmt-audio","mediaType":"book","media":{"duration":3600,"audioFiles":[{}]}}`), &audiobook))
+	require.NoError(t, json.Unmarshal([]byte(`{"id":"fmt-audio","mediaType":"book","media":{"duration":3600,"numTracks":1}}`), &audiobook))
 	require.NoError(t, json.Unmarshal([]byte(`{"id":"fmt-ebook","mediaType":"book","media":{"ebookFile":{"ebookFormat":"epub"}}}`), &ebook))
 	svc.recordBookOutcomeWithMatchMethod(audiobook, OutcomeNotFound, "missing", nil, nil, "")
 	svc.recordBookOutcomeWithMatchMethod(ebook, OutcomeNotFound, "missing", nil, nil, "")

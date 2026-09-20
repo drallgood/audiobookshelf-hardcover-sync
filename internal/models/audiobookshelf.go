@@ -75,8 +75,9 @@ type AudiobookshelfBook struct {
 }
 
 // mediaContent records which media files an Audiobookshelf item carries.
-// Expanded library items list audioFiles and an ebookFile object; minified
-// ones report numAudioFiles and ebookFormat instead.
+// Audio follows Audiobookshelf's own hasAudioTracks rule: only audio files not
+// marked excluded count, which is what numTracks (and, for expanded items,
+// tracks) reflect. An ebook shows as an ebookFile object or an ebookFormat.
 type mediaContent struct {
 	hasAudio bool
 	hasEbook bool
@@ -91,10 +92,10 @@ func (b *AudiobookshelfBook) UnmarshalJSON(data []byte) error {
 	}
 	var raw struct {
 		Media struct {
-			AudioFiles    []json.RawMessage `json:"audioFiles"`
-			NumAudioFiles int               `json:"numAudioFiles"`
-			EbookFile     json.RawMessage   `json:"ebookFile"`
-			EbookFormat   string            `json:"ebookFormat"`
+			NumTracks   int               `json:"numTracks"`
+			Tracks      []json.RawMessage `json:"tracks"`
+			EbookFile   json.RawMessage   `json:"ebookFile"`
+			EbookFormat string            `json:"ebookFormat"`
 		} `json:"media"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -102,7 +103,7 @@ func (b *AudiobookshelfBook) UnmarshalJSON(data []byte) error {
 	}
 	ebookFileStr := string(raw.Media.EbookFile)
 	b.content = mediaContent{
-		hasAudio: b.Media.Duration > 0 || raw.Media.NumAudioFiles > 0 || len(raw.Media.AudioFiles) > 0,
+		hasAudio: b.Media.Duration > 0 || raw.Media.NumTracks > 0 || len(raw.Media.Tracks) > 0,
 		hasEbook: (ebookFileStr != "" && ebookFileStr != "null") || strings.TrimSpace(raw.Media.EbookFormat) != "",
 	}
 	return nil

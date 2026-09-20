@@ -13,11 +13,12 @@ func TestAudiobookshelfBookIsEbook(t *testing.T) {
 		json string
 		want bool
 	}{
-		{"expanded audiobook", `{"mediaType":"book","media":{"duration":3600,"audioFiles":[{}],"ebookFile":null}}`, false},
-		{"expanded ebook", `{"mediaType":"book","media":{"duration":0,"audioFiles":[],"ebookFile":{"ebookFormat":"epub"}}}`, true},
-		{"minified audiobook", `{"mediaType":"book","media":{"numAudioFiles":2,"ebookFormat":null}}`, false},
-		{"minified ebook", `{"mediaType":"book","media":{"numAudioFiles":0,"ebookFormat":"epub"}}`, true},
-		{"audiobook with companion ebook", `{"mediaType":"book","media":{"duration":3600,"ebookFile":{"ebookFormat":"epub"}}}`, false},
+		{"expanded audiobook", `{"mediaType":"book","media":{"duration":3600,"numTracks":1,"tracks":[{}],"ebookFile":null}}`, false},
+		{"expanded ebook", `{"mediaType":"book","media":{"duration":0,"numTracks":0,"tracks":[],"ebookFile":{"ebookFormat":"epub"}}}`, true},
+		{"minified audiobook", `{"mediaType":"book","media":{"numTracks":2,"ebookFormat":null}}`, false},
+		{"minified ebook", `{"mediaType":"book","media":{"numTracks":0,"ebookFormat":"epub"}}`, true},
+		{"audiobook with companion ebook", `{"mediaType":"book","media":{"duration":3600,"numTracks":1,"ebookFile":{"ebookFormat":"epub"}}}`, false},
+		{"only excluded audio files plus ebook", `{"mediaType":"book","media":{"duration":0,"numTracks":0,"audioFiles":[{"exclude":true}],"tracks":[],"ebookFile":{"ebookFormat":"epub"}}}`, true},
 		{"no media details", `{"mediaType":"book","media":{}}`, false},
 		{"legacy ebook media type", `{"mediaType":"ebook","media":{}}`, true},
 	}
