@@ -1,6 +1,7 @@
 package hardcover
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/util"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -178,6 +180,47 @@ func TestGraphQLQuery_BookByASIN(t *testing.T) {
 	assert.Equal(t, 2, edition.ReadingFormatID, "Reading format ID should be 2 (audiobook)")
 	assert.Equal(t, "B00I8OW9R2", *edition.ASIN, "ASIN should match the query parameter")
 	assert.Equal(t, 12345, *edition.AudioSeconds, "Audio seconds should match the mock response")
+}
+
+func TestGraphQLRequestLogsWaitForAdmissionDuringDailyPause(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{}}`))
+	}))
+	defer server.Close()
+
+	client := CreateTestClient(server)
+	previousLevel := zerolog.GlobalLevel()
+	zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	t.Cleanup(func() { zerolog.SetGlobalLevel(previousLevel) })
+	var logs bytes.Buffer
+	log := &logger.Logger{Logger: zerolog.New(&logs).Level(zerolog.DebugLevel)}
+	client.logger = log
+	client.rateLimiter = util.NewRateLimiter(time.Nanosecond, 1, log)
+	client.rateLimiter.WithRateLimitHeaders(&http.Response{Header: http.Header{
+		"Ratelimit":        {`"daily";r=0;t=3600`},
+		"Ratelimit-Policy": {`"daily";q=5000;w=86400`},
+	}})
+	logs.Reset()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	var result struct{}
+	err := client.GraphQLQuery(ctx, `query Paused { books { id } }`, nil, &result)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Zero(t, requests.Load())
+	assert.NotContains(t, logs.String(), `"message":"Executing GraphQL request"`)
+	assert.NotContains(t, logs.String(), `"message":"GraphQL request body"`)
+
+	client.rateLimiter.ResetRate()
+	logs.Reset()
+	err = client.GraphQLQuery(context.Background(), `query Admitted { books { id } }`, nil, &result)
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), requests.Load())
+	assert.Contains(t, logs.String(), `"message":"Executing GraphQL request"`)
+	assert.Contains(t, logs.String(), `"message":"GraphQL request body"`)
 }
 
 func TestGraphQLQuery_RetriesOn429ThenSucceeds(t *testing.T) {

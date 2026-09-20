@@ -769,6 +769,37 @@ func TestRateLimiterRecoversFromHeaderDrivenSlowdown(t *testing.T) {
 	assert.Contains(t, logs.String(), `"message":"Rate limiter pacing recovered"`)
 }
 
+func TestRateLimiterDoesNotLogPacingRecoveryDuringDailyPause(t *testing.T) {
+	previousLevel := zerolog.GlobalLevel()
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	t.Cleanup(func() { zerolog.SetGlobalLevel(previousLevel) })
+
+	var logs bytes.Buffer
+	testLogger := &logger.Logger{Logger: zerolog.New(&logs).Level(zerolog.InfoLevel)}
+	rl := NewRateLimiter(2*time.Second, 1, testLogger)
+
+	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+		"Ratelimit":        {`"Free";r=8;t=42, "daily";r=1;t=10`},
+		"Ratelimit-Policy": {`"Free";q=60;w=60;burst=10, "daily";q=5000;w=86400`},
+	}})
+	require.Equal(t, 10*time.Second, rl.GetRate())
+	logs.Reset()
+
+	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+		"Ratelimit":        {`"Free";r=1;t=42, "daily";r=0;t=3600`},
+		"Ratelimit-Policy": {`"Free";q=60;w=60;burst=10, "daily";q=5000;w=86400`},
+	}})
+
+	assert.True(t, rl.DailyQuotaPaused())
+	assert.Equal(t, 2*time.Second, rl.GetRate(), "ordinary pacing still updates")
+	assert.True(t, containsLogEntry(t, logs.String(), "warn", "Daily rate limit exhausted, pausing until reset"))
+	assert.False(t, containsLogEntry(t, logs.String(), "info", "Rate limiter pacing recovered"))
+	assert.False(t, containsLogEntry(t, logs.String(), "info", "Rate limit window nearly exhausted, slowing down"))
+
+	rl.ResetRate()
+	assert.False(t, rl.DailyQuotaPaused())
+}
+
 func TestRateLimiterAdaptivePacingLogLevels(t *testing.T) {
 	previousLevel := zerolog.GlobalLevel()
 	zerolog.SetGlobalLevel(zerolog.DebugLevel)

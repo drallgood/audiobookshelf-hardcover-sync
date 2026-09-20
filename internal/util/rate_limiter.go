@@ -51,6 +51,7 @@ type RateLimiter struct {
 	minRate         time.Duration
 	maxBackoff      time.Duration
 	backoffUntil    time.Time
+	dailyPauseUntil time.Time // Logging state; admission continues to use backoffUntil.
 	backoffFactor   float64
 	jitterFactor    float64
 	scheduleChanged chan struct{}
@@ -86,6 +87,14 @@ func (r *RateLimiter) DailyLimit() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.dailyLimit
+}
+
+// DailyQuotaPaused reports whether an exhausted daily quota is still holding
+// requests until its authoritative reset.
+func (r *RateLimiter) DailyQuotaPaused() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return time.Now().Before(r.dailyPauseUntil)
 }
 
 // NewRateLimiter creates a new RateLimiter with the specified pacing and concurrency limits.
@@ -234,6 +243,7 @@ func (r *RateLimiter) ResetRate() {
 	r.rate = r.minRate
 	// Reset the backoff period
 	r.backoffUntil = time.Time{}
+	r.dailyPauseUntil = time.Time{}
 	// Reset the backoff factor to the default
 	r.backoffFactor = DefaultBackoffFactor
 	// Reset the jitter factor to the default
@@ -643,7 +653,7 @@ func (r *RateLimiter) applyIETFHeaders(remaining, reset map[string]int, h http.H
 			if resetSec > 0 {
 				pause = boundedSecondsDuration(resetSec, 1.2, r.maxBackoff)
 			}
-			if pause > 0 || desiredRate > r.minRate {
+			if (pause > 0 || desiredRate > r.minRate) && !time.Now().Before(r.dailyPauseUntil) {
 				r.logger.Info("Rate limit window nearly exhausted, slowing down", map[string]interface{}{
 					"component":  "rate_limiter",
 					"bucket":     name,
@@ -701,13 +711,15 @@ func (r *RateLimiter) applyLegacyHeaders(h http.Header) {
 			} else {
 				desiredRate = max(desiredRate, r.minRate*2)
 			}
-			r.logger.Info("Approaching rate limit (legacy headers), being more conservative", map[string]interface{}{
-				"component":     "rate_limiter",
-				"remaining":     remaining,
-				"limit":         limit,
-				"remaining_pct": remainingPct,
-				"new_rate":      desiredRate.String(),
-			})
+			if !time.Now().Before(r.dailyPauseUntil) {
+				r.logger.Info("Approaching rate limit (legacy headers), being more conservative", map[string]interface{}{
+					"component":     "rate_limiter",
+					"remaining":     remaining,
+					"limit":         limit,
+					"remaining_pct": remainingPct,
+					"new_rate":      desiredRate.String(),
+				})
+			}
 		}
 	}
 	if rem <= 0 {
@@ -731,7 +743,7 @@ func (r *RateLimiter) applyLegacyHeaders(h http.Header) {
 	}
 	r.setRate(desiredRate)
 
-	if resetOK {
+	if resetOK && !time.Now().Before(r.dailyPauseUntil) {
 		r.logger.Debug("Rate limit will reset, scheduling next request", map[string]interface{}{
 			"component": "rate_limiter",
 			"reset_in":  time.Until(resetAt).String(),
@@ -825,10 +837,14 @@ func (r *RateLimiter) applyRetryAfter(delay time.Duration) time.Duration {
 // applyDailyResetWait pauses admission until an authoritative daily quota reset,
 // bounded independently from shorter retry backoffs.
 func (r *RateLimiter) applyDailyResetWait(resetSeconds int) time.Duration {
-	return r.applyPause(
+	delay := r.applyPause(
 		boundedSecondsDuration(resetSeconds, 1, DefaultMaxDailyResetWait),
 		DefaultMaxDailyResetWait,
 	)
+	if until := time.Now().Add(delay); until.After(r.dailyPauseUntil) {
+		r.dailyPauseUntil = until
+	}
+	return delay
 }
 
 func (r *RateLimiter) applyPause(delay, maxDelay time.Duration) time.Duration {
@@ -861,7 +877,7 @@ func (r *RateLimiter) setRate(rate time.Duration) {
 	}
 	if rate > r.rate {
 		r.metrics.BackoffEvents++
-	} else {
+	} else if !time.Now().Before(r.dailyPauseUntil) {
 		r.logger.Info("Rate limiter pacing recovered", map[string]interface{}{
 			"component":     "rate_limiter",
 			"previous_rate": r.rate.String(),

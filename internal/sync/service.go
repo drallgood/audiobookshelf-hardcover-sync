@@ -254,6 +254,13 @@ type Service struct {
 	snapshotCheckpoint  func(SyncSnapshot) error
 }
 
+// hardcoverDailyQuotaPaused is intentionally optional for test clients and
+// alternate implementations of HardcoverClientInterface.
+func (s *Service) hardcoverDailyQuotaPaused() bool {
+	client, ok := s.hardcover.(interface{ DailyQuotaPaused() bool })
+	return ok && client.DailyQuotaPaused()
+}
+
 // SetSnapshotCheckpoint installs a narrow callback for durable lifecycle
 // snapshots. The callback is invoked after each attempted-book checkpoint,
 // including dry runs, and receives an independent snapshot copy.
@@ -3111,9 +3118,11 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 	// This prevents Hardcover from auto-creating a blank finished read row
 	// as a side effect of the status transition.
 
-	log.Debug("Fetching read statuses from Hardcover", map[string]interface{}{
-		"user_book_id": userBookID,
-	})
+	if !s.hardcoverDailyQuotaPaused() {
+		log.Debug("Fetching read statuses from Hardcover", map[string]interface{}{
+			"user_book_id": userBookID,
+		})
+	}
 
 	readStatuses, err := s.hardcover.GetUserBookReads(ctx, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
@@ -4775,7 +4784,9 @@ func (s *Service) findBookInHardcoverByTitleAuthor(ctx context.Context, book mod
 	}
 	log := s.log.With(logCtx)
 
-	log.Debug("Searching for book by title and author", nil)
+	if !s.hardcoverDailyQuotaPaused() {
+		log.Debug("Searching for book by title and author", nil)
+	}
 
 	// Build search query with title and author if available
 	searchQuery := title
@@ -5028,7 +5039,9 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 			return hcBook, nil
 		}
 
-		log.Debug(fmt.Sprintf("Searching for book by ASIN: %s", book.Media.Metadata.ASIN), nil)
+		if !s.hardcoverDailyQuotaPaused() {
+			log.Debug(fmt.Sprintf("Searching for book by ASIN: %s", book.Media.Metadata.ASIN), nil)
+		}
 
 		hcBook, err := s.hardcover.SearchBookByASIN(hardcover.WithAudnexRegion(ctx, s.config.Audiobookshelf.AudnexusRegion), book.Media.Metadata.ASIN)
 		if err != nil {
@@ -5094,7 +5107,9 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 
 	// 2. Try to find by ISBN if available
 	if book.Media.Metadata.ISBN != "" {
-		log.Debug(fmt.Sprintf("Searching for book by ISBN: %s", book.Media.Metadata.ISBN), nil)
+		if !s.hardcoverDailyQuotaPaused() {
+			log.Debug(fmt.Sprintf("Searching for book by ISBN: %s", book.Media.Metadata.ISBN), nil)
+		}
 
 		// Try to find by ISBN-13 first
 		hcBook, err := s.hardcover.SearchBookByISBN13(ctx, book.Media.Metadata.ISBN)
@@ -5153,11 +5168,13 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 
 	// 3. If we get here, we couldn't find the book by ASIN or ISBN, try title/author search
 	if book.Media.Metadata.Title != "" && book.Media.Metadata.AuthorName != "" {
-		log.Debug("Trying title/author search after ASIN/ISBN search failed", map[string]interface{}{
-			"search_method": "title_author",
-			"title":         book.Media.Metadata.Title,
-			"author":        book.Media.Metadata.AuthorName,
-		})
+		if !s.hardcoverDailyQuotaPaused() {
+			log.Debug("Trying title/author search after ASIN/ISBN search failed", map[string]interface{}{
+				"search_method": "title_author",
+				"title":         book.Media.Metadata.Title,
+				"author":        book.Media.Metadata.AuthorName,
+			})
+		}
 
 		hcBook, err := s.findBookInHardcoverByTitleAuthor(ctx, book)
 		if err != nil {
