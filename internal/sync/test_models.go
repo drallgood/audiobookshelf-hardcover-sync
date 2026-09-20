@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"encoding/json"
 	"reflect"
 	"time"
 
@@ -55,10 +56,13 @@ func toAudiobookshelfBook(testBook *TestAudiobookshelfBook) *models.Audiobookshe
 
 	// Create media with embedded metadata
 	var media struct {
-		ID        string                              `json:"id"`
-		Metadata  models.AudiobookshelfMetadataStruct `json:"metadata"`
-		CoverPath string                              `json:"coverPath"`
-		Duration  float64                             `json:"duration"`
+		ID          string                              `json:"id"`
+		Metadata    models.AudiobookshelfMetadataStruct `json:"metadata"`
+		CoverPath   string                              `json:"coverPath"`
+		Duration    float64                             `json:"duration"`
+		NumTracks   int                                 `json:"numTracks"`
+		EbookFile   *json.RawMessage                    `json:"ebookFile"`
+		EbookFormat string                              `json:"ebookFormat"`
 	}
 	media.ID = testBook.Media.ID
 	media.Metadata = metadata

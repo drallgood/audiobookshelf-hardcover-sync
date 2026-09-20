@@ -32,3 +32,27 @@ func TestAudiobookshelfBookIsEbook(t *testing.T) {
 		})
 	}
 }
+
+// TestAudiobookshelfBookIsEbookWithoutJSONDecoding verifies the decision uses
+// only the exported media fields, so items built in code behave like decoded ones.
+func TestAudiobookshelfBookIsEbookWithoutJSONDecoding(t *testing.T) {
+	ebookFile := json.RawMessage(`{}`)
+
+	var ebook AudiobookshelfBook
+	ebook.MediaType = "book"
+	ebook.Media.EbookFile = &ebookFile
+	require.True(t, ebook.IsEbook())
+
+	var epubFormat AudiobookshelfBook
+	epubFormat.MediaType = "book"
+	epubFormat.Media.EbookFormat = "epub"
+	require.True(t, epubFormat.IsEbook())
+
+	withAudio := epubFormat
+	withAudio.Media.NumTracks = 1
+	require.False(t, withAudio.IsEbook())
+
+	withDuration := epubFormat
+	withDuration.Media.Duration = 3600
+	require.False(t, withDuration.IsEbook())
+}

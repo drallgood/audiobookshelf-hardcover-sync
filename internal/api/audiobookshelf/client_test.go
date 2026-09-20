@@ -284,10 +284,13 @@ func TestGetListeningSessions(t *testing.T) {
 						{
 							ID: "book1",
 							Media: struct {
-								ID        string                              `json:"id"`
-								Metadata  models.AudiobookshelfMetadataStruct `json:"metadata"`
-								CoverPath string                              `json:"coverPath"`
-								Duration  float64                             `json:"duration"`
+								ID          string                              `json:"id"`
+								Metadata    models.AudiobookshelfMetadataStruct `json:"metadata"`
+								CoverPath   string                              `json:"coverPath"`
+								Duration    float64                             `json:"duration"`
+								NumTracks   int                                 `json:"numTracks"`
+								EbookFile   *json.RawMessage                    `json:"ebookFile"`
+								EbookFormat string                              `json:"ebookFormat"`
 							}{
 								Metadata: models.AudiobookshelfMetadataStruct{
 									Title: "Test Book",

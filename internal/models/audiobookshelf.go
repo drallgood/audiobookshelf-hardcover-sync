@@ -61,10 +61,13 @@ type AudiobookshelfBook struct {
 		Metadata  AudiobookshelfMetadataStruct `json:"metadata"`
 		CoverPath string                       `json:"coverPath"`
 		Duration  float64                      `json:"duration"`
+		// NumTracks counts the audio files not marked excluded, and is present in
+		// both minified and expanded items. EbookFile is set (non-nil) for an ebook
+		// and EbookFormat names its format. IsEbook reads all three.
+		NumTracks   int              `json:"numTracks"`
+		EbookFile   *json.RawMessage `json:"ebookFile"`
+		EbookFormat string           `json:"ebookFormat"`
 	} `json:"media"`
-	// content describes the media files, which Audiobookshelf reports in the
-	// media payload rather than in mediaType. It is populated by UnmarshalJSON.
-	content mediaContent
 	// Progress tracks the user's progress through the book
 	Progress struct {
 		CurrentTime float64 `json:"currentTime"`
@@ -74,56 +77,20 @@ type AudiobookshelfBook struct {
 	} `json:"progress,omitempty"`
 }
 
-// mediaContent records which media files an Audiobookshelf item carries.
-// Audio follows Audiobookshelf's own hasAudioTracks rule: only audio files not
-// marked excluded count, which is what numTracks reflects (numTracks is present
-// in both minified and expanded items). An ebook shows as an ebookFile object
-// or an ebookFormat, matching Audiobookshelf's own truthiness check on ebookFile.
-type mediaContent struct {
-	hasAudio bool
-	hasEbook bool
-}
-
-// UnmarshalJSON decodes the item and records its media content, which the
-// exported fields do not capture. The payload is parsed a second time for that
-// content: the media object is an anonymous struct that cannot be extended
-// without breaking existing struct literals, and the extra parse is small next
-// to the library-items request that produced it. Only scalar fields with a
-// documented type are read, so an unexpected payload shape cannot fail the decode.
-func (b *AudiobookshelfBook) UnmarshalJSON(data []byte) error {
-	type plain AudiobookshelfBook
-	if err := json.Unmarshal(data, (*plain)(b)); err != nil {
-		return err
-	}
-	var raw struct {
-		Media struct {
-			NumTracks int `json:"numTracks"`
-			// A JSON null (or a missing key) decodes to a nil pointer.
-			EbookFile   *json.RawMessage `json:"ebookFile"`
-			EbookFormat string           `json:"ebookFormat"`
-		} `json:"media"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	b.content = mediaContent{
-		hasAudio: b.Media.Duration > 0 || raw.Media.NumTracks > 0,
-		hasEbook: raw.Media.EbookFile != nil || strings.TrimSpace(raw.Media.EbookFormat) != "",
-	}
-	return nil
-}
-
 // IsEbook reports whether the item is an ebook-only library item. Audiobookshelf
 // reports "book" as the media type for audiobooks and ebooks alike, so the media
-// content decides: an item with audio is an audiobook even if it also carries
-// an ebook file. That content is only recorded when the item is decoded from
-// JSON; items built any other way fall back to the media type alone, and the
-// Duration check keeps such an item with audio from being reported as an ebook.
+// content decides: an item with audio is an audiobook even if it also carries an
+// ebook file. Audio follows Audiobookshelf's own hasAudioTracks rule (numTracks
+// counts the non-excluded audio files, or there is a duration). An ebook is an
+// ebookFile object (any object, as in Audiobookshelf's own truthiness check) or
+// an ebookFormat. The legacy "ebook" media type is still honored.
 func (b *AudiobookshelfBook) IsEbook() bool {
 	if strings.EqualFold(strings.TrimSpace(b.MediaType), "ebook") {
 		return true
 	}
-	return b.content.hasEbook && !b.content.hasAudio && b.Media.Duration <= 0
+	hasAudio := b.Media.Duration > 0 || b.Media.NumTracks > 0
+	hasEbook := b.Media.EbookFile != nil || strings.TrimSpace(b.Media.EbookFormat) != ""
+	return hasEbook && !hasAudio
 }
 
 // GetID returns the book's unique identifier

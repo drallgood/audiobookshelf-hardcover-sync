@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -343,10 +344,13 @@ func TestProcessLibrary(t *testing.T) {
 			{
 				ID: "book1",
 				Media: struct {
-					ID        string                              `json:"id"`
-					Metadata  models.AudiobookshelfMetadataStruct `json:"metadata"`
-					CoverPath string                              `json:"coverPath"`
-					Duration  float64                             `json:"duration"`
+					ID          string                              `json:"id"`
+					Metadata    models.AudiobookshelfMetadataStruct `json:"metadata"`
+					CoverPath   string                              `json:"coverPath"`
+					Duration    float64                             `json:"duration"`
+					NumTracks   int                                 `json:"numTracks"`
+					EbookFile   *json.RawMessage                    `json:"ebookFile"`
+					EbookFormat string                              `json:"ebookFormat"`
 				}{
 					ID: "media1",
 					Metadata: models.AudiobookshelfMetadataStruct{
