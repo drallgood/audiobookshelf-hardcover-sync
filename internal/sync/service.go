@@ -4949,11 +4949,9 @@ func (s *Service) findBookInHardcoverByTitleAuthor(ctx context.Context, book mod
 // findBookInHardcover finds a book in Hardcover by various methods
 // It first tries ASIN, then ISBN-13, then ISBN-10
 // Title/author search is only used for mismatches and should be called separately
+// Callers must carry the item's reading format on ctx via hardcover.WithReadingFormat.
 func (s *Service) findBookInHardcover(ctx context.Context, book models.AudiobookshelfBook) (*models.HardcoverBook, error) {
 	var lookupErr error
-	// Match against Hardcover editions of the item's own reading format so an
-	// ebook is not looked up among audiobook editions.
-	ctx = hardcover.WithReadingFormat(ctx, hardcoverReadingFormat(book))
 	// Create a logger with book context
 	logCtx := map[string]interface{}{
 		"book_id": book.ID,

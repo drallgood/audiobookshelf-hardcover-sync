@@ -1,7 +1,6 @@
 package models
 
 import (
-	"bytes"
 	"encoding/json"
 	"strings"
 )
@@ -101,10 +100,10 @@ func (b *AudiobookshelfBook) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	ebookFile := bytes.TrimSpace(raw.Media.EbookFile)
+	ebookFileStr := string(raw.Media.EbookFile)
 	b.content = mediaContent{
 		hasAudio: b.Media.Duration > 0 || raw.Media.NumAudioFiles > 0 || len(raw.Media.AudioFiles) > 0,
-		hasEbook: (len(ebookFile) > 0 && !bytes.Equal(ebookFile, []byte("null"))) || strings.TrimSpace(raw.Media.EbookFormat) != "",
+		hasEbook: (ebookFileStr != "" && ebookFileStr != "null") || strings.TrimSpace(raw.Media.EbookFormat) != "",
 	}
 	return nil
 }

@@ -895,11 +895,11 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 
 	// Editions are restricted to the requested reading format (audiobook by
 	// default); a book with no edition of that format gets no edition.
-	preferredFormatID := readingFormatIDFromCtx(ctx)
+	formatID := readingFormatIDFromCtx(ctx)
 
 	// Use a flexible raw map to be resilient to schema variations
 	var raw map[string]interface{}
-	if err := c.GraphQLQuery(ctx, query, map[string]interface{}{"id": idInt, "format_id": preferredFormatID}, &raw); err != nil {
+	if err := c.GraphQLQuery(ctx, query, map[string]interface{}{"id": idInt, "format_id": formatID}, &raw); err != nil {
 		log.Error("Failed to fetch book by ID", map[string]interface{}{"error": err.Error()})
 		return nil, fmt.Errorf("failed to fetch book by ID: %w", err)
 	}
@@ -1041,7 +1041,7 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 		}
 	}
 
-	// Editions - accept only one of the requested reading format
+	// Editions - only an edition of the requested reading format is accepted
 	var editions []interface{}
 	if v, ok := bookObj["editions"].([]interface{}); ok {
 		editions = v
@@ -1049,7 +1049,7 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 	var chosen map[string]interface{}
 	for _, e := range editions {
 		if em, ok := e.(map[string]interface{}); ok {
-			if rf, ok := em["reading_format_id"].(float64); ok && int(rf) == preferredFormatID {
+			if rf, ok := em["reading_format_id"].(float64); ok && int(rf) == formatID {
 				chosen = em
 				break
 			}
