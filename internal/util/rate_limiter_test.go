@@ -746,9 +746,15 @@ func TestRateLimiterHonorsAuthoritativeTooManyRequestsGuidance(t *testing.T) {
 }
 
 func TestRateLimiterRecoversFromHeaderDrivenSlowdown(t *testing.T) {
+	previousLevel := zerolog.GlobalLevel()
+	zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	t.Cleanup(func() {
+		zerolog.SetGlobalLevel(previousLevel)
+	})
+
 	configuredRate := 2 * time.Second
 	var logs bytes.Buffer
-	testLogger := &logger.Logger{Logger: zerolog.New(&logs).Level(zerolog.InfoLevel)}
+	testLogger := &logger.Logger{Logger: zerolog.New(&logs).Level(zerolog.DebugLevel)}
 	rl := NewRateLimiter(configuredRate, 1, testLogger)
 
 	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
@@ -763,7 +769,7 @@ func TestRateLimiterRecoversFromHeaderDrivenSlowdown(t *testing.T) {
 		"Ratelimit-Policy": {`"Free";q=60;w=60;burst=10, "daily";q=5000;w=86400`},
 	}})
 	assert.Equal(t, configuredRate, rl.GetRate())
-	assert.Contains(t, logs.String(), `"level":"info"`)
+	assert.Contains(t, logs.String(), `"level":"debug"`)
 	assert.Contains(t, logs.String(), `"previous_rate":"10s"`)
 	assert.Contains(t, logs.String(), `"new_rate":"2s"`)
 	assert.Contains(t, logs.String(), `"message":"Rate limiter pacing recovered"`)
@@ -776,7 +782,7 @@ func TestRateLimiterAdaptivePacingLogLevels(t *testing.T) {
 		zerolog.SetGlobalLevel(previousLevel)
 	})
 
-	t.Run("IETF window adjustment is info", func(t *testing.T) {
+	t.Run("IETF window adjustment is debug", func(t *testing.T) {
 		var logs bytes.Buffer
 		testLogger := &logger.Logger{Logger: zerolog.New(&logs).Level(zerolog.DebugLevel)}
 		rl := NewRateLimiter(100*time.Millisecond, 1, testLogger)
@@ -788,11 +794,12 @@ func TestRateLimiterAdaptivePacingLogLevels(t *testing.T) {
 		}})
 
 		message := "Rate limit window nearly exhausted, slowing down"
-		assert.True(t, containsLogEntry(t, logs.String(), "info", message))
+		assert.True(t, containsLogEntry(t, logs.String(), "debug", message))
+		assert.False(t, containsLogEntry(t, logs.String(), "info", message))
 		assert.False(t, containsLogEntry(t, logs.String(), "warn", message))
 	})
 
-	t.Run("legacy adjustment is info and reset schedule is debug", func(t *testing.T) {
+	t.Run("legacy adjustment and reset schedule are debug", func(t *testing.T) {
 		var logs bytes.Buffer
 		testLogger := &logger.Logger{Logger: zerolog.New(&logs).Level(zerolog.DebugLevel)}
 		rl := NewRateLimiter(100*time.Millisecond, 1, testLogger)
@@ -805,7 +812,8 @@ func TestRateLimiterAdaptivePacingLogLevels(t *testing.T) {
 		rl.WithRateLimitHeaders(&http.Response{Header: header})
 
 		adjustment := "Approaching rate limit (legacy headers), being more conservative"
-		assert.True(t, containsLogEntry(t, logs.String(), "info", adjustment))
+		assert.True(t, containsLogEntry(t, logs.String(), "debug", adjustment))
+		assert.False(t, containsLogEntry(t, logs.String(), "info", adjustment))
 		assert.False(t, containsLogEntry(t, logs.String(), "warn", adjustment))
 		assert.True(t, containsLogEntry(t, logs.String(), "debug", "Rate limit will reset, scheduling next request"))
 	})
