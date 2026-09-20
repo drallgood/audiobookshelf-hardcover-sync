@@ -2388,6 +2388,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 						Duration:      book.Media.Duration,
 						LibraryID:     book.LibraryID,
 						FolderID:      "",
+						ReadingFormat: hardcoverReadingFormat(book),
 					},
 					book.ID,
 					edID,
@@ -2645,6 +2646,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				Duration:      book.Media.Duration,
 				LibraryID:     book.LibraryID,
 				FolderID:      "",
+				ReadingFormat: hardcoverReadingFormat(book),
 			},
 			bookID,    // Use the book ID if available
 			editionID, // Use the edition ID if available
@@ -2711,6 +2713,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				Duration:      book.Media.Duration,
 				LibraryID:     book.LibraryID,
 				FolderID:      "",
+				ReadingFormat: hardcoverReadingFormat(book),
 			},
 			hcBook.ID, // Use the book ID we found
 			"",        // No edition ID
@@ -2781,6 +2784,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				Duration:      book.Media.Duration,
 				LibraryID:     book.LibraryID,
 				FolderID:      "",
+				ReadingFormat: hardcoverReadingFormat(book),
 			},
 			bookID,    // Use the book ID if available
 			editionID, // Use the edition ID if available
@@ -2858,6 +2862,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				Duration:      book.Media.Duration,
 				LibraryID:     book.LibraryID,
 				FolderID:      "",
+				ReadingFormat: hardcoverReadingFormat(book),
 			},
 			bookID,    // Use the book ID from BookError if available
 			editionID, // Empty since we don't have an edition ID

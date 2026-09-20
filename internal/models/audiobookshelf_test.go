@@ -19,6 +19,8 @@ func TestAudiobookshelfBookIsEbook(t *testing.T) {
 		{"minified ebook", `{"mediaType":"book","media":{"numTracks":0,"ebookFormat":"epub"}}`, true},
 		{"audiobook with companion ebook", `{"mediaType":"book","media":{"duration":3600,"numTracks":1,"ebookFile":{"ebookFormat":"epub"}}}`, false},
 		{"only excluded audio files plus ebook", `{"mediaType":"book","media":{"duration":0,"numTracks":0,"audioFiles":[{"exclude":true}],"tracks":[],"ebookFile":{"ebookFormat":"epub"}}}`, true},
+		{"tracks reported as a count still decodes", `{"mediaType":"book","media":{"numTracks":3,"tracks":3,"ebookFormat":null}}`, false},
+		{"empty ebookFile object counts as an ebook, like ABS", `{"mediaType":"book","media":{"numTracks":0,"ebookFile":{}}}`, true},
 		{"no media details", `{"mediaType":"book","media":{}}`, false},
 		{"legacy ebook media type", `{"mediaType":"ebook","media":{}}`, true},
 	}
