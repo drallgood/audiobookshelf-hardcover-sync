@@ -770,8 +770,8 @@ func TestProcessBookErrorDoesNotCountAsSynced(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid edition ID format")
-	assert.Equal(t, int32(0), svc.summary.BooksSynced, "failed book must not count as synced")
-	assert.Equal(t, int32(1), svc.summary.TotalBooksProcessed)
+	assert.Equal(t, int32(0), svc.outcomeCounts.Synced, "failed book must not count as synced")
+	assert.Equal(t, int32(1), svc.outcomeCounts.Failed)
 	mockClient.AssertExpectations(t)
 }
 

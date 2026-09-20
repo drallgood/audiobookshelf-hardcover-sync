@@ -5008,7 +5008,7 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 				hcBook.UserBookID = strconv.FormatInt(userBookID, 10)
 			}
 
-			s.log.Info("Using cached book by ASIN", map[string]interface{}{
+			s.log.Debug("Using cached book by ASIN", map[string]interface{}{
 				"book_id":      hcBook.ID,
 				"edition_id":   hcBook.EditionID,
 				"user_book_id": hcBook.UserBookID,
