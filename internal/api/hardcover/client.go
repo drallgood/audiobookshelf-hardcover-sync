@@ -744,6 +744,13 @@ func (c *Client) GetCurrentUserID(ctx context.Context) (int, error) {
 		break
 	}
 
+	// Always release waiters and clear the in-flight marker, even if the
+	// request panics, so later callers can start a fresh fetch.
+	fetchedUserID := 0
+	defer func() {
+		c.finishCurrentUserFetch(fetchedUserID)
+	}()
+
 	c.logger.Debug("User ID not in cache, fetching from Hardcover API", nil)
 
 	// Define the GraphQL query
@@ -764,24 +771,21 @@ func (c *Client) GetCurrentUserID(ctx context.Context) (int, error) {
 	// Execute the query
 	err := c.GraphQLQuery(ctx, query, nil, &resp)
 	if err != nil {
-		c.finishCurrentUserFetch(0)
 		return 0, fmt.Errorf("failed to get current user ID: %w", err)
 	}
 
 	// Check if we got any results
 	if len(resp.Me) == 0 {
-		c.finishCurrentUserFetch(0)
 		return 0, fmt.Errorf("no user data returned from API")
 	}
 
 	// Check if we got a valid user ID
 	userID := resp.Me[0].ID
 	if userID == 0 {
-		c.finishCurrentUserFetch(0)
 		return 0, fmt.Errorf("received invalid user ID from API: %d", userID)
 	}
 
-	c.finishCurrentUserFetch(userID)
+	fetchedUserID = userID
 
 	c.logger.Debug("Successfully retrieved and cached current user ID from Hardcover", map[string]interface{}{
 		"user_id": userID,

@@ -155,3 +155,47 @@ func TestGetCurrentUserIDCoalescesConcurrentFetches(t *testing.T) {
 	}
 	assert.Equal(t, int32(1), requests.Load())
 }
+
+type panicOnceTransport struct {
+	next     http.RoundTripper
+	panicked atomic.Bool
+}
+
+func (p *panicOnceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if p.panicked.CompareAndSwap(false, true) {
+		panic("transport failure")
+	}
+	return p.next.RoundTrip(req)
+}
+
+func TestGetCurrentUserIDRecoversAfterFetchPanic(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, err := w.Write([]byte(`{"data":{"me":[{"id":1001}]}}`))
+		require.NoError(t, err)
+	}))
+	defer server.Close()
+
+	log := logger.Get()
+	httpClient := server.Client()
+	httpClient.Transport = &panicOnceTransport{next: httpClient.Transport}
+	client := &Client{
+		baseURL:         server.URL,
+		authToken:       "test-token",
+		httpClient:      httpClient,
+		logger:          log,
+		rateLimiter:     util.NewRateLimiter(time.Millisecond, 2, log),
+		userBookIDCache: cache.NewMemoryCache[int, int](log),
+		userCache:       cache.NewMemoryCache[string, any](log),
+	}
+
+	assert.Panics(t, func() {
+		_, _ = client.GetCurrentUserID(context.Background())
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	id, err := client.GetCurrentUserID(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1001, id)
+}
