@@ -2393,7 +2393,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 					hcBook = &enrichedHCBook
 				}
 			}
-			bookLog.Info("Book found by title/author - recorded as mismatch")
+			bookLog.Debug("Book found by title/author - recorded as mismatch")
 
 			// Set the book as processed
 			bookProcessed = true

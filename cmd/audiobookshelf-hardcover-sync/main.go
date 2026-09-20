@@ -413,7 +413,7 @@ func main() {
 								})
 								return
 							}
-							log.Info("Started periodic sync for profile", map[string]interface{}{
+							log.Debug("Started periodic sync for profile", map[string]interface{}{
 								"profile_id": profileID,
 								"run_id":     accepted.RunID,
 							})
