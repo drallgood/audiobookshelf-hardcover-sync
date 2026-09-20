@@ -51,6 +51,7 @@ type RateLimiter struct {
 	minRate         time.Duration
 	maxBackoff      time.Duration
 	backoffUntil    time.Time
+	dailyPauseUntil time.Time // Logging state: how long an exhausted daily quota has held admission; admission itself uses backoffUntil.
 	backoffFactor   float64
 	jitterFactor    float64
 	scheduleChanged chan struct{}
@@ -113,6 +114,14 @@ func (r *RateLimiter) DailyLimit() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.dailyLimit
+}
+
+// DailyQuotaPaused reports whether an exhausted daily quota is still holding
+// requests, including any longer backoff that extended the hold past the reset.
+func (r *RateLimiter) DailyQuotaPaused() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return time.Now().Before(r.dailyPauseUntil)
 }
 
 // NewRateLimiter creates a new RateLimiter with the specified pacing and concurrency limits.
@@ -282,6 +291,7 @@ func (r *RateLimiter) ResetRate() {
 	r.rate = r.minRate
 	// Reset the backoff period
 	r.backoffUntil = time.Time{}
+	r.dailyPauseUntil = time.Time{}
 	// Reset the backoff factor to the default
 	r.backoffFactor = DefaultBackoffFactor
 	// Reset the jitter factor to the default
@@ -725,7 +735,7 @@ func (r *RateLimiter) applyIETFHeaders(remaining, reset map[string]int, h http.H
 			if resetSec > 0 {
 				pause = boundedSecondsDuration(resetSec, 1.2, r.maxBackoff)
 			}
-			if pause > 0 || desiredRate > r.minRate {
+			if (pause > 0 || desiredRate > r.minRate) && !time.Now().Before(r.dailyPauseUntil) {
 				logs = append(logs, rateLimiterLogEntry{
 					level:   rateLimiterLogInfo,
 					message: "Rate limit window nearly exhausted, slowing down",
@@ -932,10 +942,16 @@ func (r *RateLimiter) applyRetryAfter(delay time.Duration) time.Duration {
 // applyDailyResetWait pauses admission until an authoritative daily quota reset,
 // bounded independently from shorter retry backoffs.
 func (r *RateLimiter) applyDailyResetWait(resetSeconds int) time.Duration {
-	return r.applyPause(
+	delay := r.applyPause(
 		boundedSecondsDuration(resetSeconds, 1, DefaultMaxDailyResetWait),
 		DefaultMaxDailyResetWait,
 	)
+	// Track the actual admission hold, which a longer existing backoff may
+	// already extend past the daily reset.
+	if r.backoffUntil.After(r.dailyPauseUntil) {
+		r.dailyPauseUntil = r.backoffUntil
+	}
+	return delay
 }
 
 func (r *RateLimiter) applyPause(delay, maxDelay time.Duration) time.Duration {
@@ -969,14 +985,18 @@ func (r *RateLimiter) setRate(rate time.Duration) *rateLimiterLogEntry {
 	if rate > r.rate {
 		r.metrics.BackoffEvents++
 	} else {
-		logEntry := &rateLimiterLogEntry{
-			level:   rateLimiterLogInfo,
-			message: "Rate limiter pacing recovered",
-			fields: map[string]interface{}{
-				"component":     "rate_limiter",
-				"previous_rate": r.rate.String(),
-				"new_rate":      rate.String(),
-			},
+		// Pacing recovery is not worth logging while a daily pause holds requests.
+		var logEntry *rateLimiterLogEntry
+		if !time.Now().Before(r.dailyPauseUntil) {
+			logEntry = &rateLimiterLogEntry{
+				level:   rateLimiterLogInfo,
+				message: "Rate limiter pacing recovered",
+				fields: map[string]interface{}{
+					"component":     "rate_limiter",
+					"previous_rate": r.rate.String(),
+					"new_rate":      rate.String(),
+				},
+			}
 		}
 		r.rate = rate
 		r.notifyScheduleChanged()
@@ -994,6 +1014,11 @@ func (r *RateLimiter) setBackoffUntil(until time.Time) {
 		return
 	}
 	r.backoffUntil = until
+	// A backoff that lengthens an active daily pause keeps requests held, so
+	// extend the logging marker with it.
+	if time.Now().Before(r.dailyPauseUntil) && until.After(r.dailyPauseUntil) {
+		r.dailyPauseUntil = until
+	}
 	r.notifyScheduleChanged()
 }
 
