@@ -111,11 +111,7 @@ func TestRateLimiter_ContextCancellation(t *testing.T) {
 
 func TestRateLimiter_AcquireLogsOutsideLock(t *testing.T) {
 	rl := NewRateLimiter(time.Second, 1, nil)
-	previousLevel := zerolog.GlobalLevel()
-	zerolog.SetGlobalLevel(zerolog.DebugLevel)
-	t.Cleanup(func() {
-		zerolog.SetGlobalLevel(previousLevel)
-	})
+	testutils.SetGlobalLogLevel(t, zerolog.DebugLevel)
 	rl.mu.Lock()
 	rl.backoffUntil = time.Now().Add(time.Hour)
 	rl.mu.Unlock()
@@ -869,11 +865,7 @@ func TestRateLimiterDoesNotLogPacingRecoveryDuringDailyPause(t *testing.T) {
 func TestRateLimiterRecoveryLogsOutsideLock(t *testing.T) {
 	configuredRate := 2 * time.Second
 	rl := NewRateLimiter(configuredRate, 1, nil)
-	previousLevel := zerolog.GlobalLevel()
-	zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	t.Cleanup(func() {
-		zerolog.SetGlobalLevel(previousLevel)
-	})
+	testutils.SetGlobalLogLevel(t, zerolog.InfoLevel)
 	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
 		"Ratelimit":        {`"Free";r=8;t=42, "daily";r=1;t=10`},
 		"Ratelimit-Policy": {`"Free";q=60;w=60;burst=10, "daily";q=5000;w=86400`},
