@@ -261,6 +261,17 @@ func (s *Service) hardcoverDailyQuotaPaused() bool {
 	return ok && client.DailyQuotaPaused()
 }
 
+// debugRequestIntent logs that a Hardcover request is about to be made. Log
+// every pre-admission "about to request" message through this helper: while an
+// exhausted daily quota holds requests, they are not being sent, so the message
+// would be misleading.
+func (s *Service) debugRequestIntent(log *logger.Logger, msg string, fields ...map[string]interface{}) {
+	if s.hardcoverDailyQuotaPaused() {
+		return
+	}
+	log.Debug(msg, fields...)
+}
+
 // SetSnapshotCheckpoint installs a narrow callback for durable lifecycle
 // snapshots. The callback is invoked after each attempted-book checkpoint,
 // including dry runs, and receives an independent snapshot copy.
@@ -3118,11 +3129,9 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 	// This prevents Hardcover from auto-creating a blank finished read row
 	// as a side effect of the status transition.
 
-	if !s.hardcoverDailyQuotaPaused() {
-		log.Debug("Fetching read statuses from Hardcover", map[string]interface{}{
-			"user_book_id": userBookID,
-		})
-	}
+	s.debugRequestIntent(log, "Fetching read statuses from Hardcover", map[string]interface{}{
+		"user_book_id": userBookID,
+	})
 
 	readStatuses, err := s.hardcover.GetUserBookReads(ctx, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
@@ -3228,7 +3237,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 			updateObj["edition_id"] = *latestUnfinishedRead.EditionID
 		}
 
-		s.log.Debug("Updating existing read status to mark as finished", map[string]interface{}{
+		s.debugRequestIntent(s.log, "Updating existing read status to mark as finished", map[string]interface{}{
 			"id":          latestUnfinishedRead.ID,
 			"progress":    updateObj["progress"],
 			"started_at":  updateObj["started_at"],
@@ -3322,7 +3331,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 	// --- STEP 2: Update status to FINISHED SECOND ---
 	// Now that the read record is in place, set the book status to FINISHED.
 	if needsStatusUpdate {
-		log.Debug("Updating book status to FINISHED", map[string]interface{}{
+		s.debugRequestIntent(log, "Updating book status to FINISHED", map[string]interface{}{
 			"user_book_id": userBookID,
 		})
 
@@ -4784,9 +4793,7 @@ func (s *Service) findBookInHardcoverByTitleAuthor(ctx context.Context, book mod
 	}
 	log := s.log.With(logCtx)
 
-	if !s.hardcoverDailyQuotaPaused() {
-		log.Debug("Searching for book by title and author", nil)
-	}
+	s.debugRequestIntent(log, "Searching for book by title and author", nil)
 
 	// Build search query with title and author if available
 	searchQuery := title
@@ -5039,9 +5046,7 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 			return hcBook, nil
 		}
 
-		if !s.hardcoverDailyQuotaPaused() {
-			log.Debug(fmt.Sprintf("Searching for book by ASIN: %s", book.Media.Metadata.ASIN), nil)
-		}
+		s.debugRequestIntent(log, fmt.Sprintf("Searching for book by ASIN: %s", book.Media.Metadata.ASIN), nil)
 
 		hcBook, err := s.hardcover.SearchBookByASIN(hardcover.WithAudnexRegion(ctx, s.config.Audiobookshelf.AudnexusRegion), book.Media.Metadata.ASIN)
 		if err != nil {
@@ -5107,9 +5112,7 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 
 	// 2. Try to find by ISBN if available
 	if book.Media.Metadata.ISBN != "" {
-		if !s.hardcoverDailyQuotaPaused() {
-			log.Debug(fmt.Sprintf("Searching for book by ISBN: %s", book.Media.Metadata.ISBN), nil)
-		}
+		s.debugRequestIntent(log, fmt.Sprintf("Searching for book by ISBN: %s", book.Media.Metadata.ISBN), nil)
 
 		// Try to find by ISBN-13 first
 		hcBook, err := s.hardcover.SearchBookByISBN13(ctx, book.Media.Metadata.ISBN)
@@ -5168,13 +5171,11 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 
 	// 3. If we get here, we couldn't find the book by ASIN or ISBN, try title/author search
 	if book.Media.Metadata.Title != "" && book.Media.Metadata.AuthorName != "" {
-		if !s.hardcoverDailyQuotaPaused() {
-			log.Debug("Trying title/author search after ASIN/ISBN search failed", map[string]interface{}{
-				"search_method": "title_author",
-				"title":         book.Media.Metadata.Title,
-				"author":        book.Media.Metadata.AuthorName,
-			})
-		}
+		s.debugRequestIntent(log, "Trying title/author search after ASIN/ISBN search failed", map[string]interface{}{
+			"search_method": "title_author",
+			"title":         book.Media.Metadata.Title,
+			"author":        book.Media.Metadata.AuthorName,
+		})
 
 		hcBook, err := s.findBookInHardcoverByTitleAuthor(ctx, book)
 		if err != nil {

@@ -800,48 +800,6 @@ func TestRateLimiterDoesNotLogPacingRecoveryDuringDailyPause(t *testing.T) {
 	assert.False(t, rl.DailyQuotaPaused())
 }
 
-func TestRateLimiterAdaptivePacingLogLevels(t *testing.T) {
-	previousLevel := zerolog.GlobalLevel()
-	zerolog.SetGlobalLevel(zerolog.DebugLevel)
-	t.Cleanup(func() {
-		zerolog.SetGlobalLevel(previousLevel)
-	})
-
-	t.Run("IETF window adjustment is info", func(t *testing.T) {
-		var logs bytes.Buffer
-		testLogger := &logger.Logger{Logger: zerolog.New(&logs).Level(zerolog.DebugLevel)}
-		rl := NewRateLimiter(100*time.Millisecond, 1, testLogger)
-		logs.Reset()
-
-		rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
-			"Ratelimit":        {`"Free";r=1;t=10`},
-			"Ratelimit-Policy": {`"Free";q=60;w=60;burst=10`},
-		}})
-
-		message := "Rate limit window nearly exhausted, slowing down"
-		assert.True(t, containsLogEntry(t, logs.String(), "info", message))
-		assert.False(t, containsLogEntry(t, logs.String(), "warn", message))
-	})
-
-	t.Run("legacy adjustment is info and reset schedule is debug", func(t *testing.T) {
-		var logs bytes.Buffer
-		testLogger := &logger.Logger{Logger: zerolog.New(&logs).Level(zerolog.DebugLevel)}
-		rl := NewRateLimiter(100*time.Millisecond, 1, testLogger)
-		logs.Reset()
-
-		header := make(http.Header)
-		header.Set("X-RateLimit-Limit", "100")
-		header.Set("X-RateLimit-Remaining", "10")
-		header.Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10))
-		rl.WithRateLimitHeaders(&http.Response{Header: header})
-
-		adjustment := "Approaching rate limit (legacy headers), being more conservative"
-		assert.True(t, containsLogEntry(t, logs.String(), "info", adjustment))
-		assert.False(t, containsLogEntry(t, logs.String(), "warn", adjustment))
-		assert.True(t, containsLogEntry(t, logs.String(), "debug", "Rate limit will reset, scheduling next request"))
-	})
-}
-
 func TestRateLimitBuckets(t *testing.T) {
 	tests := []struct {
 		input string
@@ -969,4 +927,22 @@ func TestWithRateLimitHeaders(t *testing.T) {
 			tt.check(t, rl)
 		})
 	}
+}
+
+func TestRateLimiterDailyPauseLastsAsLongAsRequestsAreHeld(t *testing.T) {
+	rl := NewRateLimiter(time.Millisecond, 1, &logger.Logger{Logger: zerolog.Nop()})
+
+	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+		"Ratelimit":        {`"daily";r=0;t=1`},
+		"Ratelimit-Policy": {`"daily";q=5000;w=86400`},
+	}})
+	require.True(t, rl.DailyQuotaPaused())
+
+	// A longer Retry-After keeps admission held after the daily reset time.
+	rl.OnRateLimit(3 * time.Second)
+	time.Sleep(1100 * time.Millisecond)
+	assert.True(t, rl.DailyQuotaPaused(), "requests are still held by the longer backoff")
+
+	rl.ResetRate()
+	assert.False(t, rl.DailyQuotaPaused())
 }

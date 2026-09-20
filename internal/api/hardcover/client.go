@@ -208,6 +208,18 @@ func (c *Client) DailyQuotaPaused() bool {
 	return c.rateLimiter != nil && c.rateLimiter.DailyQuotaPaused()
 }
 
+// debugRequestIntent logs that a request is about to be made. Log every
+// pre-admission "about to request" message through this helper: while an
+// exhausted daily quota holds requests, they are not being sent, so the message
+// would be misleading. Logs written after the rate limiter admits a request do
+// not need it.
+func (c *Client) debugRequestIntent(log *logger.Logger, msg string, fields ...map[string]interface{}) {
+	if c.DailyQuotaPaused() {
+		return
+	}
+	log.Debug(msg, fields...)
+}
+
 func (c *Client) logSkippedMutation(operation string) {
 	log := c.logger
 	if log == nil {
@@ -805,9 +817,7 @@ func (c *Client) SearchBookByISBN13(ctx context.Context, isbn13 string) (*models
 		"isbn13": isbn13,
 		"method": "SearchBookByISBN13",
 	})
-	if !c.DailyQuotaPaused() {
-		log.Debug("Searching for book by ISBN-13")
-	}
+	c.debugRequestIntent(log, "Searching for book by ISBN-13")
 	return c.searchBookByISBN(ctx, "isbn_13", isbn13)
 }
 
@@ -1781,11 +1791,9 @@ func (c *Client) searchBooksWithLimit(ctx context.Context, query string, limit i
 	}
 
 	// Execute the GraphQL query
-	if !c.DailyQuotaPaused() {
-		c.logger.Debug("Searching for books using GraphQL", map[string]interface{}{
-			"query": query,
-		})
-	}
+	c.debugRequestIntent(c.logger, "Searching for books using GraphQL", map[string]interface{}{
+		"query": query,
+	})
 	err := c.GraphQLQuery(ctx, searchQuery, variables, &response)
 	if err != nil {
 		c.logger.Error("Failed to execute search query", map[string]interface{}{
@@ -2333,7 +2341,7 @@ func (c *Client) UpdateUserBookRead(ctx context.Context, input UpdateUserBookRea
 		return true, nil
 	}
 
-	c.logger.Debug("Updating user book read", map[string]interface{}{
+	c.debugRequestIntent(c.logger, "Updating user book read", map[string]interface{}{
 		"id":     input.ID,
 		"object": input.Object,
 	})
@@ -2746,13 +2754,11 @@ func (c *Client) SearchPeople(ctx context.Context, name, personType string, limi
 		"type":      personType,
 	})
 
-	if !c.DailyQuotaPaused() {
-		log.Debug("Searching for person", map[string]interface{}{
-			"name":  name,
-			"type":  personType,
-			"limit": limit,
-		})
-	}
+	c.debugRequestIntent(log, "Searching for person", map[string]interface{}{
+		"name":  name,
+		"type":  personType,
+		"limit": limit,
+	})
 
 	// First, try a direct search by name using the authors query with exact match
 	directQuery := `
@@ -2795,12 +2801,10 @@ func (c *Client) SearchPeople(ctx context.Context, name, personType string, limi
 	}
 
 	// Log the search query for debugging
-	if !c.DailyQuotaPaused() {
-		log.Debug("Executing person search query", map[string]interface{}{
-			"query":     query,
-			"variables": variables,
-		})
-	}
+	c.debugRequestIntent(log, "Executing person search query", map[string]interface{}{
+		"query":     query,
+		"variables": variables,
+	})
 
 	// Execute the direct search query
 	if err := c.GraphQLQuery(ctx, query, variables, &searchResponse); err != nil {
@@ -2993,11 +2997,9 @@ func (c *Client) GetPersonByID(ctx context.Context, id string) (*models.Author, 
 	}
 
 	// Execute the query
-	if !c.DailyQuotaPaused() {
-		log.Debug("Fetching person details", map[string]interface{}{
-			"id": id,
-		})
-	}
+	c.debugRequestIntent(log, "Fetching person details", map[string]interface{}{
+		"id": id,
+	})
 
 	if err := c.GraphQLQuery(ctx, query, variables, &response); err != nil {
 		log.Error("Failed to fetch person details", map[string]interface{}{
@@ -3376,7 +3378,7 @@ func (c *Client) CreateUserBook(ctx context.Context, editionID, status string) (
 	}
 
 	// First, get the edition to ensure it exists and get the book_id
-	c.logger.Debug("Getting edition details for user book creation", map[string]interface{}{
+	c.debugRequestIntent(c.logger, "Getting edition details for user book creation", map[string]interface{}{
 		"editionID": editionID,
 	})
 
@@ -3764,12 +3766,10 @@ func (c *Client) SearchBookByTitleAuthor(ctx context.Context, title, author stri
 	}
 
 	// Log the actual query being executed
-	if !c.DailyQuotaPaused() {
-		log.Debug("Executing GraphQL query", map[string]interface{}{
-			"query":     query,
-			"variables": variables,
-		})
-	}
+	c.debugRequestIntent(log, "Executing GraphQL query", map[string]interface{}{
+		"query":     query,
+		"variables": variables,
+	})
 
 	// Execute the query
 	var response struct {
