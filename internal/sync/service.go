@@ -422,9 +422,8 @@ func (s *Service) setASINInCache(asin string, book *models.HardcoverBook) {
 // clearASINCache clears only the in-memory ASIN cache (persistent cache remains)
 func (s *Service) clearASINCache() {
 	s.asinCacheMutex.Lock()
-	defer s.asinCacheMutex.Unlock()
-
 	s.asinCache = make(map[string]*models.HardcoverBook)
+	s.asinCacheMutex.Unlock()
 	s.log.Debug("Cleared in-memory ASIN cache for new sync (persistent cache preserved)", nil)
 }
 
@@ -1125,13 +1124,12 @@ func unattemptedCount(candidateTotal, processedCount int32) int32 {
 // logSyncSummary logs a summary of the sync operation
 func (s *Service) logSyncSummary() {
 	s.runStateMutex.RLock()
-	defer s.runStateMutex.RUnlock()
-
 	processedCount := s.outcomeCounts.Total()
 	booksSynced := s.outcomeCounts.Synced
 	notFoundCount := s.outcomeCounts.NotFound
 	needsReviewCount := s.outcomeCounts.NeedsReview
 	failedCount := s.outcomeCounts.Failed
+	s.runStateMutex.RUnlock()
 
 	// Log summary header
 	s.log.Info("========================================", nil)

@@ -46,6 +46,39 @@ func containsLogEntry(t *testing.T, output, level, message string) bool {
 	return false
 }
 
+type blockingLogWriter struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func newBlockingLogWriter() *blockingLogWriter {
+	return &blockingLogWriter{
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}, 1),
+	}
+}
+
+func (w *blockingLogWriter) Write(p []byte) (int, error) {
+	w.started <- struct{}{}
+	<-w.release
+	return len(p), nil
+}
+
+func assertRateLimiterReadDoesNotBlock(t *testing.T, rl *RateLimiter) {
+	t.Helper()
+	readDone := make(chan struct{})
+	go func() {
+		rl.GetRate()
+		close(readDone)
+	}()
+
+	select {
+	case <-readDone:
+	case <-time.After(time.Second):
+		t.Fatal("rate limiter mutex remained locked while writing a log entry")
+	}
+}
+
 func init() {
 	// Enable test mode to disable buffering in ParseRetryAfter
 	testMode = true
@@ -73,6 +106,40 @@ func TestRateLimiter_ContextCancellation(t *testing.T) {
 		err := acquireAndRelease(ctx, rl)
 		assert.ErrorIs(t, err, context.DeadlineExceeded)
 	})
+}
+
+func TestRateLimiter_AcquireLogsOutsideLock(t *testing.T) {
+	rl := NewRateLimiter(time.Second, 1, nil)
+	previousLevel := zerolog.GlobalLevel()
+	zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	t.Cleanup(func() {
+		zerolog.SetGlobalLevel(previousLevel)
+	})
+	rl.mu.Lock()
+	rl.backoffUntil = time.Now().Add(time.Hour)
+	rl.mu.Unlock()
+
+	logWriter := newBlockingLogWriter()
+	rl.logger = &logger.Logger{Logger: zerolog.New(logWriter).Level(zerolog.DebugLevel)}
+	ctx, cancel := context.WithCancel(context.Background())
+	waitDone := make(chan error, 1)
+	go func() {
+		_, err := rl.Acquire(ctx)
+		waitDone <- err
+	}()
+
+	select {
+	case <-logWriter.started:
+	case <-time.After(time.Second):
+		cancel()
+		logWriter.release <- struct{}{}
+		t.Fatal("Acquire did not reach the expected backoff log")
+	}
+	assertRateLimiterReadDoesNotBlock(t, rl)
+
+	cancel()
+	logWriter.release <- struct{}{}
+	require.ErrorIs(t, <-waitDone, context.Canceled)
 }
 
 func TestRateLimiter_ConcurrentAcquiresArePaced(t *testing.T) {
@@ -798,6 +865,47 @@ func TestRateLimiterDoesNotLogPacingRecoveryDuringDailyPause(t *testing.T) {
 
 	rl.ResetRate()
 	assert.False(t, rl.DailyQuotaPaused())
+}
+
+func TestRateLimiterRecoveryLogsOutsideLock(t *testing.T) {
+	configuredRate := 2 * time.Second
+	rl := NewRateLimiter(configuredRate, 1, nil)
+	previousLevel := zerolog.GlobalLevel()
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	t.Cleanup(func() {
+		zerolog.SetGlobalLevel(previousLevel)
+	})
+	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+		"Ratelimit":        {`"Free";r=8;t=42, "daily";r=1;t=10`},
+		"Ratelimit-Policy": {`"Free";q=60;w=60;burst=10, "daily";q=5000;w=86400`},
+	}})
+	require.Greater(t, rl.GetRate(), configuredRate)
+
+	logWriter := newBlockingLogWriter()
+	rl.logger = &logger.Logger{Logger: zerolog.New(logWriter).Level(zerolog.InfoLevel)}
+	updateDone := make(chan struct{})
+	go func() {
+		rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+			"Ratelimit":        {`"Free";r=8;t=42, "daily";r=4000;t=1000`},
+			"Ratelimit-Policy": {`"Free";q=60;w=60;burst=10, "daily";q=5000;w=86400`},
+		}})
+		close(updateDone)
+	}()
+
+	select {
+	case <-logWriter.started:
+	case <-time.After(time.Second):
+		logWriter.release <- struct{}{}
+		t.Fatal("header update did not reach the expected pacing recovery log")
+	}
+	assertRateLimiterReadDoesNotBlock(t, rl)
+
+	logWriter.release <- struct{}{}
+	select {
+	case <-updateDone:
+	case <-time.After(time.Second):
+		t.Fatal("header update did not finish after the logger was released")
+	}
 }
 
 func TestRateLimitBuckets(t *testing.T) {
