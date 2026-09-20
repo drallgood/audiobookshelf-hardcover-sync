@@ -960,6 +960,15 @@ func audiobookshelfDisplayFormat(book models.AudiobookshelfBook) string {
 	return "Audiobook"
 }
 
+// hardcoverReadingFormat returns the Hardcover reading format ("ebook" or
+// "audiobook") that editions matching the item must have.
+func hardcoverReadingFormat(book models.AudiobookshelfBook) string {
+	if book.IsEbook() {
+		return "ebook"
+	}
+	return "audiobook"
+}
+
 func audiobookshelfSeries(metadata models.AudiobookshelfMetadataStruct) (string, string) {
 	seriesName := strings.TrimSpace(metadata.SeriesName)
 	if len(metadata.Series) == 0 {
@@ -2084,8 +2093,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	bookLog.Debug("Starting book processing")
 
 	// Media type filtering: skip ebooks unless explicitly enabled
-	mediaType := strings.ToLower(book.MediaType)
-	if mediaType == "ebook" && !s.config.Sync.IncludeEbooks {
+	if book.IsEbook() && !s.config.Sync.IncludeEbooks {
 		bookLog.Info("Skipping ebook because include_ebooks is disabled", map[string]interface{}{
 			"media_type":     book.MediaType,
 			"include_ebooks": s.config.Sync.IncludeEbooks,
@@ -2094,6 +2102,10 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		setOutcome(OutcomeSkipped, "ebook excluded by configuration")
 		return ErrSkippedBook
 	}
+
+	// Every Hardcover lookup for this item, including mismatch enrichment,
+	// must resolve editions of the item's own reading format.
+	ctx = hardcover.WithReadingFormat(ctx, hardcoverReadingFormat(book))
 
 	// Enhance book progress from the /api/me endpoint before any sync checks.
 	// The library items endpoint does not include per-user progress, so
@@ -4939,14 +4951,9 @@ func (s *Service) findBookInHardcoverByTitleAuthor(ctx context.Context, book mod
 // Title/author search is only used for mismatches and should be called separately
 func (s *Service) findBookInHardcover(ctx context.Context, book models.AudiobookshelfBook) (*models.HardcoverBook, error) {
 	var lookupErr error
-	// Derive desired reading format from source media type
-	mediaType := strings.ToLower(strings.TrimSpace(book.MediaType))
-	desiredFormat := "audiobook"
-	if mediaType == "ebook" {
-		desiredFormat = "ebook"
-	}
-	// Attach to context for client to respect
-	ctx = hardcover.WithReadingFormat(ctx, desiredFormat)
+	// Match against Hardcover editions of the item's own reading format so an
+	// ebook is not looked up among audiobook editions.
+	ctx = hardcover.WithReadingFormat(ctx, hardcoverReadingFormat(book))
 	// Create a logger with book context
 	logCtx := map[string]interface{}{
 		"book_id": book.ID,

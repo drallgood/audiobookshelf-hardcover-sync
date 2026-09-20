@@ -76,7 +76,7 @@ sync:
   test_book_limit: 0
   
   # Include ebooks in sync (default: false)
-  # When false, items with mediaType "ebook" are skipped
+  # When false, ebook-only Audiobookshelf items (an ebook file and no audio) are skipped
   include_ebooks: false
   
   # Preserve books marked as "Did Not Finish" in Hardcover (default: true)

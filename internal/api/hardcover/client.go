@@ -59,6 +59,21 @@ func getReadingFormatFromCtx(ctx context.Context) (string, bool) {
 	return "", false
 }
 
+// Hardcover reading_format ids for the formats Audiobookshelf items can have.
+const (
+	readingFormatIDAudiobook = 2
+	readingFormatIDEbook     = 4
+)
+
+// readingFormatIDFromCtx maps the reading format carried by ctx to Hardcover's
+// reading_format id, defaulting to audiobook when none (or an unknown one) is set.
+func readingFormatIDFromCtx(ctx context.Context) int {
+	if formatStr, ok := getReadingFormatFromCtx(ctx); ok && formatStr == "ebook" {
+		return readingFormatIDEbook
+	}
+	return readingFormatIDAudiobook
+}
+
 // getMapKeys returns a sorted list of keys from a map
 func getMapKeys(m map[string]interface{}) []string {
 	keys := make([]string, 0, len(m))
@@ -1022,7 +1037,8 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 		}
 	}
 
-	// Editions - prefer audiobook if available
+	// Editions - prefer the requested reading format (audiobook by default)
+	preferredFormatID := readingFormatIDFromCtx(ctx)
 	var editions []interface{}
 	if v, ok := bookObj["editions"].([]interface{}); ok {
 		editions = v
@@ -1030,7 +1046,7 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 	var chosen map[string]interface{}
 	for _, e := range editions {
 		if em, ok := e.(map[string]interface{}); ok {
-			if rf, ok := em["reading_format_id"].(float64); ok && int(rf) == 2 {
+			if rf, ok := em["reading_format_id"].(float64); ok && int(rf) == preferredFormatID {
 				chosen = em
 				break
 			}
@@ -1285,16 +1301,7 @@ func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.Har
 	})
 
 	// Define the GraphQL query: always format-aware via numeric format_id, default to audiobook (2)
-	formatStr, hasFormat := getReadingFormatFromCtx(ctx)
-	formatID := 2
-	if hasFormat {
-		switch formatStr {
-		case "ebook":
-			formatID = 4
-		case "audiobook":
-			formatID = 2
-		}
-	}
+	formatID := readingFormatIDFromCtx(ctx)
 	query := `
 query BookByASIN($asin: String!, $asin_us: String!, $format_id: Int!) {
   books(
@@ -1541,16 +1548,7 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
 	normalizedISBN = strings.ReplaceAll(normalizedISBN, " ", "")
 
 	// Define the GraphQL query (always format-aware via numeric format_id, default to audiobook id=2)
-	formatStr, hasFormat := getReadingFormatFromCtx(ctx)
-	formatID := 2
-	if hasFormat {
-		switch formatStr {
-		case "ebook":
-			formatID = 4
-		case "audiobook":
-			formatID = 2
-		}
-	}
+	formatID := readingFormatIDFromCtx(ctx)
 	query := fmt.Sprintf(`
     query BookByISBN($isbn: String!, $format_id: Int!) {
       books(

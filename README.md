@@ -567,7 +567,7 @@ sync:
   minimum_progress: 0.01  # Minimum progress threshold (0.0 to 1.0)
   sync_want_to_read: true  # Sync books with 0% progress as "Want to Read"
   sync_owned: true        # Mark synced books as owned in Hardcover
-  include_ebooks: false    # Include items with media type "ebook" in sync
+  include_ebooks: false    # Include ebook-only Audiobookshelf items in sync
   process_unread_books: false  # Process books with 0% progress for mismatches and want-to-read status
   preserve_dnf: true      # Preserve books marked as "Did Not Finish" in Hardcover
   dry_run: false           # Enable dry run mode (no changes will be made)
@@ -709,7 +709,7 @@ hardcover:
 | `RATE_LIMIT_RATE` | Min time between requests | `rate_limit.rate` | e.g. `2s` (30 rpm) |
 | `RATE_LIMIT_MAX_CONCURRENT` | Max concurrent requests | `rate_limit.max_concurrent` | e.g. `1` |
 | `SYNC_INTERVAL` | Time between automatic syncs | `sync.sync_interval` | Legacy mode only |
-| `SYNC_INCLUDE_EBOOKS` | Include items with media type "ebook" | `sync.include_ebooks` | Legacy mode only |
+| `SYNC_INCLUDE_EBOOKS` | Include ebook-only Audiobookshelf items | `sync.include_ebooks` | Legacy mode only |
 | `SYNC_LIBRARIES_INCLUDE` | Comma-separated list of libraries to include | `sync.libraries.include` | Legacy mode only |
 | `SYNC_LIBRARIES_EXCLUDE` | Comma-separated list of libraries to exclude | `sync.libraries.exclude` | Legacy mode only |
 

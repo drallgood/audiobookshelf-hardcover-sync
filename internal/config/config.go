@@ -56,7 +56,7 @@ type Config struct {
 			// Exclude these libraries (empty = none)
 			Exclude []string `yaml:"exclude" env:"SYNC_LIBRARIES_EXCLUDE"`
 		} `yaml:"libraries"`
-		// IncludeEbooks controls whether items with mediaType "ebook" are included in sync (default: false)
+		// IncludeEbooks controls whether ebook-only Audiobookshelf items (an ebook file and no audio) are included in sync (default: false)
 		IncludeEbooks bool `yaml:"include_ebooks" env:"SYNC_INCLUDE_EBOOKS"`
 		// PreserveDNF controls whether books marked as DNF in Hardcover should be protected from sync updates
 		PreserveDNF bool `yaml:"preserve_dnf" env:"SYNC_PRESERVE_DNF"`
