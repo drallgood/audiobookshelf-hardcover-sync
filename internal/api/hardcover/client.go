@@ -864,7 +864,7 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 	}
 
 	const query = `
-	query GetBookByID($id: Int!) {
+	query GetBookByID($id: Int!, $format_id: Int!) {
 	  books(where: { id: { _eq: $id } }, limit: 1) {
 	    id
 	    title
@@ -877,7 +877,7 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 	      position
 	      series { name }
 	    }
-	    editions(limit: 10) {
+	    editions(where: { reading_format_id: { _eq: $format_id } }, limit: 10) {
 	      id
 	      asin
 	      isbn_13
@@ -893,9 +893,13 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 	  }
 	}`
 
+	// Editions are restricted to the requested reading format (audiobook by
+	// default); a book with no edition of that format gets no edition.
+	preferredFormatID := readingFormatIDFromCtx(ctx)
+
 	// Use a flexible raw map to be resilient to schema variations
 	var raw map[string]interface{}
-	if err := c.GraphQLQuery(ctx, query, map[string]interface{}{"id": idInt}, &raw); err != nil {
+	if err := c.GraphQLQuery(ctx, query, map[string]interface{}{"id": idInt, "format_id": preferredFormatID}, &raw); err != nil {
 		log.Error("Failed to fetch book by ID", map[string]interface{}{"error": err.Error()})
 		return nil, fmt.Errorf("failed to fetch book by ID: %w", err)
 	}
@@ -1037,8 +1041,7 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 		}
 	}
 
-	// Editions - prefer the requested reading format (audiobook by default)
-	preferredFormatID := readingFormatIDFromCtx(ctx)
+	// Editions - accept only one of the requested reading format
 	var editions []interface{}
 	if v, ok := bookObj["editions"].([]interface{}); ok {
 		editions = v
@@ -1049,9 +1052,6 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 			if rf, ok := em["reading_format_id"].(float64); ok && int(rf) == preferredFormatID {
 				chosen = em
 				break
-			}
-			if chosen == nil {
-				chosen = em
 			}
 		}
 	}

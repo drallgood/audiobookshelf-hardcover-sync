@@ -64,3 +64,70 @@ func TestLookupsRequestEditionsOfTheContextReadingFormat(t *testing.T) {
 		}
 	}
 }
+
+// TestGetBookByIDOnlyAcceptsEditionsOfTheContextReadingFormat verifies that the
+// book query is restricted to the context's reading format and that an edition
+// of another format is never adopted, even if the API returns one.
+func TestGetBookByIDOnlyAcceptsEditionsOfTheContextReadingFormat(t *testing.T) {
+	logger.Setup(logger.Config{Level: "debug", Format: "json"})
+
+	tests := map[string]struct {
+		ctx           context.Context
+		wantFormatID  float64
+		returnedEdits []interface{}
+		wantEditionID string
+	}{
+		"ebook picks the ebook edition": {
+			ctx: WithReadingFormat(context.Background(), "ebook"), wantFormatID: 4,
+			returnedEdits: []interface{}{
+				map[string]interface{}{"id": 10, "reading_format_id": 2},
+				map[string]interface{}{"id": 11, "reading_format_id": 4},
+			},
+			wantEditionID: "11",
+		},
+		"ebook ignores audiobook-only editions": {
+			ctx: WithReadingFormat(context.Background(), "ebook"), wantFormatID: 4,
+			returnedEdits: []interface{}{map[string]interface{}{"id": 10, "reading_format_id": 2}},
+		},
+		"default picks the audiobook edition": {
+			ctx: context.Background(), wantFormatID: 2,
+			returnedEdits: []interface{}{
+				map[string]interface{}{"id": 11, "reading_format_id": 4},
+				map[string]interface{}{"id": 10, "reading_format_id": 2},
+			},
+			wantEditionID: "10",
+		},
+		"default ignores ebook-only editions": {
+			ctx: context.Background(), wantFormatID: 2,
+			returnedEdits: []interface{}{map[string]interface{}{"id": 11, "reading_format_id": 4}},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			var sent map[string]interface{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				require.NoError(t, err)
+				var req struct {
+					Variables map[string]interface{} `json:"variables"`
+				}
+				require.NoError(t, json.Unmarshal(body, &req))
+				sent = req.Variables
+				w.Header().Set("Content-Type", "application/json")
+				require.NoError(t, json.NewEncoder(w).Encode(map[string]interface{}{
+					"data": map[string]interface{}{"books": []interface{}{map[string]interface{}{
+						"id": 1, "title": "Book", "editions": tt.returnedEdits,
+					}}},
+				}))
+			}))
+			defer server.Close()
+
+			book, err := CreateTestClient(server).GetBookByID(tt.ctx, "1")
+			require.NoError(t, err)
+			require.NotNil(t, book)
+			require.Equal(t, tt.wantFormatID, sent["format_id"])
+			require.Equal(t, tt.wantEditionID, book.EditionID)
+		})
+	}
+}
