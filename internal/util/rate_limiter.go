@@ -443,7 +443,7 @@ func (r *RateLimiter) applyRateLimitHeaders(resp *http.Response) (logs []rateLim
 	ietfRemaining, ietfReset := r.parseIETFRateLimit(resp.Header)
 	if resp.StatusCode == http.StatusTooManyRequests && hasExhaustedDailyIETFQuota(ietfRemaining, ietfReset) {
 		logs = append(logs, r.applyIETFHeaders(ietfRemaining, ietfReset, resp.Header)...)
-		return
+		return logs
 	}
 
 	// Retry-After takes priority when no exhausted daily quota overrides it.
@@ -459,7 +459,7 @@ func (r *RateLimiter) applyRateLimitHeaders(resp *http.Response) (logs []rateLim
 				fields:  logFields,
 			})
 			r.applyRetryAfter(duration)
-			return
+			return logs
 		}
 	}
 
@@ -470,11 +470,11 @@ func (r *RateLimiter) applyRateLimitHeaders(resp *http.Response) (logs []rateLim
 		// advisory; fall through to the bounded client-selected backoff instead.
 		if hasExhaustedIETFQuota(ietfRemaining, ietfReset) {
 			logs = append(logs, r.applyIETFHeaders(ietfRemaining, ietfReset, resp.Header)...)
-			return
+			return logs
 		}
 		if hasExhaustedLegacyQuota(resp.Header) {
 			logs = append(logs, r.applyLegacyHeaders(resp.Header)...)
-			return
+			return logs
 		}
 
 		// Processing an incomplete legacy header set first would reset the rate
@@ -489,11 +489,11 @@ func (r *RateLimiter) applyRateLimitHeaders(resp *http.Response) (logs []rateLim
 				"backoff_until": r.backoffUntil.Format(time.RFC3339),
 			},
 		})
-		return
+		return logs
 	}
 	if len(ietfRemaining) > 0 {
 		logs = append(logs, r.applyIETFHeaders(ietfRemaining, ietfReset, resp.Header)...)
-		return
+		return logs
 	}
 
 	// Fall back to legacy X-RateLimit-* headers.
