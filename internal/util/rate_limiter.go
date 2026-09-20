@@ -912,6 +912,9 @@ func boundedSecondsRate(windowSeconds, quota int, maxDuration time.Duration) tim
 // without shortening an existing authoritative pause.
 func (r *RateLimiter) applyExponentialBackoff() time.Duration {
 	backoff := r.exponentialBackoff(r.rate)
+	// A backoff never lowers the rate, so setRate cannot return its "pacing
+	// recovered" log entry here; the result is intentionally discarded. Handle
+	// it if exponentialBackoff can ever return a rate below the current one.
 	r.setRate(backoff)
 
 	until := time.Now().Add(backoff)

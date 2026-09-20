@@ -180,11 +180,12 @@ func TestGetCurrentUserIDRecoversAfterFetchPanic(t *testing.T) {
 	httpClient := server.Client()
 	httpClient.Transport = &panicOnceTransport{next: httpClient.Transport}
 	client := &Client{
-		baseURL:         server.URL,
-		authToken:       "test-token",
-		httpClient:      httpClient,
-		logger:          log,
-		rateLimiter:     util.NewRateLimiter(time.Millisecond, 2, log),
+		baseURL:    server.URL,
+		authToken:  "test-token",
+		httpClient: httpClient,
+		logger:     log,
+		// A single permit proves a panic does not leak the concurrency permit.
+		rateLimiter:     util.NewRateLimiter(time.Millisecond, 1, log),
 		userBookIDCache: cache.NewMemoryCache[int, int](log),
 		userCache:       cache.NewMemoryCache[string, any](log),
 	}

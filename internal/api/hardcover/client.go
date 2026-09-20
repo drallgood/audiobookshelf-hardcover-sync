@@ -536,11 +536,17 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		if err != nil {
 			return fmt.Errorf("rate limiter error: %w", err)
 		}
+		// Release the permit exactly once. The explicit calls below free it as
+		// soon as the response is read; the deferred call covers a panic in the
+		// request path so the permit is not lost.
+		var releaseOnce sync.Once
+		releasePermit := func() { releaseOnce.Do(release) }
+		defer releasePermit()
 
 		// Execute the request
 		resp, err := httpClient.Do(req)
 		if err != nil {
-			release()
+			releasePermit()
 			lastErr = fmt.Errorf("HTTP request failed: %w", err)
 			c.logger.Error("GraphQL request failed", map[string]interface{}{
 				"error":   lastErr.Error(),
@@ -553,7 +559,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
-			release()
+			releasePermit()
 			lastErr = fmt.Errorf("failed to read response body: %w", err)
 			c.logger.Error("Failed to read response body", map[string]interface{}{
 				"error":   lastErr.Error(),
@@ -573,7 +579,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		// Process rate limit headers from EVERY response so the rate limiter
 		// can self-throttle proactively before hitting HTTP 429.
 		c.rateLimiter.WithRateLimitHeaders(resp)
-		release()
+		releasePermit()
 
 		// Check for HTTP errors
 		if resp.StatusCode >= 400 {
@@ -736,6 +742,9 @@ func (c *Client) GetCurrentUserID(ctx context.Context) (int, error) {
 			case <-ctx.Done():
 				return 0, ctx.Err()
 			case <-fetchDone:
+				// The fetch finished, successfully or not. Re-check the cache; after
+				// a failure each waiter may start its own fetch, matching the
+				// pre-existing behavior of retrying a failed lookup per caller.
 				continue
 			}
 		}
