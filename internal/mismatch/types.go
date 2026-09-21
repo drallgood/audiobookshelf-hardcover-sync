@@ -42,7 +42,7 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 	if ebook {
 		// The audiobook platform hints below do not apply to an ebook.
 		if editionFormat == "" || editionFormat == "Audiobook" {
-			editionFormat = "Ebook"
+			editionFormat = editionFormatEbook
 		}
 	} else if editionFormat == "" || editionFormat == "Audiobook" {
 		// Primary check: ASIN indicates Audible/Amazon purchase
@@ -231,6 +231,16 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 		result.BookID, result.Title, result.EditionInfo, result.AuthorIDs, result.PublisherID))
 
 	return result
+}
+
+// editionFormatEbook is the edition format an ebook item is exported with.
+const editionFormatEbook = "Ebook"
+
+// MarkEbook makes the record export as an ebook edition. An audiobook keeps
+// its formats as they are.
+func (b *BookMismatch) MarkEbook() {
+	b.EditionFormat = editionFormatEbook
+	b.ReadingFormat = models.ReadingFormatEbook
 }
 
 // BookMismatch represents a book that couldn't be matched/synced with Hardcover

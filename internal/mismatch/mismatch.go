@@ -319,13 +319,6 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 	// Note: We no longer automatically use ASIN as bookID to prevent incorrect book identification
 	// ASIN is stored in its dedicated field below
 
-	// An ebook item is exported as an ebook edition; an audiobook keeps the
-	// original export shape, with no reading format.
-	editionFormat, readingFormat := "Audiobook", ""
-	if strings.EqualFold(metadata.ReadingFormat, models.ReadingFormatEbook) {
-		editionFormat, readingFormat = "Ebook", models.ReadingFormatEbook
-	}
-
 	// Create the mismatch with all available metadata
 	mismatch := BookMismatch{
 		// Core book information
@@ -349,8 +342,7 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 		ImageURL: metadata.CoverURL, // Use CoverURL as ImageURL by default
 
 		// Edition information
-		EditionFormat: editionFormat,
-		ReadingFormat: readingFormat,
+		EditionFormat: "Audiobook",
 		Abridged:      metadata.Abridged,
 		EditionInfo:   "Audiobookshelf", // Only include platform info, no debug/error details
 		LanguageID:    1,                // Default to English
@@ -368,6 +360,11 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 		Reason:    reason,
 		Timestamp: time.Now().Unix(),
 		CreatedAt: time.Now(),
+	}
+	// An ebook item is exported as an ebook edition; an audiobook keeps the
+	// original export shape, with no reading format.
+	if strings.EqualFold(metadata.ReadingFormat, models.ReadingFormatEbook) {
+		mismatch.MarkEbook()
 	}
 
 	// If we have a Hardcover client, try to enrich with Hardcover-side details
