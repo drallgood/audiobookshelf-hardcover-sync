@@ -180,6 +180,7 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 			// Try to look up publisher ID from Hardcover
 			if id, err := LookupPublisherID(ctx, hc, b.Publisher); err == nil && id > 0 {
 				b.PublisherID = id
+				publisherID = id
 				logger.Debug(fmt.Sprintf("Looked up publisher ID: %d", b.PublisherID))
 			} else if err != nil {
 				logger.Error("Failed to look up publisher ID", map[string]interface{}{

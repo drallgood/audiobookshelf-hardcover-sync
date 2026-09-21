@@ -283,8 +283,9 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 		isbn10, isbn13 = parsed.GivenISBN10(), parsed.GivenISBN13()
 	}
 
-	// Default publisher values
-	publisherID := 1 // Default publisher ID
+	// Publisher values. A zero ID means the publisher is unresolved; the
+	// export writes 0 rather than guessing a publisher.
+	publisherID := 0
 	publisherName := metadata.Publisher
 
 	// If we have a Hardcover client and a publisher name, try to look up the publisher ID
@@ -306,7 +307,7 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 				"error": err.Error(),
 			})
 		} else {
-			logger.Get().Debug("Publisher not found, using default ID", map[string]interface{}{
+			logger.Get().Debug("Publisher not found, leaving publisher ID unset", map[string]interface{}{
 				"name": publisherName,
 			})
 		}
@@ -352,7 +353,7 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 		CountryID:     1,                // Default to US
 
 		// Publisher information
-		PublisherID: publisherID, // Use looked up or default publisher ID
+		PublisherID: publisherID, // Looked-up publisher ID, or 0 when unresolved
 		Publisher:   publisherName,
 
 		// Audiobookshelf-specific context

@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Incremental sync checkpoints**: Persist per-book sync state after each processed book so completed work survives cancellation or process termination before the full library run finishes. State-file replacement is now atomic, dry runs remain non-persistent, and checkpoint failures stop the sync instead of reporting false success. Failed Hardcover status updates leave the affected book uncheckpointed for retry, even if its read progress was saved; a persistent status failure can therefore recur while other books continue. An unavailable status on an existing read is not blindly changed or checkpointed after a read update. By @Snuffy2. (#179)
 - Run gofmt across repo by @Snuffy2 (#187)
 - **Reduce noisy info-level logging**: Log startup and configuration dumps, request and client detail, cache statistics, and mismatch enrichment at debug instead of info, since info is the default log level. Per-book outcomes and skip reasons, run and library progress, dry-run confirmations, rate limiter pacing, the web UI port, lifecycle events, and the sync summary stay at info. By @Snuffy2. (#189)
+- **Unresolved publisher no longer defaults to ID 1 in mismatch exports**: The mismatch JSON export (`edition_*.json` files consumed by the `edition` CLI) now writes `publisher_id: 0` when a book's publisher cannot be resolved on Hardcover, instead of the previous default of `1`, so imports no longer attach an arbitrary publisher. By @Snuffy2.
 
 ## [v3.6.0] - 2026-09-01
 

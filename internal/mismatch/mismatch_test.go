@@ -485,7 +485,7 @@ func TestAddWithMetadata(t *testing.T) {
 	assert.Equal(t, "Audiobookshelf", mismatch.EditionInfo) // Only contains platform name
 	assert.Equal(t, 1, mismatch.LanguageID)                 // Default to English
 	assert.Equal(t, 1, mismatch.CountryID)                  // Default to US
-	assert.Equal(t, 1, mismatch.PublisherID)                // Default publisher
+	assert.Equal(t, 0, mismatch.PublisherID)                // Unresolved publisher is left unset
 }
 
 // TestAddWithMetadata_ISBNForms verifies that separators in the Audiobookshelf
@@ -959,4 +959,91 @@ func TestAddWithMetadata_NoRegionSet(t *testing.T) {
 	mu.Unlock()
 
 	assert.Equal(t, 1, emptyCalls, "Should have called Audnex with empty region (backward-compatible behavior)")
+}
+
+// publisherLookupMock resolves a fixed publisher name so AddWithMetadata's
+// publisher lookup can be exercised without a live Hardcover client.
+type publisherLookupMock struct {
+	*MockHardcoverClient
+	publishers []models.Publisher
+}
+
+func (m *publisherLookupMock) SearchPublishers(ctx context.Context, query string, limit int) ([]models.Publisher, error) {
+	return m.publishers, nil
+}
+
+func TestAddWithMetadata_PublisherID(t *testing.T) {
+	tests := []struct {
+		name       string
+		publisher  string
+		publishers []models.Publisher
+		want       int
+	}{
+		{
+			name:       "resolved publisher uses its Hardcover ID",
+			publisher:  "Publisher Resolved Test House",
+			publishers: []models.Publisher{{ID: "42", Name: "Publisher Resolved Test House"}},
+			want:       42,
+		},
+		{
+			name:       "publisher not found in Hardcover is left unset",
+			publisher:  "Publisher Missing Test House",
+			publishers: nil,
+			want:       0,
+		},
+		{
+			name:      "no publisher name is left unset",
+			publisher: "",
+			want:      0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := &MockHardcoverClient{}
+			base.On("SearchBooks", mock.Anything, mock.Anything, mock.Anything).Return(nil, nil)
+			hc := &publisherLookupMock{MockHardcoverClient: base, publishers: tt.publishers}
+
+			collector := NewCollector()
+			got := collector.AddWithMetadata(MediaMetadata{
+				Title:      "Publisher Test Book",
+				AuthorName: "Publisher Test Author",
+				Publisher:  tt.publisher,
+			}, "abs-1", "", "test reason", 60, "abs-1", hc, "")
+
+			assert.Equal(t, tt.want, got.PublisherID)
+		})
+	}
+}
+
+func TestToEditionExport_PublisherResolvedDuringExport(t *testing.T) {
+	tests := []struct {
+		name       string
+		publisher  string
+		publishers []models.Publisher
+		want       int
+	}{
+		{
+			name:       "publisher resolved during export is exported",
+			publisher:  "Export Resolved Test House",
+			publishers: []models.Publisher{{ID: "42", Name: "Export Resolved Test House"}},
+			want:       42,
+		},
+		{
+			name:      "publisher not found during export is exported as unset",
+			publisher: "Export Missing Test House",
+			want:      0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hc := &publisherLookupMock{MockHardcoverClient: &MockHardcoverClient{}, publishers: tt.publishers}
+			record := BookMismatch{Title: "Export Publisher Book", Publisher: tt.publisher}
+
+			export := record.ToEditionExport(logger.WithLogger(context.Background(), logger.Get()), hc)
+
+			assert.Equal(t, tt.want, export.PublisherID)
+		})
+	}
 }
