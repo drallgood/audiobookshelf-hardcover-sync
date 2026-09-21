@@ -502,6 +502,11 @@ func TestAddWithMetadata_ISBNForms(t *testing.T) {
 		{"hyphenated ISBN-10", "0-306-40615-2", "0-306-40615-2", "0306406152", ""},
 		{"spaced ISBN-13", "978 0 306 40615 7", "978 0 306 40615 7", "", "9780306406157"},
 		{"plain ISBN-13", "9780306406157", "9780306406157", "", "9780306406157"},
+		{"lowercase x check digit is uppercased", "0-8044-2957-x", "0-8044-2957-x", "080442957X", ""},
+		{"979 ISBN-13 has no ISBN-10 to derive", "979-10-90636-07-1", "979-10-90636-07-1", "", "9791090636071"},
+		{"invalid checksum is still exported as given", "9780306406158", "9780306406158", "", "9780306406158"},
+		{"dots and dashes are separators", "978.0-306.40615-7", "978.0-306.40615-7", "", "9780306406157"},
+		{"wrong length is exported as neither form", "97803064061", "97803064061", "", ""},
 		{"not an ISBN", "abc", "abc", "", ""},
 		{"empty", "", "", "", ""},
 	}
@@ -937,6 +942,56 @@ func TestToEditionExport_PublisherResolvedDuringExport(t *testing.T) {
 			export := record.ToEditionExport(logger.WithLogger(context.Background(), logger.Get()), hc)
 
 			assert.Equal(t, tt.want, export.PublisherID)
+		})
+	}
+}
+
+// TestAudiobookExportKeepsItsFields pins the audiobook export fields the
+// ebook changes must not alter (crosswalk R11, R13, R14, R15, R16 and R17): the
+// edition format label, the rounded audio length, "Unabridged", the language and
+// country constants, and the cover preference.
+func TestAudiobookExportKeepsItsFields(t *testing.T) {
+	ctx := newTestContext(t)
+
+	labels := map[string]struct {
+		asin, publisher, want string
+	}{
+		"ASIN is Audible Audio":                 {"B002V0QK4C", "", "Audible Audio"},
+		"ASIN wins over a libro publisher":      {"B002V0QK4C", "Libro.fm", "Audible Audio"},
+		"libro publisher is libro.fm":           {"", "Libro.fm Audio", "libro.fm"},
+		"other publisher has no label":          {"", "Brilliance Audio", ""},
+		"no ASIN and no publisher has no label": {"", "", ""},
+	}
+	for name, tt := range labels {
+		t.Run("label "+name, func(t *testing.T) {
+			record := BookMismatch{BookID: "1", Title: "Book", ASIN: tt.asin, Publisher: tt.publisher}
+			export := record.ToEditionExport(ctx, nil)
+			assert.Equal(t, tt.want, export.EditionFormat)
+			assert.Equal(t, "Unabridged", export.EditionInfo)
+			assert.Empty(t, export.ReadingFormat, "an audiobook export carries no reading_format")
+			assert.Equal(t, 1, export.LanguageID)
+			assert.Equal(t, 1, export.CountryID)
+		})
+	}
+
+	durations := map[float64]int{33854.905: 33855, 100.4: 100, 100.5: 101, 0: 0}
+	for duration, want := range durations {
+		record := NewCollector().AddWithMetadata(MediaMetadata{Title: "Book"}, "1", "", "reason", duration, "abs1", nil, "")
+		assert.Equal(t, want, record.ToEditionExport(ctx, nil).AudioSeconds, "duration %v", duration)
+	}
+
+	covers := map[string]struct {
+		image, cover, hardcover, want string
+	}{
+		"image URL first":               {"https://abs/image", "https://abs/cover", "https://hc/cover", "https://abs/image"},
+		"cover URL when no image URL":   {"", "https://abs/cover", "https://hc/cover", "https://abs/cover"},
+		"Hardcover cover as a fallback": {"", "", "https://hc/cover", "https://hc/cover"},
+		"none":                          {"", "", "", ""},
+	}
+	for name, tt := range covers {
+		t.Run("cover "+name, func(t *testing.T) {
+			record := BookMismatch{BookID: "1", Title: "Book", ImageURL: tt.image, CoverURL: tt.cover, HardcoverCoverURL: tt.hardcover}
+			assert.Equal(t, tt.want, record.ToEditionExport(ctx, nil).ImageURL)
 		})
 	}
 }
