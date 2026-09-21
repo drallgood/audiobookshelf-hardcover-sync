@@ -1947,6 +1947,56 @@ func TestEditionCreator_createEdition(t *testing.T) {
 	}
 }
 
+// TestEditionCreator_createEditionFormat checks the edition_format sent to
+// Hardcover: a caller-supplied label is honored (trimmed) and a missing one
+// falls back to "Audiobook". The reading format stays Audiobook either way.
+func TestEditionCreator_createEditionFormat(t *testing.T) {
+	logger.Setup(logger.Config{Level: "debug", Format: "json"})
+
+	tests := []struct {
+		name   string
+		format string
+		want   string
+	}{
+		{"provided format is sent", "Audible Audio", "Audible Audio"},
+		{"surrounding whitespace is trimmed", "  Audible Audio\t", "Audible Audio"},
+		{"empty falls back to Audiobook", "", "Audiobook"},
+		{"whitespace only falls back to Audiobook", "  \t ", "Audiobook"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var sent map[string]interface{}
+			mockClient := new(MockHardcoverClient)
+			mockClient.On("GraphQLMutation",
+				mock.Anything,
+				mock.MatchedBy(func(query string) bool { return strings.Contains(query, "insert_edition") }),
+				mock.AnythingOfType("map[string]interface {}"),
+				mock.MatchedBy(isInsertEditionResult),
+			).Run(func(args mock.Arguments) {
+				variables := args.Get(2).(map[string]interface{})
+				sent = variables["edition"].(map[string]interface{})["dto"].(map[string]interface{})
+				resp := args.Get(3).(*struct {
+					InsertEdition struct {
+						ID     interface{} `json:"id"`
+						Errors []string    `json:"errors"`
+					} `json:"insert_edition"`
+				})
+				resp.InsertEdition.ID = 789
+			}).Return(nil).Once()
+
+			creator := newTestCreator(t, mockClient)
+			input := &edition.EditionInput{BookID: 123, Title: "T", AuthorIDs: []int{1}, EditionFormat: tt.format}
+			id, err := edition.NewTestHelpers(creator).CreateEdition(context.Background(), input, 0)
+
+			assert.NoError(t, err)
+			assert.Equal(t, 789, id)
+			assert.Equal(t, tt.want, sent["edition_format"])
+			assert.Equal(t, 2, sent["reading_format_id"])
+			mockClient.AssertExpectations(t)
+		})
+	}
+}
+
 func TestNewCreator(t *testing.T) {
 	// Setup logger with test config
 	logger.Setup(logger.Config{

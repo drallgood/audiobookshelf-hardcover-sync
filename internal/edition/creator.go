@@ -675,11 +675,17 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 	  }
 	}`
 
+	// The format label is free text; reading_format_id stays Audiobook.
+	editionFormat := strings.TrimSpace(input.EditionFormat)
+	if editionFormat == "" {
+		editionFormat = "Audiobook"
+	}
+
 	// Initialize edition data with required fields
 	editionData := map[string]interface{}{
 		"dto": map[string]interface{}{
 			"title":             input.Title,
-			"edition_format":    "Audiobook",
+			"edition_format":    editionFormat,
 			"reading_format_id": 2, // 2 is the ID for Audiobook format
 		},
 	}
