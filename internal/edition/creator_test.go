@@ -1187,7 +1187,7 @@ func (m *mockImageTransport) RoundTrip(req *http.Request) (*http.Response, error
 			// Return a successful response with fake image data
 			return &http.Response{
 				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(strings.NewReader("fake image data")),
+				Body:       io.NopCloser(strings.NewReader("\xff\xd8\xff\xe0 fake JPEG data")), // JPEG magic bytes: covers must sniff as PNG or JPEG
 				Header:     make(http.Header),
 			}, nil
 		}

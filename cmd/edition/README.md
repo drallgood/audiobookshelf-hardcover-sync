@@ -149,6 +149,9 @@ The tool reads from the same `config.yaml` file as the main application. Make su
    When a cover was requested but could not be attached, the edition is still
    created and the printed result carries an `image_error` naming the failed
    step (never remote text, URLs or credentials).
+   A cover is only uploaded when the downloaded file is a PNG or JPEG (decided
+   from the file's bytes, not its Content-Type) of at most 15 MB; WebP is not
+   supported by Hardcover, and 15 MB is the largest size it documents.
 
 ### Dry Run
 

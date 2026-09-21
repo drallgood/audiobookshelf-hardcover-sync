@@ -21,6 +21,20 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 )
 
+// maxCoverBytes is the largest cover download accepted: 15 MiB. Hardcover's
+// Edition Standards say larger covers are better and name a 15 MB file as an
+// example of what is welcome; 15 MB is the largest size it documents, and it
+// documents no hard maximum.
+const maxCoverBytes = 15 << 20
+
+var (
+	// errCoverFormat means the downloaded cover is not a PNG or JPEG, the only
+	// formats Hardcover documents as supported.
+	errCoverFormat = errors.New("cover image is not a PNG or JPEG")
+	// errCoverTooLarge means the downloaded cover exceeds maxCoverBytes.
+	errCoverTooLarge = errors.New("cover image is too large")
+)
+
 // EditionInput represents the input data for creating or updating an edition
 type EditionInput struct {
 	BookID        int    `json:"book_id"`
@@ -268,7 +282,14 @@ func (c *Creator) CreateEdition(ctx context.Context, input *EditionInput) (*Edit
 		if uploadErr != nil {
 			c.log.Error("Failed to upload image to GCS, continuing without it",
 				map[string]interface{}{"error": uploadErr.Error()})
-			imageError = "cover image upload failed"
+			switch {
+			case errors.Is(uploadErr, errCoverFormat):
+				imageError = "cover image format not supported (Hardcover accepts PNG and JPEG)"
+			case errors.Is(uploadErr, errCoverTooLarge):
+				imageError = "cover image is larger than 15 MB"
+			default:
+				imageError = "cover image upload failed"
+			}
 		} else {
 			// Then create the image record with the edition ID
 			imageID, err = c.CreateImageRecord(ctx, editionID, imageURL)
@@ -311,7 +332,7 @@ func (c *Creator) uploadImageToGCS(ctx context.Context, editionID int, imageURL 
 
 	// Set headers for the download request
 	downloadReq.Header.Set("User-Agent", "Audiobookshelf-Hardcover-Sync/1.0")
-	downloadReq.Header.Set("Accept", "image/*")
+	downloadReq.Header.Set("Accept", "image/jpeg, image/png")
 
 	// Add Audiobookshelf token if available and the URL is from Audiobookshelf
 	if c.shouldSendAudiobookshelfToken(imageURL) {
@@ -330,23 +351,34 @@ func (c *Creator) uploadImageToGCS(ctx context.Context, editionID int, imageURL 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return "", fmt.Errorf("image download failed: HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Read the image data
-	imgData, err := io.ReadAll(resp.Body)
+	// Refuse an oversized cover up front when the size is announced, and
+	// otherwise read at most one byte past the limit so a huge or endless body
+	// is never held in memory.
+	if resp.ContentLength > maxCoverBytes {
+		return "", errCoverTooLarge
+	}
+	imgData, err := io.ReadAll(io.LimitReader(resp.Body, maxCoverBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("failed to read image data: %w", err)
 	}
+	if len(imgData) > maxCoverBytes {
+		return "", errCoverTooLarge
+	}
 
-	// Determine file extension from content type
-	extension := "jpg"
-	contentType := resp.Header.Get("Content-Type")
-	if strings.Contains(contentType, "png") {
+	// Hardcover supports only PNG and JPEG. Decide from the bytes rather than
+	// the response Content-Type, which a server can set to anything.
+	var extension string
+	switch http.DetectContentType(imgData) {
+	case "image/jpeg":
+		extension = "jpg"
+	case "image/png":
 		extension = "png"
-	} else if strings.Contains(contentType, "webp") {
-		extension = "webp"
+	default:
+		return "", errCoverFormat
 	}
 
 	// Generate a unique filename
