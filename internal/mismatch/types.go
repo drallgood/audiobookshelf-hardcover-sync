@@ -98,14 +98,14 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 		readingFormat = models.ReadingFormatEbook
 	}
 
-	// Edition information. An ebook has none unless the record carries a real
-	// value (for example one taken from Hardcover). An audiobook is "Abridged"
-	// only when the record says so, and "Unabridged" otherwise.
+	// Edition information describes the edition (e.g., "Unabridged"). Placeholders
+	// and debug text that end up in EditionInfo are not real values. An
+	// audiobook falls back to "Unabridged" when the record has no real value; an
+	// ebook has no such default and stays empty.
 	editionInfo := ""
 	info := strings.TrimSpace(b.EditionInfo)
 	if ebook {
 		lower := strings.ToLower(info)
-		// Placeholders and debug text that end up in EditionInfo are not real values.
 		if info != "" &&
 			!strings.Contains(lower, "error") &&
 			!strings.Contains(lower, "reason:") &&
@@ -113,8 +113,12 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 			!strings.Contains(lower, "audiobookshelf") {
 			editionInfo = info
 		}
-	} else if strings.EqualFold(info, "Abridged") {
-		editionInfo = "Abridged"
+	} else if info != "" &&
+		!strings.Contains(info, "error") &&
+		!strings.Contains(info, "Reason:") &&
+		!strings.Contains(info, "mismatch") &&
+		!strings.Contains(info, "Audiobookshelf") {
+		editionInfo = info
 	} else {
 		editionInfo = "Unabridged"
 	}

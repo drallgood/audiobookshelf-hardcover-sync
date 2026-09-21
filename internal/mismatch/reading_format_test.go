@@ -134,28 +134,28 @@ func TestSavedExportKeepsTheCanonicalReadingFormatAndNoPlatformInfo(t *testing.T
 	}
 }
 
-// TestExportEditionInformation checks the edition information rule: an ebook
-// has none unless the record carries a real value, and an audiobook is
-// "Abridged" only when the record says so and "Unabridged" otherwise.
+// TestExportEditionInformation checks the edition information rule. An
+// audiobook keeps a real value the record carries and otherwise defaults to
+// "Unabridged" (crosswalk R14, unchanged); an ebook has no default and keeps
+// only a real value.
 func TestExportEditionInformation(t *testing.T) {
 	tests := map[string]struct {
 		readingFormat string
 		info          string
 		want          string
 	}{
-		"audiobook without information":      {"", "", "Unabridged"},
-		"audiobook abridged":                 {"", "Abridged", "Abridged"},
-		"audiobook abridged, other spelling": {"", " abridged ", "Abridged"},
-		"audiobook already unabridged":       {"", "Unabridged", "Unabridged"},
-		"audiobook placeholder":              {"", "Audiobookshelf", "Unabridged"},
-		"audiobook other text":               {"", "Special edition", "Unabridged"},
-		"ebook without information":          {"ebook", "", ""},
-		"ebook placeholder":                  {"ebook", "Audiobookshelf", ""},
-		"ebook debug text":                   {"ebook", "Reason: no match", ""},
-		"ebook with a real value":            {"ebook", "Special edition", "Special edition"},
-		"ebook lowercase placeholder":        {"ebook", "audiobookshelf", ""},
-		"ebook lowercase debug text":         {"ebook", "reason: no match", ""},
-		"ebook capitalised error":            {"ebook", "Error: lookup failed", ""},
+		"audiobook without information":   {"", "", "Unabridged"},
+		"audiobook real value":            {"", "Special edition", "Special edition"},
+		"audiobook real value is trimmed": {"", " Abridged ", "Abridged"},
+		"audiobook placeholder":           {"", "Audiobookshelf", "Unabridged"},
+		"audiobook debug text":            {"", "Reason: no match", "Unabridged"},
+		"ebook without information":       {"ebook", "", ""},
+		"ebook placeholder":               {"ebook", "Audiobookshelf", ""},
+		"ebook debug text":                {"ebook", "Reason: no match", ""},
+		"ebook with a real value":         {"ebook", "Special edition", "Special edition"},
+		"ebook lowercase placeholder":     {"ebook", "audiobookshelf", ""},
+		"ebook lowercase debug text":      {"ebook", "reason: no match", ""},
+		"ebook capitalised error":         {"ebook", "Error: lookup failed", ""},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {

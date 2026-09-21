@@ -376,8 +376,8 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 				PublisherID:   2,
 				ReleaseDate:   "2020-01-01",
 				AudioSeconds:  37800,
-				EditionFormat: "Audible Audio", // ASIN indicates Audible/Amazon purchase
-				EditionInfo:   "Unabridged",    // An audiobook is Unabridged unless the record says Abridged
+				EditionFormat: "Audible Audio",   // ASIN indicates Audible/Amazon purchase
+				EditionInfo:   "Special Edition", // A real value on the record is kept
 				LanguageID:    1,
 				CountryID:     1,
 			},
