@@ -9,7 +9,11 @@ This tool helps create and manage audiobook editions in Hardcover. It provides t
 
 ### Prerequisites
 - Docker installed on your system
-- Hardcover API token (set as `HARDCOVER_TOKEN` environment variable)
+- Hardcover API token (set as `HARDCOVER_TOKEN` environment variable) with these scopes:
+  - `read:library`
+  - `write:library`
+  - `read:catalog`
+  - `write:catalog:append`
 
 ### Basic Usage
 
