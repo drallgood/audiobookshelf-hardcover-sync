@@ -14,6 +14,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audnex"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 )
@@ -276,13 +277,10 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 
 	// Extract ISBN10 and ISBN13 from metadata.ISBN if it's set
 	isbn10, isbn13 := "", ""
-	if metadata.ISBN != "" {
-		// Simple heuristic: ISBN10 is 10 chars, ISBN13 is 13 chars
-		if len(metadata.ISBN) == 10 {
-			isbn10 = metadata.ISBN
-		} else if len(metadata.ISBN) == 13 {
-			isbn13 = metadata.ISBN
-		}
+	if parsed, ok := isbn.Parse(metadata.ISBN); ok {
+		// Separators such as hyphens are dropped; only the form the item
+		// carries is set, never a derived counterpart.
+		isbn10, isbn13 = parsed.GivenISBN10(), parsed.GivenISBN13()
 	}
 
 	// Default publisher values

@@ -488,6 +488,34 @@ func TestAddWithMetadata(t *testing.T) {
 	assert.Equal(t, 1, mismatch.PublisherID)                // Default publisher
 }
 
+// TestAddWithMetadata_ISBNForms verifies that separators in the Audiobookshelf
+// ISBN do not drop it, and that only the form the item carries is set.
+func TestAddWithMetadata_ISBNForms(t *testing.T) {
+	tests := []struct {
+		name      string
+		isbn      string
+		wantISBN  string
+		wantISBN1 string
+		wantISBN3 string
+	}{
+		{"hyphenated ISBN-13", "978-0-306-40615-7", "978-0-306-40615-7", "", "9780306406157"},
+		{"hyphenated ISBN-10", "0-306-40615-2", "0-306-40615-2", "0306406152", ""},
+		{"spaced ISBN-13", "978 0 306 40615 7", "978 0 306 40615 7", "", "9780306406157"},
+		{"plain ISBN-13", "9780306406157", "9780306406157", "", "9780306406157"},
+		{"not an ISBN", "abc", "abc", "", ""},
+		{"empty", "", "", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			collector := NewCollector()
+			got := collector.AddWithMetadata(MediaMetadata{Title: "Book", ISBN: tt.isbn}, "1", "", "reason", 60, "abs1", nil, "")
+			assert.Equal(t, tt.wantISBN, got.ISBN, "the original value is kept")
+			assert.Equal(t, tt.wantISBN1, got.ISBN10)
+			assert.Equal(t, tt.wantISBN3, got.ISBN13)
+		})
+	}
+}
+
 func TestBookMismatchToEditionInput(t *testing.T) {
 	// Create a test context
 	ctx := context.Background()
