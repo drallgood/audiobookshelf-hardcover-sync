@@ -56,3 +56,21 @@ func TestAudiobookshelfBookIsEbookWithoutJSONDecoding(t *testing.T) {
 	withDuration.Media.Duration = 3600
 	require.False(t, withDuration.IsEbook())
 }
+
+func TestAudiobookshelfMetadataDecodesAbridged(t *testing.T) {
+	tests := map[string]struct {
+		json string
+		want bool
+	}{
+		"abridged":                    {`{"media":{"metadata":{"abridged":true}}}`, true},
+		"not abridged":                {`{"media":{"metadata":{"abridged":false}}}`, false},
+		"absent, as in older servers": {`{"media":{"metadata":{}}}`, false},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			var book AudiobookshelfBook
+			require.NoError(t, json.Unmarshal([]byte(tt.json), &book))
+			require.Equal(t, tt.want, book.Media.Metadata.Abridged)
+		})
+	}
+}

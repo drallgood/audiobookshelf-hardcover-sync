@@ -351,6 +351,7 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 		// Edition information
 		EditionFormat: editionFormat,
 		ReadingFormat: readingFormat,
+		Abridged:      metadata.Abridged,
 		EditionInfo:   "Audiobookshelf", // Only include platform info, no debug/error details
 		LanguageID:    1,                // Default to English
 		CountryID:     1,                // Default to US
@@ -860,4 +861,6 @@ type MediaMetadata struct {
 	// ReadingFormat is the Hardcover reading format ("ebook" or "audiobook") that
 	// editions matching the source item must have. Empty means audiobook.
 	ReadingFormat string
+	// Abridged is true when the source item is marked abridged.
+	Abridged bool
 }

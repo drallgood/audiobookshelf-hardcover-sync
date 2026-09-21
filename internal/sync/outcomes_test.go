@@ -552,15 +552,18 @@ func TestProcessBookIdentifierFailureMismatchExportsByReadingFormat(t *testing.T
 	tests := []struct {
 		name           string
 		ebook          bool
+		abridged       bool
 		isbn           string
 		wantReading    string
 		wantEdition    string
+		wantInfo       string
 		wantAudioTotal int
 		wantISBN13     string
 		wantISBN10     string
 	}{
-		{name: "ebook is exported as an ebook edition", ebook: true, isbn: "978-0-306-40615-7", wantReading: models.ReadingFormatEbook, wantEdition: "Ebook", wantAudioTotal: 0, wantISBN13: "9780306406157", wantISBN10: ""},
-		{name: "audiobook keeps the audiobook shape", ebook: false, isbn: "0-306-40615-2", wantReading: "", wantEdition: "Audible Audio", wantAudioTotal: 1000, wantISBN13: "", wantISBN10: "0306406152"},
+		{name: "ebook is exported as an ebook edition", ebook: true, isbn: "978-0-306-40615-7", wantReading: models.ReadingFormatEbook, wantEdition: "Ebook", wantInfo: "", wantAudioTotal: 0, wantISBN13: "9780306406157", wantISBN10: ""},
+		{name: "audiobook keeps the audiobook shape", ebook: false, isbn: "0-306-40615-2", wantReading: "", wantEdition: "Audible Audio", wantInfo: "Unabridged", wantAudioTotal: 1000, wantISBN13: "", wantISBN10: "0306406152"},
+		{name: "abridged audiobook is exported as abridged", abridged: true, isbn: "0-306-40615-2", wantReading: "", wantEdition: "Audible Audio", wantInfo: "Abridged", wantAudioTotal: 1000, wantISBN13: "", wantISBN10: "0306406152"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -573,6 +576,7 @@ func TestProcessBookIdentifierFailureMismatchExportsByReadingFormat(t *testing.T
 				testBook.MediaType = "ebook"
 			}
 			absBook := toAudiobookshelfBook(testBook)
+			absBook.Media.Metadata.Abridged = tt.abridged
 			require.Equal(t, tt.ebook, absBook.IsEbook())
 			lookupErr := errors.New("identifier lookup unavailable")
 			hc.On("SearchBookByASIN", mock.Anything, "failed-asin").Return((*models.HardcoverBook)(nil), lookupErr).Once()
@@ -600,6 +604,7 @@ func TestProcessBookIdentifierFailureMismatchExportsByReadingFormat(t *testing.T
 			export := records[0].ToEditionExport(context.Background(), hc)
 			require.NotNil(t, export)
 			assert.Equal(t, tt.wantEdition, export.EditionFormat)
+			assert.Equal(t, tt.wantInfo, export.EditionInfo)
 			assert.Equal(t, tt.wantAudioTotal, export.AudioSeconds)
 		})
 	}

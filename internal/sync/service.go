@@ -2272,6 +2272,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				ISBN:            book.Media.Metadata.ISBN,
 				ISBN10:          isbn10,
 				ISBN13:          isbn13,
+				Abridged:        book.Media.Metadata.Abridged,
 				LibraryID:       book.LibraryID,
 				PublishedYear:   book.Media.Metadata.PublishedYear,
 				DurationSeconds: int(book.Media.Duration),
@@ -2408,6 +2409,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 						LibraryID:     book.LibraryID,
 						FolderID:      "",
 						ReadingFormat: book.ReadingFormat(),
+						Abridged:      book.Media.Metadata.Abridged,
 					},
 					book.ID,
 					edID,
@@ -2666,6 +2668,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				LibraryID:     book.LibraryID,
 				FolderID:      "",
 				ReadingFormat: book.ReadingFormat(),
+				Abridged:      book.Media.Metadata.Abridged,
 			},
 			bookID,    // Use the book ID if available
 			editionID, // Use the edition ID if available
@@ -2733,6 +2736,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				LibraryID:     book.LibraryID,
 				FolderID:      "",
 				ReadingFormat: book.ReadingFormat(),
+				Abridged:      book.Media.Metadata.Abridged,
 			},
 			hcBook.ID, // Use the book ID we found
 			"",        // No edition ID
@@ -2804,6 +2808,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				LibraryID:     book.LibraryID,
 				FolderID:      "",
 				ReadingFormat: book.ReadingFormat(),
+				Abridged:      book.Media.Metadata.Abridged,
 			},
 			bookID,    // Use the book ID if available
 			editionID, // Use the edition ID if available
@@ -2882,6 +2887,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				LibraryID:     book.LibraryID,
 				FolderID:      "",
 				ReadingFormat: book.ReadingFormat(),
+				Abridged:      book.Media.Metadata.Abridged,
 			},
 			bookID,    // Use the book ID from BookError if available
 			editionID, // Empty since we don't have an edition ID

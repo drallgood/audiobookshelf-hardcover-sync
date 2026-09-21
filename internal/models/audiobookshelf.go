@@ -22,6 +22,8 @@ type AudiobookshelfMetadataStruct struct {
 	ISBN              string                 `json:"isbn"`
 	ASIN              string                 `json:"asin"`
 	Language          string                 `json:"language"`
+	// Abridged is true when Audiobookshelf marks the audiobook as abridged.
+	Abridged bool `json:"abridged"`
 }
 
 // AudiobookshelfSeries describes a book's membership and position in a series.
