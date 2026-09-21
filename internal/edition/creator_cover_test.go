@@ -187,6 +187,7 @@ func TestCreateEditionReportsAFailedCoverWithoutFailingTheEdition(t *testing.T) 
 			client := &coverFlowClient{failImageRecord: tt.failImageRec, failAttach: tt.failAttach}
 			creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "",
 				&http.Client{Transport: &coverFlowTransport{failHosts: tt.failHosts}})
+			creator.EnableCoverUpload()
 
 			result, err := creator.CreateEdition(context.Background(), &edition.EditionInput{
 				BookID: 123, Title: "T", AuthorIDs: []int{1}, ImageURL: tt.imageURL,
@@ -216,6 +217,7 @@ func TestCreateEditionCoverRequestAuthorization(t *testing.T) {
 	transport := &coverFlowTransport{}
 	creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "abs-secret",
 		&http.Client{Transport: transport})
+	creator.EnableCoverUpload()
 
 	result, err := creator.CreateEdition(context.Background(), &edition.EditionInput{
 		BookID: 123, Title: "T", AuthorIDs: []int{1}, ImageURL: "https://covers.example.test/cover.jpg",
@@ -252,6 +254,7 @@ func TestCreateEditionCoverFileExtensionFollowsTheImageBytes(t *testing.T) {
 			transport := &coverFlowTransport{imageBody: tt.body, imageContentType: tt.contentType, omitImageContentType: tt.omit}
 			creator := edition.NewCreatorWithHTTPClient(&coverFlowClient{}, logger.Get(), false, "",
 				&http.Client{Transport: transport})
+			creator.EnableCoverUpload()
 
 			result, err := creator.CreateEdition(context.Background(), &edition.EditionInput{
 				BookID: 123, Title: "T", AuthorIDs: []int{1}, ImageURL: "https://covers.example.test/cover",
@@ -306,6 +309,7 @@ func TestCreateEditionRejectsACoverThatIsNotPNGOrJPEG(t *testing.T) {
 			transport := &coverFlowTransport{imageBody: tt.body, imageContentType: "image/jpeg"}
 			creator := edition.NewCreatorWithHTTPClient(&coverFlowClient{}, logger.Get(), false, "abs-secret",
 				&http.Client{Transport: transport})
+			creator.EnableCoverUpload()
 
 			requireCoverRejected(t, transport, func() (*edition.EditionResult, error) {
 				return creator.CreateEdition(context.Background(), &edition.EditionInput{
@@ -322,6 +326,7 @@ func TestCreateEditionCoverSizeLimit(t *testing.T) {
 	create := func(transport *coverFlowTransport) func() (*edition.EditionResult, error) {
 		creator := edition.NewCreatorWithHTTPClient(&coverFlowClient{}, logger.Get(), false, "abs-secret",
 			&http.Client{Transport: transport})
+		creator.EnableCoverUpload()
 		return func() (*edition.EditionResult, error) {
 			return creator.CreateEdition(context.Background(), &edition.EditionInput{
 				BookID: 123, Title: "T", AuthorIDs: []int{1}, ImageURL: "https://covers.example.test/cover.jpg",
@@ -353,4 +358,34 @@ func TestCreateEditionCoverSizeLimit(t *testing.T) {
 		require.Equal(t, 55, result.ImageID)
 		require.True(t, strings.HasSuffix(transport.uploadedFilename, ".jpg"), transport.uploadedFilename)
 	})
+}
+
+func TestCreateEditionDoesNotAttemptACoverWhileUploadIsOff(t *testing.T) {
+	client := &coverFlowClient{}
+	transport := &coverFlowTransport{}
+	// The creator is not passed EnableCoverUpload, as in every production caller.
+	creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "abs-secret",
+		&http.Client{Transport: transport})
+
+	result, err := creator.CreateEdition(context.Background(), &edition.EditionInput{
+		BookID: 123, Title: "T", AuthorIDs: []int{1}, ImageURL: "https://covers.example.test/cover.jpg",
+	})
+
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.Equal(t, 789, result.EditionID, "the edition is still created")
+	require.Zero(t, result.ImageID)
+	require.NotEmpty(t, result.ImageError, "a requested cover is reported as not uploaded")
+	require.Empty(t, transport.requests, "no request may reach the image host, Hardcover's upload endpoint or storage")
+}
+
+func TestUploadEditionImageIsRefusedWhileUploadIsOff(t *testing.T) {
+	transport := &coverFlowTransport{}
+	creator := edition.NewCreatorWithHTTPClient(&coverFlowClient{}, logger.Get(), false, "abs-secret",
+		&http.Client{Transport: transport})
+
+	err := creator.UploadEditionImage(context.Background(), 789, "https://covers.example.test/cover.jpg", "")
+
+	require.ErrorIs(t, err, edition.ErrCoverUploadDisabled)
+	require.Empty(t, transport.requests, "no request may be made")
 }

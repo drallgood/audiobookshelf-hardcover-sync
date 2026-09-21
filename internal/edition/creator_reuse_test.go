@@ -149,6 +149,7 @@ func TestCreateEdition_ReusesOnlyAnEditionOfTheSameBook(t *testing.T) {
 				ImageURL: "https://audiobookshelf.example.test/api/items/x/cover",
 			}
 			creator := edition.NewCreatorWithHTTPClient(tt.client, logger.Get(), false, "token", &http.Client{Transport: failingTransport{}})
+			creator.EnableCoverUpload()
 
 			result, err := creator.CreateEdition(context.Background(), input)
 
@@ -202,6 +203,7 @@ func TestCreateEdition_DetectsAnExistingEditionByEveryIdentifierBeforeInserting(
 				ImageURL: "https://audiobookshelf.example.test/api/items/x/cover",
 			}
 			creator := edition.NewCreatorWithHTTPClient(tt.client, logger.Get(), false, "token", &http.Client{Transport: failingTransport{}})
+			creator.EnableCoverUpload()
 
 			result, err := creator.CreateEdition(context.Background(), input)
 

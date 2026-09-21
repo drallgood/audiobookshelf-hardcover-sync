@@ -267,13 +267,15 @@ func newTestCreator(t *testing.T, client edition.HardcoverClient) *edition.Creat
 	}
 
 	// Create a new creator with the mock HTTP client
-	return edition.NewCreatorWithHTTPClient(
+	creator := edition.NewCreatorWithHTTPClient(
 		client,
 		logger.Get(),
 		false,
 		"",
 		httpClient,
 	)
+	creator.EnableCoverUpload()
+	return creator
 }
 
 func TestEditionCreator_CreateEdition(t *testing.T) {
@@ -1417,6 +1419,7 @@ func TestEditionCreator_UploadEditionImage(t *testing.T) {
 				"test-token",
 				httpClient,
 			)
+			creator.EnableCoverUpload()
 
 			// Setup mocks
 			if tt.setupMock != nil {

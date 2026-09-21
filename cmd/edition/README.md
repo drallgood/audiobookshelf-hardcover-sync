@@ -150,12 +150,10 @@ The tool reads from the same `config.yaml` file as the main application. Make su
    different book, or one whose book cannot be confirmed, is refused with an
    error.
 
-   When a cover was requested but could not be attached, the edition is still
-   created and the printed result carries an `image_error` naming the failed
-   step (never remote text, URLs or credentials).
-   A cover is only uploaded when the downloaded file is a PNG or JPEG (decided
-   from the file's bytes, not its Content-Type) of at most 15 MB; WebP is not
-   supported by Hardcover, and 15 MB is the largest size it documents.
+   No cover is uploaded for now: Hardcover's cover upload endpoint is not part of
+   its documented API and rejected a new scoped API token. An `image_url` in the
+   input is not fetched; the edition is still created and the printed result
+   carries an `image_error` saying so. The cover code is kept, switched off.
 
 ### Dry Run
 

@@ -27,6 +27,14 @@ import (
 // documents no hard maximum.
 const maxCoverBytes = 15 << 20
 
+// ErrCoverUploadDisabled is returned by UploadEditionImage while cover upload
+// is switched off (see EnableCoverUpload).
+var ErrCoverUploadDisabled = errors.New("cover upload to Hardcover is not supported yet")
+
+// coverUploadDisabledLabel is the ImageError of an edition whose input asked for
+// a cover while cover upload is switched off. It is fixed text, not remote data.
+const coverUploadDisabledLabel = "cover upload to Hardcover is not supported yet"
+
 var (
 	// errCoverFormat means the downloaded cover is not a PNG or JPEG, the only
 	// formats Hardcover documents as supported.
@@ -140,7 +148,19 @@ type Creator struct {
 	// audiobookshelfBaseURL, when set, limits the Audiobookshelf token to
 	// image URLs under this base URL. When empty the legacy heuristic applies.
 	audiobookshelfBaseURL string
-	httpClient            *http.Client // Custom HTTP client for testing
+	// coverUpload is off unless EnableCoverUpload is called. While it is off the
+	// creator makes no cover request of any kind.
+	coverUpload bool
+	httpClient  *http.Client // Custom HTTP client for testing
+}
+
+// EnableCoverUpload switches the cover upload flow on. It is off by default and
+// no production caller turns it on: the upload endpoint
+// (hardcover.app/api/upload/google) is outside Hardcover's documented API and
+// answered 401 to a new scoped API token, so the flow is kept but not used.
+// Call this once a supported way to upload a cover is found.
+func (c *Creator) EnableCoverUpload() {
+	c.coverUpload = true
 }
 
 // SetAudiobookshelfBaseURL restricts sending the Audiobookshelf token to image
@@ -276,7 +296,11 @@ func (c *Creator) CreateEdition(ctx context.Context, input *EditionInput) (*Edit
 	// failure does not fail the creation; it is logged and reported on the result.
 	var imageID int
 	var imageError string
-	if input.ImageURL != "" {
+	if input.ImageURL != "" && !c.coverUpload {
+		// Do not try the upload: it is switched off (see EnableCoverUpload).
+		c.log.Info("Cover upload is not supported yet, creating the edition without a cover", nil)
+		imageError = coverUploadDisabledLabel
+	} else if input.ImageURL != "" {
 		// First upload the image to Google Cloud Storage
 		imageURL, uploadErr := c.uploadImageToGCS(ctx, editionID, input.ImageURL)
 		if uploadErr != nil {
@@ -621,6 +645,10 @@ func (c *Creator) CreateImageRecord(ctx context.Context, editionID int, imageURL
 
 // UploadEditionImage handles the entire flow of uploading an image to an edition
 func (c *Creator) UploadEditionImage(ctx context.Context, editionID int, imageURL, description string) error {
+	if !c.coverUpload {
+		return ErrCoverUploadDisabled
+	}
+
 	// Upload the image to GCS
 	uploadedImageURL, err := c.uploadImageToGCS(ctx, editionID, imageURL)
 	if err != nil {
