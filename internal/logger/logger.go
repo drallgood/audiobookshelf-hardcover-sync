@@ -152,6 +152,12 @@ func (r *responseWriterWrapper) Write(b []byte) (int, error) {
 	return r.ResponseWriter.Write(b)
 }
 
+// Unwrap exposes the wrapped writer so http.ResponseController can reach its
+// optional capabilities, such as per-response write deadlines and flushing.
+func (r *responseWriterWrapper) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
 // Get returns the global logger instance
 func Get() *Logger {
 	once.Do(func() {

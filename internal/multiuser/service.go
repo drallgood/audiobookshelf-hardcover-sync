@@ -184,6 +184,15 @@ func (s *MultiUserService) admissionErrorLocked(profileID string) error {
 	return nil
 }
 
+// checkEditionAdmission rejects read-only edition work for a service that is
+// shutting down or a profile that is being or has been deleted. It admits
+// nothing and holds nothing afterwards.
+func (s *MultiUserService) checkEditionAdmission(profileID string) error {
+	s.admissionMutex.Lock()
+	defer s.admissionMutex.Unlock()
+	return s.admissionErrorLocked(profileID)
+}
+
 // ListProfiles returns all active sync profiles
 func (s *MultiUserService) ListProfiles() ([]database.SyncProfile, error) {
 	return s.repository.ListProfiles()
