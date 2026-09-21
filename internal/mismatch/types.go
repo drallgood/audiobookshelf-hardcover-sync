@@ -40,10 +40,10 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 	ebook := strings.EqualFold(b.ReadingFormat, models.ReadingFormatEbook)
 	editionFormat := b.EditionFormat
 	if ebook {
-		// The audiobook platform hints below do not apply to an ebook.
-		if editionFormat == "" || editionFormat == "Audiobook" {
-			editionFormat = editionFormatEbook
-		}
+		// The audiobook platform hints below do not apply to an ebook, and a
+		// platform label the record already carries (for example "Audible Audio")
+		// must not leak into an ebook export.
+		editionFormat = editionFormatEbook
 	} else if editionFormat == "" || editionFormat == "Audiobook" {
 		// Primary check: ASIN indicates Audible/Amazon purchase
 		if b.ASIN != "" {

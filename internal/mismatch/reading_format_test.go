@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"testing"
 
@@ -104,6 +105,19 @@ func TestEbookMismatchExportsAnEbookEdition(t *testing.T) {
 	}
 }
 
+// TestEbookExportIgnoresAnAudiobookFormatLabel checks that an ebook record
+// exports as an "Ebook" edition whatever edition format label it carries, so an
+// audiobook platform label on a legacy or hand-built record does not leak.
+func TestEbookExportIgnoresAnAudiobookFormatLabel(t *testing.T) {
+	for _, label := range []string{"", "Audiobook", "Audible Audio", "libro.fm"} {
+		t.Run("label "+label, func(t *testing.T) {
+			record := BookMismatch{BookID: "1", Title: "Book", ASIN: "B0EBOOK001", ReadingFormat: "ebook", EditionFormat: label}
+			export := record.ToEditionExport(logger.WithLogger(context.Background(), logger.Get()), nil)
+			require.Equal(t, "Ebook", export.EditionFormat)
+		})
+	}
+}
+
 // TestSavedExportKeepsTheCanonicalReadingFormatAndNoPlatformInfo checks the
 // written edition files: an ebook is exported as "ebook" however the record
 // spelled it, and its edition information stays empty (the importer sends it
@@ -121,6 +135,9 @@ func TestSavedExportKeepsTheCanonicalReadingFormatAndNoPlatformInfo(t *testing.T
 	files, err := filepath.Glob(filepath.Join(dir, "edition_*.json"))
 	require.NoError(t, err)
 	require.Len(t, files, 2)
+	// The files are numbered in record order (edition_001_..., edition_002_...),
+	// so a lexical sort pairs each file with its record.
+	sort.Strings(files)
 
 	want := []struct{ reading, info string }{{"ebook", ""}, {"", "Unabridged"}}
 	for i, file := range files {
