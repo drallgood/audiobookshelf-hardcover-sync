@@ -67,6 +67,7 @@ Existing single-profile setups are **automatically migrated** on first startup:
 | `DELETE` | `/api/profiles/{id}` | Delete profile |
 | `PUT` | `/api/profiles/{id}/config` | Update profile configuration |
 | `GET` | `/api/profiles/{id}/runs/{runId}/details` | Get book-level details for a retained sync run |
+| `GET` | `/api/profiles/{id}/runs/{runId}/books/{bookId}/edition-draft` | Get a draft Hardcover edition for a `needs_review` book in a run with available details |
 | `POST` | `/api/profiles/{id}/sync` | Start sync |
 | `DELETE` | `/api/profiles/{id}/sync` | Cancel sync |
 | `GET` | `/api/status` | All profile statuses |
@@ -107,6 +108,68 @@ history return `404`. Clients can filter `book_outcomes` for `needs_review`,
 `not_found`, and `failed` records. `last_attempted_at` includes dry-run,
 failed, and canceled attempts; `last_successful_at` is updated only by a
 successful non-dry-run completion.
+
+### Draft an edition for a `needs_review` book (API)
+
+When a sync run marks a book `needs_review` and its record has a Hardcover
+candidate (`hardcover_book_id`), an authenticated caller can fetch a draft of a
+new Hardcover edition built from the Audiobookshelf item. This is an API-only
+workflow; the web interface does not offer it yet. The route is scoped to a run
+whose details are available (the active run or a retained one) and to a book in
+that run, and requires write permission on the profile. `{bookId}` is the
+Audiobookshelf library item ID from `book_outcomes[].book_id` in the run-details
+response. The draft only reads from Audiobookshelf and Hardcover; it creates
+nothing.
+
+```bash
+# Fetch the draft (authenticated; use your own host, IDs, and token)
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/profiles/$PROFILE_ID/runs/$RUN_ID/books/$BOOK_ID/edition-draft"
+```
+
+The response uses the usual `{"success": ..., "data": ..., "error": ...}`
+envelope.
+
+- **Draft**: `data` always contains every one of these keys: the editable
+  edition fields (`title`, `subtitle`, `asin`, `isbn_10`, `isbn_13`,
+  `release_date`, `edition_information`, `edition_format`, `audio_seconds`,
+  `language_id`, `country_id`, `author_ids`, `narrator_ids`, `publisher_id`),
+  the target `hardcover_book_id`, the `reading_format` (`audiobook` or
+  `ebook`, decided by the Audiobookshelf item), display names (`author_names`,
+  `narrator_names`, `publisher_name`), the Audiobookshelf `cover_url` (empty
+  when the item has no cover), `dry_run`, and `warnings`. The ID lists and
+  `warnings` are arrays and are never `null`. The Hardcover book is taken from
+  the run record. A `publisher_id` of `0` means no publisher. Hyphens and
+  spaces are removed from the ISBN, and when it is valid the draft also fills
+  the other ISBN form (ISBN-10 or ISBN-13) so Hardcover can match either. The
+  route returns `409` for a book whose Audiobookshelf item has no ASIN or valid
+  ISBN, because an edition created for it could not be matched by a sync; add
+  one in Audiobookshelf first. Warnings flag
+  things to review before an edition is created: no author that could be
+  resolved on Hardcover (creation would then fail), no release date, a
+  publisher not found on Hardcover, and no narrator. A warning can also come
+  from a Hardcover lookup that failed rather than found nothing, for example
+  during an outage; fetching the draft again may clear it.
+- **Ebooks**: an Audiobookshelf item that has an ebook file and no audio (the
+  same rule the sync uses) drafts an ebook edition: `reading_format` is `ebook`,
+  `edition_format` defaults to `Ebook`, and there are no narrators or
+  `audio_seconds`. An audiobook that also has an ebook file is still an
+  audiobook.
+- **Dry run**: `dry_run` is `true` when the profile is in dry-run mode.
+- **Audiobookshelf token**: the profile's Audiobookshelf token is used only on
+  the server, to fetch the item, and is never returned.
+
+Errors:
+
+| Status | Meaning |
+|--------|---------|
+| `401` | Authentication is enabled and the request is not authenticated |
+| `403` | The caller is a viewer without write permission |
+| `404` | Profile (including another user's profile), run, book record, or Audiobookshelf item not found |
+| `409` | The book is not `needs_review` or has no numeric Hardcover book ID, its Audiobookshelf item has no ASIN or valid ISBN, or the profile is being deleted |
+| `500` | Unexpected server failure |
+| `502` | Audiobookshelf or Hardcover failed; the message is generic and names only the service |
+| `503` | The service is shutting down |
 
 ### Environment Variables (Multi-Profile)
 

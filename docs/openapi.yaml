@@ -44,6 +44,8 @@ tags:
     description: Control sync operations
   - name: Status
     description: Check sync status
+  - name: Editions
+    description: Draft Hardcover editions for needs-review books
 
 components:
   securitySchemes:
@@ -321,6 +323,63 @@ components:
           items:
             $ref: '#/components/schemas/BookOutcomeRecord'
 
+    EditionDraft:
+      type: object
+      description: Draft of a new Hardcover edition built from an Audiobookshelf item. The editable fields (title, subtitle, asin, isbn_10, isbn_13, release_date, edition_information, edition_format, audio_seconds, language_id, country_id, author_ids, narrator_ids, publisher_id) are proposed values; the remaining fields (hardcover_book_id, reading_format, author_names, narrator_names, publisher_name, cover_url, dry_run, warnings) are informational.
+      required: [hardcover_book_id, title, subtitle, asin, isbn_10, isbn_13, release_date, edition_information, edition_format, reading_format, audio_seconds, language_id, country_id, author_ids, narrator_ids, publisher_id, author_names, narrator_names, publisher_name, cover_url, dry_run, warnings]
+      properties:
+        hardcover_book_id:
+          type: integer
+          description: Hardcover book the edition will be attached to. Taken from the run record, never from the client.
+        title: {type: string}
+        subtitle: {type: string}
+        asin: {type: string}
+        isbn_10: {type: string}
+        isbn_13: {type: string}
+        release_date:
+          type: string
+          description: Release date as YYYY-MM-DD; may be empty.
+          example: "2024-01-31"
+        edition_information: {type: string}
+        edition_format: {type: string}
+        reading_format:
+          type: string
+          enum: [audiobook, ebook]
+          description: Decided by the Audiobookshelf item (an ebook file and no audio is an ebook). An ebook draft has no narrators or audio_seconds.
+        audio_seconds: {type: integer}
+        language_id: {type: integer}
+        country_id: {type: integer}
+        author_ids:
+          type: array
+          description: Never null; empty when no author was resolved on Hardcover.
+          items: {type: integer}
+        narrator_ids:
+          type: array
+          description: Never null.
+          items: {type: integer}
+        publisher_id:
+          type: integer
+          description: Hardcover publisher ID; 0 means no publisher.
+        author_names:
+          type: string
+          description: Display string for the author IDs.
+        narrator_names:
+          type: string
+          description: Display string for the narrator IDs.
+        publisher_name:
+          type: string
+          description: Display string for the publisher.
+        cover_url:
+          type: string
+          description: Audiobookshelf cover URL; empty when the item has no cover.
+        dry_run:
+          type: boolean
+          description: True when the profile is in dry-run mode.
+        warnings:
+          type: array
+          description: Things to review before an edition is created, such as no author resolved on Hardcover (creation would then fail), no release date, a publisher not found on Hardcover, or no narrator. A warning can also result from a Hardcover lookup that failed rather than found nothing, for example during an outage, and fetching the draft again may clear it. Never null; empty when there is nothing to flag.
+          items: {type: string}
+
 security:
   - BearerAuth: []
 
@@ -578,6 +637,87 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
   
+  /profiles/{profileId}/runs/{runId}/books/{bookId}/edition-draft:
+    get:
+      tags: [Editions]
+      summary: Get a draft Hardcover edition for a needs-review book
+      description: Builds a draft of a new Hardcover edition from the Audiobookshelf item of a book that a run with available details (the active run or a retained one) marked needs_review and that has a Hardcover candidate (hardcover_book_id). Hyphens and spaces are removed from the ISBN, and when it is valid the draft also fills the other ISBN form. The item must have an ASIN or a valid ISBN, otherwise the request is rejected with 409. Requires write permission on the profile. The profile's Audiobookshelf token is used only on the server to fetch the item and is never returned.
+      parameters:
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "profile-123"
+        - name: runId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "profile-123-1700000000000000000-1"
+        - name: bookId
+          in: path
+          required: true
+          description: Audiobookshelf library item ID, from book_outcomes[].book_id of the run details.
+          schema:
+            type: string
+          example: "li_abc123"
+      responses:
+        '200':
+          description: Draft edition
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/EditionDraft'
+        '401':
+          description: Authentication is enabled and the request is not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller is a viewer without write permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Profile (including another user's profile), run, book record, or Audiobookshelf item not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The book is not needs_review or has no numeric Hardcover book ID, its Audiobookshelf item has no ASIN or valid ISBN, or the profile is being deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: Audiobookshelf or Hardcover request failed; the message is generic and names only the service
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The service is shutting down
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /status:
     get:
       tags: [Status]
