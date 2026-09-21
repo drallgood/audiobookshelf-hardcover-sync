@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Run gofmt across repo by @Snuffy2 (#187)
 - **Reduce noisy info-level logging**: Log startup and configuration dumps, request and client detail, cache statistics, and mismatch enrichment at debug instead of info, since info is the default log level. Per-book outcomes and skip reasons, run and library progress, dry-run confirmations, rate limiter pacing, the web UI port, lifecycle events, and the sync summary stay at info. By @Snuffy2. (#189)
 - **Unresolved publisher no longer defaults to ID 1 in mismatch exports**: The mismatch JSON export (`edition_*.json` files consumed by the `edition` CLI) now writes `publisher_id: 0` when a book's publisher cannot be resolved on Hardcover, instead of the previous default of `1`, so imports no longer attach an arbitrary publisher. By @Snuffy2.
+- **Ebook items export as ebook editions**: The mismatch JSON export (`edition_*.json` files consumed by the `edition` CLI) now marks an ebook item with `"reading_format": "ebook"` and an `Ebook` edition format, and leaves out the audiobook-only `Unabridged` default and audio length. Audiobook items export exactly as before. By @Snuffy2.
 
 ## [v3.6.0] - 2026-09-01
 

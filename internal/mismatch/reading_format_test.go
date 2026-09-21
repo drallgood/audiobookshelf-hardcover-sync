@@ -1,6 +1,7 @@
 package mismatch
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/stretchr/testify/require"
 )
 
@@ -56,6 +58,46 @@ func TestAddWithMetadataEnrichesAgainstTheSourceReadingFormat(t *testing.T) {
 			for _, id := range formatIDs {
 				require.Equal(t, tt.wantFormatID, id)
 			}
+		})
+	}
+}
+
+// TestEbookMismatchExportsAnEbookEdition checks the edition export of an ebook
+// item: an ebook reading format and label, no audiobook platform hint, no
+// audio length, and no "Unabridged" default. An audiobook's export is unchanged.
+func TestEbookMismatchExportsAnEbookEdition(t *testing.T) {
+	tests := map[string]struct {
+		readingFormat  string
+		wantFormat     string
+		wantReading    string
+		wantInfo       string
+		wantAudioSecs  int
+		wantEditionFmt string
+	}{
+		"ebook":     {"ebook", "Ebook", "ebook", "", 0, "Ebook"},
+		"audiobook": {"", "Audible Audio", "", "Unabridged", 3600, "Audiobook"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"data":{"books":[]}}`))
+			}))
+			defer server.Close()
+			hc := hardcover.CreateTestClient(server)
+			metadata := MediaMetadata{Title: "Book", AuthorName: "Author", Duration: 3600, ReadingFormat: tt.readingFormat}
+			record := NewCollector().AddWithMetadata(metadata, "1", "", "reason", 3600, "abs1", hc, "")
+			// An ASIN would otherwise make the record query the public Audnex API.
+			record.ASIN = "B0EBOOK001"
+			require.Equal(t, tt.wantReading, record.ReadingFormat)
+			require.Equal(t, tt.wantEditionFmt, record.EditionFormat)
+
+			export := record.ToEditionExport(logger.WithLogger(context.Background(), logger.Get()), hc)
+
+			require.Equal(t, tt.wantFormat, export.EditionFormat)
+			require.Equal(t, tt.wantReading, export.ReadingFormat)
+			require.Equal(t, tt.wantInfo, export.EditionInfo)
+			require.Equal(t, tt.wantAudioSecs, export.AudioSeconds)
 		})
 	}
 }
