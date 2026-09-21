@@ -104,12 +104,13 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 	editionInfo := ""
 	info := strings.TrimSpace(b.EditionInfo)
 	if ebook {
+		lower := strings.ToLower(info)
 		// Placeholders and debug text that end up in EditionInfo are not real values.
 		if info != "" &&
-			!strings.Contains(info, "error") &&
-			!strings.Contains(info, "Reason:") &&
-			!strings.Contains(info, "mismatch") &&
-			!strings.Contains(info, "Audiobookshelf") {
+			!strings.Contains(lower, "error") &&
+			!strings.Contains(lower, "reason:") &&
+			!strings.Contains(lower, "mismatch") &&
+			!strings.Contains(lower, "audiobookshelf") {
 			editionInfo = info
 		}
 	} else if strings.EqualFold(info, "Abridged") {

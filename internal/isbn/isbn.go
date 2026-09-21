@@ -70,6 +70,7 @@ func Normalize(s string) string {
 	return out
 }
 
+// isSeparator reports whether r is a character used to separate ISBN digits.
 func isSeparator(r rune) bool {
 	switch r {
 	case '-', '_', '.', '‐', '‑', '‒', '–', '—', '―':
@@ -100,6 +101,7 @@ func Parse(s string) (Result, bool) {
 	return Result{}, false
 }
 
+// allDigits reports whether s contains only digits and is not empty.
 func allDigits(s string) bool {
 	for _, r := range s {
 		if r < '0' || r > '9' {
@@ -109,6 +111,7 @@ func allDigits(s string) bool {
 	return s != ""
 }
 
+// check13 calculates the ISBN-13 check digit for the first 12 characters.
 func check13(first12 string) byte {
 	sum := 0
 	for i, r := range first12 {
@@ -121,8 +124,10 @@ func check13(first12 string) byte {
 	return byte('0' + (10-sum%10)%10)
 }
 
+// valid13 reports whether s is a valid ISBN-13 string.
 func valid13(s string) bool { return s[12] == check13(s[:12]) }
 
+// check10 calculates the ISBN-10 check digit for the first 9 characters.
 func check10(first9 string) byte {
 	sum := 0
 	for i, r := range first9 {
@@ -135,6 +140,7 @@ func check10(first9 string) byte {
 	return byte('0' + c)
 }
 
+// valid10 reports whether s is a valid ISBN-10 string.
 func valid10(s string) bool { return s[9] == check10(s[:9]) }
 
 // to13 converts a valid ISBN-10 to its 978-prefixed ISBN-13.

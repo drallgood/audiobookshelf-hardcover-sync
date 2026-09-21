@@ -36,6 +36,7 @@ func ReadingFormatID(format string) int {
 	return readingFormatIDAudiobook
 }
 
+// readingFormatKey is the context key for storing the desired reading format.
 type readingFormatKey struct{}
 
 // WithReadingFormat returns a context that carries the desired reading format

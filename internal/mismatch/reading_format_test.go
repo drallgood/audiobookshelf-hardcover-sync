@@ -153,6 +153,9 @@ func TestExportEditionInformation(t *testing.T) {
 		"ebook placeholder":                  {"ebook", "Audiobookshelf", ""},
 		"ebook debug text":                   {"ebook", "Reason: no match", ""},
 		"ebook with a real value":            {"ebook", "Special edition", "Special edition"},
+		"ebook lowercase placeholder":        {"ebook", "audiobookshelf", ""},
+		"ebook lowercase debug text":         {"ebook", "reason: no match", ""},
+		"ebook capitalised error":            {"ebook", "Error: lookup failed", ""},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
