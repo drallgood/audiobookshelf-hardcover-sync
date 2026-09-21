@@ -40,6 +40,31 @@ type EditionInput struct {
 	ReleaseDate   string `json:"release_date,omitempty"`
 	EditionInfo   string `json:"edition_information,omitempty"`
 	EditionFormat string `json:"edition_format,omitempty"`
+	// ReadingFormat is "audiobook" (the default when empty) or "ebook". It picks
+	// Hardcover's reading format, which formats the duplicate lookups consider,
+	// and whether audio-only fields (duration, narrators) are sent.
+	ReadingFormat string `json:"reading_format,omitempty"`
+}
+
+// isEbook reports whether the input describes an ebook edition.
+func (e *EditionInput) isEbook() bool {
+	return strings.EqualFold(strings.TrimSpace(e.ReadingFormat), models.ReadingFormatEbook)
+}
+
+// readingFormat returns the normalized reading format of the input.
+func (e *EditionInput) readingFormat() string {
+	if e.isEbook() {
+		return models.ReadingFormatEbook
+	}
+	return models.ReadingFormatAudiobook
+}
+
+// defaultEditionFormat is the edition_format label used when none is given.
+func (e *EditionInput) defaultEditionFormat() string {
+	if e.isEbook() {
+		return "Ebook"
+	}
+	return "Audiobook"
 }
 
 // EditionResult represents the result of an edition creation or update
@@ -188,17 +213,22 @@ func NewCreatorWithHTTPClient(client HardcoverClient, log *logger.Logger, dryRun
 	}
 }
 
-// CreateEdition creates a new audiobook edition in Hardcover
+// CreateEdition creates a new edition in Hardcover, an audiobook unless the input
+// says ebook.
 func (c *Creator) CreateEdition(ctx context.Context, input *EditionInput) (*EditionResult, error) {
 	// Validate input
 	if err := input.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid input: %w", err)
 	}
 
-	c.log.Debug("Creating new audiobook edition", map[string]interface{}{
-		"book_id": input.BookID,
-		"title":   input.Title,
-		"dry_run": c.dryRun,
+	// The duplicate lookups only consider editions of the input's own format.
+	ctx = models.WithReadingFormat(ctx, input.readingFormat())
+
+	c.log.Debug("Creating new edition", map[string]interface{}{
+		"book_id":        input.BookID,
+		"title":          input.Title,
+		"reading_format": input.readingFormat(),
+		"dry_run":        c.dryRun,
 	})
 
 	if c.dryRun {
@@ -777,10 +807,10 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 	  }
 	}`
 
-	// The format label is free text; reading_format_id stays Audiobook.
+	// The format label is free text; reading_format_id follows the reading format.
 	editionFormat := strings.TrimSpace(input.EditionFormat)
 	if editionFormat == "" {
-		editionFormat = "Audiobook"
+		editionFormat = input.defaultEditionFormat()
 	}
 
 	// Initialize edition data with required fields
@@ -788,7 +818,7 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 		"dto": map[string]interface{}{
 			"title":             input.Title,
 			"edition_format":    editionFormat,
-			"reading_format_id": 2, // 2 is the ID for Audiobook format
+			"reading_format_id": models.ReadingFormatID(input.ReadingFormat),
 		},
 	}
 
@@ -827,11 +857,14 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 		})
 	}
 
-	for _, narratorID := range input.NarratorIDs {
-		contributions = append(contributions, map[string]interface{}{
-			"author_id":    narratorID,
-			"contribution": "Narrator",
-		})
+	// Narrators and audio length only apply to audiobooks.
+	if !input.isEbook() {
+		for _, narratorID := range input.NarratorIDs {
+			contributions = append(contributions, map[string]interface{}{
+				"author_id":    narratorID,
+				"contribution": "Narrator",
+			})
+		}
 	}
 
 	if len(contributions) > 0 {
@@ -852,7 +885,7 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 	}
 
 	// Set audio length if provided
-	if input.AudioLength > 0 {
+	if input.AudioLength > 0 && !input.isEbook() {
 		dto["audio_seconds"] = input.AudioLength
 	}
 
@@ -1114,6 +1147,11 @@ func (e *EditionInput) Validate() error {
 	}
 	if len(e.AuthorIDs) == 0 {
 		return errors.New("at least one author is required")
+	}
+	switch strings.ToLower(strings.TrimSpace(e.ReadingFormat)) {
+	case "", models.ReadingFormatAudiobook, models.ReadingFormatEbook:
+	default:
+		return fmt.Errorf("invalid reading_format %q, expected audiobook or ebook", e.ReadingFormat)
 	}
 	if e.ReleaseDate != "" {
 		if _, err := time.Parse("2006-01-02", e.ReleaseDate); err != nil {

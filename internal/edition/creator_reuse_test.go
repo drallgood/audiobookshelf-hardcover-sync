@@ -32,11 +32,21 @@ type reuseClient struct {
 	mu        sync.Mutex
 	mutations []string
 	lookups   []string // "KIND:value", in call order
+	// lookupFormats is the reading format each lookup's context carried ("" for none).
+	lookupFormats []string
+	// sent is the edition dto of each insert_edition attempt.
+	sent []map[string]interface{}
+}
+
+func (c *reuseClient) noteFormat(ctx context.Context) {
+	format, _ := models.ReadingFormatFromContext(ctx)
+	c.lookupFormats = append(c.lookupFormats, format)
 }
 
 func (c *reuseClient) GetEditionByASIN(ctx context.Context, asin string) (*models.Edition, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.noteFormat(ctx)
 	c.lookups = append(c.lookups, "ASIN:"+asin)
 	return c.visible(c.byASIN)
 }
@@ -44,6 +54,7 @@ func (c *reuseClient) GetEditionByASIN(ctx context.Context, asin string) (*model
 func (c *reuseClient) GetEditionByISBN10(ctx context.Context, isbn10 string) (*models.Edition, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.noteFormat(ctx)
 	c.lookups = append(c.lookups, "ISBN-10:"+isbn10)
 	return c.visible(c.byISBN10)
 }
@@ -51,6 +62,7 @@ func (c *reuseClient) GetEditionByISBN10(ctx context.Context, isbn10 string) (*m
 func (c *reuseClient) GetEditionByISBN13(ctx context.Context, isbn13 string) (*models.Edition, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.noteFormat(ctx)
 	c.lookups = append(c.lookups, "ISBN-13:"+isbn13)
 	return c.visible(c.byISBN13)
 }
@@ -67,6 +79,11 @@ func (c *reuseClient) visible(found *models.Edition) (*models.Edition, error) {
 func (c *reuseClient) GraphQLMutation(_ context.Context, mutation string, variables map[string]interface{}, result interface{}) error {
 	c.mu.Lock()
 	c.mutations = append(c.mutations, mutation)
+	if edition, ok := variables["edition"].(map[string]interface{}); ok {
+		if dto, ok := edition["dto"].(map[string]interface{}); ok {
+			c.sent = append(c.sent, dto)
+		}
+	}
 	c.mu.Unlock()
 	if !strings.Contains(mutation, "insert_edition") {
 		return errors.New("unexpected mutation")
@@ -248,6 +265,90 @@ func TestCreateEdition_DryRunLooksNothingUp(t *testing.T) {
 	}
 }
 
+// TestCreateEdition_EbookInputCreatesAnEbookEdition checks what an ebook edition
+// sends to Hardcover and that duplicates are looked up among ebook editions only.
+func TestCreateEdition_EbookInputCreatesAnEbookEdition(t *testing.T) {
+	base := edition.EditionInput{
+		BookID: 123, Title: "A Title", ASIN: "B0EBOOK001", ISBN13: "9780306406157", AuthorIDs: []int{1},
+		NarratorIDs: []int{7}, AudioLength: 3600,
+	}
+	tests := []struct {
+		name         string
+		format       string
+		wantFormat   string
+		wantReading  int
+		wantAudio    bool
+		wantLookupIn string
+	}{
+		{"ebook", "ebook", "Ebook", 4, false, "ebook"},
+		{"ebook is case-insensitive", " Ebook ", "Ebook", 4, false, "ebook"},
+		{"audiobook", "audiobook", "Audiobook", 2, true, "audiobook"},
+		{"unset stays an audiobook", "", "Audiobook", 2, true, "audiobook"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &reuseClient{insertID: 777}
+			input := base
+			input.ReadingFormat = tt.format
+			creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "token", &http.Client{Transport: failingTransport{}})
+
+			result, err := creator.CreateEdition(context.Background(), &input)
+			if err != nil {
+				t.Fatalf("CreateEdition() error = %v", err)
+			}
+			if result.EditionID != 777 || result.Existing {
+				t.Fatalf("CreateEdition() = %+v, want the new edition 777", result)
+			}
+			if len(client.sent) != 1 {
+				t.Fatalf("insert_edition attempts = %d, want 1", len(client.sent))
+			}
+			dto := client.sent[0]
+			if dto["edition_format"] != tt.wantFormat || dto["reading_format_id"] != tt.wantReading {
+				t.Errorf("dto edition_format=%v reading_format_id=%v, want %q and %d", dto["edition_format"], dto["reading_format_id"], tt.wantFormat, tt.wantReading)
+			}
+			if _, hasAudio := dto["audio_seconds"]; hasAudio != tt.wantAudio {
+				t.Errorf("audio_seconds sent = %v, want %v", hasAudio, tt.wantAudio)
+			}
+			_, hasContributions := dto["contributions"]
+			hasNarrator := false
+			if list, ok := dto["contributions"].([]map[string]interface{}); ok {
+				for _, c := range list {
+					if c["contribution"] == "Narrator" {
+						hasNarrator = true
+					}
+				}
+			}
+			if hasNarrator != tt.wantAudio || !hasContributions {
+				t.Errorf("narrator contribution sent = %v, want %v (authors are always sent)", hasNarrator, tt.wantAudio)
+			}
+			if len(client.lookupFormats) == 0 {
+				t.Fatal("no duplicate lookup was made")
+			}
+			for _, got := range client.lookupFormats {
+				if got != tt.wantLookupIn {
+					t.Errorf("lookup reading format = %q, want %q", got, tt.wantLookupIn)
+				}
+			}
+		})
+	}
+}
+
+func TestEditionInputValidate_RejectsAnUnknownReadingFormat(t *testing.T) {
+	input := edition.EditionInput{BookID: 1, Title: "T", AuthorIDs: []int{1}, ReadingFormat: "paperback"}
+	if err := input.Validate(); err == nil {
+		t.Fatal("Validate() accepted reading_format \"paperback\"")
+	}
+	for _, ok := range []string{"", "audiobook", "Ebook"} {
+		input.ReadingFormat = ok
+		if err := input.Validate(); err != nil {
+			t.Errorf("Validate() rejected reading_format %q: %v", ok, err)
+		}
+	}
+}
+
+// TestCreateEdition_DuplicateErrorFallbackFindsAnEditionByISBN10 covers the race
+// where the edition only appears after insert_edition reports a duplicate: the
+// fallback searches every identifier, including the ISBN-10.
 func TestCreateEdition_DuplicateErrorFallbackFindsAnEditionByISBN10(t *testing.T) {
 	client := &reuseClient{
 		insertErrors: []string{"already exists"},

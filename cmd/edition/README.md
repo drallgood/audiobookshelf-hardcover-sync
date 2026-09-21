@@ -106,11 +106,18 @@ The input JSON should follow this structure:
   "release_date": "2023-01-01",
   "audio_seconds": 3600,
   "edition_format": "Audible Audio",
+  "reading_format": "audiobook",
   "edition_information": "Special edition with bonus content",
   "language_id": 1,
   "country_id": 1
 }
 ```
+
+`reading_format` is optional: `audiobook` (the default) or `ebook`. An `ebook`
+edition is created with Hardcover's ebook reading format, an `Ebook` default
+`edition_format`, and without narrators or `audio_seconds`, and duplicate
+detection by ASIN and ISBN only considers ebook editions. Mismatch files
+exported for ebook items already carry `"reading_format": "ebook"`.
 
 ## Configuration
 
