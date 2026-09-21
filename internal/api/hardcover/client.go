@@ -22,10 +22,8 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/util"
 )
 
-// Context key for passing desired reading format (e.g., "audiobook", "ebook")
+// Context key type for values this package passes on the context.
 type ctxKey string
-
-const ctxKeyReadingFormat ctxKey = "hardcover_reading_format"
 
 const ctxKeyAudnexRegion ctxKey = "hardcover_audnex_region"
 
@@ -33,7 +31,7 @@ const ctxKeyAudnexRegion ctxKey = "hardcover_audnex_region"
 // Accepted values typically include "audiobook" and "ebook". Case-insensitive.
 // When absent, client defaults to audiobook-only behavior for compatibility.
 func WithReadingFormat(ctx context.Context, format string) context.Context {
-	return context.WithValue(ctx, ctxKeyReadingFormat, strings.ToLower(strings.TrimSpace(format)))
+	return models.WithReadingFormat(ctx, format)
 }
 
 // WithAudnexRegion returns a context that carries the configured Audnexus region.
@@ -52,26 +50,14 @@ func getAudnexRegionFromCtx(ctx context.Context) string {
 
 // getReadingFormatFromCtx extracts a normalized reading format string from context, if present.
 func getReadingFormatFromCtx(ctx context.Context) (string, bool) {
-	v := ctx.Value(ctxKeyReadingFormat)
-	if s, ok := v.(string); ok && s != "" {
-		return strings.ToLower(strings.TrimSpace(s)), true
-	}
-	return "", false
+	return models.ReadingFormatFromContext(ctx)
 }
-
-// Hardcover reading_format ids for the formats Audiobookshelf items can have.
-const (
-	readingFormatIDAudiobook = 2
-	readingFormatIDEbook     = 4
-)
 
 // readingFormatIDFromCtx maps the reading format carried by ctx to Hardcover's
 // reading_format id, defaulting to audiobook when none (or an unknown one) is set.
 func readingFormatIDFromCtx(ctx context.Context) int {
-	if formatStr, ok := getReadingFormatFromCtx(ctx); ok && formatStr == "ebook" {
-		return readingFormatIDEbook
-	}
-	return readingFormatIDAudiobook
+	format, _ := getReadingFormatFromCtx(ctx)
+	return models.ReadingFormatID(format)
 }
 
 // getMapKeys returns a sorted list of keys from a map
