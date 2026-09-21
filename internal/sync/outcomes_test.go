@@ -548,6 +548,55 @@ func TestProcessBookKeepsIdentifierFailureWhenTitleSearchFindsCandidate(t *testi
 	hc.AssertExpectations(t)
 }
 
+func TestProcessBookIdentifierFailureMismatchExportsByReadingFormat(t *testing.T) {
+	tests := []struct {
+		name           string
+		ebook          bool
+		wantReading    string
+		wantEdition    string
+		wantAudioTotal int
+	}{
+		{name: "ebook is exported as an ebook edition", ebook: true, wantReading: models.ReadingFormatEbook, wantEdition: "Ebook", wantAudioTotal: 0},
+		{name: "audiobook keeps the audiobook shape", ebook: false, wantReading: "", wantEdition: "Audible Audio", wantAudioTotal: 1000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, hc := createTestService()
+			svc.config.Sync.IncludeEbooks = true
+			testBook := createTestBook("lookup-failed-format", "Possible Match", "Author", "failed-asin", "")
+			testBook.Media.Duration = 1000
+			testBook.Progress.CurrentTime = 300
+			if tt.ebook {
+				testBook.MediaType = "ebook"
+			}
+			absBook := toAudiobookshelfBook(testBook)
+			require.Equal(t, tt.ebook, absBook.IsEbook())
+			lookupErr := errors.New("identifier lookup unavailable")
+			hc.On("SearchBookByASIN", mock.Anything, "failed-asin").Return((*models.HardcoverBook)(nil), lookupErr).Once()
+			hc.On("SearchBooks", mock.Anything, "Possible Match Author", "").Return([]models.HardcoverBook{{
+				ID: "901", Title: "Possible Match", Slug: "possible-match",
+			}}, nil).Once()
+			hc.On("GetBookByID", mock.Anything, "901").Return(&models.HardcoverBook{
+				ID: "901", Title: "Possible Match", Slug: "possible-match",
+			}, nil).Once()
+
+			require.NoError(t, svc.processBook(context.Background(), *absBook, &models.AudiobookshelfUserProgress{}))
+			require.Equal(t, OutcomeFailed, recordedOutcome(svc, absBook.ID).Outcome)
+			records := svc.mismatchCollector.GetAll()
+			require.Len(t, records, 1)
+			assert.Equal(t, tt.wantReading, records[0].ReadingFormat)
+
+			// The export only resolves people, which are irrelevant to the format.
+			hc.On("SearchAuthors", mock.Anything, mock.Anything, mock.Anything).Return([]models.Author{}, nil).Maybe()
+			hc.On("SearchNarrators", mock.Anything, mock.Anything, mock.Anything).Return([]models.Author{}, nil).Maybe()
+			export := records[0].ToEditionExport(context.Background(), hc)
+			require.NotNil(t, export)
+			assert.Equal(t, tt.wantEdition, export.EditionFormat)
+			assert.Equal(t, tt.wantAudioTotal, export.AudioSeconds)
+		})
+	}
+}
+
 func TestProcessBookSnapshotKeepsTitleOnlyEnrichment(t *testing.T) {
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false

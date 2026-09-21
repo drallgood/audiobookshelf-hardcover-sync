@@ -2275,6 +2275,12 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				Timestamp:       time.Now().Unix(),
 				CreatedAt:       time.Now(),
 			}
+			// An ebook item is exported as an ebook edition, as AddWithMetadata does;
+			// an audiobook keeps its unset formats.
+			if book.IsEbook() {
+				mismatchData.EditionFormat = "Ebook"
+				mismatchData.ReadingFormat = models.ReadingFormatEbook
+			}
 
 			// Add Hardcover book details if available
 			if foundByTitleAuthor {
