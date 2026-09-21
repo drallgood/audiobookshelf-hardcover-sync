@@ -436,7 +436,12 @@ func (h *Handler) UpdateProfileConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use existing tokens if not provided in request
+	// Use existing values if not provided in request
+	audiobookshelfURL := req.AudiobookshelfURL
+	if audiobookshelfURL == "" {
+		audiobookshelfURL = existingProfile.AudiobookshelfURL
+	}
+
 	audiobookshelfToken := req.AudiobookshelfToken
 	if audiobookshelfToken == "" {
 		audiobookshelfToken = existingProfile.AudiobookshelfToken
@@ -450,7 +455,7 @@ func (h *Handler) UpdateProfileConfig(w http.ResponseWriter, r *http.Request) {
 	// Update profile config
 	if err := h.multiUserService.UpdateProfileConfig(
 		profileID,
-		req.AudiobookshelfURL,
+		audiobookshelfURL,
 		audiobookshelfToken,
 		hardcoverToken,
 		req.SyncConfig,

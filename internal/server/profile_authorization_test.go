@@ -227,6 +227,31 @@ func TestAuthDisabledProfileResponsesRedactCredentialsAndPreserveUpdates(t *test
 	}
 }
 
+func TestProfileConfigUpdatePreservesOmittedAudiobookshelfURL(t *testing.T) {
+	fixture := newRouteTestFixture(t, false)
+	const profileID = "url-preserving-profile"
+	createResponse := fixture.request(
+		http.MethodPost,
+		"/api/profiles",
+		[]byte(`{"id":"`+profileID+`","name":"URL Preserving","audiobookshelf_url":"http://saved.invalid","audiobookshelf_token":"abs-token","hardcover_token":"hc-token"}`),
+	)
+	require.Equal(t, http.StatusOK, createResponse.Code, createResponse.Body.String())
+
+	response := fixture.request(
+		http.MethodPut,
+		"/api/profiles/"+profileID+"/config",
+		[]byte(`{"hardcover_token":"rotated-token"}`),
+	)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+
+	profile, err := fixture.repo.GetProfile(profileID)
+	require.NoError(t, err)
+	require.NotNil(t, profile)
+	require.Equal(t, "http://saved.invalid", profile.AudiobookshelfURL)
+	require.Equal(t, "abs-token", profile.AudiobookshelfToken)
+	require.Equal(t, "rotated-token", profile.HardcoverToken)
+}
+
 func TestGetProfileIncludesPersistedLastSuccessfulAt(t *testing.T) {
 	fixture := newRouteTestFixture(t, false)
 	const profileID = "profile-with-success"
