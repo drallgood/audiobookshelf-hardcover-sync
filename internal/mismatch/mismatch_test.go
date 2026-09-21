@@ -995,3 +995,31 @@ func TestAudiobookExportKeepsItsFields(t *testing.T) {
 		})
 	}
 }
+
+// TestAddWithMetadata_ReleaseDate pins how the export's release date is
+// normalized to YYYY-MM-DD when Audnex supplies none (crosswalk R8): a full
+// date in any of the accepted layouts, a year alone as January 1, and the full
+// date winning over the year.
+func TestAddWithMetadata_ReleaseDate(t *testing.T) {
+	tests := map[string]struct {
+		publishedDate string
+		publishedYear string
+		want          string
+	}{
+		"year alone is January 1":      {"", "2008", "2008-01-01"},
+		"ISO date":                     {"2024-01-15", "", "2024-01-15"},
+		"RFC 3339 with a time":         {"2024-01-15T10:30:00Z", "", "2024-01-15"},
+		"slash date":                   {"2024/01/15", "", "2024-01-15"},
+		"US layout is tried first":     {"01/02/2006", "", "2006-01-02"},
+		"month name":                   {"Jan 2, 2006", "", "2006-01-02"},
+		"day first":                    {"2 Jan 2006", "", "2006-01-02"},
+		"full date wins over the year": {"2024-01-15", "2020", "2024-01-15"},
+		"neither is left empty":        {"", "", ""},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			record := NewCollector().AddWithMetadata(MediaMetadata{Title: "Book", PublishedDate: tt.publishedDate, PublishedYear: tt.publishedYear}, "1", "", "reason", 60, "abs1", nil, "")
+			assert.Equal(t, tt.want, record.ReleaseDate)
+		})
+	}
+}
