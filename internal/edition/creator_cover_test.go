@@ -57,6 +57,8 @@ type coverFlowTransport struct {
 	omitImageContentType bool
 	// uploadedFilename is the file name of the multipart upload to the storage host.
 	uploadedFilename string
+	// authByHost records the Authorization header each peer was sent.
+	authByHost map[string]string
 }
 
 func (rt *coverFlowTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -78,6 +80,10 @@ func (rt *coverFlowTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		}, nil
 	}
 	host := req.URL.Hostname()
+	if rt.authByHost == nil {
+		rt.authByHost = map[string]string{}
+	}
+	rt.authByHost[host] = req.Header.Get("Authorization")
 	if rt.failHosts[host] {
 		return reply(http.StatusInternalServerError, "boom")
 	}
@@ -143,6 +149,27 @@ func TestCreateEditionReportsAFailedCoverWithoutFailingTheEdition(t *testing.T) 
 			}
 		})
 	}
+}
+
+func TestCreateEditionCoverRequestAuthorization(t *testing.T) {
+	logger.Setup(logger.Config{Level: "debug", Format: "json"})
+
+	client := &coverFlowClient{}
+	require.NotEmpty(t, client.GetAuthHeader(), "the assertion below would pass vacuously")
+	transport := &coverFlowTransport{}
+	creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "abs-secret",
+		&http.Client{Transport: transport})
+
+	result, err := creator.CreateEdition(context.Background(), &edition.EditionInput{
+		BookID: 123, Title: "T", AuthorIDs: []int{1}, ImageURL: "https://covers.example.test/cover.jpg",
+	})
+
+	require.NoError(t, err)
+	require.Empty(t, result.ImageError)
+	require.Equal(t, client.GetAuthHeader(), transport.authByHost["hardcover.app"],
+		"the upload-credentials request must carry the Hardcover Authorization header")
+	require.Empty(t, transport.authByHost["covers.example.test"], "the Audiobookshelf token must not go to a non-Audiobookshelf image host")
+	require.Empty(t, transport.authByHost["storage.example.test"], "the storage upload must carry no Authorization header")
 }
 
 func TestCreateEditionCoverFileExtensionFollowsContentType(t *testing.T) {
