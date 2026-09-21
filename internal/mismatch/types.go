@@ -3,7 +3,6 @@ package mismatch
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -12,38 +11,6 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 )
-
-// EditionCreatorInput represents the input format expected by the edition import tool
-type EditionCreatorInput struct {
-	// Core book information
-	BookID   int    `json:"book_id"`
-	Title    string `json:"title"`
-	Subtitle string `json:"subtitle,omitempty"`
-
-	// Identifiers
-	ASIN   string `json:"asin,omitempty"`
-	ISBN10 string `json:"isbn_10,omitempty"`
-	ISBN13 string `json:"isbn_13,omitempty"`
-
-	// Media information
-	ImageURL    string `json:"image_url,omitempty"`
-	AudioLength int    `json:"audio_length,omitempty"`
-	LanguageID  int    `json:"language_id,omitempty"`
-
-	// Relationships
-	AuthorIDs   []int `json:"author_ids,omitempty"`
-	NarratorIDs []int `json:"narrator_ids,omitempty"`
-	PublisherID int   `json:"publisher_id,omitempty"`
-	CountryID   int   `json:"country_id,omitempty"`
-
-	// Edition information
-	ReleaseDate   string `json:"release_date"`
-	EditionFormat string `json:"edition_format,omitempty"`
-	EditionInfo   string `json:"edition_information,omitempty"`
-
-	// User notes (not imported, for reference only)
-	UserNotes string `json:"user_notes,omitempty"`
-}
 
 // ToEditionExport converts a BookMismatch to an EditionExport for the edition import tool
 // Note: This function should be called with a context that has a Hardcover client available
@@ -250,121 +217,6 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 		result.BookID, result.Title, result.EditionInfo, result.AuthorIDs, result.PublisherID))
 
 	return result
-}
-
-// ToEditionInput converts a BookMismatch to an EditionCreatorInput
-// This creates a best-effort conversion to the format expected by the edition import tool
-// Note: This function should be called with a context that has a Hardcover client available
-func (b *BookMismatch) ToEditionInput(ctx context.Context, hc hardcover.HardcoverClientInterface) (EditionCreatorInput, error) {
-	// Get logger from context
-	logger := logger.FromContext(ctx)
-
-	// Log the book ID for debugging
-	logger.Debug("Converting BookMismatch to EditionInput", map[string]interface{}{
-		"book_id": b.BookID,
-		"title":   b.Title,
-	})
-
-	// Parse book ID (use 0 if not available)
-	bookID := 0
-	if b.BookID != "" {
-		// First try to parse as integer
-		if id, err := strconv.Atoi(b.BookID); err == nil {
-			bookID = id
-		} else {
-			// If it's not a number, try to extract a number from the string
-			re := regexp.MustCompile(`(\d+)`)
-			if matches := re.FindStringSubmatch(b.BookID); len(matches) > 0 {
-				if id, err := strconv.Atoi(matches[0]); err == nil {
-					bookID = id
-				}
-			}
-		}
-	}
-
-	// If we still don't have a book ID, log a warning
-	if bookID == 0 {
-		logger.Warn("Could not determine book ID from BookMismatch", map[string]interface{}{
-			"book_id": b.BookID,
-			"title":   b.Title,
-		})
-	}
-
-	// Handle ISBN (split into ISBN10/ISBN13 if possible)
-	var isbn10, isbn13 string
-	if b.ISBN != "" {
-		// Simple heuristic: ISBN10 is 10 chars, ISBN13 is 13 chars
-		if len(b.ISBN) == 10 {
-			isbn10 = b.ISBN
-		} else if len(b.ISBN) == 13 {
-			isbn13 = b.ISBN
-		}
-	}
-
-	// Format release date (required field)
-	releaseDate := b.ReleaseDate
-	if releaseDate == "" && b.PublishedYear != "" {
-		releaseDate = b.PublishedYear + "-01-01" // Use Jan 1st if only year is known
-	} else if releaseDate == "" {
-		releaseDate = time.Now().Format("2006-01-02") // Default to today if no date
-	}
-
-	// Perform author and narrator lookups
-	authorIDs, err := LookupAuthorIDs(ctx, hc, b.Author)
-	if err != nil {
-		authorIDs = []int{}
-	}
-
-	narratorIDs, err := LookupNarratorIDs(ctx, hc, b.Narrator)
-	if err != nil {
-		narratorIDs = []int{}
-	}
-
-	// Create user notes with additional metadata
-	userNotes := ""
-	if b.BookID != "" {
-		userNotes += fmt.Sprintf("Original Book ID: %s\n", b.BookID)
-	}
-	if b.LibraryID != "" {
-		userNotes += fmt.Sprintf("Library ID: %s\n", b.LibraryID)
-	}
-	if b.FolderID != "" {
-		userNotes += fmt.Sprintf("Folder ID: %s\n", b.FolderID)
-	}
-
-	// Create the edition input
-	edition := EditionCreatorInput{
-		// Core book information
-		BookID:   bookID,
-		Title:    b.Title,
-		Subtitle: b.Subtitle,
-
-		// Identifiers
-		ASIN:   b.ASIN,
-		ISBN10: isbn10,
-		ISBN13: isbn13,
-
-		// Media information
-		ImageURL:    b.ImageURL, // Prefer ImageURL over CoverURL
-		AudioLength: b.DurationSeconds,
-		LanguageID:  1, // Default to English (would need to be looked up)
-
-		// Relationships
-		AuthorIDs:   authorIDs,
-		NarratorIDs: narratorIDs,
-		PublisherID: 0, // Would need to be looked up
-		CountryID:   1, // Default to US (would need to be looked up)
-
-		// Edition information
-		ReleaseDate:   releaseDate,
-		EditionFormat: "Audiobook",
-		EditionInfo:   "Imported from Audiobookshelf",
-
-		// User notes
-		UserNotes: strings.TrimSpace(userNotes),
-	}
-
-	return edition, nil
 }
 
 // BookMismatch represents a book that couldn't be matched/synced with Hardcover
