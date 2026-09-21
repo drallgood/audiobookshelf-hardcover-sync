@@ -11,6 +11,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -80,8 +81,42 @@ type Creator struct {
 	client              HardcoverClient
 	log                 *logger.Logger
 	dryRun              bool
-	audiobookshelfToken string       // Token for authenticating with Audiobookshelf
-	httpClient          *http.Client // Custom HTTP client for testing
+	audiobookshelfToken string // Token for authenticating with Audiobookshelf
+	// audiobookshelfBaseURL, when set, limits the Audiobookshelf token to
+	// image URLs under this base URL. When empty the legacy heuristic applies.
+	audiobookshelfBaseURL string
+	httpClient            *http.Client // Custom HTTP client for testing
+}
+
+// SetAudiobookshelfBaseURL restricts sending the Audiobookshelf token to image
+// URLs hosted under baseURL. Without it, the token is sent to any URL that
+// contains "audiobookshelf", which misses self-hosted names such as abs.home.
+func (c *Creator) SetAudiobookshelfBaseURL(baseURL string) {
+	c.audiobookshelfBaseURL = strings.TrimSpace(baseURL)
+}
+
+// shouldSendAudiobookshelfToken reports whether imageURL is an Audiobookshelf
+// URL that may receive the Audiobookshelf bearer token.
+func (c *Creator) shouldSendAudiobookshelfToken(imageURL string) bool {
+	if c.audiobookshelfToken == "" {
+		return false
+	}
+	if c.audiobookshelfBaseURL == "" {
+		return strings.Contains(imageURL, "audiobookshelf")
+	}
+	base, err := url.Parse(c.audiobookshelfBaseURL)
+	if err != nil || base.Host == "" {
+		return false
+	}
+	target, err := url.Parse(imageURL)
+	if err != nil {
+		return false
+	}
+	if !strings.EqualFold(base.Scheme, target.Scheme) || !strings.EqualFold(base.Host, target.Host) {
+		return false
+	}
+	basePath := strings.TrimRight(base.Path, "/")
+	return basePath == "" || target.Path == basePath || strings.HasPrefix(target.Path, basePath+"/")
 }
 
 // NewCreator creates a new instance of the edition creator
@@ -218,7 +253,7 @@ func (c *Creator) uploadImageToGCS(ctx context.Context, editionID int, imageURL 
 	downloadReq.Header.Set("Accept", "image/*")
 
 	// Add Audiobookshelf token if available and the URL is from Audiobookshelf
-	if c.audiobookshelfToken != "" && strings.Contains(imageURL, "audiobookshelf") {
+	if c.shouldSendAudiobookshelfToken(imageURL) {
 		downloadReq.Header.Set("Authorization", "Bearer "+c.audiobookshelfToken)
 		log.Debug("Added Audiobookshelf token to download request")
 	}
@@ -263,10 +298,10 @@ func (c *Creator) uploadImageToGCS(ctx context.Context, editionID int, imageURL 
 	})
 
 	// Construct the API URL for getting upload credentials
-	url := "https://hardcover.app/api/upload/google"
+	uploadURL := "https://hardcover.app/api/upload/google"
 
 	// Create the request with query parameters
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil) // Use POST method as per docs
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, nil) // Use POST method as per docs
 	if err != nil {
 		log.Error("Failed to create request", map[string]interface{}{"error": err.Error()})
 		return "", fmt.Errorf("failed to create request: %w", err)
