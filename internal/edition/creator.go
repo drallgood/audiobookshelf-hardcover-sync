@@ -185,8 +185,14 @@ func NewCreator(client HardcoverClient, log *logger.Logger, dryRun bool, audiobo
 			if len(via) >= 10 {
 				return fmt.Errorf("stopped after 10 redirects")
 			}
-			if len(via) > 0 && via[0].Header.Get("Authorization") != "" {
-				req.Header.Set("Authorization", via[0].Header.Get("Authorization"))
+			// Authorization is deliberately not copied from the first request:
+			// net/http already forwards it only to the same host or a subdomain
+			// and strips it for other hosts, so re-adding it would leak the
+			// Audiobookshelf or Hardcover token to wherever a redirect leads.
+			// It is also dropped on an https -> http downgrade, which net/http
+			// would otherwise allow for the same host.
+			if prev := via[len(via)-1]; prev.URL.Scheme == "https" && req.URL.Scheme != "https" {
+				req.Header.Del("Authorization")
 			}
 			return nil
 		},

@@ -51,13 +51,28 @@ func (c *coverFlowClient) GraphQLMutation(_ context.Context, mutation string, _ 
 // listed in failHosts answers 500; nothing reaches the real network.
 type coverFlowTransport struct {
 	failHosts map[string]bool
+	// imageContentType is the Content-Type the image host answers with; it
+	// defaults to image/jpeg. omitImageContentType sends no Content-Type at all.
+	imageContentType     string
+	omitImageContentType bool
+	// uploadedFilename is the file name of the multipart upload to the storage host.
+	uploadedFilename string
 }
 
 func (rt *coverFlowTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	reply := func(status int, body string) (*http.Response, error) {
+		header := http.Header{"Content-Type": []string{"image/jpeg"}}
+		if req.URL.Hostname() == "covers.example.test" {
+			if rt.imageContentType != "" {
+				header.Set("Content-Type", rt.imageContentType)
+			}
+			if rt.omitImageContentType {
+				header.Del("Content-Type")
+			}
+		}
 		return &http.Response{
 			StatusCode: status,
-			Header:     http.Header{"Content-Type": []string{"image/jpeg"}},
+			Header:     header,
 			Body:       io.NopCloser(bytes.NewBufferString(body)),
 			Request:    req,
 		}, nil
@@ -72,6 +87,13 @@ func (rt *coverFlowTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	case "hardcover.app":
 		return reply(http.StatusOK, `{"url":"https://storage.example.test/upload","fields":{"key":"editions/789/cover.jpg"}}`)
 	case "storage.example.test":
+		if reader, err := req.MultipartReader(); err == nil {
+			for part, err := reader.NextPart(); err == nil; part, err = reader.NextPart() {
+				if part.FormName() == "file" {
+					rt.uploadedFilename = part.FileName()
+				}
+			}
+		}
 		return reply(http.StatusNoContent, "")
 	}
 	return nil, errors.New("unexpected host " + host)
@@ -119,6 +141,39 @@ func TestCreateEditionReportsAFailedCoverWithoutFailingTheEdition(t *testing.T) 
 			} else {
 				require.Empty(t, result.ImageError)
 			}
+		})
+	}
+}
+
+func TestCreateEditionCoverFileExtensionFollowsContentType(t *testing.T) {
+	logger.Setup(logger.Config{Level: "debug", Format: "json"})
+
+	tests := []struct {
+		name        string
+		contentType string
+		omit        bool
+		wantExt     string
+	}{
+		{name: "png", contentType: "image/png", wantExt: ".png"},
+		{name: "webp", contentType: "image/webp", wantExt: ".webp"},
+		{name: "jpeg", contentType: "image/jpeg", wantExt: ".jpg"},
+		{name: "missing content type", omit: true, wantExt: ".jpg"},
+		{name: "unknown content type", contentType: "application/octet-stream", wantExt: ".jpg"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := &coverFlowTransport{imageContentType: tt.contentType, omitImageContentType: tt.omit}
+			creator := edition.NewCreatorWithHTTPClient(&coverFlowClient{}, logger.Get(), false, "",
+				&http.Client{Transport: transport})
+
+			result, err := creator.CreateEdition(context.Background(), &edition.EditionInput{
+				BookID: 123, Title: "T", AuthorIDs: []int{1}, ImageURL: "https://covers.example.test/cover",
+			})
+
+			require.NoError(t, err)
+			require.Empty(t, result.ImageError)
+			require.True(t, strings.HasPrefix(transport.uploadedFilename, "cover-"), transport.uploadedFilename)
+			require.True(t, strings.HasSuffix(transport.uploadedFilename, tt.wantExt), transport.uploadedFilename)
 		})
 	}
 }

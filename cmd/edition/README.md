@@ -146,6 +146,10 @@ The tool reads from the same `config.yaml` file as the main application. Make su
    different book, or one whose book cannot be confirmed, is refused with an
    error.
 
+   When a cover was requested but could not be attached, the edition is still
+   created and the printed result carries an `image_error` naming the failed
+   step (never remote text, URLs or credentials).
+
 ### Dry Run
 
 ```bash
