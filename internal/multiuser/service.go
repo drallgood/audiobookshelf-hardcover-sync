@@ -155,14 +155,8 @@ var ErrServiceShuttingDown = errors.New("multi-user service is shutting down")
 func (s *MultiUserService) beginSyncStart(profileID string) (*profileRunGate, error) {
 	s.admissionMutex.Lock()
 	defer s.admissionMutex.Unlock()
-	if s.shuttingDown {
-		return nil, ErrServiceShuttingDown
-	}
-	if _, deleting := s.deletingProfiles[profileID]; deleting {
-		return nil, ErrProfileDeleting
-	}
-	if _, deleted := s.deletedProfiles[profileID]; deleted {
-		return nil, ErrProfileNotFound
+	if err := s.admissionErrorLocked(profileID); err != nil {
+		return nil, err
 	}
 	gate := s.profileGate(profileID)
 	s.startWaitGroup.Add(1)
@@ -173,6 +167,21 @@ func (s *MultiUserService) beginSyncStart(profileID string) (*profileRunGate, er
 func (s *MultiUserService) endSyncStart(gate *profileRunGate) {
 	gate.startWaitGroup.Done()
 	s.startWaitGroup.Done()
+}
+
+// admissionErrorLocked reports why new work for profileID must be rejected, or
+// nil when it may proceed. The caller must hold admissionMutex.
+func (s *MultiUserService) admissionErrorLocked(profileID string) error {
+	if s.shuttingDown {
+		return ErrServiceShuttingDown
+	}
+	if _, deleting := s.deletingProfiles[profileID]; deleting {
+		return ErrProfileDeleting
+	}
+	if _, deleted := s.deletedProfiles[profileID]; deleted {
+		return ErrProfileNotFound
+	}
+	return nil
 }
 
 // ListProfiles returns all active sync profiles
@@ -1106,6 +1115,32 @@ func (s *MultiUserService) runSyncWorker(profileID, runID string, generation uin
 	work()
 }
 
+// newHardcoverClient builds a Hardcover client for token using the global
+// base URL, rate-limit, and concurrency settings.
+func (s *MultiUserService) newHardcoverClient(token string) *hardcover.Client {
+	// Build Hardcover client config using global settings (rate limits/base URL)
+	hcCfg := hardcover.DefaultClientConfig()
+	if s.globalConfig != nil {
+		if s.globalConfig.Hardcover.BaseURL != "" {
+			hcCfg.BaseURL = s.globalConfig.Hardcover.BaseURL
+		}
+		if s.globalConfig.RateLimit.Rate > 0 {
+			hcCfg.RateLimit = s.globalConfig.RateLimit.Rate
+		}
+		if s.globalConfig.RateLimit.MaxConcurrent > 0 {
+			hcCfg.MaxConcurrent = s.globalConfig.RateLimit.MaxConcurrent
+		}
+	}
+
+	s.logger.Debug("Initializing Hardcover client (multi-user)", map[string]interface{}{
+		"base_url":       hcCfg.BaseURL,
+		"rate_limit":     hcCfg.RateLimit.String(),
+		"max_concurrent": hcCfg.MaxConcurrent,
+	})
+
+	return hardcover.NewClientWithConfig(hcCfg, token, s.logger)
+}
+
 // performSync performs the actual sync operation for a profile
 func (s *MultiUserService) performSync(ctx context.Context, profileID string, profileConfig *database.ProfileWithTokens, generation uint64) {
 	// Ensure only this run's active marker is cleared when its goroutine ends.
@@ -1129,28 +1164,7 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
 	// Create clients
 	absClient := audiobookshelf.NewClient(profileConfig.AudiobookshelfURL, profileConfig.AudiobookshelfToken)
 
-	// Build Hardcover client config using global settings (rate limits/base URL)
-	hcCfg := hardcover.DefaultClientConfig()
-	if s.globalConfig != nil {
-		if s.globalConfig.Hardcover.BaseURL != "" {
-			hcCfg.BaseURL = s.globalConfig.Hardcover.BaseURL
-		}
-		if s.globalConfig.RateLimit.Rate > 0 {
-			hcCfg.RateLimit = s.globalConfig.RateLimit.Rate
-		}
-		if s.globalConfig.RateLimit.MaxConcurrent > 0 {
-			hcCfg.MaxConcurrent = s.globalConfig.RateLimit.MaxConcurrent
-		}
-	}
-
-	s.logger.Debug("Initializing Hardcover client (multi-user)", map[string]interface{}{
-		"profile_id":     profileID,
-		"base_url":       hcCfg.BaseURL,
-		"rate_limit":     hcCfg.RateLimit.String(),
-		"max_concurrent": hcCfg.MaxConcurrent,
-	})
-
-	hcClient := hardcover.NewClientWithConfig(hcCfg, profileConfig.HardcoverToken, s.logger)
+	hcClient := s.newHardcoverClient(profileConfig.HardcoverToken)
 
 	// Create sync service bound to the accepted run identity. This preserves the
 	// queued run ID/timestamp through service initialization and Sync startup.
