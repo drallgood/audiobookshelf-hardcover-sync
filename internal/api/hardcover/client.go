@@ -2520,6 +2520,33 @@ func (c *Client) GetEditionByISBN13(ctx context.Context, isbn13 string) (*models
 	return edition, nil
 }
 
+// GetEditionByISBN10 retrieves an edition by its ISBN-10. It mirrors
+// GetEditionByISBN13: the search is audiobook-format aware and returns the
+// first matching book, and the edition's book is the book of that search hit.
+func (c *Client) GetEditionByISBN10(ctx context.Context, isbn10 string) (*models.Edition, error) {
+	book, err := c.SearchBookByISBN10(ctx, isbn10)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find book by ISBN-10: %w", err)
+	}
+
+	if book == nil || book.ID == "" {
+		return nil, fmt.Errorf("no book found with ISBN-10: %s", isbn10)
+	}
+
+	if book.EditionID == "" {
+		return nil, fmt.Errorf("no edition found for book with ID: %s", book.ID)
+	}
+
+	return &models.Edition{
+		ID:     book.EditionID,
+		BookID: book.ID,
+		Title:  book.Title,
+		ASIN:   book.EditionASIN,
+		ISBN13: book.EditionISBN13,
+		ISBN10: book.EditionISBN10,
+	}, nil
+}
+
 // GetEditionByASIN retrieves an edition by its ASIN
 func (c *Client) GetEditionByASIN(ctx context.Context, asin string) (*models.Edition, error) {
 	// Ensure the logger is initialized
