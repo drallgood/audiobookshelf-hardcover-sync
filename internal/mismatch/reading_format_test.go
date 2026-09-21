@@ -133,3 +133,32 @@ func TestSavedExportKeepsTheCanonicalReadingFormatAndNoPlatformInfo(t *testing.T
 		require.Equal(t, want[i].info, got["edition_information"], file)
 	}
 }
+
+// TestExportEditionInformation checks the edition information rule: an ebook
+// has none unless the record carries a real value, and an audiobook is
+// "Abridged" only when the record says so and "Unabridged" otherwise.
+func TestExportEditionInformation(t *testing.T) {
+	tests := map[string]struct {
+		readingFormat string
+		info          string
+		want          string
+	}{
+		"audiobook without information":      {"", "", "Unabridged"},
+		"audiobook abridged":                 {"", "Abridged", "Abridged"},
+		"audiobook abridged, other spelling": {"", " abridged ", "Abridged"},
+		"audiobook already unabridged":       {"", "Unabridged", "Unabridged"},
+		"audiobook placeholder":              {"", "Audiobookshelf", "Unabridged"},
+		"audiobook other text":               {"", "Special edition", "Unabridged"},
+		"ebook without information":          {"ebook", "", ""},
+		"ebook placeholder":                  {"ebook", "Audiobookshelf", ""},
+		"ebook debug text":                   {"ebook", "Reason: no match", ""},
+		"ebook with a real value":            {"ebook", "Special edition", "Special edition"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			record := BookMismatch{BookID: "1", Title: "Book", ReadingFormat: tt.readingFormat, EditionInfo: tt.info}
+			export := record.ToEditionExport(logger.WithLogger(context.Background(), logger.Get()), nil)
+			require.Equal(t, tt.want, export.EditionInfo)
+		})
+	}
+}

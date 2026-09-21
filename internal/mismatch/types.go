@@ -90,9 +90,6 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 		imageURL = b.HardcoverCoverURL
 	}
 
-	// Set edition information to describe the edition (e.g., "Unabridged")
-	// Default to empty string if we don't know
-	editionInfo := ""
 	audioSeconds := b.DurationSeconds
 	// ebook is matched case-insensitively, so export the canonical value.
 	readingFormat := b.ReadingFormat
@@ -101,16 +98,23 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 		readingFormat = models.ReadingFormatEbook
 	}
 
-	// If EditionInfo is already set in the mismatch, check if it's valid
-	if b.EditionInfo != "" &&
-		!strings.Contains(b.EditionInfo, "error") &&
-		!strings.Contains(b.EditionInfo, "Reason:") &&
-		!strings.Contains(b.EditionInfo, "mismatch") &&
-		!strings.Contains(b.EditionInfo, "Audiobookshelf") {
-		// Use existing value if it appears valid
-		editionInfo = strings.TrimSpace(b.EditionInfo)
-	} else if !ebook {
-		// Otherwise, use "Unabridged" for audiobooks as a reasonable default
+	// Edition information. An ebook has none unless the record carries a real
+	// value (for example one taken from Hardcover). An audiobook is "Abridged"
+	// only when the record says so, and "Unabridged" otherwise.
+	editionInfo := ""
+	info := strings.TrimSpace(b.EditionInfo)
+	if ebook {
+		// Placeholders and debug text that end up in EditionInfo are not real values.
+		if info != "" &&
+			!strings.Contains(info, "error") &&
+			!strings.Contains(info, "Reason:") &&
+			!strings.Contains(info, "mismatch") &&
+			!strings.Contains(info, "Audiobookshelf") {
+			editionInfo = info
+		}
+	} else if strings.EqualFold(info, "Abridged") {
+		editionInfo = "Abridged"
+	} else {
 		editionInfo = "Unabridged"
 	}
 
