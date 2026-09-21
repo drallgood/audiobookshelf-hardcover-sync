@@ -171,6 +171,9 @@ func uploadBookImage(imageURL, bookID, description string, cfg *config.Config) {
 
 	// Create a creator instance
 	creator := edition.NewCreator(client, logger.Get(), false, cfg.Audiobookshelf.Token)
+	// Send the token only to the configured Audiobookshelf server. An empty URL
+	// keeps the legacy "URL contains audiobookshelf" check.
+	creator.SetAudiobookshelfBaseURL(cfg.Audiobookshelf.URL)
 
 	// Convert bookID to int (assuming it's a valid number)
 	bookIDInt, err := strconv.Atoi(bookID)
@@ -228,6 +231,9 @@ func uploadEditionImage(imageURL string, editionID string, description string, c
 	// Create a new client and creator
 	client := hardcover.NewClientWithConfig(hcCfg, token, logger.Get())
 	creator := edition.NewCreator(client, logger.Get(), false, cfg.Audiobookshelf.Token)
+	// Send the token only to the configured Audiobookshelf server. An empty URL
+	// keeps the legacy "URL contains audiobookshelf" check.
+	creator.SetAudiobookshelfBaseURL(cfg.Audiobookshelf.URL)
 
 	// Convert editionID to int
 	editionIDInt, err := strconv.Atoi(editionID)

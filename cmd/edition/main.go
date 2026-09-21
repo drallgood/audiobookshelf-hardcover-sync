@@ -156,6 +156,9 @@ func createEdition(c *cli.Context) error {
 		log.Debug("Using Audiobookshelf token from config")
 	}
 	creator := edition.NewCreator(hc, log, c.Bool("dry-run"), audiobookshelfToken)
+	// Send the token only to the configured Audiobookshelf server. An empty URL
+	// keeps the legacy "URL contains audiobookshelf" check.
+	creator.SetAudiobookshelfBaseURL(cfg.Audiobookshelf.URL)
 
 	// Create edition
 	result, err := creator.CreateEdition(context.Background(), &input)

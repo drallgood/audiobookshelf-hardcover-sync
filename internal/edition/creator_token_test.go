@@ -74,3 +74,40 @@ func TestCreatorAudiobookshelfTokenScoping(t *testing.T) {
 		})
 	}
 }
+
+// An empty or whitespace-only base URL, as the commands pass when no
+// Audiobookshelf URL is configured, must behave exactly like never calling
+// SetAudiobookshelfBaseURL: the legacy "audiobookshelf" match decides.
+func TestCreatorEmptyBaseURLKeepsLegacyMatch(t *testing.T) {
+	const token = "abs-secret"
+
+	tests := []struct {
+		name      string
+		baseURL   string
+		imageURL  string
+		wantToken bool
+	}{
+		{"empty base, legacy match", "", "https://audiobookshelf.example.com/api/items/li_1/cover", true},
+		{"empty base, non-matching host withheld", "", "https://abs.home/api/items/li_1/cover", false},
+		{"whitespace base, legacy match", "  \t", "https://audiobookshelf.example.com/api/items/li_1/cover", true},
+		{"whitespace base, non-matching host withheld", "  \t", "https://abs.home/api/items/li_1/cover", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rt := &recordingTransport{failure: errors.New("stop after recording")}
+			creator := NewCreatorWithHTTPClient(nil, logger.Get(), false, token, &http.Client{Transport: rt})
+			creator.SetAudiobookshelfBaseURL(tt.baseURL)
+
+			if _, err := creator.uploadImageToGCS(context.Background(), 1, tt.imageURL); err == nil {
+				t.Fatal("expected the recorded download to fail")
+			}
+			if !rt.called {
+				t.Fatal("image download was never attempted")
+			}
+			if got := rt.auth == "Bearer "+token; got != tt.wantToken {
+				t.Errorf("token sent = %v, want %v (Authorization=%q)", got, tt.wantToken, rt.auth)
+			}
+		})
+	}
+}
