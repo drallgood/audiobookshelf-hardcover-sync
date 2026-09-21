@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 )
@@ -195,6 +196,8 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 		ASIN:          b.ASIN,
 		ISBN10:        b.ISBN10,
 		ISBN13:        b.ISBN13,
+		ISBN10Valid:   isbnChecksumValid(b.ISBN10),
+		ISBN13Valid:   isbnChecksumValid(b.ISBN13),
 		AuthorIDs:     authorIDs,
 		NarratorIDs:   narratorIDs,
 		PublisherID:   publisherID,
@@ -231,6 +234,16 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 		result.BookID, result.Title, result.EditionInfo, result.AuthorIDs, result.PublisherID))
 
 	return result
+}
+
+// isbnChecksumValid reports whether the check digit of the ISBN a record carries
+// is correct, or nil when the record has no ISBN of that form.
+func isbnChecksumValid(raw string) *bool {
+	parsed, ok := isbn.Parse(raw)
+	if !ok {
+		return nil
+	}
+	return &parsed.Valid
 }
 
 // editionFormatEbook is the edition format an ebook item is exported with.
@@ -327,13 +340,19 @@ type EditionExportInfo struct {
 // EditionExport represents the format expected by the Hardcover edition import tool
 type EditionExport struct {
 	// Core book information (used for import)
-	BookID        int    `json:"book_id"`
-	Title         string `json:"title"`
-	Subtitle      string `json:"subtitle"`
-	ImageURL      string `json:"image_url"`
-	ASIN          string `json:"asin"`
-	ISBN10        string `json:"isbn_10"`
-	ISBN13        string `json:"isbn_13"`
+	BookID   int    `json:"book_id"`
+	Title    string `json:"title"`
+	Subtitle string `json:"subtitle"`
+	ImageURL string `json:"image_url"`
+	ASIN     string `json:"asin"`
+	ISBN10   string `json:"isbn_10"`
+	ISBN13   string `json:"isbn_13"`
+	// ISBN10Valid and ISBN13Valid report whether the exported ISBN's own check
+	// digit is correct, like Hardcover's isbn_10_valid and isbn_13_valid. An ISBN
+	// with a wrong check digit is still exported as given. Each is omitted when
+	// its ISBN is empty, and the edition tool does not read them.
+	ISBN10Valid   *bool  `json:"isbn_10_valid,omitempty"`
+	ISBN13Valid   *bool  `json:"isbn_13_valid,omitempty"`
 	AuthorIDs     []int  `json:"author_ids"`
 	NarratorIDs   []int  `json:"narrator_ids"`
 	PublisherID   int    `json:"publisher_id"`

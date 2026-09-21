@@ -27,14 +27,15 @@ func TestParse(t *testing.T) {
 		given       string
 		is13        bool
 		counterpart string
+		valid       bool
 	}{
-		{name: "plain ISBN-13 gets its ISBN-10", in: "9780306406157", ok: true, given: "9780306406157", is13: true, counterpart: "0306406152"},
-		{name: "hyphenated ISBN-13", in: "978-0-306-40615-7", ok: true, given: "9780306406157", is13: true, counterpart: "0306406152"},
-		{name: "plain ISBN-10 gets its ISBN-13", in: "0306406152", ok: true, given: "0306406152", counterpart: "9780306406157"},
-		{name: "hyphenated ISBN-10", in: "0-306-40615-2", ok: true, given: "0306406152", counterpart: "9780306406157"},
-		{name: "spaces separate the groups", in: "0 306 40615 2", ok: true, given: "0306406152", counterpart: "9780306406157"},
-		{name: "lowercase x check digit", in: "0-8044-2957-x", ok: true, given: "080442957X", counterpart: "9780804429573"},
-		{name: "979 ISBN-13 has no ISBN-10", in: "979-10-90636-07-1", ok: true, given: "9791090636071", is13: true},
+		{name: "plain ISBN-13 gets its ISBN-10", in: "9780306406157", ok: true, given: "9780306406157", is13: true, counterpart: "0306406152", valid: true},
+		{name: "hyphenated ISBN-13", in: "978-0-306-40615-7", ok: true, given: "9780306406157", is13: true, counterpart: "0306406152", valid: true},
+		{name: "plain ISBN-10 gets its ISBN-13", in: "0306406152", ok: true, given: "0306406152", counterpart: "9780306406157", valid: true},
+		{name: "hyphenated ISBN-10", in: "0-306-40615-2", ok: true, given: "0306406152", counterpart: "9780306406157", valid: true},
+		{name: "spaces separate the groups", in: "0 306 40615 2", ok: true, given: "0306406152", counterpart: "9780306406157", valid: true},
+		{name: "lowercase x check digit", in: "0-8044-2957-x", ok: true, given: "080442957X", counterpart: "9780804429573", valid: true},
+		{name: "979 ISBN-13 has no ISBN-10", in: "979-10-90636-07-1", ok: true, given: "9791090636071", is13: true, valid: true},
 		{name: "invalid ISBN-13 checksum keeps only the given form", in: "9780306406158", ok: true, given: "9780306406158", is13: true},
 		{name: "invalid ISBN-10 checksum keeps only the given form", in: "0306406153", ok: true, given: "0306406153"},
 		{name: "wrong length", in: "97803064061", ok: false},
@@ -53,8 +54,8 @@ func TestParse(t *testing.T) {
 			if !ok {
 				return
 			}
-			if got.Given != tt.given || got.Is13 != tt.is13 || got.Counterpart != tt.counterpart {
-				t.Errorf("Parse(%q) = %+v, want given %q is13 %v counterpart %q", tt.in, got, tt.given, tt.is13, tt.counterpart)
+			if got.Given != tt.given || got.Is13 != tt.is13 || got.Counterpart != tt.counterpart || got.Valid != tt.valid {
+				t.Errorf("Parse(%q) = %+v, want given %q is13 %v counterpart %q valid %v", tt.in, got, tt.given, tt.is13, tt.counterpart, tt.valid)
 			}
 		})
 	}

@@ -1,6 +1,13 @@
 // Package isbn normalizes ISBN strings and converts between the ISBN-10 and
 // ISBN-13 forms of the same book. It imports no other project package so the
 // sync, mismatch, edition, and Hardcover client code can all share it.
+//
+// Checksum policy: a value is accepted by shape alone, so an ISBN whose check
+// digit is wrong is still returned in the form it arrived in. Result.Valid
+// reports the input's own checksum, as Hardcover's isbn_10_valid and
+// isbn_13_valid fields do, so a caller can decide what to do with an invalid
+// ISBN without this package dropping it. The other form of the same book is
+// derived only from a valid ISBN-10, or a valid 978 ISBN-13.
 package isbn
 
 import (
@@ -17,6 +24,9 @@ type Result struct {
 	Counterpart string
 	// Is13 reports whether Given is an ISBN-13 (otherwise an ISBN-10).
 	Is13 bool
+	// Valid reports whether Given's own check digit is correct. It is true for
+	// a valid 979 ISBN-13 even though that has no Counterpart.
+	Valid bool
 }
 
 // ISBN10 returns the ISBN-10 form that is known: the input itself or its
@@ -81,19 +91,20 @@ func isSeparator(r rune) bool {
 
 // Parse normalizes s and accepts it by shape only: 13 digits is an ISBN-13, and
 // 9 digits followed by a digit or X is an ISBN-10. Anything else is rejected.
-// The counterpart form is filled in only when the input's checksum is valid.
+// The result records whether the input's checksum is valid, and the counterpart
+// form is filled in only when it is.
 func Parse(s string) (Result, bool) {
 	n := Normalize(s)
 	switch {
 	case len(n) == 13 && allDigits(n):
-		r := Result{Given: n, Is13: true}
-		if valid13(n) && strings.HasPrefix(n, "978") {
+		r := Result{Given: n, Is13: true, Valid: valid13(n)}
+		if r.Valid && strings.HasPrefix(n, "978") {
 			r.Counterpart = to10(n)
 		}
 		return r, true
 	case len(n) == 10 && allDigits(n[:9]) && (allDigits(n[9:]) || n[9] == 'X'):
-		r := Result{Given: n}
-		if valid10(n) {
+		r := Result{Given: n, Valid: valid10(n)}
+		if r.Valid {
 			r.Counterpart = to13(n)
 		}
 		return r, true

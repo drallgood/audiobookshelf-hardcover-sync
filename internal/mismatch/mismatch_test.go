@@ -521,6 +521,47 @@ func TestAddWithMetadata_ISBNForms(t *testing.T) {
 	}
 }
 
+// TestToEditionExport_ISBNChecksumFlags checks the exported JSON reports whether
+// each exported ISBN's own check digit is correct, keeps an invalid ISBN as
+// given, and omits a flag when its ISBN slot is empty.
+func TestToEditionExport_ISBNChecksumFlags(t *testing.T) {
+	tests := []struct {
+		name      string
+		isbn      string
+		wantISBN  string
+		wantValid map[string]bool // exported isbn_*_valid keys; a missing key must be absent
+	}{
+		{"valid ISBN-13", "978-0-306-40615-7", "9780306406157", map[string]bool{"isbn_13_valid": true}},
+		{"valid ISBN-10", "0-306-40615-2", "0306406152", map[string]bool{"isbn_10_valid": true}},
+		{"valid 979 ISBN-13", "979-10-90636-07-1", "9791090636071", map[string]bool{"isbn_13_valid": true}},
+		{"invalid ISBN-13 checksum is kept and flagged", "9780306406158", "9780306406158", map[string]bool{"isbn_13_valid": false}},
+		{"invalid ISBN-10 checksum is kept and flagged", "0306406153", "0306406153", map[string]bool{"isbn_10_valid": false}},
+		{"no ISBN has no flags", "", "", map[string]bool{}},
+		{"not an ISBN has no flags", "abc", "", map[string]bool{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			record := NewCollector().AddWithMetadata(MediaMetadata{Title: "Book", ISBN: tt.isbn}, "1", "", "reason", 60, "abs1", nil, "")
+			export := record.ToEditionExport(logger.WithLogger(context.Background(), logger.Get()), nil)
+			data, err := json.Marshal(export)
+			require.NoError(t, err)
+			var got map[string]interface{}
+			require.NoError(t, json.Unmarshal(data, &got))
+
+			exported := got["isbn_10"].(string) + got["isbn_13"].(string)
+			require.Equal(t, tt.wantISBN, exported)
+			for _, key := range []string{"isbn_10_valid", "isbn_13_valid"} {
+				want, present := tt.wantValid[key]
+				if !present {
+					require.NotContains(t, got, key)
+					continue
+				}
+				require.Equal(t, want, got[key], key)
+			}
+		})
+	}
+}
+
 func TestSaveMismatchesJSONFileIndividual(t *testing.T) {
 	// Create a test context
 	ctx := context.Background()
