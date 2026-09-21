@@ -3,6 +3,7 @@ package audiobookshelf
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -328,4 +329,64 @@ func TestGetListeningSessions(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGetLibraryItem(t *testing.T) {
+	t.Run("returns the expanded item", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "/api/items/li_abc", r.URL.Path)
+			assert.Equal(t, "1", r.URL.Query().Get("expanded"))
+			assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"li_abc","libraryId":"lib1","mediaType":"book","media":{"duration":3600.5,"metadata":{"title":"A Title","authorName":"An Author","narratorName":"A Narrator","asin":"B000000000"}}}`))
+		}))
+		defer server.Close()
+
+		book, err := NewClient(server.URL, "test-token").GetLibraryItem(context.Background(), "li_abc")
+		require.NoError(t, err)
+		assert.Equal(t, "li_abc", book.ID)
+		assert.Equal(t, "A Title", book.Media.Metadata.Title)
+		assert.Equal(t, "A Narrator", book.Media.Metadata.NarratorName)
+		assert.Equal(t, "B000000000", book.Media.Metadata.ASIN)
+		assert.InDelta(t, 3600.5, book.Media.Duration, 0.001)
+	})
+
+	t.Run("escapes the item ID in the path", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "/api/items/a/b", r.URL.Path)
+			assert.Equal(t, "/api/items/a%2Fb", r.URL.EscapedPath())
+			_, _ = w.Write([]byte(`{"id":"a/b"}`))
+		}))
+		defer server.Close()
+
+		_, err := NewClient(server.URL, "test-token").GetLibraryItem(context.Background(), "a/b")
+		require.NoError(t, err)
+	})
+
+	t.Run("missing item wraps ErrItemNotFound", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.NotFound(w, r)
+		}))
+		defer server.Close()
+
+		_, err := NewClient(server.URL, "test-token").GetLibraryItem(context.Background(), "missing")
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrItemNotFound))
+	})
+
+	t.Run("other statuses are plain errors", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		defer server.Close()
+
+		_, err := NewClient(server.URL, "test-token").GetLibraryItem(context.Background(), "li_abc")
+		require.Error(t, err)
+		assert.False(t, errors.Is(err, ErrItemNotFound))
+	})
+
+	t.Run("empty item ID is rejected without a request", func(t *testing.T) {
+		_, err := NewClient("http://127.0.0.1:1", "test-token").GetLibraryItem(context.Background(), "")
+		require.Error(t, err)
+	})
 }

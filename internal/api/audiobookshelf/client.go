@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -18,6 +20,10 @@ import (
 const (
 	apiPath = "/api"
 )
+
+// ErrItemNotFound is returned when Audiobookshelf reports that a library item
+// does not exist or is not visible to the configured token.
+var ErrItemNotFound = errors.New("audiobookshelf library item not found")
 
 // AudiobookshelfLibrary represents a library in Audiobookshelf
 type AudiobookshelfLibrary struct {
@@ -33,6 +39,9 @@ type Client struct {
 	logger  *logger.Logger
 }
 
+// RequestTimeout bounds each request the client makes to Audiobookshelf.
+const RequestTimeout = 30 * time.Second
+
 // NewClient creates a new Audiobookshelf client
 func NewClient(baseURL, token string) *Client {
 	log := logger.Get()
@@ -44,7 +53,7 @@ func NewClient(baseURL, token string) *Client {
 		baseURL: baseURL,
 		token:   token,
 		client: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: RequestTimeout,
 		},
 		logger: log,
 	}
@@ -353,6 +362,54 @@ func (c *Client) GetLibraryItems(ctx context.Context, libraryID string) ([]model
 	}
 
 	return result.Results, nil
+}
+
+// GetLibraryItem returns one expanded library item, including its media
+// metadata, so callers can act on a single book without listing a library.
+// A missing item yields an error wrapping ErrItemNotFound.
+func (c *Client) GetLibraryItem(ctx context.Context, itemID string) (*models.AudiobookshelfBook, error) {
+	if itemID == "" {
+		return nil, fmt.Errorf("item ID is required")
+	}
+	endpoint := "/items/" + url.PathEscape(itemID) + "?expanded=1"
+	log := c.logger.With(map[string]interface{}{
+		"endpoint": "/items/{id}",
+		"item_id":  itemID,
+	})
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+apiPath+endpoint, nil)
+	if err != nil {
+		log.Error("Failed to create request in GetLibraryItem", map[string]interface{}{"error": err.Error()})
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		log.Error("Request failed in GetLibraryItem", map[string]interface{}{"error": err.Error()})
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		return nil, fmt.Errorf("%w: %s", ErrItemNotFound, itemID)
+	default:
+		log.Error("Unexpected status code in GetLibraryItem", map[string]interface{}{"status": resp.StatusCode})
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	var book models.AudiobookshelfBook
+	if err := json.NewDecoder(resp.Body).Decode(&book); err != nil {
+		log.Error("Failed to decode response in GetLibraryItem", map[string]interface{}{"error": err.Error()})
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	if book.ID == "" {
+		return nil, fmt.Errorf("audiobookshelf returned an item without an ID for %s", itemID)
+	}
+	return &book, nil
 }
 
 // GetUserProgress fetches the current user's progress data from Audiobookshelf
