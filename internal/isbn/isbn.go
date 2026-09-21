@@ -148,3 +148,13 @@ func to10(isbn13 string) string {
 	body := isbn13[3:12]
 	return body + string(check10(body))
 }
+
+// Split returns the ISBN-10 or ISBN-13 form that the value itself carries
+// (separators dropped, lowercase trailing x upcased), never a derived counterpart.
+// Both return values are empty when the input is not ISBN-shaped.
+func Split(raw string) (isbn10, isbn13 string) {
+	if parsed, ok := Parse(raw); ok {
+		return parsed.GivenISBN10(), parsed.GivenISBN13()
+	}
+	return "", ""
+}

@@ -16,6 +16,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
@@ -2257,6 +2258,9 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				mismatchReason = fmt.Sprintf("Identifier lookup failed; title/author candidate requires review: %v", findErr)
 			}
 
+			// Extract ISBN10 and ISBN13 from the ISBN
+			isbn10, isbn13 := isbn.Split(book.Media.Metadata.ISBN)
+
 			// Create mismatch with both Audiobookshelf and Hardcover details
 			mismatchData := mismatch.BookMismatch{
 				BookID:          book.ID,
@@ -2266,6 +2270,8 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				Narrator:        book.Media.Metadata.NarratorName,
 				ASIN:            book.Media.Metadata.ASIN,
 				ISBN:            book.Media.Metadata.ISBN,
+				ISBN10:          isbn10,
+				ISBN13:          isbn13,
 				LibraryID:       book.LibraryID,
 				PublishedYear:   book.Media.Metadata.PublishedYear,
 				DurationSeconds: int(book.Media.Duration),

@@ -70,3 +70,26 @@ func TestResultForms(t *testing.T) {
 		t.Errorf("ISBN-10 result forms = %+v", r10)
 	}
 }
+
+func TestSplit(t *testing.T) {
+	tests := []struct {
+		in     string
+		want10 string
+		want13 string
+	}{
+		{in: "978-0-306-40615-7", want10: "", want13: "9780306406157"},
+		{in: "0-306-40615-2", want10: "0306406152", want13: ""},
+		{in: "0-8044-2957-x", want10: "080442957X", want13: ""},
+		{in: "978 0306 40615 7", want10: "", want13: "9780306406157"},
+		{in: "not-an-isbn", want10: "", want13: ""},
+		{in: "", want10: "", want13: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			got10, got13 := Split(tt.in)
+			if got10 != tt.want10 || got13 != tt.want13 {
+				t.Errorf("Split(%q) = (%q, %q), want (%q, %q)", tt.in, got10, got13, tt.want10, tt.want13)
+			}
+		})
+	}
+}
