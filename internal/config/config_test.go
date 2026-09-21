@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -172,6 +173,24 @@ http:
 	assert.Equal(t, "https://example.com/audiobookshelf", cfg.Audiobookshelf.URL)
 	assert.Equal(t, "test-audiobookshelf-token", cfg.Audiobookshelf.Token)
 	assert.Equal(t, "test-hardcover-token", cfg.Hardcover.Token)
+}
+
+func TestDatabaseSyncRunReportRetentionUsesYAMLAndEnvironment(t *testing.T) {
+	t.Setenv("AUDIOBOOKSHELF_URL", "https://example.com/audiobookshelf")
+	t.Setenv("AUDIOBOOKSHELF_TOKEN", "test-audiobookshelf-token")
+	t.Setenv("HARDCOVER_TOKEN", "test-hardcover-token")
+	t.Setenv("DATABASE_SYNC_RUN_REPORT_RETENTION", "7")
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("database:\n  sync_run_report_retention: 3\n"), 0644))
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, 7, cfg.Database.SyncRunReportRetention)
+
+	t.Setenv("DATABASE_SYNC_RUN_REPORT_RETENTION", "")
+	cfg, err = Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, 3, cfg.Database.SyncRunReportRetention)
 }
 
 func TestLoadConfig_WithAudnexusRegion(t *testing.T) {

@@ -56,8 +56,6 @@ spec:
             # Rate limiting configuration
             - name: RATE_LIMIT_RATE
               value: {{ .Values.config.rateLimit.rate | quote }}
-            - name: RATE_LIMIT_BURST
-              value: {{ .Values.config.rateLimit.burst | quote }}
             - name: RATE_LIMIT_MAX_CONCURRENT
               value: {{ .Values.config.rateLimit.maxConcurrent | quote }}
             

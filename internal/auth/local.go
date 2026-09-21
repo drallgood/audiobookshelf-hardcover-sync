@@ -28,14 +28,14 @@ func NewLocalAuthProvider(name string, config map[string]string, log *logger.Log
 		logger:     log,
 		repository: repository,
 	}
-	
+
 	if log != nil {
-		log.Info("Local authentication provider initialized", map[string]interface{}{
+		log.Debug("Local authentication provider initialized", map[string]interface{}{
 			"provider": name,
 			"enabled":  true,
 		})
 	}
-	
+
 	return provider
 }
 

@@ -12,22 +12,18 @@ import (
 	"time"
 )
 
-const (
-	CurrentVersion   = "2.0"
-	DefaultStateFile = "./data/sync_state.json"
-)
+const DefaultStateFile = "./data/sync_state.json"
+
+// CurrentVersion is the explicit state schema version written by Save. Legacy
+// v1 files only carried retired timestamp metadata; v2 and unversioned files
+// with Books use the current checkpoint shape and need no field conversion.
+const CurrentVersion = "3.0"
 
 type State struct {
-	Version      string             `json:"version"`
-	LastSync     int64              `json:"lastSync"`
-	LastFullSync int64              `json:"lastFullSync"`
-	Libraries    map[string]Library `json:"libraries,omitempty"`
-	Books        map[string]Book    `json:"books,omitempty"`
-	mu           sync.RWMutex       `json:"-"`
-}
-
-type Library struct {
-	LastUpdated int64 `json:"lastUpdated"`
+	Version string          `json:"version"`
+	Books   map[string]Book `json:"books,omitempty"`
+	mu      sync.RWMutex    `json:"-"`
+	dirty   bool            `json:"-"`
 }
 
 type Book struct {
@@ -40,11 +36,8 @@ type Book struct {
 
 func NewState() *State {
 	return &State{
-		Version:      CurrentVersion,
-		LastSync:     0,
-		LastFullSync: 0,
-		Libraries:    make(map[string]Library),
-		Books:        make(map[string]Book),
+		Version: CurrentVersion,
+		Books:   make(map[string]Book),
 	}
 }
 
@@ -57,41 +50,38 @@ func LoadState(path string) (*State, error) {
 		return nil, fmt.Errorf("failed to read state file: %w", err)
 	}
 
-	var raw map[string]interface{}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("failed to parse state file: %w", err)
-	}
-
-	version, _ := raw["version"].(string)
-	if version == "" || version == "1.0" {
-		log.Println("INFO - Migrating state from v1 to v2")
-		var v1 v1State
-		if err := json.Unmarshal(data, &v1); err != nil {
-			return nil, fmt.Errorf("failed to parse v1 state: %w", err)
-		}
-		return migrateV1ToV2(v1), nil
-	}
-
 	var state State
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("failed to parse state: %w", err)
 	}
+	if state.Version != "" && state.Version != "1.0" && state.Version != "2.0" && state.Version != CurrentVersion {
+		return nil, fmt.Errorf("unsupported state version %q", state.Version)
+	}
+	// Unversioned legacy Books files and v1/v2 checkpoint files are compatible
+	// with the current shape. Normalize their in-memory version so the next
+	// persistence writes an explicit current schema version. v1 timestamp-only
+	// files intentionally remain empty so the first run rebuilds checkpoints.
+	state.Version = CurrentVersion
 
 	if state.Books == nil {
 		state.Books = make(map[string]Book)
 	}
-	if state.Libraries == nil {
-		state.Libraries = make(map[string]Library)
-	}
-
 	return &state, nil
 }
 
 func (s *State) Save(path string) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	dir := filepath.Dir(path)
+	targetPath, err := resolveStatePath(path)
+	if err != nil {
+		return fmt.Errorf("failed to resolve state file: %w", err)
+	}
+	dir := filepath.Dir(targetPath)
+	directoriesToSync, err := stateDirectorySyncPaths(dir)
+	if err != nil {
+		return fmt.Errorf("failed to inspect state directory: %w", err)
+	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create state directory: %w", err)
 	}
@@ -101,16 +91,200 @@ func (s *State) Save(path string) error {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("failed to write state file: %w", err)
+	tempFile, err := os.CreateTemp(dir, ".sync-state-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary state file: %w", err)
 	}
+	tempPath := tempFile.Name()
+	defer func() { _ = os.Remove(tempPath) }()
+
+	if _, err := tempFile.Write(data); err != nil {
+		_ = tempFile.Close()
+		return fmt.Errorf("failed to write temporary state file: %w", err)
+	}
+	if err := tempFile.Sync(); err != nil {
+		_ = tempFile.Close()
+		return fmt.Errorf("failed to sync temporary state file: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temporary state file: %w", err)
+	}
+	if err := os.Rename(tempPath, targetPath); err != nil {
+		return fmt.Errorf("failed to replace state file: %w", err)
+	}
+	for _, directory := range directoriesToSync {
+		if err := syncDirectory(directory); err != nil {
+			return fmt.Errorf("failed to sync state directory %q: %w", directory, err)
+		}
+	}
+	s.dirty = false
 
 	return nil
 }
 
+// stateDirectorySyncPaths returns the destination directory and every missing
+// parent up to the nearest directory that existed before MkdirAll. Flushing
+// each of these directories after the state file rename makes the complete
+// newly-created path durable across a power loss.
+func stateDirectorySyncPaths(dir string) ([]string, error) {
+	var paths []string
+	for current := dir; ; current = filepath.Dir(current) {
+		info, err := os.Stat(current)
+		switch {
+		case err == nil:
+			if !info.IsDir() {
+				return nil, fmt.Errorf("state path component %q is not a directory", current)
+			}
+			return append(paths, current), nil
+		case !os.IsNotExist(err):
+			return nil, fmt.Errorf("failed to inspect state directory %q: %w", current, err)
+		}
+
+		paths = append(paths, current)
+		parent := filepath.Dir(current)
+		if parent == current {
+			return nil, fmt.Errorf("no existing ancestor for state directory %q", dir)
+		}
+	}
+}
+
+const maxStateSymlinkDepth = 255
+
+// resolveStatePath follows the configured state path to the file that should
+// be replaced. Resolving the path before the atomic rename keeps a configured
+// symlink in place, including when its target does not exist yet. Components
+// are resolved in filesystem order rather than cleaning the path first. This
+// matters for paths such as "link/../state": the ".." is relative to the
+// symlink target, not to the directory containing the symlink.
+func resolveStatePath(path string) (string, error) {
+	absPath, err := absoluteStatePath(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to make state path absolute: %w", err)
+	}
+
+	base, components := splitStatePath(absPath)
+	return resolveStatePathComponents(base, components, make(map[string]struct{}), 0)
+}
+
+func absoluteStatePath(path string) (string, error) {
+	if filepath.IsAbs(path) {
+		return path, nil
+	}
+
+	workingDir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	if path == "" {
+		return workingDir, nil
+	}
+	// Do not use filepath.Join here: it cleans away ".." before the
+	// component-by-component resolver can apply it after symlink expansion.
+	return workingDir + string(filepath.Separator) + path, nil
+}
+
+func splitStatePath(path string) (string, []string) {
+	volume := filepath.VolumeName(path)
+	remainder := strings.TrimPrefix(path, volume)
+	if filepath.IsAbs(path) {
+		root := volume + string(filepath.Separator)
+		remainder = strings.TrimLeft(remainder, string(filepath.Separator))
+		return root, strings.Split(remainder, string(filepath.Separator))
+	}
+
+	return "", strings.Split(remainder, string(filepath.Separator))
+}
+
+func resolveStatePathComponents(base string, components []string, visited map[string]struct{}, depth int) (string, error) {
+	if len(components) == 0 {
+		return base, nil
+	}
+
+	component := components[0]
+	rest := components[1:]
+	if component == "" || component == "." {
+		return resolveStatePathComponents(base, rest, visited, depth)
+	}
+	if component == ".." {
+		return resolveStatePathComponents(filepath.Dir(base), rest, visited, depth)
+	}
+
+	candidate := filepath.Join(base, component)
+	info, err := os.Lstat(candidate)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if containsParentTraversal(rest) {
+				return "", fmt.Errorf("cannot resolve state path through missing component %q", candidate)
+			}
+			// A missing component cannot contain a symlink below it. Keep the
+			// remaining non-traversing components for MkdirAll and Save.
+			return filepath.Join(append([]string{candidate}, rest...)...), nil
+		}
+		return "", fmt.Errorf("failed to inspect state path: %w", err)
+	}
+
+	if info.Mode()&os.ModeSymlink != 0 {
+		if depth >= maxStateSymlinkDepth {
+			return "", fmt.Errorf("state path exceeds maximum symlink depth")
+		}
+		if _, seen := visited[candidate]; seen {
+			return "", fmt.Errorf("state path contains a symlink loop")
+		}
+
+		target, err := os.Readlink(candidate)
+		if err != nil {
+			return "", fmt.Errorf("failed to read state path symlink: %w", err)
+		}
+		if target == "" {
+			return "", fmt.Errorf("state path symlink %q has an empty target", candidate)
+		}
+
+		targetBase, targetComponents := splitStatePath(target)
+		if targetBase != "" {
+			base = targetBase
+		}
+		// Keep this marker active while the symlink target is resolved so an
+		// actual loop is rejected. Clear it before resolving the configured
+		// path's remaining components: a path can legitimately encounter the
+		// same symlink again after resolving ".." back to its parent.
+		visited[candidate] = struct{}{}
+		resolved, err := resolveStatePathComponents(base, targetComponents, visited, depth+1)
+		delete(visited, candidate)
+		if err != nil {
+			return "", err
+		}
+		if len(rest) > 0 {
+			info, err := os.Lstat(resolved)
+			switch {
+			case err == nil && !info.IsDir():
+				return "", fmt.Errorf("state path component %q is not a directory", resolved)
+			case err != nil && !os.IsNotExist(err):
+				return "", fmt.Errorf("failed to inspect state path: %w", err)
+			case os.IsNotExist(err) && containsParentTraversal(rest):
+				return "", fmt.Errorf("cannot resolve state path through missing component %q", resolved)
+			}
+		}
+		return resolveStatePathComponents(resolved, rest, visited, depth+1)
+	}
+
+	if len(rest) > 0 && !info.IsDir() {
+		return "", fmt.Errorf("state path component %q is not a directory", candidate)
+	}
+	return resolveStatePathComponents(candidate, rest, visited, depth)
+}
+
+func containsParentTraversal(components []string) bool {
+	for _, component := range components {
+		if component == ".." {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *State) UpdateBook(bookID string, progress float64, status string) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var debugMessages []string
 
 	debugLog := false
 	if strings.Contains(strings.ToLower(bookID), "scrum") {
@@ -133,13 +307,15 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 		statusChanged := existing.Status != status
 
 		if debugLog {
-			log.Printf("DEBUG - UpdateBook for %s (existing) - stored: %.4f, new: %.4f, storedStatus: %s, newStatus: %s, progressChanged: %v, statusChanged: %v",
-				bookID, storedProgress, normalizedProgress, existing.Status, status, progressChanged, statusChanged)
+			debugMessages = append(debugMessages, fmt.Sprintf(
+				"DEBUG - UpdateBook for %s (existing) - stored: %.4f, new: %.4f, storedStatus: %s, newStatus: %s, progressChanged: %v, statusChanged: %v",
+				bookID, storedProgress, normalizedProgress, existing.Status, status, progressChanged, statusChanged,
+			))
 		}
 
 		if !progressChanged && !statusChanged {
 			if debugLog {
-				log.Printf("DEBUG - No update needed for book %s - no significant changes", bookID)
+				debugMessages = append(debugMessages, fmt.Sprintf("DEBUG - No update needed for book %s - no significant changes", bookID))
 			}
 			// Even when nothing changed, fix up HasProgressSeconds for FINISHED books
 			// so the incremental NeedsSync check skips them on subsequent runs.
@@ -147,6 +323,7 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 				old := s.Books[bookID]
 				old.HasProgressSeconds = true
 				s.Books[bookID] = old
+				updated = true
 			}
 		} else {
 			oldBook := s.Books[bookID]
@@ -159,7 +336,7 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 			}
 			updated = true
 			if debugLog {
-				log.Printf("DEBUG - Updated book %s state - progress: %.4f, status: %s", bookID, normalizedProgress, status)
+				debugMessages = append(debugMessages, fmt.Sprintf("DEBUG - Updated book %s state - progress: %.4f, status: %s", bookID, normalizedProgress, status))
 			}
 		}
 	} else {
@@ -172,7 +349,7 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 		updated = true
 
 		if strings.Contains(strings.ToLower(bookID), "scrum") {
-			log.Printf("DEBUG - Created new state for Scrum book %s - progress: %.4f, status: %s", bookID, normalizedProgress, status)
+			debugMessages = append(debugMessages, fmt.Sprintf("DEBUG - Created new state for Scrum book %s - progress: %.4f, status: %s", bookID, normalizedProgress, status))
 		}
 	}
 
@@ -194,9 +371,11 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 					UserBookID:         oldBook.UserBookID,
 					HasProgressSeconds: oldBook.HasProgressSeconds || status == "FINISHED",
 				}
+				updated = true
 			} else if !existing.HasProgressSeconds && status == "FINISHED" {
 				existing.HasProgressSeconds = true
 				s.Books[baseID] = existing
+				updated = true
 			}
 		} else {
 			s.Books[baseID] = Book{
@@ -205,29 +384,18 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 				Status:             status,
 				HasProgressSeconds: status == "FINISHED",
 			}
+			updated = true
 		}
 	}
 
-	s.LastSync = now
-	return updated
-}
-
-func (s *State) UpdateLibrary(libraryID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := time.Now().Unix()
-	s.Libraries[libraryID] = Library{
-		LastUpdated: now,
+	if updated {
+		s.dirty = true
 	}
-	s.LastSync = now
-}
-
-func (s *State) SetFullSync() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.LastFullSync = time.Now().Unix()
+	s.mu.Unlock()
+	for _, message := range debugMessages {
+		log.Print(message)
+	}
+	return updated
 }
 
 func (s *State) NeedsSync(bookID string, currentProgress float64, currentStatus string, minChangeThreshold float64) bool {
@@ -268,22 +436,6 @@ func (s *State) GetBookState(bookID string) (Book, bool) {
 	return book, exists
 }
 
-func (s *State) GetStaleBooks(maxAge time.Duration) []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	cutoff := time.Now().Add(-maxAge).Unix()
-	var staleBooks []string
-
-	for bookID, book := range s.Books {
-		if book.LastUpdated < cutoff {
-			staleBooks = append(staleBooks, bookID)
-		}
-	}
-
-	return staleBooks
-}
-
 func (s *State) UpdateBookWithUserBookID(bookID string, progress float64, status string, userBookID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -292,20 +444,24 @@ func (s *State) UpdateBookWithUserBookID(bookID string, progress float64, status
 	normalizedProgress := normalizeProgress(progress)
 
 	oldBook, exists := s.Books[bookID]
-	hasProgressSeconds := false
-	if exists {
-		hasProgressSeconds = oldBook.HasProgressSeconds
-	}
-
-	s.Books[bookID] = Book{
+	updated := Book{
 		LastProgress:       normalizedProgress,
-		LastUpdated:        now,
 		Status:             status,
 		UserBookID:         userBookID,
-		HasProgressSeconds: hasProgressSeconds,
+		HasProgressSeconds: oldBook.HasProgressSeconds,
 	}
 
-	s.LastSync = now
+	if exists {
+		// LastUpdated records the last semantic state change, so it must not
+		// make an otherwise identical update dirty merely because time passed.
+		updated.LastUpdated = oldBook.LastUpdated
+		if oldBook == updated {
+			return
+		}
+	}
+	updated.LastUpdated = now
+	s.Books[bookID] = updated
+	s.dirty = true
 }
 
 func normalizeProgress(progress float64) float64 {
@@ -318,35 +474,33 @@ func normalizeProgress(progress float64) float64 {
 	return progress
 }
 
-type v1State struct {
-	LastSyncTimestamp int64  `json:"lastSyncTimestamp"`
-	LastFullSync      int64  `json:"lastFullSync"`
-	Version           string `json:"version"`
-}
-
-func migrateV1ToV2(v1 v1State) *State {
-	return &State{
-		Version:      CurrentVersion,
-		LastSync:     v1.LastSyncTimestamp / 1000,
-		LastFullSync: v1.LastFullSync / 1000,
-		Libraries:    make(map[string]Library),
-		Books:        make(map[string]Book),
-	}
-}
-
 func (s *State) SetHasProgressSeconds(bookID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if book, exists := s.Books[bookID]; exists {
-		book.HasProgressSeconds = true
-		s.Books[bookID] = book
+		if !book.HasProgressSeconds {
+			book.HasProgressSeconds = true
+			s.Books[bookID] = book
+			s.dirty = true
+		}
 	}
 
 	if baseID := strings.SplitN(bookID, ":", 2)[0]; baseID != "" && baseID != bookID {
 		if book, exists := s.Books[baseID]; exists {
-			book.HasProgressSeconds = true
-			s.Books[baseID] = book
+			if !book.HasProgressSeconds {
+				book.HasProgressSeconds = true
+				s.Books[baseID] = book
+				s.dirty = true
+			}
 		}
 	}
+}
+
+// IsDirty reports whether the state has changes that have not been persisted.
+func (s *State) IsDirty() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.dirty
 }

@@ -44,15 +44,15 @@ func (b *BatchBookLookup) AddError(bookID string, err error) {
 func (b *BatchBookLookup) GetResult(bookID string) (*models.HardcoverBook, error, bool) {
 	b.mutex.RLock()
 	defer b.mutex.RUnlock()
-	
+
 	if book, exists := b.Results[bookID]; exists {
 		return book, nil, true
 	}
-	
+
 	if err, exists := b.Errors[bookID]; exists {
 		return nil, err, true
 	}
-	
+
 	return nil, nil, false
 }
 
@@ -62,7 +62,7 @@ func (s *Service) BatchProcessBooks(ctx context.Context, books []models.Audioboo
 		return nil
 	}
 
-	s.log.Info("Starting batch book processing", map[string]interface{}{
+	s.log.Debug("Starting batch book processing", map[string]interface{}{
 		"total_books": len(books),
 	})
 
@@ -84,7 +84,7 @@ func (s *Service) BatchProcessBooks(ctx context.Context, books []models.Audioboo
 				}
 			}
 			currentStatus := s.determineBookStatus(currentProgress, book.Progress.IsFinished, book.Progress.FinishedAt)
-			
+
 			// Check if this book needs syncing
 			minChangeThreshold := float64(s.config.Sync.MinChangeThreshold) / book.Media.Duration
 			if !s.state.NeedsSync(book.ID, currentProgress, currentStatus, minChangeThreshold) {
@@ -92,11 +92,11 @@ func (s *Service) BatchProcessBooks(ctx context.Context, books []models.Audioboo
 				continue
 			}
 		}
-		
+
 		booksToProcess = append(booksToProcess, book)
 	}
 
-	s.log.Info("Pre-filtering complete", map[string]interface{}{
+	s.log.Debug("Pre-filtering complete", map[string]interface{}{
 		"original_count":  len(books),
 		"to_process":      len(booksToProcess),
 		"skipped":         skippedCount,
@@ -104,14 +104,14 @@ func (s *Service) BatchProcessBooks(ctx context.Context, books []models.Audioboo
 	})
 
 	if len(booksToProcess) == 0 {
-		s.log.Info("No books need processing after pre-filtering")
+		s.log.Debug("No books need processing after pre-filtering")
 		return nil
 	}
 
 	// Phase 2: Collect unique ASINs for batch lookup optimization
 	uniqueASINs := make(map[string]bool)
 	asinToBooks := make(map[string][]models.AudiobookshelfBook)
-	
+
 	for _, book := range booksToProcess {
 		if book.Media.Metadata.ASIN != "" {
 			if !uniqueASINs[book.Media.Metadata.ASIN] {
@@ -121,16 +121,16 @@ func (s *Service) BatchProcessBooks(ctx context.Context, books []models.Audioboo
 		}
 	}
 
-	s.log.Info("ASIN analysis complete", map[string]interface{}{
-		"unique_asins":     len(uniqueASINs),
-		"books_with_asin":  len(asinToBooks),
-		"deduplication":    fmt.Sprintf("%.1f%% reduction", float64(len(booksToProcess)-len(uniqueASINs))/float64(len(booksToProcess))*100),
+	s.log.Debug("ASIN analysis complete", map[string]interface{}{
+		"unique_asins":    len(uniqueASINs),
+		"books_with_asin": len(asinToBooks),
+		"deduplication":   fmt.Sprintf("%.1f%% reduction", float64(len(booksToProcess)-len(uniqueASINs))/float64(len(booksToProcess))*100),
 	})
 
 	// Phase 3: Process books with optimized lookup strategy
 	batch := NewBatchBookLookup(booksToProcess)
 	processedCount := 0
-	
+
 	// Process books in smaller batches to avoid overwhelming the API
 	batchSize := 50 // Process 50 books at a time
 	for i := 0; i < len(booksToProcess); i += batchSize {
@@ -138,14 +138,14 @@ func (s *Service) BatchProcessBooks(ctx context.Context, books []models.Audioboo
 		if end > len(booksToProcess) {
 			end = len(booksToProcess)
 		}
-		
+
 		batchBooks := booksToProcess[i:end]
 		s.log.Debug("Processing book batch", map[string]interface{}{
 			"batch_start": i + 1,
 			"batch_end":   end,
 			"batch_size":  len(batchBooks),
 		})
-		
+
 		// Process each book in the batch
 		for _, book := range batchBooks {
 			// Respect context cancellation
@@ -167,7 +167,7 @@ func (s *Service) BatchProcessBooks(ctx context.Context, books []models.Audioboo
 				processedCount++
 			}
 		}
-		
+
 		// Add a small delay between batches to be respectful to the API
 		if end < len(booksToProcess) {
 			// Context-aware delay
@@ -180,11 +180,11 @@ func (s *Service) BatchProcessBooks(ctx context.Context, books []models.Audioboo
 		}
 	}
 
-	s.log.Info("Batch processing complete", map[string]interface{}{
-		"total_books":     len(booksToProcess),
-		"processed":       processedCount,
-		"failed":          len(booksToProcess) - processedCount,
-		"success_rate":    fmt.Sprintf("%.1f%%", float64(processedCount)/float64(len(booksToProcess))*100),
+	s.log.Debug("Batch processing complete", map[string]interface{}{
+		"total_books":  len(booksToProcess),
+		"processed":    processedCount,
+		"failed":       len(booksToProcess) - processedCount,
+		"success_rate": fmt.Sprintf("%.1f%%", float64(processedCount)/float64(len(booksToProcess))*100),
 	})
 
 	return nil
@@ -194,7 +194,7 @@ func (s *Service) BatchProcessBooks(ctx context.Context, books []models.Audioboo
 func (s *Service) PreloadASINCache(ctx context.Context, books []models.AudiobookshelfBook) error {
 	// Collect unique ASINs that aren't already cached
 	asinsToPreload := make([]string, 0)
-	
+
 	for _, book := range books {
 		if book.Media.Metadata.ASIN != "" {
 			if _, exists := s.getASINFromCache(book.Media.Metadata.ASIN); !exists {
@@ -202,39 +202,39 @@ func (s *Service) PreloadASINCache(ctx context.Context, books []models.Audiobook
 			}
 		}
 	}
-	
+
 	if len(asinsToPreload) == 0 {
 		s.log.Debug("No ASINs need preloading - all are already cached")
 		return nil
 	}
-	
-	s.log.Info("Preloading ASIN cache", map[string]interface{}{
+
+	s.log.Debug("Preloading ASIN cache", map[string]interface{}{
 		"asins_to_preload": len(asinsToPreload),
 	})
-	
+
 	// Note: Since Hardcover doesn't support batch ASIN lookups in their API,
 	// we'll rely on the existing caching mechanism during normal processing.
 	// This method serves as a placeholder for future batch API support.
-	
+
 	return nil
 }
 
 // OptimizeCache performs cache maintenance and optimization
 func (s *Service) OptimizeCache() {
 	s.log.Debug("Starting cache optimization")
-	
+
 	// Clean expired entries from persistent cache
 	if s.persistentCache != nil {
 		removed := s.persistentCache.CleanExpired()
 		if removed > 0 {
-			s.log.Info("Cleaned expired cache entries", map[string]interface{}{
+			s.log.Debug("Cleaned expired cache entries", map[string]interface{}{
 				"removed_entries": removed,
 			})
 		}
 	}
-	
+
 	// Log current cache statistics
 	s.logASINCacheStats()
-	
+
 	s.log.Debug("Cache optimization complete")
 }

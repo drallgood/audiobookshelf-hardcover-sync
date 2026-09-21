@@ -176,11 +176,11 @@ func TestHandleInProgressBook_DNFDisabled(t *testing.T) {
 func createTestServiceWithoutMocks() *Service {
 	// Setup logger
 	logger.Setup(logger.Config{Level: "debug", Format: "json"})
-	
+
 	// Create test config
 	cfg := config.DefaultConfig()
 	cfg.Sync.PreserveDNF = true
-	
+
 	// Create service without initializing clients
 	return &Service{
 		config: cfg,

@@ -112,7 +112,7 @@ func (c *memoryCache[K, V]) Clear() {
 
 	c.items = make(map[K]entry[V])
 
-	c.log.Info("Cache cleared", nil)
+	c.log.Debug("Cache cleared", nil)
 }
 
 // WithTTL returns a wrapper that automatically applies a TTL to all Set operations

@@ -229,19 +229,16 @@ Assign appropriate roles to users in Keycloak:
 
 ### Protected Endpoints
 
-All API endpoints under `/api/` require authentication when `AUTH_ENABLED=true`:
-
-- `/api/users` - User management
-- `/api/status` - Sync status
-- `/api/auth/me` - Current user info
+When `AUTH_ENABLED=true`, `/api/profiles/...` routes require authentication.
+`GET /api/status` remains public and returns redacted aggregate status.
 
 ### Authentication Headers
 
-For API access, include the session cookie:
+For authenticated profile API access, include the session cookie:
 
 ```bash
 curl -H "Cookie: abs-hc-sync-session=..." \
-     https://your-app.example.com/api/status
+     https://your-app.example.com/api/profiles
 ```
 
 ## Web UI Integration

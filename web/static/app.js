@@ -1,5 +1,7 @@
 // Sync Profile Management App
-console.info('Sync UI loaded', { build: '2025-08-16 01:05:44+02:00' });
+const STATUS_LOAD_TIMEOUT_MS = 15000;
+const PROFILE_RETRY_BASE_MS = 5000;
+const PROFILE_RETRY_MAX_MS = 60000;
 // Global image error handler for cover fallbacks
 window.__absHandleImageError = function(img) {
     try {
@@ -27,14 +29,40 @@ window.__absHandleImageError = function(img) {
 class SyncProfileApp {
     constructor() {
         this.users = [];
-        this.statuses = {};
+        this.statuses = Object.create(null);
+        this.actionErrors = new Map();
         this.currentEditUser = null;
         this.refreshInterval = null;
         this.currentUser = null;
         this.authEnabled = false;
         this.hasRedirectedToLogin = false;
         this.autoRefreshEnabled = true; // Auto-refresh is enabled by default
-        
+        this.statusLoadSequence = 0;
+        this.activeStatusLoads = 0;
+        this.activeStatusRequests = 0;
+        this.statusLoadController = null;
+        this.profileLoadFailed = false;
+        this.profileRetryFailures = 0;
+        this.nextProfileRetryAt = 0;
+        this.statusRefreshError = null;
+        this.openSummary = null;
+        this.statusRefreshQueued = false;
+        this.statusRefreshWaiters = [];
+        // The public aggregate intentionally omits raw run errors. A terminal
+        // card may hydrate its error from the authenticated status route with
+        // bounded retries for transient failures.
+        this.terminalErrorCache = new Map();
+        this.terminalErrorRetries = new Map();
+        this.terminalErrorRequests = new Map();
+        this.authSessionGeneration = 0;
+        this.editProfileRequest = null;
+        this.sessionMutationRequests = new Map();
+        // A successful start response is authoritative immediately, even if
+        // an aggregate request that was already in flight still contains the
+        // replaced run. Each entry records the latest status request sequence
+        // that was in flight when the start was accepted.
+        this.trackedRunIds = new Map();
+
         this.init();
     }
 
@@ -51,6 +79,71 @@ class SyncProfileApp {
         if (value === 1) return true;
         if (value === 0) return false;
         return !!defaultValue;
+    }
+
+    profileUrl(profileId, suffix = '') {
+        return `/api/profiles/${encodeURIComponent(String(profileId))}${suffix}`;
+    }
+
+    isViewer() {
+        return Boolean(this.authEnabled && this.currentUser
+            && String(this.currentUser.role || '').toLowerCase() === 'viewer');
+    }
+
+    beginSessionMutation(key) {
+        this.sessionMutationRequests.get(key)?.controller?.abort();
+        const request = {
+            generation: this.authSessionGeneration,
+            controller: typeof AbortController === 'undefined' ? null : new AbortController()
+        };
+        this.sessionMutationRequests.set(key, request);
+        return request;
+    }
+
+    isCurrentSessionMutation(key, request) {
+        return this.authSessionGeneration === request.generation
+            && this.sessionMutationRequests.get(key) === request
+            && !request.controller?.signal.aborted;
+    }
+
+    finishSessionMutation(key, request) {
+        if (this.sessionMutationRequests.get(key) !== request) return false;
+        this.sessionMutationRequests.delete(key);
+        return true;
+    }
+
+    abortSessionMutations() {
+        this.sessionMutationRequests.forEach(request => request.controller?.abort());
+        this.sessionMutationRequests.clear();
+    }
+
+    updateViewerControls() {
+        const viewer = this.isViewer();
+        const addProfileTab = [...document.querySelectorAll('.tab-button')]
+            .find(button => button.getAttribute('onclick') === "showTab('add-user')");
+        const addProfileContent = document.getElementById('add-user-tab');
+
+        if (viewer && addProfileContent?.classList.contains('active')) {
+            this.showTab('users');
+        }
+        if (addProfileTab) {
+            addProfileTab.hidden = viewer;
+            addProfileTab.setAttribute('aria-hidden', String(viewer));
+            addProfileTab.style.display = viewer ? 'none' : '';
+        }
+        if (addProfileContent) {
+            addProfileContent.hidden = viewer;
+            addProfileContent.setAttribute('aria-hidden', String(viewer));
+            addProfileContent.style.display = viewer ? 'none' : '';
+        }
+        if (viewer && document.getElementById('edit-user-modal')?.style.display === 'block') {
+            this.closeEditModal();
+        }
+
+        // Re-render already-loaded cards when the session role changes so a
+        // viewer never retains controls from a previous authenticated session.
+        if (this.users.length > 0) this.renderProfiles();
+        if (Object.keys(this.statuses).length > 0) this.renderStatuses();
     }
 
     // Format a timestamp to relative time (e.g., "5 minutes ago") with fallback
@@ -102,14 +195,12 @@ class SyncProfileApp {
             
             // If we get here, either auth is disabled or user is authenticated
             try {
-                // Load data in parallel for better performance
-                await Promise.all([
-                    this.loadProfiles(),
-                    this.loadStatuses()
-                ]);
+                // Status loading owns the initial loading state and loads profiles
+                // before fetching their statuses.
+                await this.loadStatuses();
                 
-                // Start auto-refresh only if we have data to refresh
-                if (this.users.length > 0) {
+                // Keep retrying if the initial profile request failed.
+                if (this.users.length > 0 || this.profileLoadFailed) {
                     this.startAutoRefresh();
                 }
             } catch (error) {
@@ -151,7 +242,6 @@ class SyncProfileApp {
             
             // No user loaded - check if we need to redirect to login
             if (this.authEnabled && !this.hasRedirectedToLogin) {
-                console.log('Auth enabled but no user, redirecting to login');
                 this.hasRedirectedToLogin = true;
                 this.redirectToLogin();
                 return false;
@@ -189,19 +279,16 @@ class SyncProfileApp {
                 
                 if (data.authenticated && data.user) {
                     this.currentUser = data.user;
-                    console.log('User authenticated:', this.currentUser);
                     return true;
                 } else {
                     // Not authenticated but auth is enabled
                     this.currentUser = null;
-                    console.log('User not authenticated, auth enabled:', this.authEnabled);
                     return false;
                 }
             } else {
                 // If we get an error, assume auth is enabled but user not authenticated
                 this.currentUser = null;
                 this.authEnabled = true;
-                console.log('Auth error, assuming auth enabled');
                 return false;
             }
         } catch (error) {
@@ -228,14 +315,6 @@ class SyncProfileApp {
                 console.warn('User info element not found');
                 return;
             }
-
-            // Debug logging - show full user object for troubleshooting
-            console.log('Current user object:', this.currentUser);
-            console.log('Updating user info:', { 
-                authEnabled: this.authEnabled, 
-                currentUser: this.currentUser || 'No user',
-                path: window.location.pathname
-            });
 
             if (this.authEnabled && this.currentUser) {
                 // User is authenticated - show user info and logout button
@@ -280,6 +359,7 @@ class SyncProfileApp {
             
             // Trigger a reflow to ensure UI updates
             userInfoElement.offsetHeight;
+            this.updateViewerControls();
             
         } catch (error) {
             console.error('Error updating user info:', error);
@@ -289,8 +369,11 @@ class SyncProfileApp {
     async logout() {
         try {
             // Clear local state first to update UI immediately
+            this.editProfileRequest?.controller?.abort();
+            this.editProfileRequest = null;
             this.currentUser = null;
             this.authEnabled = true;
+            this.resetSessionBoundState();
             this.updateUserInfo();
             
             // Show loading state
@@ -311,10 +394,6 @@ class SyncProfileApp {
             
             // Handle response
             if (response.ok) {
-                // Clear any remaining data
-                this.users = [];
-                this.statuses = {};
-                
                 // Stop any auto-refresh
                 this.stopAutoRefresh();
                 
@@ -339,6 +418,42 @@ class SyncProfileApp {
     }
 
     setupEventListeners() {
+        const bindProfileActions = (containerId, cardSelector) => {
+            const container = document.getElementById(containerId);
+            container.addEventListener('click', (event) => {
+                const button = event.target.closest('button[data-profile-action]');
+                if (!button || !container.contains(button)) return;
+
+                const card = button.closest(cardSelector);
+                if (!card || !container.contains(card)) return;
+                const profileId = card.dataset.profileId;
+
+                if (this.isViewer() && ['edit', 'delete', 'start', 'cancel'].includes(button.dataset.profileAction)) {
+                    return;
+                }
+
+                switch (button.dataset.profileAction) {
+                    case 'edit': this.editProfile(profileId); break;
+                    case 'delete': this.deleteProfile(profileId); break;
+                    case 'start': this.startSync(profileId); break;
+                    case 'cancel': this.cancelSync(profileId); break;
+                    case 'summary': this.toggleSyncSummary(profileId); break;
+                    case 'dismiss-error':
+                        this.actionErrors.delete(profileId);
+                        this.renderStatuses();
+                        break;
+                }
+            });
+        };
+        bindProfileActions('users-list', '.user-card[data-profile-id]');
+        bindProfileActions('sync-status', '.status-card[data-profile-id]');
+
+        document.getElementById('sync-summary-content').addEventListener('click', (event) => {
+            if (!event.target.closest('[data-details-retry]')) return;
+            const open = this.openSummary;
+            if (open) this.fetchAndRenderDetails({ open, preservePosition: true });
+        });
+
         // Tab switching
         document.querySelectorAll('.tab-button').forEach(button => {
             button.addEventListener('click', (e) => {
@@ -368,6 +483,9 @@ class SyncProfileApp {
     }
 
     showTab(tabName) {
+        if (this.isViewer() && tabName === 'add-user') {
+            tabName = 'users';
+        }
         // Update tab buttons
         document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
         document.querySelector(`[onclick="showTab('${tabName}')"]`).classList.add('active');
@@ -395,20 +513,20 @@ class SyncProfileApp {
             usersList.innerHTML = `
                 <div class="empty-state" style="grid-column: 1 / -1; text-align: center; padding: 2rem;">
                     <h3>No sync profiles found</h3>
-                    <p>Click on "Add Profile" to create a new sync profile.</p>
+                    <p>${this.isViewer() ? 'No profiles are available.' : 'Click on "Add Profile" to create a new sync profile.'}</p>
                 </div>
             `;
             return;
         }
 
         usersList.innerHTML = this.users.map(user => {
-            const lastSyncISO = user.last_sync || null;
+            const lastSyncISO = user.last_successful_at || null;
             const lastSync = lastSyncISO ? this.formatRelativeTime(lastSyncISO) : 'Never';
             const statusClass = user.active ? 'active' : 'inactive';
             const statusIcon = user.active ? '✓' : '✗';
             
             return `
-                <div class="user-card">
+                <div class="user-card" data-profile-id="${this.escapeHtmlAttribute(user.id)}">
                     <div class="user-card-header">
                         <h3>${this.escapeHtml(user.name || user.id)}</h3>
                         <span class="status-badge ${statusClass}" title="${user.active ? 'Active' : 'Inactive'}">
@@ -428,1402 +546,1243 @@ class SyncProfileApp {
                             </div>
                         </div>
                         
-                        <div class="user-card-actions">
-                            <button class="btn btn-sm btn-icon" onclick="app.editProfile('${this.escapeHtml(user.id)}')" title="Edit Profile">
+                        ${this.isViewer() ? '' : `<div class="user-card-actions">
+                            <button class="btn btn-sm btn-icon" data-profile-action="edit" title="Edit Profile">
                                 <span class="icon">✏️</span> Edit
                             </button>
-                            <button class="btn btn-sm btn-icon btn-danger" onclick="app.deleteProfile('${this.escapeHtml(user.id)}')" title="Delete Profile">
+                            <button class="btn btn-sm btn-icon btn-danger" data-profile-action="delete" title="Delete Profile">
                                 <span class="icon">🗑️</span> Delete
                             </button>
-                            <button class="btn btn-sm btn-primary" onclick="app.startSync('${this.escapeHtml(user.id)}')" ${user.active ? '' : 'disabled'}>
+                            <button class="btn btn-sm btn-primary" data-profile-action="start" ${user.active ? '' : 'disabled'}>
                                 <span class="icon">🔄</span> Sync Now
                             </button>
-                        </div>
+                        </div>`}
                     </div>
                 </div>
             `;
         }).join('');
     }
 
-    async loadProfiles() {
+    async fetchJsonWithTimeout(url, options = {}) {
+        const { signal: requestSignal, ...fetchOptions } = options;
+        if (typeof AbortController === 'undefined') {
+            const response = await fetch(url, fetchOptions);
+            return { response, data: await response.json() };
+        }
+
+        const controller = new AbortController();
+        let timedOut = false;
+        const timeout = setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+        }, STATUS_LOAD_TIMEOUT_MS);
+        const abortForRequest = () => controller.abort(requestSignal.reason);
+
+        if (requestSignal) {
+            if (requestSignal.aborted) {
+                abortForRequest();
+            } else {
+                requestSignal.addEventListener('abort', abortForRequest, { once: true });
+            }
+        }
+
         try {
-            this.showLoading();
+            const response = await fetch(url, { ...fetchOptions, signal: controller.signal });
+            const data = await response.json().catch(() => ({}));
+            if (controller.signal.aborted) {
+                const error = new Error(timedOut ? 'Request timed out' : 'Request aborted');
+                error.name = timedOut ? 'TimeoutError' : 'AbortError';
+                throw error;
+            }
+            return { response, data };
+        } catch (error) {
+            // fetch() rejects with AbortError before reaching the response path.
+            // Keep a real timeout distinct from an intentional parent cancellation.
+            if (timedOut && error.name === 'AbortError') {
+                const timeoutError = new Error('Request timed out');
+                timeoutError.name = 'TimeoutError';
+                throw timeoutError;
+            }
+            throw error;
+        } finally {
+            clearTimeout(timeout);
+            requestSignal?.removeEventListener('abort', abortForRequest);
+        }
+    }
+
+    async loadProfiles({ showLoading = true, statusOwned = false, signal } = {}) {
+        const authGeneration = this.authSessionGeneration;
+        try {
+            if (showLoading) this.showLoading();
             
             // Check authentication status first
             if (this.authEnabled && !this.currentUser) {
+                this.resetProfileRetry();
                 this.showToast('Please log in to view profiles', 'error');
                 this.redirectToLogin();
                 return;
             }
             
-            const response = await fetch('/api/profiles', {
+            const { response, data } = await this.fetchJsonWithTimeout('/api/profiles', {
                 method: 'GET',
                 credentials: 'include', // Include session cookies
                 headers: {
                     'Content-Type': 'application/json'
-                }
+                },
+                signal
             });
+
+            // A session switch may have happened while the request was in
+            // flight. Do not let the old response redirect or otherwise
+            // mutate the UI for the new session.
+            if (authGeneration !== this.authSessionGeneration) return;
             
             // Handle authentication errors specifically
             if (response.status === 401 || response.status === 403) {
+                this.resetProfileRetry();
                 this.showToast('Authentication required. Please log in.', 'error');
                 this.redirectToLogin();
                 return;
             }
             
-            const data = await response.json();
-
             if (response.ok && data.success) {
+                this.resetProfileRetry();
                 this.users = data.data;
                 this.renderProfiles();
             } else {
                 // Handle different types of errors
                 if (data.error && data.error.code === 'authentication_required') {
+                    this.resetProfileRetry();
                     this.showToast('Authentication required. Please log in.', 'error');
                     this.redirectToLogin();
                 } else {
-                    this.showToast('Failed to load sync profiles: ' + (data.error?.message || data.error || 'Unknown error'), 'error');
+                    const message = 'Failed to load sync profiles: ' + (data.error?.message || data.error || 'Unknown error');
+                    if (statusOwned) throw new Error(message);
+                    this.showToast(message, 'error');
                 }
             }
         } catch (error) {
+            if (authGeneration !== this.authSessionGeneration) return;
+            if (statusOwned) throw error;
             this.showToast('Error loading sync profiles: ' + error.message, 'error');
         } finally {
-            this.hideLoading();
+            if (showLoading && authGeneration === this.authSessionGeneration) this.hideLoading();
         }
     }
 
-    async loadStatuses() {
+    resetProfileRetry() {
+        this.profileLoadFailed = false;
+        this.profileRetryFailures = 0;
+        this.nextProfileRetryAt = 0;
+    }
+
+    async loadStatuses({ silent = false } = {}) {
+        // Timer-driven refreshes must never overlap. Keeping the existing
+        // request alive also lets its stale-response guard remain effective.
+        if (this.activeStatusRequests > 0) {
+            if (silent) return;
+            this.statusRefreshQueued = true;
+            return new Promise(resolve => this.statusRefreshWaiters.push(resolve));
+        }
+        const authGeneration = this.authSessionGeneration;
+        const requestSequence = ++this.statusLoadSequence;
+        const controller = typeof AbortController === 'undefined' ? null : new AbortController();
+        this.statusLoadController = controller;
+        const signal = controller?.signal;
+        const isCurrentRequest = () => authGeneration === this.authSessionGeneration
+            && requestSequence === this.statusLoadSequence
+            && !signal?.aborted;
+        this.activeStatusRequests += 1;
         try {
-            this.showLoading();
-            const statuses = {};
-            const summaryPromises = [];
-            
+            if (!silent) {
+                this.activeStatusLoads += 1;
+                this.showLoading();
+            }
             // First, get the list of profiles if not already loaded
             if (!this.users || this.users.length === 0) {
-                await this.loadProfiles();
+                // This status request owns its loading feedback. Avoid letting
+                // the nested profile request hide it before statuses finish.
+                await this.loadProfiles({ showLoading: false, statusOwned: true, signal });
             }
             
             // If no users, render empty status
             if (!this.users || this.users.length === 0) {
-                this.statuses = {};
+                if (!isCurrentRequest()) return;
+                this.statuses = Object.create(null);
+                this.pruneTerminalErrorState();
                 this.renderStatuses();
                 return;
             }
-            
-            // Fetch status for each profile
-            for (const user of this.users) {
-                try {
-                    const statusResponse = await fetch(`/api/profiles/${user.id}/status`);
-                    if (statusResponse.ok) {
-                        const statusData = await statusResponse.json();
-                        if (statusData.success) {
-                            const hasSummary = statusData.data?.last_sync_summary || 
-                                            (statusData.data?.books_synced !== undefined && 
-                                             (statusData.data?.mismatches?.length > 0 || 
-                                              statusData.data?.books_not_found?.length > 0));
-                            
-                            statuses[user.id] = {
-                                ...statusData.data,
-                                profile_id: user.id,
-                                profile_name: user.name || `Profile ${user.id}`,
-                                books_not_found: statusData.data?.books_not_found || [],
-                                mismatches: statusData.data?.mismatches || [],
-                                has_summary: hasSummary,
-                                // Ensure we have the total books processed
-                                books_total: statusData.data?.books_total || 0,
-                                books_synced: statusData.data?.books_synced || 0,
-                                last_sync: statusData.data?.last_sync
-                            };
-                            
-                            // Always try to fetch the summary for completed/error states
-                            if (statusData.data?.state === 'completed' || statusData.data?.state === 'error') {
-                                summaryPromises.push(this.fetchSyncSummary(user.id, statuses));
-                            }
-                        // HC-specific: show correct notices and add extra fields
-                        if (source === 'hc') {
-                            const hasBookMatch = !!(cleanData.url || cleanData.slug || cleanData.path);
-                            if (hasBookMatch) {
-                                // We found a book via search (slug/path/url), but it's a mismatch (edition not matched)
-                                details.push(`
-                                    <div class="mt-2">
-                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
-                                            Edition not matched — showing closest book match
-                                        </span>
-                                    </div>
-                                `);
-                            } else {
-                                // We couldn't even find a book match
-                                details.push(`
-                                    <div class="mt-2">
-                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
-                                            Book not found on Hardcover
-                                        </span>
-                                    </div>
-                                `);
-                            }
-
-                            // Extra HC metadata if present
-                            if (typeof cleanData.average_rating === 'number' || typeof cleanData.rating === 'number') {
-                                const r = (cleanData.average_rating ?? cleanData.rating).toString();
-                                metadata.push({ label: 'Rating', value: this.escapeHtml(r) });
-                            }
-                            if (typeof cleanData.ratings_count === 'number') {
-                                metadata.push({ label: 'Ratings', value: this.escapeHtml(cleanData.ratings_count.toString()) });
-                            }
-                            if (cleanData.slug) {
-                                metadata.push({ label: 'Slug', value: this.escapeHtml(cleanData.slug) });
-                            }
-                            if (cleanData.series && typeof cleanData.series === 'string') {
-                                metadata.push({ label: 'Series', value: this.escapeHtml(cleanData.series) });
-                            }
-                            const genres = cleanData.genres || cleanData.subjects;
-                            if (Array.isArray(genres) && genres.length > 0) {
-                                metadata.push({ label: 'Genres', value: genres.map(g => this.escapeHtml(String(g))).join(', ') });
-                            }
-                        }
-                        }
-                    }
-                } catch (error) {
-                    console.error(`Error fetching status for profile ${user.id}:`, error);
-                }
+            if (this.authEnabled && !(await this.validateSession(signal))) return;
+            const { response, data: result } = await this.fetchJsonWithTimeout('/api/status', { signal });
+            // Ignore every response from an earlier authorization boundary,
+            // including authentication errors, so stale aggregate requests
+            // cannot expire a newly authenticated session.
+            if (!isCurrentRequest()) return;
+            if (response.status === 401 || response.status === 403) {
+                this.handleAuthExpiry();
+                return;
             }
-            
-            // Wait for all summary fetches to complete
-            await Promise.all(summaryPromises);
-            
+            if (!response.ok) throw new Error(`Status request failed (${response.status})`);
+            const statusData = result.success ? result.data : result;
+            if (!Array.isArray(statusData)) throw new Error('Status response was not an array');
+
+            if (!isCurrentRequest()) return;
+            const authorizedProfileIds = this.authEnabled && this.currentUser
+                ? new Set(this.users.map(user => String(user?.id ?? '')))
+                : null;
+            const statuses = Object.create(null);
+            statusData.forEach((status) => {
+                if (!status || !status.profile_id) return;
+                const profileId = String(status.profile_id);
+                if (authorizedProfileIds && !authorizedProfileIds.has(profileId)) return;
+                const snapshot = status.snapshot || null;
+                const trackedRun = this.trackedRunIds.get(profileId);
+                const incomingRunId = snapshot?.run_id ? String(snapshot.run_id) : '';
+                // Do not let a status request that started before the
+                // accepted-start response replace the queued run with the
+                // previous terminal report. Once a request started after
+                // acceptance responds, its different run (including no run
+                // after a server restart) is authoritative and clears the
+                // one-shot guard.
+                const requestStartedBeforeAcceptance = trackedRun
+                    && requestSequence <= trackedRun.acceptedAfterSequence;
+                if (requestStartedBeforeAcceptance && incomingRunId !== trackedRun.runId) {
+                    const previous = this.statuses[profileId];
+                    if (previous?.snapshot?.run_id === trackedRun.runId) statuses[profileId] = previous;
+                    return;
+                }
+                if (trackedRun) this.trackedRunIds.delete(profileId);
+                const normalized = {
+                    profile_id: status.profile_id,
+                    profile_name: status.profile_name || `Profile ${profileId}`,
+                    last_attempted_at: status.last_attempted_at || null,
+                    last_successful_at: status.last_successful_at || null,
+                    snapshot
+                };
+                const errorKey = this.terminalErrorIdentity(profileId, normalized);
+                if (errorKey && this.terminalErrorCache.has(errorKey)) {
+                    normalized.terminal_error = this.terminalErrorCache.get(errorKey);
+                }
+                statuses[profileId] = normalized;
+            });
             this.statuses = statuses;
+            this.pruneTerminalErrorState();
+            this.statusRefreshError = null;
             this.renderStatuses();
-            this.renderSyncSummary();
-            
-        } catch (error) {
-            console.error('Error in loadStatuses:', error);
-            this.showToast('Error loading statuses: ' + error.message, 'error');
-        } finally {
-            this.hideLoading();
-        }
-    }
-    
-    async fetchSyncSummary(profileId, statuses) {
-        try {
-            console.log(`Fetching sync summary for profile ${profileId}...`);
-            const response = await fetch(`/api/profiles/${profileId}/summary`);
-            if (response.ok) {
-                const result = await response.json();
-                console.log('Raw sync summary response:', result);
-                
-                // The API returns the data directly in the response, not in a 'data' property
-                const summaryData = result.success ? result.data || result : result;
-                
-                if (statuses[profileId]) {
-                    const booksSynced = summaryData.books_synced || statuses[profileId].books_synced || 0;
-                    const booksNotFound = summaryData.books_not_found || statuses[profileId].books_not_found || [];
-                    const mismatches = summaryData.mismatches || statuses[profileId].mismatches || [];
-                    
-                    // Update the status with the summary data
-                    // Keep books_total from the status response (pre-counted total),
-                    // don't override with total_books_processed (running count).
-                    statuses[profileId] = {
-                        ...statuses[profileId],
-                        books_synced: booksSynced,
-                        books_not_found: booksNotFound,
-                        mismatches: mismatches,
-                        has_summary: true,
-                        last_sync: statuses[profileId].last_sync || new Date().toISOString()
-                    };
-                    
-                    console.log(`Updated sync summary for profile ${profileId}:`, statuses[profileId]);
-                    
-                    // Force a re-render of the statuses to show the updated summary
-                    this.statuses = { ...statuses };
-                }
-            } else {
-                console.error(`Failed to fetch summary for profile ${profileId}:`, response.status, response.statusText);
-            }
-        } catch (error) {
-            console.error(`Error fetching summary for profile ${profileId}:`, error);
-            // Don't show toast here to avoid multiple toasts for multiple failures
-        }
-    }
-    
-    renderStatuses() {
-        const container = document.getElementById('sync-status');
-        if (!container) return;
+            this.refreshOpenSummary();
+            this.fetchTerminalErrorFallbacks(signal, authGeneration);
 
-        if (Object.keys(this.statuses).length === 0) {
-            container.innerHTML = `
-                <div class="text-center" style="grid-column: 1 / -1; padding: 40px;">
-                    <h3>No sync statuses available</h3>
-                    <p>Add a new sync profile and start syncing to see status information.</p>
-                </div>
-            `;
+        } catch (error) {
+            if (error.name === 'AbortError') return;
+            console.error('Error loading sync statuses:', error);
+            this.statusRefreshError = error.message;
+            // Keep the last good snapshot and its DOM intact during a
+            // transient network failure. Only add a passive stale indicator.
+            if (this.users.length > 0 && requestSequence === this.statusLoadSequence) {
+                this.renderStatuses({ unavailable: true });
+                this.renderDetailsStale(this.openSummary);
+            }
+            if (this.users.length === 0 && requestSequence === this.statusLoadSequence && error.name !== 'AbortError') {
+                this.profileLoadFailed = true;
+                this.profileRetryFailures = Math.min(this.profileRetryFailures + 1, 5);
+                const retryDelay = Math.min(PROFILE_RETRY_BASE_MS * 2 ** (this.profileRetryFailures - 1), PROFILE_RETRY_MAX_MS);
+                this.nextProfileRetryAt = Date.now() + retryDelay;
+                this.renderStatuses({ unavailable: true });
+                this.renderDetailsStale(this.openSummary);
+                this.startAutoRefresh();
+            }
+            if (!silent && requestSequence === this.statusLoadSequence) {
+                this.showToast('Error loading statuses: ' + error.message, 'error');
+            }
+        } finally {
+            this.activeStatusRequests -= 1;
+            const ownsLoadingUI = requestSequence === this.statusLoadSequence
+                && this.statusLoadController === controller
+                && !signal?.aborted;
+            if (this.statusLoadController === controller) {
+                this.statusLoadController = null;
+            }
+            if (!silent) {
+                this.activeStatusLoads -= 1;
+                if (this.activeStatusLoads === 0 && ownsLoadingUI) this.hideLoading();
+            }
+            if (this.activeStatusRequests === 0 && this.statusRefreshQueued) {
+                this.statusRefreshQueued = false;
+                const waiters = this.statusRefreshWaiters.splice(0);
+                this.loadStatuses({ silent: true }).then(() => {
+                    waiters.forEach(resolve => resolve());
+                });
+            }
+        }
+    }
+
+    terminalErrorIdentity(profileId, status) {
+        const snapshot = status?.snapshot || {};
+        const state = String(snapshot.state || '').toLowerCase();
+        if (state !== 'failed') return null;
+        const runId = snapshot.run_id;
+        return runId ? JSON.stringify([String(profileId), String(runId)]) : null;
+    }
+
+    pruneTerminalErrorState() {
+        const liveProfileIds = new Set(this.users.map(user => String(user?.id || '')));
+        const currentFailures = new Set();
+        Object.entries(this.statuses).forEach(([profileId, status]) => {
+            const identity = this.terminalErrorIdentity(profileId, status);
+            if (identity) currentFailures.add(identity);
+        });
+        for (const identity of this.terminalErrorCache.keys()) {
+            if (!currentFailures.has(identity)) this.terminalErrorCache.delete(identity);
+        }
+        for (const identity of this.terminalErrorRetries.keys()) {
+            if (!currentFailures.has(identity)) this.terminalErrorRetries.delete(identity);
+        }
+        for (const profileId of this.actionErrors.keys()) {
+            if (!liveProfileIds.has(String(profileId))) this.actionErrors.delete(profileId);
+        }
+    }
+
+    fetchTerminalErrorFallbacks(signal, authGeneration) {
+        Object.entries(this.statuses).forEach(([profileId, status]) => {
+            const identity = this.terminalErrorIdentity(profileId, status);
+            if (!identity || this.terminalErrorCache.has(identity) || this.terminalErrorRequests.has(identity)) return;
+            const retry = this.terminalErrorRetries.get(identity);
+            if (retry && retry.retryAt > Date.now()) return;
+            const request = this.fetchTerminalError(profileId, identity, signal, authGeneration);
+            this.terminalErrorRequests.set(identity, request);
+            request.finally(() => {
+                if (this.terminalErrorRequests.get(identity) === request) {
+                    this.terminalErrorRequests.delete(identity);
+                }
+            });
+        });
+    }
+
+    scheduleTerminalErrorRetry(profileId, identity, authGeneration) {
+        if (authGeneration !== this.authSessionGeneration
+            || this.terminalErrorIdentity(profileId, this.statuses[profileId]) !== identity) return;
+        const previous = this.terminalErrorRetries.get(identity);
+        const failures = Math.min((previous?.failures || 0) + 1, 6);
+        const delay = Math.min(15000 * 2 ** (failures - 1), 300000);
+        this.terminalErrorRetries.set(identity, { failures, retryAt: Date.now() + delay });
+    }
+
+    async fetchTerminalError(profileId, identity, signal, authGeneration) {
+        const runId = JSON.parse(identity)[1];
+        try {
+            const { response, data: result } = await this.fetchJsonWithTimeout(
+                `${this.profileUrl(profileId)}/runs/${encodeURIComponent(runId)}/details`,
+                { signal }
+            );
+            // A terminal-error request can outlive the status load that
+            // started it. Ignore every response from an earlier authorization
+            // boundary, including authentication errors, so it cannot expire
+            // a newly authenticated session.
+            if (authGeneration !== this.authSessionGeneration) return;
+            if (response.status === 401 || response.status === 403) {
+                this.handleAuthExpiry();
+                return;
+            }
+            if (response.status !== 200) throw new Error(`Terminal details request failed (${response.status})`);
+            if (!result || result.success !== true || !result.data || typeof result.data !== 'object') {
+                throw new Error('Terminal details response was invalid');
+            }
+            const snapshot = result.data;
+            if (String(snapshot.run_id || '') !== runId) {
+                throw new Error('Terminal details response was for the wrong run');
+            }
+            if (Object.prototype.hasOwnProperty.call(snapshot, 'run_error') && typeof snapshot.run_error !== 'string') {
+                throw new Error('Terminal details response contained an invalid error');
+            }
+            if (authGeneration !== this.authSessionGeneration
+                || this.terminalErrorIdentity(profileId, this.statuses[profileId]) !== identity) return;
+            const error = typeof snapshot.run_error === 'string' ? snapshot.run_error : '';
+            this.terminalErrorCache.set(identity, error);
+            this.terminalErrorRetries.delete(identity);
+            const current = this.statuses[profileId];
+            current.terminal_error = error;
+            this.renderStatuses();
+            this.renderOpenSummaryError(profileId, identity, error);
+        } catch (error) {
+            if (error.name !== 'AbortError') {
+                console.error('Error loading terminal sync status:', error);
+            }
+            this.scheduleTerminalErrorRetry(profileId, identity, authGeneration);
+        }
+    }
+
+    renderOpenSummaryError(profileId, identity, error) {
+        const open = this.openSummary;
+        if (!open || open.profileId !== profileId) return;
+        const identityParts = JSON.parse(identity);
+        const runId = identityParts[1];
+        if (!runId || open.runId !== runId) return;
+        const content = document.getElementById('sync-summary-content');
+        const summary = content?.querySelector('.sync-summary');
+        if (!content || !summary || summary.dataset.runId !== runId) return;
+        const viewport = this.captureDetailViewport(content);
+        let errorNode = summary.querySelector('[data-run-error]');
+        if (!error) {
+            errorNode?.remove();
+            this.restoreDetailViewport(content, viewport);
             return;
         }
+        if (!errorNode) {
+            errorNode = document.createElement('div');
+            errorNode.dataset.runError = 'true';
+            errorNode.className = 'status-message status-error';
+            summary.prepend(errorNode);
+        }
+        errorNode.innerHTML = `<strong>Run error:</strong> ${this.escapeHtml(error)}`;
+        this.restoreDetailViewport(content, viewport);
+    }
 
-        // Debug: Log status data to console for troubleshooting
-        console.log('Rendering statuses with data:', this.statuses);
+    async validateSession(signal) {
+        const previousUserId = this.currentUser?.id == null ? null : String(this.currentUser.id);
+        const previousRole = String(this.currentUser?.role || '').trim().toLowerCase();
+        try {
+            const { response, data } = await this.fetchJsonWithTimeout('/api/auth/me', {
+                credentials: 'include',
+                headers: {
+                    'Accept': 'application/json',
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache'
+                },
+                signal
+            });
+            const authEnabled = data.auth_enabled !== false;
+            if (response.status === 401 || response.status === 403 || (authEnabled && data.authenticated === false)) {
+                this.handleAuthExpiry();
+                return false;
+            }
+            if (response.ok && !authEnabled) {
+                this.authEnabled = false;
+                this.currentUser = null;
+            } else if (response.ok && data.authenticated && data.user) {
+                this.currentUser = data.user;
+            }
+            const currentUserId = this.currentUser?.id == null ? null : String(this.currentUser.id);
+            const currentRole = String(this.currentUser?.role || '').trim().toLowerCase();
+            const sessionBoundaryChanged = previousUserId !== currentUserId || previousRole !== currentRole;
+            if (sessionBoundaryChanged) {
+                this.resetSessionBoundState();
+                // This validation runs inside loadStatuses. Queue one fresh
+                // request after the stale request unwinds so profile access
+                // and status cards are rebuilt for the new authorization
+                // boundary.
+                this.statusRefreshQueued = true;
+                this.updateUserInfo();
+            }
+            return true;
+        } catch (error) {
+            if (error.name === 'AbortError') return false;
+            // A transient validation failure should not log the user out or
+            // replace the last-good aggregate status snapshot.
+            return true;
+        }
+    }
 
-        // Convert statuses object to array and filter out any null/undefined entries
-        const statusArray = Object.entries(this.statuses).filter(([_, status]) => status);
-        
-        container.innerHTML = statusArray.map(([profileId, status]) => {
-            const progress = status.progress || 0;
-            const booksSynced = status.books_synced || 0;
-            const booksTotal = status.books_total || 0;
-            const totalProcessed = status.last_sync_summary?.total_books_processed !== undefined
-                ? status.last_sync_summary.total_books_processed
-                : (status.total_books_processed !== undefined ? status.total_books_processed : booksTotal);
-            const booksNotFound = status.books_not_found?.length || 0;
-            const mismatches = status.mismatches?.length || 0;
-            
-            // Determine if we should show the View Details button
-            const hasSummary = status.has_summary || 
-                             (status.status === 'completed' && 
-                              (booksSynced > 0 || booksNotFound > 0 || mismatches > 0));
-            
-            const progressPercent = booksTotal > 0 ? Math.round((totalProcessed / booksTotal) * 100) : 0;
-            const lastSync = status.last_sync || status.lastSync || null;
-            const statusText = status.status || 'idle';
-            const profileName = status.profile_name || status.profile_id || 'Unknown Profile';
+    resetSessionBoundState() {
+        this.abortSessionMutations();
+        this.editProfileRequest?.controller?.abort();
+        this.editProfileRequest = null;
+        this.users = [];
+        this.statuses = Object.create(null);
+        this.closeEditModal();
+        this.statusRefreshError = null;
+        this.actionErrors.clear();
+        this.terminalErrorCache.clear();
+        this.terminalErrorRetries.clear();
+        this.terminalErrorRequests.clear();
+        this.trackedRunIds.clear();
+        this.resetProfileRetry();
+        this.authSessionGeneration += 1;
+        this.statusLoadSequence += 1;
+        this.statusLoadController?.abort();
+        this.statusRefreshQueued = false;
+        this.statusRefreshWaiters.splice(0).forEach(resolve => resolve());
+        this.clearOpenSummary();
+        this.renderProfiles();
+        this.renderStatuses();
+    }
+    
+    renderStatusCard(profileId, status) {
+        const snapshot = status.snapshot || {};
+        const counts = snapshot.outcome_counts || {};
+        const processed = Number(snapshot.processed_so_far || 0);
+        const booksTotal = Number(snapshot.books_total || 0);
+        const progressPercent = booksTotal > 0 ? Math.min(100, Math.round((processed / booksTotal) * 100)) : 0;
+        const hasKnownTotal = booksTotal > 0;
+        const hasProcessedBooks = processed > 0;
+        const statusState = this.statusPhase(status);
+        const statusClass = this.isActiveRunPhase(statusState)
+            ? 'syncing'
+            : statusState === 'completed'
+                ? 'completed'
+                : statusState === 'failed' || statusState === 'canceled' ? 'error' : 'idle';
+        const statusText = this.formatStatusLabel(statusState, snapshot.dry_run);
+        const profileName = status.profile_name || status.profile_id || 'Unknown Profile';
+        const actionError = this.actionErrors.get(profileId);
+        const hasRun = Boolean(snapshot.run_id);
+        const detailsOpen = this.isSyncSummaryOpen(profileId, snapshot.run_id);
+        const retryable = statusState === 'failed';
+        const categories = this.outcomeCategories(counts);
+        const isActiveRun = this.isActiveRunPhase(statusState);
+        const isDryRun = this.toBool(snapshot.dry_run, false);
+        const runStartedAt = this.timestampOrNull(snapshot.queued_at);
+        const lastActivityAt = this.timestampOrNull(snapshot.last_activity_at)
+            || this.timestampOrNull(snapshot.last_processed_at);
+        const finishedAt = this.timestampOrNull(snapshot.finished_at);
+        const lastAttemptedAt = this.timestampOrNull(status.last_attempted_at);
+        const lastSuccessfulAt = this.timestampOrNull(status.last_successful_at);
+        const fallbackAttemptedAt = runStartedAt ? null : lastAttemptedAt;
+        let terminalLabel = '';
+        let terminalAt = null;
+        if (statusState === 'completed') {
+            terminalLabel = isDryRun ? 'Dry run completed' : 'Completed';
+            terminalAt = finishedAt || (!isDryRun ? lastSuccessfulAt : null);
+        } else if (statusState === 'failed') {
+            terminalLabel = 'Failed';
+            terminalAt = finishedAt;
+        } else if (statusState === 'canceled') {
+            terminalLabel = 'Canceled';
+            terminalAt = finishedAt;
+        }
+        const historicalSuccessLabel = isActiveRun ? 'Previous successful sync' : 'Last successful';
+        const showHistoricalSuccess = lastSuccessfulAt && (
+            isActiveRun
+            || !hasRun
+            || statusState === 'failed'
+            || statusState === 'canceled'
+            || (statusState === 'completed' && isDryRun)
+        );
 
-            return `
-                <div class="status-card ${statusText.toLowerCase()}">
+        return `
+                <div class="status-card ${statusClass}" data-profile-id="${this.escapeHtmlAttribute(profileId)}">
                     <div class="status-header">
                         <h3>${this.escapeHtml(profileName)}</h3>
-                        <span class="status-badge">${statusText}</span>
+                        <span class="status-badge">${this.escapeHtml(statusText)}</span>
                     </div>
                     <div class="status-info">
-                        ${lastSync ? `
-                            <div><strong>Last Sync:</strong> <span title="${new Date(lastSync).toLocaleString()}">${this.formatRelativeTime(lastSync)}</span></div>
+                        ${runStartedAt ? `
+                            <div><strong>Run started:</strong> <span class="relative-sync-time" data-timestamp="${this.escapeHtmlAttribute(runStartedAt)}" title="${new Date(runStartedAt).toLocaleString()}">${this.formatRelativeTime(runStartedAt)}</span></div>
                         ` : ''}
-                        ${progress > 0 ? `
-                            <div><strong>Progress:</strong> ${progress}%</div>
+                        ${isActiveRun && lastActivityAt ? `
+                            <div><strong>Last activity:</strong> <span class="relative-sync-time" data-timestamp="${this.escapeHtmlAttribute(lastActivityAt)}" title="${new Date(lastActivityAt).toLocaleString()}">${this.formatRelativeTime(lastActivityAt)}</span></div>
                         ` : ''}
-                        ${booksTotal > 0 ? `
-                            <div><strong>Books Processed:</strong> ${totalProcessed} of ${booksTotal}</div>
-                            ${booksSynced > 0 ? `<div><strong>Books Synced:</strong> ${booksSynced}</div>` : ''}
+                        ${terminalAt ? `
+                            <div><strong>${terminalLabel}:</strong> <span class="relative-sync-time" data-timestamp="${this.escapeHtmlAttribute(terminalAt)}" title="${new Date(terminalAt).toLocaleString()}">${this.formatRelativeTime(terminalAt)}</span></div>
+                        ` : ''}
+                        ${fallbackAttemptedAt ? `
+                            <div><strong>Last attempted:</strong> <span class="relative-sync-time" data-timestamp="${this.escapeHtmlAttribute(fallbackAttemptedAt)}" title="${new Date(fallbackAttemptedAt).toLocaleString()}">${this.formatRelativeTime(fallbackAttemptedAt)}</span></div>
+                        ` : ''}
+                        ${showHistoricalSuccess ? `
+                            <div><strong>${historicalSuccessLabel}:</strong> <span class="relative-sync-time" data-timestamp="${this.escapeHtmlAttribute(lastSuccessfulAt)}" title="${new Date(lastSuccessfulAt).toLocaleString()}">${this.formatRelativeTime(lastSuccessfulAt)}</span></div>
+                        ` : ''}
+                        ${hasKnownTotal ? `
+                            <div><strong>Processed:</strong> ${processed} of ${booksTotal}</div>
                             <div class="progress-bar">
                                 <div class="progress-fill" style="width: ${progressPercent}%"></div>
                             </div>
+                        ` : hasProcessedBooks ? `
+                            <div><strong>Processed:</strong> ${processed} (total unknown)</div>
                         ` : ''}
-                        ${hasSummary ? `
-                            <div class="sync-summary-stats">
-                                <span class="stat success">✓ ${booksSynced} synced</span>
-                                ${booksNotFound > 0 ? `<span class="stat warning">⚠ ${booksNotFound} not found</span>` : ''}
-                                ${mismatches > 0 ? `<span class="stat warning">⚠ ${mismatches} mismatches</span>` : ''}
+                        ${hasRun ? `
+                            <div class="sync-summary-stats outcome-counts" aria-label="Sync outcome counts">
+                                ${categories.map(category => `<span class="stat ${category.tone}">${category.label}: ${category.count}</span>`).join('')}
                             </div>
                         ` : ''}
                         ${status.message ? `
                             <div class="status-message">${this.escapeHtml(status.message)}</div>
                         ` : ''}
-                        ${status.error ? `
-                            <div class="status-error">Error: ${this.escapeHtml(status.error)}</div>
+                        ${status.terminal_error ? `
+                            <div class="status-message status-error"><strong>Run error:</strong> ${this.escapeHtml(status.terminal_error)}</div>
+                        ` : ''}
+                        ${status.unavailable || this.statusRefreshError ? `
+                            <div class="status-message" role="status">Status unavailable. Showing last known data.</div>
+                        ` : ''}
+                        ${actionError ? `
+                            <div class="action-error" role="alert">
+                                <span>${this.escapeHtml(actionError.action)} failed: ${this.escapeHtml(actionError.message)}</span>
+                                <button class="btn btn-sm" data-profile-action="dismiss-error" aria-label="Dismiss action error">Dismiss</button>
+                            </div>
                         ` : ''}
                     </div>
                     <div class="status-actions">
-                        ${statusText.toLowerCase() === 'syncing' ? `
-                            <button class="btn btn-warning" onclick="app.cancelSync('${profileId}')">
+                        ${this.isViewer() ? '' : (this.isActiveRunPhase(statusState) ? `
+                            <button class="btn btn-warning" data-profile-action="cancel">
                                 Cancel Sync
                             </button>
                         ` : `
-                            <button class="btn btn-primary" onclick="app.startSync('${profileId}')">
-                                ${statusText.toLowerCase() === 'error' ? 'Retry Sync' : 'Start Sync'}
+                            <button class="btn btn-primary" data-profile-action="start">
+                                ${retryable ? 'Retry Sync' : 'Start Sync'}
                             </button>
-                        `}
-                        ${hasSummary ? `
-                            <button class="btn btn-secondary" onclick="app.showSyncSummary('${profileId}')">
-                                View Details
+                        `)}
+                        ${hasRun ? `
+                            <button class="btn btn-secondary" data-profile-action="summary" aria-expanded="${detailsOpen}">
+                                ${detailsOpen ? 'Hide Details' : 'View Details'}
                             </button>
                         ` : ''}
                     </div>
                 </div>
             `;
-        }).join('');
+    }
+
+    statusPhase(status) {
+        const state = String(status?.snapshot?.state || 'idle').toLowerCase();
+        return ['queued', 'running', 'finalizing', 'completed', 'canceled', 'failed'].includes(state)
+            ? state
+            : 'idle';
+    }
+
+    isActiveRunPhase(state) {
+        return ['queued', 'running', 'finalizing'].includes(state);
+    }
+
+    formatStatusLabel(state, dryRun = false) {
+        const labels = {
+            queued: 'Queued',
+            running: 'Running',
+            finalizing: 'Finalizing',
+            completed: 'Completed',
+            canceled: 'Canceled',
+            failed: 'Failed',
+            idle: 'Idle'
+        };
+        const label = labels[state] || 'Idle';
+        return dryRun && this.isActiveRunPhase(state) ? `${label} (dry run)` : label;
+    }
+
+    detailsStatusTimestamp(snapshot = {}) {
+        const state = String(snapshot.state || '').toLowerCase();
+        const timestampCandidates = {
+            queued: [snapshot.queued_at],
+            running: [snapshot.processing_started_at, snapshot.last_activity_at, snapshot.queued_at],
+            finalizing: [snapshot.last_activity_at, snapshot.processing_started_at, snapshot.queued_at],
+            completed: [snapshot.finished_at, snapshot.last_activity_at, snapshot.processing_started_at, snapshot.queued_at],
+            canceled: [snapshot.finished_at, snapshot.last_activity_at, snapshot.processing_started_at, snapshot.queued_at],
+            failed: [snapshot.finished_at, snapshot.last_activity_at, snapshot.processing_started_at, snapshot.queued_at]
+        };
+        const timestamp = (timestampCandidates[state] || [snapshot.queued_at])
+            .map(value => this.timestampOrNull(value))
+            .find(Boolean);
+        return {
+            label: state === 'completed' && this.toBool(snapshot.dry_run, false)
+                ? 'Dry run completed'
+                : this.formatStatusLabel(state, snapshot.dry_run),
+            timestamp
+        };
+    }
+
+    timestampOrNull(value) {
+        if (!value) return null;
+        const date = value instanceof Date ? value : new Date(value);
+        return Number.isFinite(date.getTime()) && date.getUTCFullYear() > 1 ? value : null;
+    }
+
+    outcomeCategories(counts = {}) {
+        return [
+            { key: 'synced', label: 'Synced', tone: 'success' },
+            { key: 'already_current', label: 'Already current', tone: 'info' },
+            { key: 'skipped', label: 'Skipped', tone: 'muted' },
+            { key: 'needs_review', label: 'Needs review', tone: 'warning' },
+            { key: 'not_found', label: 'Not found', tone: 'warning' },
+            { key: 'failed', label: 'Failed', tone: 'error' },
+            { key: 'would_sync', label: 'Would sync', tone: 'info' }
+        ].map(category => ({ ...category, count: Number(counts[category.key] || 0) }));
+    }
+
+    updateRelativeSyncTime(card) {
+        card.querySelectorAll('.relative-sync-time[data-timestamp]').forEach((relativeTime) => {
+            const timestamp = relativeTime.dataset.timestamp;
+            if (!timestamp) return;
+            relativeTime.textContent = this.formatRelativeTime(timestamp);
+            relativeTime.title = new Date(timestamp).toLocaleString();
+        });
+    }
+
+    renderStatuses({ unavailable = false } = {}) {
+        const container = document.getElementById('sync-status');
+        if (!container) return;
+
+        if (Object.keys(this.statuses).length === 0) {
+            const emptyState = container.querySelector('.status-empty-state');
+            if (!emptyState) {
+                container.innerHTML = `
+                    <div class="text-center status-empty-state" style="grid-column: 1 / -1; padding: 40px;">
+                        <h3></h3>
+                        <p></p>
+                    </div>
+                `;
+            }
+            const state = container.querySelector('.status-empty-state');
+            state.querySelector('h3').textContent = unavailable ? 'Unable to load sync statuses' : 'No sync statuses available';
+            state.querySelector('p').textContent = unavailable
+                ? 'Try refreshing the status in a moment.'
+                : 'Add a new sync profile and start syncing to see status information.';
+            return;
+        }
+
+        const statusArray = Object.entries(this.statuses).filter(([_, status]) => status);
+        const existingCards = new Map(
+            [...container.querySelectorAll('.status-card[data-profile-id]')]
+                .map(card => [card.dataset.profileId, card])
+        );
+        const retainedProfiles = new Set();
+        const activeElement = document.activeElement;
+        const scrollPosition = { x: window.scrollX, y: window.scrollY };
+        let changed = false;
+
+        // Remove the empty-state message once real status cards are available.
+        [...container.children].filter(child => !child.matches('.status-card')).forEach(child => {
+            child.remove();
+            changed = true;
+        });
+
+        statusArray.forEach(([profileId, status], index) => {
+            let card = existingCards.get(profileId);
+            const snapshotRunId = status.snapshot?.run_id;
+            const detailsOpen = this.isSyncSummaryOpen(profileId, snapshotRunId);
+            const signature = JSON.stringify([status, this.actionErrors.get(profileId), Boolean(this.statusRefreshError), detailsOpen]);
+            const focusInfo = card && activeElement && card.contains(activeElement)
+                ? {
+                    id: activeElement.id,
+                    tagName: activeElement.tagName,
+                    action: activeElement.dataset.profileAction,
+                    primaryAction: ['start', 'cancel'].includes(activeElement.dataset.profileAction)
+                }
+                : null;
+
+            if (!card || card.__statusSignature !== signature) {
+                const wrapper = document.createElement('div');
+                wrapper.innerHTML = this.renderStatusCard(profileId, status).trim();
+                const replacement = wrapper.firstElementChild;
+                replacement.__statusSignature = signature;
+                if (card) {
+                    card.replaceWith(replacement);
+                } else {
+                    container.appendChild(replacement);
+                }
+                card = replacement;
+                changed = true;
+
+                if (focusInfo) {
+                    const focusTarget = focusInfo.id
+                        ? [...card.querySelectorAll('[id]')].find(element => element.id === focusInfo.id)
+                        : [...card.querySelectorAll(focusInfo.tagName)].find(element =>
+                            focusInfo.primaryAction
+                                ? ['start', 'cancel'].includes(element.dataset.profileAction)
+                                : element.dataset.profileAction === focusInfo.action);
+                    focusTarget?.focus({ preventScroll: true });
+                }
+            }
+
+            retainedProfiles.add(profileId);
+            this.updateRelativeSyncTime(card);
+            const cardAtPosition = container.children[index];
+            if (cardAtPosition !== card) {
+                container.insertBefore(card, cardAtPosition || null);
+                changed = true;
+            }
+        });
+
+        existingCards.forEach((card, profileId) => {
+            if (!retainedProfiles.has(profileId)) {
+                card.remove();
+                changed = true;
+            }
+        });
+
+        if (changed && typeof window.scrollTo === 'function') {
+            window.scrollTo(scrollPosition.x, scrollPosition.y);
+        }
+    }
+
+    isSyncSummaryOpen(profileId, runId) {
+        return Boolean(runId)
+            && this.openSummary?.profileId === profileId
+            && this.openSummary?.runId === runId;
+    }
+
+    async toggleSyncSummary(profileId) {
+        const runId = this.statuses[profileId]?.snapshot?.run_id;
+        if (this.isSyncSummaryOpen(profileId, runId)) {
+            this.clearOpenSummary();
+            this.renderStatuses();
+            return;
+        }
+        await this.showSyncSummary(profileId);
     }
     
-    showSyncSummary(profileId) {
+    async showSyncSummary(profileId) {
         const status = this.statuses[profileId];
-        if (!status) {
-            console.error('No status found for profile:', profileId);
+        const runId = status?.snapshot?.run_id;
+        if (!status || !runId) {
+            console.error('No current sync run found for profile:', profileId);
             return;
         }
-        
-        console.log('Showing sync summary for profile:', profileId, status);
-        
+
         const container = document.getElementById('sync-summary-container');
-        const content = document.getElementById('sync-summary-content');
-        const tabsContainer = document.getElementById('sync-summary-tabs');
-        
-        if (!container || !content || !tabsContainer) {
-            console.error('Missing required DOM elements for sync summary');
-            return;
-        }
-        
-        // Update the tabs to show the current profile
-        tabsContainer.innerHTML = `
-            <button class="tab-button active" data-profile="${profileId}">
-                ${this.escapeHtml(status.profile_name || `Profile ${profileId}`)}
-            </button>`;
-        
-        // Get the last sync time if available
-        const lastSync = status.last_sync || status.lastSync;
-        const lastSyncDate = lastSync ? new Date(lastSync).toLocaleString() : 'Never';
-        
-        // Build summary HTML
-        const summary = status.last_sync_summary || status.lastSyncSummary || null;
-        const booksSynced = (summary && typeof summary.books_synced === 'number') ? summary.books_synced : (status.books_synced || 0);
-        const booksTotal = (summary && typeof summary.total_books_processed === 'number') ? summary.total_books_processed : (status.books_total || 0);
-        // Prefer top-level mismatches; only fall back to summary mismatches if top-level is empty
-        let mismatchesArr = Array.isArray(status.mismatches) && status.mismatches.length > 0
-            ? status.mismatches
-            : (Array.isArray(summary?.mismatches) ? summary.mismatches : []);
-        // De-duplicate by book_id just in case both sources are present
-        if (Array.isArray(summary?.mismatches) && summary.mismatches.length > 0 && Array.isArray(status.mismatches) && status.mismatches.length > 0) {
-            const byId = new Map();
-            [...status.mismatches, ...summary.mismatches].forEach(m => {
-                const id = m.book_id || m.id;
-                if (!byId.has(id)) byId.set(id, m);
-            });
-            mismatchesArr = Array.from(byId.values());
-        }
-        // Resolve the Audiobookshelf base URL for this profile (used to build ABS book links)
-        const profileEntry = Array.isArray(this.users)
-            ? this.users.find(u => (u.id || (u.profile && u.profile.id)) === profileId)
-            : null;
-        // Profiles returned by /api/profiles include Config as `config` with `audiobookshelf_url`
-        const __absBaseUrl = profileEntry && profileEntry.config && profileEntry.config.audiobookshelf_url
-            ? String(profileEntry.config.audiobookshelf_url).replace(/\/+$/, '')
-            : '';
-        let html = `
-            <div class="sync-summary">
-                <div class="summary-header">
-                    <h3>Sync Summary: ${this.escapeHtml(status.profile_name || 'Unknown Profile')}</h3>
-                    <div class="last-sync">Last Sync: ${lastSyncDate}</div>
-                </div>
-                <div class="summary-stats">
-                    <div class="stat-item success">
-                        <span class="stat-value">${booksSynced}</span>
-                        <span class="stat-label">Books Synced</span>
-                    </div>
-                    <div class="stat-item info">
-                        <span class="stat-value">${booksTotal}</span>
-                        <span class="stat-label">Total Processed</span>
-                    </div>`;
-        
-        // Add books not found stat if any
-        if (status.books_not_found?.length > 0) {
-            html += `
-                    <div class="stat-item warning">
-                        <span class="stat-value">${status.books_not_found.length}</span>
-                        <span class="stat-label">Books Not Found</span>
-                    </div>`;
-        }
-        
-        // Add mismatches stat if any
-        if (mismatchesArr.length > 0) {
-            html += `
-                    <div class="stat-item warning">
-                        <span class="stat-value">${mismatchesArr.length}</span>
-                        <span class="stat-label">Potential Mismatches</span>
-                    </div>`;
-        }
-        
-        html += `
-                </div>`; // Close summary-stats
-        
-        // Add books not found section
-        if (status.books_not_found?.length > 0) {
-            const booksHtml = status.books_not_found.map(book => {
-                const title = this.escapeHtml(book.title || 'Unknown Title');
-                const subtitle = book.subtitle ? `<div class="book-subtitle">${this.escapeHtml(book.subtitle)}</div>` : '';
-                const author = book.author ? `<div><strong>Author:</strong> ${this.escapeHtml(book.author)}</div>` : '';
-                const publishedYear = book.published_year ? `<div><strong>Published:</strong> ${this.escapeHtml(book.published_year)}</div>` : '';
-                const publisher = book.publisher ? `<div><strong>Publisher:</strong> ${this.escapeHtml(book.publisher)}</div>` : '';
-                const asin = book.asin ? `<div><strong>ASIN:</strong> ${this.escapeHtml(book.asin)}</div>` : '';
-                const isbn = book.isbn ? `<div><strong>ISBN:</strong> ${this.escapeHtml(book.isbn)}</div>` : '';
-                const libraryId = book.library_id ? `<div><strong>Library ID:</strong> ${this.escapeHtml(book.library_id)}</div>` : '';
-                const error = book.error ? `<div class="book-error">${this.escapeHtml(book.error)}</div>` : '';
-                const reason = book.reason ? `<div class="book-reason"><strong>Reason:</strong> ${this.escapeHtml(book.reason)}</div>` : '';
-                
-                return `
-                    <div class="book-item">
-                        <div class="book-title">${title}</div>
-                        ${subtitle}
-                        <div class="book-meta">
-                            ${author}
-                            ${publishedYear}
-                            ${publisher}
-                            ${asin}
-                            ${isbn}
-                            ${libraryId}
-                        </div>
-                        ${error}
-                        ${reason}
-                    </div>`;
-            }).join('');
-            
-            html += `
-                <div class="summary-section">
-                    <h4>Books Not Found in Hardcover</h4>
-                    <div class="book-list">${booksHtml}
-                    </div>
-                </div>`;
-        } else {
-            html += `
-                <div class="summary-section">
-                    <p>All books were found in Hardcover.</p>
-                </div>`;
-        }
-        
-        // Add mismatches section if any
-        if (mismatchesArr.length > 0) {
-            const mismatchesHtml = mismatchesArr.map(mismatch => {
-                // Get data from the mismatch object with proper fallbacks
-                const absData = {
-                    ...mismatch,
-                    // Map any ABS-specific fields here if needed
-                };
-                // If ABS author is missing but Hardcover provided one, use Hardcover author as a fallback
-                if ((!absData.author || absData.author === 'Unknown Author') && mismatch.hardcover_author) {
-                    absData.author = mismatch.hardcover_author;
-                }
-                
-                // Log mismatch data for debugging
-                console.log('Mismatch data:', { absData, mismatch });
-                
-                // Extract author information
-                const hardcoverAuthor = mismatch.hardcover_author || mismatch.author || 'Unknown Author';
-                
-                // Create direct link to the book on Hardcover (only if we have a book-level match via slug/path/url)
-                const hardcoverBookUrl = (() => {
-                    const data = mismatch.hardcover_data || {};
-                    // Prefer explicit URL fields from backend
-                    if (mismatch.hardcover_url && typeof mismatch.hardcover_url === 'string') return mismatch.hardcover_url;
-                    if (data.url && typeof data.url === 'string') return data.url;
-                    if (data.slug_url && typeof data.slug_url === 'string') return data.slug_url;
-                    // Construct from slug or path
-                    if (mismatch.hardcover_slug && typeof mismatch.hardcover_slug === 'string') return `https://hardcover.app/books/${mismatch.hardcover_slug}`;
-                    if (data.slug && typeof data.slug === 'string') return `https://hardcover.app/books/${data.slug}`;
-                    if (data.path && typeof data.path === 'string') return `https://hardcover.app${data.path}`;
-                    // No book-level match -> no link
-                    return '';
-                })();
-
-                // Base Hardcover data: ONLY what HC provided (no ABS fallbacks)
-                const hcData = {
-                    title: mismatch.hardcover_title || undefined,
-                    author: mismatch.hardcover_author || undefined,
-                    published_year: mismatch.hardcover_published_year || undefined,
-                    publisher: mismatch.hardcover_publisher || undefined,
-                    asin: mismatch.hardcover_asin || undefined,
-                    isbn: mismatch.hardcover_isbn || undefined,
-                    format: mismatch.hardcover_format || undefined,
-                    language: mismatch.hardcover_language || undefined,
-                    page_count: mismatch.hardcover_page_count || undefined,
-                    description: mismatch.hardcover_description || undefined,
-                    cover_url: mismatch.hardcover_cover_url || undefined,
-                    id: mismatch.hardcover_book_id || undefined,
-                    slug: mismatch.hardcover_slug || (mismatch.hardcover_data && mismatch.hardcover_data.slug) || undefined,
-                    path: (mismatch.hardcover_data && mismatch.hardcover_data.path) || undefined,
-                    // Include raw hardcover_data first so our computed URL can override legacy forms
-                    ...(mismatch.hardcover_data || {}),
-                    // Use the direct URL if available, otherwise construct it from slug/path only
-                    url: hardcoverBookUrl
-                };
-                
-                // Remove any duplicate or empty fields
-                Object.keys(hcData).forEach(key => {
-                    if (hcData[key] === undefined || hcData[key] === '') {
-                        delete hcData[key];
-                    }
-                });
-
-                // Normalize legacy Hardcover URL forms: prefer slug/path; otherwise drop link
-                if (typeof hcData === 'object' && hcData) {
-                    const legacyRe = /^https?:\/\/hardcover\.app\/book\/[0-9]+\/?$/i;
-                    if (hcData.url && legacyRe.test(hcData.url)) {
-                        if (hcData.slug) {
-                            hcData.url = `https://hardcover.app/books/${hcData.slug}`;
-                        } else if (hcData.path) {
-                            hcData.url = `https://hardcover.app${hcData.path}`;
-                        } else {
-                            hcData.url = '';
-                        }
-                    }
-                }
-                
-                // If we have a hardcover_book object, use its properties
-                if (mismatch.hardcover_book) {
-                    const book = mismatch.hardcover_book;
-                    Object.assign(hcData, {
-                        title: book.title || hcData.title,
-                        author: book.author_display || book.author || hcData.author,
-                        // Preserve authors array for multi-author rendering
-                        authors: Array.isArray(book.authors) && book.authors.length > 0 ? book.authors : hcData.authors,
-                        published_year: book.published_year || hcData.published_year,
-                        publisher: book.publisher || hcData.publisher,
-                        isbn: book.isbn || book.isbn13 || hcData.isbn,
-                        format: book.format || hcData.format,
-                        language: book.language || hcData.language,
-                        page_count: book.page_count || hcData.page_count,
-                        description: book.description || hcData.description,
-                        cover_url: book.cover_url || book.cover_image_url || hcData.cover_url,
-                        slug: book.slug || hcData.slug,
-                        path: book.path || hcData.path,
-                        // Prefer slug/path-derived URL or precomputed hcData.url over legacy /book/<id>
-                        url: (
-                            hcData.url ||
-                            (book.slug ? `https://hardcover.app/books/${book.slug}` : (book.path ? `https://hardcover.app${book.path}` : '')) ||
-                            book.url ||
-                            hcData.url
-                        )
-                    });
-                }
-                
-                const hasAbsData = absData && (absData.title || absData.author);
-                const hasHcData = hcData && (hcData.title || hcData.author);
-                
-                const displayTitle = this.escapeHtml(absData?.title || 'Unknown Title');
-                const displaySubtitle = absData?.subtitle ? this.escapeHtml(absData.subtitle) : '';
-                
-                // Helper function to clean and extract book data with deep fallbacks
-                const extractBookData = (data, source) => {
-                    if (!data) return {};
-                    
-                    // Clean the data by removing empty/undefined values and trimming strings
-                    const cleanData = {};
-                    Object.entries(data).forEach(([key, value]) => {
-                        if (value !== undefined && value !== null && value !== '') {
-                            if (typeof value === 'string') {
-                                const trimmed = value.trim();
-                                if (trimmed) cleanData[key] = trimmed;
-                            } else if (Array.isArray(value) && value.length > 0) {
-                                cleanData[key] = value;
-                            } else if (typeof value === 'object' && value !== null) {
-                                cleanData[key] = value;
-                            } else if (value !== '') {
-                                cleanData[key] = value;
-                            }
-                        }
-                    });
-
-                    // Extract and transform fields with fallbacks
-                    const extracted = {
-                        // Title with fallbacks
-                        title: cleanData.title || cleanData.name || 'Unknown Title',
-                        // Optional subtitle
-                        subtitle: cleanData.subtitle,
-                        
-                        // Author with multiple fallback fields (include Hardcover's author_display)
-                        author: cleanData.author || 
-                               cleanData.author_display ||
-                               cleanData.author_name || 
-                               cleanData.authors?.[0]?.name ||
-                               (Array.isArray(cleanData.authors) && cleanData.authors.length > 0 ? 
-                                   cleanData.authors[0] : 'Unknown Author'),
-                        
-                        // Narrator (ABS)
-                        narrator: cleanData.narrator || 
-                                  cleanData.reader || 
-                                  (Array.isArray(cleanData.narrators) ? cleanData.narrators.join(', ') : cleanData.narrators),
-                        
-                        // Published year from various date formats (prefer incoming published_year)
-                        published_year: cleanData.published_year ||
-                                      cleanData.publishedYear || 
-                                      (cleanData.published_date ? 
-                                          cleanData.published_date.split('-')[0] : 
-                                          cleanData.publication_date?.split('-')[0]),
-                        
-                        // Publisher with fallback to series
-                        publisher: cleanData.publisher || 
-                                 (cleanData.series && cleanData.series.publisher) ||
-                                 cleanData.series?.publisher,
-                        
-                        // Format with intelligent detection
-                        format: cleanData.format || 
-                               (cleanData.mediaType ? 
-                                   `${cleanData.mediaType.charAt(0).toUpperCase()}${cleanData.mediaType.slice(1)}` : 
-                                   source === 'abs' ? 'Audiobook' : 'Book'),
-                        
-                        // Language with fallback
-                        language: cleanData.language || 
-                                (cleanData.languages && cleanData.languages[0]) ||
-                                cleanData.language_code,
-                        
-                        // Page count with fallbacks
-                        page_count: cleanData.numPages || 
-                                  cleanData.pageCount || 
-                                  cleanData.pages,
-                        
-                        // Description with fallback to subtitle
-                        description: cleanData.description || 
-                                   cleanData.overview ||
-                                   cleanData.summary,
-
-                        // Duration fields (ABS)
-                        duration_seconds: (typeof cleanData.duration_seconds === 'number' ? cleanData.duration_seconds :
-                                           typeof cleanData.durationSeconds === 'number' ? cleanData.durationSeconds :
-                                           (typeof cleanData.duration === 'number' ? cleanData.duration : undefined)),
-                        duration: (typeof cleanData.duration === 'string' ? cleanData.duration :
-                                   cleanData.length || cleanData.length_readable),
-                        
-                        // Cover image with multiple possible fields (accept raw cover_url too)
-                        cover_url: cleanData.coverImageUrl || 
-                                 cleanData.cover_image_url ||
-                                 cleanData.cover_url ||
-                                 cleanData.cover?.medium ||
-                                 cleanData.cover?.large ||
-                                 cleanData.image_url,
-                        
-                        // Identifiers with fallbacks
-                        // Do NOT cross-fallback between ASIN and ISBN
-                        asin: cleanData.asin,
-                        isbn: cleanData.isbn || cleanData.isbn13 || cleanData.isbn_13 || cleanData.isbn10 || cleanData.isbn_10,
-                        isbn10: cleanData.isbn10 || cleanData.isbn_10,
-                        isbn13: cleanData.isbn13 || cleanData.isbn_13,
-                        
-                        // URLs with controlled generation: don't fall back to Amazon for title link
-                        url: (() => {
-                            const legacyRe = /^https?:\/\/hardcover\.app\/book\/[0-9]+\/?$/i;
-                            // Start with provided URL when present
-                            let u = cleanData.url || '';
-                            // ABS keeps its abs_url
-                            if (!u && source === 'abs' && cleanData.abs_url) u = cleanData.abs_url;
-                            // For HC prefer slug/path when building from scratch
-                            if (!u && source === 'hc') {
-                                if (cleanData.slug && typeof cleanData.slug === 'string') u = `https://hardcover.app/books/${cleanData.slug}`;
-                                else if (cleanData.path && typeof cleanData.path === 'string') u = `https://hardcover.app${cleanData.path}`;
-                            }
-                            // Normalize legacy HC book ID URLs
-                            if (source === 'hc' && u && legacyRe.test(u)) {
-                                if (cleanData.slug && typeof cleanData.slug === 'string') u = `https://hardcover.app/books/${cleanData.slug}`;
-                                else if (cleanData.path && typeof cleanData.path === 'string') u = `https://hardcover.app${cleanData.path}`;
-                                else u = '';
-                            }
-                            return u || '';
-                        })(),
-                        // Preserve ABS direct link for buttons and other UI
-                        abs_url: cleanData.abs_url,
-                        // Additional metadata
-                        genres: cleanData.genres || cleanData.categories,
-                        // Preserve authors array if provided (used for multi-author rendering)
-                        authors: Array.isArray(cleanData.authors) && cleanData.authors.length > 0 ? cleanData.authors : undefined,
-                        series: cleanData.series,
-                        // ABS-specific additional metadata
-                        library_id: cleanData.library_id,
-                        folder_id: cleanData.folder_id,
-                        release_date: cleanData.release_date,
-                        // ABS-specific tracking/context
-                        book_id: cleanData.book_id || cleanData.id,
-                        timestamp: cleanData.timestamp,
-                        created_at: cleanData.created_at,
-                        reason: cleanData.reason,
-                        attempts: cleanData.attempts,
-                        
-                        // Status information based on source
-                        status: source === 'abs' ? 'In Audiobookshelf' : 'On Hardcover',
-                        statusType: source === 'abs' ? 'success' : 'info'
-                    };
-                    
-                    // Clean up any remaining undefined values
-                    Object.keys(extracted).forEach(key => {
-                        if (extracted[key] === undefined || 
-                            (Array.isArray(extracted[key]) && extracted[key].length === 0)) {
-                            delete extracted[key];
-                        }
-                    });
-                    
-                    return extracted;
-                };
-                
-                // Build a list of cover image fallbacks (ordered, unique)
-                const computeCoverFallbacks = (cleanData, rawData, source) => {
-                    try {
-                        const isHttp = (u) => typeof u === 'string' && /^https?:\/\//.test(u);
-
-                        // Primary candidates from the current source
-                        const candidates = [
-                            cleanData && cleanData.cover_url,
-                            cleanData && cleanData.image_url,
-                            rawData && rawData.cover_url,
-                            rawData && rawData.cover_image_url,
-                            rawData && (rawData.cover?.large),
-                            rawData && (rawData.cover?.medium)
-                        ].filter(isHttp);
-
-                        // If rendering ABS, append Hardcover URLs as fallbacks
-                        if (source === 'abs' && typeof hcData === 'object' && hcData) {
-                            const hcCandidates = [
-                                hcData.cover_url,
-                                hcData.cover_image_url,
-                                hcData.image_url,
-                                hcData.cover && hcData.cover.large,
-                                hcData.cover && hcData.cover.medium
-                            ].filter(isHttp);
-                            candidates.push(...hcCandidates);
-                        }
-
-                        // Append local placeholder last
-                        candidates.push('/cover-placeholder.svg');
-
-                        // De-duplicate while preserving order
-                        const seen = new Set();
-                        const unique = [];
-                        for (const u of candidates) {
-                            if (!seen.has(u)) { seen.add(u); unique.push(u); }
-                        }
-                        return unique;
-                    } catch (e) {
-                        console.warn('computeCoverFallbacks error:', e);
-                        return ['/cover-placeholder.svg'];
-                    }
-                };
-                
-                // Helper function to render a book's details
-                const renderBookDetails = (data, source) => {
-                    try {
-                        console.log(`Rendering ${source} data:`, data);
-                        if (!data || (typeof data === 'object' && Object.keys(data).length === 0)) {
-                            console.log(`No data for ${source}`);
-                            return `
-                            <div class="comparison-details">
-                                <div><em>No data available</em></div>
-                            </div>`;
-                        }
-                        
-                        // Extract and clean the data
-                        const cleanData = extractBookData(data, source);
-                        const details = [];
-                        
-                        // Set up author information with safe fallbacks and support for multiple authors
-                        let authorToShow = (() => {
-                            // Prefer explicit authors array when present (map objects to name)
-                            if (Array.isArray(cleanData.authors) && cleanData.authors.length > 0) {
-                                const names = cleanData.authors
-                                    .map(a => (typeof a === 'string' ? a : (a && a.name ? a.name : '')))
-                                    .filter(Boolean);
-                                if (names.length > 0) return names.join(', ');
-                            }
-                            return cleanData.author || 'Unknown Author';
-                        })();
-                        
-                        // HC-specific notices: show edition/book status ABOVE the image
-                        if (source === 'hc') {
-                            const hasBookMatch = !!(cleanData.url || cleanData.slug || cleanData.path || cleanData.id);
-                            if (hasBookMatch) {
-                                details.push(`
-                                    <div class="mb-3">
-                                        <div class="edition-warning rounded-md px-3 py-2 text-sm flex items-start gap-2">
-                                            <i class="fas fa-exclamation-triangle mt-0.5 edition-warning-icon" aria-hidden="true"></i>
-                                            <div>
-                                                <div class="edition-warning-title"><strong>Edition not matched.</strong></div>
-                                                <div class="edition-warning-text">Create or link the correct Hardcover edition.</div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                `);
-                            } else {
-                                details.push(`
-                                    <div class="mb-3">
-                                        <div class="book-not-found rounded-md px-3 py-2 text-sm flex items-start gap-2">
-                                            <i class="fas fa-info-circle mt-0.5 book-not-found-icon" aria-hidden="true"></i>
-                                            <div>
-                                                <div class="book-not-found-title"><strong>Book not found on Hardcover.</strong></div>
-                                                <div class="book-not-found-text">Try searching on Hardcover to create it.</div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                `);
-                            }
-                        }
-
-                        // Add cover image near the top of each column
-                        {
-                            const fallbacks = computeCoverFallbacks(cleanData, data, source);
-                            const initialSrc = fallbacks[0] || '/cover-placeholder.svg';
-                            const fbAttr = this.escapeHtml(fallbacks.join('|'));
-                            const altText = this.escapeHtml(cleanData.title || 'Book cover');
-                            details.push(`
-                                <div class="mb-3 text-center">
-                                    <img src="${initialSrc}"
-                                         data-fallbacks="${fbAttr}"
-                                         data-fb-idx="0"
-                                         alt="${altText}"
-                                         class="book-cover mx-auto"
-                                         loading="lazy"
-                                         decoding="async"
-                                         fetchpriority="low"
-                                         onerror="window.__absHandleImageError && window.__absHandleImageError(this)"
-                                         style="max-height: 300px; max-width: 100%; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
-                                </div>
-                            `);
-                        }
-                        
-                        // Use provided author URL only; do not fabricate cross-site search links
-                        let authorUrl = cleanData.author_url;
-                        
-                        // Add title with link if URL is available
-                        if (cleanData.title) {
-                            const titleText = this.escapeHtml(cleanData.title);
-                            
-                            // Create title display with optional author
-                            let titleHtml = `<div class="mb-2"><strong>Title</strong><span> `;
-                            
-                            if (cleanData.url) {
-                                titleHtml += `<a href="${this.escapeHtml(cleanData.url)}" target="_blank" rel="noopener noreferrer" class="font-medium text-blue-600 hover:underline">${titleText} <i class="fas fa-external-link-alt" style="font-size: 0.8em;"></i></a>`;
-                            } else {
-                                titleHtml += titleText;
-                            }
-                            
-                            // Add author if available
-                            if (authorToShow && authorToShow !== 'Unknown Author') {
-                                if (authorUrl) {
-                                    titleHtml += ` <span class=\"text-gray-600\">by</span> <a href="${this.escapeHtml(authorUrl)}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline">${this.escapeHtml(authorToShow)} <i class=\"fas fa-external-link-alt\" style=\"font-size: 0.8em;\"></i></a>`;
-                                } else {
-                                    titleHtml += ` <span class=\"text-gray-600\">by</span> <span class=\"text-gray-800\">${this.escapeHtml(authorToShow)}</span>`;
-                                }
-                            }
-                            
-                            titleHtml += `</span></div>`;
-                            details.push(titleHtml);
-                            // Subtitle directly under the title, labeled like other fields
-                            if (cleanData.subtitle) {
-                                details.push(`<div class="mb-2"><strong>Subtitle</strong><span class="text-gray-800"> ${this.escapeHtml(cleanData.subtitle)}</span></div>`);
-                            }
-                        } else if (authorToShow && authorToShow !== 'Unknown Author') {
-                            // If no title but we have an author, show just the author
-                            if (authorUrl) {
-                                details.push(`<div class=\"mb-2\"><strong>Author</strong><span> <a href="${this.escapeHtml(authorUrl)}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline">${this.escapeHtml(authorToShow)} <i class=\"fas fa-external-link-alt\" style=\"font-size: 0.8em;\"></i></a></span></div>`);
-                            } else {
-                                details.push(`<div class=\"mb-2\"><strong>Author</strong><span class=\"text-gray-800\">${this.escapeHtml(authorToShow)}</span></div>`);
-                            }
-                        }
-                        
-                        // Add metadata in a clean, consistent format
-                        const metadata = [];
-                        // For ABS (and HC), group metadata into sections for clarity
-                        const identifiers = (source === 'abs' || source === 'hc') ? [] : null;
-                        const metaSection = (source === 'abs' || source === 'hc') ? [] : null;
-                        const tracking = (source === 'abs' || source === 'hc') ? [] : null;
-                        
-                        // Published: ABS shows date/year; HC only when an edition (release_date) exists
-                        if (
-                            (source !== 'hc' && (cleanData.release_date || cleanData.published_year)) ||
-                            (source === 'hc' && !!cleanData.release_date)
-                        ) {
-                            const target = (source === 'abs' || source === 'hc') ? metaSection : metadata;
-                            const publishedVal = (cleanData.release_date || cleanData.published_year).toString();
-                            target.push({
-                                label: 'Published',
-                                value: this.escapeHtml(publishedVal)
-                            });
-                        }
-                        
-                        // Add publisher if available
-                        // - ABS: always show when present
-                        // - HC: only show when an edition (release_date) is present
-                        if (
-                            (source === 'abs' && cleanData.publisher) ||
-                            (source === 'hc' && cleanData.publisher && !!cleanData.release_date)
-                        ) {
-                            const target = (source === 'abs' || source === 'hc') ? metaSection : metadata;
-                            target.push({
-                                label: 'Publisher',
-                                value: this.escapeHtml(cleanData.publisher)
-                            });
-                        }
-                        
-                        // Omit format row; it's not meaningful for our comparison UI
-
-                        // ABS-specific: add Narrator, ASIN, identifiers and tracking when present
-                        if (source === 'abs') {
-                            if (cleanData.narrator) {
-                                metaSection.push({
-                                    label: 'Narrator',
-                                    value: this.escapeHtml(cleanData.narrator)
-                                });
-                            }
-                            if (cleanData.asin) {
-                                const asinEsc = this.escapeHtml(cleanData.asin);
-                                const audibleHref = `https://www.audible.com/pd?asin=${asinEsc}`;
-                                identifiers.push({
-                                    label: 'ASIN',
-                                    value: `<a href="${audibleHref}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline" title="Open on Audible"><code class="text-inherit">${asinEsc}</code> <i class="fas fa-external-link-alt" style="font-size: 0.8em;"></i></a>`
-                                });
-                            }
-                            // Show ISBN fields if available
-                            const isbnVal = data.isbn || cleanData.isbn;
-                            const isbn10Val = data.isbn_10 || cleanData.isbn10 || cleanData.isbn_10;
-                            const isbn13Val = data.isbn_13 || cleanData.isbn13 || cleanData.isbn_13;
-                            if (isbnVal) {
-                                identifiers.push({ label: 'ISBN', value: this.escapeHtml(isbnVal.toString()) });
-                            }
-                            if (isbn10Val) {
-                                identifiers.push({ label: 'ISBN-10', value: this.escapeHtml(isbn10Val.toString()) });
-                            }
-                            if (isbn13Val) {
-                                identifiers.push({ label: 'ISBN-13', value: this.escapeHtml(isbn13Val.toString()) });
-                            }
-
-                            // Show Library ID, Folder ID when available
-                            if (data.library_id || cleanData.library_id) {
-                                tracking.push({
-                                    label: 'Library ID',
-                                    value: `<code>${this.escapeHtml((data.library_id || cleanData.library_id).toString())}</code>`
-                                });
-                            }
-                            if (data.folder_id || cleanData.folder_id) {
-                                tracking.push({
-                                    label: 'Folder ID',
-                                    value: `<code>${this.escapeHtml((data.folder_id || cleanData.folder_id).toString())}</code>`
-                                });
-                            }
-                            if (cleanData.book_id) {
-                                const __bookIdStr = cleanData.book_id.toString();
-                                // Prefer UI route with configured base URL
-                                let __absBookUrl = __absBaseUrl
-                                    ? `${__absBaseUrl}/item/${encodeURIComponent(__bookIdStr)}`
-                                    : '';
-                                // Fallback: use abs_url if provided by API
-                                if (!__absBookUrl && typeof cleanData.abs_url === 'string' && cleanData.abs_url) {
-                                    __absBookUrl = cleanData.abs_url;
-                                }
-                                // Fallback: derive UI link from cover_url (api/items/<id>/cover -> /audiobookshelf/item/<id>)
-                                if (!__absBookUrl && typeof cleanData.cover_url === 'string' && cleanData.cover_url) {
-                                    try {
-                                        const u = new URL(cleanData.cover_url);
-                                        const base = `${u.origin}/audiobookshelf`;
-                                        __absBookUrl = `${base}/item/${encodeURIComponent(__bookIdStr)}`;
-                                    } catch (_) {
-                                        // ignore URL parse errors; leave as plain code
-                                    }
-                                }
-                                const __valueHtml = __absBookUrl
-                                    ? `<a href="${this.escapeHtml(__absBookUrl)}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline" title="Open in Audiobookshelf"><code class="text-inherit">${this.escapeHtml(__bookIdStr)}</code> <i class="fas fa-external-link-alt" style="font-size: 0.8em;"></i></a>`
-                                    : `<code>${this.escapeHtml(__bookIdStr)}</code>`;
-                                tracking.push({
-                                    label: 'Book ID',
-                                    value: __valueHtml
-                                });
-                            }
-                            // Note: HC tracking is handled in the HC block below
-                            // Remove Detected row as requested
-                            if (typeof cleanData.attempts === 'number') {
-                                tracking.push({
-                                    label: 'Attempts',
-                                    value: this.escapeHtml(String(cleanData.attempts))
-                                });
-                            }
-                            // Remove Reason row as requested
-                        }
-                        // HC-specific tracking rows (mirrors ABS layout)
-                        if (source === 'hc' && data && tracking) {
-                            if (data.id) {
-                                const __hcBookIdStr = data.id.toString();
-                                // Build preferred HC link order: explicit url > slug > path
-                                let __hcUrl = '';
-                                if (typeof data.url === 'string' && data.url) {
-                                    __hcUrl = data.url;
-                                } else if (typeof data.slug === 'string' && data.slug) {
-                                    __hcUrl = `https://hardcover.app/books/${encodeURIComponent(data.slug)}`;
-                                } else if (typeof data.path === 'string' && data.path) {
-                                    __hcUrl = `https://hardcover.app${data.path}`;
-                                }
-                                const __hcValueHtml = __hcUrl
-                                    ? `<a href="${this.escapeHtml(__hcUrl)}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline" title="Open on Hardcover"><code class="text-inherit">${this.escapeHtml(__hcBookIdStr)}</code> <i class="fas fa-external-link-alt" style="font-size: 0.8em;"></i></a>`
-                                    : `<code>${this.escapeHtml(__hcBookIdStr)}</code>`;
-                                tracking.push({ label: 'Book ID', value: __hcValueHtml });
-                            }
-                        }
-                        
-                        // Add page count if available
-                        if (cleanData.page_count) {
-                            const target = (source === 'abs' || source === 'hc') ? metaSection : metadata;
-                            target.push({
-                                label: 'Pages',
-                                value: cleanData.page_count.toString()
-                            });
-                        }
-                        
-                        // Add language if available
-                        if (cleanData.language) {
-                            const target = (source === 'abs' || source === 'hc') ? metaSection : metadata;
-                            target.push({
-                                label: 'Language',
-                                value: this.escapeHtml(cleanData.language)
-                            });
-                        }
-                        
-                        // Add duration or length
-                        if (cleanData.duration_seconds) {
-                            const hours = Math.floor(cleanData.duration_seconds / 3600);
-                            const minutes = Math.floor((cleanData.duration_seconds % 3600) / 60);
-                            const durationText = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
-                            const target = (source === 'abs' || source === 'hc') ? metaSection : metadata;
-                            target.push({
-                                label: 'Duration',
-                                value: durationText
-                            });
-                        } else if (cleanData.duration) {
-                            const target = (source === 'abs' || source === 'hc') ? metaSection : metadata;
-                            target.push({
-                                label: 'Duration',
-                                value: cleanData.duration
-                            });
-                        }
-                        
-                        // Add genres if available
-                        if (cleanData.genres && cleanData.genres.length > 0) {
-                            const genres = Array.isArray(cleanData.genres) 
-                                ? cleanData.genres.map(g => this.escapeHtml(g)).join(', ')
-                                : this.escapeHtml(cleanData.genres);
-                            const target = (source === 'abs' || source === 'hc') ? metaSection : metadata;
-                            target.push({
-                                label: 'Genres',
-                                value: genres,
-                                class: 'text-sm text-gray-600'
-                            });
-                        }
-                        
-                        // Add series information if available
-                        if (cleanData.series) {
-                            const seriesInfo = [];
-                            if (cleanData.series.name) {
-                                seriesInfo.push(`<span class="font-medium">${this.escapeHtml(cleanData.series.name)}</span>`);
-                            }
-                            if (cleanData.series.sequence) {
-                                seriesInfo.push(`(Book ${cleanData.series.sequence})`);
-                            }
-                            
-                            if (seriesInfo.length > 0) {
-                                const target = (source === 'abs' || source === 'hc') ? metaSection : metadata;
-                                target.push({
-                                    label: 'Series',
-                                    value: seriesInfo.join(' ')
-                                });
-                            }
-                        }
-                        
-                        // Render metadata
-                        if (source === 'abs' || (source === 'hc' && ((identifiers && identifiers.length) || (metaSection && metaSection.length) || (tracking && tracking.length)))) {
-                            const sections = [
-                                { title: 'Identifiers', items: identifiers || [] },
-                                { title: 'Metadata', items: metaSection || [] },
-                                { title: 'Tracking', items: tracking || [] }
-                            ].filter(s => s.items && s.items.length > 0);
-
-                            sections.forEach((section, idx) => {
-                                // Divider between sections
-                                if (idx > 0) {
-                                    details.push(`<div class="my-2 border-t border-gray-200"></div>`);
-                                }
-                                // Section header
-                                details.push(`
-                                    <h4 class="mt-2 mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">${this.escapeHtml(section.title)}</h4>
-                                `);
-                                // Section items
-                                section.items.forEach(item => {
-                                    details.push(`
-                                        <div>
-                                            <strong>${item.label}</strong>
-                                            <span class="${item.class || 'text-gray-800'}">${item.value}</span>
-                                        </div>
-                                    `);
-                                });
-                            });
-                        } else {
-                            // Non-ABS: flat list rendering
-                            if (metadata.length > 0) {
-                                metadata.forEach(item => {
-                                    details.push(`
-                                        <div>
-                                            <strong>${item.label}</strong>
-                                            <span class="${item.class || 'text-gray-800'}">${item.value}</span>
-                                        </div>
-                                    `);
-                                });
-                            }
-                        }
-                        
-                        
-                        
-                        // Do not render a separate Author row if it was already shown with the title to avoid duplicates
-                        // However, if there is no title, still show the author-only row
-                        if (!cleanData.title && authorToShow && authorToShow !== 'Unknown Author') {
-                            const authorText = this.escapeHtml(authorToShow);
-                            if (authorUrl) {
-                                details.push(`<div class=\"mb-2\"><strong>Author</strong><span> <a href="${this.escapeHtml(authorUrl)}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline">${authorText} <i class=\"fas fa-external-link-alt\" style=\"font-size: 0.8em;\"></i></a></span></div>`);
-                            } else {
-                                details.push(`<div class=\"mb-2\"><strong>Author</strong><span class=\"text-gray-800\">${authorText}</span></div>`);
-                            }
-                        }
-
-                        // Do not add a separate HC button; title already links when available
-                        
-                        // Add Hardcover ID (HC side) to Identifiers section so HC matches ABS layout
-                        if (source === 'hc' && data.id && identifiers) {
-                            const hcIdLink = data.url ? data.url : (data.slug ? `https://hardcover.app/books/${data.slug}` : (data.path ? `https://hardcover.app${data.path}` : ''));
-                            const idHtml = hcIdLink
-                                ? `<a href="${hcIdLink}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline" title="Open on Hardcover"><code class="text-inherit">${this.escapeHtml(data.id)}</code> <i class="fas fa-external-link-alt" style="font-size: 0.8em;"></i></a>`
-                                : `<code>${this.escapeHtml(data.id)}</code>`;
-                            identifiers.push({ label: 'Hardcover ID', value: idHtml });
-                        }
-                        
-                        // Add description if available (with markdown link support and read more/less)
-                        if (cleanData.description) {
-                            const maxLength = 300;
-                            // First escape HTML, then handle markdown links
-                            const escapeHtml = (str) => {
-                                return str
-                                    .replace(/&/g, '&amp;')
-                                    .replace(/</g, '&lt;')
-                                    .replace(/>/g, '&gt;')
-                                    .replace(/"/g, '&quot;')
-                                    .replace(/'/g, '&#039;');
-                            };
-                            
-                            // Convert markdown links to HTML
-                            const processMarkdownLinks = (text) => {
-                                return text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, 
-                                    (match, text, url) => {
-                                        return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline">${escapeHtml(text)} <i class="fas fa-external-link-alt" style="font-size: 0.7em;"></i></a>`;
-                                    }
-                                );
-                            };
-                            
-                            const escapedDescription = escapeHtml(cleanData.description);
-                            const processedDescription = processMarkdownLinks(escapedDescription);
-                            const isLong = processedDescription.length > maxLength;
-                            
-                            // Create short description by truncating at the last space before maxLength
-                            let shortDesc = processedDescription;
-                            if (isLong) {
-                                const lastSpace = processedDescription.lastIndexOf(' ', maxLength);
-                                shortDesc = processedDescription.substring(0, lastSpace > 0 ? lastSpace : maxLength) + '...';
-                            }
-                            
-                            details.push(`
-                                <div class="mt-3">
-                                    <div class="font-medium text-gray-700 mb-1">Description:</div>
-                                    <div class="text-gray-800 text-sm description-container">
-                                        <span class="description-text">${shortDesc}</span>
-                                        ${isLong ? 
-                                            `<span class="description-full hidden">${processedDescription}</span>
-                                            <a href="#" class="text-blue-600 hover:underline read-more">Read more</a>` 
-                                            : ''
-                                        }
-                                    </div>
-                                </div>
-                            `);
-                        }
-                        
-                        // Add action buttons in a consistent, accessible way
-                        const buttons = [];
-                        
-                        // Do not add a separate Hardcover button; the title already links to Hardcover on the HC side
-                        
-                        // Removed external ASIN action button per request
-                        
-                        // Add Audiobookshelf button for ABS source
-                        if (source === 'abs') {
-                            const bookUrl = (cleanData.book_id && __absBaseUrl)
-                                ? `${__absBaseUrl}/item/${encodeURIComponent(cleanData.book_id.toString())}`
-                                : (cleanData.abs_url || cleanData.url || '');
-                            if (bookUrl) {
-                                buttons.push({
-                                    url: bookUrl,
-                                    icon: 'headphones',
-                                    label: 'Open in Audiobookshelf',
-                                    style: 'secondary',
-                                    title: 'Open this book in Audiobookshelf'
-                                });
-                            }
-                        }
-                        
-                        // Add Goodreads button only on ABS side (prefer ISBN13 > ISBN10 > ISBN)
-                        if (source === 'abs') {
-                            const grIsbn = cleanData.isbn13 || cleanData.isbn_13 || cleanData.isbn10 || cleanData.isbn_10 || cleanData.isbn;
-                            if (grIsbn) {
-                                buttons.push({
-                                    url: `https://www.goodreads.com/search?q=${grIsbn}`,
-                                    icon: 'goodreads',
-                                    label: 'View on Goodreads',
-                                    style: 'secondary',
-                                    title: `Find ${cleanData.title || 'this book'} on Goodreads`
-                                });
-                            }
-                        }
-                        
-                        // Render buttons with consistent styling
-                        if (buttons.length > 0) {
-                            const buttonClasses = {
-                                primary: 'bg-indigo-600 hover:bg-indigo-700 text-white border-transparent',
-                                secondary: 'bg-white hover:bg-gray-50 text-gray-700 border-gray-300',
-                                danger: 'bg-red-600 hover:bg-red-700 text-white border-transparent'
-                            };
-                            
-                            const iconMap = {
-                                book: 'book',
-                                amazon: 'amazon',
-                                headphones: 'headphones',
-                                goodreads: 'book-open',
-                                external: 'external-link-alt'
-                            };
-                            
-                            details.push(`
-                                <div class="mt-4 flex flex-wrap gap-2">
-                                    ${buttons.map(btn => `
-                                        <a href="${this.escapeHtml(btn.url)}" 
-                                           target="_blank" 
-                                           rel="noopener noreferrer"
-                                           title="${btn.title || ''}"
-                                           class="inline-flex items-center px-3 py-1.5 border rounded-md text-xs font-medium shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 ${buttonClasses[btn.style] || buttonClasses.secondary}">
-                                            <i class="${btn.icon.startsWith('fa-') ? btn.icon : `fa${btn.icon === 'amazon' ? 'b' : 's'} fa-${iconMap[btn.icon] || iconMap.external}`} mr-1"></i> 
-                                            ${btn.label}
-                                        </a>
-                                    `).join('\n')}
-                                </div>
-                            `);
-                        }
-                        
-                        // Add status if available (e.g., "Not in Library")
-                        if (data.status) {
-                            const statusType = data.statusType || 'info';
-                            details.push(`
-                                <div class="mt-3">
-                                    <span class="status-badge inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                                        statusType === 'success' ? 'bg-green-100 text-green-800' : 
-                                        statusType === 'warning' ? 'bg-yellow-100 text-yellow-800' : 
-                                        'bg-blue-100 text-blue-800'
-                                    }">
-                                        ${this.escapeHtml(data.status)}
-                                    </span>
-                                </div>
-                            `);
-                        }
-                        
-                        return `
-                            <div class="comparison-details">
-                                ${details.join('')}
-                            </div>`;
-                    } catch (error) {
-                        console.error('Error in renderBookDetails:', error);
-                        return '<div class="comparison-details"><em>Error loading details</em></div>';
-                    }
-                };
-                
-                // Do not inject status into Hardcover details to avoid duplicate display
-                // The mismatch reason is already shown once below the comparison.
-                
-                // Generate the book details HTML first
-                // Avoid rendering placeholder authors
-                if (absData && absData.author === 'Unknown Author') {
-                    delete absData.author;
-                }
-
-                const absDetails = renderBookDetails({
-                    ...absData,
-                    format: absData?.format || 'Audiobook', // Use format from data if available
-                    // Do not pass a status to avoid extra badge rendering on ABS side
-                    url: absData?.abs_url || absData?.link || absData?.url || '',
-                    author: absData?.author || absData?.hardcover_author || absData?.author_name || 'Unknown Author'
-                }, 'abs');
-                
-                // Resolve Hardcover author; if it's unknown, fall back to ABS author
-                let hcAuthorResolved = hcData.author || hcData.hardcover_author || hcData.author_name;
-                if (!hcAuthorResolved || hcAuthorResolved === 'Unknown Author') {
-                    hcAuthorResolved = absData.author || mismatch.author || hcAuthorResolved;
-                }
-                if (hcAuthorResolved === 'Unknown Author') {
-                    hcAuthorResolved = undefined;
-                }
-
-                const hcDetails = renderBookDetails({
-                    ...hcData,
-                    format: hcData.format || 'Book',
-                    // Do not pass a status to prevent duplicate status badge in HC column
-                    url: hcData.url || (hcData.id ? `https://hardcover.app/book/${hcData.id}` : ''),
-                    author: hcAuthorResolved || 'Unknown Author'
-                }, 'hc');
-                
-                // Determine ABS link for header title if available
-                const __absHeaderUrl = absData?.abs_url || absData?.link || absData?.url || '';
-
-                return `
-                    <div class="mismatch-item" data-book-id="${mismatch.id || mismatch.book_id || 'book-' + Math.random().toString(36).substr(2, 9)}">
-                        <div class="mismatch-header">
-                            <div class="mismatch-title">${__absHeaderUrl ? `<a href="${this.escapeHtml(__absHeaderUrl)}" target="_blank" rel="noopener noreferrer" class="text-blue-700 hover:underline">${displayTitle} <i class=\"fas fa-external-link-alt\" style=\"font-size: 0.8em;\"></i></a>` : displayTitle}</div>
-                            ${displaySubtitle ? `<div class=\"mismatch-subtitle\"><strong>Subtitle</strong><span class=\"text-gray-800\"> ${displaySubtitle}</span></div>` : ''}
-                        </div>
-                        
-                        <div class="mismatch-columns mismatch-comparison">
-                            <!-- Audiobookshelf Column -->
-                            <div class="mismatch-col abs comparison-column">
-                                <div class="mismatch-col-title abs comparison-header">
-                                    <i class="fas fa-book-open"></i>
-                                    <span>Audiobookshelf</span>
-                                </div>
-                                ${absDetails}
-                            </div>
-                            
-                            <!-- Arrow Divider -->
-                            <div class="mismatch-divider comparison-arrow">
-                                <div class="mismatch-divider-dot">
-                                    <i class="fas fa-arrow-right"></i>
-                                </div>
-                            </div>
-                            
-                            <!-- Hardcover Column -->
-                            <div class="mismatch-col hc comparison-column">
-                                <div class="mismatch-col-title hc comparison-header">
-                                    <i class="fas fa-book"></i>
-                                    <span>Hardcover</span>
-                                </div>
-                                ${hcDetails}
-                            </div>
-                        </div>
-                        
-                        ${mismatch.reason ? `
-                            <div class="mismatch-reason">
-                                <strong>Note:</strong> ${this.escapeHtml(mismatch.reason)}
-                            </div>` : ''}
-                    </div>`;
-            }).join('');
-            
-            html += `
-                <div class="summary-section">
-                    <div class="section-header">
-                        <h3>Potential Mismatches</h3>
-                        <p class="mismatch-help">These books were found but may have some discrepancies. Please verify the details.</p>
-                    </div>
-                    <div class="summary-stats">
-                        <div class="mismatches-container">
-                            ${mismatchesHtml}
-                        </div>
-                    </div>
-                </div>`;
-        }
-        
-        // Close the sync-summary div
-        html += `
-            </div>`;
-            
-        // Update the content and show the container
-        content.innerHTML = html;
-        container.style.display = 'block';
-        container.scrollIntoView({ behavior: 'smooth' });
-        
-        // Show the sync tab
-        this.showTab('sync');
+        if (!container) return;
+        const previous = this.openSummary;
+        const sameRun = previous?.profileId === profileId && previous?.runId === runId;
+        previous?.detailsController?.abort();
+        this.openSummary = {
+            profileId,
+            runId,
+            generation: (previous?.generation || 0) + 1,
+            expandedIds: sameRun ? previous.expandedIds : new Set(),
+            expandedOutcomes: sameRun && previous.expandedOutcomes instanceof Set ? previous.expandedOutcomes : new Set(),
+            scrollTop: 0
+        };
+        const open = this.openSummary;
+        this.renderStatuses();
+        if (!sameRun) this.renderDetailsState('loading', open);
+        await this.fetchAndRenderDetails({ open });
+        if (!sameRun && this.openSummary === open) container.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
-    renderSyncSummary() {
-        // Currently empty, but can be used to render a summary of all syncs
+    async refreshOpenSummary() {
+        if (!this.openSummary) return;
+        const status = this.statuses[this.openSummary.profileId];
+        const runId = status?.snapshot?.run_id;
+        if (!runId) {
+            this.clearOpenSummary();
+            return;
+        }
+        // Replace the open state object rather than mutating it. An older
+        // details response can then never clear or publish the new run.
+        if (runId !== this.openSummary.runId) {
+            const previous = this.openSummary;
+            previous.detailsController?.abort();
+            this.openSummary = {
+                profileId: previous.profileId,
+                runId,
+                generation: previous.generation + 1,
+                expandedIds: new Set(),
+                expandedOutcomes: new Set(),
+                scrollTop: 0
+            };
+            this.renderDetailsState('loading', this.openSummary);
+        }
+        await this.fetchAndRenderDetails({ open: this.openSummary, preservePosition: true });
+    }
+
+    clearOpenSummary() {
+        this.openSummary?.detailsController?.abort();
+        this.openSummary?.expandedIds?.clear();
+        this.openSummary?.expandedOutcomes?.clear();
+        this.openSummary = null;
+        const container = document.getElementById('sync-summary-container');
+        const content = document.getElementById('sync-summary-content');
+        const tabs = document.getElementById('sync-summary-tabs');
+        if (content) content.replaceChildren();
+        if (tabs) tabs.replaceChildren();
+        if (container) container.style.display = 'none';
+    }
+
+    captureDetailViewport(content) {
+        const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+        const visible = (element) => {
+            const rect = element.getBoundingClientRect();
+            return rect.bottom > 0 && rect.top < viewportHeight;
+        };
+        const book = [...content.querySelectorAll('[data-book-id]')].find(visible);
+        const outcome = book ? null : [...content.querySelectorAll('[data-outcome]')].find(visible);
+        const anchor = book
+            ? { type: 'book', value: book.dataset.bookId, top: book.getBoundingClientRect().top }
+            : outcome
+                ? { type: 'outcome', value: outcome.dataset.outcome, top: outcome.getBoundingClientRect().top }
+                : null;
+        return {
+            windowX: window.scrollX || 0,
+            windowY: window.scrollY || 0,
+            contentTop: content.scrollTop || 0,
+            anchor
+        };
+    }
+
+    restoreDetailViewport(content, state) {
+        if (!content || !state) return;
+        content.scrollTop = state.contentTop;
+        if (typeof window.scrollTo === 'function') window.scrollTo(state.windowX, state.windowY);
+        if (!state.anchor) return;
+        const elements = state.anchor.type === 'book'
+            ? [...content.querySelectorAll('[data-book-id]')]
+            : [...content.querySelectorAll('[data-outcome]')];
+        const anchor = elements.find(element => (state.anchor.type === 'book'
+            ? element.dataset.bookId === state.anchor.value
+            : element.dataset.outcome === state.anchor.value));
+        if (!anchor || typeof window.scrollTo !== 'function') return;
+        const delta = anchor.getBoundingClientRect().top - state.anchor.top;
+        if (Number.isFinite(delta) && delta !== 0) {
+            window.scrollTo(state.windowX, state.windowY + delta);
+        }
+    }
+
+    handleAuthExpiry() {
+        this.authEnabled = true;
+        this.currentUser = null;
+        this.resetSessionBoundState();
+        this.stopAutoRefresh();
+        this.showToast('Authentication required. Please log in.', 'error');
+        this.redirectToLogin();
+    }
+
+    renderDetailsState(state, open) {
+        if (!open || this.openSummary !== open) return;
+        const container = document.getElementById('sync-summary-container');
+        const content = document.getElementById('sync-summary-content');
+        const tabs = document.getElementById('sync-summary-tabs');
+        if (!container || !content || !tabs) return;
+        container.style.display = 'block';
+        tabs.innerHTML = `<button class="tab-button active" type="button">${this.escapeHtml(this.statuses[open.profileId]?.profile_name || `Profile ${open.profileId}`)}</button>`;
+        const isError = state === 'error';
+        content.innerHTML = `
+            <div class="details-state" data-run-id="${this.escapeHtmlAttribute(open.runId)}" role="status" aria-live="polite">
+                <p>${isError ? 'Run details could not be loaded.' : 'Loading run details…'}</p>
+                ${isError ? `<button type="button" class="btn btn-secondary" data-details-retry>Retry</button>` : ''}
+            </div>`;
+    }
+
+    renderDetailsStale(open, message = '') {
+        if (!open || this.openSummary !== open) return;
+        const summary = document.querySelector('#sync-summary-content .sync-summary');
+        if (!summary || summary.dataset.runId !== open.runId) return;
+        const content = document.getElementById('sync-summary-content');
+        const viewport = content ? this.captureDetailViewport(content) : null;
+        let state = summary.querySelector('[data-details-refresh-state]');
+        if (!state) {
+            state = document.createElement('div');
+            state.dataset.detailsRefreshState = 'stale';
+            state.className = 'details-refresh-state';
+            summary.prepend(state);
+        }
+        state.setAttribute('role', 'status');
+        state.setAttribute('aria-live', 'polite');
+        state.innerHTML = `<span>Status may be stale${message ? `: ${this.escapeHtml(message)}` : ''}.</span> <button type="button" class="btn btn-sm" data-details-retry>Retry</button>`;
+        this.restoreDetailViewport(content, viewport);
+    }
+
+    async fetchAndRenderDetails({ open = this.openSummary, preservePosition = false } = {}) {
+        if (!open || open.loading) return;
+        const authGeneration = this.authSessionGeneration;
+        const requestGeneration = open.generation;
+        const requestRunId = open.runId;
+        const requestController = typeof AbortController === 'undefined' ? null : new AbortController();
+        open.detailsController = requestController;
+        open.loading = true;
+        const content = document.getElementById('sync-summary-content');
+        const container = document.getElementById('sync-summary-container');
+        try {
+            const { response, data: result } = await this.fetchJsonWithTimeout(
+                `${this.profileUrl(open.profileId)}/runs/${encodeURIComponent(requestRunId)}/details`,
+                { signal: requestController?.signal }
+            );
+            // Ignore every response from an earlier authorization boundary,
+            // including authentication errors, so stale detail requests cannot
+            // expire a newly authenticated session.
+            if (authGeneration !== this.authSessionGeneration) return;
+            const snapshot = result.success ? result.data : result;
+            if (response.status === 401 || response.status === 403) {
+                this.handleAuthExpiry();
+                return;
+            }
+            const currentRunId = this.statuses[open.profileId]?.snapshot?.run_id;
+            const currentRequest = this.openSummary === open && open.generation === requestGeneration && open.runId === requestRunId;
+            const replacingRun = !open.renderedRunId || open.renderedRunId !== requestRunId;
+            if (!currentRequest) return;
+            if (!response.ok || !snapshot || snapshot.run_id !== requestRunId || currentRunId !== requestRunId) {
+                if (replacingRun) this.renderDetailsState('error', open);
+                else this.renderDetailsStale(open, `refresh failed (${response.status})`);
+                return;
+            }
+            const viewport = preservePosition && content ? this.captureDetailViewport(content) : null;
+            if (viewport) open.viewport = viewport;
+            const activeElement = document.activeElement;
+            if (activeElement && content?.contains(activeElement)) {
+                open.focus = {
+                    bookId: activeElement.closest('[data-book-id]')?.dataset.bookId,
+                    outcome: activeElement.closest('[data-outcome-category]')?.dataset.outcomeCategory,
+                    tagName: activeElement.tagName,
+                    className: activeElement.className
+                };
+            }
+            this.renderDetailsSnapshot(snapshot);
+            container.style.display = 'block';
+            this.restoreDetailViewport(content, open.viewport);
+            if (open.focus) {
+                const candidates = content ? [...content.querySelectorAll(open.focus.tagName)] : [];
+                const target = candidates.find(element => open.focus.bookId
+                    ? element.closest('[data-book-id]')?.dataset.bookId === open.focus.bookId
+                    : open.focus.outcome
+                        ? element.dataset.outcomeCategory === open.focus.outcome
+                        : element.className === open.focus.className);
+                target?.focus({ preventScroll: true });
+            }
+        } catch (error) {
+            const currentRequest = this.openSummary === open && open.generation === requestGeneration && open.runId === requestRunId;
+            if (error.name !== 'AbortError' && currentRequest) {
+                if (!open.renderedRunId || open.renderedRunId !== requestRunId) this.renderDetailsState('error', open);
+                else this.renderDetailsStale(open, error.message);
+                console.error('Error loading sync run details:', error);
+            }
+        } finally {
+            open.loading = false;
+            if (open.detailsController === requestController) open.detailsController = null;
+        }
+    }
+
+    renderDetailsSnapshot(snapshot) {
+        const open = this.openSummary;
+        const content = document.getElementById('sync-summary-content');
+        const tabs = document.getElementById('sync-summary-tabs');
+        if (!open || !content || !tabs) return;
+        if (!(open.expandedOutcomes instanceof Set)) open.expandedOutcomes = new Set();
+        open.renderedRunId = snapshot.run_id;
+        const categories = this.outcomeCategories(snapshot.outcome_counts || {});
+        const records = new Map((snapshot.book_outcomes || []).map(record => [record.book_id, record]));
+        tabs.innerHTML = `<button class="tab-button active" type="button">${this.escapeHtml(this.statuses[open.profileId]?.profile_name || `Profile ${open.profileId}`)}</button>`;
+        const snapshotState = String(snapshot.state || '').toLowerCase();
+        const statusTimestamp = this.detailsStatusTimestamp(snapshot);
+        const unresolved = Number(snapshot.outcome_counts?.needs_review || 0) + Number(snapshot.outcome_counts?.not_found || 0) + Number(snapshot.outcome_counts?.failed || 0);
+        const groups = categories.map(category => {
+            const groupRecords = [...records.values()].filter(record => record.outcome === category.key);
+            return { ...category, records: groupRecords };
+        });
+        const audiobookshelfURL = snapshot.audiobookshelf_url || '';
+        const groupsHtml = groups.map(group => {
+            const emptyMessage = group.key === 'not_found'
+                ? this.isActiveRunPhase(snapshotState)
+                    ? 'No missing books reported in this run so far.'
+                    : 'No missing books reported in this run.'
+                : 'No books in this category.';
+            return `
+            <details class="summary-section outcome-group" data-outcome="${group.key}" ${open.expandedOutcomes.has(group.key) ? 'open' : ''}>
+                <summary data-outcome-category="${group.key}"><span>${group.label}</span><span class="stat ${group.tone}">${group.count}</span></summary>
+                <div class="book-list">${group.records.length ? group.records.map(record => this.renderOutcomeRecord(record, audiobookshelfURL)).join('') : `<p class="empty-state">${emptyMessage}</p>`}</div>
+            </details>`;
+        }).join('');
+        let statusMessage = 'Run status is unavailable.';
+        if (snapshotState === 'completed') {
+            statusMessage = unresolved === 0
+                ? 'This run completed without unresolved or failed outcomes.'
+                : `This run completed with ${unresolved} ${unresolved === 1 ? 'outcome that needs' : 'outcomes that need'} attention.`;
+        } else if (snapshotState === 'failed') {
+            statusMessage = 'This run failed before it could complete.';
+        } else if (snapshotState === 'canceled') {
+            statusMessage = 'This run was canceled.';
+        } else if (snapshotState === 'queued') {
+            statusMessage = 'Sync accepted and queued; processing has not started yet.';
+        } else if (snapshotState === 'running') {
+            statusMessage = 'Currently syncing.';
+        } else if (snapshotState === 'finalizing') {
+            statusMessage = 'Finalizing sync results.';
+        }
+        const runError = snapshot.run_error || this.statuses[open.profileId]?.terminal_error || '';
+        content.innerHTML = `
+            <div class="sync-summary" data-run-id="${this.escapeHtmlAttribute(snapshot.run_id)}">
+                <div class="summary-header"><h3>Run details</h3><div class="last-sync">${this.escapeHtml(statusTimestamp.label)}${statusTimestamp.timestamp ? `: ${new Date(statusTimestamp.timestamp).toLocaleString()}` : ''}</div></div>
+                <p class="status-message">${statusMessage}</p>
+                ${runError ? `<div class="status-message status-error" data-run-error><strong>Run error:</strong> ${this.escapeHtml(runError)}</div>` : ''}
+                <div class="summary-stats">${groups.map(group => `<div class="stat-item ${group.tone}"><span class="stat-value">${group.count}</span><span class="stat-label">${group.label}</span></div>`).join('')}</div>
+                ${groupsHtml}
+            </div>`;
+        content.querySelectorAll('details.outcome-group').forEach(group => {
+            group.addEventListener('toggle', () => {
+                if (group.open) open.expandedOutcomes.add(group.dataset.outcome);
+                else open.expandedOutcomes.delete(group.dataset.outcome);
+            });
+        });
+    }
+
+    renderHardcoverCandidate(record) {
+        if (!record || typeof record !== 'object') return '';
+
+        const value = (raw) => {
+            if (typeof raw === 'string') return raw.trim();
+            if (typeof raw === 'number' && Number.isFinite(raw)) return String(raw);
+            return '';
+        };
+        const title = value(record.hardcover_title);
+        const author = value(record.hardcover_author);
+        const publishedYear = value(record.hardcover_published_year);
+        const asin = value(record.hardcover_asin);
+        const isbn = value(record.hardcover_isbn);
+        const slug = value(record.hardcover_slug);
+        const series = value(record.hardcover_series);
+        const seriesNumber = value(record.hardcover_series_number);
+        const coverURL = value(record.hardcover_cover_url);
+        const hardcoverURL = slug
+            ? `https://hardcover.app/books/${encodeURIComponent(slug)}`
+            : '';
+        const fields = [];
+        const addField = (label, rawValue) => {
+            const fieldValue = value(rawValue);
+            if (fieldValue) {
+                fields.push(`<span><strong>${label}:</strong> ${this.escapeHtml(fieldValue)}</span>`);
+            }
+        };
+
+        if (title) {
+            const titleHTML = hardcoverURL
+                ? `<a href="${this.escapeHtmlAttribute(hardcoverURL)}" target="_blank" rel="noopener noreferrer">${this.escapeHtml(title)}</a>`
+                : this.escapeHtml(title);
+            fields.push(`<span><strong>Title:</strong> ${titleHTML}</span>`);
+        }
+        addField('Author', author);
+        addField('Published', publishedYear);
+        addField('ASIN', asin);
+        addField('ISBN', isbn);
+        addField('Slug', slug);
+        addField('Series', this.formatSeries(series, seriesNumber));
+
+        const coverIsHTTP = /^https?:\/\//i.test(coverURL) && !coverURL.includes('|');
+        const coverHTML = coverIsHTTP
+            ? `<img src="${this.escapeHtmlAttribute(coverURL)}"
+                    data-fallbacks="${this.escapeHtmlAttribute(`${coverURL}|/cover-placeholder.svg`)}"
+                    data-fb-idx="0"
+                    alt="${this.escapeHtmlAttribute(`Hardcover cover${title ? ` for ${title}` : ''}`)}"
+                    class="book-cover"
+                    loading="lazy"
+                    decoding="async"
+                    onerror="window.__absHandleImageError && window.__absHandleImageError(this)">`
+            : '';
+
+        if (!fields.length && !coverHTML) return '';
+        return `<section class="hardcover-candidate" aria-label="Hardcover candidate">
+            <h4>Hardcover candidate</h4>
+            <div class="hardcover-candidate-content">
+                ${coverHTML ? `<div class="hardcover-candidate-cover">${coverHTML}</div>` : ''}
+                ${fields.length ? `<div class="book-meta">${fields.join('')}</div>` : ''}
+            </div>
+        </section>`;
+    }
+
+    buildAudiobookshelfItemURL(baseURL, bookId) {
+        const itemId = String(bookId || '').trim();
+        if (!baseURL || !itemId) return '';
+
+        try {
+            const url = new URL(String(baseURL).trim());
+            if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+            url.pathname = `${url.pathname.replace(/\/+$/, '')}/item/${encodeURIComponent(itemId)}`;
+            url.search = '';
+            url.hash = '';
+            return url.toString();
+        } catch (_) {
+            return '';
+        }
+    }
+
+    buildHardcoverBookURL(record) {
+        const bookId = String(record?.hardcover_book_id || '').trim();
+        if (bookId) return `https://hardcover.app/book/${encodeURIComponent(bookId)}`;
+
+        const slug = String(record?.hardcover_slug || '').trim();
+        return slug ? `https://hardcover.app/books/${encodeURIComponent(slug)}` : '';
+    }
+
+    buildAudibleBookURL(asin) {
+        const normalizedASIN = String(asin || '').trim();
+        return normalizedASIN
+            ? `https://www.audible.com/pd?asin=${encodeURIComponent(normalizedASIN)}`
+            : '';
+    }
+
+    buildGoodreadsSearchURL(isbn) {
+        const normalizedISBN = String(isbn || '').trim();
+        return normalizedISBN
+            ? `https://www.goodreads.com/search?q=${encodeURIComponent(normalizedISBN)}`
+            : '';
+    }
+
+    formatSeries(series, seriesNumber) {
+        const name = String(series || '').trim();
+        if (!name) return '';
+        const number = String(seriesNumber || '').trim().replace(/^#\s*/, '');
+        return number ? `${name} #${number}` : name;
+    }
+
+    renderAudiobookshelfCover(record) {
+        const coverURL = String(record?.cover_url || '').trim();
+        const coverIsHTTP = /^https?:\/\//i.test(coverURL) && !coverURL.includes('|');
+        const initialURL = coverIsHTTP ? coverURL : '/cover-placeholder.svg';
+        const fallbacks = coverIsHTTP ? `${coverURL}|/cover-placeholder.svg` : '/cover-placeholder.svg';
+        const title = String(record?.title || '').trim();
+        return `<div class="audiobookshelf-cover">
+            <img src="${this.escapeHtmlAttribute(initialURL)}"
+                data-fallbacks="${this.escapeHtmlAttribute(fallbacks)}"
+                data-fb-idx="0"
+                alt="${this.escapeHtmlAttribute(`Audiobookshelf cover${title ? ` for ${title}` : ''}`)}"
+                class="book-cover"
+                loading="lazy"
+                decoding="async"
+                onerror="window.__absHandleImageError && window.__absHandleImageError(this)">
+        </div>`;
+    }
+
+    renderOutcomeRecord(record, audiobookshelfBaseURL = '') {
+        const bookId = String(record.book_id || '');
+        const title = this.escapeHtml(record.title || 'Unknown title');
+        const audiobookshelfURL = this.buildAudiobookshelfItemURL(audiobookshelfBaseURL, bookId);
+        const hardcoverURL = this.buildHardcoverBookURL(record);
+        const asin = String(record.asin || '').trim();
+        const isbn = String(record.isbn || '').trim();
+        const format = String(record.format || '').trim();
+        const series = this.formatSeries(record.series, record.series_number);
+        const audibleURL = record.outcome === 'needs_review'
+            ? this.buildAudibleBookURL(asin)
+            : '';
+        const goodreadsURL = record.outcome === 'needs_review'
+            ? this.buildGoodreadsSearchURL(isbn)
+            : '';
+        const titleHTML = audiobookshelfURL
+            ? `<a class="book-title-link" href="${this.escapeHtmlAttribute(audiobookshelfURL)}" target="_blank" rel="noopener noreferrer" title="Open in Audiobookshelf">${title} <span class="external-link-mark" aria-hidden="true">↗</span></a>`
+            : title;
+        const hardcoverLink = record.outcome !== 'needs_review' && hardcoverURL
+            ? `<a class="book-service-link hardcover" href="${this.escapeHtmlAttribute(hardcoverURL)}" target="_blank" rel="noopener noreferrer" title="Open on Hardcover">Hardcover <span class="external-link-mark" aria-hidden="true">↗</span></a>`
+            : '';
+        const asinHTML = asin
+            ? `<span><strong>ASIN:</strong> ${audibleURL
+                ? `<a href="${this.escapeHtmlAttribute(audibleURL)}" target="_blank" rel="noopener noreferrer" title="Open on Audible">${this.escapeHtml(asin)} <span class="external-link-mark" aria-hidden="true">↗</span></a>`
+                : this.escapeHtml(asin)}</span>`
+            : '';
+        const isbnHTML = isbn
+            ? `<span><strong>ISBN:</strong> ${goodreadsURL
+                ? `<a href="${this.escapeHtmlAttribute(goodreadsURL)}" target="_blank" rel="noopener noreferrer" title="Search on Goodreads">${this.escapeHtml(isbn)} <span class="external-link-mark" aria-hidden="true">↗</span></a>`
+                : this.escapeHtml(isbn)}</span>`
+            : '';
+        return `<article class="book-item" data-book-id="${this.escapeHtmlAttribute(bookId)}">
+            <div class="book-item-content">
+                ${this.renderAudiobookshelfCover(record)}
+                <div class="book-item-details">
+                    <div class="book-heading">
+                        <div class="book-title">${titleHTML}</div>
+                        ${hardcoverLink ? `<div class="book-service-links">${hardcoverLink}</div>` : ''}
+                    </div>
+                    ${record.author ? `<div><strong>Author:</strong> ${this.escapeHtml(record.author)}</div>` : ''}
+                    <div class="book-meta">${asinHTML}${isbnHTML}${format ? `<span><strong>Format:</strong> ${this.escapeHtml(format)}</span>` : ''}${series ? `<span><strong>Series:</strong> ${this.escapeHtml(series)}</span>` : ''}</div>
+                    ${record.match_method ? `<div><strong>Match method:</strong> ${this.escapeHtml(record.match_method)}</div>` : ''}
+                    ${record.outcome === 'needs_review' ? this.renderHardcoverCandidate(record) : ''}
+                    ${record.reason ? `<div class="book-reason"><strong>Reason:</strong> ${this.escapeHtml(record.reason)}</div>` : ''}
+                    ${record.error ? `<div class="book-error"><strong>Error:</strong> ${this.escapeHtml(record.error)}</div>` : ''}
+                </div>
+            </div>
+        </article>`;
     }
 
     async handleAddProfile(event) {
+        if (this.isViewer()) return;
         const formData = new FormData(event.target);
+        const profileId = String(formData.get('id') || '');
+        if (profileId.length > 244) {
+            this.showToast('Profile ID must be 244 characters or fewer.', 'error');
+            return;
+        }
         const profileData = {
-            id: formData.get('id'),
+            id: profileId,
             name: formData.get('name'),
             audiobookshelf_url: formData.get('audiobookshelf_url'),
             audiobookshelf_token: formData.get('audiobookshelf_token'),
@@ -1841,12 +1800,14 @@ class SyncProfileApp {
                 process_unread_books: formData.get('process_unread_books') === 'on',
                 sync_owned: formData.get('sync_owned') === 'on',
                 include_ebooks: formData.get('include_ebooks') === 'on',
-                dry_run: false,
+                dry_run: formData.get('dry_run') === 'on',
                 test_book_filter: '',
                 test_book_limit: 0,
                 audnexus_region: formData.get('audnexus_region') || ''
             }
         };
+        const mutationKey = 'create-profile';
+        const mutation = this.beginSessionMutation(mutationKey);
 
         try {
             this.showLoading();
@@ -1855,27 +1816,43 @@ class SyncProfileApp {
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify(profileData)
+                body: JSON.stringify(profileData),
+                ...(mutation.controller ? { signal: mutation.controller.signal } : {})
             });
 
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             const data = await response.json();
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
 
             if (data.success) {
                 this.showToast('Profile created successfully!', 'success');
                 event.target.reset();
                 this.loadProfiles();
-                this.showTab('profiles');
+                this.showTab('users');
             } else {
                 this.showToast('Failed to create profile: ' + data.error, 'error');
             }
         } catch (error) {
+            if (!this.isCurrentSessionMutation(mutationKey, mutation) || error.name === 'AbortError') return;
             this.showToast('Error creating profile: ' + error.message, 'error');
         } finally {
-            this.hideLoading();
+            if (this.finishSessionMutation(mutationKey, mutation) && this.sessionMutationRequests.size === 0) {
+                this.hideLoading();
+            }
         }
     }
 
     async editProfile(profileId) {
+        if (this.isViewer()) return;
+        const authGeneration = this.authSessionGeneration;
+        this.editProfileRequest?.controller?.abort();
+        const request = {
+            controller: typeof AbortController === 'undefined' ? null : new AbortController()
+        };
+        this.editProfileRequest = request;
+        const isCurrentRequest = () => this.authSessionGeneration === authGeneration
+            && this.editProfileRequest === request
+            && !request.controller?.signal.aborted;
         try {
             this.showLoading();
             
@@ -1886,13 +1863,16 @@ class SyncProfileApp {
                 return;
             }
             
-            const response = await fetch(`/api/profiles/${profileId}`, {
+            const response = await fetch(this.profileUrl(profileId), {
                 method: 'GET',
                 credentials: 'include', // Include session cookies
                 headers: {
                     'Content-Type': 'application/json'
-                }
+                },
+                ...(request.controller ? { signal: request.controller.signal } : {})
             });
+
+            if (!isCurrentRequest()) return;
             
             // Handle authentication errors specifically
             if (response.status === 401 || response.status === 403) {
@@ -1901,7 +1881,9 @@ class SyncProfileApp {
                 return;
             }
             
+            if (!isCurrentRequest()) return;
             const data = await response.json();
+            if (!isCurrentRequest()) return;
 
             if (response.ok && data.success) {
                 this.currentEditUser = data.data;
@@ -1918,9 +1900,13 @@ class SyncProfileApp {
                 }
             }
         } catch (error) {
+            if (!isCurrentRequest() || error.name === 'AbortError') return;
             this.showToast('Error loading profile data: ' + error.message, 'error');
         } finally {
-            this.hideLoading();
+            if (this.editProfileRequest === request) {
+                this.editProfileRequest = null;
+                if (authGeneration === this.authSessionGeneration) this.hideLoading();
+            }
         }
     }
 
@@ -1944,6 +1930,7 @@ class SyncProfileApp {
         if (includeEbooksEl) {
             includeEbooksEl.checked = this.toBool(config.include_ebooks, false);
         }
+        document.getElementById('edit-dry-run').checked = this.toBool(config.dry_run, false);
         
         // Library filters
         const libraries = config.libraries || {};
@@ -1967,6 +1954,7 @@ class SyncProfileApp {
     }
 
     async handleEditProfile(event) {
+        if (this.isViewer()) return;
         const formData = new FormData(event.target);
         const userId = formData.get('id');
         
@@ -1978,8 +1966,8 @@ class SyncProfileApp {
         // Update user config with form data
         const configUpdateData = {
             audiobookshelf_url: formData.get('audiobookshelf_url'),
-            audiobookshelf_token: formData.get('audiobookshelf_token') || this.currentEditUser.audiobookshelf_token,
-            hardcover_token: formData.get('hardcover_token') || this.currentEditUser.hardcover_token,
+            audiobookshelf_token: formData.get('audiobookshelf_token'),
+            hardcover_token: formData.get('hardcover_token'),
                 sync_config: {
                     incremental: formData.get('incremental') === 'on',
                     min_change_threshold: 60,
@@ -1993,40 +1981,48 @@ class SyncProfileApp {
                 process_unread_books: formData.get('process_unread_books') === 'on',
                 sync_owned: formData.get('sync_owned') === 'on',
                 include_ebooks: formData.get('include_ebooks') === 'on',
-                dry_run: false,
+                dry_run: formData.get('dry_run') === 'on',
                 test_book_filter: '',
                 test_book_limit: 0,
                 audnexus_region: formData.get('audnexus_region') || ''
             }
         };
+        const mutationKey = 'edit-profile';
+        const mutation = this.beginSessionMutation(mutationKey);
 
         try {
             this.showLoading();
             
             // Update user
-            const userResponse = await fetch(`/api/profiles/${userId}`, {
+            const userResponse = await fetch(this.profileUrl(userId), {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify(userUpdateData)
+                body: JSON.stringify(userUpdateData),
+                ...(mutation.controller ? { signal: mutation.controller.signal } : {})
             });
 
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             const userData = await userResponse.json();
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             if (!userData.success) {
                 throw new Error(userData.error);
             }
 
             // Update config
-            const configResponse = await fetch(`/api/profiles/${userId}/config`, {
+            const configResponse = await fetch(this.profileUrl(userId, '/config'), {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify(configUpdateData)
+                body: JSON.stringify(configUpdateData),
+                ...(mutation.controller ? { signal: mutation.controller.signal } : {})
             });
 
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             const configData = await configResponse.json();
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             if (!configData.success) {
                 throw new Error(configData.error);
             }
@@ -2035,90 +2031,149 @@ class SyncProfileApp {
             this.closeEditModal();
             this.loadProfiles();
         } catch (error) {
+            if (!this.isCurrentSessionMutation(mutationKey, mutation) || error.name === 'AbortError') return;
             this.showToast('Error updating profile: ' + error.message, 'error');
         } finally {
-            this.hideLoading();
+            if (this.finishSessionMutation(mutationKey, mutation) && this.sessionMutationRequests.size === 0) {
+                this.hideLoading();
+            }
         }
     }
 
     async deleteProfile(profileId) {
+        if (this.isViewer()) return;
         if (!confirm('Are you sure you want to delete this sync profile? This action cannot be undone.')) {
             return;
         }
+        const mutationKey = `delete-profile:${String(profileId)}`;
+        const mutation = this.beginSessionMutation(mutationKey);
 
         try {
             this.showLoading();
-            const response = await fetch(`/api/profiles/${profileId}`, {
-                method: 'DELETE'
+            const response = await fetch(this.profileUrl(profileId), {
+                method: 'DELETE',
+                ...(mutation.controller ? { signal: mutation.controller.signal } : {})
             });
 
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             const data = await response.json();
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
 
             if (data.success) {
+                this.actionErrors.delete(profileId);
                 this.showToast('Profile deleted successfully!', 'success');
+                if (this.openSummary?.profileId === profileId) {
+                    this.clearOpenSummary();
+                }
                 this.loadProfiles();
                 this.loadStatuses();
             } else {
                 this.showToast('Failed to delete profile: ' + (data.error || 'Unknown error'), 'error');
             }
         } catch (error) {
+            if (!this.isCurrentSessionMutation(mutationKey, mutation) || error.name === 'AbortError') return;
             this.showToast('Error deleting profile: ' + error.message, 'error');
         } finally {
-            this.hideLoading();
+            if (this.finishSessionMutation(mutationKey, mutation) && this.sessionMutationRequests.size === 0) {
+                this.hideLoading();
+            }
         }
     }
 
     async startSync(profileId) {
+        if (this.isViewer()) return;
         if (!profileId) {
             console.error('No profile ID provided for sync');
             this.showToast('Error: No profile ID provided', 'error');
             return;
         }
+        const mutationKey = `start-sync:${String(profileId)}`;
+        const mutation = this.beginSessionMutation(mutationKey);
 
         try {
             this.showLoading();
-            const response = await fetch(`/api/profiles/${profileId}/sync`, {
+            const response = await fetch(this.profileUrl(profileId, '/sync'), {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
-                }
+                },
+                ...(mutation.controller ? { signal: mutation.controller.signal } : {})
             });
 
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             const result = await response.json();
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             
-            if (response.ok) {
-                this.showToast('Sync started successfully', 'success');
-                // Update the specific profile status
-                if (result.data) {
-                    this.statuses[profileId] = {
-                        ...result.data,
-                        profile_id: profileId,
-                        profile_name: this.statuses[profileId]?.profile_name || profileId
-                    };
-                    this.renderStatuses();
-                } else {
-                    // If no data in response, refresh all statuses
-                    await this.loadStatuses();
-                }
+            if (response.status === 202 && result.success && result.data?.run_id && result.data?.state === 'queued') {
+                const accepted = result.data;
+                this.trackedRunIds.set(String(profileId), {
+                    runId: String(accepted.run_id),
+                    acceptedAfterSequence: this.statusLoadSequence
+                });
+                this.actionErrors.delete(profileId);
+                this.applyAcceptedRun(profileId, accepted);
+                this.renderStatuses();
+                this.showToast('Sync accepted and queued', 'success');
+                // Follow the authoritative run ID; processing may not have
+                // started by the time this refresh returns.
+                await this.loadStatuses();
             } else {
                 throw new Error(result.error || 'Failed to start sync');
             }
         } catch (error) {
+            if (!this.isCurrentSessionMutation(mutationKey, mutation) || error.name === 'AbortError') return;
             console.error('Error starting sync:', error);
+            this.actionErrors.set(profileId, { action: 'Start sync', message: error.message });
+            this.renderStatuses();
             this.showToast(`Error: ${error.message}`, 'error');
-            
-            // Update UI to show error state
-            if (profileId && this.statuses[profileId]) {
-                this.statuses[profileId].status = 'error';
-                this.statuses[profileId].error = error.message;
-                this.renderStatuses();
-            }
         } finally {
-            this.hideLoading();
+            if (this.finishSessionMutation(mutationKey, mutation) && this.sessionMutationRequests.size === 0) {
+                this.hideLoading();
+            }
         }
     }
 
+    applyAcceptedRun(profileId, accepted) {
+        const id = String(profileId);
+        const queuedAt = accepted.queued_at;
+        const profile = this.users.find(user => String(user?.id || '') === id);
+        const zeroCounts = {
+            synced: 0,
+            already_current: 0,
+            skipped: 0,
+            needs_review: 0,
+            not_found: 0,
+            failed: 0,
+            would_sync: 0
+        };
+        const previous = this.statuses[id] || {};
+        this.statusRefreshError = null;
+        this.statuses[id] = {
+            ...previous,
+            terminal_error: '',
+            profile_id: profileId,
+            profile_name: previous.profile_name || profile?.name || `Profile ${id}`,
+            last_attempted_at: queuedAt,
+            message: accepted.message || '',
+            snapshot: {
+                run_id: accepted.run_id,
+                queued_at: queuedAt,
+                processing_started_at: null,
+                last_activity_at: null,
+                last_processed_at: null,
+                finished_at: null,
+                dry_run: this.toBool(accepted.dry_run, false),
+                state: 'queued',
+                books_total: 0,
+                processed_so_far: 0,
+                unattempted_count: 0,
+                outcome_counts: zeroCounts
+            }
+        };
+    }
+
     async cancelSync(profileId) {
+        if (this.isViewer()) return;
         if (!confirm('Are you sure you want to cancel the sync?')) {
             return;
         }
@@ -2128,53 +2183,53 @@ class SyncProfileApp {
             this.showToast('Error: No profile ID provided', 'error');
             return;
         }
+        const mutationKey = `cancel-sync:${String(profileId)}`;
+        const mutation = this.beginSessionMutation(mutationKey);
 
         try {
             this.showLoading();
-            const response = await fetch(`/api/profiles/${profileId}/sync`, {
-                method: 'DELETE'
+            const response = await fetch(this.profileUrl(profileId, '/sync'), {
+                method: 'DELETE',
+                ...(mutation.controller ? { signal: mutation.controller.signal } : {})
             });
 
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             const result = await response.json();
+            if (!this.isCurrentSessionMutation(mutationKey, mutation)) return;
             
             if (response.ok) {
+                this.actionErrors.delete(profileId);
+                this.renderStatuses();
                 this.showToast('Sync cancelled', 'info');
-                // Update the specific profile status
-                if (result.data) {
-                    this.statuses[profileId] = {
-                        ...result.data,
-                        profile_id: profileId,
-                        profile_name: this.statuses[profileId]?.profile_name || profileId,
-                        status: 'cancelled'
-                    };
-                    this.renderStatuses();
-                } else {
-                    // If no data in response, refresh all statuses
-                    await this.loadStatuses();
-                }
+                // The action acknowledgement only contains a message; reload
+                // the authoritative status before updating the card.
+                await this.loadStatuses();
             } else {
                 throw new Error(result.error || 'Failed to cancel sync');
             }
         } catch (error) {
+            if (!this.isCurrentSessionMutation(mutationKey, mutation) || error.name === 'AbortError') return;
             console.error('Error cancelling sync:', error);
+            this.actionErrors.set(profileId, { action: 'Cancel sync', message: error.message });
+            this.renderStatuses();
             this.showToast(`Error: ${error.message}`, 'error');
-            
-            // Update UI to show error state
-            if (profileId && this.statuses[profileId]) {
-                this.statuses[profileId].status = 'error';
-                this.statuses[profileId].error = error.message;
-                this.renderStatuses();
-            }
         } finally {
-            this.hideLoading();
+            if (this.finishSessionMutation(mutationKey, mutation) && this.sessionMutationRequests.size === 0) {
+                this.hideLoading();
+            }
         }
     }
 
     startAutoRefresh() {
+        if (this.refreshInterval) return;
+
         // Refresh statuses every 5 seconds
         this.refreshInterval = setInterval(() => {
-            if (this.autoRefreshEnabled && document.getElementById('sync-tab').classList.contains('active')) {
-                this.loadStatuses();
+            if (this.autoRefreshEnabled &&
+                (this.profileLoadFailed || document.getElementById('sync-tab').classList.contains('active'))) {
+                if (this.activeStatusRequests > 0) return;
+                if (this.profileLoadFailed && Date.now() < this.nextProfileRetryAt) return;
+                this.loadStatuses({ silent: true });
             }
         }, 5000);
     }
@@ -2255,6 +2310,14 @@ class SyncProfileApp {
         div.textContent = text;
         return div.innerHTML;
     }
+
+    escapeHtmlAttribute(text) {
+        return this.escapeHtml(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { SyncProfileApp };
 }
 
 // Global functions for HTML onclick handlers
@@ -2295,7 +2358,6 @@ function closeEditModal() {
 let app;
 document.addEventListener('DOMContentLoaded', () => {
     app = new SyncProfileApp();
-    app.init();
     
     // Add event delegation for read more/less functionality
     document.addEventListener('click', (e) => {

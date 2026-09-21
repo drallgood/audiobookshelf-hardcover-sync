@@ -1,16 +1,21 @@
 package sync
 
 import (
+	"context"
 	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-// TestNewService_Success tests the successful creation of a new service
-func TestNewService_Success(t *testing.T) {
+// TestNewServiceWithRunIdentity_Success tests successful service creation.
+func TestNewServiceWithRunIdentity_Success(t *testing.T) {
 	// Initialize logger for testing
 	logger.Setup(logger.Config{Level: "debug", Format: "json"})
 
@@ -23,7 +28,7 @@ func TestNewService_Success(t *testing.T) {
 	hcClient := new(MockHardcoverClient)
 
 	// Create a new service
-	svc, err := NewService(absClient, hcClient, cfg)
+	svc, err := NewServiceWithRunIdentity(absClient, hcClient, cfg, "", time.Time{})
 
 	// Verify results
 	assert.NoError(t, err, "Should not return an error when creating a new service")
@@ -39,8 +44,24 @@ func TestNewService_Success(t *testing.T) {
 	_ = os.Remove(cfg.Sync.StateFile)
 }
 
-// TestNewService_WithDifferentLogFormat tests creating a service with different log formats
-func TestNewService_WithDifferentLogFormat(t *testing.T) {
+func TestNewServiceWithRunIdentityConfiguresHardcoverDryRun(t *testing.T) {
+	logger.Setup(logger.Config{Level: "debug", Format: "json"})
+	cfg := createTestConfig(false)
+	cfg.Sync.DryRun = true
+	cfg.Sync.StateFile = filepath.Join(t.TempDir(), "sync_state.json")
+	cfg.Paths.CacheDir = t.TempDir()
+	hcClient := hardcover.NewClient("test-token", logger.Get())
+
+	svc, err := NewServiceWithRunIdentity(&audiobookshelf.Client{}, hcClient, cfg, "", time.Time{})
+	require.NoError(t, err)
+
+	createdID, err := svc.hardcover.CreateUserBook(context.Background(), "invalid", "invalid")
+	require.NoError(t, err)
+	assert.Equal(t, "-1", createdID)
+}
+
+// TestNewServiceWithRunIdentity_WithDifferentLogFormat tests creating a service with different log formats.
+func TestNewServiceWithRunIdentity_WithDifferentLogFormat(t *testing.T) {
 	// Test with JSON format
 	t.Run("JSON format", func(t *testing.T) {
 		// Initialize logger for testing
@@ -56,7 +77,7 @@ func TestNewService_WithDifferentLogFormat(t *testing.T) {
 		hcClient := new(MockHardcoverClient)
 
 		// Create a new service
-		svc, err := NewService(absClient, hcClient, cfg)
+		svc, err := NewServiceWithRunIdentity(absClient, hcClient, cfg, "", time.Time{})
 
 		// Verify results
 		assert.NoError(t, err, "Should not return an error when creating a new service with JSON format")
@@ -81,7 +102,7 @@ func TestNewService_WithDifferentLogFormat(t *testing.T) {
 		hcClient := new(MockHardcoverClient)
 
 		// Create a new service
-		svc, err := NewService(absClient, hcClient, cfg)
+		svc, err := NewServiceWithRunIdentity(absClient, hcClient, cfg, "", time.Time{})
 
 		// Verify results
 		assert.NoError(t, err, "Should not return an error when creating a new service with console format")
@@ -92,8 +113,8 @@ func TestNewService_WithDifferentLogFormat(t *testing.T) {
 	})
 }
 
-// TestNewService_InvalidStatePath tests the case where the state path is invalid
-func TestNewService_InvalidStatePath(t *testing.T) {
+// TestNewServiceWithRunIdentity_InvalidStatePath tests an invalid state path.
+func TestNewServiceWithRunIdentity_InvalidStatePath(t *testing.T) {
 	// Initialize logger for testing
 	logger.Setup(logger.Config{Level: "debug", Format: "json"})
 
@@ -106,7 +127,7 @@ func TestNewService_InvalidStatePath(t *testing.T) {
 	hcClient := new(MockHardcoverClient)
 
 	// Create a new service
-	svc, err := NewService(absClient, hcClient, cfg)
+	svc, err := NewServiceWithRunIdentity(absClient, hcClient, cfg, "", time.Time{})
 
 	// Verify results
 	// Note: This might not fail if the directory is created automatically

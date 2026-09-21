@@ -14,7 +14,6 @@ data:
     # Rate limiting configuration
     rate_limit:
       rate: {{ .Values.config.rateLimit.rate | quote }}
-      burst: {{ .Values.config.rateLimit.burst }}
       max_concurrent: {{ .Values.config.rateLimit.maxConcurrent }}
 
     # Logging configuration

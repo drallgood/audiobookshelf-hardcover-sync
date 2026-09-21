@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"encoding/json"
 	"reflect"
 	"time"
 
@@ -32,6 +33,8 @@ func toHardcoverBook(testBook *TestHardcoverBook) *models.HardcoverBook {
 		ASIN:          testBook.ASIN,
 		ISBN:          testBook.ISBN,
 		EditionID:     testBook.EditionID,
+		SeriesName:    testBook.SeriesName,
+		SeriesNumber:  testBook.SeriesNumber,
 	}
 }
 
@@ -47,14 +50,19 @@ func toAudiobookshelfBook(testBook *TestAudiobookshelfBook) *models.Audiobookshe
 		AuthorName: testBook.Media.Metadata.GetAuthorName(),
 		ASIN:       testBook.Media.Metadata.GetASIN(),
 		ISBN:       testBook.Media.Metadata.GetISBN(),
+		SeriesName: testBook.Media.Metadata.SeriesName,
+		Series:     append([]models.AudiobookshelfSeries(nil), testBook.Media.Metadata.Series...),
 	}
 
 	// Create media with embedded metadata
 	var media struct {
-		ID        string                          `json:"id"`
-		Metadata  models.AudiobookshelfMetadataStruct `json:"metadata"`
-		CoverPath string                          `json:"coverPath"`
-		Duration  float64                         `json:"duration"`
+		ID          string                              `json:"id"`
+		Metadata    models.AudiobookshelfMetadataStruct `json:"metadata"`
+		CoverPath   string                              `json:"coverPath"`
+		Duration    float64                             `json:"duration"`
+		NumTracks   int                                 `json:"numTracks"`
+		EbookFile   *json.RawMessage                    `json:"ebookFile"`
+		EbookFormat string                              `json:"ebookFormat"`
 	}
 	media.ID = testBook.Media.ID
 	media.Metadata = metadata
@@ -156,6 +164,7 @@ type TestAudiobookshelfMetadata struct {
 	AuthorNameLF      string
 	NarratorName      string
 	SeriesName        string
+	Series            []models.AudiobookshelfSeries
 	Genres            []string
 	PublishedYear     string
 	Publisher         string
@@ -214,6 +223,8 @@ type TestHardcoverBook struct {
 	EditionASIN   string
 	EditionISBN10 string
 	EditionISBN13 string
+	SeriesName    string
+	SeriesNumber  string
 }
 
 // GetID returns the book ID
@@ -263,17 +274,18 @@ func createTestBook(id, title, author, asin, isbn string) *TestAudiobookshelfBoo
 			CoverPath: "/path/to/cover.jpg",
 			Duration:  3600.0,
 			Metadata: TestAudiobookshelfMetadata{
-				Title:             title,
-				AuthorName:        author,
-				ASIN:              asin,
-				ISBN:              isbn,
-				Genres:            []string{"Fiction"},
-				PublishedYear:     "2023",
-				Publisher:         "Test Publisher",
-				Description:       "Test description",
-				Language:          "en",
-				NarratorName:      "Test Narrator",
-				SeriesName:        "Test Series",
+				Title:         title,
+				AuthorName:    author,
+				ASIN:          asin,
+				ISBN:          isbn,
+				Genres:        []string{"Fiction"},
+				PublishedYear: "2023",
+				Publisher:     "Test Publisher",
+				Description:   "Test description",
+				Language:      "en",
+				NarratorName:  "Test Narrator",
+				SeriesName:    "Test Series",
+				Series:        []models.AudiobookshelfSeries{{Name: "Test Series", Sequence: "2"}},
 			},
 		},
 		Progress: struct {
@@ -294,12 +306,10 @@ func createTestBook(id, title, author, asin, isbn string) *TestAudiobookshelfBoo
 func createTestFinishedBook(id, title, author, asin, isbn string) *TestAudiobookshelfBook {
 	book := createTestBook(id, title, author, asin, isbn)
 	book.Progress.IsFinished = true
-	book.Progress.FinishedAt = time.Now().Unix()
+	book.Progress.FinishedAt = time.Now().UnixMilli()
 	book.Progress.CurrentTime = book.Media.Duration // Set current time to duration (100% complete)
 	return book
 }
-
-
 
 // TestLibrary implements a simple library interface for testing
 type TestLibrary struct {

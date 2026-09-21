@@ -45,9 +45,9 @@ func TestGetLibraries(t *testing.T) {
 					}
 					w.Header().Set("Content-Type", "application/json")
 					if err := json.NewEncoder(w).Encode(response); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
 				})
 				return httptest.NewServer(handler)
 			},
@@ -106,30 +106,30 @@ func TestGetLibraryItems(t *testing.T) {
 					response := map[string]interface{}{
 						"results": []map[string]interface{}{
 							{
-								"id": "book1",
+								"id":    "book1",
 								"title": "Test Book",
 								"media": map[string]interface{}{
 									"metadata": map[string]interface{}{
-										"title": "Test Book",
+										"title":      "Test Book",
 										"authorName": "Test Author",
 									},
 								},
+							},
 						},
-					},
-					"total": 1,
-				}
-				w.Header().Set("Content-Type", "application/json")
-				if err := json.NewEncoder(w).Encode(response); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			})
-			return httptest.NewServer(handler)
+						"total": 1,
+					}
+					w.Header().Set("Content-Type", "application/json")
+					if err := json.NewEncoder(w).Encode(response); err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
+				})
+				return httptest.NewServer(handler)
+			},
+			libraryID:      "1",
+			expectError:    false,
+			expectedLength: 1,
 		},
-		libraryID:      "1",
-		expectError:    false,
-		expectedLength: 1,
-	},
 	}
 
 	for _, tt := range tests {
@@ -195,10 +195,10 @@ func TestGetUserProgress(t *testing.T) {
 							},
 						},
 						ListeningSessions: []struct {
-							ID            string  `json:"id"`
-							UserID        string  `json:"userId"`
-							LibraryItemID string  `json:"libraryItemId"`
-							MediaType     string  `json:"mediaType"`
+							ID            string `json:"id"`
+							UserID        string `json:"userId"`
+							LibraryItemID string `json:"libraryItemId"`
+							MediaType     string `json:"mediaType"`
 							MediaMetadata struct {
 								Title  string `json:"title"`
 								Author string `json:"author"`
@@ -234,9 +234,9 @@ func TestGetUserProgress(t *testing.T) {
 
 					w.Header().Set("Content-Type", "application/json")
 					if err := json.NewEncoder(w).Encode(progress); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
 				})
 				return httptest.NewServer(handler)
 			},
@@ -284,10 +284,13 @@ func TestGetListeningSessions(t *testing.T) {
 						{
 							ID: "book1",
 							Media: struct {
-								ID       string                       `json:"id"`
-								Metadata models.AudiobookshelfMetadataStruct `json:"metadata"`
-								CoverPath string                       `json:"coverPath"`
-								Duration  float64                      `json:"duration"`
+								ID          string                              `json:"id"`
+								Metadata    models.AudiobookshelfMetadataStruct `json:"metadata"`
+								CoverPath   string                              `json:"coverPath"`
+								Duration    float64                             `json:"duration"`
+								NumTracks   int                                 `json:"numTracks"`
+								EbookFile   *json.RawMessage                    `json:"ebookFile"`
+								EbookFormat string                              `json:"ebookFormat"`
 							}{
 								Metadata: models.AudiobookshelfMetadataStruct{
 									Title: "Test Book",
@@ -297,9 +300,9 @@ func TestGetListeningSessions(t *testing.T) {
 					}
 					w.Header().Set("Content-Type", "application/json")
 					if err := json.NewEncoder(w).Encode(sessions); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
 				})
 				return httptest.NewServer(handler)
 			},

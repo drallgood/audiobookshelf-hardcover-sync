@@ -32,7 +32,7 @@ func TestLogFormat(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := ParseLogFormat(tt.input)
 			assert.Equal(t, tt.expected, result, "ParseLogFormat returned unexpected format")
-			
+
 			// For invalid input, we expect the default format (JSON)
 			if tt.input == "invalid" {
 				assert.Equal(t, "json", result.String(), "Expected default format 'json' for invalid input")
@@ -46,22 +46,22 @@ func TestLogFormat(t *testing.T) {
 func TestLogMethods(t *testing.T) {
 	// Create a buffer to capture output
 	var buf bytes.Buffer
-	
+
 	// Reset the global logger for testing
 	ResetForTesting()
-	
+
 	// Setup the logger with debug level to capture all logs
 	config := Config{
-		Level:      "debug", // Set to debug to capture all log levels
+		Level:      "debug",    // Set to debug to capture all log levels
 		Format:     FormatJSON, // Explicitly set format to JSON
 		Output:     &buf,
 		TimeFormat: time.RFC3339,
 	}
 	Setup(config)
-	
+
 	// Get the logger instance
 	log := Get()
-	
+
 	// Ensure the logger is using our buffer
 	if log == nil {
 		t.Fatal("Failed to get logger instance")
@@ -127,10 +127,10 @@ func TestLogMethods(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			buf.Reset()
 			tt.logFunc()
-			
+
 			// Get the raw output
 			output := buf.String()
-			
+
 			// Check if the output contains the expected level and message
 			// This is more flexible than strict JSON parsing
 			assert.Contains(t, output, `"level":"`+tt.level+`"`, "Log output should contain the correct level")
@@ -142,12 +142,12 @@ func TestLogMethods(t *testing.T) {
 func TestWithFields(t *testing.T) {
 	// Create a buffer to capture output
 	var buf bytes.Buffer
-	
+
 	// Create a logger with the buffer as output
 	logger := &Logger{
 		Logger: zerolog.New(&buf).With().Timestamp().Logger(),
 	}
-	
+
 	// Test With
 	logger = logger.With(map[string]interface{}{"service": "test"})
 	logger.Info("test with fields")
@@ -175,37 +175,37 @@ func TestWithFields(t *testing.T) {
 func TestContext(t *testing.T) {
 	// Reset the global logger before testing
 	ResetForTesting()
-	
+
 	// Create a buffer for test output
 	var buf1, buf2 bytes.Buffer
-	
+
 	// Create a new logger with output to buf1
 	logger1 := &Logger{
 		Logger: zerolog.New(&buf1).With().Timestamp().Logger(),
 		level:  int(zerolog.DebugLevel),
 	}
-	
+
 	// Add a field to the logger using the With method
 	logger1 = logger1.With(map[string]interface{}{"test": "logger1"})
 
 	// Test NewContext and FromContext
 	ctx := context.Background()
 	ctx = NewContext(ctx, logger1)
-	
+
 	// Retrieve logger from context
 	logFromCtx := FromContext(ctx)
 	assert.NotNil(t, logFromCtx, "Logger should be retrievable from context")
-	
+
 	// Log a test message with the original logger
 	logger1.Info("test message 1")
-	
+
 	// Log the same message with the logger from context
 	logFromCtx.Info("test message 1 from ctx")
-	
+
 	// Check the output from the first logger
 	output1 := buf1.String()
 	t.Logf("Logger 1 output: %s", output1)
-	
+
 	// The output should contain our test field and message
 	assert.Contains(t, output1, `"test":"logger1"`, "Logger should have test field")
 	assert.Contains(t, output1, `"message":"test message 1"`, "Logger should log the correct message")
@@ -218,28 +218,28 @@ func TestContext(t *testing.T) {
 	}
 	// Add a field to the new logger
 	logger2 = logger2.With(map[string]interface{}{"test": "logger2"})
-	
+
 	// Set the new logger in the context
 	ctx = WithLogger(ctx, logger2)
 	logFromCtx = FromContext(ctx)
 	assert.NotNil(t, logFromCtx, "Should get a logger from context after WithLogger")
-	
+
 	// Log a message with the new logger
 	logFromCtx.Info("test message 2")
-	
+
 	// Check the output from the second logger
 	output2 := buf2.String()
 	t.Logf("Logger 2 output: %s", output2)
-	
+
 	// The output should contain the new logger's test field and message
 	assert.Contains(t, output2, `"test":"logger2"`, "New logger should have the correct test field")
 	assert.Contains(t, output2, `"message":"test message 2"`, "New logger should log the correct message")
-	
+
 	// Test that the original logger is not affected by the new logger
 	logger1.Info("test message 3")
 	output3 := buf1.String()
 	t.Logf("Logger 1 final output: %s", output3)
-	
+
 	// The original logger's output should contain its original test field and the new message
 	assert.Contains(t, output3, `"test":"logger1"`, "Original logger should still have original test field")
 	assert.Contains(t, output3, `"message":"test message 3"`, "Original logger should still work")
@@ -247,15 +247,15 @@ func TestContext(t *testing.T) {
 
 func TestLogLevels(t *testing.T) {
 	tests := []struct {
-		name          string
+		name            string
 		configuredLevel string
-		shouldLogDebug bool
-		shouldLogInfo  bool
-		shouldLogWarn  bool
-		shouldLogError bool
+		shouldLogDebug  bool
+		shouldLogInfo   bool
+		shouldLogWarn   bool
+		shouldLogError  bool
 	}{
 		{
-			name:           "debug level - all messages should be logged",
+			name:            "debug level - all messages should be logged",
 			configuredLevel: "debug",
 			shouldLogDebug:  true,
 			shouldLogInfo:   true,
@@ -263,7 +263,7 @@ func TestLogLevels(t *testing.T) {
 			shouldLogError:  true,
 		},
 		{
-			name:           "info level - debug messages should be filtered out",
+			name:            "info level - debug messages should be filtered out",
 			configuredLevel: "info",
 			shouldLogDebug:  false,
 			shouldLogInfo:   true,
@@ -271,7 +271,7 @@ func TestLogLevels(t *testing.T) {
 			shouldLogError:  true,
 		},
 		{
-			name:           "warn level - only warn and error messages should be logged",
+			name:            "warn level - only warn and error messages should be logged",
 			configuredLevel: "warn",
 			shouldLogDebug:  false,
 			shouldLogInfo:   false,
@@ -279,7 +279,7 @@ func TestLogLevels(t *testing.T) {
 			shouldLogError:  true,
 		},
 		{
-			name:           "error level - only error messages should be logged",
+			name:            "error level - only error messages should be logged",
 			configuredLevel: "error",
 			shouldLogDebug:  false,
 			shouldLogInfo:   false,
@@ -335,34 +335,34 @@ func TestLogLevels(t *testing.T) {
 
 			// Check if each message was logged based on the configured level
 			if tt.shouldLogDebug {
-				assert.True(t, messageWasLogged("debug", "debug message"), 
+				assert.True(t, messageWasLogged("debug", "debug message"),
 					"Debug message should be logged when level is %s", tt.configuredLevel)
 			} else {
-				assert.False(t, messageWasLogged("debug", "debug message"), 
+				assert.False(t, messageWasLogged("debug", "debug message"),
 					"Debug message should not be logged when level is %s", tt.configuredLevel)
 			}
 
 			if tt.shouldLogInfo {
-				assert.True(t, messageWasLogged("info", "info message"), 
+				assert.True(t, messageWasLogged("info", "info message"),
 					"Info message should be logged when level is %s", tt.configuredLevel)
 			} else {
-				assert.False(t, messageWasLogged("info", "info message"), 
+				assert.False(t, messageWasLogged("info", "info message"),
 					"Info message should not be logged when level is %s", tt.configuredLevel)
 			}
 
 			if tt.shouldLogWarn {
-				assert.True(t, messageWasLogged("warn", "warn message"), 
+				assert.True(t, messageWasLogged("warn", "warn message"),
 					"Warn message should be logged when level is %s", tt.configuredLevel)
 			} else {
-				assert.False(t, messageWasLogged("warn", "warn message"), 
+				assert.False(t, messageWasLogged("warn", "warn message"),
 					"Warn message should not be logged when level is %s", tt.configuredLevel)
 			}
 
 			if tt.shouldLogError {
-				assert.True(t, messageWasLogged("error", "error message"), 
+				assert.True(t, messageWasLogged("error", "error message"),
 					"Error message should be logged when level is %s", tt.configuredLevel)
 			} else {
-				assert.False(t, messageWasLogged("error", "error message"), 
+				assert.False(t, messageWasLogged("error", "error message"),
 					"Error message should not be logged when level is %s", tt.configuredLevel)
 			}
 		})
@@ -426,18 +426,18 @@ func TestLogFormatConfiguration(t *testing.T) {
 				// Split the output into lines (each log entry is on a separate line)
 				lines := strings.Split(strings.TrimSpace(output), "\n")
 				var found bool
-				
+
 				// Look for our test message in any of the log entries
 				for _, line := range lines {
 					if line == "" {
 						continue
 					}
-					
+
 					var jsonData map[string]interface{}
 					if err := json.Unmarshal([]byte(line), &jsonData); err != nil {
 						continue // Skip invalid JSON lines
 					}
-					
+
 					if msg, ok := jsonData["message"].(string); ok && msg == testMessage {
 						found = true
 						// Verify the key-value pair is present
@@ -445,7 +445,7 @@ func TestLogFormatConfiguration(t *testing.T) {
 						break
 					}
 				}
-				
+
 				assert.True(t, found, "Test message not found in JSON output")
 			}
 
@@ -454,7 +454,7 @@ func TestLogFormatConfiguration(t *testing.T) {
 				// Remove ANSI color codes for easier matching
 				ansiRegex := regexp.MustCompile(`\x1b\[[0-9;]*m`)
 				cleanOutput := ansiRegex.ReplaceAllString(output, "")
-				
+
 				// Check for our test message and key-value pair
 				assert.Contains(t, cleanOutput, testMessage, "Console output should contain the test message")
 				assert.Contains(t, cleanOutput, "key=value", "Console output should contain the key-value pair")

@@ -26,11 +26,11 @@ func TestClient_InsertUserBookRead(t *testing.T) {
 	log := logger.Get()
 
 	tests := []struct {
-		name        string
-		input       InsertUserBookReadInput
+		name         string
+		input        InsertUserBookReadInput
 		mockResponse interface{}
-		expectError bool
-		expectedID  int
+		expectError  bool
+		expectedID   int
 	}{
 		{
 			name: "successful insert",
@@ -45,7 +45,7 @@ func TestClient_InsertUserBookRead(t *testing.T) {
 			mockResponse: map[string]interface{}{
 				"data": map[string]interface{}{
 					"insert_user_book_read": map[string]interface{}{
-						"id": 456,
+						"id":    456,
 						"error": nil,
 					},
 				},
@@ -64,7 +64,7 @@ func TestClient_InsertUserBookRead(t *testing.T) {
 			mockResponse: map[string]interface{}{
 				"data": map[string]interface{}{
 					"insert_user_book_read": map[string]interface{}{
-						"id": 789,
+						"id":    789,
 						"error": nil,
 					},
 				},
@@ -110,32 +110,32 @@ func TestClient_InsertUserBookRead(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				// Set content type for JSON responses
 				w.Header().Set("Content-Type", "application/json")
-				
+
 				// Parse the request body
 				body, err := io.ReadAll(r.Body)
 				if err != nil {
 					t.Logf("Failed to read request body: %v", err)
 					w.WriteHeader(http.StatusInternalServerError)
 					if _, err := w.Write([]byte(`{"error": "Failed to read request body"}`)); err != nil {
-					t.Fatalf("Failed to write response: %v", err)
-				}  
+						t.Fatalf("Failed to write response: %v", err)
+					}
 					return
 				}
-				
+
 				// Parse GraphQL request
 				var req map[string]interface{}
 				if err := json.Unmarshal(body, &req); err != nil {
 					t.Logf("Failed to parse request JSON: %v\nBody: %s", err, string(body))
 					w.WriteHeader(http.StatusBadRequest)
 					if _, err := w.Write([]byte(`{"error": "Invalid JSON"}`)); err != nil {
-					t.Fatalf("Failed to write response: %v", err)
-				}  
+						t.Fatalf("Failed to write response: %v", err)
+					}
 					return
 				}
-				
+
 				// Extract GraphQL query and variables
 				query, _ := req["query"].(string)
-				
+
 				// Handle different types of queries
 				if strings.Contains(query, "GetCurrentUserID") {
 					// Handle GetCurrentUserID query
@@ -163,31 +163,31 @@ func TestClient_InsertUserBookRead(t *testing.T) {
 						t.Fatalf("Failed to marshal mock response: %v", err)
 					}
 					if _, err := w.Write(respBytes); err != nil {
-					t.Fatalf("Failed to write response: %v", err)
-				}
+						t.Fatalf("Failed to write response: %v", err)
+					}
 					return
 				}
-				
+
 				// Unknown GraphQL query
 				t.Logf("Unhandled GraphQL query: %s", query)
 				w.WriteHeader(http.StatusBadRequest)
 				if _, err := w.Write([]byte(`{"error": "Unhandled GraphQL query"}`)); err != nil {
 					t.Fatalf("Failed to write response: %v", err)
-				}  
+				}
 			}))
 			defer server.Close()
 
 			// Create client with all necessary fields
 			client := &Client{
-				baseURL:          server.URL,
-				authToken:        "test-token",
-				httpClient:       server.Client(),
-				logger:           log,
-				rateLimiter:      util.NewRateLimiter(10*time.Millisecond, 1, 1, log),
-				maxRetries:       3,
-				retryDelay:       10*time.Millisecond,
-				userBookIDCache:  cache.NewMemoryCache[int, int](log),
-				userCache:        cache.NewMemoryCache[string, any](log),
+				baseURL:         server.URL,
+				authToken:       "test-token",
+				httpClient:      server.Client(),
+				logger:          log,
+				rateLimiter:     util.NewRateLimiter(10*time.Millisecond, 1, log),
+				maxRetries:      3,
+				retryDelay:      10 * time.Millisecond,
+				userBookIDCache: cache.NewMemoryCache[int, int](log),
+				userCache:       cache.NewMemoryCache[string, any](log),
 			}
 
 			// Call method
@@ -278,7 +278,7 @@ func TestClient_InsertUserBookRead_IncludesProgressSeconds(t *testing.T) {
 		authToken:       "test-token",
 		httpClient:      server.Client(),
 		logger:          log,
-		rateLimiter:     util.NewRateLimiter(10*time.Millisecond, 1, 1, log),
+		rateLimiter:     util.NewRateLimiter(10*time.Millisecond, 1, log),
 		maxRetries:      3,
 		retryDelay:      10 * time.Millisecond,
 		userBookIDCache: cache.NewMemoryCache[int, int](log),
@@ -305,11 +305,11 @@ func TestClient_UpdateUserBookRead(t *testing.T) {
 	log := logger.Get()
 
 	tests := []struct {
-		name        string
-		input       UpdateUserBookReadInput
+		name         string
+		input        UpdateUserBookReadInput
 		mockResponse interface{}
-		expectError bool
-		expected    bool
+		expectError  bool
+		expected     bool
 	}{
 		{
 			name: "successful update",
@@ -317,8 +317,8 @@ func TestClient_UpdateUserBookRead(t *testing.T) {
 				ID: 123,
 				Object: map[string]interface{}{
 					"progress_seconds": int(0.5 * 3600),
-					"started_at":      "2023-01-01T00:00:00Z",
-					"finished_at":     "2023-01-02T00:00:00Z",
+					"started_at":       "2023-01-01T00:00:00Z",
+					"finished_at":      "2023-01-02T00:00:00Z",
 				},
 			},
 			mockResponse: map[string]interface{}{
@@ -360,8 +360,8 @@ func TestClient_UpdateUserBookRead(t *testing.T) {
 			mockResponse: map[string]interface{}{
 				"data": map[string]interface{}{
 					"update_user_book_read": map[string]interface{}{
-						"id":           123,
-						"error":        nil,
+						"id":             123,
+						"error":          nil,
 						"user_book_read": nil,
 					},
 				},
@@ -392,32 +392,32 @@ func TestClient_UpdateUserBookRead(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				// Set content type for JSON responses
 				w.Header().Set("Content-Type", "application/json")
-				
+
 				// Parse the request body
 				body, err := io.ReadAll(r.Body)
 				if err != nil {
 					t.Logf("Failed to read request body: %v", err)
 					w.WriteHeader(http.StatusInternalServerError)
 					if _, err := w.Write([]byte(`{"error": "Failed to read request body"}`)); err != nil {
-					t.Fatalf("Failed to write response: %v", err)
-				}  
+						t.Fatalf("Failed to write response: %v", err)
+					}
 					return
 				}
-				
+
 				// Parse GraphQL request
 				var req map[string]interface{}
 				if err := json.Unmarshal(body, &req); err != nil {
 					t.Logf("Failed to parse request JSON: %v\nBody: %s", err, string(body))
 					w.WriteHeader(http.StatusBadRequest)
 					if _, err := w.Write([]byte(`{"error": "Invalid JSON"}`)); err != nil {
-					t.Fatalf("Failed to write response: %v", err)
-				}  
+						t.Fatalf("Failed to write response: %v", err)
+					}
 					return
 				}
-				
+
 				// Extract GraphQL query and variables
 				query, _ := req["query"].(string)
-				
+
 				// Handle different types of queries
 				if strings.Contains(query, "GetCurrentUserID") {
 					// Handle GetCurrentUserID query
@@ -434,8 +434,8 @@ func TestClient_UpdateUserBookRead(t *testing.T) {
 						t.Fatalf("Failed to marshal response: %v", err)
 					}
 					if _, err := w.Write(responseJSON); err != nil {
-					t.Fatalf("Failed to write response: %v", err)
-				}
+						t.Fatalf("Failed to write response: %v", err)
+					}
 					return
 				} else if strings.Contains(query, "UpdateUserBookRead") || strings.Contains(query, "update_user_book_read") {
 					// Handle UpdateUserBookRead mutation
@@ -445,31 +445,31 @@ func TestClient_UpdateUserBookRead(t *testing.T) {
 						t.Fatalf("Failed to marshal mock response: %v", err)
 					}
 					if _, err := w.Write(respBytes); err != nil {
-					t.Fatalf("Failed to write response: %v", err)
-				}
+						t.Fatalf("Failed to write response: %v", err)
+					}
 					return
 				}
-				
+
 				// Unknown GraphQL query
 				t.Logf("Unhandled GraphQL query: %s", query)
 				w.WriteHeader(http.StatusBadRequest)
 				if _, err := w.Write([]byte(`{"error": "Unhandled GraphQL query"}`)); err != nil {
 					t.Fatalf("Failed to write response: %v", err)
-				}  
+				}
 			}))
 			defer server.Close()
 
 			// Create client with all necessary fields
 			client := &Client{
-				baseURL:          server.URL,
-				authToken:        "test-token",
-				httpClient:       server.Client(),
-				logger:           log,
-				rateLimiter:      util.NewRateLimiter(10*time.Millisecond, 1, 1, log),
-				maxRetries:       3,
-				retryDelay:       10*time.Millisecond,
-				userBookIDCache:  cache.NewMemoryCache[int, int](log),
-				userCache:        cache.NewMemoryCache[string, any](log),
+				baseURL:         server.URL,
+				authToken:       "test-token",
+				httpClient:      server.Client(),
+				logger:          log,
+				rateLimiter:     util.NewRateLimiter(10*time.Millisecond, 1, log),
+				maxRetries:      3,
+				retryDelay:      10 * time.Millisecond,
+				userBookIDCache: cache.NewMemoryCache[int, int](log),
+				userCache:       cache.NewMemoryCache[string, any](log),
 			}
 
 			// Call method
@@ -614,32 +614,32 @@ func TestClient_GetUserBookReads(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				// Set content type for JSON responses
 				w.Header().Set("Content-Type", "application/json")
-				
+
 				// Parse the request body
 				body, err := io.ReadAll(r.Body)
 				if err != nil {
 					t.Logf("Failed to read request body: %v", err)
 					w.WriteHeader(http.StatusInternalServerError)
 					if _, err := w.Write([]byte(`{"error": "Failed to read request body"}`)); err != nil {
-					t.Fatalf("Failed to write response: %v", err)
-				}  
+						t.Fatalf("Failed to write response: %v", err)
+					}
 					return
 				}
-				
+
 				// Parse GraphQL request
 				var req map[string]interface{}
 				if err := json.Unmarshal(body, &req); err != nil {
 					t.Logf("Failed to parse request JSON: %v\nBody: %s", err, string(body))
 					w.WriteHeader(http.StatusBadRequest)
 					if _, err := w.Write([]byte(`{"error": "Invalid JSON"}`)); err != nil {
-					t.Fatalf("Failed to write response: %v", err)
-				}  
+						t.Fatalf("Failed to write response: %v", err)
+					}
 					return
 				}
-				
+
 				// Extract GraphQL query and variables
 				query, _ := req["query"].(string)
-				
+
 				// Handle different types of queries
 				if strings.Contains(query, "GetCurrentUserID") {
 					// Handle GetCurrentUserID query
@@ -656,8 +656,8 @@ func TestClient_GetUserBookReads(t *testing.T) {
 						t.Fatalf("Failed to marshal response: %v", err)
 					}
 					if _, err := w.Write(responseJSON); err != nil {
-					t.Fatalf("Failed to write response: %v", err)
-				}
+						t.Fatalf("Failed to write response: %v", err)
+					}
 					return
 				} else if strings.Contains(query, "GetUserBookReads") || strings.Contains(query, "user_book_read") {
 					// Handle GetUserBookReads query
@@ -667,31 +667,31 @@ func TestClient_GetUserBookReads(t *testing.T) {
 						t.Fatalf("Failed to marshal mock response: %v", err)
 					}
 					if _, err := w.Write(respBytes); err != nil {
-					t.Fatalf("Failed to write response: %v", err)
-				}
+						t.Fatalf("Failed to write response: %v", err)
+					}
 					return
 				}
-				
+
 				// Unknown GraphQL query
 				t.Logf("Unhandled GraphQL query: %s", query)
 				w.WriteHeader(http.StatusBadRequest)
 				if _, err := w.Write([]byte(`{"error": "Unhandled GraphQL query"}`)); err != nil {
 					t.Fatalf("Failed to write response: %v", err)
-				}  
+				}
 			}))
 			defer server.Close()
 
 			// Create client with all necessary fields
 			client := &Client{
-				baseURL:          server.URL,
-				authToken:        "test-token",
-				httpClient:       server.Client(),
-				logger:           log,
-				rateLimiter:      util.NewRateLimiter(10*time.Millisecond, 1, 1, log),
-				maxRetries:       3,
-				retryDelay:       10*time.Millisecond,
-				userBookIDCache:  cache.NewMemoryCache[int, int](log),
-				userCache:        cache.NewMemoryCache[string, any](log),
+				baseURL:         server.URL,
+				authToken:       "test-token",
+				httpClient:      server.Client(),
+				logger:          log,
+				rateLimiter:     util.NewRateLimiter(10*time.Millisecond, 1, log),
+				maxRetries:      3,
+				retryDelay:      10 * time.Millisecond,
+				userBookIDCache: cache.NewMemoryCache[int, int](log),
+				userCache:       cache.NewMemoryCache[string, any](log),
 			}
 
 			// Call method
@@ -735,7 +735,7 @@ func TestClient_CheckExistingFinishedRead(t *testing.T) {
 			input: CheckExistingFinishedReadInput{
 				UserBookID: 123,
 			},
-			responseJSON: `{"data":{"user_book_reads":[{"finished_at":"2023-01-02T00:00:00Z"}]}}`,
+			responseJSON:       `{"data":{"user_book_reads":[{"finished_at":"2023-01-02T00:00:00Z"}]}}`,
 			expectError:        false,
 			expectedHasRead:    true,
 			expectedFinishedAt: func() *string { s := "2023-01-02T00:00:00Z"; return &s }(),
@@ -756,7 +756,7 @@ func TestClient_CheckExistingFinishedRead(t *testing.T) {
 				UserBookID: 123,
 			},
 			responseJSON: `{"errors":[{"message":"GraphQL error"}]}`,
-			expectError: true,
+			expectError:  true,
 		},
 		{
 			name: "null response",
@@ -803,7 +803,7 @@ func TestClient_CheckExistingFinishedRead(t *testing.T) {
 				authToken:   "test-token",
 				httpClient:  server.Client(),
 				logger:      log,
-				rateLimiter: util.NewRateLimiter(10*time.Millisecond, 1, 10, log), // Fast rate limiting for tests
+				rateLimiter: util.NewRateLimiter(10*time.Millisecond, 10, log), // Fast rate limiting for tests
 				maxRetries:  3,
 				retryDelay:  time.Millisecond,
 			}
@@ -814,7 +814,7 @@ func TestClient_CheckExistingFinishedRead(t *testing.T) {
 			// Check results
 			if tt.expectError {
 				assert.Error(t, err)
-				
+
 				// For empty_result_response test case, we need to check if the error message contains "unmarshal"
 				if tt.name == "empty result response" {
 					assert.Contains(t, err.Error(), "unmarshal", "empty result test case should fail with unmarshal error")
@@ -893,9 +893,9 @@ func TestClient_GetGoogleUploadCredentials(t *testing.T) {
 					"google_upload_credentials": map[string]interface{}{
 						"url": "",
 						"fields": map[string]interface{}{
-							"bucket":        "my-hardcover-bucket",
-							"key":           "uploads/123/file.mp3",
-							"Content-Type":  "audio/mpeg",
+							"bucket":       "my-hardcover-bucket",
+							"key":          "uploads/123/file.mp3",
+							"Content-Type": "audio/mpeg",
 						},
 					},
 				},
@@ -911,8 +911,8 @@ func TestClient_GetGoogleUploadCredentials(t *testing.T) {
 					"google_upload_credentials": map[string]interface{}{
 						"url": "https://storage.googleapis.com/upload",
 						"fields": map[string]interface{}{
-							"key":           "uploads/123/file.mp3",
-							"Content-Type":  "audio/mpeg",
+							"key":          "uploads/123/file.mp3",
+							"Content-Type": "audio/mpeg",
 						},
 					},
 				},
@@ -921,10 +921,10 @@ func TestClient_GetGoogleUploadCredentials(t *testing.T) {
 			expectedURL: "https://storage.googleapis.com/upload/uploads/123/file.mp3",
 		},
 		{
-			name:      "malformed response",
-			filename:  "test-audio.mp3",
-			editionID: 123,
-			response: "malformed", // Special marker for malformed response
+			name:        "malformed response",
+			filename:    "test-audio.mp3",
+			editionID:   123,
+			response:    "malformed", // Special marker for malformed response
 			expectError: true,
 		},
 	}
@@ -934,15 +934,15 @@ func TestClient_GetGoogleUploadCredentials(t *testing.T) {
 			// Create test server with handler based on response type
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				
+
 				if tt.response == "malformed" {
 					// Special case for malformed response
 					if _, err := w.Write([]byte(`{"data": {"google_`)); err != nil {
-					t.Fatalf("Failed to write response: %v", err)
-				}
+						t.Fatalf("Failed to write response: %v", err)
+					}
 					return
 				}
-				
+
 				// Use the standard encoding/json package to properly encode the response
 				if err := json.NewEncoder(w).Encode(tt.response); err != nil {
 					t.Fatalf("Failed to encode response: %v", err)
@@ -960,7 +960,7 @@ func TestClient_GetGoogleUploadCredentials(t *testing.T) {
 				authToken:   "test-token",
 				httpClient:  server.Client(),
 				logger:      log,
-				rateLimiter: util.NewRateLimiter(10*time.Millisecond, 1, 10, log), // Fast rate limiting for tests
+				rateLimiter: util.NewRateLimiter(10*time.Millisecond, 10, log), // Fast rate limiting for tests
 				maxRetries:  3,
 				retryDelay:  time.Millisecond,
 			}

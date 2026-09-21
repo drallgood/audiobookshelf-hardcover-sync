@@ -11,6 +11,18 @@ info:
     ```
     Authorization: Bearer <token>
     ```
+
+    When authentication is enabled, newly created profiles belong to the
+    authenticated user. For authenticated `/api/profiles` APIs, users and
+    viewers can access only their owned profiles; viewers are read-only, while
+    administrators can access all profiles. Profile API responses never echo
+    `audiobookshelf_token` or `hardcover_token`, regardless of authentication
+    or role. Legacy ownerless profiles are administrator-only: they are not
+    listed or accessible to ordinary users, and there is currently no way to
+    assign one of these profiles to a user. Foreign and nonexistent profile
+    requests return a non-enumerating `404`. The public
+    `/api/status` endpoint remains scalar and redacted. Authentication disabled
+    preserves unrestricted profile access.
     
     ## Rate Limiting
     
@@ -60,6 +72,28 @@ components:
         data:
           type: object
           description: Response data
+
+    AcceptedSyncRun:
+      type: object
+      required: [message, run_id, state, queued_at, dry_run]
+      properties:
+        message:
+          type: string
+          example: Sync started
+        run_id:
+          type: string
+          description: Authoritative ID assigned to the accepted run.
+          example: profile-123-1700000000000000000
+        state:
+          type: string
+          enum: [queued]
+          description: The accepted run is durably queued before worker launch; response delivery may race worker processing.
+        queued_at:
+          type: string
+          format: date-time
+        dry_run:
+          type: boolean
+          description: True when the accepted run will not perform Hardcover mutations.
     
     Profile:
       type: object
@@ -81,6 +115,11 @@ components:
           type: string
           format: date-time
           example: "2023-01-01T00:00:00Z"
+        last_successful_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Time the most recent non-dry-run run completed successfully.
     
     ProfileConfig:
       type: object
@@ -104,7 +143,11 @@ components:
               items:
                 type: string
               example: ["exclusive"]
-            dryRun:
+            state_file:
+              type: string
+              description: Optional relative state-file path. Absolute paths and relative paths that lexically escape the effective data directory are rejected; when paths.data_dir is empty, /data is used. The profile-specific filename component, including the encoded profile ID, must fit the supported 255-byte baseline.
+              pattern: '^(?!/).*$'
+            dry_run:
               type: boolean
               example: false
     
@@ -116,27 +159,167 @@ components:
             config:
               $ref: '#/components/schemas/ProfileConfig'
     
-    SyncStatus:
+    AggregateSyncStatus:
       type: object
+      description: Scalar status exposed by the public aggregate status endpoint. Per-book arrays are available from the authenticated run-details endpoint.
       properties:
-        status:
+        profile_id:
           type: string
-          enum: [idle, syncing, completed, error]
-          example: "idle"
-        lastSync:
+        profile_name:
+          type: string
+        last_attempted_at:
           type: string
           format: date-time
           nullable: true
-          example: "2023-01-01T00:00:00Z"
-        progress:
+          description: Time the most recent run was accepted, including dry-run, failed, or canceled runs.
+        last_successful_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Time the most recent non-dry-run run completed successfully; null when no such run exists.
+        snapshot:
+          $ref: '#/components/schemas/AggregateSnapshot'
+
+    AggregateSnapshot:
+      type: object
+      description: Scalar current-run snapshot used for inexpensive aggregate polling.
+      required: [run_id, queued_at, processing_started_at, last_activity_at, last_processed_at, finished_at, state, dry_run, books_total, processed_so_far, outcome_counts, unattempted_count]
+      properties:
+        run_id: {type: string}
+        queued_at: {type: string, format: date-time}
+        processing_started_at:
+          type: string
+          format: date-time
+          description: Zero timestamp until the worker begins processing.
+        last_activity_at:
+          type: string
+          format: date-time
+          description: Zero timestamp until the run records worker activity.
+        last_processed_at:
+          type: string
+          format: date-time
+          description: Zero timestamp until a candidate receives an outcome.
+        finished_at:
+          type: string
+          format: date-time
+          description: Zero timestamp until a terminal phase is recorded.
+        dry_run:
+          type: boolean
+          description: True when no Hardcover mutations are performed and a would_sync outcome represents planned work.
+        state:
+          type: string
+          enum: [queued, running, finalizing, completed, canceled, failed]
+          description: Canonical lifecycle phase for this run.
+        unattempted_count:
           type: integer
-          minimum: 0
-          maximum: 100
-          example: 0
-        error:
+          description: Candidates not yet assigned an outcome; zero when processed_so_far reaches books_total or the total is unknown.
+        books_total:
+          type: integer
+          description: Number of candidates observed before processing limits; zero means the total is unknown or has not been observed yet.
+        processed_so_far:
+          type: integer
+          description: Number of books processed so far, independent of books_total.
+        outcome_counts:
+          $ref: '#/components/schemas/OutcomeCounts'
+
+    OutcomeCounts:
+      type: object
+      required: [synced, already_current, skipped, needs_review, not_found, failed, would_sync]
+      properties:
+        synced: {type: integer}
+        already_current: {type: integer}
+        skipped: {type: integer}
+        needs_review: {type: integer}
+        not_found: {type: integer}
+        failed: {type: integer}
+        would_sync: {type: integer}
+
+    BookOutcomeRecord:
+      type: object
+      required: [book_id, outcome, updated_at]
+      properties:
+        book_id: {type: string}
+        outcome:
+          type: string
+          enum: [synced, already_current, skipped, needs_review, not_found, failed, would_sync]
+        title: {type: string}
+        author: {type: string}
+        asin: {type: string}
+        isbn: {type: string}
+        cover_url: {type: string, format: uri}
+        format: {type: string}
+        series: {type: string}
+        series_number: {type: string}
+        reason: {type: string}
+        error: {type: string}
+        match_method: {type: string}
+        hardcover_book_id: {type: string}
+        edition_id: {type: string}
+        hardcover_title: {type: string}
+        hardcover_author: {type: string}
+        hardcover_published_year: {type: string}
+        hardcover_cover_url: {type: string, format: uri}
+        hardcover_publisher: {type: string}
+        hardcover_asin: {type: string}
+        hardcover_isbn: {type: string}
+        hardcover_slug: {type: string}
+        hardcover_series: {type: string}
+        hardcover_series_number: {type: string}
+        updated_at: {type: string, format: date-time}
+
+    SyncSnapshot:
+      type: object
+      required: [run_id, queued_at, processing_started_at, last_activity_at, last_processed_at, finished_at, state, dry_run, unattempted_count, books_total, processed_so_far, outcome_counts, book_outcomes]
+      properties:
+        profile_id: {type: string}
+        audiobookshelf_url:
+          type: string
+          format: uri
+          description: Base URL used to build Audiobookshelf item links in authenticated run details. Omitted from aggregate status responses.
+        run_id: {type: string}
+        queued_at: {type: string, format: date-time}
+        processing_started_at:
+          type: string
+          format: date-time
+          description: Zero timestamp until the worker begins processing.
+        last_activity_at:
+          type: string
+          format: date-time
+          description: Zero timestamp until the run records worker activity.
+        last_processed_at:
+          type: string
+          format: date-time
+          description: Zero timestamp until a candidate receives an outcome.
+        finished_at:
+          type: string
+          format: date-time
+          description: Zero timestamp until a terminal phase is recorded.
+        dry_run:
+          type: boolean
+          description: True when no Hardcover mutations are performed and would_sync records indicate planned changes.
+        run_error:
           type: string
           nullable: true
-          example: "Connection failed"
+          description: Run-level error for failed or canceled runs; absent when no run error was recorded.
+        unattempted_count:
+          type: integer
+          description: Candidates not yet assigned an outcome; when books_total is unknown this remains zero until a denominator is observed.
+        state:
+          type: string
+          enum: [queued, running, finalizing, completed, canceled, failed]
+          description: Canonical lifecycle phase. A canceled run retains its partial snapshot; it does not become idle or completed.
+        books_total:
+          type: integer
+          description: Number of candidates observed before processing limits; zero means the total is unknown or has not been observed yet. This is independent of processed_so_far.
+        processed_so_far:
+          type: integer
+          description: Sum of all outcome_counts categories, independent of books_total.
+        outcome_counts:
+          $ref: '#/components/schemas/OutcomeCounts'
+        book_outcomes:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookOutcomeRecord'
 
 security:
   - BearerAuth: []
@@ -181,6 +364,9 @@ paths:
               properties:
                 id:
                   type: string
+                  maxLength: 244
+                  pattern: '^(?!\.\.?$)[A-Za-z0-9._~-]+$'
+                  description: Up to 244 ASCII RFC 3986 unreserved characters; "." and ".." are not valid profile IDs.
                   example: "profile-123"
                 name:
                   type: string
@@ -354,10 +540,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
   
-  /profiles/{profileId}/status:
+  /profiles/{profileId}/runs/{runId}/details:
     get:
       tags: [Status]
-      summary: Get sync status for a profile
+      summary: Get full details for an active or retained run of a profile
+      description: Returns per-book outcomes when runId identifies the profile's active run or an exact retained terminal report. Unknown, other-profile, and evicted run IDs return 404; the endpoint never substitutes a newer run.
       parameters:
         - name: profileId
           in: path
@@ -365,9 +552,15 @@ paths:
           schema:
             type: string
           example: "profile-123"
+        - name: runId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "profile-123-1700000000000000000-1"
       responses:
         '200':
-          description: Current sync status
+          description: Full active or retained run snapshot details
           content:
             application/json:
               schema:
@@ -377,9 +570,9 @@ paths:
                     type: boolean
                     example: true
                   data:
-                    $ref: '#/components/schemas/SyncStatus'
+                    $ref: '#/components/schemas/SyncSnapshot'
         '404':
-          description: Profile not found
+          description: Profile, active run, or retained run not found
           content:
             application/json:
               schema:
@@ -389,6 +582,7 @@ paths:
     get:
       tags: [Status]
       summary: Get sync status for all profiles
+      security: []
       responses:
         '200':
           description: Sync status for all profiles
@@ -403,16 +597,7 @@ paths:
                   data:
                     type: array
                     items:
-                      type: object
-                      properties:
-                        profileId:
-                          type: string
-                          example: "profile-123"
-                        profileName:
-                          type: string
-                          example: "My Audiobooks"
-                        status:
-                          $ref: '#/components/schemas/SyncStatus'
+                      $ref: '#/components/schemas/AggregateSyncStatus'
   
   /profiles/{profileId}/sync:
     post:
@@ -427,11 +612,17 @@ paths:
           example: "profile-123"
       responses:
         '202':
-          description: Sync started successfully
+          description: Sync accepted and queued successfully
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SuccessResponse'
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/AcceptedSyncRun'
         '404':
           description: Profile not found
           content:

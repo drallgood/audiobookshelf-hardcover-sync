@@ -28,7 +28,7 @@ func (tc *TestClient) GetEdition(ctx context.Context, editionID string) (*models
 	if edition, ok := tc.mockEditions[editionID]; ok {
 		return edition, nil
 	}
-	
+
 	// Fall back to real implementation
 	return tc.Client.GetEdition(ctx, editionID)
 }
@@ -41,7 +41,7 @@ func (tc *TestClient) GetEditionByASIN(ctx context.Context, asin string) (*model
 			return edition, nil
 		}
 	}
-	
+
 	// For other test cases, fall back to the original implementation
 	return tc.Client.GetEditionByASIN(ctx, asin)
 }
@@ -69,10 +69,10 @@ func TestClient_GetEditionByASIN(t *testing.T) {
 				"data": map[string]interface{}{
 					"books": []map[string]interface{}{
 						{
-							"id": 123,
-							"title": "Test Book",
+							"id":             123,
+							"title":          "Test Book",
 							"book_status_id": 1,
-							"canonical_id": 456,
+							"canonical_id":   456,
 							"authors": []map[string]interface{}{
 								{
 									"name": "Test Author",
@@ -80,12 +80,12 @@ func TestClient_GetEditionByASIN(t *testing.T) {
 							},
 							"editions": []map[string]interface{}{
 								{
-									"id": 789,
-									"asin": "B01234567",
-									"isbn_13": "9781234567897",
-									"isbn_10": "1234567890",
+									"id":                789,
+									"asin":              "B01234567",
+									"isbn_13":           "9781234567897",
+									"isbn_10":           "1234567890",
 									"reading_format_id": 2,
-									"audio_seconds": 3600,
+									"audio_seconds":     3600,
 								},
 							},
 							// Add editionId field to match the structure expected by GetEditionByASIN
@@ -141,7 +141,7 @@ func TestClient_GetEditionByASIN(t *testing.T) {
 				},
 			},
 			editionResponse: nil, // Not used in this test case
-			expectedError:  "failed to find book by ASIN",
+			expectedError:   "failed to find book by ASIN",
 		},
 		{
 			name: "edition not found",
@@ -150,7 +150,7 @@ func TestClient_GetEditionByASIN(t *testing.T) {
 				"data": map[string]interface{}{
 					"books": []map[string]interface{}{
 						{
-							"id": 789,
+							"id":    789,
 							"title": "Another Book",
 							"authors": []map[string]interface{}{
 								{
@@ -198,7 +198,7 @@ func TestClient_GetEditionByASIN(t *testing.T) {
 					// Print the query and response for debugging
 					fmt.Printf("GetEdition query: %s\n", requestBody.Query)
 					fmt.Printf("GetEdition variables: %v\n", requestBody.Variables)
-					
+
 					// Instead of using the generic response structure, let's provide exactly what the GetEdition method expects
 					response := map[string]interface{}{
 						"data": map[string]interface{}{
@@ -215,7 +215,7 @@ func TestClient_GetEditionByASIN(t *testing.T) {
 							},
 						},
 					}
-					
+
 					// Marshal the response for returning to the client
 					respBytes, err = json.Marshal(response)
 					fmt.Printf("GetEdition response: %s\n", string(respBytes))
@@ -236,8 +236,8 @@ func TestClient_GetEditionByASIN(t *testing.T) {
 			// Create a client that points to our test server
 			log := logger.Get()
 			baseClient := &Client{
-				baseURL:         server.URL,
-				authToken:       "test-token",
+				baseURL:   server.URL,
+				authToken: "test-token",
 				httpClient: &http.Client{
 					Transport: &headerAddingTransport{
 						token:   "test-token",
@@ -245,14 +245,14 @@ func TestClient_GetEditionByASIN(t *testing.T) {
 						rt:      http.DefaultTransport,
 					},
 				},
-				logger:          log,
+				logger: log,
 				// Initialize rate limiter for tests
-				rateLimiter:     util.NewRateLimiter(10*time.Millisecond, 1, 1, log),
+				rateLimiter: util.NewRateLimiter(10*time.Millisecond, 1, log),
 				// Initialize required caches
 				userBookIDCache: cache.NewMemoryCache[int, int](log),
 				userCache:       cache.NewMemoryCache[string, any](log),
 			}
-			
+
 			// Create our test client with mock edition data
 			client := &TestClient{
 				Client: baseClient,

@@ -1,0 +1,176 @@
+package sync
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
+	"github.com/stretchr/testify/require"
+)
+
+func TestSnapshotDeepCopiesCanonicalOutcomeDetails(t *testing.T) {
+	svc, _ := createTestService()
+	svc.beginOutcomeRun()
+	book := *toAudiobookshelfBook(createTestBook("snapshot-copy", "Snapshot Copy", "Author", "", ""))
+	svc.recordBookOutcomeWithMatchMethod(book, OutcomeNeedsReview, "manual review", nil, nil, "")
+	svc.enrichAttentionCandidate(mismatch.BookMismatch{
+		BookID:      book.ID,
+		AuthorIDs:   []int{11},
+		NarratorIDs: []int{22},
+		Reason:      "manual review",
+	})
+	svc.recordBookOutcomeWithMatchMethod(book, OutcomeNotFound, "not found", nil, nil, "")
+
+	first := svc.GetSnapshot()
+	require.Len(t, first.BookOutcomes, 1)
+	first.BookOutcomes[0].Title = "caller mutation"
+
+	// A distinct needs-review item exercises deep-copying of mismatch-owned
+	// slices while outcome and attention data are read together.
+	otherBook := *toAudiobookshelfBook(createTestBook("snapshot-mismatch", "Mismatch", "Author", "", ""))
+	svc.recordBookOutcomeWithMatchMethod(otherBook, OutcomeNeedsReview, "review", nil, nil, "")
+	svc.enrichAttentionCandidate(mismatch.BookMismatch{
+		BookID:      otherBook.ID,
+		AuthorIDs:   []int{33},
+		NarratorIDs: []int{44},
+		Reason:      "review",
+	})
+	first = svc.GetSnapshot()
+	require.Len(t, first.BookOutcomes, 2)
+	first.BookOutcomes[0].Title = "changed"
+
+	second := svc.GetSnapshot()
+	require.Len(t, second.BookOutcomes, 2)
+	require.Equal(t, "Snapshot Copy", second.BookOutcomes[0].Title)
+	require.Equal(t, second.ProcessedSoFar, second.OutcomeCounts.Total())
+}
+
+func TestSnapshotStatusCopiesScalarsWithoutDetails(t *testing.T) {
+	svc, _ := createTestService()
+	svc.config.Audiobookshelf.URL = "https://audiobookshelf.example/base"
+	svc.beginOutcomeRun()
+
+	svc.recordLibraryCandidateTotal("snapshot-library", 2)
+
+	needsReview := *toAudiobookshelfBook(createTestBook("snapshot-status-review", "Review", "Author", "", ""))
+	svc.recordBookOutcomeWithMatchMethod(needsReview, OutcomeNeedsReview, "manual review", nil, nil, "")
+	notFound := *toAudiobookshelfBook(createTestBook("snapshot-status-missing", "Missing", "Author", "", ""))
+	svc.recordBookOutcomeWithMatchMethod(notFound, OutcomeNotFound, "not found", nil, nil, "")
+
+	status := svc.GetSnapshotStatus()
+	require.NotEmpty(t, status.RunID)
+	require.False(t, status.QueuedAt.IsZero())
+	require.Equal(t, string(RunPhaseQueued), status.State)
+	require.Equal(t, int32(2), status.BooksTotal)
+	require.Equal(t, int32(2), status.ProcessedSoFar)
+	require.Equal(t, OutcomeCounts{NeedsReview: 1, NotFound: 1}, status.OutcomeCounts)
+	require.Nil(t, status.BookOutcomes)
+	require.Empty(t, status.AudiobookshelfURL, "aggregate status snapshots omit profile configuration")
+
+	full := svc.GetSnapshot()
+	require.Equal(t, "https://audiobookshelf.example/base", full.AudiobookshelfURL)
+	require.Len(t, full.BookOutcomes, 2)
+	for _, record := range full.BookOutcomes {
+		require.Equal(t, "https://audiobookshelf.example/base/api/items/"+record.BookID+"/cover", record.CoverURL)
+		require.Equal(t, "Audiobook", record.Format)
+		require.Equal(t, "Test Series", record.Series)
+		require.Equal(t, "2", record.SeriesNumber)
+	}
+}
+
+func TestSnapshotStatusKeepsUnknownTotalSeparateFromProcessedOutcomes(t *testing.T) {
+	svc, _ := createTestService()
+	svc.beginOutcomeRun()
+
+	book := *toAudiobookshelfBook(createTestBook("unknown-total", "Unknown total", "Author", "", ""))
+	svc.recordBookOutcomeWithMatchMethod(book, OutcomeNotFound, "not found", nil, nil, "")
+
+	status := svc.GetSnapshotStatus()
+	require.Zero(t, status.BooksTotal, "the denominator remains unknown until a library count is observed")
+	require.Equal(t, int32(1), status.ProcessedSoFar)
+	require.Equal(t, OutcomeCounts{NotFound: 1}, status.OutcomeCounts)
+	require.Equal(t, int32(1), status.ProcessedSoFar)
+}
+
+func TestSnapshotSanitizesAudiobookshelfURLs(t *testing.T) {
+	tests := []struct {
+		name           string
+		audiobookshelf string
+		wantURL        string
+		wantCoverURL   string
+		hardcoverCover string
+		wantHardcover  string
+	}{
+		{
+			name:           "strips userinfo",
+			audiobookshelf: "https://reader:secret@audiobookshelf.example/base",
+			wantURL:        "https://audiobookshelf.example/base",
+			wantCoverURL:   "https://audiobookshelf.example/base/api/items/snapshot-sanitize/cover",
+			hardcoverCover: "https://reader:secret@hardcover.example/cover",
+			wantHardcover:  "https://hardcover.example/cover",
+		},
+		{
+			name:           "preserves credential-free URL",
+			audiobookshelf: "https://audiobookshelf.example/base",
+			wantURL:        "https://audiobookshelf.example/base",
+			wantCoverURL:   "https://audiobookshelf.example/base/api/items/snapshot-sanitize/cover",
+			hardcoverCover: "https://hardcover.example/cover",
+			wantHardcover:  "https://hardcover.example/cover",
+		},
+		{
+			name:           "strips query and fragment",
+			audiobookshelf: "https://reader:secret@audiobookshelf.example/base?token=query-secret#fragment",
+			wantURL:        "https://audiobookshelf.example/base",
+			wantCoverURL:   "https://audiobookshelf.example/base/api/items/snapshot-sanitize/cover",
+			hardcoverCover: "https://reader:secret@hardcover.example/cover?token=query-secret#fragment",
+			wantHardcover:  "https://hardcover.example/cover",
+		},
+		{
+			name:           "omits credential-bearing opaque URL",
+			audiobookshelf: "https:reader:secret@audiobookshelf.example/base",
+			wantURL:        "",
+			wantCoverURL:   "",
+			hardcoverCover: "https:reader:secret@hardcover.example/cover",
+			wantHardcover:  "",
+		},
+		{
+			name:           "omits unparsable URL",
+			audiobookshelf: "https://reader:%zz@audiobookshelf.example/base",
+			hardcoverCover: "https://reader:%zz@hardcover.example/cover",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, _ := createTestService()
+			svc.config.Audiobookshelf.URL = tt.audiobookshelf
+			svc.beginOutcomeRun()
+			book := *toAudiobookshelfBook(createTestBook("snapshot-sanitize", "Snapshot", "Author", "", ""))
+			svc.recordBookOutcomeWithMatchMethod(book, OutcomeNeedsReview, "manual review", nil, &models.HardcoverBook{CoverImageURL: tt.hardcoverCover}, "")
+
+			snapshot := svc.GetSnapshot()
+			require.Equal(t, tt.wantURL, snapshot.AudiobookshelfURL)
+			require.Len(t, snapshot.BookOutcomes, 1)
+			require.Equal(t, tt.wantCoverURL, snapshot.BookOutcomes[0].CoverURL)
+			require.Equal(t, tt.wantHardcover, snapshot.BookOutcomes[0].HardcoverCoverURL)
+		})
+	}
+}
+
+func TestOutcomeRecordFormatReflectsMediaContent(t *testing.T) {
+	svc, _ := createTestService()
+	svc.beginOutcomeRun()
+
+	var audiobook, ebook models.AudiobookshelfBook
+	require.NoError(t, json.Unmarshal([]byte(`{"id":"fmt-audio","mediaType":"book","media":{"duration":3600,"numTracks":1}}`), &audiobook))
+	require.NoError(t, json.Unmarshal([]byte(`{"id":"fmt-ebook","mediaType":"book","media":{"ebookFile":{"ebookFormat":"epub"}}}`), &ebook))
+	svc.recordBookOutcomeWithMatchMethod(audiobook, OutcomeNotFound, "missing", nil, nil, "")
+	svc.recordBookOutcomeWithMatchMethod(ebook, OutcomeNotFound, "missing", nil, nil, "")
+
+	formats := map[string]string{}
+	for _, record := range svc.GetSnapshot().BookOutcomes {
+		formats[record.BookID] = record.Format
+	}
+	require.Equal(t, map[string]string{"fmt-audio": "Audiobook", "fmt-ebook": "Ebook"}, formats)
+}

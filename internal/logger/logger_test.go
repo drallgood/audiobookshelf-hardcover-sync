@@ -95,7 +95,7 @@ func TestWithContext(t *testing.T) {
 
 	// Get the log output
 	logOutput := buf.String()
-	
+
 	// Verify the output contains our fields
 	assert.Contains(t, logOutput, "\"key1\":\"value1\"")
 	assert.Contains(t, logOutput, "\"key2\":42")
@@ -114,7 +114,7 @@ func TestGet(t *testing.T) {
 	// Get the logger
 	logger := Get()
 	require.NotNil(t, logger)
-	
+
 	// Verify it's the same logger we just set up
 	assert.Equal(t, globalLogger, logger)
 }

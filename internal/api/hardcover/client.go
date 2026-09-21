@@ -59,6 +59,21 @@ func getReadingFormatFromCtx(ctx context.Context) (string, bool) {
 	return "", false
 }
 
+// Hardcover reading_format ids for the formats Audiobookshelf items can have.
+const (
+	readingFormatIDAudiobook = 2
+	readingFormatIDEbook     = 4
+)
+
+// readingFormatIDFromCtx maps the reading format carried by ctx to Hardcover's
+// reading_format id, defaulting to audiobook when none (or an unknown one) is set.
+func readingFormatIDFromCtx(ctx context.Context) int {
+	if formatStr, ok := getReadingFormatFromCtx(ctx); ok && formatStr == "ebook" {
+		return readingFormatIDEbook
+	}
+	return readingFormatIDAudiobook
+}
+
 // getMapKeys returns a sorted list of keys from a map
 func getMapKeys(m map[string]interface{}) []string {
 	keys := make([]string, 0, len(m))
@@ -117,8 +132,6 @@ const (
 	// DefaultRateLimit is the default minimum time between requests.
 	// Hardcover now enforces 30 requests/minute, so use 2s between requests.
 	DefaultRateLimit = 2 * time.Second
-	// DefaultBurst is the default burst size for rate limiting
-	DefaultBurst = 1
 	// DefaultMaxConcurrent is the default maximum concurrent requests
 	DefaultMaxConcurrent = 1
 )
@@ -135,8 +148,6 @@ type ClientConfig struct {
 	RetryDelay time.Duration
 	// RateLimit specifies the minimum time between requests (default: from config or DefaultRateLimit)
 	RateLimit time.Duration
-	// Burst specifies the burst size for rate limiting (default: from config or DefaultBurst)
-	Burst int
 	// MaxConcurrent specifies the maximum number of concurrent requests (default: from config or 3)
 	MaxConcurrent int
 }
@@ -169,20 +180,55 @@ const (
 // Client represents a client for the Hardcover API
 // Client represents a client for the Hardcover API
 type Client struct {
-	baseURL          string
-	authToken        string
-	httpClient       *http.Client
-	gqlClient        *graphql.Client
-	logger           *logger.Logger
-	currentUserID    int
-	currentUserMutex sync.RWMutex
-	rateLimiter      *util.RateLimiter
-	maxRetries       int
-	retryDelay       time.Duration
+	baseURL               string
+	authToken             string
+	dryRun                bool
+	httpClient            *http.Client
+	gqlClient             *graphql.Client
+	logger                *logger.Logger
+	currentUserID         int
+	currentUserMutex      sync.RWMutex
+	currentUserFetch      chan struct{}
+	rateLimiter           *util.RateLimiter
+	maxRetries            int
+	retryDelay            time.Duration
 	userBookIDCache       cache.Cache[int, int]             // editionID -> userBookID
 	userBookByBookIDCache cache.Cache[int, int]             // bookID -> userBookID
 	userCache             cache.Cache[string, any]          // Generic cache for user-specific data
 	editionCache          cache.Cache[int, *models.Edition] // editionID -> Edition
+}
+
+// SetDryRun enables or disables mutation suppression for this client.
+func (c *Client) SetDryRun(dryRun bool) {
+	c.dryRun = dryRun
+}
+
+// DailyQuotaPaused reports whether request admission is waiting for the daily reset.
+// It is used only to avoid logging request intent before admission.
+func (c *Client) DailyQuotaPaused() bool {
+	return c.rateLimiter != nil && c.rateLimiter.DailyQuotaPaused()
+}
+
+// debugRequestIntent logs that a request is about to be made. Log every
+// pre-admission "about to request" message through this helper: while an
+// exhausted daily quota holds requests, they are not being sent, so the message
+// would be misleading. Logs written after the rate limiter admits a request do
+// not need it.
+func (c *Client) debugRequestIntent(log *logger.Logger, msg string, fields ...map[string]interface{}) {
+	if c.DailyQuotaPaused() {
+		return
+	}
+	log.Debug(msg, fields...)
+}
+
+func (c *Client) logSkippedMutation(operation string) {
+	log := c.logger
+	if log == nil {
+		log = logger.Get()
+	}
+	log.Info("[DRY-RUN] Skipping Hardcover mutation", map[string]interface{}{
+		"operation": operation,
+	})
 }
 
 // GetAuthHeader returns the properly formatted Authorization header value
@@ -217,7 +263,6 @@ func DefaultClientConfig() *ClientConfig {
 		MaxRetries:    DefaultMaxRetries,
 		RetryDelay:    DefaultRetryDelay,
 		RateLimit:     DefaultRateLimit,     // Use hardcoded default
-		Burst:         DefaultBurst,         // Use hardcoded default
 		MaxConcurrent: DefaultMaxConcurrent, // Use hardcoded default
 	}
 }
@@ -255,7 +300,7 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 	}
 
 	// Create rate limiter with max concurrent requests from config
-	rateLimiter := util.NewRateLimiter(cfg.RateLimit, cfg.Burst, cfg.MaxConcurrent, log)
+	rateLimiter := util.NewRateLimiter(cfg.RateLimit, cfg.MaxConcurrent, log)
 
 	// Create logger if not provided
 	if log == nil {
@@ -263,7 +308,7 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 	}
 
 	// Log the logger configuration
-	log.Info("Logger initialized for Hardcover client", map[string]interface{}{
+	log.Debug("Logger initialized for Hardcover client", map[string]interface{}{
 		"log_level": log.GetLevel().String(),
 	})
 
@@ -275,7 +320,7 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 		})
 	}
 
-	childLogger.Info("Created child logger for Hardcover client", nil)
+	childLogger.Debug("Created child logger for Hardcover client", nil)
 
 	// Create authenticated HTTP client with headers
 	authClient := &http.Client{
@@ -334,16 +379,6 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 	return client
 }
 
-// enforceRateLimit ensures we don't exceed the API rate limits
-func (c *Client) enforceRateLimit(ctx context.Context) error {
-	// Simply use the rate limiter which already handles:
-	// - Token bucket algorithm
-	// - Jitter
-	// - Context cancellation
-	// - Dynamic rate adjustment
-	return c.rateLimiter.Wait(ctx)
-}
-
 // loggingRoundTripper is a custom http.RoundTripper that logs requests and responses
 type loggingRoundTripper struct {
 	logger *logger.Logger
@@ -353,7 +388,7 @@ type loggingRoundTripper struct {
 // RoundTrip implements the http.RoundTripper interface
 func (l loggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Log the request with basic info
-	l.logger.Info("Sending request", map[string]interface{}{
+	l.logger.Debug("Sending request", map[string]interface{}{
 		"method": req.Method,
 		"url":    req.URL.String(),
 	})
@@ -392,7 +427,7 @@ func (l loggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	if resp.StatusCode >= 400 {
 		l.logger.Error("Received error response", logFields)
 	} else {
-		l.logger.Info("Received response", logFields)
+		l.logger.Debug("Received response", logFields)
 	}
 
 	// Create a new response with the body since we've already read it
@@ -414,30 +449,6 @@ func isRetryableHTTPStatus(statusCode int) bool {
 	return statusCode == http.StatusTooManyRequests || (statusCode >= 500 && statusCode <= 599)
 }
 
-func parseRetryAfterDelay(value string) (time.Duration, bool) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return 0, false
-	}
-
-	if seconds, err := strconv.Atoi(value); err == nil {
-		if seconds < 0 {
-			seconds = 0
-		}
-		return time.Duration(seconds) * time.Second, true
-	}
-
-	if retryAt, err := http.ParseTime(value); err == nil {
-		delay := time.Until(retryAt)
-		if delay < 0 {
-			delay = 0
-		}
-		return delay, true
-	}
-
-	return 0, false
-}
-
 // GraphQLQuery executes a GraphQL query and unmarshals the response into the result parameter
 func (c *Client) GraphQLQuery(ctx context.Context, query string, variables map[string]interface{}, result interface{}) error {
 	if variables == nil {
@@ -451,6 +462,11 @@ func (c *Client) GraphQLQuery(ctx context.Context, query string, variables map[s
 
 // GraphQLMutation executes a GraphQL mutation and unmarshals the response into the result parameter
 func (c *Client) GraphQLMutation(ctx context.Context, mutation string, variables map[string]interface{}, result interface{}) error {
+	if c.dryRun {
+		c.logSkippedMutation("GraphQLMutation")
+		return nil
+	}
+
 	if variables == nil {
 		variables = make(map[string]interface{})
 	}
@@ -462,12 +478,22 @@ func (c *Client) GraphQLMutation(ctx context.Context, mutation string, variables
 
 // executeGraphQLOperation is a helper function that handles the common logic for executing GraphQL operations
 func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperation, query string, variables map[string]interface{}, result interface{}) error {
-	// Create a new GraphQL client with logging transport
-	httpClient := &http.Client{
-		Transport: loggingRoundTripper{
-			logger: c.logger,
-			rt:     http.DefaultTransport,
-		},
+	// Preserve the configured client (including timeout, redirects, cookies, and
+	// custom transport) while adding request/response logging around its
+	// transport. A few tests and callers construct Client values directly, so
+	// retain a safe default when no HTTP client or transport is configured.
+	httpClient := &http.Client{}
+	if c.httpClient != nil {
+		clientCopy := *c.httpClient
+		httpClient = &clientCopy
+	}
+	transport := httpClient.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	httpClient.Transport = loggingRoundTripper{
+		logger: c.logger,
+		rt:     transport,
 	}
 
 	// Set the authorization header
@@ -487,11 +513,6 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				return fmt.Errorf("retry canceled: %w", ctx.Err())
 			case <-time.After(c.retryDelay * time.Duration(attempt)):
 			}
-		}
-
-		// Apply rate limiting
-		if err := c.rateLimiter.Wait(ctx); err != nil {
-			return fmt.Errorf("rate limiter error: %w", err)
 		}
 
 		// Create the request body
@@ -514,7 +535,19 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		// Apply the request modifier to add auth headers
 		reqModifier(req)
 
-		// Log the request details
+		// Apply pacing and acquire a permit for the active HTTP request.
+		release, err := c.rateLimiter.Acquire(ctx)
+		if err != nil {
+			return fmt.Errorf("rate limiter error: %w", err)
+		}
+		// Release the permit exactly once. The explicit calls below free it as
+		// soon as the response is read; the deferred call covers a panic in the
+		// request path so the permit is not lost.
+		var releaseOnce sync.Once
+		releasePermit := func() { releaseOnce.Do(release) }
+		defer releasePermit()
+
+		// These describe an admitted request, not one still waiting for a reset.
 		c.logger.Debug("Executing GraphQL request", map[string]interface{}{
 			"method":    req.Method,
 			"url":       req.URL.String(),
@@ -522,8 +555,6 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 			"query":     query,
 			"variables": variables,
 		})
-
-		// Log the raw request body for debugging
 		c.logger.Debug("GraphQL request body", map[string]interface{}{
 			"body": string(jsonBody),
 		})
@@ -531,6 +562,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		// Execute the request
 		resp, err := httpClient.Do(req)
 		if err != nil {
+			releasePermit()
 			lastErr = fmt.Errorf("HTTP request failed: %w", err)
 			c.logger.Error("GraphQL request failed", map[string]interface{}{
 				"error":   lastErr.Error(),
@@ -543,6 +575,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
+			releasePermit()
 			lastErr = fmt.Errorf("failed to read response body: %w", err)
 			c.logger.Error("Failed to read response body", map[string]interface{}{
 				"error":   lastErr.Error(),
@@ -562,6 +595,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		// Process rate limit headers from EVERY response so the rate limiter
 		// can self-throttle proactively before hitting HTTP 429.
 		c.rateLimiter.WithRateLimitHeaders(resp)
+		releasePermit()
 
 		// Check for HTTP errors
 		if resp.StatusCode >= 400 {
@@ -577,19 +611,6 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				return fmt.Errorf("non-retryable HTTP error: %w", lastErr)
 			}
 
-			if resp.StatusCode == http.StatusTooManyRequests {
-				if retryAfter, ok := parseRetryAfterDelay(resp.Header.Get("Retry-After")); ok {
-					genericDelay := c.retryDelay * time.Duration(attempt+1)
-					if retryAfter > genericDelay {
-						extraDelay := retryAfter - genericDelay
-						select {
-						case <-ctx.Done():
-							return fmt.Errorf("retry canceled: %w", ctx.Err())
-						case <-time.After(extraDelay):
-						}
-					}
-				}
-			}
 			continue
 		}
 
@@ -721,29 +742,39 @@ func (c *Client) executeGraphQLMutation(ctx context.Context, mutation string, va
 // It returns the user ID from cache if available, otherwise fetches it from the API
 // and caches it for future use. The function is safe for concurrent access.
 func (c *Client) GetCurrentUserID(ctx context.Context) (int, error) {
-	// Try to get the user ID from cache first (read lock)
-	c.currentUserMutex.RLock()
-	if c.currentUserID != 0 {
-		userID := c.currentUserID
-		c.currentUserMutex.RUnlock()
-		c.logger.Debug("Returning cached user ID", map[string]interface{}{
-			"user_id": userID,
-		})
-		return userID, nil
+	for {
+		c.currentUserMutex.Lock()
+		if c.currentUserID != 0 {
+			userID := c.currentUserID
+			c.currentUserMutex.Unlock()
+			c.logger.Debug("Returning cached user ID", map[string]interface{}{
+				"user_id": userID,
+			})
+			return userID, nil
+		}
+		if fetchDone := c.currentUserFetch; fetchDone != nil {
+			c.currentUserMutex.Unlock()
+			select {
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			case <-fetchDone:
+				// The fetch finished, successfully or not. Re-check the cache; after
+				// a failure each waiter may start its own fetch, matching the
+				// pre-existing behavior of retrying a failed lookup per caller.
+				continue
+			}
+		}
+		c.currentUserFetch = make(chan struct{})
+		c.currentUserMutex.Unlock()
+		break
 	}
-	c.currentUserMutex.RUnlock()
 
-	// If not in cache, acquire write lock and check again (double-checked locking pattern)
-	c.currentUserMutex.Lock()
-	defer c.currentUserMutex.Unlock()
-
-	// Check again in case another goroutine updated the cache while we were waiting for the lock
-	if c.currentUserID != 0 {
-		c.logger.Debug("Returning user ID from cache (after acquiring lock)", map[string]interface{}{
-			"user_id": c.currentUserID,
-		})
-		return c.currentUserID, nil
-	}
+	// Always release waiters and clear the in-flight marker, even if the
+	// request panics, so later callers can start a fresh fetch.
+	fetchedUserID := 0
+	defer func() {
+		c.finishCurrentUserFetch(fetchedUserID)
+	}()
 
 	c.logger.Debug("User ID not in cache, fetching from Hardcover API", nil)
 
@@ -779,14 +810,22 @@ func (c *Client) GetCurrentUserID(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("received invalid user ID from API: %d", userID)
 	}
 
-	// Cache the user ID
-	c.currentUserID = userID
+	fetchedUserID = userID
 
 	c.logger.Debug("Successfully retrieved and cached current user ID from Hardcover", map[string]interface{}{
 		"user_id": userID,
 	})
 
 	return userID, nil
+}
+
+func (c *Client) finishCurrentUserFetch(userID int) {
+	c.currentUserMutex.Lock()
+	c.currentUserID = userID
+	fetchDone := c.currentUserFetch
+	c.currentUserFetch = nil
+	c.currentUserMutex.Unlock()
+	close(fetchDone)
 }
 
 // SearchBookByISBN13 searches for a book in the Hardcover database by ISBN-13
@@ -803,7 +842,7 @@ func (c *Client) SearchBookByISBN13(ctx context.Context, isbn13 string) (*models
 		"isbn13": isbn13,
 		"method": "SearchBookByISBN13",
 	})
-	log.Debug("Searching for book by ISBN-13")
+	c.debugRequestIntent(log, "Searching for book by ISBN-13")
 	return c.searchBookByISBN(ctx, "isbn_13", isbn13)
 }
 
@@ -866,7 +905,7 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 	}
 
 	const query = `
-	query GetBookByID($id: Int!) {
+	query GetBookByID($id: Int!, $format_id: Int!) {
 	  books(where: { id: { _eq: $id } }, limit: 1) {
 	    id
 	    title
@@ -875,7 +914,11 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 	    canonical_id
 	    image { url }
 	    contributions(limit: 50) { contribution author { id name } }
-	    editions(limit: 10) {
+	    book_series(order_by: [{ featured: desc }, { position: asc }], limit: 1) {
+	      position
+	      series { name }
+	    }
+	    editions(where: { reading_format_id: { _eq: $format_id } }, limit: 10) {
 	      id
 	      asin
 	      isbn_13
@@ -891,9 +934,13 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 	  }
 	}`
 
+	// Editions are restricted to the requested reading format (audiobook by
+	// default); a book with no edition of that format gets no edition.
+	formatID := readingFormatIDFromCtx(ctx)
+
 	// Use a flexible raw map to be resilient to schema variations
 	var raw map[string]interface{}
-	if err := c.GraphQLQuery(ctx, query, map[string]interface{}{"id": idInt}, &raw); err != nil {
+	if err := c.GraphQLQuery(ctx, query, map[string]interface{}{"id": idInt, "format_id": formatID}, &raw); err != nil {
 		log.Error("Failed to fetch book by ID", map[string]interface{}{"error": err.Error()})
 		return nil, fmt.Errorf("failed to fetch book by ID: %w", err)
 	}
@@ -964,6 +1011,25 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 		}
 	}
 
+	// Primary series (featured first) and the book's position within it.
+	if memberships, ok := bookObj["book_series"].([]interface{}); ok && len(memberships) > 0 {
+		if membership, ok := memberships[0].(map[string]interface{}); ok {
+			if series, ok := membership["series"].(map[string]interface{}); ok {
+				if name, ok := series["name"].(string); ok {
+					hcBook.SeriesName = strings.TrimSpace(name)
+				}
+			}
+			switch position := membership["position"].(type) {
+			case json.Number:
+				hcBook.SeriesNumber = position.String()
+			case float64:
+				hcBook.SeriesNumber = strconv.FormatFloat(position, 'f', -1, 64)
+			case string:
+				hcBook.SeriesNumber = strings.TrimSpace(position)
+			}
+		}
+	}
+
 	// Release date
 	if s, ok := bookObj["release_date"].(string); ok {
 		hcBook.ReleaseDate = s
@@ -1016,7 +1082,7 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 		}
 	}
 
-	// Editions - prefer audiobook if available
+	// Editions - only an edition of the requested reading format is accepted
 	var editions []interface{}
 	if v, ok := bookObj["editions"].([]interface{}); ok {
 		editions = v
@@ -1024,12 +1090,9 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 	var chosen map[string]interface{}
 	for _, e := range editions {
 		if em, ok := e.(map[string]interface{}); ok {
-			if rf, ok := em["reading_format_id"].(float64); ok && int(rf) == 2 {
+			if rf, ok := em["reading_format_id"].(float64); ok && int(rf) == formatID {
 				chosen = em
 				break
-			}
-			if chosen == nil {
-				chosen = em
 			}
 		}
 	}
@@ -1074,6 +1137,8 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 		"slug":             hcBook.Slug,
 		"edition_id":       hcBook.EditionID,
 		"has_cover":        hcBook.CoverImageURL != "",
+		"series":           hcBook.SeriesName,
+		"series_number":    hcBook.SeriesNumber,
 	})
 
 	return hcBook, nil
@@ -1144,10 +1209,10 @@ func (c *Client) GetUserBook(ctx context.Context, userBookID string) (*models.Ha
 			} `json:"book"`
 			EditionID int `json:"edition_id"`
 			Edition   struct {
-				ID     int     `json:"id"`
-				ASIN   *string `json:"asin"`
-				ISBN13 *string `json:"isbn_13"`
-				ISBN10 *string `json:"isbn_10"`
+				ID           int     `json:"id"`
+				ASIN         *string `json:"asin"`
+				ISBN13       *string `json:"isbn_13"`
+				ISBN10       *string `json:"isbn_10"`
 				BookMappings []struct {
 					ExternalID string `json:"external_id"`
 					Platform   struct {
@@ -1277,16 +1342,7 @@ func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.Har
 	})
 
 	// Define the GraphQL query: always format-aware via numeric format_id, default to audiobook (2)
-	formatStr, hasFormat := getReadingFormatFromCtx(ctx)
-	formatID := 2
-	if hasFormat {
-		switch formatStr {
-		case "ebook":
-			formatID = 4
-		case "audiobook":
-			formatID = 2
-		}
-	}
+	formatID := readingFormatIDFromCtx(ctx)
 	query := `
 query BookByASIN($asin: String!, $asin_us: String!, $format_id: Int!) {
   books(
@@ -1533,16 +1589,7 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
 	normalizedISBN = strings.ReplaceAll(normalizedISBN, " ", "")
 
 	// Define the GraphQL query (always format-aware via numeric format_id, default to audiobook id=2)
-	formatStr, hasFormat := getReadingFormatFromCtx(ctx)
-	formatID := 2
-	if hasFormat {
-		switch formatStr {
-		case "ebook":
-			formatID = 4
-		case "audiobook":
-			formatID = 2
-		}
-	}
+	formatID := readingFormatIDFromCtx(ctx)
 	query := fmt.Sprintf(`
     query BookByISBN($isbn: String!, $format_id: Int!) {
       books(
@@ -1769,7 +1816,7 @@ func (c *Client) searchBooksWithLimit(ctx context.Context, query string, limit i
 	}
 
 	// Execute the GraphQL query
-	c.logger.Debug("Searching for books using GraphQL", map[string]interface{}{
+	c.debugRequestIntent(c.logger, "Searching for books using GraphQL", map[string]interface{}{
 		"query": query,
 	})
 	err := c.GraphQLQuery(ctx, searchQuery, variables, &response)
@@ -1841,7 +1888,7 @@ func (c *Client) searchBooksWithLimit(ctx context.Context, query string, limit i
 		resultIDs = append(resultIDs, fmt.Sprintf("%s (%s)", r.ID, r.Title))
 	}
 
-	log.Info("Successfully searched for books", map[string]interface{}{
+	log.Debug("Successfully searched for books", map[string]interface{}{
 		"count":   len(searchResults),
 		"results": resultIDs,
 	})
@@ -1877,6 +1924,11 @@ type InsertUserBookReadInput struct {
 
 // InsertUserBookRead creates a new user book read entry in Hardcover
 func (c *Client) InsertUserBookRead(ctx context.Context, input InsertUserBookReadInput) (int, error) {
+	if c.dryRun {
+		c.logSkippedMutation("InsertUserBookRead")
+		return 0, nil
+	}
+
 	const mutation = `
 	mutation InsertUserBookRead($user_book_id: Int!, $user_book_read: DatesReadInput!) {
 	  insert_user_book_read(
@@ -1955,6 +2007,11 @@ type UpdateUserBookStatusInput struct {
 
 // UpdateUserBookStatus updates the status of a user book in Hardcover
 func (c *Client) UpdateUserBookStatus(ctx context.Context, input UpdateUserBookStatusInput) error {
+	if c.dryRun {
+		c.logSkippedMutation("UpdateUserBookStatus")
+		return nil
+	}
+
 	const mutation = `
 	mutation UpdateUserBookStatus($id: Int!, $status_id: Int!) {
 	  update_user_book(id: $id, object: { status_id: $status_id }) {
@@ -2018,6 +2075,11 @@ func (c *Client) UpdateUserBookStatus(ctx context.Context, input UpdateUserBookS
 
 // UpdateUserBookEdition updates the edition_id of a user book in Hardcover
 func (c *Client) UpdateUserBookEdition(ctx context.Context, userBookID, editionID int) error {
+	if c.dryRun {
+		c.logSkippedMutation("UpdateUserBookEdition")
+		return nil
+	}
+
 	const mutation = `
 	mutation UpdateUserBookEdition($id: Int!, $edition_id: Int!) {
 	  update_user_book(id: $id, object: { edition_id: $edition_id }) {
@@ -2299,7 +2361,12 @@ func (c *Client) CheckExistingUserBookRead(ctx context.Context, input CheckExist
 
 // UpdateUserBookRead updates an existing user book read entry
 func (c *Client) UpdateUserBookRead(ctx context.Context, input UpdateUserBookReadInput) (bool, error) {
-	c.logger.Debug("Updating user book read", map[string]interface{}{
+	if c.dryRun {
+		c.logSkippedMutation("UpdateUserBookRead")
+		return true, nil
+	}
+
+	c.debugRequestIntent(c.logger, "Updating user book read", map[string]interface{}{
 		"id":     input.ID,
 		"object": input.Object,
 	})
@@ -2397,14 +2464,14 @@ func (c *Client) UpdateUserBookRead(ctx context.Context, input UpdateUserBookRea
 	// The API sometimes returns success with user_book_read: null
 	// In this case, we'll assume the update was successful
 	if result.UpdateUserBookRead.UserBookRead == nil {
-		c.logger.Info("Successfully updated user book read (no user_book_read in response but no error)", map[string]interface{}{
+		c.logger.Debug("Successfully updated user book read (no user_book_read in response but no error)", map[string]interface{}{
 			"id": input.ID,
 		})
 		return true, nil
 	}
 
 	updatedID := result.UpdateUserBookRead.UserBookRead.ID
-	c.logger.Info("Successfully updated user book read entry", map[string]interface{}{
+	c.logger.Debug("Successfully updated user book read entry", map[string]interface{}{
 		"updated_id": updatedID,
 	})
 
@@ -2413,6 +2480,11 @@ func (c *Client) UpdateUserBookRead(ctx context.Context, input UpdateUserBookRea
 
 // DeleteUserBookRead deletes a user book read entry by its ID.
 func (c *Client) DeleteUserBookRead(ctx context.Context, id int64) error {
+	if c.dryRun {
+		c.logSkippedMutation("DeleteUserBookRead")
+		return nil
+	}
+
 	const mutation = `
 	mutation DeleteUserBookReadByID($id: Int!) {
 	  delete_user_book_read(id: $id) {
@@ -2564,15 +2636,15 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 	// should match what's inside the data field
 	var response struct {
 		Editions []struct {
-			ID             int     `json:"id"`
-			BookID         int     `json:"book_id"`
-			Title          *string `json:"title"`
-			ISBN10         *string `json:"isbn_10"`
-			ISBN13         *string `json:"isbn_13"`
-			ASIN           *string `json:"asin"`
-			ReleaseDate    *string `json:"release_date"`
+			ID              int     `json:"id"`
+			BookID          int     `json:"book_id"`
+			Title           *string `json:"title"`
+			ISBN10          *string `json:"isbn_10"`
+			ISBN13          *string `json:"isbn_13"`
+			ASIN            *string `json:"asin"`
+			ReleaseDate     *string `json:"release_date"`
 			ReadingFormatID *int    `json:"reading_format_id"`
-			BookMappings   []struct {
+			BookMappings    []struct {
 				ExternalID string `json:"external_id"`
 				Platform   struct {
 					Name string `json:"name"`
@@ -2615,13 +2687,13 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 
 	// Log the raw edition data for debugging
 	log.Debug("Retrieved edition details", map[string]interface{}{
-		"id":               edition.ID,
-		"book_id":          edition.BookID,
-		"title":            safeString(edition.Title),
-		"isbn_10":          safeString(edition.ISBN10),
-		"isbn_13":          safeString(edition.ISBN13),
-		"asin":             safeString(edition.ASIN),
-		"release_date":     safeString(edition.ReleaseDate),
+		"id":                edition.ID,
+		"book_id":           edition.BookID,
+		"title":             safeString(edition.Title),
+		"isbn_10":           safeString(edition.ISBN10),
+		"isbn_13":           safeString(edition.ISBN13),
+		"asin":              safeString(edition.ASIN),
+		"release_date":      safeString(edition.ReleaseDate),
 		"reading_format_id": edition.ReadingFormatID,
 	})
 
@@ -2707,7 +2779,7 @@ func (c *Client) SearchPeople(ctx context.Context, name, personType string, limi
 		"type":      personType,
 	})
 
-	log.Debug("Searching for person", map[string]interface{}{
+	c.debugRequestIntent(log, "Searching for person", map[string]interface{}{
 		"name":  name,
 		"type":  personType,
 		"limit": limit,
@@ -2754,7 +2826,7 @@ func (c *Client) SearchPeople(ctx context.Context, name, personType string, limi
 	}
 
 	// Log the search query for debugging
-	log.Debug("Executing person search query", map[string]interface{}{
+	c.debugRequestIntent(log, "Executing person search query", map[string]interface{}{
 		"query":     query,
 		"variables": variables,
 	})
@@ -2854,11 +2926,6 @@ func (c *Client) SearchPublishers(ctx context.Context, name string, limit int) (
 		"limit":     limit,
 	})
 
-	// Enforce rate limiting
-	if err := c.enforceRateLimit(ctx); err != nil {
-		return nil, fmt.Errorf("rate limit error: %w", err)
-	}
-
 	// Define the GraphQL query
 	// Note: Using _eq for exact match as _ilike is not supported by the API
 	query := `
@@ -2955,7 +3022,7 @@ func (c *Client) GetPersonByID(ctx context.Context, id string) (*models.Author, 
 	}
 
 	// Execute the query
-	log.Debug("Fetching person details", map[string]interface{}{
+	c.debugRequestIntent(log, "Fetching person details", map[string]interface{}{
 		"id": id,
 	})
 
@@ -3031,10 +3098,10 @@ func (c *Client) GetUserBookID(ctx context.Context, editionID int) (int, error) 
 	userBookID, err := c.lookupUserBookByBookID(ctx, bookID, editionID, userID)
 	if err != nil {
 		log.Warn("Failed to lookup user book by book ID and edition ID", map[string]interface{}{
-			"bookID": bookID,
+			"bookID":    bookID,
 			"editionID": editionID,
-			"userID": userID,
-			"error":  err.Error(),
+			"userID":    userID,
+			"error":     err.Error(),
 		})
 		return 0, fmt.Errorf("failed to lookup user book by book ID and edition ID: %w", err)
 	}
@@ -3173,10 +3240,10 @@ func (c *Client) ClearUserBookCache() {
 // lookupUserBookByBookID performs a single lookup of a user book by book ID and edition ID
 func (c *Client) lookupUserBookByBookID(ctx context.Context, bookID, editionID, userID int) (int, error) {
 	log := c.logger.With(map[string]interface{}{
-		"bookID": bookID,
+		"bookID":    bookID,
 		"editionID": editionID,
-		"userID": userID,
-		"method": "lookupUserBookByBookID",
+		"userID":    userID,
+		"method":    "lookupUserBookByBookID",
 	})
 
 	// Define the GraphQL query - look for user book with both book_id and edition_id
@@ -3330,8 +3397,13 @@ var statusNameToID = map[string]int{
 
 // CreateUserBook creates a new user book entry for the given edition ID and status
 func (c *Client) CreateUserBook(ctx context.Context, editionID, status string) (string, error) {
+	if c.dryRun {
+		c.logSkippedMutation("CreateUserBook")
+		return "-1", nil
+	}
+
 	// First, get the edition to ensure it exists and get the book_id
-	c.logger.Debug("Getting edition details for user book creation", map[string]interface{}{
+	c.debugRequestIntent(c.logger, "Getting edition details for user book creation", map[string]interface{}{
 		"editionID": editionID,
 	})
 
@@ -3434,7 +3506,7 @@ func (c *Client) CreateUserBook(ctx context.Context, editionID, status string) (
 
 	userBookID := strconv.Itoa(result.InsertUserBook.UserBook.ID)
 
-	c.logger.Info("Successfully created user book", map[string]interface{}{
+	c.logger.Debug("Successfully created user book", map[string]interface{}{
 		"userBookID":    result.InsertUserBook.UserBook.ID,
 		"statusID":      result.InsertUserBook.UserBook.StatusID,
 		"editionID":     editionIDInt,
@@ -3719,7 +3791,7 @@ func (c *Client) SearchBookByTitleAuthor(ctx context.Context, title, author stri
 	}
 
 	// Log the actual query being executed
-	log.Debug("Executing GraphQL query", map[string]interface{}{
+	c.debugRequestIntent(log, "Executing GraphQL query", map[string]interface{}{
 		"query":     query,
 		"variables": variables,
 	})
@@ -3800,6 +3872,11 @@ func (c *Client) SearchBookByTitleAuthor(ctx context.Context, title, author stri
 
 // MarkEditionAsOwned marks an edition as owned in the user's "Owned" list
 func (c *Client) MarkEditionAsOwned(ctx context.Context, editionID int) error {
+	if c.dryRun {
+		c.logSkippedMutation("MarkEditionAsOwned")
+		return nil
+	}
+
 	log := c.logger.With(map[string]interface{}{
 		"edition_id": editionID,
 		"method":     "MarkEditionAsOwned",
@@ -3870,6 +3947,11 @@ func (c *Client) MarkEditionAsOwned(ctx context.Context, editionID int) error {
 
 // UpdateUserBook updates a user book
 func (c *Client) UpdateUserBook(ctx context.Context, input UpdateUserBookInput) error {
+	if c.dryRun {
+		c.logSkippedMutation("UpdateUserBook")
+		return nil
+	}
+
 	log := c.logger.With(map[string]interface{}{
 		"method":     "UpdateUserBook",
 		"id":         input.ID,
@@ -3920,7 +4002,7 @@ func (c *Client) UpdateUserBook(ctx context.Context, input UpdateUserBookInput) 
 		return ErrUserBookNotFound
 	}
 
-	log.Info("Successfully updated user book", map[string]interface{}{
+	log.Debug("Successfully updated user book", map[string]interface{}{
 		"id":         result.UpdateUserBookByPk.ID,
 		"edition_id": result.UpdateUserBookByPk.EditionID,
 	})

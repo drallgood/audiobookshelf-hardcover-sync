@@ -51,9 +51,9 @@ func TestHTTPMiddleware(t *testing.T) {
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
 				if _, err := w.Write([]byte("test response")); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
 			},
 			expectedStatus: http.StatusOK,
 			expectedLogs: []string{
@@ -100,7 +100,7 @@ func TestHTTPMiddleware(t *testing.T) {
 
 			// Configure the logger with JSON format for easier parsing
 			Setup(Config{
-				Level:      "info",
+				Level:      "debug",
 				Format:     FormatJSON,
 				Output:     &buf,
 				TimeFormat: "", // No timestamp in tests for easier assertions
@@ -118,28 +118,28 @@ func TestHTTPMiddleware(t *testing.T) {
 			// Create the middleware chain with our test handler
 			handler := WithRequestID(HTTPMiddleware(tt.handler))
 
-		// Serve the request
-		handler.ServeHTTP(rr, req)
+			// Serve the request
+			handler.ServeHTTP(rr, req)
 
-		// Check the response status code
-		assert.Equal(t, tt.expectedStatus, rr.Code, "Unexpected status code")
+			// Check the response status code
+			assert.Equal(t, tt.expectedStatus, rr.Code, "Unexpected status code")
 
-		// Get the log output
-		output := buf.String()
+			// Get the log output
+			output := buf.String()
 
-		// Check that the log contains the expected fields
-		for _, expected := range tt.expectedLogs {
-			assert.Contains(t, output, expected, "Log output should contain %q", expected)
-		}
+			// Check that the log contains the expected fields
+			for _, expected := range tt.expectedLogs {
+				assert.Contains(t, output, expected, "Log output should contain %q", expected)
+			}
 
-		// Check that the response headers include the request ID
-		requestID := rr.Header().Get("X-Request-Id")
-		assert.NotEmpty(t, requestID, "Response should include X-Request-Id header")
+			// Check that the response headers include the request ID
+			requestID := rr.Header().Get("X-Request-Id")
+			assert.NotEmpty(t, requestID, "Response should include X-Request-Id header")
 
-		// Check that the request ID is included in the logs
-		assert.Contains(t, output, requestID, "Log output should include the request ID")
-	})
-}
+			// Check that the request ID is included in the logs
+			assert.Contains(t, output, requestID, "Log output should include the request ID")
+		})
+	}
 }
 
 func TestResponseWriterWrapper(t *testing.T) {

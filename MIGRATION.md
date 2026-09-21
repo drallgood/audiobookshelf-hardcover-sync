@@ -37,10 +37,40 @@ If you previously used environment variables for configuration, you will need to
 
 ## Breaking Changes
 
+### Sync Status API
+
+The legacy global sync, per-profile status, and summary endpoints were removed.
+Use `GET /api/status` for lightweight profile lifecycle/count snapshots and
+`GET /api/profiles/{id}/runs/{runId}/details` for authenticated full run details.
+The canonical schema uses `queued_at`, `processed_so_far`, and `book_outcomes`;
+the `run_started_at`, `processed_count`, and `attention_records` aliases were
+removed. Filter `book_outcomes` for `needs_review`, `not_found`, and `failed`
+records. The legacy top-level `status`, `dry_run`, `books_total`, `error`,
+`progress`, and `last_sync` fields were also removed in favor of the nested
+snapshot and `last_attempted_at`/`last_successful_at`.
+
+### Profile API Credentials
+
+Profile API responses no longer echo `audiobookshelf_token` or
+`hardcover_token`, regardless of authentication or role. API clients that read
+credentials back from profile responses must retain their own values instead.
+Omitted or empty token fields in a configuration update preserve the stored
+tokens.
+
+### Authentication and Existing Profiles
+
+When authentication is enabled, pre-existing profiles without an owner remain
+active and continue to run scheduled syncs. Administrators can still manage
+them, but regular users and viewers cannot see or use them. To give a regular
+user control of one, create a new profile while signed in as that user, then
+have an administrator remove the old profile to prevent duplicate syncs.
+
 ### Removed Environment Variables
 
-- **`HARDCOVER_SYNC_DELAY_MS`**: Replaced with token bucket rate limiting
+- **`HARDCOVER_SYNC_DELAY_MS`**: Replaced with request pacing and concurrency limiting
   - **Migration**: Use the rate limiting configuration in `config.yaml` instead
+- **`RATE_LIMIT_BURST` / `rate_limit.burst`**: This setting has been removed and no longer has any effect
+  - **Migration**: Delete it from your environment or YAML configuration. To adjust rate limiting, use `RATE_LIMIT_RATE` / `rate_limit.rate` to control how often requests are sent and `RATE_LIMIT_MAX_CONCURRENT` / `rate_limit.max_concurrent` to limit simultaneous requests.
 - **`AUDIOBOOK_MATCH_MODE`**: This legacy option has been removed
   - **Migration**: No action needed, improved matching is now the default
 
@@ -48,7 +78,6 @@ If you previously used environment variables for configuration, you will need to
 
 - **`HARDCOVER_BASE_URL`**: Override the Hardcover GraphQL API base URL (default: https://api.hardcover.app/v1/graphql)
 - **`RATE_LIMIT_RATE`**: Minimum time between Hardcover API requests (e.g., `2s` for 30 requests/minute)
-- **`RATE_LIMIT_BURST`**: Maximum burst size for requests (e.g., `2`)
 - **`RATE_LIMIT_MAX_CONCURRENT`**: Maximum number of concurrent requests (e.g., `3`)
 - **`CONFIG_FILE`**: Path to the configuration file (default: "./config.yaml")
 
@@ -59,7 +88,7 @@ If you previously used environment variables for configuration, you will need to
 - **`sync.min_change_threshold`**: Minimum progress change threshold in seconds (default: 60)
 - **`app.sync_owned`**: Enable ownership syncing between platforms (default: true)
 - **`paths.cache_dir`**: Directory for cache files (default: "./cache")
-- **`app.mismatch_output_dir`**: Directory to store mismatch files (default: "./mismatches")
+- **`paths.mismatch_output_dir`**: Directory to store mismatch files (default: "./mismatches")
 - **`rate_limit`**: Configuration section for rate limiting
 
 Note: The Hardcover client now uses a unified configuration builder in both single-user and multi-user modes. It honors `hardcover.base_url` (defaulting to the official endpoint) and all `rate_limit.*` settings.
@@ -68,9 +97,11 @@ Note: The Hardcover client now uses a unified configuration builder in both sing
 - **State File**: The application now maintains state between runs in a JSON file
   - **Migration**: Ensure the directory for state files exists (default: "./data")
   - **Configuration**: Set via `sync.state_file` in config.yaml
+  - **Compatibility**: A legacy v1 timestamp-only file at the configured `sync.state_file` path is accepted with empty checkpoints so the first run rebuilds them. Unversioned legacy `books` files and v2 checkpoint files at that path are retained and normalized to the current explicit state version on their next save; no book-field conversion is required.
+  - **Previous cache location**: `./cache/sync_state.json` is no longer read or relocated. Those v1-only files contained timestamp metadata now superseded by database timestamps; the first sync after upgrading writes per-book checkpoints to `sync.state_file` (default: `./data/sync_state.json`).
 - **Mismatch Files**: Mismatches are now stored as individual files in a dedicated directory
   - **Migration**: Ensure the mismatch directory exists (default: "./mismatches")
-  - **Configuration**: Set via `app.mismatch_output_dir` in config.yaml
+  - **Configuration**: Set via `paths.mismatch_output_dir` in config.yaml
 
 ## Docker Changes
 
@@ -178,7 +209,6 @@ sync:
   ```yaml
   rate_limit:
     rate: "3000ms"  # Increase this value to slow down requests
-    burst: 1        # Reduce burst capacity
   ```
 
 ### Progress Not Syncing
@@ -189,7 +219,7 @@ sync:
 ### Missing Mismatches
 - Verify that the mismatch output directory is correctly set in config.yaml:
   ```yaml
-  app:
+  paths:
     mismatch_output_dir: "./mismatches"
   ```
 - Check that the directory exists and has proper write permissions

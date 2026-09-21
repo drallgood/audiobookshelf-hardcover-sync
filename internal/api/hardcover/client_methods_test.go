@@ -59,7 +59,7 @@ func newTestClient(t *testing.T) (*Client, *httptest.Server) {
 			}
 			return
 		}
-		
+
 		// Prepare the response based on the query
 		// Always initialize response with an empty books array by default
 		response := map[string]interface{}{
@@ -118,7 +118,7 @@ func newTestClient(t *testing.T) (*Client, *httptest.Server) {
 	}))
 
 	// Create a no-op rate limiter for testing
-	rateLimiter := util.NewRateLimiter(10*time.Millisecond, 10, 10, logger.Get()) // Fast rate limiting for tests
+	rateLimiter := util.NewRateLimiter(10*time.Millisecond, 10, logger.Get()) // Fast rate limiting for tests
 
 	// Create a test logger that writes to a buffer
 	var buf bytes.Buffer
@@ -226,7 +226,7 @@ func TestClient_AddWithMetadata(t *testing.T) {
 	key := "test-key"
 	value := "test-value"
 	metadata := map[string]interface{}{
-		"source": "audiobookshelf",
+		"source":    "audiobookshelf",
 		"timestamp": time.Now().Unix(),
 	}
 

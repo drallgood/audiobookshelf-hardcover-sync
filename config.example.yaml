@@ -7,7 +7,6 @@ server:
 # Rate limiting configuration
 rate_limit:
   rate: "2s"            # Minimum time between requests (30 requests per minute)
-  burst: 1              # Maximum number of requests in a burst
   max_concurrent: 1     # Maximum number of concurrent requests
 
 # Logging configuration
@@ -77,7 +76,7 @@ sync:
   test_book_limit: 0
   
   # Include ebooks in sync (default: false)
-  # When false, items with mediaType "ebook" are skipped
+  # When false, ebook-only Audiobookshelf items (an ebook file and no audio) are skipped
   include_ebooks: false
   
   # Preserve books marked as "Did Not Finish" in Hardcover (default: true)
@@ -109,6 +108,9 @@ app:
 database:
   # Database type: sqlite, postgresql, mysql, mariadb
   type: "sqlite"
+
+  # Number of terminal sync reports retained per profile (default: 10)
+  sync_run_report_retention: 10
   
   # SQLite configuration (default)
   path: ""  # Uses default path if empty: ./data/database.db

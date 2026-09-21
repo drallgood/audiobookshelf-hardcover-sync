@@ -1,21 +1,33 @@
 package models
 
+import (
+	"encoding/json"
+	"strings"
+)
+
 // AudiobookshelfMetadata represents the metadata for an Audiobookshelf book
 type AudiobookshelfMetadataStruct struct {
-	Title             string   `json:"title"`
-	TitleIgnorePrefix string   `json:"titleIgnorePrefix"`
-	Subtitle          string   `json:"subtitle"`
-	AuthorName        string   `json:"authorName"`
-	AuthorNameLF      string   `json:"authorNameLF"`
-	NarratorName      string   `json:"narratorName"`
-	SeriesName        string   `json:"seriesName"`
-	Genres            []string `json:"genres"`
-	PublishedYear     string   `json:"publishedYear"`
-	Publisher         string   `json:"publisher"`
-	Description       string   `json:"description"`
-	ISBN              string   `json:"isbn"`
-	ASIN              string   `json:"asin"`
-	Language          string   `json:"language"`
+	Title             string                 `json:"title"`
+	TitleIgnorePrefix string                 `json:"titleIgnorePrefix"`
+	Subtitle          string                 `json:"subtitle"`
+	AuthorName        string                 `json:"authorName"`
+	AuthorNameLF      string                 `json:"authorNameLF"`
+	NarratorName      string                 `json:"narratorName"`
+	SeriesName        string                 `json:"seriesName"`
+	Series            []AudiobookshelfSeries `json:"series"`
+	Genres            []string               `json:"genres"`
+	PublishedYear     string                 `json:"publishedYear"`
+	Publisher         string                 `json:"publisher"`
+	Description       string                 `json:"description"`
+	ISBN              string                 `json:"isbn"`
+	ASIN              string                 `json:"asin"`
+	Language          string                 `json:"language"`
+}
+
+// AudiobookshelfSeries describes a book's membership and position in a series.
+type AudiobookshelfSeries struct {
+	Name     string `json:"name"`
+	Sequence string `json:"sequence"`
 }
 
 // GetTitle returns the book's title
@@ -45,10 +57,16 @@ type AudiobookshelfBook struct {
 	Path      string `json:"path"`
 	MediaType string `json:"mediaType"`
 	Media     struct {
-		ID       string                      `json:"id"`
-		Metadata AudiobookshelfMetadataStruct `json:"metadata"`
-		CoverPath string                     `json:"coverPath"`
-		Duration  float64                    `json:"duration"`
+		ID        string                       `json:"id"`
+		Metadata  AudiobookshelfMetadataStruct `json:"metadata"`
+		CoverPath string                       `json:"coverPath"`
+		Duration  float64                      `json:"duration"`
+		// NumTracks counts the audio files not marked excluded, and is present in
+		// both minified and expanded items. EbookFile is set (non-nil) for an ebook
+		// and EbookFormat names its format. IsEbook reads all three.
+		NumTracks   int              `json:"numTracks"`
+		EbookFile   *json.RawMessage `json:"ebookFile"`
+		EbookFormat string           `json:"ebookFormat"`
 	} `json:"media"`
 	// Progress tracks the user's progress through the book
 	Progress struct {
@@ -57,6 +75,22 @@ type AudiobookshelfBook struct {
 		StartedAt   int64   `json:"startedAt"`
 		FinishedAt  int64   `json:"finishedAt"`
 	} `json:"progress,omitempty"`
+}
+
+// IsEbook reports whether the item is an ebook-only library item. Audiobookshelf
+// reports "book" as the media type for audiobooks and ebooks alike, so the media
+// content decides: an item with audio is an audiobook even if it also carries an
+// ebook file. Audio follows Audiobookshelf's own hasAudioTracks rule (numTracks
+// counts the non-excluded audio files, or there is a duration). An ebook is an
+// ebookFile object (any object, as in Audiobookshelf's own truthiness check) or
+// an ebookFormat. The legacy "ebook" media type is still honored.
+func (b *AudiobookshelfBook) IsEbook() bool {
+	if strings.EqualFold(strings.TrimSpace(b.MediaType), "ebook") {
+		return true
+	}
+	hasAudio := b.Media.Duration > 0 || b.Media.NumTracks > 0
+	hasEbook := b.Media.EbookFile != nil || strings.TrimSpace(b.Media.EbookFormat) != ""
+	return hasEbook && !hasAudio
 }
 
 // GetID returns the book's unique identifier

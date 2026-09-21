@@ -164,11 +164,11 @@ func NewAuthConfigFromConfig(configAuth *ConfigAuth) AuthConfig {
 // getAuthConfigFromEnv creates auth config from environment variables only
 func getAuthConfigFromEnv() AuthConfig {
 	config := DefaultAuthConfig()
-	
+
 	if isEnvNonEmpty("AUTH_ENABLED") {
 		config.Enabled = getBoolFromEnv("AUTH_ENABLED", false)
 	}
-	
+
 	return config
 }
 

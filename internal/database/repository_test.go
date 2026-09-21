@@ -1,0 +1,463 @@
+package database
+
+import (
+	"context"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/stretchr/testify/require"
+)
+
+func newRepositoryForTest(t *testing.T) (*Database, *Repository) {
+	t.Helper()
+	db, err := NewDatabase(&DatabaseConfig{
+		Type: DatabaseTypeSQLite,
+		Path: filepath.Join(t.TempDir(), "sync.db"),
+	}, logger.Get())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	return db, NewRepository(db, nil, logger.Get())
+}
+
+func createTestProfile(t *testing.T, db *Database, profileID string) {
+	t.Helper()
+	require.NoError(t, db.GetDB().Create(&SyncProfile{ID: profileID, Name: profileID, Active: true}).Error)
+}
+
+func TestFreshLifecycleSchemaOmitsRetiredColumns(t *testing.T) {
+	db, _ := newRepositoryForTest(t)
+	migrator := db.GetDB().Migrator()
+	columns, err := migrator.ColumnTypes(&SyncRunReport{})
+	require.NoError(t, err)
+	for _, column := range columns {
+		if strings.EqualFold(column.Name(), "snapshot_json") {
+			require.Equal(t, "TEXT", strings.ToUpper(column.DatabaseTypeName()))
+		}
+	}
+
+	for _, column := range []string{
+		"run_generation",
+		"last_successful_run_id",
+		"last_successful_generation",
+		"created_at",
+		"updated_at",
+	} {
+		require.False(t, migrator.HasColumn(&ProfileSyncState{}, column), column)
+	}
+	for _, column := range []string{"created_at", "updated_at"} {
+		require.False(t, migrator.HasColumn(&SyncRunReport{}, column), column)
+	}
+}
+
+func TestSyncSnapshotJSONUsesDialectLargeTextType(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		dialector gorm.Dialector
+		wantType  string
+	}{
+		{name: "mysql", dialector: mysql.Open(""), wantType: "LONGTEXT"},
+		{name: "mariadb via mysql dialector", dialector: mysql.Open(""), wantType: "LONGTEXT"},
+		{name: "postgres", dialector: postgres.Open(""), wantType: "TEXT"},
+		{name: "sqlite", dialector: sqlite.Open(":memory:"), wantType: "TEXT"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db := &gorm.DB{Config: &gorm.Config{Dialector: test.dialector}}
+			require.Equal(t, "string", SyncSnapshotJSON("").GormDataType())
+			require.Equal(t, test.wantType, SyncSnapshotJSON("").GormDBDataType(db, nil))
+		})
+	}
+}
+
+func acceptTestSyncRun(t *testing.T, repo *Repository, profileID, runID string, dryRun bool, queuedAt time.Time) *SyncRunReport {
+	t.Helper()
+	report, err := repo.AcceptSyncRun(&SyncRunReport{
+		ProfileID: profileID, RunID: runID, Phase: SyncRunPhaseQueued,
+		DryRun: dryRun, QueuedAt: &queuedAt,
+		SnapshotJSON: "{}",
+	})
+	require.NoError(t, err)
+	return report
+}
+
+func TestAcceptSyncRunAllocatesPerProfileGenerationAndAttemptMetadata(t *testing.T) {
+	db, repo := newRepositoryForTest(t)
+	createTestProfile(t, db, "profile-a")
+	createTestProfile(t, db, "profile-b")
+	queuedAt := time.Date(2026, time.September, 16, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, db.GetDB().Create(&ProfileSyncState{ProfileID: "profile-a"}).Error)
+
+	first := acceptTestSyncRun(t, repo, "profile-a", "run-a-1", false, queuedAt)
+	require.Equal(t, uint64(1), first.Generation)
+	require.Equal(t, SyncRunPhaseQueued, first.Phase)
+	require.Equal(t, queuedAt, *first.QueuedAt)
+	first.Phase = SyncRunPhaseCompleted
+	first.FinishedAt = timePtrForDatabaseTest(queuedAt.Add(time.Minute))
+	first.SnapshotJSON = `{"finished":true}`
+	require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), first))
+	stored, err := repo.GetSyncRunReport("profile-a", "run-a-1")
+	require.NoError(t, err)
+	require.Equal(t, queuedAt, *stored.QueuedAt)
+	require.Equal(t, `{"finished":true}`, string(stored.SnapshotJSON))
+
+	second := acceptTestSyncRun(t, repo, "profile-a", "run-a-2", true, queuedAt.Add(time.Minute))
+	require.Equal(t, uint64(2), second.Generation)
+
+	other := acceptTestSyncRun(t, repo, "profile-b", "run-b-1", false, queuedAt)
+	require.Equal(t, uint64(1), other.Generation)
+
+	state, err := repo.GetSyncState("profile-a")
+	require.NoError(t, err)
+	require.Equal(t, second.RunID, state.LastAttemptedRunID)
+	require.Equal(t, uint64(2), state.LastAttemptedGeneration)
+	require.Equal(t, queuedAt.Add(time.Minute), *state.LastAttemptedAt)
+	require.Equal(t, queuedAt.Add(time.Minute), *state.LastSuccessfulAt)
+}
+
+func timePtrForDatabaseTest(value time.Time) *time.Time {
+	return &value
+}
+
+func TestSyncRunReportLookupIsScopedToProfile(t *testing.T) {
+	db, repo := newRepositoryForTest(t)
+	createTestProfile(t, db, "profile-a")
+	createTestProfile(t, db, "profile-b")
+	for _, report := range []*SyncRunReport{
+		{ProfileID: "profile-a", RunID: "same-run", Generation: 1, Phase: SyncRunPhaseFailed, SnapshotJSON: `{"profile":"a"}`},
+		{ProfileID: "profile-b", RunID: "same-run", Generation: 1, Phase: SyncRunPhaseCanceled, SnapshotJSON: `{"profile":"b"}`},
+	} {
+		require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), report))
+	}
+
+	retrieved, err := repo.GetSyncRunReport("profile-b", "same-run")
+	require.NoError(t, err)
+	require.NotNil(t, retrieved)
+	require.Equal(t, "profile-b", retrieved.ProfileID)
+	require.Equal(t, `{"profile":"b"}`, string(retrieved.SnapshotJSON))
+
+	missing, err := repo.GetSyncRunReport("profile-c", "same-run")
+	require.NoError(t, err)
+	require.Nil(t, missing)
+}
+
+func TestUpsertSyncRunReportAdvancesOnlyNewerCompletedNonDryRun(t *testing.T) {
+	db, repo := newRepositoryForTest(t)
+	createTestProfile(t, db, "profile-a")
+	finish := time.Date(2026, time.September, 16, 12, 30, 0, 0, time.UTC)
+	completed := func(generation uint64, runID string, dryRun bool, phase string) *SyncRunReport {
+		return &SyncRunReport{
+			ProfileID: "profile-a", RunID: runID, Generation: generation,
+			Phase: phase, DryRun: dryRun, FinishedAt: &finish,
+			SnapshotJSON: `{"state":"terminal"}`,
+		}
+	}
+
+	// Reports can only advance success after their run was accepted. Accept two
+	// runs so generation two is current when it completes.
+	firstAccepted := acceptTestSyncRun(t, repo, "profile-a", "run-1", false, finish.Add(-2*time.Minute))
+	firstAccepted.Phase = SyncRunPhaseCanceled
+	firstAccepted.FinishedAt = timePtrForDatabaseTest(finish.Add(-90 * time.Second))
+	require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), firstAccepted))
+	acceptTestSyncRun(t, repo, "profile-a", "run-2", false, finish.Add(-time.Minute))
+	require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), completed(2, "run-2", false, SyncRunPhaseCompleted)))
+	state, err := repo.GetSyncState("profile-a")
+	require.NoError(t, err)
+	require.Equal(t, finish, *state.LastSuccessfulAt)
+
+	for _, test := range []struct {
+		generation uint64
+		runID      string
+		dryRun     bool
+		phase      string
+	}{
+		{generation: 3, runID: "run-failed", phase: SyncRunPhaseFailed},
+		{generation: 4, runID: "run-canceled", phase: SyncRunPhaseCanceled},
+		{generation: 5, runID: "run-dry", dryRun: true, phase: SyncRunPhaseCompleted},
+	} {
+		acceptTestSyncRun(t, repo, "profile-a", test.runID, test.dryRun, finish.Add(time.Duration(test.generation)*time.Minute))
+		require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), completed(test.generation, test.runID, test.dryRun, test.phase)))
+	}
+	// The first run is no longer the accepted attempt, so a late terminal
+	// report is rejected before it can overwrite durable history.
+	err = repo.UpsertSyncRunReportContext(context.Background(), completed(1, "run-1", false, SyncRunPhaseCompleted))
+	require.ErrorIs(t, err, ErrStaleSyncRunReport)
+	require.ErrorIs(t, repo.UpsertSyncRunReportContext(context.Background(), &SyncRunReport{
+		ProfileID: "profile-a", RunID: "run-1", Phase: SyncRunPhaseFailed, SnapshotJSON: "{}",
+	}), ErrStaleSyncRunReport)
+	state, err = repo.GetSyncState("profile-a")
+	require.NoError(t, err)
+	require.Equal(t, finish, *state.LastSuccessfulAt)
+
+	acceptTestSyncRun(t, repo, "profile-a", "run-6", false, finish.Add(6*time.Minute))
+	newFinish := finish.Add(time.Hour)
+	newReport := completed(6, "run-6", false, SyncRunPhaseCompleted)
+	newReport.FinishedAt = &newFinish
+	require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), newReport))
+	state, err = repo.GetSyncState("profile-a")
+	require.NoError(t, err)
+	require.Equal(t, newFinish, *state.LastSuccessfulAt)
+
+	duplicate := completed(6, "run-6", false, SyncRunPhaseCompleted)
+	duplicate.FinishedAt = timePtrForDatabaseTest(newFinish.Add(time.Hour))
+	require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), duplicate))
+	state, err = repo.GetSyncState("profile-a")
+	require.NoError(t, err)
+	require.Equal(t, newFinish, *state.LastSuccessfulAt)
+}
+
+func TestSyncRunReportRetentionIsConfigurableForPersistenceAndLookup(t *testing.T) {
+	db, repo := newRepositoryForTest(t)
+	createTestProfile(t, db, "profile-a")
+	repo.SetSyncRunReportRetention(2)
+	for generation := uint64(1); generation <= 3; generation++ {
+		require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), &SyncRunReport{
+			ProfileID: "profile-a", RunID: "run-" + string(rune('a'+generation-1)),
+			Generation: generation, Phase: SyncRunPhaseFailed, SnapshotJSON: "{}",
+		}))
+	}
+	reports, err := repo.ListTerminalSyncRunReports("profile-a", 100)
+	require.NoError(t, err)
+	require.Len(t, reports, 2)
+	reports, err = repo.ListTerminalSyncRunReports("profile-a", 0)
+	require.NoError(t, err)
+	require.Len(t, reports, 2)
+}
+
+func TestReconcileInterruptedSyncRunReportsPreservesHistory(t *testing.T) {
+	db, repo := newRepositoryForTest(t)
+	createTestProfile(t, db, "profile-a")
+	queuedAt := time.Date(2026, time.September, 18, 12, 0, 0, 0, time.UTC)
+	queued := acceptTestSyncRun(t, repo, "profile-a", "run-queued", false, queuedAt)
+	processingStarted := queuedAt.Add(time.Second)
+	lastActivity := queuedAt.Add(2 * time.Second)
+	lastProcessed := queuedAt.Add(3 * time.Second)
+	queued.ProcessingStartedAt = &processingStarted
+	queued.LastActivityAt = &lastActivity
+	queued.LastProcessedAt = &lastProcessed
+	queued.SnapshotJSON = `{"state":"queued","book_outcomes":[{"book_id":"book"}]}`
+	require.NoError(t, db.GetDB().Save(queued).Error)
+	require.NoError(t, db.GetDB().Exec("UPDATE sync_run_reports SET phase = ? WHERE profile_id = ? AND run_id = ?", "running", "profile-a", "run-queued").Error)
+	require.NoError(t, repo.ReconcileInterruptedSyncRunReports())
+
+	report, err := repo.GetSyncRunReport("profile-a", "run-queued")
+	require.NoError(t, err)
+	require.Equal(t, SyncRunPhaseFailed, report.Phase)
+	require.Equal(t, interruptedSyncRunError, report.RunError)
+	require.Contains(t, report.SnapshotJSON, "book_outcomes")
+	require.Equal(t, processingStarted, *report.ProcessingStartedAt)
+	require.Equal(t, lastActivity, *report.LastActivityAt)
+	require.Equal(t, lastProcessed, *report.LastProcessedAt)
+	require.NotNil(t, report.FinishedAt)
+}
+
+func TestActiveCheckpointPreservesSuccessAndRejectsTerminalDemotion(t *testing.T) {
+	db, repo := newRepositoryForTest(t)
+	createTestProfile(t, db, "profile-a")
+	queuedAt := time.Date(2026, time.September, 18, 12, 0, 0, 0, time.UTC)
+	first := acceptTestSyncRun(t, repo, "profile-a", "run-first", false, queuedAt)
+	first.Phase = SyncRunPhaseCompleted
+	first.FinishedAt = timePtrForDatabaseTest(queuedAt.Add(time.Minute))
+	require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), first))
+
+	second := acceptTestSyncRun(t, repo, "profile-a", "run-second", false, queuedAt.Add(2*time.Minute))
+	checkpoint := &SyncRunReport{
+		ProfileID: "profile-a", RunID: second.RunID, Generation: second.Generation,
+		Phase: SyncRunPhaseRunning, SnapshotJSON: `{"state":"running","processed_so_far":2}`,
+		ProcessingStartedAt: timePtrForDatabaseTest(queuedAt.Add(3 * time.Minute)),
+		LastProcessedAt:     timePtrForDatabaseTest(queuedAt.Add(4 * time.Minute)),
+	}
+	require.NoError(t, repo.UpsertSyncRunCheckpointContext(context.Background(), checkpoint))
+
+	stored, err := repo.GetSyncRunReport("profile-a", second.RunID)
+	require.NoError(t, err)
+	require.Equal(t, SyncRunPhaseRunning, stored.Phase)
+	require.Contains(t, string(stored.SnapshotJSON), "processed_so_far")
+	state, err := repo.GetSyncState("profile-a")
+	require.NoError(t, err)
+	require.Equal(t, *first.FinishedAt, *state.LastSuccessfulAt)
+
+	checkpoint.Phase = SyncRunPhaseCompleted
+	checkpoint.FinishedAt = timePtrForDatabaseTest(queuedAt.Add(5 * time.Minute))
+	require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), checkpoint))
+	checkpoint.Phase = SyncRunPhaseFinalizing
+	err = repo.UpsertSyncRunCheckpointContext(context.Background(), checkpoint)
+	require.ErrorIs(t, err, ErrStaleSyncRunReport)
+	stored, err = repo.GetSyncRunReport("profile-a", second.RunID)
+	require.NoError(t, err)
+	require.Equal(t, SyncRunPhaseCompleted, stored.Phase)
+}
+
+func TestReconcilePrunesExistingTerminalHistoryAfterRetentionDecrease(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sync.db")
+	db, err := NewDatabase(&DatabaseConfig{Type: DatabaseTypeSQLite, Path: dbPath}, logger.Get())
+	require.NoError(t, err)
+	createTestProfile(t, db, "profile-a")
+	repo := NewRepository(db, nil, logger.Get())
+	repo.SetSyncRunReportRetention(5)
+	for generation := uint64(1); generation <= 5; generation++ {
+		require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), &SyncRunReport{
+			ProfileID: "profile-a", RunID: "history-" + string(rune('a'+generation-1)),
+			Generation: generation, Phase: SyncRunPhaseFailed, SnapshotJSON: "{}",
+		}))
+	}
+	require.NoError(t, db.Close())
+
+	db, err = NewDatabase(&DatabaseConfig{Type: DatabaseTypeSQLite, Path: dbPath}, logger.Get())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	repo = NewRepository(db, nil, logger.Get())
+	repo.SetSyncRunReportRetention(2)
+	require.NoError(t, repo.ReconcileInterruptedSyncRunReports())
+
+	reports, err := repo.ListTerminalSyncRunReports("profile-a", 0)
+	require.NoError(t, err)
+	require.Len(t, reports, 2)
+	oldest, err := repo.GetSyncRunReport("profile-a", "history-a")
+	require.NoError(t, err)
+	require.Nil(t, oldest)
+	newest, err := repo.GetSyncRunReport("profile-a", "history-e")
+	require.NoError(t, err)
+	require.NotNil(t, newest)
+}
+
+func TestCompletedReportPreservesCanonicalSuccessAfterRestart(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sync.db")
+	db, err := NewDatabase(&DatabaseConfig{Type: DatabaseTypeSQLite, Path: dbPath}, logger.Get())
+	require.NoError(t, err)
+	createTestProfile(t, db, "profile-a")
+	repo := NewRepository(db, nil, logger.Get())
+	finishedAt := time.Date(2026, time.September, 16, 12, 30, 0, 0, time.UTC)
+	report := acceptTestSyncRun(t, repo, "profile-a", "run-completed", false, finishedAt.Add(-time.Minute))
+	report.Phase = SyncRunPhaseCompleted
+	report.FinishedAt = timePtrForDatabaseTest(finishedAt)
+	require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), report))
+	require.NoError(t, db.Close())
+
+	db, err = NewDatabase(&DatabaseConfig{Type: DatabaseTypeSQLite, Path: dbPath}, logger.Get())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	state, err := NewRepository(db, nil, logger.Get()).GetSyncState("profile-a")
+	require.NoError(t, err)
+	require.Equal(t, finishedAt, *state.LastSuccessfulAt)
+}
+
+func TestUpsertSyncRunReportRetainsNewestTenAcrossTerminalPhases(t *testing.T) {
+	db, repo := newRepositoryForTest(t)
+	createTestProfile(t, db, "profile-a")
+	phases := []string{SyncRunPhaseCompleted, SyncRunPhaseFailed, SyncRunPhaseCanceled}
+	for generation := uint64(1); generation <= 11; generation++ {
+		runID := "run-" + string(rune('a'+generation-1))
+		report := acceptTestSyncRun(t, repo, "profile-a", runID, false, time.Now().UTC())
+		report.Phase = phases[(generation-1)%uint64(len(phases))]
+		report.SnapshotJSON = `{"terminal":true}`
+		require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), report))
+	}
+
+	reports, err := repo.ListTerminalSyncRunReports("profile-a", 100)
+	require.NoError(t, err)
+	require.Len(t, reports, 10)
+	for index, report := range reports {
+		require.Equal(t, uint64(11-index), report.Generation)
+	}
+	oldest, err := repo.GetSyncRunReport("profile-a", "run-a")
+	require.NoError(t, err)
+	require.Nil(t, oldest)
+	latest, err := repo.GetSyncRunReport("profile-a", "run-k")
+	require.NoError(t, err)
+	require.NotNil(t, latest)
+	require.Equal(t, uint64(11), latest.Generation)
+}
+
+func TestQueuedAcceptanceRemovesStaleQueuedReportsAndRetainsTerminalHistory(t *testing.T) {
+	db, repo := newRepositoryForTest(t)
+	createTestProfile(t, db, "profile-a")
+	queuedAt := time.Date(2026, time.September, 16, 12, 0, 0, 0, time.UTC)
+
+	for generation := 1; generation <= maxSyncRunReports; generation++ {
+		report := acceptTestSyncRun(t, repo, "profile-a", "terminal-"+string(rune('a'+generation-1)), false,
+			queuedAt.Add(time.Duration(generation)*time.Minute))
+		report.Phase = SyncRunPhaseCompleted
+		report.FinishedAt = timePtrForDatabaseTest(queuedAt.Add(time.Duration(generation) * time.Minute))
+		require.NoError(t, repo.UpsertSyncRunReportContext(context.Background(), report))
+	}
+
+	var firstQueued *SyncRunReport
+	for generation := 1; generation <= 12; generation++ {
+		report := acceptTestSyncRun(t, repo, "profile-a", "queued-"+string(rune('a'+generation-1)), false,
+			queuedAt.Add(time.Duration(maxSyncRunReports+generation)*time.Minute))
+		if generation == 1 {
+			firstQueued = report
+		}
+	}
+	require.NotNil(t, firstQueued)
+	require.Equal(t, uint64(11), firstQueued.Generation)
+
+	var queuedCount int64
+	require.NoError(t, db.GetDB().Model(&SyncRunReport{}).
+		Where("profile_id = ? AND phase = ?", "profile-a", SyncRunPhaseQueued).
+		Count(&queuedCount).Error)
+	require.EqualValues(t, 1, queuedCount)
+
+	stale, err := repo.GetSyncRunReport("profile-a", "queued-a")
+	require.NoError(t, err)
+	require.Nil(t, stale)
+	latest, err := repo.GetSyncRunReport("profile-a", "queued-l")
+	require.NoError(t, err)
+	require.NotNil(t, latest)
+
+	terminals, err := repo.ListTerminalSyncRunReports("profile-a", 0)
+	require.NoError(t, err)
+	require.Len(t, terminals, maxSyncRunReports)
+	for generation := 1; generation <= maxSyncRunReports; generation++ {
+		report, err := repo.GetSyncRunReport("profile-a", "terminal-"+string(rune('a'+generation-1)))
+		require.NoError(t, err)
+		require.NotNil(t, report)
+	}
+}
+
+func TestMigrateLegacyLastSyncToLastAttemptedAtIdempotently(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+	legacy := time.Date(2026, time.September, 15, 8, 0, 0, 0, time.UTC)
+	driver := &PureSQLiteDriver{}
+	raw, err := driver.Connect(&DatabaseConfig{Type: DatabaseTypeSQLite, Path: dbPath}, logger.Get())
+	require.NoError(t, err)
+	require.NoError(t, raw.Exec(`CREATE TABLE sync_profiles (
+		id TEXT PRIMARY KEY, name TEXT NOT NULL, active BOOLEAN
+	)`).Error)
+	require.NoError(t, raw.Exec(`INSERT INTO sync_profiles (id, name, active) VALUES (?, ?, ?)`,
+		"profile-a", "profile-a", true).Error)
+	require.NoError(t, raw.Exec(`CREATE TABLE profile_sync_states (
+		profile_id TEXT PRIMARY KEY, state_data TEXT, last_sync DATETIME,
+		created_at DATETIME, updated_at DATETIME
+	)`).Error)
+	require.NoError(t, raw.Exec(`INSERT INTO profile_sync_states
+		(profile_id, state_data, last_sync, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+		"profile-a", "{}", legacy, legacy, legacy).Error)
+	sqlDB, err := raw.DB()
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
+
+	db, err := NewDatabase(&DatabaseConfig{Type: DatabaseTypeSQLite, Path: dbPath}, logger.Get())
+	require.NoError(t, err)
+	repo := NewRepository(db, nil, logger.Get())
+	state, err := repo.GetSyncState("profile-a")
+	require.NoError(t, err)
+	require.Equal(t, legacy, *state.LastAttemptedAt)
+	require.Nil(t, state.LastSuccessfulAt)
+	require.NoError(t, db.Close())
+
+	db, err = NewDatabase(&DatabaseConfig{Type: DatabaseTypeSQLite, Path: dbPath}, logger.Get())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	state, err = NewRepository(db, nil, logger.Get()).GetSyncState("profile-a")
+	require.NoError(t, err)
+	require.Equal(t, legacy, *state.LastAttemptedAt)
+	require.Nil(t, state.LastSuccessfulAt)
+}

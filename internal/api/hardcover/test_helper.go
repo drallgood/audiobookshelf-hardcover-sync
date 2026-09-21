@@ -36,15 +36,13 @@ func CreateTestClient(server *httptest.Server) *Client {
 			},
 		},
 		logger:          log,
-		rateLimiter:     util.NewRateLimiter(10*time.Millisecond, 5, 10, log),
+		rateLimiter:     util.NewRateLimiter(10*time.Millisecond, 10, log),
 		maxRetries:      0, // Disable retries in tests to reduce noise
 		retryDelay:      time.Millisecond,
 		userBookIDCache: cache.NewMemoryCache[int, int](log),
 		userCache:       cache.NewMemoryCache[string, any](log),
 	}
 }
-
-
 
 // CreateTestClientWithHandler creates a test client with the provided handler
 func CreateTestClientWithHandler(handler http.HandlerFunc) (*Client, *httptest.Server) {
@@ -69,6 +67,7 @@ func HandleGetCurrentUserIDRequest(w http.ResponseWriter, userID int) {
 		http.Error(w, fmt.Sprintf("Failed to encode response: %v", err), http.StatusInternalServerError)
 	}
 }
+
 // HandleGetCurrentUserIDQuery checks if the request is a GetCurrentUserID query and handles it if it is.
 // Returns true if the request was handled, false otherwise.
 // This helps ensure all test handlers properly respond to user ID requests.

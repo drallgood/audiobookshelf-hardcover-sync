@@ -19,9 +19,20 @@ import (
 )
 
 var (
-	mismatches   []BookMismatch
-	mismatchLock sync.Mutex
+	mismatchLogLock sync.Mutex
 )
+
+// Collector stores mismatches for one sync run so concurrent profile runs
+// cannot clear or combine one another's records.
+type Collector struct {
+	lock       sync.Mutex
+	mismatches []BookMismatch
+}
+
+// NewCollector creates an empty mismatch collector.
+func NewCollector() *Collector {
+	return &Collector{}
+}
 
 // newAudnexClient is a factory for creating Audnex API clients.
 // It can be overridden in tests to inject mock clients.
@@ -29,10 +40,9 @@ var newAudnexClient = func(log *logger.Logger) *audnex.Client {
 	return audnex.NewClient(log)
 }
 
-// Add adds a new book mismatch to the collection
-func Add(book BookMismatch) {
-	mismatchLock.Lock()
-	defer mismatchLock.Unlock()
+// Add adds a new book mismatch to this collector.
+func (c *Collector) Add(book BookMismatch) {
+	c.lock.Lock()
 
 	// Set timestamp if not already set
 	if book.Timestamp == 0 {
@@ -45,47 +55,25 @@ func Add(book BookMismatch) {
 		book.CreatedAt = time.Now()
 	}
 
-	mismatches = append(mismatches, book)
+	c.mismatches = append(c.mismatches, book)
+	c.lock.Unlock()
 
 	// Log the mismatch
 	log := logger.Get()
 	if log != nil {
-		log.Info("Mismatch recorded", map[string]interface{}{
+		mismatchLogLock.Lock()
+		log.Debug("Mismatch recorded", map[string]interface{}{
 			"title":  book.Title,
 			"reason": book.Reason,
 		})
+		mismatchLogLock.Unlock()
 	}
-}
-
-// RecordMismatch records a new book mismatch
-func RecordMismatch(book *BookMismatch) error {
-	mismatchLock.Lock()
-	defer mismatchLock.Unlock()
-
-	// Check if we already have this mismatch
-	key := book.BookID
-	for i, existing := range mismatches {
-		if existing.BookID == key {
-			existing.Attempts++
-			existing.Timestamp = time.Now().Unix()
-			existing.Reason = book.Reason
-			mismatches[i] = existing
-			return nil
-		}
-	}
-
-	// Add timestamp and initialize attempts
-	book.Timestamp = time.Now().Unix()
-	book.CreatedAt = time.Now()
-	book.Attempts = 1
-
-	mismatches = append(mismatches, *book)
-	return nil
 }
 
 // AddWithMetadata creates and adds a new book mismatch with enhanced metadata
-// If hc is provided, it will be used to look up publisher and other metadata
-func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, duration float64, audiobookShelfID string, hc hardcover.HardcoverClientInterface, audnexusRegion string) {
+// to this collector and returns the enriched record. If hc is provided, it
+// will be used to look up publisher and other metadata.
+func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, duration float64, audiobookShelfID string, hc hardcover.HardcoverClientInterface, audnexusRegion string) BookMismatch {
 	// Create a logger
 	log := logger.Get()
 
@@ -127,7 +115,7 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 
 	// If we have an ASIN, try to look up the book details from Audnex API
 	if metadata.ASIN != "" {
-		log.Info("Attempting Audnex enrichment for mismatch with ASIN", map[string]interface{}{
+		log.Debug("Attempting Audnex enrichment for mismatch with ASIN", map[string]interface{}{
 			"asin":     metadata.ASIN,
 			"title":    metadata.Title,
 			"book_id":  bookID,
@@ -146,7 +134,7 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 		})
 
 		// Log details just before the API call
-		log.Info("Calling Audnex API for book details by ASIN", map[string]interface{}{
+		log.Debug("Calling Audnex API for book details by ASIN", map[string]interface{}{
 			"asin":    metadata.ASIN,
 			"title":   metadata.Title,
 			"context": "mismatch_enrichment",
@@ -167,7 +155,7 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 			book, err = audnexClient.GetBookByASIN(ctx, metadata.ASIN, region)
 			if err == nil && book != nil {
 				if region != "" {
-					log.Info("Audnex API lookup succeeded with region", map[string]interface{}{
+					log.Debug("Audnex API lookup succeeded with region", map[string]interface{}{
 						"asin":   metadata.ASIN,
 						"region": region,
 					})
@@ -186,7 +174,7 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 		// Enhanced logging based on response
 		if err == nil && book != nil {
 			// Successfully retrieved book details from Audnex
-			log.Info("Audnex API lookup succeeded", map[string]interface{}{
+			log.Debug("Audnex API lookup succeeded", map[string]interface{}{
 				"asin":           metadata.ASIN,
 				"audnex_title":   book.Title,
 				"has_release":    book.ReleaseDate != "",
@@ -208,7 +196,7 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 
 			if book.ReleaseDate != "" {
 				audnexReleaseDate = book.ReleaseDate
-				log.Info("Using release date from Audnex API for mismatch enrichment", map[string]interface{}{
+				log.Debug("Using release date from Audnex API for mismatch enrichment", map[string]interface{}{
 					"asin":         metadata.ASIN,
 					"release_date": audnexReleaseDate,
 					"title":        book.Title,
@@ -390,7 +378,8 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 			"author":     metadata.AuthorName,
 		})
 
-		ctx, cancel := context.WithTimeout(hardcover.WithAudnexRegion(context.Background(), audnexusRegion), 10*time.Second)
+		// The lookups below must resolve editions of the source item's own format.
+		ctx, cancel := context.WithTimeout(hardcover.WithReadingFormat(hardcover.WithAudnexRegion(context.Background(), audnexusRegion), metadata.ReadingFormat), 10*time.Second)
 		defer cancel()
 
 		// Helper to apply Hardcover book details to mismatch
@@ -419,6 +408,14 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 			}
 			if mismatch.HardcoverCoverURL == "" && hcBook.CoverImageURL != "" {
 				mismatch.HardcoverCoverURL = hcBook.CoverImageURL
+			}
+			if hcBook.SeriesName != "" {
+				if mismatch.HardcoverSeries == "" {
+					mismatch.HardcoverSeries = hcBook.SeriesName
+				}
+				if mismatch.HardcoverSeries == hcBook.SeriesName && mismatch.HardcoverSeriesNumber == "" {
+					mismatch.HardcoverSeriesNumber = hcBook.SeriesNumber
+				}
 			}
 			// Only apply publisher when we have a confirmed edition match via identifiers (ASIN/ISBN)
 			if mismatch.HardcoverPublisher == "" && hcBook.Publisher != "" {
@@ -648,62 +645,35 @@ func AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, d
 			"hc_isbn":      mismatch.HardcoverISBN,
 			"hc_cover":     mismatch.HardcoverCoverURL != "",
 			"hc_year":      mismatch.HardcoverPublishedYear,
+			"hc_series":    mismatch.HardcoverSeries,
+			"hc_series_no": mismatch.HardcoverSeriesNumber,
 		})
 	}
 
-	Add(mismatch)
+	c.Add(mismatch)
+	return mismatch
 }
 
-// GetAll returns a copy of all collected mismatches
-func GetAll() []BookMismatch {
-	mismatchLock.Lock()
-	defer mismatchLock.Unlock()
+// GetAll returns a copy of all mismatches in this collector.
+func (c *Collector) GetAll() []BookMismatch {
+	c.lock.Lock()
+	defer c.lock.Unlock()
 
 	// Return a copy to avoid race conditions
-	result := make([]BookMismatch, len(mismatches))
-	copy(result, mismatches)
+	result := make([]BookMismatch, len(c.mismatches))
+	copy(result, c.mismatches)
 	return result
 }
 
-// Clear removes all collected mismatches
-func Clear() {
-	mismatchLock.Lock()
-	defer mismatchLock.Unlock()
-	mismatches = []BookMismatch{}
+// SaveToFile saves this collector's mismatches as individual JSON files in the
+// specified directory. Production callers scope output directories per profile
+// and serialize runs for the same profile.
+func (c *Collector) SaveToFile(ctx context.Context, hc hardcover.HardcoverClientInterface, outputDir string, cfg *config.Config) error {
+	return saveToFile(ctx, hc, outputDir, cfg, c.GetAll())
 }
 
-// ExportJSON returns all mismatches as a JSON string
-func ExportJSON() (string, error) {
-	mismatchLock.Lock()
-	defer mismatchLock.Unlock()
-
-	// Create a struct that matches the expected JSON structure
-	type exportStruct struct {
-		Mismatches []BookMismatch `json:"mismatches"`
-		Count      int            `json:"count"`
-		Timestamp  int64          `json:"timestamp"`
-	}
-
-	exportData := exportStruct{
-		Mismatches: mismatches,
-		Count:      len(mismatches),
-		Timestamp:  time.Now().Unix(),
-	}
-
-	jsonData, err := json.MarshalIndent(exportData, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal mismatches to JSON: %w", err)
-	}
-
-	return string(jsonData), nil
-}
-
-// SaveToFile saves all mismatches as individual JSON files in the specified directory
-// in a format compatible with the edition import tool. If outputDir is empty, it will
-// use the directory from the provided config.
-// Note: This function should be called with a context that has a Hardcover client available
-// for proper author/narrator lookups.
-func SaveToFile(ctx context.Context, hc hardcover.HardcoverClientInterface, outputDir string, cfg *config.Config) error {
+// saveToFile writes a snapshot of mismatch records.
+func saveToFile(ctx context.Context, hc hardcover.HardcoverClientInterface, outputDir string, cfg *config.Config, mismatches []BookMismatch) error {
 	// Get logger instance
 	log := logger.Get()
 
@@ -738,10 +708,8 @@ func SaveToFile(ctx context.Context, hc hardcover.HardcoverClientInterface, outp
 		// Continue anyway, this isn't a fatal error
 	}
 
-	// Get all mismatches
-	mismatches := GetAll()
 	if len(mismatches) == 0 {
-		log.Info("No mismatches to save")
+		log.Debug("No mismatches to save")
 		return nil
 	}
 
@@ -806,7 +774,7 @@ func SaveToFile(ctx context.Context, hc hardcover.HardcoverClientInterface, outp
 			"failed":     len(saveErrors),
 		})
 	} else {
-		log.Info("Successfully saved all mismatch files in mismatch.SaveToFile", map[string]interface{}{
+		log.Debug("Successfully saved all mismatch files in mismatch.SaveToFile", map[string]interface{}{
 			"count": successCount,
 		})
 	}
@@ -892,4 +860,7 @@ type MediaMetadata struct {
 	Duration      float64 `json:"duration,omitempty"`
 	LibraryID     string  // Audiobookshelf library ID
 	FolderID      string  // Source folder ID (if available)
+	// ReadingFormat is the Hardcover reading format ("ebook" or "audiobook") that
+	// editions matching the source item must have. Empty means audiobook.
+	ReadingFormat string
 }

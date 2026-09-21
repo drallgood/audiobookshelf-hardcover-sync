@@ -36,8 +36,8 @@ func TestClient_MarkEditionAsOwned(t *testing.T) {
 					"ownership": map[string]interface{}{
 						"id": 456,
 						"list_book": map[string]interface{}{
-							"id": 789,
-							"book_id": 123,
+							"id":         789,
+							"book_id":    123,
 							"edition_id": 123,
 						},
 					},
@@ -97,18 +97,18 @@ func TestClient_MarkEditionAsOwned(t *testing.T) {
 			expectError:    true,
 		},
 		{
-			name:         "null response",
-			editionID:    "999",
-			mockResponse: nil,
+			name:           "null response",
+			editionID:      "999",
+			mockResponse:   nil,
 			mockStatusCode: http.StatusInternalServerError,
-			expectError:  true,
+			expectError:    true,
 		},
 		{
-			name:         "server error",
-			editionID:    "999",
-			mockResponse: "invalid JSON response",
+			name:           "server error",
+			editionID:      "999",
+			mockResponse:   "invalid JSON response",
 			mockStatusCode: http.StatusOK,
-			expectError:  true,
+			expectError:    true,
 		},
 	}
 
@@ -118,34 +118,34 @@ func TestClient_MarkEditionAsOwned(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				// Set content type for JSON responses
 				w.Header().Set("Content-Type", "application/json")
-				
+
 				// Parse the request body
 				body, err := io.ReadAll(r.Body)
 				if err != nil {
 					t.Logf("Failed to read request body: %v", err)
 					w.WriteHeader(http.StatusInternalServerError)
-					_, err := w.Write([]byte(`{"error": "Failed to read request body"}`))  
+					_, err := w.Write([]byte(`{"error": "Failed to read request body"}`))
 					if err != nil {
 						t.Fatalf("Failed to write error response: %v", err)
 					}
 					return
 				}
-				
+
 				// Parse GraphQL request
 				var req map[string]interface{}
 				if err := json.Unmarshal(body, &req); err != nil {
 					t.Logf("Failed to parse request JSON: %v\nBody: %s", err, string(body))
 					w.WriteHeader(http.StatusBadRequest)
-					_, err := w.Write([]byte(`{"error": "Invalid JSON"}`))  
+					_, err := w.Write([]byte(`{"error": "Invalid JSON"}`))
 					if err != nil {
 						t.Fatalf("Failed to write error response: %v", err)
 					}
 					return
 				}
-				
+
 				// Extract GraphQL query and variables
 				query, _ := req["query"].(string)
-				
+
 				// Handle different types of queries
 				if strings.Contains(query, "GetCurrentUserID") {
 					// Handle GetCurrentUserID query
@@ -177,7 +177,7 @@ func TestClient_MarkEditionAsOwned(t *testing.T) {
 						}
 						return
 					}
-					
+
 					// Handle GraphQL response
 					w.WriteHeader(http.StatusOK)
 					respBytes, err := json.Marshal(tt.mockResponse)
@@ -190,12 +190,12 @@ func TestClient_MarkEditionAsOwned(t *testing.T) {
 					}
 					return
 				}
-				
+
 				// Unknown GraphQL query
 				t.Logf("Unhandled GraphQL query: %s", query)
 				w.WriteHeader(http.StatusBadRequest)
 				var writeErr error
-				_, writeErr = w.Write([]byte(`{"error": "Unhandled GraphQL query"}`))  
+				_, writeErr = w.Write([]byte(`{"error": "Unhandled GraphQL query"}`))
 				if writeErr != nil {
 					t.Fatalf("Failed to write error response: %v", writeErr)
 				}

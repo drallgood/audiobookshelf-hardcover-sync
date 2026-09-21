@@ -27,14 +27,14 @@ func NewSessionManager(db *gorm.DB, config SessionConfig) *DefaultSessionManager
 func (sm *DefaultSessionManager) CreateSession(ctx context.Context, userID string, r *http.Request) (*AuthSession, error) {
 	// Generate session token
 	token := generateSessionToken()
-	
+
 	// Get user agent and IP
 	userAgent := r.UserAgent()
 	clientIP := getClientIP(r)
-	
+
 	// Calculate expiry
 	expiresAt := time.Now().Add(time.Duration(sm.config.MaxAge) * time.Second)
-	
+
 	session := &AuthSession{
 		ID:        generateUserID(), // Reuse the same ID generation function
 		UserID:    userID,
@@ -44,12 +44,12 @@ func (sm *DefaultSessionManager) CreateSession(ctx context.Context, userID strin
 		ClientIP:  clientIP,
 		Active:    true,
 	}
-	
+
 	// Save to database
 	if err := sm.db.WithContext(ctx).Create(session).Error; err != nil {
 		return nil, fmt.Errorf("failed to create session: %w", err)
 	}
-	
+
 	return session, nil
 }
 
@@ -59,14 +59,14 @@ func (sm *DefaultSessionManager) GetSession(ctx context.Context, token string) (
 	err := sm.db.WithContext(ctx).
 		Where("token = ? AND active = ? AND expires_at > ?", token, true, time.Now()).
 		First(&session).Error
-	
+
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return nil, fmt.Errorf("session not found or expired")
 		}
 		return nil, fmt.Errorf("failed to get session: %w", err)
 	}
-	
+
 	return &session, nil
 }
 
@@ -77,24 +77,24 @@ func (sm *DefaultSessionManager) ValidateSession(ctx context.Context, token stri
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Get user
 	var user AuthUser
 	err = sm.db.WithContext(ctx).
 		Where("id = ? AND active = ?", session.UserID, true).
 		First(&user).Error
-	
+
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return nil, fmt.Errorf("user not found or inactive")
 		}
 		return nil, fmt.Errorf("failed to get user: %w", err)
 	}
-	
+
 	// Update session last activity
 	session.LastActivity = time.Now()
 	sm.db.WithContext(ctx).Save(session)
-	
+
 	return &user, nil
 }
 
@@ -104,31 +104,31 @@ func (sm *DefaultSessionManager) DestroySession(ctx context.Context, token strin
 		Model(&AuthSession{}).
 		Where("token = ?", token).
 		Update("active", false)
-	
+
 	if result.Error != nil {
 		return fmt.Errorf("failed to destroy session: %w", result.Error)
 	}
-	
+
 	if result.RowsAffected == 0 {
 		return fmt.Errorf("session not found")
 	}
-	
+
 	return nil
 }
 
 // CleanupExpiredSessions removes expired sessions
 func (sm *DefaultSessionManager) CleanupExpiredSessions(ctx context.Context) error {
 	result := sm.db.WithContext(ctx).
-		Where("expires_at < ? OR (active = ? AND last_activity < ?)", 
-			time.Now(), 
-			true, 
+		Where("expires_at < ? OR (active = ? AND last_activity < ?)",
+			time.Now(),
+			true,
 			time.Now().Add(-24*time.Hour)).
 		Delete(&AuthSession{})
-	
+
 	if result.Error != nil {
 		return fmt.Errorf("failed to cleanup expired sessions: %w", result.Error)
 	}
-	
+
 	return nil
 }
 
@@ -138,11 +138,11 @@ func (sm *DefaultSessionManager) DestroyUserSessions(ctx context.Context, userID
 		Model(&AuthSession{}).
 		Where("user_id = ?", userID).
 		Update("active", false)
-	
+
 	if result.Error != nil {
 		return fmt.Errorf("failed to destroy user sessions: %w", result.Error)
 	}
-	
+
 	return nil
 }
 
@@ -153,11 +153,11 @@ func (sm *DefaultSessionManager) GetUserSessions(ctx context.Context, userID str
 		Where("user_id = ? AND active = ? AND expires_at > ?", userID, true, time.Now()).
 		Order("last_activity DESC").
 		Find(&sessions).Error
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user sessions: %w", err)
 	}
-	
+
 	return sessions, nil
 }
 
@@ -181,12 +181,12 @@ func getClientIP(r *http.Request) string {
 			return xff
 		}
 	}
-	
+
 	// Check for X-Real-IP header
 	if xri := r.Header.Get("X-Real-IP"); xri != "" {
 		return xri
 	}
-	
+
 	// Fall back to RemoteAddr
 	return r.RemoteAddr
 }
@@ -201,7 +201,7 @@ func (sm *DefaultSessionManager) SetSessionCookie(w http.ResponseWriter, token s
 		HttpOnly: sm.config.HttpOnly,
 		Secure:   sm.config.Secure,
 	}
-	
+
 	// Set SameSite attribute
 	switch sm.config.SameSite {
 	case "Strict":
@@ -213,7 +213,7 @@ func (sm *DefaultSessionManager) SetSessionCookie(w http.ResponseWriter, token s
 	default:
 		cookie.SameSite = http.SameSiteLaxMode
 	}
-	
+
 	http.SetCookie(w, cookie)
 }
 
@@ -227,7 +227,7 @@ func (sm *DefaultSessionManager) ClearSessionCookie(w http.ResponseWriter) {
 		HttpOnly: sm.config.HttpOnly,
 		Secure:   sm.config.Secure,
 	}
-	
+
 	http.SetCookie(w, cookie)
 }
 
@@ -237,13 +237,13 @@ func (sm *DefaultSessionManager) GetSessionFromRequest(r *http.Request) string {
 	if cookie, err := r.Cookie(sm.config.CookieName); err == nil {
 		return cookie.Value
 	}
-	
+
 	// Try Authorization header as fallback
 	if auth := r.Header.Get("Authorization"); auth != "" {
 		if len(auth) > 7 && auth[:7] == "Bearer " {
 			return auth[7:]
 		}
 	}
-	
+
 	return ""
 }

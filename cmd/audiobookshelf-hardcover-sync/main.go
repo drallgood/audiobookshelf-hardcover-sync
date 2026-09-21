@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,8 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/auth"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/crypto"
@@ -22,7 +21,6 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/multiuser"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/server"
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 )
 
 // Package main is the entry point for the Audiobookshelf to Hardcover sync service.
@@ -30,9 +28,9 @@ import (
 // reading progress, book status, and ownership information.
 //
 // Environment Variables:
-//   AUDIOBOOKSHELF_URL      URL to your AudiobookShelf server (legacy single-user mode)
-//   AUDIOBOOKSHELF_TOKEN    API token for AudiobookShelf (legacy single-user mode)
-//   HARDCOVER_TOKEN         API token for Hardcover (legacy single-user mode)
+//   AUDIOBOOKSHELF_URL      URL for the default Audiobookshelf profile
+//   AUDIOBOOKSHELF_TOKEN    API token for the default Audiobookshelf profile
+//   HARDCOVER_TOKEN         API token for the default Hardcover profile
 //   SYNC_INTERVAL           (optional) Go duration string for periodic sync (e.g., "10m", "1h")
 //   LOG_LEVEL               (optional) Log level (debug, info, warn, error, fatal, panic)
 //   DRY_RUN                 (optional) If set to true, no changes will be made to Hardcover
@@ -44,16 +42,13 @@ import (
 //   DATA_DIR                (optional) Directory for database and encryption key files (default: ./data)
 //
 // Endpoints:
-//   GET /healthz           # Health check
-//   POST/GET /sync         # Trigger a sync (legacy single-user mode)
-//   GET /                  # Multi-user web interface
-//   GET /api/users         # List all users
-//   POST /api/users        # Create a new user
-//   PUT /api/users/:id     # Update user configuration
-//   DELETE /api/users/:id  # Delete a user
-//   POST /api/users/:id/sync/start  # Start sync for a user
-//   POST /api/users/:id/sync/cancel # Cancel sync for a user
-//   GET /api/users/:id/sync/status  # Get sync status for a user
+//   GET /health                                  # Health check
+//   GET /                                       # Web interface
+//   GET /api/status                             # Aggregate sync status
+//   GET/POST /api/profiles                      # List or create profiles
+//   GET/PUT/DELETE /api/profiles/{id}           # Manage a profile
+//   POST/DELETE /api/profiles/{id}/sync         # Start or cancel a sync
+//   GET /api/profiles/{id}/runs/{runID}/details # Exact run details
 
 var (
 	version = "dev" // Set during build
@@ -107,7 +102,7 @@ func main() {
 	})
 
 	// Log basic configuration info (without sensitive data)
-	log.Info("Application configuration", map[string]interface{}{
+	log.Debug("Application configuration", map[string]interface{}{
 		"log_level": cfg.Logging.Level,
 		"dry_run":   cfg.Sync.DryRun,
 	})
@@ -141,11 +136,10 @@ func main() {
 	defer stop()
 
 	// Initialize services
-	abortCh := make(chan struct{})
 	errCh := make(chan error, 1)
 
 	// Initialize multi-user system
-	log.Info("Initializing multi-user system", nil)
+	log.Debug("Initializing multi-user system", nil)
 
 	// Set up database with config.yaml and environment-based configuration
 	// Create database config from config.yaml with environment variable override
@@ -177,7 +171,7 @@ func main() {
 	}
 
 	// Log the database configuration being used
-	log.Info("Database configuration", map[string]interface{}{
+	log.Debug("Database configuration", map[string]interface{}{
 		"type":     dbConfig.Type,
 		"host":     dbConfig.Host,
 		"port":     dbConfig.Port,
@@ -185,7 +179,7 @@ func main() {
 		"path":     dbConfig.Path,
 	})
 
-	log.Info("Encryption configuration", map[string]interface{}{
+	log.Debug("Encryption configuration", map[string]interface{}{
 		"data_dir":      encryptionDataDir,
 		"using_env_key": os.Getenv("ENCRYPTION_KEY") != "",
 	})
@@ -199,7 +193,12 @@ func main() {
 		})
 		os.Exit(1)
 	}
-	defer db.Close()
+	closeDatabase := true
+	defer func() {
+		if closeDatabase {
+			db.Close()
+		}
+	}()
 
 	// Set up encryption
 	encryptor, err := crypto.NewEncryptionManagerWithDataDir(encryptionDataDir, log)
@@ -212,13 +211,14 @@ func main() {
 
 	// Set up repository
 	repo := database.NewRepository(db, encryptor, log)
+	repo.SetSyncRunReportRetention(cfg.Database.SyncRunReportRetention)
 
 	// Perform automatic migration from single-user config if needed
 	// Use the actual config path that was loaded, not default search paths
 	configPath := flags.configFile
 
 	// Log the migration attempt with the actual database path being used
-	log.Info("Checking migration from config", map[string]interface{}{
+	log.Debug("Checking migration from config", map[string]interface{}{
 		"config_path": configPath,
 		"db_path":     dbConfig.Path, // Use the same path as the main database
 	})
@@ -230,12 +230,17 @@ func main() {
 		})
 		os.Exit(1)
 	}
-
 	// Create multi-user service
 	multiUserService := multiuser.NewMultiUserService(repo, cfg, log)
+	if err := multiUserService.ReconcileInterruptedSyncRuns(); err != nil {
+		log.Error("Failed to reconcile interrupted sync runs", map[string]interface{}{
+			"error": err.Error(),
+		})
+		os.Exit(1)
+	}
 
 	// Initialize authentication system
-	log.Info("Initializing authentication system", nil)
+	log.Debug("Initializing authentication system", nil)
 	// Convert config.yaml auth config to internal auth config with env overrides
 	configAuth := &auth.ConfigAuth{
 		Enabled: cfg.Authentication.Enabled,
@@ -305,57 +310,11 @@ func main() {
 	} else {
 		log.Info("Authentication system disabled", nil)
 	}
-	// In Web UI mode, the sync service is managed per-profile through the multiUserService
-	// In simple mode, we'll create a one-off sync service
-	var syncService *sync.Service
-
-	if !cfg.Server.EnableWebUI {
-		// Simple mode: Create clients from config
-		audiobookshelfClient := audiobookshelf.NewClient(cfg.Audiobookshelf.URL, cfg.Audiobookshelf.Token)
-
-		// Build Hardcover client config from global settings
-		hcCfg := hardcover.DefaultClientConfig()
-		if cfg.Hardcover.BaseURL != "" {
-			hcCfg.BaseURL = cfg.Hardcover.BaseURL
-		}
-		if cfg.RateLimit.Rate > 0 {
-			hcCfg.RateLimit = cfg.RateLimit.Rate
-		}
-		if cfg.RateLimit.Burst > 0 {
-			hcCfg.Burst = cfg.RateLimit.Burst
-		}
-		if cfg.RateLimit.MaxConcurrent > 0 {
-			hcCfg.MaxConcurrent = cfg.RateLimit.MaxConcurrent
-		}
-
-		log.Debug("Initializing Hardcover client (single-user)", map[string]interface{}{
-			"base_url":       hcCfg.BaseURL,
-			"rate_limit":     hcCfg.RateLimit.String(),
-			"burst":          hcCfg.Burst,
-			"max_concurrent": hcCfg.MaxConcurrent,
-		})
-
-		hardcoverClient := hardcover.NewClientWithConfig(hcCfg, cfg.Hardcover.Token, log)
-
-		// Create sync service with config
-		syncService, err = sync.NewService(audiobookshelfClient, hardcoverClient, cfg)
-		if err != nil {
-			log.Error("Failed to create sync service", map[string]interface{}{
-				"error": err.Error(),
-			})
-			os.Exit(1)
-		}
-	} else {
-		// Web UI mode: The sync service will be created per-profile by multiUserService
-		// We still need a dummy sync service for the API handler
-		syncService = &sync.Service{}
-	}
-
 	// Conditionally launch web UI based on configuration
 	var srv *server.Server
 	if cfg.Server.EnableWebUI {
 		// Create HTTP server with multi-user and authentication support
-		srv = server.New(fmt.Sprintf(":%s", cfg.Server.Port), multiUserService, authService, syncService, log)
+		srv = server.New(fmt.Sprintf(":%s", cfg.Server.Port), multiUserService, authService, log)
 
 		// Start the HTTP server
 		go func() {
@@ -399,7 +358,11 @@ func main() {
 		// Periodic sync
 		go func() {
 			// Initial sync after delay
-			<-initialSyncTicker.C
+			select {
+			case <-initialSyncTicker.C:
+			case <-ctx.Done():
+				return
+			}
 			profiles, err := multiUserService.ListProfiles()
 			if err != nil {
 				log.Error("Failed to list profiles for initial sync", map[string]interface{}{
@@ -407,14 +370,11 @@ func main() {
 				})
 			} else {
 				for _, profile := range profiles {
-					log.Info("Starting initial sync for profile", map[string]interface{}{
-						"profile_id": profile.ID,
-					})
 					go func(profileID string) {
-						log.Info("Starting initial sync for profile", map[string]interface{}{
+						log.Debug("Starting initial sync for profile", map[string]interface{}{
 							"profile_id": profileID,
 						})
-						if err := multiUserService.StartSync(profileID); err != nil {
+						if _, err := multiUserService.StartSyncWithAcceptedRun(profileID); err != nil {
 							log.Error("Failed to start sync for profile", map[string]interface{}{
 								"profile_id": profileID,
 								"error":      err.Error(),
@@ -438,25 +398,25 @@ func main() {
 					}
 
 					for _, profile := range profiles {
-						// Skip if profile is already syncing
-						if multiUserService.IsProfileSyncing(profile.ID) {
-							log.Debug("Sync already in progress for profile, skipping", map[string]interface{}{
-								"profile_id": profile.ID,
-							})
-							continue
-						}
-
-						log.Info("Starting periodic sync for profile", map[string]interface{}{
-							"profile_id": profile.ID,
-						})
-
 						go func(profileID string) {
-							if err := multiUserService.StartSync(profileID); err != nil {
+							accepted, err := multiUserService.StartSyncWithAcceptedRun(profileID)
+							if errors.Is(err, multiuser.ErrSyncAlreadyActive) {
+								log.Debug("Sync already in progress for profile, skipping", map[string]interface{}{
+									"profile_id": profileID,
+								})
+								return
+							}
+							if err != nil {
 								log.Error("Failed to start sync for profile", map[string]interface{}{
 									"profile_id": profileID,
 									"error":      err.Error(),
 								})
+								return
 							}
+							log.Debug("Started periodic sync for profile", map[string]interface{}{
+								"profile_id": profileID,
+								"run_id":     accepted.RunID,
+							})
 						}(profile.ID)
 					}
 
@@ -485,25 +445,35 @@ func main() {
 	// Cancel any ongoing operations
 	stop()
 
-	// Signal any background goroutines to stop
-	close(abortCh)
+	// Close sync admission, cancel active runs, and drain workers before the
+	// database deferred cleanup runs.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
+	defer cancel()
+	if err := multiUserService.Shutdown(shutdownCtx); err != nil {
+		// Do not explicitly close the database while a timed-out cancellation may
+		// still be unwinding. Process exit will reclaim it safely.
+		closeDatabase = false
+		log.Error("Error during sync service shutdown", map[string]interface{}{
+			"error": err.Error(),
+		})
+	}
 
 	// Shutdown HTTP server with configured timeout (only if web UI is enabled)
 	if cfg.Server.EnableWebUI && srv != nil {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
-		defer cancel()
-
-		log.Info("Initiating graceful shutdown...", map[string]interface{}{
+		log.Debug("Initiating graceful shutdown...", map[string]interface{}{
 			"timeout": cfg.Server.ShutdownTimeout.String(),
 		})
 
-		if err := srv.Shutdown(shutdownCtx); err != nil {
+		serverShutdownCtx, serverCancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
+		err := srv.Shutdown(serverShutdownCtx)
+		serverCancel()
+		if err != nil {
 			log.Error("Error during server shutdown", map[string]interface{}{
 				"error": err.Error(),
 			})
 		}
 	} else {
-		log.Info("Web UI disabled - no HTTP server to shutdown", nil)
+		log.Debug("Web UI disabled - no HTTP server to shutdown", nil)
 	}
 
 	log.Info("Shutdown completed", nil)

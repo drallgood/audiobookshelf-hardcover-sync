@@ -38,8 +38,8 @@ func TestClient_CheckBookOwnership(t *testing.T) {
 					"name": "Owned",
 					"list_books": []map[string]interface{}{
 						{
-							"id":        1,
-							"book_id":   123,
+							"id":         1,
+							"book_id":    123,
 							"edition_id": nil,
 						},
 					},
@@ -54,8 +54,8 @@ func TestClient_CheckBookOwnership(t *testing.T) {
 			bookID: "456",
 			mockResponse: []map[string]interface{}{
 				{
-					"id":   1,
-					"name": "Owned",
+					"id":         1,
+					"name":       "Owned",
 					"list_books": []map[string]interface{}{}, // Empty list for 'not owned'
 				},
 			},
@@ -68,8 +68,8 @@ func TestClient_CheckBookOwnership(t *testing.T) {
 			bookID: "123",
 			mockResponse: []map[string]interface{}{
 				{
-					"id":        1,
-					"name":      "Owned",
+					"id":         1,
+					"name":       "Owned",
 					"list_books": []map[string]interface{}{},
 				},
 			},
@@ -78,9 +78,9 @@ func TestClient_CheckBookOwnership(t *testing.T) {
 			expectError:    false,
 		},
 		{
-			name:   "no owned list",
-			bookID: "123",
-			mockResponse: []map[string]interface{}{},
+			name:           "no owned list",
+			bookID:         "123",
+			mockResponse:   []map[string]interface{}{},
 			mockStatusCode: http.StatusOK,
 			expected:       false,
 			expectError:    false,
@@ -115,12 +115,12 @@ func TestClient_CheckBookOwnership(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				// Set content type for JSON responses
 				w.Header().Set("Content-Type", "application/json")
-				
+
 				// Check if this is a GetCurrentUserID query and handle it if it is
 				if HandleGetCurrentUserIDQuery(t, w, r) {
 					return
 				}
-				
+
 				// Parse the request body
 				body, err := io.ReadAll(r.Body)
 				if err != nil {
@@ -129,10 +129,10 @@ func TestClient_CheckBookOwnership(t *testing.T) {
 					_, err := w.Write([]byte(`{"error": "Failed to read request body"}`))
 					if err != nil {
 						t.Fatalf("Failed to write error response: %v", err)
-					}  
+					}
 					return
 				}
-				
+
 				// Parse GraphQL request
 				var req map[string]interface{}
 				if err := json.Unmarshal(body, &req); err != nil {
@@ -141,16 +141,16 @@ func TestClient_CheckBookOwnership(t *testing.T) {
 					_, err := w.Write([]byte(`{"error": "Invalid JSON"}`))
 					if err != nil {
 						t.Fatalf("Failed to write error response: %v", err)
-					}  
+					}
 					return
 				}
-				
+
 				// Extract GraphQL query and variables
 				query, _ := req["query"].(string)
 				vars, _ := req["variables"].(map[string]interface{})
-				
+
 				t.Logf("Received GraphQL query: %s with variables: %+v", query, vars)
-				
+
 				if strings.Contains(query, "CheckBookOwnership") {
 					// Handle CheckBookOwnership query
 					// Log bookId from variables for debugging
@@ -176,7 +176,7 @@ func TestClient_CheckBookOwnership(t *testing.T) {
 						if err != nil {
 							t.Fatalf("Failed to write GraphQL error response: %v", err)
 						}
-					
+
 					case "http error":
 						// Handle HTTP error - use raw text response without JSON wrapper
 						t.Logf("Returning HTTP error response for test case: %s", tt.name)
@@ -189,25 +189,25 @@ func TestClient_CheckBookOwnership(t *testing.T) {
 						if err != nil {
 							t.Fatalf("Failed to write error message: %v", err)
 						}
-					
+
 					default:
 						// Handle normal cases
 						t.Logf("Sending response for test case: %s", tt.name)
 						var responseJSON []byte
 						var err error
-						
+
 						// The CheckBookOwnership function expects data.lists structure
 						responseWrapper := map[string]interface{}{
 							"data": map[string]interface{}{
 								"lists": tt.mockResponse,
 							},
 						}
-						
+
 						responseJSON, err = json.Marshal(responseWrapper)
 						if err != nil {
 							t.Fatalf("Failed to marshal mock response: %v", err)
 						}
-						
+
 						w.WriteHeader(tt.mockStatusCode)
 						t.Logf("Sending response for %s: %s", tt.name, string(responseJSON))
 						_, err = w.Write(responseJSON)
@@ -219,10 +219,10 @@ func TestClient_CheckBookOwnership(t *testing.T) {
 					// Unknown GraphQL query
 					t.Logf("Unhandled GraphQL query: %s", query)
 					w.WriteHeader(http.StatusBadRequest)
-					_, err := w.Write([]byte(`{"error": "Unhandled GraphQL query"}`)) 
+					_, err := w.Write([]byte(`{"error": "Unhandled GraphQL query"}`))
 					if err != nil {
 						t.Fatalf("Failed to write error response: %v", err)
-					} 
+					}
 				}
 			}))
 			defer server.Close()
@@ -232,7 +232,7 @@ func TestClient_CheckBookOwnership(t *testing.T) {
 
 			// Convert bookID from string to int
 			bookIDInt, _ := strconv.Atoi(tt.bookID)
-			
+
 			// Special handling for specific test cases
 			switch tt.name {
 			case "graphql error", "http error":
@@ -243,7 +243,7 @@ func TestClient_CheckBookOwnership(t *testing.T) {
 				t.Logf("Received expected error for %s: %v", tt.name, err)
 				return
 			}
-			
+
 			// Call the method being tested for non-error cases
 			isOwned, err := client.CheckBookOwnership(context.Background(), bookIDInt)
 

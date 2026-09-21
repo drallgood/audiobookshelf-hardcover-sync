@@ -54,12 +54,12 @@ func TestClient_GetUserBook(t *testing.T) {
 			},
 			mockStatusCode: http.StatusOK,
 			expected: &models.HardcoverBook{
-				ID:           "456",
-				Title:        "Test Book",
-				UserBookID:   "123",
-				BookStatusID: 2, // READING status
-				EditionID:    "789",
-				EditionASIN:  "B00TEST123",
+				ID:            "456",
+				Title:         "Test Book",
+				UserBookID:    "123",
+				BookStatusID:  2, // READING status
+				EditionID:     "789",
+				EditionASIN:   "B00TEST123",
 				EditionISBN13: "9781234567890",
 				EditionISBN10: "1234567890",
 			},
@@ -92,12 +92,12 @@ func TestClient_GetUserBook(t *testing.T) {
 			},
 			mockStatusCode: http.StatusOK,
 			expected: &models.HardcoverBook{
-				ID:           "789",
-				Title:        "Finished Book",
-				UserBookID:   "456",
-				BookStatusID: 3, // FINISHED/READ status
-				EditionID:    "101",
-				EditionASIN:  "B00DONE456",
+				ID:            "789",
+				Title:         "Finished Book",
+				UserBookID:    "456",
+				BookStatusID:  3, // FINISHED/READ status
+				EditionID:     "101",
+				EditionASIN:   "B00DONE456",
 				EditionISBN13: "9780987654321",
 				EditionISBN10: "0987654321",
 			},
@@ -148,7 +148,7 @@ func TestClient_GetUserBook(t *testing.T) {
 				if HandleGetCurrentUserIDQuery(t, w, r) {
 					return
 				}
-				
+
 				// Set the status code
 				w.WriteHeader(tt.mockStatusCode)
 

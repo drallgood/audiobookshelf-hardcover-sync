@@ -19,11 +19,14 @@ Automatically syncs your Audiobookshelf library with Hardcover, including readin
 - **👥 Multiple Sync Profiles**: Each profile can have individual Audiobookshelf and Hardcover tokens
 - **🔒 Secure Storage**: All API tokens encrypted at rest with AES-256-GCM
 - **🔄 Concurrent Syncing**: Multiple profiles can sync simultaneously
-- **📊 Real-Time Monitoring**: Live sync status with auto-refresh
+- **📊 Real-Time Monitoring**: Live sync status with quiet auto-refresh and automatic retry after a temporary profile-load failure
 - **🔧 REST API**: Complete programmatic control via RESTful endpoints
 - **⬆️ Automatic Migration**: Seamless upgrade from single-profile setups
-- **🔙 Backwards Compatible**: All existing functionality preserved
 - **🚀 Cache Busting**: Automatic cache invalidation ensures profiles always get the latest UI updates
+
+### Browser support
+
+The web interface supports desktop Chrome 84+, Edge 84+, Firefox 74+, and Safari 15+, plus Safari on iOS 15.5+. These minimums account for optional chaining in the untranspiled JavaScript, flexbox `gap` in the layout, and `focus({ preventScroll: true })` when live status cards update. The loading overlay's background blur is decorative and may differ between supported browsers. Other mobile browsers may scroll when focus is restored during a status update.
 
 ### Quick Start (Multi-User)
 
@@ -63,10 +66,47 @@ Existing single-profile setups are **automatically migrated** on first startup:
 | `PUT` | `/api/profiles/{id}` | Update profile |
 | `DELETE` | `/api/profiles/{id}` | Delete profile |
 | `PUT` | `/api/profiles/{id}/config` | Update profile configuration |
-| `GET` | `/api/profiles/{id}/status` | Get sync status |
+| `GET` | `/api/profiles/{id}/runs/{runId}/details` | Get book-level details for a retained sync run |
 | `POST` | `/api/profiles/{id}/sync` | Start sync |
 | `DELETE` | `/api/profiles/{id}/sync` | Cancel sync |
 | `GET` | `/api/status` | All profile statuses |
+
+### Current-run sync status
+
+The Sync Status page shows the current run for each profile, including its
+progress and outcome counts. Select **View Details** to see the books in each
+category. Each result includes its Audiobookshelf cover, format, and series
+position when available, and its title links to the Audiobookshelf library
+item. Known Hardcover books link to Hardcover; a needs-review result instead
+shows the Hardcover candidate's series when available and links the candidate
+title, its ASIN to Audible, and its ISBN to a Goodreads search.
+
+Each processed book is counted once as `synced`, `already_current`, `skipped`,
+`needs_review`, `not_found`, `failed`, or dry-run `would_sync`. A total of zero
+means the number of books is not known yet, so the processed count may still
+increase. A sync start durably reserves an accepted `queued` run before worker
+launch; the HTTP response may race processing. The status card then follows that run through `running`,
+`finalizing`, and its terminal phase. Canceled and failed runs retain their
+partial counts, including unattempted candidates. The card distinguishes the
+last attempted run from the last successful non-dry-run run, and labels active
+dry runs without implying that Hardcover was changed.
+
+The service retains the newest 10 terminal run reports per profile by default. Set
+`database.sync_run_report_retention` or `DATABASE_SYNC_RUN_REPORT_RETENTION` to change
+the retention window. View Details can open
+the report for an exact run ID, including a completed, canceled, or failed run,
+so the latest report remains available after a restart. While a run is active,
+an empty missing-books category means `No missing books reported in this run
+so far`; after a terminal run it means `No missing books reported in this run`.
+
+For API clients, `GET /api/status` provides a lightweight snapshot with the run
+ID, start time, state, totals, and outcome counts, but no book-level records.
+Book-level outcomes and unredacted run errors are available from the authenticated
+`GET /api/profiles/{id}/runs/{runId}/details` route; run IDs outside the retained
+history return `404`. Clients can filter `book_outcomes` for `needs_review`,
+`not_found`, and `failed` records. `last_attempted_at` includes dry-run,
+failed, and canceled attempts; `last_successful_at` is updated only by a
+successful non-dry-run completion.
 
 ### Environment Variables (Multi-Profile)
 
@@ -74,13 +114,14 @@ Existing single-profile setups are **automatically migrated** on first startup:
 |----------|-------------|:-------:|
 | `ENCRYPTION_KEY` | Base64-encoded 32-byte encryption key (auto-generated if not set) | Auto-generated |
 | `DATA_DIR` | Directory for database and encryption files | `./data` |
+| `DATABASE_SYNC_RUN_REPORT_RETENTION` | Terminal run reports retained per profile | `10` |
 
 ### Security Features
 
 - **Token Encryption**: All API tokens encrypted at rest
 - **Profile Management**: Full CRUD operations for sync profiles data
 - **Secure Key Management**: Auto-generated encryption keys
-- **Token Masking**: Sensitive data masked in API responses
+- **Token Redaction**: Profile API responses never return Audiobookshelf or Hardcover tokens
 - **Directory Protection**: Static file serving with traversal protection
 
 ---
@@ -156,10 +197,9 @@ The project follows standard Go project layout:
 - **🌐 Web Interface**: Modern, responsive management dashboard at `http://localhost:8080`
 - **🔒 Secure Storage**: AES-256-GCM encrypted token storage
 - **🔄 Concurrent Syncing**: Multiple users can sync simultaneously
-- **📊 Real-Time Monitoring**: Live sync status with auto-refresh
+- **📊 Real-Time Monitoring**: Live sync status with quiet auto-refresh and automatic retry after a temporary profile-load failure
 - **🔧 REST API**: Complete programmatic control via RESTful endpoints
 - **⬆️ Automatic Migration**: Seamless upgrade from single-user setups
-- **🔙 Backwards Compatible**: All existing functionality preserved
 
 ### 📚 Core Sync Features
 - **Full Library Sync**: Syncs your entire Audiobookshelf library with Hardcover
@@ -168,7 +208,9 @@ The project follows standard Go project layout:
 - **Incremental Sync**: Efficient state-based syncing to only process changed books
   - Tracks sync state between runs
   - Configurable minimum change threshold
-  - Persistent state storage
+  - Checkpoints changed state after each processed book (except dry runs); each run still scans the library from the beginning
+  - For books that would be newly matched, an item explicitly marked finished or computed at 100% progress without `finished_at` is excluded from Hardcover matching until a finished date is available. This fix applies to new matches and does not repair existing reads created with the old sync-time synthetic date.
+
 - **Smart Caching**: Intelligent caching of author/narrator lookups with cross-role discovery
 - **Enhanced Progress Detection**: Uses `/api/me` endpoint for accurate finished book detection, preventing false re-read scenarios
 
@@ -465,8 +507,14 @@ export KEYCLOAK_REDIRECT_URI="https://your-app.example.com/auth/callback/oidc"
 ### User Roles
 
 - **Admin**: Full access, user management, system configuration
-- **User**: Sync functionality, personal configurations
-- **Viewer**: Read-only access to sync status
+- **User**: Sync functionality and read/write access to owned profiles
+- **Viewer**: Read-only access to owned profiles
+
+When authentication is enabled, profiles created before ownership was recorded
+remain active and continue to run scheduled syncs. Administrators can still
+manage them, but regular users and viewers cannot see or use them. To give a
+regular user control of one, create a new profile while signed in as that user,
+then have an administrator remove the old profile to prevent duplicate syncs.
 
 ### Security Features
 
@@ -493,7 +541,6 @@ server:
 # Rate limiting configuration
 rate_limit:
   rate: "2s"            # Minimum time between requests (30 requests per minute)
-  burst: 1              # Maximum number of requests in a burst
   max_concurrent: 1     # Maximum number of concurrent requests
 
 # Logging configuration
@@ -520,10 +567,9 @@ sync:
   minimum_progress: 0.01  # Minimum progress threshold (0.0 to 1.0)
   sync_want_to_read: true  # Sync books with 0% progress as "Want to Read"
   sync_owned: true        # Mark synced books as owned in Hardcover
-  include_ebooks: false    # Include items with media type "ebook" in sync
+  include_ebooks: false    # Include ebook-only Audiobookshelf items in sync
   process_unread_books: false  # Process books with 0% progress for mismatches and want-to-read status
   preserve_dnf: true      # Preserve books marked as "Did Not Finish" in Hardcover
-  mismatch_output_dir: "./mismatches"  # Directory to store mismatch JSON files
   dry_run: false           # Enable dry run mode (no changes will be made)
   test_book_filter: ""    # Filter books by title for testing
   test_book_limit: 0       # Limit number of books to process for testing (0 = no limit)
@@ -606,10 +652,9 @@ paths:
 | `LOG_FORMAT` | Log output format | `json` | `json`, `text` |
 | `HARDCOVER_BASE_URL` | Hardcover GraphQL API base URL | `https://api.hardcover.app/v1/graphql` | `https://api.hardcover.app/v1/graphql` |
 | `RATE_LIMIT_RATE` | Minimum time between Hardcover API requests | unset | `2s` (30 rpm) |
-| `RATE_LIMIT_BURST` | Max burst size for requests | unset | `1` |
 | `RATE_LIMIT_MAX_CONCURRENT` | Max concurrent requests | unset | `1` |
 
-**Single-User Mode (Legacy)** - For backwards compatibility (web UI disabled):
+**Headless Mode** - Existing configuration-file and environment-variable setup (web UI disabled):
 
 ### Configuration Modes
 
@@ -622,7 +667,7 @@ The application supports two distinct operating modes controlled by the `enable_
 - **Real-time monitoring** and control
 - **No token requirements** at startup (tokens configured via web UI)
 
-#### Single-User Mode (Legacy) - `enable_web_ui: false` (default)
+#### Headless Mode - `enable_web_ui: false` (default)
 - **Backward compatible** with existing setups
 - **Environment variable/configuration file** based token management
 - **No web interface** - runs as a service only
@@ -662,10 +707,9 @@ hardcover:
 | `HARDCOVER_TOKEN` | Hardcover API token | `hardcover.token` | Legacy mode only |
 | `HARDCOVER_BASE_URL` | Hardcover API base URL | `hardcover.base_url` | Override default endpoint |
 | `RATE_LIMIT_RATE` | Min time between requests | `rate_limit.rate` | e.g. `2s` (30 rpm) |
-| `RATE_LIMIT_BURST` | Burst size | `rate_limit.burst` | e.g. `1` |
 | `RATE_LIMIT_MAX_CONCURRENT` | Max concurrent requests | `rate_limit.max_concurrent` | e.g. `1` |
 | `SYNC_INTERVAL` | Time between automatic syncs | `sync.sync_interval` | Legacy mode only |
-| `SYNC_INCLUDE_EBOOKS` | Include items with media type "ebook" | `sync.include_ebooks` | Legacy mode only |
+| `SYNC_INCLUDE_EBOOKS` | Include ebook-only Audiobookshelf items | `sync.include_ebooks` | Legacy mode only |
 | `SYNC_LIBRARIES_INCLUDE` | Comma-separated list of libraries to include | `sync.libraries.include` | Legacy mode only |
 | `SYNC_LIBRARIES_EXCLUDE` | Comma-separated list of libraries to exclude | `sync.libraries.exclude` | Legacy mode only |
 
@@ -873,7 +917,7 @@ Use this workflow:
 
 1. **Find the mismatch details**
   - Open the sync summary in the web UI and inspect the mismatch entries.
-  - Optionally review JSON mismatch files in your configured `sync.mismatch_output_dir` (default: `./mismatches`).
+  - Optionally review JSON mismatch files in your configured `paths.mismatch_output_dir` (default: `./mismatches`). Multi-profile runs use an encoded profile-specific subdirectory beneath it.
 
 2. **Identify why matching failed**
   - Missing or incorrect identifiers in AudiobookShelf (ASIN/ISBN)

@@ -312,11 +312,11 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 				Title:         "Test Book",
 				AuthorIDs:     []int{}, // Empty slice when no authors found
 				AudioSeconds:  19800,
-				EditionFormat: "", // Empty for generic audiobooks (no ASIN)
-				EditionInfo:   "Unabridged",    // Updated to match new default
-				LanguageID:    1,               // Default values
-				CountryID:     1,               // Default values
-				PublisherID:   0,               // Default values
+				EditionFormat: "",           // Empty for generic audiobooks (no ASIN)
+				EditionInfo:   "Unabridged", // Updated to match new default
+				LanguageID:    1,            // Default values
+				CountryID:     1,            // Default values
+				PublisherID:   0,            // Default values
 			},
 		},
 		{
@@ -445,6 +445,7 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 
 // TestAddWithMetadata verifies that AddWithMetadata populates all required fields
 func TestAddWithMetadata(t *testing.T) {
+	collector := NewCollector()
 	// Setup
 	metadata := MediaMetadata{
 		Title:         "Test Book",
@@ -459,10 +460,10 @@ func TestAddWithMetadata(t *testing.T) {
 	}
 
 	// Call the function with a nil Hardcover client for testing
-	AddWithMetadata(metadata, "123", "edition123", "test reason", 3600, "abs123", nil, "")
+	collector.AddWithMetadata(metadata, "123", "edition123", "test reason", 3600, "abs123", nil, "")
 
 	// Get the added mismatch
-	mismatches := GetAll()
+	mismatches := collector.GetAll()
 	require.NotEmpty(t, mismatches, "Expected at least one mismatch")
 	mismatch := mismatches[len(mismatches)-1] // Get the last added mismatch
 
@@ -611,8 +612,7 @@ func TestSaveMismatchesJSONFileIndividual(t *testing.T) {
 	// Create a test config with the temp directory
 	cfg := newTestConfig(tempDir)
 
-	// Clear any existing mismatches
-	Clear()
+	collector := NewCollector()
 
 	// Add test mismatches
 	now := time.Now()
@@ -644,11 +644,11 @@ func TestSaveMismatchesJSONFileIndividual(t *testing.T) {
 	}
 
 	for _, m := range mismatches {
-		Add(m)
+		collector.Add(m)
 	}
 
 	// Save mismatches to files
-	if err = SaveToFile(ctx, hc, "", cfg); err != nil {
+	if err = collector.SaveToFile(ctx, hc, "", cfg); err != nil {
 		t.Fatalf("SaveToFile failed: %v", err)
 	}
 
@@ -792,7 +792,7 @@ func TestAddWithMetadata_RegionFallback(t *testing.T) {
 	}
 	defer func() { newAudnexClient = originalFactory }()
 
-	Clear()
+	collector := NewCollector()
 
 	metadata := MediaMetadata{
 		Title:         "Region Test Book",
@@ -803,9 +803,9 @@ func TestAddWithMetadata_RegionFallback(t *testing.T) {
 	}
 
 	// Test with "ca" region - should fail on "ca" and fall back to "us"
-	AddWithMetadata(metadata, "123", "edition123", "test reason", 3600, "abs123", nil, "ca")
+	collector.AddWithMetadata(metadata, "123", "edition123", "test reason", 3600, "abs123", nil, "ca")
 
-	mismatches := GetAll()
+	mismatches := collector.GetAll()
 	require.NotEmpty(t, mismatches, "Expected at least one mismatch")
 	m := mismatches[len(mismatches)-1]
 
@@ -851,7 +851,7 @@ func TestAddWithMetadata_RegionSucceedsOnFirstTry(t *testing.T) {
 	}
 	defer func() { newAudnexClient = originalFactory }()
 
-	Clear()
+	collector := NewCollector()
 
 	metadata := MediaMetadata{
 		Title:         "Direct Hit",
@@ -861,9 +861,9 @@ func TestAddWithMetadata_RegionSucceedsOnFirstTry(t *testing.T) {
 	}
 
 	// Test with "uk" region - should succeed on first try, no fallback needed
-	AddWithMetadata(metadata, "456", "edition456", "test reason", 3600, "abs456", nil, "uk")
+	collector.AddWithMetadata(metadata, "456", "edition456", "test reason", 3600, "abs456", nil, "uk")
 
-	mismatches := GetAll()
+	mismatches := collector.GetAll()
 	require.NotEmpty(t, mismatches)
 	m := mismatches[len(mismatches)-1]
 
@@ -909,7 +909,7 @@ func TestAddWithMetadata_NoRegionSet(t *testing.T) {
 	}
 	defer func() { newAudnexClient = originalFactory }()
 
-	Clear()
+	collector := NewCollector()
 
 	metadata := MediaMetadata{
 		Title:         "No Region",
@@ -918,9 +918,9 @@ func TestAddWithMetadata_NoRegionSet(t *testing.T) {
 		PublishedDate: "2024-01-01",
 	}
 
-	AddWithMetadata(metadata, "789", "edition789", "test reason", 3600, "abs789", nil, "")
+	collector.AddWithMetadata(metadata, "789", "edition789", "test reason", 3600, "abs789", nil, "")
 
-	mismatches := GetAll()
+	mismatches := collector.GetAll()
 	require.NotEmpty(t, mismatches)
 	m := mismatches[len(mismatches)-1]
 
