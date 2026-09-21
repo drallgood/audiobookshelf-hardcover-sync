@@ -48,15 +48,10 @@ func getAudnexRegionFromCtx(ctx context.Context) string {
 	return "us"
 }
 
-// getReadingFormatFromCtx extracts a normalized reading format string from context, if present.
-func getReadingFormatFromCtx(ctx context.Context) (string, bool) {
-	return models.ReadingFormatFromContext(ctx)
-}
-
 // readingFormatIDFromCtx maps the reading format carried by ctx to Hardcover's
 // reading_format id, defaulting to audiobook when none (or an unknown one) is set.
 func readingFormatIDFromCtx(ctx context.Context) int {
-	format, _ := getReadingFormatFromCtx(ctx)
+	format, _ := models.ReadingFormatFromContext(ctx)
 	return models.ReadingFormatID(format)
 }
 
