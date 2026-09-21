@@ -1,0 +1,207 @@
+// Package draft builds a Hardcover edition draft from an Audiobookshelf item.
+//
+// It lives beside, not inside, package edition because it reuses the mismatch
+// pipeline (mismatch imports the Hardcover client, which imports edition).
+package draft
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/url"
+	"strconv"
+	"strings"
+
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
+)
+
+// draftReason labels the throwaway mismatch record used to build a draft.
+const draftReason = "Edition draft requested from Sync Status"
+
+// Draft is a previewable, editable Hardcover edition built from an
+// Audiobookshelf item. The JSON tags are the API contract for the
+// edition-draft endpoint.
+type Draft struct {
+	HardcoverBookID    int      `json:"hardcover_book_id"`
+	Title              string   `json:"title"`
+	Subtitle           string   `json:"subtitle"`
+	ASIN               string   `json:"asin"`
+	ISBN10             string   `json:"isbn_10"`
+	ISBN13             string   `json:"isbn_13"`
+	ReleaseDate        string   `json:"release_date"`
+	EditionInformation string   `json:"edition_information"`
+	EditionFormat      string   `json:"edition_format"`
+	ReadingFormat      string   `json:"reading_format"`
+	AudioSeconds       int      `json:"audio_seconds"`
+	LanguageID         int      `json:"language_id"`
+	CountryID          int      `json:"country_id"`
+	AuthorIDs          []int    `json:"author_ids"`
+	NarratorIDs        []int    `json:"narrator_ids"`
+	PublisherID        int      `json:"publisher_id"`
+	AuthorNames        string   `json:"author_names"`
+	NarratorNames      string   `json:"narrator_names"`
+	PublisherName      string   `json:"publisher_name"`
+	CoverURL           string   `json:"cover_url"`
+	DryRun             bool     `json:"dry_run"`
+	Warnings           []string `json:"warnings"`
+}
+
+// CoverURL returns the server-controlled Audiobookshelf cover URL for an item,
+// or "" when the item has no cover or no usable base URL. It is the only image
+// URL a draft may carry, because the edition creator can attach the
+// Audiobookshelf token to the image download.
+func CoverURL(absBaseURL string, absBook models.AudiobookshelfBook) string {
+	if absBook.ID == "" || absBook.Media.CoverPath == "" {
+		return ""
+	}
+	base, err := url.Parse(strings.TrimSpace(absBaseURL))
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return ""
+	}
+	// Never carry credentials, query data, or a fragment into the image URL.
+	base.User = nil
+	base.RawQuery = ""
+	base.Fragment = ""
+	return fmt.Sprintf("%s/api/items/%s/cover", strings.TrimRight(base.String(), "/"), url.PathEscape(absBook.ID))
+}
+
+// New builds a draft for absBook using the existing mismatch export pipeline.
+// hardcoverBookID is the book the edition will attach to; it always overrides
+// whatever Hardcover candidate enrichment guessed. Author, narrator, and
+// publisher IDs are resolved through hc, so this issues Hardcover read queries.
+func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID int, absBaseURL string, hc hardcover.HardcoverClientInterface, audnexRegion string) (*Draft, error) {
+	if hc == nil {
+		return nil, errors.New("hardcover client is required")
+	}
+	if hardcoverBookID <= 0 {
+		return nil, errors.New("hardcover book id is required")
+	}
+	if absBook.ID == "" {
+		return nil, errors.New("audiobookshelf item id is required")
+	}
+
+	coverURL := CoverURL(absBaseURL, absBook)
+	meta := absBook.Media.Metadata
+	readingFormat := absBook.ReadingFormat()
+	ebook := readingFormat == models.ReadingFormatEbook
+	narrator := meta.NarratorName
+	if ebook {
+		// Narrators and audio length only apply to audiobooks.
+		narrator = ""
+	}
+
+	record := mismatch.NewCollector().AddWithMetadata(
+		mismatch.MediaMetadata{
+			Title:         meta.Title,
+			Subtitle:      meta.Subtitle,
+			AuthorName:    meta.AuthorName,
+			NarratorName:  narrator,
+			Publisher:     meta.Publisher,
+			PublishedYear: meta.PublishedYear,
+			ISBN:          meta.ISBN,
+			ASIN:          meta.ASIN,
+			CoverURL:      coverURL,
+			Duration:      absBook.Media.Duration,
+			LibraryID:     absBook.LibraryID,
+			ReadingFormat: readingFormat,
+		},
+		absBook.ID,
+		"",
+		draftReason,
+		absBook.Media.Duration,
+		absBook.ID,
+		hc,
+		audnexRegion,
+	)
+	record.HardcoverBookID = strconv.Itoa(hardcoverBookID)
+
+	if logger.FromContext(ctx) == nil {
+		ctx = logger.WithLogger(ctx, logger.Get())
+	}
+	export := record.ToEditionExport(ctx, hc)
+	if export == nil {
+		return nil, errors.New("edition export was not produced")
+	}
+
+	d := &Draft{
+		HardcoverBookID:    hardcoverBookID,
+		Title:              export.Title,
+		Subtitle:           export.Subtitle,
+		ASIN:               export.ASIN,
+		ISBN10:             export.ISBN10,
+		ISBN13:             export.ISBN13,
+		ReleaseDate:        export.ReleaseDate,
+		EditionInformation: export.EditionInfo,
+		EditionFormat:      export.EditionFormat,
+		ReadingFormat:      readingFormat,
+		AudioSeconds:       export.AudioSeconds,
+		LanguageID:         export.LanguageID,
+		CountryID:          export.CountryID,
+		AuthorIDs:          nonNilInts(export.AuthorIDs),
+		NarratorIDs:        nonNilInts(export.NarratorIDs),
+		PublisherID:        export.PublisherID,
+		CoverURL:           coverURL,
+	}
+	if export.Info != nil {
+		d.AuthorNames = export.Info.AuthorName
+		d.NarratorNames = export.Info.NarratorName
+		d.PublisherName = export.Info.PublisherName
+	}
+	d.fillCounterpartISBN()
+	d.Warnings = d.buildWarnings()
+	return d, nil
+}
+
+// fillCounterpartISBN sets the missing ISBN form when the other can be derived
+// from it, so the draft carries both and Hardcover can match either. The user
+// can edit both before creating the edition.
+func (d *Draft) fillCounterpartISBN() {
+	switch {
+	case d.ISBN13 != "" && d.ISBN10 == "":
+		if parsed, ok := isbn.Parse(d.ISBN13); ok {
+			d.ISBN10 = parsed.ISBN10()
+		}
+	case d.ISBN10 != "" && d.ISBN13 == "":
+		if parsed, ok := isbn.Parse(d.ISBN10); ok {
+			d.ISBN13 = parsed.ISBN13()
+		}
+	}
+}
+
+// buildWarnings lists conditions the user should know about before creating
+// the edition. The first one (no author) makes creation fail validation.
+func (d *Draft) buildWarnings() []string {
+	warnings := []string{}
+	if len(d.AuthorIDs) == 0 {
+		if d.AuthorNames == "" {
+			warnings = append(warnings, "The Audiobookshelf item has no author, and an author is required to create an edition.")
+		} else {
+			warnings = append(warnings, fmt.Sprintf("No Hardcover author matched %q, and an author is required to create an edition.", d.AuthorNames))
+		}
+	}
+	if d.ReleaseDate == "" {
+		warnings = append(warnings, "No release date is available, so the edition will have none.")
+	}
+	if d.PublisherID == 0 && d.PublisherName != "" {
+		warnings = append(warnings, fmt.Sprintf("Publisher %q was not found on Hardcover, so the edition will have no publisher.", d.PublisherName))
+	}
+	if len(d.NarratorIDs) == 0 && d.ReadingFormat != models.ReadingFormatEbook {
+		if d.NarratorNames == "" {
+			warnings = append(warnings, "The Audiobookshelf item lists no narrator, so the edition will have none.")
+		} else {
+			warnings = append(warnings, fmt.Sprintf("No Hardcover narrator matched %q, so the edition will have none.", d.NarratorNames))
+		}
+	}
+	return warnings
+}
+
+func nonNilInts(ids []int) []int {
+	if ids == nil {
+		return []int{}
+	}
+	return ids
+}

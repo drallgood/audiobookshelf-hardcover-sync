@@ -278,8 +278,8 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 	// Extract ISBN10 and ISBN13 from metadata.ISBN if it's set
 	isbn10, isbn13 := isbn.Split(metadata.ISBN)
 
-	// Publisher values. A zero ID means the publisher is unresolved; the
-	// export writes 0 rather than guessing a publisher.
+	// Publisher values. A zero ID means the publisher is unresolved; downstream
+	// edition creation omits the publisher rather than guessing one.
 	publisherID := 0
 	publisherName := metadata.Publisher
 
