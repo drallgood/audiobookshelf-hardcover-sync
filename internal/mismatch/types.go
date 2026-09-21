@@ -94,8 +94,11 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 	// Default to empty string if we don't know
 	editionInfo := ""
 	audioSeconds := b.DurationSeconds
+	// ebook is matched case-insensitively, so export the canonical value.
+	readingFormat := b.ReadingFormat
 	if ebook {
 		audioSeconds = 0
+		readingFormat = models.ReadingFormatEbook
 	}
 
 	// If EditionInfo is already set in the mismatch, check if it's valid
@@ -187,7 +190,7 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 		ReleaseDate:   b.ReleaseDate,
 		AudioSeconds:  audioSeconds,
 		EditionFormat: editionFormat,
-		ReadingFormat: b.ReadingFormat,
+		ReadingFormat: readingFormat,
 		EditionInfo:   editionInfo,
 		LanguageID:    languageID,
 		CountryID:     countryID,

@@ -735,11 +735,6 @@ func saveToFile(ctx context.Context, hc hardcover.HardcoverClientInterface, outp
 		// Use the provided context and Hardcover client for author/narrator lookups
 		export := mismatch.ToEditionExport(ctx, hc)
 
-		// Set edition information if not already set - only include platform info, not debug/error details
-		if export.EditionInfo == "" {
-			export.EditionInfo = "Audiobookshelf"
-		}
-
 		// Convert to JSON with indentation for readability
 		jsonData, err := json.MarshalIndent(export, "", "  ")
 		if err != nil {

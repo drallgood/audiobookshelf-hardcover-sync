@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -99,5 +101,35 @@ func TestEbookMismatchExportsAnEbookEdition(t *testing.T) {
 			require.Equal(t, tt.wantInfo, export.EditionInfo)
 			require.Equal(t, tt.wantAudioSecs, export.AudioSeconds)
 		})
+	}
+}
+
+// TestSavedExportKeepsTheCanonicalReadingFormatAndNoPlatformInfo checks the
+// written edition files: an ebook is exported as "ebook" however the record
+// spelled it, and its edition information stays empty (the importer sends it
+// as the edition's information) while an audiobook keeps "Unabridged".
+func TestSavedExportKeepsTheCanonicalReadingFormatAndNoPlatformInfo(t *testing.T) {
+	dir := t.TempDir()
+	records := []BookMismatch{
+		{BookID: "1", Title: "Ebook", ReadingFormat: "Ebook"},
+		{BookID: "2", Title: "Audiobook", DurationSeconds: 60},
+	}
+
+	ctx := logger.WithLogger(context.Background(), logger.Get())
+	require.NoError(t, saveToFile(ctx, nil, dir, nil, records))
+
+	files, err := filepath.Glob(filepath.Join(dir, "edition_*.json"))
+	require.NoError(t, err)
+	require.Len(t, files, 2)
+
+	want := []struct{ reading, info string }{{"ebook", ""}, {"", "Unabridged"}}
+	for i, file := range files {
+		data, err := os.ReadFile(file)
+		require.NoError(t, err)
+		var got map[string]interface{}
+		require.NoError(t, json.Unmarshal(data, &got))
+		reading, _ := got["reading_format"].(string)
+		require.Equal(t, want[i].reading, reading, file)
+		require.Equal(t, want[i].info, got["edition_information"], file)
 	}
 }
