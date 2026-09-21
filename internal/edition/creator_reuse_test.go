@@ -143,7 +143,7 @@ func TestCreateEdition_ReusesOnlyAnEditionOfTheSameBook(t *testing.T) {
 			case err != nil:
 				t.Fatalf("CreateEdition() error = %v", err)
 			default:
-				if result.EditionID != 555 || result.Existing != tt.wantExisting || result.ImageID != 0 {
+				if result.EditionID != 555 || result.Existing != tt.wantExisting || result.ImageError != "" || result.ImageID != 0 {
 					t.Errorf("CreateEdition() = %+v, want the untouched existing edition 555", result)
 				}
 			}
@@ -202,7 +202,7 @@ func TestCreateEdition_DetectsAnExistingEditionByEveryIdentifierBeforeInserting(
 					t.Errorf("CreateEdition() = %+v, want the newly created edition 777", result)
 				}
 			default:
-				if result.EditionID != 555 || !result.Existing || result.ImageID != 0 {
+				if result.EditionID != 555 || !result.Existing || result.ImageError != "" || result.ImageID != 0 {
 					t.Errorf("CreateEdition() = %+v, want the untouched existing edition 555", result)
 				}
 			}

@@ -47,6 +47,10 @@ type EditionResult struct {
 	Success   bool `json:"success"`
 	EditionID int  `json:"edition_id"`
 	ImageID   int  `json:"image_id"`
+	// ImageError is set when a cover was requested but could not be attached.
+	// The edition itself was still created. It names the failed step only and
+	// never carries remote error text, URLs, or credentials.
+	ImageError string `json:"image_error,omitempty"`
 	// Existing is true when the edition was already on Hardcover for the same
 	// book and was reused. A reused edition is returned untouched: no cover or
 	// metadata is sent for it.
@@ -216,35 +220,38 @@ func (c *Creator) CreateEdition(ctx context.Context, input *EditionInput) (*Edit
 		return &EditionResult{Success: true, EditionID: editionID, Existing: true}, nil
 	}
 
-	// Step 2: If we have an image URL, upload it and update the edition
+	// Step 2: If we have an image URL, upload it and update the edition. A cover
+	// failure does not fail the creation; it is logged and reported on the result.
 	var imageID int
+	var imageError string
 	if input.ImageURL != "" {
 		// First upload the image to Google Cloud Storage
 		imageURL, uploadErr := c.uploadImageToGCS(ctx, editionID, input.ImageURL)
 		if uploadErr != nil {
 			c.log.Error("Failed to upload image to GCS, continuing without it",
 				map[string]interface{}{"error": uploadErr.Error()})
+			imageError = "cover image upload failed"
 		} else {
 			// Then create the image record with the edition ID
 			imageID, err = c.CreateImageRecord(ctx, editionID, imageURL)
 			if err != nil {
 				c.log.Error("Failed to create image record, continuing without it",
 					map[string]interface{}{"error": err.Error()})
-			} else {
+				imageError = "cover image record creation failed"
+			} else if updateErr := c.updateEditionImage(ctx, editionID, imageID); updateErr != nil {
 				// Finally, update the edition with the new image ID
-				updateErr := c.updateEditionImage(ctx, editionID, imageID)
-				if updateErr != nil {
-					c.log.Error("Failed to update edition with image ID, but continuing",
-						map[string]interface{}{"error": updateErr.Error()})
-				}
+				c.log.Error("Failed to update edition with image ID, but continuing",
+					map[string]interface{}{"error": updateErr.Error()})
+				imageError = "attaching the cover image to the edition failed"
 			}
 		}
 	}
 
 	return &EditionResult{
-		Success:   true,
-		EditionID: editionID,
-		ImageID:   imageID,
+		Success:    true,
+		EditionID:  editionID,
+		ImageID:    imageID,
+		ImageError: imageError,
 	}, nil
 }
 
