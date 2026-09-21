@@ -189,9 +189,11 @@ func NewCreator(client HardcoverClient, log *logger.Logger, dryRun bool, audiobo
 			// net/http already forwards it only to the same host or a subdomain
 			// and strips it for other hosts, so re-adding it would leak the
 			// Audiobookshelf or Hardcover token to wherever a redirect leads.
-			// It is also dropped on an https -> http downgrade, which net/http
-			// would otherwise allow for the same host.
-			if prev := via[len(via)-1]; prev.URL.Scheme == "https" && req.URL.Scheme != "https" {
+			// net/http rebuilds every hop's headers from the original request,
+			// so it would also send the token in cleartext on any same-host
+			// http hop after an https -> http downgrade. A request that started
+			// on https therefore never sends Authorization over a non-https hop.
+			if via[0].URL.Scheme == "https" && req.URL.Scheme != "https" {
 				req.Header.Del("Authorization")
 			}
 			return nil
