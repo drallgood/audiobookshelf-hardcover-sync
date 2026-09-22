@@ -148,9 +148,9 @@ envelope.
   each ISBN's own check digit is correct, as Hardcover's own fields of the
   same name do. An audiobook Audiobookshelf marks abridged has
   `edition_information: "Abridged"` instead of the default `"Unabridged"`. The
-  route returns `409` for a book whose Audiobookshelf item has no ASIN or valid
-  ISBN, because an edition created for it could not be matched by a sync; add
-  one in Audiobookshelf first. Warnings flag
+  route returns `409` for a book whose Audiobookshelf item has no ASIN or
+  parseable ISBN, because an edition created for it could not be
+  matched by a sync; add one in Audiobookshelf first. Warnings flag
   things to review before an edition is created: no author that could be
   resolved on Hardcover (creation would then fail), no release date, a
   publisher not found on Hardcover, no narrator, an ISBN with an incorrect
@@ -176,7 +176,7 @@ Errors:
 | `401` | Authentication is enabled and the request is not authenticated |
 | `403` | The caller is a viewer without write permission |
 | `404` | Profile (including another user's profile), run, book record, or Audiobookshelf item not found |
-| `409` | The book is not `needs_review` or has no numeric Hardcover book ID, its Audiobookshelf item has no ASIN or valid ISBN, or the profile is being deleted |
+| `409` | The book is not `needs_review` or has no numeric Hardcover book ID, its Audiobookshelf item has no ASIN or parseable ISBN, or the profile is being deleted |
 | `500` | Unexpected server failure |
 | `502` | Audiobookshelf or Hardcover failed; the message is generic and names only the service |
 | `503` | The service is shutting down |

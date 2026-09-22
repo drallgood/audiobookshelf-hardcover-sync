@@ -1,0 +1,34 @@
+{
+  "id": "item-audiobook",
+  "libraryId": "library",
+  "mediaType": "book",
+  "media": {
+    "id": "media-audiobook",
+    "metadata": {
+      "title": "Expanded Audiobook",
+      "subtitle": "A Fixture",
+      "authors": [
+        {
+          "id": "author-audio",
+          "name": "Fixture Author"
+        }
+      ],
+      "narrators": [
+        "Fixture Narrator"
+      ],
+      "authorName": "Fixture Author",
+      "narratorName": "Fixture Narrator",
+      "publishedYear": "2020",
+      "publishedDate": "2020-06-15",
+      "publisher": "Fixture Publisher",
+      "isbn": "978-0-306-40615-8",
+      "asin": null,
+      "language": "German",
+      "abridged": true
+    },
+    "coverPath": "/metadata/items/item-audiobook/cover.jpg",
+    "duration": 33854.905,
+    "numTracks": 24,
+    "ebookFile": null
+  }
+}

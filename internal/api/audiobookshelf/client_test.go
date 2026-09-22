@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -332,24 +334,48 @@ func TestGetListeningSessions(t *testing.T) {
 }
 
 func TestGetLibraryItem(t *testing.T) {
-	t.Run("returns the expanded item", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			assert.Equal(t, "/api/items/li_abc", r.URL.Path)
-			assert.Equal(t, "1", r.URL.Query().Get("expanded"))
-			assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"id":"li_abc","libraryId":"lib1","mediaType":"book","media":{"duration":3600.5,"metadata":{"title":"A Title","authorName":"An Author","narratorName":"A Narrator","asin":"B000000000"}}}`))
-		}))
-		defer server.Close()
+	for _, tt := range []struct {
+		name          string
+		fixture       string
+		itemID        string
+		title         string
+		publishedDate string
+		language      string
+		abridged      bool
+		ebook         bool
+	}{
+		{
+			name: "decodes a real expanded audiobook shape", fixture: "expanded-audiobook.json",
+			itemID: "item-audiobook", title: "Expanded Audiobook", publishedDate: "2020-06-15",
+			language: "German", abridged: true,
+		},
+		{
+			name: "decodes a real expanded ebook shape", fixture: "expanded-ebook.json",
+			itemID: "item-ebook", title: "Expanded Ebook", language: "English", ebook: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			payload, err := os.ReadFile(filepath.Join("testdata", tt.fixture))
+			require.NoError(t, err)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/api/items/"+tt.itemID, r.URL.Path)
+				assert.Equal(t, "1", r.URL.Query().Get("expanded"))
+				assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(payload)
+			}))
+			defer server.Close()
 
-		book, err := NewClient(server.URL, "test-token").GetLibraryItem(context.Background(), "li_abc")
-		require.NoError(t, err)
-		assert.Equal(t, "li_abc", book.ID)
-		assert.Equal(t, "A Title", book.Media.Metadata.Title)
-		assert.Equal(t, "A Narrator", book.Media.Metadata.NarratorName)
-		assert.Equal(t, "B000000000", book.Media.Metadata.ASIN)
-		assert.InDelta(t, 3600.5, book.Media.Duration, 0.001)
-	})
+			book, err := NewClient(server.URL, "test-token").GetLibraryItem(context.Background(), tt.itemID)
+			require.NoError(t, err)
+			assert.Equal(t, tt.itemID, book.ID)
+			assert.Equal(t, tt.title, book.Media.Metadata.Title)
+			assert.Equal(t, tt.publishedDate, book.Media.Metadata.PublishedDate)
+			assert.Equal(t, tt.language, book.Media.Metadata.Language)
+			assert.Equal(t, tt.abridged, book.Media.Metadata.Abridged)
+			assert.Equal(t, tt.ebook, book.IsEbook())
+		})
+	}
 
 	t.Run("escapes the item ID in the path", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

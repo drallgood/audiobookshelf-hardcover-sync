@@ -649,7 +649,7 @@ paths:
     get:
       tags: [Editions]
       summary: Get a draft Hardcover edition for a needs-review book
-      description: Builds a draft of a new Hardcover edition from the Audiobookshelf item of a book that a run with available details (the active run or a retained one) marked needs_review and that has a Hardcover candidate (hardcover_book_id). Hyphens and spaces are removed from the ISBN, and when it is valid the draft also fills the other ISBN form. The item must have an ASIN or a valid ISBN, otherwise the request is rejected with 409. Requires write permission on the *profile* for authorization purposes (previewing shares the mutation admission checks with creating), but this endpoint only reads: it needs no `write:catalog:append` on the profile's Hardcover token, only the read scopes (`read:library`, `read:catalog`) the sync token already has. The profile's Audiobookshelf token is used only on the server to fetch the item and is never returned.
+      description: Builds a draft of a new Hardcover edition from the Audiobookshelf item of a book that a run with available details (the active run or a retained one) marked needs_review and that has a Hardcover candidate (hardcover_book_id). Hyphens and spaces are removed from the ISBN, and when its checksum is valid the draft also fills the other ISBN form. The item must have an ASIN or a parseable ISBN, otherwise the request is rejected with 409. Requires write permission on the *profile* for authorization purposes (previewing shares the mutation admission checks with creating), but this endpoint only reads: it needs no `write:catalog:append` on the profile's Hardcover token, only the read scopes (`read:library`, `read:catalog`) the sync token already has. The profile's Audiobookshelf token is used only on the server to fetch the item and is never returned.
       parameters:
         - name: profileId
           in: path
@@ -702,7 +702,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: The book is not needs_review or has no numeric Hardcover book ID, its Audiobookshelf item has no ASIN or valid ISBN, or the profile is being deleted
+          description: The book is not needs_review or has no numeric Hardcover book ID, its Audiobookshelf item has no ASIN or parseable ISBN, or the profile is being deleted
           content:
             application/json:
               schema:

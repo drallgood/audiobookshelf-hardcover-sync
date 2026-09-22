@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -36,6 +37,15 @@ func editionAPIItem(id, title, author, coverPath string) map[string]interface{} 
 			"duration":  3600.0,
 		},
 	}
+}
+
+func expandedEditionAPIItem(t *testing.T, name string) map[string]interface{} {
+	t.Helper()
+	payload, err := os.ReadFile(filepath.Join("audiobookshelf", "testdata", name))
+	require.NoError(t, err)
+	var item map[string]interface{}
+	require.NoError(t, json.Unmarshal(payload, &item))
+	return item
 }
 
 type editionAPIFixture struct {
@@ -232,6 +242,66 @@ func TestGetEditionDraftForAnEbook(t *testing.T) {
 	require.EqualValues(t, 0, data["audio_seconds"])
 	require.Equal(t, []interface{}{}, data["narrator_ids"])
 
+	require.Empty(t, f.hardcover.RecordedMutations())
+}
+
+func TestGetEditionDraftMapsExpandedAudiobookAtHTTPBoundary(t *testing.T) {
+	item := expandedEditionAPIItem(t, "expanded-audiobook.json")
+	f := newEditionAPIFixture(t, false,
+		[]syncsvc.BookOutcomeRecord{reviewRecord("item-audiobook", "4242")},
+		map[string]map[string]interface{}{"item-audiobook": item},
+	)
+	f.hardcover.Authors["Fixture Author"] = 55
+
+	response := f.do(http.MethodGet, editionBasePath+"item-audiobook/edition-draft", "")
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	data := decodeEnvelope(t, response).Data
+	require.Equal(t, "Expanded Audiobook", data["title"])
+	require.Equal(t, "2020-06-15", data["release_date"])
+	require.Equal(t, "Abridged", data["edition_information"])
+	require.Equal(t, "audiobook", data["reading_format"])
+	require.EqualValues(t, 33855, data["audio_seconds"])
+	require.Equal(t, "9780306406158", data["isbn_13"])
+	require.Equal(t, "", data["isbn_10"])
+	require.Equal(t, false, data["isbn_13_valid"])
+	require.Equal(t, []interface{}{float64(55)}, data["author_ids"])
+
+	warnings, ok := data["warnings"].([]interface{})
+	require.True(t, ok)
+	warningText := make([]string, 0, len(warnings))
+	for _, warning := range warnings {
+		warningText = append(warningText, warning.(string))
+	}
+	require.Contains(t, strings.Join(warningText, "\n"), "Fixture Publisher")
+	require.Contains(t, strings.Join(warningText, "\n"), "Fixture Narrator")
+	require.Contains(t, strings.Join(warningText, "\n"), "incorrect check digit")
+	require.Contains(t, strings.Join(warningText, "\n"), "tagged \"German\"")
+	require.Empty(t, f.hardcover.RecordedMutations())
+}
+
+func TestGetEditionDraftMapsExpandedEbookAtHTTPBoundary(t *testing.T) {
+	item := expandedEditionAPIItem(t, "expanded-ebook.json")
+	f := newEditionAPIFixture(t, false,
+		[]syncsvc.BookOutcomeRecord{reviewRecord("item-ebook", "4242")},
+		map[string]map[string]interface{}{"item-ebook": item},
+	)
+	f.hardcover.Authors["Ebook Fixture Author"] = 66
+
+	response := f.do(http.MethodGet, editionBasePath+"item-ebook/edition-draft", "")
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	data := decodeEnvelope(t, response).Data
+	require.Equal(t, "Expanded Ebook", data["title"])
+	require.Equal(t, "2019-01-01", data["release_date"])
+	require.Equal(t, "ebook", data["reading_format"])
+	require.Equal(t, "Ebook", data["edition_format"])
+	require.EqualValues(t, 0, data["audio_seconds"])
+	require.Equal(t, "9780525505143", data["isbn_13"])
+	require.Equal(t, "0525505148", data["isbn_10"])
+	require.Equal(t, true, data["isbn_13_valid"])
+	require.Equal(t, true, data["isbn_10_valid"])
+	require.Equal(t, []interface{}{float64(66)}, data["author_ids"])
+	require.Equal(t, []interface{}{}, data["narrator_ids"])
+	require.Equal(t, []interface{}{}, data["warnings"])
 	require.Empty(t, f.hardcover.RecordedMutations())
 }
 

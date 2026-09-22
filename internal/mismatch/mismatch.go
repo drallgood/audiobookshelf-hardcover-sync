@@ -75,6 +75,15 @@ func (c *Collector) Add(book BookMismatch) {
 // to this collector and returns the enriched record. If hc is provided, it
 // will be used to look up publisher and other metadata.
 func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, reason string, duration float64, audiobookShelfID string, hc hardcover.HardcoverClientInterface, audnexusRegion string) BookMismatch {
+	return c.AddWithMetadataContext(context.Background(), metadata, bookID, editionID, reason, duration, audiobookShelfID, hc, audnexusRegion)
+}
+
+// AddWithMetadataContext is AddWithMetadata with caller-controlled cancellation
+// for every Audnex and Hardcover lookup performed during enrichment.
+func (c *Collector) AddWithMetadataContext(parent context.Context, metadata MediaMetadata, bookID, editionID, reason string, duration float64, audiobookShelfID string, hc hardcover.HardcoverClientInterface, audnexusRegion string) BookMismatch {
+	if parent == nil {
+		parent = context.Background()
+	}
 	// Create a logger
 	log := logger.Get()
 
@@ -126,7 +135,7 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 		})
 
 		// Create a context with timeout for the ASIN lookup
-		ctx, cancel := context.WithTimeout(hardcover.WithAudnexRegion(context.Background(), audnexusRegion), 15*time.Second)
+		ctx, cancel := context.WithTimeout(hardcover.WithAudnexRegion(parent, audnexusRegion), 15*time.Second)
 		defer cancel()
 
 		// Create Audnex client and log the creation
@@ -291,7 +300,7 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 	// If we have a Hardcover client and a publisher name, try to look up the publisher ID
 	if hc != nil && publisherName != "" {
 		// Create a context with timeout for the publisher lookup
-		ctx, cancel := context.WithTimeout(hardcover.WithAudnexRegion(context.Background(), audnexusRegion), 10*time.Second)
+		ctx, cancel := context.WithTimeout(hardcover.WithAudnexRegion(parent, audnexusRegion), 10*time.Second)
 		defer cancel()
 
 		// Look up the publisher ID
@@ -383,7 +392,7 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 		})
 
 		// The lookups below must resolve editions of the source item's own format.
-		ctx, cancel := context.WithTimeout(hardcover.WithReadingFormat(hardcover.WithAudnexRegion(context.Background(), audnexusRegion), metadata.ReadingFormat), 10*time.Second)
+		ctx, cancel := context.WithTimeout(hardcover.WithReadingFormat(hardcover.WithAudnexRegion(parent, audnexusRegion), metadata.ReadingFormat), 10*time.Second)
 		defer cancel()
 
 		// Helper to apply Hardcover book details to mismatch

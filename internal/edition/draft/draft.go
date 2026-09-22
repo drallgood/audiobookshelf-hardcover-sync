@@ -118,7 +118,8 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 		narrator = ""
 	}
 
-	record := mismatch.NewCollector().AddWithMetadata(
+	record := mismatch.NewCollector().AddWithMetadataContext(
+		ctx,
 		mismatch.MediaMetadata{
 			Title:         meta.Title,
 			Subtitle:      meta.Subtitle,
@@ -143,12 +144,18 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 		hc,
 		audnexRegion,
 	)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	record.HardcoverBookID = strconv.Itoa(hardcoverBookID)
 
 	if logger.FromContext(ctx) == nil {
 		ctx = logger.WithLogger(ctx, logger.Get())
 	}
 	export := record.ToEditionExport(ctx, hc)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if export == nil {
 		return nil, errors.New("edition export was not produced")
 	}

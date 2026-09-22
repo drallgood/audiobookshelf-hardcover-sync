@@ -52,3 +52,31 @@ func TestInFlightEditionDraftDoesNotDelayShutdown(t *testing.T) {
 		t.Fatal("the draft did not finish after release")
 	}
 }
+
+func TestPrepareEditionDraftStopsOnCallerCancellation(t *testing.T) {
+	f := newHeldCreateFixture(t)
+	holdReads := make(chan struct{})
+	f.hardcover.HoldReads(holdReads)
+	t.Cleanup(f.hardcover.ReleaseHolds)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	draftDone := make(chan error, 1)
+	go func() {
+		_, err := f.service.PrepareEditionDraft(ctx, "profile-1", "run-1", "item-1")
+		draftDone <- err
+	}()
+
+	select {
+	case <-f.hardcover.ReadEntered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the draft never reached Hardcover")
+	}
+	cancel()
+
+	select {
+	case err := <-draftDone:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("the draft did not stop after its caller canceled")
+	}
+}

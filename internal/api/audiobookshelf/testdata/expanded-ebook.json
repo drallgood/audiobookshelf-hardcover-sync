@@ -1,0 +1,35 @@
+{
+  "id": "item-ebook",
+  "libraryId": "library",
+  "mediaType": "book",
+  "media": {
+    "id": "media-ebook",
+    "metadata": {
+      "title": "Expanded Ebook",
+      "authors": [
+        {
+          "id": "author-ebook",
+          "name": "Ebook Fixture Author"
+        }
+      ],
+      "narrators": [
+        "Narrator Not Used For Ebook"
+      ],
+      "authorName": "Ebook Fixture Author",
+      "narratorName": "Narrator Not Used For Ebook",
+      "publishedYear": "2019",
+      "publisher": "",
+      "isbn": "978-0-525-50514-3",
+      "asin": "B0768ZM5QH",
+      "language": "English",
+      "abridged": false
+    },
+    "coverPath": "/metadata/items/item-ebook/cover.jpg",
+    "duration": 0,
+    "numTracks": 0,
+    "ebookFile": {
+      "ebookFormat": "epub"
+    },
+    "ebookFormat": "epub"
+  }
+}
