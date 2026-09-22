@@ -252,3 +252,64 @@ func TestCreatorRedirectAuthorizationAcrossSchemeChains(t *testing.T) {
 		})
 	}
 }
+
+func TestCreatorRedirectAuthorizationStaysWithinConfiguredBase(t *testing.T) {
+	const (
+		origin  = "https://abs.home:1337/abs/api/items/li_1/cover"
+		baseURL = "https://abs.home:1337/abs"
+		token   = "Bearer abs-secret"
+	)
+	tests := []struct {
+		name       string
+		redirectTo string
+		wantAuth   string
+	}{
+		{
+			name:       "in-scope path keeps token",
+			redirectTo: "https://abs.home:1337/abs/api/items/li_1/cover-large",
+			wantAuth:   token,
+		},
+		{
+			name:       "outside path strips token",
+			redirectTo: "https://abs.home:1337/other/cover.jpg",
+		},
+		{
+			name:       "different port strips token",
+			redirectTo: "https://abs.home:1338/abs/api/items/li_1/cover",
+		},
+		{
+			name:       "subdomain strips token",
+			redirectTo: "https://cdn.abs.home:1337/abs/api/items/li_1/cover",
+		},
+		{
+			name:       "https downgrade strips token",
+			redirectTo: "http://abs.home:1337/abs/api/items/li_1/cover",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rt := &chainTransport{redirects: map[string]string{origin: tt.redirectTo}}
+			creator := NewCreator(nil, logger.Get(), false, "abs-secret")
+			creator.SetAudiobookshelfBaseURL(baseURL)
+			client := *creator.httpClient // keep production CheckRedirect, swap only the transport
+			client.Transport = rt
+
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, origin, nil)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			req.Header.Set("Authorization", token)
+
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+			resp.Body.Close()
+
+			if got := rt.auth[tt.redirectTo]; got != tt.wantAuth {
+				t.Errorf("Authorization at %s = %q, want %q", tt.redirectTo, got, tt.wantAuth)
+			}
+		})
+	}
+}

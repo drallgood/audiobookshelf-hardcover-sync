@@ -179,6 +179,12 @@ func (c *Creator) shouldSendAudiobookshelfToken(imageURL string) bool {
 	if c.audiobookshelfBaseURL == "" {
 		return strings.Contains(imageURL, "audiobookshelf")
 	}
+	return c.isAudiobookshelfURLInScope(imageURL)
+}
+
+// isAudiobookshelfURLInScope reports whether imageURL remains within the
+// configured Audiobookshelf scheme, host (including port), and path prefix.
+func (c *Creator) isAudiobookshelfURLInScope(imageURL string) bool {
 	base, err := url.Parse(c.audiobookshelfBaseURL)
 	if err != nil || base.Host == "" {
 		return false
@@ -192,6 +198,35 @@ func (c *Creator) shouldSendAudiobookshelfToken(imageURL string) bool {
 	}
 	basePath := strings.TrimRight(base.Path, "/")
 	return basePath == "" || target.Path == basePath || strings.HasPrefix(target.Path, basePath+"/")
+}
+
+// checkRedirect keeps sensitive headers within the same authorized origin.
+// When an Audiobookshelf base is configured, its complete URL scope also
+// applies to redirects; otherwise the initial request's exact scheme and host
+// (including port) are the scope. Go's default redirect policy allows
+// subdomains and ignores ports for sensitive headers, so those checks must be
+// stricter here.
+func (c *Creator) checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after 10 redirects")
+	}
+	if len(via) == 0 {
+		return nil
+	}
+
+	allowed := false
+	if c.audiobookshelfBaseURL != "" {
+		allowed = c.isAudiobookshelfURLInScope(via[0].URL.String()) &&
+			c.isAudiobookshelfURLInScope(req.URL.String())
+	} else {
+		initial := via[0].URL
+		allowed = strings.EqualFold(initial.Scheme, req.URL.Scheme) &&
+			strings.EqualFold(initial.Host, req.URL.Host)
+	}
+	if !allowed {
+		req.Header.Del("Authorization")
+	}
+	return nil
 }
 
 // NewCreator creates a new instance of the edition creator
@@ -215,32 +250,17 @@ func NewCreator(client HardcoverClient, log *logger.Logger, dryRun bool, audiobo
 	httpClient := &http.Client{
 		Transport: transport,
 		Timeout:   300 * time.Second, // 5 minute timeout for large uploads
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return fmt.Errorf("stopped after 10 redirects")
-			}
-			// Authorization is deliberately not copied from the first request:
-			// net/http already forwards it only to the same host or a subdomain
-			// and strips it for other hosts, so re-adding it would leak the
-			// Audiobookshelf or Hardcover token to wherever a redirect leads.
-			// net/http rebuilds every hop's headers from the original request,
-			// so it would also send the token in cleartext on any same-host
-			// http hop after an https -> http downgrade. A request that started
-			// on https therefore never sends Authorization over a non-https hop.
-			if via[0].URL.Scheme == "https" && req.URL.Scheme != "https" {
-				req.Header.Del("Authorization")
-			}
-			return nil
-		},
 	}
 
-	return &Creator{
+	creator := &Creator{
 		client:              client,
 		log:                 log,
 		dryRun:              dryRun,
 		audiobookshelfToken: audiobookshelfToken,
 		httpClient:          httpClient,
 	}
+	httpClient.CheckRedirect = creator.checkRedirect
+	return creator
 }
 
 // NewCreatorWithHTTPClient creates a new instance of the edition creator with a custom HTTP client

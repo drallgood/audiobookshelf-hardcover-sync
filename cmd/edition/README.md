@@ -9,7 +9,14 @@ This tool helps create and manage audiobook editions in Hardcover. It provides t
 
 ### Prerequisites
 - Docker installed on your system
-- Hardcover API token (set as `HARDCOVER_TOKEN` environment variable) with these scopes:
+- A `config.yaml` file with the Hardcover API token under `hardcover.token`:
+
+  ```yaml
+  hardcover:
+    token: your_token
+  ```
+
+  The token needs these scopes:
   - `read:library`
   - `write:library`
   - `read:catalog`
@@ -27,10 +34,10 @@ Generate a JSON template from an existing book:
 
 ```bash
 docker run --rm \
-  -e HARDCOVER_TOKEN=your_token \
-  -v $(pwd):/app \
+  -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
+  -v "$(pwd):/work" \
   ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest \
-  edition-tool prepopulate --book-id 12345 --output /app/edition.json
+  edition-tool --config /app/config.yaml prepopulate --book-id 12345 --output /work/edition.json
 ```
 
 #### Create a New Edition
@@ -38,10 +45,10 @@ Create a new edition using a JSON input file:
 
 ```bash
 docker run --rm \
-  -e HARDCOVER_TOKEN=your_token \
-  -v $(pwd):/app \
+  -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
+  -v "$(pwd):/work" \
   ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest \
-  edition-tool create --input /app/edition.json
+  edition-tool --config /app/config.yaml create --input /work/edition.json
 ```
 
 ### Advanced Options
@@ -51,10 +58,10 @@ Test without making any changes:
 
 ```bash
 docker run --rm \
-  -e HARDCOVER_TOKEN=your_token \
-  -v $(pwd):/app \
+  -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
+  -v "$(pwd):/work" \
   ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest \
-  edition-tool create --input /app/edition.json --dry-run
+  edition-tool --config /app/config.yaml --dry-run create --input /work/edition.json
 ```
 
 #### Interactive Mode
@@ -62,9 +69,9 @@ Run in interactive mode to be prompted for input:
 
 ```bash
 docker run -it --rm \
-  -e HARDCOVER_TOKEN=your_token \
+  -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
   ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest \
-  edition-tool create --interactive
+  edition-tool --config /app/config.yaml create --interactive
 ```
 
 ## Local Development
@@ -82,13 +89,13 @@ go build -o edition cmd/edition/main.go
 #### Prepopulate a Template
 
 ```bash
-HARDCOVER_TOKEN=your_token ./edition prepopulate --book-id 12345 --output edition.json
+./edition --config ./config.yaml prepopulate --book-id 12345 --output edition.json
 ```
 
 #### Create a New Edition
 
 ```bash
-HARDCOVER_TOKEN=your_token ./edition create --input edition.json
+./edition --config ./config.yaml create --input edition.json
 ```
 
 ## JSON Schema
@@ -125,7 +132,14 @@ exported for ebook items already carry `"reading_format": "ebook"`.
 
 ## Configuration
 
-The tool reads from the same `config.yaml` file as the main application. Make sure to configure your Hardcover API key and other settings there.
+The tool reads `config.yaml` by default, or another file supplied with
+`--config`. Configure the Hardcover API token in that file; the edition
+commands do not use `HARDCOVER_TOKEN` environment overrides.
+
+```yaml
+hardcover:
+  token: your_token
+```
 
 ## Examples
 
@@ -133,14 +147,14 @@ The tool reads from the same `config.yaml` file as the main application. Make su
 
 1. First, generate a template:
    ```bash
-   ./edition prepopulate --book-id 12345 --output my-audiobook.json
+   ./edition --config ./config.yaml prepopulate --book-id 12345 --output my-audiobook.json
    ```
 
 2. Edit the generated JSON file as needed
 
 3. Create the edition:
    ```bash
-   ./edition create --input my-audiobook.json
+   ./edition --config ./config.yaml create --input my-audiobook.json
    ```
 
    Before creating, the tool looks for an existing audiobook edition with the
@@ -158,7 +172,7 @@ The tool reads from the same `config.yaml` file as the main application. Make su
 ### Dry Run
 
 ```bash
-./edition create --input my-audiobook.json --dry-run
+./edition --config ./config.yaml --dry-run create --input my-audiobook.json
 ```
 
 ## Error Handling
