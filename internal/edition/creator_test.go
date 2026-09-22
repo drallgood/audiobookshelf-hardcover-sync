@@ -2121,29 +2121,6 @@ func TestNewCreator(t *testing.T) {
 	}
 }
 
-func TestNewCreatorTLSVerificationRequiresExplicitOptIn(t *testing.T) {
-	creator := edition.NewCreator(nil, logger.Get(), false, "")
-	reflectedCreator := reflect.ValueOf(creator).Elem()
-	httpClientField := reflectedCreator.FieldByName("httpClient")
-	httpClientField = reflect.NewAt(httpClientField.Type(), unsafe.Pointer(httpClientField.UnsafeAddr())).Elem()
-	httpClient := httpClientField.Interface().(*http.Client)
-
-	transport, ok := httpClient.Transport.(*http.Transport)
-	if !assert.True(t, ok) {
-		return
-	}
-	assert.Nil(t, transport.TLSClientConfig, "default transport should use Go's verified TLS settings")
-
-	creator.EnableInsecureTLS()
-	transport, ok = httpClient.Transport.(*http.Transport)
-	if !assert.True(t, ok) {
-		return
-	}
-	if assert.NotNil(t, transport.TLSClientConfig) {
-		assert.True(t, transport.TLSClientConfig.InsecureSkipVerify)
-	}
-}
-
 func TestMain(m *testing.M) {
 	// Run tests
 	code := m.Run()

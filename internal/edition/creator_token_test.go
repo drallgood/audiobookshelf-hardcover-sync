@@ -46,7 +46,7 @@ func TestCreatorAudiobookshelfTokenScoping(t *testing.T) {
 		{"scheme mismatch withheld", "https://abs.home", "http://abs.home/api/items/li_1/cover", false},
 		{"port mismatch withheld", "https://abs.home:13378", "https://abs.home/api/items/li_1/cover", false},
 		{"unset base withholds token", "", "https://audiobookshelf.example.com/api/items/li_1/cover", false},
-		{"unset base keeps legacy non-match", "", "https://abs.home/api/items/li_1/cover", false},
+		{"unset base withholds token for any host", "", "https://abs.home/api/items/li_1/cover", false},
 	}
 
 	for _, tt := range tests {
@@ -88,9 +88,9 @@ func TestCreatorEmptyBaseURLWithholdsToken(t *testing.T) {
 		imageURL  string
 		wantToken bool
 	}{
-		{"empty base, legacy match", "", "https://audiobookshelf.example.com/api/items/li_1/cover", false},
+		{"empty base withholds token", "", "https://audiobookshelf.example.com/api/items/li_1/cover", false},
 		{"empty base, non-matching host withheld", "", "https://abs.home/api/items/li_1/cover", false},
-		{"whitespace base, legacy match", "  \t", "https://audiobookshelf.example.com/api/items/li_1/cover", false},
+		{"whitespace base withholds token", "  \t", "https://audiobookshelf.example.com/api/items/li_1/cover", false},
 		{"whitespace base, non-matching host withheld", "  \t", "https://abs.home/api/items/li_1/cover", false},
 	}
 
@@ -126,7 +126,11 @@ func TestSetAudiobookshelfBaseURLValidation(t *testing.T) {
 		{name: "whitespace is unset", baseURL: " \t", wantStored: ""},
 		{name: "http is allowed", baseURL: "http://abs.home:13378", wantStored: "http://abs.home:13378"},
 		{name: "https path is allowed", baseURL: "https://abs.home/api", wantStored: "https://abs.home/api"},
-		{name: "scheme is required", baseURL: "abs.home:13378", wantErr: true},
+		// A bare host:port (no scheme) is the footgun a maintainer review
+		// flagged: it must not be silently misread or rejected outright, so
+		// it is normalized to https rather than failing the command.
+		{name: "bare host:port is normalized to https", baseURL: "abs.home:13378", wantStored: "https://abs.home:13378"},
+		{name: "bare hostname is normalized to https", baseURL: "abs.home", wantStored: "https://abs.home"},
 		{name: "host is required", baseURL: "https:///api", wantErr: true},
 		{name: "hostname is required", baseURL: "http://:13378", wantErr: true},
 		{name: "http or https is required", baseURL: "ftp://abs.home", wantErr: true},
@@ -143,5 +147,30 @@ func TestSetAudiobookshelfBaseURLValidation(t *testing.T) {
 				t.Errorf("stored base URL = %q, want %q", creator.audiobookshelfBaseURL, tt.wantStored)
 			}
 		})
+	}
+}
+
+// TestNewCreatorTLSVerificationRequiresExplicitOptIn is in package edition
+// (not edition_test) so it can read creator.httpClient directly, without the
+// reflect/unsafe access other tests in this package's external test file use.
+func TestNewCreatorTLSVerificationRequiresExplicitOptIn(t *testing.T) {
+	creator := NewCreator(nil, logger.Get(), false, "")
+
+	transport, ok := creator.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("httpClient.Transport = %T, want *http.Transport", creator.httpClient.Transport)
+	}
+	if transport.TLSClientConfig != nil {
+		t.Errorf("TLSClientConfig = %+v, want nil (Go's verified TLS settings) before EnableInsecureTLS", transport.TLSClientConfig)
+	}
+
+	creator.EnableInsecureTLS()
+
+	transport, ok = creator.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("httpClient.Transport = %T, want *http.Transport", creator.httpClient.Transport)
+	}
+	if transport.TLSClientConfig == nil || !transport.TLSClientConfig.InsecureSkipVerify {
+		t.Errorf("TLSClientConfig = %+v, want InsecureSkipVerify=true after EnableInsecureTLS", transport.TLSClientConfig)
 	}
 }

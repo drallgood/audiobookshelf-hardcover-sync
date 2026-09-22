@@ -167,9 +167,12 @@ func (c *Creator) EnableCoverUpload() {
 // EnableInsecureTLS opts this creator into skipping TLS certificate
 // verification. It is intended only for explicitly trusted development
 // environments; production callers leave the default verified transport in
-// place.
+// place. There is no production caller today. If the creator's HTTP client or
+// transport is not the kind this can modify, it logs a warning and leaves TLS
+// verification on rather than failing silently.
 func (c *Creator) EnableInsecureTLS() {
 	if c.httpClient == nil {
+		c.log.Warn("EnableInsecureTLS: no HTTP client to modify; TLS verification remains on", nil)
 		return
 	}
 
@@ -179,6 +182,9 @@ func (c *Creator) EnableInsecureTLS() {
 	}
 	transport, ok := baseTransport.(*http.Transport)
 	if !ok {
+		c.log.Warn("EnableInsecureTLS: transport is not *http.Transport; TLS verification remains on", map[string]interface{}{
+			"transport_type": fmt.Sprintf("%T", baseTransport),
+		})
 		return
 	}
 
@@ -196,7 +202,10 @@ func (c *Creator) EnableInsecureTLS() {
 
 // SetAudiobookshelfBaseURL restricts sending the Audiobookshelf token to image
 // URLs hosted under baseURL. An empty base URL is allowed, but leaves token
-// forwarding disabled. Non-empty values must be absolute HTTP or HTTPS URLs.
+// forwarding disabled. A bare host[:port] with no scheme (for example
+// "abs.home:13378", a self-hosted address a user might reasonably write) is
+// treated as https; anything else that is not an absolute http or https URL
+// with a host is rejected.
 func (c *Creator) SetAudiobookshelfBaseURL(baseURL string) error {
 	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
@@ -204,14 +213,34 @@ func (c *Creator) SetAudiobookshelfBaseURL(baseURL string) error {
 		return nil
 	}
 
-	parsed, err := url.Parse(baseURL)
-	if err != nil || !parsed.IsAbs() || parsed.Hostname() == "" ||
-		(!strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https")) {
-		return fmt.Errorf("Audiobookshelf base URL must be an absolute http or https URL with a host")
+	parsed, ok := parseHTTPBaseURL(baseURL)
+	if !ok && !strings.Contains(baseURL, "://") {
+		// A bare "host:port" (no scheme separator at all) parses with the
+		// host misread as an opaque scheme, so retry once assuming https.
+		// A value that already names some scheme (even an invalid one, or a
+		// valid scheme with a missing host) is not retried: it is rejected
+		// as given, so a real typo like "ftp://abs.home" still fails.
+		if withScheme, ok2 := parseHTTPBaseURL("https://" + baseURL); ok2 {
+			parsed, ok = withScheme, true
+		}
+	}
+	if !ok {
+		return fmt.Errorf("audiobookshelf base URL must be an absolute http or https URL with a host: %q", baseURL)
 	}
 
-	c.audiobookshelfBaseURL = baseURL
+	c.audiobookshelfBaseURL = parsed.String()
 	return nil
+}
+
+// parseHTTPBaseURL reports whether raw parses as an absolute http or https
+// URL with a non-empty host, returning the parsed URL when it does.
+func parseHTTPBaseURL(raw string) (*url.URL, bool) {
+	parsed, err := url.Parse(raw)
+	if err != nil || !parsed.IsAbs() || parsed.Hostname() == "" ||
+		(!strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https")) {
+		return nil, false
+	}
+	return parsed, true
 }
 
 // shouldSendAudiobookshelfToken reports whether imageURL is an Audiobookshelf
@@ -258,6 +287,17 @@ func canonicalURLPath(rawPath string) string {
 // (including port) are the scope. Go's default redirect policy allows
 // subdomains and ignores ports for sensitive headers, so those checks must be
 // stricter here.
+//
+// This policy is installed on the shared c.httpClient (see NewCreator), so it
+// also governs the hardcover.app upload-credentials request and the
+// subsequent GCS upload PUT, not only the Audiobookshelf cover download. Both
+// of those carry the Hardcover Authorization header (see uploadImageToGCS).
+// With an Audiobookshelf base configured (the production case, since every
+// command calls SetAudiobookshelfBaseURL), hardcover.app is never within that
+// scope, so a redirect on either request strips the header rather than
+// leaking it: safe, but it would silently fail the upload instead of
+// following the redirect. Today this only matters if EnableCoverUpload is
+// called, since no production caller does.
 func (c *Creator) checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= 10 {
 		return fmt.Errorf("stopped after 10 redirects")
