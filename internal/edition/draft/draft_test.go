@@ -3,6 +3,8 @@ package draft_test
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
 	"reflect"
 	"sort"
 	"strings"
@@ -84,6 +86,41 @@ func TestNew_UsesExactExpandedPeopleNames(t *testing.T) {
 	if d.AuthorNames != "Mara Author, Jr., Avery Exact Author" || d.NarratorNames != "Rae Reader, PhD, Sky Exact Narrator" {
 		t.Errorf("names = authors %q narrators %q, want trimmed expanded ABS names joined for display", d.AuthorNames, d.NarratorNames)
 	}
+}
+
+func TestNewTrimsASINForAudnexAndPreview(t *testing.T) {
+	previousTransport := http.DefaultTransport
+	var gotPath string
+	http.DefaultTransport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		gotPath = request.URL.Path
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"asin":"B0TRIMMED1","releaseDate":"2024-04-05"}`)),
+			Request:    request,
+		}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = previousTransport })
+
+	item := absItem(func(book *models.AudiobookshelfBook) {
+		book.Media.Metadata.ASIN = " \tB0TRIMMED1\n"
+	})
+	d, err := draft.New(context.Background(), item, 42, "")
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if gotPath != "/books/B0TRIMMED1" {
+		t.Errorf("Audnex request path = %q, want trimmed ASIN", gotPath)
+	}
+	if d.ASIN != "B0TRIMMED1" {
+		t.Errorf("draft ASIN = %q, want trimmed ASIN", d.ASIN)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
 }
 
 func TestNew_FallsBackToLegacyJoinedPeopleNames(t *testing.T) {

@@ -65,6 +65,7 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 	}
 
 	meta := absBook.Media.Metadata
+	asin := strings.TrimSpace(meta.ASIN)
 	readingFormat := absBook.ReadingFormat()
 	ebook := readingFormat == models.ReadingFormatEbook
 	var authorNames []string
@@ -90,7 +91,6 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 	if ebook {
 		// Narrators and audio length only apply to audiobooks.
 		narratorName = ""
-		narratorNames = nil
 	}
 	// Keep the publisher name as source metadata. Passing a nil Hardcover client
 	// to the shared mismatch pipeline prevents draft-time Hardcover lookups.
@@ -107,7 +107,7 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 			PublishedYear: meta.PublishedYear,
 			PublishedDate: meta.PublishedDate,
 			ISBN:          meta.ISBN,
-			ASIN:          meta.ASIN,
+			ASIN:          asin,
 			Duration:      absBook.Media.Duration,
 			LibraryID:     absBook.LibraryID,
 			ReadingFormat: readingFormat,
