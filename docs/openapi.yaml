@@ -382,7 +382,7 @@ components:
           description: True when the profile is in dry-run mode.
         warnings:
           type: array
-          description: Things to review before an edition is created, such as no author resolved on Hardcover (creation would then fail), no release date, a publisher not found on Hardcover, no narrator, an ISBN with an incorrect check digit (Hardcover will still store it as given), or an Audiobookshelf item tagged with a non-English language (the edition still defaults to language_id 1 and country_id 1). A warning can also result from a Hardcover lookup that failed rather than found nothing, for example during an outage, and fetching the draft again may clear it. Never null; empty when there is nothing to flag.
+          description: Things to review before an edition is created, such as no author resolved on Hardcover (creation would then fail), no release date, a publisher not found on Hardcover, no narrator, an ISBN with an incorrect check digit (Hardcover will still store it as given), or an Audiobookshelf item tagged with a non-English language (the edition still defaults to language_id 1 and country_id 1). Hardcover lookup failures return HTTP 502 instead of being represented as warnings. Never null; empty when there is nothing to flag.
           items: {type: string}
 
 security:

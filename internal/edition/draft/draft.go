@@ -72,6 +72,18 @@ type Draft struct {
 	Warnings           []string `json:"warnings"`
 }
 
+// UpstreamError reports a Hardcover lookup failure while preparing a draft.
+// The multi-user service translates it to its sanitized upstream response;
+// mismatch exports intentionally keep their historical best-effort behavior.
+type UpstreamError struct {
+	Err error
+}
+
+func (e *UpstreamError) Error() string {
+	return fmt.Sprintf("hardcover draft lookup failed: %v", e.Err)
+}
+func (e *UpstreamError) Unwrap() error { return e.Err }
+
 // New builds a draft for absBook using the existing mismatch export pipeline.
 // hardcoverBookID is the book the edition will attach to; it always overrides
 // whatever Hardcover candidate enrichment guessed. Author, narrator, and
@@ -95,6 +107,11 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 		// Narrators and audio length only apply to audiobooks.
 		narrator = ""
 	}
+	// AddWithMetadataContext performs a best-effort publisher lookup for
+	// ordinary mismatch exports. Drafts resolve publisher IDs strictly below,
+	// so leave this field blank during collection to guarantee exactly one
+	// authoritative publisher request.
+	publisherName := meta.Publisher
 
 	record := mismatch.NewCollector().AddWithMetadataContext(
 		ctx,
@@ -103,7 +120,7 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 			Subtitle:      meta.Subtitle,
 			AuthorName:    meta.AuthorName,
 			NarratorName:  narrator,
-			Publisher:     meta.Publisher,
+			Publisher:     "",
 			PublishedYear: meta.PublishedYear,
 			PublishedDate: meta.PublishedDate,
 			ISBN:          meta.ISBN,
@@ -121,15 +138,22 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 		hc,
 		audnexRegion,
 	)
+	record.Publisher = publisherName
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if err := resolveMetadataIDs(ctx, &record, hc); err != nil {
+		return nil, &UpstreamError{Err: err}
 	}
 	record.HardcoverBookID = strconv.Itoa(hardcoverBookID)
 
 	if logger.FromContext(ctx) == nil {
 		ctx = logger.WithLogger(ctx, logger.Get())
 	}
-	export := record.ToEditionExport(ctx, hc)
+	// Metadata IDs have already been resolved above. Passing a nil client keeps
+	// the shared exporter from repeating those lookups (and suppressing errors)
+	// while retaining its established field mapping.
+	export := record.ToEditionExport(ctx, nil)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -165,6 +189,39 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 	d.fillCounterpartISBN()
 	d.Warnings = d.buildWarnings(meta.Language)
 	return d, nil
+}
+
+// resolveMetadataIDs performs the three direct metadata lookups needed by an
+// edition draft. A successful empty result means that Hardcover has no match
+// and is deliberately not an error; transport, GraphQL, and timeout failures
+// are returned so the caller can report an upstream failure instead.
+func resolveMetadataIDs(ctx context.Context, record *mismatch.BookMismatch, hc hardcover.HardcoverClientInterface) error {
+	if hc == nil {
+		return errors.New("hardcover client is required")
+	}
+
+	if len(record.AuthorIDs) == 0 && record.Author != "" {
+		ids, err := mismatch.LookupAuthorIDsStrict(ctx, hc, record.Author)
+		if err != nil {
+			return fmt.Errorf("look up author %q: %w", record.Author, err)
+		}
+		record.AuthorIDs = ids
+	}
+	if len(record.NarratorIDs) == 0 && record.Narrator != "" {
+		ids, err := mismatch.LookupNarratorIDsStrict(ctx, hc, record.Narrator)
+		if err != nil {
+			return fmt.Errorf("look up narrator %q: %w", record.Narrator, err)
+		}
+		record.NarratorIDs = ids
+	}
+	if record.PublisherID == 0 && record.Publisher != "" {
+		id, err := mismatch.LookupPublisherID(ctx, hc, record.Publisher)
+		if err != nil {
+			return fmt.Errorf("look up publisher %q: %w", record.Publisher, err)
+		}
+		record.PublisherID = id
+	}
+	return nil
 }
 
 // fillCounterpartISBN sets the missing ISBN form when the other can be derived

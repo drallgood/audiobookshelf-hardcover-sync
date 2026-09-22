@@ -28,7 +28,12 @@ type fakeHardcover struct {
 	publishers map[string]string
 	// candidates is returned by SearchBooks, mimicking the title/author
 	// enrichment that can guess a different Hardcover book.
-	candidates []models.HardcoverBook
+	candidates        []models.HardcoverBook
+	authorErr         error
+	narratorErr       error
+	publisherErr      error
+	publisherCalls    int
+	publisherFailOnce bool
 }
 
 func (f *fakeHardcover) lookup(m map[string]string, name string) []models.Author {
@@ -39,18 +44,117 @@ func (f *fakeHardcover) lookup(m map[string]string, name string) []models.Author
 }
 
 func (f *fakeHardcover) SearchAuthors(_ context.Context, name string, _ int) ([]models.Author, error) {
+	if f.authorErr != nil {
+		return nil, f.authorErr
+	}
 	return f.lookup(f.authors, name), nil
 }
 
 func (f *fakeHardcover) SearchNarrators(_ context.Context, name string, _ int) ([]models.Author, error) {
+	if f.narratorErr != nil {
+		return nil, f.narratorErr
+	}
 	return f.lookup(f.narrators, name), nil
 }
 
 func (f *fakeHardcover) SearchPublishers(_ context.Context, name string, _ int) ([]models.Publisher, error) {
+	f.publisherCalls++
+	if f.publisherFailOnce && f.publisherCalls == 1 {
+		return nil, f.publisherErr
+	}
+	if f.publisherErr != nil && !f.publisherFailOnce {
+		return nil, f.publisherErr
+	}
 	if id, ok := f.publishers[name]; ok {
 		return []models.Publisher{{ID: id, Name: name}}, nil
 	}
 	return nil, nil
+}
+
+func TestNew_DoesNotRetryAFailedPublisherLookup(t *testing.T) {
+	hc := &fakeHardcover{
+		publishers:        map[string]string{"Draftwright House": "303"},
+		publisherErr:      errors.New("publisher transport failed"),
+		publisherFailOnce: true,
+	}
+
+	_, err := draft.New(context.Background(), absItem(nil), 42, hc, "")
+	if err == nil {
+		t.Fatal("New() error = nil, want the first publisher lookup failure")
+	}
+	var upstream *draft.UpstreamError
+	if !errors.As(err, &upstream) {
+		t.Fatalf("New() error = %v, want draft.UpstreamError", err)
+	}
+	if hc.publisherCalls != 1 {
+		t.Errorf("publisher lookup calls = %d, want exactly one", hc.publisherCalls)
+	}
+}
+
+func TestNew_PropagatesMetadataLookupFailures(t *testing.T) {
+	tests := []struct {
+		name   string
+		client func(*fakeHardcover)
+		want   string
+	}{
+		{
+			name:   "author",
+			client: func(hc *fakeHardcover) { hc.authorErr = errors.New("author transport failed") },
+			want:   "look up author",
+		},
+		{
+			name: "narrator",
+			client: func(hc *fakeHardcover) {
+				hc.authors = map[string]string{"Ada Draftwright": "101"}
+				hc.narratorErr = errors.New("narrator GraphQL failed")
+			},
+			want: "look up narrator",
+		},
+		{
+			name: "publisher",
+			client: func(hc *fakeHardcover) {
+				hc.authors = map[string]string{"Ada Draftwright": "101"}
+				hc.narrators = map[string]string{"Nora Voicer": "202"}
+				hc.publisherErr = errors.New("publisher timeout")
+			},
+			want: "look up publisher",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hc := &fakeHardcover{}
+			tt.client(hc)
+			_, err := draft.New(context.Background(), absItem(nil), 42, hc, "")
+			if err == nil {
+				t.Fatal("New() error = nil, want a Hardcover lookup error")
+			}
+			var upstream *draft.UpstreamError
+			if !errors.As(err, &upstream) {
+				t.Fatalf("New() error = %v, want draft.UpstreamError", err)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("New() error = %q, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestNew_NoMetadataMatchesRemainsSuccessful(t *testing.T) {
+	d, err := draft.New(context.Background(), absItem(func(b *models.AudiobookshelfBook) {
+		b.Media.Metadata.AuthorName = "No Match Author"
+		b.Media.Metadata.NarratorName = "No Match Narrator"
+		b.Media.Metadata.Publisher = "No Match Publisher"
+	}), 42, &fakeHardcover{}, "")
+	if err != nil {
+		t.Fatalf("New() error = %v, want nil for successful no-match lookups", err)
+	}
+	if len(d.AuthorIDs) != 0 || len(d.NarratorIDs) != 0 || d.PublisherID != 0 {
+		t.Fatalf("resolved metadata = authors %v, narrators %v, publisher %d; want no matches", d.AuthorIDs, d.NarratorIDs, d.PublisherID)
+	}
+	if !strings.Contains(strings.Join(d.Warnings, "\n"), "No Hardcover author matched") {
+		t.Errorf("Warnings = %v, want unresolved-author warning", d.Warnings)
+	}
 }
 
 func (f *fakeHardcover) SearchBooks(context.Context, string, string) ([]models.HardcoverBook, error) {

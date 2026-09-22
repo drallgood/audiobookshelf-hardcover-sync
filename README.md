@@ -156,9 +156,8 @@ envelope.
   check digit (Hardcover still stores it as given, so this is informational,
   not a blocker), and an Audiobookshelf item tagged with a non-English
   language (the edition still defaults to `language_id: 1` and
-  `country_id: 1`). A warning can also come
-  from a Hardcover lookup that failed rather than found nothing, for example
-  during an outage; fetching the draft again may clear it.
+  `country_id: 1`). A failed Hardcover lookup returns `502` so the client can
+  distinguish an upstream outage from metadata that genuinely has no match.
 - **Ebooks**: an Audiobookshelf item that has an ebook file and no audio (the
   same rule the sync uses) drafts an ebook edition: `reading_format` is `ebook`,
   `edition_format` defaults to `Ebook`, and there are no narrators or

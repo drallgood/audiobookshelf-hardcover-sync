@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -80,6 +81,28 @@ func newEditionAPIFixture(t *testing.T, dryRun bool, records []syncsvc.BookOutco
 	root.Handle("/api/", apiMux)
 
 	return &editionAPIFixture{statusServiceFixture: fixture, routes: root, hardcover: hardcover, abs: abs}
+}
+
+func newEditionAPIFixtureForHardcoverURL(t *testing.T, dryRun bool, records []syncsvc.BookOutcomeRecord, items map[string]map[string]interface{}, hardcoverURL string) *editionAPIFixture {
+	t.Helper()
+	abs := editiontest.NewAudiobookshelfFake(t, items)
+	fixture := newStatusServiceFixture(t, hardcoverURL)
+	require.NoError(t, fixture.repo.CreateProfile(
+		editionProfileID, "Edition profile", abs.URL, "abs-secret-token", "hc-secret-token",
+		database.SyncConfigData{
+			StateFile:          filepath.Join(fixture.dataDir, "sync-state.json"),
+			ProcessUnreadBooks: true,
+			DryRun:             dryRun,
+		},
+	))
+	seedEditionRun(t, fixture.repo, records)
+
+	handler := NewHandler(fixture.multiUser, logger.Get())
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("GET /api/profiles/{id}/runs/{runID}/books/{bookID}/edition-draft", handler.GetEditionDraft)
+	root := http.NewServeMux()
+	root.Handle("/api/", apiMux)
+	return &editionAPIFixture{statusServiceFixture: fixture, routes: root, abs: abs}
 }
 
 // seedEditionRun stores a completed run report holding the given records.
@@ -328,4 +351,48 @@ func TestGetEditionDraftReportsMissingAndFailingAudiobookshelfItems(t *testing.T
 	require.NotContains(t, recorder.Body.String(), "abs-secret-token")
 	require.NotContains(t, recorder.Body.String(), "forced failure")
 	require.Empty(t, f.hardcover.RecordedMutations())
+}
+
+func TestGetEditionDraftReturnsSanitized502ForFailedPublisherLookup(t *testing.T) {
+	hardcover := newPublisherFailOnceHardcoverServer(t)
+	t.Cleanup(hardcover.Close)
+	item := editionAPIItem("item-1", "Publisher Failure Title", "Publisher Failure Author", "")
+	item["media"].(map[string]interface{})["metadata"].(map[string]interface{})["publisher"] = "Publisher Failure"
+	f := newEditionAPIFixtureForHardcoverURL(t, false,
+		[]syncsvc.BookOutcomeRecord{reviewRecord("item-1", "4242")},
+		map[string]map[string]interface{}{"item-1": item}, hardcover.URL)
+
+	response := f.do(http.MethodGet, editionBasePath+"item-1/edition-draft", "")
+	require.Equal(t, http.StatusBadGateway, response.Code, response.Body.String())
+	require.Equal(t, "Could not complete the request with hardcover", decodeEnvelope(t, response).Error)
+	require.NotContains(t, response.Body.String(), "first publisher lookup failed")
+}
+
+func newPublisherFailOnceHardcoverServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	var publisherCalls atomic.Int32
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(request.Query, "SearchPublishers") && publisherCalls.Add(1) == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"errors": []map[string]string{{"message": "first publisher lookup failed"}}})
+			return
+		}
+		if strings.Contains(request.Query, "SearchPublishers") {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]interface{}{
+					"publishers": []map[string]interface{}{{"id": 303, "name": "Publisher Failure"}},
+				},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": map[string]interface{}{}})
+	}))
 }

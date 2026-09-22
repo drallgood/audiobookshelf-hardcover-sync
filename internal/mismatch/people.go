@@ -34,6 +34,20 @@ func LookupAuthorIDs(ctx context.Context, hc hardcover.HardcoverClientInterface,
 	return lookupPeople(ctx, hc, "author", names...)
 }
 
+// LookupAuthorIDsStrict is the draft-only variant of LookupAuthorIDs. It
+// returns Hardcover search failures instead of preserving the mismatch
+// exporter's historical best-effort behavior.
+func LookupAuthorIDsStrict(ctx context.Context, hc hardcover.HardcoverClientInterface, names ...string) ([]int, error) {
+	if len(names) == 1 && strings.Contains(names[0], ",") {
+		splitNames := strings.Split(names[0], ",")
+		for i, name := range splitNames {
+			splitNames[i] = strings.TrimSpace(name)
+		}
+		return lookupPeopleStrict(ctx, hc, "author", splitNames...)
+	}
+	return lookupPeopleStrict(ctx, hc, "author", names...)
+}
+
 // LookupNarratorIDs looks up narrator IDs by name.
 // It can handle multiple names separated by commas in a single string.
 func LookupNarratorIDs(ctx context.Context, hc hardcover.HardcoverClientInterface, names ...string) ([]int, error) {
@@ -49,8 +63,30 @@ func LookupNarratorIDs(ctx context.Context, hc hardcover.HardcoverClientInterfac
 	return lookupPeople(ctx, hc, "narrator", names...)
 }
 
+// LookupNarratorIDsStrict is the draft-only variant of LookupNarratorIDs. It
+// returns Hardcover search failures instead of preserving the mismatch
+// exporter's historical best-effort behavior.
+func LookupNarratorIDsStrict(ctx context.Context, hc hardcover.HardcoverClientInterface, names ...string) ([]int, error) {
+	if len(names) == 1 && strings.Contains(names[0], ",") {
+		splitNames := strings.Split(names[0], ",")
+		for i, name := range splitNames {
+			splitNames[i] = strings.TrimSpace(name)
+		}
+		return lookupPeopleStrict(ctx, hc, "narrator", splitNames...)
+	}
+	return lookupPeopleStrict(ctx, hc, "narrator", names...)
+}
+
 // lookupPeople is a helper function to look up people (authors or narrators) by name
 func lookupPeople(ctx context.Context, hc hardcover.HardcoverClientInterface, personType string, names ...string) ([]int, error) {
+	return lookupPeopleWithMode(ctx, hc, personType, false, names...)
+}
+
+func lookupPeopleStrict(ctx context.Context, hc hardcover.HardcoverClientInterface, personType string, names ...string) ([]int, error) {
+	return lookupPeopleWithMode(ctx, hc, personType, true, names...)
+}
+
+func lookupPeopleWithMode(ctx context.Context, hc hardcover.HardcoverClientInterface, personType string, propagateErrors bool, names ...string) ([]int, error) {
 	if hc == nil {
 		return nil, fmt.Errorf("hardcover client is required")
 	}
@@ -98,6 +134,9 @@ func lookupPeople(ctx context.Context, hc hardcover.HardcoverClientInterface, pe
 				"name":  name,
 				"error": err.Error(),
 			})
+			if propagateErrors {
+				return nil, fmt.Errorf("failed to search for %s %q: %w", personType, name, err)
+			}
 			continue
 		}
 
