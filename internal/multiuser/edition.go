@@ -20,6 +20,12 @@ import (
 // upload. The HTTP layer sizes its response write deadline from it.
 const EditionCreateTimeout = 2 * time.Minute
 
+// EditionDraftTimeout bounds the complete read-only draft preparation,
+// including the Audiobookshelf fetch and all sequential Hardcover lookups.
+// It shares the create work budget; the draft's HTTP deadline also reserves
+// time to serialize and write the response.
+const EditionDraftTimeout = EditionCreateTimeout
+
 var (
 	// ErrEditionNotFound indicates that the run, or the book record within it, does not exist.
 	ErrEditionNotFound = errors.New("sync run or book record not found")
@@ -58,6 +64,16 @@ type editionTarget struct {
 // PrepareEditionDraft builds a previewable edition for a needs-review book from
 // a retained or live sync run. It only reads from Audiobookshelf and Hardcover.
 func (s *MultiUserService) PrepareEditionDraft(ctx context.Context, profileID, runID, bookID string) (*draft.Draft, error) {
+	return s.prepareEditionDraft(ctx, profileID, runID, bookID, EditionDraftTimeout)
+}
+
+// prepareEditionDraft runs draft preparation with an overall budget. Keeping
+// the budget as an argument lets tests exercise timeout behavior quickly while
+// production callers use the fixed EditionDraftTimeout above.
+func (s *MultiUserService) prepareEditionDraft(ctx context.Context, profileID, runID, bookID string, timeout time.Duration) (*draft.Draft, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	// A draft is read-only and bound to ctx, so it needs no drain on shutdown or
 	// profile deletion; it only refuses to start once either has begun.
 	if err := s.checkEditionAdmission(profileID); err != nil {

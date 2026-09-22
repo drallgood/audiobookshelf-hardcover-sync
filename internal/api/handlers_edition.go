@@ -16,9 +16,10 @@ import (
 // request would finish its work but the client would see a closed connection
 // and retry into a duplicate. A create first fetches the Audiobookshelf item
 // (at most audiobookshelf.RequestTimeout) and only then starts its own
-// multiuser.EditionCreateTimeout, so the bound is both plus a margin for the
-// work around them. Drafts make many sequential paced Hardcover lookups and
-// share the bound.
+// multiuser.EditionCreateTimeout. Draft preparation has an overall
+// multiuser.EditionDraftTimeout that includes its Audiobookshelf fetch and
+// sequential Hardcover lookups, leaving response-write margin within this
+// deadline.
 const editionWriteDeadline = audiobookshelf.RequestTimeout + multiuser.EditionCreateTimeout + 15*time.Second
 
 // GetEditionDraft handles

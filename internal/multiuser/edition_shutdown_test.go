@@ -80,3 +80,32 @@ func TestPrepareEditionDraftStopsOnCallerCancellation(t *testing.T) {
 		t.Fatal("the draft did not stop after its caller canceled")
 	}
 }
+
+func TestPrepareEditionDraftOverallTimeoutStopsBlockedHardcoverRead(t *testing.T) {
+	f := newHeldCreateFixture(t)
+	holdReads := make(chan struct{})
+	f.hardcover.HoldReads(holdReads)
+	t.Cleanup(f.hardcover.ReleaseHolds)
+
+	const timeout = 50 * time.Millisecond
+	draftDone := make(chan error, 1)
+	started := time.Now()
+	go func() {
+		_, err := f.service.prepareEditionDraft(context.Background(), "profile-1", "run-1", "item-1", timeout)
+		draftDone <- err
+	}()
+
+	select {
+	case <-f.hardcover.ReadEntered:
+	case <-time.After(time.Second):
+		t.Fatal("the draft never reached Hardcover")
+	}
+
+	select {
+	case err := <-draftDone:
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.Less(t, time.Since(started), time.Second, "the overall draft timeout must cancel a blocked lookup")
+	case <-time.After(time.Second):
+		t.Fatal("the draft did not stop at its overall timeout")
+	}
+}
