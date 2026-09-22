@@ -1,67 +1,29 @@
 # Edition Creation Tool
 
-This tool helps create and manage audiobook editions in Hardcover. It provides two main commands:
+This tool helps create and manage editions in Hardcover. It provides two main commands:
 
 1. `prepopulate`: Generate a prepopulated JSON template from an existing book
 2. `create`: Create a new edition using a JSON input file
 
 ## Running with Docker
 
-### Prerequisites
-- Docker installed on your system
-- Hardcover API token (set as `HARDCOVER_TOKEN` environment variable)
+The published Docker image runs the main `audiobookshelf-hardcover-sync`
+service and does not include the `edition` command. Run the edition workflows
+locally as described below.
 
-### Basic Usage
+The edition command needs a `config.yaml` file with the Hardcover API token
+under `hardcover.token`:
 
-#### Build the Docker Image
-```bash
-docker build -t audiobookshelf-hardcover-sync .
-```
+  ```yaml
+  hardcover:
+    token: your_token
+  ```
 
-#### Prepopulate a Template
-Generate a JSON template from an existing book:
-
-```bash
-docker run --rm \
-  -e HARDCOVER_TOKEN=your_token \
-  -v $(pwd):/app \
-  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest \
-  edition-tool prepopulate --book-id 12345 --output /app/edition.json
-```
-
-#### Create a New Edition
-Create a new edition using a JSON input file:
-
-```bash
-docker run --rm \
-  -e HARDCOVER_TOKEN=your_token \
-  -v $(pwd):/app \
-  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest \
-  edition-tool create --input /app/edition.json
-```
-
-### Advanced Options
-
-#### Dry Run Mode
-Test without making any changes:
-
-```bash
-docker run --rm \
-  -e HARDCOVER_TOKEN=your_token \
-  -v $(pwd):/app \
-  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest \
-  edition-tool create --input /app/edition.json --dry-run
-```
-
-#### Interactive Mode
-Run in interactive mode to be prompted for input:
-
-```bash
-docker run -it --rm \
-  -e HARDCOVER_TOKEN=your_token \
-  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest \
-  edition-tool create --interactive
-```
+  The token needs these scopes:
+  - `read:library`
+  - `write:library`
+  - `read:catalog`
+  - `write:catalog:append`
 
 ## Local Development
 
@@ -78,13 +40,13 @@ go build -o edition cmd/edition/main.go
 #### Prepopulate a Template
 
 ```bash
-HARDCOVER_TOKEN=your_token ./edition prepopulate --book-id 12345 --output edition.json
+./edition --config ./config.yaml prepopulate --book-id 12345 --output edition.json
 ```
 
 #### Create a New Edition
 
 ```bash
-HARDCOVER_TOKEN=your_token ./edition create --input edition.json
+./edition --config ./config.yaml create --input edition.json
 ```
 
 ## JSON Schema
@@ -106,15 +68,38 @@ The input JSON should follow this structure:
   "release_date": "2023-01-01",
   "audio_seconds": 3600,
   "edition_format": "Audible Audio",
+  "reading_format": "audiobook",
   "edition_information": "Special edition with bonus content",
   "language_id": 1,
   "country_id": 1
 }
 ```
 
+`reading_format` is optional: `audiobook` (the default) or `ebook`. An `ebook`
+edition is created with Hardcover's ebook reading format, an `Ebook` default
+`edition_format`, and without narrators or `audio_seconds`, and duplicate
+detection by ASIN and ISBN only considers ebook editions. Mismatch files
+exported for ebook items already carry `"reading_format": "ebook"`.
+
 ## Configuration
 
-The tool reads from the same `config.yaml` file as the main application. Make sure to configure your Hardcover API key and other settings there.
+The tool reads `config.yaml` by default, or another file supplied with
+`--config`. Configure the Hardcover API token in that file; the edition
+commands do not use `HARDCOVER_TOKEN` environment overrides.
+
+```yaml
+hardcover:
+  token: your_token
+```
+
+An authenticated Audiobookshelf cover URL must match the configured
+`audiobookshelf.url` base URL's scheme, hostname, port, and canonical path
+prefix. A non-empty base may be an absolute `http://` or `https://` URL; HTTPS
+is not required. An unambiguous bare host or host with port (for example
+`abs.home:13378`) is treated as `https`. A single-label host with a port
+requires an explicit scheme so it cannot be mistaken for an opaque URL such as
+`ftp:443`. Aliases such as `localhost` and `127.0.0.1`, and different ports,
+intentionally receive no token.
 
 ## Examples
 
@@ -122,20 +107,32 @@ The tool reads from the same `config.yaml` file as the main application. Make su
 
 1. First, generate a template:
    ```bash
-   ./edition prepopulate --book-id 12345 --output my-audiobook.json
+   ./edition --config ./config.yaml prepopulate --book-id 12345 --output my-audiobook.json
    ```
 
 2. Edit the generated JSON file as needed
 
 3. Create the edition:
    ```bash
-   ./edition create --input my-audiobook.json
+   ./edition --config ./config.yaml create --input my-audiobook.json
    ```
+
+   Before creating, the tool looks for an existing edition in the requested
+   reading format with the same ASIN, ISBN-13 or ISBN-10 (an ISBN also under its
+   converted form). One of the same book is reused untouched (no cover or
+   metadata is sent) and the printed result includes `"existing": true`. An
+   existing edition of a different book, or one whose book cannot be confirmed,
+   is refused with an error.
+
+   No cover is uploaded for now: Hardcover's cover upload endpoint is not part of
+   its documented API and rejected a new scoped API token. An `image_url` in the
+   input is not fetched; the edition is still created and the printed result
+   carries an `image_error` saying so. The cover code is kept, switched off.
 
 ### Dry Run
 
 ```bash
-./edition create --input my-audiobook.json --dry-run
+./edition --config ./config.yaml --dry-run create --input my-audiobook.json
 ```
 
 ## Error Handling

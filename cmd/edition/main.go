@@ -156,6 +156,10 @@ func createEdition(c *cli.Context) error {
 		log.Debug("Using Audiobookshelf token from config")
 	}
 	creator := edition.NewCreator(hc, log, c.Bool("dry-run"), audiobookshelfToken)
+	// Send the token only to the configured Audiobookshelf server.
+	if err := creator.SetAudiobookshelfBaseURL(cfg.Audiobookshelf.URL); err != nil {
+		return fmt.Errorf("invalid Audiobookshelf URL: %w", err)
+	}
 
 	// Create edition
 	result, err := creator.CreateEdition(context.Background(), &input)
@@ -189,6 +193,9 @@ func prepopulateEdition(c *cli.Context) error {
 		log.Debug("Using Audiobookshelf token from config")
 	}
 	creator := edition.NewCreator(hc, log, c.Bool("dry-run"), audiobookshelfToken)
+	if err := creator.SetAudiobookshelfBaseURL(cfg.Audiobookshelf.URL); err != nil {
+		return fmt.Errorf("invalid Audiobookshelf URL: %w", err)
+	}
 
 	// Generate prepopulated data
 	prepopulated, err := creator.PrepopulateFromBook(context.Background(), c.Int("book-id"))

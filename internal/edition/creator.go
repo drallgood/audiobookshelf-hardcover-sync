@@ -11,12 +11,37 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
+)
+
+// maxCoverBytes is the largest cover download accepted: 15 MiB. Hardcover's
+// Edition Standards say larger covers are better and name a 15 MB file as an
+// example of what is welcome; 15 MB is the largest size it documents, and it
+// documents no hard maximum.
+const maxCoverBytes = 15 << 20
+
+// ErrCoverUploadDisabled is returned by UploadEditionImage while cover upload
+// is switched off (see EnableCoverUpload).
+var ErrCoverUploadDisabled = errors.New("cover upload to Hardcover is not supported yet")
+
+// coverUploadDisabledLabel is the ImageError of an edition whose input asked for
+// a cover while cover upload is switched off. It is fixed text, not remote data.
+const coverUploadDisabledLabel = "cover upload to Hardcover is not supported yet"
+
+var (
+	// errCoverFormat means the downloaded cover is not a PNG or JPEG, the only
+	// formats Hardcover documents as supported.
+	errCoverFormat = errors.New("cover image is not a PNG or JPEG")
+	// errCoverTooLarge means the downloaded cover exceeds maxCoverBytes.
+	errCoverTooLarge = errors.New("cover image is too large")
 )
 
 // EditionInput represents the input data for creating or updating an edition
@@ -38,6 +63,31 @@ type EditionInput struct {
 	ReleaseDate   string `json:"release_date,omitempty"`
 	EditionInfo   string `json:"edition_information,omitempty"`
 	EditionFormat string `json:"edition_format,omitempty"`
+	// ReadingFormat is "audiobook" (the default when empty) or "ebook". It picks
+	// Hardcover's reading format, which formats the duplicate lookups consider,
+	// and whether audio-only fields (duration, narrators) are sent.
+	ReadingFormat string `json:"reading_format,omitempty"`
+}
+
+// isEbook reports whether the input describes an ebook edition.
+func (e *EditionInput) isEbook() bool {
+	return strings.EqualFold(strings.TrimSpace(e.ReadingFormat), models.ReadingFormatEbook)
+}
+
+// readingFormat returns the normalized reading format of the input.
+func (e *EditionInput) readingFormat() string {
+	if e.isEbook() {
+		return models.ReadingFormatEbook
+	}
+	return models.ReadingFormatAudiobook
+}
+
+// defaultEditionFormat is the edition_format label used when none is given.
+func (e *EditionInput) defaultEditionFormat() string {
+	if e.isEbook() {
+		return "Ebook"
+	}
+	return "Audiobook"
 }
 
 // EditionResult represents the result of an edition creation or update
@@ -45,7 +95,20 @@ type EditionResult struct {
 	Success   bool `json:"success"`
 	EditionID int  `json:"edition_id"`
 	ImageID   int  `json:"image_id"`
+	// ImageError is set when a cover was requested but could not be attached.
+	// The edition itself was still created. It names the failed step only and
+	// never carries remote error text, URLs, or credentials.
+	ImageError string `json:"image_error,omitempty"`
+	// Existing is true when the edition was already on Hardcover for the same
+	// book and was reused. A reused edition is returned untouched: no cover or
+	// metadata is sent for it.
+	Existing bool `json:"existing,omitempty"`
 }
+
+// ErrEditionBelongsToOtherBook reports that an existing edition found by ASIN,
+// ISBN-13 or ISBN-10 belongs to a different Hardcover book than the requested one, or
+// that its book could not be determined. The edition is never adopted.
+var ErrEditionBelongsToOtherBook = errors.New("existing edition belongs to a different book")
 
 // GoogleUploadInfo contains the signed upload credentials for Google Cloud Storage
 type GoogleUploadInfo struct {
@@ -65,6 +128,8 @@ type HardcoverClient interface {
 	GetEditionByASIN(ctx context.Context, asin string) (*models.Edition, error)
 	// GetEditionByISBN13 gets an edition by ISBN-13
 	GetEditionByISBN13(ctx context.Context, isbn13 string) (*models.Edition, error)
+	// GetEditionByISBN10 gets an edition by ISBN-10
+	GetEditionByISBN10(ctx context.Context, isbn10 string) (*models.Edition, error)
 	// GraphQLQuery executes a GraphQL query
 	GraphQLQuery(ctx context.Context, query string, variables map[string]interface{}, result interface{}) error
 	// GraphQLMutation executes a GraphQL mutation
@@ -80,17 +145,196 @@ type Creator struct {
 	client              HardcoverClient
 	log                 *logger.Logger
 	dryRun              bool
-	audiobookshelfToken string       // Token for authenticating with Audiobookshelf
-	httpClient          *http.Client // Custom HTTP client for testing
+	audiobookshelfToken string // Token for authenticating with Audiobookshelf
+	// audiobookshelfBaseURL, when set, limits the Audiobookshelf token to
+	// image URLs under this base URL. When empty, the token is withheld.
+	audiobookshelfBaseURL string
+	// coverUpload is off unless EnableCoverUpload is called. While it is off the
+	// creator makes no cover request of any kind.
+	coverUpload bool
+	httpClient  *http.Client // Custom HTTP client for testing
+}
+
+// EnableCoverUpload switches the cover upload flow on. It is off by default and
+// no production caller turns it on: the upload endpoint
+// (hardcover.app/api/upload/google) is outside Hardcover's documented API and
+// answered 401 to a new scoped API token, so the flow is kept but not used.
+// Call this once a supported way to upload a cover is found.
+func (c *Creator) EnableCoverUpload() {
+	c.coverUpload = true
+}
+
+// EnableInsecureTLS opts this creator into skipping TLS certificate
+// verification. It is intended only for explicitly trusted development
+// environments; production callers leave the default verified transport in
+// place. There is no production caller today. If the creator's HTTP client or
+// transport is not the kind this can modify, it logs a warning and leaves TLS
+// verification on rather than failing silently.
+func (c *Creator) EnableInsecureTLS() {
+	if c.httpClient == nil {
+		c.log.Warn("EnableInsecureTLS: no HTTP client to modify; TLS verification remains on", nil)
+		return
+	}
+
+	baseTransport := c.httpClient.Transport
+	if baseTransport == nil {
+		baseTransport = http.DefaultTransport
+	}
+	transport, ok := baseTransport.(*http.Transport)
+	if !ok {
+		c.log.Warn("EnableInsecureTLS: transport is not *http.Transport; TLS verification remains on", map[string]interface{}{
+			"transport_type": fmt.Sprintf("%T", baseTransport),
+		})
+		return
+	}
+
+	transport = transport.Clone()
+	tlsConfig := transport.TLSClientConfig
+	if tlsConfig == nil {
+		tlsConfig = &tls.Config{}
+	} else {
+		tlsConfig = tlsConfig.Clone()
+	}
+	tlsConfig.InsecureSkipVerify = true // #nosec G402 -- explicit opt-in for trusted development environments
+	transport.TLSClientConfig = tlsConfig
+	c.httpClient.Transport = transport
+}
+
+// SetAudiobookshelfBaseURL restricts sending the Audiobookshelf token to image
+// URLs hosted under baseURL. An empty base URL is allowed, but leaves token
+// forwarding disabled. An unambiguous bare host[:port] with no scheme (for
+// example "abs.home:13378") is treated as https; single-label hosts with a
+// port need an explicit scheme to avoid confusing them with opaque URLs such
+// as "ftp:443". Other values must be absolute http or https URLs with a host.
+func (c *Creator) SetAudiobookshelfBaseURL(baseURL string) error {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		c.audiobookshelfBaseURL = ""
+		return nil
+	}
+
+	parsed, ok := parseHTTPBaseURL(baseURL)
+	if !ok && isUnambiguousBareHost(baseURL) {
+		// A bare host can be supplied without a scheme. Default it to https
+		// only when it cannot be confused with an opaque scheme:port URL.
+		if withScheme, ok2 := parseHTTPBaseURL("https://" + baseURL); ok2 {
+			parsed, ok = withScheme, true
+		}
+	}
+	if !ok {
+		return fmt.Errorf("audiobookshelf base URL must be an absolute http or https URL with a host: %q", baseURL)
+	}
+
+	c.audiobookshelfBaseURL = parsed.String()
+	return nil
+}
+
+// isUnambiguousBareHost accepts only host[:port] forms that cannot be
+// mistaken for an opaque URL with a non-HTTP scheme.
+func isUnambiguousBareHost(raw string) bool {
+	if strings.ContainsAny(raw, "/?#@") || strings.Contains(raw, "://") {
+		return false
+	}
+	if strings.HasPrefix(raw, "[") {
+		return true // Bracketed IPv6 is checked by parseHTTPBaseURL.
+	}
+	host, _, hasPort := strings.Cut(raw, ":")
+	return !hasPort || strings.Contains(host, ".") || strings.EqualFold(host, "localhost")
+}
+
+// parseHTTPBaseURL reports whether raw parses as an absolute http or https
+// URL with a non-empty host, returning the parsed URL when it does.
+func parseHTTPBaseURL(raw string) (*url.URL, bool) {
+	parsed, err := url.Parse(raw)
+	if err != nil || !parsed.IsAbs() || parsed.Hostname() == "" ||
+		(!strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https")) {
+		return nil, false
+	}
+	return parsed, true
+}
+
+// shouldSendAudiobookshelfToken reports whether imageURL is an Audiobookshelf
+// URL that may receive the Audiobookshelf bearer token.
+func (c *Creator) shouldSendAudiobookshelfToken(imageURL string) bool {
+	if c.audiobookshelfToken == "" {
+		return false
+	}
+	if c.audiobookshelfBaseURL == "" {
+		return false
+	}
+	return c.isAudiobookshelfURLInScope(imageURL)
+}
+
+// isAudiobookshelfURLInScope reports whether imageURL remains within the
+// configured Audiobookshelf scheme, host (including port), and path prefix.
+func (c *Creator) isAudiobookshelfURLInScope(imageURL string) bool {
+	base, err := url.Parse(c.audiobookshelfBaseURL)
+	if err != nil || base.Host == "" {
+		return false
+	}
+	target, err := url.Parse(imageURL)
+	if err != nil {
+		return false
+	}
+	if !strings.EqualFold(base.Scheme, target.Scheme) || !strings.EqualFold(base.Host, target.Host) {
+		return false
+	}
+	basePath := strings.TrimRight(canonicalURLPath(base.Path), "/")
+	targetPath := canonicalURLPath(target.Path)
+	return basePath == "" || targetPath == basePath || strings.HasPrefix(targetPath, basePath+"/")
+}
+
+func canonicalURLPath(rawPath string) string {
+	if rawPath == "" {
+		return ""
+	}
+	return path.Clean(rawPath)
+}
+
+// checkRedirect keeps sensitive headers within the same authorized origin.
+// When an Audiobookshelf base is configured, its complete URL scope also
+// applies to redirects; otherwise the initial request's exact scheme and host
+// (including port) are the scope. Go's default redirect policy allows
+// subdomains and ignores ports for sensitive headers, so those checks must be
+// stricter here.
+//
+// This policy is installed on the shared c.httpClient (see NewCreator), so it
+// also governs the hardcover.app upload-credentials request and the
+// subsequent GCS upload POST, not only the Audiobookshelf cover download. The
+// upload-credentials request carries Hardcover Authorization; the GCS request
+// authenticates with signed form fields instead.
+// With an Audiobookshelf base configured (the production case, since every
+// command calls SetAudiobookshelfBaseURL), hardcover.app is never within that
+// scope, so a redirect on the credential request strips that header. A
+// redirect on either request may fail the upload. Today this only matters if
+// EnableCoverUpload is called, since no production caller does.
+func (c *Creator) checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after 10 redirects")
+	}
+	if len(via) == 0 {
+		return nil
+	}
+
+	allowed := false
+	if c.audiobookshelfBaseURL != "" {
+		allowed = c.isAudiobookshelfURLInScope(via[0].URL.String()) &&
+			c.isAudiobookshelfURLInScope(req.URL.String())
+	} else {
+		initial := via[0].URL
+		allowed = strings.EqualFold(initial.Scheme, req.URL.Scheme) &&
+			strings.EqualFold(initial.Host, req.URL.Host)
+	}
+	if !allowed {
+		req.Header.Del("Authorization")
+	}
+	return nil
 }
 
 // NewCreator creates a new instance of the edition creator
 func NewCreator(client HardcoverClient, log *logger.Logger, dryRun bool, audiobookshelfToken string) *Creator {
 	// Create a default HTTP client with reasonable timeouts
 	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true, // Only for development, consider making this configurable
-		},
 		MaxIdleConns:           10,
 		MaxIdleConnsPerHost:    10,
 		IdleConnTimeout:        90 * time.Second,
@@ -105,24 +349,17 @@ func NewCreator(client HardcoverClient, log *logger.Logger, dryRun bool, audiobo
 	httpClient := &http.Client{
 		Transport: transport,
 		Timeout:   300 * time.Second, // 5 minute timeout for large uploads
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return fmt.Errorf("stopped after 10 redirects")
-			}
-			if len(via) > 0 && via[0].Header.Get("Authorization") != "" {
-				req.Header.Set("Authorization", via[0].Header.Get("Authorization"))
-			}
-			return nil
-		},
 	}
 
-	return &Creator{
+	creator := &Creator{
 		client:              client,
 		log:                 log,
 		dryRun:              dryRun,
 		audiobookshelfToken: audiobookshelfToken,
 		httpClient:          httpClient,
 	}
+	httpClient.CheckRedirect = creator.checkRedirect
+	return creator
 }
 
 // NewCreatorWithHTTPClient creates a new instance of the edition creator with a custom HTTP client
@@ -137,17 +374,22 @@ func NewCreatorWithHTTPClient(client HardcoverClient, log *logger.Logger, dryRun
 	}
 }
 
-// CreateEdition creates a new audiobook edition in Hardcover
+// CreateEdition creates a new edition in Hardcover, an audiobook unless the input
+// says ebook.
 func (c *Creator) CreateEdition(ctx context.Context, input *EditionInput) (*EditionResult, error) {
 	// Validate input
 	if err := input.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid input: %w", err)
 	}
 
-	c.log.Debug("Creating new audiobook edition", map[string]interface{}{
-		"book_id": input.BookID,
-		"title":   input.Title,
-		"dry_run": c.dryRun,
+	// The duplicate lookups only consider editions of the input's own format.
+	ctx = models.WithReadingFormat(ctx, input.readingFormat())
+
+	c.log.Debug("Creating new edition", map[string]interface{}{
+		"book_id":        input.BookID,
+		"title":          input.Title,
+		"reading_format": input.readingFormat(),
+		"dry_run":        c.dryRun,
 	})
 
 	if c.dryRun {
@@ -160,40 +402,58 @@ func (c *Creator) CreateEdition(ctx context.Context, input *EditionInput) (*Edit
 	}
 
 	// Step 1: Create the edition first (without image)
-	editionID, err := c.createEdition(ctx, input, 0) // Pass 0 as imageID initially
+	editionID, existing, err := c.createEdition(ctx, input, 0) // Pass 0 as imageID initially
 	if err != nil {
 		return nil, fmt.Errorf("failed to create edition: %w", err)
 	}
+	if existing {
+		// An edition of this book was already on Hardcover. Leave it as it is.
+		return &EditionResult{Success: true, EditionID: editionID, Existing: true}, nil
+	}
 
-	// Step 2: If we have an image URL, upload it and update the edition
+	// Step 2: If we have an image URL, upload it and update the edition. A cover
+	// failure does not fail the creation; it is logged and reported on the result.
 	var imageID int
-	if input.ImageURL != "" {
+	var imageError string
+	if input.ImageURL != "" && !c.coverUpload {
+		// Do not try the upload: it is switched off (see EnableCoverUpload).
+		c.log.Info("Cover upload is not supported yet, creating the edition without a cover", nil)
+		imageError = coverUploadDisabledLabel
+	} else if input.ImageURL != "" {
 		// First upload the image to Google Cloud Storage
 		imageURL, uploadErr := c.uploadImageToGCS(ctx, editionID, input.ImageURL)
 		if uploadErr != nil {
 			c.log.Error("Failed to upload image to GCS, continuing without it",
 				map[string]interface{}{"error": uploadErr.Error()})
+			switch {
+			case errors.Is(uploadErr, errCoverFormat):
+				imageError = "cover image format not supported (Hardcover accepts PNG and JPEG)"
+			case errors.Is(uploadErr, errCoverTooLarge):
+				imageError = "cover image is larger than 15 MB"
+			default:
+				imageError = "cover image upload failed"
+			}
 		} else {
 			// Then create the image record with the edition ID
 			imageID, err = c.CreateImageRecord(ctx, editionID, imageURL)
 			if err != nil {
 				c.log.Error("Failed to create image record, continuing without it",
 					map[string]interface{}{"error": err.Error()})
-			} else {
+				imageError = "cover image record creation failed"
+			} else if updateErr := c.updateEditionImage(ctx, editionID, imageID); updateErr != nil {
 				// Finally, update the edition with the new image ID
-				updateErr := c.updateEditionImage(ctx, editionID, imageID)
-				if updateErr != nil {
-					c.log.Error("Failed to update edition with image ID, but continuing",
-						map[string]interface{}{"error": updateErr.Error()})
-				}
+				c.log.Error("Failed to update edition with image ID, but continuing",
+					map[string]interface{}{"error": updateErr.Error()})
+				imageError = "attaching the cover image to the edition failed"
 			}
 		}
 	}
 
 	return &EditionResult{
-		Success:   true,
-		EditionID: editionID,
-		ImageID:   imageID,
+		Success:    true,
+		EditionID:  editionID,
+		ImageID:    imageID,
+		ImageError: imageError,
 	}, nil
 }
 
@@ -215,10 +475,10 @@ func (c *Creator) uploadImageToGCS(ctx context.Context, editionID int, imageURL 
 
 	// Set headers for the download request
 	downloadReq.Header.Set("User-Agent", "Audiobookshelf-Hardcover-Sync/1.0")
-	downloadReq.Header.Set("Accept", "image/*")
+	downloadReq.Header.Set("Accept", "image/jpeg, image/png")
 
 	// Add Audiobookshelf token if available and the URL is from Audiobookshelf
-	if c.audiobookshelfToken != "" && strings.Contains(imageURL, "audiobookshelf") {
+	if c.shouldSendAudiobookshelfToken(imageURL) {
 		downloadReq.Header.Set("Authorization", "Bearer "+c.audiobookshelfToken)
 		log.Debug("Added Audiobookshelf token to download request")
 	}
@@ -234,23 +494,34 @@ func (c *Creator) uploadImageToGCS(ctx context.Context, editionID int, imageURL 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return "", fmt.Errorf("image download failed: HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Read the image data
-	imgData, err := io.ReadAll(resp.Body)
+	// Refuse an oversized cover up front when the size is announced, and
+	// otherwise read at most one byte past the limit so a huge or endless body
+	// is never held in memory.
+	if resp.ContentLength > maxCoverBytes {
+		return "", errCoverTooLarge
+	}
+	imgData, err := io.ReadAll(io.LimitReader(resp.Body, maxCoverBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("failed to read image data: %w", err)
 	}
+	if len(imgData) > maxCoverBytes {
+		return "", errCoverTooLarge
+	}
 
-	// Determine file extension from content type
-	extension := "jpg"
-	contentType := resp.Header.Get("Content-Type")
-	if strings.Contains(contentType, "png") {
+	// Hardcover supports only PNG and JPEG. Decide from the bytes rather than
+	// the response Content-Type, which a server can set to anything.
+	var extension string
+	switch http.DetectContentType(imgData) {
+	case "image/jpeg":
+		extension = "jpg"
+	case "image/png":
 		extension = "png"
-	} else if strings.Contains(contentType, "webp") {
-		extension = "webp"
+	default:
+		return "", errCoverFormat
 	}
 
 	// Generate a unique filename
@@ -263,10 +534,10 @@ func (c *Creator) uploadImageToGCS(ctx context.Context, editionID int, imageURL 
 	})
 
 	// Construct the API URL for getting upload credentials
-	url := "https://hardcover.app/api/upload/google"
+	uploadURL := "https://hardcover.app/api/upload/google"
 
 	// Create the request with query parameters
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil) // Use POST method as per docs
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, nil) // Use POST method as per docs
 	if err != nil {
 		log.Error("Failed to create request", map[string]interface{}{"error": err.Error()})
 		return "", fmt.Errorf("failed to create request: %w", err)
@@ -493,6 +764,10 @@ func (c *Creator) CreateImageRecord(ctx context.Context, editionID int, imageURL
 
 // UploadEditionImage handles the entire flow of uploading an image to an edition
 func (c *Creator) UploadEditionImage(ctx context.Context, editionID int, imageURL, description string) error {
+	if !c.coverUpload {
+		return ErrCoverUploadDisabled
+	}
+
 	// Upload the image to GCS
 	uploadedImageURL, err := c.uploadImageToGCS(ctx, editionID, imageURL)
 	if err != nil {
@@ -616,19 +891,110 @@ type CreateEditionInput struct {
 	Errors          []string `json:"errors,omitempty"`
 }
 
-// createEdition creates a new edition with the given metadata
-func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageID int) (int, error) {
-	// First, check if an edition already exists for this book with the same ASIN/ISBN
-	if input.ASIN != "" {
-		edition, err := c.client.GetEditionByASIN(ctx, input.ASIN)
-		if err == nil && edition != nil && edition.ID != "" {
-			editionID, _ := strconv.Atoi(edition.ID)
-			c.log.Debug("Edition already exists with this ASIN", map[string]interface{}{
-				"edition_id": editionID,
-				"asin":       input.ASIN,
-			})
-			return editionID, nil
+// adoptExistingEdition returns the ID of an edition found on Hardcover by ASIN
+// or ISBN so it can be reused instead of duplicated. The lookups are global,
+// so the edition is adopted only when it belongs to the requested book; any
+// other or unknown book fails closed with ErrEditionBelongsToOtherBook.
+func adoptExistingEdition(found *models.Edition, input *EditionInput) (int, error) {
+	if found.BookID != strconv.Itoa(input.BookID) {
+		return 0, ErrEditionBelongsToOtherBook
+	}
+	editionID, err := strconv.Atoi(found.ID)
+	if err != nil || editionID <= 0 {
+		return 0, fmt.Errorf("existing edition has an invalid ID %q", found.ID)
+	}
+	return editionID, nil
+}
+
+// editionLookup is one identifier to look an existing edition up by.
+type editionLookup struct{ kind, value string }
+
+// existingEditionLookups lists, in order, the identifiers that may already
+// identify an edition: the ASIN, the given ISBN-13 and ISBN-10, then the forms
+// derived from them (an ISBN-10's ISBN-13 and the reverse), without duplicates.
+func existingEditionLookups(input *EditionInput) []editionLookup {
+	var lookups []editionLookup
+	seen := map[editionLookup]struct{}{}
+	add := func(kind, value string) {
+		l := editionLookup{kind: kind, value: value}
+		if value == "" {
+			return
 		}
+		if _, dup := seen[l]; !dup {
+			seen[l] = struct{}{}
+			lookups = append(lookups, l)
+		}
+	}
+	add("ASIN", strings.TrimSpace(input.ASIN))
+	given13, ok13 := isbn.Parse(input.ISBN13)
+	given10, ok10 := isbn.Parse(input.ISBN10)
+	if ok13 {
+		add("ISBN-13", given13.ISBN13())
+	}
+	if ok10 {
+		add("ISBN-10", given10.ISBN10())
+	}
+	if ok10 {
+		add("ISBN-13", given10.ISBN13())
+	}
+	if ok13 {
+		add("ISBN-10", given13.ISBN10())
+	}
+	return lookups
+}
+
+// findExistingEdition looks up each identifier of the input on Hardcover and
+// returns the first edition found. Only an explicit not-found result permits
+// creation to continue; lookup failures fail closed to avoid duplicate inserts.
+func (c *Creator) findExistingEdition(ctx context.Context, input *EditionInput) (*models.Edition, editionLookup, error) {
+	for _, l := range existingEditionLookups(input) {
+		var (
+			found *models.Edition
+			err   error
+		)
+		switch l.kind {
+		case "ASIN":
+			found, err = c.client.GetEditionByASIN(ctx, l.value)
+		case "ISBN-13":
+			found, err = c.client.GetEditionByISBN13(ctx, l.value)
+		default:
+			found, err = c.client.GetEditionByISBN10(ctx, l.value)
+		}
+		if err != nil {
+			if errors.Is(err, models.ErrEditionNotFound) {
+				continue
+			}
+			return nil, editionLookup{}, fmt.Errorf("lookup existing edition by %s %q failed: %w", l.kind, l.value, err)
+		}
+		if found == nil {
+			continue
+		}
+		if found.ID == "" {
+			return nil, editionLookup{}, fmt.Errorf("lookup existing edition by %s %q returned an edition without an ID", l.kind, l.value)
+		}
+		return found, l, nil
+	}
+	return nil, editionLookup{}, nil
+}
+
+// createEdition creates a new edition with the given metadata. Before inserting
+// it looks for an existing edition with the same ASIN, ISBN-13 or ISBN-10 (or a
+// converted ISBN form). One that belongs to the same book is returned with true
+// and left untouched; one of another book is an error.
+func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageID int) (int, bool, error) {
+	if found, by, lookupErr := c.findExistingEdition(ctx, input); lookupErr != nil {
+		return 0, false, lookupErr
+	} else if found != nil {
+		editionID, adoptErr := adoptExistingEdition(found, input)
+		if adoptErr != nil {
+			return 0, false, adoptErr
+		}
+		c.log.Debug("Edition already exists", map[string]interface{}{
+			"edition_id": editionID,
+			"matched_by": by.kind,
+			"identifier": by.value,
+		})
+		return editionID, true, nil
 	}
 
 	// Prepare the GraphQL mutation with errors field
@@ -640,12 +1006,18 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 	  }
 	}`
 
+	// The format label is free text; reading_format_id follows the reading format.
+	editionFormat := strings.TrimSpace(input.EditionFormat)
+	if editionFormat == "" {
+		editionFormat = input.defaultEditionFormat()
+	}
+
 	// Initialize edition data with required fields
 	editionData := map[string]interface{}{
 		"dto": map[string]interface{}{
 			"title":             input.Title,
-			"edition_format":    "Audiobook",
-			"reading_format_id": 2, // 2 is the ID for Audiobook format
+			"edition_format":    editionFormat,
+			"reading_format_id": models.ReadingFormatID(input.ReadingFormat),
 		},
 	}
 
@@ -684,11 +1056,14 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 		})
 	}
 
-	for _, narratorID := range input.NarratorIDs {
-		contributions = append(contributions, map[string]interface{}{
-			"author_id":    narratorID,
-			"contribution": "Narrator",
-		})
+	// Narrators and audio length only apply to audiobooks.
+	if !input.isEbook() {
+		for _, narratorID := range input.NarratorIDs {
+			contributions = append(contributions, map[string]interface{}{
+				"author_id":    narratorID,
+				"contribution": "Narrator",
+			})
+		}
 	}
 
 	if len(contributions) > 0 {
@@ -709,7 +1084,7 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 	}
 
 	// Set audio length if provided
-	if input.AudioLength > 0 {
+	if input.AudioLength > 0 && !input.isEbook() {
 		dto["audio_seconds"] = input.AudioLength
 	}
 
@@ -750,7 +1125,7 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 
 	// Execute the GraphQL mutation
 	if err := c.client.GraphQLMutation(ctx, mutation, variables, &response); err != nil {
-		return 0, fmt.Errorf("GraphQL mutation failed: %w", err)
+		return 0, false, fmt.Errorf("GraphQL mutation failed: %w", err)
 	}
 
 	// Check for errors in the response
@@ -760,55 +1135,23 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 			"errors": response.InsertEdition.Errors,
 		})
 
-		// Check if this is a duplicate error and try to extract the existing edition ID
+		// A duplicate error means an edition with these identifiers appeared after
+		// the proactive lookup (a race); look it up again to reuse it.
 		if strings.Contains(errMsg, "already exists") {
-			// Extract dto map from editionInput
-			dtoMap, ok := editionData["dto"].(map[string]interface{})
-			if !ok {
-				// This shouldn't happen but just in case
-				return 0, fmt.Errorf("edition already exists but could not find dto data: %s", errMsg)
-			}
-
-			// Check if we already have an edition with this ISBN-13
-			if isbn13, ok := dtoMap["isbn_13"].(string); ok && isbn13 != "" {
-				c.log.Debug("Looking up existing edition by ISBN-13", map[string]interface{}{
-					"isbn13": isbn13,
-				})
-				edition, err := c.client.GetEditionByISBN13(ctx, isbn13)
-				if err == nil && edition != nil && edition.ID != "" {
-					// Found an existing edition with this ISBN-13
-					c.log.Debug("Found existing edition with ISBN-13", map[string]interface{}{
-						"edition_id": edition.ID,
-						"isbn13":     isbn13,
-					})
-					editionID, _ := strconv.Atoi(edition.ID)
-					return editionID, nil
+			if found, _, lookupErr := c.findExistingEdition(ctx, input); lookupErr != nil {
+				return 0, false, fmt.Errorf("edition already exists but lookup failed: %w", lookupErr)
+			} else if found != nil {
+				editionID, adoptErr := adoptExistingEdition(found, input)
+				if adoptErr != nil {
+					return 0, false, adoptErr
 				}
+				return editionID, true, nil
 			}
-
-			// Check if we already have an edition with this ASIN
-			if asin, ok := dtoMap["asin"].(string); ok && asin != "" {
-				c.log.Debug("Looking up existing edition by ASIN", map[string]interface{}{
-					"asin": asin,
-				})
-				edition, err := c.client.GetEditionByASIN(ctx, asin)
-				if err == nil && edition != nil && edition.ID != "" {
-					// Found an existing edition with this ASIN
-					c.log.Debug("Found existing edition with ASIN", map[string]interface{}{
-						"edition_id": edition.ID,
-						"asin":       asin,
-					})
-					editionID, _ := strconv.Atoi(edition.ID)
-					return editionID, nil
-				}
-			}
-
-			// If we still can't find it, return a more specific error
-			return 0, fmt.Errorf("edition already exists but could not find existing edition: %s", errMsg)
+			return 0, false, fmt.Errorf("edition already exists but could not find existing edition: %s", errMsg)
 		}
 
 		// For other errors, return the error message
-		return 0, fmt.Errorf("edition creation failed: %s", errMsg)
+		return 0, false, fmt.Errorf("edition creation failed: %s", errMsg)
 	}
 
 	// Handle different ID types (int, float64, or string)
@@ -826,20 +1169,20 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 				"id":    id,
 				"error": err.Error(),
 			})
-			return 0, fmt.Errorf("invalid edition ID format: %v", id)
+			return 0, false, fmt.Errorf("invalid edition ID format: %v", id)
 		}
 		editionID = parsedID
 	case nil:
 		c.log.Error("Missing edition ID in response", map[string]interface{}{
 			"response": response,
 		})
-		return 0, fmt.Errorf("missing edition ID in response")
+		return 0, false, fmt.Errorf("missing edition ID in response")
 	default:
 		c.log.Error("Unexpected ID type in response", map[string]interface{}{
 			"id":   response.InsertEdition.ID,
 			"type": fmt.Sprintf("%T", response.InsertEdition.ID),
 		})
-		return 0, fmt.Errorf("unexpected ID type in response: %T", response.InsertEdition.ID)
+		return 0, false, fmt.Errorf("unexpected ID type in response: %T", response.InsertEdition.ID)
 	}
 
 	if editionID <= 0 {
@@ -847,7 +1190,7 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 			"edition_id": editionID,
 			"response":   response,
 		})
-		return 0, fmt.Errorf("invalid edition ID in response: %d", editionID)
+		return 0, false, fmt.Errorf("invalid edition ID in response: %d", editionID)
 	}
 
 	// Success! Return the new edition ID
@@ -855,7 +1198,7 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 		"edition_id": editionID,
 	})
 
-	return editionID, nil
+	return editionID, false, nil
 }
 func (c *Creator) PrepopulateFromBook(ctx context.Context, bookID int) (*EditionInput, error) {
 	c.log.Debug("Prepopulating edition data from book", map[string]interface{}{
@@ -997,7 +1340,7 @@ func (c *Creator) PrepopulateFromBook(ctx context.Context, bookID int) (*Edition
 
 // Validate validates the edition input
 func (e *EditionInput) Validate() error {
-	if e.BookID == 0 {
+	if e.BookID <= 0 {
 		return errors.New("book_id is required")
 	}
 	if e.Title == "" {
@@ -1005,6 +1348,11 @@ func (e *EditionInput) Validate() error {
 	}
 	if len(e.AuthorIDs) == 0 {
 		return errors.New("at least one author is required")
+	}
+	switch strings.ToLower(strings.TrimSpace(e.ReadingFormat)) {
+	case "", models.ReadingFormatAudiobook, models.ReadingFormatEbook:
+	default:
+		return fmt.Errorf("invalid reading_format %q, expected audiobook or ebook", e.ReadingFormat)
 	}
 	if e.ReleaseDate != "" {
 		if _, err := time.Parse("2006-01-02", e.ReleaseDate); err != nil {

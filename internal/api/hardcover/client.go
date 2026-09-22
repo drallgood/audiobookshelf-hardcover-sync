@@ -1393,47 +1393,42 @@ query BookByASIN($asin: String!, $asin_us: String!, $format_id: Int!) {
 
 	var books []map[string]interface{}
 
-	// Extract data from response
+	// Extract data from response. An empty books array is the only successful
+	// not-found response; missing or malformed fields are API failures.
 	data, ok := rawResponse["data"].(map[string]interface{})
 	if !ok {
-		// If that fails, try to see if rawResponse itself is the data
 		if _, isMap := rawResponse["books"]; isMap {
 			data = rawResponse
 		} else {
-			log.Warn("No 'data' key found in response and response is not a direct data object", map[string]interface{}{})
+			return nil, fmt.Errorf("invalid ASIN response: missing data")
 		}
 	}
 
-	if data != nil {
-		log.Debug("Data keys in response", map[string]interface{}{
-			"data_keys": fmt.Sprintf("%v", getMapKeys(data)),
-		})
-
-		if booksData, ok := data["books"]; ok {
-			switch v := booksData.(type) {
-			case []interface{}:
-				log.Debug("Found books array in response", map[string]interface{}{
-					"books_count": len(v),
-				})
-
-				for i, b := range v {
-					if book, ok := b.(map[string]interface{}); ok {
-						books = append(books, book)
-						log.Debug("Found book in response", map[string]interface{}{
-							"book_index": i,
-							"book_id":    fmt.Sprintf("%v", book["id"]),
-							"title":      fmt.Sprintf("%v", book["title"]),
-						})
-					}
-				}
-			default:
-				log.Warn("Unexpected type for books data", map[string]interface{}{
-					"books_type": fmt.Sprintf("%T", v),
-				})
-			}
-		} else {
-			log.Warn("No 'books' key found in data", map[string]interface{}{})
+	log.Debug("Data keys in response", map[string]interface{}{
+		"data_keys": fmt.Sprintf("%v", getMapKeys(data)),
+	})
+	booksData, ok := data["books"]
+	if !ok {
+		return nil, fmt.Errorf("invalid ASIN response: books field is missing")
+	}
+	booksSlice, ok := booksData.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid ASIN response: books has type %T", booksData)
+	}
+	log.Debug("Found books array in response", map[string]interface{}{
+		"books_count": len(booksSlice),
+	})
+	for i, b := range booksSlice {
+		book, ok := b.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("invalid ASIN response: book %d has type %T", i, b)
 		}
+		books = append(books, book)
+		log.Debug("Found book in response", map[string]interface{}{
+			"book_index": i,
+			"book_id":    fmt.Sprintf("%v", book["id"]),
+			"title":      fmt.Sprintf("%v", book["title"]),
+		})
 	}
 
 	log.Debug("Extracted books from response", map[string]interface{}{
@@ -1489,14 +1484,14 @@ query BookByASIN($asin: String!, $asin_us: String!, $format_id: Int!) {
 	// Handle editions
 	editions, _ := bookData["editions"].([]interface{})
 	if len(editions) == 0 {
-		log.Warn("No editions found for book", map[string]interface{}{
-			"book_id": hcBook.ID,
-		})
-		return nil, nil
+		return nil, fmt.Errorf("invalid ASIN response: book %s has no editions", hcBook.ID)
 	}
 
 	// Process the first edition
-	edition, _ := editions[0].(map[string]interface{})
+	edition, ok := editions[0].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid ASIN response: edition has type %T", editions[0])
+	}
 
 	// Set EditionID if available
 	if editionID, ok := edition["id"]; ok {
@@ -1510,6 +1505,15 @@ query BookByASIN($asin: String!, $asin_us: String!, $format_id: Int!) {
 		case string:
 			hcBook.EditionID = v
 		}
+	}
+	if hcBook.ID == "" {
+		return nil, fmt.Errorf("invalid ASIN response: book is missing an ID")
+	}
+	if hcBook.Title == "" {
+		return nil, fmt.Errorf("invalid ASIN response: book is missing a title")
+	}
+	if hcBook.EditionID == "" {
+		return nil, fmt.Errorf("invalid ASIN response: edition is missing an ID")
 	}
 
 	// Handle optional CanonicalID
@@ -1545,7 +1549,7 @@ query BookByASIN($asin: String!, $asin_us: String!, $format_id: Int!) {
 
 	log.Debug("Successfully found book by ASIN", map[string]interface{}{
 		"book_id":    hcBook.ID,
-		"title":      bookData["title"].(string),
+		"title":      hcBook.Title,
 		"edition_id": hcBook.EditionID,
 	})
 
@@ -1635,9 +1639,11 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
 		Editions     []*Edition  `json:"editions"`
 	}
 
-	// The GraphQL response is already unwrapped by the client, so we expect just the books array
-	var result struct {
-		Books []*Book `json:"books"`
+	// The GraphQL response is already unwrapped by the client, so we expect just
+	// the books array. Keep it raw until presence and shape are validated: a
+	// missing or malformed books field is an API failure, not a not-found result.
+	var rawResult struct {
+		Books json.RawMessage `json:"books"`
 	}
 
 	// Execute the GraphQL query
@@ -1645,27 +1651,48 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
 		"isbn":      normalizedISBN,
 		"format_id": formatID,
 	}
-	err := c.GraphQLQuery(ctx, query, vars, &result)
+	err := c.GraphQLQuery(ctx, query, vars, &rawResult)
+	var books []*Book
+	if err == nil {
+		if len(rawResult.Books) == 0 || string(rawResult.Books) == "null" {
+			err = fmt.Errorf("invalid ISBN response: books field is missing")
+		} else if unmarshalErr := json.Unmarshal(rawResult.Books, &books); unmarshalErr != nil {
+			err = fmt.Errorf("invalid ISBN response: books field: %w", unmarshalErr)
+		}
+	}
 
 	// Debug: Log the result after unmarshaling
-	resultJSON, _ := json.Marshal(result)
+	resultJSON, _ := json.Marshal(rawResult)
 	log.Debug("GraphQL query result", map[string]interface{}{
 		"result":      string(resultJSON),
-		"books_count": len(result.Books),
+		"books_count": len(books),
 	})
 
-	if len(result.Books) > 0 {
-		book := result.Books[0]
+	if len(books) > 0 {
+		book := books[0]
+		if book == nil {
+			err = fmt.Errorf("invalid ISBN response: book is null")
+		}
 		editionsCount := 0
-		if book.Editions != nil {
+		if book != nil && book.Editions != nil {
 			editionsCount = len(book.Editions)
 		}
 		log.Debug("First book in result", map[string]interface{}{
-			"book_id":  book.ID,
-			"title":    book.Title,
+			"book_id": func() string {
+				if book == nil {
+					return ""
+				}
+				return book.ID.String()
+			}(),
+			"title": func() string {
+				if book == nil {
+					return ""
+				}
+				return book.Title
+			}(),
 			"editions": editionsCount,
 		})
-		if editionsCount > 0 {
+		if editionsCount > 0 && book.Editions[0] != nil {
 			edition := book.Editions[0]
 			log.Debug("First edition", map[string]interface{}{
 				"edition_id": edition.ID,
@@ -1686,24 +1713,30 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
 	}
 
 	// Check if any books were found
-	if len(result.Books) == 0 {
+	if len(books) == 0 {
 		log.Debug("No books found with the given ISBN", map[string]interface{}{
 			"isbn": isbn,
 		})
 		return nil, nil
 	}
 
-	bookData := result.Books[0]
+	bookData := books[0]
+	if bookData.ID.String() == "" {
+		return nil, fmt.Errorf("invalid ISBN response: book is missing an ID")
+	}
+	if bookData.Title == "" {
+		return nil, fmt.Errorf("invalid ISBN response: book is missing a title")
+	}
 
 	// Check if we have any editions
 	if len(bookData.Editions) == 0 {
-		log.Warn("No editions found for book", map[string]interface{}{
-			"book_id": bookData.ID.String(),
-		})
-		return nil, nil
+		return nil, fmt.Errorf("invalid ISBN response: book %s has no editions", bookData.ID.String())
 	}
 
 	edition := bookData.Editions[0]
+	if edition == nil || edition.ID.String() == "" {
+		return nil, fmt.Errorf("invalid ISBN response: edition is missing an ID")
+	}
 	hcBook := &models.HardcoverBook{
 		ID:           bookData.ID.String(),
 		Title:        bookData.Title,
@@ -2499,12 +2532,12 @@ func (c *Client) GetEditionByISBN13(ctx context.Context, isbn13 string) (*models
 	}
 
 	if book == nil || book.ID == "" {
-		return nil, fmt.Errorf("no book found with ISBN-13: %s", isbn13)
+		return nil, fmt.Errorf("%w: no book found with ISBN-13: %s", models.ErrEditionNotFound, isbn13)
 	}
 
 	// Check if we have an edition ID
 	if book.EditionID == "" {
-		return nil, fmt.Errorf("no edition found for book with ID: %s", book.ID)
+		return nil, fmt.Errorf("%w: no edition found for book with ID: %s", models.ErrEditionNotFound, book.ID)
 	}
 
 	// Create an Edition from the embedded fields in HardcoverBook
@@ -2518,6 +2551,33 @@ func (c *Client) GetEditionByISBN13(ctx context.Context, isbn13 string) (*models
 	}
 
 	return edition, nil
+}
+
+// GetEditionByISBN10 retrieves an edition by its ISBN-10. It mirrors
+// GetEditionByISBN13: the search is audiobook-format aware and returns the
+// first matching book, and the edition's book is the book of that search hit.
+func (c *Client) GetEditionByISBN10(ctx context.Context, isbn10 string) (*models.Edition, error) {
+	book, err := c.SearchBookByISBN10(ctx, isbn10)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find book by ISBN-10: %w", err)
+	}
+
+	if book == nil || book.ID == "" {
+		return nil, fmt.Errorf("%w: no book found with ISBN-10: %s", models.ErrEditionNotFound, isbn10)
+	}
+
+	if book.EditionID == "" {
+		return nil, fmt.Errorf("%w: no edition found for book with ID: %s", models.ErrEditionNotFound, book.ID)
+	}
+
+	return &models.Edition{
+		ID:     book.EditionID,
+		BookID: book.ID,
+		Title:  book.Title,
+		ASIN:   book.EditionASIN,
+		ISBN13: book.EditionISBN13,
+		ISBN10: book.EditionISBN10,
+	}, nil
 }
 
 // GetEditionByASIN retrieves an edition by its ASIN
@@ -2538,7 +2598,7 @@ func (c *Client) GetEditionByASIN(ctx context.Context, asin string) (*models.Edi
 	}
 
 	if book == nil || book.ID == "" {
-		return nil, fmt.Errorf("no book found with ASIN: %s", asin)
+		return nil, fmt.Errorf("%w: no book found with ASIN: %s", models.ErrEditionNotFound, asin)
 	}
 
 	// Get the edition ID from the book's EditionID field
@@ -2554,7 +2614,7 @@ func (c *Client) GetEditionByASIN(ctx context.Context, asin string) (*models.Edi
 			"book_id": book.ID,
 			"asin":    asin,
 		})
-		return nil, fmt.Errorf("no edition ID found for book with ASIN: %s", asin)
+		return nil, fmt.Errorf("%w: no edition ID found for book with ASIN: %s", models.ErrEditionNotFound, asin)
 	}
 
 	// Then get the edition details
@@ -2660,7 +2720,7 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 		log.Debug("Edition not found in response", map[string]interface{}{
 			"edition_id": editionID,
 		})
-		return nil, fmt.Errorf("edition not found: %s", editionID)
+		return nil, fmt.Errorf("%w: %s", models.ErrEditionNotFound, editionID)
 	}
 
 	// Get the first edition

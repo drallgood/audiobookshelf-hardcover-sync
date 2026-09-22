@@ -78,7 +78,8 @@ func (h *TestHelpers) UpdateEditionImage(ctx context.Context, editionID int, ima
 // CreateEdition exposes the private createEdition method for testing
 func (h *TestHelpers) CreateEdition(ctx context.Context, input *EditionInput, imageID int) (int, error) {
 	// Call the original method directly
-	return h.creator.createEdition(ctx, input, imageID)
+	editionID, _, err := h.creator.createEdition(ctx, input, imageID)
+	return editionID, err
 }
 
 // testRoundTripper is a custom http.RoundTripper that redirects hardcover.app URLs

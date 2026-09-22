@@ -50,6 +50,15 @@ func (m *MockHardcoverClient) GetEdition(ctx context.Context, id string) (*model
 	return args.Get(0).(*models.Edition), args.Error(1)
 }
 
+// GetEditionByISBN10 mocks the GetEditionByISBN10 method
+func (m *MockHardcoverClient) GetEditionByISBN10(ctx context.Context, isbn10 string) (*models.Edition, error) {
+	args := m.Called(ctx, isbn10)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.Edition), args.Error(1)
+}
+
 // GetEditionByISBN13 mocks the GetEditionByISBN13 method
 func (m *MockHardcoverClient) GetEditionByISBN13(ctx context.Context, isbn13 string) (*models.Edition, error) {
 	args := m.Called(ctx, isbn13)
@@ -258,13 +267,15 @@ func newTestCreator(t *testing.T, client edition.HardcoverClient) *edition.Creat
 	}
 
 	// Create a new creator with the mock HTTP client
-	return edition.NewCreatorWithHTTPClient(
+	creator := edition.NewCreatorWithHTTPClient(
 		client,
 		logger.Get(),
 		false,
 		"",
 		httpClient,
 	)
+	creator.EnableCoverUpload()
+	return creator
 }
 
 func TestEditionCreator_CreateEdition(t *testing.T) {
@@ -694,6 +705,15 @@ func TestEditionInput_Validate(t *testing.T) {
 		{
 			name: "missing book ID",
 			input: &edition.EditionInput{
+				Title:     "Test Book",
+				AuthorIDs: []int{1, 2},
+			},
+			expectError: true,
+		},
+		{
+			name: "negative book ID",
+			input: &edition.EditionInput{
+				BookID:    -1,
 				Title:     "Test Book",
 				AuthorIDs: []int{1, 2},
 			},
@@ -1178,7 +1198,7 @@ func (m *mockImageTransport) RoundTrip(req *http.Request) (*http.Response, error
 			// Return a successful response with fake image data
 			return &http.Response{
 				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(strings.NewReader("fake image data")),
+				Body:       io.NopCloser(strings.NewReader("\xff\xd8\xff\xe0 fake JPEG data")), // JPEG magic bytes: covers must sniff as PNG or JPEG
 				Header:     make(http.Header),
 			}, nil
 		}
@@ -1408,6 +1428,7 @@ func TestEditionCreator_UploadEditionImage(t *testing.T) {
 				"test-token",
 				httpClient,
 			)
+			creator.EnableCoverUpload()
 
 			// Setup mocks
 			if tt.setupMock != nil {
@@ -1652,7 +1673,7 @@ func TestEditionCreator_createEdition(t *testing.T) {
 			imageID: 456,
 			setupMock: func(t *testing.T, m *MockHardcoverClient) {
 				// First, check GetEditionByASIN should return nil since no duplicate exists
-				m.On("GetEditionByASIN", mock.Anything, "B123456789").Return(nil, fmt.Errorf("edition not found"))
+				m.On("GetEditionByASIN", mock.Anything, "B123456789").Return(nil, models.ErrEditionNotFound)
 
 				// Mock GraphQLMutation for creating the edition
 				m.On("GraphQLMutation",
@@ -1685,8 +1706,9 @@ func TestEditionCreator_createEdition(t *testing.T) {
 			setupMock: func(t *testing.T, m *MockHardcoverClient) {
 				// Return an existing edition for the ASIN
 				existingEdition := &models.Edition{
-					ID:    "555",
-					Title: "Existing Edition",
+					ID:     "555",
+					BookID: "123",
+					Title:  "Existing Edition",
 				}
 				m.On("GetEditionByASIN", mock.Anything, "B123456789").Return(existingEdition, nil)
 			},
@@ -1703,7 +1725,7 @@ func TestEditionCreator_createEdition(t *testing.T) {
 			imageID: 456,
 			setupMock: func(t *testing.T, m *MockHardcoverClient) {
 				// First, check GetEditionByASIN should return nil since no duplicate exists
-				m.On("GetEditionByASIN", mock.Anything, "B123456789").Return(nil, fmt.Errorf("edition not found"))
+				m.On("GetEditionByASIN", mock.Anything, "B123456789").Return(nil, models.ErrEditionNotFound)
 
 				// Make GraphQLMutation fail
 				m.On("GraphQLMutation",
@@ -1728,7 +1750,7 @@ func TestEditionCreator_createEdition(t *testing.T) {
 			imageID: 456,
 			setupMock: func(t *testing.T, m *MockHardcoverClient) {
 				// First, check GetEditionByASIN should return nil since no duplicate exists
-				m.On("GetEditionByASIN", mock.Anything, "B123456789").Return(nil, fmt.Errorf("edition not found"))
+				m.On("GetEditionByASIN", mock.Anything, "B123456789").Return(nil, models.ErrEditionNotFound)
 
 				// Return errors in the GraphQL response suggesting duplication
 				m.On("GraphQLMutation",
@@ -1760,9 +1782,13 @@ func TestEditionCreator_createEdition(t *testing.T) {
 				// This is the critical part: Set up the second expectation for GetEditionByISBN13
 				// It will be called after the GraphQL mutation returns the "already exists" error
 				existingEdition := &models.Edition{
-					ID:    "666",
-					Title: "Existing Edition by ISBN13",
+					ID:     "666",
+					BookID: "123",
+					Title:  "Existing Edition by ISBN13",
 				}
+				// The lookup before the insert finds nothing; only the one after the
+				// duplicate error finds the edition.
+				m.On("GetEditionByISBN13", mock.Anything, "9781234567890").Return(nil, models.ErrEditionNotFound).Once()
 				m.On("GetEditionByISBN13", mock.Anything, "9781234567890").Return(existingEdition, nil).Once()
 			},
 			expectedID:  666, // Should return the existing edition's ID found by ISBN13
@@ -1778,7 +1804,7 @@ func TestEditionCreator_createEdition(t *testing.T) {
 			imageID: 456,
 			setupMock: func(t *testing.T, m *MockHardcoverClient) {
 				// First, check GetEditionByASIN should return nil for initial check
-				m.On("GetEditionByASIN", mock.Anything, "B123456789").Return(nil, fmt.Errorf("edition not found")).Once()
+				m.On("GetEditionByASIN", mock.Anything, "B123456789").Return(nil, models.ErrEditionNotFound).Once()
 
 				// Return errors in the GraphQL response suggesting duplication
 				m.On("GraphQLMutation",
@@ -1809,8 +1835,9 @@ func TestEditionCreator_createEdition(t *testing.T) {
 
 				// Second lookup for GetEditionByASIN after duplicate error returns existing edition
 				existingEdition := &models.Edition{
-					ID:    "777",
-					Title: "Existing Edition by ASIN",
+					ID:     "777",
+					BookID: "123",
+					Title:  "Existing Edition by ASIN",
 				}
 				// The critical fix: Set up the right expectation for the second call after error
 				m.On("GetEditionByASIN", mock.Anything, "B123456789").Return(existingEdition, nil).Once()
@@ -1839,7 +1866,7 @@ func TestEditionCreator_createEdition(t *testing.T) {
 			imageID: 456,
 			setupMock: func(t *testing.T, m *MockHardcoverClient) {
 				// First, check GetEditionByASIN should return nil since no duplicate exists
-				m.On("GetEditionByASIN", mock.Anything, "B123456789").Return(nil, fmt.Errorf("edition not found"))
+				m.On("GetEditionByASIN", mock.Anything, "B123456789").Return(nil, models.ErrEditionNotFound)
 
 				// Verify all optional fields are included in the GraphQL mutation
 				m.On("GraphQLMutation",
@@ -1926,6 +1953,9 @@ func TestEditionCreator_createEdition(t *testing.T) {
 			if tt.setupMock != nil {
 				tt.setupMock(t, mockClient)
 			}
+			// ISBN lookups that a case does not script find nothing.
+			mockClient.On("GetEditionByISBN13", mock.Anything, mock.Anything).Return(nil, models.ErrEditionNotFound).Maybe()
+			mockClient.On("GetEditionByISBN10", mock.Anything, mock.Anything).Return(nil, models.ErrEditionNotFound).Maybe()
 
 			// Call the method under test via the helper
 			editionID, err := helper.CreateEdition(context.Background(), tt.input, tt.imageID)
@@ -1942,6 +1972,56 @@ func TestEditionCreator_createEdition(t *testing.T) {
 			}
 
 			// Verify all mocks were called as expected
+			mockClient.AssertExpectations(t)
+		})
+	}
+}
+
+// TestEditionCreator_createEditionFormat checks the edition_format sent to
+// Hardcover: a caller-supplied label is honored (trimmed) and a missing one
+// falls back to "Audiobook". The reading format stays Audiobook either way.
+func TestEditionCreator_createEditionFormat(t *testing.T) {
+	logger.Setup(logger.Config{Level: "debug", Format: "json"})
+
+	tests := []struct {
+		name   string
+		format string
+		want   string
+	}{
+		{"provided format is sent", "Audible Audio", "Audible Audio"},
+		{"surrounding whitespace is trimmed", "  Audible Audio\t", "Audible Audio"},
+		{"empty falls back to Audiobook", "", "Audiobook"},
+		{"whitespace only falls back to Audiobook", "  \t ", "Audiobook"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var sent map[string]interface{}
+			mockClient := new(MockHardcoverClient)
+			mockClient.On("GraphQLMutation",
+				mock.Anything,
+				mock.MatchedBy(func(query string) bool { return strings.Contains(query, "insert_edition") }),
+				mock.AnythingOfType("map[string]interface {}"),
+				mock.MatchedBy(isInsertEditionResult),
+			).Run(func(args mock.Arguments) {
+				variables := args.Get(2).(map[string]interface{})
+				sent = variables["edition"].(map[string]interface{})["dto"].(map[string]interface{})
+				resp := args.Get(3).(*struct {
+					InsertEdition struct {
+						ID     interface{} `json:"id"`
+						Errors []string    `json:"errors"`
+					} `json:"insert_edition"`
+				})
+				resp.InsertEdition.ID = 789
+			}).Return(nil).Once()
+
+			creator := newTestCreator(t, mockClient)
+			input := &edition.EditionInput{BookID: 123, Title: "T", AuthorIDs: []int{1}, EditionFormat: tt.format}
+			id, err := edition.NewTestHelpers(creator).CreateEdition(context.Background(), input, 0)
+
+			assert.NoError(t, err)
+			assert.Equal(t, 789, id)
+			assert.Equal(t, tt.want, sent["edition_format"])
+			assert.Equal(t, 2, sent["reading_format_id"])
 			mockClient.AssertExpectations(t)
 		})
 	}
