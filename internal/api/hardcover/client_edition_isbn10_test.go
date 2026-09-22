@@ -108,6 +108,7 @@ func TestClient_GetEditionByISBN10(t *testing.T) {
 		edition, err := client.GetEditionByISBN10(context.Background(), "0000000000")
 		require.Error(t, err)
 		assert.Nil(t, edition)
+		assert.ErrorIs(t, err, models.ErrEditionNotFound)
 		assert.True(t, strings.Contains(err.Error(), "no book found with ISBN-10"), err.Error())
 	})
 

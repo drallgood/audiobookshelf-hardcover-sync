@@ -145,10 +145,11 @@ func newTestClient(t *testing.T) (*Client, *httptest.Server) {
 
 func TestClient_GetEditionByISBN13(t *testing.T) {
 	tests := []struct {
-		name        string
-		isbn13      string
-		expectError bool
-		expected    *models.Edition
+		name         string
+		isbn13       string
+		expectError  bool
+		wantNotFound bool
+		expected     *models.Edition
 	}{
 		{
 			name:   "successful search",
@@ -169,10 +170,11 @@ func TestClient_GetEditionByISBN13(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name:        "book not found",
-			isbn13:      "9780000000000", // This will trigger the not found case in our test server
-			expected:    nil,
-			expectError: true,
+			name:         "book not found",
+			isbn13:       "9780000000000", // This will trigger the not found case in our test server
+			expected:     nil,
+			expectError:  true,
+			wantNotFound: true,
 		},
 	}
 
@@ -188,6 +190,9 @@ func TestClient_GetEditionByISBN13(t *testing.T) {
 			// Check for expected errors
 			if tt.expectError {
 				assert.Error(t, err)
+				if tt.wantNotFound {
+					assert.ErrorIs(t, err, models.ErrEditionNotFound)
+				}
 				return
 			}
 

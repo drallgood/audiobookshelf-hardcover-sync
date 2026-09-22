@@ -60,6 +60,7 @@ func TestClient_GetEditionByASIN(t *testing.T) {
 		searchResponse  map[string]interface{}
 		editionResponse map[string]interface{}
 		expectedError   string
+		wantNotFound    bool
 		expectedEdition *models.Edition
 	}{
 		{
@@ -128,6 +129,7 @@ func TestClient_GetEditionByASIN(t *testing.T) {
 				},
 			},
 			expectedError: "no book found with ASIN",
+			wantNotFound:  true,
 		},
 		{
 			name: "search error",
@@ -166,7 +168,7 @@ func TestClient_GetEditionByASIN(t *testing.T) {
 					"editions": []map[string]interface{}{},
 				},
 			},
-			expectedError: "no book found with ASIN",
+			expectedError: "invalid ASIN response",
 		},
 	}
 
@@ -275,6 +277,9 @@ func TestClient_GetEditionByASIN(t *testing.T) {
 			// Check for expected errors
 			if tt.expectedError != "" {
 				assert.Error(t, err)
+				if tt.wantNotFound {
+					assert.ErrorIs(t, err, models.ErrEditionNotFound)
+				}
 				if err != nil {
 					assert.Contains(t, err.Error(), tt.expectedError)
 				}

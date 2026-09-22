@@ -25,9 +25,11 @@ type reuseClient struct {
 	// afterInsert hides every lookup result until an insert_edition was
 	// attempted, so an edition is found only by the lookups that follow a
 	// duplicate error.
-	afterInsert  bool
-	insertErrors []string
-	insertID     int // the ID insert_edition returns when it does not report errors
+	afterInsert          bool
+	insertErrors         []string
+	insertID             int // the ID insert_edition returns when it does not report errors
+	lookupErr            error
+	afterInsertLookupErr error
 
 	mu        sync.Mutex
 	mutations []string
@@ -70,8 +72,14 @@ func (c *reuseClient) GetEditionByISBN13(ctx context.Context, isbn13 string) (*m
 // visible returns found, or a not-found error while lookups are hidden. The
 // caller holds c.mu.
 func (c *reuseClient) visible(found *models.Edition) (*models.Edition, error) {
+	if c.afterInsert && len(c.mutations) > 0 && c.afterInsertLookupErr != nil {
+		return nil, c.afterInsertLookupErr
+	}
+	if c.lookupErr != nil {
+		return nil, c.lookupErr
+	}
 	if found == nil || (c.afterInsert && len(c.mutations) == 0) {
-		return nil, errors.New("not found")
+		return nil, models.ErrEditionNotFound
 	}
 	return found, nil
 }
@@ -232,6 +240,58 @@ func TestCreateEdition_DetectsAnExistingEditionByEveryIdentifierBeforeInserting(
 	}
 }
 
+func TestCreateEdition_LookupFailureDoesNotInsert(t *testing.T) {
+	client := &reuseClient{lookupErr: errors.New("temporary lookup failure")}
+	creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "token", &http.Client{Transport: failingTransport{}})
+
+	_, err := creator.CreateEdition(context.Background(), &edition.EditionInput{
+		BookID: 123, Title: "A Title", AuthorIDs: []int{1}, ASIN: "B0LOOKUPFAIL",
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "temporary lookup failure") {
+		t.Fatalf("CreateEdition() error = %v, want the lookup failure", err)
+	}
+	if len(client.mutations) != 0 {
+		t.Fatalf("mutations sent = %d, want no insert after lookup failure", len(client.mutations))
+	}
+}
+
+func TestCreateEdition_DuplicateLookupFailureIsSurfaced(t *testing.T) {
+	client := &reuseClient{
+		afterInsert:          true,
+		insertErrors:         []string{"already exists"},
+		afterInsertLookupErr: errors.New("duplicate relookup failed"),
+	}
+	creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "token", &http.Client{Transport: failingTransport{}})
+
+	_, err := creator.CreateEdition(context.Background(), &edition.EditionInput{
+		BookID: 123, Title: "A Title", AuthorIDs: []int{1}, ASIN: "B0DUPLOOKUPFAIL",
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "duplicate relookup failed") {
+		t.Fatalf("CreateEdition() error = %v, want duplicate relookup failure", err)
+	}
+	if len(client.mutations) != 1 {
+		t.Fatalf("mutations sent = %d, want one insert attempt", len(client.mutations))
+	}
+}
+
+func TestCreateEditionRejectsNegativeBookIDWithoutMutation(t *testing.T) {
+	client := &reuseClient{}
+	creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "token", &http.Client{Transport: failingTransport{}})
+
+	_, err := creator.CreateEdition(context.Background(), &edition.EditionInput{
+		BookID: -1, Title: "A Title", AuthorIDs: []int{1}, ASIN: "B0INVALID01",
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "book_id is required") {
+		t.Fatalf("CreateEdition() error = %v, want invalid book_id", err)
+	}
+	if len(client.lookups) != 0 || len(client.mutations) != 0 {
+		t.Errorf("invalid book ID made lookups %v or mutations %v", len(client.lookups), len(client.mutations))
+	}
+}
+
 func TestCreateEdition_LooksUpEachIdentifierOnceInOrder(t *testing.T) {
 	client := &reuseClient{insertID: 777}
 	creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "token", &http.Client{Transport: failingTransport{}})
@@ -264,22 +324,6 @@ func TestCreateEdition_DryRunLooksNothingUp(t *testing.T) {
 	}
 	if len(client.lookups) != 0 || len(client.mutations) != 0 {
 		t.Errorf("dry run made lookups %v and mutations %v", client.lookups, client.mutations)
-	}
-}
-
-func TestCreateEditionRejectsNegativeBookIDWithoutMutation(t *testing.T) {
-	client := &reuseClient{}
-	creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "token", &http.Client{Transport: failingTransport{}})
-
-	_, err := creator.CreateEdition(context.Background(), &edition.EditionInput{
-		BookID: -1, Title: "A Title", AuthorIDs: []int{1}, ASIN: "B0INVALID01",
-	})
-
-	if err == nil || !strings.Contains(err.Error(), "book_id is required") {
-		t.Fatalf("CreateEdition() error = %v, want invalid book_id", err)
-	}
-	if len(client.lookups) != 0 || len(client.mutations) != 0 {
-		t.Errorf("invalid book ID made lookups %v or mutations %v", client.lookups, client.mutations)
 	}
 }
 

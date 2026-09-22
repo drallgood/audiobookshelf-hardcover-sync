@@ -1,6 +1,6 @@
 # Edition Creation Tool
 
-This tool helps create and manage audiobook editions in Hardcover. It provides two main commands:
+This tool helps create and manage editions in Hardcover. It provides two main commands:
 
 1. `prepopulate`: Generate a prepopulated JSON template from an existing book
 2. `create`: Create a new edition using a JSON input file
@@ -108,12 +108,12 @@ hardcover:
    ./edition --config ./config.yaml create --input my-audiobook.json
    ```
 
-   Before creating, the tool looks for an existing audiobook edition with the
-   same ASIN, ISBN-13 or ISBN-10 (an ISBN also under its converted form). One of
-   the same book is reused untouched (no cover or metadata is sent) and the
-   printed result includes `"existing": true`. An existing edition of a
-   different book, or one whose book cannot be confirmed, is refused with an
-   error.
+   Before creating, the tool looks for an existing edition in the requested
+   reading format with the same ASIN, ISBN-13 or ISBN-10 (an ISBN also under its
+   converted form). One of the same book is reused untouched (no cover or
+   metadata is sent) and the printed result includes `"existing": true`. An
+   existing edition of a different book, or one whose book cannot be confirmed,
+   is refused with an error.
 
    No cover is uploaded for now: Hardcover's cover upload endpoint is not part of
    its documented API and rejected a new scoped API token. An `image_url` in the

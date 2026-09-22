@@ -32,6 +32,10 @@ const maxCoverBytes = 15 << 20
 // is switched off (see EnableCoverUpload).
 var ErrCoverUploadDisabled = errors.New("cover upload to Hardcover is not supported yet")
 
+// coverUploadDisabledLabel is the ImageError of an edition whose input asked for
+// a cover while cover upload is switched off. It is fixed text, not remote data.
+const coverUploadDisabledLabel = "cover upload to Hardcover is not supported yet"
+
 var (
 	// errCoverFormat means the downloaded cover is not a PNG or JPEG, the only
 	// formats Hardcover documents as supported.
@@ -179,13 +183,6 @@ func (c *Creator) shouldSendAudiobookshelfToken(imageURL string) bool {
 	return c.isAudiobookshelfURLInScope(imageURL)
 }
 
-func canonicalURLPath(rawPath string) string {
-	if rawPath == "" {
-		return ""
-	}
-	return path.Clean(rawPath)
-}
-
 // isAudiobookshelfURLInScope reports whether imageURL remains within the
 // configured Audiobookshelf scheme, host (including port), and path prefix.
 func (c *Creator) isAudiobookshelfURLInScope(imageURL string) bool {
@@ -203,6 +200,13 @@ func (c *Creator) isAudiobookshelfURLInScope(imageURL string) bool {
 	basePath := strings.TrimRight(canonicalURLPath(base.Path), "/")
 	targetPath := canonicalURLPath(target.Path)
 	return basePath == "" || targetPath == basePath || strings.HasPrefix(targetPath, basePath+"/")
+}
+
+func canonicalURLPath(rawPath string) string {
+	if rawPath == "" {
+		return ""
+	}
+	return path.Clean(rawPath)
 }
 
 // checkRedirect keeps sensitive headers within the same authorized origin.
@@ -308,7 +312,7 @@ func (c *Creator) CreateEdition(ctx context.Context, input *EditionInput) (*Edit
 	}
 
 	// Step 1: Create the edition first (without image)
-	editionID, existing, err := c.createEdition(ctx, input)
+	editionID, existing, err := c.createEdition(ctx, input, 0) // Pass 0 as imageID initially
 	if err != nil {
 		return nil, fmt.Errorf("failed to create edition: %w", err)
 	}
@@ -324,7 +328,7 @@ func (c *Creator) CreateEdition(ctx context.Context, input *EditionInput) (*Edit
 	if input.ImageURL != "" && !c.coverUpload {
 		// Do not try the upload: it is switched off (see EnableCoverUpload).
 		c.log.Info("Cover upload is not supported yet, creating the edition without a cover", nil)
-		imageError = ErrCoverUploadDisabled.Error()
+		imageError = coverUploadDisabledLabel
 	} else if input.ImageURL != "" {
 		// First upload the image to Google Cloud Storage
 		imageURL, uploadErr := c.uploadImageToGCS(ctx, editionID, input.ImageURL)
@@ -850,9 +854,9 @@ func existingEditionLookups(input *EditionInput) []editionLookup {
 }
 
 // findExistingEdition looks up each identifier of the input on Hardcover and
-// returns the first edition found. A failed lookup counts as not found, so a
-// transient error never blocks creation on its own.
-func (c *Creator) findExistingEdition(ctx context.Context, input *EditionInput) (*models.Edition, editionLookup) {
+// returns the first edition found. Only an explicit not-found result permits
+// creation to continue; lookup failures fail closed to avoid duplicate inserts.
+func (c *Creator) findExistingEdition(ctx context.Context, input *EditionInput) (*models.Edition, editionLookup, error) {
 	for _, l := range existingEditionLookups(input) {
 		var (
 			found *models.Edition
@@ -866,19 +870,31 @@ func (c *Creator) findExistingEdition(ctx context.Context, input *EditionInput) 
 		default:
 			found, err = c.client.GetEditionByISBN10(ctx, l.value)
 		}
-		if err == nil && found != nil && found.ID != "" {
-			return found, l
+		if err != nil {
+			if errors.Is(err, models.ErrEditionNotFound) {
+				continue
+			}
+			return nil, editionLookup{}, fmt.Errorf("lookup existing edition by %s %q failed: %w", l.kind, l.value, err)
 		}
+		if found == nil {
+			continue
+		}
+		if found.ID == "" {
+			return nil, editionLookup{}, fmt.Errorf("lookup existing edition by %s %q returned an edition without an ID", l.kind, l.value)
+		}
+		return found, l, nil
 	}
-	return nil, editionLookup{}
+	return nil, editionLookup{}, nil
 }
 
 // createEdition creates a new edition with the given metadata. Before inserting
 // it looks for an existing edition with the same ASIN, ISBN-13 or ISBN-10 (or a
 // converted ISBN form). One that belongs to the same book is returned with true
 // and left untouched; one of another book is an error.
-func (c *Creator) createEdition(ctx context.Context, input *EditionInput) (int, bool, error) {
-	if found, by := c.findExistingEdition(ctx, input); found != nil {
+func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageID int) (int, bool, error) {
+	if found, by, lookupErr := c.findExistingEdition(ctx, input); lookupErr != nil {
+		return 0, false, lookupErr
+	} else if found != nil {
 		editionID, adoptErr := adoptExistingEdition(found, input)
 		if adoptErr != nil {
 			return 0, false, adoptErr
@@ -907,10 +923,19 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput) (int, 
 	}
 
 	// Initialize edition data with required fields
-	dto := map[string]interface{}{
-		"title":             input.Title,
-		"edition_format":    editionFormat,
-		"reading_format_id": models.ReadingFormatID(input.ReadingFormat),
+	editionData := map[string]interface{}{
+		"dto": map[string]interface{}{
+			"title":             input.Title,
+			"edition_format":    editionFormat,
+			"reading_format_id": models.ReadingFormatID(input.ReadingFormat),
+		},
+	}
+
+	// Get the dto object, create it if it doesn't exist
+	dto, ok := editionData["dto"].(map[string]interface{})
+	if !ok {
+		dto = make(map[string]interface{})
+		editionData["dto"] = dto
 	}
 
 	// Add optional fields to dto if they exist
@@ -983,10 +1008,16 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput) (int, 
 		dto["edition_information"] = input.EditionInfo
 	}
 
+	if imageID > 0 {
+		dto["image_id"] = imageID
+	}
+
 	// Prepare variables for the mutation
+	editionInput := editionData // Use the edition data directly as the input
+
 	variables := map[string]interface{}{
 		"bookId":  input.BookID,
-		"edition": map[string]interface{}{"dto": dto},
+		"edition": editionInput,
 	}
 
 	// The client handles the top-level GraphQL response, we just need to define the data structure
@@ -1017,7 +1048,9 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput) (int, 
 		// A duplicate error means an edition with these identifiers appeared after
 		// the proactive lookup (a race); look it up again to reuse it.
 		if strings.Contains(errMsg, "already exists") {
-			if found, _ := c.findExistingEdition(ctx, input); found != nil {
+			if found, _, lookupErr := c.findExistingEdition(ctx, input); lookupErr != nil {
+				return 0, false, fmt.Errorf("edition already exists but lookup failed: %w", lookupErr)
+			} else if found != nil {
 				editionID, adoptErr := adoptExistingEdition(found, input)
 				if adoptErr != nil {
 					return 0, false, adoptErr
