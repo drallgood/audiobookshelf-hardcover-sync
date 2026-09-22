@@ -92,10 +92,16 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 	ebook := readingFormat == models.ReadingFormatEbook
 	var authorNames []string
 	for _, author := range meta.Authors {
-		authorNames = append(authorNames, author.Name)
+		if name := strings.TrimSpace(author.Name); name != "" {
+			authorNames = append(authorNames, name)
+		}
 	}
 	var narratorNames []string
-	narratorNames = append(narratorNames, meta.Narrators...)
+	for _, narrator := range meta.Narrators {
+		if name := strings.TrimSpace(narrator); name != "" {
+			narratorNames = append(narratorNames, name)
+		}
+	}
 	authorName := meta.AuthorName
 	if len(authorNames) > 0 {
 		authorName = strings.Join(authorNames, ", ")
@@ -300,20 +306,13 @@ func (d *Draft) buildWarnings(absLanguage string) []string {
 
 func isEnglishLabel(language string) bool {
 	label := strings.ToLower(strings.TrimSpace(language))
-	words := strings.Fields(strings.NewReplacer("-", " ", "_", " ").Replace(label))
-	if len(words) >= 2 && ((words[0] == "non" && words[1] == "english") || (words[0] == "not" && words[1] == "english")) {
-		return false
+	if label == "english" || label == "en" {
+		return true
 	}
-	compact := strings.Map(func(r rune) rune {
-		if r >= 'a' && r <= 'z' {
-			return r
-		}
-		return -1
-	}, label)
-	if strings.HasPrefix(compact, "nonenglish") || strings.HasPrefix(compact, "notenglish") {
-		return false
+	if strings.HasPrefix(label, "en-") || strings.HasPrefix(label, "en_") {
+		return true
 	}
-	return strings.Contains(label, "english")
+	return strings.HasPrefix(label, "english (") && strings.HasSuffix(label, ")")
 }
 
 func nonNilInts(ids []int) []int {
