@@ -139,9 +139,9 @@ func TestGetEditionDraftReturnsTheDraftContract(t *testing.T) {
 	sort.Strings(keys)
 	require.Equal(t, []string{
 		"asin", "audio_seconds", "author_ids", "author_names", "country_id", "cover_url", "dry_run",
-		"edition_format", "edition_information", "hardcover_book_id", "isbn_10", "isbn_13", "language_id",
-		"narrator_ids", "narrator_names", "publisher_id", "publisher_name", "reading_format", "release_date", "subtitle",
-		"title", "warnings",
+		"edition_format", "edition_information", "hardcover_book_id", "isbn_10", "isbn_10_valid", "isbn_13",
+		"isbn_13_valid", "language_id", "narrator_ids", "narrator_names", "publisher_id", "publisher_name",
+		"reading_format", "release_date", "subtitle", "title", "warnings",
 	}, keys)
 	require.EqualValues(t, 4242, envelope.Data["hardcover_book_id"])
 	require.Equal(t, "Contract Title", envelope.Data["title"])

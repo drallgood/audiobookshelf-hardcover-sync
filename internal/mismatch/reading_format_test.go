@@ -152,36 +152,22 @@ func TestSavedExportKeepsTheCanonicalReadingFormatAndNoPlatformInfo(t *testing.T
 }
 
 // TestExportEditionInformation checks the edition information rule (crosswalk
-// R14). An audiobook keeps a real value the record carries, and otherwise is
-// "Abridged" when Audiobookshelf marks it abridged and "Unabridged" when not;
-// an ebook has no default and keeps only a real value.
+// R14): an audiobook is "Abridged" when Audiobookshelf marks it abridged and
+// "Unabridged" when not; an ebook has no default and always exports empty.
 func TestExportEditionInformation(t *testing.T) {
 	tests := map[string]struct {
 		readingFormat string
-		info          string
 		abridged      bool
 		want          string
 	}{
-		"audiobook without information":            {"", "", false, "Unabridged"},
-		"audiobook real value":                     {"", "Special edition", false, "Special edition"},
-		"audiobook real value is trimmed":          {"", " Abridged ", false, "Abridged"},
-		"audiobook placeholder":                    {"", "Audiobookshelf", false, "Unabridged"},
-		"audiobook debug text":                     {"", "Reason: no match", false, "Unabridged"},
-		"audiobook marked abridged":                {"", "", true, "Abridged"},
-		"audiobook abridged with placeholder":      {"", "Audiobookshelf", true, "Abridged"},
-		"audiobook real value wins over abridged":  {"", "Special edition", true, "Special edition"},
-		"ebook marked abridged has no information": {"ebook", "", true, ""},
-		"ebook without information":                {"ebook", "", false, ""},
-		"ebook placeholder":                        {"ebook", "Audiobookshelf", false, ""},
-		"ebook debug text":                         {"ebook", "Reason: no match", false, ""},
-		"ebook with a real value":                  {"ebook", "Special edition", false, "Special edition"},
-		"ebook lowercase placeholder":              {"ebook", "audiobookshelf", false, ""},
-		"ebook lowercase debug text":               {"ebook", "reason: no match", false, ""},
-		"ebook capitalised error":                  {"ebook", "Error: lookup failed", false, ""},
+		"audiobook not abridged":                   {"", false, "Unabridged"},
+		"audiobook marked abridged":                {"", true, "Abridged"},
+		"ebook not abridged":                       {"ebook", false, ""},
+		"ebook marked abridged has no information": {"ebook", true, ""},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			record := BookMismatch{BookID: "1", Title: "Book", ReadingFormat: tt.readingFormat, EditionInfo: tt.info, Abridged: tt.abridged}
+			record := BookMismatch{BookID: "1", Title: "Book", ReadingFormat: tt.readingFormat, Abridged: tt.abridged}
 			export := record.ToEditionExport(logger.WithLogger(context.Background(), logger.Get()), nil)
 			require.Equal(t, tt.want, export.EditionInfo)
 		})

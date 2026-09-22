@@ -336,6 +336,14 @@ components:
         asin: {type: string}
         isbn_10: {type: string}
         isbn_13: {type: string}
+        isbn_10_valid:
+          type: boolean
+          nullable: true
+          description: Whether isbn_10's own check digit is correct, like Hardcover's isbn_10_valid. Omitted when isbn_10 is empty. A bad checksum is still accepted by Hardcover, so this is informational, not a blocker.
+        isbn_13_valid:
+          type: boolean
+          nullable: true
+          description: Whether isbn_13's own check digit is correct, like Hardcover's isbn_13_valid. Omitted when isbn_13 is empty.
         release_date:
           type: string
           description: Release date as YYYY-MM-DD; may be empty.
@@ -377,7 +385,7 @@ components:
           description: True when the profile is in dry-run mode.
         warnings:
           type: array
-          description: Things to review before an edition is created, such as no author resolved on Hardcover (creation would then fail), no release date, a publisher not found on Hardcover, or no narrator. A warning can also result from a Hardcover lookup that failed rather than found nothing, for example during an outage, and fetching the draft again may clear it. Never null; empty when there is nothing to flag.
+          description: Things to review before an edition is created, such as no author resolved on Hardcover (creation would then fail), no release date, a publisher not found on Hardcover, no narrator, an ISBN with an incorrect check digit (Hardcover will still store it as given), or an Audiobookshelf item tagged with a non-English language (the edition still defaults to language_id 1 and country_id 1). A warning can also result from a Hardcover lookup that failed rather than found nothing, for example during an outage, and fetching the draft again may clear it. Never null; empty when there is nothing to flag.
           items: {type: string}
 
 security:
@@ -641,7 +649,7 @@ paths:
     get:
       tags: [Editions]
       summary: Get a draft Hardcover edition for a needs-review book
-      description: Builds a draft of a new Hardcover edition from the Audiobookshelf item of a book that a run with available details (the active run or a retained one) marked needs_review and that has a Hardcover candidate (hardcover_book_id). Hyphens and spaces are removed from the ISBN, and when it is valid the draft also fills the other ISBN form. The item must have an ASIN or a valid ISBN, otherwise the request is rejected with 409. Requires write permission on the profile. The profile's Audiobookshelf token is used only on the server to fetch the item and is never returned.
+      description: Builds a draft of a new Hardcover edition from the Audiobookshelf item of a book that a run with available details (the active run or a retained one) marked needs_review and that has a Hardcover candidate (hardcover_book_id). Hyphens and spaces are removed from the ISBN, and when it is valid the draft also fills the other ISBN form. The item must have an ASIN or a valid ISBN, otherwise the request is rejected with 409. Requires write permission on the *profile* for authorization purposes (previewing shares the mutation admission checks with creating), but this endpoint only reads: it needs no `write:catalog:append` on the profile's Hardcover token, only the read scopes (`read:library`, `read:catalog`) the sync token already has. The profile's Audiobookshelf token is used only on the server to fetch the item and is never returned.
       parameters:
         - name: profileId
           in: path

@@ -17,11 +17,14 @@ type AudiobookshelfMetadataStruct struct {
 	Series            []AudiobookshelfSeries `json:"series"`
 	Genres            []string               `json:"genres"`
 	PublishedYear     string                 `json:"publishedYear"`
-	Publisher         string                 `json:"publisher"`
-	Description       string                 `json:"description"`
-	ISBN              string                 `json:"isbn"`
-	ASIN              string                 `json:"asin"`
-	Language          string                 `json:"language"`
+	// PublishedDate is a free-form full publication date, tried before
+	// PublishedYear when deriving a release date.
+	PublishedDate string `json:"publishedDate"`
+	Publisher     string `json:"publisher"`
+	Description   string `json:"description"`
+	ISBN          string `json:"isbn"`
+	ASIN          string `json:"asin"`
+	Language      string `json:"language"`
 	// Abridged is true when Audiobookshelf marks the audiobook as abridged.
 	Abridged bool `json:"abridged"`
 }

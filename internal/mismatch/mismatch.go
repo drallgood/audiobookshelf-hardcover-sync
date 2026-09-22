@@ -114,8 +114,10 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 	releaseDate := ""
 	audnexReleaseDate := ""
 
-	// If we have an ASIN, try to look up the book details from Audnex API
-	if metadata.ASIN != "" {
+	// If we have an ASIN, try to look up the book details from Audnex API.
+	// Audnex is Audible-only and an ebook's ASIN (Kindle or otherwise) is not
+	// expected to resolve there, so skip the call for an ebook record.
+	if metadata.ASIN != "" && metadata.ReadingFormat != models.ReadingFormatEbook {
 		log.Debug("Attempting Audnex enrichment for mismatch with ASIN", map[string]interface{}{
 			"asin":     metadata.ASIN,
 			"title":    metadata.Title,
@@ -214,7 +216,10 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 			})
 		}
 	} else {
-		log.Debug("Skipping Audnex enrichment, no ASIN available", nil)
+		log.Debug("Skipping Audnex enrichment", map[string]interface{}{
+			"has_asin":       metadata.ASIN != "",
+			"reading_format": metadata.ReadingFormat,
+		})
 	}
 
 	// Format release date - prefer Audnex API date, then publishedDate, fallback to publishedYear
@@ -344,9 +349,8 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 		// Edition information
 		EditionFormat: "Audiobook",
 		Abridged:      metadata.Abridged,
-		EditionInfo:   "Audiobookshelf", // Only include platform info, no debug/error details
-		LanguageID:    1,                // Default to English
-		CountryID:     1,                // Default to US
+		LanguageID:    1, // Default to English
+		CountryID:     1, // Default to US
 
 		// Publisher information
 		PublisherID: publisherID, // Looked-up publisher ID, or 0 when unresolved

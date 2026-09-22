@@ -99,31 +99,16 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 		readingFormat = models.ReadingFormatEbook
 	}
 
-	// Edition information describes the edition (e.g., "Unabridged"). Placeholders
-	// and debug text that end up in EditionInfo are not real values. An
-	// audiobook falls back to "Abridged" when Audiobookshelf marks it abridged and
-	// to "Unabridged" otherwise; an ebook has no such default and stays empty.
+	// Edition information describes the edition. An audiobook exports "Abridged"
+	// when Audiobookshelf marks it abridged and "Unabridged" otherwise; an ebook
+	// has no such default and stays empty.
 	editionInfo := ""
-	info := strings.TrimSpace(b.EditionInfo)
-	if ebook {
-		lower := strings.ToLower(info)
-		if info != "" &&
-			!strings.Contains(lower, "error") &&
-			!strings.Contains(lower, "reason:") &&
-			!strings.Contains(lower, "mismatch") &&
-			!strings.Contains(lower, "audiobookshelf") {
-			editionInfo = info
+	if !ebook {
+		if b.Abridged {
+			editionInfo = "Abridged"
+		} else {
+			editionInfo = "Unabridged"
 		}
-	} else if info != "" &&
-		!strings.Contains(info, "error") &&
-		!strings.Contains(info, "Reason:") &&
-		!strings.Contains(info, "mismatch") &&
-		!strings.Contains(info, "Audiobookshelf") {
-		editionInfo = info
-	} else if b.Abridged {
-		editionInfo = "Abridged"
-	} else {
-		editionInfo = "Unabridged"
 	}
 
 	// Look up author IDs if we have an author name and a Hardcover client
@@ -291,7 +276,6 @@ type BookMismatch struct {
 	ReadingFormat string `json:"reading_format,omitempty"`
 	// Abridged is true when Audiobookshelf marks the audiobook as abridged.
 	Abridged    bool   `json:"abridged,omitempty"`
-	EditionInfo string `json:"edition_information,omitempty"`
 	LanguageID  int    `json:"language_id,omitempty"`
 	CountryID   int    `json:"country_id,omitempty"`
 	PublisherID int    `json:"publisher_id,omitempty"`

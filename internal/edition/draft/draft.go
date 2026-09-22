@@ -2,6 +2,24 @@
 //
 // It lives beside, not inside, package edition because it reuses the mismatch
 // pipeline (mismatch imports the Hardcover client, which imports edition).
+//
+// Two crosswalk findings are deliberately left open in this step rather than
+// implemented, because closing them touches the shared mismatch/export
+// pipeline (finding 2) or needs a live-API check this step cannot make
+// (finding 9):
+//   - Finding 2 (exact author/narrator arrays): the Audiobookshelf item's
+//     expanded response carries authors[]/narrators[] with exact names, but
+//     this draft still goes through mismatch.AddWithMetadata's joined-string
+//     splitting (Author/Narrator, comma-separated), matching the mismatch
+//     export's existing behavior. Using the exact arrays instead would need
+//     new MediaMetadata fields threaded through the shared export pipeline,
+//     which step 1 pins as otherwise unchanged; left for a future step.
+//   - Finding 9 (exact, case-sensitive Hardcover person/publisher matching):
+//     an author/narrator/publisher name that differs by punctuation or
+//     spelling from Hardcover's stored name will not match. The draft's
+//     warnings (buildWarnings) are the minimum mitigation this step commits
+//     to; a looser lookup needs verification against the hosted API before
+//     it can be adopted (see AGENTS.md), and a UI remedy is step 7's decision.
 package draft
 
 import (
@@ -26,12 +44,18 @@ const draftReason = "Edition draft requested from Sync Status"
 // Audiobookshelf item. The JSON tags are the API contract for the
 // edition-draft endpoint.
 type Draft struct {
-	HardcoverBookID    int      `json:"hardcover_book_id"`
-	Title              string   `json:"title"`
-	Subtitle           string   `json:"subtitle"`
-	ASIN               string   `json:"asin"`
-	ISBN10             string   `json:"isbn_10"`
-	ISBN13             string   `json:"isbn_13"`
+	HardcoverBookID int    `json:"hardcover_book_id"`
+	Title           string `json:"title"`
+	Subtitle        string `json:"subtitle"`
+	ASIN            string `json:"asin"`
+	ISBN10          string `json:"isbn_10"`
+	ISBN13          string `json:"isbn_13"`
+	// ISBN10Valid and ISBN13Valid report whether the ISBN's own check digit is
+	// correct, like Hardcover's isbn_10_valid and isbn_13_valid. Each is omitted
+	// when that ISBN is empty. A bad checksum is a warning, not a blocker:
+	// Hardcover accepts and stores a checksum-invalid ISBN.
+	ISBN10Valid        *bool    `json:"isbn_10_valid,omitempty"`
+	ISBN13Valid        *bool    `json:"isbn_13_valid,omitempty"`
 	ReleaseDate        string   `json:"release_date"`
 	EditionInformation string   `json:"edition_information"`
 	EditionFormat      string   `json:"edition_format"`
@@ -102,12 +126,14 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 			NarratorName:  narrator,
 			Publisher:     meta.Publisher,
 			PublishedYear: meta.PublishedYear,
+			PublishedDate: meta.PublishedDate,
 			ISBN:          meta.ISBN,
 			ASIN:          meta.ASIN,
 			CoverURL:      coverURL,
 			Duration:      absBook.Media.Duration,
 			LibraryID:     absBook.LibraryID,
 			ReadingFormat: readingFormat,
+			Abridged:      meta.Abridged,
 		},
 		absBook.ID,
 		"",
@@ -134,6 +160,8 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 		ASIN:               export.ASIN,
 		ISBN10:             export.ISBN10,
 		ISBN13:             export.ISBN13,
+		ISBN10Valid:        export.ISBN10Valid,
+		ISBN13Valid:        export.ISBN13Valid,
 		ReleaseDate:        export.ReleaseDate,
 		EditionInformation: export.EditionInfo,
 		EditionFormat:      export.EditionFormat,
@@ -152,7 +180,7 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 		d.PublisherName = export.Info.PublisherName
 	}
 	d.fillCounterpartISBN()
-	d.Warnings = d.buildWarnings()
+	d.Warnings = d.buildWarnings(meta.Language)
 	return d, nil
 }
 
@@ -160,21 +188,27 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 // from it, so the draft carries both and Hardcover can match either. The user
 // can edit both before creating the edition.
 func (d *Draft) fillCounterpartISBN() {
+	valid := true
 	switch {
 	case d.ISBN13 != "" && d.ISBN10 == "":
 		if parsed, ok := isbn.Parse(d.ISBN13); ok {
-			d.ISBN10 = parsed.ISBN10()
+			if d.ISBN10 = parsed.ISBN10(); d.ISBN10 != "" {
+				d.ISBN10Valid = &valid
+			}
 		}
 	case d.ISBN10 != "" && d.ISBN13 == "":
 		if parsed, ok := isbn.Parse(d.ISBN10); ok {
-			d.ISBN13 = parsed.ISBN13()
+			if d.ISBN13 = parsed.ISBN13(); d.ISBN13 != "" {
+				d.ISBN13Valid = &valid
+			}
 		}
 	}
 }
 
 // buildWarnings lists conditions the user should know about before creating
 // the edition. The first one (no author) makes creation fail validation.
-func (d *Draft) buildWarnings() []string {
+// absLanguage is the Audiobookshelf item's free-text metadata.language field.
+func (d *Draft) buildWarnings(absLanguage string) []string {
 	warnings := []string{}
 	if len(d.AuthorIDs) == 0 {
 		if d.AuthorNames == "" {
@@ -195,6 +229,15 @@ func (d *Draft) buildWarnings() []string {
 		} else {
 			warnings = append(warnings, fmt.Sprintf("No Hardcover narrator matched %q, so the edition will have none.", d.NarratorNames))
 		}
+	}
+	if d.ISBN10Valid != nil && !*d.ISBN10Valid {
+		warnings = append(warnings, fmt.Sprintf("ISBN-10 %q has an incorrect check digit; Hardcover will still store it as given.", d.ISBN10))
+	}
+	if d.ISBN13Valid != nil && !*d.ISBN13Valid {
+		warnings = append(warnings, fmt.Sprintf("ISBN-13 %q has an incorrect check digit; Hardcover will still store it as given.", d.ISBN13))
+	}
+	if lang := strings.TrimSpace(absLanguage); lang != "" && !strings.Contains(strings.ToLower(lang), "english") {
+		warnings = append(warnings, fmt.Sprintf("The Audiobookshelf item is tagged %q, but the draft defaults to language 1 (English) and country 1 (United States); set language_id and country_id explicitly when creating the edition if that is wrong.", lang))
 	}
 	return warnings
 }

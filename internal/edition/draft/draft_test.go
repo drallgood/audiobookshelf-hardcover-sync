@@ -190,6 +190,32 @@ func TestNew_Warnings(t *testing.T) {
 			want:    []string{"No Hardcover narrator matched"},
 			wantIDs: true,
 		},
+		{
+			name: "bad-checksum ISBN-13 warns but is still exported",
+			mutate: func(b *models.AudiobookshelfBook) {
+				b.Media.Metadata.ISBN = "9780306406158" // shape-valid, wrong check digit
+			},
+			hc: &fakeHardcover{
+				authors:    map[string]string{"Ada Draftwright": "101"},
+				narrators:  map[string]string{"Nora Voicer": "202"},
+				publishers: map[string]string{"Draftwright House": "303"},
+			},
+			want:    []string{"ISBN-13 \"9780306406158\" has an incorrect check digit"},
+			wantIDs: true,
+		},
+		{
+			name: "non-English language warns",
+			mutate: func(b *models.AudiobookshelfBook) {
+				b.Media.Metadata.Language = "German"
+			},
+			hc: &fakeHardcover{
+				authors:    map[string]string{"Ada Draftwright": "101"},
+				narrators:  map[string]string{"Nora Voicer": "202"},
+				publishers: map[string]string{"Draftwright House": "303"},
+			},
+			want:    []string{"tagged \"German\""},
+			wantIDs: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -323,9 +349,9 @@ func TestDraft_JSONContract(t *testing.T) {
 	sort.Strings(keys)
 	want := []string{
 		"asin", "audio_seconds", "author_ids", "author_names", "country_id", "cover_url", "dry_run",
-		"edition_format", "edition_information", "hardcover_book_id", "isbn_10", "isbn_13", "language_id",
-		"narrator_ids", "narrator_names", "publisher_id", "publisher_name", "reading_format", "release_date", "subtitle",
-		"title", "warnings",
+		"edition_format", "edition_information", "hardcover_book_id", "isbn_10", "isbn_10_valid", "isbn_13",
+		"isbn_13_valid", "language_id", "narrator_ids", "narrator_names", "publisher_id", "publisher_name",
+		"reading_format", "release_date", "subtitle", "title", "warnings",
 	}
 	if !reflect.DeepEqual(keys, want) {
 		t.Errorf("JSON keys = %v, want %v", keys, want)
@@ -379,5 +405,41 @@ func TestNew_AudiobookDraftReportsItsReadingFormat(t *testing.T) {
 	}
 	if d.ReadingFormat != "audiobook" {
 		t.Errorf("ReadingFormat = %q, want audiobook", d.ReadingFormat)
+	}
+}
+
+// TestNew_CarriesAbridgedFlag guards crosswalk row R14: an audiobook item
+// Audiobookshelf marks abridged must draft as "Abridged", not the default
+// "Unabridged" (the draft previously never forwarded the abridged flag).
+func TestNew_CarriesAbridgedFlag(t *testing.T) {
+	hc := &fakeHardcover{authors: map[string]string{"Ada Draftwright": "101"}}
+	tests := map[bool]string{true: "Abridged", false: "Unabridged"}
+	for abridged, want := range tests {
+		d, err := draft.New(context.Background(), absItem(func(b *models.AudiobookshelfBook) {
+			b.Media.Metadata.Abridged = abridged
+		}), 42, "https://abs.example.com/", hc, "us")
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		if d.EditionInformation != want {
+			t.Errorf("abridged=%v: EditionInformation = %q, want %q", abridged, d.EditionInformation, want)
+		}
+	}
+}
+
+// TestNew_PrefersPublishedDateOverYear guards crosswalk finding 4: a full
+// publishedDate, when Audiobookshelf provides one, is used before the
+// year-only fallback.
+func TestNew_PrefersPublishedDateOverYear(t *testing.T) {
+	hc := &fakeHardcover{authors: map[string]string{"Ada Draftwright": "101"}}
+	d, err := draft.New(context.Background(), absItem(func(b *models.AudiobookshelfBook) {
+		b.Media.Metadata.PublishedYear = "2020"
+		b.Media.Metadata.PublishedDate = "2020-06-15"
+	}), 42, "https://abs.example.com/", hc, "us")
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if d.ReleaseDate != "2020-06-15" {
+		t.Errorf("ReleaseDate = %q, want the full publishedDate 2020-06-15 over the year-only fallback", d.ReleaseDate)
 	}
 }

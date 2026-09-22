@@ -119,7 +119,9 @@ whose details are available (the active run or a retained one) and to a book in
 that run, and requires write permission on the profile. `{bookId}` is the
 Audiobookshelf library item ID from `book_outcomes[].book_id` in the run-details
 response. The draft only reads from Audiobookshelf and Hardcover; it creates
-nothing.
+nothing, so the profile's Hardcover token needs no `write:catalog:append`
+scope, only the read scopes (`read:library`, `read:catalog`) a sync token
+already has.
 
 ```bash
 # Fetch the draft (authenticated; use your own host, IDs, and token)
@@ -141,13 +143,21 @@ envelope.
   `warnings` are arrays and are never `null`. The Hardcover book is taken from
   the run record. A `publisher_id` of `0` means no publisher. Hyphens and
   spaces are removed from the ISBN, and when it is valid the draft also fills
-  the other ISBN form (ISBN-10 or ISBN-13) so Hardcover can match either. The
+  the other ISBN form (ISBN-10 or ISBN-13) so Hardcover can match either;
+  `isbn_10_valid`/`isbn_13_valid` (omitted when that ISBN is empty) say whether
+  each ISBN's own check digit is correct, as Hardcover's own fields of the
+  same name do. An audiobook Audiobookshelf marks abridged has
+  `edition_information: "Abridged"` instead of the default `"Unabridged"`. The
   route returns `409` for a book whose Audiobookshelf item has no ASIN or valid
   ISBN, because an edition created for it could not be matched by a sync; add
   one in Audiobookshelf first. Warnings flag
   things to review before an edition is created: no author that could be
   resolved on Hardcover (creation would then fail), no release date, a
-  publisher not found on Hardcover, and no narrator. A warning can also come
+  publisher not found on Hardcover, no narrator, an ISBN with an incorrect
+  check digit (Hardcover still stores it as given, so this is informational,
+  not a blocker), and an Audiobookshelf item tagged with a non-English
+  language (the edition still defaults to `language_id: 1` and
+  `country_id: 1`). A warning can also come
   from a Hardcover lookup that failed rather than found nothing, for example
   during an outage; fetching the draft again may clear it.
 - **Ebooks**: an Audiobookshelf item that has an ebook file and no audio (the

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -338,7 +339,6 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 				CoverURL:        "https://example.com/cover.jpg",
 				ImageURL:        "https://example.com/image.jpg",
 				EditionFormat:   "Audiobook",
-				EditionInfo:     "Special Edition",
 				LanguageID:      1,
 				CountryID:       1,
 				PublisherID:     2,
@@ -376,8 +376,8 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 				PublisherID:   2,
 				ReleaseDate:   "2020-01-01",
 				AudioSeconds:  37800,
-				EditionFormat: "Audible Audio",   // ASIN indicates Audible/Amazon purchase
-				EditionInfo:   "Special Edition", // A real value on the record is kept
+				EditionFormat: "Audible Audio", // ASIN indicates Audible/Amazon purchase
+				EditionInfo:   "Unabridged",
 				LanguageID:    1,
 				CountryID:     1,
 			},
@@ -482,10 +482,9 @@ func TestAddWithMetadata(t *testing.T) {
 	assert.Equal(t, "2020-01-15", mismatch.ReleaseDate) // Uses the date from metadata PublishedDate
 	assert.Equal(t, "2020", mismatch.PublishedYear)
 	assert.Equal(t, "Audiobook", mismatch.EditionFormat)
-	assert.Equal(t, "Audiobookshelf", mismatch.EditionInfo) // Only contains platform name
-	assert.Equal(t, 1, mismatch.LanguageID)                 // Default to English
-	assert.Equal(t, 1, mismatch.CountryID)                  // Default to US
-	assert.Equal(t, 0, mismatch.PublisherID)                // Unresolved publisher is left unset
+	assert.Equal(t, 1, mismatch.LanguageID)  // Default to English
+	assert.Equal(t, 1, mismatch.CountryID)   // Default to US
+	assert.Equal(t, 0, mismatch.PublisherID) // Unresolved publisher is left unset
 }
 
 // TestAddWithMetadata_ISBNForms verifies that separators in the Audiobookshelf
@@ -696,15 +695,12 @@ func TestSaveMismatchesJSONFileIndividual(t *testing.T) {
 			t.Errorf("Expected isbn_13 to be %q, got %q in file %s", expectedISBN13, isbn13, filePath)
 		}
 
-		// Check the edition_information field - should now default to "Unabridged" for audiobooks
+		// Check the edition_information field - should default to "Unabridged" for
+		// an audiobook not marked abridged, which is every record in this test.
 		if editionInfo, ok := result["edition_information"].(string); ok {
-			expectedEditionInfo := "Unabridged"
-			if expected.EditionInfo != "" {
-				expectedEditionInfo = expected.EditionInfo
-			}
-			if editionInfo != expectedEditionInfo {
+			if editionInfo != "Unabridged" {
 				t.Errorf("Mismatch in file %s: edition_information should be %q but got %q",
-					filePath, expectedEditionInfo, editionInfo)
+					filePath, "Unabridged", editionInfo)
 			}
 		} else {
 			t.Errorf("Missing edition_information in file %s", filePath)
@@ -1063,4 +1059,38 @@ func TestAddWithMetadata_ReleaseDate(t *testing.T) {
 			assert.Equal(t, tt.want, record.ReleaseDate)
 		})
 	}
+}
+
+// TestAddWithMetadataSkipsAudnexForAnEbook checks crosswalk finding 7: Audnex
+// is Audible-only, so an ebook's ASIN must not trigger a call to it, even
+// though an audiobook with the same ASIN would.
+func TestAddWithMetadataSkipsAudnexForAnEbook(t *testing.T) {
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"releaseDate": "2024-01-15"}`))
+	}))
+	defer server.Close()
+
+	originalFactory := newAudnexClient
+	newAudnexClient = func(log *logger.Logger) *audnex.Client {
+		return audnex.NewClientForTesting(server.URL, log)
+	}
+	defer func() { newAudnexClient = originalFactory }()
+
+	record := NewCollector().AddWithMetadata(
+		MediaMetadata{Title: "Ebook", ASIN: "B0EBOOK002", ReadingFormat: "ebook", PublishedYear: "2019"},
+		"1", "", "reason", 0, "abs1", nil, "",
+	)
+
+	assert.Zero(t, atomic.LoadInt32(&calls), "Audnex must not be called for an ebook record")
+	assert.Equal(t, "2019-01-01", record.ReleaseDate, "falls back to the published year, not an Audnex date")
+
+	// The same ASIN on an audiobook does call Audnex.
+	NewCollector().AddWithMetadata(
+		MediaMetadata{Title: "Audiobook", ASIN: "B0EBOOK002", PublishedYear: "2019"},
+		"2", "", "reason", 60, "abs2", nil, "",
+	)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&calls), "an audiobook with an ASIN must still call Audnex")
 }
