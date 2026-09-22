@@ -32,10 +32,6 @@ const maxCoverBytes = 15 << 20
 // is switched off (see EnableCoverUpload).
 var ErrCoverUploadDisabled = errors.New("cover upload to Hardcover is not supported yet")
 
-// coverUploadDisabledLabel is the ImageError of an edition whose input asked for
-// a cover while cover upload is switched off. It is fixed text, not remote data.
-const coverUploadDisabledLabel = "cover upload to Hardcover is not supported yet"
-
 var (
 	// errCoverFormat means the downloaded cover is not a PNG or JPEG, the only
 	// formats Hardcover documents as supported.
@@ -312,7 +308,7 @@ func (c *Creator) CreateEdition(ctx context.Context, input *EditionInput) (*Edit
 	}
 
 	// Step 1: Create the edition first (without image)
-	editionID, existing, err := c.createEdition(ctx, input, 0) // Pass 0 as imageID initially
+	editionID, existing, err := c.createEdition(ctx, input)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create edition: %w", err)
 	}
@@ -328,7 +324,7 @@ func (c *Creator) CreateEdition(ctx context.Context, input *EditionInput) (*Edit
 	if input.ImageURL != "" && !c.coverUpload {
 		// Do not try the upload: it is switched off (see EnableCoverUpload).
 		c.log.Info("Cover upload is not supported yet, creating the edition without a cover", nil)
-		imageError = coverUploadDisabledLabel
+		imageError = ErrCoverUploadDisabled.Error()
 	} else if input.ImageURL != "" {
 		// First upload the image to Google Cloud Storage
 		imageURL, uploadErr := c.uploadImageToGCS(ctx, editionID, input.ImageURL)
@@ -881,7 +877,7 @@ func (c *Creator) findExistingEdition(ctx context.Context, input *EditionInput) 
 // it looks for an existing edition with the same ASIN, ISBN-13 or ISBN-10 (or a
 // converted ISBN form). One that belongs to the same book is returned with true
 // and left untouched; one of another book is an error.
-func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageID int) (int, bool, error) {
+func (c *Creator) createEdition(ctx context.Context, input *EditionInput) (int, bool, error) {
 	if found, by := c.findExistingEdition(ctx, input); found != nil {
 		editionID, adoptErr := adoptExistingEdition(found, input)
 		if adoptErr != nil {
@@ -911,19 +907,10 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 	}
 
 	// Initialize edition data with required fields
-	editionData := map[string]interface{}{
-		"dto": map[string]interface{}{
-			"title":             input.Title,
-			"edition_format":    editionFormat,
-			"reading_format_id": models.ReadingFormatID(input.ReadingFormat),
-		},
-	}
-
-	// Get the dto object, create it if it doesn't exist
-	dto, ok := editionData["dto"].(map[string]interface{})
-	if !ok {
-		dto = make(map[string]interface{})
-		editionData["dto"] = dto
+	dto := map[string]interface{}{
+		"title":             input.Title,
+		"edition_format":    editionFormat,
+		"reading_format_id": models.ReadingFormatID(input.ReadingFormat),
 	}
 
 	// Add optional fields to dto if they exist
@@ -996,16 +983,10 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 		dto["edition_information"] = input.EditionInfo
 	}
 
-	if imageID > 0 {
-		dto["image_id"] = imageID
-	}
-
 	// Prepare variables for the mutation
-	editionInput := editionData // Use the edition data directly as the input
-
 	variables := map[string]interface{}{
 		"bookId":  input.BookID,
-		"edition": editionInput,
+		"edition": map[string]interface{}{"dto": dto},
 	}
 
 	// The client handles the top-level GraphQL response, we just need to define the data structure

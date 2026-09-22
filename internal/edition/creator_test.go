@@ -1647,7 +1647,6 @@ func TestEditionCreator_createEdition(t *testing.T) {
 	tests := []struct {
 		name          string
 		input         *edition.EditionInput
-		imageID       int
 		setupMock     func(*testing.T, *MockHardcoverClient)
 		expectedID    int
 		expectError   bool
@@ -1670,7 +1669,6 @@ func TestEditionCreator_createEdition(t *testing.T) {
 				ReleaseDate: "2023-01-01",
 				EditionInfo: "First Edition",
 			},
-			imageID: 456,
 			setupMock: func(t *testing.T, m *MockHardcoverClient) {
 				// First, check GetEditionByASIN should return nil since no duplicate exists
 				m.On("GetEditionByASIN", mock.Anything, "B123456789").Return(nil, fmt.Errorf("edition not found"))
@@ -1702,7 +1700,6 @@ func TestEditionCreator_createEdition(t *testing.T) {
 				Title:  "Test Edition",
 				ASIN:   "B123456789",
 			},
-			imageID: 456,
 			setupMock: func(t *testing.T, m *MockHardcoverClient) {
 				// Return an existing edition for the ASIN
 				existingEdition := &models.Edition{
@@ -1722,7 +1719,6 @@ func TestEditionCreator_createEdition(t *testing.T) {
 				Title:  "Test Edition",
 				ASIN:   "B123456789",
 			},
-			imageID: 456,
 			setupMock: func(t *testing.T, m *MockHardcoverClient) {
 				// First, check GetEditionByASIN should return nil since no duplicate exists
 				m.On("GetEditionByASIN", mock.Anything, "B123456789").Return(nil, fmt.Errorf("edition not found"))
@@ -1747,7 +1743,6 @@ func TestEditionCreator_createEdition(t *testing.T) {
 				ASIN:   "B123456789",
 				ISBN13: "9781234567890",
 			},
-			imageID: 456,
 			setupMock: func(t *testing.T, m *MockHardcoverClient) {
 				// First, check GetEditionByASIN should return nil since no duplicate exists
 				m.On("GetEditionByASIN", mock.Anything, "B123456789").Return(nil, fmt.Errorf("edition not found"))
@@ -1801,7 +1796,6 @@ func TestEditionCreator_createEdition(t *testing.T) {
 				Title:  "Test Edition",
 				ASIN:   "B123456789",
 			},
-			imageID: 456,
 			setupMock: func(t *testing.T, m *MockHardcoverClient) {
 				// First, check GetEditionByASIN should return nil for initial check
 				m.On("GetEditionByASIN", mock.Anything, "B123456789").Return(nil, fmt.Errorf("edition not found")).Once()
@@ -1863,7 +1857,6 @@ func TestEditionCreator_createEdition(t *testing.T) {
 				ReleaseDate: "2023-01-01",
 				EditionInfo: "First Edition",
 			},
-			imageID: 456,
 			setupMock: func(t *testing.T, m *MockHardcoverClient) {
 				// First, check GetEditionByASIN should return nil since no duplicate exists
 				m.On("GetEditionByASIN", mock.Anything, "B123456789").Return(nil, fmt.Errorf("edition not found"))
@@ -1902,7 +1895,6 @@ func TestEditionCreator_createEdition(t *testing.T) {
 							"audio_seconds":       3600,
 							"release_date":        "2023-01-01",
 							"edition_information": "First Edition",
-							"image_id":            456,
 						}
 
 						// Check all fields are present in the DTO
@@ -1958,7 +1950,7 @@ func TestEditionCreator_createEdition(t *testing.T) {
 			mockClient.On("GetEditionByISBN10", mock.Anything, mock.Anything).Return(nil, fmt.Errorf("not found")).Maybe()
 
 			// Call the method under test via the helper
-			editionID, err := helper.CreateEdition(context.Background(), tt.input, tt.imageID)
+			editionID, err := helper.CreateEdition(context.Background(), tt.input)
 
 			// Verify results
 			if tt.expectError {
@@ -2016,7 +2008,7 @@ func TestEditionCreator_createEditionFormat(t *testing.T) {
 
 			creator := newTestCreator(t, mockClient)
 			input := &edition.EditionInput{BookID: 123, Title: "T", AuthorIDs: []int{1}, EditionFormat: tt.format}
-			id, err := edition.NewTestHelpers(creator).CreateEdition(context.Background(), input, 0)
+			id, err := edition.NewTestHelpers(creator).CreateEdition(context.Background(), input)
 
 			assert.NoError(t, err)
 			assert.Equal(t, 789, id)
