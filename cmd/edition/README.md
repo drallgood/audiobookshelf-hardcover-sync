@@ -94,10 +94,12 @@ hardcover:
 
 An authenticated Audiobookshelf cover URL must match the configured
 `audiobookshelf.url` base URL's scheme, hostname, port, and canonical path
-prefix. A non-empty base must be an absolute `http://` or `https://` URL; HTTPS
-is not required. A bare `host` or `host:port` with no scheme (for example
-`abs.home:13378`) is treated as `https`. Aliases such as `localhost` and
-`127.0.0.1`, and different ports, intentionally receive no token.
+prefix. A non-empty base may be an absolute `http://` or `https://` URL; HTTPS
+is not required. An unambiguous bare host or host with port (for example
+`abs.home:13378`) is treated as `https`. A single-label host with a port
+requires an explicit scheme so it cannot be mistaken for an opaque URL such as
+`ftp:443`. Aliases such as `localhost` and `127.0.0.1`, and different ports,
+intentionally receive no token.
 
 ## Examples
 

@@ -131,6 +131,12 @@ func TestSetAudiobookshelfBaseURLValidation(t *testing.T) {
 		// it is normalized to https rather than failing the command.
 		{name: "bare host:port is normalized to https", baseURL: "abs.home:13378", wantStored: "https://abs.home:13378"},
 		{name: "bare hostname is normalized to https", baseURL: "abs.home", wantStored: "https://abs.home"},
+		{name: "localhost with port is normalized to https", baseURL: "localhost:13378", wantStored: "https://localhost:13378"},
+		{name: "opaque ftp scheme is rejected", baseURL: "ftp:443", wantErr: true},
+		{name: "ambiguous short host with port requires scheme", baseURL: "abs:13378", wantErr: true},
+		{name: "explicit short host with port is allowed", baseURL: "http://abs:13378", wantStored: "http://abs:13378"},
+		{name: "bare host with path is rejected", baseURL: "abs.home/api", wantErr: true},
+		{name: "bare host with userinfo is rejected", baseURL: "user@abs.home", wantErr: true},
 		{name: "host is required", baseURL: "https:///api", wantErr: true},
 		{name: "hostname is required", baseURL: "http://:13378", wantErr: true},
 		{name: "http or https is required", baseURL: "ftp://abs.home", wantErr: true},

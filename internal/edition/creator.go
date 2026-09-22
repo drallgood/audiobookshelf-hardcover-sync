@@ -202,10 +202,10 @@ func (c *Creator) EnableInsecureTLS() {
 
 // SetAudiobookshelfBaseURL restricts sending the Audiobookshelf token to image
 // URLs hosted under baseURL. An empty base URL is allowed, but leaves token
-// forwarding disabled. A bare host[:port] with no scheme (for example
-// "abs.home:13378", a self-hosted address a user might reasonably write) is
-// treated as https; anything else that is not an absolute http or https URL
-// with a host is rejected.
+// forwarding disabled. An unambiguous bare host[:port] with no scheme (for
+// example "abs.home:13378") is treated as https; single-label hosts with a
+// port need an explicit scheme to avoid confusing them with opaque URLs such
+// as "ftp:443". Other values must be absolute http or https URLs with a host.
 func (c *Creator) SetAudiobookshelfBaseURL(baseURL string) error {
 	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
@@ -214,12 +214,9 @@ func (c *Creator) SetAudiobookshelfBaseURL(baseURL string) error {
 	}
 
 	parsed, ok := parseHTTPBaseURL(baseURL)
-	if !ok && !strings.Contains(baseURL, "://") {
-		// A bare "host:port" (no scheme separator at all) parses with the
-		// host misread as an opaque scheme, so retry once assuming https.
-		// A value that already names some scheme (even an invalid one, or a
-		// valid scheme with a missing host) is not retried: it is rejected
-		// as given, so a real typo like "ftp://abs.home" still fails.
+	if !ok && isUnambiguousBareHost(baseURL) {
+		// A bare host can be supplied without a scheme. Default it to https
+		// only when it cannot be confused with an opaque scheme:port URL.
 		if withScheme, ok2 := parseHTTPBaseURL("https://" + baseURL); ok2 {
 			parsed, ok = withScheme, true
 		}
@@ -230,6 +227,19 @@ func (c *Creator) SetAudiobookshelfBaseURL(baseURL string) error {
 
 	c.audiobookshelfBaseURL = parsed.String()
 	return nil
+}
+
+// isUnambiguousBareHost accepts only host[:port] forms that cannot be
+// mistaken for an opaque URL with a non-HTTP scheme.
+func isUnambiguousBareHost(raw string) bool {
+	if strings.ContainsAny(raw, "/?#@") || strings.Contains(raw, "://") {
+		return false
+	}
+	if strings.HasPrefix(raw, "[") {
+		return true // Bracketed IPv6 is checked by parseHTTPBaseURL.
+	}
+	host, _, hasPort := strings.Cut(raw, ":")
+	return !hasPort || strings.Contains(host, ".") || strings.EqualFold(host, "localhost")
 }
 
 // parseHTTPBaseURL reports whether raw parses as an absolute http or https
@@ -290,14 +300,14 @@ func canonicalURLPath(rawPath string) string {
 //
 // This policy is installed on the shared c.httpClient (see NewCreator), so it
 // also governs the hardcover.app upload-credentials request and the
-// subsequent GCS upload PUT, not only the Audiobookshelf cover download. Both
-// of those carry the Hardcover Authorization header (see uploadImageToGCS).
+// subsequent GCS upload POST, not only the Audiobookshelf cover download. The
+// upload-credentials request carries Hardcover Authorization; the GCS request
+// authenticates with signed form fields instead.
 // With an Audiobookshelf base configured (the production case, since every
 // command calls SetAudiobookshelfBaseURL), hardcover.app is never within that
-// scope, so a redirect on either request strips the header rather than
-// leaking it: safe, but it would silently fail the upload instead of
-// following the redirect. Today this only matters if EnableCoverUpload is
-// called, since no production caller does.
+// scope, so a redirect on the credential request strips that header. A
+// redirect on either request may fail the upload. Today this only matters if
+// EnableCoverUpload is called, since no production caller does.
 func (c *Creator) checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= 10 {
 		return fmt.Errorf("stopped after 10 redirects")
