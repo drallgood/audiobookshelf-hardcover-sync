@@ -2,11 +2,7 @@ package multiuser
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
-	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,11 +27,9 @@ func editionItem(id, title, author string) map[string]interface{} {
 	}
 }
 
-// editionItemWithCover is editionItem with a cover, so creating its edition
-// downloads the cover from Audiobookshelf and uploads it to Hardcover.
 type editionFixture struct {
 	service   *MultiUserService
-	hardcover *editiontest.HardcoverFake
+	hardcover *editiontest.HardcoverRequestCounter
 	abs       *editiontest.AudiobookshelfFake
 }
 
@@ -44,7 +38,7 @@ type editionFixture struct {
 func newEditionFixture(t *testing.T, dryRun bool, records []syncsvc.BookOutcomeRecord, items map[string]map[string]interface{}) *editionFixture {
 	t.Helper()
 	service, _ := newStatusLookupService(t)
-	hardcover := editiontest.NewHardcoverFake(t)
+	hardcover := editiontest.NewHardcoverRequestCounter(t)
 	abs := editiontest.NewAudiobookshelfFake(t, items)
 	service.globalConfig.Hardcover.BaseURL = hardcover.URL
 	service.globalConfig.RateLimit.Rate = time.Nanosecond
@@ -106,7 +100,7 @@ func TestEditionRequestsRequireAnEligibleRecord(t *testing.T) {
 
 			_, draftErr := f.service.PrepareEditionDraft(context.Background(), tt.profileID, tt.runID, tt.bookID)
 			require.ErrorIs(t, draftErr, tt.want)
-			require.Empty(t, f.hardcover.RecordedMutations())
+			require.Zero(t, f.hardcover.RequestCount())
 		})
 	}
 }
@@ -124,7 +118,7 @@ func TestEditionRequests_AudiobookshelfFailures(t *testing.T) {
 	_, err = f.service.PrepareEditionDraft(context.Background(), "profile-1", "run-1", "item-1")
 	require.ErrorAs(t, err, &upstream)
 	require.Equal(t, "audiobookshelf", upstream.Service)
-	require.Empty(t, f.hardcover.RecordedMutations())
+	require.Zero(t, f.hardcover.RequestCount())
 }
 
 func TestEditionRequestsAreRejectedAfterShutdown(t *testing.T) {
@@ -136,163 +130,24 @@ func TestEditionRequestsAreRejectedAfterShutdown(t *testing.T) {
 
 	_, err := f.service.PrepareEditionDraft(context.Background(), "profile-1", "run-1", "item-1")
 	require.ErrorIs(t, err, ErrServiceShuttingDown)
-	require.Empty(t, f.hardcover.RecordedMutations())
+	require.Zero(t, f.hardcover.RequestCount())
 }
 
-func TestPrepareEditionDraft_ResolvesFromTheRunRecord(t *testing.T) {
+func TestPrepareEditionDraftUsesABSNamesWithoutHardcoverRequests(t *testing.T) {
 	for _, dryRun := range []bool{false, true} {
 		f := newEditionFixture(t, dryRun,
 			[]syncsvc.BookOutcomeRecord{needsReview("item-1", "4242")},
 			map[string]map[string]interface{}{"item-1": editionItem("item-1", "Draft Service Title", "Draft Service Author")},
 		)
-		f.hardcover.Authors["Draft Service Author"] = 55
-
 		built, err := f.service.PrepareEditionDraft(context.Background(), "profile-1", "run-1", "item-1")
 		require.NoError(t, err)
 		require.Equal(t, 4242, built.HardcoverBookID)
 		require.Equal(t, "Draft Service Title", built.Title)
-		require.Equal(t, []int{55}, built.AuthorIDs)
+		require.Equal(t, "Draft Service Author", built.AuthorNames)
 		require.Equal(t, dryRun, built.DryRun)
 		require.Equal(t, 3600, built.AudioSeconds)
-		require.Empty(t, f.hardcover.RecordedMutations(), "previewing must never mutate Hardcover")
+		require.Zero(t, f.hardcover.RequestCount(), "previewing must not send any Hardcover request")
 	}
-}
-
-func TestPrepareEditionDraft_PropagatesMetadataLookupFailures(t *testing.T) {
-	tests := []struct {
-		name       string
-		lookup     string
-		itemMutate func(map[string]interface{})
-	}{
-		{
-			name:   "author",
-			lookup: "author",
-		},
-		{
-			name:   "narrator",
-			lookup: "narrator",
-			itemMutate: func(item map[string]interface{}) {
-				item["media"].(map[string]interface{})["metadata"].(map[string]interface{})["narratorName"] = "Narrator Failure"
-			},
-		},
-		{
-			name:   "publisher",
-			lookup: "publisher",
-			itemMutate: func(item map[string]interface{}) {
-				item["media"].(map[string]interface{})["metadata"].(map[string]interface{})["publisher"] = "Publisher Failure"
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			item := editionItem("item-1", "Failure Title", "Author Failure")
-			if tt.itemMutate != nil {
-				tt.itemMutate(item)
-			}
-			f := newEditionFixture(t, false,
-				[]syncsvc.BookOutcomeRecord{needsReview("item-1", "4242")},
-				map[string]map[string]interface{}{"item-1": item},
-			)
-			failureServer := newHardcoverLookupFailureServer(t, tt.lookup)
-			t.Cleanup(failureServer.Close)
-			f.service.globalConfig.Hardcover.BaseURL = failureServer.URL
-
-			_, err := f.service.PrepareEditionDraft(context.Background(), "profile-1", "run-1", "item-1")
-			var upstream *EditionUpstreamError
-			require.ErrorAs(t, err, &upstream)
-			require.Equal(t, "hardcover", upstream.Service)
-			require.Empty(t, f.hardcover.RecordedMutations())
-		})
-	}
-}
-
-func TestPrepareEditionDraft_NoMetadataMatchRemainsSuccessful(t *testing.T) {
-	item := editionItem("item-1", "No Match Title", "No Match Author")
-	metadata := item["media"].(map[string]interface{})["metadata"].(map[string]interface{})
-	metadata["narratorName"] = "No Match Narrator"
-	metadata["publisher"] = "No Match Publisher"
-	f := newEditionFixture(t, false,
-		[]syncsvc.BookOutcomeRecord{needsReview("item-1", "4242")},
-		map[string]map[string]interface{}{"item-1": item},
-	)
-
-	built, err := f.service.PrepareEditionDraft(context.Background(), "profile-1", "run-1", "item-1")
-	require.NoError(t, err)
-	require.Empty(t, built.AuthorIDs)
-	require.Empty(t, built.NarratorIDs)
-	require.Zero(t, built.PublisherID)
-	require.NotEmpty(t, built.Warnings)
-	require.Empty(t, f.hardcover.RecordedMutations())
-}
-
-func TestPrepareEditionDraft_DoesNotRetryFailedPublisherLookup(t *testing.T) {
-	item := editionItem("item-1", "Publisher Failure Title", "Publisher Failure Author")
-	item["media"].(map[string]interface{})["metadata"].(map[string]interface{})["publisher"] = "Publisher Failure"
-	f := newEditionFixture(t, false,
-		[]syncsvc.BookOutcomeRecord{needsReview("item-1", "4242")},
-		map[string]map[string]interface{}{"item-1": item},
-	)
-	failureServer := newPublisherFailOnceServer(t)
-	t.Cleanup(failureServer.Close)
-	f.service.globalConfig.Hardcover.BaseURL = failureServer.URL
-
-	_, err := f.service.PrepareEditionDraft(context.Background(), "profile-1", "run-1", "item-1")
-	var upstream *EditionUpstreamError
-	require.ErrorAs(t, err, &upstream)
-	require.Equal(t, "hardcover", upstream.Service)
-	require.Empty(t, f.hardcover.RecordedMutations())
-}
-
-func newHardcoverLookupFailureServer(t *testing.T, lookup string) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request struct {
-			Query string `json:"query"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		matches := (lookup == "publisher" && strings.Contains(request.Query, "SearchPublishers")) ||
-			(lookup == "author" && strings.Contains(request.Query, "SearchPeopleDirect") && !strings.Contains(request.Query, "contributions:")) ||
-			(lookup == "narrator" && strings.Contains(request.Query, "SearchPeopleDirect") && strings.Contains(request.Query, "contributions:"))
-		if matches {
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"errors": []map[string]string{{"message": "forced lookup failure"}}})
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": map[string]interface{}{}})
-	}))
-}
-
-func newPublisherFailOnceServer(t *testing.T) *httptest.Server {
-	t.Helper()
-	var publisherCalls atomic.Int32
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request struct {
-			Query string `json:"query"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(request.Query, "SearchPublishers") && publisherCalls.Add(1) == 1 {
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"errors": []map[string]string{{"message": "first publisher lookup failed"}}})
-			return
-		}
-		if strings.Contains(request.Query, "SearchPublishers") {
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"data": map[string]interface{}{
-					"publishers": []map[string]interface{}{{"id": 303, "name": "Publisher Failure"}},
-				},
-			})
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": map[string]interface{}{}})
-	}))
 }
 
 func TestEditionRequestsRequireAnIdentifierOnTheAudiobookshelfItem(t *testing.T) {

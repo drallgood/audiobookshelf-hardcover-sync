@@ -118,10 +118,10 @@ workflow; the web interface does not offer it yet. The route is scoped to a run
 whose details are available (the active run or a retained one) and to a book in
 that run, and requires write permission on the profile. `{bookId}` is the
 Audiobookshelf library item ID from `book_outcomes[].book_id` in the run-details
-response. The draft only reads from Audiobookshelf and Hardcover; it creates
-nothing, so the profile's Hardcover token needs no `write:catalog:append`
-scope, only the read scopes (`read:library`, `read:catalog`) a sync token
-already has.
+response. The draft is a read-only preview and creates nothing. It reads
+Audiobookshelf metadata and may call Audnex for an audiobook ASIN. It never
+constructs a Hardcover client or sends a request, so no Hardcover token or
+scope is needed to preview an edition.
 
 ```bash
 # Fetch the draft (authenticated; use your own host, IDs, and token)
@@ -132,32 +132,36 @@ curl -H "Authorization: Bearer $TOKEN" \
 The response uses the usual `{"success": ..., "data": ..., "error": ...}`
 envelope.
 
-- **Draft**: `data` always contains every one of these keys: the editable
+- **Draft**: `data` always contains every one of these keys: the proposed
   edition fields (`title`, `subtitle`, `asin`, `isbn_10`, `isbn_13`,
   `release_date`, `edition_information`, `edition_format`, `audio_seconds`,
-  `language_id`, `country_id`, `author_ids`, `narrator_ids`, `publisher_id`),
+  `language_id`, `country_id`),
   the target `hardcover_book_id`, the `reading_format` (`audiobook` or
-  `ebook`, decided by the Audiobookshelf item), display names (`author_names`,
-  `narrator_names`, `publisher_name`), `dry_run`, and `warnings`. The ID lists
-  and `warnings` are arrays and are never `null`. The Hardcover book is taken
-  from the run record. A `publisher_id` of `0` means no publisher. Hyphens and
-  spaces are removed from the ISBN, and when it is valid the draft also fills
+  `ebook`, decided by the Audiobookshelf item), source names (`author_names`,
+  `narrator_names`, `publisher_name`), `dry_run`, and `warnings`. Names are
+  taken from expanded Audiobookshelf metadata when available, falling back to
+  its legacy joined author and narrator strings; the API returns names joined
+  into display strings. The response contains no Hardcover-resolved author,
+  narrator, or publisher IDs and does not warn about Hardcover matches. The
+  Hardcover book is taken from the run record. Hyphens and spaces are removed
+  from the ISBN, and when it is valid the draft also fills
   the other ISBN form (ISBN-10 or ISBN-13) so Hardcover can match either;
   `isbn_10_valid`/`isbn_13_valid` (omitted when that ISBN is empty) say whether
   each ISBN's own check digit is correct, as Hardcover's own fields of the
   same name do. An audiobook Audiobookshelf marks abridged has
   `edition_information: "Abridged"` instead of the default `"Unabridged"`. The
   route returns `409` for a book whose Audiobookshelf item has no ASIN or
-  parseable ISBN, because an edition created for it could not be
-  matched by a sync; add one in Audiobookshelf first. Warnings flag
-  things to review before an edition is created: no author that could be
-  resolved on Hardcover (creation would then fail), no release date, a
-  publisher not found on Hardcover, no narrator, an ISBN with an incorrect
-  check digit (Hardcover still stores it as given, so this is informational,
-  not a blocker), and an Audiobookshelf item tagged with a non-English
-  language (the edition still defaults to `language_id: 1` and
-  `country_id: 1`). A failed Hardcover lookup returns `502` so the client can
-  distinguish an upstream outage from metadata that genuinely has no match.
+  parseable ISBN, because an edition created for it could not be matched by a
+  sync; add one in Audiobookshelf first. Warnings flag source metadata to
+  review before creating an edition: no author or audiobook narrator in
+  Audiobookshelf, no release date, an ISBN with an incorrect check digit
+  (Hardcover still stores it as given, so this is informational, not a
+  blocker), and an Audiobookshelf item tagged with a non-English language (the
+  draft still defaults to `language_id: 1` and `country_id: 1`). Audnex release
+  metadata is best-effort; the draft falls back to the Audiobookshelf date and
+  year. A failed Audiobookshelf request returns `502`. Hardcover can normalize
+  known edition-format labels during creation; for example, the preview's
+  `Audible Audio` label may be stored as `Audible`.
 - **Ebooks**: an Audiobookshelf item that has an ebook file and no audio (the
   same rule the sync uses) drafts an ebook edition: `reading_format` is `ebook`,
   `edition_format` defaults to `Ebook`, and there are no narrators or
@@ -176,7 +180,7 @@ Errors:
 | `404` | Profile (including another user's profile), run, book record, or Audiobookshelf item not found |
 | `409` | The book is not `needs_review` or has no numeric Hardcover book ID, its Audiobookshelf item has no ASIN or parseable ISBN, or the profile is being deleted |
 | `500` | Unexpected server failure |
-| `502` | Audiobookshelf or Hardcover failed; the message is generic and names only the service |
+| `502` | Audiobookshelf failed; the message is generic and names only the service |
 | `503` | The service is shutting down |
 
 ### Environment Variables (Multi-Profile)

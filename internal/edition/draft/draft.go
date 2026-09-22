@@ -1,13 +1,10 @@
-// Package draft builds a Hardcover edition draft from an Audiobookshelf item.
+// Package draft builds an edition preview from an Audiobookshelf item.
 //
 // It lives beside, not inside, package edition because it reuses the mismatch
 // pipeline (mismatch imports the Hardcover client, which imports edition).
 //
-// The draft retains exact, case-sensitive Hardcover matching for people and
-// publishers.
-// Names that differ by punctuation or spelling will not match; buildWarnings
-// surfaces missing matches until looser lookup behavior can be verified
-// against the hosted API.
+// The preview uses only Audiobookshelf metadata and optional Audnex release
+// metadata. Hardcover resolution happens after the user confirms creation.
 package draft
 
 import (
@@ -17,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
@@ -50,9 +46,6 @@ type Draft struct {
 	AudioSeconds       int      `json:"audio_seconds"`
 	LanguageID         int      `json:"language_id"`
 	CountryID          int      `json:"country_id"`
-	AuthorIDs          []int    `json:"author_ids"`
-	NarratorIDs        []int    `json:"narrator_ids"`
-	PublisherID        int      `json:"publisher_id"`
 	AuthorNames        string   `json:"author_names"`
 	NarratorNames      string   `json:"narrator_names"`
 	PublisherName      string   `json:"publisher_name"`
@@ -60,26 +53,10 @@ type Draft struct {
 	Warnings           []string `json:"warnings"`
 }
 
-// UpstreamError reports a Hardcover lookup failure while preparing a draft.
-// The multi-user service translates it to its sanitized upstream response;
-// mismatch exports intentionally keep their historical best-effort behavior.
-type UpstreamError struct {
-	Err error
-}
-
-func (e *UpstreamError) Error() string {
-	return fmt.Sprintf("hardcover draft lookup failed: %v", e.Err)
-}
-func (e *UpstreamError) Unwrap() error { return e.Err }
-
 // New builds a draft for absBook using the existing mismatch export pipeline.
-// hardcoverBookID is the book the edition will attach to; it always overrides
-// whatever Hardcover candidate enrichment guessed. Author, narrator, and
-// publisher IDs are resolved through hc, so this issues Hardcover read queries.
-func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID int, hc hardcover.HardcoverClientInterface, audnexRegion string) (*Draft, error) {
-	if hc == nil {
-		return nil, errors.New("hardcover client is required")
-	}
+// hardcoverBookID is copied from the needs-review run record and identifies
+// the target for a later create request; it does not trigger a Hardcover call.
+func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID int, audnexRegion string) (*Draft, error) {
 	if hardcoverBookID <= 0 {
 		return nil, errors.New("hardcover book id is required")
 	}
@@ -115,10 +92,8 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 		narratorName = ""
 		narratorNames = nil
 	}
-	// AddWithMetadataContext performs a best-effort publisher lookup for
-	// ordinary mismatch exports. Drafts resolve publisher IDs strictly below,
-	// so leave this field blank during collection to guarantee exactly one
-	// authoritative publisher request.
+	// Keep the publisher name as source metadata. Passing a nil Hardcover client
+	// to the shared mismatch pipeline prevents draft-time Hardcover lookups.
 	publisherName := meta.Publisher
 
 	record := mismatch.NewCollector().AddWithMetadataContext(
@@ -143,24 +118,19 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 		draftReason,
 		absBook.Media.Duration,
 		absBook.ID,
-		hc,
+		nil,
 		audnexRegion,
 	)
 	record.Publisher = publisherName
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := resolveMetadataIDs(ctx, &record, hc, authorNames, narratorNames); err != nil {
-		return nil, &UpstreamError{Err: err}
-	}
 	record.HardcoverBookID = strconv.Itoa(hardcoverBookID)
 
 	if logger.FromContext(ctx) == nil {
 		ctx = logger.WithLogger(ctx, logger.Get())
 	}
-	// Metadata IDs have already been resolved above. Passing a nil client keeps
-	// the shared exporter from repeating those lookups (and suppressing errors)
-	// while retaining its established field mapping.
+	// Retain the established export mapping without Hardcover enrichment.
 	export := record.ToEditionExport(ctx, nil)
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -185,9 +155,6 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 		AudioSeconds:       export.AudioSeconds,
 		LanguageID:         export.LanguageID,
 		CountryID:          export.CountryID,
-		AuthorIDs:          nonNilInts(export.AuthorIDs),
-		NarratorIDs:        nonNilInts(export.NarratorIDs),
-		PublisherID:        export.PublisherID,
 	}
 	if export.Info != nil {
 		d.AuthorNames = export.Info.AuthorName
@@ -197,53 +164,6 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 	d.fillCounterpartISBN()
 	d.Warnings = d.buildWarnings(meta.Language)
 	return d, nil
-}
-
-// resolveMetadataIDs performs the three direct metadata lookups needed by an
-// edition draft. A successful empty result means that Hardcover has no match
-// and is deliberately not an error; transport, GraphQL, and timeout failures
-// are returned so the caller can report an upstream failure instead.
-func resolveMetadataIDs(ctx context.Context, record *mismatch.BookMismatch, hc hardcover.HardcoverClientInterface, authorNames, narratorNames []string) error {
-	if hc == nil {
-		return errors.New("hardcover client is required")
-	}
-
-	if len(record.AuthorIDs) == 0 && record.Author != "" {
-		ids, err := lookupAuthorIDs(ctx, hc, record.Author, authorNames)
-		if err != nil {
-			return fmt.Errorf("look up author %q: %w", record.Author, err)
-		}
-		record.AuthorIDs = ids
-	}
-	if len(record.NarratorIDs) == 0 && record.Narrator != "" {
-		ids, err := lookupNarratorIDs(ctx, hc, record.Narrator, narratorNames)
-		if err != nil {
-			return fmt.Errorf("look up narrator %q: %w", record.Narrator, err)
-		}
-		record.NarratorIDs = ids
-	}
-	if record.PublisherID == 0 && record.Publisher != "" {
-		id, err := mismatch.LookupPublisherID(ctx, hc, record.Publisher)
-		if err != nil {
-			return fmt.Errorf("look up publisher %q: %w", record.Publisher, err)
-		}
-		record.PublisherID = id
-	}
-	return nil
-}
-
-func lookupAuthorIDs(ctx context.Context, hc hardcover.HardcoverClientInterface, legacyName string, exactNames []string) ([]int, error) {
-	if len(exactNames) > 0 {
-		return mismatch.LookupAuthorIDsExactStrict(ctx, hc, exactNames...)
-	}
-	return mismatch.LookupAuthorIDsStrict(ctx, hc, legacyName)
-}
-
-func lookupNarratorIDs(ctx context.Context, hc hardcover.HardcoverClientInterface, legacyName string, exactNames []string) ([]int, error) {
-	if len(exactNames) > 0 {
-		return mismatch.LookupNarratorIDsExactStrict(ctx, hc, exactNames...)
-	}
-	return mismatch.LookupNarratorIDsStrict(ctx, hc, legacyName)
 }
 
 // fillCounterpartISBN sets the missing ISBN form when the other can be derived
@@ -267,30 +187,19 @@ func (d *Draft) fillCounterpartISBN() {
 	}
 }
 
-// buildWarnings lists conditions the user should know about before creating
-// the edition. The first one (no author) makes creation fail validation.
+// buildWarnings lists source metadata conditions the user should know about
+// before creating the edition. It does not check for Hardcover matches.
 // absLanguage is the Audiobookshelf item's free-text metadata.language field.
 func (d *Draft) buildWarnings(absLanguage string) []string {
 	warnings := []string{}
-	if len(d.AuthorIDs) == 0 {
-		if d.AuthorNames == "" {
-			warnings = append(warnings, "The Audiobookshelf item has no author, and an author is required to create an edition.")
-		} else {
-			warnings = append(warnings, fmt.Sprintf("No Hardcover author matched %q, and an author is required to create an edition.", d.AuthorNames))
-		}
+	if d.AuthorNames == "" {
+		warnings = append(warnings, "The Audiobookshelf item has no author, and an author is required to create an edition.")
 	}
 	if d.ReleaseDate == "" {
 		warnings = append(warnings, "No release date is available, so the edition will have none.")
 	}
-	if d.PublisherID == 0 && d.PublisherName != "" {
-		warnings = append(warnings, fmt.Sprintf("Publisher %q was not found on Hardcover, so the edition will have no publisher.", d.PublisherName))
-	}
-	if len(d.NarratorIDs) == 0 && d.ReadingFormat != models.ReadingFormatEbook {
-		if d.NarratorNames == "" {
-			warnings = append(warnings, "The Audiobookshelf item lists no narrator, so the edition will have none.")
-		} else {
-			warnings = append(warnings, fmt.Sprintf("No Hardcover narrator matched %q, so the edition will have none.", d.NarratorNames))
-		}
+	if d.NarratorNames == "" && d.ReadingFormat != models.ReadingFormatEbook {
+		warnings = append(warnings, "The Audiobookshelf item lists no narrator, so the edition will have none.")
 	}
 	if d.ISBN10Valid != nil && !*d.ISBN10Valid {
 		warnings = append(warnings, fmt.Sprintf("ISBN-10 %q has an incorrect check digit; Hardcover will still store it as given.", d.ISBN10))
@@ -299,7 +208,7 @@ func (d *Draft) buildWarnings(absLanguage string) []string {
 		warnings = append(warnings, fmt.Sprintf("ISBN-13 %q has an incorrect check digit; Hardcover will still store it as given.", d.ISBN13))
 	}
 	if lang := strings.TrimSpace(absLanguage); lang != "" && !isEnglishLabel(lang) {
-		warnings = append(warnings, fmt.Sprintf("The Audiobookshelf item is tagged %q, but the draft defaults to language 1 (English) and country 1 (United States); set language_id and country_id explicitly when creating the edition if that is wrong.", lang))
+		warnings = append(warnings, fmt.Sprintf("The Audiobookshelf item is tagged %q, but the draft defaults to language 1 (English) and country 1 (United States).", lang))
 	}
 	return warnings
 }
@@ -316,11 +225,4 @@ func isEnglishLabel(language string) bool {
 		return true
 	}
 	return strings.HasPrefix(label, "en-") || strings.HasPrefix(label, "en_")
-}
-
-func nonNilInts(ids []int) []int {
-	if ids == nil {
-		return []int{}
-	}
-	return ids
 }

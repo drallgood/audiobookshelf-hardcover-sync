@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -52,18 +51,15 @@ func expandedEditionAPIItem(t *testing.T, name string) map[string]interface{} {
 type editionAPIFixture struct {
 	*statusServiceFixture
 	routes    http.Handler
-	hardcover *editiontest.HardcoverFake
+	hardcover *editiontest.HardcoverRequestCounter
 	abs       *editiontest.AudiobookshelfFake
 }
 
 func newEditionAPIFixture(t *testing.T, dryRun bool, records []syncsvc.BookOutcomeRecord, items map[string]map[string]interface{}) *editionAPIFixture {
 	t.Helper()
-	hardcover := editiontest.NewHardcoverFake(t)
+	hardcover := editiontest.NewHardcoverRequestCounter(t)
 	abs := editiontest.NewAudiobookshelfFake(t, items)
 	fixture := newStatusServiceFixture(t, hardcover.URL)
-	// Runs before the service shuts down, so a held sync can unwind.
-	t.Cleanup(hardcover.ReleaseHolds)
-
 	require.NoError(t, fixture.repo.CreateProfile(
 		editionProfileID, "Edition profile", abs.URL, "abs-secret-token", "hc-secret-token",
 		database.SyncConfigData{
@@ -81,28 +77,6 @@ func newEditionAPIFixture(t *testing.T, dryRun bool, records []syncsvc.BookOutco
 	root.Handle("/api/", apiMux)
 
 	return &editionAPIFixture{statusServiceFixture: fixture, routes: root, hardcover: hardcover, abs: abs}
-}
-
-func newEditionAPIFixtureForHardcoverURL(t *testing.T, dryRun bool, records []syncsvc.BookOutcomeRecord, items map[string]map[string]interface{}, hardcoverURL string) *editionAPIFixture {
-	t.Helper()
-	abs := editiontest.NewAudiobookshelfFake(t, items)
-	fixture := newStatusServiceFixture(t, hardcoverURL)
-	require.NoError(t, fixture.repo.CreateProfile(
-		editionProfileID, "Edition profile", abs.URL, "abs-secret-token", "hc-secret-token",
-		database.SyncConfigData{
-			StateFile:          filepath.Join(fixture.dataDir, "sync-state.json"),
-			ProcessUnreadBooks: true,
-			DryRun:             dryRun,
-		},
-	))
-	seedEditionRun(t, fixture.repo, records)
-
-	handler := NewHandler(fixture.multiUser, logger.Get())
-	apiMux := http.NewServeMux()
-	apiMux.HandleFunc("GET /api/profiles/{id}/runs/{runID}/books/{bookID}/edition-draft", handler.GetEditionDraft)
-	root := http.NewServeMux()
-	root.Handle("/api/", apiMux)
-	return &editionAPIFixture{statusServiceFixture: fixture, routes: root, abs: abs}
 }
 
 // seedEditionRun stores a completed run report holding the given records.
@@ -158,7 +132,6 @@ func singleItemFixture(t *testing.T, dryRun bool, item map[string]interface{}) *
 func TestGetEditionDraftReturnsTheDraftContract(t *testing.T) {
 	item := editionAPIItem("item-1", "Contract Title", "Contract Author", "/covers/item-1.jpg")
 	f := singleItemFixture(t, false, item)
-	f.hardcover.Authors["Contract Author"] = 55
 
 	recorder := f.do(http.MethodGet, editionBasePath+"item-1/edition-draft", "")
 	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
@@ -171,21 +144,22 @@ func TestGetEditionDraftReturnsTheDraftContract(t *testing.T) {
 	}
 	sort.Strings(keys)
 	require.Equal(t, []string{
-		"asin", "audio_seconds", "author_ids", "author_names", "country_id", "dry_run",
+		"asin", "audio_seconds", "author_names", "country_id", "dry_run",
 		"edition_format", "edition_information", "hardcover_book_id", "isbn_10", "isbn_10_valid", "isbn_13",
-		"isbn_13_valid", "language_id", "narrator_ids", "narrator_names", "publisher_id", "publisher_name",
+		"isbn_13_valid", "language_id", "narrator_names", "publisher_name",
 		"reading_format", "release_date", "subtitle", "title", "warnings",
 	}, keys)
 	require.EqualValues(t, 4242, envelope.Data["hardcover_book_id"])
 	require.Equal(t, "Contract Title", envelope.Data["title"])
-	require.Equal(t, []interface{}{float64(55)}, envelope.Data["author_ids"])
-	require.Equal(t, []interface{}{}, envelope.Data["narrator_ids"])
 	require.Equal(t, "Contract Author", envelope.Data["author_names"])
+	require.NotContains(t, envelope.Data, "author_ids")
+	require.NotContains(t, envelope.Data, "narrator_ids")
+	require.NotContains(t, envelope.Data, "publisher_id")
 	require.EqualValues(t, 3600, envelope.Data["audio_seconds"])
 	require.Equal(t, false, envelope.Data["dry_run"])
 	require.IsType(t, []interface{}{}, envelope.Data["warnings"])
 	require.NotContains(t, recorder.Body.String(), "abs-secret-token")
-	require.Empty(t, f.hardcover.RecordedMutations(), "previewing must not create anything")
+	require.Zero(t, f.hardcover.RequestCount(), "a valid audiobook preview must not send any Hardcover request")
 }
 
 func TestGetEditionDraftRejectsIneligibleTargets(t *testing.T) {
@@ -220,7 +194,7 @@ func TestGetEditionDraftRejectsIneligibleTargets(t *testing.T) {
 			require.False(t, decodeEnvelope(t, draft).Success)
 		})
 	}
-	require.Empty(t, f.hardcover.RecordedMutations())
+	require.Zero(t, f.hardcover.RequestCount())
 }
 
 func TestGetEditionDraftRequiresAllPathIdentifiers(t *testing.T) {
@@ -241,7 +215,7 @@ func TestGetEditionDraftRejectsABookWithoutAnASINOrISBN(t *testing.T) {
 	draft := f.do(http.MethodGet, editionBasePath+"item-1/edition-draft", "")
 	require.Equal(t, http.StatusConflict, draft.Code, draft.Body.String())
 	require.Equal(t, want, decodeEnvelope(t, draft).Error)
-	require.Empty(t, f.hardcover.RecordedMutations())
+	require.Zero(t, f.hardcover.RequestCount())
 }
 
 func ebookAPIItem() map[string]interface{} {
@@ -254,7 +228,6 @@ func ebookAPIItem() map[string]interface{} {
 
 func TestGetEditionDraftForAnEbook(t *testing.T) {
 	f := singleItemFixture(t, false, ebookAPIItem())
-	f.hardcover.Authors["Ebook Author"] = 55
 
 	draft := f.do(http.MethodGet, editionBasePath+"item-1/edition-draft", "")
 	require.Equal(t, http.StatusOK, draft.Code, draft.Body.String())
@@ -262,9 +235,11 @@ func TestGetEditionDraftForAnEbook(t *testing.T) {
 	require.Equal(t, "ebook", data["reading_format"])
 	require.Equal(t, "Ebook", data["edition_format"])
 	require.EqualValues(t, 0, data["audio_seconds"])
-	require.Equal(t, []interface{}{}, data["narrator_ids"])
+	require.NotContains(t, data, "author_ids")
+	require.NotContains(t, data, "narrator_ids")
+	require.NotContains(t, data, "publisher_id")
 
-	require.Empty(t, f.hardcover.RecordedMutations())
+	require.Zero(t, f.hardcover.RequestCount(), "a valid ebook preview must not send any Hardcover request")
 }
 
 func TestGetEditionDraftMapsExpandedAudiobookAtHTTPBoundary(t *testing.T) {
@@ -273,7 +248,6 @@ func TestGetEditionDraftMapsExpandedAudiobookAtHTTPBoundary(t *testing.T) {
 		[]syncsvc.BookOutcomeRecord{reviewRecord("item-audiobook", "4242")},
 		map[string]map[string]interface{}{"item-audiobook": item},
 	)
-	f.hardcover.Authors["Fixture Author"] = 55
 
 	response := f.do(http.MethodGet, editionBasePath+"item-audiobook/edition-draft", "")
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
@@ -286,7 +260,8 @@ func TestGetEditionDraftMapsExpandedAudiobookAtHTTPBoundary(t *testing.T) {
 	require.Equal(t, "9780306406158", data["isbn_13"])
 	require.Equal(t, "", data["isbn_10"])
 	require.Equal(t, false, data["isbn_13_valid"])
-	require.Equal(t, []interface{}{float64(55)}, data["author_ids"])
+	require.Equal(t, "Fixture Author", data["author_names"])
+	require.Equal(t, "Fixture Narrator", data["narrator_names"])
 
 	warnings, ok := data["warnings"].([]interface{})
 	require.True(t, ok)
@@ -294,11 +269,10 @@ func TestGetEditionDraftMapsExpandedAudiobookAtHTTPBoundary(t *testing.T) {
 	for _, warning := range warnings {
 		warningText = append(warningText, warning.(string))
 	}
-	require.Contains(t, strings.Join(warningText, "\n"), "Fixture Publisher")
-	require.Contains(t, strings.Join(warningText, "\n"), "Fixture Narrator")
 	require.Contains(t, strings.Join(warningText, "\n"), "incorrect check digit")
 	require.Contains(t, strings.Join(warningText, "\n"), "tagged \"German\"")
-	require.Empty(t, f.hardcover.RecordedMutations())
+	require.NotContains(t, strings.Join(warningText, "\n"), "match")
+	require.Zero(t, f.hardcover.RequestCount())
 }
 
 func TestGetEditionDraftMapsExpandedEbookAtHTTPBoundary(t *testing.T) {
@@ -307,7 +281,6 @@ func TestGetEditionDraftMapsExpandedEbookAtHTTPBoundary(t *testing.T) {
 		[]syncsvc.BookOutcomeRecord{reviewRecord("item-ebook", "4242")},
 		map[string]map[string]interface{}{"item-ebook": item},
 	)
-	f.hardcover.Authors["Ebook Fixture Author"] = 66
 
 	response := f.do(http.MethodGet, editionBasePath+"item-ebook/edition-draft", "")
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
@@ -321,10 +294,10 @@ func TestGetEditionDraftMapsExpandedEbookAtHTTPBoundary(t *testing.T) {
 	require.Equal(t, "0525505148", data["isbn_10"])
 	require.Equal(t, true, data["isbn_13_valid"])
 	require.Equal(t, true, data["isbn_10_valid"])
-	require.Equal(t, []interface{}{float64(66)}, data["author_ids"])
-	require.Equal(t, []interface{}{}, data["narrator_ids"])
+	require.Equal(t, "Ebook Fixture Author", data["author_names"])
+	require.Equal(t, "", data["narrator_names"])
 	require.Equal(t, []interface{}{}, data["warnings"])
-	require.Empty(t, f.hardcover.RecordedMutations())
+	require.Zero(t, f.hardcover.RequestCount())
 }
 
 func TestGetEditionDraftReportsDryRunProfiles(t *testing.T) {
@@ -334,7 +307,7 @@ func TestGetEditionDraftReportsDryRunProfiles(t *testing.T) {
 	require.Equal(t, http.StatusOK, draft.Code, draft.Body.String())
 	require.Equal(t, true, decodeEnvelope(t, draft).Data["dry_run"])
 
-	require.Empty(t, f.hardcover.RecordedMutations())
+	require.Zero(t, f.hardcover.RequestCount())
 }
 
 func TestGetEditionDraftReportsMissingAndFailingAudiobookshelfItems(t *testing.T) {
@@ -350,49 +323,5 @@ func TestGetEditionDraftReportsMissingAndFailingAudiobookshelfItems(t *testing.T
 	require.Equal(t, http.StatusBadGateway, recorder.Code, recorder.Body.String())
 	require.NotContains(t, recorder.Body.String(), "abs-secret-token")
 	require.NotContains(t, recorder.Body.String(), "forced failure")
-	require.Empty(t, f.hardcover.RecordedMutations())
-}
-
-func TestGetEditionDraftReturnsSanitized502ForFailedPublisherLookup(t *testing.T) {
-	hardcover := newPublisherFailOnceHardcoverServer(t)
-	t.Cleanup(hardcover.Close)
-	item := editionAPIItem("item-1", "Publisher Failure Title", "Publisher Failure Author", "")
-	item["media"].(map[string]interface{})["metadata"].(map[string]interface{})["publisher"] = "Publisher Failure"
-	f := newEditionAPIFixtureForHardcoverURL(t, false,
-		[]syncsvc.BookOutcomeRecord{reviewRecord("item-1", "4242")},
-		map[string]map[string]interface{}{"item-1": item}, hardcover.URL)
-
-	response := f.do(http.MethodGet, editionBasePath+"item-1/edition-draft", "")
-	require.Equal(t, http.StatusBadGateway, response.Code, response.Body.String())
-	require.Equal(t, "Could not complete the request with hardcover", decodeEnvelope(t, response).Error)
-	require.NotContains(t, response.Body.String(), "first publisher lookup failed")
-}
-
-func newPublisherFailOnceHardcoverServer(t *testing.T) *httptest.Server {
-	t.Helper()
-	var publisherCalls atomic.Int32
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request struct {
-			Query string `json:"query"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(request.Query, "SearchPublishers") && publisherCalls.Add(1) == 1 {
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"errors": []map[string]string{{"message": "first publisher lookup failed"}}})
-			return
-		}
-		if strings.Contains(request.Query, "SearchPublishers") {
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"data": map[string]interface{}{
-					"publishers": []map[string]interface{}{{"id": 303, "name": "Publisher Failure"}},
-				},
-			})
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": map[string]interface{}{}})
-	}))
+	require.Zero(t, f.hardcover.RequestCount())
 }

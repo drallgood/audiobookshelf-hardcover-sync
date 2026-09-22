@@ -3,187 +3,17 @@ package draft_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
 
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/edition/draft"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 )
 
-// fakeHardcover answers the read queries the draft pipeline issues. Embedding
-// the interface leaves every other method nil, so an unexpected call fails
-// loudly instead of silently succeeding.
-//
-// Person and publisher lookups are cached process-wide by the mismatch
-// package, so each test uses names no other test uses.
-type fakeHardcover struct {
-	hardcover.HardcoverClientInterface
-
-	authors    map[string]string // name -> Hardcover ID
-	narrators  map[string]string
-	publishers map[string]string
-	// candidates is returned by SearchBooks, mimicking the title/author
-	// enrichment that can guess a different Hardcover book.
-	candidates        []models.HardcoverBook
-	authorErr         error
-	narratorErr       error
-	publisherErr      error
-	publisherCalls    int
-	publisherFailOnce bool
-}
-
-func (f *fakeHardcover) lookup(m map[string]string, name string) []models.Author {
-	if id, ok := m[name]; ok {
-		return []models.Author{{ID: id, Name: name}}
-	}
-	return nil
-}
-
-func (f *fakeHardcover) SearchAuthors(_ context.Context, name string, _ int) ([]models.Author, error) {
-	if f.authorErr != nil {
-		return nil, f.authorErr
-	}
-	return f.lookup(f.authors, name), nil
-}
-
-func (f *fakeHardcover) SearchNarrators(_ context.Context, name string, _ int) ([]models.Author, error) {
-	if f.narratorErr != nil {
-		return nil, f.narratorErr
-	}
-	return f.lookup(f.narrators, name), nil
-}
-
-func (f *fakeHardcover) SearchPublishers(_ context.Context, name string, _ int) ([]models.Publisher, error) {
-	f.publisherCalls++
-	if f.publisherFailOnce && f.publisherCalls == 1 {
-		return nil, f.publisherErr
-	}
-	if f.publisherErr != nil && !f.publisherFailOnce {
-		return nil, f.publisherErr
-	}
-	if id, ok := f.publishers[name]; ok {
-		return []models.Publisher{{ID: id, Name: name}}, nil
-	}
-	return nil, nil
-}
-
-func TestNew_DoesNotRetryAFailedPublisherLookup(t *testing.T) {
-	hc := &fakeHardcover{
-		publishers:        map[string]string{"Draftwright House": "303"},
-		publisherErr:      errors.New("publisher transport failed"),
-		publisherFailOnce: true,
-	}
-
-	_, err := draft.New(context.Background(), absItem(nil), 42, hc, "")
-	if err == nil {
-		t.Fatal("New() error = nil, want the first publisher lookup failure")
-	}
-	var upstream *draft.UpstreamError
-	if !errors.As(err, &upstream) {
-		t.Fatalf("New() error = %v, want draft.UpstreamError", err)
-	}
-	if hc.publisherCalls != 1 {
-		t.Errorf("publisher lookup calls = %d, want exactly one", hc.publisherCalls)
-	}
-}
-
-func TestNew_PropagatesMetadataLookupFailures(t *testing.T) {
-	tests := []struct {
-		name   string
-		client func(*fakeHardcover)
-		want   string
-	}{
-		{
-			name:   "author",
-			client: func(hc *fakeHardcover) { hc.authorErr = errors.New("author transport failed") },
-			want:   "look up author",
-		},
-		{
-			name: "narrator",
-			client: func(hc *fakeHardcover) {
-				hc.authors = map[string]string{"Ada Draftwright": "101"}
-				hc.narratorErr = errors.New("narrator GraphQL failed")
-			},
-			want: "look up narrator",
-		},
-		{
-			name: "publisher",
-			client: func(hc *fakeHardcover) {
-				hc.authors = map[string]string{"Ada Draftwright": "101"}
-				hc.narrators = map[string]string{"Nora Voicer": "202"}
-				hc.publisherErr = errors.New("publisher timeout")
-			},
-			want: "look up publisher",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			hc := &fakeHardcover{}
-			tt.client(hc)
-			_, err := draft.New(context.Background(), absItem(nil), 42, hc, "")
-			if err == nil {
-				t.Fatal("New() error = nil, want a Hardcover lookup error")
-			}
-			var upstream *draft.UpstreamError
-			if !errors.As(err, &upstream) {
-				t.Fatalf("New() error = %v, want draft.UpstreamError", err)
-			}
-			if !strings.Contains(err.Error(), tt.want) {
-				t.Errorf("New() error = %q, want %q", err, tt.want)
-			}
-		})
-	}
-}
-
-func TestNew_NoMetadataMatchesRemainsSuccessful(t *testing.T) {
-	d, err := draft.New(context.Background(), absItem(func(b *models.AudiobookshelfBook) {
-		b.Media.Metadata.AuthorName = "No Match Author"
-		b.Media.Metadata.NarratorName = "No Match Narrator"
-		b.Media.Metadata.Publisher = "No Match Publisher"
-	}), 42, &fakeHardcover{}, "")
-	if err != nil {
-		t.Fatalf("New() error = %v, want nil for successful no-match lookups", err)
-	}
-	if len(d.AuthorIDs) != 0 || len(d.NarratorIDs) != 0 || d.PublisherID != 0 {
-		t.Fatalf("resolved metadata = authors %v, narrators %v, publisher %d; want no matches", d.AuthorIDs, d.NarratorIDs, d.PublisherID)
-	}
-	if !strings.Contains(strings.Join(d.Warnings, "\n"), "No Hardcover author matched") {
-		t.Errorf("Warnings = %v, want unresolved-author warning", d.Warnings)
-	}
-}
-
-func (f *fakeHardcover) SearchBooks(context.Context, string, string) ([]models.HardcoverBook, error) {
-	return f.candidates, nil
-}
-
-func (f *fakeHardcover) GetBookByID(_ context.Context, id string) (*models.HardcoverBook, error) {
-	for i := range f.candidates {
-		if f.candidates[i].ID == id {
-			return &f.candidates[i], nil
-		}
-	}
-	return nil, errors.New("not found")
-}
-
-func (f *fakeHardcover) SearchBookByISBN13(context.Context, string) (*models.HardcoverBook, error) {
-	return nil, nil
-}
-
-func (f *fakeHardcover) SearchBookByISBN10(context.Context, string) (*models.HardcoverBook, error) {
-	return nil, nil
-}
-
-func (f *fakeHardcover) SearchBookByASIN(context.Context, string) (*models.HardcoverBook, error) {
-	return nil, nil
-}
-
-// absItem builds an Audiobookshelf item. It never sets an ASIN, because the
-// draft pipeline would then call the live Audnex API.
+// absItem builds an Audiobookshelf item without an ASIN, avoiding external
+// Audnex calls in these mapping tests.
 func absItem(mutate func(*models.AudiobookshelfBook)) models.AudiobookshelfBook {
 	var b models.AudiobookshelfBook
 	b.ID = "li_draft1"
@@ -203,105 +33,60 @@ func absItem(mutate func(*models.AudiobookshelfBook)) models.AudiobookshelfBook 
 	return b
 }
 
-func TestNew_CarriesResolvedFields(t *testing.T) {
-	hc := &fakeHardcover{
-		authors:    map[string]string{"Ada Draftwright": "101"},
-		narrators:  map[string]string{"Nora Voicer": "202"},
-		publishers: map[string]string{"Draftwright House": "303"},
-		// Enrichment finds a plausible-looking candidate on a different book.
-		candidates: []models.HardcoverBook{{ID: "999", Title: "The Draft Title"}},
-	}
-
-	d, err := draft.New(context.Background(), absItem(nil), 42, hc, "us")
+func TestNew_CarriesMappedFields(t *testing.T) {
+	d, err := draft.New(context.Background(), absItem(nil), 42, "us")
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
 	if d.HardcoverBookID != 42 {
-		t.Errorf("HardcoverBookID = %d, want 42 (the argument, not the enrichment guess)", d.HardcoverBookID)
-	}
-	if !reflect.DeepEqual(d.AuthorIDs, []int{101}) || !reflect.DeepEqual(d.NarratorIDs, []int{202}) || d.PublisherID != 303 {
-		t.Errorf("IDs = authors %v narrators %v publisher %d, want [101] [202] 303", d.AuthorIDs, d.NarratorIDs, d.PublisherID)
+		t.Errorf("HardcoverBookID = %d, want 42 from the run record", d.HardcoverBookID)
 	}
 	checks := map[string][2]string{
 		"title":               {d.Title, "The Draft Title"},
 		"subtitle":            {d.Subtitle, "A Draft Subtitle"},
 		"isbn_13":             {d.ISBN13, "9781234567897"},
-		"isbn_10":             {d.ISBN10, "123456789X"}, // derived from the ISBN-13
+		"isbn_10":             {d.ISBN10, "123456789X"},
 		"release_date":        {d.ReleaseDate, "2020-01-01"},
 		"edition_information": {d.EditionInformation, "Unabridged"},
 		"author_names":        {d.AuthorNames, "Ada Draftwright"},
 		"narrator_names":      {d.NarratorNames, "Nora Voicer"},
 		"publisher_name":      {d.PublisherName, "Draftwright House"},
 	}
-	for field, c := range checks {
-		if c[0] != c[1] {
-			t.Errorf("%s = %q, want %q", field, c[0], c[1])
+	for field, values := range checks {
+		if values[0] != values[1] {
+			t.Errorf("%s = %q, want %q", field, values[0], values[1])
 		}
 	}
 	if d.AudioSeconds != 3600 {
 		t.Errorf("AudioSeconds = %d, want 3600", d.AudioSeconds)
 	}
-	if d.LanguageID == 0 || d.CountryID == 0 {
-		t.Errorf("language/country defaults missing: %d/%d", d.LanguageID, d.CountryID)
+	if d.LanguageID != 1 || d.CountryID != 1 {
+		t.Errorf("language/country defaults = %d/%d, want 1/1", d.LanguageID, d.CountryID)
 	}
 	if len(d.Warnings) != 0 {
-		t.Errorf("Warnings = %v, want none for a fully resolved draft", d.Warnings)
+		t.Errorf("Warnings = %v, want none for complete source metadata", d.Warnings)
 	}
 }
 
 func TestNew_UsesExactExpandedPeopleNames(t *testing.T) {
-	hc := &fakeHardcover{
-		authors: map[string]string{
-			"Mara Author, Jr.":   "801",
-			"Avery Exact Author": "802",
-		},
-		narrators: map[string]string{
-			"Rae Reader, PhD":    "803",
-			"Sky Exact Narrator": "804",
-		},
-	}
 	item := absItem(func(b *models.AudiobookshelfBook) {
+		b.Media.Metadata.AuthorName = "Joined fallback author"
+		b.Media.Metadata.NarratorName = "Joined fallback narrator"
 		b.Media.Metadata.Authors = []models.AudiobookshelfPerson{{Name: "Mara Author, Jr."}, {Name: "Avery Exact Author"}}
 		b.Media.Metadata.Narrators = []string{"Rae Reader, PhD", "Sky Exact Narrator"}
 	})
 
-	d, err := draft.New(context.Background(), item, 42, hc, "")
+	d, err := draft.New(context.Background(), item, 42, "")
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
-	}
-	if !reflect.DeepEqual(d.AuthorIDs, []int{801, 802}) || !reflect.DeepEqual(d.NarratorIDs, []int{803, 804}) {
-		t.Errorf("IDs = authors %v narrators %v, want [801 802] [803 804]", d.AuthorIDs, d.NarratorIDs)
 	}
 	if d.AuthorNames != "Mara Author, Jr., Avery Exact Author" || d.NarratorNames != "Rae Reader, PhD, Sky Exact Narrator" {
-		t.Errorf("names = authors %q narrators %q, want exact source names joined for display", d.AuthorNames, d.NarratorNames)
-	}
-}
-
-func TestNew_DoesNotSplitCommaInSingleExpandedPersonName(t *testing.T) {
-	hc := &fakeHardcover{
-		authors:   map[string]string{"Mara Single, Jr.": "809"},
-		narrators: map[string]string{"Rae Single, PhD": "810"},
-	}
-	item := absItem(func(b *models.AudiobookshelfBook) {
-		b.Media.Metadata.Authors = []models.AudiobookshelfPerson{{Name: "Mara Single, Jr."}}
-		b.Media.Metadata.Narrators = []string{"Rae Single, PhD"}
-	})
-
-	d, err := draft.New(context.Background(), item, 42, hc, "")
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	if !reflect.DeepEqual(d.AuthorIDs, []int{809}) || !reflect.DeepEqual(d.NarratorIDs, []int{810}) {
-		t.Errorf("IDs = authors %v narrators %v, want [809] [810]", d.AuthorIDs, d.NarratorIDs)
+		t.Errorf("names = authors %q narrators %q, want trimmed expanded ABS names joined for display", d.AuthorNames, d.NarratorNames)
 	}
 }
 
 func TestNew_FallsBackToLegacyJoinedPeopleNames(t *testing.T) {
-	hc := &fakeHardcover{
-		authors:   map[string]string{"Legacy First Author": "805", "Legacy Second Author": "806"},
-		narrators: map[string]string{"Legacy First Narrator": "807", "Legacy Second Narrator": "808"},
-	}
 	item := absItem(func(b *models.AudiobookshelfBook) {
 		b.Media.Metadata.Authors = nil
 		b.Media.Metadata.AuthorName = "Legacy First Author, Legacy Second Author"
@@ -309,184 +94,84 @@ func TestNew_FallsBackToLegacyJoinedPeopleNames(t *testing.T) {
 		b.Media.Metadata.NarratorName = "Legacy First Narrator, Legacy Second Narrator"
 	})
 
-	d, err := draft.New(context.Background(), item, 42, hc, "")
+	d, err := draft.New(context.Background(), item, 42, "")
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if !reflect.DeepEqual(d.AuthorIDs, []int{805, 806}) || !reflect.DeepEqual(d.NarratorIDs, []int{807, 808}) {
-		t.Errorf("IDs = authors %v narrators %v, want [805 806] [807 808]", d.AuthorIDs, d.NarratorIDs)
+	if d.AuthorNames != "Legacy First Author, Legacy Second Author" || d.NarratorNames != "Legacy First Narrator, Legacy Second Narrator" {
+		t.Errorf("legacy names = authors %q narrators %q, want the joined ABS fallback strings", d.AuthorNames, d.NarratorNames)
 	}
 }
 
-func TestNew_Warnings(t *testing.T) {
+func TestNew_WarningsAreBasedOnSourceMetadata(t *testing.T) {
 	tests := []struct {
-		name    string
-		mutate  func(*models.AudiobookshelfBook)
-		hc      *fakeHardcover
-		want    []string // substrings, one per expected warning, in order
-		wantIDs bool     // authors resolved
+		name   string
+		mutate func(*models.AudiobookshelfBook)
+		want   []string
 	}{
 		{
-			name: "nothing resolves",
-			mutate: func(b *models.AudiobookshelfBook) {
-				b.Media.Metadata.AuthorName = "Unknown Author Q"
-				b.Media.Metadata.NarratorName = "Unknown Narrator Q"
-				b.Media.Metadata.Publisher = "Unknown Publisher Q"
-				b.Media.Metadata.PublishedYear = ""
-			},
-			hc:   &fakeHardcover{},
-			want: []string{"No Hardcover author matched", "No release date", "Publisher \"Unknown Publisher Q\" was not found", "No Hardcover narrator matched"},
-		},
-		{
-			name: "item has no author or narrator or publisher",
+			name: "missing author narrator and date",
 			mutate: func(b *models.AudiobookshelfBook) {
 				b.Media.Metadata.AuthorName = ""
 				b.Media.Metadata.NarratorName = ""
-				b.Media.Metadata.Publisher = ""
+				b.Media.Metadata.PublishedYear = ""
 			},
-			hc:   &fakeHardcover{},
-			want: []string{"has no author", "lists no narrator"},
+			want: []string{"has no author", "No release date", "lists no narrator"},
 		},
 		{
-			name: "only the narrator is unresolved",
+			name: "checksum-invalid ISBN remains draftable",
 			mutate: func(b *models.AudiobookshelfBook) {
-				b.Media.Metadata.AuthorName = "Known Author R"
-				b.Media.Metadata.NarratorName = "Unknown Narrator R"
-				b.Media.Metadata.Publisher = "Known Publisher R"
+				b.Media.Metadata.ISBN = "9780306406158"
 			},
-			hc: &fakeHardcover{
-				authors:    map[string]string{"Known Author R": "11"},
-				publishers: map[string]string{"Known Publisher R": "33"},
-			},
-			want:    []string{"No Hardcover narrator matched"},
-			wantIDs: true,
-		},
-		{
-			name: "bad-checksum ISBN-13 warns but is still exported",
-			mutate: func(b *models.AudiobookshelfBook) {
-				b.Media.Metadata.ISBN = "9780306406158" // shape-valid, wrong check digit
-			},
-			hc: &fakeHardcover{
-				authors:    map[string]string{"Ada Draftwright": "101"},
-				narrators:  map[string]string{"Nora Voicer": "202"},
-				publishers: map[string]string{"Draftwright House": "303"},
-			},
-			want:    []string{"ISBN-13 \"9780306406158\" has an incorrect check digit"},
-			wantIDs: true,
+			want: []string{"ISBN-13 \"9780306406158\" has an incorrect check digit"},
 		},
 		{
 			name: "non-English language warns",
 			mutate: func(b *models.AudiobookshelfBook) {
 				b.Media.Metadata.Language = "German"
 			},
-			hc: &fakeHardcover{
-				authors:    map[string]string{"Ada Draftwright": "101"},
-				narrators:  map[string]string{"Nora Voicer": "202"},
-				publishers: map[string]string{"Draftwright House": "303"},
-			},
-			want:    []string{"tagged \"German\""},
-			wantIDs: true,
-		},
-		{
-			name: "non-English label warns",
-			mutate: func(b *models.AudiobookshelfBook) {
-				b.Media.Metadata.Language = "non-English"
-			},
-			hc: &fakeHardcover{
-				authors:    map[string]string{"Ada Draftwright": "101"},
-				narrators:  map[string]string{"Nora Voicer": "202"},
-				publishers: map[string]string{"Draftwright House": "303"},
-			},
-			want:    []string{"tagged \"non-English\""},
-			wantIDs: true,
-		},
-		{
-			name: "not English label warns",
-			mutate: func(b *models.AudiobookshelfBook) {
-				b.Media.Metadata.Language = "not English"
-			},
-			hc: &fakeHardcover{
-				authors:    map[string]string{"Ada Draftwright": "101"},
-				narrators:  map[string]string{"Nora Voicer": "202"},
-				publishers: map[string]string{"Draftwright House": "303"},
-			},
-			want:    []string{"tagged \"not English\""},
-			wantIDs: true,
-		},
-		{
-			name: "normal English label does not warn",
-			mutate: func(b *models.AudiobookshelfBook) {
-				b.Media.Metadata.Language = "English (US)"
-			},
-			hc: &fakeHardcover{
-				authors:    map[string]string{"Ada Draftwright": "101"},
-				narrators:  map[string]string{"Nora Voicer": "202"},
-				publishers: map[string]string{"Draftwright House": "303"},
-			},
-			wantIDs: true,
-		},
-		{
-			name: "English language tag does not warn",
-			mutate: func(b *models.AudiobookshelfBook) {
-				b.Media.Metadata.Language = "en-US"
-			},
-			hc: &fakeHardcover{
-				authors:    map[string]string{"Ada Draftwright": "101"},
-				narrators:  map[string]string{"Nora Voicer": "202"},
-				publishers: map[string]string{"Draftwright House": "303"},
-			},
-			wantIDs: true,
+			want: []string{"tagged \"German\""},
 		},
 		{
 			name: "mixed English label warns",
 			mutate: func(b *models.AudiobookshelfBook) {
 				b.Media.Metadata.Language = "English/French"
 			},
-			hc: &fakeHardcover{
-				authors:    map[string]string{"Ada Draftwright": "101"},
-				narrators:  map[string]string{"Nora Voicer": "202"},
-				publishers: map[string]string{"Draftwright House": "303"},
-			},
-			want:    []string{"tagged \"English/French\""},
-			wantIDs: true,
+			want: []string{"tagged \"English/French\""},
 		},
 		{
-			name: "unexpected English qualifier warns",
+			name: "English label does not warn",
 			mutate: func(b *models.AudiobookshelfBook) {
-				b.Media.Metadata.Language = "English (French)"
+				b.Media.Metadata.Language = "English (US)"
 			},
-			hc: &fakeHardcover{
-				authors:    map[string]string{"Ada Draftwright": "101"},
-				narrators:  map[string]string{"Nora Voicer": "202"},
-				publishers: map[string]string{"Draftwright House": "303"},
-			},
-			want:    []string{"tagged \"English (French)\""},
-			wantIDs: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d, err := draft.New(context.Background(), absItem(tt.mutate), 7, tt.hc, "")
+			d, err := draft.New(context.Background(), absItem(tt.mutate), 7, "")
 			if err != nil {
 				t.Fatalf("New() error = %v", err)
 			}
 			if len(d.Warnings) != len(tt.want) {
-				t.Fatalf("Warnings = %q, want %d entries matching %q", d.Warnings, len(tt.want), tt.want)
+				t.Fatalf("Warnings = %q, want entries matching %q", d.Warnings, tt.want)
 			}
 			for i, sub := range tt.want {
 				if !strings.Contains(d.Warnings[i], sub) {
 					t.Errorf("Warnings[%d] = %q, want it to contain %q", i, d.Warnings[i], sub)
 				}
 			}
-			if got := len(d.AuthorIDs) > 0; got != tt.wantIDs {
-				t.Errorf("author resolved = %v, want %v", got, tt.wantIDs)
-			}
-			// An unresolved publisher must stay unset rather than defaulting.
-			if tt.name == "nothing resolves" && d.PublisherID != 0 {
-				t.Errorf("PublisherID = %d, want 0 when unresolved", d.PublisherID)
-			}
 		})
+	}
+}
+
+func TestNewDoesNotReportHardcoverMatchWarnings(t *testing.T) {
+	d, err := draft.New(context.Background(), absItem(nil), 7, "")
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if len(d.Warnings) != 0 {
+		t.Errorf("Warnings = %v, want no match warnings when source names are present", d.Warnings)
 	}
 }
 
@@ -505,7 +190,7 @@ func TestNew_ISBNForms(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d, err := draft.New(context.Background(), absItem(func(b *models.AudiobookshelfBook) { b.Media.Metadata.ISBN = tt.isbn }), 9, &fakeHardcover{}, "")
+			d, err := draft.New(context.Background(), absItem(func(b *models.AudiobookshelfBook) { b.Media.Metadata.ISBN = tt.isbn }), 9, "")
 			if err != nil {
 				t.Fatalf("New() error = %v", err)
 			}
@@ -517,20 +202,17 @@ func TestNew_ISBNForms(t *testing.T) {
 }
 
 func TestNew_RejectsInvalidArguments(t *testing.T) {
-	hc := &fakeHardcover{}
 	tests := []struct {
 		name   string
 		item   models.AudiobookshelfBook
 		bookID int
-		hc     hardcover.HardcoverClientInterface
 	}{
-		{"nil client", absItem(nil), 1, nil},
-		{"no hardcover book", absItem(nil), 0, hc},
-		{"no item id", absItem(func(b *models.AudiobookshelfBook) { b.ID = "" }), 1, hc},
+		{"no Hardcover book ID", absItem(nil), 0},
+		{"no Audiobookshelf item ID", absItem(func(b *models.AudiobookshelfBook) { b.ID = "" }), 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := draft.New(context.Background(), tt.item, tt.bookID, tt.hc, ""); err == nil {
+			if _, err := draft.New(context.Background(), tt.item, tt.bookID, ""); err == nil {
 				t.Fatal("New() error = nil, want an error")
 			}
 		})
@@ -538,12 +220,10 @@ func TestNew_RejectsInvalidArguments(t *testing.T) {
 }
 
 func TestDraft_JSONContract(t *testing.T) {
-	// A draft with nothing resolved must still serialize lists as arrays.
 	d, err := draft.New(context.Background(), absItem(func(b *models.AudiobookshelfBook) {
-		b.Media.Metadata.AuthorName = "Nobody Matches S"
 		b.Media.Metadata.NarratorName = ""
 		b.Media.Metadata.Publisher = ""
-	}), 9, &fakeHardcover{}, "")
+	}), 9, "")
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -557,39 +237,35 @@ func TestDraft_JSONContract(t *testing.T) {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
 	keys := make([]string, 0, len(got))
-	for k := range got {
-		keys = append(keys, k)
+	for key := range got {
+		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	want := []string{
-		"asin", "audio_seconds", "author_ids", "author_names", "country_id", "dry_run",
-		"edition_format", "edition_information", "hardcover_book_id", "isbn_10", "isbn_10_valid", "isbn_13",
-		"isbn_13_valid", "language_id", "narrator_ids", "narrator_names", "publisher_id", "publisher_name",
-		"reading_format", "release_date", "subtitle", "title", "warnings",
+		"asin", "audio_seconds", "author_names", "country_id", "dry_run", "edition_format",
+		"edition_information", "hardcover_book_id", "isbn_10", "isbn_10_valid", "isbn_13",
+		"isbn_13_valid", "language_id", "narrator_names", "publisher_name", "reading_format",
+		"release_date", "subtitle", "title", "warnings",
 	}
 	if !reflect.DeepEqual(keys, want) {
 		t.Errorf("JSON keys = %v, want %v", keys, want)
 	}
-	for _, k := range []string{"author_ids", "narrator_ids", "warnings"} {
-		if strings.TrimSpace(string(got[k])) == "null" {
-			t.Errorf("%s serialized as null, want an array", k)
+	for _, key := range []string{"author_ids", "narrator_ids", "publisher_id"} {
+		if _, exists := got[key]; exists {
+			t.Errorf("draft serialized %q; previews must not contain Hardcover-resolved IDs", key)
 		}
+	}
+	if strings.TrimSpace(string(got["warnings"])) == "null" {
+		t.Error("warnings serialized as null, want an array")
 	}
 }
 
-// TestNew_EbookDraft checks that an ebook-only item drafts an ebook edition: it
-// is labeled as one and carries no narrators, audio length or narrator warning.
 func TestNew_EbookDraft(t *testing.T) {
-	hc := &fakeHardcover{
-		authors:   map[string]string{"Ada Draftwright": "101"},
-		narrators: map[string]string{"Nora Voicer": "202"},
-	}
 	ebook := absItem(func(b *models.AudiobookshelfBook) {
 		b.Media.Duration = 0
 		b.Media.EbookFormat = "epub"
 	})
-
-	d, err := draft.New(context.Background(), ebook, 42, hc, "us")
+	d, err := draft.New(context.Background(), ebook, 42, "us")
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -597,23 +273,21 @@ func TestNew_EbookDraft(t *testing.T) {
 	if d.ReadingFormat != "ebook" || d.EditionFormat != "Ebook" {
 		t.Errorf("reading format %q, edition format %q, want ebook and Ebook", d.ReadingFormat, d.EditionFormat)
 	}
-	if len(d.NarratorIDs) != 0 || d.NarratorNames != "" || d.AudioSeconds != 0 {
-		t.Errorf("narrators %v (%q), audio seconds %d, want none", d.NarratorIDs, d.NarratorNames, d.AudioSeconds)
+	if d.NarratorNames != "" || d.AudioSeconds != 0 {
+		t.Errorf("narrator names %q, audio seconds %d, want none", d.NarratorNames, d.AudioSeconds)
 	}
 	if d.EditionInformation != "" {
 		t.Errorf("edition information = %q, want none for an ebook", d.EditionInformation)
 	}
-	for _, w := range d.Warnings {
-		if strings.Contains(w, "narrator") {
-			t.Errorf("an ebook draft warned about a narrator: %q", w)
+	for _, warning := range d.Warnings {
+		if strings.Contains(warning, "narrator") {
+			t.Errorf("an ebook draft warned about a narrator: %q", warning)
 		}
 	}
 }
 
-// TestNew_AudiobookDraftReportsItsReadingFormat guards the audiobook default.
 func TestNew_AudiobookDraftReportsItsReadingFormat(t *testing.T) {
-	hc := &fakeHardcover{authors: map[string]string{"Ada Draftwright": "101"}}
-	d, err := draft.New(context.Background(), absItem(nil), 42, hc, "us")
+	d, err := draft.New(context.Background(), absItem(nil), 42, "us")
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -622,16 +296,12 @@ func TestNew_AudiobookDraftReportsItsReadingFormat(t *testing.T) {
 	}
 }
 
-// TestNew_CarriesAbridgedFlag guards crosswalk row R14: an audiobook item
-// Audiobookshelf marks abridged must draft as "Abridged", not the default
-// "Unabridged" (the draft previously never forwarded the abridged flag).
 func TestNew_CarriesAbridgedFlag(t *testing.T) {
-	hc := &fakeHardcover{authors: map[string]string{"Ada Draftwright": "101"}}
 	tests := map[bool]string{true: "Abridged", false: "Unabridged"}
 	for abridged, want := range tests {
 		d, err := draft.New(context.Background(), absItem(func(b *models.AudiobookshelfBook) {
 			b.Media.Metadata.Abridged = abridged
-		}), 42, hc, "us")
+		}), 42, "us")
 		if err != nil {
 			t.Fatalf("New() error = %v", err)
 		}
@@ -641,19 +311,15 @@ func TestNew_CarriesAbridgedFlag(t *testing.T) {
 	}
 }
 
-// TestNew_PrefersPublishedDateOverYear guards crosswalk finding 4: a full
-// publishedDate, when Audiobookshelf provides one, is used before the
-// year-only fallback.
 func TestNew_PrefersPublishedDateOverYear(t *testing.T) {
-	hc := &fakeHardcover{authors: map[string]string{"Ada Draftwright": "101"}}
 	d, err := draft.New(context.Background(), absItem(func(b *models.AudiobookshelfBook) {
 		b.Media.Metadata.PublishedYear = "2020"
 		b.Media.Metadata.PublishedDate = "2020-06-15"
-	}), 42, hc, "us")
+	}), 42, "us")
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 	if d.ReleaseDate != "2020-06-15" {
-		t.Errorf("ReleaseDate = %q, want the full publishedDate 2020-06-15 over the year-only fallback", d.ReleaseDate)
+		t.Errorf("ReleaseDate = %q, want 2020-06-15 over the year-only fallback", d.ReleaseDate)
 	}
 }

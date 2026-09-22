@@ -16,15 +16,10 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 )
 
-// EditionCreateTimeout bounds one edition creation, including the cover
-// upload. The HTTP layer sizes its response write deadline from it.
-const EditionCreateTimeout = 2 * time.Minute
-
-// EditionDraftTimeout bounds the complete read-only draft preparation,
-// including the Audiobookshelf fetch and all sequential Hardcover lookups.
-// It shares the create work budget; the draft's HTTP deadline also reserves
-// time to serialize and write the response.
-const EditionDraftTimeout = EditionCreateTimeout
+// EditionDraftTimeout bounds draft preparation to less than Audiobookshelf's
+// per-request timeout, leaving time to serialize and write the response.
+// Audnex enrichment is optional and uses a shorter request-scoped timeout.
+const EditionDraftTimeout = audiobookshelf.RequestTimeout - 5*time.Second
 
 var (
 	// ErrEditionNotFound indicates that the run, or the book record within it, does not exist.
@@ -43,7 +38,7 @@ var (
 	ErrEditionNoIdentifier = errors.New("audiobookshelf item has no asin or isbn")
 )
 
-// EditionUpstreamError reports a failed Audiobookshelf or Hardcover call. The
+// EditionUpstreamError reports a failed Audiobookshelf or Audnex call. The
 // wrapped error may contain remote details and must not be shown to users.
 type EditionUpstreamError struct {
 	Service string
@@ -62,7 +57,8 @@ type editionTarget struct {
 }
 
 // PrepareEditionDraft builds a previewable edition for a needs-review book from
-// a retained or live sync run. It only reads from Audiobookshelf and Hardcover.
+// a retained or live sync run. It reads Audiobookshelf metadata and may enrich
+// an audiobook ASIN with Audnex; it does not use Hardcover.
 func (s *MultiUserService) PrepareEditionDraft(ctx context.Context, profileID, runID, bookID string) (*draft.Draft, error) {
 	return s.prepareEditionDraft(ctx, profileID, runID, bookID, EditionDraftTimeout)
 }
@@ -92,12 +88,10 @@ func (s *MultiUserService) prepareEditionDraft(ctx context.Context, profileID, r
 		return nil, ErrEditionNoIdentifier
 	}
 
-	hcClient := s.newHardcoverClient(target.profile.HardcoverToken)
-	built, err := draft.New(ctx, *item, target.hardcoverBookID, hcClient, target.profile.SyncConfig.AudnexusRegion)
+	built, err := draft.New(ctx, *item, target.hardcoverBookID, target.profile.SyncConfig.AudnexusRegion)
 	if err != nil {
-		var upstream *draft.UpstreamError
-		if errors.As(err, &upstream) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, &EditionUpstreamError{Service: "hardcover", Err: err}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, &EditionUpstreamError{Service: "audiobookshelf or Audnex", Err: err}
 		}
 		return nil, fmt.Errorf("build edition draft: %w", err)
 	}

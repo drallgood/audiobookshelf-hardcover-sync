@@ -10,7 +10,7 @@ import (
 	syncsvc "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 )
 
-func newHeldCreateFixture(t *testing.T) *editionFixture {
+func newHeldDraftFixture(t *testing.T) *editionFixture {
 	t.Helper()
 	return newEditionFixture(t, false,
 		[]syncsvc.BookOutcomeRecord{needsReview("item-1", "4242")},
@@ -19,10 +19,10 @@ func newHeldCreateFixture(t *testing.T) *editionFixture {
 }
 
 func TestInFlightEditionDraftDoesNotDelayShutdown(t *testing.T) {
-	f := newHeldCreateFixture(t)
+	f := newHeldDraftFixture(t)
 	holdReads := make(chan struct{})
-	f.hardcover.HoldReads(holdReads)
-	t.Cleanup(f.hardcover.ReleaseHolds)
+	f.abs.HoldReads(holdReads)
+	t.Cleanup(f.abs.ReleaseReads)
 
 	draftDone := make(chan error, 1)
 	go func() {
@@ -30,9 +30,9 @@ func TestInFlightEditionDraftDoesNotDelayShutdown(t *testing.T) {
 		draftDone <- err
 	}()
 	select {
-	case <-f.hardcover.ReadEntered:
+	case <-f.abs.ReadEntered:
 	case <-time.After(10 * time.Second):
-		t.Fatal("the draft never reached Hardcover")
+		t.Fatal("the draft never reached Audiobookshelf")
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -44,8 +44,7 @@ func TestInFlightEditionDraftDoesNotDelayShutdown(t *testing.T) {
 	_, err := f.service.PrepareEditionDraft(context.Background(), "profile-1", "run-1", "item-1")
 	require.ErrorIs(t, err, ErrServiceShuttingDown)
 
-	close(holdReads)
-	f.hardcover.HoldReads(nil)
+	f.abs.ReleaseReads()
 	select {
 	case <-draftDone:
 	case <-time.After(10 * time.Second):
@@ -54,10 +53,10 @@ func TestInFlightEditionDraftDoesNotDelayShutdown(t *testing.T) {
 }
 
 func TestPrepareEditionDraftStopsOnCallerCancellation(t *testing.T) {
-	f := newHeldCreateFixture(t)
+	f := newHeldDraftFixture(t)
 	holdReads := make(chan struct{})
-	f.hardcover.HoldReads(holdReads)
-	t.Cleanup(f.hardcover.ReleaseHolds)
+	f.abs.HoldReads(holdReads)
+	t.Cleanup(f.abs.ReleaseReads)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	draftDone := make(chan error, 1)
@@ -67,9 +66,9 @@ func TestPrepareEditionDraftStopsOnCallerCancellation(t *testing.T) {
 	}()
 
 	select {
-	case <-f.hardcover.ReadEntered:
+	case <-f.abs.ReadEntered:
 	case <-time.After(10 * time.Second):
-		t.Fatal("the draft never reached Hardcover")
+		t.Fatal("the draft never reached Audiobookshelf")
 	}
 	cancel()
 
@@ -81,11 +80,11 @@ func TestPrepareEditionDraftStopsOnCallerCancellation(t *testing.T) {
 	}
 }
 
-func TestPrepareEditionDraftOverallTimeoutStopsBlockedHardcoverRead(t *testing.T) {
-	f := newHeldCreateFixture(t)
+func TestPrepareEditionDraftOverallTimeoutStopsBlockedAudiobookshelfRead(t *testing.T) {
+	f := newHeldDraftFixture(t)
 	holdReads := make(chan struct{})
-	f.hardcover.HoldReads(holdReads)
-	t.Cleanup(f.hardcover.ReleaseHolds)
+	f.abs.HoldReads(holdReads)
+	t.Cleanup(f.abs.ReleaseReads)
 
 	const timeout = 50 * time.Millisecond
 	draftDone := make(chan error, 1)
@@ -96,9 +95,9 @@ func TestPrepareEditionDraftOverallTimeoutStopsBlockedHardcoverRead(t *testing.T
 	}()
 
 	select {
-	case <-f.hardcover.ReadEntered:
+	case <-f.abs.ReadEntered:
 	case <-time.After(time.Second):
-		t.Fatal("the draft never reached Hardcover")
+		t.Fatal("the draft never reached Audiobookshelf")
 	}
 
 	select {
@@ -106,7 +105,7 @@ func TestPrepareEditionDraftOverallTimeoutStopsBlockedHardcoverRead(t *testing.T
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 		var upstream *EditionUpstreamError
 		require.ErrorAs(t, err, &upstream)
-		require.Equal(t, "hardcover", upstream.Service)
+		require.Equal(t, "audiobookshelf", upstream.Service)
 		require.Less(t, time.Since(started), time.Second, "the overall draft timeout must cancel a blocked lookup")
 	case <-time.After(time.Second):
 		t.Fatal("the draft did not stop at its overall timeout")

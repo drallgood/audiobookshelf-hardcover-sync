@@ -325,8 +325,8 @@ components:
 
     EditionDraft:
       type: object
-      description: Draft of a new Hardcover edition built from an Audiobookshelf item. The editable fields (title, subtitle, asin, isbn_10, isbn_13, release_date, edition_information, edition_format, audio_seconds, language_id, country_id, author_ids, narrator_ids, publisher_id) are proposed values; the remaining fields (hardcover_book_id, reading_format, author_names, narrator_names, publisher_name, dry_run, warnings) are informational.
-      required: [hardcover_book_id, title, subtitle, asin, isbn_10, isbn_13, release_date, edition_information, edition_format, reading_format, audio_seconds, language_id, country_id, author_ids, narrator_ids, publisher_id, author_names, narrator_names, publisher_name, dry_run, warnings]
+      description: Preview of a new Hardcover edition built from Audiobookshelf metadata and optional Audnex release metadata. Draft preparation never constructs a Hardcover client or sends a Hardcover request. The response includes no Hardcover-resolved author, narrator, or publisher IDs; author_names, narrator_names, and publisher_name carry Audiobookshelf source names.
+      required: [hardcover_book_id, title, subtitle, asin, isbn_10, isbn_13, release_date, edition_information, edition_format, reading_format, audio_seconds, language_id, country_id, author_names, narrator_names, publisher_name, dry_run, warnings]
       properties:
         hardcover_book_id:
           type: integer
@@ -357,32 +357,21 @@ components:
         audio_seconds: {type: integer}
         language_id: {type: integer}
         country_id: {type: integer}
-        author_ids:
-          type: array
-          description: Never null; empty when no author was resolved on Hardcover.
-          items: {type: integer}
-        narrator_ids:
-          type: array
-          description: Never null.
-          items: {type: integer}
-        publisher_id:
-          type: integer
-          description: Hardcover publisher ID; 0 means no publisher.
         author_names:
           type: string
-          description: Display string for the author IDs.
+          description: Audiobookshelf author names joined for display, from expanded authors when available or the legacy authorName field.
         narrator_names:
           type: string
-          description: Display string for the narrator IDs.
+          description: Audiobookshelf narrator names joined for display, from expanded narrators when available or the legacy narratorName field; empty for ebooks.
         publisher_name:
           type: string
-          description: Display string for the publisher.
+          description: Audiobookshelf publisher name; no Hardcover match is checked during preview.
         dry_run:
           type: boolean
           description: True when the profile is in dry-run mode.
         warnings:
           type: array
-          description: Things to review before an edition is created, such as no author resolved on Hardcover (creation would then fail), no release date, a publisher not found on Hardcover, no narrator, an ISBN with an incorrect check digit (Hardcover will still store it as given), or an Audiobookshelf item tagged with a non-English language (the edition still defaults to language_id 1 and country_id 1). Hardcover lookup failures return HTTP 502 instead of being represented as warnings. Never null; empty when there is nothing to flag.
+          description: Source metadata to review before an edition is created, including a missing Audiobookshelf author, missing audiobook narrator or release date, an ISBN with an incorrect check digit (Hardcover still stores it as given), or non-English Audiobookshelf language metadata (the draft defaults to language_id 1 and country_id 1). Hardcover matches are not checked during preview. Never null; empty when there is nothing to flag.
           items: {type: string}
 
 security:
@@ -646,7 +635,7 @@ paths:
     get:
       tags: [Editions]
       summary: Get a draft Hardcover edition for a needs-review book
-      description: Builds a draft of a new Hardcover edition from the Audiobookshelf item of a book that a run with available details (the active run or a retained one) marked needs_review and that has a Hardcover candidate (hardcover_book_id). Hyphens and spaces are removed from the ISBN, and when its checksum is valid the draft also fills the other ISBN form. The item must have an ASIN or a parseable ISBN, otherwise the request is rejected with 409. Requires write permission on the *profile* for authorization purposes (previewing shares the mutation admission checks with creating), but this endpoint only reads: it needs no `write:catalog:append` on the profile's Hardcover token, only the read scopes (`read:library`, `read:catalog`) the sync token already has. The profile's Audiobookshelf token is used only on the server to fetch the item and is never returned.
+      description: Builds a draft of a new Hardcover edition from the Audiobookshelf item of a book that a run with available details (the active run or a retained one) marked needs_review and that has a Hardcover candidate (hardcover_book_id). Hyphens and spaces are removed from the ISBN, and when its checksum is valid the draft also fills the other ISBN form. The item must have an ASIN or a parseable ISBN, otherwise the request is rejected with 409. Requires write permission on the profile for authorization purposes. Previewing reads Audiobookshelf metadata and may call Audnex for an audiobook ASIN; it never constructs a Hardcover client or sends a Hardcover request, so no Hardcover token or scope is needed. The profile's Audiobookshelf token is used only on the server to fetch the item and is never returned.
       parameters:
         - name: profileId
           in: path
@@ -711,7 +700,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '502':
-          description: Audiobookshelf or Hardcover request failed; the message is generic and names only the service
+          description: Audiobookshelf request failed; the message is generic and names only the service
           content:
             application/json:
               schema:
