@@ -303,7 +303,9 @@ func TestCreatorRedirectAuthorizationStaysWithinConfiguredBase(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			rt := &chainTransport{redirects: map[string]string{origin: tt.redirectTo}}
 			creator := NewCreator(nil, logger.Get(), false, "abs-secret")
-			creator.SetAudiobookshelfBaseURL(baseURL)
+			if err := creator.SetAudiobookshelfBaseURL(baseURL); err != nil {
+				t.Fatalf("SetAudiobookshelfBaseURL() error = %v", err)
+			}
 			client := *creator.httpClient // keep production CheckRedirect, swap only the transport
 			client.Transport = rt
 

@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -29,7 +30,7 @@ func main() {
 
 	// Define command-line flags
 	var (
-		imageURL    = flag.String("url", "", "URL of the image to upload (required)")
+		imageURL    = flag.String("url", "", "URL of the image (required; cover uploads are disabled)")
 		bookID      = flag.String("book", "", "Hardcover book ID to attach the image to (mutually exclusive with -edition)")
 		editionID   = flag.String("edition", "", "Hardcover edition ID to attach the image to (mutually exclusive with -book)")
 		descFlag    = flag.String("desc", "", "Optional description for the image (alias for -description)")
@@ -48,10 +49,10 @@ func main() {
 
 	// Customize flag usage output
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Upload a cover image to a book or edition in Hardcover\n\n")
+		fmt.Fprintf(os.Stderr, "Cover uploads to Hardcover are currently unsupported and disabled for both books and editions.\n\n")
 		fmt.Fprintf(os.Stderr, "Usage: %s [command] [flags]\n\n", os.Args[0])
 		fmt.Fprintln(os.Stderr, "Commands:")
-		fmt.Fprintln(os.Stderr, "  upload    Upload a cover image to a book or edition")
+		fmt.Fprintln(os.Stderr, "  upload    Attempt a cover upload (currently unsupported; exits nonzero)")
 		fmt.Fprintln(os.Stderr, "\nFlags:")
 		flag.PrintDefaults()
 		fmt.Fprintln(os.Stderr, "\nEnvironment variables:")
@@ -171,9 +172,10 @@ func uploadBookImage(imageURL, bookID, description string, cfg *config.Config) {
 
 	// Create a creator instance
 	creator := edition.NewCreator(client, logger.Get(), false, cfg.Audiobookshelf.Token)
-	// Send the token only to the configured Audiobookshelf server. An empty URL
-	// keeps the legacy "URL contains audiobookshelf" check.
-	creator.SetAudiobookshelfBaseURL(cfg.Audiobookshelf.URL)
+	if err := creator.SetAudiobookshelfBaseURL(cfg.Audiobookshelf.URL); err != nil {
+		log.Error("Invalid Audiobookshelf URL", map[string]interface{}{"error": err.Error()})
+		os.Exit(1)
+	}
 
 	// Convert bookID to int (assuming it's a valid number)
 	bookIDInt, err := strconv.Atoi(bookID)
@@ -188,10 +190,7 @@ func uploadBookImage(imageURL, bookID, description string, cfg *config.Config) {
 	log.Info("Uploading book cover image...", nil)
 	err = creator.UploadEditionImage(ctx, bookIDInt, imageURL, description)
 	if err != nil {
-		log.Error("Failed to upload book cover image", map[string]interface{}{
-			"error": err.Error(),
-		})
-		os.Exit(1)
+		exitUploadError(log, "book", err)
 	}
 
 	log.Info("Successfully uploaded book cover image to Hardcover", map[string]interface{}{
@@ -231,9 +230,10 @@ func uploadEditionImage(imageURL string, editionID string, description string, c
 	// Create a new client and creator
 	client := hardcover.NewClientWithConfig(hcCfg, token, logger.Get())
 	creator := edition.NewCreator(client, logger.Get(), false, cfg.Audiobookshelf.Token)
-	// Send the token only to the configured Audiobookshelf server. An empty URL
-	// keeps the legacy "URL contains audiobookshelf" check.
-	creator.SetAudiobookshelfBaseURL(cfg.Audiobookshelf.URL)
+	if err := creator.SetAudiobookshelfBaseURL(cfg.Audiobookshelf.URL); err != nil {
+		log.Error("Invalid Audiobookshelf URL", map[string]interface{}{"error": err.Error()})
+		os.Exit(1)
+	}
 
 	// Convert editionID to int
 	editionIDInt, err := strconv.Atoi(editionID)
@@ -248,10 +248,7 @@ func uploadEditionImage(imageURL string, editionID string, description string, c
 	log.Info("Uploading edition cover image...", nil)
 	err = creator.UploadEditionImage(ctx, editionIDInt, imageURL, description)
 	if err != nil {
-		log.Error("Failed to upload edition cover image", map[string]interface{}{
-			"error": err.Error(),
-		})
-		os.Exit(1)
+		exitUploadError(log, "edition", err)
 	}
 
 	log.Info("Successfully uploaded edition cover image to Hardcover", map[string]interface{}{
@@ -260,15 +257,29 @@ func uploadEditionImage(imageURL string, editionID string, description string, c
 	})
 }
 
+// exitUploadError logs a caller-facing upload failure and exits nonzero. Cover
+// uploads are currently disabled, so keep that expected limitation distinct
+// from operational failures.
+func exitUploadError(log *logger.Logger, target string, err error) {
+	message := fmt.Sprintf("Failed to upload %s cover image", target)
+	if errors.Is(err, edition.ErrCoverUploadDisabled) {
+		message = "cover uploads are not supported yet"
+	}
+	log.Error(message, map[string]interface{}{"error": err.Error()})
+	os.Exit(1)
+}
+
 func printUsage() {
 	fmt.Println(`Hardcover Image Tool
+
+Cover uploads to Hardcover are currently unsupported and disabled for both books and editions.
 
 Usage:
   image-tool [command] [flags]
   image-tool [flags]
 
 Commands:
-  upload    Upload a cover image to a book or edition
+  upload    Attempt a cover upload (currently unsupported; exits nonzero)
 
 Flags:
   -book string        Hardcover book ID (mutually exclusive with -edition)
@@ -276,15 +287,7 @@ Flags:
   -desc string        Optional description for the image (alias for -description)
   -description string  Optional description for the image (alias for -desc)
   -edition string     Hardcover edition ID (mutually exclusive with -book)
-  -url string         URL of the image to upload (required)
+  -url string         URL of the image (required; cover uploads are disabled)
 
-Examples:
-  # Upload a cover image to a book with a description
-  image-tool upload -url https://example.com/cover.jpg -book 123 -desc "Cover art"
-  
-  # Upload a cover image to an edition
-  image-tool upload -url https://example.com/edition-cover.jpg -edition 456 -desc "Special edition cover"
-  
-  # Legacy format (without upload command)
-  image-tool -url https://example.com/cover.jpg -book 123`)
+No upload examples are provided because both book and edition cover uploads are currently disabled.`)
 }

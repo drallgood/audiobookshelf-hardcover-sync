@@ -147,7 +147,7 @@ type Creator struct {
 	dryRun              bool
 	audiobookshelfToken string // Token for authenticating with Audiobookshelf
 	// audiobookshelfBaseURL, when set, limits the Audiobookshelf token to
-	// image URLs under this base URL. When empty the legacy heuristic applies.
+	// image URLs under this base URL. When empty, the token is withheld.
 	audiobookshelfBaseURL string
 	// coverUpload is off unless EnableCoverUpload is called. While it is off the
 	// creator makes no cover request of any kind.
@@ -164,11 +164,54 @@ func (c *Creator) EnableCoverUpload() {
 	c.coverUpload = true
 }
 
+// EnableInsecureTLS opts this creator into skipping TLS certificate
+// verification. It is intended only for explicitly trusted development
+// environments; production callers leave the default verified transport in
+// place.
+func (c *Creator) EnableInsecureTLS() {
+	if c.httpClient == nil {
+		return
+	}
+
+	baseTransport := c.httpClient.Transport
+	if baseTransport == nil {
+		baseTransport = http.DefaultTransport
+	}
+	transport, ok := baseTransport.(*http.Transport)
+	if !ok {
+		return
+	}
+
+	transport = transport.Clone()
+	tlsConfig := transport.TLSClientConfig
+	if tlsConfig == nil {
+		tlsConfig = &tls.Config{}
+	} else {
+		tlsConfig = tlsConfig.Clone()
+	}
+	tlsConfig.InsecureSkipVerify = true // #nosec G402 -- explicit opt-in for trusted development environments
+	transport.TLSClientConfig = tlsConfig
+	c.httpClient.Transport = transport
+}
+
 // SetAudiobookshelfBaseURL restricts sending the Audiobookshelf token to image
-// URLs hosted under baseURL. Without it, the token is sent to any URL that
-// contains "audiobookshelf", which misses self-hosted names such as abs.home.
-func (c *Creator) SetAudiobookshelfBaseURL(baseURL string) {
-	c.audiobookshelfBaseURL = strings.TrimSpace(baseURL)
+// URLs hosted under baseURL. An empty base URL is allowed, but leaves token
+// forwarding disabled. Non-empty values must be absolute HTTP or HTTPS URLs.
+func (c *Creator) SetAudiobookshelfBaseURL(baseURL string) error {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		c.audiobookshelfBaseURL = ""
+		return nil
+	}
+
+	parsed, err := url.Parse(baseURL)
+	if err != nil || !parsed.IsAbs() || parsed.Hostname() == "" ||
+		(!strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https")) {
+		return fmt.Errorf("Audiobookshelf base URL must be an absolute http or https URL with a host")
+	}
+
+	c.audiobookshelfBaseURL = baseURL
+	return nil
 }
 
 // shouldSendAudiobookshelfToken reports whether imageURL is an Audiobookshelf
@@ -178,7 +221,7 @@ func (c *Creator) shouldSendAudiobookshelfToken(imageURL string) bool {
 		return false
 	}
 	if c.audiobookshelfBaseURL == "" {
-		return strings.Contains(imageURL, "audiobookshelf")
+		return false
 	}
 	return c.isAudiobookshelfURLInScope(imageURL)
 }
@@ -242,9 +285,6 @@ func (c *Creator) checkRedirect(req *http.Request, via []*http.Request) error {
 func NewCreator(client HardcoverClient, log *logger.Logger, dryRun bool, audiobookshelfToken string) *Creator {
 	// Create a default HTTP client with reasonable timeouts
 	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true, // Only for development, consider making this configurable
-		},
 		MaxIdleConns:           10,
 		MaxIdleConnsPerHost:    10,
 		IdleConnTimeout:        90 * time.Second,

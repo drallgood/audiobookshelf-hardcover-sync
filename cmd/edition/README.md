@@ -92,6 +92,12 @@ hardcover:
   token: your_token
 ```
 
+An authenticated Audiobookshelf cover URL must match the configured
+`audiobookshelf.url` base URL's scheme, hostname, port, and canonical path
+prefix. A non-empty base must be an absolute `http://` or `https://` URL; HTTPS
+is not required. Aliases such as `localhost` and `127.0.0.1`, and different
+ports, intentionally receive no token.
+
 ## Examples
 
 ### Basic Usage

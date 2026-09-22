@@ -838,18 +838,8 @@ make build-tools
 
 ### Image Tool
 
-The `image-tool` allows you to upload and attach cover images to books and editions in Hardcover.
-
-```bash
-# Upload an image to a book
-./bin/image-tool upload --url "https://example.com/cover.jpg" --book "hardcover-book-id" 
-
-# Upload an image to an edition
-./bin/image-tool upload --url "https://example.com/cover.jpg" --edition "hardcover-edition-id" --description "Audiobook Cover"
-
-# Using a custom config file
-./bin/image-tool --config /path/to/config.yaml --url "https://example.com/cover.jpg" --book "hardcover-book-id"
-```
+Cover upload is currently unsupported and disabled. `image-tool` reports this
+explicitly and does not upload or attach cover images.
 
 ### Hardcover Lookup
 
