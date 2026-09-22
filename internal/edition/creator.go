@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -182,6 +183,13 @@ func (c *Creator) shouldSendAudiobookshelfToken(imageURL string) bool {
 	return c.isAudiobookshelfURLInScope(imageURL)
 }
 
+func canonicalURLPath(rawPath string) string {
+	if rawPath == "" {
+		return ""
+	}
+	return path.Clean(rawPath)
+}
+
 // isAudiobookshelfURLInScope reports whether imageURL remains within the
 // configured Audiobookshelf scheme, host (including port), and path prefix.
 func (c *Creator) isAudiobookshelfURLInScope(imageURL string) bool {
@@ -196,8 +204,9 @@ func (c *Creator) isAudiobookshelfURLInScope(imageURL string) bool {
 	if !strings.EqualFold(base.Scheme, target.Scheme) || !strings.EqualFold(base.Host, target.Host) {
 		return false
 	}
-	basePath := strings.TrimRight(base.Path, "/")
-	return basePath == "" || target.Path == basePath || strings.HasPrefix(target.Path, basePath+"/")
+	basePath := strings.TrimRight(canonicalURLPath(base.Path), "/")
+	targetPath := canonicalURLPath(target.Path)
+	return basePath == "" || targetPath == basePath || strings.HasPrefix(targetPath, basePath+"/")
 }
 
 // checkRedirect keeps sensitive headers within the same authorized origin.
@@ -1227,7 +1236,7 @@ func (c *Creator) PrepopulateFromBook(ctx context.Context, bookID int) (*Edition
 
 // Validate validates the edition input
 func (e *EditionInput) Validate() error {
-	if e.BookID == 0 {
+	if e.BookID <= 0 {
 		return errors.New("book_id is required")
 	}
 	if e.Title == "" {

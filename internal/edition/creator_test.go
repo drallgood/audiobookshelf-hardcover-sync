@@ -711,6 +711,15 @@ func TestEditionInput_Validate(t *testing.T) {
 			expectError: true,
 		},
 		{
+			name: "negative book ID",
+			input: &edition.EditionInput{
+				BookID:    -1,
+				Title:     "Test Book",
+				AuthorIDs: []int{1, 2},
+			},
+			expectError: true,
+		},
+		{
 			name: "missing title",
 			input: &edition.EditionInput{
 				BookID:    123,

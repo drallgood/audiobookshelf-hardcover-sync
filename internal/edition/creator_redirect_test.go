@@ -274,6 +274,18 @@ func TestCreatorRedirectAuthorizationStaysWithinConfiguredBase(t *testing.T) {
 			redirectTo: "https://abs.home:1337/other/cover.jpg",
 		},
 		{
+			name:       "plain traversal strips token",
+			redirectTo: "https://abs.home:1337/abs/../admin/cover.jpg",
+		},
+		{
+			name:       "encoded dot traversal strips token",
+			redirectTo: "https://abs.home:1337/abs/%2e%2e/admin/cover.jpg",
+		},
+		{
+			name:       "encoded slash traversal strips token",
+			redirectTo: "https://abs.home:1337/abs/%2f../admin/cover.jpg",
+		},
+		{
 			name:       "different port strips token",
 			redirectTo: "https://abs.home:1338/abs/api/items/li_1/cover",
 		},

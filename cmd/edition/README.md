@@ -7,9 +7,12 @@ This tool helps create and manage audiobook editions in Hardcover. It provides t
 
 ## Running with Docker
 
-### Prerequisites
-- Docker installed on your system
-- A `config.yaml` file with the Hardcover API token under `hardcover.token`:
+The published Docker image runs the main `audiobookshelf-hardcover-sync`
+service and does not include the `edition` command. Run the edition workflows
+locally as described below.
+
+The edition command needs a `config.yaml` file with the Hardcover API token
+under `hardcover.token`:
 
   ```yaml
   hardcover:
@@ -21,58 +24,6 @@ This tool helps create and manage audiobook editions in Hardcover. It provides t
   - `write:library`
   - `read:catalog`
   - `write:catalog:append`
-
-### Basic Usage
-
-#### Build the Docker Image
-```bash
-docker build -t audiobookshelf-hardcover-sync .
-```
-
-#### Prepopulate a Template
-Generate a JSON template from an existing book:
-
-```bash
-docker run --rm \
-  -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
-  -v "$(pwd):/work" \
-  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest \
-  edition-tool --config /app/config.yaml prepopulate --book-id 12345 --output /work/edition.json
-```
-
-#### Create a New Edition
-Create a new edition using a JSON input file:
-
-```bash
-docker run --rm \
-  -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
-  -v "$(pwd):/work" \
-  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest \
-  edition-tool --config /app/config.yaml create --input /work/edition.json
-```
-
-### Advanced Options
-
-#### Dry Run Mode
-Test without making any changes:
-
-```bash
-docker run --rm \
-  -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
-  -v "$(pwd):/work" \
-  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest \
-  edition-tool --config /app/config.yaml --dry-run create --input /work/edition.json
-```
-
-#### Interactive Mode
-Run in interactive mode to be prompted for input:
-
-```bash
-docker run -it --rm \
-  -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
-  ghcr.io/drallgood/audiobookshelf-hardcover-sync:latest \
-  edition-tool --config /app/config.yaml create --interactive
-```
 
 ## Local Development
 

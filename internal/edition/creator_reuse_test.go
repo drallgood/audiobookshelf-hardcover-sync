@@ -267,6 +267,22 @@ func TestCreateEdition_DryRunLooksNothingUp(t *testing.T) {
 	}
 }
 
+func TestCreateEditionRejectsNegativeBookIDWithoutMutation(t *testing.T) {
+	client := &reuseClient{}
+	creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "token", &http.Client{Transport: failingTransport{}})
+
+	_, err := creator.CreateEdition(context.Background(), &edition.EditionInput{
+		BookID: -1, Title: "A Title", AuthorIDs: []int{1}, ASIN: "B0INVALID01",
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "book_id is required") {
+		t.Fatalf("CreateEdition() error = %v, want invalid book_id", err)
+	}
+	if len(client.lookups) != 0 || len(client.mutations) != 0 {
+		t.Errorf("invalid book ID made lookups %v or mutations %v", client.lookups, client.mutations)
+	}
+}
+
 // TestCreateEdition_EbookInputCreatesAnEbookEdition checks what an ebook edition
 // sends to Hardcover and that duplicates are looked up among ebook editions only.
 func TestCreateEdition_EbookInputCreatesAnEbookEdition(t *testing.T) {
