@@ -450,6 +450,19 @@ func TestNew_Warnings(t *testing.T) {
 			want:    []string{"tagged \"English/French\""},
 			wantIDs: true,
 		},
+		{
+			name: "unexpected English qualifier warns",
+			mutate: func(b *models.AudiobookshelfBook) {
+				b.Media.Metadata.Language = "English (French)"
+			},
+			hc: &fakeHardcover{
+				authors:    map[string]string{"Ada Draftwright": "101"},
+				narrators:  map[string]string{"Nora Voicer": "202"},
+				publishers: map[string]string{"Draftwright House": "303"},
+			},
+			want:    []string{"tagged \"English (French)\""},
+			wantIDs: true,
+		},
 	}
 
 	for _, tt := range tests {

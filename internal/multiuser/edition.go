@@ -96,7 +96,7 @@ func (s *MultiUserService) prepareEditionDraft(ctx context.Context, profileID, r
 	built, err := draft.New(ctx, *item, target.hardcoverBookID, hcClient, target.profile.SyncConfig.AudnexusRegion)
 	if err != nil {
 		var upstream *draft.UpstreamError
-		if errors.As(err, &upstream) {
+		if errors.As(err, &upstream) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, &EditionUpstreamError{Service: "hardcover", Err: err}
 		}
 		return nil, fmt.Errorf("build edition draft: %w", err)

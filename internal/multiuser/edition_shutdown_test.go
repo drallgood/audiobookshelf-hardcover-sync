@@ -104,6 +104,9 @@ func TestPrepareEditionDraftOverallTimeoutStopsBlockedHardcoverRead(t *testing.T
 	select {
 	case err := <-draftDone:
 		require.ErrorIs(t, err, context.DeadlineExceeded)
+		var upstream *EditionUpstreamError
+		require.ErrorAs(t, err, &upstream)
+		require.Equal(t, "hardcover", upstream.Service)
 		require.Less(t, time.Since(started), time.Second, "the overall draft timeout must cancel a blocked lookup")
 	case <-time.After(time.Second):
 		t.Fatal("the draft did not stop at its overall timeout")

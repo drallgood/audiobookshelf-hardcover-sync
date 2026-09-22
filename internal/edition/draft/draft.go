@@ -306,13 +306,16 @@ func (d *Draft) buildWarnings(absLanguage string) []string {
 
 func isEnglishLabel(language string) bool {
 	label := strings.ToLower(strings.TrimSpace(language))
-	if label == "english" || label == "en" {
+	switch label {
+	case "english", "en",
+		"english (us)", "english (united states)",
+		"english (uk)", "english (gb)", "english (united kingdom)",
+		"english (ca)", "english (canada)",
+		"english (au)", "english (australia)",
+		"english (nz)", "english (new zealand)":
 		return true
 	}
-	if strings.HasPrefix(label, "en-") || strings.HasPrefix(label, "en_") {
-		return true
-	}
-	return strings.HasPrefix(label, "english (") && strings.HasSuffix(label, ")")
+	return strings.HasPrefix(label, "en-") || strings.HasPrefix(label, "en_")
 }
 
 func nonNilInts(ids []int) []int {
