@@ -150,7 +150,6 @@ func TestPrepareEditionDraft_ResolvesFromTheRunRecord(t *testing.T) {
 		require.Equal(t, []int{55}, built.AuthorIDs)
 		require.Equal(t, dryRun, built.DryRun)
 		require.Equal(t, 3600, built.AudioSeconds)
-		require.Empty(t, built.CoverURL, "an item without a cover has no cover URL")
 		require.Empty(t, f.hardcover.RecordedMutations(), "previewing must never mutate Hardcover")
 	}
 }

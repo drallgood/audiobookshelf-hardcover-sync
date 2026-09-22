@@ -325,8 +325,8 @@ components:
 
     EditionDraft:
       type: object
-      description: Draft of a new Hardcover edition built from an Audiobookshelf item. The editable fields (title, subtitle, asin, isbn_10, isbn_13, release_date, edition_information, edition_format, audio_seconds, language_id, country_id, author_ids, narrator_ids, publisher_id) are proposed values; the remaining fields (hardcover_book_id, reading_format, author_names, narrator_names, publisher_name, cover_url, dry_run, warnings) are informational.
-      required: [hardcover_book_id, title, subtitle, asin, isbn_10, isbn_13, release_date, edition_information, edition_format, reading_format, audio_seconds, language_id, country_id, author_ids, narrator_ids, publisher_id, author_names, narrator_names, publisher_name, cover_url, dry_run, warnings]
+      description: Draft of a new Hardcover edition built from an Audiobookshelf item. The editable fields (title, subtitle, asin, isbn_10, isbn_13, release_date, edition_information, edition_format, audio_seconds, language_id, country_id, author_ids, narrator_ids, publisher_id) are proposed values; the remaining fields (hardcover_book_id, reading_format, author_names, narrator_names, publisher_name, dry_run, warnings) are informational.
+      required: [hardcover_book_id, title, subtitle, asin, isbn_10, isbn_13, release_date, edition_information, edition_format, reading_format, audio_seconds, language_id, country_id, author_ids, narrator_ids, publisher_id, author_names, narrator_names, publisher_name, dry_run, warnings]
       properties:
         hardcover_book_id:
           type: integer
@@ -377,9 +377,6 @@ components:
         publisher_name:
           type: string
           description: Display string for the publisher.
-        cover_url:
-          type: string
-          description: Audiobookshelf cover URL; empty when the item has no cover.
         dry_run:
           type: boolean
           description: True when the profile is in dry-run mode.

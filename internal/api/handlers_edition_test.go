@@ -148,7 +148,7 @@ func TestGetEditionDraftReturnsTheDraftContract(t *testing.T) {
 	}
 	sort.Strings(keys)
 	require.Equal(t, []string{
-		"asin", "audio_seconds", "author_ids", "author_names", "country_id", "cover_url", "dry_run",
+		"asin", "audio_seconds", "author_ids", "author_names", "country_id", "dry_run",
 		"edition_format", "edition_information", "hardcover_book_id", "isbn_10", "isbn_10_valid", "isbn_13",
 		"isbn_13_valid", "language_id", "narrator_ids", "narrator_names", "publisher_id", "publisher_name",
 		"reading_format", "release_date", "subtitle", "title", "warnings",
@@ -159,7 +159,6 @@ func TestGetEditionDraftReturnsTheDraftContract(t *testing.T) {
 	require.Equal(t, []interface{}{}, envelope.Data["narrator_ids"])
 	require.Equal(t, "Contract Author", envelope.Data["author_names"])
 	require.EqualValues(t, 3600, envelope.Data["audio_seconds"])
-	require.Equal(t, f.abs.URL+"/api/items/item-1/cover", envelope.Data["cover_url"])
 	require.Equal(t, false, envelope.Data["dry_run"])
 	require.IsType(t, []interface{}{}, envelope.Data["warnings"])
 	require.NotContains(t, recorder.Body.String(), "abs-secret-token")

@@ -77,7 +77,7 @@ func (s *MultiUserService) PrepareEditionDraft(ctx context.Context, profileID, r
 	}
 
 	hcClient := s.newHardcoverClient(target.profile.HardcoverToken)
-	built, err := draft.New(ctx, *item, target.hardcoverBookID, target.profile.AudiobookshelfURL, hcClient, target.profile.SyncConfig.AudnexusRegion)
+	built, err := draft.New(ctx, *item, target.hardcoverBookID, hcClient, target.profile.SyncConfig.AudnexusRegion)
 	if err != nil {
 		return nil, fmt.Errorf("build edition draft: %w", err)
 	}

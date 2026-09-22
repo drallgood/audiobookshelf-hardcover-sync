@@ -108,7 +108,7 @@ func TestNew_CarriesResolvedFields(t *testing.T) {
 		candidates: []models.HardcoverBook{{ID: "999", Title: "The Draft Title"}},
 	}
 
-	d, err := draft.New(context.Background(), absItem(nil), 42, "https://abs.example.com/", hc, "us")
+	d, err := draft.New(context.Background(), absItem(nil), 42, hc, "us")
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -129,7 +129,6 @@ func TestNew_CarriesResolvedFields(t *testing.T) {
 		"author_names":        {d.AuthorNames, "Ada Draftwright"},
 		"narrator_names":      {d.NarratorNames, "Nora Voicer"},
 		"publisher_name":      {d.PublisherName, "Draftwright House"},
-		"cover_url":           {d.CoverURL, "https://abs.example.com/api/items/li_draft1/cover"},
 	}
 	for field, c := range checks {
 		if c[0] != c[1] {
@@ -220,7 +219,7 @@ func TestNew_Warnings(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d, err := draft.New(context.Background(), absItem(tt.mutate), 7, "https://abs.example.com", tt.hc, "")
+			d, err := draft.New(context.Background(), absItem(tt.mutate), 7, tt.hc, "")
 			if err != nil {
 				t.Fatalf("New() error = %v", err)
 			}
@@ -243,39 +242,6 @@ func TestNew_Warnings(t *testing.T) {
 	}
 }
 
-func TestNew_CoverURL(t *testing.T) {
-	tests := []struct {
-		name    string
-		baseURL string
-		mutate  func(*models.AudiobookshelfBook)
-		want    string
-	}{
-		{"forced to the base URL", "https://abs.example.com", nil, "https://abs.example.com/api/items/li_draft1/cover"},
-		{"trailing slash trimmed", "https://abs.example.com/", nil, "https://abs.example.com/api/items/li_draft1/cover"},
-		{"credentials and query stripped", "https://user:pw@abs.example.com/?token=x#frag", nil, "https://abs.example.com/api/items/li_draft1/cover"},
-		{"unparseable base URL leaves it empty", "not a url", nil, ""},
-		{"path prefix preserved", "https://example.com/abs/", nil, "https://example.com/abs/api/items/li_draft1/cover"},
-		{"no cover path leaves it empty", "https://abs.example.com", func(b *models.AudiobookshelfBook) { b.Media.CoverPath = "" }, ""},
-		{"no base URL leaves it empty", "", nil, ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// A Hardcover candidate with a cover must never leak into the draft.
-			hc := &fakeHardcover{
-				authors:    map[string]string{"Ada Draftwright": "101"},
-				candidates: []models.HardcoverBook{{ID: "5", Title: "The Draft Title", CoverImageURL: "https://assets.hardcover.app/cover.jpg"}},
-			}
-			d, err := draft.New(context.Background(), absItem(tt.mutate), 42, tt.baseURL, hc, "us")
-			if err != nil {
-				t.Fatalf("New() error = %v", err)
-			}
-			if d.CoverURL != tt.want {
-				t.Errorf("CoverURL = %q, want %q", d.CoverURL, tt.want)
-			}
-		})
-	}
-}
-
 func TestNew_ISBNForms(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -291,7 +257,7 @@ func TestNew_ISBNForms(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d, err := draft.New(context.Background(), absItem(func(b *models.AudiobookshelfBook) { b.Media.Metadata.ISBN = tt.isbn }), 9, "https://abs.example.com", &fakeHardcover{}, "")
+			d, err := draft.New(context.Background(), absItem(func(b *models.AudiobookshelfBook) { b.Media.Metadata.ISBN = tt.isbn }), 9, &fakeHardcover{}, "")
 			if err != nil {
 				t.Fatalf("New() error = %v", err)
 			}
@@ -316,7 +282,7 @@ func TestNew_RejectsInvalidArguments(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := draft.New(context.Background(), tt.item, tt.bookID, "https://abs.example.com", tt.hc, ""); err == nil {
+			if _, err := draft.New(context.Background(), tt.item, tt.bookID, tt.hc, ""); err == nil {
 				t.Fatal("New() error = nil, want an error")
 			}
 		})
@@ -329,7 +295,7 @@ func TestDraft_JSONContract(t *testing.T) {
 		b.Media.Metadata.AuthorName = "Nobody Matches S"
 		b.Media.Metadata.NarratorName = ""
 		b.Media.Metadata.Publisher = ""
-	}), 9, "https://abs.example.com", &fakeHardcover{}, "")
+	}), 9, &fakeHardcover{}, "")
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -348,7 +314,7 @@ func TestDraft_JSONContract(t *testing.T) {
 	}
 	sort.Strings(keys)
 	want := []string{
-		"asin", "audio_seconds", "author_ids", "author_names", "country_id", "cover_url", "dry_run",
+		"asin", "audio_seconds", "author_ids", "author_names", "country_id", "dry_run",
 		"edition_format", "edition_information", "hardcover_book_id", "isbn_10", "isbn_10_valid", "isbn_13",
 		"isbn_13_valid", "language_id", "narrator_ids", "narrator_names", "publisher_id", "publisher_name",
 		"reading_format", "release_date", "subtitle", "title", "warnings",
@@ -375,7 +341,7 @@ func TestNew_EbookDraft(t *testing.T) {
 		b.Media.EbookFormat = "epub"
 	})
 
-	d, err := draft.New(context.Background(), ebook, 42, "https://abs.example.com/", hc, "us")
+	d, err := draft.New(context.Background(), ebook, 42, hc, "us")
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -399,7 +365,7 @@ func TestNew_EbookDraft(t *testing.T) {
 // TestNew_AudiobookDraftReportsItsReadingFormat guards the audiobook default.
 func TestNew_AudiobookDraftReportsItsReadingFormat(t *testing.T) {
 	hc := &fakeHardcover{authors: map[string]string{"Ada Draftwright": "101"}}
-	d, err := draft.New(context.Background(), absItem(nil), 42, "https://abs.example.com/", hc, "us")
+	d, err := draft.New(context.Background(), absItem(nil), 42, hc, "us")
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -417,7 +383,7 @@ func TestNew_CarriesAbridgedFlag(t *testing.T) {
 	for abridged, want := range tests {
 		d, err := draft.New(context.Background(), absItem(func(b *models.AudiobookshelfBook) {
 			b.Media.Metadata.Abridged = abridged
-		}), 42, "https://abs.example.com/", hc, "us")
+		}), 42, hc, "us")
 		if err != nil {
 			t.Fatalf("New() error = %v", err)
 		}
@@ -435,7 +401,7 @@ func TestNew_PrefersPublishedDateOverYear(t *testing.T) {
 	d, err := draft.New(context.Background(), absItem(func(b *models.AudiobookshelfBook) {
 		b.Media.Metadata.PublishedYear = "2020"
 		b.Media.Metadata.PublishedDate = "2020-06-15"
-	}), 42, "https://abs.example.com/", hc, "us")
+	}), 42, hc, "us")
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

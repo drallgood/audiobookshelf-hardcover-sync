@@ -26,7 +26,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -69,35 +68,15 @@ type Draft struct {
 	AuthorNames        string   `json:"author_names"`
 	NarratorNames      string   `json:"narrator_names"`
 	PublisherName      string   `json:"publisher_name"`
-	CoverURL           string   `json:"cover_url"`
 	DryRun             bool     `json:"dry_run"`
 	Warnings           []string `json:"warnings"`
-}
-
-// CoverURL returns the server-controlled Audiobookshelf cover URL for an item,
-// or "" when the item has no cover or no usable base URL. It is the only image
-// URL a draft may carry, because the edition creator can attach the
-// Audiobookshelf token to the image download.
-func CoverURL(absBaseURL string, absBook models.AudiobookshelfBook) string {
-	if absBook.ID == "" || absBook.Media.CoverPath == "" {
-		return ""
-	}
-	base, err := url.Parse(strings.TrimSpace(absBaseURL))
-	if err != nil || base.Scheme == "" || base.Host == "" {
-		return ""
-	}
-	// Never carry credentials, query data, or a fragment into the image URL.
-	base.User = nil
-	base.RawQuery = ""
-	base.Fragment = ""
-	return fmt.Sprintf("%s/api/items/%s/cover", strings.TrimRight(base.String(), "/"), url.PathEscape(absBook.ID))
 }
 
 // New builds a draft for absBook using the existing mismatch export pipeline.
 // hardcoverBookID is the book the edition will attach to; it always overrides
 // whatever Hardcover candidate enrichment guessed. Author, narrator, and
 // publisher IDs are resolved through hc, so this issues Hardcover read queries.
-func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID int, absBaseURL string, hc hardcover.HardcoverClientInterface, audnexRegion string) (*Draft, error) {
+func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID int, hc hardcover.HardcoverClientInterface, audnexRegion string) (*Draft, error) {
 	if hc == nil {
 		return nil, errors.New("hardcover client is required")
 	}
@@ -108,7 +87,6 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 		return nil, errors.New("audiobookshelf item id is required")
 	}
 
-	coverURL := CoverURL(absBaseURL, absBook)
 	meta := absBook.Media.Metadata
 	readingFormat := absBook.ReadingFormat()
 	ebook := readingFormat == models.ReadingFormatEbook
@@ -130,7 +108,6 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 			PublishedDate: meta.PublishedDate,
 			ISBN:          meta.ISBN,
 			ASIN:          meta.ASIN,
-			CoverURL:      coverURL,
 			Duration:      absBook.Media.Duration,
 			LibraryID:     absBook.LibraryID,
 			ReadingFormat: readingFormat,
@@ -179,7 +156,6 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 		AuthorIDs:          nonNilInts(export.AuthorIDs),
 		NarratorIDs:        nonNilInts(export.NarratorIDs),
 		PublisherID:        export.PublisherID,
-		CoverURL:           coverURL,
 	}
 	if export.Info != nil {
 		d.AuthorNames = export.Info.AuthorName

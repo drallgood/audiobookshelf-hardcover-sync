@@ -138,10 +138,9 @@ envelope.
   `language_id`, `country_id`, `author_ids`, `narrator_ids`, `publisher_id`),
   the target `hardcover_book_id`, the `reading_format` (`audiobook` or
   `ebook`, decided by the Audiobookshelf item), display names (`author_names`,
-  `narrator_names`, `publisher_name`), the Audiobookshelf `cover_url` (empty
-  when the item has no cover), `dry_run`, and `warnings`. The ID lists and
-  `warnings` are arrays and are never `null`. The Hardcover book is taken from
-  the run record. A `publisher_id` of `0` means no publisher. Hyphens and
+  `narrator_names`, `publisher_name`), `dry_run`, and `warnings`. The ID lists
+  and `warnings` are arrays and are never `null`. The Hardcover book is taken
+  from the run record. A `publisher_id` of `0` means no publisher. Hyphens and
   spaces are removed from the ISBN, and when it is valid the draft also fills
   the other ISBN form (ISBN-10 or ISBN-13) so Hardcover can match either;
   `isbn_10_valid`/`isbn_13_valid` (omitted when that ISBN is empty) say whether
