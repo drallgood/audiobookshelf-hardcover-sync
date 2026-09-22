@@ -3,46 +3,15 @@ package mismatch
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 )
-
-// EditionCreatorInput represents the input format expected by the edition import tool
-type EditionCreatorInput struct {
-	// Core book information
-	BookID   int    `json:"book_id"`
-	Title    string `json:"title"`
-	Subtitle string `json:"subtitle,omitempty"`
-
-	// Identifiers
-	ASIN   string `json:"asin,omitempty"`
-	ISBN10 string `json:"isbn_10,omitempty"`
-	ISBN13 string `json:"isbn_13,omitempty"`
-
-	// Media information
-	ImageURL    string `json:"image_url,omitempty"`
-	AudioLength int    `json:"audio_length,omitempty"`
-	LanguageID  int    `json:"language_id,omitempty"`
-
-	// Relationships
-	AuthorIDs   []int `json:"author_ids,omitempty"`
-	NarratorIDs []int `json:"narrator_ids,omitempty"`
-	PublisherID int   `json:"publisher_id,omitempty"`
-	CountryID   int   `json:"country_id,omitempty"`
-
-	// Edition information
-	ReleaseDate   string `json:"release_date"`
-	EditionFormat string `json:"edition_format,omitempty"`
-	EditionInfo   string `json:"edition_information,omitempty"`
-
-	// User notes (not imported, for reference only)
-	UserNotes string `json:"user_notes,omitempty"`
-}
 
 // ToEditionExport converts a BookMismatch to an EditionExport for the edition import tool
 // Note: This function should be called with a context that has a Hardcover client available
@@ -69,8 +38,14 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 	})
 
 	// Set edition format based on purchase source (ASIN indicates Audible/Amazon) and publisher
+	ebook := strings.EqualFold(b.ReadingFormat, models.ReadingFormatEbook)
 	editionFormat := b.EditionFormat
-	if editionFormat == "" || editionFormat == "Audiobook" {
+	if ebook {
+		// The audiobook platform hints below do not apply to an ebook, and a
+		// platform label the record already carries (for example "Audible Audio")
+		// must not leak into an ebook export.
+		editionFormat = editionFormatEbook
+	} else if editionFormat == "" || editionFormat == "Audiobook" {
 		// Primary check: ASIN indicates Audible/Amazon purchase
 		if b.ASIN != "" {
 			editionFormat = "Audible Audio"
@@ -116,20 +91,38 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 		imageURL = b.HardcoverCoverURL
 	}
 
-	// Set edition information to describe the edition (e.g., "Unabridged")
-	// Default to empty string if we don't know
-	editionInfo := ""
+	audioSeconds := b.DurationSeconds
+	// ebook is matched case-insensitively, so export the canonical value.
+	readingFormat := b.ReadingFormat
+	if ebook {
+		audioSeconds = 0
+		readingFormat = models.ReadingFormatEbook
+	}
 
-	// If EditionInfo is already set in the mismatch, check if it's valid
-	if b.EditionInfo != "" &&
-		!strings.Contains(b.EditionInfo, "error") &&
-		!strings.Contains(b.EditionInfo, "Reason:") &&
-		!strings.Contains(b.EditionInfo, "mismatch") &&
-		!strings.Contains(b.EditionInfo, "Audiobookshelf") {
-		// Use existing value if it appears valid
-		editionInfo = strings.TrimSpace(b.EditionInfo)
+	// Edition information describes the edition (e.g., "Unabridged"). Placeholders
+	// and debug text that end up in EditionInfo are not real values. An
+	// audiobook falls back to "Abridged" when Audiobookshelf marks it abridged and
+	// to "Unabridged" otherwise; an ebook has no such default and stays empty.
+	editionInfo := ""
+	info := strings.TrimSpace(b.EditionInfo)
+	if ebook {
+		lower := strings.ToLower(info)
+		if info != "" &&
+			!strings.Contains(lower, "error") &&
+			!strings.Contains(lower, "reason:") &&
+			!strings.Contains(lower, "mismatch") &&
+			!strings.Contains(lower, "audiobookshelf") {
+			editionInfo = info
+		}
+	} else if info != "" &&
+		!strings.Contains(info, "error") &&
+		!strings.Contains(info, "Reason:") &&
+		!strings.Contains(info, "mismatch") &&
+		!strings.Contains(info, "Audiobookshelf") {
+		editionInfo = info
+	} else if b.Abridged {
+		editionInfo = "Abridged"
 	} else {
-		// Otherwise, use "Unabridged" for audiobooks as a reasonable default
 		editionInfo = "Unabridged"
 	}
 
@@ -180,6 +173,7 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 			// Try to look up publisher ID from Hardcover
 			if id, err := LookupPublisherID(ctx, hc, b.Publisher); err == nil && id > 0 {
 				b.PublisherID = id
+				publisherID = id
 				logger.Debug(fmt.Sprintf("Looked up publisher ID: %d", b.PublisherID))
 			} else if err != nil {
 				logger.Error("Failed to look up publisher ID", map[string]interface{}{
@@ -202,12 +196,15 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 		ASIN:          b.ASIN,
 		ISBN10:        b.ISBN10,
 		ISBN13:        b.ISBN13,
+		ISBN10Valid:   isbnChecksumValid(b.ISBN10),
+		ISBN13Valid:   isbnChecksumValid(b.ISBN13),
 		AuthorIDs:     authorIDs,
 		NarratorIDs:   narratorIDs,
 		PublisherID:   publisherID,
 		ReleaseDate:   b.ReleaseDate,
-		AudioSeconds:  b.DurationSeconds,
+		AudioSeconds:  audioSeconds,
 		EditionFormat: editionFormat,
+		ReadingFormat: readingFormat,
 		EditionInfo:   editionInfo,
 		LanguageID:    languageID,
 		CountryID:     countryID,
@@ -239,119 +236,24 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 	return result
 }
 
-// ToEditionInput converts a BookMismatch to an EditionCreatorInput
-// This creates a best-effort conversion to the format expected by the edition import tool
-// Note: This function should be called with a context that has a Hardcover client available
-func (b *BookMismatch) ToEditionInput(ctx context.Context, hc hardcover.HardcoverClientInterface) (EditionCreatorInput, error) {
-	// Get logger from context
-	logger := logger.FromContext(ctx)
-
-	// Log the book ID for debugging
-	logger.Debug("Converting BookMismatch to EditionInput", map[string]interface{}{
-		"book_id": b.BookID,
-		"title":   b.Title,
-	})
-
-	// Parse book ID (use 0 if not available)
-	bookID := 0
-	if b.BookID != "" {
-		// First try to parse as integer
-		if id, err := strconv.Atoi(b.BookID); err == nil {
-			bookID = id
-		} else {
-			// If it's not a number, try to extract a number from the string
-			re := regexp.MustCompile(`(\d+)`)
-			if matches := re.FindStringSubmatch(b.BookID); len(matches) > 0 {
-				if id, err := strconv.Atoi(matches[0]); err == nil {
-					bookID = id
-				}
-			}
-		}
+// isbnChecksumValid reports whether the check digit of the ISBN a record carries
+// is correct, or nil when the record has no ISBN of that form.
+func isbnChecksumValid(raw string) *bool {
+	parsed, ok := isbn.Parse(raw)
+	if !ok {
+		return nil
 	}
+	return &parsed.Valid
+}
 
-	// If we still don't have a book ID, log a warning
-	if bookID == 0 {
-		logger.Warn("Could not determine book ID from BookMismatch", map[string]interface{}{
-			"book_id": b.BookID,
-			"title":   b.Title,
-		})
-	}
+// editionFormatEbook is the edition format an ebook item is exported with.
+const editionFormatEbook = "Ebook"
 
-	// Handle ISBN (split into ISBN10/ISBN13 if possible)
-	var isbn10, isbn13 string
-	if b.ISBN != "" {
-		// Simple heuristic: ISBN10 is 10 chars, ISBN13 is 13 chars
-		if len(b.ISBN) == 10 {
-			isbn10 = b.ISBN
-		} else if len(b.ISBN) == 13 {
-			isbn13 = b.ISBN
-		}
-	}
-
-	// Format release date (required field)
-	releaseDate := b.ReleaseDate
-	if releaseDate == "" && b.PublishedYear != "" {
-		releaseDate = b.PublishedYear + "-01-01" // Use Jan 1st if only year is known
-	} else if releaseDate == "" {
-		releaseDate = time.Now().Format("2006-01-02") // Default to today if no date
-	}
-
-	// Perform author and narrator lookups
-	authorIDs, err := LookupAuthorIDs(ctx, hc, b.Author)
-	if err != nil {
-		authorIDs = []int{}
-	}
-
-	narratorIDs, err := LookupNarratorIDs(ctx, hc, b.Narrator)
-	if err != nil {
-		narratorIDs = []int{}
-	}
-
-	// Create user notes with additional metadata
-	userNotes := ""
-	if b.BookID != "" {
-		userNotes += fmt.Sprintf("Original Book ID: %s\n", b.BookID)
-	}
-	if b.LibraryID != "" {
-		userNotes += fmt.Sprintf("Library ID: %s\n", b.LibraryID)
-	}
-	if b.FolderID != "" {
-		userNotes += fmt.Sprintf("Folder ID: %s\n", b.FolderID)
-	}
-
-	// Create the edition input
-	edition := EditionCreatorInput{
-		// Core book information
-		BookID:   bookID,
-		Title:    b.Title,
-		Subtitle: b.Subtitle,
-
-		// Identifiers
-		ASIN:   b.ASIN,
-		ISBN10: isbn10,
-		ISBN13: isbn13,
-
-		// Media information
-		ImageURL:    b.ImageURL, // Prefer ImageURL over CoverURL
-		AudioLength: b.DurationSeconds,
-		LanguageID:  1, // Default to English (would need to be looked up)
-
-		// Relationships
-		AuthorIDs:   authorIDs,
-		NarratorIDs: narratorIDs,
-		PublisherID: 0, // Would need to be looked up
-		CountryID:   1, // Default to US (would need to be looked up)
-
-		// Edition information
-		ReleaseDate:   releaseDate,
-		EditionFormat: "Audiobook",
-		EditionInfo:   "Imported from Audiobookshelf",
-
-		// User notes
-		UserNotes: strings.TrimSpace(userNotes),
-	}
-
-	return edition, nil
+// MarkEbook makes the record export as an ebook edition. An audiobook keeps
+// its formats as they are.
+func (b *BookMismatch) MarkEbook() {
+	b.EditionFormat = editionFormatEbook
+	b.ReadingFormat = models.ReadingFormatEbook
 }
 
 // BookMismatch represents a book that couldn't be matched/synced with Hardcover
@@ -385,11 +287,15 @@ type BookMismatch struct {
 
 	// Hardcover-specific fields
 	EditionFormat string `json:"edition_format,omitempty"`
-	EditionInfo   string `json:"edition_information,omitempty"`
-	LanguageID    int    `json:"language_id,omitempty"`
-	CountryID     int    `json:"country_id,omitempty"`
-	PublisherID   int    `json:"publisher_id,omitempty"`
-	Publisher     string `json:"publisher,omitempty"`
+	// ReadingFormat is "ebook" for an ebook item and empty for an audiobook.
+	ReadingFormat string `json:"reading_format,omitempty"`
+	// Abridged is true when Audiobookshelf marks the audiobook as abridged.
+	Abridged    bool   `json:"abridged,omitempty"`
+	EditionInfo string `json:"edition_information,omitempty"`
+	LanguageID  int    `json:"language_id,omitempty"`
+	CountryID   int    `json:"country_id,omitempty"`
+	PublisherID int    `json:"publisher_id,omitempty"`
+	Publisher   string `json:"publisher,omitempty"`
 
 	// Hardcover book details (for mismatch comparison)
 	HardcoverBookID        string `json:"hardcover_book_id,omitempty"`
@@ -434,19 +340,27 @@ type EditionExportInfo struct {
 // EditionExport represents the format expected by the Hardcover edition import tool
 type EditionExport struct {
 	// Core book information (used for import)
-	BookID        int    `json:"book_id"`
-	Title         string `json:"title"`
-	Subtitle      string `json:"subtitle"`
-	ImageURL      string `json:"image_url"`
-	ASIN          string `json:"asin"`
-	ISBN10        string `json:"isbn_10"`
-	ISBN13        string `json:"isbn_13"`
+	BookID   int    `json:"book_id"`
+	Title    string `json:"title"`
+	Subtitle string `json:"subtitle"`
+	ImageURL string `json:"image_url"`
+	ASIN     string `json:"asin"`
+	ISBN10   string `json:"isbn_10"`
+	ISBN13   string `json:"isbn_13"`
+	// ISBN10Valid and ISBN13Valid report whether the exported ISBN's own check
+	// digit is correct, like Hardcover's isbn_10_valid and isbn_13_valid. An ISBN
+	// with a wrong check digit is still exported as given. Each is omitted when
+	// its ISBN is empty, and the edition tool does not read them.
+	ISBN10Valid   *bool  `json:"isbn_10_valid,omitempty"`
+	ISBN13Valid   *bool  `json:"isbn_13_valid,omitempty"`
 	AuthorIDs     []int  `json:"author_ids"`
 	NarratorIDs   []int  `json:"narrator_ids"`
 	PublisherID   int    `json:"publisher_id"`
 	ReleaseDate   string `json:"release_date"`
 	AudioSeconds  int    `json:"audio_seconds"`
 	EditionFormat string `json:"edition_format"`
+	// ReadingFormat is "ebook" for an ebook item and omitted for an audiobook.
+	ReadingFormat string `json:"reading_format,omitempty"`
 	EditionInfo   string `json:"edition_information"`
 	LanguageID    int    `json:"language_id"`
 	CountryID     int    `json:"country_id"`

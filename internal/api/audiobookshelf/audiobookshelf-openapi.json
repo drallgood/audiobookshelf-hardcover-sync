@@ -2412,6 +2412,11 @@
             "description": "Whether the book has been marked as explicit.",
             "type": "boolean",
             "example": false
+          },
+          "abridged": {
+            "description": "Whether the book has been marked as abridged.",
+            "type": "boolean",
+            "example": false
           }
         }
       },

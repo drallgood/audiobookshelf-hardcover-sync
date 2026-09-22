@@ -16,6 +16,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
@@ -975,15 +976,6 @@ func audiobookshelfDisplayFormat(book models.AudiobookshelfBook) string {
 		return "Ebook"
 	}
 	return "Audiobook"
-}
-
-// hardcoverReadingFormat returns the Hardcover reading format ("ebook" or
-// "audiobook") that editions matching the item must have.
-func hardcoverReadingFormat(book models.AudiobookshelfBook) string {
-	if book.IsEbook() {
-		return "ebook"
-	}
-	return "audiobook"
 }
 
 func audiobookshelfSeries(metadata models.AudiobookshelfMetadataStruct) (string, string) {
@@ -2121,7 +2113,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 
 	// Every Hardcover lookup for this item, including mismatch enrichment,
 	// must resolve editions of the item's own reading format.
-	ctx = hardcover.WithReadingFormat(ctx, hardcoverReadingFormat(book))
+	ctx = hardcover.WithReadingFormat(ctx, book.ReadingFormat())
 
 	// Enhance book progress from the /api/me endpoint before any sync checks.
 	// The library items endpoint does not include per-user progress, so
@@ -2266,6 +2258,9 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				mismatchReason = fmt.Sprintf("Identifier lookup failed; title/author candidate requires review: %v", findErr)
 			}
 
+			// Extract ISBN10 and ISBN13 from the ISBN
+			isbn10, isbn13 := isbn.Split(book.Media.Metadata.ISBN)
+
 			// Create mismatch with both Audiobookshelf and Hardcover details
 			mismatchData := mismatch.BookMismatch{
 				BookID:          book.ID,
@@ -2275,6 +2270,9 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				Narrator:        book.Media.Metadata.NarratorName,
 				ASIN:            book.Media.Metadata.ASIN,
 				ISBN:            book.Media.Metadata.ISBN,
+				ISBN10:          isbn10,
+				ISBN13:          isbn13,
+				Abridged:        book.Media.Metadata.Abridged,
 				LibraryID:       book.LibraryID,
 				PublishedYear:   book.Media.Metadata.PublishedYear,
 				DurationSeconds: int(book.Media.Duration),
@@ -2283,6 +2281,11 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				Reason:          mismatchReason,
 				Timestamp:       time.Now().Unix(),
 				CreatedAt:       time.Now(),
+			}
+			// An ebook item is exported as an ebook edition, as AddWithMetadata does;
+			// an audiobook keeps its unset formats.
+			if book.IsEbook() {
+				mismatchData.MarkEbook()
 			}
 
 			// Add Hardcover book details if available
@@ -2404,7 +2407,8 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 						Duration:      book.Media.Duration,
 						LibraryID:     book.LibraryID,
 						FolderID:      "",
-						ReadingFormat: hardcoverReadingFormat(book),
+						ReadingFormat: book.ReadingFormat(),
+						Abridged:      book.Media.Metadata.Abridged,
 					},
 					book.ID,
 					edID,
@@ -2662,7 +2666,8 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				Duration:      book.Media.Duration,
 				LibraryID:     book.LibraryID,
 				FolderID:      "",
-				ReadingFormat: hardcoverReadingFormat(book),
+				ReadingFormat: book.ReadingFormat(),
+				Abridged:      book.Media.Metadata.Abridged,
 			},
 			bookID,    // Use the book ID if available
 			editionID, // Use the edition ID if available
@@ -2729,7 +2734,8 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				Duration:      book.Media.Duration,
 				LibraryID:     book.LibraryID,
 				FolderID:      "",
-				ReadingFormat: hardcoverReadingFormat(book),
+				ReadingFormat: book.ReadingFormat(),
+				Abridged:      book.Media.Metadata.Abridged,
 			},
 			hcBook.ID, // Use the book ID we found
 			"",        // No edition ID
@@ -2800,7 +2806,8 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				Duration:      book.Media.Duration,
 				LibraryID:     book.LibraryID,
 				FolderID:      "",
-				ReadingFormat: hardcoverReadingFormat(book),
+				ReadingFormat: book.ReadingFormat(),
+				Abridged:      book.Media.Metadata.Abridged,
 			},
 			bookID,    // Use the book ID if available
 			editionID, // Use the edition ID if available
@@ -2878,7 +2885,8 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				Duration:      book.Media.Duration,
 				LibraryID:     book.LibraryID,
 				FolderID:      "",
-				ReadingFormat: hardcoverReadingFormat(book),
+				ReadingFormat: book.ReadingFormat(),
+				Abridged:      book.Media.Metadata.Abridged,
 			},
 			bookID,    // Use the book ID from BookError if available
 			editionID, // Empty since we don't have an edition ID

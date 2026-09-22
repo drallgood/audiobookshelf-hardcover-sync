@@ -14,6 +14,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audnex"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 )
@@ -275,18 +276,11 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 	}
 
 	// Extract ISBN10 and ISBN13 from metadata.ISBN if it's set
-	isbn10, isbn13 := "", ""
-	if metadata.ISBN != "" {
-		// Simple heuristic: ISBN10 is 10 chars, ISBN13 is 13 chars
-		if len(metadata.ISBN) == 10 {
-			isbn10 = metadata.ISBN
-		} else if len(metadata.ISBN) == 13 {
-			isbn13 = metadata.ISBN
-		}
-	}
+	isbn10, isbn13 := isbn.Split(metadata.ISBN)
 
-	// Default publisher values
-	publisherID := 1 // Default publisher ID
+	// Publisher values. A zero ID means the publisher is unresolved; the
+	// export writes 0 rather than guessing a publisher.
+	publisherID := 0
 	publisherName := metadata.Publisher
 
 	// If we have a Hardcover client and a publisher name, try to look up the publisher ID
@@ -308,7 +302,7 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 				"error": err.Error(),
 			})
 		} else {
-			logger.Get().Debug("Publisher not found, using default ID", map[string]interface{}{
+			logger.Get().Debug("Publisher not found, leaving publisher ID unset", map[string]interface{}{
 				"name": publisherName,
 			})
 		}
@@ -349,12 +343,13 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 
 		// Edition information
 		EditionFormat: "Audiobook",
+		Abridged:      metadata.Abridged,
 		EditionInfo:   "Audiobookshelf", // Only include platform info, no debug/error details
 		LanguageID:    1,                // Default to English
 		CountryID:     1,                // Default to US
 
 		// Publisher information
-		PublisherID: publisherID, // Use looked up or default publisher ID
+		PublisherID: publisherID, // Looked-up publisher ID, or 0 when unresolved
 		Publisher:   publisherName,
 
 		// Audiobookshelf-specific context
@@ -365,6 +360,11 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 		Reason:    reason,
 		Timestamp: time.Now().Unix(),
 		CreatedAt: time.Now(),
+	}
+	// An ebook item is exported as an ebook edition; an audiobook keeps the
+	// original export shape, with no reading format.
+	if strings.EqualFold(metadata.ReadingFormat, models.ReadingFormatEbook) {
+		mismatch.MarkEbook()
 	}
 
 	// If we have a Hardcover client, try to enrich with Hardcover-side details
@@ -733,11 +733,6 @@ func saveToFile(ctx context.Context, hc hardcover.HardcoverClientInterface, outp
 		// Use the provided context and Hardcover client for author/narrator lookups
 		export := mismatch.ToEditionExport(ctx, hc)
 
-		// Set edition information if not already set - only include platform info, not debug/error details
-		if export.EditionInfo == "" {
-			export.EditionInfo = "Audiobookshelf"
-		}
-
 		// Convert to JSON with indentation for readability
 		jsonData, err := json.MarshalIndent(export, "", "  ")
 		if err != nil {
@@ -863,4 +858,6 @@ type MediaMetadata struct {
 	// ReadingFormat is the Hardcover reading format ("ebook" or "audiobook") that
 	// editions matching the source item must have. Empty means audiobook.
 	ReadingFormat string
+	// Abridged is true when the source item is marked abridged.
+	Abridged bool
 }

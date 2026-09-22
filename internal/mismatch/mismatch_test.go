@@ -377,7 +377,7 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 				ReleaseDate:   "2020-01-01",
 				AudioSeconds:  37800,
 				EditionFormat: "Audible Audio",   // ASIN indicates Audible/Amazon purchase
-				EditionInfo:   "Special Edition", // Updated to remove the period at the end
+				EditionInfo:   "Special Edition", // A real value on the record is kept
 				LanguageID:    1,
 				CountryID:     1,
 			},
@@ -485,111 +485,78 @@ func TestAddWithMetadata(t *testing.T) {
 	assert.Equal(t, "Audiobookshelf", mismatch.EditionInfo) // Only contains platform name
 	assert.Equal(t, 1, mismatch.LanguageID)                 // Default to English
 	assert.Equal(t, 1, mismatch.CountryID)                  // Default to US
-	assert.Equal(t, 1, mismatch.PublisherID)                // Default publisher
+	assert.Equal(t, 0, mismatch.PublisherID)                // Unresolved publisher is left unset
 }
 
-func TestBookMismatchToEditionInput(t *testing.T) {
-	// Create a test context
-	ctx := context.Background()
-
+// TestAddWithMetadata_ISBNForms verifies that separators in the Audiobookshelf
+// ISBN do not drop it, and that only the form the item carries is set.
+func TestAddWithMetadata_ISBNForms(t *testing.T) {
 	tests := []struct {
-		name     string
-		book     BookMismatch
-		hc       *hardcover.Client // Mocked Hardcover client
-		expected EditionCreatorInput
-		err      bool
+		name      string
+		isbn      string
+		wantISBN  string
+		wantISBN1 string
+		wantISBN3 string
 	}{
-		{
-			name: "basic book with minimum fields",
-			book: BookMismatch{
-				BookID:          "123",
-				Title:           "Test Book",
-				Author:          "Test Author",
-				Reason:          "test reason",
-				DurationSeconds: 19800, // 5.5 hours in seconds
-				Timestamp:       time.Now().Unix(),
-				CreatedAt:       time.Now(),
-			},
-			expected: EditionCreatorInput{
-				Title:         "Test Book",
-				Subtitle:      "",
-				ASIN:          "",
-				ISBN10:        "",
-				ISBN13:        "",
-				AudioLength:   19800,
-				EditionFormat: "Audiobook",
-				ImageURL:      "",
-			},
-			err: false,
-		},
-		{
-			name: "book with all fields",
-			book: BookMismatch{
-				BookID:          "456",
-				Title:           "Test Book",
-				Subtitle:        "Test Subtitle",
-				Author:          "Test Author",
-				Narrator:        "Test Narrator",
-				ASIN:            "B07GNTNXQW",
-				ISBN:            "1234567890",
-				ISBN10:          "1234567890",
-				ISBN13:          "9781234567890",
-				ReleaseDate:     "2020-01-01",
-				PublishedYear:   "2020",
-				DurationSeconds: 37800, // 10.5 hours in seconds
-				CoverURL:        "https://example.com/cover.jpg",
-				ImageURL:        "https://example.com/image.jpg",
-				EditionFormat:   "Audiobook",
-				EditionInfo:     "Special Edition",
-				LanguageID:      1,
-				CountryID:       1,
-				PublisherID:     2,
-				Reason:          "test reason",
-				Timestamp:       time.Now().Unix(),
-				CreatedAt:       time.Now(),
-			},
-			expected: EditionCreatorInput{
-				Title:         "Test Book",
-				Subtitle:      "Test Subtitle",
-				ASIN:          "B07GNTNXQW",
-				ISBN10:        "1234567890",
-				ISBN13:        "9781234567890",
-				AudioLength:   37800,
-				EditionFormat: "Audiobook",
-				ImageURL:      "https://example.com/image.jpg",
-			},
-			err: false,
-		},
+		{"hyphenated ISBN-13", "978-0-306-40615-7", "978-0-306-40615-7", "", "9780306406157"},
+		{"hyphenated ISBN-10", "0-306-40615-2", "0-306-40615-2", "0306406152", ""},
+		{"spaced ISBN-13", "978 0 306 40615 7", "978 0 306 40615 7", "", "9780306406157"},
+		{"plain ISBN-13", "9780306406157", "9780306406157", "", "9780306406157"},
+		{"lowercase x check digit is uppercased", "0-8044-2957-x", "0-8044-2957-x", "080442957X", ""},
+		{"979 ISBN-13 has no ISBN-10 to derive", "979-10-90636-07-1", "979-10-90636-07-1", "", "9791090636071"},
+		{"invalid checksum is still exported as given", "9780306406158", "9780306406158", "", "9780306406158"},
+		{"dots and dashes are separators", "978.0-306.40615-7", "978.0-306.40615-7", "", "9780306406157"},
+		{"wrong length is exported as neither form", "97803064061", "97803064061", "", ""},
+		{"not an ISBN", "abc", "abc", "", ""},
+		{"empty", "", "", "", ""},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			input, err := tt.book.ToEditionInput(ctx, tt.hc)
-			if (err != nil) != tt.err {
-				t.Fatalf("ToEditionInput() error = %v, expectErr %v", err, tt.err)
-			}
+			collector := NewCollector()
+			got := collector.AddWithMetadata(MediaMetadata{Title: "Book", ISBN: tt.isbn}, "1", "", "reason", 60, "abs1", nil, "")
+			assert.Equal(t, tt.wantISBN, got.ISBN, "the original value is kept")
+			assert.Equal(t, tt.wantISBN1, got.ISBN10)
+			assert.Equal(t, tt.wantISBN3, got.ISBN13)
+		})
+	}
+}
 
-			// Check the fields we care about
-			if input.Title != tt.expected.Title {
-				t.Errorf("Title: got %v, want %v", input.Title, tt.expected.Title)
-			}
-			if input.Subtitle != tt.expected.Subtitle {
-				t.Errorf("Subtitle: got %v, want %v", input.Subtitle, tt.expected.Subtitle)
-			}
-			if input.ASIN != tt.expected.ASIN {
-				t.Errorf("ASIN: got %v, want %v", input.ASIN, tt.expected.ASIN)
-			}
-			if input.ISBN10 != tt.expected.ISBN10 {
-				t.Errorf("ISBN10: got %v, want %v", input.ISBN10, tt.expected.ISBN10)
-			}
-			if input.AudioLength != tt.expected.AudioLength {
-				t.Errorf("AudioLength: got %v, want %v", input.AudioLength, tt.expected.AudioLength)
-			}
-			if input.EditionFormat != tt.expected.EditionFormat {
-				t.Errorf("EditionFormat: got %v, want %v", input.EditionFormat, tt.expected.EditionFormat)
-			}
-			if input.ImageURL != tt.expected.ImageURL {
-				t.Errorf("ImageURL: got %v, want %v", input.ImageURL, tt.expected.ImageURL)
+// TestToEditionExport_ISBNChecksumFlags checks the exported JSON reports whether
+// each exported ISBN's own check digit is correct, keeps an invalid ISBN as
+// given, and omits a flag when its ISBN slot is empty.
+func TestToEditionExport_ISBNChecksumFlags(t *testing.T) {
+	tests := []struct {
+		name      string
+		isbn      string
+		wantISBN  string
+		wantValid map[string]bool // exported isbn_*_valid keys; a missing key must be absent
+	}{
+		{"valid ISBN-13", "978-0-306-40615-7", "9780306406157", map[string]bool{"isbn_13_valid": true}},
+		{"valid ISBN-10", "0-306-40615-2", "0306406152", map[string]bool{"isbn_10_valid": true}},
+		{"valid 979 ISBN-13", "979-10-90636-07-1", "9791090636071", map[string]bool{"isbn_13_valid": true}},
+		{"invalid ISBN-13 checksum is kept and flagged", "9780306406158", "9780306406158", map[string]bool{"isbn_13_valid": false}},
+		{"invalid ISBN-10 checksum is kept and flagged", "0306406153", "0306406153", map[string]bool{"isbn_10_valid": false}},
+		{"no ISBN has no flags", "", "", map[string]bool{}},
+		{"not an ISBN has no flags", "abc", "", map[string]bool{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			record := NewCollector().AddWithMetadata(MediaMetadata{Title: "Book", ISBN: tt.isbn}, "1", "", "reason", 60, "abs1", nil, "")
+			export := record.ToEditionExport(logger.WithLogger(context.Background(), logger.Get()), nil)
+			data, err := json.Marshal(export)
+			require.NoError(t, err)
+			var got map[string]interface{}
+			require.NoError(t, json.Unmarshal(data, &got))
+
+			exported := got["isbn_10"].(string) + got["isbn_13"].(string)
+			require.Equal(t, tt.wantISBN, exported)
+			for _, key := range []string{"isbn_10_valid", "isbn_13_valid"} {
+				want, present := tt.wantValid[key]
+				if !present {
+					require.NotContains(t, got, key)
+					continue
+				}
+				require.Equal(t, want, got[key], key)
 			}
 		})
 	}
@@ -931,4 +898,169 @@ func TestAddWithMetadata_NoRegionSet(t *testing.T) {
 	mu.Unlock()
 
 	assert.Equal(t, 1, emptyCalls, "Should have called Audnex with empty region (backward-compatible behavior)")
+}
+
+// publisherLookupMock resolves a fixed publisher name so AddWithMetadata's
+// publisher lookup can be exercised without a live Hardcover client.
+type publisherLookupMock struct {
+	*MockHardcoverClient
+	publishers []models.Publisher
+}
+
+func (m *publisherLookupMock) SearchPublishers(ctx context.Context, query string, limit int) ([]models.Publisher, error) {
+	return m.publishers, nil
+}
+
+func TestAddWithMetadata_PublisherID(t *testing.T) {
+	tests := []struct {
+		name       string
+		publisher  string
+		publishers []models.Publisher
+		want       int
+	}{
+		{
+			name:       "resolved publisher uses its Hardcover ID",
+			publisher:  "Publisher Resolved Test House",
+			publishers: []models.Publisher{{ID: "42", Name: "Publisher Resolved Test House"}},
+			want:       42,
+		},
+		{
+			name:       "publisher not found in Hardcover is left unset",
+			publisher:  "Publisher Missing Test House",
+			publishers: nil,
+			want:       0,
+		},
+		{
+			name:      "no publisher name is left unset",
+			publisher: "",
+			want:      0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := &MockHardcoverClient{}
+			base.On("SearchBooks", mock.Anything, mock.Anything, mock.Anything).Return(nil, nil)
+			hc := &publisherLookupMock{MockHardcoverClient: base, publishers: tt.publishers}
+
+			collector := NewCollector()
+			got := collector.AddWithMetadata(MediaMetadata{
+				Title:      "Publisher Test Book",
+				AuthorName: "Publisher Test Author",
+				Publisher:  tt.publisher,
+			}, "abs-1", "", "test reason", 60, "abs-1", hc, "")
+
+			assert.Equal(t, tt.want, got.PublisherID)
+		})
+	}
+}
+
+func TestToEditionExport_PublisherResolvedDuringExport(t *testing.T) {
+	tests := []struct {
+		name       string
+		publisher  string
+		publishers []models.Publisher
+		want       int
+	}{
+		{
+			name:       "publisher resolved during export is exported",
+			publisher:  "Export Resolved Test House",
+			publishers: []models.Publisher{{ID: "42", Name: "Export Resolved Test House"}},
+			want:       42,
+		},
+		{
+			name:      "publisher not found during export is exported as unset",
+			publisher: "Export Missing Test House",
+			want:      0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hc := &publisherLookupMock{MockHardcoverClient: &MockHardcoverClient{}, publishers: tt.publishers}
+			record := BookMismatch{Title: "Export Publisher Book", Publisher: tt.publisher}
+
+			export := record.ToEditionExport(logger.WithLogger(context.Background(), logger.Get()), hc)
+
+			assert.Equal(t, tt.want, export.PublisherID)
+		})
+	}
+}
+
+// TestAudiobookExportKeepsItsFields pins the audiobook export fields the
+// ebook changes must not alter (crosswalk R11, R13, R14, R15, R16 and R17): the
+// edition format label, the rounded audio length, "Unabridged", the language and
+// country constants, and the cover preference.
+func TestAudiobookExportKeepsItsFields(t *testing.T) {
+	ctx := newTestContext(t)
+
+	labels := map[string]struct {
+		asin, publisher, want string
+	}{
+		"ASIN is Audible Audio":                 {"B002V0QK4C", "", "Audible Audio"},
+		"ASIN wins over a libro publisher":      {"B002V0QK4C", "Libro.fm", "Audible Audio"},
+		"libro publisher is libro.fm":           {"", "Libro.fm Audio", "libro.fm"},
+		"other publisher has no label":          {"", "Brilliance Audio", ""},
+		"no ASIN and no publisher has no label": {"", "", ""},
+	}
+	for name, tt := range labels {
+		t.Run("label "+name, func(t *testing.T) {
+			record := BookMismatch{BookID: "1", Title: "Book", ASIN: tt.asin, Publisher: tt.publisher}
+			export := record.ToEditionExport(ctx, nil)
+			assert.Equal(t, tt.want, export.EditionFormat)
+			assert.Equal(t, "Unabridged", export.EditionInfo)
+			assert.Empty(t, export.ReadingFormat, "an audiobook export carries no reading_format")
+			assert.Equal(t, 1, export.LanguageID)
+			assert.Equal(t, 1, export.CountryID)
+		})
+	}
+
+	durations := map[float64]int{33854.905: 33855, 100.4: 100, 100.5: 101, 0: 0}
+	for duration, want := range durations {
+		record := NewCollector().AddWithMetadata(MediaMetadata{Title: "Book"}, "1", "", "reason", duration, "abs1", nil, "")
+		assert.Equal(t, want, record.ToEditionExport(ctx, nil).AudioSeconds, "duration %v", duration)
+	}
+
+	covers := map[string]struct {
+		image, cover, hardcover, want string
+	}{
+		"image URL first":               {"https://abs/image", "https://abs/cover", "https://hc/cover", "https://abs/image"},
+		"cover URL when no image URL":   {"", "https://abs/cover", "https://hc/cover", "https://abs/cover"},
+		"Hardcover cover as a fallback": {"", "", "https://hc/cover", "https://hc/cover"},
+		"none":                          {"", "", "", ""},
+	}
+	for name, tt := range covers {
+		t.Run("cover "+name, func(t *testing.T) {
+			record := BookMismatch{BookID: "1", Title: "Book", ImageURL: tt.image, CoverURL: tt.cover, HardcoverCoverURL: tt.hardcover}
+			assert.Equal(t, tt.want, record.ToEditionExport(ctx, nil).ImageURL)
+		})
+	}
+}
+
+// TestAddWithMetadata_ReleaseDate pins how the export's release date is
+// normalized to YYYY-MM-DD when Audnex supplies none (crosswalk R8): a full
+// date in any of the accepted layouts, a year alone as January 1, and the full
+// date winning over the year.
+func TestAddWithMetadata_ReleaseDate(t *testing.T) {
+	tests := map[string]struct {
+		publishedDate string
+		publishedYear string
+		want          string
+	}{
+		"year alone is January 1":      {"", "2008", "2008-01-01"},
+		"ISO date":                     {"2024-01-15", "", "2024-01-15"},
+		"RFC 3339 with a time":         {"2024-01-15T10:30:00Z", "", "2024-01-15"},
+		"slash date":                   {"2024/01/15", "", "2024-01-15"},
+		"US layout is tried first":     {"01/02/2006", "", "2006-01-02"},
+		"month name":                   {"Jan 2, 2006", "", "2006-01-02"},
+		"day first":                    {"2 Jan 2006", "", "2006-01-02"},
+		"full date wins over the year": {"2024-01-15", "2020", "2024-01-15"},
+		"neither is left empty":        {"", "", ""},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			record := NewCollector().AddWithMetadata(MediaMetadata{Title: "Book", PublishedDate: tt.publishedDate, PublishedYear: tt.publishedYear}, "1", "", "reason", 60, "abs1", nil, "")
+			assert.Equal(t, tt.want, record.ReleaseDate)
+		})
+	}
 }

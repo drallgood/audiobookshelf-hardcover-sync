@@ -548,6 +548,68 @@ func TestProcessBookKeepsIdentifierFailureWhenTitleSearchFindsCandidate(t *testi
 	hc.AssertExpectations(t)
 }
 
+func TestProcessBookIdentifierFailureMismatchExportsByReadingFormat(t *testing.T) {
+	tests := []struct {
+		name           string
+		ebook          bool
+		abridged       bool
+		isbn           string
+		wantReading    string
+		wantEdition    string
+		wantInfo       string
+		wantAudioTotal int
+		wantISBN13     string
+		wantISBN10     string
+	}{
+		{name: "ebook is exported as an ebook edition", ebook: true, isbn: "978-0-306-40615-7", wantReading: models.ReadingFormatEbook, wantEdition: "Ebook", wantInfo: "", wantAudioTotal: 0, wantISBN13: "9780306406157", wantISBN10: ""},
+		{name: "audiobook keeps the audiobook shape", ebook: false, isbn: "0-306-40615-2", wantReading: "", wantEdition: "Audible Audio", wantInfo: "Unabridged", wantAudioTotal: 1000, wantISBN13: "", wantISBN10: "0306406152"},
+		{name: "abridged audiobook is exported as abridged", abridged: true, isbn: "0-306-40615-2", wantReading: "", wantEdition: "Audible Audio", wantInfo: "Abridged", wantAudioTotal: 1000, wantISBN13: "", wantISBN10: "0306406152"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, hc := createTestService()
+			svc.config.Sync.IncludeEbooks = true
+			testBook := createTestBook("lookup-failed-format", "Possible Match", "Author", "failed-asin", tt.isbn)
+			testBook.Media.Duration = 1000
+			testBook.Progress.CurrentTime = 300
+			if tt.ebook {
+				testBook.MediaType = "ebook"
+			}
+			absBook := toAudiobookshelfBook(testBook)
+			absBook.Media.Metadata.Abridged = tt.abridged
+			require.Equal(t, tt.ebook, absBook.IsEbook())
+			lookupErr := errors.New("identifier lookup unavailable")
+			hc.On("SearchBookByASIN", mock.Anything, "failed-asin").Return((*models.HardcoverBook)(nil), lookupErr).Once()
+			hc.On("SearchBookByISBN13", mock.Anything, mock.Anything).Return((*models.HardcoverBook)(nil), nil).Maybe()
+			hc.On("SearchBookByISBN10", mock.Anything, mock.Anything).Return((*models.HardcoverBook)(nil), nil).Maybe()
+			hc.On("SearchBooks", mock.Anything, "Possible Match Author", "").Return([]models.HardcoverBook{{
+				ID: "901", Title: "Possible Match", Slug: "possible-match",
+			}}, nil).Once()
+			hc.On("GetBookByID", mock.Anything, "901").Return(&models.HardcoverBook{
+				ID: "901", Title: "Possible Match", Slug: "possible-match",
+			}, nil).Once()
+
+			require.NoError(t, svc.processBook(context.Background(), *absBook, &models.AudiobookshelfUserProgress{}))
+			require.Equal(t, OutcomeFailed, recordedOutcome(svc, absBook.ID).Outcome)
+			records := svc.mismatchCollector.GetAll()
+			require.Len(t, records, 1)
+			assert.Equal(t, tt.isbn, records[0].ISBN, "raw ISBN should match input value")
+			assert.Equal(t, tt.wantReading, records[0].ReadingFormat)
+			assert.Equal(t, tt.wantISBN13, records[0].ISBN13, "ISBN13 should be extracted correctly")
+			assert.Equal(t, tt.wantISBN10, records[0].ISBN10, "ISBN10 should be extracted correctly")
+
+			// The export only resolves people, which are irrelevant to the format.
+			hc.On("SearchAuthors", mock.Anything, mock.Anything, mock.Anything).Return([]models.Author{}, nil).Maybe()
+			hc.On("SearchNarrators", mock.Anything, mock.Anything, mock.Anything).Return([]models.Author{}, nil).Maybe()
+			export := records[0].ToEditionExport(context.Background(), hc)
+			require.NotNil(t, export)
+			assert.Equal(t, tt.wantEdition, export.EditionFormat)
+			assert.Equal(t, tt.wantInfo, export.EditionInfo)
+			assert.Equal(t, tt.wantAudioTotal, export.AudioSeconds)
+		})
+	}
+}
+
 func TestProcessBookSnapshotKeepsTitleOnlyEnrichment(t *testing.T) {
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
