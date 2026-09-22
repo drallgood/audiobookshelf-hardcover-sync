@@ -48,6 +48,13 @@ func LookupAuthorIDsStrict(ctx context.Context, hc hardcover.HardcoverClientInte
 	return lookupPeopleStrict(ctx, hc, "author", names...)
 }
 
+// LookupAuthorIDsExactStrict resolves each name exactly as supplied, including
+// commas that are part of a person's name. Drafts use this for Audiobookshelf's
+// expanded authors array.
+func LookupAuthorIDsExactStrict(ctx context.Context, hc hardcover.HardcoverClientInterface, names ...string) ([]int, error) {
+	return lookupPeopleStrict(ctx, hc, "author", names...)
+}
+
 // LookupNarratorIDs looks up narrator IDs by name.
 // It can handle multiple names separated by commas in a single string.
 func LookupNarratorIDs(ctx context.Context, hc hardcover.HardcoverClientInterface, names ...string) ([]int, error) {
@@ -74,6 +81,13 @@ func LookupNarratorIDsStrict(ctx context.Context, hc hardcover.HardcoverClientIn
 		}
 		return lookupPeopleStrict(ctx, hc, "narrator", splitNames...)
 	}
+	return lookupPeopleStrict(ctx, hc, "narrator", names...)
+}
+
+// LookupNarratorIDsExactStrict resolves each name exactly as supplied,
+// including commas that are part of a person's name. Drafts use this for
+// Audiobookshelf's expanded narrators array.
+func LookupNarratorIDsExactStrict(ctx context.Context, hc hardcover.HardcoverClientInterface, names ...string) ([]int, error) {
 	return lookupPeopleStrict(ctx, hc, "narrator", names...)
 }
 

@@ -3,23 +3,11 @@
 // It lives beside, not inside, package edition because it reuses the mismatch
 // pipeline (mismatch imports the Hardcover client, which imports edition).
 //
-// Two crosswalk findings are deliberately left open in this step rather than
-// implemented, because closing them touches the shared mismatch/export
-// pipeline (finding 2) or needs a live-API check this step cannot make
-// (finding 9):
-//   - Finding 2 (exact author/narrator arrays): the Audiobookshelf item's
-//     expanded response carries authors[]/narrators[] with exact names, but
-//     this draft still goes through mismatch.AddWithMetadata's joined-string
-//     splitting (Author/Narrator, comma-separated), matching the mismatch
-//     export's existing behavior. Using the exact arrays instead would need
-//     new MediaMetadata fields threaded through the shared export pipeline,
-//     which step 1 pins as otherwise unchanged; left for a future step.
-//   - Finding 9 (exact, case-sensitive Hardcover person/publisher matching):
-//     an author/narrator/publisher name that differs by punctuation or
-//     spelling from Hardcover's stored name will not match. The draft's
-//     warnings (buildWarnings) are the minimum mitigation this step commits
-//     to; a looser lookup needs verification against the hosted API before
-//     it can be adopted (see AGENTS.md), and a UI remedy is step 7's decision.
+// The draft retains exact, case-sensitive Hardcover matching for people and
+// publishers.
+// Names that differ by punctuation or spelling will not match; buildWarnings
+// surfaces missing matches until looser lookup behavior can be verified
+// against the hosted API.
 package draft
 
 import (
@@ -102,10 +90,24 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 	meta := absBook.Media.Metadata
 	readingFormat := absBook.ReadingFormat()
 	ebook := readingFormat == models.ReadingFormatEbook
-	narrator := meta.NarratorName
+	var authorNames []string
+	for _, author := range meta.Authors {
+		authorNames = append(authorNames, author.Name)
+	}
+	var narratorNames []string
+	narratorNames = append(narratorNames, meta.Narrators...)
+	authorName := meta.AuthorName
+	if len(authorNames) > 0 {
+		authorName = strings.Join(authorNames, ", ")
+	}
+	narratorName := meta.NarratorName
+	if len(narratorNames) > 0 {
+		narratorName = strings.Join(narratorNames, ", ")
+	}
 	if ebook {
 		// Narrators and audio length only apply to audiobooks.
-		narrator = ""
+		narratorName = ""
+		narratorNames = nil
 	}
 	// AddWithMetadataContext performs a best-effort publisher lookup for
 	// ordinary mismatch exports. Drafts resolve publisher IDs strictly below,
@@ -118,8 +120,8 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 		mismatch.MediaMetadata{
 			Title:         meta.Title,
 			Subtitle:      meta.Subtitle,
-			AuthorName:    meta.AuthorName,
-			NarratorName:  narrator,
+			AuthorName:    authorName,
+			NarratorName:  narratorName,
 			Publisher:     "",
 			PublishedYear: meta.PublishedYear,
 			PublishedDate: meta.PublishedDate,
@@ -142,7 +144,7 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := resolveMetadataIDs(ctx, &record, hc); err != nil {
+	if err := resolveMetadataIDs(ctx, &record, hc, authorNames, narratorNames); err != nil {
 		return nil, &UpstreamError{Err: err}
 	}
 	record.HardcoverBookID = strconv.Itoa(hardcoverBookID)
@@ -195,20 +197,20 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 // edition draft. A successful empty result means that Hardcover has no match
 // and is deliberately not an error; transport, GraphQL, and timeout failures
 // are returned so the caller can report an upstream failure instead.
-func resolveMetadataIDs(ctx context.Context, record *mismatch.BookMismatch, hc hardcover.HardcoverClientInterface) error {
+func resolveMetadataIDs(ctx context.Context, record *mismatch.BookMismatch, hc hardcover.HardcoverClientInterface, authorNames, narratorNames []string) error {
 	if hc == nil {
 		return errors.New("hardcover client is required")
 	}
 
 	if len(record.AuthorIDs) == 0 && record.Author != "" {
-		ids, err := mismatch.LookupAuthorIDsStrict(ctx, hc, record.Author)
+		ids, err := lookupAuthorIDs(ctx, hc, record.Author, authorNames)
 		if err != nil {
 			return fmt.Errorf("look up author %q: %w", record.Author, err)
 		}
 		record.AuthorIDs = ids
 	}
 	if len(record.NarratorIDs) == 0 && record.Narrator != "" {
-		ids, err := mismatch.LookupNarratorIDsStrict(ctx, hc, record.Narrator)
+		ids, err := lookupNarratorIDs(ctx, hc, record.Narrator, narratorNames)
 		if err != nil {
 			return fmt.Errorf("look up narrator %q: %w", record.Narrator, err)
 		}
@@ -222,6 +224,20 @@ func resolveMetadataIDs(ctx context.Context, record *mismatch.BookMismatch, hc h
 		record.PublisherID = id
 	}
 	return nil
+}
+
+func lookupAuthorIDs(ctx context.Context, hc hardcover.HardcoverClientInterface, legacyName string, exactNames []string) ([]int, error) {
+	if len(exactNames) > 0 {
+		return mismatch.LookupAuthorIDsExactStrict(ctx, hc, exactNames...)
+	}
+	return mismatch.LookupAuthorIDsStrict(ctx, hc, legacyName)
+}
+
+func lookupNarratorIDs(ctx context.Context, hc hardcover.HardcoverClientInterface, legacyName string, exactNames []string) ([]int, error) {
+	if len(exactNames) > 0 {
+		return mismatch.LookupNarratorIDsExactStrict(ctx, hc, exactNames...)
+	}
+	return mismatch.LookupNarratorIDsStrict(ctx, hc, legacyName)
 }
 
 // fillCounterpartISBN sets the missing ISBN form when the other can be derived
@@ -276,10 +292,28 @@ func (d *Draft) buildWarnings(absLanguage string) []string {
 	if d.ISBN13Valid != nil && !*d.ISBN13Valid {
 		warnings = append(warnings, fmt.Sprintf("ISBN-13 %q has an incorrect check digit; Hardcover will still store it as given.", d.ISBN13))
 	}
-	if lang := strings.TrimSpace(absLanguage); lang != "" && !strings.Contains(strings.ToLower(lang), "english") {
+	if lang := strings.TrimSpace(absLanguage); lang != "" && !isEnglishLabel(lang) {
 		warnings = append(warnings, fmt.Sprintf("The Audiobookshelf item is tagged %q, but the draft defaults to language 1 (English) and country 1 (United States); set language_id and country_id explicitly when creating the edition if that is wrong.", lang))
 	}
 	return warnings
+}
+
+func isEnglishLabel(language string) bool {
+	label := strings.ToLower(strings.TrimSpace(language))
+	words := strings.Fields(strings.NewReplacer("-", " ", "_", " ").Replace(label))
+	if len(words) >= 2 && ((words[0] == "non" && words[1] == "english") || (words[0] == "not" && words[1] == "english")) {
+		return false
+	}
+	compact := strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' {
+			return r
+		}
+		return -1
+	}, label)
+	if strings.HasPrefix(compact, "nonenglish") || strings.HasPrefix(compact, "notenglish") {
+		return false
+	}
+	return strings.Contains(label, "english")
 }
 
 func nonNilInts(ids []int) []int {

@@ -13,6 +13,8 @@ type AudiobookshelfMetadataStruct struct {
 	AuthorName        string                 `json:"authorName"`
 	AuthorNameLF      string                 `json:"authorNameLF"`
 	NarratorName      string                 `json:"narratorName"`
+	Authors           []AudiobookshelfPerson `json:"authors"`
+	Narrators         []string               `json:"narrators"`
 	SeriesName        string                 `json:"seriesName"`
 	Series            []AudiobookshelfSeries `json:"series"`
 	Genres            []string               `json:"genres"`
@@ -27,6 +29,12 @@ type AudiobookshelfMetadataStruct struct {
 	Language      string `json:"language"`
 	// Abridged is true when Audiobookshelf marks the audiobook as abridged.
 	Abridged bool `json:"abridged"`
+}
+
+// AudiobookshelfPerson is a named author entry in expanded Audiobookshelf
+// metadata.
+type AudiobookshelfPerson struct {
+	Name string `json:"name"`
 }
 
 // AudiobookshelfSeries describes a book's membership and position in a series.

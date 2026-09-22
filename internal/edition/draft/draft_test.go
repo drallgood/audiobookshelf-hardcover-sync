@@ -250,6 +250,74 @@ func TestNew_CarriesResolvedFields(t *testing.T) {
 	}
 }
 
+func TestNew_UsesExactExpandedPeopleNames(t *testing.T) {
+	hc := &fakeHardcover{
+		authors: map[string]string{
+			"Mara Author, Jr.":   "801",
+			"Avery Exact Author": "802",
+		},
+		narrators: map[string]string{
+			"Rae Reader, PhD":    "803",
+			"Sky Exact Narrator": "804",
+		},
+	}
+	item := absItem(func(b *models.AudiobookshelfBook) {
+		b.Media.Metadata.Authors = []models.AudiobookshelfPerson{{Name: "Mara Author, Jr."}, {Name: "Avery Exact Author"}}
+		b.Media.Metadata.Narrators = []string{"Rae Reader, PhD", "Sky Exact Narrator"}
+	})
+
+	d, err := draft.New(context.Background(), item, 42, hc, "")
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if !reflect.DeepEqual(d.AuthorIDs, []int{801, 802}) || !reflect.DeepEqual(d.NarratorIDs, []int{803, 804}) {
+		t.Errorf("IDs = authors %v narrators %v, want [801 802] [803 804]", d.AuthorIDs, d.NarratorIDs)
+	}
+	if d.AuthorNames != "Mara Author, Jr., Avery Exact Author" || d.NarratorNames != "Rae Reader, PhD, Sky Exact Narrator" {
+		t.Errorf("names = authors %q narrators %q, want exact source names joined for display", d.AuthorNames, d.NarratorNames)
+	}
+}
+
+func TestNew_DoesNotSplitCommaInSingleExpandedPersonName(t *testing.T) {
+	hc := &fakeHardcover{
+		authors:   map[string]string{"Mara Single, Jr.": "809"},
+		narrators: map[string]string{"Rae Single, PhD": "810"},
+	}
+	item := absItem(func(b *models.AudiobookshelfBook) {
+		b.Media.Metadata.Authors = []models.AudiobookshelfPerson{{Name: "Mara Single, Jr."}}
+		b.Media.Metadata.Narrators = []string{"Rae Single, PhD"}
+	})
+
+	d, err := draft.New(context.Background(), item, 42, hc, "")
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if !reflect.DeepEqual(d.AuthorIDs, []int{809}) || !reflect.DeepEqual(d.NarratorIDs, []int{810}) {
+		t.Errorf("IDs = authors %v narrators %v, want [809] [810]", d.AuthorIDs, d.NarratorIDs)
+	}
+}
+
+func TestNew_FallsBackToLegacyJoinedPeopleNames(t *testing.T) {
+	hc := &fakeHardcover{
+		authors:   map[string]string{"Legacy First Author": "805", "Legacy Second Author": "806"},
+		narrators: map[string]string{"Legacy First Narrator": "807", "Legacy Second Narrator": "808"},
+	}
+	item := absItem(func(b *models.AudiobookshelfBook) {
+		b.Media.Metadata.Authors = nil
+		b.Media.Metadata.AuthorName = "Legacy First Author, Legacy Second Author"
+		b.Media.Metadata.Narrators = nil
+		b.Media.Metadata.NarratorName = "Legacy First Narrator, Legacy Second Narrator"
+	})
+
+	d, err := draft.New(context.Background(), item, 42, hc, "")
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if !reflect.DeepEqual(d.AuthorIDs, []int{805, 806}) || !reflect.DeepEqual(d.NarratorIDs, []int{807, 808}) {
+		t.Errorf("IDs = authors %v narrators %v, want [805 806] [807 808]", d.AuthorIDs, d.NarratorIDs)
+	}
+}
+
 func TestNew_Warnings(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -317,6 +385,44 @@ func TestNew_Warnings(t *testing.T) {
 				publishers: map[string]string{"Draftwright House": "303"},
 			},
 			want:    []string{"tagged \"German\""},
+			wantIDs: true,
+		},
+		{
+			name: "non-English label warns",
+			mutate: func(b *models.AudiobookshelfBook) {
+				b.Media.Metadata.Language = "non-English"
+			},
+			hc: &fakeHardcover{
+				authors:    map[string]string{"Ada Draftwright": "101"},
+				narrators:  map[string]string{"Nora Voicer": "202"},
+				publishers: map[string]string{"Draftwright House": "303"},
+			},
+			want:    []string{"tagged \"non-English\""},
+			wantIDs: true,
+		},
+		{
+			name: "not English label warns",
+			mutate: func(b *models.AudiobookshelfBook) {
+				b.Media.Metadata.Language = "not English"
+			},
+			hc: &fakeHardcover{
+				authors:    map[string]string{"Ada Draftwright": "101"},
+				narrators:  map[string]string{"Nora Voicer": "202"},
+				publishers: map[string]string{"Draftwright House": "303"},
+			},
+			want:    []string{"tagged \"not English\""},
+			wantIDs: true,
+		},
+		{
+			name: "normal English label does not warn",
+			mutate: func(b *models.AudiobookshelfBook) {
+				b.Media.Metadata.Language = "English (US)"
+			},
+			hc: &fakeHardcover{
+				authors:    map[string]string{"Ada Draftwright": "101"},
+				narrators:  map[string]string{"Nora Voicer": "202"},
+				publishers: map[string]string{"Draftwright House": "303"},
+			},
 			wantIDs: true,
 		},
 	}

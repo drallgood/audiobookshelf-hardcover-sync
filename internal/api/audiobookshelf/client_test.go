@@ -339,6 +339,8 @@ func TestGetLibraryItem(t *testing.T) {
 		fixture       string
 		itemID        string
 		title         string
+		authors       []models.AudiobookshelfPerson
+		narrators     []string
 		publishedDate string
 		language      string
 		abridged      bool
@@ -346,12 +348,14 @@ func TestGetLibraryItem(t *testing.T) {
 	}{
 		{
 			name: "decodes a real expanded audiobook shape", fixture: "expanded-audiobook.json",
-			itemID: "item-audiobook", title: "Expanded Audiobook", publishedDate: "2020-06-15",
+			itemID: "item-audiobook", title: "Expanded Audiobook",
+			authors: []models.AudiobookshelfPerson{{Name: "Fixture Author"}}, narrators: []string{"Fixture Narrator"}, publishedDate: "2020-06-15",
 			language: "German", abridged: true,
 		},
 		{
 			name: "decodes a real expanded ebook shape", fixture: "expanded-ebook.json",
-			itemID: "item-ebook", title: "Expanded Ebook", language: "English", ebook: true,
+			itemID: "item-ebook", title: "Expanded Ebook",
+			authors: []models.AudiobookshelfPerson{{Name: "Ebook Fixture Author"}}, narrators: []string{"Narrator Not Used For Ebook"}, language: "English", ebook: true,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -370,6 +374,8 @@ func TestGetLibraryItem(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.itemID, book.ID)
 			assert.Equal(t, tt.title, book.Media.Metadata.Title)
+			assert.Equal(t, tt.authors, book.Media.Metadata.Authors)
+			assert.Equal(t, tt.narrators, book.Media.Metadata.Narrators)
 			assert.Equal(t, tt.publishedDate, book.Media.Metadata.PublishedDate)
 			assert.Equal(t, tt.language, book.Media.Metadata.Language)
 			assert.Equal(t, tt.abridged, book.Media.Metadata.Abridged)
