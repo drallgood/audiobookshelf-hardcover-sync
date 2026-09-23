@@ -358,3 +358,13 @@ func TestGetEditionDraftDoesNotReportCallerCancellationAsUpstreamFailure(t *test
 	require.Empty(t, recorder.Body.String(), "a canceled caller should not receive an upstream failure response")
 	require.Zero(t, f.hardcover.RequestCount())
 }
+
+func TestWriteEditionErrorMapsLiveRequestDeadlineToGatewayTimeout(t *testing.T) {
+	handler := NewHandler(nil, logger.Get())
+	recorder := httptest.NewRecorder()
+
+	handler.writeEditionError(recorder, context.Background(), "prepare edition draft", editionProfileID, context.DeadlineExceeded)
+
+	require.Equal(t, http.StatusGatewayTimeout, recorder.Code, recorder.Body.String())
+	require.Equal(t, "The request timed out", decodeEnvelope(t, recorder).Error)
+}

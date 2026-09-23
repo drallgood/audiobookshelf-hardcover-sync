@@ -37,9 +37,9 @@ var (
 	ErrEditionNoIdentifier = errors.New("audiobookshelf item has no asin or isbn")
 )
 
-// EditionUpstreamError reports a failed Audiobookshelf call or overall draft
-// timeout. The wrapped error may contain remote details and must not be shown
-// to users.
+// EditionUpstreamError reports an upstream request failure during draft
+// preparation. The wrapped error may contain remote details and must not be
+// shown to users.
 type EditionUpstreamError struct {
 	Service string
 	Err     error
@@ -81,18 +81,42 @@ func (s *MultiUserService) prepareEditionDraft(ctx context.Context, profileID, r
 	}
 
 	target, err := s.resolveEditionTarget(profileID, runID, bookID)
+	if contextErr := editionDraftContextError(callerCtx, ctx); contextErr != nil {
+		return nil, contextErr
+	}
 	if err != nil {
 		return nil, err
 	}
-	item, err := s.fetchEditionItem(ctx, target.profile, bookID)
+
+	releasePermit, err := s.acquireEditionDraftPermit(ctx, profileID)
 	if err != nil {
 		if callerCtx.Err() != nil {
 			return nil, callerCtx.Err()
+		}
+		return nil, err
+	}
+	defer releasePermit()
+	if contextErr := editionDraftContextError(callerCtx, ctx); contextErr != nil {
+		return nil, contextErr
+	}
+	// A request may have waited for another draft while profile deletion or
+	// shutdown began. Recheck admission before any outbound request starts.
+	if err := s.checkEditionAdmission(profileID); err != nil {
+		return nil, err
+	}
+
+	item, err := s.fetchEditionItem(ctx, target.profile, bookID)
+	if err != nil {
+		if contextErr := editionDraftContextError(callerCtx, ctx); contextErr != nil {
+			return nil, contextErr
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, &EditionUpstreamError{Service: "audiobookshelf", Err: err}
 		}
 		return nil, err
+	}
+	if contextErr := editionDraftContextError(callerCtx, ctx); contextErr != nil {
+		return nil, contextErr
 	}
 	if !hasEditionIdentifier(item) {
 		return nil, ErrEditionNoIdentifier
@@ -100,16 +124,26 @@ func (s *MultiUserService) prepareEditionDraft(ctx context.Context, profileID, r
 
 	built, err := draft.New(ctx, *item, target.hardcoverBookID, target.profile.SyncConfig.AudnexusRegion)
 	if err != nil {
-		if callerCtx.Err() != nil {
-			return nil, callerCtx.Err()
+		if contextErr := editionDraftContextError(callerCtx, ctx); contextErr != nil {
+			return nil, contextErr
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, &EditionUpstreamError{Service: "audiobookshelf", Err: err}
 		}
 		return nil, fmt.Errorf("build edition draft: %w", err)
 	}
+	if contextErr := editionDraftContextError(callerCtx, ctx); contextErr != nil {
+		return nil, contextErr
+	}
 	built.DryRun = target.profile.SyncConfig.DryRun
 	return built, nil
+}
+
+func editionDraftContextError(callerCtx, draftCtx context.Context) error {
+	if err := callerCtx.Err(); err != nil {
+		return err
+	}
+	return draftCtx.Err()
 }
 
 // resolveEditionTarget loads the profile and finds the needs-review record for

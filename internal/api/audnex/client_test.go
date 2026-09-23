@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
@@ -82,7 +83,7 @@ func TestGetBookByASIN_NotFound(t *testing.T) {
 	}
 
 	// Call the method
-	book, err := client.GetBookByASIN(context.Background(), "INVALID", "")
+	book, err := client.GetBookByASIN(context.Background(), "INVALID000", "")
 
 	// Check the results
 	if err == nil {
@@ -145,7 +146,7 @@ func TestGetBookByASIN_NoRegion(t *testing.T) {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, err := w.Write([]byte(`{"asin": "NO_REGION", "title": "No Region Book"}`))
+		_, err := w.Write([]byte(`{"asin": "NOREGION01", "title": "No Region Book"}`))
 		if err != nil {
 			t.Errorf("Failed to write response: %v", err)
 		}
@@ -158,7 +159,7 @@ func TestGetBookByASIN_NoRegion(t *testing.T) {
 		logger:     logger.Get(),
 	}
 
-	book, err := client.GetBookByASIN(context.Background(), "NO_REGION", "")
+	book, err := client.GetBookByASIN(context.Background(), "NOREGION01", "")
 
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
@@ -166,4 +167,50 @@ func TestGetBookByASIN_NoRegion(t *testing.T) {
 	if book == nil {
 		t.Fatal("Expected book to be non-nil")
 	}
+}
+
+func TestGetBookByASIN_RejectsMalformedPathInputsWithoutRequest(t *testing.T) {
+	transport := &countingRoundTripper{}
+
+	client := &Client{
+		httpClient: &http.Client{Transport: transport},
+		baseURL:    "https://audnex.example",
+		logger:     logger.Get(),
+	}
+	tests := []struct {
+		name string
+		asin string
+	}{
+		{name: "path traversal", asin: "B0BXJF2LW5/../../admin"},
+		{name: "query injection", asin: "B0BXJF2LW5?region=ca"},
+		{name: "fragment injection", asin: "B0BXJF2LW5#fragment"},
+		{name: "encoded separator", asin: "B0BXJF2LW5%2Fadmin"},
+		{name: "dot segment characters", asin: ".........."},
+		{name: "wrong length", asin: "INVALID"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := client.GetBookByASIN(context.Background(), tt.asin, ""); err == nil {
+				t.Fatal("GetBookByASIN() error = nil, want invalid ASIN error")
+			}
+			if got := transport.requests.Load(); got != 0 {
+				t.Fatalf("outbound requests = %d, want 0 for malformed ASIN", got)
+			}
+		})
+	}
+}
+
+type countingRoundTripper struct {
+	requests atomic.Int32
+}
+
+func (t *countingRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	t.requests.Add(1)
+	return &http.Response{
+		StatusCode: http.StatusNotFound,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    request,
+	}, nil
 }

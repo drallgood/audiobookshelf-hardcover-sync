@@ -736,7 +736,7 @@ func TestAddWithMetadata_RegionFallback(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, err := w.Write([]byte(`{
-			"asin": "TESTASIN",
+			"asin": "TESTASIN01",
 			"title": "Region Test Book",
 			"releaseDate": "2024-01-15",
 			"authors": ["Author One"],
@@ -760,7 +760,7 @@ func TestAddWithMetadata_RegionFallback(t *testing.T) {
 	metadata := MediaMetadata{
 		Title:         "Region Test Book",
 		AuthorName:    "Author One",
-		ASIN:          "TESTASIN",
+		ASIN:          "TESTASIN01",
 		PublishedDate: "2024-01-01",
 		CoverURL:      "https://example.com/cover.jpg",
 	}
@@ -796,7 +796,7 @@ func TestAddWithMetadata_RegionSucceedsOnFirstTry(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, err := w.Write([]byte(`{
-			"asin": "TESTASIN",
+			"asin": "TESTASIN01",
 			"title": "Direct Hit",
 			"releaseDate": "2024-06-01",
 			"authors": ["Author One"],
@@ -819,7 +819,7 @@ func TestAddWithMetadata_RegionSucceedsOnFirstTry(t *testing.T) {
 	metadata := MediaMetadata{
 		Title:         "Direct Hit",
 		AuthorName:    "Author One",
-		ASIN:          "TESTASIN",
+		ASIN:          "TESTASIN01",
 		PublishedDate: "2024-01-01",
 	}
 
@@ -854,7 +854,7 @@ func TestAddWithMetadata_NoRegionSet(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, err := w.Write([]byte(`{
-			"asin": "TESTASIN",
+			"asin": "TESTASIN01",
 			"title": "No Region",
 			"releaseDate": "2024-03-15",
 			"authors": ["Author One"],
@@ -877,7 +877,7 @@ func TestAddWithMetadata_NoRegionSet(t *testing.T) {
 	metadata := MediaMetadata{
 		Title:         "No Region",
 		AuthorName:    "Author One",
-		ASIN:          "TESTASIN",
+		ASIN:          "TESTASIN01",
 		PublishedDate: "2024-01-01",
 	}
 

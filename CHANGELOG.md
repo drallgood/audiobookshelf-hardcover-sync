@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Draft a Hardcover edition for a `needs_review` book (API)**: Add a write-authorized endpoint that previews an edition from Audiobookshelf and optional Audnex metadata. It handles audiobook and ebook fields, derives counterpart ISBNs, warns about source metadata, and rejects items without an ASIN or parseable ISBN. Previewing never calls Hardcover or creates anything; no UI is included yet. By @Snuffy2. (#198)
+- **Draft a Hardcover edition for a `needs_review` book (API)**: Add a write-authorized endpoint that previews an edition from Audiobookshelf and optional Audnex metadata. It handles audiobook and ebook fields, derives counterpart ISBNs, warns about source metadata, and rejects items without an ASIN or parseable ISBN. Previewing never calls Hardcover or creates anything; no UI is included yet. For follow-up Steps 4–5, classify identifiers as Amazon ASINs or third-party identifiers (including Audible ASINs): Step 4 must put the latter in Hardcover `book_mappings`, and Step 5 must match mapped identifiers. By @Snuffy2. (#198)
 
 ### Changed
 

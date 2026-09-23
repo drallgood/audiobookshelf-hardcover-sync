@@ -23,7 +23,7 @@ func (h *Handler) GetEditionDraft(w http.ResponseWriter, r *http.Request) {
 
 	draft, err := h.multiUserService.PrepareEditionDraft(r.Context(), profileID, runID, bookID)
 	if err != nil {
-		h.writeEditionError(w, "prepare edition draft", profileID, err)
+		h.writeEditionError(w, r.Context(), "prepare edition draft", profileID, err)
 		return
 	}
 	h.writeSuccessResponse(w, draft)
@@ -49,7 +49,13 @@ func (h *Handler) editionRequestIDs(w http.ResponseWriter, r *http.Request) (pro
 // writeEditionError maps edition service errors to HTTP responses. Upstream and
 // internal failures are logged and reported generically so remote details and
 // credentials never reach the client.
-func (h *Handler) writeEditionError(w http.ResponseWriter, action, profileID string, err error) {
+func (h *Handler) writeEditionError(w http.ResponseWriter, requestCtx context.Context, action, profileID string, err error) {
+	if requestCtx.Err() != nil {
+		// The caller is no longer waiting. Avoid writing a response after the
+		// request itself has been canceled or timed out.
+		return
+	}
+
 	var upstream *multiuser.EditionUpstreamError
 	errors.As(err, &upstream)
 	switch {
@@ -67,10 +73,9 @@ func (h *Handler) writeEditionError(w http.ResponseWriter, action, profileID str
 		h.writeErrorResponse(w, http.StatusConflict, "Sync profile is being deleted")
 	case errors.Is(err, multiuser.ErrServiceShuttingDown):
 		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Service is shutting down")
-	case upstream == nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)):
-		// The request context ended; the client is no longer waiting for an
-		// upstream failure response, so avoid logging it as one.
-		return
+	case upstream == nil && errors.Is(err, context.DeadlineExceeded):
+		h.log.Error(fmt.Sprintf("Timed out while trying to %s for profile %s", action, profileID))
+		h.writeErrorResponse(w, http.StatusGatewayTimeout, "The request timed out")
 	case upstream != nil:
 		h.log.Error(fmt.Sprintf("Failed to %s for profile %s: %s", action, profileID, err.Error()))
 		h.writeErrorResponse(w, http.StatusBadGateway, fmt.Sprintf("Could not complete the request with %s", upstream.Service))

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
@@ -127,17 +128,20 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 	if asin == "" {
 		return nil, fmt.Errorf("ASIN is required")
 	}
+	if !validASIN(asin) {
+		return nil, fmt.Errorf("ASIN must be exactly 10 alphanumeric characters")
+	}
 
-	url := fmt.Sprintf("%s/books/%s", c.baseURL, asin)
+	requestURL := fmt.Sprintf("%s/books/%s", c.baseURL, url.PathEscape(asin))
 	if region != "" {
-		url = fmt.Sprintf("%s?region=%s", url, region)
+		requestURL = fmt.Sprintf("%s?region=%s", requestURL, region)
 	}
 
 	c.logger.Debug("Making request to Audnex API", map[string]interface{}{
 		"method": "GetBookByASIN",
 		"asin":   asin,
 		"region": region,
-		"url":    url,
+		"url":    requestURL,
 	})
 
 	// Retry configuration
@@ -168,7 +172,7 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 		}
 
 		// Create a new request for each attempt to ensure fresh connection
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
@@ -242,4 +246,17 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 		"error":       lastErr.Error(),
 	})
 	return nil, fmt.Errorf("failed after %d retries: %w", maxRetries, lastErr)
+}
+
+func validASIN(asin string) bool {
+	if len(asin) != 10 {
+		return false
+	}
+	for i := 0; i < len(asin); i++ {
+		char := asin[i]
+		if (char < 'A' || char > 'Z') && (char < 'a' || char > 'z') && (char < '0' || char > '9') {
+			return false
+		}
+	}
+	return true
 }
