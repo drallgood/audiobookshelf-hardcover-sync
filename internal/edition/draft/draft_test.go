@@ -129,17 +129,43 @@ func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) 
 func TestNew_FallsBackToLegacyJoinedPeopleNames(t *testing.T) {
 	item := absItem(func(b *models.AudiobookshelfBook) {
 		b.Media.Metadata.Authors = nil
-		b.Media.Metadata.AuthorName = "Legacy First Author, Legacy Second Author"
+		b.Media.Metadata.AuthorName = " Legacy First Author, Legacy Second Author \t"
 		b.Media.Metadata.Narrators = nil
-		b.Media.Metadata.NarratorName = "Legacy First Narrator, Legacy Second Narrator"
+		b.Media.Metadata.NarratorName = "\nLegacy First Narrator, Legacy Second Narrator "
 	})
 
 	d, err := draft.New(context.Background(), item, 42, "")
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if d.AuthorNames != "Legacy First Author, Legacy Second Author" || d.NarratorNames != "Legacy First Narrator, Legacy Second Narrator" {
-		t.Errorf("legacy names = authors %q narrators %q, want the joined ABS fallback strings", d.AuthorNames, d.NarratorNames)
+	wantAuthor := " Legacy First Author, Legacy Second Author \t"
+	wantNarrator := "\nLegacy First Narrator, Legacy Second Narrator "
+	if d.AuthorNames != wantAuthor || d.NarratorNames != wantNarrator {
+		t.Errorf("legacy names = authors %q narrators %q, want the source fallback strings preserved exactly", d.AuthorNames, d.NarratorNames)
+	}
+}
+
+func TestNew_WhitespaceOnlyLegacyNamesWarnForAudiobook(t *testing.T) {
+	item := absItem(func(b *models.AudiobookshelfBook) {
+		b.Media.Metadata.Authors = nil
+		b.Media.Metadata.AuthorName = " \t\n "
+		b.Media.Metadata.Narrators = nil
+		b.Media.Metadata.NarratorName = "\t \n"
+	})
+
+	d, err := draft.New(context.Background(), item, 42, "")
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if d.AuthorNames != "" || d.NarratorNames != "" {
+		t.Errorf("legacy names = authors %q narrators %q, want blank names", d.AuthorNames, d.NarratorNames)
+	}
+	wantWarnings := []string{
+		"The Audiobookshelf item has no author, and an author is required to create an edition.",
+		"The Audiobookshelf item lists no narrator, so the edition will have none.",
+	}
+	if !reflect.DeepEqual(d.Warnings, wantWarnings) {
+		t.Errorf("Warnings = %q, want %q", d.Warnings, wantWarnings)
 	}
 }
 

@@ -84,10 +84,16 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 		}
 	}
 	authorName := meta.AuthorName
+	if strings.TrimSpace(authorName) == "" {
+		authorName = ""
+	}
 	if len(authorNames) > 0 {
 		authorName = strings.Join(authorNames, ", ")
 	}
 	narratorName := meta.NarratorName
+	if strings.TrimSpace(narratorName) == "" {
+		narratorName = ""
+	}
 	if len(narratorNames) > 0 {
 		narratorName = strings.Join(narratorNames, ", ")
 	}
