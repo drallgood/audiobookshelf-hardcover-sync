@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
@@ -22,6 +23,8 @@ import (
 
 // draftReason labels the throwaway mismatch record used to build a draft.
 const draftReason = "Edition draft requested from Sync Status"
+
+const draftEnrichmentReserve = time.Second
 
 // Draft is a previewable, editable Hardcover edition built from an
 // Audiobookshelf item. The JSON tags are the API contract for the
@@ -96,8 +99,18 @@ func New(ctx context.Context, absBook models.AudiobookshelfBook, hardcoverBookID
 	// to the shared mismatch pipeline prevents draft-time Hardcover lookups.
 	publisherName := meta.Publisher
 
+	// Optional Audnex enrichment uses a deadline one second earlier than the
+	// overall draft budget. It still inherits caller cancellation, while ctx
+	// remains available to classify a genuine overall timeout below.
+	enrichmentCtx := ctx
+	if deadline, ok := ctx.Deadline(); ok {
+		boundedCtx, cancel := context.WithDeadline(ctx, deadline.Add(-draftEnrichmentReserve))
+		defer cancel()
+		enrichmentCtx = boundedCtx
+	}
+
 	record := mismatch.NewCollector().AddWithMetadataContext(
-		ctx,
+		enrichmentCtx,
 		mismatch.MediaMetadata{
 			Title:         meta.Title,
 			Subtitle:      meta.Subtitle,

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -50,6 +51,7 @@ func (h *Handler) editionRequestIDs(w http.ResponseWriter, r *http.Request) (pro
 // credentials never reach the client.
 func (h *Handler) writeEditionError(w http.ResponseWriter, action, profileID string, err error) {
 	var upstream *multiuser.EditionUpstreamError
+	errors.As(err, &upstream)
 	switch {
 	case errors.Is(err, multiuser.ErrProfileNotFound):
 		h.writeErrorResponse(w, http.StatusNotFound, "Sync profile not found")
@@ -65,7 +67,11 @@ func (h *Handler) writeEditionError(w http.ResponseWriter, action, profileID str
 		h.writeErrorResponse(w, http.StatusConflict, "Sync profile is being deleted")
 	case errors.Is(err, multiuser.ErrServiceShuttingDown):
 		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Service is shutting down")
-	case errors.As(err, &upstream):
+	case upstream == nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)):
+		// The request context ended; the client is no longer waiting for an
+		// upstream failure response, so avoid logging it as one.
+		return
+	case upstream != nil:
 		h.log.Error(fmt.Sprintf("Failed to %s for profile %s: %s", action, profileID, err.Error()))
 		h.writeErrorResponse(w, http.StatusBadGateway, fmt.Sprintf("Could not complete the request with %s", upstream.Service))
 	default:

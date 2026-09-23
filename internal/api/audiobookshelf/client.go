@@ -387,10 +387,15 @@ func (c *Client) GetLibraryItem(ctx context.Context, itemID string) (*models.Aud
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		log.Error("Request failed in GetLibraryItem", map[string]interface{}{"error": err.Error()})
+		if ctx.Err() == nil {
+			log.Error("Request failed in GetLibraryItem", map[string]interface{}{"error": err.Error()})
+		}
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	switch resp.StatusCode {
 	case http.StatusOK:
@@ -403,6 +408,9 @@ func (c *Client) GetLibraryItem(ctx context.Context, itemID string) (*models.Aud
 
 	var book models.AudiobookshelfBook
 	if err := json.NewDecoder(resp.Body).Decode(&book); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		log.Error("Failed to decode response in GetLibraryItem", map[string]interface{}{"error": err.Error()})
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}

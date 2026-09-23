@@ -2,7 +2,9 @@ package multiuser
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +33,24 @@ type editionFixture struct {
 	service   *MultiUserService
 	hardcover *editiontest.HardcoverRequestCounter
 	abs       *editiontest.AudiobookshelfFake
+}
+
+type editionRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f editionRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func stubAudnexTransport(t *testing.T, roundTrip func(*http.Request) (*http.Response, error)) {
+	t.Helper()
+	previous := http.DefaultTransport
+	http.DefaultTransport = editionRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Host == "api.audnex.us" {
+			return roundTrip(request)
+		}
+		return previous.RoundTrip(request)
+	})
+	t.Cleanup(func() { http.DefaultTransport = previous })
 }
 
 // newEditionFixture builds a service with one profile whose run "run-1"
@@ -160,25 +180,35 @@ func TestEditionRequestsRequireAnIdentifierOnTheAudiobookshelfItem(t *testing.T)
 		name    string
 		items   map[string]map[string]interface{}
 		allowed bool
-		noDraft bool // a draft of an item with an ASIN would query the public Audnex API
 	}{
 		{name: "neither ASIN nor ISBN", items: item(func(m map[string]interface{}) { delete(m, "isbn") })},
 		{name: "blank ASIN and ISBN", items: item(func(m map[string]interface{}) { m["isbn"], m["asin"] = " ", "  " })},
 		{name: "an ISBN that is not an ISBN", items: item(func(m map[string]interface{}) { m["isbn"] = "not-an-isbn" })},
 		{name: "an ISBN only", items: item(func(m map[string]interface{}) {}), allowed: true},
-		{name: "an ASIN only", items: item(func(m map[string]interface{}) { delete(m, "isbn"); m["asin"] = "B0EXISTING1" }), allowed: true, noDraft: true},
+		{name: "an ASIN only", items: item(func(m map[string]interface{}) { delete(m, "isbn"); m["asin"] = "B0EXISTING1" }), allowed: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.name == "an ASIN only" {
+				stubAudnexTransport(t, func(request *http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     make(http.Header),
+						Body:       io.NopCloser(strings.NewReader(`{"releaseDate":"2024-04-05"}`)),
+						Request:    request,
+					}, nil
+				})
+			}
 			f := newEditionFixture(t, false, []syncsvc.BookOutcomeRecord{needsReview("item-1", "4242")}, tt.items)
 
-			var draftErr error
-			if !tt.noDraft {
-				_, draftErr = f.service.PrepareEditionDraft(context.Background(), "profile-1", "run-1", "item-1")
-			}
+			built, draftErr := f.service.PrepareEditionDraft(context.Background(), "profile-1", "run-1", "item-1")
 
 			if tt.allowed {
-				require.NotErrorIs(t, draftErr, ErrEditionNoIdentifier)
+				require.NoError(t, draftErr)
+				if tt.name == "an ASIN only" {
+					require.Equal(t, "B0EXISTING1", built.ASIN)
+				}
+				require.Zero(t, f.hardcover.RequestCount(), "previewing must not send any Hardcover request")
 				return
 			}
 			require.ErrorIs(t, draftErr, ErrEditionNoIdentifier)

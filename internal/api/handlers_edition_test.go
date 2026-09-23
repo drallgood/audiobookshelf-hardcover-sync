@@ -325,3 +325,36 @@ func TestGetEditionDraftReportsMissingAndFailingAudiobookshelfItems(t *testing.T
 	require.NotContains(t, recorder.Body.String(), "forced failure")
 	require.Zero(t, f.hardcover.RequestCount())
 }
+
+func TestGetEditionDraftDoesNotReportCallerCancellationAsUpstreamFailure(t *testing.T) {
+	f := singleItemFixture(t, false, editionAPIItem("item-1", "Title", "Author", ""))
+	holdReads := make(chan struct{})
+	f.abs.HoldReads(holdReads)
+	t.Cleanup(f.abs.ReleaseReads)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	request := httptest.NewRequest(http.MethodGet, editionBasePath+"item-1/edition-draft", nil).WithContext(ctx)
+	recorder := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		f.routes.ServeHTTP(recorder, request)
+		close(done)
+	}()
+
+	select {
+	case <-f.abs.ReadEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the request never reached Audiobookshelf")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the handler did not stop after its caller canceled")
+	}
+
+	require.NotEqual(t, http.StatusBadGateway, recorder.Code)
+	require.Empty(t, recorder.Body.String(), "a canceled caller should not receive an upstream failure response")
+	require.Zero(t, f.hardcover.RequestCount())
+}

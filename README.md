@@ -158,8 +158,10 @@ envelope.
   (Hardcover still stores it as given, so this is informational, not a
   blocker), and an Audiobookshelf item tagged with a non-English language (the
   draft still defaults to `language_id: 1` and `country_id: 1`). Audnex release
-  metadata is best-effort; the draft falls back to the Audiobookshelf date and
-  year. A failed Audiobookshelf request returns `502`. Hardcover can normalize
+  metadata is best-effort; a valid Audnex date wins, followed by a valid
+  Audiobookshelf `publishedDate` and then `publishedYear`. Slow or invalid
+  Audnex data falls back to those Audiobookshelf values. A failed
+  Audiobookshelf request returns `502`. Hardcover can normalize
   known edition-format labels during creation; for example, the preview's
   `Audible Audio` label may be stored as `Audible`.
 - **Ebooks**: an Audiobookshelf item that has an ebook file and no audio (the

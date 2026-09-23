@@ -134,7 +134,7 @@ func (c *Collector) AddWithMetadataContext(parent context.Context, metadata Medi
 			"mismatch": true,
 		})
 
-		// Create a context with timeout for the ASIN lookup
+		// Audnex is optional and is bounded by its own request timeout.
 		ctx, cancel := context.WithTimeout(hardcover.WithAudnexRegion(parent, audnexusRegion), 15*time.Second)
 		defer cancel()
 
@@ -231,17 +231,12 @@ func (c *Collector) AddWithMetadataContext(parent context.Context, metadata Medi
 		})
 	}
 
-	// Format release date - prefer Audnex API date, then publishedDate, fallback to publishedYear
-	// Always ensure the date is in YYYY-MM-DD format without time component
+	// Format release date - prefer Audnex API date, then publishedDate, fallback
+	// to publishedYear. Only return dates that parse to a real calendar date.
 	formatDateToYYYYMMDD := func(dateStr string) string {
 		// If empty, return empty
 		if dateStr == "" {
 			return ""
-		}
-
-		// Check if it's already in YYYY-MM-DD format
-		if len(dateStr) == 10 && dateStr[4] == '-' && dateStr[7] == '-' {
-			return dateStr
 		}
 
 		// Try to parse ISO-8601 format (including with time component)
@@ -269,26 +264,23 @@ func (c *Collector) AddWithMetadataContext(parent context.Context, metadata Medi
 			return dateStr + "-01-01" // Use Jan 1st if only year is known
 		}
 
-		// Could not parse, return as is
+		// Could not parse this source; let the next candidate provide a date.
 		log.Warn("Could not parse date format", map[string]interface{}{
 			"date": dateStr,
 		})
-		return dateStr
+		return ""
 	}
 
-	// Process and format the release date
-	if audnexReleaseDate != "" {
-		releaseDate = formatDateToYYYYMMDD(audnexReleaseDate)
-		log.Debug("Formatted Audnex release date", map[string]interface{}{
-			"original":  audnexReleaseDate,
-			"formatted": releaseDate,
-		})
-	} else if metadata.PublishedDate != "" {
-		releaseDate = formatDateToYYYYMMDD(metadata.PublishedDate)
-	} else if metadata.PublishedYear != "" {
-		releaseDate = formatDateToYYYYMMDD(metadata.PublishedYear)
+	// R8 source precedence applies only to valid dates: invalid Audnex or
+	// Audiobookshelf values fall through to the next available source.
+	for _, candidate := range []string{audnexReleaseDate, metadata.PublishedDate, metadata.PublishedYear} {
+		if candidate == "" {
+			continue
+		}
+		if releaseDate = formatDateToYYYYMMDD(candidate); releaseDate != "" {
+			break
+		}
 	}
-
 	// Extract ISBN10 and ISBN13 from metadata.ISBN if it's set
 	isbn10, isbn13 := isbn.Split(metadata.ISBN)
 

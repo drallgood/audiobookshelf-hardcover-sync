@@ -1043,19 +1043,55 @@ func TestAddWithMetadata_ReleaseDate(t *testing.T) {
 		publishedYear string
 		want          string
 	}{
-		"year alone is January 1":      {"", "2008", "2008-01-01"},
-		"ISO date":                     {"2024-01-15", "", "2024-01-15"},
-		"RFC 3339 with a time":         {"2024-01-15T10:30:00Z", "", "2024-01-15"},
-		"slash date":                   {"2024/01/15", "", "2024-01-15"},
-		"US layout is tried first":     {"01/02/2006", "", "2006-01-02"},
-		"month name":                   {"Jan 2, 2006", "", "2006-01-02"},
-		"day first":                    {"2 Jan 2006", "", "2006-01-02"},
-		"full date wins over the year": {"2024-01-15", "2020", "2024-01-15"},
-		"neither is left empty":        {"", "", ""},
+		"year alone is January 1":                {"", "2008", "2008-01-01"},
+		"ISO date":                               {"2024-01-15", "", "2024-01-15"},
+		"RFC 3339 with a time":                   {"2024-01-15T10:30:00Z", "", "2024-01-15"},
+		"slash date":                             {"2024/01/15", "", "2024-01-15"},
+		"US layout is tried first":               {"01/02/2006", "", "2006-01-02"},
+		"month name":                             {"Jan 2, 2006", "", "2006-01-02"},
+		"day first":                              {"2 Jan 2006", "", "2006-01-02"},
+		"full date wins over the year":           {"2024-01-15", "2020", "2024-01-15"},
+		"impossible date falls through to year":  {"2024-02-30", "2020", "2020-01-01"},
+		"unsupported text falls through to year": {"next spring", "2020", "2020-01-01"},
+		"invalid date without year is empty":     {"2024-13-45", "", ""},
+		"neither is left empty":                  {"", "", ""},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			record := NewCollector().AddWithMetadata(MediaMetadata{Title: "Book", PublishedDate: tt.publishedDate, PublishedYear: tt.publishedYear}, "1", "", "reason", 60, "abs1", nil, "")
+			assert.Equal(t, tt.want, record.ReleaseDate)
+		})
+	}
+}
+
+func TestAddWithMetadata_InvalidAudnexDateFallsThroughToAudiobookshelf(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"releaseDate":"2024-02-30"}`))
+	}))
+	defer server.Close()
+
+	originalFactory := newAudnexClient
+	newAudnexClient = func(log *logger.Logger) *audnex.Client {
+		return audnex.NewClientForTesting(server.URL, log)
+	}
+	defer func() { newAudnexClient = originalFactory }()
+
+	tests := []struct {
+		name          string
+		publishedDate string
+		publishedYear string
+		want          string
+	}{
+		{name: "valid ABS date wins after invalid Audnex", publishedDate: "2024-02-29", publishedYear: "2020", want: "2024-02-29"},
+		{name: "year wins after invalid Audnex and ABS date", publishedDate: "sometime later", publishedYear: "2019", want: "2019-01-01"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			record := NewCollector().AddWithMetadata(
+				MediaMetadata{Title: "Book", ASIN: "B0DATECHECK1", PublishedDate: tt.publishedDate, PublishedYear: tt.publishedYear},
+				"1", "", "reason", 60, "abs1", nil, "",
+			)
 			assert.Equal(t, tt.want, record.ReleaseDate)
 		})
 	}

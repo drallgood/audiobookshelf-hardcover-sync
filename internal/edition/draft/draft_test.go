@@ -115,6 +115,9 @@ func TestNewTrimsASINForAudnexAndPreview(t *testing.T) {
 	if d.ASIN != "B0TRIMMED1" {
 		t.Errorf("draft ASIN = %q, want trimmed ASIN", d.ASIN)
 	}
+	if d.ReleaseDate != "2024-04-05" {
+		t.Errorf("release date = %q, want fast Audnex date to win", d.ReleaseDate)
+	}
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

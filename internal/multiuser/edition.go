@@ -18,7 +18,6 @@ import (
 
 // EditionDraftTimeout bounds draft preparation to less than Audiobookshelf's
 // per-request timeout, leaving time to serialize and write the response.
-// Audnex enrichment is optional and uses a shorter request-scoped timeout.
 const EditionDraftTimeout = audiobookshelf.RequestTimeout - 5*time.Second
 
 var (
@@ -38,8 +37,9 @@ var (
 	ErrEditionNoIdentifier = errors.New("audiobookshelf item has no asin or isbn")
 )
 
-// EditionUpstreamError reports a failed Audiobookshelf or Audnex call. The
-// wrapped error may contain remote details and must not be shown to users.
+// EditionUpstreamError reports a failed Audiobookshelf call or overall draft
+// timeout. The wrapped error may contain remote details and must not be shown
+// to users.
 type EditionUpstreamError struct {
 	Service string
 	Err     error
@@ -67,8 +67,12 @@ func (s *MultiUserService) PrepareEditionDraft(ctx context.Context, profileID, r
 // the budget as an argument lets tests exercise timeout behavior quickly while
 // production callers use the fixed EditionDraftTimeout above.
 func (s *MultiUserService) prepareEditionDraft(ctx context.Context, profileID, runID, bookID string, timeout time.Duration) (*draft.Draft, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	callerCtx := ctx
+	ctx, cancel := context.WithTimeout(callerCtx, timeout)
 	defer cancel()
+	if err := callerCtx.Err(); err != nil {
+		return nil, err
+	}
 
 	// A draft is read-only and bound to ctx, so it needs no drain on shutdown or
 	// profile deletion; it only refuses to start once either has begun.
@@ -82,6 +86,12 @@ func (s *MultiUserService) prepareEditionDraft(ctx context.Context, profileID, r
 	}
 	item, err := s.fetchEditionItem(ctx, target.profile, bookID)
 	if err != nil {
+		if callerCtx.Err() != nil {
+			return nil, callerCtx.Err()
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, &EditionUpstreamError{Service: "audiobookshelf", Err: err}
+		}
 		return nil, err
 	}
 	if !hasEditionIdentifier(item) {
@@ -90,8 +100,11 @@ func (s *MultiUserService) prepareEditionDraft(ctx context.Context, profileID, r
 
 	built, err := draft.New(ctx, *item, target.hardcoverBookID, target.profile.SyncConfig.AudnexusRegion)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, &EditionUpstreamError{Service: "audiobookshelf or Audnex", Err: err}
+		if callerCtx.Err() != nil {
+			return nil, callerCtx.Err()
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, &EditionUpstreamError{Service: "audiobookshelf", Err: err}
 		}
 		return nil, fmt.Errorf("build edition draft: %w", err)
 	}
@@ -154,6 +167,9 @@ func (s *MultiUserService) fetchEditionItem(ctx context.Context, profile *databa
 	absClient := audiobookshelf.NewClient(profile.AudiobookshelfURL, profile.AudiobookshelfToken)
 	item, err := absClient.GetLibraryItem(ctx, bookID)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		if errors.Is(err, audiobookshelf.ErrItemNotFound) {
 			return nil, fmt.Errorf("%w: %s", ErrEditionItemNotFound, bookID)
 		}
