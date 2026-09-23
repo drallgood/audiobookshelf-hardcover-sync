@@ -229,7 +229,7 @@ func (d *Draft) buildWarnings(absLanguage string) []string {
 func isEnglishLabel(language string) bool {
 	label := strings.ToLower(strings.TrimSpace(language))
 	switch label {
-	case "english", "en",
+	case "english", "en", "eng",
 		"english (us)", "english (united states)",
 		"english (uk)", "english (gb)", "english (united kingdom)",
 		"english (ca)", "english (canada)",

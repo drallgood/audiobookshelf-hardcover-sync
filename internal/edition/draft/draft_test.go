@@ -185,6 +185,12 @@ func TestNew_WarningsAreBasedOnSourceMetadata(t *testing.T) {
 				b.Media.Metadata.Language = "English (US)"
 			},
 		},
+		{
+			name: "ISO 639-2 English code does not warn",
+			mutate: func(b *models.AudiobookshelfBook) {
+				b.Media.Metadata.Language = "eng"
+			},
+		},
 	}
 
 	for _, tt := range tests {
