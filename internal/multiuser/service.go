@@ -1147,6 +1147,7 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
 	// Create clients
 	absClient := audiobookshelf.NewClient(profileConfig.AudiobookshelfURL, profileConfig.AudiobookshelfToken)
 
+	// Build Hardcover client config using global settings (rate limits/base URL)
 	hcCfg := hardcover.DefaultClientConfig()
 	if s.globalConfig != nil {
 		if s.globalConfig.Hardcover.BaseURL != "" {
@@ -1159,12 +1160,14 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
 			hcCfg.MaxConcurrent = s.globalConfig.RateLimit.MaxConcurrent
 		}
 	}
+
 	s.logger.Debug("Initializing Hardcover client (multi-user)", map[string]interface{}{
 		"profile_id":     profileID,
 		"base_url":       hcCfg.BaseURL,
 		"rate_limit":     hcCfg.RateLimit.String(),
 		"max_concurrent": hcCfg.MaxConcurrent,
 	})
+
 	hcClient := hardcover.NewClientWithConfig(hcCfg, profileConfig.HardcoverToken, s.logger)
 
 	// Create sync service bound to the accepted run identity. This preserves the

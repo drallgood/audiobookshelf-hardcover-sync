@@ -111,79 +111,26 @@ successful non-dry-run completion.
 
 ### Draft an edition for a `needs_review` book (API)
 
-When a sync run marks a book `needs_review` and its record has a Hardcover
-candidate (`hardcover_book_id`), an authenticated caller can fetch a draft of a
-new Hardcover edition built from the Audiobookshelf item. This is an API-only
-workflow; the web interface does not offer it yet. The route is scoped to a run
-whose details are available (the active run or a retained one) and to a book in
-that run, and requires write permission on the profile. `{bookId}` is the
-Audiobookshelf library item ID from `book_outcomes[].book_id` in the run-details
-response. The draft is a read-only preview and creates nothing. It reads
-Audiobookshelf metadata and may call Audnex for an audiobook ASIN. It never
-constructs a Hardcover client or sends a request, so no Hardcover token or
-scope is needed to preview an edition.
+If a sync marks a book `needs_review`, API clients can preview the Hardcover
+edition data that would be used for that book. The web interface does not offer
+this workflow yet.
+
+Get the run and book IDs from the run-details response, then call the draft
+endpoint with an authenticated account that can edit the profile:
 
 ```bash
-# Fetch the draft (authenticated; use your own host, IDs, and token)
 curl -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/profiles/$PROFILE_ID/runs/$RUN_ID/books/$BOOK_ID/edition-draft"
 ```
 
-The response uses the usual `{"success": ..., "data": ..., "error": ...}`
-envelope.
+The preview uses Audiobookshelf metadata and optional Audnex release data,
+handles audiobook and ebook fields, derives the other ISBN form when possible,
+and returns warnings for metadata worth reviewing. If the item has no ASIN or
+parseable ISBN, add one in Audiobookshelf before trying again.
 
-- **Draft**: `data` always contains every one of these keys: the proposed
-  edition fields (`title`, `subtitle`, `asin`, `isbn_10`, `isbn_13`,
-  `release_date`, `edition_information`, `edition_format`, `audio_seconds`,
-  `language_id`, `country_id`),
-  the target `hardcover_book_id`, the `reading_format` (`audiobook` or
-  `ebook`, decided by the Audiobookshelf item), source names (`author_names`,
-  `narrator_names`, `publisher_name`), `dry_run`, and `warnings`. Names are
-  taken from expanded Audiobookshelf metadata when available, falling back to
-  its legacy joined author and narrator strings; the API returns names joined
-  into display strings. The response contains no Hardcover-resolved author,
-  narrator, or publisher IDs and does not warn about Hardcover matches. The
-  Hardcover book is taken from the run record. Hyphens and spaces are removed
-  from the ISBN, and when it is valid the draft also fills
-  the other ISBN form (ISBN-10 or ISBN-13) so Hardcover can match either;
-  `isbn_10_valid`/`isbn_13_valid` (omitted when that ISBN is empty) say whether
-  each ISBN's own check digit is correct, as Hardcover's own fields of the
-  same name do. An audiobook Audiobookshelf marks abridged has
-  `edition_information: "Abridged"` instead of the default `"Unabridged"`. The
-  route returns `409` for a book whose Audiobookshelf item has no ASIN or
-  parseable ISBN, because an edition created for it could not be matched by a
-  sync; add one in Audiobookshelf first. Warnings flag source metadata to
-  review before creating an edition: no author or audiobook narrator in
-  Audiobookshelf, no release date, an ISBN with an incorrect check digit
-  (Hardcover still stores it as given, so this is informational, not a
-  blocker), and an Audiobookshelf item tagged with a non-English language (the
-  draft still defaults to `language_id: 1` and `country_id: 1`). Audnex release
-  metadata is best-effort; a valid Audnex date wins, followed by a valid
-  Audiobookshelf `publishedDate` and then `publishedYear`. Slow or invalid
-  Audnex data falls back to those Audiobookshelf values. A failed
-  Audiobookshelf request returns `502`. Hardcover can normalize
-  known edition-format labels during creation; for example, the preview's
-  `Audible Audio` label may be stored as `Audible`.
-- **Ebooks**: an Audiobookshelf item that has an ebook file and no audio (the
-  same rule the sync uses) drafts an ebook edition: `reading_format` is `ebook`,
-  `edition_format` defaults to `Ebook`, and there are no narrators or
-  `audio_seconds`. An audiobook that also has an ebook file is still an
-  audiobook.
-- **Dry run**: `dry_run` is `true` when the profile is in dry-run mode.
-- **Audiobookshelf token**: the profile's Audiobookshelf token is used only on
-  the server, to fetch the item, and is never returned.
-
-Errors:
-
-| Status | Meaning |
-|--------|---------|
-| `401` | Authentication is enabled and the request is not authenticated |
-| `403` | The caller is a viewer without write permission |
-| `404` | Profile (including another user's profile), run, book record, or Audiobookshelf item not found |
-| `409` | The book is not `needs_review` or has no numeric Hardcover book ID, its Audiobookshelf item has no ASIN or parseable ISBN, or the profile is being deleted |
-| `500` | Unexpected server failure |
-| `502` | Audiobookshelf failed; the message is generic and names only the service |
-| `503` | The service is shutting down |
+This operation is read-only: it does not contact Hardcover or create anything,
+and it does not require a Hardcover token or scope. See the
+[OpenAPI specification](docs/openapi.yaml) for the response fields and errors.
 
 ### Environment Variables (Multi-Profile)
 
