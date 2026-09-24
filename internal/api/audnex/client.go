@@ -303,6 +303,9 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 			var book Book
 			if err := json.NewDecoder(resp.Body).Decode(&book); err != nil {
 				_ = resp.Body.Close()
+				if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					return nil, &APIError{Kind: ErrTransient, Err: err}
+				}
 				return nil, fmt.Errorf("failed to decode response: %w", err)
 			}
 			_ = resp.Body.Close()

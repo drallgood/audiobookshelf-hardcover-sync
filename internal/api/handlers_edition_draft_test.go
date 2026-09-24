@@ -260,7 +260,7 @@ func TestGetEditionSourceDraftReportsRetryableAudnexWarningAndABSDateFallback(t 
 				"id":"abs-item-1","mediaType":"book","media":{
 					"metadata":{"title":"Fallback","authorName":"Author","publishedYear":"2008","asin":"B0SOURCE12","language":"Spanish"},
 					"duration":3600,"numTracks":1
-				}}`, "br")
+			}}`, "mx")
 			fixture.setDiscovery(func(_ context.Context, sourceASIN, preferred string) (*audnex.Book, string, error) {
 				require.Equal(t, "B0SOURCE12", sourceASIN)
 				require.Equal(t, "us", preferred)

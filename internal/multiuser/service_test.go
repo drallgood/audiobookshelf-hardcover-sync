@@ -1412,12 +1412,12 @@ func TestProfileAudnexusRegionNormalizationAndPersistence(t *testing.T) {
 		profile.AudiobookshelfURL,
 		profile.AudiobookshelfToken,
 		profile.HardcoverToken,
-		database.SyncConfigData{AudnexusRegion: "br"},
+		database.SyncConfigData{AudnexusRegion: "mx"},
 	))
 	profile, err = service.GetProfile(profileID)
 	require.NoError(t, err)
 	require.NotNil(t, profile)
-	require.Equal(t, "br", profile.SyncConfig.AudnexusRegion)
+	require.Equal(t, "us", profile.SyncConfig.AudnexusRegion)
 
 	// Existing stored values also pass through the same validation at runtime.
 	legacyProfile := &database.ProfileWithTokens{
@@ -1426,9 +1426,9 @@ func TestProfileAudnexusRegionNormalizationAndPersistence(t *testing.T) {
 	}
 	profileConfig = service.createProfileSpecificConfig(legacyProfile)
 	require.Equal(t, "es", profileConfig.Audiobookshelf.AudnexusRegion)
-	legacyProfile.SyncConfig.AudnexusRegion = "br"
+	legacyProfile.SyncConfig.AudnexusRegion = "mx"
 	profileConfig = service.createProfileSpecificConfig(legacyProfile)
-	require.Equal(t, "br", profileConfig.Audiobookshelf.AudnexusRegion)
+	require.Equal(t, "us", profileConfig.Audiobookshelf.AudnexusRegion)
 }
 
 func TestStartSyncRejectsStoredStateFileWithOverlongComponent(t *testing.T) {

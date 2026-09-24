@@ -401,3 +401,25 @@ func TestDiscoverBookByASIN_OverallDeadlineReturnsTransient(t *testing.T) {
 		t.Fatalf("expected deadline to bound the whole sweep after one request, got %d requests", calls)
 	}
 }
+
+func TestDiscoverBookByASIN_BodyDeadlineReturnsTransient(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"asin":"`))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	client := &Client{httpClient: server.Client(), baseURL: server.URL, logger: logger.Get()}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	book, region, err := client.DiscoverBookByASIN(ctx, "B0BXJF2LW5", "us")
+	if book != nil || region != "" || !errors.Is(err, ErrTransient) {
+		t.Fatalf("expected a transient body timeout, got book=%#v region=%q err=%v", book, region, err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected the deadline cause to remain inspectable, got %v", err)
+	}
+}

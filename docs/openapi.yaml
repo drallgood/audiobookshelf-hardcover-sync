@@ -147,7 +147,7 @@ components:
               example: ["exclusive"]
             audnexus_region:
               type: string
-              description: Region preference stored for the profile. Values are trimmed and lowercased. `us`, `ca`, `uk`, `au`, `de`, `fr`, `es`, `in`, `it`, and `jp` are supported for Audnex draft discovery. `br` is retained for legacy Hardcover `ASIN:br` sync matching, but draft discovery treats it as unsupported, warns, and starts in the US. Other unsupported non-empty values warn and normalize to `us`. An explicit empty string clears the saved preference; omitting this field preserves it.
+              description: Region preference stored for the profile. Values are trimmed and lowercased. `us`, `ca`, `uk`, `au`, `de`, `fr`, `es`, `in`, `it`, and `jp` are supported for Audnex draft discovery. Unsupported non-empty values warn and normalize to `us`. An explicit empty string clears the saved preference; omitting this field preserves it.
             state_file:
               type: string
               description: Optional relative state-file path. Absolute paths and relative paths that lexically escape the effective data directory are rejected; when paths.data_dir is empty, /data is used. The profile-specific filename component, including the encoded profile ID, must fit the supported 255-byte baseline.
@@ -232,7 +232,7 @@ components:
           description: Bare source ASIN when present, retained with its source casing even when malformed. Empty when the ABS item has no ASIN.
         region:
           type: string
-          description: Confirmed Audnex region, or an empty string when unknown, temporarily unavailable, or not applicable. A later user correction may supply a regional Audible identifier, including the Audible-only `br` region.
+          description: Confirmed Audnex region, or an empty string when unknown, temporarily unavailable, or not applicable. A later user correction may supply a regional Audible identifier.
         correction_allowed:
           type: boolean
           description: Whether the regional Audible identifier can be corrected in a later add-edition workflow.
@@ -688,7 +688,7 @@ paths:
                   properties:
                     audnexus_region:
                       type: string
-                      description: Region preference stored for the profile. Supported Audnex draft lookup regions are `us`, `ca`, `uk`, `au`, `de`, `fr`, `es`, `in`, `it`, and `jp`. `br` is retained for legacy Hardcover `ASIN:br` sync matching; draft discovery treats it as unsupported, warns, and starts in the US. Other unsupported non-empty values normalize to `us`. An explicit empty string clears the saved preference; omission preserves it.
+                      description: Region preference stored for the profile. Supported Audnex draft lookup regions are `us`, `ca`, `uk`, `au`, `de`, `fr`, `es`, `in`, `it`, and `jp`. Unsupported non-empty values normalize to `us`. An explicit empty string clears the saved preference; omission preserves it.
                     dry_run:
                       type: boolean
                       description: When supplied as `false`, explicitly disables dry run. When omitted from a partial configuration update, preserves the saved value.

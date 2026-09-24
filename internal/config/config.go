@@ -84,9 +84,7 @@ type Config struct {
 		URL string `yaml:"url" env:"AUDIOBOOKSHELF_URL"`
 		// Token is the API token for Audiobookshelf
 		Token string `yaml:"token" env:"AUDIOBOOKSHELF_TOKEN"`
-		// AudnexusRegion is the normalized region preference. Draft Audnex discovery
-		// supports us, ca, uk, au, de, fr, es, in, it, and jp; br is retained for
-		// legacy Hardcover Audible external-ID matching.
+		// AudnexusRegion is the normalized preference for the ten Audnex regions.
 		AudnexusRegion string `yaml:"audnexus_region" env:"AUDIOBOOKSHELF_AUDNEXUS_REGION"`
 	} `yaml:"audiobookshelf"`
 
@@ -282,10 +280,8 @@ func DefaultConfig() *Config {
 }
 
 // NormalizeAudnexusRegion lowercases and validates a configured region
-// preference. The draft Audnex discovery endpoint supports ten regions; br is
-// also accepted for legacy Hardcover Audible external-ID matching. An empty
-// value remains empty so callers can apply their default. Unsupported values
-// resolve to US and return false.
+// preference. An empty value remains empty so callers can apply their default.
+// Unsupported values resolve to US and return false.
 func NormalizeAudnexusRegion(region string) (string, bool) {
 	region = strings.ToLower(strings.TrimSpace(region))
 	if region == "" {
@@ -293,7 +289,7 @@ func NormalizeAudnexusRegion(region string) (string, bool) {
 	}
 
 	switch region {
-	case "us", "ca", "uk", "au", "de", "fr", "es", "in", "it", "jp", "br":
+	case "us", "ca", "uk", "au", "de", "fr", "es", "in", "it", "jp":
 		return region, true
 	default:
 		return "us", false
@@ -448,7 +444,7 @@ func (c *Config) Validate() error {
 	// environment overrides have all been applied.
 	region, valid := NormalizeAudnexusRegion(c.Audiobookshelf.AudnexusRegion)
 	if !valid {
-		fmt.Printf("Warning: Unknown audnexus_region '%s'. Valid values: us, ca, uk, au, de, fr, es, in, it, jp, br. Using us.\n",
+		fmt.Printf("Warning: Unknown audnexus_region '%s'. Valid values: us, ca, uk, au, de, fr, es, in, it, jp. Using us.\n",
 			c.Audiobookshelf.AudnexusRegion)
 	}
 	c.Audiobookshelf.AudnexusRegion = region

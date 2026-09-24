@@ -232,8 +232,6 @@ func (s *MultiUserService) UpdateProfileConfig(profileID, audiobookshelfURL, aud
 }
 
 func (s *MultiUserService) normalizeProfileAudnexusRegion(profileID, region string) string {
-	// Preserve br for legacy Hardcover Audible mapping lookups. Edition draft
-	// discovery applies its narrower Audnex region validation at its own boundary.
 	normalized, valid := config.NormalizeAudnexusRegion(region)
 	if !valid && s.logger != nil {
 		s.logger.Warn("Unknown Audnex region preference; using US", map[string]interface{}{

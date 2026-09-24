@@ -703,7 +703,7 @@ The application supports two distinct operating modes controlled by the `enable_
 - `ENABLE_WEB_UI`: Enable/disable web UI (`true`/`false`, default: `false`)
 - `AUDIOBOOKSHELF_URL`: Audiobookshelf server URL (required)
 - `AUDIOBOOKSHELF_TOKEN`: Audiobookshelf API token (required for single-user mode)
-- `AUDIOBOOKSHELF_AUDNEXUS_REGION`: Audnex draft lookup preference (`us`, `ca`, `uk`, `au`, `de`, `fr`, `es`, `in`, `it`, or `jp`; defaults to US). `br` is also accepted for legacy Hardcover `ASIN:br` sync matching.
+- `AUDIOBOOKSHELF_AUDNEXUS_REGION`: Audnex draft lookup preference (`us`, `ca`, `uk`, `au`, `de`, `fr`, `es`, `in`, `it`, or `jp`; defaults to US).
 - `HARDCOVER_TOKEN`: Hardcover API token (required for single-user mode)
 
 #### Config File
@@ -728,7 +728,7 @@ hardcover:
 | `CONFIG_PATH` | Path to config file | - | `./config.yaml` |
 | `AUDIOBOOKSHELF_URL` | URL of your AudiobookShelf instance | `audiobookshelf.url` | Legacy mode only |
 | `AUDIOBOOKSHELF_TOKEN` | AudiobookShelf API token | `audiobookshelf.token` | Legacy mode only |
-| `AUDIOBOOKSHELF_AUDNEXUS_REGION` | Audnex draft lookup preference (`us`, `ca`, `uk`, `au`, `de`, `fr`, `es`, `in`, `it`, `jp`); `br` is retained for legacy Hardcover `ASIN:br` sync matching | `audiobookshelf.audnexus_region` | Legacy single-user configuration; overrides YAML when set; trims whitespace and lowercases. Unsupported non-empty values warn and use `us`; default preference is `us`. |
+| `AUDIOBOOKSHELF_AUDNEXUS_REGION` | Audnex draft lookup preference (`us`, `ca`, `uk`, `au`, `de`, `fr`, `es`, `in`, `it`, `jp`) | `audiobookshelf.audnexus_region` | Legacy single-user configuration; overrides YAML when set; trims whitespace and lowercases. Unsupported non-empty values warn and use `us`; default preference is `us`. |
 | `HARDCOVER_TOKEN` | Hardcover API token | `hardcover.token` | Legacy mode only |
 | `HARDCOVER_BASE_URL` | Hardcover API base URL | `hardcover.base_url` | Override default endpoint |
 | `RATE_LIMIT_RATE` | Min time between requests | `rate_limit.rate` | e.g. `2s` (30 rpm) |
@@ -740,18 +740,11 @@ hardcover:
 
 > **💡 Tip**: For new installations, use the multi-user web interface instead of environment variables. Legacy environment variables are automatically migrated to the multi-user database on first startup.
 
-Draft region discovery supports the ten Audnex regions listed above. The
-`audnexus_region` setting also accepts `br` to preserve legacy Hardcover
-`ASIN:br` matching; edition-draft discovery treats saved `br` as unsupported,
-returns a warning, and starts in the US. Values are trimmed and lowercased.
-Other unsupported values are replaced with `us` and logged as a warning. An
-empty preference uses US for draft discovery. A supported draft preference
-chooses the first Audnex marketplace to check; it does not claim that the source
-ASIN belongs to that marketplace.
-
-If an earlier update already changed a saved `br` value to `us`, restore
-Hardcover mapping matches for a saved profile by setting
-`sync_config.audnexus_region: "br"` in its profile configuration.
+Draft region discovery supports the ten Audnex regions listed above. Values
+are trimmed and lowercased. Unsupported values are replaced with `us` and
+logged as a warning. An empty preference uses US for draft discovery. A
+supported draft preference chooses the first Audnex marketplace to check; it
+does not claim that the source ASIN belongs to that marketplace.
 
 Profile configuration PUTs can update only selected fields. Omitted boolean
 settings, including `dry_run`, keep their saved values; explicitly sending
