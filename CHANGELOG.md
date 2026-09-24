@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Preserve omitted booleans on partial profile config updates**: A PUT that updates only `sync_config.audnexus_region` now preserves omitted settings such as `dry_run`. Explicitly supplied `false` values still update the corresponding setting.
+- **Edition draft timeout and date warnings**: An Audnex response body that stalls until the draft deadline now returns a retryable draft. Date warnings identify Audiobookshelf as their source when a confirmed Audnex date replaces the preview date.
 
 ## [v4.0.0] - 2026-09-21
 

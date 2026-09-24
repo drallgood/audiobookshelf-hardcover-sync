@@ -208,6 +208,45 @@ func TestGetEditionSourceDraftKeepsBareASINAndUsesDiscoveredRegionDate(t *testin
 	require.Zero(t, fixture.hardcoverRequests.Load())
 }
 
+func TestGetEditionSourceDraftDateWarningsDescribeABSSourceAfterAudnexOverride(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		publishedDate string
+		publishedYear string
+		warningCode   string
+	}{
+		{name: "missing", warningCode: "date_unavailable"},
+		{name: "ambiguous", publishedDate: "03/04/2020", publishedYear: "1999", warningCode: "published_date_ambiguous"},
+		{name: "unrecognized", publishedDate: "unknown", publishedYear: "1999", warningCode: "published_date_unrecognized"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			item := strings.NewReplacer(
+				"__DATE__", test.publishedDate,
+				"__YEAR__", test.publishedYear,
+			).Replace(`{
+				"id":"abs-item-1","mediaType":"book","media":{
+					"metadata":{"title":"Date source","asin":"B0SOURCE12","publishedDate":"__DATE__","publishedYear":"__YEAR__"},
+					"duration":100,"numTracks":1
+				}}`)
+			fixture := newEditionDraftTestFixture(t, item, "us")
+			fixture.setDiscovery(func(context.Context, string, string) (*audnex.Book, string, error) {
+				return &audnex.Book{ASIN: "B0SOURCE12", ReleaseDate: "2023-08-09"}, "us", nil
+			})
+
+			response := fixture.request(editionDraftItemPath, fixture.sessionCookie(t, fixture.owner))
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			var envelope struct {
+				Data editionDraftResponse `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+			require.Equal(t, "2023-08-09", envelope.Data.MetadataPreview.ReleaseDate)
+			warning := editionDraftWarningByCode(envelope.Data, test.warningCode)
+			require.NotNil(t, warning)
+			require.Contains(t, warning.Message, "Audiobookshelf")
+		})
+	}
+}
+
 func TestGetEditionSourceDraftReportsRetryableAudnexWarningAndABSDateFallback(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -585,6 +624,37 @@ func TestGetEditionSourceDraftFinishesBeforeHTTPWriteTimeout(t *testing.T) {
 	require.NotNil(t, warning)
 	require.True(t, warning.Retryable)
 	require.Zero(t, fixture.hardcoverRequests.Load())
+}
+
+func TestGetEditionSourceDraftMapsAudnexBodyDeadlineToRetryableWarning(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{
+		"id":"abs-item-1","mediaType":"book","media":{
+			"metadata":{"title":"Slow Audnex body","asin":"B0SOURCE12"},
+			"duration":10,"numTracks":1
+		}}`, "us")
+	fixture.handler.editionDraftRequestTimeout = 200 * time.Millisecond
+	audnexServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"asin":"`))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	t.Cleanup(audnexServer.Close)
+	fixture.handler.editionDraftAudnexClientFactory = func() editionDraftAudnexDiscoverer {
+		return audnex.NewClientForTesting(audnexServer.URL, logger.Get())
+	}
+
+	response := fixture.request(editionDraftItemPath, fixture.sessionCookie(t, fixture.owner))
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var envelope struct {
+		Data editionDraftResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	require.Equal(t, "temporarily_unavailable", envelope.Data.RegionStatus)
+	warning := editionDraftWarningByCode(envelope.Data, "audnex_temporarily_unavailable")
+	require.NotNil(t, warning)
+	require.True(t, warning.Retryable)
 }
 
 func TestGetEditionSourceDraftMapsAudnex408ToRetryableWarning(t *testing.T) {

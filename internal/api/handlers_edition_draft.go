@@ -160,7 +160,7 @@ func (h *Handler) GetEditionSourceDraft(w http.ResponseWriter, r *http.Request) 
 				returnedASIN, validReturnedASIN = audnex.CanonicalASIN(found.ASIN)
 			}
 			switch {
-			case errors.Is(discoverErr, audnex.ErrRateLimited), errors.Is(discoverErr, audnex.ErrTransient):
+			case errors.Is(draftCtx.Err(), context.DeadlineExceeded), errors.Is(discoverErr, audnex.ErrRateLimited), errors.Is(discoverErr, audnex.ErrTransient):
 				draft.RegionStatus = "temporarily_unavailable"
 				draft.addWarning("audnex_temporarily_unavailable", "Audnex region discovery is temporarily unavailable. Retry to check the source ASIN.", true)
 			case discoverErr != nil:
@@ -220,13 +220,13 @@ func buildEditionSourceDraft(book *models.AudiobookshelfBook, dryRun bool) *edit
 		draft.addWarning("invalid_isbn", "The source ISBN has an invalid check digit. It remains a candidate, but verify or correct it before adding an edition.", false)
 	}
 	if !dateOK {
-		draft.addWarning("date_unavailable", "No usable publication date or year is available for this item.", false)
+		draft.addWarning("date_unavailable", "Audiobookshelf has no usable publication date or year.", false)
 	}
 	if strings.TrimSpace(metadata.PublishedDate) != "" {
 		if isAmbiguousSlashDate(metadata.PublishedDate) {
-			draft.addWarning("published_date_ambiguous", "Audiobookshelf publication date is ambiguous; the published year is used as its fallback when available.", false)
+			draft.addWarning("published_date_ambiguous", "Audiobookshelf publication date is ambiguous; its published year is the fallback when available.", false)
 		} else if _, ok := normalizeDraftDate(metadata.PublishedDate); !ok {
-			draft.addWarning("published_date_unrecognized", "Audiobookshelf publication date could not be normalized; the published year is used when available.", false)
+			draft.addWarning("published_date_unrecognized", "Audiobookshelf publication date could not be normalized; its published year is the fallback when available.", false)
 		}
 	}
 	if author == "" {

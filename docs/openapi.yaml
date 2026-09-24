@@ -309,7 +309,7 @@ components:
         code:
           type: string
           enum: [missing_identifier, invalid_isbn, invalid_source_asin, date_unavailable, missing_author, language_defaults_to_english, published_date_unrecognized, published_date_ambiguous, unsupported_audnex_region, audnex_temporarily_unavailable, audnex_date_unrecognized]
-          description: Current warning code identifying the source or draft issue. `invalid_source_asin` means a non-empty audiobook ASIN is not exactly 10 ASCII alphanumeric characters; the draft remains eligible and region status is `unknown`. `invalid_isbn` covers unsupported ISBN shape and a bad checksum; a bad-checksum ISBN that has a supported shape remains eligible, with its validity flag false. `published_date_ambiguous` means both month-first and day-first slash parsing succeed, so `publishedYear` is used when available.
+          description: Current warning code identifying the source or draft issue. `invalid_source_asin` means a non-empty audiobook ASIN is not exactly 10 ASCII alphanumeric characters; the draft remains eligible and region status is `unknown`. `invalid_isbn` covers unsupported ISBN shape and a bad checksum; a bad-checksum ISBN that has a supported shape remains eligible, with its validity flag false. Date warnings describe Audiobookshelf source metadata; a confirmed Audnex release date can still replace the preview date. `published_date_ambiguous` means both month-first and day-first slash parsing succeed, so `publishedYear` is the Audiobookshelf fallback when available.
         message:
           type: string
           description: Human-readable detail for this warning.
