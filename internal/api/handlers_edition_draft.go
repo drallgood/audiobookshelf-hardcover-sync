@@ -132,14 +132,6 @@ func (h *Handler) GetEditionSourceDraft(w http.ResponseWriter, r *http.Request) 
 		h.writeErrorResponse(w, http.StatusBadGateway, "Failed to retrieve Audiobookshelf item")
 		return
 	}
-	if book == nil {
-		h.writeErrorResponse(w, http.StatusBadGateway, "Audiobookshelf returned no item")
-		return
-	}
-	if book.ID != itemID {
-		h.writeErrorResponse(w, http.StatusBadGateway, "Audiobookshelf returned a different item")
-		return
-	}
 	if parentCtx.Err() != nil {
 		return
 	}

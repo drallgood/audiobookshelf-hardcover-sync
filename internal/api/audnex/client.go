@@ -330,9 +330,6 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 	}
 
 	// If we get here, we've exhausted all retries
-	if lastErr == nil {
-		lastErr = errors.New("request attempts exhausted")
-	}
 	c.logger.Error("Exhausted all retries for Audnex API request", map[string]interface{}{
 		"method":      "GetBookByASIN",
 		"asin":        asin,
@@ -384,9 +381,6 @@ func (c *Client) DiscoverBookByASIN(ctx context.Context, asin, preferredRegion s
 			continue
 		}
 		if err != nil {
-			if errors.Is(err, ErrRateLimited) || errors.Is(err, ErrTransient) {
-				return nil, "", err
-			}
 			return nil, "", err
 		}
 		if book != nil {
