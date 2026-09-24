@@ -167,7 +167,7 @@ func (h *Handler) GetEditionSourceDraft(w http.ResponseWriter, r *http.Request) 
 				h.log.Error("Failed to discover Audnex region for edition source draft: " + discoverErr.Error())
 				h.writeErrorResponse(w, http.StatusBadGateway, "Failed to retrieve Audnex source metadata")
 				return
-			case validReturnedASIN && returnedASIN == lookupASIN && isAudnexRegion(region):
+			case validReturnedASIN && returnedASIN == lookupASIN && audnex.IsRegion(region):
 				draft.RegionStatus = "confirmed"
 				draft.ConfirmedRegion = region
 				draft.AudibleIdentifierCandidate.Region = region
@@ -356,19 +356,10 @@ func supportedAudnexPreference(raw string) (string, bool) {
 	if region == "" {
 		return "us", true
 	}
-	if isAudnexRegion(region) {
+	if audnex.IsRegion(region) {
 		return region, true
 	}
 	return "us", false
-}
-
-func isAudnexRegion(region string) bool {
-	switch region {
-	case "us", "ca", "uk", "au", "de", "fr", "es", "in", "it", "jp":
-		return true
-	default:
-		return false
-	}
 }
 
 func isEnglish(raw string) bool {

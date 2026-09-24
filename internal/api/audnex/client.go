@@ -63,6 +63,24 @@ const regionDiscoveryTimeout = 30 * time.Second
 
 var audnexRegions = [...]string{"us", "ca", "uk", "au", "de", "fr", "es", "in", "it", "jp"}
 
+// Regions returns a copy of the supported Audnex regions in sweep order:
+// us, ca, uk, au, de, fr, es, in, it, jp.
+func Regions() []string {
+	regions := make([]string, len(audnexRegions))
+	copy(regions, audnexRegions[:])
+	return regions
+}
+
+// IsRegion reports whether region is one of the ten supported Audnex regions.
+func IsRegion(region string) bool {
+	for _, candidate := range audnexRegions {
+		if region == candidate {
+			return true
+		}
+	}
+	return false
+}
+
 // Author represents an author from the Audnex API
 type Author struct {
 	Name string `json:"name,omitempty"`
@@ -413,12 +431,7 @@ func (c *Client) DiscoverBookByASIN(ctx context.Context, asin, preferredRegion s
 }
 
 func isAudnexRegion(region string) bool {
-	for _, candidate := range audnexRegions {
-		if region == candidate {
-			return true
-		}
-	}
-	return false
+	return IsRegion(region)
 }
 
 func classifyContextError(err error) error {
