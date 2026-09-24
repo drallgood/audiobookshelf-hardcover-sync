@@ -1,7 +1,9 @@
 package database
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -137,6 +139,11 @@ func (s *SyncConfigData) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
+	for name, value := range fields {
+		if isTrackedSyncConfigField(name) && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return fmt.Errorf("sync config field %q cannot be null", name)
+		}
+	}
 	*s = SyncConfigData(decoded)
 	s.incrementalSet = false
 	s.syncWantToReadSet = false
@@ -164,6 +171,21 @@ func (s *SyncConfigData) UnmarshalJSON(data []byte) error {
 		}
 	}
 	return nil
+}
+
+func isTrackedSyncConfigField(name string) bool {
+	switch {
+	case strings.EqualFold(name, "incremental"),
+		strings.EqualFold(name, "sync_want_to_read"),
+		strings.EqualFold(name, "process_unread_books"),
+		strings.EqualFold(name, "sync_owned"),
+		strings.EqualFold(name, "include_ebooks"),
+		strings.EqualFold(name, "dry_run"),
+		strings.EqualFold(name, "audnexus_region"):
+		return true
+	default:
+		return false
+	}
 }
 
 // IsEmpty checks whether SyncConfigData contains no provided values.

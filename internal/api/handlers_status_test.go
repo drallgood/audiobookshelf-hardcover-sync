@@ -403,7 +403,7 @@ func TestCreateProfileValidatesIDs(t *testing.T) {
 	}
 }
 
-func TestUpdateProfileConfigClearsAudnexusPreferenceToDefault(t *testing.T) {
+func TestUpdateProfileConfigPreservesOmittedFieldsAndRejectsNull(t *testing.T) {
 	fixture := newStatusServiceFixture(t, "http://hardcover.invalid")
 	const profileID = "audnexus-clear-profile"
 	require.NoError(t, fixture.repo.CreateProfile(
@@ -437,6 +437,41 @@ func TestUpdateProfileConfigClearsAudnexusPreferenceToDefault(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, profile)
 	require.Equal(t, "jp", profile.SyncConfig.AudnexusRegion, "omitted fields preserve the saved preference")
+
+	nullFields := []struct {
+		name    string
+		payload string
+	}{
+		{name: "incremental", payload: `{"sync_config":{"incremental":null}}`},
+		{name: "sync want to read", payload: `{"sync_config":{"sync_want_to_read":null}}`},
+		{name: "process unread books", payload: `{"sync_config":{"process_unread_books":null}}`},
+		{name: "sync owned", payload: `{"sync_config":{"sync_owned":null}}`},
+		{name: "include ebooks", payload: `{"sync_config":{"include_ebooks":null}}`},
+		{name: "dry run", payload: `{"sync_config":{"dry_run":null}}`},
+		{name: "Audnexus region", payload: `{"sync_config":{"audnexus_region":null}}`},
+	}
+	for _, test := range nullFields {
+		t.Run("reject null "+test.name, func(t *testing.T) {
+			var request UpdateProfileConfigRequest
+			err := json.Unmarshal([]byte(test.payload), &request)
+			require.ErrorContains(t, err, "cannot be null")
+
+			response := httptest.NewRecorder()
+			routes.ServeHTTP(response, httptest.NewRequest(
+				http.MethodPut,
+				"/api/profiles/"+profileID+"/config",
+				strings.NewReader(test.payload),
+			))
+			require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+
+			profile, err := fixture.multiUser.GetProfile(profileID)
+			require.NoError(t, err)
+			require.NotNil(t, profile)
+			require.Equal(t, "http://updated.invalid", profile.AudiobookshelfURL)
+			require.Equal(t, "jp", profile.SyncConfig.AudnexusRegion)
+			require.True(t, profile.SyncConfig.DryRun)
+		})
+	}
 
 	response := httptest.NewRecorder()
 	routes.ServeHTTP(response, httptest.NewRequest(
