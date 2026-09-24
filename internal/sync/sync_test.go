@@ -26,7 +26,6 @@ import (
 type AudiobookshelfClientInterface interface {
 	GetLibraries(ctx context.Context) ([]audiobookshelf.AudiobookshelfLibrary, error)
 	GetLibraryItems(ctx context.Context, libraryID string) ([]models.AudiobookshelfBook, error)
-	GetLibraryItemByID(ctx context.Context, itemID string) (*models.AudiobookshelfBook, error)
 	GetUserProgress(ctx context.Context) (*models.AudiobookshelfUserProgress, error)
 	GetListeningSessions(ctx context.Context, since time.Time) ([]models.AudiobookshelfBook, error)
 }
@@ -52,15 +51,6 @@ func (m *MockAudiobookshelfClient) GetLibraryItems(ctx context.Context, libraryI
 		return nil, args.Error(1)
 	}
 	return args.Get(0).([]models.AudiobookshelfBook), args.Error(1)
-}
-
-// GetLibraryItemByID mocks the expanded item lookup method.
-func (m *MockAudiobookshelfClient) GetLibraryItemByID(ctx context.Context, itemID string) (*models.AudiobookshelfBook, error) {
-	args := m.Called(ctx, itemID)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(*models.AudiobookshelfBook), args.Error(1)
 }
 
 // GetUserProgress mocks the GetUserProgress method
