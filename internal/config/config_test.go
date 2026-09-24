@@ -263,11 +263,22 @@ hardcover:
 		"AudnexusRegion should be lowercase from YAML config")
 }
 
+func TestLoadConfig_BrazilRegionIsRetainedForLegacyHardcoverMatching(t *testing.T) {
+	t.Setenv("AUDIOBOOKSHELF_URL", "https://example.com/audiobookshelf")
+	t.Setenv("AUDIOBOOKSHELF_TOKEN", "test-audiobookshelf-token")
+	t.Setenv("HARDCOVER_TOKEN", "test-hardcover-token")
+	t.Setenv("AUDIOBOOKSHELF_AUDNEXUS_REGION", " BR ")
+
+	cfg, err := Load("")
+	require.NoError(t, err)
+	assert.Equal(t, "br", cfg.Audiobookshelf.AudnexusRegion)
+}
+
 func TestLoadConfig_UnsupportedAudnexusRegionFallsBackToUS(t *testing.T) {
 	t.Setenv("AUDIOBOOKSHELF_URL", "https://example.com/audiobookshelf")
 	t.Setenv("AUDIOBOOKSHELF_TOKEN", "test-audiobookshelf-token")
 	t.Setenv("HARDCOVER_TOKEN", "test-hardcover-token")
-	t.Setenv("AUDIOBOOKSHELF_AUDNEXUS_REGION", "br")
+	t.Setenv("AUDIOBOOKSHELF_AUDNEXUS_REGION", "mx")
 
 	cfg, err := Load("")
 	require.NoError(t, err)
@@ -275,7 +286,7 @@ func TestLoadConfig_UnsupportedAudnexusRegionFallsBackToUS(t *testing.T) {
 }
 
 func TestNormalizeAudnexusRegionSupportsConfiguredRegions(t *testing.T) {
-	for _, region := range []string{"us", "ca", "uk", "au", "de", "fr", "es", "in", "it", "jp"} {
+	for _, region := range []string{"us", "ca", "uk", "au", "de", "fr", "es", "in", "it", "jp", "br"} {
 		t.Run(region, func(t *testing.T) {
 			normalized, valid := NormalizeAudnexusRegion(strings.ToUpper(region))
 			assert.True(t, valid)

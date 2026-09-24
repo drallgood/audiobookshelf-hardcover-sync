@@ -167,11 +167,36 @@ func NewClientForTesting(baseURL string, log *logger.Logger) *Client {
 	}
 }
 
+// CanonicalASIN returns a normalized ASIN when raw contains exactly ten ASCII
+// letters or digits. Lowercase letters are uppercased so lookups and response
+// comparisons use the same identifier without inferring a marketplace.
+func CanonicalASIN(raw string) (string, bool) {
+	asin := strings.TrimSpace(raw)
+	if len(asin) != 10 {
+		return "", false
+	}
+	for _, char := range asin {
+		if char < '0' || char > '9' {
+			if char < 'A' || char > 'Z' {
+				if char < 'a' || char > 'z' {
+					return "", false
+				}
+			}
+		}
+	}
+	return strings.ToUpper(asin), true
+}
+
 // GetBookByASIN retrieves book details by ASIN with retry mechanism
 func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book, error) {
-	if asin == "" {
+	if strings.TrimSpace(asin) == "" {
 		return nil, fmt.Errorf("ASIN is required")
 	}
+	canonicalASIN, valid := CanonicalASIN(asin)
+	if !valid {
+		return nil, fmt.Errorf("ASIN must contain exactly 10 ASCII letters or digits")
+	}
+	asin = canonicalASIN
 
 	url := fmt.Sprintf("%s/books/%s", c.baseURL, asin)
 	if region != "" {
@@ -328,9 +353,14 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 // failures stop the sweep and return a typed error. The 30-second overall
 // deadline includes each region's request retries and can be shortened by ctx.
 func (c *Client) DiscoverBookByASIN(ctx context.Context, asin, preferredRegion string) (*Book, string, error) {
-	if asin == "" {
+	if strings.TrimSpace(asin) == "" {
 		return nil, "", fmt.Errorf("ASIN is required")
 	}
+	canonicalASIN, valid := CanonicalASIN(asin)
+	if !valid {
+		return nil, "", fmt.Errorf("ASIN must contain exactly 10 ASCII letters or digits")
+	}
+	asin = canonicalASIN
 
 	preferredRegion = strings.ToLower(strings.TrimSpace(preferredRegion))
 	if !isAudnexRegion(preferredRegion) {
@@ -359,8 +389,11 @@ func (c *Client) DiscoverBookByASIN(ctx context.Context, asin, preferredRegion s
 			}
 			return nil, "", err
 		}
-		if book != nil && book.ASIN == asin {
-			return book, region, nil
+		if book != nil {
+			returnedASIN, valid := CanonicalASIN(book.ASIN)
+			if valid && returnedASIN == asin {
+				return book, region, nil
+			}
 		}
 	}
 

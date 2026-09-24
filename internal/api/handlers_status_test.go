@@ -412,7 +412,15 @@ func TestUpdateProfileConfigClearsAudnexusPreferenceToDefault(t *testing.T) {
 		"http://audiobookshelf.invalid",
 		"abs-token",
 		"hardcover-token",
-		database.SyncConfigData{AudnexusRegion: "jp"},
+		database.SyncConfigData{
+			Incremental:        true,
+			SyncWantToRead:     true,
+			ProcessUnreadBooks: true,
+			SyncOwned:          true,
+			IncludeEbooks:      true,
+			DryRun:             true,
+			AudnexusRegion:     "jp",
+		},
 	))
 
 	handler := NewHandler(fixture.multiUser, logger.Get())
@@ -442,9 +450,32 @@ func TestUpdateProfileConfigClearsAudnexusPreferenceToDefault(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, profile)
 	require.Empty(t, profile.SyncConfig.AudnexusRegion)
+	require.True(t, profile.SyncConfig.Incremental)
+	require.True(t, profile.SyncConfig.SyncWantToRead)
+	require.True(t, profile.SyncConfig.ProcessUnreadBooks)
+	require.True(t, profile.SyncConfig.SyncOwned)
+	require.True(t, profile.SyncConfig.IncludeEbooks)
+	require.True(t, profile.SyncConfig.DryRun)
 	preferredRegion, supported := supportedAudnexPreference(profile.SyncConfig.AudnexusRegion)
 	require.True(t, supported)
 	require.Equal(t, "us", preferredRegion, "the next draft should use the default US preference")
+
+	falseFlagsResponse := httptest.NewRecorder()
+	routes.ServeHTTP(falseFlagsResponse, httptest.NewRequest(
+		http.MethodPut,
+		"/api/profiles/"+profileID+"/config",
+		strings.NewReader(`{"sync_config":{"incremental":false,"sync_want_to_read":false,"process_unread_books":false,"sync_owned":false,"include_ebooks":false,"dry_run":false}}`),
+	))
+	require.Equal(t, http.StatusOK, falseFlagsResponse.Code, falseFlagsResponse.Body.String())
+	profile, err = fixture.multiUser.GetProfile(profileID)
+	require.NoError(t, err)
+	require.NotNil(t, profile)
+	require.False(t, profile.SyncConfig.Incremental)
+	require.False(t, profile.SyncConfig.SyncWantToRead)
+	require.False(t, profile.SyncConfig.ProcessUnreadBooks)
+	require.False(t, profile.SyncConfig.SyncOwned)
+	require.False(t, profile.SyncConfig.IncludeEbooks)
+	require.False(t, profile.SyncConfig.DryRun)
 }
 
 func TestProfileStateFilenameValidationAtHTTPBoundary(t *testing.T) {

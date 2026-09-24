@@ -1367,7 +1367,15 @@ func TestProfileAudnexusRegionNormalizationAndPersistence(t *testing.T) {
 		"http://audiobookshelf",
 		"abs-token",
 		"hc-token",
-		database.SyncConfigData{AudnexusRegion: " JP "},
+		database.SyncConfigData{
+			Incremental:        true,
+			SyncWantToRead:     true,
+			ProcessUnreadBooks: true,
+			SyncOwned:          true,
+			IncludeEbooks:      true,
+			DryRun:             true,
+			AudnexusRegion:     " JP ",
+		},
 	))
 	profile, err := service.GetProfile(profileID)
 	require.NoError(t, err)
@@ -1390,6 +1398,12 @@ func TestProfileAudnexusRegionNormalizationAndPersistence(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, profile)
 	require.Empty(t, profile.SyncConfig.AudnexusRegion)
+	require.True(t, profile.SyncConfig.Incremental)
+	require.True(t, profile.SyncConfig.SyncWantToRead)
+	require.True(t, profile.SyncConfig.ProcessUnreadBooks)
+	require.True(t, profile.SyncConfig.SyncOwned)
+	require.True(t, profile.SyncConfig.IncludeEbooks)
+	require.True(t, profile.SyncConfig.DryRun)
 	profileConfig := service.createProfileSpecificConfig(profile)
 	require.Empty(t, profileConfig.Audiobookshelf.AudnexusRegion, "runtime should use the default US preference")
 
@@ -1403,7 +1417,7 @@ func TestProfileAudnexusRegionNormalizationAndPersistence(t *testing.T) {
 	profile, err = service.GetProfile(profileID)
 	require.NoError(t, err)
 	require.NotNil(t, profile)
-	require.Equal(t, "us", profile.SyncConfig.AudnexusRegion)
+	require.Equal(t, "br", profile.SyncConfig.AudnexusRegion)
 
 	// Existing stored values also pass through the same validation at runtime.
 	legacyProfile := &database.ProfileWithTokens{
@@ -1414,7 +1428,7 @@ func TestProfileAudnexusRegionNormalizationAndPersistence(t *testing.T) {
 	require.Equal(t, "es", profileConfig.Audiobookshelf.AudnexusRegion)
 	legacyProfile.SyncConfig.AudnexusRegion = "br"
 	profileConfig = service.createProfileSpecificConfig(legacyProfile)
-	require.Equal(t, "us", profileConfig.Audiobookshelf.AudnexusRegion)
+	require.Equal(t, "br", profileConfig.Audiobookshelf.AudnexusRegion)
 }
 
 func TestStartSyncRejectsStoredStateFileWithOverlongComponent(t *testing.T) {

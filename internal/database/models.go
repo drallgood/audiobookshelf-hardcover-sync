@@ -116,11 +116,17 @@ type SyncConfigData struct {
 	TestBookFilter     string  `json:"test_book_filter"`
 	TestBookLimit      int     `json:"test_book_limit"`
 	AudnexusRegion     string  `json:"audnexus_region"`
+	incrementalSet     bool
+	syncWantToReadSet  bool
+	processUnreadSet   bool
+	syncOwnedSet       bool
+	includeEbooksSet   bool
+	dryRunSet          bool
 	audnexusRegionSet  bool
 }
 
-// UnmarshalJSON records whether audnexus_region was sent so profile updates
-// can distinguish an explicit empty value (reset to the default) from omission.
+// UnmarshalJSON records whether boolean and region fields were sent so profile
+// updates can distinguish explicit zero values from omitted fields.
 func (s *SyncConfigData) UnmarshalJSON(data []byte) error {
 	type syncConfigAlias SyncConfigData
 	decoded := syncConfigAlias(*s)
@@ -132,11 +138,29 @@ func (s *SyncConfigData) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*s = SyncConfigData(decoded)
+	s.incrementalSet = false
+	s.syncWantToReadSet = false
+	s.processUnreadSet = false
+	s.syncOwnedSet = false
+	s.includeEbooksSet = false
+	s.dryRunSet = false
 	s.audnexusRegionSet = false
 	for name := range fields {
-		if strings.EqualFold(name, "audnexus_region") {
+		switch {
+		case strings.EqualFold(name, "incremental"):
+			s.incrementalSet = true
+		case strings.EqualFold(name, "sync_want_to_read"):
+			s.syncWantToReadSet = true
+		case strings.EqualFold(name, "process_unread_books"):
+			s.processUnreadSet = true
+		case strings.EqualFold(name, "sync_owned"):
+			s.syncOwnedSet = true
+		case strings.EqualFold(name, "include_ebooks"):
+			s.includeEbooksSet = true
+		case strings.EqualFold(name, "dry_run"):
+			s.dryRunSet = true
+		case strings.EqualFold(name, "audnexus_region"):
 			s.audnexusRegionSet = true
-			break
 		}
 	}
 	return nil
@@ -156,6 +180,12 @@ func (s SyncConfigData) IsEmpty() bool {
 		!s.SyncOwned &&
 		!s.IncludeEbooks &&
 		!s.DryRun &&
+		!s.incrementalSet &&
+		!s.syncWantToReadSet &&
+		!s.processUnreadSet &&
+		!s.syncOwnedSet &&
+		!s.includeEbooksSet &&
+		!s.dryRunSet &&
 		s.TestBookFilter == "" &&
 		s.TestBookLimit == 0 &&
 		s.AudnexusRegion == "" &&

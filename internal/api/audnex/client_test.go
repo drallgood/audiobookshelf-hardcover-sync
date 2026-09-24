@@ -87,11 +87,14 @@ func TestGetBookByASIN_NotFound(t *testing.T) {
 	}
 
 	// Call the method
-	book, err := client.GetBookByASIN(context.Background(), "INVALID", "")
+	book, err := client.GetBookByASIN(context.Background(), "B0BXJF2LW5", "")
 
 	// Check the results
 	if err == nil {
 		t.Error("Expected error, got nil")
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("Expected not-found error, got %v", err)
 	}
 	if book != nil {
 		t.Errorf("Expected book to be nil, got %v", book)
@@ -150,7 +153,7 @@ func TestGetBookByASIN_NoRegion(t *testing.T) {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, err := w.Write([]byte(`{"asin": "NO_REGION", "title": "No Region Book"}`))
+		_, err := w.Write([]byte(`{"asin": "B0BXJF2LW5", "title": "No Region Book"}`))
 		if err != nil {
 			t.Errorf("Failed to write response: %v", err)
 		}
@@ -163,7 +166,7 @@ func TestGetBookByASIN_NoRegion(t *testing.T) {
 		logger:     logger.Get(),
 	}
 
-	book, err := client.GetBookByASIN(context.Background(), "NO_REGION", "")
+	book, err := client.GetBookByASIN(context.Background(), "B0BXJF2LW5", "")
 
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
@@ -281,6 +284,51 @@ func TestDiscoverBookByASIN_TriesPreferredThenStopsOnExactMatch(t *testing.T) {
 	}
 	if want := []string{"ca", "us", "uk"}; !reflect.DeepEqual(regions, want) {
 		t.Fatalf("expected preferred and ordered fallback regions %v, got %v", want, regions)
+	}
+}
+
+func TestDiscoverBookByASINCanonicalizesLowercaseForLookupAndMatch(t *testing.T) {
+	var path, region string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		region = r.URL.Query().Get("region")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"asin":"b0bxjf2lw5","title":"Lowercase response"}`)
+	}))
+	defer server.Close()
+
+	client := &Client{httpClient: server.Client(), baseURL: server.URL, logger: logger.Get()}
+	book, foundRegion, err := client.DiscoverBookByASIN(context.Background(), "b0bxjf2lw5", "ca")
+	if err != nil {
+		t.Fatalf("expected lowercase ASIN lookup to succeed, got %v", err)
+	}
+	if book == nil || foundRegion != "ca" {
+		t.Fatalf("expected exact-ASIN result in ca, got book=%#v region=%q", book, foundRegion)
+	}
+	if path != "/books/B0BXJF2LW5" || region != "ca" {
+		t.Fatalf("expected canonical lookup path and requested region, got path=%q region=%q", path, region)
+	}
+}
+
+func TestGetBookByASINRejectsMalformedAndUnsafeASINWithoutRequest(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	client := &Client{httpClient: server.Client(), baseURL: server.URL, logger: logger.Get()}
+	for _, asin := range []string{"B0BXJF2LW", "B0BXJF2LW5?region=uk", "B0BXJF2LW5/../other", "B0BXJF2LW5#fragment"} {
+		t.Run(asin, func(t *testing.T) {
+			book, err := client.GetBookByASIN(context.Background(), asin, "us")
+			if err == nil || book != nil {
+				t.Fatalf("expected malformed ASIN %q to be rejected, got book=%#v err=%v", asin, book, err)
+			}
+		})
+	}
+	if requests != 0 {
+		t.Fatalf("expected malformed ASINs to be rejected before HTTP, got %d requests", requests)
 	}
 }
 

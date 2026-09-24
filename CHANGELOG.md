@@ -9,11 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Read-only edition source drafts**: Added a profile-scoped API route that returns audiobook metadata previews or ebook edition candidates from Audiobookshelf, with optional Audnex region discovery and separate confirmed, unknown, temporarily unavailable, or not-applicable region states. The draft makes no Hardcover requests or catalogue writes. The Audnex preference now accepts the ten published lookup regions; values are normalized, and unsupported values warn and use US.
+- **Read-only edition source drafts**: Added a profile-scoped API route that returns audiobook metadata previews or ebook edition candidates from Audiobookshelf, with separate confirmed, unknown, temporarily unavailable, or not-applicable Audnex region states. Malformed non-empty audiobook ASINs remain eligible and return a usable draft with an `invalid_source_asin` warning and unknown region. When an Audiobookshelf publication date is used, ambiguous slash-formatted values warn and fall back to `publishedYear` when available; a confirmed Audnex release date takes precedence for audiobooks. Draft discovery supports ten Audnex regions. `br` remains stored for legacy Hardcover `ASIN:br` sync matching, while draft discovery warns that it is unsupported and starts in the US. Other unsupported configured values normalize to US. The draft makes no Hardcover requests or catalogue writes.
 
 ### Changed
 
 - **Edition creator hardening**: The `edition` command and the shared edition creator now reuse an existing edition (found by ASIN, ISBN-13 or ISBN-10) instead of creating a duplicate, refuse one that belongs to another book, and print `"existing": true` when they reuse one. The requested `edition_format` is now sent instead of always `Audiobook`, and a new optional `reading_format` (`audiobook` or `ebook`) creates ebook editions. **Behavior change:** no cover is uploaded for now, because Hardcover's upload endpoint is not part of its documented API and rejected a new scoped API token: an `image_url` is not fetched and the result carries an `image_error` saying so, and `image-tool` reports that upload is not supported yet. The `Authorization` header is also no longer forwarded to other domains on a redirect (this also applies to `image-tool`). The `edition` and `image-tool` commands now send the Audiobookshelf token only to a valid configured Audiobookshelf base URL, normalizing an unambiguous bare host or host:port to `https` and rejecting invalid or ambiguous URLs. TLS certificate verification is enabled by default, with insecure TLS available only through an explicit programmatic opt-in. By @Snuffy2. (#197)
+
+### Fixed
+
+- **Preserve omitted booleans on partial profile config updates**: A PUT that updates only `sync_config.audnexus_region` now preserves omitted settings such as `dry_run`. Explicitly supplied `false` values still update the corresponding setting.
 
 ## [v4.0.0] - 2026-09-21
 

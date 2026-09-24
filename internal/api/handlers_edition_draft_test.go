@@ -161,11 +161,11 @@ func (f *editionDraftTestFixture) setDiscovery(discovery editionDraftDiscoveryFu
 func TestGetEditionSourceDraftKeepsBareASINAndUsesDiscoveredRegionDate(t *testing.T) {
 	fixture := newEditionDraftTestFixture(t, `{
 		"id":"abs-item-1","mediaType":"book","media":{
-			"metadata":{"title":"ABS Title","subtitle":"ABS Subtitle","authorName":"ABS Author","narratorName":"ABS Narrator","publisher":"Publisher","description":"ABS description","publishedDate":"2020-02-03","publishedYear":"2021","isbn":"978-0-306-40615-7","asin":" B0SOURCE123 ","language":"English","abridged":true},
+			"metadata":{"title":"ABS Title","subtitle":"ABS Subtitle","authorName":"ABS Author","narratorName":"ABS Narrator","publisher":"Publisher","description":"ABS description","publishedDate":"2020-02-03","publishedYear":"2021","isbn":"978-0-306-40615-7","asin":" B0SOURCE12 ","language":"English","abridged":true},
 			"duration":3660.6,"numTracks":1
 		}}`, "UK")
 	fixture.setDiscovery(func(_ context.Context, sourceASIN, preferred string) (*audnex.Book, string, error) {
-		require.Equal(t, "B0SOURCE123", sourceASIN)
+		require.Equal(t, "B0SOURCE12", sourceASIN)
 		require.Equal(t, "uk", preferred)
 		return &audnex.Book{ASIN: sourceASIN, Title: "Different Audnex title", ReleaseDate: "2023-08-09"}, "ca", nil
 	})
@@ -182,11 +182,11 @@ func TestGetEditionSourceDraftKeepsBareASINAndUsesDiscoveredRegionDate(t *testin
 	require.Equal(t, "audiobook", draft.ReadingFormat)
 	require.True(t, draft.DryRun)
 	require.True(t, draft.Eligible)
-	require.Equal(t, "B0SOURCE123", draft.SourceIdentifiers.ASIN)
+	require.Equal(t, "B0SOURCE12", draft.SourceIdentifiers.ASIN)
 	require.Equal(t, "978-0-306-40615-7", draft.SourceIdentifiers.ISBN)
 	require.Equal(t, "confirmed", draft.RegionStatus)
 	require.Equal(t, "ca", draft.ConfirmedRegion)
-	require.Equal(t, "B0SOURCE123", draft.AudibleIdentifierCandidate.ASIN)
+	require.Equal(t, "B0SOURCE12", draft.AudibleIdentifierCandidate.ASIN)
 	require.Equal(t, "ca", draft.AudibleIdentifierCandidate.Region)
 	require.True(t, draft.AudibleIdentifierCandidate.CorrectionAllowed)
 	require.NotNil(t, draft.MetadataPreview)
@@ -219,11 +219,11 @@ func TestGetEditionSourceDraftReportsRetryableAudnexWarningAndABSDateFallback(t 
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newEditionDraftTestFixture(t, `{
 				"id":"abs-item-1","mediaType":"book","media":{
-					"metadata":{"title":"Fallback","authorName":"Author","publishedYear":"2008","asin":"B0SOURCE123","language":"Spanish"},
+					"metadata":{"title":"Fallback","authorName":"Author","publishedYear":"2008","asin":"B0SOURCE12","language":"Spanish"},
 					"duration":3600,"numTracks":1
 				}}`, "br")
 			fixture.setDiscovery(func(_ context.Context, sourceASIN, preferred string) (*audnex.Book, string, error) {
-				require.Equal(t, "B0SOURCE123", sourceASIN)
+				require.Equal(t, "B0SOURCE12", sourceASIN)
 				require.Equal(t, "us", preferred)
 				return nil, "", test.err
 			})
@@ -237,7 +237,7 @@ func TestGetEditionSourceDraftReportsRetryableAudnexWarningAndABSDateFallback(t 
 			draft := envelope.Data
 			require.Equal(t, "temporarily_unavailable", draft.RegionStatus)
 			require.Equal(t, "2008-01-01", draft.MetadataPreview.ReleaseDate)
-			require.Equal(t, "B0SOURCE123", draft.AudibleIdentifierCandidate.ASIN)
+			require.Equal(t, "B0SOURCE12", draft.AudibleIdentifierCandidate.ASIN)
 			require.Empty(t, draft.AudibleIdentifierCandidate.Region)
 			warning := editionDraftWarningByCode(draft, "audnex_temporarily_unavailable")
 			require.NotNil(t, warning)
@@ -251,11 +251,11 @@ func TestGetEditionSourceDraftReportsRetryableAudnexWarningAndABSDateFallback(t 
 func TestGetEditionSourceDraftReportsUnknownRegionWithoutGuessing(t *testing.T) {
 	fixture := newEditionDraftTestFixture(t, `{
 		"id":"abs-item-1","mediaType":"book","media":{
-			"metadata":{"title":"Unknown region","authorName":"Author","publishedDate":"2020-04-05","asin":"B0SOURCE123","language":"English"},
+			"metadata":{"title":"Unknown region","authorName":"Author","publishedDate":"2020-04-05","asin":"B0SOURCE12","language":"English"},
 			"duration":100,"numTracks":1
 		}}`, "uk")
 	fixture.setDiscovery(func(_ context.Context, sourceASIN, preferred string) (*audnex.Book, string, error) {
-		require.Equal(t, "B0SOURCE123", sourceASIN)
+		require.Equal(t, "B0SOURCE12", sourceASIN)
 		require.Equal(t, "uk", preferred)
 		return nil, "", nil
 	})
@@ -272,6 +272,117 @@ func TestGetEditionSourceDraftReportsUnknownRegionWithoutGuessing(t *testing.T) 
 	require.Equal(t, "2020-04-05", envelope.Data.MetadataPreview.ReleaseDate)
 	require.True(t, envelope.Data.Eligible)
 	require.Zero(t, fixture.hardcoverRequests.Load())
+}
+
+func TestGetEditionSourceDraftCanonicalizesLowercaseASINAndPreservesABSValue(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{
+		"id":"abs-item-1","mediaType":"book","media":{
+			"metadata":{"title":"Lowercase ASIN","authorName":"Author","asin":"b0bxjf2lw5"},
+			"duration":100,"numTracks":1
+		}}`, "ca")
+	fixture.setDiscovery(func(_ context.Context, sourceASIN, preferred string) (*audnex.Book, string, error) {
+		require.Equal(t, "B0BXJF2LW5", sourceASIN)
+		require.Equal(t, "ca", preferred)
+		return &audnex.Book{ASIN: "b0bxjf2lw5"}, "ca", nil
+	})
+
+	response := fixture.request(editionDraftItemPath, fixture.sessionCookie(t, fixture.owner))
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var envelope struct {
+		Data editionDraftResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	require.True(t, envelope.Data.Eligible)
+	require.Equal(t, "b0bxjf2lw5", envelope.Data.SourceIdentifiers.ASIN)
+	require.Equal(t, "confirmed", envelope.Data.RegionStatus)
+	require.Equal(t, "ca", envelope.Data.ConfirmedRegion)
+	require.Equal(t, "b0bxjf2lw5", envelope.Data.AudibleIdentifierCandidate.ASIN)
+	require.Equal(t, "ca", envelope.Data.AudibleIdentifierCandidate.Region)
+}
+
+func TestGetEditionSourceDraftKeepsMalformedASINVisibleAndSkipsAudnex(t *testing.T) {
+	for _, asin := range []string{"B0BXJF2LW5?region=uk", "B0BXJF2LW5/../other"} {
+		t.Run(asin, func(t *testing.T) {
+			item := strings.ReplaceAll(`{
+				"id":"abs-item-1","mediaType":"book","media":{
+					"metadata":{"title":"Malformed ASIN","authorName":"Author","asin":"__ASIN__"},
+					"duration":100,"numTracks":1
+				}}`, "__ASIN__", asin)
+			fixture := newEditionDraftTestFixture(t, item, "us")
+			var discoveryCalls atomic.Int32
+			fixture.setDiscovery(func(context.Context, string, string) (*audnex.Book, string, error) {
+				discoveryCalls.Add(1)
+				return nil, "", nil
+			})
+
+			response := fixture.request(editionDraftItemPath, fixture.sessionCookie(t, fixture.owner))
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			var envelope struct {
+				Data editionDraftResponse `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+			draft := envelope.Data
+			require.True(t, draft.Eligible, "nonempty ASIN eligibility is retained")
+			require.Empty(t, draft.IneligibleReason)
+			require.Equal(t, asin, draft.SourceIdentifiers.ASIN)
+			require.Equal(t, asin, draft.AudibleIdentifierCandidate.ASIN)
+			require.Equal(t, "unknown", draft.RegionStatus)
+			require.True(t, hasEditionDraftWarning(draft, "invalid_source_asin"))
+			require.Zero(t, discoveryCalls.Load())
+			require.Zero(t, fixture.hardcoverRequests.Load())
+		})
+	}
+}
+
+func TestGetEditionSourceDraftHandlesSlashAndISODateBoundaries(t *testing.T) {
+	tests := []struct {
+		name            string
+		mediaType       string
+		publishedDate   string
+		publishedYear   string
+		wantReleaseDate string
+		wantAmbiguous   bool
+		wantDateMissing bool
+	}{
+		{name: "ambiguous audiobook uses published year", mediaType: "book", publishedDate: "03/04/2020", publishedYear: "1999", wantReleaseDate: "1999-01-01", wantAmbiguous: true},
+		{name: "ambiguous ebook uses published year", mediaType: "ebook", publishedDate: "03/04/2020", publishedYear: "1999", wantReleaseDate: "1999-01-01", wantAmbiguous: true},
+		{name: "ambiguous without year", mediaType: "book", publishedDate: "03/04/2020", wantAmbiguous: true, wantDateMissing: true},
+		{name: "day first unambiguous slash", mediaType: "ebook", publishedDate: "13/04/2020", publishedYear: "1999", wantReleaseDate: "2020-04-13"},
+		{name: "month first unambiguous slash", mediaType: "book", publishedDate: "04/13/2020", publishedYear: "1999", wantReleaseDate: "2020-04-13"},
+		{name: "year first slash", mediaType: "book", publishedDate: "2020/04/13", publishedYear: "1999", wantReleaseDate: "2020-04-13"},
+		{name: "ISO date", mediaType: "ebook", publishedDate: "2020-04-13", publishedYear: "1999", wantReleaseDate: "2020-04-13"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			item := strings.NewReplacer(
+				"__MEDIA_TYPE__", test.mediaType,
+				"__DATE__", test.publishedDate,
+				"__YEAR__", test.publishedYear,
+			).Replace(`{
+				"id":"abs-item-1","mediaType":"__MEDIA_TYPE__","media":{
+					"metadata":{"title":"Date draft","publishedDate":"__DATE__","publishedYear":"__YEAR__"},
+					"duration":100,"numTracks":1,"ebookFile":{},"ebookFormat":"epub"
+				}}`)
+			fixture := newEditionDraftTestFixture(t, item, "us")
+			response := fixture.request(editionDraftItemPath, fixture.sessionCookie(t, fixture.owner))
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			var envelope struct {
+				Data editionDraftResponse `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+			draft := envelope.Data
+			releaseDate := ""
+			if draft.MetadataPreview != nil {
+				releaseDate = draft.MetadataPreview.ReleaseDate
+			}
+			if draft.EbookCandidate != nil {
+				releaseDate = draft.EbookCandidate.ReleaseDate
+			}
+			require.Equal(t, test.wantReleaseDate, releaseDate)
+			require.Equal(t, test.wantAmbiguous, hasEditionDraftWarning(draft, "published_date_ambiguous"))
+			require.Equal(t, test.wantDateMissing, hasEditionDraftWarning(draft, "date_unavailable"))
+		})
+	}
 }
 
 func TestGetEditionSourceDraftBuildsEbookCandidateWithoutAudnex(t *testing.T) {
@@ -404,7 +515,7 @@ func TestGetEditionSourceDraftDistinguishesMissingProfileFromRepositoryError(t *
 
 func TestGetEditionSourceDraftStopsOnRequestCancellation(t *testing.T) {
 	fixture := newEditionDraftTestFixture(t, `{
-		"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Book","asin":"B0SOURCE123"},"duration":1,"numTracks":1}
+		"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Book","asin":"B0SOURCE12"},"duration":1,"numTracks":1}
 	}`, "us")
 	started := make(chan struct{})
 	fixture.setDiscovery(func(ctx context.Context, _ string, _ string) (*audnex.Book, string, error) {
@@ -441,7 +552,7 @@ func TestGetEditionSourceDraftStopsOnRequestCancellation(t *testing.T) {
 func TestGetEditionSourceDraftFinishesBeforeHTTPWriteTimeout(t *testing.T) {
 	fixture := newEditionDraftTestFixtureWithABSDelay(t, `{
 		"id":"abs-item-1","mediaType":"book","media":{
-			"metadata":{"title":"Slow ABS","authorName":"Author","publishedYear":"2020","asin":"B0SOURCE123"},
+			"metadata":{"title":"Slow ABS","authorName":"Author","publishedYear":"2020","asin":"B0SOURCE12"},
 			"duration":10,"numTracks":1
 		}}`, "us", 60*time.Millisecond)
 	fixture.handler.editionDraftRequestTimeout = 120 * time.Millisecond
@@ -479,7 +590,7 @@ func TestGetEditionSourceDraftFinishesBeforeHTTPWriteTimeout(t *testing.T) {
 func TestGetEditionSourceDraftMapsAudnex408ToRetryableWarning(t *testing.T) {
 	fixture := newEditionDraftTestFixture(t, `{
 		"id":"abs-item-1","mediaType":"book","media":{
-			"metadata":{"title":"Audnex timeout","authorName":"Author","asin":"B0SOURCE123"},
+			"metadata":{"title":"Audnex timeout","authorName":"Author","asin":"B0SOURCE12"},
 			"duration":10,"numTracks":1
 		}}`, "us")
 	fixture.handler.editionDraftRequestTimeout = 700 * time.Millisecond
