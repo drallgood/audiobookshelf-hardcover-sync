@@ -28,6 +28,7 @@ type editionDraftTestFixture struct {
 	routes            http.Handler
 	handler           *Handler
 	authService       *auth.AuthService
+	db                *database.Database
 	owner             *auth.AuthUser
 	absRequests       *atomic.Int32
 	hardcoverRequests *atomic.Int32
@@ -109,7 +110,7 @@ func newEditionDraftTestFixtureWithABSDelay(t *testing.T, itemJSON, preferredReg
 	})
 	return &editionDraftTestFixture{
 		routes: routes, handler: handler, authService: authService, owner: owner,
-		absRequests: absRequests, hardcoverRequests: hardcoverRequests,
+		db: db, absRequests: absRequests, hardcoverRequests: hardcoverRequests,
 	}
 }
 
@@ -129,6 +130,15 @@ func (f *editionDraftTestFixture) request(path string, cookie *http.Cookie) *htt
 	}
 	response := httptest.NewRecorder()
 	f.routes.ServeHTTP(response, req)
+	return response
+}
+
+func (f *editionDraftTestFixture) requestWithoutAuth(path string) *httptest.ResponseRecorder {
+	f.handler.SetAuthEnabled(false)
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("GET /api/profiles/{id}/edition-drafts/source/{itemID}", f.handler.GetEditionSourceDraft)
+	response := httptest.NewRecorder()
+	apiMux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 	return response
 }
 
@@ -363,6 +373,33 @@ func TestGetEditionSourceDraftRequiresAuthenticationAndProfileOwnership(t *testi
 	require.Equal(t, http.StatusNotFound, foreign.Code, foreign.Body.String())
 	require.Zero(t, fixture.absRequests.Load())
 	require.Zero(t, fixture.hardcoverRequests.Load())
+}
+
+func TestGetEditionSourceDraftDistinguishesMissingProfileFromRepositoryError(t *testing.T) {
+	t.Run("missing profile returns not found when auth is disabled", func(t *testing.T) {
+		fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Book"},"duration":1}}`, "us")
+		response := fixture.requestWithoutAuth("/api/profiles/missing-profile/edition-drafts/source/abs-item-1")
+
+		require.Equal(t, http.StatusNotFound, response.Code, response.Body.String())
+		var envelope APIResponse
+		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+		require.False(t, envelope.Success)
+		require.Equal(t, "Sync profile not found", envelope.Error)
+		require.Zero(t, fixture.absRequests.Load())
+	})
+
+	t.Run("repository error remains internal server error", func(t *testing.T) {
+		fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Book"},"duration":1}}`, "us")
+		require.NoError(t, fixture.db.GetDB().Exec("ALTER TABLE sync_profiles RENAME TO unavailable_sync_profiles").Error)
+		response := fixture.requestWithoutAuth(editionDraftItemPath)
+
+		require.Equal(t, http.StatusInternalServerError, response.Code, response.Body.String())
+		var envelope APIResponse
+		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+		require.False(t, envelope.Success)
+		require.Equal(t, "Failed to retrieve sync profile", envelope.Error)
+		require.Zero(t, fixture.absRequests.Load())
+	})
 }
 
 func TestGetEditionSourceDraftStopsOnRequestCancellation(t *testing.T) {

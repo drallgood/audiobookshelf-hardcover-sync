@@ -108,9 +108,13 @@ func (h *Handler) GetEditionSourceDraft(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	profile, err := h.multiUserService.GetProfile(profileID)
-	if err != nil || profile == nil {
+	if err != nil {
 		h.log.Error("Failed to retrieve profile for edition source draft")
 		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to retrieve sync profile")
+		return
+	}
+	if profile == nil {
+		h.writeErrorResponse(w, http.StatusNotFound, "Sync profile not found")
 		return
 	}
 
