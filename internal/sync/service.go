@@ -5013,7 +5013,7 @@ func isbnSearchCandidates(raw string) []isbnCandidate {
 
 // findBookInHardcover finds a book in Hardcover by various methods
 // It tries ASIN first, then the given ISBN form and its valid counterpart.
-// Title/author search is only used for mismatches and should be called separately
+// If those searches fail, it falls back to title/author search.
 // Callers must carry the item's reading format on ctx via hardcover.WithReadingFormat.
 func (s *Service) findBookInHardcover(ctx context.Context, book models.AudiobookshelfBook) (*models.HardcoverBook, error) {
 	var lookupErr error
@@ -5205,7 +5205,7 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 			"isbn":   book.Media.Metadata.ISBN,
 			"asin":   book.Media.Metadata.ASIN,
 		})
-		// Don't return here - fall through to try ASIN or title/author search
+		// Don't return here - fall through to try title/author search.
 	}
 
 	// 3. If we get here, we couldn't find the book by ASIN or ISBN, try title/author search
