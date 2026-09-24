@@ -198,11 +198,12 @@ func buildEditionSourceDraft(book *models.AudiobookshelfBook, dryRun bool) *edit
 	date, dateOK := fallbackDraftDate(metadata.PublishedDate, metadata.PublishedYear)
 	isbnFields, isbnOK := draftISBNFields(rawISBN)
 	author := strings.TrimSpace(metadata.AuthorName)
+	_, usableASIN := audnex.CanonicalASIN(asin)
 	draft := &editionDraftResponse{
 		ABSItemID:         book.ID,
 		ReadingFormat:     readingFormat,
 		DryRun:            dryRun,
-		Eligible:          asin != "" || isbnOK,
+		Eligible:          usableASIN || isbnOK,
 		SourceIdentifiers: identifiers,
 	}
 	if !book.IsEbook() {
@@ -210,8 +211,11 @@ func buildEditionSourceDraft(book *models.AudiobookshelfBook, dryRun bool) *edit
 			ASIN: asin, CorrectionAllowed: true,
 		}
 	}
+	if asin != "" && !usableASIN {
+		draft.addWarning("invalid_source_asin", "Audiobookshelf source ASIN is malformed; it is not usable as an identifier and Audnex region discovery is skipped.", false)
+	}
 	if !draft.Eligible {
-		draft.IneligibleReason = "The Audiobookshelf item needs an ASIN or ISBN before an edition can be added."
+		draft.IneligibleReason = "The Audiobookshelf item needs a valid ASIN or ISBN before an edition can be added."
 		draft.addWarning("missing_identifier", draft.IneligibleReason, false)
 	}
 	if rawISBN != "" && !isbnOK {

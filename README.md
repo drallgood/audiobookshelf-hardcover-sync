@@ -121,11 +121,11 @@ bare Audiobookshelf ASIN separately from any confirmed Audnex region and
 distinguish confirmed, unknown, temporarily unavailable, and not-applicable
 region results. Audiobook metadata is preview-only; ebook drafts return
 candidate fields, including an empty corrected-ISBN slot. If Audnex is
-temporarily unavailable, the response includes a retryable warning; retry the
+temporarily unavailable (including a 400 or 403 response), the response includes a retryable warning; retry the
 GET request. A completed lookup with no matching region remains unknown and
-does not silently choose US. For an audiobook, a malformed non-empty source
-ASIN remains eligible and returns a usable draft with an `invalid_source_asin`
-warning and unknown region status. When the draft uses Audiobookshelf
+does not silently choose US. A malformed non-empty source ASIN is
+kept visible with an `invalid_source_asin` warning (and unknown region status
+for an audiobook) but does not make the item eligible; a valid ISBN still does. When the draft uses Audiobookshelf
 publication metadata, an ambiguous slash-formatted date returns a
 `published_date_ambiguous` warning and falls back to `publishedYear` when
 available. A confirmed Audnex release date takes precedence for an audiobook.

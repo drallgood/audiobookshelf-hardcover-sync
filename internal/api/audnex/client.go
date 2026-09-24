@@ -25,7 +25,8 @@ var (
 	ErrNotFound = errors.New("Audnex book not found")
 	// ErrRateLimited identifies an Audnex rate-limit response.
 	ErrRateLimited = errors.New("Audnex rate limited")
-	// ErrTransient identifies a request that failed temporarily after retries.
+	// ErrTransient identifies a request that failed temporarily after retries, or
+	// a 400 or 403 response, which is retryable rather than evidence of absence.
 	ErrTransient = errors.New("Audnex request temporarily unavailable")
 )
 
@@ -288,6 +289,17 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 					"status_code": resp.StatusCode,
 				})
 				return nil, &APIError{Kind: ErrRateLimited, StatusCode: resp.StatusCode}
+			}
+			if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusForbidden {
+				// Audnex can answer a region with 400 or 403 for a temporary or
+				// regional reason, so callers must not read it as an absent ASIN.
+				c.logger.Warn("Audnex rejected the request for region", map[string]interface{}{
+					"method":      "GetBookByASIN",
+					"asin":        asin,
+					"region":      region,
+					"status_code": resp.StatusCode,
+				})
+				return nil, &APIError{Kind: ErrTransient, StatusCode: resp.StatusCode}
 			}
 			c.logger.Error("Received client error response", map[string]interface{}{
 				"method":      "GetBookByASIN",

@@ -381,7 +381,7 @@ func TestGetEditionSourceDraftCanonicalizesLowercaseASINAndPreservesABSValue(t *
 	require.Equal(t, "ca", envelope.Data.AudibleIdentifierCandidate.Region)
 }
 
-func TestGetEditionSourceDraftKeepsMalformedASINVisibleAndSkipsAudnex(t *testing.T) {
+func TestGetEditionSourceDraftKeepsMalformedASINVisibleIneligibleAndSkipsAudnex(t *testing.T) {
 	for _, asin := range []string{"B0BXJF2LW5?region=uk", "B0BXJF2LW5/../other"} {
 		t.Run(asin, func(t *testing.T) {
 			item := strings.ReplaceAll(`{
@@ -403,8 +403,8 @@ func TestGetEditionSourceDraftKeepsMalformedASINVisibleAndSkipsAudnex(t *testing
 			}
 			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
 			draft := envelope.Data
-			require.True(t, draft.Eligible, "nonempty ASIN eligibility is retained")
-			require.Empty(t, draft.IneligibleReason)
+			require.False(t, draft.Eligible, "a malformed ASIN is not a usable identifier")
+			require.Contains(t, draft.IneligibleReason, "valid ASIN or ISBN")
 			require.Equal(t, asin, draft.SourceIdentifiers.ASIN)
 			require.Equal(t, asin, draft.AudibleIdentifierCandidate.ASIN)
 			require.Equal(t, "unknown", draft.RegionStatus)
@@ -521,6 +521,29 @@ func TestGetEditionSourceDraftKeepsBadChecksumISBNWithWarning(t *testing.T) {
 	require.NotNil(t, draft.EbookCandidate.ISBN13Valid)
 	require.False(t, *draft.EbookCandidate.ISBN13Valid)
 	require.True(t, hasEditionDraftWarning(draft, "invalid_isbn"))
+	require.Zero(t, fixture.hardcoverRequests.Load())
+}
+
+func TestGetEditionSourceDraftMalformedASINWithValidISBNRemainsEligible(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{
+		"id":"abs-item-1","mediaType":"book","media":{
+			"metadata":{"title":"Bad ASIN","authorName":"Author","asin":"SHORT","isbn":"9781507000885"},
+			"duration":100,"numTracks":1
+		}}`, "us")
+	fixture.setDiscovery(func(context.Context, string, string) (*audnex.Book, string, error) {
+		t.Fatal("malformed ASIN must not reach Audnex")
+		return nil, "", nil
+	})
+
+	response := fixture.request(editionDraftItemPath, fixture.sessionCookie(t, fixture.owner))
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var envelope struct {
+		Data editionDraftResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	require.True(t, envelope.Data.Eligible)
+	require.Empty(t, envelope.Data.IneligibleReason)
+	require.True(t, hasEditionDraftWarning(envelope.Data, "invalid_source_asin"))
 	require.Zero(t, fixture.hardcoverRequests.Load())
 }
 

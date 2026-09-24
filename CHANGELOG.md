@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Read-only edition source drafts**: Added a profile-scoped API route that previews audiobook metadata or ebook edition candidates from Audiobookshelf without Hardcover requests or catalogue writes. Audiobook drafts retain the bare source ASIN, discover its region across ten Audnex marketplaces, use the confirmed region's release date when available, and report unknown or temporarily unavailable regions with retryable warnings. ABS publication dates provide a fallback, including warnings for ambiguous values. Unsupported configured regions use US. Partial profile configuration updates preserve omitted settings such as `dry_run` while accepting explicit `false`. Audnex response-body timeouts retain their transient classification.
+- **Read-only edition source drafts**: Added a profile-scoped API route that previews audiobook metadata or ebook edition candidates from Audiobookshelf without Hardcover requests or catalogue writes. Audiobook drafts retain the bare source ASIN, discover its region across ten Audnex marketplaces, use the confirmed region's release date when available, and report unknown or temporarily unavailable regions (including Audnex 400/403 responses) with retryable warnings. A malformed source ASIN is kept visible with a warning but does not make an item eligible. ABS publication dates provide a fallback, including warnings for ambiguous values. Unsupported configured regions use US. Partial profile configuration updates preserve omitted settings such as `dry_run` while accepting explicit `false`. Audnex response-body timeouts retain their transient classification.
 
 ### Changed
 

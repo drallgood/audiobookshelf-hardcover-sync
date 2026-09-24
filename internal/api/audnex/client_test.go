@@ -185,6 +185,8 @@ func TestGetBookByASIN_TypedNotFoundAndRateLimit(t *testing.T) {
 	}{
 		{name: "not found", statusCode: http.StatusNotFound, want: ErrNotFound},
 		{name: "rate limited", statusCode: http.StatusTooManyRequests, want: ErrRateLimited},
+		{name: "bad request is retryable", statusCode: http.StatusBadRequest, want: ErrTransient},
+		{name: "forbidden is retryable", statusCode: http.StatusForbidden, want: ErrTransient},
 	}
 
 	for _, tt := range tests {

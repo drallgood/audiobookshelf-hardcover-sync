@@ -181,7 +181,7 @@ components:
           description: The profile's sync dry-run setting. This draft endpoint itself remains read-only regardless of this value.
         eligible:
           type: boolean
-          description: True when a non-empty source ASIN or an ISBN accepted by shape is available. For audiobooks, a malformed non-empty source ASIN remains eligible, is retained in the draft, and produces an `invalid_source_asin` warning with `region_status` `unknown`; Audnex lookup is skipped. An ISBN with a bad checksum remains a candidate with a validity warning, so checksum warnings do not by themselves make an ISBN-shaped value ineligible.
+          description: True when a valid source ASIN (exactly 10 ASCII letters or digits) or an ISBN accepted by shape is available. A malformed non-empty source ASIN is not usable: it is retained in the draft and produces an `invalid_source_asin` warning (with `region_status` `unknown` for audiobooks and Audnex lookup skipped), and the item is eligible only if it has an ISBN. An ISBN with a bad checksum remains a candidate with a validity warning, so checksum warnings do not by themselves make an ISBN-shaped value ineligible.
         ineligible_reason:
           type: string
           description: Present when the source item has neither a non-empty ASIN nor an ISBN accepted by shape; author or date warnings do not change eligibility.
@@ -190,7 +190,7 @@ components:
         region_status:
           type: string
           enum: [confirmed, unknown, temporarily_unavailable, not_applicable]
-          description: Audiobook source-ASIN lookup state. `confirmed` means Audnex returned the same ASIN in the reported region; `unknown` means the supported-region sweep completed without a matching ASIN or the source ASIN was malformed; `temporarily_unavailable` means a rate-limit or transient error stopped the sweep; `not_applicable` means an audiobook has no source ASIN. Omitted for ebooks.
+          description: Audiobook source-ASIN lookup state. `confirmed` means Audnex returned the same ASIN in the reported region; `unknown` means the supported-region sweep completed without a matching ASIN or the source ASIN was malformed; `temporarily_unavailable` means a rate-limit, transient, or 400/403 Audnex response stopped the sweep; `not_applicable` means an audiobook has no source ASIN. Omitted for ebooks.
         confirmed_region:
           type: string
           enum: [us, ca, uk, au, de, fr, es, in, it, jp]
@@ -309,7 +309,7 @@ components:
         code:
           type: string
           enum: [missing_identifier, invalid_isbn, invalid_source_asin, date_unavailable, missing_author, language_defaults_to_english, published_date_unrecognized, published_date_ambiguous, unsupported_audnex_region, audnex_temporarily_unavailable, audnex_date_unrecognized]
-          description: Current warning code identifying the source or draft issue. `invalid_source_asin` means a non-empty audiobook ASIN is not exactly 10 ASCII alphanumeric characters; the draft remains eligible and region status is `unknown`. `invalid_isbn` covers unsupported ISBN shape and a bad checksum; a bad-checksum ISBN that has a supported shape remains eligible, with its validity flag false. Date warnings describe Audiobookshelf source metadata; a confirmed Audnex release date can still replace the preview date. `published_date_ambiguous` means both month-first and day-first slash parsing succeed, so `publishedYear` is the Audiobookshelf fallback when available.
+          description: Current warning code identifying the source or draft issue. `invalid_source_asin` means a non-empty ASIN is not exactly 10 ASCII alphanumeric characters; it does not count toward eligibility, and audiobook region status is `unknown`. `invalid_isbn` covers unsupported ISBN shape and a bad checksum; a bad-checksum ISBN that has a supported shape remains eligible, with its validity flag false. Date warnings describe Audiobookshelf source metadata; a confirmed Audnex release date can still replace the preview date. `published_date_ambiguous` means both month-first and day-first slash parsing succeed, so `publishedYear` is the Audiobookshelf fallback when available.
         message:
           type: string
           description: Human-readable detail for this warning.
@@ -775,8 +775,8 @@ paths:
       description: >-
         Fetches the expanded Audiobookshelf item and, for an audiobook with a
         source ASIN, may check Audnex across its supported regions. A complete
-        region miss is returned as `unknown`; a rate limit or transient
-        discovery failure is returned as `temporarily_unavailable` with a
+        region miss is returned as `unknown`; a rate limit, transient
+        failure, or 400/403 Audnex response is returned as `temporarily_unavailable` with a
         retryable warning. A legacy unsupported region preference warns and
         uses US. The endpoint makes no Hardcover requests and performs no
         catalogue writes. Audiobook metadata is preview-only; ebook fields are
