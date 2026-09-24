@@ -750,9 +750,8 @@ chooses the first Audnex marketplace to check; it does not claim that the source
 ASIN belongs to that marketplace.
 
 If an earlier update already changed a saved `br` value to `us`, restore
-Hardcover mapping matches by setting `audiobookshelf.audnexus_region: "br"`
-in single-user configuration or `sync_config.audnexus_region: "br"` in the
-profile configuration.
+Hardcover mapping matches for a saved profile by setting
+`sync_config.audnexus_region: "br"` in its profile configuration.
 
 Profile configuration PUTs can update only selected fields. Omitted boolean
 settings, including `dry_run`, keep their saved values; explicitly sending
