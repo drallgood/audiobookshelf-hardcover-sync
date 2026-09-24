@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Edition creator hardening**: The `edition` command and the shared edition creator now reuse an existing edition (found by ASIN, ISBN-13 or ISBN-10) instead of creating a duplicate, refuse one that belongs to another book, and print `"existing": true` when they reuse one. The requested `edition_format` is now sent instead of always `Audiobook`, and a new optional `reading_format` (`audiobook` or `ebook`) creates ebook editions. **Behavior change:** no cover is uploaded for now, because Hardcover's upload endpoint is not part of its documented API and rejected a new scoped API token: an `image_url` is not fetched and the result carries an `image_error` saying so, and `image-tool` reports that upload is not supported yet. The `Authorization` header is also no longer forwarded to other domains on a redirect (this also applies to `image-tool`). The `edition` and `image-tool` commands now send the Audiobookshelf token only to a valid configured Audiobookshelf base URL, normalizing an unambiguous bare host or host:port to `https` and rejecting invalid or ambiguous URLs. TLS certificate verification is enabled by default, with insecure TLS available only through an explicit programmatic opt-in. By @Snuffy2. (#197)
 
+### Fixed
+
+- **ISBN counterpart matching**: Match an Audiobookshelf ISBN-10 to its valid ISBN-13 counterpart, and the reverse, without changing audiobook and ebook reading-format separation. By @Snuffy2.
+
 ## [v4.0.0] - 2026-09-21
 
 ### Added
