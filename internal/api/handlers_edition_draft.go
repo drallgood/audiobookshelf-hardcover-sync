@@ -263,7 +263,7 @@ func buildEditionSourceDraft(book *models.AudiobookshelfBook, dryRun bool) *edit
 	}
 	seconds := int(book.Media.Duration + 0.5)
 	editionFormat := ""
-	if asin != "" {
+	if usableASIN {
 		editionFormat = "Audible Audio"
 	} else if strings.Contains(strings.ToLower(metadata.Publisher), "libro") {
 		editionFormat = "libro.fm"
