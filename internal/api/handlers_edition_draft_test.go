@@ -409,7 +409,7 @@ func TestGetEditionSourceDraftKeepsMalformedASINVisibleIneligibleAndSkipsAudnex(
 			require.Equal(t, asin, draft.SourceIdentifiers.ASIN)
 			require.Equal(t, asin, draft.AudibleIdentifierCandidate.ASIN)
 			require.Equal(t, "unknown", draft.RegionStatus)
-			require.True(t, hasEditionDraftWarning(draft, "invalid_source_asin"))
+			require.Equal(t, 1, countEditionDraftWarnings(draft, "invalid_source_asin"), "invalid_source_asin warning should appear exactly once")
 			require.Zero(t, discoveryCalls.Load())
 			require.Zero(t, fixture.hardcoverRequests.Load())
 		})
@@ -544,6 +544,7 @@ func TestGetEditionSourceDraftMalformedASINWithValidISBNRemainsEligible(t *testi
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
 	require.True(t, envelope.Data.Eligible)
 	require.Empty(t, envelope.Data.IneligibleReason)
+	require.Equal(t, 1, countEditionDraftWarnings(envelope.Data, "invalid_source_asin"), "invalid_source_asin warning should appear exactly once")
 	warning := editionDraftWarningByCode(envelope.Data, "invalid_source_asin")
 	require.NotNil(t, warning)
 	require.Contains(t, warning.Message, "Audnex region discovery is skipped")
@@ -563,6 +564,7 @@ func TestGetEditionSourceDraftEbookMalformedASINWarningOmitsAudnex(t *testing.T)
 		Data editionDraftResponse `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	require.Equal(t, 1, countEditionDraftWarnings(envelope.Data, "invalid_source_asin"), "invalid_source_asin warning should appear exactly once")
 	warning := editionDraftWarningByCode(envelope.Data, "invalid_source_asin")
 	require.NotNil(t, warning)
 	require.Contains(t, warning.Message, "malformed")
@@ -833,4 +835,14 @@ func editionDraftWarningByCode(draft editionDraftResponse, code string) *edition
 		}
 	}
 	return nil
+}
+
+func countEditionDraftWarnings(draft editionDraftResponse, code string) int {
+	count := 0
+	for _, warning := range draft.Warnings {
+		if warning.Code == code {
+			count++
+		}
+	}
+	return count
 }

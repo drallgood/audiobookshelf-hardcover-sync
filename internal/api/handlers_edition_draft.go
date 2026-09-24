@@ -142,7 +142,6 @@ func (h *Handler) GetEditionSourceDraft(w http.ResponseWriter, r *http.Request) 
 		lookupASIN, validASIN := audnex.CanonicalASIN(draft.SourceIdentifiers.ASIN)
 		if !validASIN {
 			draft.RegionStatus = "unknown"
-			draft.addWarning("invalid_source_asin", "Audiobookshelf source ASIN is malformed; Audnex region discovery was skipped.", false)
 		} else {
 			preferredRegion, supported := supportedAudnexPreference(profile.SyncConfig.AudnexusRegion)
 			if strings.TrimSpace(profile.SyncConfig.AudnexusRegion) != "" && !supported {
