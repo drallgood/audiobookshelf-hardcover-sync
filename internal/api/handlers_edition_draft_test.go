@@ -313,6 +313,48 @@ func TestGetEditionSourceDraftReportsUnknownRegionWithoutGuessing(t *testing.T) 
 	require.Zero(t, fixture.hardcoverRequests.Load())
 }
 
+func TestGetEditionSourceDraftUsesCompletedDiscoveryResultAfterDraftDeadline(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		found     *audnex.Book
+		region    string
+		want      string
+		confirmed string
+	}{
+		{
+			name:      "confirmed result",
+			found:     &audnex.Book{ASIN: "B0SOURCE12"},
+			region:    "ca",
+			want:      "confirmed",
+			confirmed: "ca",
+		},
+		{name: "completed miss", want: "unknown"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newEditionDraftTestFixture(t, `{
+				"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Book","asin":"B0SOURCE12"},"duration":1,"numTracks":1}
+			}`, "us")
+			fixture.handler.editionDraftRequestTimeout = 20 * time.Millisecond
+			fixture.setDiscovery(func(ctx context.Context, _, _ string) (*audnex.Book, string, error) {
+				<-ctx.Done()
+				require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
+				return test.found, test.region, nil
+			})
+
+			response := fixture.request(editionDraftItemPath, fixture.sessionCookie(t, fixture.owner))
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			var envelope struct {
+				Data editionDraftResponse `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+			require.Equal(t, test.want, envelope.Data.RegionStatus)
+			require.Equal(t, test.confirmed, envelope.Data.ConfirmedRegion)
+			require.Nil(t, editionDraftWarningByCode(envelope.Data, "audnex_temporarily_unavailable"))
+			require.Zero(t, fixture.hardcoverRequests.Load())
+		})
+	}
+}
+
 func TestGetEditionSourceDraftCanonicalizesLowercaseASINAndPreservesABSValue(t *testing.T) {
 	fixture := newEditionDraftTestFixture(t, `{
 		"id":"abs-item-1","mediaType":"book","media":{

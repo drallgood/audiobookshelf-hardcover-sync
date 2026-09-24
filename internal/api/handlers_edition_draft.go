@@ -160,7 +160,7 @@ func (h *Handler) GetEditionSourceDraft(w http.ResponseWriter, r *http.Request) 
 				returnedASIN, validReturnedASIN = audnex.CanonicalASIN(found.ASIN)
 			}
 			switch {
-			case errors.Is(draftCtx.Err(), context.DeadlineExceeded), errors.Is(discoverErr, audnex.ErrRateLimited), errors.Is(discoverErr, audnex.ErrTransient):
+			case errors.Is(discoverErr, context.DeadlineExceeded), errors.Is(discoverErr, audnex.ErrRateLimited), errors.Is(discoverErr, audnex.ErrTransient):
 				draft.RegionStatus = "temporarily_unavailable"
 				draft.addWarning("audnex_temporarily_unavailable", "Audnex region discovery is temporarily unavailable. Retry to check the source ASIN.", true)
 			case discoverErr != nil:

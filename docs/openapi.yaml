@@ -672,7 +672,14 @@ paths:
           application/json:
             schema:
               type: object
-              description: Configuration fields may be supplied partially. Omitted config booleans preserve their saved values; explicitly supplied `false` updates the boolean to false. Updating only `sync_config.audnexus_region` preserves `sync_config.dry_run`.
+              description: >-
+                Configuration fields may be supplied partially. Omitted config
+                booleans preserve their saved values; explicitly supplied
+                `false` updates the boolean to false. Updating only
+                `sync_config.audnexus_region` preserves `sync_config.dry_run`.
+                Sending `null` for `incremental`, `sync_want_to_read`,
+                `process_unread_books`, `sync_owned`, `include_ebooks`,
+                `dry_run`, or `audnexus_region` is rejected with HTTP 400.
               properties:
                 audiobookshelf_url:
                   type: string
@@ -686,6 +693,16 @@ paths:
                 sync_config:
                   type: object
                   properties:
+                    incremental:
+                      type: boolean
+                    sync_want_to_read:
+                      type: boolean
+                    process_unread_books:
+                      type: boolean
+                    sync_owned:
+                      type: boolean
+                    include_ebooks:
+                      type: boolean
                     audnexus_region:
                       type: string
                       description: Region preference stored for the profile. Supported Audnex draft lookup regions are `us`, `ca`, `uk`, `au`, `de`, `fr`, `es`, `in`, `it`, and `jp`. Unsupported non-empty values normalize to `us`. An explicit empty string clears the saved preference; omission preserves it.

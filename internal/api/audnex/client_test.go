@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -188,9 +189,9 @@ func TestGetBookByASIN_TypedNotFoundAndRateLimit(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			calls := 0
+			var calls atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				calls++
+				calls.Add(1)
 				w.WriteHeader(tt.statusCode)
 			}))
 			defer server.Close()
@@ -203,17 +204,17 @@ func TestGetBookByASIN_TypedNotFoundAndRateLimit(t *testing.T) {
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("expected error matching %v, got %v", tt.want, err)
 			}
-			if calls != 1 {
-				t.Fatalf("expected one request, got %d", calls)
+			if got := calls.Load(); got != 1 {
+				t.Fatalf("expected one request, got %d", got)
 			}
 		})
 	}
 }
 
 func TestGetBookByASIN_RetriesServerErrorsAsTransient(t *testing.T) {
-	calls := 0
+	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		calls++
+		calls.Add(1)
 		w.WriteHeader(http.StatusBadGateway)
 	}))
 	defer server.Close()
@@ -230,15 +231,15 @@ func TestGetBookByASIN_RetriesServerErrorsAsTransient(t *testing.T) {
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadGateway {
 		t.Fatalf("expected typed HTTP 502 error, got %#v", err)
 	}
-	if calls != 3 {
-		t.Fatalf("expected three attempts, got %d", calls)
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("expected three attempts, got %d", got)
 	}
 }
 
 func TestGetBookByASIN_RetriesRequestTimeoutAsTransient(t *testing.T) {
-	calls := 0
+	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		calls++
+		calls.Add(1)
 		w.WriteHeader(http.StatusRequestTimeout)
 	}))
 	defer server.Close()
@@ -255,16 +256,19 @@ func TestGetBookByASIN_RetriesRequestTimeoutAsTransient(t *testing.T) {
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusRequestTimeout {
 		t.Fatalf("expected typed HTTP 408 error, got %#v", err)
 	}
-	if calls != 3 {
-		t.Fatalf("expected three attempts, got %d", calls)
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("expected three attempts, got %d", got)
 	}
 }
 
 func TestDiscoverBookByASIN_TriesPreferredThenStopsOnExactMatch(t *testing.T) {
+	var mu sync.Mutex
 	var regions []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		region := r.URL.Query().Get("region")
+		mu.Lock()
 		regions = append(regions, region)
+		mu.Unlock()
 		if region != "uk" {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -282,16 +286,22 @@ func TestDiscoverBookByASIN_TriesPreferredThenStopsOnExactMatch(t *testing.T) {
 	if book == nil || book.ReleaseDate != "2024-06-01" || region != "uk" {
 		t.Fatalf("expected UK book and release date, got book=%#v region=%q", book, region)
 	}
-	if want := []string{"ca", "us", "uk"}; !reflect.DeepEqual(regions, want) {
-		t.Fatalf("expected preferred and ordered fallback regions %v, got %v", want, regions)
+	mu.Lock()
+	gotRegions := append([]string(nil), regions...)
+	mu.Unlock()
+	if want := []string{"ca", "us", "uk"}; !reflect.DeepEqual(gotRegions, want) {
+		t.Fatalf("expected preferred and ordered fallback regions %v, got %v", want, gotRegions)
 	}
 }
 
 func TestDiscoverBookByASINCanonicalizesLowercaseForLookupAndMatch(t *testing.T) {
+	var mu sync.Mutex
 	var path, region string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		path = r.URL.Path
 		region = r.URL.Query().Get("region")
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"asin":"b0bxjf2lw5","title":"Lowercase response"}`)
 	}))
@@ -305,15 +315,18 @@ func TestDiscoverBookByASINCanonicalizesLowercaseForLookupAndMatch(t *testing.T)
 	if book == nil || foundRegion != "ca" {
 		t.Fatalf("expected exact-ASIN result in ca, got book=%#v region=%q", book, foundRegion)
 	}
-	if path != "/books/B0BXJF2LW5" || region != "ca" {
-		t.Fatalf("expected canonical lookup path and requested region, got path=%q region=%q", path, region)
+	mu.Lock()
+	gotPath, gotRegion := path, region
+	mu.Unlock()
+	if gotPath != "/books/B0BXJF2LW5" || gotRegion != "ca" {
+		t.Fatalf("expected canonical lookup path and requested region, got path=%q region=%q", gotPath, gotRegion)
 	}
 }
 
 func TestGetBookByASINRejectsMalformedAndUnsafeASINWithoutRequest(t *testing.T) {
-	var requests int
+	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		requests++
+		requests.Add(1)
 		w.WriteHeader(http.StatusBadRequest)
 	}))
 	defer server.Close()
@@ -327,15 +340,18 @@ func TestGetBookByASINRejectsMalformedAndUnsafeASINWithoutRequest(t *testing.T) 
 			}
 		})
 	}
-	if requests != 0 {
-		t.Fatalf("expected malformed ASINs to be rejected before HTTP, got %d requests", requests)
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("expected malformed ASINs to be rejected before HTTP, got %d requests", got)
 	}
 }
 
 func TestDiscoverBookByASIN_WrongASINAndFullMissIsUnknown(t *testing.T) {
+	var mu sync.Mutex
 	var regions []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		regions = append(regions, r.URL.Query().Get("region"))
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"asin":"OTHER-ASIN","releaseDate":"2024-06-01"}`)
 	}))
@@ -347,15 +363,18 @@ func TestDiscoverBookByASIN_WrongASINAndFullMissIsUnknown(t *testing.T) {
 		t.Fatalf("expected unknown result, got book=%#v region=%q err=%v", book, region, err)
 	}
 	want := []string{"in", "us", "ca", "uk", "au", "de", "fr", "es", "it", "jp"}
-	if !reflect.DeepEqual(regions, want) {
-		t.Fatalf("expected ten unique regions %v, got %v", want, regions)
+	mu.Lock()
+	gotRegions := append([]string(nil), regions...)
+	mu.Unlock()
+	if !reflect.DeepEqual(gotRegions, want) {
+		t.Fatalf("expected ten unique regions %v, got %v", want, gotRegions)
 	}
 }
 
 func TestDiscoverBookByASIN_RateLimitStopsSweep(t *testing.T) {
-	calls := 0
+	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		calls++
+		calls.Add(1)
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	defer server.Close()
@@ -365,8 +384,8 @@ func TestDiscoverBookByASIN_RateLimitStopsSweep(t *testing.T) {
 	if !errors.Is(err, ErrRateLimited) || book != nil || region != "" {
 		t.Fatalf("expected temporarily unavailable rate-limit result, got book=%#v region=%q err=%v", book, region, err)
 	}
-	if calls != 1 {
-		t.Fatalf("expected sweep to stop after rate limit, got %d requests", calls)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("expected sweep to stop after rate limit, got %d requests", got)
 	}
 }
 
