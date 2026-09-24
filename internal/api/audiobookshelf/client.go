@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
@@ -353,6 +355,52 @@ func (c *Client) GetLibraryItems(ctx context.Context, libraryID string) ([]model
 	}
 
 	return result.Results, nil
+}
+
+// GetLibraryItemByID fetches the expanded Audiobookshelf item with its full
+// metadata and media details.
+func (c *Client) GetLibraryItemByID(ctx context.Context, itemID string) (*models.AudiobookshelfBook, error) {
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return nil, fmt.Errorf("item ID is required")
+	}
+
+	endpoint := "/items/" + url.PathEscape(itemID)
+	reqURL := c.baseURL + apiPath + endpoint + "?expanded=1"
+	log := c.logger.With(map[string]interface{}{
+		"endpoint": endpoint,
+	})
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Audiobookshelf item request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		log.Error("Failed to fetch library item", map[string]interface{}{"error": err.Error()})
+		return nil, fmt.Errorf("failed to fetch Audiobookshelf item %q: %w", itemID, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil, fmt.Errorf("Audiobookshelf returned status %d for item %q", resp.StatusCode, itemID)
+	}
+
+	var item models.AudiobookshelfBook
+	if err := json.NewDecoder(resp.Body).Decode(&item); err != nil {
+		return nil, fmt.Errorf("failed to decode Audiobookshelf item %q: %w", itemID, err)
+	}
+	if item.ID == "" {
+		return nil, fmt.Errorf("Audiobookshelf returned an item without an ID for %q", itemID)
+	}
+	if item.ID != itemID {
+		return nil, fmt.Errorf("Audiobookshelf returned item %q when %q was requested", item.ID, itemID)
+	}
+	return &item, nil
 }
 
 // GetUserProgress fetches the current user's progress data from Audiobookshelf

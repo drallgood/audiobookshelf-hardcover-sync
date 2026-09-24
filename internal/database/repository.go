@@ -736,6 +736,9 @@ func (r *Repository) UpdateUserConfig(profileID, audiobookshelfURL, audiobookshe
 		if syncConfig.TestBookLimit != 0 {
 			finalSyncConfig.TestBookLimit = syncConfig.TestBookLimit
 		}
+		if syncConfig.audnexusRegionSet || syncConfig.AudnexusRegion != "" {
+			finalSyncConfig.AudnexusRegion = syncConfig.AudnexusRegion
+		}
 		if len(syncConfig.Libraries.Include) > 0 {
 			finalSyncConfig.Libraries.Include = syncConfig.Libraries.Include
 		}

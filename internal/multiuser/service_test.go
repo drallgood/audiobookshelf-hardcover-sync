@@ -2,6 +2,7 @@ package multiuser
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1354,6 +1355,66 @@ func TestCreateProfileValidatesComposedStateFilenameLength(t *testing.T) {
 			require.NotNil(t, profile)
 		})
 	}
+}
+
+func TestProfileAudnexusRegionNormalizationAndPersistence(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	const profileID = "audnexus-region-profile"
+
+	require.NoError(t, service.CreateProfile(
+		profileID,
+		"Profile",
+		"http://audiobookshelf",
+		"abs-token",
+		"hc-token",
+		database.SyncConfigData{AudnexusRegion: " JP "},
+	))
+	profile, err := service.GetProfile(profileID)
+	require.NoError(t, err)
+	require.NotNil(t, profile)
+	require.Equal(t, "jp", profile.SyncConfig.AudnexusRegion)
+
+	var clearRegionRequest struct {
+		SyncConfig database.SyncConfigData `json:"sync_config"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(`{"sync_config":{"audnexus_region":""}}`), &clearRegionRequest))
+	require.False(t, clearRegionRequest.SyncConfig.IsEmpty(), "an explicitly empty region is an update")
+	require.NoError(t, service.UpdateProfileConfig(
+		profileID,
+		profile.AudiobookshelfURL,
+		profile.AudiobookshelfToken,
+		profile.HardcoverToken,
+		clearRegionRequest.SyncConfig,
+	))
+	profile, err = service.GetProfile(profileID)
+	require.NoError(t, err)
+	require.NotNil(t, profile)
+	require.Empty(t, profile.SyncConfig.AudnexusRegion)
+	profileConfig := service.createProfileSpecificConfig(profile)
+	require.Empty(t, profileConfig.Audiobookshelf.AudnexusRegion, "runtime should use the default US preference")
+
+	require.NoError(t, service.UpdateProfileConfig(
+		profileID,
+		profile.AudiobookshelfURL,
+		profile.AudiobookshelfToken,
+		profile.HardcoverToken,
+		database.SyncConfigData{AudnexusRegion: "br"},
+	))
+	profile, err = service.GetProfile(profileID)
+	require.NoError(t, err)
+	require.NotNil(t, profile)
+	require.Equal(t, "us", profile.SyncConfig.AudnexusRegion)
+
+	// Existing stored values also pass through the same validation at runtime.
+	legacyProfile := &database.ProfileWithTokens{
+		Profile:    database.SyncProfile{ID: "legacy-region-profile"},
+		SyncConfig: database.SyncConfigData{AudnexusRegion: "ES"},
+	}
+	profileConfig = service.createProfileSpecificConfig(legacyProfile)
+	require.Equal(t, "es", profileConfig.Audiobookshelf.AudnexusRegion)
+	legacyProfile.SyncConfig.AudnexusRegion = "br"
+	profileConfig = service.createProfileSpecificConfig(legacyProfile)
+	require.Equal(t, "us", profileConfig.Audiobookshelf.AudnexusRegion)
 }
 
 func TestStartSyncRejectsStoredStateFileWithOverlongComponent(t *testing.T) {

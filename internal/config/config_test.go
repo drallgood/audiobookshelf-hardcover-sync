@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -198,14 +199,16 @@ func TestLoadConfig_WithAudnexusRegion(t *testing.T) {
 	t.Setenv("AUDIOBOOKSHELF_URL", "https://example.com/audiobookshelf")
 	t.Setenv("AUDIOBOOKSHELF_TOKEN", "test-audiobookshelf-token")
 	t.Setenv("HARDCOVER_TOKEN", "test-hardcover-token")
-	t.Setenv("AUDIOBOOKSHELF_AUDNEXUS_REGION", "ca")
+	t.Setenv("AUDIOBOOKSHELF_AUDNEXUS_REGION", " JP ")
 
-	// Minimal YAML that omits audnexus_region to test env var path
+	// The environment value overrides the file value and is normalized after
+	// both sources have been loaded.
 	yamlContent := `server:
   port: "8080"
 audiobookshelf:
   url: "https://example.com/audiobookshelf"
   token: "test-audiobookshelf-token"
+  audnexus_region: "de"
 hardcover:
   token: "test-hardcover-token"
 `
@@ -222,8 +225,8 @@ hardcover:
 	cfg, err := Load(tmpfile.Name())
 	require.NoError(t, err)
 
-	assert.Equal(t, "ca", cfg.Audiobookshelf.AudnexusRegion,
-		"AudnexusRegion should be 'ca' from env var")
+	assert.Equal(t, "jp", cfg.Audiobookshelf.AudnexusRegion,
+		"AudnexusRegion should be normalized from the overriding environment value")
 }
 
 func TestLoadConfig_WithAudnexusRegionFromYAML(t *testing.T) {
@@ -231,6 +234,7 @@ func TestLoadConfig_WithAudnexusRegionFromYAML(t *testing.T) {
 	t.Setenv("AUDIOBOOKSHELF_URL", "https://example.com/audiobookshelf")
 	t.Setenv("AUDIOBOOKSHELF_TOKEN", "test-audiobookshelf-token")
 	t.Setenv("HARDCOVER_TOKEN", "test-hardcover-token")
+	t.Setenv("AUDIOBOOKSHELF_AUDNEXUS_REGION", "")
 
 	// YAML with audnexus_region set
 	yamlContent := `server:
@@ -238,7 +242,7 @@ func TestLoadConfig_WithAudnexusRegionFromYAML(t *testing.T) {
 audiobookshelf:
   url: "https://example.com/audiobookshelf"
   token: "test-audiobookshelf-token"
-  audnexus_region: "uk"
+  audnexus_region: "UK"
 hardcover:
   token: "test-hardcover-token"
 `
@@ -256,7 +260,28 @@ hardcover:
 	require.NoError(t, err)
 
 	assert.Equal(t, "uk", cfg.Audiobookshelf.AudnexusRegion,
-		"AudnexusRegion should be 'uk' from YAML config")
+		"AudnexusRegion should be lowercase from YAML config")
+}
+
+func TestLoadConfig_UnsupportedAudnexusRegionFallsBackToUS(t *testing.T) {
+	t.Setenv("AUDIOBOOKSHELF_URL", "https://example.com/audiobookshelf")
+	t.Setenv("AUDIOBOOKSHELF_TOKEN", "test-audiobookshelf-token")
+	t.Setenv("HARDCOVER_TOKEN", "test-hardcover-token")
+	t.Setenv("AUDIOBOOKSHELF_AUDNEXUS_REGION", "br")
+
+	cfg, err := Load("")
+	require.NoError(t, err)
+	assert.Equal(t, "us", cfg.Audiobookshelf.AudnexusRegion)
+}
+
+func TestNormalizeAudnexusRegionSupportsConfiguredRegions(t *testing.T) {
+	for _, region := range []string{"us", "ca", "uk", "au", "de", "fr", "es", "in", "it", "jp"} {
+		t.Run(region, func(t *testing.T) {
+			normalized, valid := NormalizeAudnexusRegion(strings.ToUpper(region))
+			assert.True(t, valid)
+			assert.Equal(t, region, normalized)
+		})
+	}
 }
 
 func TestLoadConfig_DefaultAudnexusRegion(t *testing.T) {
@@ -264,6 +289,7 @@ func TestLoadConfig_DefaultAudnexusRegion(t *testing.T) {
 	t.Setenv("AUDIOBOOKSHELF_URL", "https://example.com/audiobookshelf")
 	t.Setenv("AUDIOBOOKSHELF_TOKEN", "test-audiobookshelf-token")
 	t.Setenv("HARDCOVER_TOKEN", "test-hardcover-token")
+	t.Setenv("AUDIOBOOKSHELF_AUDNEXUS_REGION", "")
 
 	yamlContent := `server:
   port: "8080"

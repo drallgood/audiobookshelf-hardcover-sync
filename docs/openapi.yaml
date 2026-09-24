@@ -44,6 +44,8 @@ tags:
     description: Control sync operations
   - name: Status
     description: Check sync status
+  - name: Edition Draft
+    description: Prepare read-only edition candidates from Audiobookshelf source metadata
 
 components:
   securitySchemes:
@@ -127,7 +129,7 @@ components:
         audiobookshelfUrl:
           type: string
           example: "https://audiobooks.example.com"
-        syncConfig:
+        sync_config:
           type: object
           properties:
             libraryId:
@@ -143,6 +145,9 @@ components:
               items:
                 type: string
               example: ["exclusive"]
+            audnexus_region:
+              type: string
+              description: Preferred Audnex region for the profile. Recognized values are `us`, `ca`, `uk`, `au`, `de`, `fr`, `es`, `in`, `it`, and `jp`; `br` is not an Audnex lookup region. Non-empty values are trimmed and lowercased; unsupported values warn and normalize to `us`. An explicit empty string for `sync_config.audnexus_region` clears the preference to the US lookup default; omitting `audnexus_region` from a profile update preserves the saved value.
             state_file:
               type: string
               description: Optional relative state-file path. Absolute paths and relative paths that lexically escape the effective data directory are rejected; when paths.data_dir is empty, /data is used. The profile-specific filename component, including the encoded profile ID, must fit the supported 255-byte baseline.
@@ -158,7 +163,160 @@ components:
           properties:
             config:
               $ref: '#/components/schemas/ProfileConfig'
-    
+
+    EditionSourceDraft:
+      type: object
+      description: Read-only edition candidate built from one expanded Audiobookshelf item. The handler reads Audiobookshelf and may read Audnex; it makes no Hardcover requests and performs no catalogue mutation. `metadata_preview` is present only for audiobooks, and `ebook_candidate` is present only for ebooks.
+      required: [abs_item_id, reading_format, dry_run, eligible, source_identifiers]
+      properties:
+        abs_item_id:
+          type: string
+          description: Audiobookshelf library item ID used for this draft.
+        reading_format:
+          type: string
+          enum: [audiobook, ebook]
+          description: Format inferred from the expanded Audiobookshelf item.
+        dry_run:
+          type: boolean
+          description: The profile's sync dry-run setting. This draft endpoint itself remains read-only regardless of this value.
+        eligible:
+          type: boolean
+          description: True when a non-empty source ASIN or an ISBN accepted by shape is available. An ISBN with a bad checksum remains a candidate with a validity warning, so checksum warnings do not by themselves make an ISBN-shaped value ineligible.
+        ineligible_reason:
+          type: string
+          description: Present when the source item has neither a non-empty ASIN nor an ISBN accepted by shape; author or date warnings do not change eligibility.
+        source_identifiers:
+          $ref: '#/components/schemas/EditionDraftSourceIdentifiers'
+        region_status:
+          type: string
+          enum: [confirmed, unknown, temporarily_unavailable, not_applicable]
+          description: Audiobook source-ASIN lookup state. `confirmed` means Audnex returned the same ASIN in the reported region; `unknown` means the supported-region sweep completed without a matching ASIN; `temporarily_unavailable` means a rate-limit or transient error stopped the sweep; `not_applicable` means an audiobook has no source ASIN. Omitted for ebooks.
+        confirmed_region:
+          type: string
+          enum: [us, ca, uk, au, de, fr, es, in, it, jp]
+          description: Audnex region that returned the exact source ASIN. Omitted unless the region is confirmed; it is not inferred from the configured preference.
+        audible_identifier_candidate:
+          $ref: '#/components/schemas/AudibleIdentifierCandidate'
+        metadata_preview:
+          $ref: '#/components/schemas/AudiobookMetadataPreview'
+        ebook_candidate:
+          $ref: '#/components/schemas/EbookEditionCandidate'
+        warnings:
+          type: array
+          description: >-
+            Non-fatal source or draft issues. Retryable Audnex failures are
+            returned here with `retryable: true` and a
+            `temporarily_unavailable` region status; they do not cause a
+            guessed region to be returned.
+          items:
+            $ref: '#/components/schemas/EditionDraftWarning'
+
+    EditionDraftSourceIdentifiers:
+      type: object
+      description: Trimmed source identifiers read from Audiobookshelf. The ASIN is the bare source value and never includes a region suffix; the source ISBN retains its formatting apart from surrounding whitespace.
+      properties:
+        asin:
+          type: string
+          description: Bare Audiobookshelf ASIN. A confirmed marketplace and a submitted regional identifier are represented separately.
+        isbn:
+          type: string
+          description: Audiobookshelf's source ISBN, trimmed but otherwise unchanged.
+
+    AudibleIdentifierCandidate:
+      type: object
+      description: Audiobook identifier candidate. Present for audiobooks, including when no source ASIN is available. The ASIN remains the bare source value; region is empty when Audnex has not confirmed a marketplace, so clients must not assume US. This candidate does not write `edition.asin` or create a Hardcover mapping.
+      required: [asin, region, correction_allowed]
+      properties:
+        asin:
+          type: string
+          description: Bare source ASIN when present. Empty when the ABS item has no ASIN.
+        region:
+          type: string
+          description: Confirmed Audnex region, or an empty string when unknown, temporarily unavailable, or not applicable. A later user correction may supply a regional Audible identifier, including the Audible-only `br` region.
+        correction_allowed:
+          type: boolean
+          description: Whether the regional Audible identifier can be corrected in a later add-edition workflow.
+
+    EditionDraftISBNFields:
+      type: object
+      properties:
+        isbn_10:
+          type: string
+          description: Normalized ISBN-10 candidate when available. A counterpart is present only when it can be derived from a valid source checksum.
+        isbn_13:
+          type: string
+          description: Normalized ISBN-13 candidate when available. A counterpart is present only when it can be derived from a valid source checksum.
+        isbn_10_valid:
+          type: boolean
+          description: Checksum validity for the ISBN-10 value when present.
+        isbn_13_valid:
+          type: boolean
+          description: Checksum validity for the ISBN-13 value when present.
+
+    AudiobookMetadataPreview:
+      allOf:
+        - $ref: '#/components/schemas/EditionDraftISBNFields'
+        - type: object
+          description: Read-only audiobook metadata preview. The fields are not editable through this endpoint.
+          required: [title, edition_information, audio_seconds]
+          properties:
+            title: {type: string}
+            subtitle: {type: string}
+            author: {type: string}
+            narrator: {type: string}
+            publisher: {type: string}
+            description: {type: string}
+            language: {type: string}
+            release_date:
+              type: string
+              format: date
+              description: Audnex release date for the confirmed source ASIN region when available; otherwise the Audiobookshelf published date, then year-only fallback.
+            edition_format: {type: string}
+            edition_information:
+              type: string
+              enum: [Abridged, Unabridged]
+            audio_seconds: {type: integer}
+
+    EbookEditionCandidate:
+      allOf:
+        - $ref: '#/components/schemas/EditionDraftISBNFields'
+        - type: object
+          description: Ebook candidate fields suitable for a later format-aware add-edition workflow. This GET endpoint does not accept edits or create an edition.
+          required: [title, edition_format, corrected_isbn]
+          properties:
+            title: {type: string}
+            subtitle: {type: string}
+            author: {type: string}
+            asin:
+              type: string
+              description: Source Kindle ASIN when present.
+            release_date:
+              type: string
+              format: date
+              description: Normalized Audiobookshelf published date, falling back to published year when available.
+            edition_format:
+              type: string
+              enum: [Ebook]
+              description: Fixed to `Ebook` for an ebook candidate.
+            corrected_isbn:
+              type: string
+              description: Optional replacement ISBN slot; empty in the source draft until a user or client supplies a correction to a later workflow.
+
+    EditionDraftWarning:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [missing_identifier, invalid_isbn, date_unavailable, missing_author, language_defaults_to_english, published_date_unrecognized, unsupported_audnex_region, audnex_temporarily_unavailable, audnex_date_unrecognized]
+          description: Current warning code identifying the source or draft issue. `invalid_isbn` covers unsupported ISBN shape and a bad checksum; a bad-checksum ISBN that has a supported shape remains eligible, with its validity flag false.
+        message:
+          type: string
+          description: Human-readable detail for this warning.
+        retryable:
+          type: boolean
+          description: Present and true when the caller can retry after a temporary Audnex failure; omitted for non-retryable warnings.
+
     AggregateSyncStatus:
       type: object
       description: Scalar status exposed by the public aggregate status endpoint. Per-book arrays are available from the authenticated run-details endpoint.
@@ -380,8 +538,8 @@ paths:
                 hardcoverToken:
                   type: string
                   example: "hc-token-456"
-                syncConfig:
-                  $ref: '#/components/schemas/ProfileConfig/syncConfig'
+                sync_config:
+                  $ref: '#/components/schemas/ProfileConfig/properties/sync_config'
       responses:
         '201':
           description: Profile created successfully
@@ -524,8 +682,8 @@ paths:
                 hardcoverToken:
                   type: string
                   example: "new-hc-token-456"
-                syncConfig:
-                  $ref: '#/components/schemas/ProfileConfig/syncConfig'
+                sync_config:
+                  $ref: '#/components/schemas/ProfileConfig/properties/sync_config'
       responses:
         '200':
           description: Configuration updated successfully
@@ -573,6 +731,80 @@ paths:
                     $ref: '#/components/schemas/SyncSnapshot'
         '404':
           description: Profile, active run, or retained run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /profiles/{id}/edition-drafts/source/{itemID}:
+    get:
+      tags: [Edition Draft]
+      summary: Prepare a read-only edition draft from an Audiobookshelf item
+      description: >-
+        Fetches the expanded Audiobookshelf item and, for an audiobook with a
+        source ASIN, may check Audnex across its supported regions. A complete
+        region miss is returned as `unknown`; a rate limit or transient
+        discovery failure is returned as `temporarily_unavailable` with a
+        retryable warning. A legacy unsupported region preference warns and
+        uses US. The endpoint makes no Hardcover requests and performs no
+        catalogue writes. Audiobook metadata is preview-only; ebook fields are
+        returned as candidates.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+          example: profile-123
+        - name: itemID
+          in: path
+          required: true
+          schema: {type: string}
+          description: Audiobookshelf library item ID.
+          example: li_8gch9ve09orgn4fdz8
+      responses:
+        '200':
+          description: Source edition draft, including eligibility and any non-fatal warnings.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: {type: boolean, enum: [true]}
+                  data:
+                    $ref: '#/components/schemas/EditionSourceDraft'
+        '400':
+          description: Required profile or Audiobookshelf item ID is missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication is required when authentication is enabled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The profile is unavailable to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: The profile could not be retrieved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: The Audiobookshelf item lookup failed, including when the item was not found upstream, or Audnex returned a non-retryable error. Audnex rate-limit and transient region-discovery failures instead return a successful draft with a retryable warning.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: Retrieving the Audiobookshelf item timed out.
           content:
             application/json:
               schema:

@@ -3,8 +3,10 @@ package audnex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
@@ -16,6 +18,49 @@ type Client struct {
 	baseURL    string
 	logger     *logger.Logger
 }
+
+var (
+	// ErrNotFound identifies an Audnex response indicating that a book is absent
+	// from the requested region.
+	ErrNotFound = errors.New("Audnex book not found")
+	// ErrRateLimited identifies an Audnex rate-limit response.
+	ErrRateLimited = errors.New("Audnex rate limited")
+	// ErrTransient identifies a request that failed temporarily after retries.
+	ErrTransient = errors.New("Audnex request temporarily unavailable")
+)
+
+// APIError describes a typed Audnex API failure. Use errors.Is with
+// ErrNotFound, ErrRateLimited, or ErrTransient to classify it.
+type APIError struct {
+	Kind       error
+	StatusCode int
+	Err        error
+}
+
+func (e *APIError) Error() string {
+	if e.Err != nil {
+		if e.StatusCode != 0 {
+			return fmt.Sprintf("%s (HTTP %d): %v", e.Kind, e.StatusCode, e.Err)
+		}
+		return fmt.Sprintf("%s: %v", e.Kind, e.Err)
+	}
+	if e.StatusCode != 0 {
+		return fmt.Sprintf("%s (HTTP %d)", e.Kind, e.StatusCode)
+	}
+	return e.Kind.Error()
+}
+
+// Unwrap exposes both the classification sentinel and the underlying cause.
+func (e *APIError) Unwrap() []error {
+	if e.Err == nil {
+		return []error{e.Kind}
+	}
+	return []error{e.Kind, e.Err}
+}
+
+const regionDiscoveryTimeout = 30 * time.Second
+
+var audnexRegions = [...]string{"us", "ca", "uk", "au", "de", "fr", "es", "in", "it", "jp"}
 
 // Author represents an author from the Audnex API
 type Author struct {
@@ -144,6 +189,7 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 	const maxRetries = 3
 	const initialBackoff = 500 * time.Millisecond
 	var lastErr error
+	var lastStatusCode int
 
 	// Retry loop
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -161,7 +207,7 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 			// Check if context is cancelled before sleeping
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return nil, classifyContextError(ctx.Err())
 			case <-time.After(backoff):
 				// Continue with retry
 			}
@@ -175,28 +221,49 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
+			lastStatusCode = 0
 			lastErr = fmt.Errorf("failed to make request: %w", err)
 			continue // Retry on network errors
 		}
 
-		// Always close response body
-		defer resp.Body.Close()
-
-		// Only retry on 5xx server errors
-		if resp.StatusCode >= 500 && resp.StatusCode < 600 {
-			c.logger.Warn("Received server error from Audnex API", map[string]interface{}{
+		// Retry server errors and request timeouts. GET is safe to retry, and
+		// Audnex 408 responses indicate a temporary failure rather than a bad
+		// request for this region.
+		if resp.StatusCode == http.StatusRequestTimeout || (resp.StatusCode >= 500 && resp.StatusCode < 600) {
+			lastStatusCode = resp.StatusCode
+			_ = resp.Body.Close()
+			c.logger.Warn("Received retryable response from Audnex API", map[string]interface{}{
 				"method":      "GetBookByASIN",
 				"asin":        asin,
 				"region":      region,
 				"status_code": resp.StatusCode,
 				"attempt":     attempt + 1,
 			})
-			lastErr = fmt.Errorf("received server error response: %d", resp.StatusCode)
-			continue // Retry on server errors
+			lastErr = fmt.Errorf("received retryable response: %d", resp.StatusCode)
+			continue
 		}
 
 		// Don't retry on client errors (4xx)
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusNotFound {
+				c.logger.Debug("Audnex book was not found in region", map[string]interface{}{
+					"method":      "GetBookByASIN",
+					"asin":        asin,
+					"region":      region,
+					"status_code": resp.StatusCode,
+				})
+				return nil, &APIError{Kind: ErrNotFound, StatusCode: resp.StatusCode}
+			}
+			if resp.StatusCode == http.StatusTooManyRequests {
+				c.logger.Warn("Audnex rate limit reached", map[string]interface{}{
+					"method":      "GetBookByASIN",
+					"asin":        asin,
+					"region":      region,
+					"status_code": resp.StatusCode,
+				})
+				return nil, &APIError{Kind: ErrRateLimited, StatusCode: resp.StatusCode}
+			}
 			c.logger.Error("Received client error response", map[string]interface{}{
 				"method":      "GetBookByASIN",
 				"asin":        asin,
@@ -210,8 +277,10 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 		if resp.StatusCode == http.StatusOK {
 			var book Book
 			if err := json.NewDecoder(resp.Body).Decode(&book); err != nil {
+				_ = resp.Body.Close()
 				return nil, fmt.Errorf("failed to decode response: %w", err)
 			}
+			_ = resp.Body.Close()
 
 			// Log success after retries if this wasn't the first attempt
 			if attempt > 0 {
@@ -225,6 +294,7 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 		}
 
 		// Unexpected status code
+		_ = resp.Body.Close()
 		c.logger.Error("Received unexpected response", map[string]interface{}{
 			"method":      "GetBookByASIN",
 			"asin":        asin,
@@ -235,11 +305,83 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 	}
 
 	// If we get here, we've exhausted all retries
+	if lastErr == nil {
+		lastErr = errors.New("request attempts exhausted")
+	}
 	c.logger.Error("Exhausted all retries for Audnex API request", map[string]interface{}{
 		"method":      "GetBookByASIN",
 		"asin":        asin,
 		"max_retries": maxRetries,
 		"error":       lastErr.Error(),
 	})
-	return nil, fmt.Errorf("failed after %d retries: %w", maxRetries, lastErr)
+	return nil, &APIError{
+		Kind:       ErrTransient,
+		StatusCode: lastStatusCode,
+		Err:        fmt.Errorf("failed after %d attempts: %w", maxRetries, lastErr),
+	}
+}
+
+// DiscoverBookByASIN searches the preferred Audnex region first, then each
+// remaining supported region once. A successful result is returned only when
+// Audnex reports the requested ASIN exactly. A completed sweep with no match
+// returns a nil book, empty region, and nil error; rate limits and transient
+// failures stop the sweep and return a typed error. The 30-second overall
+// deadline includes each region's request retries and can be shortened by ctx.
+func (c *Client) DiscoverBookByASIN(ctx context.Context, asin, preferredRegion string) (*Book, string, error) {
+	if asin == "" {
+		return nil, "", fmt.Errorf("ASIN is required")
+	}
+
+	preferredRegion = strings.ToLower(strings.TrimSpace(preferredRegion))
+	if !isAudnexRegion(preferredRegion) {
+		preferredRegion = "us"
+	}
+
+	discoveryCtx, cancel := context.WithTimeout(ctx, regionDiscoveryTimeout)
+	defer cancel()
+
+	regions := make([]string, 0, len(audnexRegions))
+	regions = append(regions, preferredRegion)
+	for _, region := range audnexRegions {
+		if region != preferredRegion {
+			regions = append(regions, region)
+		}
+	}
+
+	for _, region := range regions {
+		book, err := c.GetBookByASIN(discoveryCtx, asin, region)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			if errors.Is(err, ErrRateLimited) || errors.Is(err, ErrTransient) {
+				return nil, "", err
+			}
+			return nil, "", err
+		}
+		if book != nil && book.ASIN == asin {
+			return book, region, nil
+		}
+	}
+
+	if err := discoveryCtx.Err(); err != nil {
+		return nil, "", classifyContextError(err)
+	}
+	return nil, "", nil
+}
+
+func isAudnexRegion(region string) bool {
+	for _, candidate := range audnexRegions {
+		if region == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func classifyContextError(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return &APIError{Kind: ErrTransient, Err: err}
+	}
+	return err
 }

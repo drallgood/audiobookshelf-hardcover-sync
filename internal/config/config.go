@@ -84,7 +84,7 @@ type Config struct {
 		URL string `yaml:"url" env:"AUDIOBOOKSHELF_URL"`
 		// Token is the API token for Audiobookshelf
 		Token string `yaml:"token" env:"AUDIOBOOKSHELF_TOKEN"`
-		// AudnexusRegion is the region for Audnexus API calls (ca, uk, au, de, fr, us)
+		// AudnexusRegion is the preferred region for Audnex API calls (us, ca, uk, au, de, fr, es, in, it, jp).
 		AudnexusRegion string `yaml:"audnexus_region" env:"AUDIOBOOKSHELF_AUDNEXUS_REGION"`
 	} `yaml:"audiobookshelf"`
 
@@ -279,6 +279,23 @@ func DefaultConfig() *Config {
 	return cfg
 }
 
+// NormalizeAudnexusRegion lowercases and validates an Audnex region preference.
+// An empty value remains empty so callers can apply their default. Unsupported
+// values resolve to US and return false.
+func NormalizeAudnexusRegion(region string) (string, bool) {
+	region = strings.ToLower(strings.TrimSpace(region))
+	if region == "" {
+		return "", true
+	}
+
+	switch region {
+	case "us", "ca", "uk", "au", "de", "fr", "es", "in", "it", "jp":
+		return region, true
+	default:
+		return "us", false
+	}
+}
+
 func Load(configPath string) (*Config, error) {
 	// Start with default configuration
 	cfg := DefaultConfig()
@@ -423,14 +440,14 @@ func (c *Config) Validate() error {
 		fmt.Printf("Warning: Invalid sync interval, using default: %s\n", c.Sync.SyncInterval)
 	}
 
-	// Validate audnexus region
-	if c.Audiobookshelf.AudnexusRegion != "" {
-		validRegions := map[string]bool{"us": true, "ca": true, "uk": true, "au": true, "de": true, "fr": true}
-		if !validRegions[strings.ToLower(c.Audiobookshelf.AudnexusRegion)] {
-			fmt.Printf("Warning: Unknown audnexus_region '%s'. Valid values: us, ca, uk, au, de, fr\n",
-				c.Audiobookshelf.AudnexusRegion)
-		}
+	// Normalize and validate the region only after defaults, file values and
+	// environment overrides have all been applied.
+	region, valid := NormalizeAudnexusRegion(c.Audiobookshelf.AudnexusRegion)
+	if !valid {
+		fmt.Printf("Warning: Unknown audnexus_region '%s'. Valid values: us, ca, uk, au, de, fr, es, in, it, jp. Using us.\n",
+			c.Audiobookshelf.AudnexusRegion)
 	}
+	c.Audiobookshelf.AudnexusRegion = region
 
 	// Validate minimum progress is between 0 and 1
 	if c.Sync.MinimumProgress < 0 || c.Sync.MinimumProgress > 1 {

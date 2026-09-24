@@ -403,6 +403,50 @@ func TestCreateProfileValidatesIDs(t *testing.T) {
 	}
 }
 
+func TestUpdateProfileConfigClearsAudnexusPreferenceToDefault(t *testing.T) {
+	fixture := newStatusServiceFixture(t, "http://hardcover.invalid")
+	const profileID = "audnexus-clear-profile"
+	require.NoError(t, fixture.repo.CreateProfile(
+		profileID,
+		"Audnex region profile",
+		"http://audiobookshelf.invalid",
+		"abs-token",
+		"hardcover-token",
+		database.SyncConfigData{AudnexusRegion: "jp"},
+	))
+
+	handler := NewHandler(fixture.multiUser, logger.Get())
+	routes := http.NewServeMux()
+	routes.HandleFunc("PUT /api/profiles/{id}/config", handler.UpdateProfileConfig)
+	omittedRegionResponse := httptest.NewRecorder()
+	routes.ServeHTTP(omittedRegionResponse, httptest.NewRequest(
+		http.MethodPut,
+		"/api/profiles/"+profileID+"/config",
+		strings.NewReader(`{"audiobookshelf_url":"http://updated.invalid"}`),
+	))
+	require.Equal(t, http.StatusOK, omittedRegionResponse.Code, omittedRegionResponse.Body.String())
+	profile, err := fixture.multiUser.GetProfile(profileID)
+	require.NoError(t, err)
+	require.NotNil(t, profile)
+	require.Equal(t, "jp", profile.SyncConfig.AudnexusRegion, "omitted fields preserve the saved preference")
+
+	response := httptest.NewRecorder()
+	routes.ServeHTTP(response, httptest.NewRequest(
+		http.MethodPut,
+		"/api/profiles/"+profileID+"/config",
+		strings.NewReader(`{"sync_config":{"audnexus_region":""}}`),
+	))
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+
+	profile, err = fixture.multiUser.GetProfile(profileID)
+	require.NoError(t, err)
+	require.NotNil(t, profile)
+	require.Empty(t, profile.SyncConfig.AudnexusRegion)
+	preferredRegion, supported := supportedAudnexPreference(profile.SyncConfig.AudnexusRegion)
+	require.True(t, supported)
+	require.Equal(t, "us", preferredRegion, "the next draft should use the default US preference")
+}
+
 func TestProfileStateFilenameValidationAtHTTPBoundary(t *testing.T) {
 	fixture := newStatusServiceFixture(t, "http://hardcover.invalid")
 	handler := NewHandler(fixture.multiUser, logger.Get())

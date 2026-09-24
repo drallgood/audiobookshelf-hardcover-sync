@@ -67,6 +67,7 @@ Existing single-profile setups are **automatically migrated** on first startup:
 | `DELETE` | `/api/profiles/{id}` | Delete profile |
 | `PUT` | `/api/profiles/{id}/config` | Update profile configuration |
 | `GET` | `/api/profiles/{id}/runs/{runId}/details` | Get book-level details for a retained sync run |
+| `GET` | `/api/profiles/{id}/edition-drafts/source/{itemID}` | Prepare a read-only edition draft from an Audiobookshelf item |
 | `POST` | `/api/profiles/{id}/sync` | Start sync |
 | `DELETE` | `/api/profiles/{id}/sync` | Cancel sync |
 | `GET` | `/api/status` | All profile statuses |
@@ -107,6 +108,22 @@ history return `404`. Clients can filter `book_outcomes` for `needs_review`,
 `not_found`, and `failed` records. `last_attempted_at` includes dry-run,
 failed, and canceled attempts; `last_successful_at` is updated only by a
 successful non-dry-run completion.
+
+### Read-only edition draft
+
+API clients can request
+`GET /api/profiles/{id}/edition-drafts/source/{itemID}` for an expanded
+Audiobookshelf item. The response reports whether source identifiers are
+available for a later add-edition flow and includes candidate fields and
+warnings. The endpoint reads ABS and may read Audnex, but does not call
+Hardcover, accept edits, or create an edition. Audiobook drafts preserve the
+bare Audiobookshelf ASIN separately from any confirmed Audnex region and
+distinguish confirmed, unknown, temporarily unavailable, and not-applicable
+region results. Audiobook metadata is preview-only; ebook drafts return
+candidate fields, including an empty corrected-ISBN slot. If Audnex is
+temporarily unavailable, the response includes a retryable warning; retry the
+GET request. A completed lookup with no matching region remains unknown and
+does not silently choose US.
 
 ### Environment Variables (Multi-Profile)
 
@@ -681,6 +698,7 @@ The application supports two distinct operating modes controlled by the `enable_
 - `ENABLE_WEB_UI`: Enable/disable web UI (`true`/`false`, default: `false`)
 - `AUDIOBOOKSHELF_URL`: Audiobookshelf server URL (required)
 - `AUDIOBOOKSHELF_TOKEN`: Audiobookshelf API token (required for single-user mode)
+- `AUDIOBOOKSHELF_AUDNEXUS_REGION`: Preferred Audnex lookup region for single-user configuration (`us`, `ca`, `uk`, `au`, `de`, `fr`, `es`, `in`, `it`, or `jp`; defaults to US when unset)
 - `HARDCOVER_TOKEN`: Hardcover API token (required for single-user mode)
 
 #### Config File
@@ -694,6 +712,7 @@ server:
 audiobookshelf:
   url: "https://audiobookshelf.example.com"
   token: "your-audiobookshelf-token"
+  audnexus_region: "uk"  # Optional preferred Audnex lookup region
 
 hardcover:
   token: "your-hardcover-token"
@@ -704,6 +723,7 @@ hardcover:
 | `CONFIG_PATH` | Path to config file | - | `./config.yaml` |
 | `AUDIOBOOKSHELF_URL` | URL of your AudiobookShelf instance | `audiobookshelf.url` | Legacy mode only |
 | `AUDIOBOOKSHELF_TOKEN` | AudiobookShelf API token | `audiobookshelf.token` | Legacy mode only |
+| `AUDIOBOOKSHELF_AUDNEXUS_REGION` | Preferred Audnex lookup region (`us`, `ca`, `uk`, `au`, `de`, `fr`, `es`, `in`, `it`, or `jp`) | `audiobookshelf.audnexus_region` | Legacy single-user configuration; overrides YAML when set; trims whitespace and lowercases. Unsupported non-empty values warn and use `us`; default preference is `us`. |
 | `HARDCOVER_TOKEN` | Hardcover API token | `hardcover.token` | Legacy mode only |
 | `HARDCOVER_BASE_URL` | Hardcover API base URL | `hardcover.base_url` | Override default endpoint |
 | `RATE_LIMIT_RATE` | Min time between requests | `rate_limit.rate` | e.g. `2s` (30 rpm) |
@@ -714,6 +734,15 @@ hardcover:
 | `SYNC_LIBRARIES_EXCLUDE` | Comma-separated list of libraries to exclude | `sync.libraries.exclude` | Legacy mode only |
 
 > **💡 Tip**: For new installations, use the multi-user web interface instead of environment variables. Legacy environment variables are automatically migrated to the multi-user database on first startup.
+
+The same ten-region preference is available in each profile's Audiobookshelf
+configuration. Values are trimmed and lowercased; an unsupported value is
+replaced with `us` and logged as a warning. An empty preference uses US at
+lookup. The preference chooses the first
+Audnex marketplace to check; it does not claim that the source ASIN belongs to
+that marketplace. In a profile configuration update, an explicit
+`sync_config.audnexus_region: ""` clears the saved preference to the US lookup
+default; omitting `audnexus_region` preserves the existing preference.
 
 #### Volume Mounts
 
@@ -901,7 +930,9 @@ If sync reports:
 
 it means the app could not confidently match your AudiobookShelf item to a specific Hardcover audiobook edition.
 
-Important: The web UI currently shows this warning but does not include a one-click "link edition" action yet.
+The web UI does not include a one-click "link edition" action. API clients can
+request a read-only draft for an Audiobookshelf item using the profile-scoped
+edition-draft endpoint listed above.
 
 Use this workflow:
 

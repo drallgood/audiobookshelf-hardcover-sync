@@ -12,6 +12,7 @@ import (
 type AudiobookshelfClientInterface interface {
 	GetLibraries(ctx context.Context) ([]AudiobookshelfLibrary, error)
 	GetLibraryItems(ctx context.Context, libraryID string) ([]models.AudiobookshelfBook, error)
+	GetLibraryItemByID(ctx context.Context, itemID string) (*models.AudiobookshelfBook, error)
 	GetUserProgress(ctx context.Context) (*models.AudiobookshelfUserProgress, error)
 	GetListeningSessions(ctx context.Context, since time.Time) ([]models.AudiobookshelfBook, error)
 }

@@ -1,6 +1,8 @@
 package database
 
 import (
+	"encoding/json"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -114,9 +116,33 @@ type SyncConfigData struct {
 	TestBookFilter     string  `json:"test_book_filter"`
 	TestBookLimit      int     `json:"test_book_limit"`
 	AudnexusRegion     string  `json:"audnexus_region"`
+	audnexusRegionSet  bool
 }
 
-// IsEmpty checks if the SyncConfigData is empty (all fields at their zero values)
+// UnmarshalJSON records whether audnexus_region was sent so profile updates
+// can distinguish an explicit empty value (reset to the default) from omission.
+func (s *SyncConfigData) UnmarshalJSON(data []byte) error {
+	type syncConfigAlias SyncConfigData
+	decoded := syncConfigAlias(*s)
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*s = SyncConfigData(decoded)
+	s.audnexusRegionSet = false
+	for name := range fields {
+		if strings.EqualFold(name, "audnexus_region") {
+			s.audnexusRegionSet = true
+			break
+		}
+	}
+	return nil
+}
+
+// IsEmpty checks whether SyncConfigData contains no provided values.
 func (s SyncConfigData) IsEmpty() bool {
 	return !s.Incremental &&
 		s.StateFile == "" &&
@@ -132,7 +158,8 @@ func (s SyncConfigData) IsEmpty() bool {
 		!s.DryRun &&
 		s.TestBookFilter == "" &&
 		s.TestBookLimit == 0 &&
-		s.AudnexusRegion == ""
+		s.AudnexusRegion == "" &&
+		!s.audnexusRegionSet
 }
 
 // BeforeCreate hook for SyncProfile

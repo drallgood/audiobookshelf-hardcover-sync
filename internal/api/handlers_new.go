@@ -21,6 +21,13 @@ type Handler struct {
 	multiUserService *multiuser.MultiUserService
 	log              logger.Logger
 	authEnabled      bool
+
+	// The factory keeps Audnex region discovery at its external boundary for
+	// focused HTTP tests. Production clients are constructed in the source-draft
+	// handler when this factory is nil.
+	editionDraftAudnexClientFactory func() editionDraftAudnexDiscoverer
+	// A nonzero timeout overrides the source-draft handler's production budget.
+	editionDraftRequestTimeout time.Duration
 }
 
 // NewHandler creates a new API handler.
