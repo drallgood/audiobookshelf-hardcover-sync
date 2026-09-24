@@ -1,4 +1,4 @@
-package audnex
+package audnexregion
 
 import (
 	"testing"

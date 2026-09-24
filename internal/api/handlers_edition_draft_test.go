@@ -544,8 +544,29 @@ func TestGetEditionSourceDraftMalformedASINWithValidISBNRemainsEligible(t *testi
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
 	require.True(t, envelope.Data.Eligible)
 	require.Empty(t, envelope.Data.IneligibleReason)
-	require.True(t, hasEditionDraftWarning(envelope.Data, "invalid_source_asin"))
+	warning := editionDraftWarningByCode(envelope.Data, "invalid_source_asin")
+	require.NotNil(t, warning)
+	require.Contains(t, warning.Message, "Audnex region discovery is skipped")
 	require.Zero(t, fixture.hardcoverRequests.Load())
+}
+
+func TestGetEditionSourceDraftEbookMalformedASINWarningOmitsAudnex(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{
+		"id":"abs-item-1","mediaType":"ebook","media":{
+			"metadata":{"title":"Ebook","authorName":"Writer","asin":"SHORT","isbn":"0306406152"},
+			"ebookFile":{},"ebookFormat":"epub"
+		}}`, "us")
+
+	response := fixture.request(editionDraftItemPath, fixture.sessionCookie(t, fixture.owner))
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var envelope struct {
+		Data editionDraftResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	warning := editionDraftWarningByCode(envelope.Data, "invalid_source_asin")
+	require.NotNil(t, warning)
+	require.Contains(t, warning.Message, "malformed")
+	require.NotContains(t, warning.Message, "Audnex")
 }
 
 func TestGetEditionSourceDraftMarksItemsWithoutASINOrISBNIneligible(t *testing.T) {

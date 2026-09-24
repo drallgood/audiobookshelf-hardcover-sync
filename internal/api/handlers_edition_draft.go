@@ -9,6 +9,7 @@ import (
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audnex"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/audnexregion"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 )
@@ -167,7 +168,7 @@ func (h *Handler) GetEditionSourceDraft(w http.ResponseWriter, r *http.Request) 
 				h.log.Error("Failed to discover Audnex region for edition source draft: " + discoverErr.Error())
 				h.writeErrorResponse(w, http.StatusBadGateway, "Failed to retrieve Audnex source metadata")
 				return
-			case validReturnedASIN && returnedASIN == lookupASIN && audnex.IsRegion(region):
+			case validReturnedASIN && returnedASIN == lookupASIN && audnexregion.IsRegion(region):
 				draft.RegionStatus = "confirmed"
 				draft.ConfirmedRegion = region
 				draft.AudibleIdentifierCandidate.Region = region
@@ -212,7 +213,11 @@ func buildEditionSourceDraft(book *models.AudiobookshelfBook, dryRun bool) *edit
 		}
 	}
 	if asin != "" && !usableASIN {
-		draft.addWarning("invalid_source_asin", "Audiobookshelf source ASIN is malformed; it is not usable as an identifier and Audnex region discovery is skipped.", false)
+		message := "Audiobookshelf source ASIN is malformed; it is not usable as an identifier."
+		if !book.IsEbook() {
+			message = "Audiobookshelf source ASIN is malformed; it is not usable as an identifier and Audnex region discovery is skipped."
+		}
+		draft.addWarning("invalid_source_asin", message, false)
 	}
 	if !draft.Eligible {
 		draft.IneligibleReason = "The Audiobookshelf item needs a valid ASIN or ISBN before an edition can be added."
@@ -356,7 +361,7 @@ func supportedAudnexPreference(raw string) (string, bool) {
 	if region == "" {
 		return "us", true
 	}
-	if audnex.IsRegion(region) {
+	if audnexregion.IsRegion(region) {
 		return region, true
 	}
 	return "us", false

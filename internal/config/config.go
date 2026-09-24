@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audnex"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/audnexregion"
 	"gopkg.in/yaml.v3"
 )
 
@@ -289,7 +289,7 @@ func NormalizeAudnexusRegion(region string) (string, bool) {
 		return "", true
 	}
 
-	if audnex.IsRegion(region) {
+	if audnexregion.IsRegion(region) {
 		return region, true
 	}
 	return "us", false

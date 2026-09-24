@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/audnexregion"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 )
 
@@ -60,26 +61,6 @@ func (e *APIError) Unwrap() []error {
 }
 
 const regionDiscoveryTimeout = 30 * time.Second
-
-var audnexRegions = [...]string{"us", "ca", "uk", "au", "de", "fr", "es", "in", "it", "jp"}
-
-// Regions returns a copy of the supported Audnex regions in sweep order:
-// us, ca, uk, au, de, fr, es, in, it, jp.
-func Regions() []string {
-	regions := make([]string, len(audnexRegions))
-	copy(regions, audnexRegions[:])
-	return regions
-}
-
-// IsRegion reports whether region is one of the ten supported Audnex regions.
-func IsRegion(region string) bool {
-	for _, candidate := range audnexRegions {
-		if region == candidate {
-			return true
-		}
-	}
-	return false
-}
 
 // Author represents an author from the Audnex API
 type Author struct {
@@ -393,16 +374,17 @@ func (c *Client) DiscoverBookByASIN(ctx context.Context, asin, preferredRegion s
 	asin = canonicalASIN
 
 	preferredRegion = strings.ToLower(strings.TrimSpace(preferredRegion))
-	if !isAudnexRegion(preferredRegion) {
+	if !audnexregion.IsRegion(preferredRegion) {
 		preferredRegion = "us"
 	}
 
 	discoveryCtx, cancel := context.WithTimeout(ctx, regionDiscoveryTimeout)
 	defer cancel()
 
-	regions := make([]string, 0, len(audnexRegions))
+	sweep := audnexregion.Regions()
+	regions := make([]string, 0, len(sweep))
 	regions = append(regions, preferredRegion)
-	for _, region := range audnexRegions {
+	for _, region := range sweep {
 		if region != preferredRegion {
 			regions = append(regions, region)
 		}
@@ -428,10 +410,6 @@ func (c *Client) DiscoverBookByASIN(ctx context.Context, asin, preferredRegion s
 		return nil, "", classifyContextError(err)
 	}
 	return nil, "", nil
-}
-
-func isAudnexRegion(region string) bool {
-	return IsRegion(region)
 }
 
 func classifyContextError(err error) error {
