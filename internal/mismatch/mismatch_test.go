@@ -781,10 +781,12 @@ func TestAddWithMetadata_RegionFallback(t *testing.T) {
 	mu.Lock()
 	caCalls := callCount["ca"]
 	usCalls := callCount["us"]
+	otherCalls := len(callCount)
 	mu.Unlock()
 
 	assert.Equal(t, 1, caCalls, "Should have called Audnex with region=ca once")
 	assert.Equal(t, 1, usCalls, "Should have called Audnex with region=us as fallback")
+	assert.Equal(t, 2, otherCalls, "Should have called only ca and us regions, no ten-region sweep")
 }
 
 func TestAddWithMetadata_RegionSucceedsOnFirstTry(t *testing.T) {
@@ -839,10 +841,12 @@ func TestAddWithMetadata_RegionSucceedsOnFirstTry(t *testing.T) {
 	mu.Lock()
 	ukCalls := callCount["uk"]
 	usCalls := callCount["us"]
+	totalCalls := len(callCount)
 	mu.Unlock()
 
 	assert.Equal(t, 1, ukCalls, "Should have called Audnex with region=uk once")
 	assert.Equal(t, 0, usCalls, "Should NOT have fallen back to us when uk succeeded")
+	assert.Equal(t, 1, totalCalls, "Should have made exactly one request to the configured region")
 }
 
 func TestAddWithMetadata_NoRegionSet(t *testing.T) {
@@ -895,9 +899,11 @@ func TestAddWithMetadata_NoRegionSet(t *testing.T) {
 
 	mu.Lock()
 	emptyCalls := callCount[""]
+	totalCalls := len(callCount)
 	mu.Unlock()
 
 	assert.Equal(t, 1, emptyCalls, "Should have called Audnex with empty region (backward-compatible behavior)")
+	assert.Equal(t, 1, totalCalls, "Should have made exactly one request with no region configured")
 }
 
 // publisherLookupMock resolves a fixed publisher name so AddWithMetadata's

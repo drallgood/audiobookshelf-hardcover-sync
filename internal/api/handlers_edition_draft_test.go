@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -761,6 +762,43 @@ func TestGetEditionSourceDraftMapsAudnex408ToRetryableWarning(t *testing.T) {
 	require.True(t, warning.Retryable)
 	require.Positive(t, audnexRequests.Load())
 	require.Zero(t, fixture.hardcoverRequests.Load())
+}
+
+func TestGetEditionSourceDraftMapsAudnex400And403ToRetryableWarning(t *testing.T) {
+	for _, statusCode := range []int{http.StatusBadRequest, http.StatusForbidden} {
+		t.Run(fmt.Sprintf("HTTP %d", statusCode), func(t *testing.T) {
+			fixture := newEditionDraftTestFixture(t, `{
+				"id":"abs-item-1","mediaType":"book","media":{
+					"metadata":{"title":"Audnex error","authorName":"Author","asin":"B0SOURCE12","publishedYear":"2008"},
+					"duration":10,"numTracks":1
+				}}`, "us")
+			fixture.handler.editionDraftRequestTimeout = 700 * time.Millisecond
+			audnexRequests := &atomic.Int32{}
+			audnexServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				audnexRequests.Add(1)
+				w.WriteHeader(statusCode)
+			}))
+			t.Cleanup(audnexServer.Close)
+			fixture.handler.editionDraftAudnexClientFactory = func() editionDraftAudnexDiscoverer {
+				return audnex.NewClientForTesting(audnexServer.URL, logger.Get())
+			}
+
+			response := fixture.request(editionDraftItemPath, fixture.sessionCookie(t, fixture.owner))
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			var envelope struct {
+				Data editionDraftResponse `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+			draft := envelope.Data
+			require.Equal(t, "temporarily_unavailable", draft.RegionStatus)
+			require.Equal(t, "2008-01-01", draft.MetadataPreview.ReleaseDate, "Should fall back to ABS published year")
+			require.Empty(t, draft.ConfirmedRegion, "Should have no confirmed region")
+			warning := editionDraftWarningByCode(draft, "audnex_temporarily_unavailable")
+			require.NotNil(t, warning, "Should have audnex_temporarily_unavailable warning")
+			require.True(t, warning.Retryable, "Warning should be retryable for HTTP 400/403")
+			require.Zero(t, fixture.hardcoverRequests.Load(), "Should not make Hardcover requests")
+		})
+	}
 }
 
 func hasEditionDraftWarning(draft editionDraftResponse, code string) bool {
