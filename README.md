@@ -111,24 +111,13 @@ successful non-dry-run completion.
 
 ### Read-only edition draft
 
-API clients can request
-`GET /api/profiles/{id}/edition-drafts/source/{itemID}` for an expanded
-Audiobookshelf item. The response reports whether source identifiers are
-available for a later add-edition flow and includes candidate fields and
-warnings. The endpoint reads ABS and may read Audnex, but does not call
-Hardcover, accept edits, or create an edition. Audiobook drafts preserve the
-bare Audiobookshelf ASIN separately from any confirmed Audnex region and
-distinguish confirmed, unknown, temporarily unavailable, and not-applicable
-region results. Audiobook metadata is preview-only; ebook drafts return
-candidate fields, including an empty corrected-ISBN slot. If Audnex is
-temporarily unavailable (including a 400 or 403 response), the response includes a retryable warning; retry the
-GET request. A completed lookup with no matching region remains unknown and
-does not silently choose US. A malformed non-empty source ASIN is
-kept visible with an `invalid_source_asin` warning (and unknown region status
-for an audiobook) but does not make the item eligible; a valid ISBN still does. When the draft uses Audiobookshelf
-publication metadata, an ambiguous slash-formatted date returns a
-`published_date_ambiguous` warning and falls back to `publishedYear` when
-available. A confirmed Audnex release date takes precedence for an audiobook.
+`GET /api/profiles/{id}/edition-drafts/source/{itemID}` previews an
+Audiobookshelf item's identifiers and metadata for a later add-edition flow.
+Audiobook drafts keep the source ASIN separate from any region confirmed by
+Audnex; an unknown or temporarily unavailable region is never guessed. Ebook
+drafts include candidate edition fields. A usable ASIN or ISBN is required for
+eligibility. The endpoint makes no Hardcover requests or catalogue changes.
+See [OpenAPI](docs/openapi.yaml) for response fields and warnings.
 
 ### Environment Variables (Multi-Profile)
 
@@ -703,7 +692,7 @@ The application supports two distinct operating modes controlled by the `enable_
 - `ENABLE_WEB_UI`: Enable/disable web UI (`true`/`false`, default: `false`)
 - `AUDIOBOOKSHELF_URL`: Audiobookshelf server URL (required)
 - `AUDIOBOOKSHELF_TOKEN`: Audiobookshelf API token (required for single-user mode)
-- `AUDIOBOOKSHELF_AUDNEXUS_REGION`: Audnex draft lookup preference (`us`, `ca`, `uk`, `au`, `de`, `fr`, `es`, `in`, `it`, or `jp`; defaults to US).
+- `AUDIOBOOKSHELF_AUDNEXUS_REGION`: Preferred Audnex draft lookup region (default: `us`).
 - `HARDCOVER_TOKEN`: Hardcover API token (required for single-user mode)
 
 #### Config File
@@ -728,7 +717,7 @@ hardcover:
 | `CONFIG_PATH` | Path to config file | - | `./config.yaml` |
 | `AUDIOBOOKSHELF_URL` | URL of your AudiobookShelf instance | `audiobookshelf.url` | Legacy mode only |
 | `AUDIOBOOKSHELF_TOKEN` | AudiobookShelf API token | `audiobookshelf.token` | Legacy mode only |
-| `AUDIOBOOKSHELF_AUDNEXUS_REGION` | Audnex draft lookup preference (`us`, `ca`, `uk`, `au`, `de`, `fr`, `es`, `in`, `it`, `jp`) | `audiobookshelf.audnexus_region` | Legacy single-user configuration; overrides YAML when set; trims whitespace and lowercases. Unsupported non-empty values warn and use `us`; default preference is `us`. |
+| `AUDIOBOOKSHELF_AUDNEXUS_REGION` | Preferred Audnex draft region | `audiobookshelf.audnexus_region` | `us`, `ca`, `uk`, `au`, `de`, `fr`, `es`, `in`, `it`, `jp`; overrides YAML in legacy mode. Unsupported values warn and use `us`. |
 | `HARDCOVER_TOKEN` | Hardcover API token | `hardcover.token` | Legacy mode only |
 | `HARDCOVER_BASE_URL` | Hardcover API base URL | `hardcover.base_url` | Override default endpoint |
 | `RATE_LIMIT_RATE` | Min time between requests | `rate_limit.rate` | e.g. `2s` (30 rpm) |
@@ -740,18 +729,10 @@ hardcover:
 
 > **💡 Tip**: For new installations, use the multi-user web interface instead of environment variables. Legacy environment variables are automatically migrated to the multi-user database on first startup.
 
-Draft region discovery supports the ten Audnex regions listed above. Values
-are trimmed and lowercased. Unsupported values are replaced with `us` and
-logged as a warning. An empty preference uses US for draft discovery. A
-supported draft preference chooses the first Audnex marketplace to check; it
-does not claim that the source ASIN belongs to that marketplace.
-
-Profile configuration PUTs can update only selected fields. Omitted boolean
-settings, including `dry_run`, keep their saved values; explicitly sending
-`false` updates that setting to false. For example,
-`{"sync_config":{"audnexus_region":"uk"}}` preserves `dry_run`. An explicit
-`sync_config.audnexus_region: ""` clears the saved region preference; omitting
-`audnexus_region` preserves it.
+The region preference chooses the first marketplace to check, not the ASIN's
+assumed origin. Profile configuration updates preserve omitted settings;
+explicit `false` updates a boolean, and an empty `audnexus_region` clears the
+preference.
 
 #### Volume Mounts
 
