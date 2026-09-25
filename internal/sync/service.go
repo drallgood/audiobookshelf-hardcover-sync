@@ -50,6 +50,26 @@ func (e *createUserBookMutationError) Unwrap() error {
 	return e.err
 }
 
+type editionBoundMutationError struct {
+	editionID string
+	err       error
+}
+
+func (e *editionBoundMutationError) Error() string {
+	return e.err.Error()
+}
+
+func (e *editionBoundMutationError) Unwrap() error {
+	return e.err
+}
+
+func withEditionBoundMutation(err error, editionID string) error {
+	if err == nil || editionID == "" {
+		return err
+	}
+	return &editionBoundMutationError{editionID: editionID, err: err}
+}
+
 // progressUpdateInfo stores information about the last progress update for a book
 type progressUpdateInfo struct {
 	timestamp time.Time
@@ -1240,6 +1260,7 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 					"error": edErr.Error(),
 				})
 				reportProcessBookEditionCorrection(ctx, OutcomeFailed, "failed to correct Hardcover user book edition", edErr)
+				return 0, withEditionBoundMutation(fmt.Errorf("failed to update user book edition: %w", edErr), editionID)
 			} else {
 				reportProcessBookEditionCorrection(ctx, OutcomeSynced, "corrected Hardcover user book edition", nil)
 			}
@@ -2906,6 +2927,8 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		var createErr *createUserBookMutationError
 		if errors.Is(err, models.ErrEditionNotFound) || errors.As(err, &createErr) {
 			s.forgetConfirmedMissingEdition(ctx, book.ID, editionID)
+		} else {
+			s.forgetConfirmedMissingEditionAfterMutation(ctx, book.ID, err)
 		}
 		outcomeError = err
 		setOutcome(OutcomeFailed, "failed to get or create user book ID")
@@ -2939,6 +2962,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			"progress": progress,
 		})
 		if err := s.HandleFinishedBook(ctx, book, editionID, userBookID); err != nil {
+			s.forgetConfirmedMissingEditionAfterMutation(ctx, book.ID, err)
 			outcomeError = err
 			setOutcome(OutcomeFailed, "failed to handle finished book")
 			bookLog.Error("Failed to handle finished book", map[string]interface{}{
@@ -2958,6 +2982,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 
 		// Call handleInProgressBook to update the progress with the composite state key
 		if err := s.handleInProgressBook(ctx, userBookID, book, stateKey); err != nil {
+			s.forgetConfirmedMissingEditionAfterMutation(ctx, book.ID, err)
 			outcomeError = err
 			setOutcome(OutcomeFailed, "failed to handle in-progress book")
 			bookLog.Error("Failed to handle in-progress book", map[string]interface{}{
@@ -3261,7 +3286,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 				"error":   err.Error(),
 				"read_id": latestUnfinishedRead.ID,
 			})
-			return fmt.Errorf("error updating read status: %w", err)
+			return fmt.Errorf("error updating read status: %w", withEditionBoundMutation(err, editionID))
 		}
 
 		log.Info("Updated existing read status to mark as finished", map[string]interface{}{
@@ -3311,7 +3336,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 			log.Error("Failed to create new read record", map[string]interface{}{
 				"error": err.Error(),
 			})
-			return fmt.Errorf("error creating new read record: %w", err)
+			return fmt.Errorf("error creating new read record: %w", withEditionBoundMutation(err, editionID))
 		}
 
 		log.Info("Successfully created new read record")
@@ -3527,6 +3552,10 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		if parsed, parseErr := strconv.ParseInt(hcBook.EditionID, 10, 64); parseErr == nil {
 			targetEditionID = &parsed
 		}
+	}
+	targetEditionMutationID := ""
+	if targetEditionID != nil {
+		targetEditionMutationID = strconv.FormatInt(*targetEditionID, 10)
 	}
 	var userBookEditionID *int64
 	if hcBook != nil && hcBook.EditionID != "" {
@@ -3974,7 +4003,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 						"read_id": readStatusToUpdate.ID,
 						"error":   closeErr.Error(),
 					}).Error("Failed to close stale unfinished reread")
-					return fmt.Errorf("failed to close stale unfinished reread: %w", closeErr)
+					return fmt.Errorf("failed to close stale unfinished reread: %w", withEditionBoundMutation(closeErr, targetEditionMutationID))
 				}
 
 				log.Debug("Closed stale unfinished reread, creating a new active read", map[string]interface{}{
@@ -4225,7 +4254,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				"error":   err.Error(),
 			}
 			log.With(errCtx).Error("Failed to update progress")
-			return fmt.Errorf("failed to update progress: %w", err)
+			return fmt.Errorf("failed to update progress: %w", withEditionBoundMutation(err, targetEditionMutationID))
 		}
 
 		if s.config.Sync.DryRun {
@@ -4427,7 +4456,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			s.createdReadsMutex.Unlock()
 			errCtx := map[string]interface{}{"error": err.Error()}
 			log.With(errCtx).Error("Failed to create read status in Hardcover")
-			return fmt.Errorf("failed to create read status in Hardcover: %w", err)
+			return fmt.Errorf("failed to create read status in Hardcover: %w", withEditionBoundMutation(err, targetEditionMutationID))
 		}
 
 		if s.config.Sync.DryRun {
@@ -5062,6 +5091,13 @@ func (s *Service) forgetConfirmedMissingEdition(ctx context.Context, itemID, edi
 		})
 	}
 	return removed
+}
+
+func (s *Service) forgetConfirmedMissingEditionAfterMutation(ctx context.Context, itemID string, err error) {
+	var mutationErr *editionBoundMutationError
+	if errors.As(err, &mutationErr) {
+		s.forgetConfirmedMissingEdition(ctx, itemID, mutationErr.editionID)
+	}
 }
 
 func (s *Service) recordVerifiedASINAssociation(book models.AudiobookshelfBook, result *hardcover.ASINLookupResult) {

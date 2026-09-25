@@ -399,6 +399,131 @@ func TestProcessBookChecksSavedAssociationAfterCreateUserBookFailure(t *testing.
 	}
 }
 
+func TestProcessBookChecksSavedAssociationAfterReadInsertFailure(t *testing.T) {
+	tests := []struct {
+		name            string
+		finished        bool
+		freshEdition    *models.Edition
+		freshEditionErr error
+		wantAssociation bool
+		wantCheckpoint  bool
+	}{
+		{
+			name:            "fresh lookup confirms edition is absent",
+			freshEditionErr: fmt.Errorf("%w: 902", models.ErrEditionNotFound),
+		},
+		{
+			name:            "fresh lookup transport error preserves retry state",
+			freshEditionErr: errors.New("network timeout"),
+			wantAssociation: true,
+			wantCheckpoint:  true,
+		},
+		{
+			name:            "finished read insert also confirms saved edition",
+			finished:        true,
+			freshEditionErr: fmt.Errorf("%w: 902", models.ErrEditionNotFound),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, mockClient := createTestService()
+			svc.config.Sync.SyncOwned = false
+			book := associationTestBook("association-read-insert-failure", "ASIN-123", "")
+			book.Progress.CurrentTime = book.Media.Duration / 2
+			if tt.finished {
+				book.Progress.IsFinished = true
+				book.Progress.FinishedAt = book.Progress.StartedAt + 60_000
+			}
+			association := state.Association{
+				ABSItemID: book.ID, SourceASIN: "ASIN-123", HardcoverBookID: "901",
+				HardcoverEditionID: "902", ReadingFormat: models.ReadingFormatAudiobook,
+			}
+			require.NoError(t, svc.state.SetAssociation(association))
+			svc.state.UpdateBook(book.ID+":902", 0.25, "IN_PROGRESS")
+			svc.findExistingUserBookForBookFunc = func(context.Context, int64) (int64, error) {
+				return 9021, nil
+			}
+			mockClient.On("GetEdition", mock.Anything, "902").Return(&models.Edition{
+				ID: "902", BookID: "901",
+			}, nil).Once()
+			mockClient.On("GetUserBook", mock.Anything, "9021").Return(&models.HardcoverBook{
+				ID: "901", EditionID: "902",
+			}, nil).Maybe()
+			mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
+				UserBookID: 9021,
+			}).Return([]hardcover.UserBookRead{}, nil).Once()
+			mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
+				if input.UserBookID != 9021 {
+					return false
+				}
+				if tt.finished {
+					return input.DatesRead.EditionID == nil
+				}
+				return input.DatesRead.EditionID != nil && *input.DatesRead.EditionID == 902
+			})).Return(0, errors.New("read mutation failed")).Once()
+			client := &associationLookupClient{
+				MockHardcoverClient: mockClient,
+				freshEdition:        tt.freshEdition,
+				freshEditionErr:     tt.freshEditionErr,
+			}
+			svc.hardcover = client
+
+			err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+
+			require.Error(t, err)
+			assert.Equal(t, 1, client.freshEditionLookup)
+			_, associationExists := svc.state.GetAssociation(book.ID)
+			assert.Equal(t, tt.wantAssociation, associationExists)
+			_, checkpointExists := svc.state.GetBookState(book.ID + ":902")
+			assert.Equal(t, tt.wantCheckpoint, checkpointExists)
+			assert.Equal(t, OutcomeFailed, recordedOutcome(svc, book.ID).Outcome)
+			mockClient.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+			mockClient.AssertExpectations(t)
+		})
+	}
+}
+
+func TestProcessBookStopsWhenSavedEditionCorrectionFails(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.config.Sync.SyncOwned = false
+	book := associationTestBook("association-edition-correction-failure", "ASIN-123", "")
+	book.Progress.CurrentTime = book.Media.Duration / 2
+	association := state.Association{
+		ABSItemID: book.ID, SourceASIN: "ASIN-123", HardcoverBookID: "901",
+		HardcoverEditionID: "902", ReadingFormat: models.ReadingFormatAudiobook,
+	}
+	require.NoError(t, svc.state.SetAssociation(association))
+	svc.state.UpdateBook(book.ID+":902", 0.25, "IN_PROGRESS")
+	svc.findExistingUserBookForBookFunc = func(context.Context, int64) (int64, error) {
+		return 9021, nil
+	}
+	mockClient.On("GetEdition", mock.Anything, "902").Return(&models.Edition{
+		ID: "902", BookID: "901",
+	}, nil).Once()
+	mockClient.On("GetUserBook", mock.Anything, "9021").Return(&models.HardcoverBook{
+		ID: "901", EditionID: "903",
+	}, nil).Once()
+	mockClient.On("UpdateUserBookEdition", mock.Anything, 9021, 902).Return(errors.New("permission denied")).Once()
+	client := &associationLookupClient{
+		MockHardcoverClient: mockClient,
+		freshEdition:        &models.Edition{ID: "902", BookID: "901"},
+	}
+	svc.hardcover = client
+
+	err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+
+	require.Error(t, err)
+	assert.Equal(t, 1, client.freshEditionLookup)
+	_, associationExists := svc.state.GetAssociation(book.ID)
+	assert.True(t, associationExists)
+	_, checkpointExists := svc.state.GetBookState(book.ID + ":902")
+	assert.True(t, checkpointExists)
+	assert.Equal(t, OutcomeFailed, recordedOutcome(svc, book.ID).Outcome)
+	mockClient.AssertNotCalled(t, "GetUserBookReads", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+	mockClient.AssertExpectations(t)
+}
+
 func TestSyncRefusesStateAlreadyLockedByAnotherProcess(t *testing.T) {
 	svc, client := createTestService()
 	svc.statePath = t.TempDir() + "/sync_state.json"
