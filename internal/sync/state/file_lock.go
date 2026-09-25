@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -28,6 +29,9 @@ type FileLock struct {
 // the owning process exits unexpectedly, so a crashed process cannot leave a
 // stale lock behind.
 func AcquireFileLock(path string) (*FileLock, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, errors.New("state file path is required for locking")
+	}
 	resolvedPath, err := resolveStatePath(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve state file for locking: %w", err)

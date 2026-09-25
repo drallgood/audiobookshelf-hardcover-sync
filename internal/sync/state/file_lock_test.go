@@ -39,6 +39,49 @@ func TestStateFileLockProcessHelper(t *testing.T) {
 	}
 }
 
+func TestAcquireFileLockRejectsEmptyPath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{
+			name: "empty string",
+			path: "",
+		},
+		{
+			name: "whitespace only",
+			path: "   ",
+		},
+		{
+			name: "tabs and spaces",
+			path: "\t  \t",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Change to temp directory to ensure no .lock file is created there
+			oldCwd, err := os.Getwd()
+			require.NoError(t, err)
+			tmpDir := t.TempDir()
+			require.NoError(t, os.Chdir(tmpDir))
+			defer func() {
+				require.NoError(t, os.Chdir(oldCwd))
+			}()
+
+			lock, err := AcquireFileLock(tt.path)
+
+			assert.Error(t, err)
+			assert.Nil(t, lock)
+
+			// Verify no .lock file was created in the working directory
+			entries, err := os.ReadDir(".")
+			require.NoError(t, err)
+			assert.Empty(t, entries, "no files should be created in the working directory")
+		})
+	}
+}
+
 func TestAcquireFileLockExcludesOtherProcessesAndRecoversAfterCrash(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	initial := NewState()
