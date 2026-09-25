@@ -111,7 +111,7 @@ func (c *Client) SearchBookByASINResult(ctx context.Context, asin string) (*ASIN
 				bookID: bookID, book: book, edition: edition,
 				identity: bookID + "/" + editionID,
 			}
-			if formatID == models.ReadingFormatID("audiobook") && hasExactAudibleMapping(asin, edition.bookMappings) {
+			if formatID == models.ReadingFormatID("audiobook") && exactAudibleMappingID(asin, edition.bookMappings) != "" {
 				mappingCandidates = append(mappingCandidates, candidate)
 			}
 			if edition.asin == asin {
@@ -225,10 +225,6 @@ func uniqueASINLookupCandidate(asin string, candidates []asinLookupCandidate) (*
 		return nil, fmt.Errorf("%w: ASIN %q matched %s", ErrASINLookupConflict, asin, strings.Join(conflicts, ", "))
 	}
 	return &first, nil
-}
-
-func hasExactAudibleMapping(asin string, mappings []asinLookupMapping) bool {
-	return exactAudibleMappingID(asin, mappings) != ""
 }
 
 func exactAudibleMappingID(asin string, mappings []asinLookupMapping) string {
