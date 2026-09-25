@@ -835,6 +835,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Two edition drafts are already being prepared on this server instance; retry shortly.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: The profile could not be retrieved.
           content:

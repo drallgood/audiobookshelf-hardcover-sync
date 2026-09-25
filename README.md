@@ -122,6 +122,8 @@ See [OpenAPI](docs/openapi.yaml) for response fields and warnings.
 Use a trusted Audiobookshelf URL: this route fetches it with the saved token.
 Enable authentication when exposing the API beyond localhost. A draft may
 check up to ten Audnex regions, with retries, within its 25-second deadline.
+Each server instance prepares at most two drafts concurrently; extra requests
+receive HTTP 429 and can be retried shortly.
 
 ### Environment Variables (Multi-Profile)
 

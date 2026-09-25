@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Read-only edition source drafts**: Added a profile API that previews audiobook metadata or ebook candidates from Audiobookshelf without calling Hardcover. Audiobook drafts discover the source ASIN's Audnex region and report temporary lookup failures with retryable warnings. The update also expands region preferences, validates ASINs before Audnex requests, and preserves omitted profile settings during partial updates. By @Snuffy2. (#199)
+- **Read-only edition source drafts**: Added a profile API that previews audiobook metadata or ebook candidates from Audiobookshelf without calling Hardcover. Audiobook drafts discover the source ASIN's Audnex region and report temporary lookup failures with retryable warnings. The update also expands region preferences, validates ASINs before Audnex requests, limits drafts to two concurrent requests per instance, and preserves omitted profile settings during partial updates. By @Snuffy2. (#199)
 
 ### Changed
 

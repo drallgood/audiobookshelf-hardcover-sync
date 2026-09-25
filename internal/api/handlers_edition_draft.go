@@ -108,6 +108,13 @@ func (h *Handler) GetEditionSourceDraft(w http.ResponseWriter, r *http.Request) 
 	if _, authorized := h.authorizeProfileMetadata(w, r, profileID, false); !authorized {
 		return
 	}
+	select {
+	case h.editionDraftSlots <- struct{}{}:
+		defer func() { <-h.editionDraftSlots }()
+	default:
+		h.writeErrorResponse(w, http.StatusTooManyRequests, "Edition draft service is busy; retry shortly")
+		return
+	}
 	profile, err := h.multiUserService.GetProfile(profileID)
 	if err != nil {
 		h.log.Error("Failed to retrieve profile for edition source draft")

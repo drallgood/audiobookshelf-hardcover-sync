@@ -699,6 +699,71 @@ func TestGetEditionSourceDraftStopsOnRequestCancellation(t *testing.T) {
 	require.Zero(t, fixture.hardcoverRequests.Load())
 }
 
+func TestGetEditionSourceDraftLimitsConcurrentLookupsAndReleasesCanceledSlot(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{
+		"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Book","asin":"B0SOURCE12"},"duration":1,"numTracks":1}
+	}`, "us")
+	started := make(chan struct{}, 2)
+	var discoveryCalls atomic.Int32
+	fixture.setDiscovery(func(ctx context.Context, _, _ string) (*audnex.Book, string, error) {
+		if discoveryCalls.Add(1) <= 2 {
+			started <- struct{}{}
+			<-ctx.Done()
+			return nil, "", ctx.Err()
+		}
+		return nil, "", nil
+	})
+	cookie := fixture.sessionCookie(t, fixture.owner)
+	startRequest := func() (context.CancelFunc, <-chan struct{}) {
+		ctx, cancel := context.WithCancel(context.Background())
+		req := httptest.NewRequest(http.MethodGet, editionDraftItemPath, nil).WithContext(ctx)
+		req.AddCookie(cookie)
+		done := make(chan struct{})
+		go func() {
+			fixture.routes.ServeHTTP(httptest.NewRecorder(), req)
+			close(done)
+		}()
+		return cancel, done
+	}
+	cancelFirst, firstDone := startRequest()
+	defer cancelFirst()
+	cancelSecond, secondDone := startRequest()
+	defer cancelSecond()
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("two edition drafts did not start")
+		}
+	}
+
+	busy := fixture.request(editionDraftItemPath, cookie)
+	require.Equal(t, http.StatusTooManyRequests, busy.Code, busy.Body.String())
+	var envelope APIResponse
+	require.NoError(t, json.Unmarshal(busy.Body.Bytes(), &envelope))
+	require.False(t, envelope.Success)
+	require.Contains(t, envelope.Error, "retry")
+	require.EqualValues(t, 2, fixture.absRequests.Load())
+	require.EqualValues(t, 2, discoveryCalls.Load())
+
+	cancelFirst()
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("canceled draft did not release its slot")
+	}
+	retry := fixture.request(editionDraftItemPath, cookie)
+	require.Equal(t, http.StatusOK, retry.Code, retry.Body.String())
+	require.EqualValues(t, 3, fixture.absRequests.Load())
+	require.EqualValues(t, 3, discoveryCalls.Load())
+	cancelSecond()
+	select {
+	case <-secondDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second draft did not stop after cancellation")
+	}
+}
+
 func TestGetEditionSourceDraftFinishesBeforeHTTPWriteTimeout(t *testing.T) {
 	fixture := newEditionDraftTestFixtureWithABSDelay(t, `{
 		"id":"abs-item-1","mediaType":"book","media":{
