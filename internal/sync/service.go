@@ -38,6 +38,18 @@ var (
 	errHardcoverASINConflict = errors.New("conflicting Audible ASIN mappings")
 )
 
+type createUserBookMutationError struct {
+	err error
+}
+
+func (e *createUserBookMutationError) Error() string {
+	return e.err.Error()
+}
+
+func (e *createUserBookMutationError) Unwrap() error {
+	return e.err
+}
+
 // progressUpdateInfo stores information about the last progress update for a book
 type progressUpdateInfo struct {
 	timestamp time.Time
@@ -1330,7 +1342,7 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 			"editionID": editionIDInt,
 			"status":    creationStatus,
 		})
-		return 0, fmt.Errorf("failed to create user book: %w", err)
+		return 0, &createUserBookMutationError{err: fmt.Errorf("failed to create user book: %w", err)}
 	}
 
 	// Convert the new user book ID to an integer64
@@ -2891,7 +2903,8 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	// Find or create a user book ID for this edition with the determined status
 	userBookID, err := s.findOrCreateUserBookID(ctx, editionID, status)
 	if err != nil {
-		if errors.Is(err, models.ErrEditionNotFound) {
+		var createErr *createUserBookMutationError
+		if errors.Is(err, models.ErrEditionNotFound) || errors.As(err, &createErr) {
 			s.forgetConfirmedMissingEdition(ctx, book.ID, editionID)
 		}
 		outcomeError = err
