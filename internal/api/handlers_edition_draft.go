@@ -362,9 +362,9 @@ func isAmbiguousSlashDate(raw string) bool {
 	if !strings.Contains(value, "/") {
 		return false
 	}
-	_, monthFirstErr := time.Parse("01/02/2006", value)
-	_, dayFirstErr := time.Parse("02/01/2006", value)
-	return monthFirstErr == nil && dayFirstErr == nil
+	monthFirst, monthFirstErr := time.Parse("01/02/2006", value)
+	dayFirst, dayFirstErr := time.Parse("02/01/2006", value)
+	return monthFirstErr == nil && dayFirstErr == nil && !monthFirst.Equal(dayFirst)
 }
 
 func supportedAudnexPreference(raw string) (string, bool) {

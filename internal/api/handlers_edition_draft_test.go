@@ -451,6 +451,7 @@ func TestGetEditionSourceDraftHandlesSlashAndISODateBoundaries(t *testing.T) {
 		{name: "ambiguous without year", mediaType: "book", publishedDate: "03/04/2020", wantAmbiguous: true, wantDateMissing: true},
 		{name: "day first unambiguous slash", mediaType: "ebook", publishedDate: "13/04/2020", publishedYear: "1999", wantReleaseDate: "2020-04-13"},
 		{name: "month first unambiguous slash", mediaType: "book", publishedDate: "04/13/2020", publishedYear: "1999", wantReleaseDate: "2020-04-13"},
+		{name: "matching day and month slash date", mediaType: "book", publishedDate: "05/05/2020", publishedYear: "1999", wantReleaseDate: "2020-05-05"},
 		{name: "year first slash", mediaType: "book", publishedDate: "2020/04/13", publishedYear: "1999", wantReleaseDate: "2020-04-13"},
 		{name: "ISO date", mediaType: "ebook", publishedDate: "2020-04-13", publishedYear: "1999", wantReleaseDate: "2020-04-13"},
 	}

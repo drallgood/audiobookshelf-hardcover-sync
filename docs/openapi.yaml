@@ -548,7 +548,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [id, name, audiobookshelfUrl, audiobookshelfToken, hardcoverToken]
+              required: [id, name, audiobookshelf_url, audiobookshelf_token, hardcover_token]
               properties:
                 id:
                   type: string
