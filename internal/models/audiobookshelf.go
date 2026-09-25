@@ -17,6 +17,7 @@ type AudiobookshelfMetadataStruct struct {
 	Series            []AudiobookshelfSeries `json:"series"`
 	Genres            []string               `json:"genres"`
 	PublishedYear     string                 `json:"publishedYear"`
+	PublishedDate     string                 `json:"publishedDate"`
 	Publisher         string                 `json:"publisher"`
 	Description       string                 `json:"description"`
 	ISBN              string                 `json:"isbn"`
@@ -63,12 +64,12 @@ type AudiobookshelfBook struct {
 		Metadata  AudiobookshelfMetadataStruct `json:"metadata"`
 		CoverPath string                       `json:"coverPath"`
 		Duration  float64                      `json:"duration"`
-		// NumTracks counts the audio files not marked excluded, and is present in
-		// both minified and expanded items. EbookFile is set (non-nil) for an ebook
-		// and EbookFormat names its format. IsEbook reads all three.
-		NumTracks   int              `json:"numTracks"`
-		EbookFile   *json.RawMessage `json:"ebookFile"`
-		EbookFormat string           `json:"ebookFormat"`
+		// NumTracks is available on minified items; AudioFiles is available on
+		// expanded items. EbookFile and EbookFormat describe ebook content.
+		NumTracks   int                       `json:"numTracks"`
+		AudioFiles  []AudiobookshelfAudioFile `json:"audioFiles,omitempty"`
+		EbookFile   *json.RawMessage          `json:"ebookFile"`
+		EbookFormat string                    `json:"ebookFormat"`
 	} `json:"media"`
 	// Progress tracks the user's progress through the book
 	Progress struct {
@@ -79,18 +80,32 @@ type AudiobookshelfBook struct {
 	} `json:"progress,omitempty"`
 }
 
+// AudiobookshelfAudioFile contains the audio-file property needed to determine
+// whether an expanded item has playable audio tracks.
+type AudiobookshelfAudioFile struct {
+	Exclude bool `json:"exclude"`
+}
+
 // IsEbook reports whether the item is an ebook-only library item. Audiobookshelf
 // reports "book" as the media type for audiobooks and ebooks alike, so the media
 // content decides: an item with audio is an audiobook even if it also carries an
-// ebook file. Audio follows Audiobookshelf's own hasAudioTracks rule (numTracks
-// counts the non-excluded audio files, or there is a duration). An ebook is an
-// ebookFile object (any object, as in Audiobookshelf's own truthiness check) or
-// an ebookFormat. The legacy "ebook" media type is still honored.
+// ebook file. Audio follows Audiobookshelf's hasAudioTracks rule (numTracks or
+// non-excluded expanded audio files, or a duration). An ebook is an ebookFile
+// object (any object, as in Audiobookshelf's own truthiness check) or an
+// ebookFormat. The legacy "ebook" media type is still honored.
 func (b *AudiobookshelfBook) IsEbook() bool {
 	if strings.EqualFold(strings.TrimSpace(b.MediaType), "ebook") {
 		return true
 	}
 	hasAudio := b.Media.Duration > 0 || b.Media.NumTracks > 0
+	if !hasAudio {
+		for _, file := range b.Media.AudioFiles {
+			if !file.Exclude {
+				hasAudio = true
+				break
+			}
+		}
+	}
 	hasEbook := b.Media.EbookFile != nil || strings.TrimSpace(b.Media.EbookFormat) != ""
 	return hasEbook && !hasAudio
 }

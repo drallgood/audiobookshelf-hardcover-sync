@@ -700,7 +700,7 @@ func (r *Repository) UpdateUserConfig(profileID, audiobookshelfURL, audiobookshe
 	finalSyncConfig := existingSyncConfig
 	if !syncConfig.IsEmpty() {
 		// Merge the new config with existing, preserving unset values
-		if syncConfig.Incremental || existingSyncConfig.Incremental {
+		if syncConfig.incrementalSet || syncConfig.Incremental {
 			finalSyncConfig.Incremental = syncConfig.Incremental
 		}
 		if syncConfig.StateFile != "" {
@@ -715,19 +715,19 @@ func (r *Repository) UpdateUserConfig(profileID, audiobookshelfURL, audiobookshe
 		if syncConfig.MinimumProgress != 0 {
 			finalSyncConfig.MinimumProgress = syncConfig.MinimumProgress
 		}
-		if syncConfig.SyncWantToRead || existingSyncConfig.SyncWantToRead {
+		if syncConfig.syncWantToReadSet || syncConfig.SyncWantToRead {
 			finalSyncConfig.SyncWantToRead = syncConfig.SyncWantToRead
 		}
-		// For ProcessUnreadBooks, we need to explicitly check if it was provided
-		// since false is a valid value that should be preserved
-		finalSyncConfig.ProcessUnreadBooks = syncConfig.ProcessUnreadBooks
-		if syncConfig.SyncOwned || existingSyncConfig.SyncOwned {
+		if syncConfig.processUnreadSet || syncConfig.ProcessUnreadBooks {
+			finalSyncConfig.ProcessUnreadBooks = syncConfig.ProcessUnreadBooks
+		}
+		if syncConfig.syncOwnedSet || syncConfig.SyncOwned {
 			finalSyncConfig.SyncOwned = syncConfig.SyncOwned
 		}
-		if syncConfig.IncludeEbooks || existingSyncConfig.IncludeEbooks {
+		if syncConfig.includeEbooksSet || syncConfig.IncludeEbooks {
 			finalSyncConfig.IncludeEbooks = syncConfig.IncludeEbooks
 		}
-		if syncConfig.DryRun || existingSyncConfig.DryRun {
+		if syncConfig.dryRunSet || syncConfig.DryRun {
 			finalSyncConfig.DryRun = syncConfig.DryRun
 		}
 		if syncConfig.TestBookFilter != "" {
@@ -735,6 +735,9 @@ func (r *Repository) UpdateUserConfig(profileID, audiobookshelfURL, audiobookshe
 		}
 		if syncConfig.TestBookLimit != 0 {
 			finalSyncConfig.TestBookLimit = syncConfig.TestBookLimit
+		}
+		if syncConfig.audnexusRegionSet || syncConfig.AudnexusRegion != "" {
+			finalSyncConfig.AudnexusRegion = syncConfig.AudnexusRegion
 		}
 		if len(syncConfig.Libraries.Include) > 0 {
 			finalSyncConfig.Libraries.Include = syncConfig.Libraries.Include

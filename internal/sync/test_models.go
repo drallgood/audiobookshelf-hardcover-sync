@@ -61,6 +61,7 @@ func toAudiobookshelfBook(testBook *TestAudiobookshelfBook) *models.Audiobookshe
 		CoverPath   string                              `json:"coverPath"`
 		Duration    float64                             `json:"duration"`
 		NumTracks   int                                 `json:"numTracks"`
+		AudioFiles  []models.AudiobookshelfAudioFile    `json:"audioFiles,omitempty"`
 		EbookFile   *json.RawMessage                    `json:"ebookFile"`
 		EbookFormat string                              `json:"ebookFormat"`
 	}

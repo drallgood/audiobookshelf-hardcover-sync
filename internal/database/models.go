@@ -1,6 +1,10 @@
 package database
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -114,9 +118,77 @@ type SyncConfigData struct {
 	TestBookFilter     string  `json:"test_book_filter"`
 	TestBookLimit      int     `json:"test_book_limit"`
 	AudnexusRegion     string  `json:"audnexus_region"`
+	incrementalSet     bool
+	syncWantToReadSet  bool
+	processUnreadSet   bool
+	syncOwnedSet       bool
+	includeEbooksSet   bool
+	dryRunSet          bool
+	audnexusRegionSet  bool
 }
 
-// IsEmpty checks if the SyncConfigData is empty (all fields at their zero values)
+// UnmarshalJSON records whether boolean and region fields were sent so profile
+// updates can distinguish explicit zero values from omitted fields.
+func (s *SyncConfigData) UnmarshalJSON(data []byte) error {
+	type syncConfigAlias SyncConfigData
+	decoded := syncConfigAlias(*s)
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for name, value := range fields {
+		if isTrackedSyncConfigField(name) && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return fmt.Errorf("sync config field %q cannot be null", name)
+		}
+	}
+	*s = SyncConfigData(decoded)
+	s.incrementalSet = false
+	s.syncWantToReadSet = false
+	s.processUnreadSet = false
+	s.syncOwnedSet = false
+	s.includeEbooksSet = false
+	s.dryRunSet = false
+	s.audnexusRegionSet = false
+	for name := range fields {
+		switch {
+		case strings.EqualFold(name, "incremental"):
+			s.incrementalSet = true
+		case strings.EqualFold(name, "sync_want_to_read"):
+			s.syncWantToReadSet = true
+		case strings.EqualFold(name, "process_unread_books"):
+			s.processUnreadSet = true
+		case strings.EqualFold(name, "sync_owned"):
+			s.syncOwnedSet = true
+		case strings.EqualFold(name, "include_ebooks"):
+			s.includeEbooksSet = true
+		case strings.EqualFold(name, "dry_run"):
+			s.dryRunSet = true
+		case strings.EqualFold(name, "audnexus_region"):
+			s.audnexusRegionSet = true
+		}
+	}
+	return nil
+}
+
+func isTrackedSyncConfigField(name string) bool {
+	switch {
+	case strings.EqualFold(name, "incremental"),
+		strings.EqualFold(name, "sync_want_to_read"),
+		strings.EqualFold(name, "process_unread_books"),
+		strings.EqualFold(name, "sync_owned"),
+		strings.EqualFold(name, "include_ebooks"),
+		strings.EqualFold(name, "dry_run"),
+		strings.EqualFold(name, "audnexus_region"):
+		return true
+	default:
+		return false
+	}
+}
+
+// IsEmpty checks whether SyncConfigData contains no provided values.
 func (s SyncConfigData) IsEmpty() bool {
 	return !s.Incremental &&
 		s.StateFile == "" &&
@@ -130,9 +202,16 @@ func (s SyncConfigData) IsEmpty() bool {
 		!s.SyncOwned &&
 		!s.IncludeEbooks &&
 		!s.DryRun &&
+		!s.incrementalSet &&
+		!s.syncWantToReadSet &&
+		!s.processUnreadSet &&
+		!s.syncOwnedSet &&
+		!s.includeEbooksSet &&
+		!s.dryRunSet &&
 		s.TestBookFilter == "" &&
 		s.TestBookLimit == 0 &&
-		s.AudnexusRegion == ""
+		s.AudnexusRegion == "" &&
+		!s.audnexusRegionSet
 }
 
 // BeforeCreate hook for SyncProfile

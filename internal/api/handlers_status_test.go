@@ -403,6 +403,116 @@ func TestCreateProfileValidatesIDs(t *testing.T) {
 	}
 }
 
+func TestUpdateProfileConfigPreservesOmittedFieldsAndRejectsNull(t *testing.T) {
+	fixture := newStatusServiceFixture(t, "http://hardcover.invalid")
+	const profileID = "audnexus-clear-profile"
+	require.NoError(t, fixture.repo.CreateProfile(
+		profileID,
+		"Audnex region profile",
+		"http://audiobookshelf.invalid",
+		"abs-token",
+		"hardcover-token",
+		database.SyncConfigData{
+			Incremental:        true,
+			SyncWantToRead:     true,
+			ProcessUnreadBooks: true,
+			SyncOwned:          true,
+			IncludeEbooks:      true,
+			DryRun:             true,
+			AudnexusRegion:     "jp",
+		},
+	))
+
+	handler := NewHandler(fixture.multiUser, logger.Get())
+	routes := http.NewServeMux()
+	routes.HandleFunc("PUT /api/profiles/{id}/config", handler.UpdateProfileConfig)
+	omittedRegionResponse := httptest.NewRecorder()
+	routes.ServeHTTP(omittedRegionResponse, httptest.NewRequest(
+		http.MethodPut,
+		"/api/profiles/"+profileID+"/config",
+		strings.NewReader(`{"audiobookshelf_url":"http://updated.invalid"}`),
+	))
+	require.Equal(t, http.StatusOK, omittedRegionResponse.Code, omittedRegionResponse.Body.String())
+	profile, err := fixture.multiUser.GetProfile(profileID)
+	require.NoError(t, err)
+	require.NotNil(t, profile)
+	require.Equal(t, "jp", profile.SyncConfig.AudnexusRegion, "omitted fields preserve the saved preference")
+
+	nullFields := []struct {
+		name    string
+		payload string
+	}{
+		{name: "incremental", payload: `{"sync_config":{"incremental":null}}`},
+		{name: "sync want to read", payload: `{"sync_config":{"sync_want_to_read":null}}`},
+		{name: "process unread books", payload: `{"sync_config":{"process_unread_books":null}}`},
+		{name: "sync owned", payload: `{"sync_config":{"sync_owned":null}}`},
+		{name: "include ebooks", payload: `{"sync_config":{"include_ebooks":null}}`},
+		{name: "dry run", payload: `{"sync_config":{"dry_run":null}}`},
+		{name: "Audnexus region", payload: `{"sync_config":{"audnexus_region":null}}`},
+	}
+	for _, test := range nullFields {
+		t.Run("reject null "+test.name, func(t *testing.T) {
+			var request UpdateProfileConfigRequest
+			err := json.Unmarshal([]byte(test.payload), &request)
+			require.ErrorContains(t, err, "cannot be null")
+
+			response := httptest.NewRecorder()
+			routes.ServeHTTP(response, httptest.NewRequest(
+				http.MethodPut,
+				"/api/profiles/"+profileID+"/config",
+				strings.NewReader(test.payload),
+			))
+			require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+
+			profile, err := fixture.multiUser.GetProfile(profileID)
+			require.NoError(t, err)
+			require.NotNil(t, profile)
+			require.Equal(t, "http://updated.invalid", profile.AudiobookshelfURL)
+			require.Equal(t, "jp", profile.SyncConfig.AudnexusRegion)
+			require.True(t, profile.SyncConfig.DryRun)
+		})
+	}
+
+	response := httptest.NewRecorder()
+	routes.ServeHTTP(response, httptest.NewRequest(
+		http.MethodPut,
+		"/api/profiles/"+profileID+"/config",
+		strings.NewReader(`{"sync_config":{"audnexus_region":""}}`),
+	))
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+
+	profile, err = fixture.multiUser.GetProfile(profileID)
+	require.NoError(t, err)
+	require.NotNil(t, profile)
+	require.Empty(t, profile.SyncConfig.AudnexusRegion)
+	require.True(t, profile.SyncConfig.Incremental)
+	require.True(t, profile.SyncConfig.SyncWantToRead)
+	require.True(t, profile.SyncConfig.ProcessUnreadBooks)
+	require.True(t, profile.SyncConfig.SyncOwned)
+	require.True(t, profile.SyncConfig.IncludeEbooks)
+	require.True(t, profile.SyncConfig.DryRun)
+	preferredRegion, supported := supportedAudnexPreference(profile.SyncConfig.AudnexusRegion)
+	require.True(t, supported)
+	require.Equal(t, "us", preferredRegion, "the next draft should use the default US preference")
+
+	falseFlagsResponse := httptest.NewRecorder()
+	routes.ServeHTTP(falseFlagsResponse, httptest.NewRequest(
+		http.MethodPut,
+		"/api/profiles/"+profileID+"/config",
+		strings.NewReader(`{"sync_config":{"incremental":false,"sync_want_to_read":false,"process_unread_books":false,"sync_owned":false,"include_ebooks":false,"dry_run":false}}`),
+	))
+	require.Equal(t, http.StatusOK, falseFlagsResponse.Code, falseFlagsResponse.Body.String())
+	profile, err = fixture.multiUser.GetProfile(profileID)
+	require.NoError(t, err)
+	require.NotNil(t, profile)
+	require.False(t, profile.SyncConfig.Incremental)
+	require.False(t, profile.SyncConfig.SyncWantToRead)
+	require.False(t, profile.SyncConfig.ProcessUnreadBooks)
+	require.False(t, profile.SyncConfig.SyncOwned)
+	require.False(t, profile.SyncConfig.IncludeEbooks)
+	require.False(t, profile.SyncConfig.DryRun)
+}
+
 func TestProfileStateFilenameValidationAtHTTPBoundary(t *testing.T) {
 	fixture := newStatusServiceFixture(t, "http://hardcover.invalid")
 	handler := NewHandler(fixture.multiUser, logger.Get())

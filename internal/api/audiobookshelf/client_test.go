@@ -3,6 +3,7 @@ package audiobookshelf
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -150,6 +151,157 @@ func TestGetLibraryItems(t *testing.T) {
 	}
 }
 
+func TestGetLibraryItemByIDExpandedMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/items/li_123", r.URL.Path)
+		assert.Equal(t, "1", r.URL.Query().Get("expanded"))
+		assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
+		assert.Equal(t, "application/json", r.Header.Get("Accept"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"li_123",
+			"libraryId":"lib_1",
+			"mediaType":"book",
+			"media":{
+				"metadata":{
+					"title":"A Book",
+					"subtitle":"An Expanded Record",
+					"authorName":"Ada Author",
+					"narratorName":"Nora Narrator",
+					"publishedDate":"2024-02-03",
+					"publishedYear":"2024",
+					"asin":"B012345678",
+					"isbn":"9781234567890",
+					"language":"eng"
+				},
+				"duration":0,
+				"audioFiles":[{"exclude":false}],
+				"ebookFile":{},
+				"ebookFormat":"EPUB"
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-token")
+	item, err := client.GetLibraryItemByID(context.Background(), "li_123")
+	require.NoError(t, err)
+	require.NotNil(t, item)
+	assert.Equal(t, "li_123", item.ID)
+	assert.Equal(t, "A Book", item.Media.Metadata.Title)
+	assert.Equal(t, "An Expanded Record", item.Media.Metadata.Subtitle)
+	assert.Equal(t, "Ada Author", item.Media.Metadata.AuthorName)
+	assert.Equal(t, "Nora Narrator", item.Media.Metadata.NarratorName)
+	assert.Equal(t, "2024-02-03", item.Media.Metadata.PublishedDate)
+	assert.Equal(t, "2024", item.Media.Metadata.PublishedYear)
+	assert.Equal(t, "B012345678", item.Media.Metadata.ASIN)
+	assert.Equal(t, "9781234567890", item.Media.Metadata.ISBN)
+	assert.Equal(t, "eng", item.Media.Metadata.Language)
+	assert.False(t, item.IsEbook(), "expanded audio files should identify audiobook media")
+
+	ebookJSON := `{"id":"li_ebook","mediaType":"book","media":{"metadata":{"title":"An Ebook"},"ebookFile":{},"ebookFormat":"EPUB"}}`
+	ebookServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(ebookJSON))
+	}))
+	defer ebookServer.Close()
+	ebook, err := NewClient(ebookServer.URL, "test-token").GetLibraryItemByID(context.Background(), "li_ebook")
+	require.NoError(t, err)
+	assert.True(t, ebook.IsEbook(), "expanded ebook file metadata should identify ebook-only media")
+}
+
+func TestGetLibraryItemByIDErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		body    string
+		itemID  string
+		wantErr string
+	}{
+		{
+			name:    "not found",
+			status:  http.StatusNotFound,
+			body:    `{}`,
+			itemID:  "li_missing",
+			wantErr: "status 404",
+		},
+		{
+			name:    "malformed response",
+			status:  http.StatusOK,
+			body:    `{"id":`,
+			itemID:  "li_123",
+			wantErr: "failed to decode",
+		},
+		{
+			name:    "response item differs from requested ID",
+			status:  http.StatusOK,
+			body:    `{"id":"li_other"}`,
+			itemID:  "li_123",
+			wantErr: "when \"li_123\" was requested",
+		},
+		{
+			name:    "response has no item ID",
+			status:  http.StatusOK,
+			body:    `{"mediaType":"book"}`,
+			itemID:  "li_123",
+			wantErr: "without an ID",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			item, err := NewClient(server.URL, "test-token").GetLibraryItemByID(context.Background(), tt.itemID)
+			require.Nil(t, item)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+
+	t.Run("empty item ID", func(t *testing.T) {
+		item, err := NewClient("http://127.0.0.1", "test-token").GetLibraryItemByID(context.Background(), " \t ")
+		require.Nil(t, item)
+		require.EqualError(t, err, "item ID is required")
+	})
+}
+
+func TestGetLibraryItemByIDCancellation(t *testing.T) {
+	started := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := NewClient(server.URL, "test-token")
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.GetLibraryItemByID(ctx, "li_123")
+		done <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("request did not reach the Audiobookshelf server")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		require.Error(t, err)
+		require.True(t, errors.Is(err, context.Canceled), "expected wrapped cancellation error, got %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("request did not return after its context was canceled")
+	}
+}
+
 func TestGetUserProgress(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -289,6 +441,7 @@ func TestGetListeningSessions(t *testing.T) {
 								CoverPath   string                              `json:"coverPath"`
 								Duration    float64                             `json:"duration"`
 								NumTracks   int                                 `json:"numTracks"`
+								AudioFiles  []models.AudiobookshelfAudioFile    `json:"audioFiles,omitempty"`
 								EbookFile   *json.RawMessage                    `json:"ebookFile"`
 								EbookFormat string                              `json:"ebookFormat"`
 							}{

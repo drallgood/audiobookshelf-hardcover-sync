@@ -67,6 +67,7 @@ Existing single-profile setups are **automatically migrated** on first startup:
 | `DELETE` | `/api/profiles/{id}` | Delete profile |
 | `PUT` | `/api/profiles/{id}/config` | Update profile configuration |
 | `GET` | `/api/profiles/{id}/runs/{runId}/details` | Get book-level details for a retained sync run |
+| `GET` | `/api/profiles/{id}/edition-drafts/source/{itemID}` | Prepare a read-only edition draft from an Audiobookshelf item |
 | `POST` | `/api/profiles/{id}/sync` | Start sync |
 | `DELETE` | `/api/profiles/{id}/sync` | Cancel sync |
 | `GET` | `/api/status` | All profile statuses |
@@ -107,6 +108,22 @@ history return `404`. Clients can filter `book_outcomes` for `needs_review`,
 `not_found`, and `failed` records. `last_attempted_at` includes dry-run,
 failed, and canceled attempts; `last_successful_at` is updated only by a
 successful non-dry-run completion.
+
+### Read-only edition draft
+
+`GET /api/profiles/{id}/edition-drafts/source/{itemID}` previews an
+Audiobookshelf item's identifiers and metadata for a later add-edition flow.
+Audiobook drafts keep the source ASIN separate from any region confirmed by
+Audnex; an unknown or temporarily unavailable region is never guessed. Ebook
+drafts include candidate edition fields. A usable ASIN or ISBN is required for
+eligibility. The endpoint makes no Hardcover requests or catalogue changes.
+See [OpenAPI](docs/openapi.yaml) for response fields and warnings.
+
+Use a trusted Audiobookshelf URL: this route fetches it with the saved token.
+Enable authentication when exposing the API beyond localhost. A draft may
+check up to ten Audnex regions, with retries, within its 25-second deadline.
+Each server instance prepares at most two drafts concurrently; extra requests
+receive HTTP 429 and can be retried shortly.
 
 ### Environment Variables (Multi-Profile)
 
@@ -681,6 +698,7 @@ The application supports two distinct operating modes controlled by the `enable_
 - `ENABLE_WEB_UI`: Enable/disable web UI (`true`/`false`, default: `false`)
 - `AUDIOBOOKSHELF_URL`: Audiobookshelf server URL (required)
 - `AUDIOBOOKSHELF_TOKEN`: Audiobookshelf API token (required for single-user mode)
+- `AUDIOBOOKSHELF_AUDNEXUS_REGION`: Legacy setting; profile sync and drafts use `sync_config.audnexus_region` instead.
 - `HARDCOVER_TOKEN`: Hardcover API token (required for single-user mode)
 
 #### Config File
@@ -704,6 +722,7 @@ hardcover:
 | `CONFIG_PATH` | Path to config file | - | `./config.yaml` |
 | `AUDIOBOOKSHELF_URL` | URL of your AudiobookShelf instance | `audiobookshelf.url` | Legacy mode only |
 | `AUDIOBOOKSHELF_TOKEN` | AudiobookShelf API token | `audiobookshelf.token` | Legacy mode only |
+| `AUDIOBOOKSHELF_AUDNEXUS_REGION` | Legacy Audnex setting | `audiobookshelf.audnexus_region` | Parsed from legacy configuration but does not set a profile's region preference. |
 | `HARDCOVER_TOKEN` | Hardcover API token | `hardcover.token` | Legacy mode only |
 | `HARDCOVER_BASE_URL` | Hardcover API base URL | `hardcover.base_url` | Override default endpoint |
 | `RATE_LIMIT_RATE` | Min time between requests | `rate_limit.rate` | e.g. `2s` (30 rpm) |
@@ -713,7 +732,12 @@ hardcover:
 | `SYNC_LIBRARIES_INCLUDE` | Comma-separated list of libraries to include | `sync.libraries.include` | Legacy mode only |
 | `SYNC_LIBRARIES_EXCLUDE` | Comma-separated list of libraries to exclude | `sync.libraries.exclude` | Legacy mode only |
 
-> **💡 Tip**: For new installations, use the multi-user web interface instead of environment variables. Legacy environment variables are automatically migrated to the multi-user database on first startup.
+> **💡 Tip**: Set `sync_config.audnexus_region` on each profile for sync and draft lookups. The legacy env/YAML setting does not set this profile preference.
+
+The profile region preference chooses the first marketplace to check, not the ASIN's
+assumed origin. Profile configuration updates preserve omitted settings;
+explicit `false` updates a boolean, and an empty `audnexus_region` clears the
+preference.
 
 #### Volume Mounts
 
@@ -901,7 +925,9 @@ If sync reports:
 
 it means the app could not confidently match your AudiobookShelf item to a specific Hardcover audiobook edition.
 
-Important: The web UI currently shows this warning but does not include a one-click "link edition" action yet.
+The web UI does not include a one-click "link edition" action. API clients can
+request a read-only draft for an Audiobookshelf item using the profile-scoped
+edition-draft endpoint listed above.
 
 Use this workflow:
 

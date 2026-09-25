@@ -202,6 +202,7 @@ func (s *MultiUserService) CreateProfile(profileID, name, audiobookshelfURL, aud
 
 // CreateProfileForUser creates a profile owned by ownerUserID.
 func (s *MultiUserService) CreateProfileForUser(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig database.SyncConfigData, ownerUserID string) error {
+	syncConfig.AudnexusRegion = s.normalizeProfileAudnexusRegion(profileID, syncConfig.AudnexusRegion)
 	if err := s.validateProfileStateFile(profileID, syncConfig.StateFile); err != nil {
 		return err
 	}
@@ -221,12 +222,24 @@ func (s *MultiUserService) UpdateProfile(profileID, name string) error {
 
 // UpdateProfileConfig updates profile configuration
 func (s *MultiUserService) UpdateProfileConfig(profileID, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig database.SyncConfigData) error {
+	syncConfig.AudnexusRegion = s.normalizeProfileAudnexusRegion(profileID, syncConfig.AudnexusRegion)
 	if syncConfig.StateFile != "" {
 		if err := s.validateProfileStateFile(profileID, syncConfig.StateFile); err != nil {
 			return err
 		}
 	}
 	return s.repository.UpdateUserConfig(profileID, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig)
+}
+
+func (s *MultiUserService) normalizeProfileAudnexusRegion(profileID, region string) string {
+	normalized, valid := config.NormalizeAudnexusRegion(region)
+	if !valid && s.logger != nil {
+		s.logger.Warn("Unknown Audnex region preference; using US", map[string]interface{}{
+			"profileID": profileID,
+			"region":    region,
+		})
+	}
+	return normalized
 }
 
 // DeleteProfile deletes a sync profile
@@ -1556,7 +1569,7 @@ func (s *MultiUserService) createProfileSpecificConfig(profileConfig *database.P
 	config.Sync.DryRun = syncConfig.DryRun
 	config.Sync.TestBookFilter = syncConfig.TestBookFilter
 	config.Sync.TestBookLimit = syncConfig.TestBookLimit
-	config.Audiobookshelf.AudnexusRegion = syncConfig.AudnexusRegion
+	config.Audiobookshelf.AudnexusRegion = s.normalizeProfileAudnexusRegion(profileConfig.Profile.ID, syncConfig.AudnexusRegion)
 
 	// Debug logging to verify the config is being applied correctly
 	s.logger.Debug("Applied sync config for profile", map[string]interface{}{
