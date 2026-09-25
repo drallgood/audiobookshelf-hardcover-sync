@@ -698,7 +698,7 @@ The application supports two distinct operating modes controlled by the `enable_
 - `ENABLE_WEB_UI`: Enable/disable web UI (`true`/`false`, default: `false`)
 - `AUDIOBOOKSHELF_URL`: Audiobookshelf server URL (required)
 - `AUDIOBOOKSHELF_TOKEN`: Audiobookshelf API token (required for single-user mode)
-- `AUDIOBOOKSHELF_AUDNEXUS_REGION`: Preferred Audnex draft lookup region (default: `us`).
+- `AUDIOBOOKSHELF_AUDNEXUS_REGION`: Legacy setting; profile sync and drafts use `sync_config.audnexus_region` instead.
 - `HARDCOVER_TOKEN`: Hardcover API token (required for single-user mode)
 
 #### Config File
@@ -712,7 +712,6 @@ server:
 audiobookshelf:
   url: "https://audiobookshelf.example.com"
   token: "your-audiobookshelf-token"
-  audnexus_region: "uk"  # Optional preferred Audnex lookup region
 
 hardcover:
   token: "your-hardcover-token"
@@ -723,7 +722,7 @@ hardcover:
 | `CONFIG_PATH` | Path to config file | - | `./config.yaml` |
 | `AUDIOBOOKSHELF_URL` | URL of your AudiobookShelf instance | `audiobookshelf.url` | Legacy mode only |
 | `AUDIOBOOKSHELF_TOKEN` | AudiobookShelf API token | `audiobookshelf.token` | Legacy mode only |
-| `AUDIOBOOKSHELF_AUDNEXUS_REGION` | Preferred Audnex draft region | `audiobookshelf.audnexus_region` | `us`, `ca`, `uk`, `au`, `de`, `fr`, `es`, `in`, `it`, `jp`; overrides YAML in legacy mode. Unsupported values warn and use `us`. |
+| `AUDIOBOOKSHELF_AUDNEXUS_REGION` | Legacy Audnex setting | `audiobookshelf.audnexus_region` | Parsed from legacy configuration but does not set a profile's region preference. |
 | `HARDCOVER_TOKEN` | Hardcover API token | `hardcover.token` | Legacy mode only |
 | `HARDCOVER_BASE_URL` | Hardcover API base URL | `hardcover.base_url` | Override default endpoint |
 | `RATE_LIMIT_RATE` | Min time between requests | `rate_limit.rate` | e.g. `2s` (30 rpm) |
@@ -733,9 +732,9 @@ hardcover:
 | `SYNC_LIBRARIES_INCLUDE` | Comma-separated list of libraries to include | `sync.libraries.include` | Legacy mode only |
 | `SYNC_LIBRARIES_EXCLUDE` | Comma-separated list of libraries to exclude | `sync.libraries.exclude` | Legacy mode only |
 
-> **💡 Tip**: For new installations, use the multi-user web interface instead of environment variables. Legacy environment variables are automatically migrated to the multi-user database on first startup.
+> **💡 Tip**: Set `sync_config.audnexus_region` on each profile for sync and draft lookups. The legacy env/YAML setting does not set this profile preference.
 
-The region preference chooses the first marketplace to check, not the ASIN's
+The profile region preference chooses the first marketplace to check, not the ASIN's
 assumed origin. Profile configuration updates preserve omitted settings;
 explicit `false` updates a boolean, and an empty `audnexus_region` clears the
 preference.
