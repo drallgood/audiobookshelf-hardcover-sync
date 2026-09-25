@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Persistent, read-only edition matching**: Sync reuses audiobook matches confirmed by exact region-qualified Audible mappings and stores them with the CLI state file or corresponding web profile; other ASIN, ISBN, and ebook matches remain read-only lookups. Added a profile-scoped API to forget one saved match and its incremental checkpoint. When user-book creation, edition correction, or a read mutation fails for a saved match, sync confirms edition absence with an uncached lookup before forgetting that match and checkpoint; transient lookup failures preserve them for retry, and failed edition corrections stop before progress is applied to another edition. Normal matching runs again on a later sync, dry run leaves the saved match and checkpoint in place, and Hardcover catalogue data remains unchanged. The sync state schema now writes `4.0` and reads existing `3.0` checkpoints. By @Snuffy2.
+- **Persistent, read-only edition matching**: Sync reuses audiobook matches confirmed by exact region-qualified Audible mappings and stores them with the CLI state file or corresponding web profile; other ASIN, ISBN, and ebook matches remain read-only lookups. Added a profile-scoped API to forget one saved match and its incremental checkpoint. When user-book creation, edition correction, or a read mutation fails for a saved match, sync confirms edition absence with an uncached lookup before forgetting that match and checkpoint; transient lookup failures preserve them for retry, and failed edition corrections stop before progress is applied to another edition. Normal matching runs again on a later sync, dry run leaves the saved match and checkpoint in place, and Hardcover catalogue data remains unchanged. The sync state schema now writes `4.0` and reads existing `3.0` checkpoints. Forget-association operations are serialized with profile configuration changes so a state-file path cannot change while one is running. By @Snuffy2. (#201)
 - **Read-only edition source drafts**: Added a profile API that previews audiobook metadata or ebook candidates from Audiobookshelf without calling Hardcover. Audiobook drafts discover the source ASIN's Audnex region and report temporary lookup failures with retryable warnings. The update also expands region preferences, validates ASINs before Audnex requests, limits drafts to two concurrent requests per instance, and preserves omitted profile settings during partial updates. By @Snuffy2. (#199)
 
 ### Changed
@@ -18,7 +18,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Profile state updates during association cleanup**: Serialize profile configuration changes with forget-association operations so a state-file path cannot change while the forget operation is using it. By @Snuffy2.
 - **ISBN counterpart matching**: Match an Audiobookshelf ISBN-10 to its valid ISBN-13 counterpart, and the reverse, without changing audiobook and ebook reading-format separation. By @Snuffy2. (#200)
 
 ## [v4.0.0] - 2026-09-21
