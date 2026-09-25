@@ -486,7 +486,7 @@ func TestRecordBookOutcomeReplacementClearsPreviousError(t *testing.T) {
 
 func TestProcessBookSeparatesNotFoundAndTechnicalLookupFailure(t *testing.T) {
 	newBook := func(id string) models.AudiobookshelfBook {
-		book := createTestBook(id, id, "Author", id+"-asin", id+"-isbn")
+		book := createTestBook(id, id, "Author", id+"-asin", "978-0-306-40615-7")
 		book.Progress.CurrentTime = 300
 		return *toAudiobookshelfBook(book)
 	}
@@ -495,8 +495,8 @@ func TestProcessBookSeparatesNotFoundAndTechnicalLookupFailure(t *testing.T) {
 		svc, hc := createTestService()
 		book := newBook("outcome-not-found")
 		hc.On("SearchBookByASIN", mock.Anything, "outcome-not-found-asin").Return((*models.HardcoverBook)(nil), nil).Once()
-		hc.On("SearchBookByISBN13", mock.Anything, "outcome-not-found-isbn").Return((*models.HardcoverBook)(nil), nil).Once()
-		hc.On("SearchBookByISBN10", mock.Anything, "outcome-not-found-isbn").Return((*models.HardcoverBook)(nil), nil).Once()
+		hc.On("SearchBookByISBN13", mock.Anything, "9780306406157").Return((*models.HardcoverBook)(nil), nil).Once()
+		hc.On("SearchBookByISBN10", mock.Anything, "0306406152").Return((*models.HardcoverBook)(nil), nil).Once()
 		hc.On("SearchBooks", mock.Anything, "outcome-not-found Author", "").Return([]models.HardcoverBook{}, nil).Once()
 		require.NoError(t, svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{}))
 		assert.Equal(t, OutcomeNotFound, recordedOutcome(svc, book.ID).Outcome)
@@ -506,8 +506,8 @@ func TestProcessBookSeparatesNotFoundAndTechnicalLookupFailure(t *testing.T) {
 		svc, hc := createTestService()
 		book := newBook("outcome-lookup-failed")
 		hc.On("SearchBookByASIN", mock.Anything, "outcome-lookup-failed-asin").Return((*models.HardcoverBook)(nil), errors.New("temporary API failure")).Once()
-		hc.On("SearchBookByISBN13", mock.Anything, "outcome-lookup-failed-isbn").Return((*models.HardcoverBook)(nil), errors.New("temporary API failure")).Once()
-		hc.On("SearchBookByISBN10", mock.Anything, "outcome-lookup-failed-isbn").Return((*models.HardcoverBook)(nil), nil).Once()
+		hc.On("SearchBookByISBN13", mock.Anything, "9780306406157").Return((*models.HardcoverBook)(nil), errors.New("temporary API failure")).Once()
+		hc.On("SearchBookByISBN10", mock.Anything, "0306406152").Return((*models.HardcoverBook)(nil), nil).Once()
 		hc.On("SearchBooks", mock.Anything, "outcome-lookup-failed Author", "").Return([]models.HardcoverBook{}, nil).Once()
 		require.NoError(t, svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{}))
 		record := recordedOutcome(svc, book.ID)
@@ -618,7 +618,6 @@ func TestProcessBookSnapshotKeepsTitleOnlyEnrichment(t *testing.T) {
 	absBook := toAudiobookshelfBook(book)
 
 	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return((*models.HardcoverBook)(nil), nil).Once()
-	hc.On("SearchBookByISBN10", mock.Anything, book.Media.Metadata.ISBN).Return((*models.HardcoverBook)(nil), nil).Once()
 	hc.On("SearchBooks", mock.Anything, "Title Only Author", "").Return([]models.HardcoverBook{{
 		ID: "901", Title: "Title Only Candidate", Slug: "candidate-slug",
 		Authors: []models.Author{{Name: "Candidate Author"}},
@@ -665,7 +664,6 @@ func TestProcessBookSnapshotKeepsEnrichedSecondLookupFailure(t *testing.T) {
 	hc.On("GetUserBookID", mock.Anything, 902).Return(0, nil)
 	hc.On("CreateUserBook", mock.Anything, "902", "IN_PROGRESS").Return("903", nil).Once()
 	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return((*models.HardcoverBook)(nil), lookupErr).Once()
-	hc.On("SearchBookByISBN10", mock.Anything, book.Media.Metadata.ISBN).Return((*models.HardcoverBook)(nil), lookupErr).Once()
 	hc.On("SearchBooks", mock.Anything, "Second Lookup Author", "").Return([]models.HardcoverBook{}, nil).Once()
 	// AddWithMetadata reuses the same Hardcover client to enrich the mismatch.
 	hc.On("SearchPublishers", mock.Anything, "Test Publisher", 5).Return([]models.Publisher{{ID: "777", Name: "Test Publisher"}}, nil).Once()
@@ -709,7 +707,6 @@ func TestProcessBookSnapshotKeepsSecondLookupNotFoundOutOfMismatches(t *testing.
 	}, nil).Once()
 	hc.On("GetUserBookID", mock.Anything, 902).Return(903, nil).Once()
 	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return((*models.HardcoverBook)(nil), nil).Once()
-	hc.On("SearchBookByISBN10", mock.Anything, book.Media.Metadata.ISBN).Return((*models.HardcoverBook)(nil), nil).Once()
 	hc.On("SearchBooks", mock.Anything, "Second Lookup Not Found Author", "").Return([]models.HardcoverBook{}, nil).Once()
 	// AddWithMetadata enriches the run-local mismatch export after the not-found
 	// outcome has been published.

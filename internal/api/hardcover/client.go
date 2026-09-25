@@ -17,6 +17,7 @@ import (
 	"github.com/hasura/go-graphql-client"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/cache"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/util"
@@ -1557,21 +1558,20 @@ query BookByASIN($asin: String!, $asin_us: String!, $format_id: Int!) {
 }
 
 // searchBookByISBN is a helper function to search for a book by ISBN (13 or 10)
-func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (*models.HardcoverBook, error) {
-	if isbn == "" {
+func (c *Client) searchBookByISBN(ctx context.Context, isbnField, rawISBN string) (*models.HardcoverBook, error) {
+	// Normalize the ISBN (strip separators, uppercase a trailing X) with the
+	// shared helper so every caller matches Hardcover's stored form.
+	normalizedISBN := isbn.Normalize(rawISBN)
+	if normalizedISBN == "" {
 		return nil, fmt.Errorf("ISBN cannot be empty")
 	}
 
 	// Create logger with context
 	log := c.logger.With(map[string]interface{}{
-		"isbn":       isbn,
+		"isbn":       rawISBN,
 		"isbn_field": isbnField,
 		"method":     "searchBookByISBN",
 	})
-
-	// Normalize ISBN (remove dashes, spaces, etc.)
-	normalizedISBN := strings.ReplaceAll(isbn, "-", "")
-	normalizedISBN = strings.ReplaceAll(normalizedISBN, " ", "")
 
 	// Define the GraphQL query (always format-aware via numeric format_id, default to audiobook id=2)
 	formatID := readingFormatIDFromCtx(ctx)
@@ -1707,7 +1707,7 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
 	if err != nil {
 		log.Error("Failed to search book by ISBN", map[string]interface{}{
 			"error": err.Error(),
-			"isbn":  isbn,
+			"isbn":  rawISBN,
 		})
 		return nil, fmt.Errorf("failed to search book by ISBN: %w", err)
 	}
@@ -1715,7 +1715,7 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
 	// Check if any books were found
 	if len(books) == 0 {
 		log.Debug("No books found with the given ISBN", map[string]interface{}{
-			"isbn": isbn,
+			"isbn": rawISBN,
 		})
 		return nil, nil
 	}
@@ -1753,7 +1753,7 @@ func (c *Client) searchBookByISBN(ctx context.Context, isbnField, isbn string) (
 		} else {
 			log.Error("Failed to search book by ISBN", map[string]interface{}{
 				"error": err.Error(),
-				"isbn":  isbn,
+				"isbn":  rawISBN,
 			})
 			log.Warn("Failed to parse canonical_id as integer", map[string]interface{}{
 				"error":        err.Error(),

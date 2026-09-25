@@ -47,7 +47,7 @@ func TestHardcoverSearchIntentLogsOnlyOutsideDailyPause(t *testing.T) {
 			setup: func(client *MockHardcoverClient, book *models.AudiobookshelfBook) {
 				book.Media.Metadata.ISBN = "9781101926840"
 				client.On("SearchBookByISBN13", mock.Anything, "9781101926840").Return((*models.HardcoverBook)(nil), nil)
-				client.On("SearchBookByISBN10", mock.Anything, "9781101926840").Return((*models.HardcoverBook)(nil), nil)
+				client.On("SearchBookByISBN10", mock.Anything, "1101926848").Return((*models.HardcoverBook)(nil), nil)
 			},
 			run: func(service *Service, book models.AudiobookshelfBook) {
 				_, _ = service.findBookInHardcover(context.Background(), book)

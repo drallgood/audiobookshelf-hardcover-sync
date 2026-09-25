@@ -4975,9 +4975,45 @@ func (s *Service) findBookInHardcoverByTitleAuthor(ctx context.Context, book mod
 	return bestMatch, errHardcoverTitleOnly
 }
 
+// isbnCandidate is one identifier lookup: a normalized ISBN searched in either
+// the ISBN-13 or the ISBN-10 field of Hardcover editions.
+type isbnCandidate struct {
+	value string
+	is13  bool
+}
+
+func (c isbnCandidate) label() string {
+	if c.is13 {
+		return "ISBN-13"
+	}
+	return "ISBN-10"
+}
+
+// isbnSearchCandidates lists the ISBN lookups for an Audiobookshelf ISBN value,
+// in the order they are tried: the form the item has, then its derived
+// counterpart (when the checksum is valid and one exists), each searched in its
+// own field. A value that does not parse as an ISBN keeps the historical
+// behavior of searching the normalized string in both fields. An empty result
+// means the item has no usable ISBN.
+func isbnSearchCandidates(raw string) []isbnCandidate {
+	parsed, ok := isbn.Parse(raw)
+	if !ok {
+		normalized := isbn.Normalize(raw)
+		if normalized == "" {
+			return nil
+		}
+		return []isbnCandidate{{value: normalized, is13: true}, {value: normalized}}
+	}
+	given := isbnCandidate{value: parsed.Given, is13: parsed.Is13}
+	if parsed.Counterpart == "" {
+		return []isbnCandidate{given}
+	}
+	return []isbnCandidate{given, {value: parsed.Counterpart, is13: !parsed.Is13}}
+}
+
 // findBookInHardcover finds a book in Hardcover by various methods
-// It first tries ASIN, then ISBN-13, then ISBN-10
-// Title/author search is only used for mismatches and should be called separately
+// It tries ASIN first, then the given ISBN form and its valid counterpart.
+// If those searches fail, it falls back to title/author search.
 // Callers must carry the item's reading format on ctx via hardcover.WithReadingFormat.
 func (s *Service) findBookInHardcover(ctx context.Context, book models.AudiobookshelfBook) (*models.HardcoverBook, error) {
 	var lookupErr error
@@ -5116,54 +5152,51 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 		}
 	}
 
-	// 2. Try to find by ISBN if available
-	if book.Media.Metadata.ISBN != "" {
+	// 2. Try to find by ISBN if available. The ABS value is searched as the form
+	// it has and as its derived ISBN-10/ISBN-13 counterpart, each in its own field.
+	if candidates := isbnSearchCandidates(book.Media.Metadata.ISBN); len(candidates) > 0 {
 		s.debugRequestIntent(log, fmt.Sprintf("Searching for book by ISBN: %s", book.Media.Metadata.ISBN), nil)
 
-		// Try to find by ISBN-13 first
-		hcBook, err := s.hardcover.SearchBookByISBN13(ctx, book.Media.Metadata.ISBN)
-		if err != nil {
-			// Check if this is a BookError with a book ID
-			var bookErr *hardcover.BookError
-			if errors.As(err, &bookErr) {
-				log.Debug("Found book ID in BookError from ISBN-13 search", map[string]interface{}{
-					"book_id": bookErr.BookID,
-					"error":   bookErr.Error(),
-				})
-				// Create a minimal book with just the ID
-				return &models.HardcoverBook{
-					ID: bookErr.BookID,
-				}, bookErr
+		for _, candidate := range candidates {
+			var hcBook *models.HardcoverBook
+			var err error
+			if candidate.is13 {
+				hcBook, err = s.hardcover.SearchBookByISBN13(ctx, candidate.value)
+			} else {
+				hcBook, err = s.hardcover.SearchBookByISBN10(ctx, candidate.value)
 			}
-			if lookupErr == nil {
-				lookupErr = fmt.Errorf("%w: ISBN-13 lookup: %w", errHardcoverLookupFailed, err)
+			if err != nil {
+				// Check if this is a BookError with a book ID
+				var bookErr *hardcover.BookError
+				if errors.As(err, &bookErr) {
+					if candidate.is13 {
+						log.Debug("Found book ID in BookError from ISBN-13 search", map[string]interface{}{
+							"book_id": bookErr.BookID,
+							"error":   bookErr.Error(),
+						})
+						// Create a minimal book with just the ID
+						return &models.HardcoverBook{
+							ID: bookErr.BookID,
+						}, bookErr
+					}
+					if bookErr.BookID != "" {
+						log.Debug("Found book ID in BookError from ISBN-10 search", map[string]interface{}{
+							"book_id": bookErr.BookID,
+							"error":   bookErr.Error(),
+						})
+						// Create a minimal book with just the ID
+						return &models.HardcoverBook{
+							ID: bookErr.BookID,
+						}, nil
+					}
+				}
+				if lookupErr == nil {
+					lookupErr = fmt.Errorf("%w: %s lookup: %w", errHardcoverLookupFailed, candidate.label(), err)
+				}
+				log.Warn(fmt.Sprintf("Search by %s failed, will try other identifiers or methods: %v", candidate.label(), err), nil)
+			} else if hcBook != nil {
+				return s.processFoundBook(ctx, hcBook, book)
 			}
-			log.Warn(fmt.Sprintf("Search by ISBN-13 failed, will try ISBN-10: %v", err), nil)
-		} else if hcBook != nil {
-			return s.processFoundBook(ctx, hcBook, book)
-		}
-
-		// If ISBN-13 search failed or returned no results, try ISBN-10
-		hcBook, err = s.hardcover.SearchBookByISBN10(ctx, book.Media.Metadata.ISBN)
-		if err != nil {
-			// Check if this is a BookError with a book ID
-			var bookErr *hardcover.BookError
-			if errors.As(err, &bookErr) && bookErr.BookID != "" {
-				log.Debug("Found book ID in BookError from ISBN-10 search", map[string]interface{}{
-					"book_id": bookErr.BookID,
-					"error":   bookErr.Error(),
-				})
-				// Create a minimal book with just the ID
-				return &models.HardcoverBook{
-					ID: bookErr.BookID,
-				}, nil
-			}
-			if lookupErr == nil {
-				lookupErr = fmt.Errorf("%w: ISBN-10 lookup: %w", errHardcoverLookupFailed, err)
-			}
-			log.Warn(fmt.Sprintf("Search by ISBN-10 failed: %v", err), nil)
-		} else if hcBook != nil {
-			return s.processFoundBook(ctx, hcBook, book)
 		}
 
 		log.Warn("Failed to find book by ISBN, will try other methods", map[string]interface{}{
@@ -5172,7 +5205,7 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 			"isbn":   book.Media.Metadata.ISBN,
 			"asin":   book.Media.Metadata.ASIN,
 		})
-		// Don't return here - fall through to try ASIN or title/author search
+		// Don't return here - fall through to try title/author search.
 	}
 
 	// 3. If we get here, we couldn't find the book by ASIN or ISBN, try title/author search

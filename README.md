@@ -925,6 +925,11 @@ If sync reports:
 
 it means the app could not confidently match your AudiobookShelf item to a specific Hardcover audiobook edition.
 
+For ISBN matching, sync checks the ISBN recorded in Audiobookshelf and, when
+its checksum permits conversion, the corresponding ISBN-10 or ISBN-13 form.
+It matches only Hardcover editions of the item's reading format, so an ebook
+ISBN cannot select an audiobook edition.
+
 The web UI does not include a one-click "link edition" action. API clients can
 request a read-only draft for an Audiobookshelf item using the profile-scoped
 edition-draft endpoint listed above.
