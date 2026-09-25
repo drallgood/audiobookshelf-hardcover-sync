@@ -35,7 +35,6 @@ var (
 	errHardcoverBookNotFound = errors.New("hardcover book not found")
 	errHardcoverLookupFailed = errors.New("hardcover lookup failed")
 	errHardcoverTitleOnly    = errors.New("found by title/author only")
-	errHardcoverASINConflict = errors.New("conflicting Audible ASIN mappings")
 )
 
 type editionBoundMutationError struct {
@@ -408,7 +407,7 @@ func classifyBookLookupOutcome(err error) SyncOutcome {
 	if errors.Is(err, errHardcoverTitleOnly) {
 		return OutcomeNeedsReview
 	}
-	if errors.Is(err, errHardcoverASINConflict) || errors.Is(err, hardcover.ErrASINLookupConflict) {
+	if errors.Is(err, hardcover.ErrASINLookupConflict) {
 		return OutcomeNeedsReview
 	}
 	if errors.Is(err, errHardcoverBookNotFound) {
@@ -5131,7 +5130,7 @@ func (s *Service) findBookInHardcoverWithASINMatch(ctx context.Context, book mod
 		hcBook, asinResult, err := s.lookupBookByASIN(ctx, asin)
 		if err != nil {
 			if errors.Is(err, hardcover.ErrASINLookupConflict) {
-				return nil, fmt.Errorf("%w: %w", errHardcoverASINConflict, err), false
+				return nil, fmt.Errorf("conflicting Audible ASIN mappings: %w", err), false
 			}
 			// Check if this is a BookError with a book ID
 			var bookErr *hardcover.BookError
