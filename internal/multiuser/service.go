@@ -342,6 +342,30 @@ func (s *MultiUserService) UpdateProfile(profileID, name string) error {
 
 // UpdateProfileConfig updates profile configuration
 func (s *MultiUserService) UpdateProfileConfig(profileID, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig database.SyncConfigData) error {
+	s.admissionMutex.Lock()
+	if _, deleted := s.deletedProfiles[profileID]; deleted {
+		s.admissionMutex.Unlock()
+		return fmt.Errorf("%w: %s", ErrProfileNotFound, profileID)
+	}
+	var gate *profileRunGate
+	if _, deleting := s.deletingProfiles[profileID]; deleting {
+		s.syncMutex.RLock()
+		gate = s.profileGates[profileID]
+		s.syncMutex.RUnlock()
+	} else {
+		gate = s.profileGate(profileID)
+	}
+	s.admissionMutex.Unlock()
+	if gate == nil {
+		return fmt.Errorf("%w: %s", ErrProfileNotFound, profileID)
+	}
+
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	if gate.deleted {
+		return fmt.Errorf("%w: %s", ErrProfileNotFound, profileID)
+	}
+
 	syncConfig.AudnexusRegion = s.normalizeProfileAudnexusRegion(profileID, syncConfig.AudnexusRegion)
 	if syncConfig.StateFile != "" {
 		if err := s.validateProfileStateFile(profileID, syncConfig.StateFile); err != nil {

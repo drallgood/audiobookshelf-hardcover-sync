@@ -8,11 +8,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/audnexregion"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 )
-
-var audibleASINRegions = [...]string{"us", "ca", "uk", "au", "de", "fr", "es", "in", "it", "jp"}
 
 type asinLookupBook struct {
 	ID           interface{}         `json:"id"`
@@ -146,8 +145,9 @@ func asinLookupQuery(asin string, formatID int) (string, map[string]interface{})
 	variables := map[string]interface{}{"asin": asin, "format_id": formatID}
 	editionOR := "{asin: {_eq: $asin}}"
 	if formatID == models.ReadingFormatID("audiobook") {
-		mappingPredicates := make([]string, 0, len(audibleASINRegions))
-		for _, region := range audibleASINRegions {
+		regions := audnexregion.Regions()
+		mappingPredicates := make([]string, 0, len(regions))
+		for _, region := range regions {
 			variable := "asin_" + region
 			variables[variable] = asin + ":" + region
 			mappingPredicates = append(mappingPredicates, fmt.Sprintf(
@@ -181,8 +181,9 @@ func asinLookupVariableDeclarations(formatID int) string {
 	if formatID != models.ReadingFormatID("audiobook") {
 		return ""
 	}
-	declarations := make([]string, 0, len(audibleASINRegions))
-	for _, region := range audibleASINRegions {
+	regions := audnexregion.Regions()
+	declarations := make([]string, 0, len(regions))
+	for _, region := range regions {
 		declarations = append(declarations, "$asin_"+region+": String!")
 	}
 	return ", " + strings.Join(declarations, ", ")
@@ -199,8 +200,9 @@ func asinLookupMappingSelection(formatID int) string {
 }
 
 func asinLookupMappingPredicates() []string {
-	predicates := make([]string, 0, len(audibleASINRegions))
-	for _, region := range audibleASINRegions {
+	regions := audnexregion.Regions()
+	predicates := make([]string, 0, len(regions))
+	for _, region := range regions {
 		predicates = append(predicates, fmt.Sprintf(
 			`{external_id: {_eq: $asin_%s}, platform: {name: {_eq: "Audible"}}}`,
 			region,
@@ -234,7 +236,7 @@ func hasExactAudibleMapping(asin string, mappings []asinLookupMapping) bool {
 }
 
 func exactAudibleMappingID(asin string, mappings []asinLookupMapping) string {
-	for _, region := range audibleASINRegions {
+	for _, region := range audnexregion.Regions() {
 		for _, mapping := range mappings {
 			if !strings.EqualFold(mapping.Platform.Name, "Audible") {
 				continue

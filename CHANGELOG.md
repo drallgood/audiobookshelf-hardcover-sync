@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Profile state updates during association cleanup**: Serialize profile configuration changes with forget-association operations so a state-file path cannot change while the forget operation is using it. By @Snuffy2.
 - **ISBN counterpart matching**: Match an Audiobookshelf ISBN-10 to its valid ISBN-13 counterpart, and the reverse, without changing audiobook and ebook reading-format separation. By @Snuffy2. (#200)
 
 ## [v4.0.0] - 2026-09-21

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/audnexregion"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/cache"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
@@ -43,7 +44,7 @@ func TestSearchBookByASINResultUsesRegionalMappingsAndPrioritizesThem(t *testing
 	require.Equal(t, asin+":ca", result.RegionalExternalID)
 	require.Equal(t, 1, requestCount, "the exact lookup should use one GraphQL read")
 
-	for _, region := range audibleASINRegions {
+	for _, region := range audnexregion.Regions() {
 		variable := "asin_" + region
 		require.Equal(t, asin+":"+region, request.Variables[variable])
 		require.Contains(t, request.Query, "external_id: {_eq: $"+variable+"}")

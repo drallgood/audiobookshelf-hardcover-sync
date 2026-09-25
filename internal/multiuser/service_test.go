@@ -726,6 +726,107 @@ func TestForgetEditionAssociationSerializesWithLegacyStateMigration(t *testing.T
 	require.Equal(t, legacyBefore, legacyAfter, "migration backup should retain the pre-forget source snapshot")
 }
 
+func TestUpdateProfileConfigSerializesWithForgetEditionAssociation(t *testing.T) {
+	service, db := newStatusLookupService(t)
+	service.globalConfig.Paths.DataDir = t.TempDir()
+	const (
+		profileID = "forget-config-serialization-profile"
+		itemID    = "abs-forget-config-serialization-item"
+		oldFile   = "old-state.json"
+		newFile   = "new-state.json"
+	)
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Forget config serialization", "http://audiobookshelf", "abs-token", "hc-token",
+		database.SyncConfigData{StateFile: oldFile},
+	))
+	writeAssociation := func(configuredPath, editionID string) string {
+		path := service.profileSpecificStatePath(profileID, configuredPath)
+		state := statepkg.NewState()
+		require.NoError(t, state.SetAssociation(statepkg.Association{
+			ABSItemID: itemID, HardcoverBookID: "book-" + editionID, HardcoverEditionID: editionID,
+			ReadingFormat: "audiobook", Provenance: "audible_mapping",
+		}))
+		require.NoError(t, state.Save(path))
+		return path
+	}
+	oldStatePath := writeAssociation(oldFile, "old-edition")
+	newStatePath := writeAssociation(newFile, "new-edition")
+
+	updateReadEntered := make(chan struct{})
+	releaseUpdateRead := make(chan struct{})
+	var releaseUpdateOnce sync.Once
+	releaseUpdate := func() { releaseUpdateOnce.Do(func() { close(releaseUpdateRead) }) }
+	const updateReadCallback = "multiuser_test_block_profile_config_read_for_forget"
+	var updateReadOnce sync.Once
+	require.NoError(t, db.Callback().Query().Before("gorm:query").Register(updateReadCallback, func(tx *gorm.DB) {
+		if tx.Statement.Schema == nil || tx.Statement.Schema.Name != "SyncProfileConfig" {
+			return
+		}
+		updateReadOnce.Do(func() {
+			close(updateReadEntered)
+			<-releaseUpdateRead
+		})
+	}))
+	t.Cleanup(func() {
+		releaseUpdate()
+		require.NoError(t, db.Callback().Query().Remove(updateReadCallback))
+	})
+
+	forgetReadEntered := make(chan struct{})
+	var forgetReadOnce sync.Once
+	const forgetReadCallback = "multiuser_test_observe_forget_profile_read"
+	require.NoError(t, db.Callback().Query().Before("gorm:query").Register(forgetReadCallback, func(tx *gorm.DB) {
+		if tx.Statement.Schema != nil && tx.Statement.Schema.Name == "SyncProfile" {
+			forgetReadOnce.Do(func() { close(forgetReadEntered) })
+		}
+	}))
+	t.Cleanup(func() { require.NoError(t, db.Callback().Query().Remove(forgetReadCallback)) })
+
+	updateDone := make(chan error, 1)
+	go func() {
+		updateDone <- service.UpdateProfileConfig(profileID, "", "", "", database.SyncConfigData{StateFile: newFile})
+	}()
+	<-updateReadEntered // The update owns its profile gate while paused in the repository read.
+
+	forgetDone := make(chan struct {
+		result *ForgetAssociationResult
+		err    error
+	}, 1)
+	forgetStarted := make(chan struct{})
+	go func() {
+		close(forgetStarted)
+		result, err := service.ForgetEditionAssociation(profileID, itemID)
+		forgetDone <- struct {
+			result *ForgetAssociationResult
+			err    error
+		}{result: result, err: err}
+	}()
+	<-forgetStarted
+	select {
+	case <-forgetReadEntered:
+		releaseUpdate()
+		t.Fatal("forget read the profile before the config update completed")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	releaseUpdate()
+	require.NoError(t, <-updateDone)
+	<-forgetReadEntered
+	forgot := <-forgetDone
+	require.NoError(t, forgot.err)
+	require.True(t, forgot.result.AssociationRemoved)
+	require.Equal(t, "new-edition", forgot.result.PreviousResolution.HardcoverEditionID)
+
+	oldState, err := statepkg.LoadState(oldStatePath)
+	require.NoError(t, err)
+	_, exists := oldState.GetAssociation(itemID)
+	require.True(t, exists, "the update completed first, so forget should leave the old configured state file untouched")
+	newState, err := statepkg.LoadState(newStatePath)
+	require.NoError(t, err)
+	_, exists = newState.GetAssociation(itemID)
+	require.False(t, exists, "forget should clear the association from the newly configured state file")
+}
+
 func TestForgetEditionAssociationRejectsActiveSyncAndExternalStateLock(t *testing.T) {
 	service, _ := newStatusLookupService(t)
 	service.globalConfig.Paths.DataDir = t.TempDir()
