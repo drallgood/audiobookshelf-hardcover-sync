@@ -38,18 +38,6 @@ var (
 	errHardcoverASINConflict = errors.New("conflicting Audible ASIN mappings")
 )
 
-type createUserBookMutationError struct {
-	err error
-}
-
-func (e *createUserBookMutationError) Error() string {
-	return e.err.Error()
-}
-
-func (e *createUserBookMutationError) Unwrap() error {
-	return e.err
-}
-
 type editionBoundMutationError struct {
 	editionID string
 	err       error
@@ -1363,7 +1351,7 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 			"editionID": editionIDInt,
 			"status":    creationStatus,
 		})
-		return 0, &createUserBookMutationError{err: fmt.Errorf("failed to create user book: %w", err)}
+		return 0, withEditionBoundMutation(fmt.Errorf("failed to create user book: %w", err), editionID)
 	}
 
 	// Convert the new user book ID to an integer64
@@ -2924,12 +2912,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	// Find or create a user book ID for this edition with the determined status
 	userBookID, err := s.findOrCreateUserBookID(ctx, editionID, status)
 	if err != nil {
-		var createErr *createUserBookMutationError
-		if errors.Is(err, models.ErrEditionNotFound) || errors.As(err, &createErr) {
-			s.forgetConfirmedMissingEdition(ctx, book.ID, editionID)
-		} else {
-			s.forgetConfirmedMissingEditionAfterMutation(ctx, book.ID, err)
-		}
+		s.forgetConfirmedMissingEditionForError(ctx, book.ID, editionID, err)
 		outcomeError = err
 		setOutcome(OutcomeFailed, "failed to get or create user book ID")
 		bookLog.Error("Failed to get or create user book ID", map[string]interface{}{
@@ -2962,7 +2945,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			"progress": progress,
 		})
 		if err := s.HandleFinishedBook(ctx, book, editionID, userBookID); err != nil {
-			s.forgetConfirmedMissingEditionAfterMutation(ctx, book.ID, err)
+			s.forgetConfirmedMissingEditionForError(ctx, book.ID, "", err)
 			outcomeError = err
 			setOutcome(OutcomeFailed, "failed to handle finished book")
 			bookLog.Error("Failed to handle finished book", map[string]interface{}{
@@ -2982,7 +2965,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 
 		// Call handleInProgressBook to update the progress with the composite state key
 		if err := s.handleInProgressBook(ctx, userBookID, book, stateKey); err != nil {
-			s.forgetConfirmedMissingEditionAfterMutation(ctx, book.ID, err)
+			s.forgetConfirmedMissingEditionForError(ctx, book.ID, "", err)
 			outcomeError = err
 			setOutcome(OutcomeFailed, "failed to handle in-progress book")
 			bookLog.Error("Failed to handle in-progress book", map[string]interface{}{
@@ -5093,7 +5076,12 @@ func (s *Service) forgetConfirmedMissingEdition(ctx context.Context, itemID, edi
 	return removed
 }
 
-func (s *Service) forgetConfirmedMissingEditionAfterMutation(ctx context.Context, itemID string, err error) {
+func (s *Service) forgetConfirmedMissingEditionForError(ctx context.Context, itemID, fallbackEditionID string, err error) {
+	if errors.Is(err, models.ErrEditionNotFound) && fallbackEditionID != "" {
+		s.forgetConfirmedMissingEdition(ctx, itemID, fallbackEditionID)
+		return
+	}
+
 	var mutationErr *editionBoundMutationError
 	if errors.As(err, &mutationErr) {
 		s.forgetConfirmedMissingEdition(ctx, itemID, mutationErr.editionID)
