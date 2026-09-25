@@ -159,6 +159,25 @@ func (f *editionDraftTestFixture) setDiscovery(discovery editionDraftDiscoveryFu
 	}
 }
 
+func TestGetEditionSourceDraftRejectsPodcastBeforeDiscovery(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{
+		"id":"abs-item-1","mediaType":"podcast","media":{
+			"metadata":{"title":"Podcast","asin":"B0SOURCE12"},"duration":3600
+		}}`, "us")
+	var discoveryCalls atomic.Int32
+	fixture.setDiscovery(func(context.Context, string, string) (*audnex.Book, string, error) {
+		discoveryCalls.Add(1)
+		return nil, "", nil
+	})
+
+	response := fixture.request(editionDraftItemPath, fixture.sessionCookie(t, fixture.owner))
+	require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+	require.Contains(t, response.Body.String(), "Audiobookshelf item must be a book")
+	require.EqualValues(t, 1, fixture.absRequests.Load())
+	require.Zero(t, discoveryCalls.Load())
+	require.Zero(t, fixture.hardcoverRequests.Load())
+}
+
 func TestGetEditionSourceDraftKeepsBareASINAndUsesDiscoveredRegionDate(t *testing.T) {
 	fixture := newEditionDraftTestFixture(t, `{
 		"id":"abs-item-1","mediaType":"book","media":{

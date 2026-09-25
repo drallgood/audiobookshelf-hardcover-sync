@@ -119,6 +119,10 @@ drafts include candidate edition fields. A usable ASIN or ISBN is required for
 eligibility. The endpoint makes no Hardcover requests or catalogue changes.
 See [OpenAPI](docs/openapi.yaml) for response fields and warnings.
 
+Use a trusted Audiobookshelf URL: this route fetches it with the saved token.
+Enable authentication when exposing the API beyond localhost. A draft may
+check up to ten Audnex regions, with retries, within its 25-second deadline.
+
 ### Environment Variables (Multi-Profile)
 
 | Variable | Description | Default |

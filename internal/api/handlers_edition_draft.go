@@ -136,6 +136,11 @@ func (h *Handler) GetEditionSourceDraft(w http.ResponseWriter, r *http.Request) 
 	if parentCtx.Err() != nil {
 		return
 	}
+	mediaType := strings.ToLower(strings.TrimSpace(book.MediaType))
+	if mediaType != "book" && mediaType != "ebook" {
+		h.writeErrorResponse(w, http.StatusBadRequest, "Audiobookshelf item must be a book")
+		return
+	}
 
 	draft := buildEditionSourceDraft(book, profile.SyncConfig.DryRun)
 	if !book.IsEbook() && draft.SourceIdentifiers.ASIN != "" {

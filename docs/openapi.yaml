@@ -126,35 +126,57 @@ components:
     ProfileConfig:
       type: object
       properties:
-        audiobookshelfUrl:
+        audiobookshelf_url:
           type: string
           example: "https://audiobooks.example.com"
         sync_config:
+          $ref: '#/components/schemas/SyncConfig'
+
+    SyncConfig:
+      type: object
+      properties:
+        incremental:
+          type: boolean
+        state_file:
+          type: string
+          description: Optional relative state-file path. Absolute paths and relative paths that lexically escape the effective data directory are rejected; when paths.data_dir is empty, /data is used. The profile-specific filename component, including the encoded profile ID, must fit the supported 255-byte baseline.
+          pattern: '^(?!/).*$'
+        min_change_threshold:
+          type: integer
+        libraries:
           type: object
           properties:
-            libraryId:
-              type: string
-              example: "lib1"
-            includeTags:
+            include:
               type: array
               items:
                 type: string
-              example: ["hardcover"]
-            excludeTags:
+            exclude:
               type: array
               items:
                 type: string
-              example: ["exclusive"]
-            audnexus_region:
-              type: string
-              description: Region preference stored for the profile. Values are trimmed and lowercased. `us`, `ca`, `uk`, `au`, `de`, `fr`, `es`, `in`, `it`, and `jp` are supported for Audnex draft discovery. Unsupported non-empty values warn and normalize to `us`. An explicit empty string clears the saved preference; omitting this field preserves it.
-            state_file:
-              type: string
-              description: Optional relative state-file path. Absolute paths and relative paths that lexically escape the effective data directory are rejected; when paths.data_dir is empty, /data is used. The profile-specific filename component, including the encoded profile ID, must fit the supported 255-byte baseline.
-              pattern: '^(?!/).*$'
-            dry_run:
-              type: boolean
-              example: false
+        sync_interval:
+          type: string
+        minimum_progress:
+          type: number
+        sync_want_to_read:
+          type: boolean
+        process_unread_books:
+          type: boolean
+        sync_owned:
+          type: boolean
+        include_ebooks:
+          type: boolean
+        dry_run:
+          type: boolean
+          description: An explicit `false` disables dry run; omission from a partial update preserves the saved value.
+          example: false
+        test_book_filter:
+          type: string
+        test_book_limit:
+          type: integer
+        audnexus_region:
+          type: string
+          description: Region preference stored for the profile. Values are trimmed and lowercased. `us`, `ca`, `uk`, `au`, `de`, `fr`, `es`, `in`, `it`, and `jp` are supported for Audnex draft discovery. Unsupported non-empty values warn and normalize to `us`. An explicit empty string clears the saved preference; omitting this field preserves it.
     
     ProfileWithConfig:
       allOf:
@@ -181,10 +203,18 @@ components:
           description: The profile's sync dry-run setting. This draft endpoint itself remains read-only regardless of this value.
         eligible:
           type: boolean
-          description: True when a valid source ASIN (exactly 10 ASCII letters or digits) or an ISBN accepted by shape is available. A malformed non-empty source ASIN is not usable: it is retained in the draft and produces an `invalid_source_asin` warning (with `region_status` `unknown` for audiobooks and Audnex lookup skipped), and the item is eligible only if it has an ISBN. An ISBN with a bad checksum remains a candidate with a validity warning, so checksum warnings do not by themselves make an ISBN-shaped value ineligible.
+          description: >-
+            True when a valid source ASIN (exactly 10 ASCII letters or digits)
+            or an ISBN accepted by shape is available. A malformed non-empty
+            source ASIN is not usable: it is retained in the draft and produces
+            an `invalid_source_asin` warning (with `region_status` `unknown` for
+            audiobooks and Audnex lookup skipped), and the item is eligible only
+            if it has an ISBN. An ISBN with a bad checksum remains a candidate
+            with a validity warning, so checksum warnings do not by themselves
+            make an ISBN-shaped value ineligible.
         ineligible_reason:
           type: string
-          description: Present when the source item has neither a non-empty ASIN nor an ISBN accepted by shape; author or date warnings do not change eligibility.
+          description: Present when the source item has neither a usable ASIN nor an ISBN accepted by shape; author or date warnings do not change eligibility.
         source_identifiers:
           $ref: '#/components/schemas/EditionDraftSourceIdentifiers'
         region_status:
@@ -529,17 +559,17 @@ paths:
                 name:
                   type: string
                   example: "My Audiobooks"
-                audiobookshelfUrl:
+                audiobookshelf_url:
                   type: string
                   example: "https://audiobooks.example.com"
-                audiobookshelfToken:
+                audiobookshelf_token:
                   type: string
                   example: "abs-token-123"
-                hardcoverToken:
+                hardcover_token:
                   type: string
                   example: "hc-token-456"
                 sync_config:
-                  $ref: '#/components/schemas/ProfileConfig/properties/sync_config'
+                  $ref: '#/components/schemas/SyncConfig'
       responses:
         '201':
           description: Profile created successfully
@@ -691,25 +721,7 @@ paths:
                   type: string
                   example: "new-hc-token-456"
                 sync_config:
-                  type: object
-                  properties:
-                    incremental:
-                      type: boolean
-                    sync_want_to_read:
-                      type: boolean
-                    process_unread_books:
-                      type: boolean
-                    sync_owned:
-                      type: boolean
-                    include_ebooks:
-                      type: boolean
-                    audnexus_region:
-                      type: string
-                      description: Region preference stored for the profile. Supported Audnex draft lookup regions are `us`, `ca`, `uk`, `au`, `de`, `fr`, `es`, `in`, `it`, and `jp`. Unsupported non-empty values normalize to `us`. An explicit empty string clears the saved preference; omission preserves it.
-                    dry_run:
-                      type: boolean
-                      description: When supplied as `false`, explicitly disables dry run. When omitted from a partial configuration update, preserves the saved value.
-                      example: false
+                  $ref: '#/components/schemas/SyncConfig'
       responses:
         '200':
           description: Configuration updated successfully
@@ -806,7 +818,7 @@ paths:
                   data:
                     $ref: '#/components/schemas/EditionSourceDraft'
         '400':
-          description: Required profile or Audiobookshelf item ID is missing.
+          description: Required profile or Audiobookshelf item ID is missing, or the fetched item is not book media.
           content:
             application/json:
               schema:
