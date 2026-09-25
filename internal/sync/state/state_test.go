@@ -108,10 +108,35 @@ func TestLoadState_RejectsUnknownVersion(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "state.json")
-	require.NoError(t, os.WriteFile(path, []byte(`{"version":"4.0","books":{}}`), 0644))
+	require.NoError(t, os.WriteFile(path, []byte(`{"version":"5.0","books":{}}`), 0644))
 	_, err := LoadState(path)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported state version")
+}
+
+func TestLoadState_V3PreservesCheckpointsWhenMigrated(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "state.json")
+	contents := `{"version":"3.0","books":{"item":{"lastProgress":0.75,"lastUpdated":42,"status":"IN_PROGRESS","userBookID":"123","hasProgressSeconds":true},"item:456":{"lastProgress":0.75,"lastUpdated":42,"status":"IN_PROGRESS"}}}`
+	require.NoError(t, os.WriteFile(path, []byte(contents), 0644))
+
+	state, err := LoadState(path)
+	require.NoError(t, err)
+	assert.Equal(t, CurrentVersion, state.Version)
+	assert.Equal(t, Book{
+		LastProgress:       0.75,
+		LastUpdated:        42,
+		Status:             "IN_PROGRESS",
+		UserBookID:         "123",
+		HasProgressSeconds: true,
+	}, state.Books["item"])
+	assert.Equal(t, 0.75, state.Books["item:456"].LastProgress)
+
+	require.NoError(t, state.Save(path))
+	reloaded, err := LoadState(path)
+	require.NoError(t, err)
+	assert.Equal(t, state.Books, reloaded.Books)
 }
 
 func TestLoadState_InvalidJSON(t *testing.T) {
@@ -156,6 +181,99 @@ func TestSaveAndLoad(t *testing.T) {
 	require.True(t, exists)
 	assert.Equal(t, 0.5, book.LastProgress)
 	assert.Equal(t, "IN_PROGRESS", book.Status)
+}
+
+func TestAssociationPersistsWithCheckpointAndSurvivesCheckpointUpdates(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "state.json")
+	state := NewState()
+	state.UpdateBook("item", 0.4, "IN_PROGRESS")
+	association := Association{
+		ABSItemID:          "item",
+		SourceASIN:         " B012345678 ",
+		SourceISBN10:       "0-306-40615-2",
+		SourceISBN13:       "978-0-306-40615-7",
+		Correction:         "B012345678@UK",
+		RegionalExternalID: "B012345678:UK",
+		HardcoverBookID:    "101",
+		HardcoverEditionID: "202",
+		ReadingFormat:      "audiobook",
+		Provenance:         "audible_mapping",
+	}
+	require.NoError(t, state.SetAssociation(association))
+	state.UpdateBook("item:202", 0.5, "IN_PROGRESS")
+	state.SetHasProgressSeconds("item:202")
+	require.Equal(t, association, mustGetAssociation(t, state, "item"))
+
+	require.NoError(t, state.Save(path))
+	reloaded, err := LoadState(path)
+	require.NoError(t, err)
+	got, ok := reloaded.GetAssociation("item")
+	require.True(t, ok)
+	assert.Equal(t, association, got)
+	assert.Equal(t, 0.5, reloaded.Books["item"].LastProgress)
+	assert.True(t, reloaded.Books["item"].HasProgressSeconds)
+}
+
+func mustGetAssociation(t *testing.T, state *State, itemID string) Association {
+	t.Helper()
+	association, ok := state.GetAssociation(itemID)
+	require.True(t, ok)
+	return association
+}
+
+func TestRemoveAssociationClearsOnlyAssociatedCheckpoints(t *testing.T) {
+	t.Parallel()
+
+	state := NewState()
+	state.UpdateBook("item", 0.4, "IN_PROGRESS")
+	state.UpdateBook("item:202", 0.4, "IN_PROGRESS")
+	state.UpdateBook("item-other:202", 0.8, "IN_PROGRESS")
+	association := Association{ABSItemID: "item", HardcoverBookID: "101", HardcoverEditionID: "202"}
+	require.NoError(t, state.SetAssociation(association))
+
+	previous, removed := state.RemoveAssociation("item")
+	require.True(t, removed)
+	assert.Equal(t, association, previous)
+	assert.NotContains(t, state.Books, "item")
+	assert.NotContains(t, state.Books, "item:202")
+	assert.Contains(t, state.Books, "item-other:202")
+	assert.True(t, state.IsDirty())
+
+	state.UpdateBook("item", 0.9, "IN_PROGRESS")
+	require.NoError(t, state.Save(filepath.Join(t.TempDir(), "state.json")))
+	assert.False(t, state.IsDirty())
+	_, removed = state.RemoveAssociation("item")
+	assert.False(t, removed)
+	assert.Equal(t, 0.9, state.Books["item"].LastProgress)
+}
+
+func TestSetAssociationRequiresItemAndHardcoverIDs(t *testing.T) {
+	t.Parallel()
+
+	state := NewState()
+	assert.Error(t, state.SetAssociation(Association{HardcoverBookID: "1", HardcoverEditionID: "2"}))
+	assert.Error(t, state.SetAssociation(Association{ABSItemID: "item", HardcoverBookID: "1"}))
+	assert.False(t, state.IsDirty())
+}
+
+func TestSaveFailurePreservesExistingTargetAndDirtyState(t *testing.T) {
+	t.Parallel()
+
+	targetDir := filepath.Join(t.TempDir(), "existing-directory")
+	require.NoError(t, os.MkdirAll(targetDir, 0755))
+	sentinelPath := filepath.Join(targetDir, "sentinel")
+	require.NoError(t, os.WriteFile(sentinelPath, []byte("untouched"), 0600))
+	state := NewState()
+	state.UpdateBook("item", 0.5, "IN_PROGRESS")
+
+	err := state.Save(targetDir)
+	require.Error(t, err)
+	assert.True(t, state.IsDirty())
+	sentinel, readErr := os.ReadFile(sentinelPath)
+	require.NoError(t, readErr)
+	assert.Equal(t, []byte("untouched"), sentinel)
 }
 
 func TestSavePreservesSymlinkTarget(t *testing.T) {

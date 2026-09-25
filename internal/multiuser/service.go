@@ -45,6 +45,10 @@ var ErrSyncAlreadyTerminal = errors.New("sync already terminal")
 // ErrProfileDeleting indicates that profile lifecycle teardown is in progress.
 var ErrProfileDeleting = errors.New("sync profile is being deleted")
 
+// ErrProfileStateBusy indicates that another process currently owns a profile's
+// sync state file, so an out-of-band state mutation cannot safely proceed.
+var ErrProfileStateBusy = errors.New("profile sync state is busy")
+
 // SyncProfileStatus represents the sync status for a profile
 type SyncProfileStatus struct {
 	ProfileID        string             `json:"profile_id"`
@@ -193,6 +197,122 @@ func (s *MultiUserService) GetProfileMetadata(profileID string) (*database.SyncP
 // GetProfile returns a specific profile with decrypted tokens
 func (s *MultiUserService) GetProfile(profileID string) (*database.ProfileWithTokens, error) {
 	return s.repository.GetProfile(profileID)
+}
+
+// ForgetAssociationResult describes a profile-local request to forget an ABS
+// item's confirmed Hardcover match.
+type ForgetAssociationResult struct {
+	ABSItemID            string                       `json:"abs_item_id"`
+	PreviousResolution   *ForgetAssociationResolution `json:"previous_resolution"`
+	AssociationRemoved   bool                         `json:"association_removed"`
+	PersistentChangeMade bool                         `json:"persistent_change_made"`
+	DryRun               bool                         `json:"dry_run"`
+}
+
+// ForgetAssociationResolution is the caller-visible target portion of a
+// stored local association. Source identifiers and correction details are
+// intentionally kept inside the sync state file.
+type ForgetAssociationResolution struct {
+	HardcoverBookID    string `json:"hardcover_book_id"`
+	HardcoverEditionID string `json:"hardcover_edition_id"`
+	ReadingFormat      string `json:"reading_format"`
+	Provenance         string `json:"provenance"`
+}
+
+// ForgetEditionAssociation removes an item's local Hardcover association and
+// its incremental checkpoints. The profile run gate prevents a new sync from
+// starting during the transaction; the state-file lock coordinates with CLI
+// syncs and other processes sharing the same file.
+func (s *MultiUserService) ForgetEditionAssociation(profileID, absItemID string) (*ForgetAssociationResult, error) {
+	s.admissionMutex.Lock()
+	if s.shuttingDown {
+		s.admissionMutex.Unlock()
+		return nil, ErrServiceShuttingDown
+	}
+	if _, deleting := s.deletingProfiles[profileID]; deleting {
+		s.admissionMutex.Unlock()
+		return nil, ErrProfileDeleting
+	}
+	if _, deleted := s.deletedProfiles[profileID]; deleted {
+		s.admissionMutex.Unlock()
+		return nil, ErrProfileNotFound
+	}
+	gate := s.profileGate(profileID)
+	s.admissionMutex.Unlock()
+
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	if gate.deleted {
+		return nil, ErrProfileNotFound
+	}
+
+	s.syncMutex.RLock()
+	_, active := s.activeSyncs[profileID]
+	s.syncMutex.RUnlock()
+	if active {
+		return nil, fmt.Errorf("%w for profile %s", ErrSyncAlreadyActive, profileID)
+	}
+
+	profile, err := s.GetProfile(profileID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load profile %s for forget-match: %w", profileID, err)
+	}
+	if profile == nil {
+		return nil, fmt.Errorf("%w: %s", ErrProfileNotFound, profileID)
+	}
+	if err := s.validatePersistedProfileStateFile(profileID, profile.SyncConfig.StateFile); err != nil {
+		return nil, fmt.Errorf("invalid persisted state file for profile %s: %w", profileID, err)
+	}
+
+	statePath := s.profileSpecificStatePath(profileID, profile.SyncConfig.StateFile)
+	fileLock, err := statepkg.AcquireFileLock(statePath)
+	if err != nil {
+		if errors.Is(err, statepkg.ErrStateFileLocked) {
+			return nil, fmt.Errorf("%w for profile %s: %w", ErrProfileStateBusy, profileID, err)
+		}
+		return nil, fmt.Errorf("failed to lock state file for profile %s: %w", profileID, err)
+	}
+	defer func() { _ = fileLock.Close() }()
+
+	// Resolve the canonical or legacy source without changing it. This keeps
+	// dry runs read-only and lets an absent association remain a true no-op.
+	_, loadPath, isLegacy, err := s.profileStateSourcePath(profileID, profile.SyncConfig.StateFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to locate state file for profile %s: %w", profileID, err)
+	}
+	state, err := statepkg.LoadState(loadPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load state file for profile %s: %w", profileID, err)
+	}
+
+	result := &ForgetAssociationResult{
+		ABSItemID: absItemID,
+		DryRun:    profile.SyncConfig.DryRun,
+	}
+	if association, exists := state.GetAssociation(absItemID); exists {
+		result.PreviousResolution = &ForgetAssociationResolution{
+			HardcoverBookID:    association.HardcoverBookID,
+			HardcoverEditionID: association.HardcoverEditionID,
+			ReadingFormat:      association.ReadingFormat,
+			Provenance:         association.Provenance,
+		}
+	}
+	if result.DryRun || result.PreviousResolution == nil {
+		return result, nil
+	}
+
+	if _, removed := state.RemoveAssociation(absItemID); !removed {
+		return result, nil
+	}
+	if err := state.Save(statePath); err != nil {
+		return nil, fmt.Errorf("failed to save forgotten match for profile %s: %w", profileID, err)
+	}
+	if isLegacy {
+		s.backupMigratedLegacyProfileState(profileID, loadPath)
+	}
+	result.AssociationRemoved = true
+	result.PersistentChangeMade = true
+	return result, nil
 }
 
 // CreateProfile creates a new sync profile
@@ -1125,7 +1245,9 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
 	defer s.finishActiveRun(profileID, generation)
 	// Create profile-specific config
 	config := s.createProfileSpecificConfig(profileConfig)
-	if err := s.migrateLegacyProfileStatePath(profileID, profileConfig.SyncConfig.StateFile); err != nil {
+	if err := s.withProfileStateFileLock(profileID, profileConfig.SyncConfig.StateFile, func() error {
+		return s.migrateLegacyProfileStatePath(profileID, profileConfig.SyncConfig.StateFile)
+	}); err != nil {
 		status := &SyncProfileStatus{
 			ProfileID:   profileID,
 			ProfileName: profileConfig.Profile.Name,
@@ -1600,67 +1722,46 @@ func (s *MultiUserService) profileStateBasePath(configuredPath string) string {
 	return statePath
 }
 
+// withProfileStateFileLock holds the canonical profile state lock for one
+// state-file operation. It is used for pre-sync legacy migration; Sync then
+// reacquires the lock and loads a fresh snapshot before processing books.
+func (s *MultiUserService) withProfileStateFileLock(profileID, configuredPath string, operation func() error) (err error) {
+	if operation == nil {
+		return errors.New("profile state operation is required")
+	}
+	statePath := s.profileSpecificStatePath(profileID, configuredPath)
+	stateLock, err := statepkg.AcquireFileLock(statePath)
+	if err != nil {
+		return fmt.Errorf("failed to acquire profile state lock: %w", err)
+	}
+	defer func() {
+		if closeErr := stateLock.Close(); closeErr != nil {
+			wrapped := fmt.Errorf("failed to release profile state lock: %w", closeErr)
+			if err != nil {
+				err = errors.Join(err, wrapped)
+			} else {
+				err = wrapped
+			}
+		}
+	}()
+	return operation()
+}
+
 // migrateLegacyProfileStatePath preserves state written before profile IDs were
 // encoded into a single filename component. It only reads a regular, non-symlink
 // file whose lexical and resolved parent paths remain under the canonical state
 // file directory. The canonical copy is written atomically by State.Save before
 // the old file is renamed to a recoverable .migrated backup.
 func (s *MultiUserService) migrateLegacyProfileStatePath(profileID, configuredPath string) error {
-	canonicalPath, err := filepath.Abs(s.profileSpecificStatePath(profileID, configuredPath))
+	canonicalPath, sourcePath, isLegacy, err := s.profileStateSourcePath(profileID, configuredPath)
 	if err != nil {
-		return fmt.Errorf("resolve canonical state path: %w", err)
+		return err
 	}
-	if _, err := os.Lstat(canonicalPath); err == nil {
-		return nil
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("inspect canonical state path: %w", err)
-	}
-	if !safeLegacyProfileIDPathSegments(profileID) {
+	if !isLegacy {
 		return nil
 	}
 
-	legacyPath, err := filepath.Abs(s.legacyProfileStatePath(profileID, configuredPath))
-	if err != nil {
-		return fmt.Errorf("resolve legacy state path: %w", err)
-	}
-	if legacyPath == canonicalPath {
-		return nil
-	}
-
-	stateDir := filepath.Dir(canonicalPath)
-	if !pathWithinDirectory(stateDir, legacyPath) {
-		return nil
-	}
-	resolvedStateDir, err := filepath.EvalSymlinks(stateDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("resolve canonical state directory: %w", err)
-	}
-	resolvedLegacyDir, err := filepath.EvalSymlinks(filepath.Dir(legacyPath))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("resolve legacy state directory: %w", err)
-	}
-	if !pathWithinDirectory(resolvedStateDir, resolvedLegacyDir) {
-		return nil
-	}
-
-	info, err := os.Lstat(legacyPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("inspect legacy state path: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return nil
-	}
-
-	legacyState, err := statepkg.LoadState(legacyPath)
+	legacyState, err := statepkg.LoadState(sourcePath)
 	if err != nil {
 		return fmt.Errorf("load legacy state file: %w", err)
 	}
@@ -1668,33 +1769,93 @@ func (s *MultiUserService) migrateLegacyProfileStatePath(profileID, configuredPa
 		return fmt.Errorf("save migrated state file: %w", err)
 	}
 
-	backupPath := legacyPath + ".migrated"
+	s.backupMigratedLegacyProfileState(profileID, sourcePath)
+	return nil
+}
+
+func (s *MultiUserService) backupMigratedLegacyProfileState(profileID, sourcePath string) {
+	backupPath := sourcePath + ".migrated"
 	if _, err := os.Lstat(backupPath); err == nil {
 		if s.logger != nil {
 			s.logger.Warn("Migrated legacy sync state while preserving the existing backup", map[string]interface{}{
 				"profileID": profileID,
-				"path":      legacyPath,
+				"path":      sourcePath,
 			})
 		}
-		return nil
+		return
 	} else if !os.IsNotExist(err) {
 		if s.logger != nil {
 			s.logger.Warn("Migrated legacy sync state but could not inspect its backup path", map[string]interface{}{
 				"profileID": profileID,
-				"path":      legacyPath,
+				"path":      sourcePath,
 				"error":     err.Error(),
 			})
 		}
-		return nil
+		return
 	}
-	if err := os.Rename(legacyPath, backupPath); err != nil && s.logger != nil {
+	if err := os.Rename(sourcePath, backupPath); err != nil && s.logger != nil {
 		s.logger.Warn("Migrated legacy sync state but could not rename the original", map[string]interface{}{
 			"profileID": profileID,
-			"path":      legacyPath,
+			"path":      sourcePath,
 			"error":     err.Error(),
 		})
 	}
-	return nil
+}
+
+// profileStateSourcePath identifies a safe pre-encoded state file without
+// changing it. Dry-run callers use the source path directly so even a needed
+// legacy migration remains read-only.
+func (s *MultiUserService) profileStateSourcePath(profileID, configuredPath string) (canonicalPath, sourcePath string, isLegacy bool, err error) {
+	canonicalPath, err = filepath.Abs(s.profileSpecificStatePath(profileID, configuredPath))
+	if err != nil {
+		return "", "", false, fmt.Errorf("resolve canonical state path: %w", err)
+	}
+	if _, err := os.Lstat(canonicalPath); err == nil {
+		return canonicalPath, canonicalPath, false, nil
+	} else if !os.IsNotExist(err) {
+		return "", "", false, fmt.Errorf("inspect canonical state path: %w", err)
+	}
+	if !safeLegacyProfileIDPathSegments(profileID) {
+		return canonicalPath, canonicalPath, false, nil
+	}
+
+	legacyPath, err := filepath.Abs(s.legacyProfileStatePath(profileID, configuredPath))
+	if err != nil {
+		return "", "", false, fmt.Errorf("resolve legacy state path: %w", err)
+	}
+	if legacyPath == canonicalPath || !pathWithinDirectory(filepath.Dir(canonicalPath), legacyPath) {
+		return canonicalPath, canonicalPath, false, nil
+	}
+
+	resolvedStateDir, err := filepath.EvalSymlinks(filepath.Dir(canonicalPath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return canonicalPath, canonicalPath, false, nil
+		}
+		return "", "", false, fmt.Errorf("resolve canonical state directory: %w", err)
+	}
+	resolvedLegacyDir, err := filepath.EvalSymlinks(filepath.Dir(legacyPath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return canonicalPath, canonicalPath, false, nil
+		}
+		return "", "", false, fmt.Errorf("resolve legacy state directory: %w", err)
+	}
+	if !pathWithinDirectory(resolvedStateDir, resolvedLegacyDir) {
+		return canonicalPath, canonicalPath, false, nil
+	}
+
+	info, err := os.Lstat(legacyPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return canonicalPath, canonicalPath, false, nil
+		}
+		return "", "", false, fmt.Errorf("inspect legacy state path: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return canonicalPath, canonicalPath, false, nil
+	}
+	return canonicalPath, legacyPath, true, nil
 }
 
 func pathWithinDirectory(directory, candidate string) bool {

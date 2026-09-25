@@ -68,6 +68,7 @@ Existing single-profile setups are **automatically migrated** on first startup:
 | `PUT` | `/api/profiles/{id}/config` | Update profile configuration |
 | `GET` | `/api/profiles/{id}/runs/{runId}/details` | Get book-level details for a retained sync run |
 | `GET` | `/api/profiles/{id}/edition-drafts/source/{itemID}` | Prepare a read-only edition draft from an Audiobookshelf item |
+| `DELETE` | `/api/profiles/{id}/edition-associations/{itemID}` | Forget the saved Hardcover match for one Audiobookshelf item |
 | `POST` | `/api/profiles/{id}/sync` | Start sync |
 | `DELETE` | `/api/profiles/{id}/sync` | Cancel sync |
 | `GET` | `/api/status` | All profile statuses |
@@ -124,6 +125,36 @@ Enable authentication when exposing the API beyond localhost. A draft may
 check up to ten Audnex regions, with retries, within its 25-second deadline.
 Each server instance prepares at most two drafts concurrently; extra requests
 receive HTTP 429 and can be retried shortly.
+
+### Remembered edition matches
+
+Sync checks a saved local match before searching Hardcover. It stores an
+audiobook match only when an exact, region-qualified Audible mapping confirms
+the edition. These associations live with the CLI sync state or the individual
+web profile's state and survive restarts when that file is kept. Other
+audiobook ASIN, ISBN, and title/author results, plus ebook matches, continue to
+be checked through read-only lookups but are not saved as associations in this
+step. Audiobook ASIN lookup checks existing regional Audible mappings before
+its ASIN fallback; ebook ASIN lookup continues to use Kindle editions. Sync
+matching only reads the Hardcover catalogue; it does not add or change books
+or editions there. Dry run can reuse an existing association but does not save
+or forget one.
+
+A saved match is reused only while the item's source identifiers and reading
+format still match. ISBN punctuation and surrounding ASIN whitespace alone do
+not invalidate it. Incremental sync may skip an otherwise unchanged item
+before checking identifiers, so an identifier-only change is handled the next
+time that item is processed. If sync gets an error that could mean the saved
+edition is gone, it checks the edition with a fresh Hardcover read and removes
+the association only when the edition is confirmed absent.
+
+Use `DELETE /api/profiles/{id}/edition-associations/{itemID}` to remove one
+profile's saved match and incremental checkpoint. The next sync follows its
+normal matching order and may find the same edition again if the catalogue has
+not changed. The action never deletes Hardcover data. During dry run it leaves
+the saved match and checkpoint in place. It returns `409` while that profile
+is syncing or its state file is busy. See [OpenAPI](docs/openapi.yaml) for the
+response and authorization details.
 
 ### Environment Variables (Multi-Profile)
 

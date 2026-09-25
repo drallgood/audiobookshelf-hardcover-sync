@@ -15,9 +15,9 @@ import (
 const DefaultStateFile = "./data/sync_state.json"
 
 // CurrentVersion is the explicit state schema version written by Save. Legacy
-// v1 files only carried retired timestamp metadata; v2 and unversioned files
-// with Books use the current checkpoint shape and need no field conversion.
-const CurrentVersion = "3.0"
+// v1 files only carried retired timestamp metadata; v2/v3 and unversioned
+// files retain their checkpoint shape and need no field conversion.
+const CurrentVersion = "4.0"
 
 type State struct {
 	Version string          `json:"version"`
@@ -27,11 +27,28 @@ type State struct {
 }
 
 type Book struct {
-	LastProgress       float64 `json:"lastProgress"`
-	LastUpdated        int64   `json:"lastUpdated"`
-	Status             string  `json:"status,omitempty"`
-	UserBookID         string  `json:"userBookID,omitempty"`
-	HasProgressSeconds bool    `json:"hasProgressSeconds,omitempty"`
+	LastProgress       float64      `json:"lastProgress"`
+	LastUpdated        int64        `json:"lastUpdated"`
+	Status             string       `json:"status,omitempty"`
+	UserBookID         string       `json:"userBookID,omitempty"`
+	HasProgressSeconds bool         `json:"hasProgressSeconds,omitempty"`
+	Association        *Association `json:"association,omitempty"`
+}
+
+// Association records a confirmed mapping from one Audiobookshelf item to a
+// Hardcover book and edition. It is stored with that item's checkpoint so a
+// checkpoint cannot persist independently from its association.
+type Association struct {
+	ABSItemID          string `json:"absItemId"`
+	SourceASIN         string `json:"sourceAsin,omitempty"`
+	SourceISBN10       string `json:"sourceIsbn10,omitempty"`
+	SourceISBN13       string `json:"sourceIsbn13,omitempty"`
+	Correction         string `json:"correction,omitempty"`
+	RegionalExternalID string `json:"regionalExternalId,omitempty"`
+	HardcoverBookID    string `json:"hardcoverBookId"`
+	HardcoverEditionID string `json:"hardcoverEditionId"`
+	ReadingFormat      string `json:"readingFormat"`
+	Provenance         string `json:"provenance"`
 }
 
 func NewState() *State {
@@ -54,10 +71,10 @@ func LoadState(path string) (*State, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("failed to parse state: %w", err)
 	}
-	if state.Version != "" && state.Version != "1.0" && state.Version != "2.0" && state.Version != CurrentVersion {
+	if state.Version != "" && state.Version != "1.0" && state.Version != "2.0" && state.Version != "3.0" && state.Version != CurrentVersion {
 		return nil, fmt.Errorf("unsupported state version %q", state.Version)
 	}
-	// Unversioned legacy Books files and v1/v2 checkpoint files are compatible
+	// Unversioned legacy Books files and v1/v2/v3 checkpoint files are compatible
 	// with the current shape. Normalize their in-memory version so the next
 	// persistence writes an explicit current schema version. v1 timestamp-only
 	// files intentionally remain empty so the first run rebuilds checkpoints.
@@ -164,6 +181,64 @@ func resolveStatePath(path string) (string, error) {
 
 	base, components := splitStatePath(absPath)
 	return resolveStatePathComponents(base, components, make(map[string]struct{}), 0)
+}
+
+// SetAssociation stores a confirmed Hardcover resolution with the ABS item's
+// base checkpoint. Checkpoint updates preserve this field, and atomic Save
+// persists both together.
+func (s *State) SetAssociation(association Association) error {
+	if strings.TrimSpace(association.ABSItemID) == "" {
+		return fmt.Errorf("association ABS item ID is required")
+	}
+	if strings.TrimSpace(association.HardcoverBookID) == "" || strings.TrimSpace(association.HardcoverEditionID) == "" {
+		return fmt.Errorf("association Hardcover book and edition IDs are required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	book := s.Books[association.ABSItemID]
+	if book.Association != nil && *book.Association == association {
+		return nil
+	}
+	book.Association = &association
+	s.Books[association.ABSItemID] = book
+	s.dirty = true
+	return nil
+}
+
+// GetAssociation returns the confirmed association stored for an ABS item.
+func (s *State) GetAssociation(itemID string) (Association, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	book, exists := s.Books[itemID]
+	if !exists || book.Association == nil {
+		return Association{}, false
+	}
+	return *book.Association, true
+}
+
+// RemoveAssociation forgets an ABS item's association and all incremental
+// checkpoints for that item. Missing associations are a safe no-op, so an old
+// request cannot erase checkpoints created after a prior forget operation.
+func (s *State) RemoveAssociation(itemID string) (Association, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	book, exists := s.Books[itemID]
+	if !exists || book.Association == nil {
+		return Association{}, false
+	}
+	previous := *book.Association
+	delete(s.Books, itemID)
+	for key := range s.Books {
+		if strings.HasPrefix(key, itemID+":") {
+			delete(s.Books, key)
+		}
+	}
+	s.dirty = true
+	return previous, true
 }
 
 func absoluteStatePath(path string) (string, error) {
@@ -333,6 +408,7 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 				Status:             status,
 				UserBookID:         oldBook.UserBookID,
 				HasProgressSeconds: oldBook.HasProgressSeconds || status == "FINISHED",
+				Association:        oldBook.Association,
 			}
 			updated = true
 			if debugLog {
@@ -370,6 +446,7 @@ func (s *State) UpdateBook(bookID string, progress float64, status string) bool 
 					Status:             status,
 					UserBookID:         oldBook.UserBookID,
 					HasProgressSeconds: oldBook.HasProgressSeconds || status == "FINISHED",
+					Association:        oldBook.Association,
 				}
 				updated = true
 			} else if !existing.HasProgressSeconds && status == "FINISHED" {
@@ -449,6 +526,7 @@ func (s *State) UpdateBookWithUserBookID(bookID string, progress float64, status
 		Status:             status,
 		UserBookID:         userBookID,
 		HasProgressSeconds: oldBook.HasProgressSeconds,
+		Association:        oldBook.Association,
 	}
 
 	if exists {

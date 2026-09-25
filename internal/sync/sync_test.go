@@ -608,11 +608,16 @@ func TestProcessLibraryStopsBeforeBookWhenAlreadyCanceled(t *testing.T) {
 
 func TestSyncReturnsFinalStateSaveFailure(t *testing.T) {
 	svc, mockHC := createTestService()
-	svc.statePath = t.TempDir() // Renaming a state file over a directory must fail.
+	svc.statePath = filepath.Join(t.TempDir(), "sync_state.json")
 	svc.config.Paths.MismatchOutputDir = t.TempDir()
 
 	mockABS := new(MockAudiobookshelfClient)
-	mockABS.On("GetUserProgress", mock.Anything).Return(&models.AudiobookshelfUserProgress{}, nil).Once()
+	mockABS.On("GetUserProgress", mock.Anything).Run(func(mock.Arguments) {
+		// State has already been loaded under the lock by the time external
+		// synchronization starts. Simulate the destination becoming obstructed
+		// before final persistence so this remains a final-save failure test.
+		require.NoError(t, os.Mkdir(svc.statePath, 0755))
+	}).Return(&models.AudiobookshelfUserProgress{}, nil).Once()
 	mockABS.On("GetLibraries", mock.Anything).Return([]audiobookshelf.AudiobookshelfLibrary{}, nil).Once()
 	mockHC.On("ClearUserBookCache").Return().Once()
 	svc.audiobookshelf = mockABS

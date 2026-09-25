@@ -16,6 +16,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/multiuser"
+	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 	"github.com/stretchr/testify/require"
 )
 
@@ -178,6 +179,87 @@ func TestProfileAuthorizationOwnershipAndAdminOverride(t *testing.T) {
 	require.Contains(t, adminListResponse.Body.String(), "owned-a")
 	require.Contains(t, adminListResponse.Body.String(), "owned-b")
 	require.Contains(t, adminListResponse.Body.String(), "legacy-ownerless")
+}
+
+func TestForgetEditionAssociationRouteRequiresOwnedProfileAndRemovesMatch(t *testing.T) {
+	fixture := newRouteTestFixture(t, true)
+	ownerA := newRouteSession(t, fixture, "forget-owner-a", auth.RoleUser)
+	ownerB := newRouteSession(t, fixture, "forget-owner-b", auth.RoleUser)
+	const (
+		profileA = "forget-owned-a"
+		profileB = "forget-owned-b"
+		itemID   = "abs-forget-item"
+	)
+	for _, profile := range []struct {
+		id      string
+		ownerID string
+	}{
+		{id: profileA, ownerID: ownerA.user.ID},
+		{id: profileB, ownerID: ownerB.user.ID},
+	} {
+		require.NoError(t, fixture.repo.CreateProfileForUser(
+			profile.id, profile.id, "http://audiobookshelf.invalid", "abs-token", "hc-token",
+			database.SyncConfigData{}, profile.ownerID,
+		))
+		stored := statepkg.NewState()
+		require.NoError(t, stored.SetAssociation(statepkg.Association{
+			ABSItemID: itemID, HardcoverBookID: "book-" + profile.id,
+			HardcoverEditionID: "edition-" + profile.id, ReadingFormat: "audiobook", Provenance: "audible_mapping",
+		}))
+		statePath := filepath.Join(fixture.dataDir, "sync_state."+profile.id)
+		require.NoError(t, stored.Save(statePath))
+	}
+
+	pathA := "/api/profiles/" + profileA + "/edition-associations/" + itemID
+	unauthenticated := fixture.request(http.MethodDelete, pathA, nil)
+	require.Equal(t, http.StatusUnauthorized, unauthenticated.Code, unauthenticated.Body.String())
+
+	pathB := "/api/profiles/" + profileB + "/edition-associations/" + itemID
+	foreign := fixture.requestWithCookies(http.MethodDelete, pathB, nil, []*http.Cookie{ownerA.cookie})
+	require.Equal(t, http.StatusNotFound, foreign.Code, foreign.Body.String())
+	foreignState, err := statepkg.LoadState(filepath.Join(fixture.dataDir, "sync_state."+profileB))
+	require.NoError(t, err)
+	_, exists := foreignState.GetAssociation(itemID)
+	require.True(t, exists, "foreign profile authorization must happen before state mutation")
+
+	stateLock, err := statepkg.AcquireFileLock(filepath.Join(fixture.dataDir, "sync_state."+profileB))
+	require.NoError(t, err)
+	busy := fixture.requestWithCookies(http.MethodDelete, pathB, nil, []*http.Cookie{ownerB.cookie})
+	require.Equal(t, http.StatusConflict, busy.Code, busy.Body.String())
+	require.NoError(t, stateLock.Close())
+	stillStored, err := statepkg.LoadState(filepath.Join(fixture.dataDir, "sync_state."+profileB))
+	require.NoError(t, err)
+	_, exists = stillStored.GetAssociation(itemID)
+	require.True(t, exists, "a busy state-file lock must leave the association unchanged")
+
+	removed := fixture.requestWithCookies(http.MethodDelete, pathA, nil, []*http.Cookie{ownerA.cookie})
+	require.Equal(t, http.StatusOK, removed.Code, removed.Body.String())
+	var envelope struct {
+		Success bool `json:"success"`
+		Data    struct {
+			ABSItemID          string `json:"abs_item_id"`
+			PreviousResolution struct {
+				HardcoverBookID    string `json:"hardcover_book_id"`
+				HardcoverEditionID string `json:"hardcover_edition_id"`
+			} `json:"previous_resolution"`
+			AssociationRemoved   bool `json:"association_removed"`
+			PersistentChangeMade bool `json:"persistent_change_made"`
+			DryRun               bool `json:"dry_run"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(removed.Body.Bytes(), &envelope))
+	require.True(t, envelope.Success)
+	require.Equal(t, itemID, envelope.Data.ABSItemID)
+	require.Equal(t, "book-"+profileA, envelope.Data.PreviousResolution.HardcoverBookID)
+	require.Equal(t, "edition-"+profileA, envelope.Data.PreviousResolution.HardcoverEditionID)
+	require.True(t, envelope.Data.AssociationRemoved)
+	require.True(t, envelope.Data.PersistentChangeMade)
+	require.False(t, envelope.Data.DryRun)
+
+	repeat := fixture.requestWithCookies(http.MethodDelete, pathA, nil, []*http.Cookie{ownerA.cookie})
+	require.Equal(t, http.StatusOK, repeat.Code, repeat.Body.String())
+	require.Contains(t, repeat.Body.String(), `"association_removed":false`)
+	require.Contains(t, repeat.Body.String(), `"persistent_change_made":false`)
 }
 
 func TestAuthDisabledProfileResponsesRedactCredentialsAndPreserveUpdates(t *testing.T) {

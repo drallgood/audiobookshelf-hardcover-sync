@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,11 +39,9 @@ func WithAudnexRegion(ctx context.Context, region string) context.Context {
 	return context.WithValue(ctx, ctxKeyAudnexRegion, region)
 }
 
-// getAudnexRegionFromCtx extracts the Audnex region from context. Defaults to "us".
 func getAudnexRegionFromCtx(ctx context.Context) string {
-	v := ctx.Value(ctxKeyAudnexRegion)
-	if s, ok := v.(string); ok && s != "" {
-		return s
+	if region, ok := ctx.Value(ctxKeyAudnexRegion).(string); ok && region != "" {
+		return region
 	}
 	return "us"
 }
@@ -54,16 +51,6 @@ func getAudnexRegionFromCtx(ctx context.Context) string {
 func readingFormatIDFromCtx(ctx context.Context) int {
 	format, _ := models.ReadingFormatFromContext(ctx)
 	return models.ReadingFormatID(format)
-}
-
-// getMapKeys returns a sorted list of keys from a map
-func getMapKeys(m map[string]interface{}) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 // graphqlOperation is a helper type for GraphQL operations
@@ -93,10 +80,28 @@ type UpdateUserBookInput struct {
 
 // Common errors
 var (
-	ErrBookNotFound     = errors.New("book not found")
-	ErrUserBookNotFound = errors.New("user book not found")
-	ErrInvalidInput     = errors.New("invalid input")
+	ErrBookNotFound       = errors.New("book not found")
+	ErrUserBookNotFound   = errors.New("user book not found")
+	ErrInvalidInput       = errors.New("invalid input")
+	ErrASINLookupConflict = errors.New("ASIN lookup matched conflicting editions")
 )
+
+// ASINMatchKind identifies the Hardcover field that matched an ASIN lookup.
+type ASINMatchKind string
+
+const (
+	// ASINMatchEditionASIN means the edition's asin field exactly matched.
+	ASINMatchEditionASIN ASINMatchKind = "edition_asin"
+	// ASINMatchAudibleMapping means an exact, region-suffixed Audible mapping matched.
+	ASINMatchAudibleMapping ASINMatchKind = "audible_mapping"
+)
+
+// ASINLookupResult preserves both the matched book and the identifier source.
+type ASINLookupResult struct {
+	Book               *models.HardcoverBook
+	MatchKind          ASINMatchKind
+	RegionalExternalID string
+}
 
 const (
 	// DefaultBaseURL is the default base URL for the Hardcover API
@@ -1311,28 +1316,27 @@ func extractBookMappingsASIN(mappings []interface{}) string {
 	return ""
 }
 
-// SearchBookByASIN searches for a book in the Hardcover database by ASIN
+// SearchBookByASIN searches for a book in the Hardcover database by ASIN.
+// It preserves the legacy configured-region lookup used by edition duplicate
+// checks and mismatch export. Sync identity resolution uses SearchBookByASINResult.
 func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.HardcoverBook, error) {
 	if asin == "" {
 		return nil, fmt.Errorf("ASIN cannot be empty")
 	}
+	if c.logger == nil {
+		c.logger = logger.Get()
+	}
+	log := c.logger.With(map[string]interface{}{"asin": asin, "method": "SearchBookByASIN"})
 
-	// Create logger with context
-	log := c.logger.With(map[string]interface{}{
-		"asin":   asin,
-		"method": "SearchBookByASIN",
-	})
-
-	// Define the GraphQL query: always format-aware via numeric format_id, default to audiobook (2)
 	formatID := readingFormatIDFromCtx(ctx)
 	query := `
 query BookByASIN($asin: String!, $asin_us: String!, $format_id: Int!) {
   books(
-    where: { 
+    where: {
       _or: [
-        { editions: { asin: { _eq: $asin }, reading_format: { id: { _eq: $format_id } } } },
-        { editions: { book_mappings: { external_id: { _eq: $asin }, platform: { name: { _eq: "Audible" } } }, reading_format: { id: { _eq: $format_id } } } },
-        { editions: { book_mappings: { external_id: { _eq: $asin_us }, platform: { name: { _eq: "Audible" } } }, reading_format: { id: { _eq: $format_id } } } }
+        {editions: {asin: {_eq: $asin}, reading_format: {id: {_eq: $format_id}}}},
+        {editions: {book_mappings: {external_id: {_eq: $asin}, platform: {name: {_eq: "Audible"}}}, reading_format: {id: {_eq: $format_id}}}},
+        {editions: {book_mappings: {external_id: {_eq: $asin_us}, platform: {name: {_eq: "Audible"}}}, reading_format: {id: {_eq: $format_id}}}}
       ]
     },
     limit: 1
@@ -1342,11 +1346,11 @@ query BookByASIN($asin: String!, $asin_us: String!, $format_id: Int!) {
     book_status_id
     canonical_id
     editions(
-      where: { 
+      where: {
         _or: [
-          { asin: { _eq: $asin }, reading_format: { id: { _eq: $format_id } } },
-          { book_mappings: { external_id: { _eq: $asin }, platform: { name: { _eq: "Audible" } } }, reading_format: { id: { _eq: $format_id } } },
-          { book_mappings: { external_id: { _eq: $asin_us }, platform: { name: { _eq: "Audible" } } }, reading_format: { id: { _eq: $format_id } } }
+          {asin: {_eq: $asin}, reading_format: {id: {_eq: $format_id}}},
+          {book_mappings: {external_id: {_eq: $asin}, platform: {name: {_eq: "Audible"}}}, reading_format: {id: {_eq: $format_id}}},
+          {book_mappings: {external_id: {_eq: $asin_us}, platform: {name: {_eq: "Audible"}}}, reading_format: {id: {_eq: $format_id}}}
         ]
       },
       limit: 1
@@ -1357,204 +1361,82 @@ query BookByASIN($asin: String!, $asin_us: String!, $format_id: Int!) {
       isbn_10
       reading_format_id
       audio_seconds
-      book_mappings {
-        external_id
-        platform { name }
-      }
+      book_mappings { external_id platform { name } }
     }
   }
 }`
-
-	// Define the response structure to match the actual API response
-
-	// Use a flexible raw map to be resilient to schema variations
-	var rawResponse map[string]interface{}
-
-	audnexRegion := getAudnexRegionFromCtx(ctx)
-
-	vars := map[string]interface{}{
+	variables := map[string]interface{}{
 		"asin":      asin,
-		"asin_us":   asin + ":" + audnexRegion,
+		"asin_us":   asin + ":" + getAudnexRegionFromCtx(ctx),
 		"format_id": formatID,
 	}
-	err := c.GraphQLQuery(ctx, query, vars, &rawResponse)
-
-	if err != nil {
-		log.Error("Failed to search book by ASIN", map[string]interface{}{
-			"error": err.Error(),
-			"asin":  asin,
-		})
+	var response struct {
+		Books json.RawMessage `json:"books"`
+	}
+	if err := c.GraphQLQuery(ctx, query, variables, &response); err != nil {
+		log.Error("Failed to search book by ASIN", map[string]interface{}{"error": err.Error()})
 		return nil, fmt.Errorf("failed to search book by ASIN: %w", err)
 	}
-
-	// Debug log the raw response
-	log.Debug("Raw GraphQL response", map[string]interface{}{
-		"raw_response": fmt.Sprintf("%+v", rawResponse),
-	})
-
-	var books []map[string]interface{}
-
-	// Extract data from response. An empty books array is the only successful
-	// not-found response; missing or malformed fields are API failures.
-	data, ok := rawResponse["data"].(map[string]interface{})
-	if !ok {
-		if _, isMap := rawResponse["books"]; isMap {
-			data = rawResponse
-		} else {
-			return nil, fmt.Errorf("invalid ASIN response: missing data")
-		}
-	}
-
-	log.Debug("Data keys in response", map[string]interface{}{
-		"data_keys": fmt.Sprintf("%v", getMapKeys(data)),
-	})
-	booksData, ok := data["books"]
-	if !ok {
+	if len(response.Books) == 0 || string(response.Books) == "null" {
 		return nil, fmt.Errorf("invalid ASIN response: books field is missing")
 	}
-	booksSlice, ok := booksData.([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid ASIN response: books has type %T", booksData)
+	var books []asinLookupBook
+	if err := json.Unmarshal(response.Books, &books); err != nil {
+		return nil, fmt.Errorf("invalid ASIN response: books field: %w", err)
 	}
-	log.Debug("Found books array in response", map[string]interface{}{
-		"books_count": len(booksSlice),
-	})
-	for i, b := range booksSlice {
-		book, ok := b.(map[string]interface{})
-		if !ok {
-			return nil, fmt.Errorf("invalid ASIN response: book %d has type %T", i, b)
-		}
-		books = append(books, book)
-		log.Debug("Found book in response", map[string]interface{}{
-			"book_index": i,
-			"book_id":    fmt.Sprintf("%v", book["id"]),
-			"title":      fmt.Sprintf("%v", book["title"]),
-		})
-	}
-
-	log.Debug("Extracted books from response", map[string]interface{}{
-		"books_count": len(books),
-	})
-
-	// Check if any books were found
 	if len(books) == 0 {
-		log.Debug("No books found with the given ASIN", map[string]interface{}{
-			"asin": asin,
-		})
 		return nil, nil
 	}
 
-	// Process the first book
 	bookData := books[0]
-	log.Debug("Processing first book", map[string]interface{}{
-		"book_data": fmt.Sprintf("%+v", bookData),
-	})
-
-	// Create a new HardcoverBook instance
-	hcBook := &models.HardcoverBook{}
-
-	// Set ID if available
-	if id, ok := bookData["id"]; ok {
-		switch v := id.(type) {
-		case json.Number:
-			hcBook.ID = v.String()
-		case float64:
-			hcBook.ID = strconv.FormatFloat(v, 'f', 0, 64)
-		case int64:
-			hcBook.ID = strconv.FormatInt(v, 10)
-		case string:
-			hcBook.ID = v
-		}
+	bookID := asinScalarID(bookData.ID)
+	if len(bookData.Editions) == 0 {
+		return nil, fmt.Errorf("invalid ASIN response: book %s has no editions", bookID)
 	}
-
-	// Set Title if available
-	if title, ok := bookData["title"].(string); ok {
-		hcBook.Title = title
-	}
-
-	// Set BookStatusID if available
-	switch statusID := bookData["book_status_id"].(type) {
-	case json.Number:
-		if id, err := statusID.Int64(); err == nil {
-			hcBook.BookStatusID = int(id)
-		}
-	case float64:
-		hcBook.BookStatusID = int(statusID)
-	}
-
-	// Handle editions
-	editions, _ := bookData["editions"].([]interface{})
-	if len(editions) == 0 {
-		return nil, fmt.Errorf("invalid ASIN response: book %s has no editions", hcBook.ID)
-	}
-
-	// Process the first edition
-	edition, ok := editions[0].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid ASIN response: edition has type %T", editions[0])
-	}
-
-	// Set EditionID if available
-	if editionID, ok := edition["id"]; ok {
-		switch v := editionID.(type) {
-		case json.Number:
-			hcBook.EditionID = v.String()
-		case float64:
-			hcBook.EditionID = strconv.FormatFloat(v, 'f', 0, 64)
-		case int64:
-			hcBook.EditionID = strconv.FormatInt(v, 10)
-		case string:
-			hcBook.EditionID = v
-		}
-	}
-	if hcBook.ID == "" {
+	editionData := bookData.Editions[0]
+	editionID := asinScalarID(editionData.ID)
+	if bookID == "" {
 		return nil, fmt.Errorf("invalid ASIN response: book is missing an ID")
 	}
-	if hcBook.Title == "" {
+	if bookData.Title == "" {
 		return nil, fmt.Errorf("invalid ASIN response: book is missing a title")
 	}
-	if hcBook.EditionID == "" {
+	if editionID == "" {
 		return nil, fmt.Errorf("invalid ASIN response: edition is missing an ID")
 	}
 
-	// Handle optional CanonicalID
-	if canonicalID, ok := bookData["canonical_id"]; ok && canonicalID != nil {
-		switch v := canonicalID.(type) {
-		case string:
-			if id, err := strconv.Atoi(v); err == nil {
-				hcBook.CanonicalID = &id
-			}
-		case json.Number:
-			if id, err := v.Int64(); err == nil {
-				idInt := int(id)
-				hcBook.CanonicalID = &idInt
-			}
+	book := &models.HardcoverBook{
+		ID: bookID, Title: bookData.Title, BookStatusID: bookData.BookStatusID,
+		EditionID:     editionID,
+		EditionASIN:   asinOptionalString(editionData.ASIN),
+		EditionISBN13: asinOptionalString(editionData.ISBN13),
+		EditionISBN10: asinOptionalString(editionData.ISBN10),
+	}
+	if canonicalID := asinScalarID(bookData.CanonicalID); canonicalID != "" {
+		if id, err := strconv.Atoi(canonicalID); err == nil {
+			book.CanonicalID = &id
 		}
 	}
-
-	// Set optional fields if they exist
-	if asin, ok := edition["asin"].(string); ok && asin != "" {
-		hcBook.EditionASIN = asin
+	if book.EditionASIN == "" {
+		book.EditionASIN = extractASINFromLookupMappings(editionData.BookMappings)
 	}
-	if hcBook.EditionASIN == "" {
-		if bm, ok := edition["book_mappings"].([]interface{}); ok {
-			hcBook.EditionASIN = extractBookMappingsASIN(bm)
+	return book, nil
+}
+
+func extractASINFromLookupMappings(mappings []asinLookupMapping) string {
+	for _, mapping := range mappings {
+		if !strings.EqualFold(mapping.Platform.Name, "audible") && !strings.EqualFold(mapping.Platform.Name, "amazon") {
+			continue
 		}
+		if mapping.ExternalID == "" {
+			continue
+		}
+		if index := strings.LastIndex(mapping.ExternalID, ":"); index > 0 {
+			return mapping.ExternalID[:index]
+		}
+		return mapping.ExternalID
 	}
-	if isbn13, ok := edition["isbn_13"].(string); ok && isbn13 != "" {
-		hcBook.EditionISBN13 = isbn13
-	}
-	if isbn10, ok := edition["isbn_10"].(string); ok && isbn10 != "" {
-		hcBook.EditionISBN10 = isbn10
-	}
-
-	log.Debug("Successfully found book by ASIN", map[string]interface{}{
-		"book_id":    hcBook.ID,
-		"title":      hcBook.Title,
-		"edition_id": hcBook.EditionID,
-	})
-
-	return hcBook, nil
+	return ""
 }
 
 // searchBookByISBN is a helper function to search for a book by ISBN (13 or 10)
@@ -2628,6 +2510,17 @@ func (c *Client) GetEditionByASIN(ctx context.Context, asin string) (*models.Edi
 
 // GetEdition retrieves edition details including book_id for a given edition_id
 func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edition, error) {
+	return c.getEdition(ctx, editionID, true)
+}
+
+// GetEditionUncached retrieves edition details from Hardcover without reading
+// or writing the edition cache. Use it when the caller needs fresh existence
+// confirmation after an earlier lookup.
+func (c *Client) GetEditionUncached(ctx context.Context, editionID string) (*models.Edition, error) {
+	return c.getEdition(ctx, editionID, false)
+}
+
+func (c *Client) getEdition(ctx context.Context, editionID string, useCache bool) (*models.Edition, error) {
 	// Create logger with context
 	log := logger.WithContext(map[string]interface{}{
 		"edition_id": editionID,
@@ -2644,13 +2537,15 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 	}
 
 	// Check cache first
-	if cachedEdition, found := c.editionCache.Get(editionIDInt); found {
-		log.Debug("Edition found in cache", map[string]interface{}{
-			"edition_id": editionID,
-			"book_id":    cachedEdition.BookID,
-			"title":      cachedEdition.Title,
-		})
-		return cachedEdition, nil
+	if useCache && c.editionCache != nil {
+		if cachedEdition, found := c.editionCache.Get(editionIDInt); found {
+			log.Debug("Edition found in cache", map[string]interface{}{
+				"edition_id": editionID,
+				"book_id":    cachedEdition.BookID,
+				"title":      cachedEdition.Title,
+			})
+			return cachedEdition, nil
+		}
 	}
 
 	// Define the GraphQL query
@@ -2789,13 +2684,15 @@ func (c *Client) GetEdition(ctx context.Context, editionID string) (*models.Edit
 		"title":   editionModel.Title,
 	})
 
-	// Store in cache for future requests
-	c.editionCache.Set(editionIDInt, editionModel, 0) // Use default TTL (7 days)
-	log.Debug("Edition cached", map[string]interface{}{
-		"edition_id": editionID,
-		"book_id":    editionModel.BookID,
-		"title":      editionModel.Title,
-	})
+	if useCache && c.editionCache != nil {
+		// Store in cache for future requests
+		c.editionCache.Set(editionIDInt, editionModel, 0) // Use default TTL (7 days)
+		log.Debug("Edition cached", map[string]interface{}{
+			"edition_id": editionID,
+			"book_id":    editionModel.BookID,
+			"title":      editionModel.Title,
+		})
+	}
 
 	return editionModel, nil
 }
