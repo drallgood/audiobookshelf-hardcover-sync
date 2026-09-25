@@ -710,9 +710,6 @@ func createTestService() (*Service, *MockHardcoverClient) {
 	state := state.NewState()
 
 	// Create and initialize caches
-	persistentCache := NewPersistentASINCache("/tmp/test-cache")
-	_ = persistentCache.Load() // Load cache (will create empty if doesn't exist)
-
 	userBookCache := NewPersistentUserBookCache("/tmp/test-cache")
 	_ = userBookCache.Load()
 	userBookCache.Clear() // Load cache (will create empty if doesn't exist)
@@ -724,8 +721,6 @@ func createTestService() (*Service, *MockHardcoverClient) {
 		log:                 logger.Get(),
 		state:               state,
 		lastProgressUpdates: make(map[string]progressUpdateInfo),
-		asinCache:           make(map[string]*models.HardcoverBook),
-		persistentCache:     persistentCache,
 		userBookCache:       userBookCache,
 		createdReadsThisRun: make(map[int64]struct{}),
 		mismatchCollector:   mismatch.NewCollector(),

@@ -236,12 +236,9 @@ type Service struct {
 	log                             *logger.Logger
 	state                           *state.State
 	statePath                       string
-	lastProgressUpdates             map[string]progressUpdateInfo    // Cache of last progress updates
-	lastProgressMutex               sync.RWMutex                     // Mutex to protect the cache
-	asinCache                       map[string]*models.HardcoverBook // Cache for ASIN lookups (in-memory)
-	asinCacheMutex                  sync.RWMutex                     // Mutex to protect ASIN cache
-	persistentCache                 *PersistentASINCache             // Persistent ASIN cache across runs
-	userBookCache                   *PersistentUserBookCache         // Persistent user book cache
+	lastProgressUpdates             map[string]progressUpdateInfo // Cache of last progress updates
+	lastProgressMutex               sync.RWMutex                  // Mutex to protect the cache
+	userBookCache                   *PersistentUserBookCache      // Persistent user book cache
 	runStateMutex                   sync.RWMutex
 	booksTotal                      int32
 	// Outcome state is scoped to this service instance and protected by the
@@ -340,8 +337,6 @@ func NewServiceWithRunIdentity(absClient *audiobookshelf.Client, hcClient hardco
 		log:                    logger.Get(),
 		statePath:              cfg.Sync.StateFile,
 		lastProgressUpdates:    make(map[string]progressUpdateInfo),
-		asinCache:              make(map[string]*models.HardcoverBook),
-		persistentCache:        NewPersistentASINCache(cfg.Paths.CacheDir),
 		userBookCache:          NewPersistentUserBookCache(cfg.Paths.CacheDir),
 		mismatchCollector:      mismatch.NewCollector(),
 		outcomeRecords:         make(map[string]BookOutcomeRecord),
@@ -377,37 +372,6 @@ func NewServiceWithRunIdentity(absClient *audiobookshelf.Client, hcClient hardco
 	}
 
 	return svc, nil
-}
-
-// getASINFromCache retrieves a cached ASIN lookup result
-// Checks in-memory cache first, then persistent cache
-func (s *Service) getASINFromCache(asin string) (*models.HardcoverBook, bool) {
-	// Check in-memory cache first (fastest)
-	s.asinCacheMutex.RLock()
-	book, exists := s.asinCache[asin]
-	s.asinCacheMutex.RUnlock()
-
-	if exists && book != nil {
-		return book, true
-	}
-
-	// Check persistent cache
-	book, exists = s.persistentCache.Get(asin)
-	if exists && book != nil {
-		// Promote to in-memory cache for faster access
-		s.asinCacheMutex.Lock()
-		s.asinCache[asin] = book
-		s.asinCacheMutex.Unlock()
-
-		s.log.Debug("Promoted ASIN from persistent to in-memory cache", map[string]interface{}{
-			"asin": asin,
-		})
-		return book, true
-	}
-
-	// Nil entries were used by older versions to cache technical lookup
-	// failures. Treat them as misses so a transient error is retried.
-	return nil, false
 }
 
 func outcomeCountPointer(counts *OutcomeCounts, outcome SyncOutcome) *int32 {
@@ -1134,29 +1098,6 @@ func (s *Service) logSyncSummary() {
 	s.log.Info("========================================", nil)
 }
 
-// logASINCacheStats logs ASIN cache performance statistics
-func (s *Service) logASINCacheStats() {
-	s.asinCacheMutex.RLock()
-	// Get persistent cache stats
-	total, successful, failed := s.persistentCache.Stats()
-
-	// Calculate potential API call savings
-	potentialSavings := 0
-	for _, book := range s.asinCache {
-		if book != nil {
-			potentialSavings++
-		}
-	}
-	s.asinCacheMutex.RUnlock()
-
-	s.log.Debug("ASIN Cache Performance Statistics", map[string]interface{}{
-		"total_cached_asins":  total,
-		"successful_lookups":  successful,
-		"failed_lookups":      failed,
-		"cache_hit_potential": fmt.Sprintf("Avoided up to %d duplicate API calls", potentialSavings),
-	})
-}
-
 // findOrCreateUserBookID finds or creates a user book ID for the given edition ID and status
 func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status string) (int64, error) {
 	s.log.Debug("Starting findOrCreateUserBookID", map[string]interface{}{
@@ -1731,9 +1672,6 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 	} else {
 		s.log.Info("[DRY-RUN] Skipping sync state save", nil)
 	}
-
-	// Log ASIN cache performance statistics
-	s.logASINCacheStats()
 
 	if !s.config.Sync.DryRun {
 		if cacheErr := s.userBookCache.Save(); cacheErr != nil {

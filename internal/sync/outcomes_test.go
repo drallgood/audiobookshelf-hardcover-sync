@@ -842,8 +842,6 @@ func TestSyncTestBookLimitCountsFailedBookAttempt(t *testing.T) {
 	svc.statePath = svc.config.Sync.StateFile
 	svc.config.Paths.MismatchOutputDir = t.TempDir()
 	cacheDir := t.TempDir()
-	svc.persistentCache = NewPersistentASINCache(cacheDir)
-	require.NoError(t, svc.persistentCache.Load())
 	svc.userBookCache = NewPersistentUserBookCache(cacheDir)
 	require.NoError(t, svc.userBookCache.Load())
 
