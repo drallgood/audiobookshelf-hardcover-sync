@@ -327,15 +327,6 @@ func (s *MultiUserService) CreateProfile(profileID, name, audiobookshelfURL, aud
 	return s.CreateProfileForUser(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig, "")
 }
 
-// AudiobookshelfNetworkTrust returns the deployment-scoped URL trust mode.
-// Profile settings cannot change this policy.
-func (s *MultiUserService) AudiobookshelfNetworkTrust() string {
-	if s.globalConfig == nil || strings.TrimSpace(s.globalConfig.Audiobookshelf.NetworkTrust) == "" {
-		return audiobookshelf.NetworkTrustAllowPrivate
-	}
-	return strings.TrimSpace(s.globalConfig.Audiobookshelf.NetworkTrust)
-}
-
 // CreateProfileForUser creates a profile owned by ownerUserID.
 func (s *MultiUserService) CreateProfileForUser(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken string, syncConfig database.SyncConfigData, ownerUserID string) error {
 	normalizedURL, err := audiobookshelf.ValidateBaseURL(audiobookshelfURL, s.AudiobookshelfNetworkTrust())
@@ -1796,7 +1787,7 @@ func (s *MultiUserService) profileStateBasePath(configuredPath string) string {
 // withProfileStateFileLock holds the canonical profile state lock for one
 // state-file operation. It is used for pre-sync legacy migration; Sync then
 // reacquires the lock and loads a fresh snapshot before processing books. The
-// operation receives the resolved path protected by this lock.
+// callback receives the resolved target protected by this lock.
 func (s *MultiUserService) withProfileStateFileLock(profileID, configuredPath string, operation func(string) error) (err error) {
 	if operation == nil {
 		return errors.New("profile state operation is required")
@@ -1832,7 +1823,6 @@ func (s *MultiUserService) migrateLegacyProfileStatePath(profileID, configuredPa
 	if !isLegacy {
 		return nil
 	}
-
 	legacyState, err := statepkg.LoadState(sourcePath)
 	if err != nil {
 		return fmt.Errorf("load legacy state file: %w", err)

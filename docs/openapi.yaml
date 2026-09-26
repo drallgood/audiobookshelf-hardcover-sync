@@ -46,6 +46,8 @@ tags:
     description: Check sync status
   - name: Edition Draft
     description: Prepare read-only edition candidates from Audiobookshelf source metadata
+  - name: Edition Creation
+    description: Create a user-requested edition from a verified needs-review run record
   - name: Edition Capability
     description: Report profile-scoped, operation-specific edition-write evidence
   - name: Edition Associations
@@ -296,6 +298,84 @@ components:
           items:
             $ref: '#/components/schemas/EditionDraftWarning'
 
+    EditionCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [run_id, abs_item_id]
+      description: >-
+        Identifies one item in one completed, non-dry-run sync run. The API
+        uses the Hardcover book ID in that needs-review record; clients cannot
+        choose a Hardcover book or author ID. For an audiobook, only
+        `audible_identifier` may be corrected. The remaining correction fields
+        apply to ebooks.
+      properties:
+        run_id:
+          type: string
+          description: Exact completed sync run containing the needs-review item.
+        abs_item_id:
+          type: string
+          description: Audiobookshelf item ID from that run.
+        audible_identifier:
+          type: string
+          description: >-
+            Optional audiobook correction in `ASIN:region` form, for example
+            `B00XXXYYZZ:uk`. The ASIN and supported region are validated, and the
+            supplied region is authoritative. Audnex lookup for this explicit
+            identifier is optional release-date enrichment; a rate-limit or transient
+            error does not block import, and the preview retains the Audiobookshelf
+            date. Omit this field to discover the source ASIN's region with Audnex.
+            Audiobook metadata fields are rejected as corrections.
+        title:
+          type: string
+          description: Optional ebook title correction.
+        subtitle:
+          type: string
+          description: Optional ebook subtitle correction.
+        asin:
+          type: string
+          description: Optional ebook ASIN correction.
+        isbn_10:
+          type: string
+          description: Optional ebook ISBN-10 correction; its ISBN-13 counterpart is derived when valid.
+        isbn_13:
+          type: string
+          description: Optional ebook ISBN-13 correction; its ISBN-10 counterpart is derived when valid.
+        release_date:
+          type: string
+          format: date
+          description: Optional ebook release-date correction in YYYY-MM-DD form.
+        edition_format:
+          type: string
+          description: Optional ebook edition-format correction.
+
+    EditionCreateResult:
+      type: object
+      description: >-
+        `metadata_preview` is returned for audiobook results and omitted for
+        ebooks.
+      required: [abs_item_id, reading_format, status, hardcover_book_id, hardcover_edition_id]
+      properties:
+        abs_item_id:
+          type: string
+        reading_format:
+          type: string
+          enum: [audiobook, ebook]
+        status:
+          type: string
+          enum: [loaded, created, existing]
+          description: '`loaded` is an audiobook resolver result; `existing` is an ebook duplicate found on the requested book.'
+        hardcover_book_id:
+          type: string
+          description: Verified Hardcover book ID from the sync record.
+        hardcover_edition_id:
+          type: string
+          description: Verified Hardcover edition ID.
+        regional_external_id:
+          type: string
+          description: Regional Audible identifier used by the import, present for audiobook results.
+        metadata_preview:
+          $ref: '#/components/schemas/AudiobookMetadataPreview'
+
     EditionDraftSourceIdentifiers:
       type: object
       description: Source identifiers read from Audiobookshelf and trimmed of surrounding whitespace. The ASIN is retained as supplied, is the bare source value, and never includes a region suffix; the source ISBN retains its formatting apart from surrounding whitespace.
@@ -355,7 +435,7 @@ components:
             release_date:
               type: string
               format: date
-              description: Audnex release date for the confirmed source ASIN region when available; otherwise the normalized Audiobookshelf `publishedDate`, then `publishedYear`. If the Audiobookshelf date is an ambiguous slash-formatted value, it is ignored in favor of `publishedYear` when available.
+              description: Audnex release date for the matching ASIN and region used by the draft or create request when available; otherwise the normalized Audiobookshelf `publishedDate`, then `publishedYear`. If the Audiobookshelf date is an ambiguous slash-formatted value, it is ignored in favor of `publishedYear` when available.
             edition_format: {type: string}
             edition_information:
               type: string
@@ -968,7 +1048,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '429':
-          description: Two edition drafts are already being prepared on this server instance; retry after the indicated delay.
+          description: Two draft or edition-create requests are already being processed on this server instance; retry after the indicated delay.
           headers:
             Retry-After:
               description: Seconds to wait before retrying.
@@ -998,6 +1078,142 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /profiles/{id}/edition-drafts/create:
+    post:
+      tags: [Edition Creation]
+      summary: Create an edition from a verified needs-review sync record
+      description: >-
+        Requires profile write access and an explicit user request. The body
+        must identify a completed, non-dry-run sync run and its needs-review
+        Audiobookshelf item. The API refetches the item and compares its ID, title,
+        author, ASIN, ISBN, and reading format with the verified sync record before
+        any Hardcover mutation. For ebooks, subtitle and release date come from the
+        freshly fetched Audiobookshelf item unless corrected in the request;
+        publisher always comes from the fresh item. It uses the Hardcover book ID
+        recorded by that sync run; no book or author ID is accepted from the caller.
+        Audiobooks use a regional `upsert_book` import with no `insert_edition`
+        fallback. Ebooks use format-aware
+        `insert_edition`. A successful result is verified and saved as a
+        profile-local match before the response is returned.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+          example: profile-123
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EditionCreateRequest'
+      responses:
+        '200':
+          description: Hardcover result verified and local association saved.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: {type: boolean, enum: [true]}
+                  data:
+                    $ref: '#/components/schemas/EditionCreateResult'
+        '400':
+          description: Profile ID, run ID, or ABS item ID is missing, or the JSON request is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication is required when authentication is enabled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Authenticated caller lacks profile mutation access.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The profile is unavailable to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Profile details or configuration could not be retrieved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >-
+            The profile is syncing or being deleted, the run/item record is
+            stale or no longer usable, a verified source field (item ID, title,
+            author, ASIN, ISBN, or reading format) changed, profile dry run is
+            enabled, or Hardcover returned an identity conflict. Run a fresh sync
+            after source changes. Turn off dry run before creating an edition. For
+            an identity conflict, verify the Hardcover result before retrying because
+            another edition may have been created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: >-
+            The correction fields or identifiers are invalid, or Audnex did
+            not find the source ASIN in a supported region. Supply a valid
+            regional `audible_identifier` to proceed without region discovery.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: >-
+            Edition creation capacity is busy or the profile state file is
+            locked. Wait for the indicated delay and retry.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying; currently 1.
+              schema:
+                type: string
+                example: "1"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: >-
+            Non-timeout Audiobookshelf client setup or item lookup failed, a
+            Hardcover operation or result verification failed, or the remote
+            operation succeeded but the local match could not be saved. If a
+            Hardcover operation or verification may have completed remotely,
+            verify the Hardcover result before retrying because another
+            edition may be created. The same guidance applies when local save
+            fails after verified remote success.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >-
+            The create service is shutting down, a dependency request timed out,
+            source-ASIN Audnex region discovery was rate limited or transiently
+            unavailable, or the Hardcover regional import timed out. A rate-limit
+            or transient error from Audnex `GetBookByASIN` for an explicit
+            `audible_identifier` is ignored while the request context remains
+            active; the supplied region is used and the preview falls back to the
+            Audiobookshelf date. If the request context expires during
+            Audiobookshelf or Audnex lookup, the request fails before a Hardcover
+            write. If a timeout occurs during a Hardcover mutation, verify the Hardcover
+            result before retrying because another edition may have been created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /profiles/{id}/edition-associations/{itemID}:
     delete:
       tags: [Edition Associations]

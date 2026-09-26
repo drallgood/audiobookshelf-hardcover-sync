@@ -74,6 +74,7 @@ func New(addr string, multiUserService *multiuser.MultiUserService, authService 
 	apiMux.HandleFunc("PUT /api/profiles/{id}/config", s.apiHandler.UpdateProfileConfig)
 	apiMux.HandleFunc("GET /api/profiles/{id}/edition-capability", s.apiHandler.GetEditionCapability)
 	apiMux.HandleFunc("GET /api/profiles/{id}/edition-drafts/source/{itemID}", s.apiHandler.GetEditionSourceDraft)
+	apiMux.HandleFunc("POST /api/profiles/{id}/edition-drafts/create", s.apiHandler.CreateEditionFromDraft)
 	apiMux.HandleFunc("DELETE /api/profiles/{id}/edition-associations/{itemID}", s.apiHandler.ForgetEditionAssociation)
 	apiMux.HandleFunc("POST /api/profiles/{id}/sync", s.apiHandler.StartSync)
 	apiMux.HandleFunc("DELETE /api/profiles/{id}/sync", s.apiHandler.CancelSync)

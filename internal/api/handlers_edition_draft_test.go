@@ -31,6 +31,9 @@ type editionDraftTestFixture struct {
 	config            *config.Config
 	authService       *auth.AuthService
 	db                *database.Database
+	repository        *database.Repository
+	multiUserService  *multiuser.MultiUserService
+	dataDir           string
 	owner             *auth.AuthUser
 	absRequests       *atomic.Int32
 	hardcoverRequests *atomic.Int32
@@ -112,7 +115,8 @@ func newEditionDraftTestFixtureWithABSDelay(t *testing.T, itemJSON, preferredReg
 	})
 	return &editionDraftTestFixture{
 		routes: routes, handler: handler, config: cfg, authService: authService, owner: owner,
-		db: db, absRequests: absRequests, hardcoverRequests: hardcoverRequests,
+		db: db, repository: repo, multiUserService: multiUserService, dataDir: dataDir,
+		absRequests: absRequests, hardcoverRequests: hardcoverRequests,
 	}
 }
 

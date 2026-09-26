@@ -69,6 +69,7 @@ Existing single-profile setups are **automatically migrated** on first startup:
 | `GET` | `/api/profiles/{id}/edition-capability` | Report separate ebook and audiobook edition-write capability evidence |
 | `GET` | `/api/profiles/{id}/runs/{runId}/details` | Get book-level details for a retained sync run |
 | `GET` | `/api/profiles/{id}/edition-drafts/source/{itemID}` | Prepare a read-only edition draft from an Audiobookshelf item |
+| `POST` | `/api/profiles/{id}/edition-drafts/create` | Create an edition from a verified needs-review sync record |
 | `DELETE` | `/api/profiles/{id}/edition-associations/{itemID}` | Forget the saved Hardcover match for one Audiobookshelf item |
 | `POST` | `/api/profiles/{id}/sync` | Start sync |
 | `DELETE` | `/api/profiles/{id}/sync` | Cancel sync |
@@ -124,8 +125,51 @@ See [OpenAPI](docs/openapi.yaml) for response fields and warnings.
 Use a trusted Audiobookshelf URL: this route fetches it with the saved token.
 Enable authentication when exposing the API beyond localhost. A draft may
 check up to ten Audnex regions, with retries, within its 25-second deadline.
-Each server instance prepares at most two drafts concurrently; extra requests
-receive HTTP 429 with `Retry-After: 1`.
+Each server instance handles at most two draft or edition-create requests at
+once; additional requests receive HTTP 429 with `Retry-After: 1`.
+
+### Create an edition
+
+`POST /api/profiles/{id}/edition-drafts/create` is the explicit path that may
+write an edition to Hardcover. Send the exact `run_id` and `abs_item_id` from
+a completed, non-dry-run sync record whose outcome is `needs_review`. The API
+refetches the Audiobookshelf item and checks its item ID, title, author, ASIN,
+ISBN, and reading format against the verified needs-review record. It takes the
+Hardcover book ID from that run record, not from the request. For ebooks,
+subtitle and release date come from the freshly fetched item unless corrected in
+the request; publisher always comes from the fresh item.
+
+For audiobooks, omit `audible_identifier` to discover the source ASIN's Audnex
+region, or provide `ASIN:region`; the supplied region is authoritative. Audnex
+lookup for an explicit identifier is optional release-date enrichment. A typed
+rate-limit or transient lookup failure does not block the Hardcover import, and
+the preview keeps the Audiobookshelf release date. Audiobook metadata is
+preview-only. Ebook requests may correct `title`, `subtitle`, `asin`,
+`isbn_10`, `isbn_13`, `release_date`, and `edition_format`. The response
+reports the verified Hardcover book and edition IDs; audiobook statuses are
+`loaded` or `created`, and ebook statuses are `existing` or `created`. A
+successful create saves a local association for the next sync.
+
+A profile that is syncing or deleting, a stale or superseded needs-review
+candidate, changed verified source fields (item ID, title, author, ASIN, ISBN,
+or reading format), an existing association, profile dry run, or a Hardcover
+identity conflict returns `409`; finish the sync, run a fresh sync after source
+changes, or turn off dry run as applicable. If Hardcover returned an identity
+conflict, verify the Hardcover result before retrying because another edition
+may have been created. Busy create capacity or a locked state file returns `429` with
+`Retry-After: 1`. Rate-limit or transient failures while discovering a region
+from the source ASIN, dependency timeouts, and service shutdown return `503`.
+For an explicit `audible_identifier`, those Audnex errors from optional date
+enrichment are ignored while the request context remains active, so the import
+uses the supplied region and the preview falls back to the Audiobookshelf date.
+A request timeout during Audiobookshelf or Audnex lookup happens before the
+Hardcover write and can be retried. If a timeout or other failure occurs during
+or after a Hardcover mutation, verify the Hardcover result before retrying
+because another edition may have been created.
+If Hardcover succeeded but saving the local association failed, the endpoint
+returns `502`; verify the Hardcover result before retrying, because a retry may
+create another edition. Hardcover operation or result verification failures
+also return `502` with the same guidance when the remote outcome is ambiguous.
 
 ### Edition capability
 
