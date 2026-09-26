@@ -205,6 +205,7 @@ var errStaleEditionCreateRun = errors.New("sync run no longer contains a usable 
 var errEditionCreateSourceChanged = errors.New("Audiobookshelf source data or reading format changed; run a new sync before adding an edition")
 var errEditionCreateInvalidInput = errors.New("invalid edition create input")
 var errEditionCreateInsufficientBudget = errors.New("edition create has too little time remaining for a Hardcover write")
+var errEditionCreateDiscoveryBudget = errors.New("Audnex region discovery could not finish before the Hardcover write deadline")
 
 func requireEditionCreateMutationBudget(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
@@ -302,7 +303,19 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 			preferred = "us"
 		}
 		discoverer := h.editionCreateAudnexDiscoverer()
-		found, discoveredRegion, discoverErr := discoverer.DiscoverBookByASIN(ctx, asin, preferred)
+		if err := requireEditionCreateMutationBudget(ctx); err != nil {
+			return statepkg.Association{}, err
+		}
+		discoveryCtx := ctx
+		if deadline, ok := ctx.Deadline(); ok {
+			var cancel context.CancelFunc
+			discoveryCtx, cancel = context.WithDeadline(ctx, deadline.Add(-editionCreateMutationReserve))
+			defer cancel()
+		}
+		found, discoveredRegion, discoverErr := discoverer.DiscoverBookByASIN(discoveryCtx, asin, preferred)
+		if errors.Is(discoveryCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			return statepkg.Association{}, errEditionCreateDiscoveryBudget
+		}
 		if discoverErr != nil {
 			if errors.Is(discoverErr, audnex.ErrRateLimited) || errors.Is(discoverErr, audnex.ErrTransient) || errors.Is(discoverErr, context.DeadlineExceeded) {
 				return statepkg.Association{}, fmt.Errorf("Audnex region discovery is temporarily unavailable: %w", discoverErr)
@@ -334,6 +347,9 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 		return statepkg.Association{}, errStaleEditionCreateRun
 	}
 	if err := requireEditionCreateMutationBudget(ctx); err != nil {
+		if request.AudibleIdentifier == "" && ctx.Err() == nil {
+			return statepkg.Association{}, errEditionCreateDiscoveryBudget
+		}
 		return statepkg.Association{}, err
 	}
 	mutationCtx := hardcover.WithMinimumMutationBudget(ctx, editionCreateMutationReserve)
@@ -668,6 +684,8 @@ func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID strin
 	case errors.Is(err, errEditionCreateInsufficientBudget):
 		w.Header().Set("Retry-After", "1")
 		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Too little request time remained to safely start the Hardcover write; no mutation was sent. Retry the edition create")
+	case errors.Is(err, errEditionCreateDiscoveryBudget):
+		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Audnex region discovery could not finish before the Hardcover write deadline; no mutation was sent. Supply audible_identifier (ASIN:region) to skip discovery")
 	case errors.Is(err, multiuser.ErrProfileStateBusy):
 		w.Header().Set("Retry-After", "1")
 		h.writeErrorResponse(w, http.StatusTooManyRequests, "Profile sync state is busy; retry shortly")

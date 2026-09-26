@@ -1203,8 +1203,10 @@ paths:
             The create service is shutting down, source lookup leaves too little
             time for a Hardcover write (with Retry-After: 1), a dependency request timed out,
             source-ASIN Audnex region discovery was rate limited or transiently
-            unavailable, or the Hardcover regional import timed out. A rate-limit
-            or transient error from Audnex `GetBookByASIN` for an explicit
+            unavailable, or the Hardcover regional import timed out. Region
+            discovery stops before the reserved Hardcover write time; when it
+            cannot finish in that time, supply `audible_identifier` to skip it.
+            A rate-limit or transient error from Audnex `GetBookByASIN` for an explicit
             `audible_identifier` is ignored while the request context remains
             active; the supplied region is used and the preview falls back to the
             Audiobookshelf date. If the request context expires during

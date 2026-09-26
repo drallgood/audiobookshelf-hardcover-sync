@@ -1165,6 +1165,41 @@ func TestCreateEditionFromDraftDiscoversRegionBeforeImport(t *testing.T) {
 	require.EqualValues(t, 1, counts.imports.Load())
 }
 
+func TestCreateEditionFromDraftStopsDiscoveryBeforeWriteReserve(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`, "us")
+	configureEditionCreateRoute(t, fixture)
+	addCompletedNeedsReviewRun(t, fixture, "run-discovery-budget", editionCreateRecord())
+	var discoveryDeadline time.Time
+	fixture.handler.editionCreateAudnexClientFactory = func() editionCreateAudnexDiscoverer {
+		return editionCreateAudnexStub{discoverFn: func(ctx context.Context, _, _ string) (*audnex.Book, string, error) {
+			var ok bool
+			discoveryDeadline, ok = ctx.Deadline()
+			require.True(t, ok)
+			<-ctx.Done()
+			return nil, "", ctx.Err()
+		}}
+	}
+	var counts editionCreateCallCounts
+	fixture.handler.editionCreateHardcoverFactory = countingEditionCreateClient(&counts)
+	requestCtx, cancel := context.WithTimeout(context.Background(), editionCreateMutationReserve+500*time.Millisecond)
+	defer cancel()
+	request := httptest.NewRequest(http.MethodPost, "/api/profiles/draft-profile/edition-drafts/create", strings.NewReader(
+		`{"run_id":"run-discovery-budget","abs_item_id":"abs-item-1"}`,
+	)).WithContext(requestCtx)
+	request.AddCookie(fixture.sessionCookie(t, fixture.owner))
+	response := httptest.NewRecorder()
+	fixture.routes.ServeHTTP(response, request)
+
+	requestDeadline, ok := requestCtx.Deadline()
+	require.True(t, ok)
+	require.Equal(t, requestDeadline.Add(-editionCreateMutationReserve), discoveryDeadline)
+	require.NoError(t, requestCtx.Err(), "discovery should stop while the write reserve remains")
+	require.Equal(t, http.StatusServiceUnavailable, response.Code, response.Body.String())
+	require.Contains(t, response.Body.String(), "audible_identifier")
+	require.Empty(t, response.Header().Get("Retry-After"))
+	requireNoEditionCreateEffects(t, fixture, &counts)
+}
+
 func TestCreateEditionFromDraftDoesNotStartWriteWithShortDeadline(t *testing.T) {
 	tests := []struct {
 		name     string
