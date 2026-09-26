@@ -25,6 +25,7 @@ import (
 
 type routeTestFixture struct {
 	dataDir string
+	db      *database.Database
 	repo    *database.Repository
 	server  *Server
 }
@@ -58,6 +59,7 @@ func newRouteTestFixture(t *testing.T, authEnabled bool) *routeTestFixture {
 
 	return &routeTestFixture{
 		dataDir: dataDir,
+		db:      db,
 		repo:    repo,
 		server:  New("", multiUserService, authService, logger.Get()),
 	}

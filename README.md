@@ -66,6 +66,7 @@ Existing single-profile setups are **automatically migrated** on first startup:
 | `PUT` | `/api/profiles/{id}` | Update profile |
 | `DELETE` | `/api/profiles/{id}` | Delete profile |
 | `PUT` | `/api/profiles/{id}/config` | Update profile configuration |
+| `GET` | `/api/profiles/{id}/edition-capability` | Report separate ebook and audiobook edition-write capability evidence |
 | `GET` | `/api/profiles/{id}/runs/{runId}/details` | Get book-level details for a retained sync run |
 | `GET` | `/api/profiles/{id}/edition-drafts/source/{itemID}` | Prepare a read-only edition draft from an Audiobookshelf item |
 | `DELETE` | `/api/profiles/{id}/edition-associations/{itemID}` | Forget the saved Hardcover match for one Audiobookshelf item |
@@ -125,6 +126,18 @@ Enable authentication when exposing the API beyond localhost. A draft may
 check up to ten Audnex regions, with retries, within its 25-second deadline.
 Each server instance prepares at most two drafts concurrently; extra requests
 receive HTTP 429 and can be retried shortly.
+
+### Edition capability
+
+`GET /api/profiles/{id}/edition-capability` reports, separately for ebook
+insertion (`insert_edition`) and audiobook import (`upsert_book`), whether the
+profile's Hardcover token may attempt to add an edition. It requires profile
+write access and makes no Hardcover or Audiobookshelf request. Hardcover offers
+no read-only way to check a token's scopes, so a configured token is reported
+as `unverified` with a `permission_unverified` warning. That status lets a
+later add-edition attempt proceed with the warning; it does not guarantee
+permission. A profile without a Hardcover token is reported as `denied`. See
+[OpenAPI](docs/openapi.yaml) for the response fields.
 
 ### Remembered edition matches
 
