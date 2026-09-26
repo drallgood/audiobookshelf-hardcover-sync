@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audnex"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/edition"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
@@ -88,12 +89,6 @@ func TestRunCreateStoresVerifiedAudiobookAssociationUnderLock(t *testing.T) {
 				t.Fatalf("requested item %q, expected %q", itemID, item.ID)
 			}
 			return item, nil
-		},
-		checkAudibleRegion: func(_ context.Context, asin, region string) error {
-			if asin != "B012345678" || region != "uk" {
-				t.Fatalf("unexpected explicit region check: %s/%s", asin, region)
-			}
-			return nil
 		},
 		importAudiobook: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
 			lock, err := state.AcquireFileLock(statePath)
@@ -220,7 +215,6 @@ func TestRunCreateKeepsAssociationOnLockedTargetAfterStateAliasRetarget(t *testi
 			}
 			return testAudiobook("item-1", "B012345678"), nil
 		},
-		checkAudibleRegion: func(context.Context, string, string) error { return nil },
 		importAudiobook: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
 			return &hardcover.RegionalAudiobookResult{
 				Status: hardcover.RegionalAudiobookLoaded, BookID: 21, EditionID: 34,
@@ -275,6 +269,74 @@ func TestRunCreateRejectsUnknownRegionBeforeExternalCalls(t *testing.T) {
 	}
 	if called {
 		t.Fatal("invalid region reached an external service")
+	}
+}
+
+func TestRunCreateAudibleRegionOutcomes(t *testing.T) {
+	tests := []struct {
+		name        string
+		inputJSON   string
+		discoverErr error
+		wantRegion  string
+		wantError   string
+	}{
+		{
+			name:        "explicit region imports without Audnex",
+			inputJSON:   `{"book_id":21,"asin":"b012345678","asin_region":"UK"}`,
+			discoverErr: audnex.ErrTransient,
+			wantRegion:  "uk",
+		},
+		{
+			name:        "rate-limited discovery is retryable and imports nothing",
+			inputJSON:   `{"book_id":21,"asin":"B012345678"}`,
+			discoverErr: audnex.ErrRateLimited,
+			wantError:   "temporarily unavailable; retry later or set asin_region",
+		},
+		{
+			name:      "malformed ASIN is rejected before external calls",
+			inputJSON: `{"book_id":21,"asin":"B0123","asin_region":"uk"}`,
+			wantError: "exactly ten letters or digits",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			inputPath := writeCreateInput(t, test.inputJSON)
+			discovered := false
+			var imported *hardcover.RegionalAudiobookInput
+			services := createServices{
+				discoverAudible: func(context.Context, string, string) (string, error) {
+					discovered = true
+					return "", test.discoverErr
+				},
+				importAudiobook: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+					imported = &input
+					return &hardcover.RegionalAudiobookResult{
+						Status: hardcover.RegionalAudiobookCreated, BookID: 21, EditionID: 34,
+						ReadingFormatID:    models.ReadingFormatID(models.ReadingFormatAudiobook),
+						RegionalExternalID: input.ASIN + ":" + input.Region,
+					}, nil
+				},
+			}
+			result, err := runCreate(context.Background(), createOptions{InputPath: inputPath}, services)
+			if test.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantError) {
+					t.Fatalf("expected error containing %q, got %v", test.wantError, err)
+				}
+				if imported != nil {
+					t.Fatalf("failed region resolution reached Hardcover: %#v", imported)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if discovered {
+				t.Fatal("explicit region was sent to Audnex discovery")
+			}
+			if imported == nil || imported.ASIN != "B012345678" || imported.Region != test.wantRegion || result.Status != "created" {
+				t.Fatalf("unexpected import %#v with result %#v", imported, result)
+			}
+		})
 	}
 }
 
@@ -345,10 +407,6 @@ func TestRunCreateRejectsABSIdentifierMismatchBeforeHardcover(t *testing.T) {
 					called = true
 					return "us", nil
 				},
-				checkAudibleRegion: func(context.Context, string, string) error {
-					called = true
-					return nil
-				},
 				importAudiobook: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
 					called = true
 					return nil, nil
@@ -387,14 +445,8 @@ func TestRunCreateAllowsExplicitAudiobookASINCorrectionWithNormalizedISBN(t *tes
 		fetchABSItem: func(context.Context, string) (*models.AudiobookshelfBook, error) {
 			return item, nil
 		},
-		checkAudibleRegion: func(_ context.Context, asin, region string) error {
-			if asin != "B012345678" || region != "uk" {
-				t.Fatalf("unexpected corrected regional ASIN: %s/%s", asin, region)
-			}
-			return nil
-		},
 		importAudiobook: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
-			if input.ASIN != "B012345678" {
+			if input.ASIN != "B012345678" || input.Region != "uk" {
 				t.Fatalf("correction was not sent to the importer: %#v", input)
 			}
 			return &hardcover.RegionalAudiobookResult{

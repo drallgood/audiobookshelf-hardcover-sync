@@ -56,8 +56,8 @@ profile ID, pass the actual derived state file for that profile.
 
 ## Audiobook input
 
-The audiobook input needs a positive Hardcover `book_id` and a nonblank bare
-ASIN. `reading_format` defaults to `audiobook`.
+The audiobook input needs a positive Hardcover `book_id` and a bare ASIN of
+ten letters or digits. `reading_format` defaults to `audiobook`.
 
 ```json
 {
@@ -70,11 +70,12 @@ ASIN. `reading_format` defaults to `audiobook`.
 ```
 
 `asin_region` is optional; `region` is an alias. If both are supplied they
-must agree. A supplied region is confirmed with Audnex. Without one, the
-command discovers a region by finding the requested ASIN in Audnex; it prefers
-`audiobookshelf.audnexus_region` (default `us`) and does not assume a region
-from the ASIN. An unknown region or failed lookup stops before the Hardcover
-import.
+must agree. A supplied region is sent to Hardcover as given, without an Audnex
+lookup. Without one, the command discovers a region by finding the requested
+ASIN in Audnex; it prefers `audiobookshelf.audnexus_region` (default `us`) and
+does not assume a region from the ASIN. If discovery finds no region or Audnex
+is temporarily unavailable, the command stops before the Hardcover import;
+retry later or supply `asin_region`.
 
 For audiobook imports, the command uses only `book_id`, `asin`, region,
 `reading_format`, and the optional ABS item ID. Other JSON fields are ignored,

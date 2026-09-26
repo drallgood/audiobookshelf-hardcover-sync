@@ -53,7 +53,6 @@ type createOutput struct {
 
 type createServices struct {
 	fetchABSItem       func(context.Context, string) (*models.AudiobookshelfBook, error)
-	checkAudibleRegion func(context.Context, string, string) error
 	discoverAudible    func(context.Context, string, string) (string, error)
 	importAudiobook    func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error)
 	createEbook        func(context.Context, *edition.EditionInput) (*edition.EditionResult, error)
@@ -88,16 +87,6 @@ func newCreateServices(cfg *config.Config, log *logger.Logger, dryRun bool) (cre
 				return nil, fmt.Errorf("invalid Audiobookshelf client configuration: %w", err)
 			}
 			return abs.GetLibraryItemByID(ctx, itemID)
-		},
-		checkAudibleRegion: func(ctx context.Context, asin, region string) error {
-			book, err := audnex.NewClient(log).GetBookByASIN(ctx, asin, region)
-			if err != nil {
-				return fmt.Errorf("Audnex could not confirm ASIN %q in region %q: %w", asin, region, err)
-			}
-			if canonical, ok := audnex.CanonicalASIN(book.ASIN); !ok || canonical != strings.ToUpper(asin) {
-				return fmt.Errorf("Audnex returned an unexpected ASIN for region %q", region)
-			}
-			return nil
 		},
 		discoverAudible: func(ctx context.Context, asin, preferred string) (string, error) {
 			_, region, err := audnex.NewClient(log).DiscoverBookByASIN(ctx, asin, preferred)
@@ -346,36 +335,43 @@ func validateCreateInput(input *edition.EditionInput) error {
 	if input.ASIN == "" && input.ISBN10 == "" && input.ISBN13 == "" {
 		return errors.New("an ASIN or ISBN is required")
 	}
-	if input.ReadingFormat == models.ReadingFormatAudiobook && input.ASIN == "" {
-		return errors.New("an audiobook import requires a regional Audible ASIN")
+	if input.ReadingFormat == models.ReadingFormatAudiobook {
+		if input.ASIN == "" {
+			return errors.New("an audiobook import requires a regional Audible ASIN")
+		}
+		canonicalASIN, valid := audnex.CanonicalASIN(input.ASIN)
+		if !valid {
+			return fmt.Errorf("audiobook ASIN %q must contain exactly ten letters or digits", input.ASIN)
+		}
+		input.ASIN = canonicalASIN
 	}
 	return nil
 }
 
+// resolveAudibleRegion returns the region for the regional Audible import. An
+// explicit region is the user's regional identifier and is used as given, like
+// the create API's audible_identifier; otherwise Audnex discovery must find it.
 func resolveAudibleRegion(ctx context.Context, asin, requested, preferred string, services createServices) (string, error) {
+	if requested != "" {
+		return requested, nil
+	}
 	preferred = strings.ToLower(strings.TrimSpace(preferred))
 	if preferred != "" && !audnexregion.IsRegion(preferred) {
 		return "", fmt.Errorf("configured audiobookshelf.audnexus_region %q is unsupported", preferred)
-	}
-	if requested != "" {
-		if services.checkAudibleRegion == nil {
-			return "", errors.New("Audnex region confirmation is unavailable")
-		}
-		if err := services.checkAudibleRegion(ctx, asin, requested); err != nil {
-			return "", err
-		}
-		return requested, nil
 	}
 	if services.discoverAudible == nil {
 		return "", errors.New("Audnex region discovery is unavailable")
 	}
 	region, err := services.discoverAudible(ctx, asin, preferred)
 	if err != nil {
-		return "", fmt.Errorf("failed to discover an Audible region for ASIN %q: %w", asin, err)
+		if errors.Is(err, audnex.ErrRateLimited) || errors.Is(err, audnex.ErrTransient) || errors.Is(err, context.DeadlineExceeded) {
+			return "", fmt.Errorf("Audnex region discovery for ASIN %q is temporarily unavailable; retry later or set asin_region: %w", asin, err)
+		}
+		return "", fmt.Errorf("failed to discover an Audible region for ASIN %q; set asin_region to import it: %w", asin, err)
 	}
 	region = strings.ToLower(strings.TrimSpace(region))
 	if region == "" {
-		return "", fmt.Errorf("Audnex did not find ASIN %q in any supported region", asin)
+		return "", fmt.Errorf("Audnex did not find ASIN %q in any supported region; set asin_region to import it", asin)
 	}
 	if !audnexregion.IsRegion(region) {
 		return "", fmt.Errorf("Audnex discovery returned unsupported region %q", region)
