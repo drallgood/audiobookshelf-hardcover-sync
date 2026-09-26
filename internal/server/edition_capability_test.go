@@ -87,3 +87,20 @@ func TestEditionCapabilityRouteUsesProfileWriteAuthorization(t *testing.T) {
 	viewerResponse := fixture.requestWithCookies(http.MethodGet, viewerPath, nil, []*http.Cookie{viewer.cookie})
 	require.Equal(t, http.StatusForbidden, viewerResponse.Code, viewerResponse.Body.String())
 }
+
+func TestEditionCapabilityRouteDistinguishesMissingProfileFromStorageFailure(t *testing.T) {
+	const path = "/api/profiles/capability-profile/edition-capability"
+	fixture := newRouteTestFixture(t, false)
+
+	missing := fixture.request(http.MethodGet, path, nil)
+	require.Equal(t, http.StatusNotFound, missing.Code, missing.Body.String())
+
+	require.NoError(t, fixture.repo.CreateProfile(
+		"capability-profile", "Capability profile", "http://abs.home", "abs-token", "hc-token",
+		database.SyncConfigData{},
+	))
+	require.NoError(t, fixture.db.GetDB().Exec("ALTER TABLE sync_profiles RENAME TO unavailable_sync_profiles").Error)
+	failed := fixture.request(http.MethodGet, path, nil)
+	require.Equal(t, http.StatusInternalServerError, failed.Code, failed.Body.String())
+	require.Contains(t, failed.Body.String(), "Failed to check edition capability")
+}

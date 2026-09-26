@@ -105,6 +105,7 @@ func newRouteTestFixtureWithHardcoverURL(t *testing.T, hardcoverURL string) *rou
 
 	return &routeTestFixture{
 		dataDir: dataDir,
+		db:      db,
 		repo:    repo,
 		server:  New("", multiUserService, authService, logger.Get()),
 	}
