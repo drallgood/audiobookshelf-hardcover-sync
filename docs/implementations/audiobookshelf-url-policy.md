@@ -52,9 +52,11 @@ no userinfo, query, or fragment. `public_only` requires HTTPS. A trailing
 slash is removed, as today. Configuration loading validates the trust value
 and a configured standalone URL. Web profile creation and URL updates
 validate the profile URL; the client constructor also rejects invalid URL or
-trust values before sending a request. Destination addresses are checked at
-request and connection time, because DNS answers can change after a URL is
-saved.
+trust values before sending a request. Each request checks URL syntax. New
+connections check the resolved address and connected peer, because DNS answers
+can change after a URL is saved. Redirects also check their destination
+addresses before following them. An existing validated connection remains
+usable if DNS is temporarily unavailable.
 
 HTTPS certificate verification stays enabled in both modes.
 

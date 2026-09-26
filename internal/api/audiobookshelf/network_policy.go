@@ -67,7 +67,7 @@ type scopedRoundTripper struct {
 }
 
 func (rt scopedRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	if err := rt.policy.validateURL(req.Context(), req.URL); err != nil {
+	if err := rt.policy.validateURLSyntax(req.URL); err != nil {
 		return nil, fmt.Errorf("Audiobookshelf destination rejected: %w", err)
 	}
 	request := req.Clone(req.Context())
@@ -186,6 +186,14 @@ func validateNetworkTrust(networkTrust string) error {
 }
 
 func (p networkPolicy) validateURL(ctx context.Context, u *url.URL) error {
+	if err := p.validateURLSyntax(u); err != nil {
+		return err
+	}
+	_, err := p.resolveAllowed(ctx, u.Hostname())
+	return err
+}
+
+func (p networkPolicy) validateURLSyntax(u *url.URL) error {
 	if u == nil || u.Hostname() == "" {
 		return errors.New("destination URL must have a host")
 	}
@@ -211,8 +219,7 @@ func (p networkPolicy) validateURL(ctx context.Context, u *url.URL) error {
 			return errors.New("destination URL has an invalid port")
 		}
 	}
-	_, err := p.resolveAllowed(ctx, u.Hostname())
-	return err
+	return nil
 }
 
 func (p networkPolicy) resolveAllowed(ctx context.Context, host string) ([]net.IPAddr, error) {

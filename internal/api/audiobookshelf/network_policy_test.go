@@ -2,11 +2,13 @@ package audiobookshelf
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -150,6 +152,41 @@ type fixedResolver []net.IPAddr
 
 func (r fixedResolver) LookupIPAddr(context.Context, string) ([]net.IPAddr, error) {
 	return []net.IPAddr(r), nil
+}
+
+type intermittentResolver struct{ unavailable atomic.Bool }
+
+func (r *intermittentResolver) LookupIPAddr(context.Context, string) ([]net.IPAddr, error) {
+	if r.unavailable.Load() {
+		return nil, errors.New("DNS unavailable")
+	}
+	return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+}
+
+func TestExistingAllowedConnectionSurvivesDNSFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+	_, port, err := net.SplitHostPort(server.Listener.Addr().String())
+	require.NoError(t, err)
+	base, err := url.Parse("http://abs.example:" + port)
+	require.NoError(t, err)
+
+	resolver := &intermittentResolver{}
+	policy := networkPolicy{trust: NetworkTrustAllowPrivate, resolver: resolver}
+	client := &http.Client{Transport: scopedRoundTripper{
+		base: base, token: "secret", policy: policy,
+		next: &http.Transport{DialContext: policy.dialContext},
+	}}
+	for attempt := range 2 {
+		response, err := client.Get(base.String())
+		require.NoError(t, err, "request %d should use the validated connection", attempt+1)
+		_, err = io.Copy(io.Discard, response.Body)
+		require.NoError(t, err)
+		require.NoError(t, response.Body.Close())
+		resolver.unavailable.Store(true)
+	}
 }
 
 func TestResolveAllowedRejectsMixedDNSAnswers(t *testing.T) {
