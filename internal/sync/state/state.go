@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
 )
 
 const DefaultStateFile = "./data/sync_state.json"
@@ -181,6 +183,20 @@ func resolveStatePath(path string) (string, error) {
 
 	base, components := splitStatePath(absPath)
 	return resolveStatePathComponents(base, components, make(map[string]struct{}), 0)
+}
+
+// SourceIdentifiers splits an Audiobookshelf item's reported ASIN and ISBN
+// into an association's source identifier fields. The ISBN is recorded as
+// ISBN-10 when it normalizes to ten characters and otherwise as ISBN-13. A
+// malformed or empty ISBN keeps its reported value so a later source
+// correction invalidates the association.
+func SourceIdentifiers(rawASIN, rawISBN string) (asin, isbn10, isbn13 string) {
+	asin = strings.TrimSpace(rawASIN)
+	rawISBN = strings.TrimSpace(rawISBN)
+	if len(isbn.Normalize(rawISBN)) == 10 {
+		return asin, rawISBN, ""
+	}
+	return asin, "", rawISBN
 }
 
 // SetAssociation stores a confirmed Hardcover resolution with the ABS item's

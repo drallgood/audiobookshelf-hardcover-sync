@@ -616,20 +616,12 @@ func ebookAuthorIDs(ctx context.Context, client editionCreateHardcoverClient, bo
 }
 
 func createEditionAssociation(item *models.AudiobookshelfBook, bookID, editionID, regionalID, correction, format, provenance string) statepkg.Association {
-	rawASIN := strings.TrimSpace(item.Media.Metadata.ASIN)
-	rawISBN := item.Media.Metadata.ISBN
-	normalizedISBN := isbn.Normalize(rawISBN)
-	association := statepkg.Association{
-		ABSItemID: item.ID, SourceASIN: rawASIN, RegionalExternalID: regionalID,
-		Correction: correction, HardcoverBookID: bookID, HardcoverEditionID: editionID,
-		ReadingFormat: format, Provenance: provenance,
+	asin, isbn10, isbn13 := statepkg.SourceIdentifiers(item.Media.Metadata.ASIN, item.Media.Metadata.ISBN)
+	return statepkg.Association{
+		ABSItemID: item.ID, SourceASIN: asin, SourceISBN10: isbn10, SourceISBN13: isbn13,
+		RegionalExternalID: regionalID, Correction: correction, HardcoverBookID: bookID,
+		HardcoverEditionID: editionID, ReadingFormat: format, Provenance: provenance,
 	}
-	if len(normalizedISBN) == 10 {
-		association.SourceISBN10 = rawISBN
-	} else {
-		association.SourceISBN13 = rawISBN
-	}
-	return association
 }
 
 func (h *Handler) editionCreateHardcoverClient(token string) editionCreateHardcoverClient {

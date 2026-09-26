@@ -4973,26 +4973,11 @@ func isbnSearchCandidates(raw string) []isbnCandidate {
 	return []isbnCandidate{given, {value: parsed.Counterpart, is13: !parsed.Is13}}
 }
 
-func associationSourceIdentifiers(book models.AudiobookshelfBook) (asin, isbn10, isbn13 string) {
-	asin = book.Media.Metadata.ASIN
-	rawISBN := book.Media.Metadata.ISBN
-	normalizedISBN := isbn.Normalize(rawISBN)
-	switch len(normalizedISBN) {
-	case 10:
-		isbn10 = rawISBN
-	default:
-		// Keep the reported value even when it is malformed or absent from the
-		// usual ISBN lengths so a later source correction invalidates the mapping.
-		isbn13 = rawISBN
-	}
-	return asin, isbn10, isbn13
-}
-
 func associationMatchesBook(association state.Association, book models.AudiobookshelfBook) bool {
 	if association.ABSItemID != book.ID || !strings.EqualFold(strings.TrimSpace(association.ReadingFormat), book.ReadingFormat()) {
 		return false
 	}
-	asin, isbn10, isbn13 := associationSourceIdentifiers(book)
+	asin, isbn10, isbn13 := state.SourceIdentifiers(book.Media.Metadata.ASIN, book.Media.Metadata.ISBN)
 	return strings.EqualFold(strings.TrimSpace(association.SourceASIN), strings.TrimSpace(asin)) &&
 		isbn.Normalize(association.SourceISBN10) == isbn.Normalize(isbn10) &&
 		isbn.Normalize(association.SourceISBN13) == isbn.Normalize(isbn13)
@@ -5041,7 +5026,7 @@ func (s *Service) recordVerifiedASINAssociation(book models.AudiobookshelfBook, 
 	if s.state == nil || result.Book.ID == "" || result.Book.EditionID == "" {
 		return
 	}
-	asin, isbn10, isbn13 := associationSourceIdentifiers(book)
+	asin, isbn10, isbn13 := state.SourceIdentifiers(book.Media.Metadata.ASIN, book.Media.Metadata.ISBN)
 	if strings.TrimSpace(asin) == "" {
 		return
 	}

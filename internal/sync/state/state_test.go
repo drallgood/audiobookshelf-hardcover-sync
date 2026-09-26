@@ -604,3 +604,24 @@ func TestCustomStatePath(t *testing.T) {
 	require.True(t, exists)
 	assert.Equal(t, 0.5, book.LastProgress)
 }
+
+func TestSourceIdentifiers(t *testing.T) {
+	tests := []struct {
+		name                         string
+		rawASIN, rawISBN             string
+		wantASIN, wantISBN10, want13 string
+	}{
+		{name: "hyphenated ISBN-10", rawASIN: " B0SOURCE12 ", rawISBN: " 0-306-40615-2 ", wantASIN: "B0SOURCE12", wantISBN10: "0-306-40615-2"},
+		{name: "ISBN-13 keeps reported form", rawISBN: "978-0-306-40615-7", want13: "978-0-306-40615-7"},
+		{name: "malformed ISBN is retained", rawISBN: "12345", want13: "12345"},
+		{name: "no identifiers"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			asin, isbn10, isbn13 := SourceIdentifiers(test.rawASIN, test.rawISBN)
+			assert.Equal(t, test.wantASIN, asin)
+			assert.Equal(t, test.wantISBN10, isbn10)
+			assert.Equal(t, test.want13, isbn13)
+		})
+	}
+}
