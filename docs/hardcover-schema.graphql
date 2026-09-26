@@ -12942,6 +12942,9 @@ type query_root {
   """
   book_collections_by_pk(id: bigint!): book_collections
 
+  """book_import_statuses"""
+  book_import_statuses(entries: [ImportStatusEntryInput!]!): [ImportStatusResult!]!
+
   """An array relationship"""
   book_mappings(
     """distinct select on columns"""
@@ -15729,9 +15732,6 @@ type subscription_root {
     """filter the rows returned"""
     where: book_collections_bool_exp
   ): [book_collections!]!
-
-  """book_import_statuses"""
-  book_import_statuses(entries: [ImportStatusEntryInput!]!): [ImportStatusResult!]!
 
   """An array relationship"""
   book_mappings(
