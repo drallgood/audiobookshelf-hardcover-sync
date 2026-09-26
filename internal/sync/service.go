@@ -5119,6 +5119,8 @@ func (s *Service) findBookInHardcoverWithASINMatch(ctx context.Context, book mod
 				}, nil, false
 			}
 			if !s.config.Sync.DryRun {
+				// The old identifiers no longer justify this match. If the new
+				// lookup fails, leave the item retryable without restoring it.
 				s.state.RemoveAssociation(book.ID)
 			}
 			log.Info("Discarded stale Hardcover association after Audiobookshelf identifiers changed", nil)

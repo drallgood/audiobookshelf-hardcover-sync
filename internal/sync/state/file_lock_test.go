@@ -82,6 +82,25 @@ func TestAcquireFileLockRejectsEmptyPath(t *testing.T) {
 	}
 }
 
+func TestAcquireFileLockSharesLockAcrossStateSymlink(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	aliasPath := filepath.Join(dir, "alias.json")
+	createTestSymlink(t, statePath, aliasPath)
+
+	for _, paths := range [][2]string{{aliasPath, statePath}, {statePath, aliasPath}} {
+		lock, err := AcquireFileLock(paths[0])
+		require.NoError(t, err)
+
+		competingLock, err := AcquireFileLock(paths[1])
+		assert.ErrorIs(t, err, ErrStateFileLocked)
+		if competingLock != nil {
+			assert.NoError(t, competingLock.Close())
+		}
+		require.NoError(t, lock.Close())
+	}
+}
+
 func TestAcquireFileLockExcludesOtherProcessesAndRecoversAfterCrash(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	initial := NewState()

@@ -154,7 +154,9 @@ normal matching order and may find the same edition again if the catalogue has
 not changed. The action never deletes Hardcover data. During dry run it leaves
 the saved match and checkpoint in place. It returns `409` while that profile
 is syncing or its state file is busy. See [OpenAPI](docs/openapi.yaml) for the
-response and authorization details.
+response and authorization details. Removing a match from a legacy profile
+state file migrates it to the current schema; see [MIGRATION.md](MIGRATION.md)
+before downgrading.
 
 ### Environment Variables (Multi-Profile)
 

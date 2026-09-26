@@ -874,7 +874,9 @@ paths:
         run it reports the previous resolution but leaves the saved match and
         checkpoint in place.
         Requests are rejected while the profile is syncing or its state file is
-        busy. Requires profile mutation access when authentication is enabled.
+        busy. Removing a match from a legacy profile state file also saves its
+        state in the current schema; see MIGRATION.md before downgrading.
+        Requires profile mutation access when authentication is enabled.
       parameters:
         - name: id
           in: path
