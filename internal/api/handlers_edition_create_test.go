@@ -827,7 +827,7 @@ func TestCreateEditionFromDraftConstructorUsesGlobalNetworkTrust(t *testing.T) {
 	var actualTrust string
 	fixture.handler.editionCreateABSClientFactory = func(baseURL, token, trust string) (editionCreateABSClient, error) {
 		actualTrust = trust
-		return audiobookshelf.NewClient(baseURL, token), nil
+		return audiobookshelf.NewClientWithNetworkTrust(baseURL, token, trust)
 	}
 	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
 		return editionCreateHardcoverStub{importFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
