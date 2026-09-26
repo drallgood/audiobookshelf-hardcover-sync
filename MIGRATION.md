@@ -104,22 +104,12 @@ Note: The Hardcover client now uses a unified configuration builder in both sing
 
 ### Audnex Region Preferences
 
-`AUDIOBOOKSHELF_AUDNEXUS_REGION` supplies the preferred region to the
-standalone `edition create` command. Multi-user profile operations use each
-profile's `sync_config.audnexus_region`; the process environment value does
-not initialize or override that saved preference. Set `audnexus_region` in
-each relevant profile through `PUT /api/profiles/{id}/config`.
-
-### Audiobookshelf Network Trust
-
-Existing valid configuration requires no change. The new optional
-`audiobookshelf.network_trust` setting defaults to `allow_private`, which
-continues to permit common self-hosted addresses. Set it to `public_only` (or
-set `AUDIOBOOKSHELF_NETWORK_TRUST=public_only`) when profile owners should
-only configure HTTPS Audiobookshelf servers at publicly routable addresses.
-This is a deployment-wide setting; profile owners cannot change it. Private,
-loopback, or plain-HTTP Audiobookshelf URLs will not work in `public_only`
-mode.
+The legacy `AUDIOBOOKSHELF_AUDNEXUS_REGION` setting does not populate or
+override a profile's `sync_config.audnexus_region`. Edition creation for a
+profile uses only that saved preference when discovering an audiobook's
+Audible region (US when unset). To prefer another region, set
+`audnexus_region` for each relevant profile through
+`PUT /api/profiles/{id}/config`.
 
 ### Data Storage Changes
 - **State File**: The application now maintains state between runs in a JSON file
