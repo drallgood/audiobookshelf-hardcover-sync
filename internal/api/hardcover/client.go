@@ -60,13 +60,6 @@ func mutationBudgetRemaining(ctx context.Context, reserve time.Duration) bool {
 	return ok && time.Until(deadline) >= reserve
 }
 
-func mutationBudgetError(mayHaveSent bool) error {
-	if mayHaveSent {
-		return ErrMutationOutcomeAmbiguous
-	}
-	return ErrMutationInsufficientBudget
-}
-
 func ambiguousMutationError(err error) error {
 	if err == nil {
 		return ErrMutationOutcomeAmbiguous
@@ -551,7 +544,6 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 
 	// Execute the operation using the GraphQL client with retry logic
 	var lastErr error
-	mutationMayHaveBeenSent := false
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if attempt > 0 {
 			// Context-aware backoff delay
@@ -585,8 +577,8 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		// Apply pacing and acquire a permit for the active HTTP request.
 		release, err := c.rateLimiter.Acquire(ctx)
 		if err != nil {
-			if op == mutationOperation && hasMinimumMutationBudget && ctx.Err() != nil {
-				return fmt.Errorf("%w: rate-limit admission ended before the mutation could be sent: %w", mutationBudgetError(mutationMayHaveBeenSent), err)
+			if budgetedMutation && ctx.Err() != nil {
+				return fmt.Errorf("%w: rate-limit admission ended before the mutation could be sent: %w", ErrMutationInsufficientBudget, err)
 			}
 			return fmt.Errorf("rate limiter error: %w", err)
 		}
@@ -608,18 +600,15 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		c.logger.Debug("GraphQL request body", map[string]interface{}{
 			"body": string(jsonBody),
 		})
-		if op == mutationOperation && hasMinimumMutationBudget && !mutationBudgetRemaining(ctx, minimumMutationBudget) {
+		if budgetedMutation && !mutationBudgetRemaining(ctx, minimumMutationBudget) {
 			releasePermit()
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return fmt.Errorf("%w: required %s to remain before sending: %w", mutationBudgetError(mutationMayHaveBeenSent), minimumMutationBudget, ctxErr)
+				return fmt.Errorf("%w: required %s to remain before sending: %w", ErrMutationInsufficientBudget, minimumMutationBudget, ctxErr)
 			}
-			return fmt.Errorf("%w: required %s to remain before sending", mutationBudgetError(mutationMayHaveBeenSent), minimumMutationBudget)
+			return fmt.Errorf("%w: required %s to remain before sending", ErrMutationInsufficientBudget, minimumMutationBudget)
 		}
 
 		// Execute the request
-		if op == mutationOperation {
-			mutationMayHaveBeenSent = true
-		}
 		resp, err := httpClient.Do(req)
 		if err != nil {
 			releasePermit()
@@ -628,7 +617,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"error":   lastErr.Error(),
 				"attempt": attempt + 1,
 			})
-			if op == mutationOperation && hasMinimumMutationBudget {
+			if budgetedMutation {
 				return ambiguousMutationError(lastErr)
 			}
 			continue
@@ -644,7 +633,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"error":   lastErr.Error(),
 				"attempt": attempt + 1,
 			})
-			if op == mutationOperation && hasMinimumMutationBudget {
+			if budgetedMutation {
 				return ambiguousMutationError(lastErr)
 			}
 			continue
@@ -676,7 +665,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"error":   lastErr.Error(),
 				"attempt": attempt + 1,
 			})
-			if op == mutationOperation && hasMinimumMutationBudget {
+			if budgetedMutation {
 				return ambiguousMutationError(lastErr)
 			}
 			if !isRetryableHTTPStatus(resp.StatusCode) {
@@ -726,7 +715,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"attempt": attempt + 1,
 				"errors":  gqlResp.Errors,
 			})
-			if op == mutationOperation && hasMinimumMutationBudget {
+			if budgetedMutation {
 				return ambiguousMutationError(lastErr)
 			}
 			continue
@@ -746,7 +735,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 					"attempt": attempt + 1,
 					"body":    string(body),
 				})
-				if op == mutationOperation && hasMinimumMutationBudget {
+				if budgetedMutation {
 					return ambiguousMutationError(lastErr)
 				}
 				continue
@@ -761,7 +750,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"error":   lastErr.Error(),
 				"attempt": attempt + 1,
 			})
-			if op == mutationOperation && hasMinimumMutationBudget {
+			if budgetedMutation {
 				return ambiguousMutationError(lastErr)
 			}
 			continue
@@ -775,7 +764,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"attempt": attempt + 1,
 				"data":    string(gqlResp.Data),
 			})
-			if op == mutationOperation && hasMinimumMutationBudget {
+			if budgetedMutation {
 				return ambiguousMutationError(lastErr)
 			}
 			continue

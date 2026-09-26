@@ -324,34 +324,6 @@ func TestGraphQLMutationBudgetIsCheckedAfterRateLimitAdmission(t *testing.T) {
 	release()
 }
 
-func TestGraphQLMutationBudgetRetryAfterPossibleSendIsAmbiguous(t *testing.T) {
-	var requests atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if requests.Add(1) == 1 {
-			http.Error(w, "temporary failure", http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{}}`))
-	}))
-	defer server.Close()
-
-	client := CreateTestClient(server)
-	client.maxRetries = 1
-	client.retryDelay = 150 * time.Millisecond
-	client.rateLimiter = util.NewRateLimiter(time.Nanosecond, 1, client.logger)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	ctx = WithMinimumMutationBudget(ctx, 900*time.Millisecond)
-	var result struct{}
-
-	err := client.GraphQLMutation(ctx, `mutation CreateEdition { insert_edition { id } }`, nil, &result)
-
-	require.ErrorIs(t, err, ErrMutationOutcomeAmbiguous)
-	assert.NotErrorIs(t, err, ErrMutationInsufficientBudget)
-	assert.Equal(t, int32(1), requests.Load(), "after the first HTTP attempt, the reserve guard must not call it a no-send failure")
-}
-
 func TestGraphQLMutationWithMinimumBudgetDoesNotRetryAfterPossibleSend(t *testing.T) {
 	transportFailure := errors.New("connection reset after request write")
 	tests := []struct {
