@@ -42,6 +42,13 @@ type ProfileWithTokens struct {
 	SyncConfig          SyncConfigData `json:"sync_config"`
 }
 
+// ProfileHardcoverSettings contains the profile data needed to report
+// Hardcover capability without decrypting the unrelated Audiobookshelf token.
+type ProfileHardcoverSettings struct {
+	HardcoverToken string
+	SyncConfig     SyncConfigData
+}
+
 const maxSyncRunReports = 10
 
 // ErrStaleSyncRunReport indicates that a terminal report belongs to a run
@@ -573,7 +580,63 @@ func (r *Repository) GetProfile(profileID string) (*ProfileWithTokens, error) {
 		return nil, fmt.Errorf("failed to decrypt Audiobookshelf token: %w", err)
 	}
 
-	hardcoverToken, err := r.encryptor.Decrypt(profile.Config.HardcoverTokenEncrypted)
+	hardcoverToken, err := r.decryptHardcoverToken(profileID, profile.Config.HardcoverTokenEncrypted)
+	if err != nil {
+		return nil, err
+	}
+
+	syncConfig, err := r.parseSyncConfig(profileID, profile.Config.SyncConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ProfileWithTokens{
+		Profile:             profile,
+		AudiobookshelfURL:   profile.Config.AudiobookshelfURL,
+		AudiobookshelfToken: audiobookshelfToken,
+		HardcoverToken:      hardcoverToken,
+		SyncConfig:          syncConfig,
+	}, nil
+}
+
+// GetProfileHardcoverSettings retrieves the current Hardcover token and sync
+// configuration for an active profile without decrypting its Audiobookshelf
+// token. A missing or inactive profile returns nil, nil.
+func (r *Repository) GetProfileHardcoverSettings(profileID string) (*ProfileHardcoverSettings, error) {
+	var profile SyncProfile
+	if err := r.db.GetDB().
+		Preload("Config", func(db *gorm.DB) *gorm.DB {
+			return db.Select("profile_id", "hardcover_token_encrypted", "sync_config")
+		}).
+		First(&profile, "id = ? AND active = ?", profileID, true).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get sync profile: %w", err)
+	}
+
+	if profile.Config == nil {
+		return nil, fmt.Errorf("sync profile config not found")
+	}
+
+	hardcoverToken, err := r.decryptHardcoverToken(profileID, profile.Config.HardcoverTokenEncrypted)
+	if err != nil {
+		return nil, err
+	}
+
+	syncConfig, err := r.parseSyncConfig(profileID, profile.Config.SyncConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ProfileHardcoverSettings{
+		HardcoverToken: hardcoverToken,
+		SyncConfig:     syncConfig,
+	}, nil
+}
+
+func (r *Repository) decryptHardcoverToken(profileID, encryptedToken string) (string, error) {
+	token, err := r.encryptor.Decrypt(encryptedToken)
 	if err != nil {
 		fields := map[string]interface{}{
 			"profile_id": profileID,
@@ -584,28 +647,24 @@ func (r *Repository) GetProfile(profileID string) (*ProfileWithTokens, error) {
 		}
 
 		r.logger.Error("Failed to decrypt Hardcover token", fields)
-		return nil, fmt.Errorf("failed to decrypt Hardcover token: %w", err)
+		return "", fmt.Errorf("failed to decrypt Hardcover token: %w", err)
 	}
+	return token, nil
+}
 
-	// Parse sync config
+func (r *Repository) parseSyncConfig(profileID, serialized string) (SyncConfigData, error) {
 	var syncConfig SyncConfigData
-	if profile.Config.SyncConfig != "" {
-		if err := json.Unmarshal([]byte(profile.Config.SyncConfig), &syncConfig); err != nil {
-			r.logger.Error("Failed to parse sync config", map[string]interface{}{
-				"profile_id": profileID,
-				"error":      err.Error(),
-			})
-			return nil, fmt.Errorf("failed to parse sync config: %w", err)
-		}
+	if serialized == "" {
+		return syncConfig, nil
 	}
-
-	return &ProfileWithTokens{
-		Profile:             profile,
-		AudiobookshelfURL:   profile.Config.AudiobookshelfURL,
-		AudiobookshelfToken: audiobookshelfToken,
-		HardcoverToken:      hardcoverToken,
-		SyncConfig:          syncConfig,
-	}, nil
+	if err := json.Unmarshal([]byte(serialized), &syncConfig); err != nil {
+		r.logger.Error("Failed to parse sync config", map[string]interface{}{
+			"profile_id": profileID,
+			"error":      err.Error(),
+		})
+		return SyncConfigData{}, fmt.Errorf("failed to parse sync config: %w", err)
+	}
+	return syncConfig, nil
 }
 
 // GetProfileMetadata retrieves an active profile without loading its config or

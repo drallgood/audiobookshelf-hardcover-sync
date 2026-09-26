@@ -50,7 +50,7 @@ type EditionCapability struct {
 // evidence, so a configured token is unverified for both operations. No
 // Hardcover request is made here.
 func (s *MultiUserService) EditionCapabilityForProfile(_ context.Context, profileID string) (EditionCapability, error) {
-	profile, err := s.GetProfile(profileID)
+	profile, err := s.repository.GetProfileHardcoverSettings(profileID)
 	if err != nil {
 		return EditionCapability{}, fmt.Errorf("failed to load profile %s for edition capability: %w", profileID, err)
 	}

@@ -55,6 +55,40 @@ func TestEditionCapabilityRouteReportsSeparateUnverifiedStatuses(t *testing.T) {
 	require.Equal(t, int32(0), hardcoverRequests.Load(), "capability reporting must not probe a Hardcover write")
 }
 
+func TestEditionCapabilityRouteDoesNotDecryptAudiobookshelfToken(t *testing.T) {
+	var hardcoverRequests atomic.Int32
+	hardcoverServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hardcoverRequests.Add(1)
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	t.Cleanup(hardcoverServer.Close)
+	fixture := newRouteTestFixtureWithHardcoverURL(t, hardcoverServer.URL)
+	owner := newRouteSession(t, fixture, "capability-corrupt-abs-owner", auth.RoleUser)
+	const profileID = "capability-corrupt-abs-profile"
+	require.NoError(t, fixture.repo.CreateProfileForUser(
+		profileID, "Capability profile", "http://abs.home", "abs-token", "hardcover-token",
+		database.SyncConfigData{DryRun: true}, owner.user.ID,
+	))
+	require.NoError(t, fixture.db.GetDB().Model(&database.SyncProfileConfig{}).
+		Where("profile_id = ?", profileID).
+		Update("audiobookshelf_token_encrypted", "corrupt-ciphertext").Error)
+
+	response := fixture.requestWithCookies(
+		http.MethodGet, "/api/profiles/"+profileID+"/edition-capability", nil, []*http.Cookie{owner.cookie},
+	)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var payload struct {
+		Success bool `json:"success"`
+		Data    struct {
+			DryRun bool `json:"dry_run"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &payload))
+	require.True(t, payload.Success)
+	require.True(t, payload.Data.DryRun)
+	require.Equal(t, int32(0), hardcoverRequests.Load(), "capability reporting must not probe Hardcover")
+}
+
 func TestEditionCapabilityRouteUsesProfileWriteAuthorization(t *testing.T) {
 	fixture := newRouteTestFixture(t, true)
 	owner := newRouteSession(t, fixture, "capability-auth-owner", auth.RoleUser)
