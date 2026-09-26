@@ -1,6 +1,8 @@
 package state
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -8,6 +10,10 @@ import (
 	"strings"
 	"sync"
 )
+
+const maxStateFileNameComponentBytes = 255
+
+const stateLockFileSuffix = ".lock"
 
 // ErrStateFileLocked indicates another process currently owns the state-file
 // lock. Lock acquisition is nonblocking so callers can report a busy state.
@@ -37,7 +43,7 @@ func AcquireFileLock(path string) (*FileLock, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve state file for locking: %w", err)
 	}
-	lockPath := resolvedPath + ".lock"
+	lockPath := stateFileLockPath(resolvedPath)
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0755); err != nil {
 		return nil, fmt.Errorf("failed to create state lock directory: %w", err)
 	}
@@ -54,6 +60,20 @@ func AcquireFileLock(path string) (*FileLock, error) {
 		return nil, fmt.Errorf("failed to acquire state file lock: %w", err)
 	}
 	return &FileLock{file: file, statePath: resolvedPath, unlock: unlock}, nil
+}
+
+func stateFileLockPath(resolvedPath string) string {
+	baseName := filepath.Base(resolvedPath)
+	if len([]byte(baseName))+len(stateLockFileSuffix) <= maxStateFileNameComponentBytes {
+		return resolvedPath + stateLockFileSuffix
+	}
+
+	// Keep the lock beside the state file while avoiding a filename that
+	// exceeds the platform's common 255-byte component limit. Hash the full
+	// resolved path so different long state filenames receive distinct locks.
+	pathHash := sha256.Sum256([]byte(resolvedPath))
+	lockName := ".audiobookshelf-state-lock-" + hex.EncodeToString(pathHash[:]) + stateLockFileSuffix
+	return filepath.Join(filepath.Dir(resolvedPath), lockName)
 }
 
 // StatePath is the resolved state-file path protected by this lock. Callers

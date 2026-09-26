@@ -1698,6 +1698,30 @@ func TestCreateProfileValidatesComposedStateFilenameLength(t *testing.T) {
 	}
 }
 
+func TestCreateProfileAtMaximumStateFilenameCanAcquireLock(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	service.globalConfig.Paths.DataDir = t.TempDir()
+	profileID := strings.Repeat("d", 244)
+
+	require.NoError(t, service.CreateProfile(
+		profileID,
+		"Profile",
+		"http://audiobookshelf",
+		"abs-token",
+		"hc-token",
+		database.SyncConfigData{},
+	))
+	profile, err := service.GetProfile(profileID)
+	require.NoError(t, err)
+	require.NotNil(t, profile)
+
+	statePath := service.profileSpecificStatePath(profileID, profile.SyncConfig.StateFile)
+	require.Len(t, []byte(filepath.Base(statePath)), maxStateFileComponentBytes)
+	fileLock, err := statepkg.AcquireFileLock(statePath)
+	require.NoError(t, err)
+	require.NoError(t, fileLock.Close())
+}
+
 func TestProfileAudnexusRegionNormalizationAndPersistence(t *testing.T) {
 	service, _ := newStatusLookupService(t)
 	const profileID = "audnexus-region-profile"
