@@ -1796,6 +1796,24 @@ func TestProfileAudnexusRegionNormalizationAndPersistence(t *testing.T) {
 	require.Equal(t, "us", profileConfig.Audiobookshelf.AudnexusRegion)
 }
 
+func TestProfileConfigAudnexusRegionFallsBackToGlobalConfig(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	service.globalConfig.Audiobookshelf.AudnexusRegion = "fr"
+
+	profile := &database.ProfileWithTokens{
+		Profile:    database.SyncProfile{ID: "fallback-region-profile"},
+		SyncConfig: database.SyncConfigData{},
+	}
+	profileConfig := service.createProfileSpecificConfig(profile)
+	require.Equal(t, "fr", profileConfig.Audiobookshelf.AudnexusRegion,
+		"an empty profile region should fall back to the legacy global setting")
+
+	profile.SyncConfig.AudnexusRegion = "ca"
+	profileConfig = service.createProfileSpecificConfig(profile)
+	require.Equal(t, "ca", profileConfig.Audiobookshelf.AudnexusRegion,
+		"a profile's own region preference should win over the global fallback")
+}
+
 func TestStartSyncRejectsStoredStateFileWithOverlongComponent(t *testing.T) {
 	service, _ := newStatusLookupService(t)
 	service.globalConfig.Paths.DataDir = t.TempDir()
