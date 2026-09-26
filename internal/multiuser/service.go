@@ -280,6 +280,9 @@ func (s *MultiUserService) ForgetEditionAssociation(profileID, absItemID string)
 	if err != nil {
 		return nil, fmt.Errorf("failed to locate state file for profile %s: %w", profileID, err)
 	}
+	if !isLegacy {
+		loadPath = fileLock.StatePath()
+	}
 	state, err := statepkg.LoadState(loadPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load state file for profile %s: %w", profileID, err)
@@ -304,7 +307,7 @@ func (s *MultiUserService) ForgetEditionAssociation(profileID, absItemID string)
 	if _, removed := state.RemoveAssociation(absItemID); !removed {
 		return result, nil
 	}
-	if err := state.Save(statePath); err != nil {
+	if err := state.Save(fileLock.StatePath()); err != nil {
 		return nil, fmt.Errorf("failed to save forgotten match for profile %s: %w", profileID, err)
 	}
 	if isLegacy {
@@ -1269,8 +1272,8 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
 	defer s.finishActiveRun(profileID, generation)
 	// Create profile-specific config
 	config := s.createProfileSpecificConfig(profileConfig)
-	if err := s.withProfileStateFileLock(profileID, profileConfig.SyncConfig.StateFile, func() error {
-		return s.migrateLegacyProfileStatePath(profileID, profileConfig.SyncConfig.StateFile)
+	if err := s.withProfileStateFileLock(profileID, profileConfig.SyncConfig.StateFile, func(lockedStatePath string) error {
+		return s.migrateLegacyProfileStatePath(profileID, profileConfig.SyncConfig.StateFile, lockedStatePath)
 	}); err != nil {
 		status := &SyncProfileStatus{
 			ProfileID:   profileID,
@@ -1748,8 +1751,9 @@ func (s *MultiUserService) profileStateBasePath(configuredPath string) string {
 
 // withProfileStateFileLock holds the canonical profile state lock for one
 // state-file operation. It is used for pre-sync legacy migration; Sync then
-// reacquires the lock and loads a fresh snapshot before processing books.
-func (s *MultiUserService) withProfileStateFileLock(profileID, configuredPath string, operation func() error) (err error) {
+// reacquires the lock and loads a fresh snapshot before processing books. The
+// operation receives the resolved path protected by this lock.
+func (s *MultiUserService) withProfileStateFileLock(profileID, configuredPath string, operation func(string) error) (err error) {
 	if operation == nil {
 		return errors.New("profile state operation is required")
 	}
@@ -1768,7 +1772,7 @@ func (s *MultiUserService) withProfileStateFileLock(profileID, configuredPath st
 			}
 		}
 	}()
-	return operation()
+	return operation(stateLock.StatePath())
 }
 
 // migrateLegacyProfileStatePath preserves state written before profile IDs were
@@ -1776,8 +1780,8 @@ func (s *MultiUserService) withProfileStateFileLock(profileID, configuredPath st
 // file whose lexical and resolved parent paths remain under the canonical state
 // file directory. The canonical copy is written atomically by State.Save before
 // the old file is renamed to a recoverable .migrated backup.
-func (s *MultiUserService) migrateLegacyProfileStatePath(profileID, configuredPath string) error {
-	canonicalPath, sourcePath, isLegacy, err := s.profileStateSourcePath(profileID, configuredPath)
+func (s *MultiUserService) migrateLegacyProfileStatePath(profileID, configuredPath, lockedStatePath string) error {
+	_, sourcePath, isLegacy, err := s.profileStateSourcePath(profileID, configuredPath)
 	if err != nil {
 		return err
 	}
@@ -1789,7 +1793,7 @@ func (s *MultiUserService) migrateLegacyProfileStatePath(profileID, configuredPa
 	if err != nil {
 		return fmt.Errorf("load legacy state file: %w", err)
 	}
-	if err := legacyState.Save(canonicalPath); err != nil {
+	if err := legacyState.Save(lockedStatePath); err != nil {
 		return fmt.Errorf("save migrated state file: %w", err)
 	}
 

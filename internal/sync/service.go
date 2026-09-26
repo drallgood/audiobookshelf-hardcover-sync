@@ -1379,6 +1379,10 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 	if lockErr != nil {
 		return fmt.Errorf("failed to acquire sync state lock: %w", lockErr)
 	}
+	// Every checkpoint and final save must use the target resolved when the
+	// lock was acquired, even if the configured symlink changes during sync.
+	configuredStatePath := s.statePath
+	s.statePath = stateLock.StatePath()
 	defer func() {
 		if closeErr := stateLock.Close(); closeErr != nil {
 			wrapped := fmt.Errorf("failed to release sync state lock: %w", closeErr)
@@ -1389,6 +1393,7 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 			}
 		}
 	}()
+	defer func() { s.statePath = configuredStatePath }()
 
 	loadedState, loadErr := state.LoadState(s.statePath)
 	if loadErr != nil {

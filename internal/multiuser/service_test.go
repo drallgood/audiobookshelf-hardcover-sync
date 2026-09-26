@@ -689,10 +689,10 @@ func TestForgetEditionAssociationSerializesWithLegacyStateMigration(t *testing.T
 	releaseMigration := make(chan struct{})
 	migrationDone := make(chan error, 1)
 	go func() {
-		migrationDone <- service.withProfileStateFileLock(profileID, "", func() error {
+		migrationDone <- service.withProfileStateFileLock(profileID, "", func(lockedStatePath string) error {
 			close(entered)
 			<-releaseMigration
-			return service.migrateLegacyProfileStatePath(profileID, "")
+			return service.migrateLegacyProfileStatePath(profileID, "", lockedStatePath)
 		})
 	}()
 	<-entered // Migration owns the same canonical sidecar lock used by forget.
@@ -2145,7 +2145,7 @@ func TestMigratesLegacyRawProfileStatePath(t *testing.T) {
 			legacyState.UpdateBook("preserved-book", 0.5, "IN_PROGRESS")
 			require.NoError(t, legacyState.Save(legacyPath))
 
-			require.NoError(t, service.migrateLegacyProfileStatePath(profileID, configuredPath))
+			require.NoError(t, service.migrateLegacyProfileStatePath(profileID, configuredPath, canonicalPath))
 
 			migrated, err := statepkg.LoadState(canonicalPath)
 			require.NoError(t, err)
@@ -2172,7 +2172,7 @@ func TestLegacyProfileStateMigrationSkipsUnsafeOrIneligibleCandidates(t *testing
 
 		attackerID := "foo/../sync_state.victim"
 		attackerCanonicalPath := service.profileSpecificStatePath(attackerID, "state.json")
-		require.NoError(t, service.migrateLegacyProfileStatePath(attackerID, "state.json"))
+		require.NoError(t, service.migrateLegacyProfileStatePath(attackerID, "state.json", attackerCanonicalPath))
 
 		require.NoFileExists(t, attackerCanonicalPath)
 		require.FileExists(t, victimPath)
@@ -2196,7 +2196,7 @@ func TestLegacyProfileStateMigrationSkipsUnsafeOrIneligibleCandidates(t *testing
 		require.NoError(t, legacyState.Save(legacyPath))
 		canonicalPath := service.profileSpecificStatePath(profileID, "state.json")
 
-		require.NoError(t, service.migrateLegacyProfileStatePath(profileID, "state.json"))
+		require.NoError(t, service.migrateLegacyProfileStatePath(profileID, "state.json", canonicalPath))
 		require.NoFileExists(t, canonicalPath)
 		require.FileExists(t, legacyPath)
 	})
@@ -2216,7 +2216,7 @@ func TestLegacyProfileStateMigrationSkipsUnsafeOrIneligibleCandidates(t *testing
 		}
 		canonicalPath := service.profileSpecificStatePath(profileID, "state.json")
 
-		require.NoError(t, service.migrateLegacyProfileStatePath(profileID, "state.json"))
+		require.NoError(t, service.migrateLegacyProfileStatePath(profileID, "state.json", canonicalPath))
 		require.NoFileExists(t, canonicalPath)
 		_, err := os.Lstat(legacyPath)
 		require.NoError(t, err)
@@ -2237,7 +2237,7 @@ func TestLegacyProfileStateMigrationSkipsUnsafeOrIneligibleCandidates(t *testing
 		legacyState.UpdateBook("legacy-book", 0.25, "IN_PROGRESS")
 		require.NoError(t, legacyState.Save(legacyPath))
 
-		require.NoError(t, service.migrateLegacyProfileStatePath(profileID, "state.json"))
+		require.NoError(t, service.migrateLegacyProfileStatePath(profileID, "state.json", canonicalPath))
 		migrated, err := statepkg.LoadState(canonicalPath)
 		require.NoError(t, err)
 		_, exists := migrated.GetBookState("canonical-book")

@@ -18,10 +18,11 @@ var ErrStateFileLocked = errors.New("state file is locked")
 // retained because deleting a locked file can let another process lock a new
 // inode at the same path.
 type FileLock struct {
-	file     *os.File
-	unlock   func() error
-	once     sync.Once
-	closeErr error
+	file      *os.File
+	statePath string
+	unlock    func() error
+	once      sync.Once
+	closeErr  error
 }
 
 // AcquireFileLock acquires an exclusive, nonblocking lock for path. It must
@@ -52,7 +53,17 @@ func AcquireFileLock(path string) (*FileLock, error) {
 		}
 		return nil, fmt.Errorf("failed to acquire state file lock: %w", err)
 	}
-	return &FileLock{file: file, unlock: unlock}, nil
+	return &FileLock{file: file, statePath: resolvedPath, unlock: unlock}, nil
+}
+
+// StatePath is the resolved state-file path protected by this lock. Callers
+// must use it for reads and writes until Close, even if the configured path is
+// a symlink that changes target during the transaction.
+func (l *FileLock) StatePath() string {
+	if l == nil {
+		return ""
+	}
+	return l.statePath
 }
 
 // Close releases the OS lock and closes the sidecar file. It is safe to call

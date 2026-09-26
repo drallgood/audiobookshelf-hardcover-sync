@@ -101,6 +101,43 @@ func TestAcquireFileLockSharesLockAcrossStateSymlink(t *testing.T) {
 	}
 }
 
+func TestFileLockKeepsResolvedStatePathAfterSymlinkRetarget(t *testing.T) {
+	dir := t.TempDir()
+	firstPath := filepath.Join(dir, "first.json")
+	secondPath := filepath.Join(dir, "second.json")
+	aliasPath := filepath.Join(dir, "alias.json")
+	first := NewState()
+	first.UpdateBook("first", 0.25, "IN_PROGRESS")
+	require.NoError(t, first.Save(firstPath))
+	second := NewState()
+	second.UpdateBook("second", 0.75, "IN_PROGRESS")
+	require.NoError(t, second.Save(secondPath))
+	createTestSymlink(t, firstPath, aliasPath)
+
+	lock, err := AcquireFileLock(aliasPath)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, lock.Close()) }()
+	resolvedFirstPath, err := resolveStatePath(firstPath)
+	require.NoError(t, err)
+	require.Equal(t, resolvedFirstPath, lock.StatePath())
+	require.NoError(t, os.Remove(aliasPath))
+	createTestSymlink(t, secondPath, aliasPath)
+
+	loaded, err := LoadState(lock.StatePath())
+	require.NoError(t, err)
+	loaded.UpdateBook("new", 0.5, "IN_PROGRESS")
+	require.NoError(t, loaded.Save(lock.StatePath()))
+
+	firstAfter, err := LoadState(firstPath)
+	require.NoError(t, err)
+	_, exists := firstAfter.GetBookState("new")
+	require.True(t, exists)
+	secondAfter, err := LoadState(secondPath)
+	require.NoError(t, err)
+	_, exists = secondAfter.GetBookState("new")
+	require.False(t, exists)
+}
+
 func TestAcquireFileLockRejectsSymlinkedSidecar(t *testing.T) {
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "state.json")
