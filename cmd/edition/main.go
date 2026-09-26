@@ -102,7 +102,7 @@ func newApp() *cli.App {
 					},
 					&cli.StringFlag{
 						Name:  "state-file",
-						Usage: "Sync state file for a confirmed Audiobookshelf association (required when an item ID is supplied)",
+						Usage: "Sync state file for a confirmed Audiobookshelf association (default: sync.state_file)",
 					},
 				},
 				Action: createEdition,
@@ -148,12 +148,11 @@ func createEdition(c *cli.Context) error {
 		return err
 	}
 	result, err := runCreate(context.Background(), createOptions{
-		InputPath:         c.String("input"),
-		ABSItemID:         c.String("abs-item-id"),
-		StateFile:         stateFile,
-		StateFileExplicit: c.IsSet("state-file"),
-		PreferredRegion:   cfg.Audiobookshelf.AudnexusRegion,
-		DryRun:            dryRun,
+		InputPath:       c.String("input"),
+		ABSItemID:       c.String("abs-item-id"),
+		StateFile:       stateFile,
+		PreferredRegion: cfg.Audiobookshelf.AudnexusRegion,
+		DryRun:          dryRun,
 	}, services)
 	if err != nil {
 		return err

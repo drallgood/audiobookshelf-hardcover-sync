@@ -109,7 +109,7 @@ func TestRunCreateStoresVerifiedAudiobookAssociationUnderLock(t *testing.T) {
 		},
 	}
 	result, err := runCreate(context.Background(), createOptions{
-		InputPath: inputPath, ABSItemID: "item-1", StateFile: statePath, StateFileExplicit: true,
+		InputPath: inputPath, ABSItemID: "item-1", StateFile: statePath,
 	}, services)
 	if err != nil {
 		t.Fatal(err)
@@ -161,7 +161,7 @@ func TestRunCreateRejectsExistingAssociationBeforeRemoteCalls(t *testing.T) {
 		},
 	}
 	_, err := runCreate(context.Background(), createOptions{
-		InputPath: inputPath, ABSItemID: "item-1", StateFile: statePath, StateFileExplicit: true,
+		InputPath: inputPath, ABSItemID: "item-1", StateFile: statePath,
 	}, services)
 	if err == nil || !strings.Contains(err.Error(), "already has a confirmed Hardcover association") {
 		t.Fatalf("expected existing association error, got %v", err)
@@ -224,7 +224,7 @@ func TestRunCreateKeepsAssociationOnLockedTargetAfterStateAliasRetarget(t *testi
 		},
 	}
 	result, err := runCreate(context.Background(), createOptions{
-		InputPath: inputPath, ABSItemID: "item-1", StateFile: stateAlias, StateFileExplicit: true,
+		InputPath: inputPath, ABSItemID: "item-1", StateFile: stateAlias,
 	}, services)
 	if err != nil {
 		t.Fatal(err)
@@ -262,7 +262,7 @@ func TestRunCreateRejectsUnknownRegionBeforeExternalCalls(t *testing.T) {
 		},
 	}
 	_, err := runCreate(context.Background(), createOptions{
-		InputPath: inputPath, StateFile: filepath.Join(t.TempDir(), "state.json"), StateFileExplicit: true,
+		InputPath: inputPath, StateFile: filepath.Join(t.TempDir(), "state.json"),
 	}, services)
 	if err == nil || !strings.Contains(err.Error(), "unknown Audible region") {
 		t.Fatalf("expected invalid region error, got %v", err)
@@ -359,7 +359,7 @@ func TestRunCreateRejectsABSFormatMismatchBeforeHardcover(t *testing.T) {
 		},
 	}
 	_, err := runCreate(context.Background(), createOptions{
-		InputPath: inputPath, StateFile: filepath.Join(t.TempDir(), "state.json"), StateFileExplicit: true,
+		InputPath: inputPath, StateFile: filepath.Join(t.TempDir(), "state.json"),
 	}, services)
 	if err == nil || !strings.Contains(err.Error(), "input reading_format is audiobook") {
 		t.Fatalf("expected item format mismatch, got %v", err)
@@ -369,67 +369,70 @@ func TestRunCreateRejectsABSFormatMismatchBeforeHardcover(t *testing.T) {
 	}
 }
 
-func TestRunCreateRejectsABSIdentifierMismatchBeforeHardcover(t *testing.T) {
+func TestRunCreateRecordsEbookIdentifierDifferences(t *testing.T) {
 	tests := []struct {
-		name      string
-		inputJSON string
-		item      *models.AudiobookshelfBook
-		wantError string
+		name           string
+		inputJSON      string
+		item           *models.AudiobookshelfBook
+		wantCorrection string
 	}{
 		{
-			name:      "audiobook ISBN",
-			inputJSON: `{"book_id":21,"asin":"B012345678","isbn_13":"9780306406157","abs_item_id":"item-1"}`,
-			item:      testAudiobook("item-1", "B012345678"),
-			wantError: "ISBN-13",
+			name:           "different ASIN is recorded as a correction",
+			inputJSON:      `{"book_id":21,"title":"Ebook","asin":"B012345678","author_ids":[3],"reading_format":"ebook","abs_item_id":"item-1"}`,
+			item:           testEbook("item-1", "B099999999", "9780306406157"),
+			wantCorrection: "B012345678",
 		},
 		{
-			name:      "ebook ASIN",
-			inputJSON: `{"book_id":21,"asin":"B012345678","reading_format":"ebook","abs_item_id":"item-1"}`,
-			item:      testEbook("item-1", "B099999999", "9780306406157"),
-			wantError: "ASIN",
-		},
-		{
-			name:      "ebook ISBN",
-			inputJSON: `{"book_id":21,"isbn_13":"9780306406157","reading_format":"ebook","abs_item_id":"item-1"}`,
+			name:      "different ISBN uses the supplied metadata",
+			inputJSON: `{"book_id":21,"title":"Ebook","isbn_13":"9780306406157","author_ids":[3],"reading_format":"ebook","abs_item_id":"item-1"}`,
 			item:      testEbook("item-1", "B012345678", "9780804429573"),
-			wantError: "ISBN-13",
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			statePath := filepath.Join(t.TempDir(), "sync-state.json")
 			inputPath := writeCreateInput(t, test.inputJSON)
-			called := false
+			var submitted edition.EditionInput
 			services := createServices{
 				fetchABSItem: func(context.Context, string) (*models.AudiobookshelfBook, error) {
 					return test.item, nil
 				},
-				discoverAudible: func(context.Context, string, string) (string, error) {
-					called = true
-					return "us", nil
+				createEbook: func(_ context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
+					submitted = *input
+					return &edition.EditionResult{Success: true, EditionID: 34}, nil
 				},
-				importAudiobook: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
-					called = true
-					return nil, nil
-				},
-				createEbook: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
-					called = true
-					return nil, nil
+				getEditionUncached: func(context.Context, string) (*models.Edition, error) {
+					return &models.Edition{ID: "34", BookID: "21", ReadingFormatID: "4"}, nil
 				},
 			}
-			_, err := runCreate(context.Background(), createOptions{
-				InputPath: inputPath, StateFile: filepath.Join(t.TempDir(), "state.json"), StateFileExplicit: true,
-			}, services)
-			if err == nil || !strings.Contains(err.Error(), test.wantError) {
-				t.Fatalf("expected %s mismatch error, got %v", test.wantError, err)
+			result, err := runCreate(context.Background(), createOptions{InputPath: inputPath, StateFile: statePath}, services)
+			if err != nil {
+				t.Fatal(err)
 			}
-			if called {
-				t.Fatal("identifier mismatch reached region confirmation or Hardcover")
+			if !result.AssociationSaved {
+				t.Fatalf("association was not saved: %#v", result)
+			}
+			expected, err := readEditionCreateInput(inputPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if submitted.ASIN != expected.ASIN || submitted.ISBN13 != expected.ISBN13 {
+				t.Fatalf("ebook creation did not use the supplied identifiers: %#v", submitted)
+			}
+			loaded, err := state.LoadState(statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			association, ok := loaded.GetAssociation("item-1")
+			if !ok || association.SourceASIN != test.item.Media.Metadata.ASIN ||
+				association.SourceISBN13 != test.item.Media.Metadata.ISBN || association.Correction != test.wantCorrection {
+				t.Fatalf("association did not keep the item's source identifiers and correction: %#v", association)
 			}
 		})
 	}
 }
 
-func TestRunCreateAllowsExplicitAudiobookASINCorrectionWithNormalizedISBN(t *testing.T) {
+func TestRunCreateRecordsAudiobookASINCorrectionAndIgnoresISBN(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "sync-state.json")
 	inputPath := writeCreateInput(t, `{
 		"book_id": 21,
@@ -440,7 +443,6 @@ func TestRunCreateAllowsExplicitAudiobookASINCorrectionWithNormalizedISBN(t *tes
 		"reading_format": "audiobook"
 	}`)
 	item := testAudiobook("item-1", "B099999999")
-	item.Media.Metadata.ISBN = "978-0-306-40615-7"
 	services := createServices{
 		fetchABSItem: func(context.Context, string) (*models.AudiobookshelfBook, error) {
 			return item, nil
@@ -457,7 +459,7 @@ func TestRunCreateAllowsExplicitAudiobookASINCorrectionWithNormalizedISBN(t *tes
 		},
 	}
 	result, err := runCreate(context.Background(), createOptions{
-		InputPath: inputPath, ABSItemID: "item-1", StateFile: statePath, StateFileExplicit: true,
+		InputPath: inputPath, ABSItemID: "item-1", StateFile: statePath,
 	}, services)
 	if err != nil {
 		t.Fatal(err)
@@ -494,7 +496,7 @@ func TestRunCreateRefusesBusyStateFileBeforeABSOrHardcover(t *testing.T) {
 			return nil, nil
 		},
 	}
-	_, err = runCreate(context.Background(), createOptions{InputPath: inputPath, StateFile: statePath, StateFileExplicit: true}, services)
+	_, err = runCreate(context.Background(), createOptions{InputPath: inputPath, StateFile: statePath}, services)
 	if !errors.Is(err, state.ErrStateFileLocked) {
 		t.Fatalf("expected busy state-file error, got %v", err)
 	}
@@ -524,7 +526,7 @@ func TestRunCreateKeepsEbookDryRunPath(t *testing.T) {
 		},
 	}
 	result, err := runCreate(context.Background(), createOptions{
-		InputPath: inputPath, StateFile: statePath, StateFileExplicit: true, DryRun: true,
+		InputPath: inputPath, StateFile: statePath, DryRun: true,
 	}, services)
 	if err != nil {
 		t.Fatal(err)
@@ -574,7 +576,7 @@ func TestRunCreateReadsBackEbookBeforeSavingAssociation(t *testing.T) {
 				},
 			}
 			result, err := runCreate(context.Background(), createOptions{
-				InputPath: inputPath, StateFile: statePath, StateFileExplicit: true,
+				InputPath: inputPath, StateFile: statePath,
 			}, services)
 			if test.wantError != "" {
 				if err == nil || !strings.Contains(err.Error(), test.wantError) {
@@ -663,7 +665,7 @@ func TestRunCreateDryRunDoesNotImportOrSave(t *testing.T) {
 		},
 	}
 	result, err := runCreate(context.Background(), createOptions{
-		InputPath: inputPath, StateFile: statePath, StateFileExplicit: true, DryRun: true,
+		InputPath: inputPath, StateFile: statePath, DryRun: true,
 	}, services)
 	if err != nil {
 		t.Fatal(err)
@@ -676,35 +678,15 @@ func TestRunCreateDryRunDoesNotImportOrSave(t *testing.T) {
 	}
 }
 
-func TestRunCreateRequiresExplicitStateFileForJSONABSItemBeforeExternalCalls(t *testing.T) {
-	inputPath := writeCreateInput(t, `{"book_id":21,"asin":"B012345678","abs_item_id":"item-from-json"}`)
-	called := false
-	services := createServices{
-		fetchABSItem: func(context.Context, string) (*models.AudiobookshelfBook, error) {
-			called = true
-			return testAudiobook("item-from-json", "B012345678"), nil
-		},
-		discoverAudible: func(context.Context, string, string) (string, error) {
-			called = true
-			return "us", nil
-		},
-		importAudiobook: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
-			called = true
-			return nil, nil
-		},
+func TestCreateCommandUsesConfiguredStateFileWithoutFlag(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "profile-state.json")
+	lock, err := state.AcquireFileLock(statePath)
+	if err != nil {
+		t.Fatal(err)
 	}
-	_, err := runCreate(context.Background(), createOptions{InputPath: inputPath}, services)
-	if err == nil || !strings.Contains(err.Error(), "--state-file is required") {
-		t.Fatalf("expected explicit state-file error, got %v", err)
-	}
-	if called {
-		t.Fatal("missing explicit state-file reached Audiobookshelf or Hardcover")
-	}
-}
-
-func TestCreateCommandDoesNotTreatConfigStateFileAsExplicit(t *testing.T) {
+	defer lock.Close()
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	configYAML := "hardcover:\n  token: test-token\naudiobookshelf:\n  url: https://abs.example\n  token: test-token\nsync:\n  state_file: /tmp/profile-state.json\n"
+	configYAML := "hardcover:\n  token: test-token\naudiobookshelf:\n  url: https://abs.example\n  token: test-token\nsync:\n  state_file: " + statePath + "\n"
 	if err := os.WriteFile(configPath, []byte(configYAML), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -713,9 +695,11 @@ func TestCreateCommandDoesNotTreatConfigStateFileAsExplicit(t *testing.T) {
 	app := newApp()
 	app.Writer = &stdout
 	app.ErrWriter = &stderr
-	err := app.Run([]string{"edition", "--config", configPath, "create", "--input", inputPath})
-	if err == nil || !strings.Contains(err.Error(), "--state-file is required") {
-		t.Fatalf("expected explicit state-file error, got %v", err)
+	// The configured state file is busy, so the command must stop at the lock,
+	// before contacting Audiobookshelf, Audnex, or Hardcover.
+	err = app.Run([]string{"edition", "--config", configPath, "create", "--input", inputPath})
+	if !errors.Is(err, state.ErrStateFileLocked) {
+		t.Fatalf("expected the configured state file to be locked, got %v", err)
 	}
 }
 

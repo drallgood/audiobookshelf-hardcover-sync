@@ -35,7 +35,9 @@ makes the explicit create operation fail.
 ./edition --config ./config.yaml prepopulate --book-id 12345 --output edition.json
 # Input has no abs_item_id, so this create saves no ABS association.
 ./edition --config ./config.yaml create --input edition.json
-# For a new profile-123 with blank sync.state_file and paths.data_dir ./data.
+# Single-user sync: saves the match in the configured sync.state_file.
+./edition --config ./config.yaml create --input edition.json --abs-item-id li_123
+# Web-service profile-123 with blank sync.state_file and paths.data_dir ./data.
 ./edition --config ./config.yaml create --input edition.json --abs-item-id li_123 --state-file ./data/sync_state.profile-123
 # Dry run without an ABS association; input has no abs_item_id.
 ./edition --config ./config.yaml --dry-run create --input edition.json
@@ -43,16 +45,19 @@ makes the explicit create operation fail.
 
 The `--abs-item-id` and `--state-file` flags apply to `create`. An
 `--abs-item-id` flag overrides `abs_item_id` in the input JSON. When an ABS
-item ID is present in either place, pass `--state-file` with the state file
-for the profile being associated. The multi-user service starts from that
-profile's `SyncConfig.StateFile`, resolving relative paths against
-`paths.data_dir`; when it is blank, the base path is
-`<data_dir>/sync_state.json`. It then removes a trailing `.json` and appends
-`.<encoded-profile-id>`. Thus `./data/sync_state.profile-123` applies only
-when `sync.state_file` is blank, `paths.data_dir` is the default `./data`,
-and the profile ID is `profile-123`. The CLI uses the path you pass literally;
-it does not derive a profile-specific filename. For a custom state path or
-profile ID, pass the actual derived state file for that profile.
+item ID is present in either place, the command saves the match in
+`--state-file`, or in the configured `sync.state_file` when the flag is
+omitted. That default suits the single-user sync.
+
+For a web-service profile, pass `--state-file` with that profile's state
+file. The multi-user service starts from the profile's
+`SyncConfig.StateFile`, resolving relative paths against `paths.data_dir`;
+when it is blank, the base path is `<data_dir>/sync_state.json`. It then
+removes a trailing `.json` and appends `.<encoded-profile-id>`. Thus
+`./data/sync_state.profile-123` applies only when `sync.state_file` is blank,
+`paths.data_dir` is the default `./data`, and the profile ID is
+`profile-123`. The CLI uses the path literally; it does not derive a
+profile-specific filename.
 
 ## Audiobook input
 
@@ -117,7 +122,9 @@ statuses are `loaded`, `created`, or `dry_run`. Ebook statuses are `existing`,
 `created`, or `dry_run`.
 
 When an ABS item ID is supplied, the command fetches the item before making a
-Hardcover change and requires its format to match the input. After verifying
+Hardcover change and requires its format to match the input. The saved match
+keeps the item's own ASIN and ISBN; a different submitted ASIN is recorded as
+your correction. After verifying
 the Hardcover result, it saves a local match in the configured state file
 while holding the state-file lock. If another sync holds the lock, the command
 returns an error before contacting Hardcover. A local save failure after a

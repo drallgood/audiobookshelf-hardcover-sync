@@ -30,12 +30,11 @@ type editionCreateInput struct {
 }
 
 type createOptions struct {
-	InputPath         string
-	ABSItemID         string
-	StateFile         string
-	StateFileExplicit bool
-	PreferredRegion   string
-	DryRun            bool
+	InputPath       string
+	ABSItemID       string
+	StateFile       string
+	PreferredRegion string
+	DryRun          bool
 }
 
 type createOutput struct {
@@ -114,9 +113,6 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 		input.ABSItemID = itemID
 	}
 	input.ABSItemID = strings.TrimSpace(input.ABSItemID)
-	if input.ABSItemID != "" && (!options.StateFileExplicit || strings.TrimSpace(options.StateFile) == "") {
-		return nil, errors.New("--state-file is required when associating an Audiobookshelf item; pass the sync state file for this profile")
-	}
 	input.ASIN = strings.TrimSpace(input.ASIN)
 	input.ISBN10 = strings.TrimSpace(input.ISBN10)
 	input.ISBN13 = strings.TrimSpace(input.ISBN13)
@@ -181,9 +177,6 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 		}
 		if absItem.ReadingFormat() != input.ReadingFormat {
 			return nil, fmt.Errorf("Audiobookshelf item %q is %s, but input reading_format is %s", input.ABSItemID, absItem.ReadingFormat(), input.ReadingFormat)
-		}
-		if err := validateABSItemIdentifiers(absItem, input); err != nil {
-			return nil, fmt.Errorf("Audiobookshelf item %q source identifiers do not match the input: %w", input.ABSItemID, err)
 		}
 	}
 
@@ -280,7 +273,7 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 		if err := verifyCreatedEbookEdition(ctx, created.EditionID, input.BookID, services.getEditionUncached); err != nil {
 			return nil, err
 		}
-		association := ebookAssociation(absItem, input.BookID, created.EditionID)
+		association := ebookAssociation(absItem, input.ASIN, input.BookID, created.EditionID)
 		if err := saveAssociation(loadedState, associationStatePath, association); err != nil {
 			return nil, fmt.Errorf("Hardcover returned ebook edition %d, but the local association could not be saved. Verify the Hardcover result before retrying; retrying may create another edition: %w", created.EditionID, err)
 		}
@@ -381,16 +374,12 @@ func resolveAudibleRegion(ctx context.Context, asin, requested, preferred string
 
 func audiobookAssociation(item *models.AudiobookshelfBook, requestedASIN string, resolved *hardcover.RegionalAudiobookResult) state.Association {
 	asin, isbn10, isbn13 := sourceIdentifiers(item)
-	correction := ""
-	if !strings.EqualFold(strings.TrimSpace(asin), strings.TrimSpace(requestedASIN)) {
-		correction = strings.TrimSpace(requestedASIN)
-	}
 	return state.Association{
 		ABSItemID:          item.ID,
 		SourceASIN:         asin,
 		SourceISBN10:       isbn10,
 		SourceISBN13:       isbn13,
-		Correction:         correction,
+		Correction:         asinCorrection(asin, requestedASIN),
 		RegionalExternalID: resolved.RegionalExternalID,
 		HardcoverBookID:    strconv.Itoa(resolved.BookID),
 		HardcoverEditionID: strconv.Itoa(resolved.EditionID),
@@ -420,13 +409,14 @@ func verifyCreatedEbookEdition(ctx context.Context, expectedEditionID, expectedB
 	return nil
 }
 
-func ebookAssociation(item *models.AudiobookshelfBook, bookID, editionID int) state.Association {
+func ebookAssociation(item *models.AudiobookshelfBook, submittedASIN string, bookID, editionID int) state.Association {
 	asin, isbn10, isbn13 := sourceIdentifiers(item)
 	return state.Association{
 		ABSItemID:          item.ID,
 		SourceASIN:         asin,
 		SourceISBN10:       isbn10,
 		SourceISBN13:       isbn13,
+		Correction:         asinCorrection(asin, submittedASIN),
 		HardcoverBookID:    strconv.Itoa(bookID),
 		HardcoverEditionID: strconv.Itoa(editionID),
 		ReadingFormat:      models.ReadingFormatEbook,
@@ -446,44 +436,15 @@ func sourceIdentifiers(item *models.AudiobookshelfBook) (asin, isbn10, isbn13 st
 	return asin, isbn10, isbn13
 }
 
-func validateABSItemIdentifiers(item *models.AudiobookshelfBook, input editionCreateInput) error {
-	asin, _, _ := sourceIdentifiers(item)
-	// For audiobook imports, the submitted ASIN is the explicit regional Audible
-	// identifier. It may intentionally differ from the ASIN currently recorded by
-	// ABS; the regional resolver confirms that identifier for the target book.
-	if input.ReadingFormat != models.ReadingFormatAudiobook && input.ASIN != "" && !strings.EqualFold(strings.TrimSpace(asin), strings.TrimSpace(input.ASIN)) {
-		return fmt.Errorf("ASIN %q differs from the fetched item ASIN %q", input.ASIN, asin)
+// asinCorrection returns the submitted ASIN when it differs from the ASIN the
+// Audiobookshelf item reports, so the saved match records the user's correction
+// alongside the item's own source identifiers.
+func asinCorrection(sourceASIN, submittedASIN string) string {
+	submittedASIN = strings.TrimSpace(submittedASIN)
+	if submittedASIN == "" || strings.EqualFold(strings.TrimSpace(sourceASIN), submittedASIN) {
+		return ""
 	}
-
-	itemISBN := strings.TrimSpace(item.Media.Metadata.ISBN)
-	for _, candidate := range []struct {
-		name  string
-		value string
-	}{
-		{name: "ISBN-10", value: input.ISBN10},
-		{name: "ISBN-13", value: input.ISBN13},
-	} {
-		if candidate.value != "" && !sameISBN(candidate.value, itemISBN) {
-			return fmt.Errorf("%s %q differs from the fetched item ISBN %q", candidate.name, candidate.value, itemISBN)
-		}
-	}
-	return nil
-}
-
-func sameISBN(left, right string) bool {
-	leftNormalized, rightNormalized := isbn.Normalize(left), isbn.Normalize(right)
-	if leftNormalized == rightNormalized {
-		return true
-	}
-	leftParsed, leftOK := isbn.Parse(leftNormalized)
-	rightParsed, rightOK := isbn.Parse(rightNormalized)
-	if !leftOK || !rightOK || !leftParsed.Valid || !rightParsed.Valid {
-		return false
-	}
-	return leftParsed.Given == rightParsed.Given ||
-		(leftParsed.Counterpart != "" && leftParsed.Counterpart == rightParsed.Given) ||
-		(rightParsed.Counterpart != "" && rightParsed.Counterpart == leftParsed.Given) ||
-		(leftParsed.Counterpart != "" && leftParsed.Counterpart == rightParsed.Counterpart)
+	return submittedASIN
 }
 
 func saveAssociation(loadedState *state.State, path string, association state.Association) error {
