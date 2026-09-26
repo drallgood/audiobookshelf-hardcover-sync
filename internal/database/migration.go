@@ -98,6 +98,7 @@ func (m *MigrationManager) MigrateFromSingleUserConfig(configPath string) error 
 		Incremental:        cfg.Sync.Incremental,
 		StateFile:          statePath,
 		MinChangeThreshold: cfg.Sync.MinChangeThreshold,
+		AudnexusRegion:     cfg.Audiobookshelf.AudnexusRegion,
 		Libraries: struct {
 			Include []string `json:"include"`
 			Exclude []string `json:"exclude"`
