@@ -46,6 +46,8 @@ tags:
     description: Check sync status
   - name: Edition Draft
     description: Prepare read-only edition candidates from Audiobookshelf source metadata
+  - name: Edition Capability
+    description: Report profile-scoped, operation-specific edition-write evidence
   - name: Edition Associations
     description: Inspect and forget profile-scoped local edition matches
 
@@ -98,6 +100,54 @@ components:
         dry_run:
           type: boolean
           description: True when the accepted run will not perform Hardcover mutations.
+
+    EditionCapabilityStatus:
+      type: object
+      required: [operation, status, can_attempt]
+      properties:
+        operation:
+          type: string
+          enum: [insert_edition, upsert_book]
+        status:
+          type: string
+          enum: [allowed, denied, unverified]
+          description: >-
+            A configured new or changed token is unverified. A profile with no
+            Hardcover token is denied. Allowed requires an explicit successful
+            operation; an operation-specific insufficient-scope response can
+            establish denied. Step 6 has no create operation, so configured
+            tokens are unverified until Step 7 connects actual operation
+            results. Capability is never inferred from update_edition.
+        can_attempt:
+          type: boolean
+          description: >-
+            False only for a known denied operation. True for allowed or
+            unverified; unverified also carries a warning. Eligibility and
+            profile dry-run settings remain separate create checks.
+        reason:
+          type: string
+          enum: [hardcover_token_missing, insufficient_scope]
+          description: Present when a missing credential or known permission denial prevents an attempt.
+        warning:
+          type: string
+          enum: [permission_unverified]
+          description: Present when status is unverified.
+
+    EditionCapability:
+      type: object
+      required: [ebook, audiobook, dry_run]
+      properties:
+        ebook:
+          allOf:
+            - $ref: '#/components/schemas/EditionCapabilityStatus'
+          description: Capability evidence for ebook insert_edition.
+        audiobook:
+          allOf:
+            - $ref: '#/components/schemas/EditionCapabilityStatus'
+          description: Capability evidence for regional Audible upsert_book.
+        dry_run:
+          type: boolean
+          description: The profile dry-run setting. Capability inspection never performs a write.
     
     Profile:
       type: object
@@ -777,6 +827,71 @@ paths:
                     $ref: '#/components/schemas/SyncSnapshot'
         '404':
           description: Profile, active run, or retained run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /profiles/{id}/edition-capability:
+    get:
+      tags: [Edition Capability]
+      summary: Report ebook and audiobook edition capability separately
+      description: >-
+        Requires profile mutation access, matching the eventual create
+        operation. Hardcover has no documented read-only token-scope
+        introspection, so new and changed tokens are unverified; the endpoint
+        performs no mutation probe or other Hardcover request. Today both
+        operations remain unverified until an explicit create operation
+        reports its result. Unverified capability permits a later eligible
+        user-confirmed attempt with a warning; a known operation-specific
+        insufficient-scope result blocks that operation. A successful
+        update_edition response is not evidence without a read-back. Step 7
+        connects actual create results to this report. Profiles without a
+        Hardcover token are reported denied and cannot attempt either operation.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+          example: profile-123
+      responses:
+        '200':
+          description: Separate capability evidence for ebook and audiobook creation.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: {type: boolean, enum: [true]}
+                  data:
+                    $ref: '#/components/schemas/EditionCapability'
+        '400':
+          description: Profile ID is required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication is required when authentication is enabled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Authenticated caller lacks profile mutation access.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Profile not found or unavailable to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Profile configuration could not be loaded.
           content:
             application/json:
               schema:

@@ -66,6 +66,7 @@ Existing single-profile setups are **automatically migrated** on first startup:
 | `PUT` | `/api/profiles/{id}` | Update profile |
 | `DELETE` | `/api/profiles/{id}` | Delete profile |
 | `PUT` | `/api/profiles/{id}/config` | Update profile configuration |
+| `GET` | `/api/profiles/{id}/edition-capability` | Report separate ebook and audiobook edition-write capability evidence |
 | `GET` | `/api/profiles/{id}/runs/{runId}/details` | Get book-level details for a retained sync run |
 | `GET` | `/api/profiles/{id}/edition-drafts/source/{itemID}` | Prepare a read-only edition draft from an Audiobookshelf item |
 | `DELETE` | `/api/profiles/{id}/edition-associations/{itemID}` | Forget the saved Hardcover match for one Audiobookshelf item |
@@ -119,6 +120,46 @@ Audnex; an unknown or temporarily unavailable region is never guessed. Ebook
 drafts include candidate edition fields. A usable ASIN or ISBN is required for
 eligibility. The endpoint makes no Hardcover requests or catalogue changes.
 See [OpenAPI](docs/openapi.yaml) for response fields and warnings.
+
+### Edition capability
+
+`GET /api/profiles/{id}/edition-capability` reports ebook `insert_edition`
+and audiobook `upsert_book` capability separately. It requires the same profile
+write access as an eventual create operation. Hardcover does not expose a
+documented read-only scope check, so new and changed tokens report
+`unverified`; that status allows a later eligible user-confirmed attempt with
+a `permission_unverified` warning. Both operations remain unverified in this
+step for profiles with a configured token, before the create handler is added.
+The later create handler can report
+`allowed` after an explicit operation success or `denied` after that
+operation's insufficient-scope response, and must block a known denial while
+allowing an unverified attempt with its warning. The route never probes a
+write operation. A profile without a Hardcover token is a known denial and
+cannot attempt either operation. Step 7 will connect explicit operation
+results to this capability report when it adds the write path.
+
+The forthcoming create endpoint will share one Audiobookshelf URL policy for
+profile and CLI configuration. Step 7's configuration contract is
+`audiobookshelf.network_trust: public|local` in YAML and
+`audiobookshelf_network_trust: public|local` in profile settings; both default
+to `public`. In `public` mode, destinations must resolve only to globally
+routable unicast addresses. `local` mode explicitly adds RFC 1918 IPv4, IPv6
+unique-local, and loopback addresses. Both modes reject unspecified, multicast,
+broadcast, link-local, reserved, and other non-routable addresses, including
+link-local cloud metadata endpoints. Use an absolute HTTP or HTTPS base URL
+without userinfo, query, or fragment. Public destinations require HTTPS; HTTP
+is allowed only for destinations accepted by explicit `local` trust. HTTPS
+certificate checks remain enabled.
+
+Resolve every destination hostname for each connection and redirect. Reject a
+destination if any A or AAAA result is outside the selected trust mode; connect
+only to a validated result and verify the connected peer address against the
+same policy. Validate each redirect destination this way before following it.
+Send the Audiobookshelf bearer token only when the target has the configured
+scheme, host, and port, and its normalized path is the configured base path or
+a descendant at a path-segment boundary. Re-evaluate this against the original
+base URL on every redirect; strip the token for every other origin or path.
+The capability route itself does not contact Audiobookshelf.
 
 Use a trusted Audiobookshelf URL: this route fetches it with the saved token.
 Enable authentication when exposing the API beyond localhost. A draft may
