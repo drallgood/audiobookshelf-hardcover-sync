@@ -22,9 +22,9 @@ func sentDTO(t *testing.T, input *edition.EditionInput) map[string]interface{} {
 	creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "",
 		&http.Client{Transport: failingTransport{}})
 
-	result, err := creator.CreateEdition(context.Background(), input)
+	resultID, err := edition.NewTestHelpers(creator).CreateEdition(context.Background(), input, 0)
 	require.NoError(t, err)
-	require.Equal(t, 789, result.EditionID)
+	require.Equal(t, 789, resultID)
 	require.Len(t, client.sent, 1, "exactly one insert_edition must be sent")
 	return client.sent[0]
 }

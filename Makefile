@@ -77,7 +77,7 @@ build-tools: $(TOOL_BINARIES)
 $(BIN_DIR)/%: cmd/%/main.go $(GO_FILES)
 	@echo "Building $@"
 	@mkdir -p $(@D)
-	go build -v -o $@ $(LDFLAGS) ./$<
+	go build -v -o $@ $(LDFLAGS) ./cmd/$*
 
 $(BINARY): $(GO_FILES)
 	@echo "Building $(BINARY) $(VERSION)"

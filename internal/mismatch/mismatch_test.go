@@ -443,6 +443,62 @@ func TestBookMismatchToEditionExport(t *testing.T) {
 	}
 }
 
+func TestEditionExportIncludesABSItemID(t *testing.T) {
+	ctx := newTestContext(t)
+	metadataRecord := NewCollector().AddWithMetadata(
+		MediaMetadata{Title: "Metadata Book"},
+		"hardcover-record-id", "", "reason", 0, "abs-item-123", nil, "",
+	)
+	metadataRecord.HardcoverBookID = "456"
+
+	tests := []struct {
+		name        string
+		record      BookMismatch
+		wantABSItem string
+		wantField   bool
+	}{
+		{
+			name:        "metadata mismatch uses the explicit Audiobookshelf item ID",
+			record:      metadataRecord,
+			wantABSItem: "abs-item-123",
+			wantField:   true,
+		},
+		{
+			name:        "direct mismatch uses its Audiobookshelf book ID",
+			record:      BookMismatch{BookID: "abs-item-789", HardcoverBookID: "789", Title: "Direct Book"},
+			wantABSItem: "abs-item-789",
+			wantField:   true,
+		},
+		{
+			name:      "missing source ID stays omitted for legacy exports",
+			record:    BookMismatch{HardcoverBookID: "987", Title: "Legacy Book"},
+			wantField: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			export := tt.record.ToEditionExport(ctx, nil)
+			data, err := json.Marshal(export)
+			require.NoError(t, err)
+
+			var got map[string]interface{}
+			require.NoError(t, json.Unmarshal(data, &got))
+			if tt.wantField {
+				assert.Equal(t, tt.wantABSItem, got["abs_item_id"])
+			} else {
+				assert.NotContains(t, got, "abs_item_id")
+			}
+			assert.Equal(t, float64(export.BookID), got["book_id"], "existing Hardcover book ID stays unchanged")
+			assert.Equal(t, tt.record.Title, got["title"])
+		})
+	}
+
+	var legacy EditionExport
+	require.NoError(t, json.Unmarshal([]byte(`{"book_id":42,"title":"Older export"}`), &legacy))
+	assert.Empty(t, legacy.ABSItemID, "older exports remain readable without abs_item_id")
+}
+
 // TestAddWithMetadata verifies that AddWithMetadata populates all required fields
 func TestAddWithMetadata(t *testing.T) {
 	collector := NewCollector()

@@ -421,8 +421,6 @@ func TestCreateEdition_EbookInputCreatesAnEbookEdition(t *testing.T) {
 	}{
 		{"ebook", "ebook", "Ebook", 4, false, "ebook"},
 		{"ebook is case-insensitive", " Ebook ", "Ebook", 4, false, "ebook"},
-		{"audiobook", "audiobook", "Audiobook", 2, true, "audiobook"},
-		{"unset stays an audiobook", "", "Audiobook", 2, true, "audiobook"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -469,6 +467,30 @@ func TestCreateEdition_EbookInputCreatesAnEbookEdition(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCreateEditionRejectsAudiobooksWithoutRegionalImport(t *testing.T) {
+	client := &reuseClient{}
+	creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "token", &http.Client{Transport: failingTransport{}})
+
+	for _, input := range []*edition.EditionInput{
+		{BookID: 123, Title: "A Title", ASIN: "B0AUDIO001", AuthorIDs: []int{1}},
+		{BookID: 123, Title: "A Title", ASIN: "B0AUDIO001", AuthorIDs: []int{1}, ReadingFormat: models.ReadingFormatAudiobook},
+	} {
+		_, err := creator.CreateEdition(context.Background(), input)
+		if !errors.Is(err, edition.ErrAudiobookRequiresRegionalImport) {
+			t.Fatalf("CreateEdition() error = %v, want ErrAudiobookRequiresRegionalImport", err)
+		}
+	}
+	_, err := creator.CreateEdition(context.Background(), &edition.EditionInput{
+		BookID: 123, Title: "A Title", AuthorIDs: []int{1}, ReadingFormat: "paperback",
+	})
+	if err == nil || errors.Is(err, edition.ErrAudiobookRequiresRegionalImport) {
+		t.Fatalf("CreateEdition() invalid reading format error = %v, want input validation error", err)
+	}
+	if len(client.lookups) != 0 || len(client.mutations) != 0 {
+		t.Fatalf("audiobook insertion made lookups %v and mutations %v, want no Hardcover calls", len(client.lookups), len(client.mutations))
 	}
 }
 

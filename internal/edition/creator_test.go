@@ -302,9 +302,10 @@ func TestEditionCreator_CreateEdition(t *testing.T) {
 		{
 			name: "API error",
 			input: &edition.EditionInput{
-				BookID:    999,
-				Title:     "Error Book",
-				AuthorIDs: []int{1},
+				ReadingFormat: "ebook",
+				BookID:        999,
+				Title:         "Error Book",
+				AuthorIDs:     []int{1},
 			},
 			setupMock: func(t *testing.T, m *MockHardcoverClient) {
 				setupCommonMocks(m)
@@ -330,13 +331,13 @@ func TestEditionCreator_CreateEdition(t *testing.T) {
 						editionInput := variables["edition"].(map[string]interface{})
 						dto := editionInput["dto"].(map[string]interface{})
 						assert.Equal(t, "Error Book", dto["title"])
-						assert.Equal(t, "Audiobook", dto["edition_format"])
+						assert.Equal(t, "Ebook", dto["edition_format"])
 						// Handle both int and float64 for reading_format_id
 						switch v := dto["reading_format_id"].(type) {
 						case int:
-							assert.Equal(t, 2, v)
+							assert.Equal(t, 4, v)
 						case float64:
-							assert.Equal(t, float64(2), v)
+							assert.Equal(t, float64(4), v)
 						default:
 							assert.Fail(t, "Unexpected type for reading_format_id: %T", v)
 						}
@@ -349,7 +350,8 @@ func TestEditionCreator_CreateEdition(t *testing.T) {
 		{
 			name: "missing required fields",
 			input: &edition.EditionInput{
-				BookID: 789,
+				ReadingFormat: "ebook",
+				BookID:        789,
 				// Missing required fields
 			},
 			setupMock: func(t *testing.T, m *MockHardcoverClient) {
@@ -361,12 +363,13 @@ func TestEditionCreator_CreateEdition(t *testing.T) {
 		{
 			name: "valid input without image",
 			input: &edition.EditionInput{
-				BookID:      123,
-				Title:       "Test Book",
-				AuthorIDs:   []int{1, 2},
-				NarratorIDs: []int{3},
-				PublisherID: 1,
-				ReleaseDate: "2020-01-01",
+				ReadingFormat: "ebook",
+				BookID:        123,
+				Title:         "Test Book",
+				AuthorIDs:     []int{1, 2},
+				NarratorIDs:   []int{3},
+				PublisherID:   1,
+				ReleaseDate:   "2020-01-01",
 			},
 			setupMock: func(t *testing.T, m *MockHardcoverClient) {
 				setupCommonMocks(m)
@@ -391,7 +394,7 @@ func TestEditionCreator_CreateEdition(t *testing.T) {
 						dto := editionInput["dto"].(map[string]interface{})
 
 						assert.Equal(t, "Test Book", dto["title"])
-						assert.Equal(t, "Audiobook", dto["edition_format"])
+						assert.Equal(t, "Ebook", dto["edition_format"])
 
 						// Handle both int and float64 for publisher_id
 						switch v := dto["publisher_id"].(type) {
@@ -424,13 +427,14 @@ func TestEditionCreator_CreateEdition(t *testing.T) {
 		{
 			name: "valid input with image",
 			input: &edition.EditionInput{
-				BookID:      456,
-				Title:       "Test Book with Image",
-				AuthorIDs:   []int{4, 5},
-				NarratorIDs: []int{6},
-				PublisherID: 2,
-				ReleaseDate: "2021-01-01",
-				ImageURL:    "http://example.com/cover.jpg",
+				ReadingFormat: "ebook",
+				BookID:        456,
+				Title:         "Test Book with Image",
+				AuthorIDs:     []int{4, 5},
+				NarratorIDs:   []int{6},
+				PublisherID:   2,
+				ReleaseDate:   "2021-01-01",
+				ImageURL:      "http://example.com/cover.jpg",
 			},
 			setupMock: func(t *testing.T, m *MockHardcoverClient) {
 				setupCommonMocks(m)
@@ -696,52 +700,58 @@ func TestEditionInput_Validate(t *testing.T) {
 		{
 			name: "valid input",
 			input: &edition.EditionInput{
-				BookID:    123,
-				Title:     "Test Book",
-				AuthorIDs: []int{1, 2},
+				ReadingFormat: "ebook",
+				BookID:        123,
+				Title:         "Test Book",
+				AuthorIDs:     []int{1, 2},
 			},
 			expectError: false,
 		},
 		{
 			name: "missing book ID",
 			input: &edition.EditionInput{
-				Title:     "Test Book",
-				AuthorIDs: []int{1, 2},
+				ReadingFormat: "ebook",
+				Title:         "Test Book",
+				AuthorIDs:     []int{1, 2},
 			},
 			expectError: true,
 		},
 		{
 			name: "negative book ID",
 			input: &edition.EditionInput{
-				BookID:    -1,
-				Title:     "Test Book",
-				AuthorIDs: []int{1, 2},
+				ReadingFormat: "ebook",
+				BookID:        -1,
+				Title:         "Test Book",
+				AuthorIDs:     []int{1, 2},
 			},
 			expectError: true,
 		},
 		{
 			name: "missing title",
 			input: &edition.EditionInput{
-				BookID:    123,
-				AuthorIDs: []int{1, 2},
+				ReadingFormat: "ebook",
+				BookID:        123,
+				AuthorIDs:     []int{1, 2},
 			},
 			expectError: true,
 		},
 		{
 			name: "missing authors",
 			input: &edition.EditionInput{
-				BookID: 123,
-				Title:  "Test Book",
+				ReadingFormat: "ebook",
+				BookID:        123,
+				Title:         "Test Book",
 			},
 			expectError: true,
 		},
 		{
 			name: "invalid date format",
 			input: &edition.EditionInput{
-				BookID:      123,
-				Title:       "Test Book",
-				AuthorIDs:   []int{1, 2},
-				ReleaseDate: "2023/01/01", // Invalid format
+				ReadingFormat: "ebook",
+				BookID:        123,
+				Title:         "Test Book",
+				AuthorIDs:     []int{1, 2},
+				ReleaseDate:   "2023/01/01", // Invalid format
 			},
 			expectError: true,
 		},
@@ -761,12 +771,13 @@ func TestEditionInput_Validate(t *testing.T) {
 
 func TestEditionInput_JSON(t *testing.T) {
 	input := &edition.EditionInput{
-		BookID:      123,
-		Title:       "Test Book",
-		Subtitle:    "A Test Subtitle",
-		AuthorIDs:   []int{1, 2},
-		NarratorIDs: []int{3, 4},
-		PublisherID: 5,
+		ReadingFormat: "ebook",
+		BookID:        123,
+		Title:         "Test Book",
+		Subtitle:      "A Test Subtitle",
+		AuthorIDs:     []int{1, 2},
+		NarratorIDs:   []int{3, 4},
+		PublisherID:   5,
 	}
 
 	// Test marshaling

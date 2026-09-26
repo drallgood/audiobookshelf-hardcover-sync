@@ -1,15 +1,12 @@
-// Package edition provides a command-line tool for creating new audiobook editions in Hardcover.
-// It supports creating editions from scratch or prepopulating data from existing books.
+// Package main provides the standalone Hardcover edition creation CLI.
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
@@ -18,8 +15,6 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/urfave/cli/v2"
 )
-
-// init is intentionally left empty to allow configuration to be loaded first
 
 var (
 	version = "dev"
@@ -30,55 +25,54 @@ var (
 // defaultConfigPath is optional; a file named with --config must exist.
 const defaultConfigPath = "config.yaml"
 
-// EditionCreatorInput is an alias for edition.EditionInput
-type EditionCreatorInput = edition.EditionInput
-
-// EditionCreatorResult is an alias for edition.EditionResult
-type EditionCreatorResult = edition.EditionResult
-
 func main() {
-	// Parse command line args manually to get config path
-	configPath := defaultConfigPath
-	explicitConfig := false
-	args := os.Args[1:]
-	for i, arg := range args {
-		if (arg == "-c" || arg == "--config") && i+1 < len(args) {
-			configPath, explicitConfig = args[i+1], true
-			break
-		}
-		if value, ok := strings.CutPrefix(arg, "--config="); ok {
-			configPath, explicitConfig = value, true
-			break
+	if !isHelpOrVersion(os.Args[1:]) {
+		configPath, explicitConfig := findConfigPath(os.Args[1:])
+		cfg, configErr := loadEditionConfig(configPath, explicitConfig)
+		if configErr != nil {
+			logger.Setup(logger.Config{
+				Level:      "info",
+				Format:     logger.FormatConsole,
+				Output:     os.Stderr,
+				TimeFormat: time.RFC3339,
+			})
+		} else {
+			logger.Setup(logger.Config{
+				Level:      cfg.Logging.Level,
+				Format:     logger.ParseLogFormat(cfg.Logging.Format),
+				Output:     os.Stderr,
+				TimeFormat: time.RFC3339,
+			})
 		}
 	}
 
-	// Load configuration first
-	cfg, err := loadEditionConfig(configPath, explicitConfig)
-	if err != nil {
-		// If we can't load config, use default logger settings
-		logger.Setup(logger.Config{
-			Level:      "info",
-			Format:     logger.FormatJSON,
-			TimeFormat: time.RFC3339,
-		})
-		logger.Get().Error("Failed to load config, using default logger settings", map[string]interface{}{
-			"error": err.Error(),
-		})
-	} else {
-		// Initialize logger with config values
-		logger.Setup(logger.Config{
-			Level:      cfg.Logging.Level,
-			Format:     logger.ParseLogFormat(cfg.Logging.Format),
-			Output:     os.Stdout,
-			TimeFormat: time.RFC3339,
-		})
+	app := newApp()
+	if err := app.Run(os.Args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		var exitCoder cli.ExitCoder
+		if errors.As(err, &exitCoder) {
+			os.Exit(exitCoder.ExitCode())
+		}
+		os.Exit(1)
 	}
+}
 
-	// Now create and run the CLI app
-	app := &cli.App{
-		Name:    "edition",
-		Usage:   "Create and manage audiobook editions in Hardcover",
-		Version: fmt.Sprintf("%s (%s) %s", version, commit, date),
+func isHelpOrVersion(args []string) bool {
+	for _, arg := range args {
+		if arg == "--help" || arg == "-h" || arg == "--version" || arg == "-v" || arg == "help" {
+			return true
+		}
+	}
+	return false
+}
+
+func newApp() *cli.App {
+	return &cli.App{
+		Name:      "edition",
+		Usage:     "Create and manage editions in Hardcover",
+		Version:   fmt.Sprintf("%s (%s) %s", version, commit, date),
+		Writer:    os.Stdout,
+		ErrWriter: os.Stderr,
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:    "config",
@@ -88,19 +82,27 @@ func main() {
 			},
 			&cli.BoolFlag{
 				Name:  "dry-run",
-				Usage: "Enable dry run mode (no changes will be made)",
+				Usage: "Validate and preview without making Hardcover changes",
 			},
 		},
 		Commands: []*cli.Command{
 			{
 				Name:  "create",
-				Usage: "Create a new audiobook edition",
+				Usage: "Import an audiobook or create an ebook edition",
 				Flags: []cli.Flag{
 					&cli.StringFlag{
 						Name:     "input",
 						Aliases:  []string{"i"},
 						Usage:    "Input JSON file with edition data",
 						Required: true,
+					},
+					&cli.StringFlag{
+						Name:  "abs-item-id",
+						Usage: "Audiobookshelf item ID to verify and associate in sync state",
+					},
+					&cli.StringFlag{
+						Name:  "state-file",
+						Usage: "Sync state file for a confirmed Audiobookshelf association (required when an item ID is supplied)",
 					},
 				},
 				Action: createEdition,
@@ -125,88 +127,54 @@ func main() {
 			},
 		},
 	}
-
-	if err := app.Run(os.Args); err != nil {
-		// Use the logger to ensure consistent format
-		logger.Get().Error("Error running application", map[string]interface{}{
-			"error": err.Error(),
-		})
-		os.Exit(1)
-	}
 }
 
 func createEdition(c *cli.Context) error {
-	// Initialize configuration
 	cfg, err := loadEditionConfig(c.String("config"), c.IsSet("config"))
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Get the logger
-	log := logger.Get()
-
-	// Load input JSON
-	inputFile := c.String("input")
-	data, err := os.ReadFile(inputFile)
+	dryRun := cfg.Sync.DryRun
+	if c.IsSet("dry-run") {
+		dryRun = c.Bool("dry-run")
+	}
+	stateFile := c.String("state-file")
+	if stateFile == "" {
+		stateFile = cfg.Sync.StateFile
+	}
+	services, err := newCreateServices(cfg, logger.Get(), dryRun)
 	if err != nil {
-		return fmt.Errorf("failed to read input file: %w", err)
+		return err
 	}
-
-	var input EditionCreatorInput
-	if err := json.Unmarshal(data, &input); err != nil {
-		return fmt.Errorf("invalid JSON input: %w", err)
-	}
-
-	// Initialize Hardcover client and creator
-	hc := hardcover.NewClient(cfg.Hardcover.Token, log)
-	// Get Audiobookshelf token from config
-	audiobookshelfToken := cfg.Audiobookshelf.Token
-	if audiobookshelfToken == "" {
-		log.Warn("No Audiobookshelf token found in config, image uploads may fail")
-	} else {
-		log.Debug("Using Audiobookshelf token from config")
-	}
-	creator := edition.NewCreator(hc, log, c.Bool("dry-run"), audiobookshelfToken)
-	if err := creator.SetAudiobookshelfNetworkTrust(cfg.Audiobookshelf.NetworkTrust); err != nil {
-		return fmt.Errorf("invalid Audiobookshelf network trust: %w", err)
-	}
-	// Send the token only to the configured Audiobookshelf server.
-	if err := creator.SetAudiobookshelfBaseURL(cfg.Audiobookshelf.URL); err != nil {
-		return fmt.Errorf("invalid Audiobookshelf URL: %w", err)
-	}
-
-	// Create edition
-	result, err := creator.CreateEdition(context.Background(), &input)
+	result, err := runCreate(context.Background(), createOptions{
+		InputPath:         c.String("input"),
+		ABSItemID:         c.String("abs-item-id"),
+		StateFile:         stateFile,
+		StateFileExplicit: c.IsSet("state-file"),
+		PreferredRegion:   cfg.Audiobookshelf.AudnexusRegion,
+		DryRun:            dryRun,
+	}, services)
 	if err != nil {
-		return fmt.Errorf("failed to create edition: %w", err)
+		return err
 	}
-
-	// Output result
-	output, _ := json.MarshalIndent(result, "", "  ")
-	fmt.Println(string(output))
-	return nil
+	return writeJSON(c.App.Writer, result)
 }
 
 func prepopulateEdition(c *cli.Context) error {
-	// Initialize configuration
 	cfg, err := loadEditionConfig(c.String("config"), c.IsSet("config"))
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
-
-	// Get the logger
 	log := logger.Get()
-
-	// Initialize Hardcover client and creator
-	hc := hardcover.NewClient(cfg.Hardcover.Token, log)
-	// Get Audiobookshelf token from config
-	audiobookshelfToken := cfg.Audiobookshelf.Token
-	if audiobookshelfToken == "" {
-		log.Warn("No Audiobookshelf token found in config, image uploads may fail")
-	} else {
-		log.Debug("Using Audiobookshelf token from config")
+	clientConfig := hardcoverClientConfig(cfg.Hardcover.BaseURL)
+	hc := hardcover.NewClientWithConfig(clientConfig, cfg.Hardcover.Token, log)
+	dryRun := cfg.Sync.DryRun
+	if c.IsSet("dry-run") {
+		dryRun = c.Bool("dry-run")
 	}
-	creator := edition.NewCreator(hc, log, c.Bool("dry-run"), audiobookshelfToken)
+	hc.SetDryRun(dryRun)
+	creator := edition.NewCreator(hc, log, dryRun, cfg.Audiobookshelf.Token)
 	if err := creator.SetAudiobookshelfNetworkTrust(cfg.Audiobookshelf.NetworkTrust); err != nil {
 		return fmt.Errorf("invalid Audiobookshelf network trust: %w", err)
 	}
@@ -214,21 +182,16 @@ func prepopulateEdition(c *cli.Context) error {
 		return fmt.Errorf("invalid Audiobookshelf URL: %w", err)
 	}
 
-	// Generate prepopulated data
 	prepopulated, err := creator.PrepopulateFromBook(context.Background(), c.Int("book-id"))
 	if err != nil {
 		return fmt.Errorf("failed to prepopulate data: %w", err)
 	}
-
-	// Write to output file
 	outputFile := c.String("output")
-	output, _ := json.MarshalIndent(prepopulated, "", "  ")
-	if err := os.WriteFile(outputFile, output, 0644); err != nil {
+	if err := writeJSONFile(outputFile, prepopulated); err != nil {
 		return fmt.Errorf("failed to write output file: %w", err)
 	}
-
-	fmt.Printf("Prepopulated data written to %s\n", outputFile)
-	return nil
+	_, err = fmt.Fprintf(c.App.Writer, "Prepopulated data written to %s\n", outputFile)
+	return err
 }
 
 // loadEditionConfig applies defaults, the YAML file, and environment overrides

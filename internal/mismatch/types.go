@@ -186,10 +186,18 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 
 	logger.Debug(fmt.Sprintf("Final AuthorIDs: %v, NarratorIDs: %v", authorIDs, narratorIDs))
 
-	// Initialize all fields with zero values to ensure they appear in the JSON output
+	// Keep the existing import fields present in JSON; the source item ID stays
+	// optional for older mismatch records that do not carry it.
+	absItemID := b.ABSItemID
+	if strings.TrimSpace(absItemID) == "" {
+		// Direct mismatch records use BookID for their Audiobookshelf item ID.
+		// AddWithMetadata records preserve the unambiguous source ID separately.
+		absItemID = b.BookID
+	}
 	result := &EditionExport{
 		// Core book information (used for import)
 		BookID:        bookID,
+		ABSItemID:     absItemID,
 		Title:         b.Title,
 		Subtitle:      b.Subtitle,
 		ImageURL:      imageURL,
@@ -263,6 +271,7 @@ func (b *BookMismatch) MarkEbook() {
 type BookMismatch struct {
 	// Core book information
 	BookID      string `json:"book_id"`
+	ABSItemID   string `json:"-"` // Audiobookshelf source item ID, kept separate from BookID.
 	Title       string `json:"title"`
 	Subtitle    string `json:"subtitle,omitempty"`
 	Author      string `json:"author"`
@@ -340,13 +349,14 @@ type EditionExportInfo struct {
 // EditionExport represents the format expected by the Hardcover edition import tool
 type EditionExport struct {
 	// Core book information (used for import)
-	BookID   int    `json:"book_id"`
-	Title    string `json:"title"`
-	Subtitle string `json:"subtitle"`
-	ImageURL string `json:"image_url"`
-	ASIN     string `json:"asin"`
-	ISBN10   string `json:"isbn_10"`
-	ISBN13   string `json:"isbn_13"`
+	BookID    int    `json:"book_id"`
+	ABSItemID string `json:"abs_item_id,omitempty"`
+	Title     string `json:"title"`
+	Subtitle  string `json:"subtitle"`
+	ImageURL  string `json:"image_url"`
+	ASIN      string `json:"asin"`
+	ISBN10    string `json:"isbn_10"`
+	ISBN13    string `json:"isbn_13"`
 	// ISBN10Valid and ISBN13Valid report whether the exported ISBN's own check
 	// digit is correct, like Hardcover's isbn_10_valid and isbn_13_valid. An ISBN
 	// with a wrong check digit is still exported as given. Each is omitted when
