@@ -255,7 +255,7 @@ query RegionalAudibleImport($entries: [ImportStatusEntryInput!]!, $platformId: I
 				}
 				return RegionalAudiobookStatus(state), *importStatus.EditionID, nil
 			default:
-				return "", 0, fmt.Errorf("%w: Hardcover returned unsupported regional import status %q", ErrRegionalAudiobookImportFailed, importStatus.Status)
+				return "", 0, fmt.Errorf("%w: Hardcover returned unsupported regional import status %q", ErrRegionalAudiobookIdentityConflict, importStatus.Status)
 			}
 		}
 		if len(response.Mappings) == 1 {

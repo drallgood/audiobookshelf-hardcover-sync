@@ -151,6 +151,8 @@ Hardcover book and edition are saved as the item's match for the next sync.
 If an error says Hardcover may already have processed the request, check the
 book in Hardcover before retrying; a retry may create another edition. See
 [OpenAPI](docs/openapi.yaml) for request fields, statuses, and retry guidance.
+If source lookup leaves too little time for the Hardcover write, the API returns
+503 with `Retry-After: 1` before sending the write.
 
 ### Edition capability
 

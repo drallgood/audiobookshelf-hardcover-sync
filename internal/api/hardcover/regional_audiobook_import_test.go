@@ -35,6 +35,7 @@ func TestClient_ImportRegionalAudiobook(t *testing.T) {
 		{name: "loaded import without mapping", status: "loaded", formatID: 2, wantStatus: RegionalAudiobookLoaded},
 		{name: "failed import", status: "failed", wantErr: ErrRegionalAudiobookImportFailed},
 		{name: "not found import", status: "not_found", wantErr: ErrRegionalAudiobookImportFailed},
+		{name: "unknown import outcome", status: "unknown", wantErr: ErrRegionalAudiobookIdentityConflict},
 		{name: "wrong status book", status: "created", statusBook: 43, wantErr: ErrRegionalAudiobookIdentityConflict},
 		{name: "wrong mapping book", status: "created", includeMapping: true, mappingState: "created", mappingBook: 43, wantErr: ErrRegionalAudiobookIdentityConflict},
 		{name: "mapping and status edition disagree", status: "created", includeMapping: true, mappingState: "created", mappingBook: 42, mappingEdition: 901, wantErr: ErrRegionalAudiobookIdentityConflict},

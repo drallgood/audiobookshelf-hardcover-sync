@@ -1200,7 +1200,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: >-
-            The create service is shutting down, a dependency request timed out,
+            The create service is shutting down, source lookup leaves too little
+            time for a Hardcover write (with Retry-After: 1), a dependency request timed out,
             source-ASIN Audnex region discovery was rate limited or transiently
             unavailable, or the Hardcover regional import timed out. A rate-limit
             or transient error from Audnex `GetBookByASIN` for an explicit

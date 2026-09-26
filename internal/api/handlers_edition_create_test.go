@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -936,6 +937,51 @@ func TestCreateEditionFromDraftCreatesASINOnlyEbook(t *testing.T) {
 	require.Equal(t, "84", association.HardcoverEditionID)
 }
 
+func TestCreateEditionFromDraftAppliesEbookCorrections(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"ebook","media":{
+		"metadata":{"title":"Ebook","authorName":"Author","isbn":"9780306406157"},"ebookFile":{},"ebookFormat":"epub"}}`, "us")
+	configureEditionCreateRoute(t, fixture)
+	addCompletedNeedsReviewRun(t, fixture, "run-correct-ebook", sync.BookOutcomeRecord{
+		BookID: "abs-item-1", Outcome: sync.OutcomeNeedsReview, Title: "Ebook", Author: "Author",
+		ISBN: "9780306406157", Format: "Ebook", HardcoverBookID: "42",
+	})
+	var counts editionCreateCallCounts
+	stub := countingEditionCreateClient(&counts)
+	fixture.handler.editionCreateHardcoverFactory = func(token string) editionCreateHardcoverClient {
+		client := stub(token).(editionCreateHardcoverStub)
+		create := client.createEbookFn
+		client.createEbookFn = func(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
+			require.Equal(t, "Corrected title", input.Title)
+			require.Equal(t, "0306406152", input.ISBN10)
+			require.Equal(t, "9780306406157", input.ISBN13)
+			require.Equal(t, "2024-05-06", input.ReleaseDate)
+			require.Equal(t, "Digital", input.EditionFormat)
+			return create(ctx, input)
+		}
+		return client
+	}
+	response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-correct-ebook","abs_item_id":"abs-item-1",`+
+		`"title":"Corrected title","isbn_10":"0306406152","release_date":"2024-05-06","edition_format":"Digital"}`)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.EqualValues(t, 1, counts.ebookCreates.Load())
+}
+
+func TestCreateEditionFromDraftRejectsConflictingEbookISBNCorrections(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"ebook","media":{
+		"metadata":{"title":"Ebook","authorName":"Author","isbn":"9780306406157"},"ebookFile":{},"ebookFormat":"epub"}}`, "us")
+	configureEditionCreateRoute(t, fixture)
+	addCompletedNeedsReviewRun(t, fixture, "run-conflicting-isbn", sync.BookOutcomeRecord{
+		BookID: "abs-item-1", Outcome: sync.OutcomeNeedsReview, Title: "Ebook", Author: "Author",
+		ISBN: "9780306406157", Format: "Ebook", HardcoverBookID: "42",
+	})
+	var counts editionCreateCallCounts
+	fixture.handler.editionCreateHardcoverFactory = countingEditionCreateClient(&counts)
+	response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-conflicting-isbn","abs_item_id":"abs-item-1",`+
+		`"isbn_10":"0306406152","isbn_13":"9781861972712"}`)
+	require.Equal(t, http.StatusUnprocessableEntity, response.Code, response.Body.String())
+	requireNoEditionCreateEffects(t, fixture, &counts)
+}
+
 func TestCreateEditionFromDraftRefusesUnconfirmedAudibleRegion(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -973,6 +1019,95 @@ func TestCreateEditionFromDraftRefusesUnconfirmedAudibleRegion(t *testing.T) {
 			requireNoEditionCreateEffects(t, fixture, &counts)
 		})
 	}
+}
+
+func TestCreateEditionFromDraftDiscoversRegionBeforeImport(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`, "ca")
+	configureEditionCreateRoute(t, fixture)
+	addCompletedNeedsReviewRun(t, fixture, "run-discover", editionCreateRecord())
+	fixture.handler.editionCreateAudnexClientFactory = func() editionCreateAudnexDiscoverer {
+		return editionCreateAudnexStub{discoverFn: func(_ context.Context, asin, preferred string) (*audnex.Book, string, error) {
+			require.Equal(t, "B0SOURCE12", asin)
+			require.Equal(t, "ca", preferred)
+			return &audnex.Book{ASIN: asin}, "uk", nil
+		}}
+	}
+	var counts editionCreateCallCounts
+	stub := countingEditionCreateClient(&counts)
+	fixture.handler.editionCreateHardcoverFactory = func(token string) editionCreateHardcoverClient {
+		client := stub(token).(editionCreateHardcoverStub)
+		importFn := client.importFn
+		client.importFn = func(ctx context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+			require.Equal(t, "uk", input.Region)
+			return importFn(ctx, input)
+		}
+		return client
+	}
+	response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-discover","abs_item_id":"abs-item-1"}`)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.EqualValues(t, 1, counts.imports.Load())
+}
+
+func TestCreateEditionFromDraftDoesNotStartWriteWithShortDeadline(t *testing.T) {
+	tests := []struct {
+		name     string
+		itemJSON string
+		record   sync.BookOutcomeRecord
+		body     string
+	}{
+		{name: "audiobook", itemJSON: `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`,
+			record: editionCreateRecord(), body: `{"run_id":"run-short","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`},
+		{name: "ebook", itemJSON: `{"id":"abs-item-1","mediaType":"ebook","media":{"metadata":{"title":"Ebook","authorName":"Author","isbn":"9780306406157"},"ebookFile":{},"ebookFormat":"epub"}}`,
+			record: sync.BookOutcomeRecord{BookID: "abs-item-1", Outcome: sync.OutcomeNeedsReview, Title: "Ebook", Author: "Author", ISBN: "9780306406157", Format: "Ebook", HardcoverBookID: "42"},
+			body:   `{"run_id":"run-short","abs_item_id":"abs-item-1"}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newEditionDraftTestFixture(t, test.itemJSON, "us")
+			configureEditionCreateRoute(t, fixture)
+			addCompletedNeedsReviewRun(t, fixture, "run-short", test.record)
+			var counts editionCreateCallCounts
+			fixture.handler.editionCreateHardcoverFactory = countingEditionCreateClient(&counts)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			request := httptest.NewRequest(http.MethodPost, "/api/profiles/draft-profile/edition-drafts/create", strings.NewReader(test.body)).WithContext(ctx)
+			request.AddCookie(fixture.sessionCookie(t, fixture.owner))
+			response := httptest.NewRecorder()
+			fixture.routes.ServeHTTP(response, request)
+			require.Equal(t, http.StatusServiceUnavailable, response.Code, response.Body.String())
+			require.Equal(t, "1", response.Header().Get("Retry-After"))
+			requireNoEditionCreateEffects(t, fixture, &counts)
+		})
+	}
+}
+
+func TestCreateEditionFromDraftReportsDefiniteImportFailure(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`, "us")
+	configureEditionCreateRoute(t, fixture)
+	addCompletedNeedsReviewRun(t, fixture, "run-failed-import", editionCreateRecord())
+	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+		return editionCreateHardcoverStub{importFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+			return nil, fmt.Errorf("%w: not_found", hardcover.ErrRegionalAudiobookImportFailed)
+		}}
+	}
+	response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-failed-import","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`)
+	require.Equal(t, http.StatusBadGateway, response.Code, response.Body.String())
+	require.NotContains(t, response.Body.String(), "may have processed")
+	require.NotContains(t, response.Body.String(), "retrying may create")
+}
+
+func TestCreateEditionFromDraftReportsUnverifiedIdentityOnce(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`, "us")
+	configureEditionCreateRoute(t, fixture)
+	addCompletedNeedsReviewRun(t, fixture, "run-identity-conflict", editionCreateRecord())
+	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+		return editionCreateHardcoverStub{importFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+			return nil, hardcover.ErrRegionalAudiobookIdentityConflict
+		}}
+	}
+	response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-identity-conflict","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`)
+	require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+	require.Equal(t, 1, strings.Count(response.Body.String(), "Verify the Hardcover result before retrying"))
 }
 
 func TestCreateEditionFromDraftRefusesDryRunAndForeignProfiles(t *testing.T) {

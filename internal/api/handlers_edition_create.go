@@ -25,7 +25,10 @@ import (
 	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 )
 
-const editionCreateRequestTimeout = 25 * time.Second
+const (
+	editionCreateRequestTimeout  = 65 * time.Second
+	editionCreateMutationReserve = 35 * time.Second
+)
 
 type editionCreateABSClient interface {
 	GetLibraryItemByID(context.Context, string) (*models.AudiobookshelfBook, error)
@@ -221,6 +224,17 @@ func sameEditionCreateCandidate(requested, latest sync.BookOutcomeRecord) bool {
 var errStaleEditionCreateRun = errors.New("sync run no longer contains a usable needs-review source record")
 var errEditionCreateSourceChanged = errors.New("Audiobookshelf source data or reading format changed; run a new sync before adding an edition")
 var errEditionCreateInvalidInput = errors.New("invalid edition create input")
+var errEditionCreateInsufficientBudget = errors.New("edition create has too little time remaining for a Hardcover write")
+
+func requireEditionCreateMutationBudget(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return errEditionCreateInsufficientBudget
+	}
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < editionCreateMutationReserve {
+		return errEditionCreateInsufficientBudget
+	}
+	return nil
+}
 
 func (h *Handler) createVerifiedEdition(ctx context.Context, profile *database.ProfileWithTokens, snapshot *sync.SyncSnapshot, record sync.BookOutcomeRecord, request editionCreateRequest, outcome *editionCreateOutcome) (statepkg.Association, error) {
 	if profile.SyncConfig.DryRun {
@@ -339,9 +353,12 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 	if err != nil || bookID <= 0 {
 		return statepkg.Association{}, errStaleEditionCreateRun
 	}
+	if err := requireEditionCreateMutationBudget(ctx); err != nil {
+		return statepkg.Association{}, err
+	}
 	result, err := client.ImportRegionalAudiobook(ctx, hardcover.RegionalAudiobookInput{BookID: bookID, ASIN: asin, Region: region})
 	if err != nil {
-		if errors.Is(err, hardcover.ErrRegionalAudiobookInvalidInput) || errors.Is(err, hardcover.ErrRegionalAudiobookDryRun) {
+		if errors.Is(err, hardcover.ErrRegionalAudiobookInvalidInput) || errors.Is(err, hardcover.ErrRegionalAudiobookDryRun) || errors.Is(err, hardcover.ErrRegionalAudiobookImportFailed) {
 			return statepkg.Association{}, fmt.Errorf("Hardcover regional audiobook import failed: %w", err)
 		}
 		return statepkg.Association{}, fmt.Errorf("Hardcover regional audiobook import failed: %w", markEditionCreateRemoteOutcomeAmbiguous(err))
@@ -502,6 +519,9 @@ func (h *Handler) createEbook(ctx context.Context, item *models.AudiobookshelfBo
 	if err := input.Validate(); err != nil {
 		return statepkg.Association{}, fmt.Errorf("%w: %v", errEditionCreateInvalidInput, err)
 	}
+	if err := requireEditionCreateMutationBudget(ctx); err != nil {
+		return statepkg.Association{}, err
+	}
 	result, err := client.CreateEbook(ctx, input)
 	if err != nil {
 		if errors.Is(err, edition.ErrCreateEditionPreMutation) {
@@ -654,6 +674,9 @@ func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID strin
 		h.writeErrorResponse(w, http.StatusConflict, err.Error())
 	case errors.Is(err, multiuser.ErrServiceShuttingDown):
 		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Edition creation service is shutting down; retry shortly")
+	case errors.Is(err, errEditionCreateInsufficientBudget):
+		w.Header().Set("Retry-After", "1")
+		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Edition source lookup took too long; retry before starting a Hardcover write")
 	case errors.Is(err, multiuser.ErrProfileStateBusy):
 		w.Header().Set("Retry-After", "1")
 		h.writeErrorResponse(w, http.StatusTooManyRequests, "Profile sync state is busy; retry shortly")
@@ -675,7 +698,7 @@ func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID strin
 		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, hardcover.ErrRegionalAudiobookImportTimeout):
 			h.writeErrorResponse(w, http.StatusServiceUnavailable, message)
 		case errors.Is(err, errHardcoverEditionIdentityConflict), errors.Is(err, hardcover.ErrRegionalAudiobookIdentityConflict):
-			h.writeErrorResponse(w, http.StatusConflict, fmt.Sprintf("%s. Verify the Hardcover result before retrying; retrying may create another edition.", err.Error()))
+			h.writeErrorResponse(w, http.StatusConflict, fmt.Sprintf("%s: %v", message, err))
 		default:
 			h.log.Error(fmt.Sprintf("Hardcover edition result could not be confirmed for profile %s: %v", profileID, err))
 			h.writeErrorResponse(w, http.StatusBadGateway, message)
