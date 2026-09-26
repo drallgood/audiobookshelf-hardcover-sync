@@ -448,9 +448,12 @@ func (h *Handler) createEbook(ctx context.Context, item *models.AudiobookshelfBo
 	}
 	input := &edition.EditionInput{
 		BookID: bookID, Title: draft.EbookCandidate.Title, Subtitle: draft.EbookCandidate.Subtitle,
-		ASIN: strings.TrimSpace(item.Media.Metadata.ASIN), ReleaseDate: draft.EbookCandidate.ReleaseDate,
+		ReleaseDate:   draft.EbookCandidate.ReleaseDate,
 		EditionFormat: "Ebook", ReadingFormat: models.ReadingFormatEbook,
 		LanguageID: 1, CountryID: 1,
+	}
+	if sourceASIN, valid := audnex.CanonicalASIN(item.Media.Metadata.ASIN); valid {
+		input.ASIN = sourceASIN
 	}
 	if draft.EbookCandidate.ISBN10 != "" {
 		input.ISBN10 = draft.EbookCandidate.ISBN10

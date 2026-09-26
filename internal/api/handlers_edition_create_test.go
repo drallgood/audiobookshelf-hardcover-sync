@@ -90,6 +90,7 @@ func (s editionCreateHardcoverStub) CreateEbook(ctx context.Context, input *edit
 func configureEditionCreateRoute(t *testing.T, fixture *editionDraftTestFixture) {
 	t.Helper()
 	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("GET /api/profiles/{id}/edition-drafts/source/{itemID}", fixture.handler.GetEditionSourceDraft)
 	apiMux.HandleFunc("POST /api/profiles/{id}/edition-drafts/create", fixture.handler.CreateEditionFromDraft)
 	authConfig := auth.DefaultAuthConfig()
 	authConfig.Enabled = true
@@ -935,8 +936,11 @@ func TestCreateEditionFromDraftRejectsChangedSourceIdentityBeforeMutation(t *tes
 func TestCreateEditionFromDraftRejectsInvalidInputBeforeMutation(t *testing.T) {
 	const audiobookItem = `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`
 	const isbnOnlyEbook = `{"id":"abs-item-1","mediaType":"ebook","media":{"metadata":{"title":"Ebook","authorName":"Author","isbn":"9780306406157"},"ebookFile":{},"ebookFormat":"epub"}}`
+	const malformedASINEbook = `{"id":"abs-item-1","mediaType":"ebook","media":{"metadata":{"title":"Ebook","authorName":"Author","asin":"B0BAD?ASIN","isbn":"9780306406157"},"ebookFile":{},"ebookFormat":"epub"}}`
 	ebookRecord := sync.BookOutcomeRecord{BookID: "abs-item-1", Outcome: sync.OutcomeNeedsReview, Title: "Ebook", Author: "Author",
 		ISBN: "9780306406157", Format: "Ebook", HardcoverBookID: "42"}
+	malformedASINEbookRecord := ebookRecord
+	malformedASINEbookRecord.ASIN = "B0BAD?ASIN"
 	noIdentifierEbookRecord := ebookRecord
 	noIdentifierEbookRecord.ISBN = ""
 	noASINAudiobookRecord := editionCreateRecord()
@@ -955,6 +959,7 @@ func TestCreateEditionFromDraftRejectsInvalidInputBeforeMutation(t *testing.T) {
 			itemJSON: `{"id":"abs-item-1","mediaType":"ebook","media":{"metadata":{"title":"Ebook","authorName":"Author"},"ebookFile":{},"ebookFormat":"epub"}}`},
 		{name: "correction removes the last identifier", itemJSON: isbnOnlyEbook, record: ebookRecord, body: `"isbn_13":""`},
 		{name: "whitespace-only ASIN correction", itemJSON: isbnOnlyEbook, record: ebookRecord, body: `"isbn_13":"","asin":"   "`},
+		{name: "malformed explicit ASIN correction", itemJSON: malformedASINEbook, record: malformedASINEbookRecord, body: `"asin":"not-an-asin"`},
 		{name: "Audible identifier on an ebook", itemJSON: isbnOnlyEbook, record: ebookRecord, body: `"audible_identifier":"B0SOURCE12:uk"`},
 	}
 	for _, test := range tests {
@@ -1007,6 +1012,46 @@ func TestCreateEditionFromDraftCreatesASINOnlyEbook(t *testing.T) {
 	association, exists := stored.GetAssociation("abs-item-1")
 	require.True(t, exists)
 	require.Equal(t, "84", association.HardcoverEditionID)
+}
+
+func TestCreateEditionFromDraftCreatesISBNOnlyEbookWhenSourceASINIsMalformed(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"ebook","media":{
+		"metadata":{"title":"Ebook","authorName":"Author","asin":"B0BAD?ASIN","isbn":"9780306406157"},
+		"ebookFile":{},"ebookFormat":"epub"}}`, "us")
+	configureEditionCreateRoute(t, fixture)
+	addCompletedNeedsReviewRun(t, fixture, "run-create-isbn-ebook", sync.BookOutcomeRecord{
+		BookID: "abs-item-1", Outcome: sync.OutcomeNeedsReview, Title: "Ebook", Author: "Author",
+		ASIN: "B0BAD?ASIN", ISBN: "9780306406157", Format: "Ebook", HardcoverBookID: "42",
+	})
+
+	draftResponse := fixture.request(editionDraftItemPath, fixture.sessionCookie(t, fixture.owner))
+	require.Equal(t, http.StatusOK, draftResponse.Code, draftResponse.Body.String())
+	var draftEnvelope struct {
+		Data editionDraftResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(draftResponse.Body.Bytes(), &draftEnvelope))
+	require.True(t, draftEnvelope.Data.Eligible, "the valid ISBN makes the ebook draft eligible")
+	require.Equal(t, "B0BAD?ASIN", draftEnvelope.Data.SourceIdentifiers.ASIN)
+
+	var counts editionCreateCallCounts
+	stub := countingEditionCreateClient(&counts)
+	fixture.handler.editionCreateHardcoverFactory = func(token string) editionCreateHardcoverClient {
+		client := stub(token).(editionCreateHardcoverStub)
+		create := client.createEbookFn
+		client.createEbookFn = func(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
+			require.Empty(t, input.ASIN, "malformed source ASIN is omitted from the default insert")
+			require.Equal(t, "0306406152", input.ISBN10)
+			require.Equal(t, "9780306406157", input.ISBN13)
+			return create(ctx, input)
+		}
+		return client
+	}
+
+	response := postEditionCreate(t, fixture, fixture.owner,
+		`{"run_id":"run-create-isbn-ebook","abs_item_id":"abs-item-1"}`)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.EqualValues(t, 1, counts.ebookCreates.Load())
+	require.Zero(t, counts.imports.Load())
 }
 
 func TestCreateEditionFromDraftAppliesEbookCorrections(t *testing.T) {
