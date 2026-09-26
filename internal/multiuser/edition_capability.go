@@ -46,9 +46,9 @@ type EditionCapability struct {
 
 // EditionCapabilityForProfile returns operation-specific evidence for the
 // profile's Hardcover token. Hardcover has no documented read-only scope
-// introspection, and Step 6 has no create path whose result could provide
-// operation-specific evidence, so both operations are currently unverified.
-// No Hardcover request is made here.
+// introspection, and no create operation has yet produced operation-specific
+// evidence, so a configured token is unverified for both operations. No
+// Hardcover request is made here.
 func (s *MultiUserService) EditionCapabilityForProfile(_ context.Context, profileID string) (EditionCapability, error) {
 	profile, err := s.GetProfile(profileID)
 	if err != nil {

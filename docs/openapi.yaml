@@ -112,12 +112,12 @@ components:
           type: string
           enum: [allowed, denied, unverified]
           description: >-
-            A configured new or changed token is unverified. A profile with no
-            Hardcover token is denied. Allowed requires an explicit successful
-            operation; an operation-specific insufficient-scope response can
-            establish denied. Step 6 has no create operation, so configured
-            tokens are unverified until Step 7 connects actual operation
-            results. Capability is never inferred from update_edition.
+            A configured token is currently always unverified because Hardcover
+            has no read-only token-scope check. A profile with no Hardcover
+            token is denied. allowed (after an explicit successful operation)
+            and an operation-specific insufficient_scope denial are reserved for
+            evidence from the operation itself. Capability is never inferred
+            from an update_edition response.
         can_attempt:
           type: boolean
           description: >-
@@ -127,7 +127,10 @@ components:
         reason:
           type: string
           enum: [hardcover_token_missing, insufficient_scope]
-          description: Present when a missing credential or known permission denial prevents an attempt.
+          description: >-
+            Present when an attempt is prevented. hardcover_token_missing is
+            reported today; insufficient_scope is reserved for a known
+            operation-specific permission denial.
         warning:
           type: string
           enum: [permission_unverified]
@@ -837,17 +840,13 @@ paths:
       tags: [Edition Capability]
       summary: Report ebook and audiobook edition capability separately
       description: >-
-        Requires profile mutation access, matching the eventual create
-        operation. Hardcover has no documented read-only token-scope
-        introspection, so new and changed tokens are unverified; the endpoint
-        performs no mutation probe or other Hardcover request. Today both
-        operations remain unverified until an explicit create operation
-        reports its result. Unverified capability permits a later eligible
-        user-confirmed attempt with a warning; a known operation-specific
-        insufficient-scope result blocks that operation. A successful
-        update_edition response is not evidence without a read-back. Step 7
-        connects actual create results to this report. Profiles without a
-        Hardcover token are reported denied and cannot attempt either operation.
+        Requires profile write access. Hardcover has no documented read-only
+        token-scope introspection, so a configured token is reported
+        unverified for both operations. The endpoint makes no Hardcover or
+        Audiobookshelf request and never probes a write operation. Unverified
+        capability permits a later eligible, user-confirmed attempt with a
+        warning; a known denial prevents that operation. A profile without a
+        Hardcover token is reported denied for both operations.
       parameters:
         - name: id
           in: path
