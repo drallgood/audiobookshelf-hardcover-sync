@@ -253,6 +253,29 @@ func TestDryRunDoesNotForgetConfirmedMissingEditionAssociation(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
+func TestForgetConfirmedMissingEditionWithAlternateClient(t *testing.T) {
+	svc, mockClient := createTestService()
+	bookID := "association-alternate-client"
+	association := state.Association{
+		ABSItemID: bookID, SourceASIN: "ASIN-123", HardcoverBookID: "901",
+		HardcoverEditionID: "902", ReadingFormat: models.ReadingFormatAudiobook,
+	}
+	require.NoError(t, svc.state.SetAssociation(association))
+	client := &associationLookupClient{
+		MockHardcoverClient: mockClient,
+		freshEditionErr:     fmt.Errorf("%w: 902", models.ErrEditionNotFound),
+	}
+	svc.hardcover = client
+
+	removed := svc.forgetConfirmedMissingEdition(context.Background(), bookID, association.HardcoverEditionID)
+
+	assert.True(t, removed)
+	assert.Equal(t, 1, client.freshEditionLookup)
+	_, exists := svc.state.GetAssociation(bookID)
+	assert.False(t, exists)
+	mockClient.AssertExpectations(t)
+}
+
 func TestProcessBookOnlyInvalidatesAssociationAfterFreshEditionAbsence(t *testing.T) {
 	t.Run("fresh lookup confirms missing edition", func(t *testing.T) {
 		svc, mockClient := createTestService()

@@ -226,10 +226,18 @@ func hasReliableEmbeddedProgress(book models.AudiobookshelfBook) bool {
 	return book.Progress.CurrentTime > 0 && book.Media.Duration > 0
 }
 
-// Service handles the synchronization between Audiobookshelf and Hardcover
+// HardcoverSyncClient is the Hardcover client contract required by sync.
+// Sync needs an uncached edition lookup to distinguish a deleted edition from
+// a stale cached result before removing a saved association.
+type HardcoverSyncClient interface {
+	hardcover.HardcoverClientInterface
+	GetEditionUncached(context.Context, string) (*models.Edition, error)
+}
+
+// Service handles the synchronization between Audiobookshelf and Hardcover.
 type Service struct {
 	audiobookshelf                  audiobookshelf.AudiobookshelfClientInterface
-	hardcover                       hardcover.HardcoverClientInterface
+	hardcover                       HardcoverSyncClient
 	findExistingUserBookForBookFunc func(context.Context, int64) (int64, error)
 	config                          *config.Config
 	log                             *logger.Logger
@@ -273,7 +281,7 @@ type Service struct {
 }
 
 // hardcoverDailyQuotaPaused is intentionally optional for test clients and
-// alternate implementations of HardcoverClientInterface.
+// alternate implementations of HardcoverSyncClient.
 func (s *Service) hardcoverDailyQuotaPaused() bool {
 	client, ok := s.hardcover.(interface{ DailyQuotaPaused() bool })
 	return ok && client.DailyQuotaPaused()
@@ -318,7 +326,7 @@ func (s *Service) RequestCancellation() bool {
 // accepted run. runID is opaque and is retained exactly as supplied. queuedAt
 // is the accepted-start timestamp; when omitted for a non-empty run ID, the
 // current UTC time is used so a queued snapshot exists before execution.
-func NewServiceWithRunIdentity(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverClientInterface, cfg *config.Config, runID string, queuedAt time.Time) (*Service, error) {
+func NewServiceWithRunIdentity(absClient *audiobookshelf.Client, hcClient HardcoverSyncClient, cfg *config.Config, runID string, queuedAt time.Time) (*Service, error) {
 	if client, ok := hcClient.(*hardcover.Client); ok {
 		client.SetDryRun(cfg.Sync.DryRun)
 	}
@@ -4993,13 +5001,7 @@ func (s *Service) forgetConfirmedMissingEdition(ctx context.Context, itemID, edi
 	if !exists || association.HardcoverEditionID != editionID {
 		return false
 	}
-	freshLookup, ok := s.hardcover.(interface {
-		GetEditionUncached(context.Context, string) (*models.Edition, error)
-	})
-	if !ok {
-		return false
-	}
-	_, err := freshLookup.GetEditionUncached(ctx, editionID)
+	_, err := s.hardcover.GetEditionUncached(ctx, editionID)
 	if !errors.Is(err, models.ErrEditionNotFound) {
 		return false
 	}
