@@ -46,6 +46,8 @@ tags:
     description: Check sync status
   - name: Edition Draft
     description: Prepare read-only edition candidates from Audiobookshelf source metadata
+  - name: Edition Associations
+    description: Inspect and forget profile-scoped local edition matches
 
 components:
   securitySchemes:
@@ -855,6 +857,112 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '504':
           description: Retrieving the Audiobookshelf item timed out.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /profiles/{id}/edition-associations/{itemID}:
+    delete:
+      tags: [Edition Associations]
+      summary: Forget a profile's saved Hardcover edition match for an Audiobookshelf item
+      description: >-
+        Removes the local association and incremental checkpoint for this item,
+        then allows a later sync to run normal matching again. The next sync
+        may resolve to the same edition if the Hardcover catalogue is unchanged.
+        This action does not delete or modify Hardcover catalogue data. In dry
+        run it reports the previous resolution but leaves the saved match and
+        checkpoint in place.
+        Requests are rejected while the profile is syncing or its state file is
+        busy. Removing a match from a legacy profile state file also saves its
+        state in the current schema; see MIGRATION.md before downgrading.
+        Requires profile mutation access when authentication is enabled.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+          example: profile-123
+        - name: itemID
+          in: path
+          required: true
+          schema: {type: string}
+          description: Audiobookshelf library item ID; surrounding whitespace is trimmed.
+          example: li_8gch9ve09orgn4fdz8
+      responses:
+        '200':
+          description: Association removed, absent (safe no-op), or left unchanged during dry run.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: {type: boolean, enum: [true]}
+                  data:
+                    type: object
+                    required: [abs_item_id, previous_resolution, association_removed, persistent_change_made, dry_run]
+                    properties:
+                      abs_item_id:
+                        type: string
+                        description: Trimmed Audiobookshelf item ID addressed by the request.
+                      previous_resolution:
+                        nullable: true
+                        description: Saved local target before the request, or null when no association existed.
+                        type: object
+                        required: [hardcover_book_id, hardcover_edition_id, reading_format, provenance]
+                        properties:
+                          hardcover_book_id: {type: string}
+                          hardcover_edition_id: {type: string}
+                          reading_format: {type: string, enum: [audiobook, ebook]}
+                          provenance: {type: string}
+                      association_removed:
+                        type: boolean
+                        description: True when a saved association was removed. Always false during dry run.
+                      persistent_change_made:
+                        type: boolean
+                        description: True when this request removed the association and its incremental checkpoint.
+                      dry_run:
+                        type: boolean
+                        description: Profile dry-run setting; when true, this request leaves the association and checkpoint in place.
+        '400':
+          description: Required profile ID or Audiobookshelf item ID is missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication is required when authentication is enabled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Authenticated caller lacks profile mutation access.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Profile is unavailable to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Profile sync is active, profile deletion is in progress, or the state file is locked by another process.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Profile configuration or state file could not be read, migrated, or saved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Service is shutting down.
           content:
             application/json:
               schema:

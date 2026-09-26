@@ -132,8 +132,6 @@ func TestSync(t *testing.T) {
 		state:               testState,
 		statePath:           "",
 		lastProgressUpdates: make(map[string]progressUpdateInfo),
-		asinCache:           make(map[string]*models.HardcoverBook),
-		persistentCache:     NewPersistentASINCache("/tmp"),
 		userBookCache:       NewPersistentUserBookCache("/tmp"),
 		mismatchCollector:   mismatch.NewCollector(),
 	}
@@ -268,8 +266,6 @@ func TestProcessLibrary(t *testing.T) {
 		state:               testState,
 		statePath:           "",
 		lastProgressUpdates: make(map[string]progressUpdateInfo),
-		asinCache:           make(map[string]*models.HardcoverBook),
-		persistentCache:     NewPersistentASINCache("/tmp"),
 		userBookCache:       NewPersistentUserBookCache("/tmp"),
 		mismatchCollector:   mismatch.NewCollector(),
 	}
@@ -429,6 +425,47 @@ func TestCheckpointStatePersistsCompletedBook(t *testing.T) {
 	assert.Equal(t, 0.5, bookState.LastProgress)
 	assert.Equal(t, "IN_PROGRESS", bookState.Status)
 	assert.True(t, bookState.HasProgressSeconds)
+}
+
+func TestSyncSavesToLockedStatePathAfterSymlinkRetarget(t *testing.T) {
+	svc, mockHC := createTestService()
+	dir := t.TempDir()
+	firstPath := filepath.Join(dir, "first.json")
+	secondPath := filepath.Join(dir, "second.json")
+	aliasPath := filepath.Join(dir, "alias.json")
+	first := state.NewState()
+	first.UpdateBook("first", 0.25, "IN_PROGRESS")
+	require.NoError(t, first.Save(firstPath))
+	second := state.NewState()
+	second.UpdateBook("second", 0.75, "IN_PROGRESS")
+	require.NoError(t, second.Save(secondPath))
+	if err := os.Symlink(firstPath, aliasPath); err != nil {
+		t.Skipf("state symlinks are unavailable: %v", err)
+	}
+	svc.statePath = aliasPath
+	svc.config.Paths.MismatchOutputDir = filepath.Join(dir, "mismatches")
+
+	mockABS := new(MockAudiobookshelfClient)
+	mockABS.On("GetUserProgress", mock.Anything).Return(&models.AudiobookshelfUserProgress{}, nil).Once().Run(func(mock.Arguments) {
+		require.NoError(t, os.Remove(aliasPath))
+		require.NoError(t, os.Symlink(secondPath, aliasPath))
+	})
+	mockABS.On("GetLibraries", mock.Anything).Return([]audiobookshelf.AudiobookshelfLibrary{}, nil).Once()
+	mockHC.On("ClearUserBookCache").Return().Once()
+	svc.audiobookshelf = mockABS
+
+	require.NoError(t, svc.Sync(context.Background()))
+	require.Equal(t, aliasPath, svc.statePath)
+	firstAfter, err := state.LoadState(firstPath)
+	require.NoError(t, err)
+	_, exists := firstAfter.GetBookState("first")
+	require.True(t, exists)
+	secondAfter, err := state.LoadState(secondPath)
+	require.NoError(t, err)
+	_, exists = secondAfter.GetBookState("second")
+	require.True(t, exists, "the retargeted file must not be overwritten by sync")
+	mockABS.AssertExpectations(t)
+	mockHC.AssertExpectations(t)
 }
 
 func TestCheckpointStateSkipsUnchangedState(t *testing.T) {
@@ -608,11 +645,16 @@ func TestProcessLibraryStopsBeforeBookWhenAlreadyCanceled(t *testing.T) {
 
 func TestSyncReturnsFinalStateSaveFailure(t *testing.T) {
 	svc, mockHC := createTestService()
-	svc.statePath = t.TempDir() // Renaming a state file over a directory must fail.
+	svc.statePath = filepath.Join(t.TempDir(), "sync_state.json")
 	svc.config.Paths.MismatchOutputDir = t.TempDir()
 
 	mockABS := new(MockAudiobookshelfClient)
-	mockABS.On("GetUserProgress", mock.Anything).Return(&models.AudiobookshelfUserProgress{}, nil).Once()
+	mockABS.On("GetUserProgress", mock.Anything).Run(func(mock.Arguments) {
+		// State has already been loaded under the lock by the time external
+		// synchronization starts. Simulate the destination becoming obstructed
+		// before final persistence so this remains a final-save failure test.
+		require.NoError(t, os.Mkdir(svc.statePath, 0755))
+	}).Return(&models.AudiobookshelfUserProgress{}, nil).Once()
 	mockABS.On("GetLibraries", mock.Anything).Return([]audiobookshelf.AudiobookshelfLibrary{}, nil).Once()
 	mockHC.On("ClearUserBookCache").Return().Once()
 	svc.audiobookshelf = mockABS

@@ -75,11 +75,9 @@ func TestHardcoverSearchIntentLogsOnlyOutsideDailyPause(t *testing.T) {
 				book := models.AudiobookshelfBook{}
 				tc.setup(mockClient, &book)
 				service := &Service{
-					hardcover:       client,
-					log:             log,
-					config:          config.DefaultConfig(),
-					asinCache:       make(map[string]*models.HardcoverBook),
-					persistentCache: NewPersistentASINCache(t.TempDir()),
+					hardcover: client,
+					log:       log,
+					config:    config.DefaultConfig(),
 				}
 				tc.run(service, book)
 				mockClient.AssertExpectations(t)

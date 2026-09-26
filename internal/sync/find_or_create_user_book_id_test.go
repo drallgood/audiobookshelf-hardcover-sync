@@ -347,9 +347,6 @@ func createTestServiceWithConfig(cfg *config.Config) (*Service, *MockHardcoverCl
 	mockClient := new(MockHardcoverClient)
 
 	// Create and initialize caches
-	persistentCache := NewPersistentASINCache("/tmp/test-cache")
-	_ = persistentCache.Load() // Load cache (will create empty if doesn't exist)
-
 	userBookCache := NewPersistentUserBookCache("/tmp/test-cache")
 	_ = userBookCache.Load() // Load cache (will create empty if doesn't exist)
 
@@ -359,8 +356,6 @@ func createTestServiceWithConfig(cfg *config.Config) (*Service, *MockHardcoverCl
 		config:              cfg,
 		log:                 logger.Get(),
 		lastProgressUpdates: make(map[string]progressUpdateInfo),
-		asinCache:           make(map[string]*models.HardcoverBook),
-		persistentCache:     persistentCache,
 		userBookCache:       userBookCache,
 	}
 

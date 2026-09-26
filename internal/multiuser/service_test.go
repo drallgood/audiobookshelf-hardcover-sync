@@ -544,6 +544,347 @@ func TestDryRunActiveSnapshotCheckpointDoesNotAdvanceSuccess(t *testing.T) {
 	require.Nil(t, state.LastSuccessfulAt)
 }
 
+func TestForgetEditionAssociationRemovesAssociationAndItemCheckpoints(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	service.globalConfig.Paths.DataDir = t.TempDir()
+	const profileID = "forget-association-profile"
+	const itemID = "abs-forget-item"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Forget association", "http://audiobookshelf", "abs-token", "hc-token",
+		database.SyncConfigData{Incremental: true},
+	))
+	statePath := service.profileSpecificStatePath(profileID, "")
+	stored := statepkg.NewState()
+	stored.UpdateBookWithUserBookID(itemID, 0.35, "IN_PROGRESS", "user-book")
+	stored.SetHasProgressSeconds(itemID)
+	stored.UpdateBookWithUserBookID(itemID+":edition-45", 0.35, "IN_PROGRESS", "user-book")
+	stored.SetHasProgressSeconds(itemID + ":edition-45")
+	stored.UpdateBookWithUserBookID("unrelated-item", 0.7, "IN_PROGRESS", "other-user-book")
+	require.NoError(t, stored.SetAssociation(statepkg.Association{
+		ABSItemID: itemID, SourceASIN: "B012345678", HardcoverBookID: "book-12",
+		HardcoverEditionID: "edition-45", ReadingFormat: "audiobook", Provenance: "audible_mapping",
+	}))
+	require.NoError(t, stored.Save(statePath))
+
+	result, err := service.ForgetEditionAssociation(profileID, itemID)
+	require.NoError(t, err)
+	require.Equal(t, itemID, result.ABSItemID)
+	require.Equal(t, &ForgetAssociationResolution{
+		HardcoverBookID: "book-12", HardcoverEditionID: "edition-45", ReadingFormat: "audiobook", Provenance: "audible_mapping",
+	}, result.PreviousResolution)
+	require.True(t, result.AssociationRemoved)
+	require.True(t, result.PersistentChangeMade)
+	require.False(t, result.DryRun)
+
+	updated, err := statepkg.LoadState(statePath)
+	require.NoError(t, err)
+	_, exists := updated.GetAssociation(itemID)
+	require.False(t, exists)
+	_, exists = updated.GetBookState(itemID)
+	require.False(t, exists, "base incremental checkpoint should be cleared")
+	_, exists = updated.GetBookState(itemID + ":edition-45")
+	require.False(t, exists, "edition-specific incremental checkpoint should be cleared")
+	_, exists = updated.GetBookState("unrelated-item")
+	require.True(t, exists, "forgetting one item should preserve unrelated checkpoints")
+
+	second, err := service.ForgetEditionAssociation(profileID, itemID)
+	require.NoError(t, err)
+	require.Nil(t, second.PreviousResolution)
+	require.False(t, second.AssociationRemoved)
+	require.False(t, second.PersistentChangeMade)
+}
+
+func TestForgetEditionAssociationDryRunLeavesStateFileUnchanged(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	service.globalConfig.Paths.DataDir = t.TempDir()
+	const profileID = "forget-dry-run-profile"
+	const itemID = "abs-forget-dry-run-item"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Forget dry run", "http://audiobookshelf", "abs-token", "hc-token",
+		database.SyncConfigData{DryRun: true},
+	))
+	statePath := service.profileSpecificStatePath(profileID, "")
+	stored := statepkg.NewState()
+	stored.UpdateBookWithUserBookID(itemID, 0.5, "IN_PROGRESS", "user-book")
+	require.NoError(t, stored.SetAssociation(statepkg.Association{
+		ABSItemID: itemID, HardcoverBookID: "book-1", HardcoverEditionID: "edition-1",
+		ReadingFormat: "ebook", Provenance: "isbn",
+	}))
+	require.NoError(t, stored.Save(statePath))
+	before, err := os.ReadFile(statePath)
+	require.NoError(t, err)
+
+	result, err := service.ForgetEditionAssociation(profileID, itemID)
+	require.NoError(t, err)
+	require.NotNil(t, result.PreviousResolution)
+	require.True(t, result.DryRun)
+	require.False(t, result.AssociationRemoved)
+	require.False(t, result.PersistentChangeMade)
+	after, err := os.ReadFile(statePath)
+	require.NoError(t, err)
+	require.Equal(t, before, after)
+	stillStored, err := statepkg.LoadState(statePath)
+	require.NoError(t, err)
+	_, exists := stillStored.GetAssociation(itemID)
+	require.True(t, exists)
+}
+
+func TestForgetEditionAssociationDryRunDoesNotMigrateLegacyState(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	service.globalConfig.Paths.DataDir = t.TempDir()
+	const (
+		profileID = "legacy/forget-profile"
+		itemID    = "abs-legacy-forget-item"
+	)
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Legacy forget", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{DryRun: true},
+	))
+	canonicalPath := service.profileSpecificStatePath(profileID, "")
+	legacyPath := service.legacyProfileStatePath(profileID, "")
+	require.NoError(t, os.MkdirAll(filepath.Dir(legacyPath), 0755))
+	legacyState := statepkg.NewState()
+	require.NoError(t, legacyState.SetAssociation(statepkg.Association{
+		ABSItemID: itemID, HardcoverBookID: "book-legacy", HardcoverEditionID: "edition-legacy",
+		ReadingFormat: "audiobook", Provenance: "audible_mapping",
+	}))
+	require.NoError(t, legacyState.Save(legacyPath))
+
+	result, err := service.ForgetEditionAssociation(profileID, itemID)
+	require.NoError(t, err)
+	require.NotNil(t, result.PreviousResolution)
+	require.Equal(t, "edition-legacy", result.PreviousResolution.HardcoverEditionID)
+	require.False(t, result.PersistentChangeMade)
+	_, err = os.Lstat(canonicalPath)
+	require.True(t, os.IsNotExist(err), "dry-run must not create the migrated canonical file")
+	_, err = os.Lstat(legacyPath)
+	require.NoError(t, err, "dry-run must not rename the legacy file")
+	_, err = os.Lstat(legacyPath + ".migrated")
+	require.True(t, os.IsNotExist(err), "dry-run must not create a legacy migration backup")
+}
+
+func TestForgetEditionAssociationSerializesWithLegacyStateMigration(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	service.globalConfig.Paths.DataDir = t.TempDir()
+	const (
+		profileID = "legacy/concurrent-forget-profile"
+		itemID    = "abs-concurrent-forget-item"
+	)
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Concurrent legacy forget", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
+	))
+	legacyPath := service.legacyProfileStatePath(profileID, "")
+	canonicalPath := service.profileSpecificStatePath(profileID, "")
+	require.NoError(t, os.MkdirAll(filepath.Dir(legacyPath), 0755))
+	legacy := statepkg.NewState()
+	legacy.UpdateBookWithUserBookID(itemID, 0.42, "IN_PROGRESS", "user-book")
+	legacy.SetHasProgressSeconds(itemID)
+	legacy.UpdateBookWithUserBookID(itemID+":edition-9", 0.42, "IN_PROGRESS", "user-book")
+	require.NoError(t, legacy.SetAssociation(statepkg.Association{
+		ABSItemID: itemID, HardcoverBookID: "book-9", HardcoverEditionID: "edition-9",
+		ReadingFormat: "audiobook", Provenance: "audible_mapping",
+	}))
+	require.NoError(t, legacy.Save(legacyPath))
+
+	entered := make(chan struct{})
+	releaseMigration := make(chan struct{})
+	migrationDone := make(chan error, 1)
+	go func() {
+		migrationDone <- service.withProfileStateFileLock(profileID, "", func(lockedStatePath string) error {
+			close(entered)
+			<-releaseMigration
+			return service.migrateLegacyProfileStatePath(profileID, "", lockedStatePath)
+		})
+	}()
+	<-entered // Migration owns the same canonical sidecar lock used by forget.
+
+	_, err := service.ForgetEditionAssociation(profileID, itemID)
+	require.ErrorIs(t, err, ErrProfileStateBusy)
+	legacyBefore, err := os.ReadFile(legacyPath)
+	require.NoError(t, err)
+	_, err = os.Lstat(canonicalPath)
+	require.True(t, os.IsNotExist(err), "a rejected forget must not create canonical state")
+
+	close(releaseMigration)
+	require.NoError(t, <-migrationDone)
+	result, err := service.ForgetEditionAssociation(profileID, itemID)
+	require.NoError(t, err)
+	require.True(t, result.AssociationRemoved)
+	require.Equal(t, "edition-9", result.PreviousResolution.HardcoverEditionID)
+
+	updated, err := statepkg.LoadState(canonicalPath)
+	require.NoError(t, err)
+	_, exists := updated.GetAssociation(itemID)
+	require.False(t, exists, "the later sync load must observe the forget instead of a stale migration snapshot")
+	_, exists = updated.GetBookState(itemID)
+	require.False(t, exists)
+	_, exists = updated.GetBookState(itemID + ":edition-9")
+	require.False(t, exists)
+	_, err = os.Lstat(legacyPath + ".migrated")
+	require.NoError(t, err)
+	legacyAfter, err := os.ReadFile(legacyPath + ".migrated")
+	require.NoError(t, err)
+	require.Equal(t, legacyBefore, legacyAfter, "migration backup should retain the pre-forget source snapshot")
+}
+
+func TestUpdateProfileConfigSerializesWithForgetEditionAssociation(t *testing.T) {
+	service, db := newStatusLookupService(t)
+	service.globalConfig.Paths.DataDir = t.TempDir()
+	const (
+		profileID = "forget-config-serialization-profile"
+		itemID    = "abs-forget-config-serialization-item"
+		oldFile   = "old-state.json"
+		newFile   = "new-state.json"
+	)
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Forget config serialization", "http://audiobookshelf", "abs-token", "hc-token",
+		database.SyncConfigData{StateFile: oldFile},
+	))
+	writeAssociation := func(configuredPath, editionID string) string {
+		path := service.profileSpecificStatePath(profileID, configuredPath)
+		state := statepkg.NewState()
+		require.NoError(t, state.SetAssociation(statepkg.Association{
+			ABSItemID: itemID, HardcoverBookID: "book-" + editionID, HardcoverEditionID: editionID,
+			ReadingFormat: "audiobook", Provenance: "audible_mapping",
+		}))
+		require.NoError(t, state.Save(path))
+		return path
+	}
+	oldStatePath := writeAssociation(oldFile, "old-edition")
+	newStatePath := writeAssociation(newFile, "new-edition")
+
+	updateReadEntered := make(chan struct{})
+	releaseUpdateRead := make(chan struct{})
+	var releaseUpdateOnce sync.Once
+	releaseUpdate := func() { releaseUpdateOnce.Do(func() { close(releaseUpdateRead) }) }
+	const updateReadCallback = "multiuser_test_block_profile_config_read_for_forget"
+	var updateReadOnce sync.Once
+	require.NoError(t, db.Callback().Query().Before("gorm:query").Register(updateReadCallback, func(tx *gorm.DB) {
+		if tx.Statement.Schema == nil || tx.Statement.Schema.Name != "SyncProfileConfig" {
+			return
+		}
+		updateReadOnce.Do(func() {
+			close(updateReadEntered)
+			<-releaseUpdateRead
+		})
+	}))
+	t.Cleanup(func() {
+		releaseUpdate()
+		require.NoError(t, db.Callback().Query().Remove(updateReadCallback))
+	})
+
+	forgetReadEntered := make(chan struct{})
+	var forgetReadOnce sync.Once
+	const forgetReadCallback = "multiuser_test_observe_forget_profile_read"
+	require.NoError(t, db.Callback().Query().Before("gorm:query").Register(forgetReadCallback, func(tx *gorm.DB) {
+		if tx.Statement.Schema != nil && tx.Statement.Schema.Name == "SyncProfile" {
+			forgetReadOnce.Do(func() { close(forgetReadEntered) })
+		}
+	}))
+	t.Cleanup(func() { require.NoError(t, db.Callback().Query().Remove(forgetReadCallback)) })
+
+	updateDone := make(chan error, 1)
+	go func() {
+		updateDone <- service.UpdateProfileConfig(profileID, "", "", "", database.SyncConfigData{StateFile: newFile})
+	}()
+	<-updateReadEntered // The update owns its profile gate while paused in the repository read.
+
+	forgetDone := make(chan struct {
+		result *ForgetAssociationResult
+		err    error
+	}, 1)
+	forgetStarted := make(chan struct{})
+	go func() {
+		close(forgetStarted)
+		result, err := service.ForgetEditionAssociation(profileID, itemID)
+		forgetDone <- struct {
+			result *ForgetAssociationResult
+			err    error
+		}{result: result, err: err}
+	}()
+	<-forgetStarted
+	select {
+	case <-forgetReadEntered:
+		releaseUpdate()
+		t.Fatal("forget read the profile before the config update completed")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	releaseUpdate()
+	require.NoError(t, <-updateDone)
+	<-forgetReadEntered
+	forgot := <-forgetDone
+	require.NoError(t, forgot.err)
+	require.True(t, forgot.result.AssociationRemoved)
+	require.Equal(t, "new-edition", forgot.result.PreviousResolution.HardcoverEditionID)
+
+	oldState, err := statepkg.LoadState(oldStatePath)
+	require.NoError(t, err)
+	_, exists := oldState.GetAssociation(itemID)
+	require.True(t, exists, "the update completed first, so forget should leave the old configured state file untouched")
+	newState, err := statepkg.LoadState(newStatePath)
+	require.NoError(t, err)
+	_, exists = newState.GetAssociation(itemID)
+	require.False(t, exists, "forget should clear the association from the newly configured state file")
+}
+
+func TestForgetEditionAssociationRejectsActiveSyncAndExternalStateLock(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	service.globalConfig.Paths.DataDir = t.TempDir()
+	const profileID = "forget-busy-profile"
+	const itemID = "abs-forget-busy-item"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Forget busy", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
+	))
+	statePath := service.profileSpecificStatePath(profileID, "")
+	stored := statepkg.NewState()
+	require.NoError(t, stored.SetAssociation(statepkg.Association{
+		ABSItemID: itemID, HardcoverBookID: "book-1", HardcoverEditionID: "edition-1",
+		ReadingFormat: "ebook", Provenance: "isbn",
+	}))
+	require.NoError(t, stored.Save(statePath))
+	before, err := os.ReadFile(statePath)
+	require.NoError(t, err)
+
+	installAcceptedTestRun(t, service, profileID, "forget-active-run", false)
+	_, err = service.ForgetEditionAssociation(profileID, itemID)
+	require.ErrorIs(t, err, ErrSyncAlreadyActive)
+	service.syncMutex.Lock()
+	delete(service.activeSyncs, profileID)
+	delete(service.activeRuns, profileID)
+	service.syncMutex.Unlock()
+
+	fileLock, err := statepkg.AcquireFileLock(statePath)
+	require.NoError(t, err)
+	_, err = service.ForgetEditionAssociation(profileID, itemID)
+	require.ErrorIs(t, err, ErrProfileStateBusy)
+	require.NoError(t, fileLock.Close())
+
+	after, err := os.ReadFile(statePath)
+	require.NoError(t, err)
+	require.Equal(t, before, after, "busy requests must leave persisted state unchanged")
+}
+
+func TestForgetEditionAssociationReturnsStorageErrorWithoutClaimingRemoval(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	service.globalConfig.Paths.DataDir = t.TempDir()
+	const profileID = "forget-storage-error-profile"
+	const itemID = "abs-forget-storage-error-item"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Forget storage error", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
+	))
+	statePath := service.profileSpecificStatePath(profileID, "")
+	require.NoError(t, os.MkdirAll(filepath.Dir(statePath), 0755))
+	const invalidState = `{"version":"unsupported"}`
+	require.NoError(t, os.WriteFile(statePath, []byte(invalidState), 0600))
+
+	result, err := service.ForgetEditionAssociation(profileID, itemID)
+	require.Error(t, err)
+	require.Nil(t, result)
+	after, readErr := os.ReadFile(statePath)
+	require.NoError(t, readErr)
+	require.Equal(t, invalidState, string(after))
+}
+
 func acceptedTerminalStatus(profileID string, run activeSyncRun, phase string) *SyncProfileStatus {
 	snapshot := newRunSnapshot(profileID, run, phase)
 	snapshot.FinishedAt = run.startedAt.Add(time.Minute)
@@ -1357,6 +1698,30 @@ func TestCreateProfileValidatesComposedStateFilenameLength(t *testing.T) {
 	}
 }
 
+func TestCreateProfileAtMaximumStateFilenameCanAcquireLock(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	service.globalConfig.Paths.DataDir = t.TempDir()
+	profileID := strings.Repeat("d", 244)
+
+	require.NoError(t, service.CreateProfile(
+		profileID,
+		"Profile",
+		"http://audiobookshelf",
+		"abs-token",
+		"hc-token",
+		database.SyncConfigData{},
+	))
+	profile, err := service.GetProfile(profileID)
+	require.NoError(t, err)
+	require.NotNil(t, profile)
+
+	statePath := service.profileSpecificStatePath(profileID, profile.SyncConfig.StateFile)
+	require.Len(t, []byte(filepath.Base(statePath)), maxStateFileComponentBytes)
+	fileLock, err := statepkg.AcquireFileLock(statePath)
+	require.NoError(t, err)
+	require.NoError(t, fileLock.Close())
+}
+
 func TestProfileAudnexusRegionNormalizationAndPersistence(t *testing.T) {
 	service, _ := newStatusLookupService(t)
 	const profileID = "audnexus-region-profile"
@@ -1804,7 +2169,7 @@ func TestMigratesLegacyRawProfileStatePath(t *testing.T) {
 			legacyState.UpdateBook("preserved-book", 0.5, "IN_PROGRESS")
 			require.NoError(t, legacyState.Save(legacyPath))
 
-			require.NoError(t, service.migrateLegacyProfileStatePath(profileID, configuredPath))
+			require.NoError(t, service.migrateLegacyProfileStatePath(profileID, configuredPath, canonicalPath))
 
 			migrated, err := statepkg.LoadState(canonicalPath)
 			require.NoError(t, err)
@@ -1831,7 +2196,7 @@ func TestLegacyProfileStateMigrationSkipsUnsafeOrIneligibleCandidates(t *testing
 
 		attackerID := "foo/../sync_state.victim"
 		attackerCanonicalPath := service.profileSpecificStatePath(attackerID, "state.json")
-		require.NoError(t, service.migrateLegacyProfileStatePath(attackerID, "state.json"))
+		require.NoError(t, service.migrateLegacyProfileStatePath(attackerID, "state.json", attackerCanonicalPath))
 
 		require.NoFileExists(t, attackerCanonicalPath)
 		require.FileExists(t, victimPath)
@@ -1855,7 +2220,7 @@ func TestLegacyProfileStateMigrationSkipsUnsafeOrIneligibleCandidates(t *testing
 		require.NoError(t, legacyState.Save(legacyPath))
 		canonicalPath := service.profileSpecificStatePath(profileID, "state.json")
 
-		require.NoError(t, service.migrateLegacyProfileStatePath(profileID, "state.json"))
+		require.NoError(t, service.migrateLegacyProfileStatePath(profileID, "state.json", canonicalPath))
 		require.NoFileExists(t, canonicalPath)
 		require.FileExists(t, legacyPath)
 	})
@@ -1875,7 +2240,7 @@ func TestLegacyProfileStateMigrationSkipsUnsafeOrIneligibleCandidates(t *testing
 		}
 		canonicalPath := service.profileSpecificStatePath(profileID, "state.json")
 
-		require.NoError(t, service.migrateLegacyProfileStatePath(profileID, "state.json"))
+		require.NoError(t, service.migrateLegacyProfileStatePath(profileID, "state.json", canonicalPath))
 		require.NoFileExists(t, canonicalPath)
 		_, err := os.Lstat(legacyPath)
 		require.NoError(t, err)
@@ -1896,7 +2261,7 @@ func TestLegacyProfileStateMigrationSkipsUnsafeOrIneligibleCandidates(t *testing
 		legacyState.UpdateBook("legacy-book", 0.25, "IN_PROGRESS")
 		require.NoError(t, legacyState.Save(legacyPath))
 
-		require.NoError(t, service.migrateLegacyProfileStatePath(profileID, "state.json"))
+		require.NoError(t, service.migrateLegacyProfileStatePath(profileID, "state.json", canonicalPath))
 		migrated, err := statepkg.LoadState(canonicalPath)
 		require.NoError(t, err)
 		_, exists := migrated.GetBookState("canonical-book")

@@ -166,6 +166,15 @@ func (m *MockHardcoverClient) GetEdition(ctx context.Context, editionID string) 
 	return args.Get(0).(*models.Edition), args.Error(1)
 }
 
+// GetEditionUncached mocks the required fresh edition lookup used by sync.
+func (m *MockHardcoverClient) GetEditionUncached(ctx context.Context, editionID string) (*models.Edition, error) {
+	args := m.Called(ctx, editionID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.Edition), args.Error(1)
+}
+
 // CheckBookOwnership mocks the CheckBookOwnership method
 func (m *MockHardcoverClient) CheckBookOwnership(ctx context.Context, editionID int) (bool, error) {
 	args := m.Called(ctx, editionID)
@@ -710,9 +719,6 @@ func createTestService() (*Service, *MockHardcoverClient) {
 	state := state.NewState()
 
 	// Create and initialize caches
-	persistentCache := NewPersistentASINCache("/tmp/test-cache")
-	_ = persistentCache.Load() // Load cache (will create empty if doesn't exist)
-
 	userBookCache := NewPersistentUserBookCache("/tmp/test-cache")
 	_ = userBookCache.Load()
 	userBookCache.Clear() // Load cache (will create empty if doesn't exist)
@@ -724,8 +730,6 @@ func createTestService() (*Service, *MockHardcoverClient) {
 		log:                 logger.Get(),
 		state:               state,
 		lastProgressUpdates: make(map[string]progressUpdateInfo),
-		asinCache:           make(map[string]*models.HardcoverBook),
-		persistentCache:     persistentCache,
 		userBookCache:       userBookCache,
 		createdReadsThisRun: make(map[int64]struct{}),
 		mismatchCollector:   mismatch.NewCollector(),

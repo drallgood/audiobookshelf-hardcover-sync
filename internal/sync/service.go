@@ -37,6 +37,26 @@ var (
 	errHardcoverTitleOnly    = errors.New("found by title/author only")
 )
 
+type editionBoundMutationError struct {
+	editionID string
+	err       error
+}
+
+func (e *editionBoundMutationError) Error() string {
+	return e.err.Error()
+}
+
+func (e *editionBoundMutationError) Unwrap() error {
+	return e.err
+}
+
+func withEditionBoundMutation(err error, editionID string) error {
+	if err == nil || editionID == "" {
+		return err
+	}
+	return &editionBoundMutationError{editionID: editionID, err: err}
+}
+
 // progressUpdateInfo stores information about the last progress update for a book
 type progressUpdateInfo struct {
 	timestamp time.Time
@@ -206,21 +226,26 @@ func hasReliableEmbeddedProgress(book models.AudiobookshelfBook) bool {
 	return book.Progress.CurrentTime > 0 && book.Media.Duration > 0
 }
 
-// Service handles the synchronization between Audiobookshelf and Hardcover
+// HardcoverSyncClient is the Hardcover client contract required by sync.
+// Sync needs an uncached edition lookup to distinguish a deleted edition from
+// a stale cached result before removing a saved association.
+type HardcoverSyncClient interface {
+	hardcover.HardcoverClientInterface
+	GetEditionUncached(context.Context, string) (*models.Edition, error)
+}
+
+// Service handles the synchronization between Audiobookshelf and Hardcover.
 type Service struct {
 	audiobookshelf                  audiobookshelf.AudiobookshelfClientInterface
-	hardcover                       hardcover.HardcoverClientInterface
+	hardcover                       HardcoverSyncClient
 	findExistingUserBookForBookFunc func(context.Context, int64) (int64, error)
 	config                          *config.Config
 	log                             *logger.Logger
 	state                           *state.State
 	statePath                       string
-	lastProgressUpdates             map[string]progressUpdateInfo    // Cache of last progress updates
-	lastProgressMutex               sync.RWMutex                     // Mutex to protect the cache
-	asinCache                       map[string]*models.HardcoverBook // Cache for ASIN lookups (in-memory)
-	asinCacheMutex                  sync.RWMutex                     // Mutex to protect ASIN cache
-	persistentCache                 *PersistentASINCache             // Persistent ASIN cache across runs
-	userBookCache                   *PersistentUserBookCache         // Persistent user book cache
+	lastProgressUpdates             map[string]progressUpdateInfo // Cache of last progress updates
+	lastProgressMutex               sync.RWMutex                  // Mutex to protect the cache
+	userBookCache                   *PersistentUserBookCache      // Persistent user book cache
 	runStateMutex                   sync.RWMutex
 	booksTotal                      int32
 	// Outcome state is scoped to this service instance and protected by the
@@ -256,7 +281,7 @@ type Service struct {
 }
 
 // hardcoverDailyQuotaPaused is intentionally optional for test clients and
-// alternate implementations of HardcoverClientInterface.
+// alternate implementations of HardcoverSyncClient.
 func (s *Service) hardcoverDailyQuotaPaused() bool {
 	client, ok := s.hardcover.(interface{ DailyQuotaPaused() bool })
 	return ok && client.DailyQuotaPaused()
@@ -301,7 +326,7 @@ func (s *Service) RequestCancellation() bool {
 // accepted run. runID is opaque and is retained exactly as supplied. queuedAt
 // is the accepted-start timestamp; when omitted for a non-empty run ID, the
 // current UTC time is used so a queued snapshot exists before execution.
-func NewServiceWithRunIdentity(absClient *audiobookshelf.Client, hcClient hardcover.HardcoverClientInterface, cfg *config.Config, runID string, queuedAt time.Time) (*Service, error) {
+func NewServiceWithRunIdentity(absClient *audiobookshelf.Client, hcClient HardcoverSyncClient, cfg *config.Config, runID string, queuedAt time.Time) (*Service, error) {
 	if client, ok := hcClient.(*hardcover.Client); ok {
 		client.SetDryRun(cfg.Sync.DryRun)
 	}
@@ -319,8 +344,6 @@ func NewServiceWithRunIdentity(absClient *audiobookshelf.Client, hcClient hardco
 		log:                    logger.Get(),
 		statePath:              cfg.Sync.StateFile,
 		lastProgressUpdates:    make(map[string]progressUpdateInfo),
-		asinCache:              make(map[string]*models.HardcoverBook),
-		persistentCache:        NewPersistentASINCache(cfg.Paths.CacheDir),
 		userBookCache:          NewPersistentUserBookCache(cfg.Paths.CacheDir),
 		mismatchCollector:      mismatch.NewCollector(),
 		outcomeRecords:         make(map[string]BookOutcomeRecord),
@@ -331,32 +354,15 @@ func NewServiceWithRunIdentity(absClient *audiobookshelf.Client, hcClient hardco
 		runIdentityInjected:    runID != "",
 		libraryCandidateTotals: make(map[string]int),
 		createdReadsThisRun:    make(map[int64]struct{}),
+		state:                  state.NewState(),
 	}
 	if svc.runIdentityInjected {
 		svc.runState = string(RunPhaseQueued)
 		svc.lastActivityAt = queuedAt
 	}
 
-	// Load or create state
-	var err error
-	svc.state, err = state.LoadState(svc.statePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load state: %w", err)
-	}
-
-	// Load persistent ASIN cache
-	if err := svc.persistentCache.Load(); err != nil {
-		svc.log.Warn("Failed to load persistent ASIN cache, starting with empty cache", map[string]interface{}{
-			"error": err.Error(),
-		})
-	} else {
-		total, successful, failed := svc.persistentCache.Stats()
-		svc.log.Debug("Loaded persistent ASIN cache", map[string]interface{}{
-			"total_entries":      total,
-			"successful_lookups": successful,
-			"failed_lookups":     failed,
-		})
-	}
+	// Sync reloads state only after it has acquired the cross-process state
+	// lock. Keep an empty state available for service helpers before a run.
 
 	// Load persistent user book cache
 	if err := svc.userBookCache.Load(); err != nil {
@@ -373,59 +379,6 @@ func NewServiceWithRunIdentity(absClient *audiobookshelf.Client, hcClient hardco
 	}
 
 	return svc, nil
-}
-
-// getASINFromCache retrieves a cached ASIN lookup result
-// Checks in-memory cache first, then persistent cache
-func (s *Service) getASINFromCache(asin string) (*models.HardcoverBook, bool) {
-	// Check in-memory cache first (fastest)
-	s.asinCacheMutex.RLock()
-	book, exists := s.asinCache[asin]
-	s.asinCacheMutex.RUnlock()
-
-	if exists && book != nil {
-		return book, true
-	}
-
-	// Check persistent cache
-	book, exists = s.persistentCache.Get(asin)
-	if exists && book != nil {
-		// Promote to in-memory cache for faster access
-		s.asinCacheMutex.Lock()
-		s.asinCache[asin] = book
-		s.asinCacheMutex.Unlock()
-
-		s.log.Debug("Promoted ASIN from persistent to in-memory cache", map[string]interface{}{
-			"asin": asin,
-		})
-		return book, true
-	}
-
-	// Nil entries were used by older versions to cache technical lookup
-	// failures. Treat them as misses so a transient error is retried.
-	return nil, false
-}
-
-// setASINInCache stores an ASIN lookup result in both caches
-func (s *Service) setASINInCache(asin string, book *models.HardcoverBook) {
-	if book == nil {
-		return
-	}
-	// Store in in-memory cache
-	s.asinCacheMutex.Lock()
-	s.asinCache[asin] = book
-	s.asinCacheMutex.Unlock()
-
-	// Store in persistent cache
-	s.persistentCache.Set(asin, book)
-}
-
-// clearASINCache clears only the in-memory ASIN cache (persistent cache remains)
-func (s *Service) clearASINCache() {
-	s.asinCacheMutex.Lock()
-	s.asinCache = make(map[string]*models.HardcoverBook)
-	s.asinCacheMutex.Unlock()
-	s.log.Debug("Cleared in-memory ASIN cache for new sync (persistent cache preserved)", nil)
 }
 
 func outcomeCountPointer(counts *OutcomeCounts, outcome SyncOutcome) *int32 {
@@ -460,6 +413,9 @@ func classifyBookLookupOutcome(err error) SyncOutcome {
 		return OutcomeFailed
 	}
 	if errors.Is(err, errHardcoverTitleOnly) {
+		return OutcomeNeedsReview
+	}
+	if errors.Is(err, hardcover.ErrASINLookupConflict) {
 		return OutcomeNeedsReview
 	}
 	if errors.Is(err, errHardcoverBookNotFound) {
@@ -1149,29 +1105,6 @@ func (s *Service) logSyncSummary() {
 	s.log.Info("========================================", nil)
 }
 
-// logASINCacheStats logs ASIN cache performance statistics
-func (s *Service) logASINCacheStats() {
-	s.asinCacheMutex.RLock()
-	// Get persistent cache stats
-	total, successful, failed := s.persistentCache.Stats()
-
-	// Calculate potential API call savings
-	potentialSavings := 0
-	for _, book := range s.asinCache {
-		if book != nil {
-			potentialSavings++
-		}
-	}
-	s.asinCacheMutex.RUnlock()
-
-	s.log.Debug("ASIN Cache Performance Statistics", map[string]interface{}{
-		"total_cached_asins":  total,
-		"successful_lookups":  successful,
-		"failed_lookups":      failed,
-		"cache_hit_potential": fmt.Sprintf("Avoided up to %d duplicate API calls", potentialSavings),
-	})
-}
-
 // findOrCreateUserBookID finds or creates a user book ID for the given edition ID and status
 func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status string) (int64, error) {
 	s.log.Debug("Starting findOrCreateUserBookID", map[string]interface{}{
@@ -1263,6 +1196,7 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 					"error": edErr.Error(),
 				})
 				reportProcessBookEditionCorrection(ctx, OutcomeFailed, "failed to correct Hardcover user book edition", edErr)
+				return 0, withEditionBoundMutation(fmt.Errorf("failed to update user book edition: %w", edErr), editionID)
 			} else {
 				reportProcessBookEditionCorrection(ctx, OutcomeSynced, "corrected Hardcover user book edition", nil)
 			}
@@ -1365,7 +1299,7 @@ func (s *Service) findOrCreateUserBookID(ctx context.Context, editionID, status 
 			"editionID": editionIDInt,
 			"status":    creationStatus,
 		})
-		return 0, fmt.Errorf("failed to create user book: %w", err)
+		return 0, withEditionBoundMutation(fmt.Errorf("failed to create user book: %w", err), editionID)
 	}
 
 	// Convert the new user book ID to an integer64
@@ -1438,10 +1372,36 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 		s.transitionRunPhase(runState, err)
 	}()
 
-	// Mismatches are collected in the run-local collector and exported below.
+	// Load state only after acquiring the sidecar lock and hold it through all
+	// per-book checkpoints and the final save. This prevents another CLI or web
+	// process from loading the same old snapshot and overwriting this run.
+	stateLock, lockErr := state.AcquireFileLock(s.statePath)
+	if lockErr != nil {
+		return fmt.Errorf("failed to acquire sync state lock: %w", lockErr)
+	}
+	// Every checkpoint and final save must use the target resolved when the
+	// lock was acquired, even if the configured symlink changes during sync.
+	configuredStatePath := s.statePath
+	s.statePath = stateLock.StatePath()
+	defer func() {
+		if closeErr := stateLock.Close(); closeErr != nil {
+			wrapped := fmt.Errorf("failed to release sync state lock: %w", closeErr)
+			if err != nil {
+				err = errors.Join(err, wrapped)
+			} else {
+				err = wrapped
+			}
+		}
+	}()
+	defer func() { s.statePath = configuredStatePath }()
 
-	// Clear ASIN cache to ensure fresh lookups for this sync run
-	s.clearASINCache()
+	loadedState, loadErr := state.LoadState(s.statePath)
+	if loadErr != nil {
+		return fmt.Errorf("failed to load state: %w", loadErr)
+	}
+	s.state = loadedState
+
+	// Mismatches are collected in the run-local collector and exported below.
 
 	// Clear user book cache to ensure fresh edition-specific lookups
 	s.hardcover.ClearUserBookCache()
@@ -1725,18 +1685,7 @@ func (s *Service) Sync(ctx context.Context) (err error) {
 		s.log.Info("[DRY-RUN] Skipping sync state save", nil)
 	}
 
-	// Log ASIN cache performance statistics
-	s.logASINCacheStats()
-
 	if !s.config.Sync.DryRun {
-		if cacheErr := s.persistentCache.Save(); cacheErr != nil {
-			s.log.Warn("Failed to save persistent ASIN cache", map[string]interface{}{
-				"error": cacheErr.Error(),
-			})
-		} else {
-			s.log.Debug("Saved persistent ASIN cache", nil)
-		}
-
 		if cacheErr := s.userBookCache.Save(); cacheErr != nil {
 			s.log.Warn("Failed to save persistent user book cache", map[string]interface{}{
 				"error": cacheErr.Error(),
@@ -2223,7 +2172,8 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	}
 
 	// Find the book in Hardcover to get the edition ID
-	hcBook, findErr = s.findBookInHardcover(ctx, book)
+	var foundByASIN bool
+	hcBook, findErr, foundByASIN = s.findBookInHardcoverWithASINMatch(ctx, book)
 	if findErr != nil {
 		// Handle mismatch case (found by title/author)
 		if errors.Is(findErr, errHardcoverTitleOnly) ||
@@ -2612,8 +2562,13 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		"status":      status,
 	})
 
-	// Find the book in Hardcover
-	hcBook, findErr = s.findBookInHardcover(ctx, book)
+	// Preserve the established second lookup for ISBN/title matches, which
+	// revalidates those results before mutation. An ASIN match is already
+	// confirmed by the format-scoped lookup and must not depend on a positive
+	// cache to avoid repeating the same external request.
+	if !foundByASIN {
+		hcBook, findErr = s.findBookInHardcover(ctx, book)
+	}
 	if findErr != nil {
 		outcomeError = findErr
 		lookupOutcome := classifyBookLookupOutcome(findErr)
@@ -2907,6 +2862,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	// Find or create a user book ID for this edition with the determined status
 	userBookID, err := s.findOrCreateUserBookID(ctx, editionID, status)
 	if err != nil {
+		s.forgetConfirmedMissingEditionForError(ctx, book.ID, editionID, err)
 		outcomeError = err
 		setOutcome(OutcomeFailed, "failed to get or create user book ID")
 		bookLog.Error("Failed to get or create user book ID", map[string]interface{}{
@@ -2939,6 +2895,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			"progress": progress,
 		})
 		if err := s.HandleFinishedBook(ctx, book, editionID, userBookID); err != nil {
+			s.forgetConfirmedMissingEditionForError(ctx, book.ID, "", err)
 			outcomeError = err
 			setOutcome(OutcomeFailed, "failed to handle finished book")
 			bookLog.Error("Failed to handle finished book", map[string]interface{}{
@@ -2958,6 +2915,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 
 		// Call handleInProgressBook to update the progress with the composite state key
 		if err := s.handleInProgressBook(ctx, userBookID, book, stateKey); err != nil {
+			s.forgetConfirmedMissingEditionForError(ctx, book.ID, "", err)
 			outcomeError = err
 			setOutcome(OutcomeFailed, "failed to handle in-progress book")
 			bookLog.Error("Failed to handle in-progress book", map[string]interface{}{
@@ -3261,7 +3219,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 				"error":   err.Error(),
 				"read_id": latestUnfinishedRead.ID,
 			})
-			return fmt.Errorf("error updating read status: %w", err)
+			return fmt.Errorf("error updating read status: %w", withEditionBoundMutation(err, editionID))
 		}
 
 		log.Info("Updated existing read status to mark as finished", map[string]interface{}{
@@ -3311,7 +3269,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 			log.Error("Failed to create new read record", map[string]interface{}{
 				"error": err.Error(),
 			})
-			return fmt.Errorf("error creating new read record: %w", err)
+			return fmt.Errorf("error creating new read record: %w", withEditionBoundMutation(err, editionID))
 		}
 
 		log.Info("Successfully created new read record")
@@ -3527,6 +3485,10 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 		if parsed, parseErr := strconv.ParseInt(hcBook.EditionID, 10, 64); parseErr == nil {
 			targetEditionID = &parsed
 		}
+	}
+	targetEditionMutationID := ""
+	if targetEditionID != nil {
+		targetEditionMutationID = strconv.FormatInt(*targetEditionID, 10)
 	}
 	var userBookEditionID *int64
 	if hcBook != nil && hcBook.EditionID != "" {
@@ -3974,7 +3936,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 						"read_id": readStatusToUpdate.ID,
 						"error":   closeErr.Error(),
 					}).Error("Failed to close stale unfinished reread")
-					return fmt.Errorf("failed to close stale unfinished reread: %w", closeErr)
+					return fmt.Errorf("failed to close stale unfinished reread: %w", withEditionBoundMutation(closeErr, targetEditionMutationID))
 				}
 
 				log.Debug("Closed stale unfinished reread, creating a new active read", map[string]interface{}{
@@ -4225,7 +4187,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 				"error":   err.Error(),
 			}
 			log.With(errCtx).Error("Failed to update progress")
-			return fmt.Errorf("failed to update progress: %w", err)
+			return fmt.Errorf("failed to update progress: %w", withEditionBoundMutation(err, targetEditionMutationID))
 		}
 
 		if s.config.Sync.DryRun {
@@ -4427,7 +4389,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 			s.createdReadsMutex.Unlock()
 			errCtx := map[string]interface{}{"error": err.Error()}
 			log.With(errCtx).Error("Failed to create read status in Hardcover")
-			return fmt.Errorf("failed to create read status in Hardcover: %w", err)
+			return fmt.Errorf("failed to create read status in Hardcover: %w", withEditionBoundMutation(err, targetEditionMutationID))
 		}
 
 		if s.config.Sync.DryRun {
@@ -5011,11 +4973,122 @@ func isbnSearchCandidates(raw string) []isbnCandidate {
 	return []isbnCandidate{given, {value: parsed.Counterpart, is13: !parsed.Is13}}
 }
 
+func associationSourceIdentifiers(book models.AudiobookshelfBook) (asin, isbn10, isbn13 string) {
+	asin = book.Media.Metadata.ASIN
+	rawISBN := book.Media.Metadata.ISBN
+	normalizedISBN := isbn.Normalize(rawISBN)
+	switch len(normalizedISBN) {
+	case 10:
+		isbn10 = rawISBN
+	default:
+		// Keep the reported value even when it is malformed or absent from the
+		// usual ISBN lengths so a later source correction invalidates the mapping.
+		isbn13 = rawISBN
+	}
+	return asin, isbn10, isbn13
+}
+
+func associationMatchesBook(association state.Association, book models.AudiobookshelfBook) bool {
+	if association.ABSItemID != book.ID || !strings.EqualFold(strings.TrimSpace(association.ReadingFormat), book.ReadingFormat()) {
+		return false
+	}
+	asin, isbn10, isbn13 := associationSourceIdentifiers(book)
+	return strings.EqualFold(strings.TrimSpace(association.SourceASIN), strings.TrimSpace(asin)) &&
+		isbn.Normalize(association.SourceISBN10) == isbn.Normalize(isbn10) &&
+		isbn.Normalize(association.SourceISBN13) == isbn.Normalize(isbn13)
+}
+
+func (s *Service) forgetConfirmedMissingEdition(ctx context.Context, itemID, editionID string) bool {
+	if s.config.Sync.DryRun || s.state == nil {
+		return false
+	}
+	association, exists := s.state.GetAssociation(itemID)
+	if !exists || association.HardcoverEditionID != editionID {
+		return false
+	}
+	_, err := s.hardcover.GetEditionUncached(ctx, editionID)
+	if !errors.Is(err, models.ErrEditionNotFound) {
+		return false
+	}
+	_, removed := s.state.RemoveAssociation(itemID)
+	if removed {
+		s.log.Warn("Removed confirmed association to a missing Hardcover edition", map[string]interface{}{
+			"book_id":    itemID,
+			"edition_id": editionID,
+		})
+	}
+	return removed
+}
+
+func (s *Service) forgetConfirmedMissingEditionForError(ctx context.Context, itemID, fallbackEditionID string, err error) {
+	if errors.Is(err, models.ErrEditionNotFound) && fallbackEditionID != "" {
+		s.forgetConfirmedMissingEdition(ctx, itemID, fallbackEditionID)
+		return
+	}
+
+	var mutationErr *editionBoundMutationError
+	if errors.As(err, &mutationErr) {
+		s.forgetConfirmedMissingEdition(ctx, itemID, mutationErr.editionID)
+	}
+}
+
+func (s *Service) recordVerifiedASINAssociation(book models.AudiobookshelfBook, result *hardcover.ASINLookupResult) {
+	if s.config.Sync.DryRun || book.ReadingFormat() != models.ReadingFormatAudiobook ||
+		result == nil || result.MatchKind != hardcover.ASINMatchAudibleMapping || result.Book == nil ||
+		strings.TrimSpace(result.RegionalExternalID) == "" {
+		return
+	}
+	if s.state == nil || result.Book.ID == "" || result.Book.EditionID == "" {
+		return
+	}
+	asin, isbn10, isbn13 := associationSourceIdentifiers(book)
+	if strings.TrimSpace(asin) == "" {
+		return
+	}
+	association := state.Association{
+		ABSItemID:          book.ID,
+		SourceASIN:         asin,
+		SourceISBN10:       isbn10,
+		SourceISBN13:       isbn13,
+		RegionalExternalID: result.RegionalExternalID,
+		HardcoverBookID:    result.Book.ID,
+		HardcoverEditionID: result.Book.EditionID,
+		ReadingFormat:      book.ReadingFormat(),
+		Provenance:         string(result.MatchKind),
+	}
+	if err := s.state.SetAssociation(association); err != nil {
+		s.log.Warn("Failed to stage verified Audible association", map[string]interface{}{
+			"book_id": book.ID,
+			"error":   err.Error(),
+		})
+	}
+}
+
+func (s *Service) lookupBookByASIN(ctx context.Context, asin string) (*models.HardcoverBook, *hardcover.ASINLookupResult, error) {
+	asinContext := hardcover.WithAudnexRegion(ctx, s.config.Audiobookshelf.AudnexusRegion)
+	if lookupClient, ok := s.hardcover.(interface {
+		SearchBookByASINResult(context.Context, string) (*hardcover.ASINLookupResult, error)
+	}); ok {
+		result, err := lookupClient.SearchBookByASINResult(asinContext, asin)
+		if err != nil || result == nil {
+			return nil, result, err
+		}
+		return result.Book, result, nil
+	}
+	book, err := s.hardcover.SearchBookByASIN(asinContext, asin)
+	return book, nil, err
+}
+
 // findBookInHardcover finds a book in Hardcover by various methods
 // It tries ASIN first, then the given ISBN form and its valid counterpart.
 // If those searches fail, it falls back to title/author search.
 // Callers must carry the item's reading format on ctx via hardcover.WithReadingFormat.
 func (s *Service) findBookInHardcover(ctx context.Context, book models.AudiobookshelfBook) (*models.HardcoverBook, error) {
+	hcBook, err, _ := s.findBookInHardcoverWithASINMatch(ctx, book)
+	return hcBook, err
+}
+
+func (s *Service) findBookInHardcoverWithASINMatch(ctx context.Context, book models.AudiobookshelfBook) (*models.HardcoverBook, error, bool) {
 	var lookupErr error
 	// Create a logger with book context
 	logCtx := map[string]interface{}{
@@ -5034,64 +5107,40 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 
 	log := s.log.With(logCtx)
 
-	// 1. First try to find by ASIN if available
-	if book.Media.Metadata.ASIN != "" {
-		// Check ASIN cache first
-		if cachedBook, exists := s.getASINFromCache(book.Media.Metadata.ASIN); exists {
-			log.Debug("Found book in ASIN cache", map[string]interface{}{
-				"asin":       book.Media.Metadata.ASIN,
-				"book_id":    cachedBook.ID,
-				"edition_id": cachedBook.EditionID,
-			})
-
-			// Create a copy of the cached book to avoid modifying the cached version
-			hcBook := &models.HardcoverBook{
-				ID:        cachedBook.ID,
-				Title:     cachedBook.Title,
-				EditionID: cachedBook.EditionID,
-				// Copy other fields as needed
+	// A confirmed local mapping wins before external identifier discovery, but
+	// only while Audiobookshelf still reports the identifiers and format that
+	// were present when the mapping was confirmed. This remains after the
+	// incremental progress/status filter in processBook, so identifier-only
+	// edits do not force matching.
+	if s.state != nil {
+		if association, exists := s.state.GetAssociation(book.ID); exists {
+			if associationMatchesBook(association, book) {
+				return &models.HardcoverBook{
+					ID:            association.HardcoverBookID,
+					EditionID:     association.HardcoverEditionID,
+					EditionASIN:   association.SourceASIN,
+					EditionISBN10: association.SourceISBN10,
+					EditionISBN13: association.SourceISBN13,
+				}, nil, false
 			}
-
-			// Still need to get/create user book ID for this specific book
-			editionIDStr := hcBook.EditionID
-			progress := 0.0
-			isFinished := book.Progress.IsFinished
-			finishedAt := book.Progress.FinishedAt
-			if book.Media.Duration > 0 {
-				// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
-				// because Audiobookshelf sometimes reports CurrentTime as 0 for finished books
-				if isFinished {
-					progress = 1.0
-				} else {
-					progress = book.Progress.CurrentTime / book.Media.Duration
-				}
+			if !s.config.Sync.DryRun {
+				// The old identifiers no longer justify this match. If the new
+				// lookup fails, leave the item retryable without restoring it.
+				s.state.RemoveAssociation(book.ID)
 			}
-
-			// Determine the status based on progress and isFinished flag
-			status := s.determineBookStatus(progress, isFinished, finishedAt)
-			userBookID, err := s.findOrCreateUserBookID(ctx, editionIDStr, status)
-			if err != nil {
-				s.log.Warn("Failed to get or create user book ID for cached edition", map[string]interface{}{
-					"edition_id": editionIDStr,
-					"error":      err.Error(),
-				})
-			} else {
-				hcBook.UserBookID = strconv.FormatInt(userBookID, 10)
-			}
-
-			s.log.Debug("Using cached book by ASIN", map[string]interface{}{
-				"book_id":      hcBook.ID,
-				"edition_id":   hcBook.EditionID,
-				"user_book_id": hcBook.UserBookID,
-			})
-
-			return hcBook, nil
+			log.Info("Discarded stale Hardcover association after Audiobookshelf identifiers changed", nil)
 		}
+	}
 
-		s.debugRequestIntent(log, fmt.Sprintf("Searching for book by ASIN: %s", book.Media.Metadata.ASIN), nil)
+	// 1. First try to find by ASIN if available
+	if asin := strings.TrimSpace(book.Media.Metadata.ASIN); asin != "" {
+		s.debugRequestIntent(log, fmt.Sprintf("Searching for book by ASIN: %s", asin), nil)
 
-		hcBook, err := s.hardcover.SearchBookByASIN(hardcover.WithAudnexRegion(ctx, s.config.Audiobookshelf.AudnexusRegion), book.Media.Metadata.ASIN)
+		hcBook, asinResult, err := s.lookupBookByASIN(ctx, asin)
 		if err != nil {
+			if errors.Is(err, hardcover.ErrASINLookupConflict) {
+				return nil, fmt.Errorf("conflicting Audible ASIN mappings: %w", err), false
+			}
 			// Check if this is a BookError with a book ID
 			var bookErr *hardcover.BookError
 			if errors.As(err, &bookErr) && bookErr.BookID != "" {
@@ -5102,18 +5151,12 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 				// Create a minimal book with just the ID
 				return &models.HardcoverBook{
 					ID: bookErr.BookID,
-				}, nil
+				}, nil, false
 			}
 			lookupErr = fmt.Errorf("%w: ASIN lookup: %w", errHardcoverLookupFailed, err)
 			log.Warn(fmt.Sprintf("Search by ASIN failed, will try other methods: %v", err), nil)
 		} else if hcBook != nil {
-			// Cache the ASIN lookup result for future use
-			s.setASINInCache(book.Media.Metadata.ASIN, hcBook)
-			log.Debug("Cached ASIN lookup result", map[string]interface{}{
-				"asin":       book.Media.Metadata.ASIN,
-				"book_id":    hcBook.ID,
-				"edition_id": hcBook.EditionID,
-			})
+			s.recordVerifiedASINAssociation(book, asinResult)
 
 			// Get or create user book ID for this edition
 			editionIDStr := hcBook.EditionID
@@ -5148,7 +5191,7 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 				"user_book_id": hcBook.UserBookID,
 			})
 
-			return hcBook, nil
+			return hcBook, nil, true
 		}
 	}
 
@@ -5177,7 +5220,7 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 						// Create a minimal book with just the ID
 						return &models.HardcoverBook{
 							ID: bookErr.BookID,
-						}, bookErr
+						}, bookErr, false
 					}
 					if bookErr.BookID != "" {
 						log.Debug("Found book ID in BookError from ISBN-10 search", map[string]interface{}{
@@ -5187,7 +5230,7 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 						// Create a minimal book with just the ID
 						return &models.HardcoverBook{
 							ID: bookErr.BookID,
-						}, nil
+						}, nil, false
 					}
 				}
 				if lookupErr == nil {
@@ -5195,7 +5238,8 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 				}
 				log.Warn(fmt.Sprintf("Search by %s failed, will try other identifiers or methods: %v", candidate.label(), err), nil)
 			} else if hcBook != nil {
-				return s.processFoundBook(ctx, hcBook, book)
+				foundBook, err := s.processFoundBook(ctx, hcBook, book)
+				return foundBook, err, false
 			}
 		}
 
@@ -5228,14 +5272,14 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 				// Preserve the candidate so mismatch reporting can include its
 				// Hardcover metadata while keeping it out of automatic mutation.
 				if lookupErr != nil {
-					return hcBook, lookupErr
+					return hcBook, lookupErr, false
 				}
-				return hcBook, errHardcoverTitleOnly
+				return hcBook, errHardcoverTitleOnly, false
 			}
 			if lookupErr != nil {
-				return nil, errors.Join(lookupErr, err)
+				return nil, errors.Join(lookupErr, err), false
 			}
-			return nil, err
+			return nil, err, false
 		}
 
 		// If we get here, we found a book by title/author - this is a mismatch case
@@ -5244,9 +5288,9 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 			"title":   hcBook.Title,
 		})
 		if lookupErr != nil {
-			return hcBook, lookupErr
+			return hcBook, lookupErr, false
 		}
-		return hcBook, errHardcoverTitleOnly
+		return hcBook, errHardcoverTitleOnly, false
 	}
 
 	log.Warn("Book not found in Hardcover by any search method", map[string]interface{}{
@@ -5259,7 +5303,7 @@ func (s *Service) findBookInHardcover(ctx context.Context, book models.Audiobook
 
 	// Return a specific error that indicates this is a potential mismatch
 	if lookupErr != nil {
-		return nil, lookupErr
+		return nil, lookupErr, false
 	}
-	return nil, fmt.Errorf("%w: book not found by ASIN/ISBN or title/author", errHardcoverBookNotFound)
+	return nil, fmt.Errorf("%w: book not found by ASIN/ISBN or title/author", errHardcoverBookNotFound), false
 }

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Persistent, read-only edition matching**: Sync saves verified regional Audible matches in state schema `4.0` and reuses them across runs; other matches remain read-only lookups. A profile API forgets a saved match and its checkpoint, while confirmed deleted editions are retried on later runs. Cross-process locking protects the resolved state file through each transaction, and dry runs leave it unchanged. Sync makes no Hardcover catalogue writes. By @Snuffy2. (#201)
 - **Read-only edition source drafts**: Added a profile API that previews audiobook metadata or ebook candidates from Audiobookshelf without calling Hardcover. Audiobook drafts discover the source ASIN's Audnex region and report temporary lookup failures with retryable warnings. The update also expands region preferences, validates ASINs before Audnex requests, limits drafts to two concurrent requests per instance, and preserves omitted profile settings during partial updates. By @Snuffy2. (#199)
 
 ### Changed
