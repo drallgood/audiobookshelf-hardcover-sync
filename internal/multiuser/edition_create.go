@@ -3,9 +3,7 @@ package multiuser
 import (
 	"errors"
 	"fmt"
-	"strings"
 
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
@@ -174,15 +172,6 @@ func (s *MultiUserService) CreateEditionWithAssociation(profileID, absItemID str
 		s.backupMigratedLegacyProfileState(profileID, loadPath)
 	}
 	return nil
-}
-
-// AudiobookshelfNetworkTrust returns the deployment-scoped URL trust mode.
-// Profile settings cannot change this policy.
-func (s *MultiUserService) AudiobookshelfNetworkTrust() string {
-	if s.globalConfig == nil || strings.TrimSpace(s.globalConfig.Audiobookshelf.NetworkTrust) == "" {
-		return audiobookshelf.NetworkTrustAllowPrivate
-	}
-	return strings.TrimSpace(s.globalConfig.Audiobookshelf.NetworkTrust)
 }
 
 // NewHardcoverClient constructs a profile-token client with the same global
