@@ -80,32 +80,12 @@ type editionCreateOutcome struct {
 }
 
 type editionCreateHardcoverAdapter struct {
-	client *hardcover.Client
-	log    *logger.Logger
-}
-
-func (c editionCreateHardcoverAdapter) ImportRegionalAudiobook(ctx context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
-	return c.client.ImportRegionalAudiobook(ctx, input)
-}
-
-func (c editionCreateHardcoverAdapter) GetBookByID(ctx context.Context, id string) (*models.HardcoverBook, error) {
-	return c.client.GetBookByID(ctx, id)
-}
-
-func (c editionCreateHardcoverAdapter) GetEditionUncached(ctx context.Context, id string) (*models.Edition, error) {
-	return c.client.GetEditionUncached(ctx, id)
-}
-
-func (c editionCreateHardcoverAdapter) SearchAuthors(ctx context.Context, name string, limit int) ([]models.Author, error) {
-	return c.client.SearchAuthors(ctx, name, limit)
-}
-
-func (c editionCreateHardcoverAdapter) SearchPublishers(ctx context.Context, name string, limit int) ([]models.Publisher, error) {
-	return c.client.SearchPublishers(ctx, name, limit)
+	*hardcover.Client
+	log *logger.Logger
 }
 
 func (c editionCreateHardcoverAdapter) CreateEbook(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
-	creator := edition.NewCreator(c.client, c.log, false, "")
+	creator := edition.NewCreator(c.Client, c.log, false, "")
 	return creator.CreateEditionWithMutationReserve(ctx, input, editionCreateMutationReserve)
 }
 
@@ -660,7 +640,7 @@ func (h *Handler) editionCreateHardcoverClient(token string) editionCreateHardco
 		return h.editionCreateHardcoverFactory(token)
 	}
 	client := h.multiUserService.NewHardcoverClient(token)
-	return editionCreateHardcoverAdapter{client: client, log: &h.log}
+	return editionCreateHardcoverAdapter{Client: client, log: &h.log}
 }
 
 func (h *Handler) editionCreateABSClient(baseURL, token, networkTrust string) (editionCreateABSClient, error) {
