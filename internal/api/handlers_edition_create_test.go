@@ -562,6 +562,19 @@ func TestCreateEditionFromDraftLookupFailureBeforeInsertAllowsOrdinaryRetry(t *t
 	require.False(t, exists)
 }
 
+func TestWriteEditionCreateErrorForInsufficientMutationBudgetIsRetryable(t *testing.T) {
+	handler := &Handler{}
+	response := httptest.NewRecorder()
+	err := errors.Join(edition.ErrCreateEditionPreMutation, edition.ErrCreateEditionInsufficientMutationBudget)
+
+	handler.writeEditionCreateError(response, "profile", err)
+
+	require.Equal(t, http.StatusServiceUnavailable, response.Code)
+	require.Equal(t, "1", response.Header().Get("Retry-After"))
+	require.Contains(t, response.Body.String(), "no edition mutation was sent")
+	require.NotContains(t, response.Body.String(), "may have processed")
+}
+
 func TestCreateEditionFromDraftRejectsChangedTitleOrAuthorBeforeHardcoverMutation(t *testing.T) {
 	tests := []struct {
 		name            string

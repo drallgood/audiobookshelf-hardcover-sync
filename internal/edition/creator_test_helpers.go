@@ -78,7 +78,7 @@ func (h *TestHelpers) UpdateEditionImage(ctx context.Context, editionID int, ima
 // CreateEdition exposes the private createEdition method for testing
 func (h *TestHelpers) CreateEdition(ctx context.Context, input *EditionInput, imageID int) (int, error) {
 	// Call the original method directly
-	editionID, _, err := h.creator.createEdition(ctx, input, imageID)
+	editionID, _, err := h.creator.createEdition(ctx, input, imageID, 0)
 	return editionID, err
 }
 

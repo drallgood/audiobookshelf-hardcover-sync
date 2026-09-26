@@ -106,7 +106,7 @@ func (c editionCreateHardcoverAdapter) SearchPublishers(ctx context.Context, nam
 
 func (c editionCreateHardcoverAdapter) CreateEbook(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
 	creator := edition.NewCreator(c.client, c.log, false, "")
-	return creator.CreateEdition(ctx, input)
+	return creator.CreateEditionWithMutationReserve(ctx, input, editionCreateMutationReserve)
 }
 
 // CreateEditionFromDraft handles POST /api/profiles/{id}/edition-drafts/create.
@@ -676,12 +676,15 @@ func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID strin
 		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Edition creation service is shutting down; retry shortly")
 	case errors.Is(err, errEditionCreateInsufficientBudget):
 		w.Header().Set("Retry-After", "1")
-		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Edition source lookup took too long; retry before starting a Hardcover write")
+		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Edition lookups left too little time to safely start a Hardcover write; retry the edition create")
 	case errors.Is(err, multiuser.ErrProfileStateBusy):
 		w.Header().Set("Retry-After", "1")
 		h.writeErrorResponse(w, http.StatusTooManyRequests, "Profile sync state is busy; retry shortly")
 	case errors.Is(err, multiuser.ErrEditionCreateDryRun):
 		h.writeErrorResponse(w, http.StatusConflict, "Edition creation is disabled while this profile is in dry run")
+	case errors.Is(err, edition.ErrCreateEditionInsufficientMutationBudget):
+		w.Header().Set("Retry-After", "1")
+		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Edition lookups left too little time to safely start a Hardcover write; no edition mutation was sent. Retry the edition create")
 	case errors.Is(err, edition.ErrCreateEditionPreMutation):
 		if errors.Is(err, edition.ErrEditionBelongsToOtherBook) {
 			h.writeErrorResponse(w, http.StatusConflict, err.Error())

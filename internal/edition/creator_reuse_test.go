@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/edition"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
@@ -30,6 +31,7 @@ type reuseClient struct {
 	insertID             int // the ID insert_edition returns when it does not report errors
 	lookupErr            error
 	afterInsertLookupErr error
+	lookupDelay          time.Duration
 
 	mu        sync.Mutex
 	mutations []string
@@ -46,6 +48,7 @@ func (c *reuseClient) noteFormat(ctx context.Context) {
 }
 
 func (c *reuseClient) GetEditionByASIN(ctx context.Context, asin string) (*models.Edition, error) {
+	time.Sleep(c.lookupDelay)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.noteFormat(ctx)
@@ -54,6 +57,7 @@ func (c *reuseClient) GetEditionByASIN(ctx context.Context, asin string) (*model
 }
 
 func (c *reuseClient) GetEditionByISBN10(ctx context.Context, isbn10 string) (*models.Edition, error) {
+	time.Sleep(c.lookupDelay)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.noteFormat(ctx)
@@ -62,6 +66,7 @@ func (c *reuseClient) GetEditionByISBN10(ctx context.Context, isbn10 string) (*m
 }
 
 func (c *reuseClient) GetEditionByISBN13(ctx context.Context, isbn13 string) (*models.Edition, error) {
+	time.Sleep(c.lookupDelay)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.noteFormat(ctx)
@@ -342,6 +347,61 @@ func TestCreateEdition_DryRunLooksNothingUp(t *testing.T) {
 	if len(client.lookups) != 0 || len(client.mutations) != 0 {
 		t.Errorf("dry run made lookups %v and mutations %v", client.lookups, client.mutations)
 	}
+}
+
+func TestCreateEditionWithMutationReserveChecksAtInsertBoundary(t *testing.T) {
+	input := &edition.EditionInput{
+		ReadingFormat: "ebook",
+		BookID:        123, Title: "A Title", AuthorIDs: []int{1}, ASIN: "B0RESERVE01",
+	}
+
+	t.Run("slow lookup with no match skips insert", func(t *testing.T) {
+		client := &reuseClient{lookupDelay: 300 * time.Millisecond}
+		creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "", &http.Client{Transport: failingTransport{}})
+		ctx, cancel := context.WithTimeout(context.Background(), 450*time.Millisecond)
+		defer cancel()
+
+		_, err := creator.CreateEditionWithMutationReserve(ctx, input, 250*time.Millisecond)
+		if !errors.Is(err, edition.ErrCreateEditionInsufficientMutationBudget) || !errors.Is(err, edition.ErrCreateEditionPreMutation) {
+			t.Fatalf("CreateEditionWithMutationReserve() error = %v, want pre-mutation insufficient-budget error", err)
+		}
+		if len(client.mutations) != 0 {
+			t.Fatalf("mutations sent = %d, want no insert after the lookup used the reserve", len(client.mutations))
+		}
+	})
+
+	t.Run("slow lookup still reuses matching edition", func(t *testing.T) {
+		client := &reuseClient{
+			lookupDelay: 300 * time.Millisecond,
+			byASIN:      &models.Edition{ID: "555", BookID: "123"},
+		}
+		creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "", &http.Client{Transport: failingTransport{}})
+		ctx, cancel := context.WithTimeout(context.Background(), 450*time.Millisecond)
+		defer cancel()
+
+		result, err := creator.CreateEditionWithMutationReserve(ctx, input, 250*time.Millisecond)
+		if err != nil || result == nil || !result.Existing || result.EditionID != 555 {
+			t.Fatalf("CreateEditionWithMutationReserve() = %+v, %v, want existing edition 555", result, err)
+		}
+		if len(client.mutations) != 0 {
+			t.Fatalf("mutations sent = %d, want existing edition reuse without mutation", len(client.mutations))
+		}
+	})
+
+	t.Run("sufficient reserve permits creation", func(t *testing.T) {
+		client := &reuseClient{insertID: 777}
+		creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "", &http.Client{Transport: failingTransport{}})
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		result, err := creator.CreateEditionWithMutationReserve(ctx, input, 250*time.Millisecond)
+		if err != nil || result == nil || !result.Success || result.EditionID != 777 {
+			t.Fatalf("CreateEditionWithMutationReserve() = %+v, %v, want created edition 777", result, err)
+		}
+		if len(client.mutations) != 1 {
+			t.Fatalf("mutations sent = %d, want one insert", len(client.mutations))
+		}
+	})
 }
 
 // TestCreateEdition_EbookInputCreatesAnEbookEdition checks what an ebook edition
