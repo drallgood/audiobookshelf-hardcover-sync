@@ -117,6 +117,22 @@ func TestClientsReuseConnectionsWithoutSharingCredentials(t *testing.T) {
 	assert.Equal(t, "Bearer second", second.token)
 }
 
+func TestNetworkTrustClientUsesHTTP1WhenServerDoesNotOfferHTTP2(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ProtoMajor != 1 {
+			http.Error(w, "expected HTTP/1.1", http.StatusHTTPVersionNotSupported)
+			return
+		}
+		_, _ = w.Write([]byte(`{"libraries":[]}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClientWithNetworkTrust(server.URL, "secret", NetworkTrustAllowPrivate)
+	require.NoError(t, err)
+	_, err = client.GetLibraries(context.Background())
+	require.NoError(t, err)
+}
+
 func TestAddressAllowed(t *testing.T) {
 	tests := []struct {
 		address string

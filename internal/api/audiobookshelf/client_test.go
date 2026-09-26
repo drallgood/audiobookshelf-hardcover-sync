@@ -14,8 +14,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNewClient(t *testing.T) {
-	client := NewClient("http://example.com", "test-token")
+func newTestClient(t testing.TB, baseURL, token string) *Client {
+	t.Helper()
+	client, err := NewClientWithNetworkTrust(baseURL, token, NetworkTrustAllowPrivate)
+	require.NoError(t, err)
+	return client
+}
+
+func TestNewClientWithNetworkTrust(t *testing.T) {
+	client := newTestClient(t, "http://example.com", "test-token")
 	assert.NotNil(t, client)
 	assert.Equal(t, "http://example.com", client.baseURL)
 	assert.Equal(t, "test-token", client.token)
@@ -75,7 +82,7 @@ func TestGetLibraries(t *testing.T) {
 			server := tt.setupServer()
 			defer server.Close()
 
-			client := NewClient(server.URL, "test-token")
+			client := newTestClient(t, server.URL, "test-token")
 			libraries, err := client.GetLibraries(context.Background())
 
 			if tt.expectError {
@@ -138,7 +145,7 @@ func TestGetLibraryItems(t *testing.T) {
 			server := tt.setupServer()
 			defer server.Close()
 
-			client := NewClient(server.URL, "test-token")
+			client := newTestClient(t, server.URL, "test-token")
 			items, err := client.GetLibraryItems(context.Background(), tt.libraryID)
 
 			if tt.expectError {
@@ -183,7 +190,7 @@ func TestGetLibraryItemByIDExpandedMetadata(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "test-token")
+	client := newTestClient(t, server.URL, "test-token")
 	item, err := client.GetLibraryItemByID(context.Background(), "li_123")
 	require.NoError(t, err)
 	require.NotNil(t, item)
@@ -205,7 +212,7 @@ func TestGetLibraryItemByIDExpandedMetadata(t *testing.T) {
 		_, _ = w.Write([]byte(ebookJSON))
 	}))
 	defer ebookServer.Close()
-	ebook, err := NewClient(ebookServer.URL, "test-token").GetLibraryItemByID(context.Background(), "li_ebook")
+	ebook, err := newTestClient(t, ebookServer.URL, "test-token").GetLibraryItemByID(context.Background(), "li_ebook")
 	require.NoError(t, err)
 	assert.True(t, ebook.IsEbook(), "expanded ebook file metadata should identify ebook-only media")
 }
@@ -256,7 +263,7 @@ func TestGetLibraryItemByIDErrors(t *testing.T) {
 			}))
 			defer server.Close()
 
-			item, err := NewClient(server.URL, "test-token").GetLibraryItemByID(context.Background(), tt.itemID)
+			item, err := newTestClient(t, server.URL, "test-token").GetLibraryItemByID(context.Background(), tt.itemID)
 			require.Nil(t, item)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
@@ -264,7 +271,7 @@ func TestGetLibraryItemByIDErrors(t *testing.T) {
 	}
 
 	t.Run("empty item ID", func(t *testing.T) {
-		item, err := NewClient("http://127.0.0.1", "test-token").GetLibraryItemByID(context.Background(), " \t ")
+		item, err := newTestClient(t, "http://127.0.0.1", "test-token").GetLibraryItemByID(context.Background(), " \t ")
 		require.Nil(t, item)
 		require.EqualError(t, err, "item ID is required")
 	})
@@ -280,7 +287,7 @@ func TestGetLibraryItemByIDCancellation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	client := NewClient(server.URL, "test-token")
+	client := newTestClient(t, server.URL, "test-token")
 	done := make(chan error, 1)
 	go func() {
 		_, err := client.GetLibraryItemByID(ctx, "li_123")
@@ -402,7 +409,7 @@ func TestGetUserProgress(t *testing.T) {
 			server := tt.setupServer()
 			defer server.Close()
 
-			client := NewClient(server.URL, "test-token")
+			client := newTestClient(t, server.URL, "test-token")
 			progress, err := client.GetUserProgress(context.Background())
 
 			if tt.expectError {
@@ -470,7 +477,7 @@ func TestGetListeningSessions(t *testing.T) {
 			server := tt.setupServer()
 			defer server.Close()
 
-			client := NewClient(server.URL, "test-token")
+			client := newTestClient(t, server.URL, "test-token")
 			sessions, err := client.GetListeningSessions(context.Background(), tt.since)
 
 			if tt.expectError {

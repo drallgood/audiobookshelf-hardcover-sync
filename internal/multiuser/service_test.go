@@ -42,6 +42,13 @@ func isProfileSyncing(service *MultiUserService, profileID string) bool {
 	return exists
 }
 
+func newTestABSClient(t testing.TB, baseURL, token string) *audiobookshelf.Client {
+	t.Helper()
+	client, err := audiobookshelf.NewClientWithNetworkTrust(baseURL, token, audiobookshelf.NetworkTrustAllowPrivate)
+	require.NoError(t, err)
+	return client
+}
+
 func TestProfileMismatchExportsRemainIsolated(t *testing.T) {
 	service, _ := newStatusLookupService(t)
 	service.globalConfig.Paths.MismatchOutputDir = filepath.Join(t.TempDir(), "mismatches")
@@ -109,7 +116,7 @@ func TestGetSyncRunSnapshotUsesCurrentRunWithoutProfileHydration(t *testing.T) {
 	hcConfig := hardcover.DefaultClientConfig()
 	hcConfig.BaseURL = "http://hardcover.invalid"
 	liveService, err := syncsvc.NewServiceWithRunIdentity(
-		audiobookshelf.NewClient("http://audiobookshelf.invalid", "abs-token"),
+		newTestABSClient(t, "http://audiobookshelf.invalid", "abs-token"),
 		hardcover.NewClientWithConfig(hcConfig, "hc-token", logger.Get()),
 		cfg,
 		"",
@@ -333,7 +340,7 @@ func TestAggregateStatusMapsLiveTerminalSnapshotState(t *testing.T) {
 			hcConfig := hardcover.DefaultClientConfig()
 			hcConfig.BaseURL = "http://hardcover.invalid"
 			liveService, err := syncsvc.NewServiceWithRunIdentity(
-				audiobookshelf.NewClient(absServer.URL, "abs-token"),
+				newTestABSClient(t, absServer.URL, "abs-token"),
 				hardcover.NewClientWithConfig(hcConfig, "hc-token", logger.Get()),
 				cfg,
 				"",
@@ -1284,7 +1291,7 @@ func TestCancelSyncRejectsTerminalServiceSnapshots(t *testing.T) {
 			hcConfig := hardcover.DefaultClientConfig()
 			hcConfig.BaseURL = "http://hardcover.invalid"
 			liveService, err := syncsvc.NewServiceWithRunIdentity(
-				audiobookshelf.NewClient(absServer.URL, "abs-token"),
+				newTestABSClient(t, absServer.URL, "abs-token"),
 				hardcover.NewClientWithConfig(hcConfig, "hc-token", logger.Get()),
 				cfg, "run-terminal-race", time.Now().UTC(),
 			)

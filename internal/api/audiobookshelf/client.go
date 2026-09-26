@@ -35,27 +35,6 @@ type Client struct {
 	logger  *logger.Logger
 }
 
-// NewClient creates a new Audiobookshelf client
-func NewClient(baseURL, token string) *Client {
-	client, err := NewClientWithNetworkTrust(baseURL, token, NetworkTrustAllowPrivate)
-	if err == nil {
-		return client
-	}
-
-	log := logger.Get().With(map[string]interface{}{
-		"component": "audiobookshelf_client",
-	})
-	return &Client{
-		baseURL: baseURL,
-		token:   token,
-		client: &http.Client{
-			Timeout:   30 * time.Second,
-			Transport: errorRoundTripper{err: err},
-		},
-		logger: log,
-	}
-}
-
 // NewClientWithNetworkTrust creates an Audiobookshelf client with an explicit
 // server-wide network trust policy. It validates the configured base URL and
 // trust mode before the client can make requests.

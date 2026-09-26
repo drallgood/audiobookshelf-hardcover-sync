@@ -712,8 +712,9 @@ unique-local addresses, over HTTP or HTTPS.
 deployments where profile owners are less trusted. Set it with
 `AUDIOBOOKSHELF_NETWORK_TRUST` or the YAML value above. Unsupported values are
 configuration errors. The base URL must be absolute HTTP or HTTPS; connection
-and redirect destinations are checked against the selected mode. Audiobookshelf
-requests connect directly and do not use `HTTP_PROXY`, `HTTPS_PROXY`, or
+and redirect destinations are checked against the selected mode. Hosts with
+both allowed and disallowed DNS addresses are rejected entirely. Requests
+connect directly and do not use `HTTP_PROXY`, `HTTPS_PROXY`, or
 `NO_PROXY`, since proxy-side DNS resolution would bypass these checks.
 
 #### Environment Variables

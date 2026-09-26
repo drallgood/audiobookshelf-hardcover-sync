@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -172,6 +173,32 @@ func TestCreatorCoverFetchUsesAudiobookshelfNetworkTrustPolicy(t *testing.T) {
 	_, err := creator.uploadImageToGCS(context.Background(), 1, "https://127.0.0.1:13378/api/items/item/cover")
 	if err == nil || !strings.Contains(err.Error(), "not allowed by public_only") {
 		t.Fatalf("uploadImageToGCS() error = %v, want policy rejection before network access", err)
+	}
+
+	_, err = creator.uploadImageToGCS(context.Background(), 1, "https://169.254.169.254/cover.jpg")
+	if err == nil || !strings.Contains(err.Error(), "not allowed by public_only") {
+		t.Fatalf("off-origin cover error = %v, want policy rejection", err)
+	}
+}
+
+func TestCreatorCoverFetchChecksOffOriginRedirect(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		http.Redirect(w, r, "http://169.254.169.254/cover.jpg", http.StatusFound)
+	}))
+	defer server.Close()
+
+	creator := NewCreator(nil, logger.Get(), false, "abs-secret")
+	if err := creator.SetAudiobookshelfBaseURL("http://abs.example"); err != nil {
+		t.Fatalf("SetAudiobookshelfBaseURL() error = %v", err)
+	}
+	_, err := creator.uploadImageToGCS(context.Background(), 1, server.URL+"/cover.jpg")
+	if err == nil || !strings.Contains(err.Error(), "redirect destination rejected") {
+		t.Fatalf("off-origin redirect error = %v, want policy rejection", err)
+	}
+	if requests != 1 {
+		t.Fatalf("cover server requests = %d, want 1", requests)
 	}
 }
 

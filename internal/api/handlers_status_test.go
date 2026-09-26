@@ -532,13 +532,12 @@ func TestProfileAudiobookshelfURLValidationAtHTTPBoundary(t *testing.T) {
 	routes.HandleFunc("PUT /api/profiles/{id}/config", handler.UpdateProfileConfig)
 
 	rejectedURLs := []struct {
-		name    string
-		url     string
-		message string
+		name string
+		url  string
 	}{
-		{name: "HTTP under public_only", url: "http://audiobookshelf.example", message: "must use https"},
-		{name: "unsupported scheme", url: "ftp://audiobookshelf.example", message: "scheme must be http or https"},
-		{name: "embedded credentials", url: "https://user:secret@audiobookshelf.example", message: "user information"},
+		{name: "HTTP under public_only", url: "http://audiobookshelf.example"},
+		{name: "unsupported scheme", url: "ftp://audiobookshelf.example"},
+		{name: "embedded credentials", url: "https://user:secret@audiobookshelf.example"},
 	}
 	for _, test := range rejectedURLs {
 		t.Run("create "+test.name, func(t *testing.T) {
@@ -554,7 +553,8 @@ func TestProfileAudiobookshelfURLValidationAtHTTPBoundary(t *testing.T) {
 			response := httptest.NewRecorder()
 			routes.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/profiles", bytes.NewReader(payload)))
 			require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
-			require.Contains(t, response.Body.String(), test.message)
+			require.Contains(t, response.Body.String(), "audiobookshelf_url is invalid")
+			require.NotContains(t, response.Body.String(), "public_only")
 			created, err := fixture.multiUser.GetProfile(profileID)
 			require.NoError(t, err)
 			require.Nil(t, created)
@@ -584,7 +584,8 @@ func TestProfileAudiobookshelfURLValidationAtHTTPBoundary(t *testing.T) {
 		http.MethodPut, "/api/profiles/public-profile/config", bytes.NewReader(updatePayload),
 	))
 	require.Equal(t, http.StatusBadRequest, updateResponse.Code, updateResponse.Body.String())
-	require.Contains(t, updateResponse.Body.String(), "must use https")
+	require.Contains(t, updateResponse.Body.String(), "audiobookshelf_url is invalid")
+	require.NotContains(t, updateResponse.Body.String(), "public_only")
 	unchanged, err := fixture.multiUser.GetProfile("public-profile")
 	require.NoError(t, err)
 	require.Equal(t, "https://audiobookshelf.example/abs", unchanged.AudiobookshelfURL)

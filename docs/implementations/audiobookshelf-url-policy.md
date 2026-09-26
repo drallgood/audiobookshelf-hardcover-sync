@@ -1,7 +1,7 @@
 # Audiobookshelf URL Policy
 
 **Status:** Enforced for the production Audiobookshelf clients used by sync,
-edition drafts, and the edition creator's ABS cover requests in the
+edition drafts, and the edition creator's cover requests in the
 standalone `edition` and `image-tool` commands. A later create API must use
 the same shared client. The deployment-wide mode is validated when
 configuration loads; profile URLs are validated when profiles are created or
@@ -81,8 +81,8 @@ checked dialer, so an operator must provide a direct route to Audiobookshelf.
 ## Scope
 
 The shared client policy is wired into sync, edition drafts, and the edition
-creator's ABS requests from the standalone `edition` and `image-tool`
-commands, replacing the creator's separate redirect check for those requests. Tests cover malformed URLs,
+creator's cover requests from the standalone `edition` and `image-tool`
+commands, including off-origin cover URLs. Tests cover malformed URLs,
 address classification in each mode, mixed allowed and disallowed DNS
 answers, redirects to disallowed destinations, and token stripping outside
 the configured origin or base path. The edition capability route does not

@@ -217,7 +217,9 @@ func (c *Creator) SetAudiobookshelfBaseURL(baseURL string) error {
 	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
 		c.audiobookshelfBaseURL = ""
-		if c.coverHTTPClient == nil {
+		if c.useSharedABSNetworkPolicy {
+			c.coverHTTPClient = nil
+		} else if c.coverHTTPClient == nil {
 			c.coverHTTPClient = c.httpClient
 		}
 		return nil
@@ -302,18 +304,6 @@ func (c *Creator) shouldSendAudiobookshelfToken(imageURL string) bool {
 		return false
 	}
 	return c.isAudiobookshelfURLInScope(imageURL)
-}
-
-func (c *Creator) isAudiobookshelfOrigin(imageURL string) bool {
-	base, err := url.Parse(c.audiobookshelfBaseURL)
-	if err != nil || base.Host == "" {
-		return false
-	}
-	target, err := url.Parse(imageURL)
-	if err != nil {
-		return false
-	}
-	return strings.EqualFold(base.Scheme, target.Scheme) && strings.EqualFold(base.Host, target.Host)
 }
 
 // isAudiobookshelfURLInScope reports whether imageURL remains within the
@@ -539,7 +529,10 @@ func (c *Creator) uploadImageToGCS(ctx context.Context, editionID int, imageURL 
 	log.Debug("Downloading image")
 
 	downloadClient := c.httpClient
-	if c.isAudiobookshelfOrigin(imageURL) && c.coverHTTPClient != nil {
+	if c.useSharedABSNetworkPolicy {
+		if c.coverHTTPClient == nil {
+			return "", errors.New("Audiobookshelf base URL is required for cover downloads")
+		}
 		downloadClient = c.coverHTTPClient
 	}
 	resp, err := downloadClient.Do(downloadReq)

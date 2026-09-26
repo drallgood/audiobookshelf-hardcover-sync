@@ -43,20 +43,15 @@ var networkTransports = map[string]*http.Transport{
 func newNetworkTransport(trust string) *http.Transport {
 	policy := networkPolicy{trust: trust, resolver: net.DefaultResolver}
 	return &http.Transport{
-		DialContext:           policy.dialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   2,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: time.Second,
+		DialContext:            policy.dialContext,
+		ForceAttemptHTTP2:      true,
+		MaxIdleConns:           100,
+		MaxIdleConnsPerHost:    2,
+		IdleConnTimeout:        90 * time.Second,
+		TLSHandshakeTimeout:    10 * time.Second,
+		ExpectContinueTimeout:  time.Second,
+		MaxResponseHeaderBytes: 10 << 20,
 	}
-}
-
-type errorRoundTripper struct{ err error }
-
-func (rt errorRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
-	return nil, rt.err
 }
 
 type scopedRoundTripper struct {

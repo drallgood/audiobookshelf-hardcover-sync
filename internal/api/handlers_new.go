@@ -345,9 +345,13 @@ func (h *Handler) CreateProfile(w http.ResponseWriter, r *http.Request) {
 		ownerUserID,
 	)
 	if err != nil {
+		if errors.Is(err, multiuser.ErrInvalidAudiobookshelfURL) {
+			h.log.Warn("Rejected Audiobookshelf profile URL: " + err.Error())
+			h.writeErrorResponse(w, http.StatusBadRequest, "audiobookshelf_url is invalid for this deployment's network policy")
+			return
+		}
 		if errors.Is(err, multiuser.ErrProfileStateFileNameTooLong) ||
-			errors.Is(err, multiuser.ErrProfileStateFilePathNotAllowed) ||
-			errors.Is(err, multiuser.ErrInvalidAudiobookshelfURL) {
+			errors.Is(err, multiuser.ErrProfileStateFilePathNotAllowed) {
 			h.writeErrorResponse(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -471,9 +475,13 @@ func (h *Handler) UpdateProfileConfig(w http.ResponseWriter, r *http.Request) {
 		hardcoverToken,
 		req.SyncConfig,
 	); err != nil {
+		if errors.Is(err, multiuser.ErrInvalidAudiobookshelfURL) {
+			h.log.Warn("Rejected Audiobookshelf profile URL: " + err.Error())
+			h.writeErrorResponse(w, http.StatusBadRequest, "audiobookshelf_url is invalid for this deployment's network policy")
+			return
+		}
 		if errors.Is(err, multiuser.ErrProfileStateFileNameTooLong) ||
-			errors.Is(err, multiuser.ErrProfileStateFilePathNotAllowed) ||
-			errors.Is(err, multiuser.ErrInvalidAudiobookshelfURL) {
+			errors.Is(err, multiuser.ErrProfileStateFilePathNotAllowed) {
 			h.writeErrorResponse(w, http.StatusBadRequest, err.Error())
 			return
 		}
