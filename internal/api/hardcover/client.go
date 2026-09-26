@@ -67,6 +67,13 @@ func mutationBudgetError(mayHaveSent bool) error {
 	return ErrMutationInsufficientBudget
 }
 
+func ambiguousMutationError(err error) error {
+	if err == nil {
+		return ErrMutationOutcomeAmbiguous
+	}
+	return fmt.Errorf("%w: %w", ErrMutationOutcomeAmbiguous, err)
+}
+
 // WithReadingFormat returns a context that carries the desired reading format string.
 // Accepted values typically include "audiobook" and "ebook". Case-insensitive.
 // When absent, client defaults to audiobook-only behavior for compatibility.
@@ -505,14 +512,26 @@ func (c *Client) GraphQLMutation(ctx context.Context, mutation string, variables
 
 // executeGraphQLOperation is a helper function that handles the common logic for executing GraphQL operations
 func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperation, query string, variables map[string]interface{}, result interface{}) error {
+	minimumMutationBudget, hasMinimumMutationBudget := minimumMutationBudgetFromContext(ctx)
+	budgetedMutation := op == mutationOperation && hasMinimumMutationBudget
+
 	// Preserve the configured client (including timeout, redirects, cookies, and
 	// custom transport) while adding request/response logging around its
-	// transport. A few tests and callers construct Client values directly, so
-	// retain a safe default when no HTTP client or transport is configured.
+	// transport. Budgeted mutations disable redirects below to prevent a POST
+	// replay. A few tests and callers construct Client values directly, so retain
+	// a safe default when no HTTP client or transport is configured.
 	httpClient := &http.Client{}
 	if c.httpClient != nil {
 		clientCopy := *c.httpClient
 		httpClient = &clientCopy
+	}
+	if budgetedMutation {
+		// A 307 or 308 redirect can replay the mutation body within one Do call.
+		// Return redirects to the caller so a budgeted mutation makes one HTTP
+		// attempt even when the configured client normally follows redirects.
+		httpClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
 	}
 	transport := httpClient.Transport
 	if transport == nil {
@@ -533,7 +552,6 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 	// Execute the operation using the GraphQL client with retry logic
 	var lastErr error
 	mutationMayHaveBeenSent := false
-	minimumMutationBudget, hasMinimumMutationBudget := minimumMutationBudgetFromContext(ctx)
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if attempt > 0 {
 			// Context-aware backoff delay
@@ -610,6 +628,9 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"error":   lastErr.Error(),
 				"attempt": attempt + 1,
 			})
+			if op == mutationOperation && hasMinimumMutationBudget {
+				return ambiguousMutationError(lastErr)
+			}
 			continue
 		}
 
@@ -623,6 +644,9 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"error":   lastErr.Error(),
 				"attempt": attempt + 1,
 			})
+			if op == mutationOperation && hasMinimumMutationBudget {
+				return ambiguousMutationError(lastErr)
+			}
 			continue
 		}
 
@@ -638,6 +662,9 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		// can self-throttle proactively before hitting HTTP 429.
 		c.rateLimiter.WithRateLimitHeaders(resp)
 		releasePermit()
+		if budgetedMutation && resp.StatusCode >= 300 && resp.StatusCode < 400 {
+			return ambiguousMutationError(fmt.Errorf("mutation returned HTTP redirect status %d", resp.StatusCode))
+		}
 
 		// Check for HTTP errors
 		if resp.StatusCode >= 400 {
@@ -649,6 +676,9 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"error":   lastErr.Error(),
 				"attempt": attempt + 1,
 			})
+			if op == mutationOperation && hasMinimumMutationBudget {
+				return ambiguousMutationError(lastErr)
+			}
 			if !isRetryableHTTPStatus(resp.StatusCode) {
 				return fmt.Errorf("non-retryable HTTP error: %w", lastErr)
 			}
@@ -696,6 +726,9 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"attempt": attempt + 1,
 				"errors":  gqlResp.Errors,
 			})
+			if op == mutationOperation && hasMinimumMutationBudget {
+				return ambiguousMutationError(lastErr)
+			}
 			continue
 		}
 
@@ -713,6 +746,9 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 					"attempt": attempt + 1,
 					"body":    string(body),
 				})
+				if op == mutationOperation && hasMinimumMutationBudget {
+					return ambiguousMutationError(lastErr)
+				}
 				continue
 			}
 			return nil
@@ -725,6 +761,9 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"error":   lastErr.Error(),
 				"attempt": attempt + 1,
 			})
+			if op == mutationOperation && hasMinimumMutationBudget {
+				return ambiguousMutationError(lastErr)
+			}
 			continue
 		}
 
@@ -736,6 +775,9 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"attempt": attempt + 1,
 				"data":    string(gqlResp.Data),
 			})
+			if op == mutationOperation && hasMinimumMutationBudget {
+				return ambiguousMutationError(lastErr)
+			}
 			continue
 		}
 

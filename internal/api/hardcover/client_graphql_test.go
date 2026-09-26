@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type graphqlRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f graphqlRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 // TestGraphQLQuery_BookByASIN tests the GraphQL query functionality with a mock API server
 // This is a unit test that doesn't require a real token
@@ -343,6 +350,90 @@ func TestGraphQLMutationBudgetRetryAfterPossibleSendIsAmbiguous(t *testing.T) {
 	require.ErrorIs(t, err, ErrMutationOutcomeAmbiguous)
 	assert.NotErrorIs(t, err, ErrMutationInsufficientBudget)
 	assert.Equal(t, int32(1), requests.Load(), "after the first HTTP attempt, the reserve guard must not call it a no-send failure")
+}
+
+func TestGraphQLMutationWithMinimumBudgetDoesNotRetryAfterPossibleSend(t *testing.T) {
+	transportFailure := errors.New("connection reset after request write")
+	tests := []struct {
+		name          string
+		status        int
+		body          string
+		redirectTo    string
+		transportErr  error
+		wantHTTPError bool
+		wantMessage   string
+	}{
+		{
+			name:         "transport error",
+			transportErr: transportFailure,
+			wantMessage:  "connection reset after request write",
+		},
+		{
+			name:          "retryable HTTP response",
+			status:        http.StatusServiceUnavailable,
+			body:          "temporarily unavailable",
+			wantHTTPError: true,
+			wantMessage:   "temporarily unavailable",
+		},
+		{
+			name:        "redirect response",
+			status:      http.StatusTemporaryRedirect,
+			redirectTo:  "/replayed-mutation",
+			wantMessage: "HTTP redirect status 307",
+		},
+		{
+			name:        "GraphQL error response",
+			status:      http.StatusOK,
+			body:        `{"errors":[{"message":"edition insert rejected"}]}`,
+			wantMessage: "edition insert rejected",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if test.redirectTo != "" && r.URL.Path == "/" {
+					http.Redirect(w, r, test.redirectTo, test.status)
+					return
+				}
+				w.WriteHeader(test.status)
+				_, _ = io.WriteString(w, test.body)
+			}))
+			defer server.Close()
+
+			client := CreateTestClient(server)
+			client.maxRetries = 3
+			client.retryDelay = time.Millisecond
+			var attempts atomic.Int32
+			transport := client.httpClient.Transport.(*headerAddingTransport)
+			transport.rt = graphqlRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				attempts.Add(1)
+				if test.transportErr != nil {
+					return nil, test.transportErr
+				}
+				return http.DefaultTransport.RoundTrip(req)
+			})
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			ctx = WithMinimumMutationBudget(ctx, 500*time.Millisecond)
+			var result struct{}
+
+			err := client.GraphQLMutation(ctx, `mutation CreateEdition { insert_edition { id } }`, nil, &result)
+
+			require.ErrorIs(t, err, ErrMutationOutcomeAmbiguous)
+			assert.Equal(t, int32(1), attempts.Load(), "an opted-in mutation must not retry after its first possible send")
+			assert.Contains(t, err.Error(), test.wantMessage, "the original failure should remain visible")
+			if test.transportErr != nil {
+				assert.ErrorIs(t, err, transportFailure)
+			}
+			if test.wantHTTPError {
+				var httpErr *HTTPError
+				require.ErrorAs(t, err, &httpErr)
+				assert.Equal(t, test.status, httpErr.StatusCode)
+			}
+		})
+	}
 }
 
 func TestGraphQLQuery_BoundsRetryAfterPause(t *testing.T) {
