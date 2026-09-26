@@ -16,7 +16,6 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/audnexregion"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/edition"
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
@@ -273,7 +272,7 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 		if err := verifyCreatedEbookEdition(ctx, created.EditionID, input.BookID, services.getEditionUncached); err != nil {
 			return nil, err
 		}
-		association := ebookAssociation(absItem, input.ASIN, input.BookID, created.EditionID)
+		association := ebookAssociation(absItem, input.ASIN, output.Status, input.BookID, created.EditionID)
 		if err := saveAssociation(loadedState, associationStatePath, association); err != nil {
 			return nil, fmt.Errorf("Hardcover returned ebook edition %d, but the local association could not be saved. Verify the Hardcover result before retrying; retrying may create another edition: %w", created.EditionID, err)
 		}
@@ -373,7 +372,7 @@ func resolveAudibleRegion(ctx context.Context, asin, requested, preferred string
 }
 
 func audiobookAssociation(item *models.AudiobookshelfBook, requestedASIN string, resolved *hardcover.RegionalAudiobookResult) state.Association {
-	asin, isbn10, isbn13 := sourceIdentifiers(item)
+	asin, isbn10, isbn13 := state.SourceIdentifiers(item.Media.Metadata.ASIN, item.Media.Metadata.ISBN)
 	return state.Association{
 		ABSItemID:          item.ID,
 		SourceASIN:         asin,
@@ -384,7 +383,7 @@ func audiobookAssociation(item *models.AudiobookshelfBook, requestedASIN string,
 		HardcoverBookID:    strconv.Itoa(resolved.BookID),
 		HardcoverEditionID: strconv.Itoa(resolved.EditionID),
 		ReadingFormat:      models.ReadingFormatAudiobook,
-		Provenance:         string(hardcover.ASINMatchAudibleMapping),
+		Provenance:         "cli_regional_" + string(resolved.Status),
 	}
 }
 
@@ -409,8 +408,8 @@ func verifyCreatedEbookEdition(ctx context.Context, expectedEditionID, expectedB
 	return nil
 }
 
-func ebookAssociation(item *models.AudiobookshelfBook, submittedASIN string, bookID, editionID int) state.Association {
-	asin, isbn10, isbn13 := sourceIdentifiers(item)
+func ebookAssociation(item *models.AudiobookshelfBook, submittedASIN, status string, bookID, editionID int) state.Association {
+	asin, isbn10, isbn13 := state.SourceIdentifiers(item.Media.Metadata.ASIN, item.Media.Metadata.ISBN)
 	return state.Association{
 		ABSItemID:          item.ID,
 		SourceASIN:         asin,
@@ -420,20 +419,8 @@ func ebookAssociation(item *models.AudiobookshelfBook, submittedASIN string, boo
 		HardcoverBookID:    strconv.Itoa(bookID),
 		HardcoverEditionID: strconv.Itoa(editionID),
 		ReadingFormat:      models.ReadingFormatEbook,
-		Provenance:         "edition_cli",
+		Provenance:         "cli_ebook_" + status,
 	}
-}
-
-func sourceIdentifiers(item *models.AudiobookshelfBook) (asin, isbn10, isbn13 string) {
-	asin = strings.TrimSpace(item.Media.Metadata.ASIN)
-	rawISBN := strings.TrimSpace(item.Media.Metadata.ISBN)
-	switch len(isbn.Normalize(rawISBN)) {
-	case 10:
-		isbn10 = rawISBN
-	default:
-		isbn13 = rawISBN
-	}
-	return asin, isbn10, isbn13
 }
 
 // asinCorrection returns the submitted ASIN when it differs from the ASIN the

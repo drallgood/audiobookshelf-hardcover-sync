@@ -125,7 +125,7 @@ func TestRunCreateStoresVerifiedAudiobookAssociationUnderLock(t *testing.T) {
 	if !ok {
 		t.Fatal("verified ABS association was not saved")
 	}
-	if association.SourceASIN != "B012345678" || association.RegionalExternalID != "B012345678:uk" || association.HardcoverBookID != "21" || association.HardcoverEditionID != "34" {
+	if association.SourceASIN != "B012345678" || association.RegionalExternalID != "B012345678:uk" || association.HardcoverBookID != "21" || association.HardcoverEditionID != "34" || association.Provenance != "cli_regional_created" {
 		t.Fatalf("unexpected saved association: %#v", association)
 	}
 }
@@ -607,7 +607,7 @@ func TestRunCreateReadsBackEbookBeforeSavingAssociation(t *testing.T) {
 				}
 				return
 			}
-			if !exists || association.HardcoverBookID != "21" || association.HardcoverEditionID != "34" || association.ReadingFormat != models.ReadingFormatEbook {
+			if !exists || association.HardcoverBookID != "21" || association.HardcoverEditionID != "34" || association.ReadingFormat != models.ReadingFormatEbook || association.Provenance != "cli_ebook_created" {
 				t.Fatalf("unexpected saved association: %#v exists=%t", association, exists)
 			}
 		})
