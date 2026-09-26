@@ -97,7 +97,9 @@ func New(addr string, multiUserService *multiuser.MultiUserService, authService 
 
 	// Set timeouts
 	s.server.ReadTimeout = 10 * time.Second
-	s.server.WriteTimeout = 30 * time.Second
+	// Edition creation may take 65 seconds; leave time for the handler to
+	// serialize and write its response after completing the remote mutation.
+	s.server.WriteTimeout = 75 * time.Second
 	s.server.IdleTimeout = 120 * time.Second
 
 	return s

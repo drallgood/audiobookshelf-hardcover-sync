@@ -1,8 +1,10 @@
 package multiuser
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
@@ -74,12 +76,15 @@ type EditionCreateOperation func(profile *database.ProfileWithTokens) (statepkg.
 // CreateEditionWithAssociation runs an edition create and persists its
 // profile-local association as one guarded operation. The callback runs after
 // confirming no sync is active and after acquiring the state-file lock.
-func (s *MultiUserService) CreateEditionWithAssociation(profileID, absItemID string, operation EditionCreateOperation) error {
+func (s *MultiUserService) CreateEditionWithAssociation(ctx context.Context, profileID, absItemID string, operation EditionCreateOperation) error {
 	if profileID == "" || absItemID == "" {
 		return errors.New("profile ID and ABS item ID are required")
 	}
 	if operation == nil {
 		return errors.New("edition create operation is required")
+	}
+	if ctx == nil {
+		return errors.New("edition create context is required")
 	}
 
 	// Track this profile operation with sync starts so shutdown and profile
@@ -103,7 +108,9 @@ func (s *MultiUserService) CreateEditionWithAssociation(profileID, absItemID str
 	s.admissionMutex.Unlock()
 	defer s.endSyncStart(gate)
 
-	gate.mu.Lock()
+	if err := lockProfileGateContext(ctx, gate); err != nil {
+		return err
+	}
 	defer gate.mu.Unlock()
 	if gate.deleted {
 		return ErrProfileNotFound
@@ -172,6 +179,30 @@ func (s *MultiUserService) CreateEditionWithAssociation(profileID, absItemID str
 		s.backupMigratedLegacyProfileState(profileID, loadPath)
 	}
 	return nil
+}
+
+// lockProfileGateContext waits for the shared profile gate while allowing an
+// edition-create request to abandon its queued position when its context ends.
+func lockProfileGateContext(ctx context.Context, gate *profileRunGate) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if gate.mu.TryLock() {
+			if err := ctx.Err(); err != nil {
+				gate.mu.Unlock()
+				return err
+			}
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 // NewHardcoverClient constructs a profile-token client with the same global

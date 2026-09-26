@@ -65,6 +65,11 @@ func newRouteTestFixture(t *testing.T, authEnabled bool) *routeTestFixture {
 	}
 }
 
+func TestServerWriteTimeoutCoversEditionCreateBudget(t *testing.T) {
+	fixture := newRouteTestFixture(t, false)
+	require.Greater(t, fixture.server.server.WriteTimeout, 65*time.Second)
+}
+
 func (f *routeTestFixture) request(method, path string, body []byte) *httptest.ResponseRecorder {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(method, path, bytes.NewReader(body))

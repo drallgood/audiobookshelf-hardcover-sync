@@ -147,7 +147,7 @@ func (h *Handler) CreateEditionFromDraft(w http.ResponseWriter, r *http.Request)
 	}
 
 	var outcome editionCreateOutcome
-	err = h.multiUserService.CreateEditionWithAssociation(profileID, request.ABSItemID, func(profile *database.ProfileWithTokens) (statepkg.Association, error) {
+	err = h.multiUserService.CreateEditionWithAssociation(ctx, profileID, request.ABSItemID, func(profile *database.ProfileWithTokens) (statepkg.Association, error) {
 		snapshot, record, snapshotErr := h.verifiedEditionCreateRecord(profileID, request.RunID, request.ABSItemID)
 		if snapshotErr != nil {
 			return statepkg.Association{}, snapshotErr

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
 	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
@@ -33,10 +35,21 @@ func testCreateAssociation(itemID string) statepkg.Association {
 	}
 }
 
+type observedDoneContext struct {
+	context.Context
+	doneObserved chan struct{}
+	once         sync.Once
+}
+
+func (c *observedDoneContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.doneObserved) })
+	return c.Context.Done()
+}
+
 func TestCreateEditionWithAssociationPersistsOnlyAfterOperationSucceeds(t *testing.T) {
 	service, profileID := newEditionCreateService(t)
 	called := false
-	err := service.CreateEditionWithAssociation(profileID, "item-1", func(profile *database.ProfileWithTokens) (statepkg.Association, error) {
+	err := service.CreateEditionWithAssociation(context.Background(), profileID, "item-1", func(profile *database.ProfileWithTokens) (statepkg.Association, error) {
 		called = true
 		require.Equal(t, profileID, profile.Profile.ID)
 		return testCreateAssociation("item-1"), nil
@@ -55,7 +68,7 @@ func TestCreateEditionWithAssociationPersistsOnlyAfterOperationSucceeds(t *testi
 func TestCreateEditionWithAssociationDoesNotPersistWhenOperationFails(t *testing.T) {
 	service, profileID := newEditionCreateService(t)
 	remoteErr := errors.New("remote create rejected")
-	err := service.CreateEditionWithAssociation(profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+	err := service.CreateEditionWithAssociation(context.Background(), profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
 		return statepkg.Association{}, remoteErr
 	})
 	require.ErrorIs(t, err, remoteErr)
@@ -67,7 +80,7 @@ func TestCreateEditionWithAssociationDistinguishesLocalSaveFailureAfterRemoteSuc
 	service, profileID := newEditionCreateService(t)
 	statePath := service.profileSpecificStatePath(profileID, "sync.json")
 	called := false
-	err := service.CreateEditionWithAssociation(profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+	err := service.CreateEditionWithAssociation(context.Background(), profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
 		called = true
 		// Force atomic rename to fail only after state was loaded and the remote
 		// operation has succeeded.
@@ -79,7 +92,7 @@ func TestCreateEditionWithAssociationDistinguishesLocalSaveFailureAfterRemoteSuc
 
 func TestCreateEditionWithAssociationClassifiesInvalidAssociationAfterRemoteSuccess(t *testing.T) {
 	service, profileID := newEditionCreateService(t)
-	err := service.CreateEditionWithAssociation(profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+	err := service.CreateEditionWithAssociation(context.Background(), profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
 		// A successful operation callback means the remote edition is already
 		// verified; state validation failures must therefore be retry-safe too.
 		return statepkg.Association{ABSItemID: "item-1"}, nil
@@ -94,7 +107,7 @@ func TestCreateEditionWithAssociationReturnsBusyForAnotherStateLock(t *testing.T
 	require.NoError(t, err)
 	defer func() { require.NoError(t, lock.Close()) }()
 	called := false
-	err = service.CreateEditionWithAssociation(profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+	err = service.CreateEditionWithAssociation(context.Background(), profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
 		called = true
 		return testCreateAssociation("item-1"), nil
 	})
@@ -108,7 +121,7 @@ func TestCreateEditionWithAssociationRejectsAnActiveSyncBeforeCallback(t *testin
 	service.activeSyncs[profileID] = func() {}
 	service.syncMutex.Unlock()
 	called := false
-	err := service.CreateEditionWithAssociation(profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+	err := service.CreateEditionWithAssociation(context.Background(), profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
 		called = true
 		return testCreateAssociation("item-1"), nil
 	})
@@ -128,7 +141,7 @@ func TestCreateEditionWithAssociationRefusesDryRunProfile(t *testing.T) {
 		profileID, profile.AudiobookshelfURL, profile.AudiobookshelfToken, profile.HardcoverToken, profile.SyncConfig,
 	))
 	called := false
-	err = service.CreateEditionWithAssociation(profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+	err = service.CreateEditionWithAssociation(context.Background(), profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
 		called = true
 		return testCreateAssociation("item-1"), nil
 	})
@@ -163,7 +176,7 @@ func TestCreateEditionWithAssociationOperationHoldsProfileGate(t *testing.T) {
 	finish := make(chan struct{})
 	createDone := make(chan error, 1)
 	go func() {
-		createDone <- service.CreateEditionWithAssociation(profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+		createDone <- service.CreateEditionWithAssociation(context.Background(), profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
 			close(started)
 			<-finish
 			return testCreateAssociation("item-1"), nil
@@ -181,11 +194,48 @@ func TestCreateEditionWithAssociationOperationHoldsProfileGate(t *testing.T) {
 	require.NoError(t, service.Shutdown(context.Background()))
 }
 
+func TestCreateEditionWithAssociationStopsWaitingWhenContextEnds(t *testing.T) {
+	service, profileID := newEditionCreateService(t)
+	gate := service.profileGate(profileID)
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+
+	baseCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx := &observedDoneContext{Context: baseCtx, doneObserved: make(chan struct{})}
+	called := false
+	done := make(chan error, 1)
+	go func() {
+		done <- service.CreateEditionWithAssociation(ctx, profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+			called = true
+			return testCreateAssociation("item-1"), nil
+		})
+	}()
+
+	select {
+	case <-ctx.doneObserved:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("edition create did not reach the blocked profile gate wait")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("edition create did not stop waiting after cancellation")
+	}
+	require.False(t, called)
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer shutdownCancel()
+	require.NoError(t, service.Shutdown(shutdownCtx), "canceled gate wait must release shutdown admission accounting")
+}
+
 func TestCreateEditionWithAssociationUsesProfileScopedStatePath(t *testing.T) {
 	service, profileID := newEditionCreateService(t)
 	otherPath := filepath.Join(t.TempDir(), "other.json")
 	require.NoError(t, os.WriteFile(otherPath, []byte(`{"version":"4.0"}`), 0600))
-	require.NoError(t, service.CreateEditionWithAssociation(profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+	require.NoError(t, service.CreateEditionWithAssociation(context.Background(), profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
 		return testCreateAssociation("item-1"), nil
 	}))
 	otherState, err := statepkg.LoadState(otherPath)
@@ -212,7 +262,7 @@ func TestCreateEditionWithAssociationSavesToLockedTargetAfterSymlinkRetarget(t *
 		profileID, profile.AudiobookshelfURL, "", "", profile.SyncConfig,
 	))
 
-	err = service.CreateEditionWithAssociation(profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+	err = service.CreateEditionWithAssociation(context.Background(), profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
 		require.NoError(t, os.Remove(aliasPath))
 		require.NoError(t, os.Symlink(secondPath, aliasPath))
 		return testCreateAssociation("item-1"), nil
