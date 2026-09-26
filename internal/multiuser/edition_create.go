@@ -173,7 +173,7 @@ func (s *MultiUserService) CreateEditionWithAssociation(ctx context.Context, pro
 		return fmt.Errorf("%w: invalid confirmed edition association: %w", ErrEditionAssociationSaveAfterRemoteSuccess, err)
 	}
 	if err := state.Save(fileLock.StatePath()); err != nil {
-		return fmt.Errorf("%w: %v", ErrEditionAssociationSaveAfterRemoteSuccess, err)
+		return fmt.Errorf("%w: %w", ErrEditionAssociationSaveAfterRemoteSuccess, err)
 	}
 	if isLegacy {
 		s.backupMigratedLegacyProfileState(profileID, loadPath)

@@ -88,6 +88,11 @@ func TestCreateEditionWithAssociationDistinguishesLocalSaveFailureAfterRemoteSuc
 	})
 	require.True(t, called)
 	require.ErrorIs(t, err, ErrEditionAssociationSaveAfterRemoteSuccess)
+	var saveErr *os.LinkError
+	require.ErrorAs(t, err, &saveErr)
+	require.ErrorIs(t, err, saveErr.Err)
+	require.Contains(t, err.Error(), ErrEditionAssociationSaveAfterRemoteSuccess.Error())
+	require.Contains(t, err.Error(), "failed to replace state file")
 }
 
 func TestCreateEditionWithAssociationClassifiesInvalidAssociationAfterRemoteSuccess(t *testing.T) {
