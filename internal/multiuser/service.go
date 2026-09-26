@@ -1753,7 +1753,16 @@ func (s *MultiUserService) createProfileSpecificConfig(profileConfig *database.P
 	config.Sync.DryRun = syncConfig.DryRun
 	config.Sync.TestBookFilter = syncConfig.TestBookFilter
 	config.Sync.TestBookLimit = syncConfig.TestBookLimit
-	config.Audiobookshelf.AudnexusRegion = s.normalizeProfileAudnexusRegion(profileConfig.Profile.ID, syncConfig.AudnexusRegion)
+	// A profile's own region preference wins; without one, fall back to the
+	// legacy global setting so service-mode sync matches one-time sync, which
+	// builds its service directly from the loaded configuration. This keeps
+	// `audiobookshelf.audnexus_region` effective for migrated profiles whose
+	// sync config predates the per-profile region.
+	region := syncConfig.AudnexusRegion
+	if region == "" {
+		region = config.Audiobookshelf.AudnexusRegion
+	}
+	config.Audiobookshelf.AudnexusRegion = s.normalizeProfileAudnexusRegion(profileConfig.Profile.ID, region)
 
 	// Debug logging to verify the config is being applied correctly
 	s.logger.Debug("Applied sync config for profile", map[string]interface{}{
