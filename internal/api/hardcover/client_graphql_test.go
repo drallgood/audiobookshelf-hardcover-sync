@@ -288,6 +288,63 @@ func TestGraphQLQuery_FailsFastOn400(t *testing.T) {
 	assert.Contains(t, err.Error(), "non-retryable HTTP error")
 }
 
+func TestGraphQLMutationBudgetIsCheckedAfterRateLimitAdmission(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{}}`))
+	}))
+	defer server.Close()
+
+	client := CreateTestClient(server)
+	client.rateLimiter = util.NewRateLimiter(time.Nanosecond, 1, client.logger)
+	client.rateLimiter.OnRateLimit(75 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	ctx = WithMinimumMutationBudget(ctx, 150*time.Millisecond)
+	var result struct{}
+
+	err := client.GraphQLMutation(ctx, `mutation CreateEdition { insert_edition { id } }`, nil, &result)
+
+	require.ErrorIs(t, err, ErrMutationInsufficientBudget)
+	assert.NotErrorIs(t, err, ErrMutationOutcomeAmbiguous)
+	assert.Zero(t, requests.Load(), "the mutation must not reach HTTP after admission consumes the reserve")
+
+	client.rateLimiter.ResetRate()
+	release, err := client.rateLimiter.Acquire(context.Background())
+	require.NoError(t, err, "the permit must be released when the reserve guard exits")
+	release()
+}
+
+func TestGraphQLMutationBudgetRetryAfterPossibleSendIsAmbiguous(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if requests.Add(1) == 1 {
+			http.Error(w, "temporary failure", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{}}`))
+	}))
+	defer server.Close()
+
+	client := CreateTestClient(server)
+	client.maxRetries = 1
+	client.retryDelay = 150 * time.Millisecond
+	client.rateLimiter = util.NewRateLimiter(time.Nanosecond, 1, client.logger)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	ctx = WithMinimumMutationBudget(ctx, 900*time.Millisecond)
+	var result struct{}
+
+	err := client.GraphQLMutation(ctx, `mutation CreateEdition { insert_edition { id } }`, nil, &result)
+
+	require.ErrorIs(t, err, ErrMutationOutcomeAmbiguous)
+	assert.NotErrorIs(t, err, ErrMutationInsufficientBudget)
+	assert.Equal(t, int32(1), requests.Load(), "after the first HTTP attempt, the reserve guard must not call it a no-send failure")
+}
+
 func TestGraphQLQuery_BoundsRetryAfterPause(t *testing.T) {
 	logger.Setup(logger.Config{Level: "error", Format: "json"})
 	log := logger.Get()

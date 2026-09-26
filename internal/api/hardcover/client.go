@@ -26,6 +26,46 @@ import (
 type ctxKey string
 
 const ctxKeyAudnexRegion ctxKey = "hardcover_audnex_region"
+const ctxKeyMinimumMutationBudget ctxKey = "hardcover_minimum_mutation_budget"
+
+// ErrMutationInsufficientBudget indicates an opted-in mutation was stopped
+// before any HTTP attempt because too little request time remained or admission
+// was canceled while waiting.
+var ErrMutationInsufficientBudget = errors.New("insufficient time remaining before Hardcover mutation")
+
+// ErrMutationOutcomeAmbiguous indicates an opted-in mutation could not proceed
+// after an earlier HTTP attempt may already have reached Hardcover.
+var ErrMutationOutcomeAmbiguous = errors.New("Hardcover mutation outcome is ambiguous")
+
+// WithMinimumMutationBudget asks mutation requests made with ctx to require at
+// least reserve time after rate-limit admission and immediately before sending.
+// Contexts without this opt-in retain the client's established behavior.
+func WithMinimumMutationBudget(ctx context.Context, reserve time.Duration) context.Context {
+	if reserve <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyMinimumMutationBudget, reserve)
+}
+
+func minimumMutationBudgetFromContext(ctx context.Context) (time.Duration, bool) {
+	reserve, ok := ctx.Value(ctxKeyMinimumMutationBudget).(time.Duration)
+	return reserve, ok && reserve > 0
+}
+
+func mutationBudgetRemaining(ctx context.Context, reserve time.Duration) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	deadline, ok := ctx.Deadline()
+	return ok && time.Until(deadline) >= reserve
+}
+
+func mutationBudgetError(mayHaveSent bool) error {
+	if mayHaveSent {
+		return ErrMutationOutcomeAmbiguous
+	}
+	return ErrMutationInsufficientBudget
+}
 
 // WithReadingFormat returns a context that carries the desired reading format string.
 // Accepted values typically include "audiobook" and "ebook". Case-insensitive.
@@ -492,6 +532,8 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 
 	// Execute the operation using the GraphQL client with retry logic
 	var lastErr error
+	mutationMayHaveBeenSent := false
+	minimumMutationBudget, hasMinimumMutationBudget := minimumMutationBudgetFromContext(ctx)
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if attempt > 0 {
 			// Context-aware backoff delay
@@ -525,6 +567,9 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		// Apply pacing and acquire a permit for the active HTTP request.
 		release, err := c.rateLimiter.Acquire(ctx)
 		if err != nil {
+			if op == mutationOperation && hasMinimumMutationBudget && ctx.Err() != nil {
+				return fmt.Errorf("%w: rate-limit admission ended before the mutation could be sent: %w", mutationBudgetError(mutationMayHaveBeenSent), err)
+			}
 			return fmt.Errorf("rate limiter error: %w", err)
 		}
 		// Release the permit exactly once. The explicit calls below free it as
@@ -545,8 +590,18 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		c.logger.Debug("GraphQL request body", map[string]interface{}{
 			"body": string(jsonBody),
 		})
+		if op == mutationOperation && hasMinimumMutationBudget && !mutationBudgetRemaining(ctx, minimumMutationBudget) {
+			releasePermit()
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return fmt.Errorf("%w: required %s to remain before sending: %w", mutationBudgetError(mutationMayHaveBeenSent), minimumMutationBudget, ctxErr)
+			}
+			return fmt.Errorf("%w: required %s to remain before sending", mutationBudgetError(mutationMayHaveBeenSent), minimumMutationBudget)
+		}
 
 		// Execute the request
+		if op == mutationOperation {
+			mutationMayHaveBeenSent = true
+		}
 		resp, err := httpClient.Do(req)
 		if err != nil {
 			releasePermit()

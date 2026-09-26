@@ -356,8 +356,12 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 	if err := requireEditionCreateMutationBudget(ctx); err != nil {
 		return statepkg.Association{}, err
 	}
-	result, err := client.ImportRegionalAudiobook(ctx, hardcover.RegionalAudiobookInput{BookID: bookID, ASIN: asin, Region: region})
+	mutationCtx := hardcover.WithMinimumMutationBudget(ctx, editionCreateMutationReserve)
+	result, err := client.ImportRegionalAudiobook(mutationCtx, hardcover.RegionalAudiobookInput{BookID: bookID, ASIN: asin, Region: region})
 	if err != nil {
+		if errors.Is(err, hardcover.ErrMutationInsufficientBudget) {
+			return statepkg.Association{}, errors.Join(errEditionCreateInsufficientBudget, err)
+		}
 		if errors.Is(err, hardcover.ErrRegionalAudiobookInvalidInput) || errors.Is(err, hardcover.ErrRegionalAudiobookDryRun) || errors.Is(err, hardcover.ErrRegionalAudiobookImportFailed) {
 			return statepkg.Association{}, fmt.Errorf("Hardcover regional audiobook import failed: %w", err)
 		}
@@ -522,8 +526,12 @@ func (h *Handler) createEbook(ctx context.Context, item *models.AudiobookshelfBo
 	if err := requireEditionCreateMutationBudget(ctx); err != nil {
 		return statepkg.Association{}, err
 	}
-	result, err := client.CreateEbook(ctx, input)
+	mutationCtx := hardcover.WithMinimumMutationBudget(ctx, editionCreateMutationReserve)
+	result, err := client.CreateEbook(mutationCtx, input)
 	if err != nil {
+		if errors.Is(err, hardcover.ErrMutationInsufficientBudget) {
+			return statepkg.Association{}, errors.Join(edition.ErrCreateEditionPreMutation, edition.ErrCreateEditionInsufficientMutationBudget, err)
+		}
 		if errors.Is(err, edition.ErrCreateEditionPreMutation) {
 			return statepkg.Association{}, fmt.Errorf("Hardcover ebook pre-insertion checks failed: %w", err)
 		}
@@ -676,7 +684,7 @@ func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID strin
 		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Edition creation service is shutting down; retry shortly")
 	case errors.Is(err, errEditionCreateInsufficientBudget):
 		w.Header().Set("Retry-After", "1")
-		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Edition lookups left too little time to safely start a Hardcover write; retry the edition create")
+		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Too little request time remained to safely start the Hardcover write; no mutation was sent. Retry the edition create")
 	case errors.Is(err, multiuser.ErrProfileStateBusy):
 		w.Header().Set("Retry-After", "1")
 		h.writeErrorResponse(w, http.StatusTooManyRequests, "Profile sync state is busy; retry shortly")

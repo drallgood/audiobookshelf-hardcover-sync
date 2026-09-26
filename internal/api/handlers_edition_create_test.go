@@ -575,6 +575,65 @@ func TestWriteEditionCreateErrorForInsufficientMutationBudgetIsRetryable(t *test
 	require.NotContains(t, response.Body.String(), "may have processed")
 }
 
+func TestEditionCreateMapsPreSendMutationBudgetGuardToRetryableNoSend(t *testing.T) {
+	tests := []struct {
+		name     string
+		itemJSON string
+		runID    string
+		record   sync.BookOutcomeRecord
+		body     string
+	}{
+		{
+			name:     "regional audiobook",
+			itemJSON: `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`,
+			runID:    "run-budget-audio",
+			record:   sync.BookOutcomeRecord{BookID: "abs-item-1", Outcome: sync.OutcomeNeedsReview, Title: "Reviewed title", Author: "Author", ASIN: "B0SOURCE12", ISBN: "9780306406157", Format: "Audiobook", HardcoverBookID: "42"},
+			body:     `{"run_id":"run-budget-audio","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`,
+		},
+		{
+			name:     "ebook",
+			itemJSON: `{"id":"abs-item-1","mediaType":"ebook","media":{"metadata":{"title":"Reviewed ebook","authorName":"Author","isbn":"9780306406157"},"ebookFile":{},"ebookFormat":"epub"}}`,
+			runID:    "run-budget-ebook",
+			record:   sync.BookOutcomeRecord{BookID: "abs-item-1", Outcome: sync.OutcomeNeedsReview, Title: "Reviewed ebook", Author: "Author", ISBN: "9780306406157", Format: "Ebook", HardcoverBookID: "42"},
+			body:     `{"run_id":"run-budget-ebook","abs_item_id":"abs-item-1"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newEditionDraftTestFixture(t, tt.itemJSON, "us")
+			configureEditionCreateRoute(t, fixture)
+			addCompletedNeedsReviewRun(t, fixture, tt.runID, tt.record)
+			var mutationCalls atomic.Int32
+			fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+				return editionCreateHardcoverStub{
+					importFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+						mutationCalls.Add(1)
+						return nil, hardcover.ErrMutationInsufficientBudget
+					},
+					bookFn: func(context.Context, string) (*models.HardcoverBook, error) {
+						return &models.HardcoverBook{ID: "42", Authors: []models.Author{{ID: "7", Name: "Author"}}}, nil
+					},
+					createEbookFn: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
+						mutationCalls.Add(1)
+						return nil, hardcover.ErrMutationInsufficientBudget
+					},
+				}
+			}
+
+			response := postEditionCreate(t, fixture, fixture.owner, tt.body)
+			require.Equal(t, http.StatusServiceUnavailable, response.Code, response.Body.String())
+			require.Equal(t, "1", response.Header().Get("Retry-After"))
+			require.EqualValues(t, 1, mutationCalls.Load())
+			require.Contains(t, response.Body.String(), "mutation was sent")
+			require.NotContains(t, response.Body.String(), "may have processed")
+			stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+			require.NoError(t, err)
+			_, exists := stored.GetAssociation("abs-item-1")
+			require.False(t, exists)
+		})
+	}
+}
+
 func TestCreateEditionFromDraftRejectsChangedTitleOrAuthorBeforeHardcoverMutation(t *testing.T) {
 	tests := []struct {
 		name            string
