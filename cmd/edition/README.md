@@ -11,8 +11,8 @@ The published Docker image runs the main `audiobookshelf-hardcover-sync`
 service and does not include the `edition` command. Run the edition workflows
 locally as described below.
 
-The edition command needs a `config.yaml` file with the Hardcover API token
-under `hardcover.token`:
+The edition command needs the Hardcover API token, set as `hardcover.token` in
+`config.yaml` or with `HARDCOVER_TOKEN`:
 
   ```yaml
   hardcover:
@@ -84,8 +84,11 @@ exported for ebook items already carry `"reading_format": "ebook"`.
 ## Configuration
 
 The tool reads `config.yaml` by default, or another file supplied with
-`--config`. Configure the Hardcover API token in that file; the edition
-commands do not use `HARDCOVER_TOKEN` environment overrides.
+`--config`. The default file is optional; a file named with `--config` must
+exist. Environment variables such as `HARDCOVER_TOKEN`, `AUDIOBOOKSHELF_URL`,
+`AUDIOBOOKSHELF_TOKEN`, and `AUDIOBOOKSHELF_NETWORK_TRUST` override the file,
+as they do for the sync service. The edition commands do not require the sync
+service's Audiobookshelf settings and print no configuration summary.
 
 ```yaml
 hardcover:
@@ -94,12 +97,10 @@ hardcover:
 
 An authenticated Audiobookshelf cover URL must match the configured
 `audiobookshelf.url` base URL's scheme, hostname, port, and canonical path
-prefix. A non-empty base may be an absolute `http://` or `https://` URL; HTTPS
-is not required. An unambiguous bare host or host with port (for example
-`abs.home:13378`) is treated as `https`. A single-label host with a port
-requires an explicit scheme so it cannot be mistaken for an opaque URL such as
-`ftp:443`. Aliases such as `localhost` and `127.0.0.1`, and different ports,
-intentionally receive no token.
+prefix. A non-empty base must be an absolute `http://` or `https://` URL, and
+`audiobookshelf.network_trust` applies as described in the main README
+(`public_only` requires HTTPS). Aliases such as `localhost` and `127.0.0.1`,
+and different ports, intentionally receive no token.
 
 ## Examples
 

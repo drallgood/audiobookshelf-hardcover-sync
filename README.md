@@ -125,7 +125,7 @@ Use a trusted Audiobookshelf URL: this route fetches it with the saved token.
 Enable authentication when exposing the API beyond localhost. A draft may
 check up to ten Audnex regions, with retries, within its 25-second deadline.
 Each server instance prepares at most two drafts concurrently; extra requests
-receive HTTP 429 and can be retried shortly.
+receive HTTP 429 with `Retry-After: 1`.
 
 ### Edition capability
 
@@ -615,6 +615,7 @@ logging:
 audiobookshelf:
   url: "https://your-audiobookshelf-instance.com"
   token: "your-audiobookshelf-token"
+  network_trust: "allow_private"
 
 # Hardcover configuration
 hardcover:
@@ -703,6 +704,19 @@ paths:
   mismatch_output_dir: "./mismatches"  # Directory for mismatch reports
 ```
 
+`audiobookshelf.network_trust` is a deployment-wide setting; profile owners
+cannot change it. `allow_private` is the default and permits self-hosted
+Audiobookshelf addresses, including LAN, loopback, shared overlay, and IPv6
+unique-local addresses, over HTTP or HTTPS.
+`public_only` permits public addresses over HTTPS and is intended for
+deployments where profile owners are less trusted. Set it with
+`AUDIOBOOKSHELF_NETWORK_TRUST` or the YAML value above. Unsupported values are
+configuration errors. The base URL must be absolute HTTP or HTTPS; connection
+and redirect destinations are checked against the selected mode. Hosts with
+both allowed and disallowed DNS addresses are rejected entirely. Requests
+connect directly and do not use `HTTP_PROXY`, `HTTPS_PROXY`, or
+`NO_PROXY`, since proxy-side DNS resolution would bypass these checks.
+
 #### Environment Variables
 
 **Multi-User Mode (v3.0.0+)** - Recommended:
@@ -714,6 +728,7 @@ paths:
 | `LOG_LEVEL` | Logging level | `info` | `debug`, `warn`, `error` |
 | `LOG_FORMAT` | Log output format | `json` | `json`, `text` |
 | `HARDCOVER_BASE_URL` | Hardcover GraphQL API base URL | `https://api.hardcover.app/v1/graphql` | `https://api.hardcover.app/v1/graphql` |
+| `AUDIOBOOKSHELF_NETWORK_TRUST` | Audiobookshelf destination policy (`allow_private` or `public_only`) | `allow_private` | `public_only` |
 | `RATE_LIMIT_RATE` | Minimum time between Hardcover API requests | unset | `2s` (30 rpm) |
 | `RATE_LIMIT_MAX_CONCURRENT` | Max concurrent requests | unset | `1` |
 
@@ -744,6 +759,8 @@ The application supports two distinct operating modes controlled by the `enable_
 - `ENABLE_WEB_UI`: Enable/disable web UI (`true`/`false`, default: `false`)
 - `AUDIOBOOKSHELF_URL`: Audiobookshelf server URL (required)
 - `AUDIOBOOKSHELF_TOKEN`: Audiobookshelf API token (required for single-user mode)
+- `AUDIOBOOKSHELF_NETWORK_TRUST`: Deployment-wide ABS destination policy
+  (`allow_private` by default or `public_only`)
 - `AUDIOBOOKSHELF_AUDNEXUS_REGION`: Legacy Audnex setting; used as the default region for sync when a profile has no `sync_config.audnexus_region`.
 - `HARDCOVER_TOKEN`: Hardcover API token (required for single-user mode)
 

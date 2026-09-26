@@ -37,6 +37,15 @@ If you previously used environment variables for configuration, you will need to
 
 ## Breaking Changes
 
+### Audiobookshelf URL trust
+
+Configure Audiobookshelf URLs as absolute `http://` or `https://` URLs. In
+particular, an `edition` CLI configuration that used a bare host or host:port
+must add a scheme. Audiobookshelf requests now connect directly and ignore
+`HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`; deployments that previously used a
+proxy need a direct route to the configured Audiobookshelf server. These
+requirements apply to both network trust modes.
+
 ### Sync Status API
 
 The legacy global sync, per-profile status, and summary endpoints were removed.

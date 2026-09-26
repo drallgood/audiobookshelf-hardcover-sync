@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/crypto"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
@@ -30,6 +31,11 @@ type statusServiceFixture struct {
 }
 
 func newStatusServiceFixture(t *testing.T, hardcoverURL string) *statusServiceFixture {
+	t.Helper()
+	return newStatusServiceFixtureWithConfig(t, hardcoverURL, nil)
+}
+
+func newStatusServiceFixtureWithConfig(t *testing.T, hardcoverURL string, configure func(*config.Config)) *statusServiceFixture {
 	t.Helper()
 	logger.ForceSetup(logger.Config{Level: "error", Format: logger.FormatJSON, Output: io.Discard})
 
@@ -49,6 +55,9 @@ func newStatusServiceFixture(t *testing.T, hardcoverURL string) *statusServiceFi
 	cfg.RateLimit.Rate = time.Nanosecond
 	cfg.RateLimit.MaxConcurrent = 1
 	cfg.Hardcover.BaseURL = hardcoverURL
+	if configure != nil {
+		configure(cfg)
+	}
 	multiUser := multiuser.NewMultiUserService(repo, cfg, logger.Get())
 	t.Cleanup(func() {
 		require.NoError(t, multiUser.Shutdown(context.Background()))
@@ -511,6 +520,75 @@ func TestUpdateProfileConfigPreservesOmittedFieldsAndRejectsNull(t *testing.T) {
 	require.False(t, profile.SyncConfig.SyncOwned)
 	require.False(t, profile.SyncConfig.IncludeEbooks)
 	require.False(t, profile.SyncConfig.DryRun)
+}
+
+func TestProfileAudiobookshelfURLValidationAtHTTPBoundary(t *testing.T) {
+	fixture := newStatusServiceFixtureWithConfig(t, "http://hardcover.invalid", func(cfg *config.Config) {
+		cfg.Audiobookshelf.NetworkTrust = audiobookshelf.NetworkTrustPublicOnly
+	})
+	handler := NewHandler(fixture.multiUser, logger.Get())
+	routes := http.NewServeMux()
+	routes.HandleFunc("POST /api/profiles", handler.CreateProfile)
+	routes.HandleFunc("PUT /api/profiles/{id}/config", handler.UpdateProfileConfig)
+
+	rejectedURLs := []struct {
+		name string
+		url  string
+	}{
+		{name: "HTTP under public_only", url: "http://audiobookshelf.example"},
+		{name: "unsupported scheme", url: "ftp://audiobookshelf.example"},
+		{name: "embedded credentials", url: "https://user:secret@audiobookshelf.example"},
+	}
+	for _, test := range rejectedURLs {
+		t.Run("create "+test.name, func(t *testing.T) {
+			profileID := "url-" + strings.ReplaceAll(test.name, " ", "-")
+			payload, err := json.Marshal(CreateProfileRequest{
+				ID:                  profileID,
+				Name:                "New profile",
+				AudiobookshelfURL:   test.url,
+				AudiobookshelfToken: "abs-token",
+				HardcoverToken:      "hardcover-token",
+			})
+			require.NoError(t, err)
+			response := httptest.NewRecorder()
+			routes.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/profiles", bytes.NewReader(payload)))
+			require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+			require.Contains(t, response.Body.String(), "audiobookshelf_url is invalid")
+			require.NotContains(t, response.Body.String(), "public_only")
+			created, err := fixture.multiUser.GetProfile(profileID)
+			require.NoError(t, err)
+			require.Nil(t, created)
+		})
+	}
+
+	createPayload, err := json.Marshal(CreateProfileRequest{
+		ID:                  "public-profile",
+		Name:                "Public profile",
+		AudiobookshelfURL:   "https://audiobookshelf.example/abs/",
+		AudiobookshelfToken: "abs-token",
+		HardcoverToken:      "hardcover-token",
+	})
+	require.NoError(t, err)
+	createResponse := httptest.NewRecorder()
+	routes.ServeHTTP(createResponse, httptest.NewRequest(http.MethodPost, "/api/profiles", bytes.NewReader(createPayload)))
+	require.Equal(t, http.StatusOK, createResponse.Code, createResponse.Body.String())
+	created, err := fixture.multiUser.GetProfile("public-profile")
+	require.NoError(t, err)
+	require.NotNil(t, created)
+	require.Equal(t, "https://audiobookshelf.example/abs", created.AudiobookshelfURL)
+
+	updatePayload, err := json.Marshal(UpdateProfileConfigRequest{AudiobookshelfURL: "http://audiobookshelf.example"})
+	require.NoError(t, err)
+	updateResponse := httptest.NewRecorder()
+	routes.ServeHTTP(updateResponse, httptest.NewRequest(
+		http.MethodPut, "/api/profiles/public-profile/config", bytes.NewReader(updatePayload),
+	))
+	require.Equal(t, http.StatusBadRequest, updateResponse.Code, updateResponse.Body.String())
+	require.Contains(t, updateResponse.Body.String(), "audiobookshelf_url is invalid")
+	require.NotContains(t, updateResponse.Body.String(), "public_only")
+	unchanged, err := fixture.multiUser.GetProfile("public-profile")
+	require.NoError(t, err)
+	require.Equal(t, "https://audiobookshelf.example/abs", unchanged.AudiobookshelfURL)
 }
 
 func TestProfileStateFilenameValidationAtHTTPBoundary(t *testing.T) {

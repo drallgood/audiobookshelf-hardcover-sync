@@ -170,10 +170,9 @@ func uploadBookImage(imageURL, bookID, description string, cfg *config.Config) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	// Create a creator instance
-	creator := edition.NewCreator(client, logger.Get(), false, cfg.Audiobookshelf.Token)
-	if err := creator.SetAudiobookshelfBaseURL(cfg.Audiobookshelf.URL); err != nil {
-		log.Error("Invalid Audiobookshelf URL", map[string]interface{}{"error": err.Error()})
+	creator, err := newImageCreator(client, cfg)
+	if err != nil {
+		log.Error("Invalid Audiobookshelf configuration", map[string]interface{}{"error": err.Error()})
 		os.Exit(1)
 	}
 
@@ -229,9 +228,9 @@ func uploadEditionImage(imageURL string, editionID string, description string, c
 
 	// Create a new client and creator
 	client := hardcover.NewClientWithConfig(hcCfg, token, logger.Get())
-	creator := edition.NewCreator(client, logger.Get(), false, cfg.Audiobookshelf.Token)
-	if err := creator.SetAudiobookshelfBaseURL(cfg.Audiobookshelf.URL); err != nil {
-		log.Error("Invalid Audiobookshelf URL", map[string]interface{}{"error": err.Error()})
+	creator, err := newImageCreator(client, cfg)
+	if err != nil {
+		log.Error("Invalid Audiobookshelf configuration", map[string]interface{}{"error": err.Error()})
 		os.Exit(1)
 	}
 
@@ -255,6 +254,17 @@ func uploadEditionImage(imageURL string, editionID string, description string, c
 		"editionID": editionID,
 		"imageURL":  imageURL,
 	})
+}
+
+func newImageCreator(client edition.HardcoverClient, cfg *config.Config) (*edition.Creator, error) {
+	creator := edition.NewCreator(client, logger.Get(), false, cfg.Audiobookshelf.Token)
+	if err := creator.SetAudiobookshelfNetworkTrust(cfg.Audiobookshelf.NetworkTrust); err != nil {
+		return nil, fmt.Errorf("invalid Audiobookshelf network trust: %w", err)
+	}
+	if err := creator.SetAudiobookshelfBaseURL(cfg.Audiobookshelf.URL); err != nil {
+		return nil, fmt.Errorf("invalid Audiobookshelf URL: %w", err)
+	}
+	return creator, nil
 }
 
 // exitUploadError logs a caller-facing upload failure and exits nonzero. Cover

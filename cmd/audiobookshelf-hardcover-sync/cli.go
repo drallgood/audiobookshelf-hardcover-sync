@@ -251,7 +251,17 @@ func RunOneTimeSync(flags *configFlags) {
 		"has_hardcover_token":      cfg.Hardcover.Token != "",
 	})
 
-	audiobookshelfClient := audiobookshelf.NewClient(cfg.Audiobookshelf.URL, cfg.Audiobookshelf.Token)
+	audiobookshelfClient, err := audiobookshelf.NewClientWithNetworkTrust(
+		cfg.Audiobookshelf.URL,
+		cfg.Audiobookshelf.Token,
+		cfg.Audiobookshelf.NetworkTrust,
+	)
+	if err != nil {
+		log.Error("Failed to initialize Audiobookshelf client", map[string]interface{}{
+			"error": err.Error(),
+		})
+		os.Exit(1)
+	}
 	// Get the global logger instance and pass it to the Hardcover client
 	logInstance := logger.Get()
 	hardcoverClient := hardcover.NewClient(cfg.Hardcover.Token, logInstance)

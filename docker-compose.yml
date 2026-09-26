@@ -8,6 +8,7 @@ x-common-env: &common-env
   # Audiobookshelf settings
   AUDIOBOOKSHELF_URL: ${AUDIOBOOKSHELF_URL:-}
   AUDIOBOOKSHELF_TOKEN: ${AUDIOBOOKSHELF_TOKEN:-}
+  AUDIOBOOKSHELF_NETWORK_TRUST: ${AUDIOBOOKSHELF_NETWORK_TRUST:-}
   # Hardcover settings
   HARDCOVER_TOKEN: ${HARDCOVER_TOKEN:-}
   # Sync settings

@@ -1,13 +1,17 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/audnexregion"
 	"gopkg.in/yaml.v3"
 )
@@ -83,6 +87,8 @@ type Config struct {
 	Audiobookshelf struct {
 		// URL is the base URL of the Audiobookshelf server
 		URL string `yaml:"url" env:"AUDIOBOOKSHELF_URL"`
+		// NetworkTrust controls which destination addresses ABS requests may reach.
+		NetworkTrust string `yaml:"network_trust" env:"AUDIOBOOKSHELF_NETWORK_TRUST"`
 		// Token is the API token for Audiobookshelf
 		Token string `yaml:"token" env:"AUDIOBOOKSHELF_TOKEN"`
 		// AudnexusRegion is the normalized preference for the ten Audnex regions.
@@ -214,6 +220,7 @@ func DefaultConfig() *Config {
 	cfg.Server.Port = "8080"
 	cfg.Server.ShutdownTimeout = 30 * time.Second
 	cfg.Server.EnableWebUI = false // Web UI is disabled by default for backward compatibility
+	cfg.Audiobookshelf.NetworkTrust = audiobookshelf.NetworkTrustAllowPrivate
 
 	// Default sync configuration
 	cfg.Sync.Incremental = true
@@ -295,42 +302,14 @@ func NormalizeAudnexusRegion(region string) (string, bool) {
 	return "us", false
 }
 
+// Load applies defaults, an optional YAML file, and environment overrides, then
+// validates the result for the sync service and prints the effective settings.
+// A missing file at configPath is ignored.
 func Load(configPath string) (*Config, error) {
-	// Start with default configuration
-	cfg := DefaultConfig()
-
-	// Note: Debug logging removed to prevent early logger initialization
-	// which would override the format specified in the config file
-
-	// Note: Debug logging removed to prevent early logger initialization
-
-	// Load from file if path is provided
-	if configPath != "" {
-		// Check if file exists
-		if _, err := os.Stat(configPath); os.IsNotExist(err) {
-			// Config file does not exist, using defaults
-		} else {
-			// Read the config file
-			data, err := os.ReadFile(configPath)
-			if err != nil {
-				return nil, fmt.Errorf("failed to read config file: %w", err)
-			}
-
-			// Create a temporary config to load the file into
-			fileCfg := &Config{}
-
-			// Unmarshal the config file
-			if err := yaml.Unmarshal(data, fileCfg); err != nil {
-				return nil, fmt.Errorf("failed to parse config file: %w", err)
-			}
-
-			// Merge the config from file into our config
-			mergeConfigs(cfg, fileCfg)
-		}
+	cfg, err := loadLayers(configPath, false)
+	if err != nil {
+		return nil, err
 	}
-
-	// Load from environment variables
-	loadFromEnv(cfg)
 
 	// Validate the configuration
 	if err := cfg.Validate(); err != nil {
@@ -341,8 +320,8 @@ func Load(configPath string) (*Config, error) {
 	fmt.Println("Final configuration after validation and migration:")
 	fmt.Printf("Server:\n  port: %s\n  shutdown_timeout: %s\n  enable_web_ui: %v\n",
 		cfg.Server.Port, cfg.Server.ShutdownTimeout, cfg.Server.EnableWebUI)
-	fmt.Printf("Audiobookshelf:\n  url: %s\n  has_token: %v\n  audnexus_region: %s\n",
-		cfg.Audiobookshelf.URL, cfg.Audiobookshelf.Token != "", cfg.Audiobookshelf.AudnexusRegion)
+	fmt.Printf("Audiobookshelf:\n  url: %s\n  network_trust: %s\n  has_token: %v\n  audnexus_region: %s\n",
+		cfg.Audiobookshelf.URL, cfg.Audiobookshelf.NetworkTrust, cfg.Audiobookshelf.Token != "", cfg.Audiobookshelf.AudnexusRegion)
 	fmt.Printf("Hardcover:\n  has_token: %v\n  base_url: %s\n", cfg.Hardcover.Token != "", cfg.Hardcover.BaseURL)
 	fmt.Printf("Sync:\n  incremental: %v\n  state_file: %s\n  min_change_threshold: %d\n  sync_interval: %s\n  minimum_progress: %f\n  sync_want_to_read: %v\n  process_unread_books: %v\n  sync_owned: %v\n  dry_run: %v\n  single_user_mode: %v\n  single_user_username: %s\n  test_book_filter: %s\n  test_book_limit: %d\n  include_ebooks: %v\n",
 		cfg.Sync.Incremental, cfg.Sync.StateFile, cfg.Sync.MinChangeThreshold,
@@ -376,8 +355,92 @@ func Load(configPath string) (*Config, error) {
 	return cfg, nil
 }
 
+// LoadForTool loads configuration for a standalone command without printing
+// the effective settings or requiring the sync service's single-user and web UI
+// fields. It applies defaults, the YAML file at configPath, and environment
+// overrides with the same precedence as Load. An empty configPath uses defaults
+// and the environment only; a non-empty configPath must name a readable file.
+// The Audiobookshelf network trust, URL, and Audnex region are validated and
+// normalized as in Validate, with warnings written to standard error.
+func LoadForTool(configPath string) (*Config, error) {
+	cfg, err := loadLayers(configPath, configPath != "")
+	if err != nil {
+		return nil, err
+	}
+	if err := cfg.validateAudiobookshelf(os.Stderr); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
+	return cfg, nil
+}
+
+// loadLayers returns the defaults overlaid by the optional YAML file and then
+// the environment. A missing file is an error only when requireFile is true.
+func loadLayers(configPath string, requireFile bool) (*Config, error) {
+	cfg := DefaultConfig()
+
+	// Note: Debug logging is avoided here to prevent early logger
+	// initialization, which would override the format in the config file.
+	if configPath != "" {
+		data, err := os.ReadFile(configPath)
+		switch {
+		case errors.Is(err, fs.ErrNotExist) && !requireFile:
+			// Config file does not exist, using defaults
+		case err != nil:
+			return nil, fmt.Errorf("failed to read config file: %w", err)
+		default:
+			fileCfg := &Config{}
+			if err := yaml.Unmarshal(data, fileCfg); err != nil {
+				return nil, fmt.Errorf("failed to parse config file: %w", err)
+			}
+			mergeConfigs(cfg, fileCfg)
+		}
+	}
+
+	loadFromEnv(cfg)
+	return cfg, nil
+}
+
+// validateAudiobookshelf defaults and checks the deployment-wide network trust
+// mode, normalizes a configured Audiobookshelf URL under that mode, and
+// normalizes the Audnex region preference, reporting an unsupported region to
+// warnings and using US.
+func (c *Config) validateAudiobookshelf(warnings io.Writer) error {
+	if c.Audiobookshelf.NetworkTrust == "" {
+		c.Audiobookshelf.NetworkTrust = audiobookshelf.NetworkTrustAllowPrivate
+	}
+	if c.Audiobookshelf.NetworkTrust != audiobookshelf.NetworkTrustAllowPrivate &&
+		c.Audiobookshelf.NetworkTrust != audiobookshelf.NetworkTrustPublicOnly {
+		return &ConfigError{
+			Field: "audiobookshelf.network_trust",
+			Msg: fmt.Sprintf("has unsupported value %q; must be %q or %q", c.Audiobookshelf.NetworkTrust,
+				audiobookshelf.NetworkTrustAllowPrivate, audiobookshelf.NetworkTrustPublicOnly),
+		}
+	}
+	if c.Audiobookshelf.URL != "" {
+		normalizedURL, err := audiobookshelf.ValidateBaseURL(c.Audiobookshelf.URL, c.Audiobookshelf.NetworkTrust)
+		if err != nil {
+			return &ConfigError{Field: "audiobookshelf.url", Msg: err.Error()}
+		}
+		c.Audiobookshelf.URL = normalizedURL
+	}
+
+	region, valid := NormalizeAudnexusRegion(c.Audiobookshelf.AudnexusRegion)
+	if !valid {
+		_, _ = fmt.Fprintf(warnings, "Warning: Unknown audnexus_region '%s'. Valid values: us, ca, uk, au, de, fr, es, in, it, jp. Using us.\n",
+			c.Audiobookshelf.AudnexusRegion)
+	}
+	c.Audiobookshelf.AudnexusRegion = region
+	return nil
+}
+
 // Validate checks that all required configuration is present and valid
 func (c *Config) Validate() error {
+	// Environment overrides have already been applied, so the region and
+	// Audiobookshelf settings are validated against their final values.
+	if err := c.validateAudiobookshelf(os.Stdout); err != nil {
+		return err
+	}
+
 	var missing []string
 
 	// When web UI is disabled (single-user mode), require tokens
@@ -438,15 +501,6 @@ func (c *Config) Validate() error {
 		c.Sync.SyncInterval = 1 * time.Hour
 		fmt.Printf("Warning: Invalid sync interval, using default: %s\n", c.Sync.SyncInterval)
 	}
-
-	// Normalize and validate the region only after defaults, file values and
-	// environment overrides have all been applied.
-	region, valid := NormalizeAudnexusRegion(c.Audiobookshelf.AudnexusRegion)
-	if !valid {
-		fmt.Printf("Warning: Unknown audnexus_region '%s'. Valid values: us, ca, uk, au, de, fr, es, in, it, jp. Using us.\n",
-			c.Audiobookshelf.AudnexusRegion)
-	}
-	c.Audiobookshelf.AudnexusRegion = region
 
 	// Validate minimum progress is between 0 and 1
 	if c.Sync.MinimumProgress < 0 || c.Sync.MinimumProgress > 1 {
@@ -604,6 +658,9 @@ func loadFromEnv(cfg *Config) {
 	// Audiobookshelf configuration
 	if url := os.Getenv("AUDIOBOOKSHELF_URL"); url != "" {
 		cfg.Audiobookshelf.URL = strings.TrimSuffix(url, "/")
+	}
+	if networkTrust := os.Getenv("AUDIOBOOKSHELF_NETWORK_TRUST"); networkTrust != "" {
+		cfg.Audiobookshelf.NetworkTrust = networkTrust
 	}
 	if token := os.Getenv("AUDIOBOOKSHELF_TOKEN"); token != "" {
 		cfg.Audiobookshelf.Token = token

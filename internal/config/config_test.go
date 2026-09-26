@@ -1,6 +1,7 @@
 package config
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -192,6 +193,124 @@ func TestDatabaseSyncRunReportRetentionUsesYAMLAndEnvironment(t *testing.T) {
 	cfg, err = Load(path)
 	require.NoError(t, err)
 	assert.Equal(t, 3, cfg.Database.SyncRunReportRetention)
+}
+
+func TestAudiobookshelfNetworkTrustDefaultYAMLAndEnvironment(t *testing.T) {
+	t.Setenv("AUDIOBOOKSHELF_URL", "")
+	t.Setenv("AUDIOBOOKSHELF_TOKEN", "abs-token")
+	t.Setenv("AUDIOBOOKSHELF_NETWORK_TRUST", "")
+	t.Setenv("HARDCOVER_TOKEN", "hc-token")
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("audiobookshelf:\n  url: https://abs.example\n  network_trust: public_only\n"), 0644))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "public_only", cfg.Audiobookshelf.NetworkTrust)
+
+	t.Setenv("AUDIOBOOKSHELF_NETWORK_TRUST", "allow_private")
+	cfg, err = Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "allow_private", cfg.Audiobookshelf.NetworkTrust)
+
+	t.Setenv("AUDIOBOOKSHELF_NETWORK_TRUST", "")
+	defaultCfg := DefaultConfig()
+	assert.Equal(t, "allow_private", defaultCfg.Audiobookshelf.NetworkTrust)
+}
+
+func TestAudiobookshelfNetworkTrustRejectsUnsupportedValues(t *testing.T) {
+	t.Setenv("AUDIOBOOKSHELF_URL", "https://abs.example")
+	t.Setenv("AUDIOBOOKSHELF_TOKEN", "abs-token")
+	t.Setenv("AUDIOBOOKSHELF_NETWORK_TRUST", "trust_everything")
+	t.Setenv("HARDCOVER_TOKEN", "hc-token")
+	_, err := Load("")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "audiobookshelf.network_trust")
+	assert.Contains(t, err.Error(), "trust_everything")
+}
+
+func TestAudiobookshelfConfigValidatesAndNormalizesURL(t *testing.T) {
+	t.Setenv("AUDIOBOOKSHELF_URL", "")
+	t.Setenv("AUDIOBOOKSHELF_TOKEN", "abs-token")
+	t.Setenv("AUDIOBOOKSHELF_NETWORK_TRUST", "")
+	t.Setenv("HARDCOVER_TOKEN", "hc-token")
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("audiobookshelf:\n  url: http://abs.example/\n"), 0644))
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "http://abs.example", cfg.Audiobookshelf.URL)
+
+	t.Setenv("AUDIOBOOKSHELF_NETWORK_TRUST", "public_only")
+	_, err = Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must use https")
+}
+
+func TestLoadForToolLayersQuietlyWithoutServiceRequirements(t *testing.T) {
+	for _, key := range []string{
+		"AUDIOBOOKSHELF_URL", "AUDIOBOOKSHELF_TOKEN", "AUDIOBOOKSHELF_NETWORK_TRUST",
+		"AUDIOBOOKSHELF_AUDNEXUS_REGION", "HARDCOVER_TOKEN", "ENABLE_WEB_UI",
+	} {
+		t.Setenv(key, "")
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(
+		"audiobookshelf:\n  url: http://abs.lan:13378/\n  network_trust: allow_private\n  audnexus_region: xx\nhardcover:\n  token: file-token\n",
+	), 0o600))
+
+	var cfg *Config
+	stdout := captureStdout(t, func() {
+		var err error
+		cfg, err = LoadForTool(path)
+		require.NoError(t, err)
+	})
+	assert.Empty(t, stdout, "standalone commands keep stdout for their own output")
+	assert.Equal(t, "http://abs.lan:13378", cfg.Audiobookshelf.URL)
+	assert.Equal(t, "us", cfg.Audiobookshelf.AudnexusRegion, "an unsupported region warns and uses US")
+	assert.Equal(t, "file-token", cfg.Hardcover.Token)
+
+	t.Setenv("HARDCOVER_TOKEN", "env-token")
+	t.Setenv("AUDIOBOOKSHELF_URL", "https://abs.example/")
+	t.Setenv("AUDIOBOOKSHELF_NETWORK_TRUST", "public_only")
+	cfg, err := LoadForTool(path)
+	require.NoError(t, err)
+	assert.Equal(t, "env-token", cfg.Hardcover.Token)
+	assert.Equal(t, "public_only", cfg.Audiobookshelf.NetworkTrust)
+	assert.Equal(t, "https://abs.example", cfg.Audiobookshelf.URL)
+
+	t.Setenv("AUDIOBOOKSHELF_URL", "http://abs.example")
+	_, err = LoadForTool(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must use https")
+
+	t.Setenv("AUDIOBOOKSHELF_NETWORK_TRUST", "trust_everything")
+	_, err = LoadForTool(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "audiobookshelf.network_trust")
+
+	t.Setenv("AUDIOBOOKSHELF_URL", "")
+	t.Setenv("AUDIOBOOKSHELF_NETWORK_TRUST", "")
+	cfg, err = LoadForTool("")
+	require.NoError(t, err, "Hardcover-only environment configuration needs no Audiobookshelf settings")
+	assert.Equal(t, "env-token", cfg.Hardcover.Token)
+	assert.Empty(t, cfg.Audiobookshelf.URL)
+	assert.Equal(t, "allow_private", cfg.Audiobookshelf.NetworkTrust)
+
+	_, err = LoadForTool(filepath.Join(t.TempDir(), "missing.yaml"))
+	require.Error(t, err, "a named configuration file must exist")
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	reader, writer, err := os.Pipe()
+	require.NoError(t, err)
+	original := os.Stdout
+	os.Stdout = writer
+	defer func() { os.Stdout = original }()
+	fn()
+	require.NoError(t, writer.Close())
+	output, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	return string(output)
 }
 
 func TestLoadConfig_WithAudnexusRegion(t *testing.T) {

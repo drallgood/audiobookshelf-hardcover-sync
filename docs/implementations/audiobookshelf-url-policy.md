@@ -1,9 +1,12 @@
 # Audiobookshelf URL Policy
 
-**Status:** Defined; not yet enforced. The edition create work implements this
-policy once, where Audiobookshelf (ABS) clients are constructed, before the
-create endpoint ships. Until then, sync, the edition draft, and the CLI keep
-today's behavior.
+**Status:** Enforced for the production Audiobookshelf clients used by sync,
+edition drafts, and the edition creator's cover requests in the
+standalone `edition` and `image-tool` commands. A later create API must use
+the same shared client. The deployment-wide mode is validated when
+configuration loads; profile URLs are validated when profiles are created or
+updated, and an invalid profile URL is rejected with HTTP 400. The shared
+client checks destinations when requests and redirects are made.
 
 The service fetches a configured ABS base URL on the server with that
 configuration's ABS token. In a multi-user web deployment a profile owner
@@ -36,22 +39,30 @@ is a configuration error rather than a silent fallback.
 deployments keep working without a configuration change. Operators who let
 untrusted users create profiles should set `public_only`.
 
-Both modes reject unspecified, multicast, broadcast, link-local (including
-cloud metadata endpoints such as `169.254.169.254` and `fe80::/10`),
-documentation, benchmarking, and other reserved or non-routable addresses.
+The implementation explicitly rejects unspecified, multicast, and link-local
+addresses, cloud metadata addresses such as `169.254.169.254`, documentation
+and benchmarking ranges, and selected other special-purpose ranges.
 `public_only` also rejects every address that only `allow_private` adds.
 IPv4-mapped IPv6 addresses are classified by their IPv4 address.
 
 ## URL validation
 
 A configured base URL must be an absolute `http` or `https` URL with a host and
-no userinfo, query, or fragment. A trailing slash is removed, as today.
-Validate the syntax when a profile or CLI configuration is saved or loaded,
-and report a clear configuration error. Validate destination addresses at
-connection time, because DNS answers can change after the configuration is
-saved.
+no userinfo, query, or fragment. `public_only` requires HTTPS. A trailing
+slash is removed, as today. Configuration loading validates the trust value
+and a configured standalone URL. Web profile creation and URL updates
+validate the profile URL; the client constructor also rejects invalid URL or
+trust values before sending a request. Each request checks URL syntax. New
+connections check the resolved address and connected peer, because DNS answers
+can change after a URL is saved. Redirects also check their destination
+addresses before following them. An existing validated connection remains
+usable if DNS is temporarily unavailable.
 
 HTTPS certificate verification stays enabled in both modes.
+
+Audiobookshelf requests connect directly and ignore `HTTP_PROXY`,
+`HTTPS_PROXY`, and `NO_PROXY`. A proxy would resolve destinations outside the
+checked dialer, so an operator must provide a direct route to Audiobookshelf.
 
 ## Connections and redirects
 
@@ -69,10 +80,10 @@ HTTPS certificate verification stays enabled in both modes.
 
 ## Scope
 
-One shared client boundary enforces the policy for sync, edition drafts,
-edition creation, and the standalone `edition create` command, replacing the
-edition creator's separate redirect check. Tests cover malformed URLs,
-disallowed addresses in each mode, allowed local deployments, DNS answers with
-mixed allowed and disallowed addresses, redirects to disallowed destinations,
-and token stripping on redirects. The edition capability route does not
+The shared client policy is wired into sync, edition drafts, and the edition
+creator's cover requests from the standalone `edition` and `image-tool`
+commands, including off-origin cover URLs. Tests cover malformed URLs,
+address classification in each mode, mixed allowed and disallowed DNS
+answers, redirects to disallowed destinations, and token stripping outside
+the configured origin or base path. The edition capability route does not
 contact ABS.

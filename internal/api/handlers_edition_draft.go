@@ -112,6 +112,7 @@ func (h *Handler) GetEditionSourceDraft(w http.ResponseWriter, r *http.Request) 
 	case h.editionDraftSlots <- struct{}{}:
 		defer func() { <-h.editionDraftSlots }()
 	default:
+		w.Header().Set("Retry-After", "1")
 		h.writeErrorResponse(w, http.StatusTooManyRequests, "Edition draft service is busy; retry shortly")
 		return
 	}
@@ -126,7 +127,14 @@ func (h *Handler) GetEditionSourceDraft(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	absClient := audiobookshelf.NewClient(profile.AudiobookshelfURL, profile.AudiobookshelfToken)
+	absClient, err := audiobookshelf.NewClientWithNetworkTrust(
+		profile.AudiobookshelfURL, profile.AudiobookshelfToken, h.multiUserService.AudiobookshelfNetworkTrust(),
+	)
+	if err != nil {
+		h.log.Error("Invalid Audiobookshelf client configuration for edition source draft: " + err.Error())
+		h.writeErrorResponse(w, http.StatusConflict, "Saved Audiobookshelf URL is not permitted by the current network trust policy; update the profile URL")
+		return
+	}
 	book, err := absClient.GetLibraryItemByID(r.Context(), itemID)
 	if err != nil {
 		if parentCtx.Err() != nil || errors.Is(err, context.Canceled) {

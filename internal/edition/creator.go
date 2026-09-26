@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
@@ -149,10 +150,16 @@ type Creator struct {
 	// audiobookshelfBaseURL, when set, limits the Audiobookshelf token to
 	// image URLs under this base URL. When empty, the token is withheld.
 	audiobookshelfBaseURL string
+	// networkTrust controls the shared destination policy for ABS cover fetches.
+	networkTrust string
+	// useSharedABSNetworkPolicy is true for production creators. Test creators
+	// retain their explicitly injected HTTP client.
+	useSharedABSNetworkPolicy bool
 	// coverUpload is off unless EnableCoverUpload is called. While it is off the
 	// creator makes no cover request of any kind.
-	coverUpload bool
-	httpClient  *http.Client // Custom HTTP client for testing
+	coverUpload     bool
+	httpClient      *http.Client // Custom HTTP client for testing
+	coverHTTPClient *http.Client
 }
 
 // EnableCoverUpload switches the cover upload flow on. It is off by default and
@@ -210,6 +217,11 @@ func (c *Creator) SetAudiobookshelfBaseURL(baseURL string) error {
 	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
 		c.audiobookshelfBaseURL = ""
+		if c.useSharedABSNetworkPolicy {
+			c.coverHTTPClient = nil
+		} else if c.coverHTTPClient == nil {
+			c.coverHTTPClient = c.httpClient
+		}
 		return nil
 	}
 
@@ -225,7 +237,36 @@ func (c *Creator) SetAudiobookshelfBaseURL(baseURL string) error {
 		return fmt.Errorf("audiobookshelf base URL must be an absolute http or https URL with a host: %q", baseURL)
 	}
 
-	c.audiobookshelfBaseURL = parsed.String()
+	normalizedURL := parsed.String()
+	var coverClient *http.Client
+	if c.useSharedABSNetworkPolicy {
+		client, err := audiobookshelf.NewHTTPClientWithNetworkTrust(normalizedURL, c.audiobookshelfToken, c.networkTrust)
+		if err != nil {
+			return fmt.Errorf("configure Audiobookshelf cover fetch client: %w", err)
+		}
+		coverClient = client
+	}
+	c.audiobookshelfBaseURL = normalizedURL
+	if coverClient != nil {
+		c.coverHTTPClient = coverClient
+	}
+	return nil
+}
+
+// SetAudiobookshelfNetworkTrust configures the shared destination policy for
+// cover downloads. Callers should pass the server-wide Audiobookshelf setting.
+// The default preserves support for private self-hosted Audiobookshelf servers.
+func (c *Creator) SetAudiobookshelfNetworkTrust(networkTrust string) error {
+	if networkTrust == "" {
+		networkTrust = audiobookshelf.NetworkTrustAllowPrivate
+	}
+	if networkTrust != audiobookshelf.NetworkTrustAllowPrivate && networkTrust != audiobookshelf.NetworkTrustPublicOnly {
+		return fmt.Errorf("unsupported Audiobookshelf network trust %q", networkTrust)
+	}
+	c.networkTrust = networkTrust
+	if c.audiobookshelfBaseURL != "" {
+		return c.SetAudiobookshelfBaseURL(c.audiobookshelfBaseURL)
+	}
 	return nil
 }
 
@@ -298,16 +339,12 @@ func canonicalURLPath(rawPath string) string {
 // subdomains and ignores ports for sensitive headers, so those checks must be
 // stricter here.
 //
-// This policy is installed on the shared c.httpClient (see NewCreator), so it
-// also governs the hardcover.app upload-credentials request and the
-// subsequent GCS upload POST, not only the Audiobookshelf cover download. The
-// upload-credentials request carries Hardcover Authorization; the GCS request
-// authenticates with signed form fields instead.
-// With an Audiobookshelf base configured (the production case, since every
-// command calls SetAudiobookshelfBaseURL), hardcover.app is never within that
-// scope, so a redirect on the credential request strips that header. A
-// redirect on either request may fail the upload. Today this only matters if
-// EnableCoverUpload is called, since no production caller does.
+// This policy is installed on the shared c.httpClient (see NewCreator) and
+// governs Hardcover and GCS requests. Audiobookshelf cover downloads use the
+// separate policy client built by the ABS package. The upload-credentials
+// request carries Hardcover Authorization; the GCS request authenticates with
+// signed form fields. Today cover upload only matters if EnableCoverUpload is
+// called, since no production caller does.
 func (c *Creator) checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= 10 {
 		return fmt.Errorf("stopped after 10 redirects")
@@ -352,11 +389,14 @@ func NewCreator(client HardcoverClient, log *logger.Logger, dryRun bool, audiobo
 	}
 
 	creator := &Creator{
-		client:              client,
-		log:                 log,
-		dryRun:              dryRun,
-		audiobookshelfToken: audiobookshelfToken,
-		httpClient:          httpClient,
+		client:                    client,
+		log:                       log,
+		dryRun:                    dryRun,
+		audiobookshelfToken:       audiobookshelfToken,
+		httpClient:                httpClient,
+		coverHTTPClient:           httpClient,
+		networkTrust:              audiobookshelf.NetworkTrustAllowPrivate,
+		useSharedABSNetworkPolicy: true,
 	}
 	httpClient.CheckRedirect = creator.checkRedirect
 	return creator
@@ -371,6 +411,8 @@ func NewCreatorWithHTTPClient(client HardcoverClient, log *logger.Logger, dryRun
 		dryRun:              dryRun,
 		audiobookshelfToken: audiobookshelfToken,
 		httpClient:          httpClient,
+		coverHTTPClient:     httpClient,
+		networkTrust:        audiobookshelf.NetworkTrustAllowPrivate,
 	}
 }
 
@@ -486,7 +528,14 @@ func (c *Creator) uploadImageToGCS(ctx context.Context, editionID int, imageURL 
 	// Download the image
 	log.Debug("Downloading image")
 
-	resp, err := c.httpClient.Do(downloadReq)
+	downloadClient := c.httpClient
+	if c.useSharedABSNetworkPolicy {
+		if c.coverHTTPClient == nil {
+			return "", errors.New("Audiobookshelf base URL is required for cover downloads")
+		}
+		downloadClient = c.coverHTTPClient
+	}
+	resp, err := downloadClient.Do(downloadReq)
 	if err != nil {
 		log.Error("Image download failed", map[string]interface{}{"error": err.Error()})
 		return "", fmt.Errorf("image download failed: %w", err)

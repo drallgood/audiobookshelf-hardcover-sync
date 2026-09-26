@@ -18,6 +18,9 @@ logging:
 audiobookshelf:
   url: "https://your-audiobookshelf-instance.com"
   token: "your-audiobookshelf-token"
+  # Deployment-wide destination policy: allow_private (default; LAN, Docker,
+  # loopback, HTTP or HTTPS) or public_only (public addresses over HTTPS only)
+  network_trust: "allow_private"
   # Audnexus region for non-US Audible ASIN lookups (ca, uk, au, de, fr, us)
   # Leave empty for default behavior (no region filter)
   audnexus_region: ""

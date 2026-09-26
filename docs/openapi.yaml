@@ -639,7 +639,11 @@ paths:
                   data:
                     $ref: '#/components/schemas/ProfileWithConfig'
         '400':
-          description: Invalid request
+          description: >-
+            Invalid request, rejected profile state-file path, or an
+            Audiobookshelf URL that is malformed or not permitted by the
+            deployment's `audiobookshelf.network_trust` mode. URL errors name
+            `audiobookshelf_url` without revealing the configured mode.
           content:
             application/json:
               schema:
@@ -791,7 +795,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '400':
-          description: Invalid request body or rejected profile state-file path
+          description: >-
+            Invalid request body, rejected profile state-file path, or an
+            Audiobookshelf URL that is malformed or not permitted by the
+            deployment's `audiobookshelf.network_trust` mode. A saved URL that
+            the current mode rejects must be replaced before other settings can
+            be updated. URL errors name `audiobookshelf_url` without revealing
+            the configured mode.
           content:
             application/json:
               schema:
@@ -951,14 +961,26 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The saved Audiobookshelf URL conflicts with the current network trust policy; update the profile URL. Profile writes use 400 for submitted invalid URLs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '429':
-          description: Two edition drafts are already being prepared on this server instance; retry shortly.
+          description: Two edition drafts are already being prepared on this server instance; retry after the indicated delay.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: string
+                example: "1"
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: The profile could not be retrieved.
+          description: The profile could not be retrieved because of a server error.
           content:
             application/json:
               schema:
