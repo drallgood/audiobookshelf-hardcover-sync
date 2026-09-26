@@ -769,6 +769,7 @@ hardcover:
 | `AUDIOBOOKSHELF_URL` | URL of your AudiobookShelf instance | `audiobookshelf.url` | Legacy mode only |
 | `AUDIOBOOKSHELF_TOKEN` | AudiobookShelf API token | `audiobookshelf.token` | Legacy mode only |
 | `AUDIOBOOKSHELF_AUDNEXUS_REGION` | Legacy Audnex setting | `audiobookshelf.audnexus_region` | Parsed from legacy configuration but does not set a profile's region preference. |
+| `AUDIOBOOKSHELF_NETWORK_TRUST` | Which Audiobookshelf addresses the server may contact | `audiobookshelf.network_trust` | `allow_private` (default) or `public_only`; see [Audiobookshelf network trust](#audiobookshelf-network-trust) |
 | `HARDCOVER_TOKEN` | Hardcover API token | `hardcover.token` | Legacy mode only |
 | `HARDCOVER_BASE_URL` | Hardcover API base URL | `hardcover.base_url` | Override default endpoint |
 | `RATE_LIMIT_RATE` | Min time between requests | `rate_limit.rate` | e.g. `2s` (30 rpm) |
@@ -784,6 +785,23 @@ The profile region preference chooses the first marketplace to check, not the AS
 assumed origin. Profile configuration updates preserve omitted settings;
 explicit `false` updates a boolean, and an empty `audnexus_region` clears the
 preference.
+
+#### Audiobookshelf network trust
+
+This server-wide setting controls which Audiobookshelf URLs the CLI and every
+web profile may use. Profile owners cannot change it.
+
+- `allow_private` (default): internet and private addresses, including your
+  LAN, Docker service names, Tailscale, and `localhost`, over HTTP or HTTPS.
+  Use this for a normal self-hosted setup.
+- `public_only`: only internet addresses, and only over HTTPS. Use this if
+  people you don't fully trust can create profiles, so they cannot point the
+  server at devices on your network.
+
+Both modes always block link-local addresses, such as the cloud metadata
+address `169.254.169.254`. The setting is not enforced yet; it takes effect
+when edition creation is added. See the
+[URL policy](docs/implementations/audiobookshelf-url-policy.md) for details.
 
 #### Volume Mounts
 

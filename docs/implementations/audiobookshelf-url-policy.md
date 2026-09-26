@@ -18,8 +18,8 @@ profile owner's URL choice.
 
 The trust mode is a deployment setting, not a profile setting:
 
-- YAML: `audiobookshelf.network_trust: local|public`
-- Environment: `AUDIOBOOKSHELF_NETWORK_TRUST=local|public`
+- YAML: `audiobookshelf.network_trust: allow_private|public_only`
+- Environment: `AUDIOBOOKSHELF_NETWORK_TRUST=allow_private|public_only`
 
 It follows the existing `internal/config.Load` precedence (defaults, then the
 optional config file, then the environment). It applies to the CLI's
@@ -29,18 +29,18 @@ is a configuration error rather than a silent fallback.
 
 | Mode | Allowed destination addresses | Schemes |
 |---|---|---|
-| `local` (default) | Globally routable unicast, RFC 1918 IPv4, shared address space (`100.64.0.0/10`, used by Tailscale and similar overlays), IPv6 unique-local (`fc00::/7`), and loopback | HTTP or HTTPS |
-| `public` | Globally routable unicast only | HTTPS only |
+| `allow_private` (default) | Globally routable unicast, RFC 1918 IPv4, shared address space (`100.64.0.0/10`, used by Tailscale and similar overlays), IPv6 unique-local (`fc00::/7`), and loopback | HTTP or HTTPS |
+| `public_only` | Globally routable unicast only | HTTPS only |
 
-`local` is the default so existing self-hosted, Docker, and single-user
+`allow_private` is the default so existing self-hosted, Docker, and single-user
 deployments keep working without a configuration change. Operators who let
-untrusted users create profiles should set `public`.
+untrusted users create profiles should set `public_only`.
 
 Both modes reject unspecified, multicast, broadcast, link-local (including
 cloud metadata endpoints such as `169.254.169.254` and `fe80::/10`),
 documentation, benchmarking, and other reserved or non-routable addresses.
-`public` also rejects every address that only `local` adds. IPv4-mapped IPv6 addresses are classified by their
-IPv4 address.
+`public_only` also rejects every address that only `allow_private` adds.
+IPv4-mapped IPv6 addresses are classified by their IPv4 address.
 
 ## URL validation
 
