@@ -200,7 +200,7 @@ func asinLookupMappingPredicates() []string {
 	predicates := make([]string, 0, len(regions))
 	for _, region := range regions {
 		predicates = append(predicates, fmt.Sprintf(
-			`{external_id: {_eq: $asin_%s}, platform: {name: {_eq: "Audible"}}}`,
+			`{external_id: {_eq: $asin_%s}}`,
 			region,
 		))
 	}

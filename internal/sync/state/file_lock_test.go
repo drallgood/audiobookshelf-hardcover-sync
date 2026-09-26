@@ -101,6 +101,21 @@ func TestAcquireFileLockSharesLockAcrossStateSymlink(t *testing.T) {
 	}
 }
 
+func TestAcquireFileLockRejectsSymlinkedSidecar(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	targetPath := filepath.Join(dir, "other.lock")
+	require.NoError(t, os.WriteFile(targetPath, []byte("untouched"), 0600))
+	createTestSymlink(t, targetPath, statePath+".lock")
+
+	lock, err := AcquireFileLock(statePath)
+	require.Error(t, err)
+	require.Nil(t, lock)
+	contents, err := os.ReadFile(targetPath)
+	require.NoError(t, err)
+	require.Equal(t, "untouched", string(contents))
+}
+
 func TestAcquireFileLockExcludesOtherProcessesAndRecoversAfterCrash(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	initial := NewState()

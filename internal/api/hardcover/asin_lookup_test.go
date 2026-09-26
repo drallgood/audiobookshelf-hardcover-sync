@@ -68,6 +68,28 @@ func TestSearchBookByASINResultReportsConflictingRegionalMappings(t *testing.T) 
 	require.ErrorIs(t, err, ErrASINLookupConflict)
 }
 
+func TestSearchBookByASINResultAcceptsAudiblePlatformCase(t *testing.T) {
+	const asin = "B0EXAMPLE06"
+	var request asinRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"books":[
+			{"id":1,"title":"Other platform","editions":[{"id":11,"asin":null,"reading_format_id":2,"book_mappings":[{"external_id":"B0EXAMPLE06:us","platform":{"name":"Amazon"}}]}]},
+			{"id":2,"title":"Audible platform","editions":[{"id":22,"asin":null,"reading_format_id":2,"book_mappings":[{"external_id":"B0EXAMPLE06:us","platform":{"name":"audible"}}]}]}
+		]}}`))
+	}))
+	defer server.Close()
+
+	result, err := CreateTestClient(server).SearchBookByASINResult(context.Background(), asin)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "2", result.Book.ID)
+	require.Equal(t, ASINMatchAudibleMapping, result.MatchKind)
+	require.Equal(t, asin+":us", result.RegionalExternalID)
+	require.NotContains(t, request.Query, `name: {_eq: "Audible"}`)
+}
+
 func TestSearchBookByASINResultReturnsAudiobookEditionASINFallback(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

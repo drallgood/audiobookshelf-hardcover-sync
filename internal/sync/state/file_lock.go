@@ -40,7 +40,7 @@ func AcquireFileLock(path string) (*FileLock, error) {
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0755); err != nil {
 		return nil, fmt.Errorf("failed to create state lock directory: %w", err)
 	}
-	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	file, err := openStateLockFile(lockPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open state lock file: %w", err)
 	}
