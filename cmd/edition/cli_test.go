@@ -622,22 +622,61 @@ func TestRunCreateReadsBackEbookBeforeSavingAssociation(t *testing.T) {
 	}
 }
 
-func TestRunCreateDoesNotReadBackEbookWithoutABSAssociation(t *testing.T) {
-	inputPath := writeCreateInput(t, `{"book_id":21,"title":"Ebook","isbn_13":"9780306406157","author_ids":[3],"reading_format":"ebook"}`)
-	result, err := runCreate(context.Background(), createOptions{InputPath: inputPath}, createServices{
-		createEbook: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
-			return &edition.EditionResult{Success: true, EditionID: 34}, nil
-		},
-		getEditionUncached: func(context.Context, string) (*models.Edition, error) {
-			t.Fatal("ebook without an ABS association was unexpectedly read back")
-			return nil, nil
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
+func TestRunCreateVerifiesEbookWithoutABSAssociation(t *testing.T) {
+	tests := []struct {
+		name      string
+		verified  *models.Edition
+		readErr   error
+		wantError string
+	}{
+		{name: "verified", verified: &models.Edition{ID: "34", BookID: "21", ReadingFormatID: "4"}},
+		{name: "wrong book", verified: &models.Edition{ID: "34", BookID: "22", ReadingFormatID: "4"}, wantError: "identity did not match"},
+		{name: "wrong reading format", verified: &models.Edition{ID: "34", BookID: "21", ReadingFormatID: "2"}, wantError: "identity did not match"},
+		{name: "read failure", readErr: errors.New("Hardcover unavailable"), wantError: "failed to read back Hardcover ebook edition"},
 	}
-	if result.AssociationSaved || result.Status != "created" || result.EditionID != 34 {
-		t.Fatalf("unexpected ebook creation result: %#v", result)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			inputPath := writeCreateInput(t, `{"book_id":21,"title":"Ebook","isbn_13":"9780306406157","author_ids":[3],"reading_format":"ebook"}`)
+			readBackCalled := false
+			result, err := runCreate(context.Background(), createOptions{InputPath: inputPath}, createServices{
+				createEbook: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
+					return &edition.EditionResult{Success: true, EditionID: 34}, nil
+				},
+				getEditionUncached: func(_ context.Context, editionID string) (*models.Edition, error) {
+					readBackCalled = true
+					if editionID != "34" {
+						t.Fatalf("read back edition %q, want 34", editionID)
+					}
+					return test.verified, test.readErr
+				},
+			})
+			if !readBackCalled {
+				t.Fatal("ebook without an ABS association was not read back")
+			}
+			if test.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantError) {
+					t.Fatalf("expected %q error, got %v", test.wantError, err)
+				}
+				if !strings.Contains(err.Error(), "edition 34") ||
+					!strings.Contains(err.Error(), "Check Hardcover before retrying") ||
+					!strings.Contains(err.Error(), "may create another edition") {
+					t.Fatalf("verification error did not preserve the remote result and retry guidance: %v", err)
+				}
+				if test.readErr != nil && !errors.Is(err, test.readErr) {
+					t.Fatalf("verification error did not wrap the readback cause: %v", err)
+				}
+				if result != nil {
+					t.Fatalf("failed verification returned a result: %#v", result)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.AssociationSaved || result.Status != "created" || result.EditionID != 34 || result.BookID != 21 {
+				t.Fatalf("unexpected ebook creation result: %#v", result)
+			}
+		})
 	}
 }
 
