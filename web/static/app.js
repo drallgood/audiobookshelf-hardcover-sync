@@ -1815,7 +1815,7 @@ class SyncProfileApp {
     // Returns null when the create action applies, or a reason it does not.
     editionCreateIneligibleReason(record, runContext) {
         if (!record || record.outcome !== 'needs_review') return 'Only needs-review items can be resolved here.';
-        if (!runContext || runContext.state !== 'completed') return 'Wait for the run to complete.';
+        if (!runContext || !['completed', 'canceled'].includes(runContext.state)) return 'Wait for the run to complete.';
         if (!/^\d+$/.test(String(record.hardcover_book_id || '').trim())) return 'No Hardcover book was matched for this item.';
         if (!['audiobook', 'ebook'].includes(String(record.format || '').trim().toLowerCase())) return 'The reading format is unknown.';
         if (!String(record.asin || '').trim() && !String(record.isbn || '').trim()) return 'The item needs an ASIN or ISBN.';
@@ -1827,18 +1827,17 @@ class SyncProfileApp {
         if (!open || this.isViewer()) return '';
         const profileId = open.profileId;
         const syncing = this.profileIsSyncing(profileId);
-        const syncingNote = 'A sync is running for this profile; try again when it finishes.';
-        if (record.outcome === 'needs_review' && !this.editionCreateIneligibleReason(record, open.runContext)) {
+        const syncingNote = 'A sync is running for this profile; this action will be available again when it finishes.';
+        if (record.outcome === 'needs_review') {
+            const disabledReason = syncing ? syncingNote : this.editionCreateIneligibleReason(record, open.runContext);
             return `<div class="edition-actions">
-                <button type="button" class="btn btn-sm btn-primary" data-edition-action="add" ${syncing ? `disabled title="${this.escapeHtmlAttribute(syncingNote)}"` : ''}>Add edition</button>
-                ${syncing ? `<span class="edition-note">${this.escapeHtml(syncingNote)}</span>` : ''}
+                <button type="button" class="btn btn-sm btn-primary" data-edition-action="add" ${disabledReason ? `disabled title="${this.escapeHtmlAttribute(disabledReason)}"` : ''}>Add edition</button>
             </div>`;
         }
         if (this.isMatchedRecord(record)) {
             return `<div class="edition-actions">
                 <span class="edition-note">Hardcover target: book ${this.escapeHtml(record.hardcover_book_id)}${record.edition_id ? `, edition ${this.escapeHtml(record.edition_id)}` : ''}</span>
-                <button type="button" class="btn btn-sm btn-secondary" data-edition-action="forget" ${syncing ? `disabled title="${this.escapeHtmlAttribute(syncingNote)}"` : ''}>Forget match</button>
-                ${syncing ? `<span class="edition-note">${this.escapeHtml(syncingNote)}</span>` : ''}
+                <button type="button" class="book-service-link forget-match-pill" data-edition-action="forget" ${syncing ? `disabled title="${this.escapeHtmlAttribute(syncingNote)}"` : ''}>Forget match</button>
             </div>`;
         }
         return '';

@@ -219,12 +219,19 @@ test('create action requires an eligible needs-review record with an identifier 
     assert.ok(app.editionCreateIneligibleReason({ ...needsReview, hardcover_book_id: '' }, ctx));
     assert.ok(app.editionCreateIneligibleReason({ ...needsReview, outcome: 'not_found' }, ctx));
     assert.ok(app.editionCreateIneligibleReason(needsReview, { ...ctx, state: 'running' }));
+    assert.equal(app.editionCreateIneligibleReason(needsReview, { ...ctx, state: 'canceled' }), null);
 
     assert.match(app.renderEditionActions(needsReview), /data-edition-action="add"/);
     app.currentUser = { role: 'viewer' };
     app.authEnabled = true;
     app.isViewer = () => true;
     assert.equal(app.renderEditionActions(needsReview), '');
+});
+
+test('an ineligible needs-review record still shows a disabled Add edition button with the reason', () => {
+    const app = editionApp();
+    const html = app.renderEditionActions({ ...needsReview, hardcover_book_id: '' });
+    assert.match(html, /data-edition-action="add"[^>]*disabled[^>]*title="No Hardcover book was matched for this item\."/);
 });
 
 test('create and forget are disabled with an explanation while the profile is syncing', () => {

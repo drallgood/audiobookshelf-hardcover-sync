@@ -561,6 +561,24 @@ header p {
     border-color: #2d3748;
 }
 
+.forget-match-pill {
+    appearance: none;
+    background: #e2e8f0;
+    font-family: inherit;
+    cursor: pointer;
+}
+
+.forget-match-pill:hover:not(:disabled),
+.forget-match-pill:focus-visible {
+    background: #cbd5e0;
+    border-color: #2d3748;
+}
+
+.forget-match-pill:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
 @media (max-width: 480px) {
     .book-heading {
         align-items: stretch;
