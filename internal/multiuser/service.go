@@ -401,6 +401,20 @@ func (s *MultiUserService) UpdateProfileConfig(profileID, audiobookshelfURL, aud
 	return s.repository.UpdateUserConfig(profileID, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig)
 }
 
+// ProfileAudnexusRegion returns the Audnex region preference that sync, edition
+// drafts, and edition creation use for a profile. A profile's own region wins;
+// without one, it falls back to the legacy global
+// `audiobookshelf.audnexus_region` so service-mode sync matches one-time sync,
+// which builds its service directly from the loaded configuration. This keeps
+// the legacy setting effective for migrated profiles whose sync config predates
+// the per-profile region. The result is not normalized.
+func (s *MultiUserService) ProfileAudnexusRegion(syncConfig database.SyncConfigData) string {
+	if syncConfig.AudnexusRegion != "" || s.globalConfig == nil {
+		return syncConfig.AudnexusRegion
+	}
+	return s.globalConfig.Audiobookshelf.AudnexusRegion
+}
+
 func (s *MultiUserService) normalizeProfileAudnexusRegion(profileID, region string) string {
 	normalized, valid := config.NormalizeAudnexusRegion(region)
 	if !valid && s.logger != nil {
@@ -1753,16 +1767,7 @@ func (s *MultiUserService) createProfileSpecificConfig(profileConfig *database.P
 	config.Sync.DryRun = syncConfig.DryRun
 	config.Sync.TestBookFilter = syncConfig.TestBookFilter
 	config.Sync.TestBookLimit = syncConfig.TestBookLimit
-	// A profile's own region preference wins; without one, fall back to the
-	// legacy global setting so service-mode sync matches one-time sync, which
-	// builds its service directly from the loaded configuration. This keeps
-	// `audiobookshelf.audnexus_region` effective for migrated profiles whose
-	// sync config predates the per-profile region.
-	region := syncConfig.AudnexusRegion
-	if region == "" {
-		region = config.Audiobookshelf.AudnexusRegion
-	}
-	config.Audiobookshelf.AudnexusRegion = s.normalizeProfileAudnexusRegion(profileConfig.Profile.ID, region)
+	config.Audiobookshelf.AudnexusRegion = s.normalizeProfileAudnexusRegion(profileConfig.Profile.ID, s.ProfileAudnexusRegion(syncConfig))
 
 	// Debug logging to verify the config is being applied correctly
 	s.logger.Debug("Applied sync config for profile", map[string]interface{}{

@@ -104,13 +104,12 @@ Note: The Hardcover client now uses a unified configuration builder in both sing
 
 ### Audnex Region Preferences
 
-Service-mode sync uses the legacy `AUDIOBOOKSHELF_AUDNEXUS_REGION` setting as a
-fallback when a profile has no saved `sync_config.audnexus_region`. When a
+Service-mode sync, edition drafts, and edition creation use the legacy
+`AUDIOBOOKSHELF_AUDNEXUS_REGION` setting as a fallback when a profile has no
+saved `sync_config.audnexus_region`, and US when neither is set. When a
 single-user config is migrated to profile storage, its legacy region is copied
-to the `default` profile. Edition creation uses the profile's saved
-`sync_config.audnexus_region`, or US when unset; it does not use sync's legacy
-fallback. To prefer another region for edition creation, set `audnexus_region`
-for the profile through `PUT /api/profiles/{id}/config`.
+to the `default` profile. To prefer a different region for one profile, set
+`audnexus_region` for it through `PUT /api/profiles/{id}/config`.
 
 ### Data Storage Changes
 - **State File**: The application now maintains state between runs in a JSON file

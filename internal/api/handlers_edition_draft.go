@@ -163,8 +163,9 @@ func (h *Handler) GetEditionSourceDraft(w http.ResponseWriter, r *http.Request) 
 		if !validASIN {
 			draft.RegionStatus = "unknown"
 		} else {
-			preferredRegion, supported := supportedAudnexPreference(profile.SyncConfig.AudnexusRegion)
-			if strings.TrimSpace(profile.SyncConfig.AudnexusRegion) != "" && !supported {
+			preference := h.multiUserService.ProfileAudnexusRegion(profile.SyncConfig)
+			preferredRegion, supported := supportedAudnexPreference(preference)
+			if strings.TrimSpace(preference) != "" && !supported {
 				draft.addWarning("unsupported_audnex_region", "The saved Audnex region is unsupported; region discovery is using US.", false)
 			}
 			var discovery editionDraftAudnexDiscoverer = audnex.NewClient(&h.log)

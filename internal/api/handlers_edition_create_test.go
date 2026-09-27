@@ -1541,3 +1541,55 @@ func TestCreateEditionFromDraftRefusesDuringShutdownBeforeAnyRequest(t *testing.
 	require.Zero(t, fixture.absRequests.Load())
 	requireNoEditionCreateEffects(t, fixture, &counts)
 }
+
+func TestEditionRegionDiscoveryUsesSyncRegionPreference(t *testing.T) {
+	const audiobookJSON = `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`
+	for _, test := range []struct {
+		name          string
+		profileRegion string
+		globalRegion  string
+		wantPreferred string
+	}{
+		{name: "legacy global region when profile has none", globalRegion: "uk", wantPreferred: "uk"},
+		{name: "profile region wins", profileRegion: "ca", globalRegion: "uk", wantPreferred: "ca"},
+		{name: "US when neither is set", wantPreferred: "us"},
+	} {
+		t.Run(test.name+"/draft", func(t *testing.T) {
+			fixture := newEditionDraftTestFixture(t, audiobookJSON, test.profileRegion)
+			fixture.config.Audiobookshelf.AudnexusRegion = test.globalRegion
+			var gotPreferred string
+			fixture.setDiscovery(func(_ context.Context, asin, preferred string) (*audnex.Book, string, error) {
+				gotPreferred = preferred
+				return &audnex.Book{ASIN: asin}, preferred, nil
+			})
+
+			response := fixture.request(editionDraftItemPath, fixture.sessionCookie(t, fixture.owner))
+
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			require.Equal(t, test.wantPreferred, gotPreferred)
+			require.NotContains(t, response.Body.String(), "unsupported_audnex_region")
+		})
+
+		t.Run(test.name+"/create", func(t *testing.T) {
+			fixture := newEditionDraftTestFixture(t, audiobookJSON, test.profileRegion)
+			fixture.config.Audiobookshelf.AudnexusRegion = test.globalRegion
+			configureEditionCreateRoute(t, fixture)
+			addCompletedNeedsReviewRun(t, fixture, "run-region-preference", editionCreateRecord())
+			var gotPreferred string
+			fixture.handler.editionCreateAudnexClientFactory = func() editionCreateAudnexDiscoverer {
+				return editionCreateAudnexStub{discoverFn: func(_ context.Context, asin, preferred string) (*audnex.Book, string, error) {
+					gotPreferred = preferred
+					return &audnex.Book{ASIN: asin}, preferred, nil
+				}}
+			}
+			var counts editionCreateCallCounts
+			fixture.handler.editionCreateHardcoverFactory = countingEditionCreateClient(&counts)
+
+			response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-region-preference","abs_item_id":"abs-item-1"}`)
+
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			require.Equal(t, test.wantPreferred, gotPreferred)
+			require.EqualValues(t, 1, counts.imports.Load())
+		})
+	}
+}

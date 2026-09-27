@@ -790,7 +790,7 @@ The application supports two distinct operating modes controlled by the `enable_
 - `AUDIOBOOKSHELF_TOKEN`: Audiobookshelf API token (required for single-user mode)
 - `AUDIOBOOKSHELF_NETWORK_TRUST`: Deployment-wide ABS destination policy
   (`allow_private` by default or `public_only`)
-- `AUDIOBOOKSHELF_AUDNEXUS_REGION`: Legacy Audnex setting; used as the default region for sync when a profile has no `sync_config.audnexus_region`.
+- `AUDIOBOOKSHELF_AUDNEXUS_REGION`: Legacy Audnex setting; used as the default region for sync, edition drafts, and edition creation when a profile has no `sync_config.audnexus_region`.
 - `HARDCOVER_TOKEN`: Hardcover API token (required for single-user mode)
 
 #### Config File
@@ -814,7 +814,7 @@ hardcover:
 | `CONFIG_PATH` | Path to config file | - | `./config.yaml` |
 | `AUDIOBOOKSHELF_URL` | URL of your AudiobookShelf instance | `audiobookshelf.url` | Legacy mode only |
 | `AUDIOBOOKSHELF_TOKEN` | AudiobookShelf API token | `audiobookshelf.token` | Legacy mode only |
-| `AUDIOBOOKSHELF_AUDNEXUS_REGION` | Legacy Audnex setting | `audiobookshelf.audnexus_region` | Fallback region for sync when a profile has no `sync_config.audnexus_region`; carried into the default profile during single-user config migration. |
+| `AUDIOBOOKSHELF_AUDNEXUS_REGION` | Legacy Audnex setting | `audiobookshelf.audnexus_region` | Fallback region for sync, edition drafts, and edition creation when a profile has no `sync_config.audnexus_region`; carried into the default profile during single-user config migration. |
 | `HARDCOVER_TOKEN` | Hardcover API token | `hardcover.token` | Legacy mode only |
 | `HARDCOVER_BASE_URL` | Hardcover API base URL | `hardcover.base_url` | Override default endpoint |
 | `RATE_LIMIT_RATE` | Min time between requests | `rate_limit.rate` | e.g. `2s` (30 rpm) |
@@ -824,7 +824,7 @@ hardcover:
 | `SYNC_LIBRARIES_INCLUDE` | Comma-separated list of libraries to include | `sync.libraries.include` | Legacy mode only |
 | `SYNC_LIBRARIES_EXCLUDE` | Comma-separated list of libraries to exclude | `sync.libraries.exclude` | Legacy mode only |
 
-> **💡 Tip**: Set `sync_config.audnexus_region` on each profile for sync and draft lookups. When a profile has no region preference, sync falls back to the legacy `audiobookshelf.audnexus_region` setting, which is also carried into the default profile when a single-user config is migrated.
+> **💡 Tip**: Set `sync_config.audnexus_region` on each profile for sync, draft, and create lookups. When a profile has no region preference, these fall back to the legacy `audiobookshelf.audnexus_region` setting, which is also carried into the default profile when a single-user config is migrated.
 
 The profile region preference chooses the first marketplace to check, not the ASIN's
 assumed origin. Profile configuration updates preserve omitted settings;

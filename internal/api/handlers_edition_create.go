@@ -298,7 +298,7 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 		if asin == "" {
 			return statepkg.Association{}, fmt.Errorf("%w: audiobook needs a valid source ASIN or corrected regional Audible identifier", errEditionCreateInvalidInput)
 		}
-		preferred := strings.TrimSpace(profile.SyncConfig.AudnexusRegion)
+		preferred := strings.TrimSpace(h.multiUserService.ProfileAudnexusRegion(profile.SyncConfig))
 		if !audnexregion.IsRegion(strings.ToLower(preferred)) {
 			preferred = "us"
 		}
