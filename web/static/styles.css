@@ -563,17 +563,15 @@ header p {
 
 .edition-action-pill {
     appearance: none;
-    background: #e2e8f0;
-    border-color: #2d3748;
+    background: transparent;
     font-family: inherit;
-    font-weight: 700;
     cursor: pointer;
 }
 
 .edition-action-pill:hover:not(:disabled),
 .edition-action-pill:focus-visible {
-    background: #cbd5e0;
-    border-color: #1a202c;
+    background: #edf2f7;
+    border-color: #2d3748;
 }
 
 .edition-action-pill:disabled {
