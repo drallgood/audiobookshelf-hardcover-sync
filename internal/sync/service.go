@@ -2166,6 +2166,16 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				"change_threshold": minChangeThreshold,
 			})
 			bookProcessed = false // Explicitly mark as not processed when skipping due to no changes
+			if hcBook == nil {
+				if preliminaryState, ok := s.state.GetBookState(preliminaryStateKey); ok &&
+					preliminaryState.Association != nil &&
+					strings.TrimSpace(preliminaryState.Association.HardcoverBookID) != "" {
+					hcBook = &models.HardcoverBook{
+						ID:        preliminaryState.Association.HardcoverBookID,
+						EditionID: preliminaryState.Association.HardcoverEditionID,
+					}
+				}
+			}
 			setOutcome(OutcomeAlreadyCurrent, "incremental state is current")
 			return nil
 		}
@@ -2523,6 +2533,13 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 					"current_status":   currentStatus,
 				})
 				bookProcessed = false // Explicitly mark as not processed when skipping due to no changes
+				if hcBook == nil && bookState.Association != nil &&
+					strings.TrimSpace(bookState.Association.HardcoverBookID) != "" {
+					hcBook = &models.HardcoverBook{
+						ID:        bookState.Association.HardcoverBookID,
+						EditionID: bookState.Association.HardcoverEditionID,
+					}
+				}
 				setOutcome(OutcomeAlreadyCurrent, "incremental state is current")
 				return nil
 			}

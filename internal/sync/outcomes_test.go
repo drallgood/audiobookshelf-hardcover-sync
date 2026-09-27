@@ -10,6 +10,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -62,9 +63,38 @@ func TestProcessBookRecordsSkipAndIncrementalNoChange(t *testing.T) {
 		svc.state.UpdateBook(book.ID, 0, "WANT_TO_READ")
 		svc.state.SetHasProgressSeconds(book.ID)
 		require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
-		assert.Equal(t, OutcomeAlreadyCurrent, recordedOutcome(svc, book.ID).Outcome)
+		record := recordedOutcome(svc, book.ID)
+		assert.Equal(t, OutcomeAlreadyCurrent, record.Outcome)
+		assert.Equal(t, "incremental state is current", record.Reason)
+		assert.Empty(t, record.HardcoverBookID, "no persisted association means no fabricated match")
+		assert.Empty(t, record.EditionID)
 		hc.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
 	})
+
+	t.Run("incremental no change with persisted association", func(t *testing.T) {
+		svc, hc := createTestService()
+		svc.config.Sync.Incremental = true
+		svc.config.Sync.ProcessUnreadBooks = true
+		book := toAudiobookshelfBook(createTestBook("outcome-current-associated", "Current", "Author", "", ""))
+		svc.state.UpdateBook(book.ID, 0, "WANT_TO_READ")
+		svc.state.SetHasProgressSeconds(book.ID)
+		require.NoError(t, svc.state.SetAssociation(state.Association{
+			ABSItemID:          book.ID,
+			HardcoverBookID:    "hc-book-1",
+			HardcoverEditionID: "hc-edition-1",
+		}))
+
+		require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
+
+		record := recordedOutcome(svc, book.ID)
+		assert.Equal(t, OutcomeAlreadyCurrent, record.Outcome)
+		assert.Equal(t, "incremental state is current", record.Reason)
+		assert.Equal(t, "hc-book-1", record.HardcoverBookID,
+			"the local association must enrich an already_current outcome so the UI can offer forget-match")
+		assert.Equal(t, "hc-edition-1", record.EditionID)
+		hc.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
+	})
+
 }
 
 func TestProcessBookFinishedWithoutFinishedAtSkipsHardcoverMatching(t *testing.T) {
