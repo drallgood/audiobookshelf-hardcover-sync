@@ -1987,11 +1987,16 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	editionCorrectionState := &processBookOwnershipState{}
 	userBookCreationState := &processBookOwnershipState{}
 	var (
-		hcBook      *models.HardcoverBook
-		findErr     error
-		editionID   string
-		stateKey    string
-		matchMethod string
+		hcBook                      *models.HardcoverBook
+		findErr                     error
+		editionID                   string
+		stateKey                    string
+		matchMethod                 string
+		verifiedEbookISBNMatch      *models.HardcoverBook
+		ebookISBNVerificationRun    bool
+		postMatchVerificationFailed bool
+		ownershipReconciled         bool
+		associationReused           bool
 	)
 	setOutcome := func(outcome SyncOutcome, reason string) {
 		// A completed mutation is authoritative. Later no-op guards can run
@@ -2174,6 +2179,11 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 
 	// Find the book in Hardcover to get the edition ID
 	var foundByASIN bool
+	if s.state != nil {
+		if association, exists := s.state.GetAssociation(book.ID); exists {
+			associationReused = associationMatchesBook(association, book)
+		}
+	}
 	// ISBN/title matches are checked again before mutation. Keep a newly found
 	// ISBN out of local state until that second lookup has confirmed it.
 	hcBook, findErr, foundByASIN = s.findBookInHardcoverWithASINMatch(ctx, book, associationWriteASINOnly)
@@ -2419,6 +2429,37 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		"state_key": stateKey,
 	})
 
+	// A fresh ebook ISBN match must be confirmed before any post-match skip can
+	// return. Save only the stable result here; defer processFoundBook until the
+	// item is eligible to update reading state.
+	newEbookMatch := hcBook != nil && !foundByASIN && !associationReused && book.ReadingFormat() == models.ReadingFormatEbook
+	if newEbookMatch {
+		ebookISBNVerificationRun = true
+		firstMatch := hcBook
+		hcBook, findErr, _ = s.findBookInHardcoverWithASINMatch(ctx, book, associationWriteNone)
+		if findErr == nil && hcBook != nil && (firstMatch.ID != hcBook.ID || firstMatch.EditionID != hcBook.EditionID) {
+			findErr = fmt.Errorf("%w: Hardcover match changed between lookups for ABS item %s", errHardcoverLookupFailed, book.ID)
+		}
+		if findErr != nil {
+			postMatchVerificationFailed = true
+		} else {
+			verifiedEbookISBNMatch = hcBook
+			s.recordVerifiedISBNAssociation(book, hcBook)
+		}
+	}
+
+	// These ownership checks used to happen inside processFoundBook for
+	// audiobook ISBN hits, before its callers applied post-match skip guards.
+	// Ebook matches reconcile only after the existing association or fresh ISBN
+	// match has been confirmed.
+	if hcBook != nil && !postMatchVerificationFailed {
+		if book.ReadingFormat() == models.ReadingFormatEbook ||
+			(book.ReadingFormat() == models.ReadingFormatAudiobook && !foundByASIN && !associationReused && strings.TrimSpace(book.Media.Metadata.ISBN) != "") {
+			s.reconcileBookOwnership(ctx, hcBook, book)
+			ownershipReconciled = true
+		}
+	}
+
 	// Log start of processing
 	bookLog.Debug("Starting to process book", nil)
 	bookLog.Debug("Book details", map[string]interface{}{
@@ -2428,7 +2469,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	})
 
 	// Check if we should skip this book based on incremental sync
-	if s.config.Sync.Incremental {
+	if s.config.Sync.Incremental && !postMatchVerificationFailed {
 		// Calculate current progress
 		currentProgress := 0.0
 		if book.Media.Duration > 0 {
@@ -2504,7 +2545,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	bookLog.Debug("Calculated book progress", nil)
 
 	// Skip books below minimum progress threshold
-	if progress < s.config.Sync.MinimumProgress && progress > 0 {
+	if !postMatchVerificationFailed && progress < s.config.Sync.MinimumProgress && progress > 0 {
 		bookLog.Debug("Progress below minimum threshold, skipping update", map[string]interface{}{
 			"progress":         progress,
 			"minimum_progress": s.config.Sync.MinimumProgress,
@@ -2514,7 +2555,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		return nil
 	}
 
-	if targetStatus == "" {
+	if !postMatchVerificationFailed && targetStatus == "" {
 		setOutcome(OutcomeSkipped, "no Hardcover status required for current progress")
 		return nil
 	}
@@ -2570,24 +2611,12 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	// revalidates those results before mutation. An ASIN match is already
 	// confirmed by the format-scoped lookup and must not depend on a positive
 	// cache to avoid repeating the same external request.
-	if !foundByASIN {
-		firstMatch := hcBook
-		newEbookMatch := book.ReadingFormat() == models.ReadingFormatEbook
-		if newEbookMatch && s.state != nil {
-			_, exists := s.state.GetAssociation(book.ID)
-			newEbookMatch = !exists
+	if ebookISBNVerificationRun {
+		if verifiedEbookISBNMatch != nil {
+			hcBook, findErr = s.processFoundBook(ctx, verifiedEbookISBNMatch, book)
 		}
+	} else if !foundByASIN {
 		hcBook, findErr, _ = s.findBookInHardcoverWithASINMatch(ctx, book, associationWriteNone)
-		if findErr == nil && newEbookMatch && firstMatch != nil && hcBook != nil {
-			if firstMatch.ID != hcBook.ID || firstMatch.EditionID != hcBook.EditionID {
-				findErr = fmt.Errorf("%w: Hardcover match changed between lookups for ABS item %s", errHardcoverLookupFailed, book.ID)
-			} else {
-				hcBook, findErr = s.processFoundBook(ctx, hcBook, book)
-				if findErr == nil {
-					s.recordVerifiedISBNAssociation(book, hcBook)
-				}
-			}
-		}
 	}
 	if findErr != nil {
 		outcomeError = findErr
@@ -2879,9 +2908,11 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		"edition_id": editionID,
 	})
 
-	// Reconcile ownership once for the verified match, including associations
-	// that bypass processFoundBook during identifier lookup.
-	s.reconcileBookOwnership(ctx, hcBook, book)
+	// Reconcile ownership for other successful match paths after the result is
+	// verified, including associations that bypass processFoundBook.
+	if !ownershipReconciled {
+		s.reconcileBookOwnership(ctx, hcBook, book)
+	}
 
 	// Find or create a user book ID for this edition with the determined status
 	userBookID, err := s.findOrCreateUserBookID(ctx, editionID, status)
