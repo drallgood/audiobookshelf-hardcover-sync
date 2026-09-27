@@ -575,7 +575,7 @@ header p {
 }
 
 .edition-action-pill:disabled {
-    background: #f7fafc;
+    background: transparent;
     border-color: #e2e8f0;
     color: #a0aec0;
     font-weight: 600;
