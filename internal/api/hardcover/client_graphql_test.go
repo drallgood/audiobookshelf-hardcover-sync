@@ -408,6 +408,75 @@ func TestGraphQLMutationWithMinimumBudgetDoesNotRetryAfterPossibleSend(t *testin
 	}
 }
 
+func TestGraphQLMutationClassifiesOnlyKnownPreExecutionScopeDenials(t *testing.T) {
+	tests := []struct {
+		name      string
+		query     string
+		body      string
+		wantScope bool
+	}{
+		{
+			name:      "insert edition scope denied",
+			query:     `mutation CreateEdition { insert_edition { id } }`,
+			body:      `{"errors":[{"message":"field 'insert_edition' not found in type: 'mutation_root'","extensions":{"code":"validation-failed"}}]}`,
+			wantScope: true,
+		},
+		{
+			name:      "regional upsert scope denied",
+			query:     `mutation ImportRegional { upsert_book { id } }`,
+			body:      `{"errors":[{"message":"field 'upsert_book' not found in type: 'mutation_root'","extensions":{"code":"validation-failed"}}]}`,
+			wantScope: true,
+		},
+		{
+			name:  "different validation error remains ambiguous",
+			query: `mutation CreateEdition { insert_edition { id } }`,
+			body:  `{"errors":[{"message":"field 'update_book' not found in type: 'mutation_root'","extensions":{"code":"validation-failed"}}]}`,
+		},
+		{
+			name:  "authorization code without validation proof remains ambiguous",
+			query: `mutation CreateEdition { insert_edition { id } }`,
+			body:  `{"errors":[{"message":"field 'insert_edition' not found in type: 'mutation_root'","extensions":{"code":"permission-denied"}}]}`,
+		},
+		{
+			name:  "validation error with data remains ambiguous",
+			query: `mutation CreateEdition { insert_edition { id } }`,
+			body:  `{"data":{"insert_edition":{"id":1}},"errors":[{"message":"field 'insert_edition' not found in type: 'mutation_root'","extensions":{"code":"validation-failed"}}]}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				requests.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, test.body)
+			}))
+			defer server.Close()
+
+			client := CreateTestClient(server)
+			client.maxRetries = 3
+			client.retryDelay = time.Millisecond
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			ctx = WithMinimumMutationBudget(ctx, 500*time.Millisecond)
+			var result struct{}
+
+			err := client.GraphQLMutation(ctx, test.query, nil, &result)
+
+			require.Error(t, err)
+			assert.EqualValues(t, 1, requests.Load(), "budgeted mutations must not be retried after a possible send")
+			if test.wantScope {
+				require.ErrorIs(t, err, ErrMutationScopeDenied)
+				assert.NotErrorIs(t, err, ErrMutationOutcomeAmbiguous)
+			} else {
+				require.ErrorIs(t, err, ErrMutationOutcomeAmbiguous)
+				assert.NotErrorIs(t, err, ErrMutationScopeDenied)
+			}
+		})
+	}
+}
+
 func TestGraphQLQuery_BoundsRetryAfterPause(t *testing.T) {
 	logger.Setup(logger.Config{Level: "error", Format: "json"})
 	log := logger.Get()

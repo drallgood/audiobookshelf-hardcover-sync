@@ -37,6 +37,10 @@ var ErrMutationInsufficientBudget = errors.New("insufficient time remaining befo
 // after an earlier HTTP attempt may already have reached Hardcover.
 var ErrMutationOutcomeAmbiguous = errors.New("Hardcover mutation outcome is ambiguous")
 
+// ErrMutationScopeDenied indicates Hasura rejected a known catalogue write
+// field during GraphQL validation, before executing the mutation.
+var ErrMutationScopeDenied = errors.New("Hardcover catalogue mutation scope is denied")
+
 // WithMinimumMutationBudget asks mutation requests made with ctx to require at
 // least reserve time after rate-limit admission and immediately before sending.
 // Contexts without this opt-in retain the client's established behavior.
@@ -65,6 +69,45 @@ func ambiguousMutationError(err error) error {
 		return ErrMutationOutcomeAmbiguous
 	}
 	return fmt.Errorf("%w: %w", ErrMutationOutcomeAmbiguous, err)
+}
+
+type graphQLError struct {
+	Message    string `json:"message"`
+	Extensions struct {
+		Code string `json:"code"`
+	} `json:"extensions"`
+}
+
+func knownMutationScopeDenial(op graphqlOperation, query string, data json.RawMessage, gqlErrors []graphQLError) bool {
+	if op != mutationOperation || (len(data) > 0 && strings.TrimSpace(string(data)) != "null") || len(gqlErrors) == 0 {
+		return false
+	}
+
+	fields := []string{"insert_edition", "upsert_book"}
+	deniedField := ""
+	for _, field := range fields {
+		if strings.Contains(query, field) {
+			deniedField = field
+			break
+		}
+	}
+	if deniedField == "" {
+		return false
+	}
+
+	for _, gqlErr := range gqlErrors {
+		if gqlErr.Extensions.Code != "validation-failed" {
+			return false
+		}
+		message := strings.ToLower(gqlErr.Message)
+		singleQuotedField := "field '" + deniedField + "' not found in type: 'mutation_root'"
+		doubleQuotedField := `field "` + deniedField + `" not found in type: "mutation_root"`
+		if !strings.Contains(message, singleQuotedField) && !strings.Contains(message, doubleQuotedField) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // WithReadingFormat returns a context that carries the desired reading format string.
@@ -678,9 +721,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		// First, try to parse as a standard GraphQL response with data/errors fields
 		var gqlResp struct {
 			Data   json.RawMessage `json:"data"`
-			Errors []struct {
-				Message string `json:"message"`
-			} `json:"errors,omitempty"`
+			Errors []graphQLError  `json:"errors,omitempty"`
 		}
 
 		directUnmarshal := false
@@ -716,6 +757,9 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"errors":  gqlResp.Errors,
 			})
 			if budgetedMutation {
+				if knownMutationScopeDenial(op, query, gqlResp.Data, gqlResp.Errors) {
+					return fmt.Errorf("%w: %w", ErrMutationScopeDenied, lastErr)
+				}
 				return ambiguousMutationError(lastErr)
 			}
 			continue

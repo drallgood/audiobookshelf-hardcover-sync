@@ -1490,7 +1490,10 @@ func TestCreateEditionFromDraftSavesNothingWhenTokenLacksCatalogueScope(t *testi
 
 		response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-ebook-no-scope","abs_item_id":"abs-item-1"}`)
 
-		require.GreaterOrEqual(t, response.Code, http.StatusBadRequest, response.Body.String())
+		require.Equal(t, http.StatusForbidden, response.Code, response.Body.String())
+		require.Contains(t, response.Body.String(), "catalogue write permission")
+		require.Contains(t, response.Body.String(), "no edition was created")
+		require.NotContains(t, response.Body.String(), "may have processed")
 		require.EqualValues(t, 1, hardcoverRequests.Load(), "a denied insert_edition must not be retried")
 		stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
 		require.NoError(t, err)
@@ -1516,7 +1519,10 @@ func TestCreateEditionFromDraftSavesNothingWhenTokenLacksCatalogueScope(t *testi
 
 		response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-audiobook-no-scope","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`)
 
-		require.GreaterOrEqual(t, response.Code, http.StatusBadRequest, response.Body.String())
+		require.Equal(t, http.StatusForbidden, response.Code, response.Body.String())
+		require.Contains(t, response.Body.String(), "catalogue write permission")
+		require.Contains(t, response.Body.String(), "no edition was created")
+		require.NotContains(t, response.Body.String(), "may have processed")
 		require.EqualValues(t, 1, hardcoverRequests.Load(), "a denied upsert_book must not be retried")
 		require.Zero(t, ebookCreates.Load(), "a denied audiobook import must not fall back to insert_edition")
 		stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))

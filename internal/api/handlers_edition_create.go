@@ -365,6 +365,9 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 		if errors.Is(err, hardcover.ErrMutationInsufficientBudget) {
 			return statepkg.Association{}, errors.Join(errEditionCreateInsufficientBudget, err)
 		}
+		if errors.Is(err, hardcover.ErrMutationScopeDenied) {
+			return statepkg.Association{}, fmt.Errorf("Hardcover catalogue write permission is required: %w", err)
+		}
 		if errors.Is(err, hardcover.ErrRegionalAudiobookInvalidInput) || errors.Is(err, hardcover.ErrRegionalAudiobookDryRun) || errors.Is(err, hardcover.ErrRegionalAudiobookImportFailed) {
 			return statepkg.Association{}, fmt.Errorf("Hardcover regional audiobook import failed: %w", err)
 		}
@@ -544,6 +547,9 @@ func (h *Handler) createEbook(ctx context.Context, item *models.AudiobookshelfBo
 		if errors.Is(err, hardcover.ErrMutationInsufficientBudget) {
 			return statepkg.Association{}, errors.Join(edition.ErrCreateEditionPreMutation, edition.ErrCreateEditionInsufficientMutationBudget, err)
 		}
+		if errors.Is(err, hardcover.ErrMutationScopeDenied) {
+			return statepkg.Association{}, fmt.Errorf("Hardcover catalogue write permission is required: %w", err)
+		}
 		if errors.Is(err, edition.ErrCreateEditionPreMutation) {
 			return statepkg.Association{}, fmt.Errorf("Hardcover ebook pre-insertion checks failed: %w", err)
 		}
@@ -704,6 +710,8 @@ func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID strin
 		h.writeErrorResponse(w, http.StatusTooManyRequests, "Profile sync state is busy; retry shortly")
 	case errors.Is(err, multiuser.ErrEditionCreateDryRun):
 		h.writeErrorResponse(w, http.StatusConflict, "Edition creation is disabled while this profile is in dry run")
+	case errors.Is(err, hardcover.ErrMutationScopeDenied):
+		h.writeErrorResponse(w, http.StatusForbidden, "Hardcover token is missing catalogue write permission; no edition was created")
 	case errors.Is(err, edition.ErrCreateEditionInsufficientMutationBudget):
 		w.Header().Set("Retry-After", "1")
 		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Edition lookups left too little time to safely start a Hardcover write; no edition mutation was sent. Retry the edition create")
