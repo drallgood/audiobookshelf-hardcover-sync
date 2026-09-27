@@ -56,6 +56,39 @@ func TestProcessBookRecordsSkipAndIncrementalNoChange(t *testing.T) {
 		hc.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
 	})
 
+	t.Run("earlier policy skip leaves a stale unassociated checkpoint untouched", func(t *testing.T) {
+		// The Step 11 migration check (service.go) only runs inside the
+		// incremental block, strictly after every earlier policy skip
+		// (ebook-excluded, finished-without-finished_at, book filter, unread
+		// book). A book that is skipped by one of those earlier gates must
+		// never reach the migration check, so an audiobook checkpoint with no
+		// persisted association must survive completely untouched here, even
+		// though it is exactly the shape the migration check would otherwise
+		// clear.
+		svc, hc := createTestService()
+		svc.config.Sync.Incremental = true
+		svc.config.Sync.ProcessUnreadBooks = false
+		book := toAudiobookshelfBook(createTestBook("outcome-skip-stale-checkpoint", "Unread", "Author", "", ""))
+		book.Progress.CurrentTime = 0
+		svc.state.UpdateBook(book.ID, 0.3, "IN_PROGRESS")
+		svc.state.SetHasProgressSeconds(book.ID)
+		before, hadCheckpoint := svc.state.GetBookState(book.ID)
+		require.True(t, hadCheckpoint, "test setup must seed a checkpoint")
+		_, hadAssociation := svc.state.GetAssociation(book.ID)
+		require.False(t, hadAssociation, "test setup must leave no persisted association")
+
+		require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
+
+		record := recordedOutcome(svc, book.ID)
+		assert.Equal(t, OutcomeSkipped, record.Outcome)
+		assert.Equal(t, "unread book", record.Reason)
+		after, stillHasCheckpoint := svc.state.GetBookState(book.ID)
+		assert.True(t, stillHasCheckpoint, "the earlier skip must leave the checkpoint in place")
+		assert.Equal(t, before, after, "the checkpoint's fields must be unchanged by the skip")
+		assertNoHardcoverBookSearches(t, hc)
+		hc.AssertExpectations(t)
+	})
+
 	t.Run("incremental no change with no persisted association reclassifies in the same run", func(t *testing.T) {
 		// Step 11 migration: an audiobook checkpoint with no persisted
 		// Association can no longer rest on a stale editions.asin or ISBN
