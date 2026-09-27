@@ -2340,9 +2340,17 @@ header p {
 .edition-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
 .edition-note { color: #666; font-size: 0.9rem; }
 .edition-dialog-body { padding: 20px 30px 30px; overflow-y: auto; max-height: calc(95vh - 80px); }
+.edition-dialog-subject { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.edition-dialog-subject .audiobookshelf-cover { flex: 0 0 auto; width: 4.5rem; }
+.edition-dialog-subject .audiobookshelf-cover .book-cover { width: 4.5rem; height: 6.75rem; margin: 0; }
+.edition-dialog-subject p { margin: 0; }
 .edition-fields { border: 1px solid #ddd; border-radius: 6px; padding: 10px 14px; margin: 12px 0; }
 .edition-field { display: flex; flex-direction: column; gap: 2px; margin: 8px 0; }
 .edition-field input { padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; }
+.edition-field input:read-only { background: #f1f5f9; color: #4a5568; cursor: not-allowed; }
+.edition-source-section { border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px 14px; margin: 12px 0; background: #f7fafc; }
+.edition-source-section h4 { margin: 0 0 8px; font-size: 0.9rem; color: #4a5568; }
+.edition-source-section .book-meta { margin: 0; }
 .edition-warning { background: #fff8e1; border-left: 4px solid #f0ad4e; padding: 8px 12px; margin: 8px 0; border-radius: 4px; }
 .edition-error { background: #fdecea; border-left: 4px solid #d9534f; padding: 8px 12px; margin: 8px 0; border-radius: 4px; }
 .edition-success { background: #e8f5e9; border-left: 4px solid #5cb85c; padding: 8px 12px; margin: 8px 0; border-radius: 4px; }
@@ -2350,4 +2358,3 @@ header p {
 .edition-region.confirmed { background: #e8f5e9; }
 .edition-region.review { background: #fff8e1; }
 .edition-dry-run { display: inline-block; background: #e3f2fd; color: #0d47a1; font-weight: 600; padding: 2px 10px; border-radius: 12px; margin-bottom: 8px; }
-.edition-resync { display: flex; align-items: center; gap: 8px; margin: 10px 0; }

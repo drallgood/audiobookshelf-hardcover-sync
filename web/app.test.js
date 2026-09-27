@@ -303,10 +303,39 @@ test('audiobook dialog shows region states, escapes ABS strings, and offers only
     assert.match(html, /Permission unverified/);
     assert.match(html, /name="audible_identifier"/);
     assert.doesNotMatch(html, /name="title"/);
-    assert.match(html, /name="resync"/);
+    assert.doesNotMatch(html, /name="resync"/);
+    assert.match(html, /read status will be synced/);
 
     const unavailable = app.renderEditionDialog({ ...dialog, draft: { ...dialog.draft, region_status: 'temporarily_unavailable' } });
     assert.match(unavailable, /temporarily unavailable/);
+});
+
+test('a confirmed Audible identifier is shown read-only, and an unconfirmed one stays editable', () => {
+    const app = editionApp();
+    const base = {
+        mode: 'create', profileId: 'p1', runId: 'run-1', record: needsReview, loading: false, busy: false,
+        capability: null,
+        draft: {
+            reading_format: 'audiobook', eligible: true, dry_run: false,
+            source_identifiers: { asin: 'B00ABC1234' }, audible_identifier_candidate: { asin: 'B00ABC1234' }
+        }
+    };
+    const confirmed = app.renderEditionDialog({ ...base, draft: { ...base.draft, region_status: 'confirmed', confirmed_region: 'us' } });
+    assert.match(confirmed, /name="audible_identifier"[^>]*readonly/);
+    const unknown = app.renderEditionDialog({ ...base, draft: { ...base.draft, region_status: 'unknown' } });
+    assert.doesNotMatch(unknown, /name="audible_identifier"[^>]*readonly/);
+});
+
+test('capability reason/warning codes are translated to plain-language text', () => {
+    const app = editionApp();
+    assert.match(
+        app.editionCapabilityGate({ audiobook: { status: 'denied', can_attempt: false, reason: 'hardcover_token_missing' } }, 'audiobook').reason,
+        /no Hardcover token configured/
+    );
+    assert.match(
+        app.editionCapabilityGate({ ebook: { status: 'unverified', can_attempt: true, warning: 'permission_unverified' } }, 'ebook').warning,
+        /has not been verified/
+    );
 });
 
 test('dry run is labelled and offers neither creation nor resync', () => {
@@ -318,6 +347,7 @@ test('dry run is labelled and offers neither creation nor resync', () => {
     });
     assert.match(html, /Dry run/);
     assert.doesNotMatch(html, /name="resync"/);
+    assert.doesNotMatch(html, /read status will be synced/);
     assert.match(html, /data-edition-dialog="confirm-create"[^>]*disabled/);
 });
 
@@ -354,7 +384,7 @@ test('create body sends only changed ebook fields and the opt-in resync flag', (
 
 function stubDialog(app, status, payload) {
     app.fetchJsonWithTimeout = async () => ({ response: { ok: status < 300, status, headers: { get: () => null } }, data: payload });
-    app.readEditionFormFields = () => ({ fields: { audible_identifier: { value: 'B00ABC1234:us', original: '' } }, resync: true });
+    app.readEditionFormFields = () => ({ audible_identifier: { value: 'B00ABC1234:us', original: '' } });
     app.editionDialog = {
         mode: 'create', profileId: 'p1', runId: 'run-1', record: needsReview, busy: false, error: '', result: null,
         draft: { reading_format: 'audiobook', region_status: 'confirmed', dry_run: false }

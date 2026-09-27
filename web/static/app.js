@@ -1865,6 +1865,24 @@ class SyncProfileApp {
         return Math.min(Math.max(date - now, 0), 300000);
     }
 
+    // Known API codes for capability reason/warning are machine-readable
+    // (see docs/openapi.yaml); translate the ones we recognize into text and
+    // fall back to whatever the server sent for anything new.
+    capabilityReasonText(code) {
+        const known = {
+            hardcover_token_missing: 'This profile has no Hardcover token configured, so it cannot write to Hardcover.',
+            insufficient_scope: "This profile's Hardcover token does not have permission for this action."
+        };
+        return known[code] || code;
+    }
+
+    capabilityWarningText(code) {
+        const known = {
+            permission_unverified: 'Hardcover has no way to check write permission ahead of time, so this has not been verified. The attempt may fail if the token lacks catalogue-write permission.'
+        };
+        return known[code] || code;
+    }
+
     // Applies capability evidence for the record's format.
     editionCapabilityGate(capability, format) {
         if (!capability) {
@@ -1873,10 +1891,10 @@ class SyncProfileApp {
         const status = String(format).toLowerCase() === 'ebook' ? capability.ebook : capability.audiobook;
         if (!status) return { blocked: false, warning: '' };
         if (status.status === 'denied' || status.can_attempt === false) {
-            return { blocked: true, reason: status.reason || 'The Hardcover token is not permitted to add this edition.' };
+            return { blocked: true, reason: status.reason ? this.capabilityReasonText(status.reason) : 'The Hardcover token is not permitted to add this edition.' };
         }
         if (status.status === 'unverified') {
-            return { blocked: false, warning: status.warning || 'Hardcover permission is unverified. The attempt may fail if the token lacks catalogue write permission.' };
+            return { blocked: false, warning: status.warning ? this.capabilityWarningText(status.warning) : 'Hardcover permission is unverified. The attempt may fail if the token lacks catalogue write permission.' };
         }
         return { blocked: false, warning: '' };
     }
@@ -1969,8 +1987,8 @@ class SyncProfileApp {
         this.showEditionDialog();
     }
 
-    renderDraftField(name, label, value) {
-        return `<label class="edition-field"><span>${this.escapeHtml(label)}</span><input type="text" name="${name}" value="${this.escapeHtmlAttribute(value || '')}" data-original="${this.escapeHtmlAttribute(value || '')}" autocomplete="off"></label>`;
+    renderDraftField(name, label, value, readOnly = false) {
+        return `<label class="edition-field"><span>${this.escapeHtml(label)}</span><input type="text" name="${name}" value="${this.escapeHtmlAttribute(value || '')}" data-original="${this.escapeHtmlAttribute(value || '')}" autocomplete="off" ${readOnly ? 'readonly title="Confirmed automatically from Audiobookshelf and Audnex; not editable here."' : ''}></label>`;
     }
 
     renderEditionDialog(dialog) {
@@ -1986,7 +2004,10 @@ class SyncProfileApp {
         }
         return `<div class="modal-header"><h3>${title}</h3><button type="button" class="modal-close" data-edition-dialog="close" aria-label="Close">&times;</button></div>
             <div class="edition-dialog-body" role="dialog" aria-label="${this.escapeHtmlAttribute(title)}">
-                <p><strong>${this.escapeHtml(record.title || 'Unknown title')}</strong>${record.author ? ` by ${this.escapeHtml(record.author)}` : ''}</p>
+                <div class="edition-dialog-subject">
+                    ${this.renderAudiobookshelfCover(record)}
+                    <p><strong>${this.escapeHtml(record.title || 'Unknown title')}</strong>${record.author ? ` by ${this.escapeHtml(record.author)}` : ''}</p>
+                </div>
                 ${body}
             </div>`;
     }
@@ -2013,15 +2034,19 @@ class SyncProfileApp {
         const dryRun = Boolean(draft.dry_run || dialog.capability?.dry_run || dialog.runDryRun);
         const syncing = this.profileIsSyncing(dialog.profileId);
         const ids = draft.source_identifiers || {};
-        const sourceHtml = `<div class="book-meta">
-            <span><strong>Audiobookshelf ASIN (source identifier):</strong> ${this.escapeHtml(ids.asin || 'none')}</span>
-            <span><strong>Audiobookshelf ISBN:</strong> ${this.escapeHtml(ids.isbn || 'none')}</span>
-            <span><strong>Format:</strong> ${this.escapeHtml(draft.reading_format || '')}</span></div>`;
+        const sourceHtml = `<div class="edition-source-section">
+            <h4>From Audiobookshelf</h4>
+            <div class="book-meta">
+                <span><strong>ASIN (source identifier):</strong> ${this.escapeHtml(ids.asin || 'none')}</span>
+                <span><strong>ISBN:</strong> ${this.escapeHtml(ids.isbn || 'none')}</span>
+                <span><strong>Format:</strong> ${this.escapeHtml(draft.reading_format || '')}</span>
+            </div>
+        </div>`;
         let regionHtml = '';
         let editHtml = '';
         if (isEbook) {
             const c = draft.ebook_candidate || {};
-            editHtml = `<fieldset class="edition-fields"><legend>Ebook edition fields</legend>
+            editHtml = `<fieldset class="edition-fields"><legend>Edition details (from Audiobookshelf — correct before creating)</legend>
                 ${this.renderDraftField('title', 'Title', c.title)}
                 ${this.renderDraftField('subtitle', 'Subtitle', c.subtitle)}
                 ${this.renderDraftField('asin', 'ASIN', c.asin)}
@@ -2034,7 +2059,8 @@ class SyncProfileApp {
             const status = draft.region_status || '';
             const candidate = draft.audible_identifier_candidate || {};
             let prefill = '';
-            if (status === 'confirmed' && candidate.asin && draft.confirmed_region) {
+            const confirmed = status === 'confirmed' && candidate.asin && draft.confirmed_region;
+            if (confirmed) {
                 regionHtml = `<div class="edition-region confirmed">Audible region confirmed: <strong>${this.escapeHtml(draft.confirmed_region)}</strong></div>`;
                 prefill = `${candidate.asin}:${draft.confirmed_region}`;
             } else if (status === 'temporarily_unavailable') {
@@ -2045,17 +2071,20 @@ class SyncProfileApp {
                 regionHtml = '<div class="edition-region review">No regional Audible identifier is available. Enter one (ASIN:region) to continue.</div>';
             }
             editHtml = `<fieldset class="edition-fields"><legend>Regional Audible identifier</legend>
-                ${this.renderDraftField('audible_identifier', 'Audible identifier (ASIN:region)', prefill)}
-                <p class="edition-note">Audiobook details below come from Audiobookshelf and cannot be edited; only the regional identifier can be corrected.</p>
+                ${this.renderDraftField('audible_identifier', 'Audible identifier (ASIN:region)', prefill, confirmed)}
+                ${confirmed ? '' : '<p class="edition-note">Enter the ASIN and region Hardcover should use for this edition, in the form ASIN:region.</p>'}
             </fieldset>`;
             const m = draft.metadata_preview;
             if (m) {
-                editHtml += `<div class="book-meta edition-preview">
-                    <span><strong>Title:</strong> ${this.escapeHtml(m.title)}</span>
-                    ${m.author ? `<span><strong>Author:</strong> ${this.escapeHtml(m.author)}</span>` : ''}
-                    ${m.narrator ? `<span><strong>Narrator:</strong> ${this.escapeHtml(m.narrator)}</span>` : ''}
-                    ${m.release_date ? `<span><strong>Release date:</strong> ${this.escapeHtml(m.release_date)}</span>` : ''}
-                    ${m.edition_information ? `<span><strong>Edition:</strong> ${this.escapeHtml(m.edition_information)}</span>` : ''}
+                editHtml += `<div class="edition-source-section">
+                    <h4>Audnex preview <span class="edition-note">(used to verify the match; not editable)</span></h4>
+                    <div class="book-meta edition-preview">
+                        <span><strong>Title:</strong> ${this.escapeHtml(m.title)}</span>
+                        ${m.author ? `<span><strong>Author:</strong> ${this.escapeHtml(m.author)}</span>` : ''}
+                        ${m.narrator ? `<span><strong>Narrator:</strong> ${this.escapeHtml(m.narrator)}</span>` : ''}
+                        ${m.release_date ? `<span><strong>Release date:</strong> ${this.escapeHtml(m.release_date)}</span>` : ''}
+                        ${m.edition_information ? `<span><strong>Edition:</strong> ${this.escapeHtml(m.edition_information)}</span>` : ''}
+                    </div>
                 </div>`;
             }
         }
@@ -2069,14 +2098,13 @@ class SyncProfileApp {
             ${sourceHtml}${regionHtml}
             ${!gate.blocked && gate.warning ? `<div class="edition-warning" data-warning="capability">${this.escapeHtml(gate.warning)}</div>` : ''}
             ${this.renderWarnings(draft)}
-            <form class="edition-form" onsubmit="return false">${editHtml}
-                ${dryRun ? '' : `<label class="edition-resync"><input type="checkbox" name="resync"> Sync this book's read status right after creating the edition</label>`}
-            </form>
+            <form class="edition-form" onsubmit="return false">${editHtml}</form>
+            ${dryRun ? '' : '<p class="edition-note">This book\'s read status will be synced right after the edition is created.</p>'}
             ${blockers.map(text => `<div class="edition-error" data-blocker>${this.escapeHtml(text)}</div>`).join('')}
             ${errorHtml}
             <div class="form-actions">
                 <button type="button" class="btn btn-primary" data-edition-dialog="confirm-create" ${canConfirm && !dialog.busy ? '' : 'disabled'}>${dialog.busy ? 'Creating…' : 'Create edition'}</button>
-                <button type="button" class="btn btn-secondary" data-edition-dialog="retry" ${waiting || dialog.busy ? 'disabled' : ''}>${waiting ? retryLabel : 'Refresh preview'}</button>
+                <button type="button" class="btn btn-secondary" data-edition-dialog="retry" title="Reload this preview and retry the region/candidate lookup — useful after a temporary lookup failure or if the source metadata changed." ${waiting || dialog.busy ? 'disabled' : ''}>${waiting ? retryLabel : 'Refresh preview'}</button>
                 ${closeButton}
             </div>`;
     }
@@ -2110,20 +2138,21 @@ class SyncProfileApp {
         form?.querySelectorAll('input[type="text"]').forEach(input => {
             fields[input.name] = { value: input.value, original: input.dataset.original || '' };
         });
-        return { fields, resync: Boolean(form?.querySelector('input[name="resync"]')?.checked) };
+        return fields;
     }
 
     async submitEditionCreate() {
         const dialog = this.editionDialog;
         if (!dialog || dialog.mode !== 'create' || !dialog.draft || dialog.busy) return;
-        const { fields, resync } = this.readEditionFormFields();
+        const fields = this.readEditionFormFields();
+        const resync = !dialog.draft.dry_run;
         const isEbook = dialog.draft.reading_format === 'ebook';
         if (!isEbook && dialog.draft.region_status !== 'confirmed' && !(fields.audible_identifier?.value || '').trim()) {
             dialog.error = 'Enter the regional Audible identifier (ASIN:region) before creating the edition.';
             this.showEditionDialog();
             return;
         }
-        const body = this.buildEditionCreateBody(dialog, fields, resync && !dialog.draft.dry_run);
+        const body = this.buildEditionCreateBody(dialog, fields, resync);
         dialog.busy = true;
         dialog.error = '';
         this.showEditionDialog();
