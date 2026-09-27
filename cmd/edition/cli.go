@@ -123,9 +123,6 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 		input.ABSItemID = itemID
 	}
 	input.ABSItemID = strings.TrimSpace(input.ABSItemID)
-	input.ASIN = strings.TrimSpace(input.ASIN)
-	input.ISBN10 = strings.TrimSpace(input.ISBN10)
-	input.ISBN13 = strings.TrimSpace(input.ISBN13)
 	format := strings.ToLower(strings.TrimSpace(input.ReadingFormat))
 	switch format {
 	case "", models.ReadingFormatAudiobook:
@@ -262,7 +259,7 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 		if created == nil || !created.Success {
 			return nil, errors.New("ebook dry run did not return a successful result")
 		}
-		return ebookOutput(created, input, "dry_run", false), nil
+		return ebookOutput(created, input, "dry_run"), nil
 	}
 	if services.createEbook == nil {
 		return nil, errors.New("ebook edition creation is unavailable")
@@ -276,7 +273,7 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 	if created == nil || !created.Success || created.EditionID <= 0 {
 		return nil, errors.New("ebook edition creation returned no confirmed edition")
 	}
-	output := ebookOutput(created, input, "created", false)
+	output := ebookOutput(created, input, "created")
 	if created.Existing {
 		output.Status = "existing"
 	}
@@ -503,21 +500,17 @@ func saveAssociation(loadedState *state.State, path string, association state.As
 	return nil
 }
 
-func ebookOutput(result *edition.EditionResult, input editionCreateInput, status string, associationSaved bool) *createOutput {
-	if result == nil {
-		return nil
-	}
+func ebookOutput(result *edition.EditionResult, input editionCreateInput, status string) *createOutput {
 	return &createOutput{
-		Success:          result.Success,
-		Status:           status,
-		BookID:           input.BookID,
-		EditionID:        result.EditionID,
-		ImageID:          result.ImageID,
-		ImageError:       result.ImageError,
-		Existing:         result.Existing,
-		ReadingFormat:    models.ReadingFormatEbook,
-		ABSItemID:        input.ABSItemID,
-		AssociationSaved: associationSaved,
+		Success:       result.Success,
+		Status:        status,
+		BookID:        input.BookID,
+		EditionID:     result.EditionID,
+		ImageID:       result.ImageID,
+		ImageError:    result.ImageError,
+		Existing:      result.Existing,
+		ReadingFormat: models.ReadingFormatEbook,
+		ABSItemID:     input.ABSItemID,
 	}
 }
 
