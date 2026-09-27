@@ -20,7 +20,8 @@ The default file is optional; a file named with `--config` must exist. Set
 `audiobookshelf.url` and `audiobookshelf.token`. Environment variables such as
 `HARDCOVER_TOKEN`, `AUDIOBOOKSHELF_URL`, `AUDIOBOOKSHELF_TOKEN`,
 `AUDIOBOOKSHELF_NETWORK_TRUST`, and `AUDIOBOOKSHELF_AUDNEXUS_REGION` override
-the file, as they do for the sync service. The command does not require the
+the file, as they do for the sync service. Hardcover requests follow the
+configured `rate_limit` settings, like sync. The command does not require the
 sync service's Audiobookshelf settings and prints no configuration summary.
 
 The Hardcover token needs `read:catalog` for book/edition reads and duplicate

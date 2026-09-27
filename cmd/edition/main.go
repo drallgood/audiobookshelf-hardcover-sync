@@ -166,7 +166,7 @@ func prepopulateEdition(c *cli.Context) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 	log := logger.Get()
-	clientConfig := hardcoverClientConfig(cfg.Hardcover.BaseURL)
+	clientConfig := hardcoverClientConfig(cfg)
 	hc := hardcover.NewClientWithConfig(clientConfig, cfg.Hardcover.Token, log)
 	dryRun := cfg.Sync.DryRun
 	if c.IsSet("dry-run") {

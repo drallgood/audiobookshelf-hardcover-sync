@@ -58,7 +58,7 @@ type createServices struct {
 }
 
 func newCreateServices(cfg *config.Config, log *logger.Logger, dryRun bool) (createServices, error) {
-	clientConfig := hardcoverClientConfig(cfg.Hardcover.BaseURL)
+	clientConfig := hardcoverClientConfig(cfg)
 	hc := hardcover.NewClientWithConfig(clientConfig, cfg.Hardcover.Token, log)
 	hc.SetDryRun(dryRun)
 	creator := edition.NewCreator(hc, log, dryRun, cfg.Audiobookshelf.Token)
@@ -487,10 +487,18 @@ func writeJSONFile(path string, value any) error {
 	return nil
 }
 
-func hardcoverClientConfig(baseURL string) *hardcover.ClientConfig {
+// hardcoverClientConfig applies the configured Hardcover endpoint and request
+// pacing, as the sync service and create API do.
+func hardcoverClientConfig(cfg *config.Config) *hardcover.ClientConfig {
 	clientConfig := hardcover.DefaultClientConfig()
-	if strings.TrimSpace(baseURL) != "" {
-		clientConfig.BaseURL = strings.TrimSpace(baseURL)
+	if baseURL := strings.TrimSpace(cfg.Hardcover.BaseURL); baseURL != "" {
+		clientConfig.BaseURL = baseURL
+	}
+	if cfg.RateLimit.Rate > 0 {
+		clientConfig.RateLimit = cfg.RateLimit.Rate
+	}
+	if cfg.RateLimit.MaxConcurrent > 0 {
+		clientConfig.MaxConcurrent = cfg.RateLimit.MaxConcurrent
 	}
 	return clientConfig
 }
