@@ -135,9 +135,12 @@ every route.
 
 `POST /api/profiles/{id}/edition-drafts/create` is the only API route that
 writes an edition to Hardcover, and only when you call it; sync never does.
-Send the `run_id` and
-`abs_item_id` of a `needs_review` item from a completed, non-dry-run sync. The
-Hardcover book always comes from that sync record, never from the request.
+The profile's Hardcover token must include `write:catalog:append` for this
+action.
+
+Send the `run_id` and `abs_item_id` of a `needs_review` item from a completed,
+non-dry-run sync. The Hardcover book always comes from that sync record, never
+from the request.
 
 - **Audiobooks** are imported through Hardcover's regional Audible importer.
   Omit `audible_identifier` to discover the ASIN's region with Audnex, or send
@@ -325,10 +328,12 @@ The project follows standard Go project layout:
 
 ### Prerequisites
 
-- Go 1.21 or later
+- Go 1.26 or later
 - Docker (optional, for containerized deployment)
 - Audiobookshelf instance with API access
-- Hardcover API token
+- Hardcover API token with `read:library`, `read:catalog`, `read:lists`,
+  `read:me`, `write:library`, and `write:catalog:append`
+  ([create a token with these scopes](https://hardcover.app/account/api/keys/new?scope=read%3Alibrary+read%3Acatalog+write%3Alibrary+read%3Alists+read%3Ame+write%3Acatalog%3Aappend)).
 
 ### Local Development
 
@@ -392,7 +397,7 @@ The application will automatically migrate settings from the old `app` section t
 
 - [Docker](https://docs.docker.com/engine/install/) installed on your system
 - [Docker Compose](https://docs.docker.com/compose/install/) (recommended for the main sync service)
-- [Hardcover API token](#getting-started) (requires scopes: `read:library`, `read:catalog`, `read:lists`, `read:me`, `write:library` — [create one with this link](https://hardcover.app/account/api/keys/new?scope=read%3Alibrary+read%3Acatalog+write%3Alibrary+read%3Alists+read%3Ame))
+- [Hardcover API token](#prerequisites) with all required scopes — [create one with this link](https://hardcover.app/account/api/keys/new?scope=read%3Alibrary+read%3Acatalog+write%3Alibrary+read%3Alists+read%3Ame+write%3Acatalog%3Aappend).
 - (Optional) [Audiobookshelf](https://www.audiobookshelf.org/) URL and token if using the sync service
 
 
