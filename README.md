@@ -178,12 +178,13 @@ permission. A profile without a Hardcover token is reported as `denied`. See
 
 Sync checks a saved local match before searching Hardcover. It stores an
 audiobook match only when an exact, region-qualified Audible mapping confirms
-the edition. These associations live with the CLI sync state or the individual
-web profile's state and survive restarts when that file is kept. Other
-audiobook ASIN, ISBN, and title/author results, plus ebook matches, continue to
-be checked through read-only lookups but are not saved as associations in this
-step. Audiobook ASIN lookup checks existing regional Audible mappings before
-its ASIN fallback; ebook ASIN lookup continues to use Kindle editions. Sync
+the edition; other audiobook ASIN, ISBN, and title/author results continue to
+be checked through read-only lookups but are not saved. For ebooks, it stores
+a match whenever an exact `editions.asin` match or an exact ISBN match
+confirms the edition. These associations live with the CLI sync state or the
+individual web profile's state and survive restarts when that file is kept.
+Audiobook ASIN lookup checks existing regional Audible mappings before its
+ASIN fallback; ebook ASIN lookup continues to use Kindle editions. Sync
 matching only reads the Hardcover catalogue; it does not add or change books
 or editions there. Dry run can reuse an existing association but does not save
 or forget one.

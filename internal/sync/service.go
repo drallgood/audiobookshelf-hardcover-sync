@@ -5019,10 +5019,26 @@ func (s *Service) forgetConfirmedMissingEditionForError(ctx context.Context, ite
 	}
 }
 
+// recordVerifiedASINAssociation persists a durable association for the two
+// ASIN match kinds that are trustworthy enough to remember across syncs: an
+// audiobook's exact regional Audible book_mappings match, and an ebook's
+// exact editions.asin match. A temporary editions.asin fallback for an
+// audiobook (used only while no regional mapping exists) stays ephemeral and
+// is re-resolved on every sync, so it is deliberately excluded here.
 func (s *Service) recordVerifiedASINAssociation(book models.AudiobookshelfBook, result *hardcover.ASINLookupResult) {
-	if s.config.Sync.DryRun || book.ReadingFormat() != models.ReadingFormatAudiobook ||
-		result == nil || result.MatchKind != hardcover.ASINMatchAudibleMapping || result.Book == nil ||
-		strings.TrimSpace(result.RegionalExternalID) == "" {
+	if s.config.Sync.DryRun || result == nil || result.Book == nil {
+		return
+	}
+	format := book.ReadingFormat()
+	switch {
+	case format == models.ReadingFormatAudiobook && result.MatchKind == hardcover.ASINMatchAudibleMapping:
+		if strings.TrimSpace(result.RegionalExternalID) == "" {
+			return
+		}
+	case format == models.ReadingFormatEbook && result.MatchKind == hardcover.ASINMatchEditionASIN:
+		// Widened case: an ebook's editions.asin match is exact (no regional
+		// ambiguity like Audible mappings), so it is safe to remember.
+	default:
 		return
 	}
 	if s.state == nil || result.Book.ID == "" || result.Book.EditionID == "" {
@@ -5040,11 +5056,44 @@ func (s *Service) recordVerifiedASINAssociation(book models.AudiobookshelfBook, 
 		RegionalExternalID: result.RegionalExternalID,
 		HardcoverBookID:    result.Book.ID,
 		HardcoverEditionID: result.Book.EditionID,
-		ReadingFormat:      book.ReadingFormat(),
+		ReadingFormat:      format,
 		Provenance:         string(result.MatchKind),
 	}
 	if err := s.state.SetAssociation(association); err != nil {
-		s.log.Warn("Failed to stage verified Audible association", map[string]interface{}{
+		s.log.Warn("Failed to stage verified ASIN association", map[string]interface{}{
+			"book_id": book.ID,
+			"error":   err.Error(),
+		})
+	}
+}
+
+// recordVerifiedISBNAssociation persists a durable association for an
+// ebook's exact ISBN match (ISBN-10 or ISBN-13). Audiobook ISBN matches stay
+// ephemeral and are re-resolved on every sync; only ebook ISBN persistence is
+// in scope here.
+func (s *Service) recordVerifiedISBNAssociation(book models.AudiobookshelfBook, hcBook *models.HardcoverBook) {
+	if s.config.Sync.DryRun || book.ReadingFormat() != models.ReadingFormatEbook || hcBook == nil {
+		return
+	}
+	if s.state == nil || hcBook.ID == "" || hcBook.EditionID == "" {
+		return
+	}
+	asin, isbn10, isbn13 := state.SourceIdentifiers(book.Media.Metadata.ASIN, book.Media.Metadata.ISBN)
+	if strings.TrimSpace(isbn10) == "" && strings.TrimSpace(isbn13) == "" {
+		return
+	}
+	association := state.Association{
+		ABSItemID:          book.ID,
+		SourceASIN:         asin,
+		SourceISBN10:       isbn10,
+		SourceISBN13:       isbn13,
+		HardcoverBookID:    hcBook.ID,
+		HardcoverEditionID: hcBook.EditionID,
+		ReadingFormat:      book.ReadingFormat(),
+		Provenance:         "isbn",
+	}
+	if err := s.state.SetAssociation(association); err != nil {
+		s.log.Warn("Failed to stage verified ISBN association", map[string]interface{}{
 			"book_id": book.ID,
 			"error":   err.Error(),
 		})
@@ -5225,6 +5274,7 @@ func (s *Service) findBookInHardcoverWithASINMatch(ctx context.Context, book mod
 				}
 				log.Warn(fmt.Sprintf("Search by %s failed, will try other identifiers or methods: %v", candidate.label(), err), nil)
 			} else if hcBook != nil {
+				s.recordVerifiedISBNAssociation(book, hcBook)
 				foundBook, err := s.processFoundBook(ctx, hcBook, book)
 				return foundBook, err, false
 			}

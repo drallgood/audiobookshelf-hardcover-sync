@@ -77,7 +77,7 @@ func TestFindBookInHardcoverReusesMatchingAssociationFirst(t *testing.T) {
 	client.AssertExpectations(t)
 }
 
-func TestFindBookInHardcoverPersistsOnlyVerifiedAudiobookMapping(t *testing.T) {
+func TestFindBookInHardcoverPersistsVerifiedASINMatches(t *testing.T) {
 	tests := []struct {
 		name       string
 		format     string
@@ -87,7 +87,7 @@ func TestFindBookInHardcoverPersistsOnlyVerifiedAudiobookMapping(t *testing.T) {
 	}{
 		{name: "verified audiobook mapping", format: models.ReadingFormatAudiobook, matchKind: hardcover.ASINMatchAudibleMapping, wantSaved: true, wantRegion: "ASIN-123:uk"},
 		{name: "temporary edition ASIN fallback", format: models.ReadingFormatAudiobook, matchKind: hardcover.ASINMatchEditionASIN},
-		{name: "ebook edition ASIN", format: models.ReadingFormatEbook, matchKind: hardcover.ASINMatchEditionASIN},
+		{name: "ebook edition ASIN", format: models.ReadingFormatEbook, matchKind: hardcover.ASINMatchEditionASIN, wantSaved: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -119,13 +119,93 @@ func TestFindBookInHardcoverPersistsOnlyVerifiedAudiobookMapping(t *testing.T) {
 			if tt.wantSaved {
 				assert.Equal(t, tt.wantRegion, association.RegionalExternalID)
 				assert.Equal(t, "ASIN-123", association.SourceASIN)
-				assert.Equal(t, string(hardcover.ASINMatchAudibleMapping), association.Provenance)
+				assert.Equal(t, string(tt.matchKind), association.Provenance)
 			} else {
 				assert.False(t, svc.state.IsDirty())
 			}
 			mockClient.AssertExpectations(t)
 		})
 	}
+}
+
+func TestFindBookInHardcoverPersistsVerifiedISBNMatches(t *testing.T) {
+	tests := []struct {
+		name      string
+		format    string
+		isbn      string
+		wantSaved bool
+	}{
+		{name: "ebook ISBN-13", format: models.ReadingFormatEbook, isbn: "978-0-306-40615-7", wantSaved: true},
+		{name: "ebook ISBN-10", format: models.ReadingFormatEbook, isbn: "0-306-40615-2", wantSaved: true},
+		{name: "audiobook ISBN stays ephemeral", format: models.ReadingFormatAudiobook, isbn: "978-0-306-40615-7"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, mockClient := createTestService()
+			svc.config.Sync.SyncOwned = false
+			book := associationTestBook("association-isbn-"+tt.name, "", tt.isbn)
+			if tt.format == models.ReadingFormatEbook {
+				book.MediaType = "ebook"
+			}
+			ctx := hardcover.WithReadingFormat(context.Background(), tt.format)
+			candidates := isbnSearchCandidates(book.Media.Metadata.ISBN)
+			require.NotEmpty(t, candidates)
+			for _, candidate := range candidates {
+				if candidate.is13 {
+					mockClient.On("SearchBookByISBN13", mock.Anything, candidate.value).Return(&models.HardcoverBook{ID: "901", EditionID: "902"}, nil).Maybe()
+				} else {
+					mockClient.On("SearchBookByISBN10", mock.Anything, candidate.value).Return(&models.HardcoverBook{ID: "901", EditionID: "902"}, nil).Maybe()
+				}
+			}
+			expectASINEditionRead(t, mockClient, "901", "902")
+
+			got, err := svc.findBookInHardcover(ctx, book)
+
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, "902", got.EditionID)
+			association, saved := svc.state.GetAssociation(book.ID)
+			assert.Equal(t, tt.wantSaved, saved)
+			if tt.wantSaved {
+				assert.Equal(t, "isbn", association.Provenance)
+				assert.Equal(t, "901", association.HardcoverBookID)
+				assert.Equal(t, "902", association.HardcoverEditionID)
+				assert.True(t, association.SourceISBN10 != "" || association.SourceISBN13 != "")
+			} else {
+				assert.False(t, svc.state.IsDirty())
+			}
+			mockClient.AssertExpectations(t)
+		})
+	}
+}
+
+func TestDryRunDoesNotStageVerifiedEbookMatches(t *testing.T) {
+	t.Run("editions.asin", func(t *testing.T) {
+		svc, _ := createTestService()
+		svc.config.Sync.DryRun = true
+		book := associationTestBook("association-ebook-dry-run-asin", "ASIN-123", "")
+		book.MediaType = "ebook"
+		svc.recordVerifiedASINAssociation(book, &hardcover.ASINLookupResult{
+			Book:      &models.HardcoverBook{ID: "901", EditionID: "902"},
+			MatchKind: hardcover.ASINMatchEditionASIN,
+		})
+
+		_, exists := svc.state.GetAssociation(book.ID)
+		assert.False(t, exists)
+		assert.False(t, svc.state.IsDirty())
+	})
+
+	t.Run("isbn", func(t *testing.T) {
+		svc, _ := createTestService()
+		svc.config.Sync.DryRun = true
+		book := associationTestBook("association-ebook-dry-run-isbn", "", "978-0-306-40615-7")
+		book.MediaType = "ebook"
+		svc.recordVerifiedISBNAssociation(book, &models.HardcoverBook{ID: "901", EditionID: "902"})
+
+		_, exists := svc.state.GetAssociation(book.ID)
+		assert.False(t, exists)
+		assert.False(t, svc.state.IsDirty())
+	})
 }
 
 func TestProcessBookDoesNotRepeatTemporaryASINFallbackLookup(t *testing.T) {
