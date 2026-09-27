@@ -1291,6 +1291,22 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 	return editionID, false, nil
 }
 func (c *Creator) PrepopulateFromBook(ctx context.Context, bookID int) (*EditionInput, error) {
+	return c.PrepopulateFromBookWithFormat(ctx, bookID, "")
+}
+
+// PrepopulateFromBookWithFormat loads book metadata into a create template.
+// An empty readingFormat infers audiobook when the book has an ASIN (including
+// books that have both ASIN and ISBNs), ebook for ISBN-only books, and
+// audiobook when the book has neither identifier. A non-empty value selects
+// the requested supported format.
+func (c *Creator) PrepopulateFromBookWithFormat(ctx context.Context, bookID int, readingFormat string) (*EditionInput, error) {
+	requestedFormat := strings.ToLower(strings.TrimSpace(readingFormat))
+	switch requestedFormat {
+	case "", models.ReadingFormatAudiobook, models.ReadingFormatEbook:
+	default:
+		return nil, fmt.Errorf("invalid reading_format %q, expected audiobook or ebook", readingFormat)
+	}
+
 	c.log.Debug("Prepopulating edition data from book", map[string]interface{}{
 		"book_id": bookID,
 	})
@@ -1376,17 +1392,27 @@ func (c *Creator) PrepopulateFromBook(ctx context.Context, bookID int) (*Edition
 
 	// Map the response to our input struct
 	book := response.Book
+	if requestedFormat == "" {
+		requestedFormat = models.ReadingFormatAudiobook
+		if strings.TrimSpace(book.ASIN) == "" && (strings.TrimSpace(book.ISBN10) != "" || strings.TrimSpace(book.ISBN13) != "") {
+			requestedFormat = models.ReadingFormatEbook
+		}
+	}
+	editionFormat := "Audiobook"
+	if requestedFormat == models.ReadingFormatEbook {
+		editionFormat = "Ebook"
+	}
 	input := &EditionInput{
-		BookID:      bookID,
-		Title:       book.Title,
-		Subtitle:    book.Subtitle,
-		ImageURL:    book.CoverImageURL,
-		ISBN10:      book.ISBN10,
-		ISBN13:      book.ISBN13,
-		ASIN:        book.ASIN,
-		ReleaseDate: book.PublishedDate,
-		// Set the edition format to Audiobook by default
-		EditionFormat: "Audiobook",
+		BookID:        bookID,
+		Title:         book.Title,
+		Subtitle:      book.Subtitle,
+		ImageURL:      book.CoverImageURL,
+		ISBN10:        book.ISBN10,
+		ISBN13:        book.ISBN13,
+		ASIN:          book.ASIN,
+		ReleaseDate:   book.PublishedDate,
+		EditionFormat: editionFormat,
+		ReadingFormat: requestedFormat,
 	}
 
 	// Add authors
@@ -1416,11 +1442,6 @@ func (c *Creator) PrepopulateFromBook(ctx context.Context, bookID int) (*Edition
 		input.CountryID = book.Country.ID
 	} else {
 		input.CountryID = 1 // Default to USA
-	}
-
-	// Set default values
-	if input.EditionFormat == "" {
-		input.EditionFormat = "Audiobook"
 	}
 
 	return input, nil

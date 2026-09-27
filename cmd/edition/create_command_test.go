@@ -44,6 +44,8 @@ type fakeHardcover struct {
 	importStatus     string
 	readbackBook     int
 	readbackFormat   int
+	readbackEdition  int
+	bookResponse     string
 	// emptyLookups answers unrecognized read queries, such as ebook duplicate
 	// lookups, with no matches.
 	emptyLookups bool
@@ -58,11 +60,12 @@ type fakeHardcover struct {
 
 func newFakeHardcover(t *testing.T) *fakeHardcover {
 	return &fakeHardcover{
-		t:              t,
-		upsertResponse: fmt.Sprintf(`{"data":{"upsert_book":{"id":77,"status":"fetching","book":{"id":%d},"edition":{"id":%d,"book_id":%d,"reading_format_id":2},"edition_id":%d,"errors":[]}}}`, boundaryBookID, boundaryEditionID, boundaryBookID, boundaryEditionID),
-		importStatus:   "created",
-		readbackBook:   boundaryBookID,
-		readbackFormat: 2,
+		t:               t,
+		upsertResponse:  fmt.Sprintf(`{"data":{"upsert_book":{"id":77,"status":"fetching","book":{"id":%d},"edition":{"id":%d,"book_id":%d,"reading_format_id":2},"edition_id":%d,"errors":[]}}}`, boundaryBookID, boundaryEditionID, boundaryBookID, boundaryEditionID),
+		importStatus:    "created",
+		readbackBook:    boundaryBookID,
+		readbackFormat:  2,
+		readbackEdition: boundaryEditionID,
 	}
 }
 
@@ -106,9 +109,13 @@ func (f *fakeHardcover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"book_mappings":        []interface{}{},
 		}})
 	case strings.Contains(request.Query, "GetEdition"):
-		_, _ = fmt.Fprintf(w, `{"data":{"editions":[{"id":%d,"book_id":%d,"reading_format_id":%d}]}}`, boundaryEditionID, f.readbackBook, f.readbackFormat)
+		_, _ = fmt.Fprintf(w, `{"data":{"editions":[{"id":%d,"book_id":%d,"reading_format_id":%d}]}}`, f.readbackEdition, f.readbackBook, f.readbackFormat)
 	case strings.Contains(request.Query, "GetBook"):
-		_, _ = fmt.Fprintf(w, `{"data":{"book":{"id":%d,"title":"Prepopulated","asin":%q,"isbn13":"9780306406157","authors":[{"id":3,"name":"Author"}],"narrators":[{"id":4,"name":"Narrator"}]}}}`, boundaryBookID, boundaryASIN)
+		if f.bookResponse != "" {
+			_, _ = w.Write([]byte(f.bookResponse))
+		} else {
+			_, _ = fmt.Fprintf(w, `{"data":{"book":{"id":%d,"title":"Prepopulated","asin":%q,"isbn13":"9780306406157","authors":[{"id":3,"name":"Author"}],"narrators":[{"id":4,"name":"Narrator"}]}}}`, boundaryBookID, boundaryASIN)
+		}
 	case f.emptyLookups && !strings.HasPrefix(strings.TrimSpace(request.Query), "mutation"):
 		_, _ = w.Write([]byte(`{"data":{"books":[],"editions":[],"book_mappings":[]}}`))
 	default:
@@ -427,8 +434,8 @@ func TestCreateCommandPrepopulatedTemplateImportsAudiobook(t *testing.T) {
 		t.Fatalf("prepopulate did not report its output file: %s", stdout.String())
 	}
 
-	// The prepopulated template carries ebook-style metadata; an audiobook
-	// import reads only its book ID and ASIN plus the supplied region.
+	// A book with both an ASIN and ISBN defaults to the established audiobook
+	// path. The import reads its book ID and ASIN plus the supplied region.
 	var template map[string]interface{}
 	data, err := os.ReadFile(templatePath)
 	if err != nil {
@@ -436,6 +443,9 @@ func TestCreateCommandPrepopulatedTemplateImportsAudiobook(t *testing.T) {
 	}
 	if err := json.Unmarshal(data, &template); err != nil {
 		t.Fatal(err)
+	}
+	if template["reading_format"] != models.ReadingFormatAudiobook {
+		t.Fatalf("ASIN-backed prepopulate should select audiobook, got %#v", template["reading_format"])
 	}
 	template["asin_region"] = "uk"
 	data, err = json.Marshal(template)
@@ -458,6 +468,87 @@ func TestCreateCommandPrepopulatedTemplateImportsAudiobook(t *testing.T) {
 	}
 	if _, err := os.Stat(env.statePath); !os.IsNotExist(err) {
 		t.Fatalf("create without an ABS item ID wrote state: %v", err)
+	}
+}
+
+func TestPrepopulateISBNOnlyBookCreatesEbookTemplate(t *testing.T) {
+	hc := newFakeHardcover(t)
+	hc.bookResponse = fmt.Sprintf(`{"data":{"book":{"id":%d,"title":"ISBN Book","isbn13":"9780306406157","authors":[{"id":3,"name":"Author"}]}}}`, boundaryBookID)
+	hc.emptyLookups = true
+	hc.insertResponse = `{"data":{"insert_edition":{"id":901,"errors":[]}}}`
+	hc.readbackEdition = 901
+	hc.readbackFormat = models.ReadingFormatID(models.ReadingFormatEbook)
+	env := newCommandEnv(t, hc, "")
+	templatePath := filepath.Join(t.TempDir(), "edition.json")
+
+	var stdout bytes.Buffer
+	app := newApp()
+	app.Writer = &stdout
+	app.ErrWriter = &bytes.Buffer{}
+	if err := app.Run([]string{"edition", "--config", env.configPath, "prepopulate", "--book-id", "21", "--output", templatePath}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(templatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var template map[string]interface{}
+	if err := json.Unmarshal(data, &template); err != nil {
+		t.Fatal(err)
+	}
+	if template["reading_format"] != models.ReadingFormatEbook || template["edition_format"] != "Ebook" {
+		t.Fatalf("ISBN-only template should select ebook, got %#v", template)
+	}
+
+	result, err := env.run(t, "create", "--input", templatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["status"] != "created" || result["reading_format"] != models.ReadingFormatEbook {
+		t.Fatalf("prepopulated ISBN-only template did not create an ebook: %#v", result)
+	}
+	if upserts, inserts, _ := hc.counts(); upserts != 0 || inserts != 1 {
+		t.Fatalf("ISBN-only template should use ebook insertion once: upserts=%d inserts=%d", upserts, inserts)
+	}
+}
+
+func TestPrepopulateRejectsUnknownReadingFormat(t *testing.T) {
+	hc := newFakeHardcover(t)
+	env := newCommandEnv(t, hc, "")
+	app := newApp()
+	app.Writer = &bytes.Buffer{}
+	app.ErrWriter = &bytes.Buffer{}
+	err := app.Run([]string{"edition", "--config", env.configPath, "prepopulate", "--book-id", "21", "--reading-format", "print"})
+	if err == nil || !strings.Contains(err.Error(), `invalid reading_format "print"`) {
+		t.Fatalf("expected invalid format error, got %v", err)
+	}
+	if upserts, inserts, _ := hc.counts(); upserts != 0 || inserts != 0 {
+		t.Fatalf("invalid format reached a Hardcover mutation: upserts=%d inserts=%d", upserts, inserts)
+	}
+}
+
+func TestPrepopulateExplicitReadingFormatOverridesASINInference(t *testing.T) {
+	hc := newFakeHardcover(t)
+	env := newCommandEnv(t, hc, "")
+	templatePath := filepath.Join(t.TempDir(), "ebook.json")
+	app := newApp()
+	app.Writer = &bytes.Buffer{}
+	app.ErrWriter = &bytes.Buffer{}
+	if err := app.Run([]string{"edition", "--config", env.configPath, "prepopulate", "--book-id", "21", "--reading-format", "ebook", "--output", templatePath}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(templatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var template map[string]interface{}
+	if err := json.Unmarshal(data, &template); err != nil {
+		t.Fatal(err)
+	}
+	if template["reading_format"] != models.ReadingFormatEbook || template["edition_format"] != "Ebook" {
+		t.Fatalf("explicit ebook selection was not applied: %#v", template)
 	}
 }
 

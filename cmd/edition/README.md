@@ -34,6 +34,8 @@ makes the explicit create operation fail.
 
 ```bash
 ./edition --config ./config.yaml prepopulate --book-id 12345 --output edition.json
+# Choose the format when a book has both identifiers or should use another format.
+./edition --config ./config.yaml prepopulate --book-id 12345 --reading-format ebook --output ebook.json
 # Input has no abs_item_id, so this create saves no ABS association.
 ./edition --config ./config.yaml create --input edition.json
 # Single-user sync: saves the match in the configured sync.state_file.
@@ -43,6 +45,15 @@ makes the explicit create operation fail.
 # Dry run without an ABS association; input has no abs_item_id.
 ./edition --config ./config.yaml --dry-run create --input edition.json
 ```
+
+`prepopulate` writes `reading_format` and a matching `edition_format` into its
+JSON template. By default, it selects audiobook when Hardcover has an ASIN,
+including when the book also has ISBNs; this preserves the prior audiobook
+path for books with both identifiers. It selects ebook for an ISBN-only book.
+Use `--reading-format audiobook` or `--reading-format ebook` to override that
+inference. The selected format is written to the template, so `create` uses the
+same format without an additional flag. Audiobook templates still need a valid
+ASIN and a known or supplied Audible region before they can be imported.
 
 The `--abs-item-id` and `--state-file` flags apply to `create`. An
 `--abs-item-id` flag overrides `abs_item_id` in the input JSON. When an ABS

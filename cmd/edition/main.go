@@ -117,6 +117,10 @@ func newApp() *cli.App {
 						Required: true,
 					},
 					&cli.StringFlag{
+						Name:  "reading-format",
+						Usage: "Edition reading format: audiobook or ebook (default: ASIN means audiobook, ISBN-only means ebook)",
+					},
+					&cli.StringFlag{
 						Name:    "output",
 						Aliases: []string{"o"},
 						Usage:   "Output JSON file",
@@ -181,7 +185,7 @@ func prepopulateEdition(c *cli.Context) error {
 		return fmt.Errorf("invalid Audiobookshelf URL: %w", err)
 	}
 
-	prepopulated, err := creator.PrepopulateFromBook(context.Background(), c.Int("book-id"))
+	prepopulated, err := creator.PrepopulateFromBookWithFormat(context.Background(), c.Int("book-id"), c.String("reading-format"))
 	if err != nil {
 		return fmt.Errorf("failed to prepopulate data: %w", err)
 	}
