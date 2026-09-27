@@ -193,6 +193,24 @@ func TestProbeUpsertBookCapabilityClassifiesValidationAndScopeResponses(t *testi
 			want:   EditionCapabilityProbeDenied,
 		},
 		{
+			name:   "unauthorized response is unverified",
+			status: http.StatusUnauthorized,
+			body:   `{"error":"invalid_token"}`,
+			want:   EditionCapabilityProbeUnverified,
+		},
+		{
+			name:   "rate limit is unverified",
+			status: http.StatusTooManyRequests,
+			body:   `{"error":"rate_limited"}`,
+			want:   EditionCapabilityProbeUnverified,
+		},
+		{
+			name:   "server failure is unverified",
+			status: http.StatusServiceUnavailable,
+			body:   `{"error":"unavailable"}`,
+			want:   EditionCapabilityProbeUnverified,
+		},
+		{
 			name:   "unexpected mutation success is unverified",
 			status: http.StatusOK,
 			body:   `{"data":{"upsert_book":{"id":99}}}`,
@@ -226,6 +244,24 @@ func TestProbeUpsertBookCapabilityClassifiesValidationAndScopeResponses(t *testi
 			require.Equal(t, uint64(1), client.rateLimiter.GetMetrics().Requests, "probe uses the configured Hardcover rate limiter")
 		})
 	}
+}
+
+func TestProbeUpsertBookCapabilityTimeoutIsUnverified(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		time.Sleep(250 * time.Millisecond)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	client := CreateTestClient(server)
+	client.httpClient.Timeout = 100 * time.Millisecond
+
+	got := client.ProbeUpsertBookCapability(context.Background())
+
+	require.Equal(t, EditionCapabilityProbeUnverified, got)
+	require.Equal(t, int32(1), requests.Load())
 }
 
 func TestProbeUpsertBookCapabilityDryRunSkipsMutation(t *testing.T) {
