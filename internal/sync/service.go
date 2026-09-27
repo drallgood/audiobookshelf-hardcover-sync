@@ -5201,11 +5201,8 @@ func (s *Service) findBookInHardcoverWithASINMatch(ctx context.Context, book mod
 		if association, exists := s.state.GetAssociation(book.ID); exists {
 			if associationMatchesBook(association, book) {
 				return &models.HardcoverBook{
-					ID:            association.HardcoverBookID,
-					EditionID:     association.HardcoverEditionID,
-					EditionASIN:   association.SourceASIN,
-					EditionISBN10: association.SourceISBN10,
-					EditionISBN13: association.SourceISBN13,
+					ID:        association.HardcoverBookID,
+					EditionID: association.HardcoverEditionID,
 				}, nil, false
 			}
 			if !s.config.Sync.DryRun {

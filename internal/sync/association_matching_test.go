@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 	"github.com/stretchr/testify/assert"
@@ -146,6 +147,39 @@ func TestFindBookInHardcoverReusesMatchingEbookAssociationFirst(t *testing.T) {
 			nextClient.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
 		})
 	}
+}
+
+func TestProcessBookReusedAssociationDoesNotReportSourceIdentifiersAsHardcover(t *testing.T) {
+	svc, client := createTestService()
+	svc.config.Sync.IncludeEbooks = true
+	svc.config.Sync.SyncOwned = false
+	svc.config.Sync.ProcessUnreadBooks = true
+	svc.config.Sync.SyncWantToRead = false
+	book := associationTestBook("association-ebook-source-identifiers", "ASIN-123", "978-0-306-40615-7")
+	book.MediaType = "ebook"
+	// The durable association stores ABS source identifiers but no verified
+	// Hardcover edition identifiers, so reuse must not expose them as such.
+	require.NoError(t, svc.state.SetAssociation(state.Association{
+		ABSItemID:          book.ID,
+		SourceASIN:         "ASIN-123",
+		SourceISBN13:       "9780306406157",
+		HardcoverBookID:    "901",
+		HardcoverEditionID: "902",
+		ReadingFormat:      models.ReadingFormatEbook,
+		Provenance:         string(hardcover.ASINMatchEditionASIN),
+	}))
+
+	err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+
+	require.NoError(t, err)
+	record := recordedOutcome(svc, book.ID)
+	assert.Equal(t, "901", record.HardcoverBookID)
+	assert.Equal(t, "902", record.EditionID)
+	assert.Empty(t, record.HardcoverASIN)
+	assert.Empty(t, record.HardcoverISBN)
+	client.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
+	client.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
+	client.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
 }
 
 func TestFindBookInHardcoverPersistsVerifiedASINMatches(t *testing.T) {
@@ -355,6 +389,48 @@ func TestProcessBookReconcilesOwnershipForSavedEbookAssociation(t *testing.T) {
 			client.AssertExpectations(t)
 		})
 	}
+}
+
+func TestProcessBookReconcilesOwnershipForFreshEbookASINMatch(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.config.Sync.IncludeEbooks = true
+	svc.config.Sync.SyncOwned = true
+	svc.config.Sync.ProcessUnreadBooks = true
+	svc.config.Sync.SyncWantToRead = true
+	book := associationTestBook("association-ebook-fresh-owned", "ASIN-123", "978-0-306-40615-7")
+	book.MediaType = "ebook"
+	client := &associationLookupClient{
+		MockHardcoverClient: mockClient,
+		result: &hardcover.ASINLookupResult{
+			Book: &models.HardcoverBook{
+				ID: "901", EditionID: "902", EditionASIN: "ASIN-123",
+			},
+			MatchKind: hardcover.ASINMatchEditionASIN,
+		},
+	}
+	svc.hardcover = client
+	expectASINEditionRead(t, mockClient, "901", "902")
+	expectASINEditionRead(t, mockClient, "901", "902")
+	mockClient.On("CheckBookOwnership", mock.Anything, 901).Return(false, nil).Once()
+	mockClient.On("MarkEditionAsOwned", mock.Anything, 902).Return(nil).Once()
+	mockClient.On("UpdateUserBookStatus", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookStatusInput) bool {
+		return input.ID == 9021 && input.StatusID == 1
+	})).Return(nil).Once()
+
+	err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, client.searchCount, "a fresh ASIN match should make one identifier lookup")
+	association, exists := svc.state.GetAssociation(book.ID)
+	require.True(t, exists)
+	assert.Equal(t, "ASIN-123", association.SourceASIN)
+	assert.Equal(t, isbn.Normalize(book.Media.Metadata.ISBN), isbn.Normalize(association.SourceISBN13))
+	assert.Equal(t, "901", association.HardcoverBookID)
+	assert.Equal(t, "902", association.HardcoverEditionID)
+	mockClient.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
+	mockClient.AssertExpectations(t)
 }
 
 func TestProcessBookRechecksEbookISBNBeforeSavingAssociation(t *testing.T) {
