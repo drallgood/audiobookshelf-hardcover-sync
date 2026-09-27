@@ -114,14 +114,15 @@ components:
           type: string
           enum: [allowed, denied, unverified]
           description: >-
-            Ebook insert_edition may be allowed or denied from its
-            impossible-book probe. Audiobook upsert_book may be allowed from
-            the exact validation error returned when its required book
-            argument is omitted. Either operation is denied only for the
-            recognized HTTP 403 insufficient_scope response. Unverified permits
-            a later eligible, user-confirmed attempt with a warning; a profile
-            without a Hardcover token is denied. Capability is never inferred
-            from an update_edition response.
+            Ebook insert_edition may be allowed from the exact validation
+            response returned when its required book_id argument is omitted.
+            Audiobook upsert_book may be allowed from the exact validation
+            response returned when its required book argument is omitted.
+            Either operation is denied only for the recognized HTTP 403
+            insufficient_scope response. Unverified permits a later eligible,
+            user-confirmed attempt with a warning; a profile without a
+            Hardcover token is denied. Capability is never inferred from an
+            update_edition response.
         can_attempt:
           type: boolean
           description: >-
@@ -968,17 +969,17 @@ paths:
       summary: Report ebook and audiobook edition capability separately
       description: >-
         Requires profile write access. For a live profile, the endpoint probes
-        ebook insert_edition using book ID -1, which is known to return the
-        expected book-not-found error before creating an edition for a token
-        with that capability. It probes audiobook upsert_book without its
-        required book argument; the exact missing-argument validation response
-        proves the field is available without supplying a book or external ID.
-        An exact HTTP 403 insufficient_scope response is reported denied for
-        either operation; any other result remains unverified. Probe outcomes
-        are cached per profile and operation: definite outcomes for 5 minutes
-        and unverified outcomes for 15 seconds; changing the Hardcover token
-        causes the next check to probe again. A dry-run profile skips both
-        probes and reports allowed because it performs no catalogue mutation.
+        ebook insert_edition without its required book_id argument and
+        audiobook upsert_book without its required book argument. Each exact
+        missing-argument validation response proves its mutation is available
+        before any catalogue write can execute; neither probe supplies a book
+        or external ID. An exact HTTP 403 insufficient_scope response is
+        reported denied for either operation; any other result remains
+        unverified. Probe outcomes are cached per profile and operation:
+        definite outcomes for 5 minutes and unverified outcomes for 15 seconds;
+        changing the Hardcover token causes the next check to probe again. A
+        dry-run profile skips both probes and reports allowed because it
+        performs no catalogue mutation.
         The create endpoint remains disabled for dry-run profiles. A profile
         without a Hardcover token is reported denied for both operations.
         Probe requests use the configured Hardcover request pacing and

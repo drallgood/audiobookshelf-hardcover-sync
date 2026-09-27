@@ -176,19 +176,18 @@ finish within that time, the API returns 503 without a write; supply a known
 insertion (`insert_edition`) and audiobook import (`upsert_book`), whether the
 profile's Hardcover token may attempt to add an edition. It requires profile
 write access and makes no Audiobookshelf request. For a configured token on a
-non-dry-run profile, the route probes ebook `insert_edition` with the
-impossible book ID `-1`, and audiobook `upsert_book` with its required `book`
-argument omitted. Only Hardcover's expected `Couldn't find Book` response
-counts as evidence that ebook insertion is allowed. For audiobook import,
-only the exact missing-argument GraphQL validation response counts as evidence
-that the token passed the observed catalogue-write scope gate; the mutation
-does not execute. A recognized catalogue-write scope denial is reported as
-`denied` for either operation. Other outcomes, including timeouts, rate limits,
-and unexpected responses, leave that operation `unverified` with a
-`permission_unverified` warning. A later audiobook import can still fail for
-other reasons. Probe results are cached by profile and token: allowed or
-denied results for 5 minutes, and unverified results for 15 seconds. A changed
-token is probed separately.
+non-dry-run profile, the route probes ebook `insert_edition` without its
+required `book_id` and `edition` arguments, and audiobook `upsert_book` without
+its required `book` argument. These requests fail GraphQL validation before
+either mutation resolver runs. Only the exact observed `validation-failed`
+response for each operation counts as evidence that the token passed the
+observed catalogue-write scope gate. A recognized HTTP 403 scope denial is
+reported as `denied`; other outcomes, including timeouts, rate limits, and
+unexpected responses, leave that operation `unverified` with a
+`permission_unverified` warning. This scope evidence does not guarantee that a
+later edition creation or audiobook import will succeed. Probe results are
+cached by profile and token: allowed or denied results for 5 minutes, and
+unverified results for 15 seconds. A changed token is probed separately.
 
 A later add-edition attempt may proceed when capability is unverified, but
 permission is not guaranteed. Profiles without a Hardcover token are reported

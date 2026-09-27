@@ -26,10 +26,10 @@ func respondToCapabilityProbe(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if strings.Contains(request.Query, "upsert_book") {
-		_, _ = w.Write([]byte(`{"errors":[{"message":"field 'upsert_book' argument 'book' of type 'CreateBookFromPlatformInput!' is required, but it was not provided","extensions":{"code":"validation-failed"}}],"data":null}`))
+		_, _ = w.Write([]byte(`{"errors":[{"message":"missing required field 'book'","extensions":{"path":"$.selectionSet.upsert_book.args.book","code":"validation-failed"}}]}`))
 		return
 	}
-	_, _ = w.Write([]byte(`{"errors":[{"message":"Couldn't find Book"}],"data":null}`))
+	_, _ = w.Write([]byte(`{"errors":[{"message":"missing required field 'book_id'","extensions":{"path":"$.selectionSet.insert_edition.args.book_id","code":"validation-failed"}}]}`))
 }
 
 func TestEditionCapabilityForProfileSkipsProbesInDryRun(t *testing.T) {

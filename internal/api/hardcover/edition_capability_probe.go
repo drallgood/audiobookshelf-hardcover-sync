@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -19,24 +18,20 @@ const (
 	EditionCapabilityProbeUnverified EditionCapabilityProbeState = "unverified"
 )
 
-const insertEditionCapabilityProbeMutation = `
-mutation ProbeInsertEditionCapability {
-	insert_edition(book_id: -1, edition: {dto: {title: "Capability probe", edition_format: "ebook", reading_format_id: 4}}) {
-		id
-		errors
-	}
-}`
+const insertEditionCapabilityProbeMutation = `mutation ProbeInsertEditionCapability { insert_edition { id } }`
 
-const insertEditionCapabilityProbeNotFound = "GraphQL error: Couldn't find Book"
 const editionCapabilityProbeMutationReserve = 10 * time.Millisecond
 const upsertBookCapabilityProbeMutation = `mutation ProbeUpsertBookCapability { upsert_book { id } }`
-const upsertBookCapabilityProbeMissingArgument = "field 'upsert_book' argument 'book' of type 'CreateBookFromPlatformInput!' is required, but it was not provided"
+const insertEditionCapabilityProbeMissingArgument = "missing required field 'book_id'"
+const insertEditionCapabilityProbeMissingArgumentPath = "$.selectionSet.insert_edition.args.book_id"
+const upsertBookCapabilityProbeMissingArgument = "missing required field 'book'"
+const upsertBookCapabilityProbeMissingArgumentPath = "$.selectionSet.upsert_book.args.book"
 
-// ProbeInsertEditionCapability checks ebook insert_edition capability using
-// Hardcover's observed pre-execution behavior for the impossible book ID -1.
-// It only reports allowed for the exact expected book-not-found response and
-// denied for the known insufficient_scope HTTP 403 response. Every other
-// response is unverified. Dry run short-circuits as allowed without a request.
+// ProbeInsertEditionCapability checks ebook insert_edition capability by
+// omitting the required book_id argument. Hardcover rejects this request during
+// GraphQL validation, before a catalogue write can run. Only that exact
+// validation response proves the mutation is available; the known HTTP 403
+// scope response proves denial. Dry run short-circuits without a request.
 func (c *Client) ProbeInsertEditionCapability(ctx context.Context) EditionCapabilityProbeState {
 	if c.dryRun {
 		return EditionCapabilityProbeAllowed
@@ -50,14 +45,9 @@ func (c *Client) ProbeInsertEditionCapability(ctx context.Context) EditionCapabi
 	defer cancel()
 	probeCtx = WithMinimumMutationBudget(probeCtx, editionCapabilityProbeMutationReserve)
 
-	var response struct {
-		InsertEdition struct {
-			ID     *int     `json:"id"`
-			Errors []string `json:"errors"`
-		} `json:"insert_edition"`
-	}
+	var response struct{}
 	err := c.GraphQLMutation(probeCtx, insertEditionCapabilityProbeMutation, nil, &response)
-	if isExpectedInsertEditionCapabilityNotFound(err) {
+	if isExpectedInsertEditionCapabilityMissingArgument(err) {
 		return EditionCapabilityProbeAllowed
 	}
 	if isEditionCapabilityScopeDenial(err, insertEditionCapabilityProbeMutation) {
@@ -99,15 +89,8 @@ func isExpectedUpsertBookCapabilityMissingArgument(err error) bool {
 	return errors.Is(err, errUpsertBookMissingRequiredArgument)
 }
 
-func isExpectedInsertEditionCapabilityNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := strings.TrimSpace(err.Error())
-	if message == insertEditionCapabilityProbeNotFound {
-		return true
-	}
-	return message == ErrMutationOutcomeAmbiguous.Error()+": "+insertEditionCapabilityProbeNotFound
+func isExpectedInsertEditionCapabilityMissingArgument(err error) bool {
+	return errors.Is(err, errInsertEditionMissingRequiredArgument)
 }
 
 func isEditionCapabilityScopeDenial(err error, query string) bool {

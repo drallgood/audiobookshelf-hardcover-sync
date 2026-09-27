@@ -13,6 +13,7 @@ import (
 )
 
 func TestProbeInsertEditionCapabilityClassifiesMutationResponses(t *testing.T) {
+	const validationBody = `{"errors":[{"message":"missing required field 'book_id'","extensions":{"path":"$.selectionSet.insert_edition.args.book_id","code":"validation-failed"}}]}`
 	tests := []struct {
 		name   string
 		status int
@@ -20,10 +21,52 @@ func TestProbeInsertEditionCapabilityClassifiesMutationResponses(t *testing.T) {
 		want   EditionCapabilityProbeState
 	}{
 		{
-			name:   "observed impossible book response proves scope",
+			name:   "exact missing book_id validation proves scope",
 			status: http.StatusOK,
-			body:   `{"errors":[{"message":"Couldn't find Book"}],"data":null}`,
+			body:   validationBody,
 			want:   EditionCapabilityProbeAllowed,
+		},
+		{
+			name:   "exact validation response with null data proves scope",
+			status: http.StatusOK,
+			body:   `{"errors":[{"message":"missing required field 'book_id'","extensions":{"path":"$.selectionSet.insert_edition.args.book_id","code":"validation-failed"}}],"data":null}`,
+			want:   EditionCapabilityProbeAllowed,
+		},
+		{
+			name:   "matching validation body with HTTP 201 is unverified",
+			status: http.StatusCreated,
+			body:   validationBody,
+			want:   EditionCapabilityProbeUnverified,
+		},
+		{
+			name:   "matching validation body with HTTP 202 is unverified",
+			status: http.StatusAccepted,
+			body:   validationBody,
+			want:   EditionCapabilityProbeUnverified,
+		},
+		{
+			name:   "matching validation body with HTTP 206 is unverified",
+			status: http.StatusPartialContent,
+			body:   validationBody,
+			want:   EditionCapabilityProbeUnverified,
+		},
+		{
+			name:   "wrong validation message is unverified",
+			status: http.StatusOK,
+			body:   `{"errors":[{"message":"missing required field 'edition'","extensions":{"path":"$.selectionSet.insert_edition.args.book_id","code":"validation-failed"}}]}`,
+			want:   EditionCapabilityProbeUnverified,
+		},
+		{
+			name:   "wrong validation path is unverified",
+			status: http.StatusOK,
+			body:   `{"errors":[{"message":"missing required field 'book_id'","extensions":{"path":"$.other.path","code":"validation-failed"}}]}`,
+			want:   EditionCapabilityProbeUnverified,
+		},
+		{
+			name:   "validation response with data is unverified",
+			status: http.StatusOK,
+			body:   `{"errors":[{"message":"missing required field 'book_id'","extensions":{"path":"$.selectionSet.insert_edition.args.book_id","code":"validation-failed"}}],"data":{"insert_edition":null}}`,
+			want:   EditionCapabilityProbeUnverified,
 		},
 		{
 			name:   "insufficient scope denies operation",
@@ -72,9 +115,10 @@ func TestProbeInsertEditionCapabilityClassifiesMutationResponses(t *testing.T) {
 					Query string `json:"query"`
 				}
 				require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
-				require.Contains(t, payload.Query, "insert_edition")
-				require.Contains(t, payload.Query, "book_id: -1")
-				require.Contains(t, payload.Query, "reading_format_id: 4")
+				require.Equal(t, insertEditionCapabilityProbeMutation, payload.Query)
+				require.NotContains(t, payload.Query, "book_id:")
+				require.NotContains(t, payload.Query, "edition:")
+				require.NotContains(t, payload.Query, "external_id")
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(test.status)
 				_, _ = w.Write([]byte(test.body))
@@ -85,7 +129,7 @@ func TestProbeInsertEditionCapabilityClassifiesMutationResponses(t *testing.T) {
 			got := client.ProbeInsertEditionCapability(context.Background())
 
 			require.Equal(t, test.want, got)
-			require.Equal(t, int32(1), requests.Load(), "probe sends one actual mutation with an impossible book ID")
+			require.Equal(t, int32(1), requests.Load(), "probe sends one argument-free mutation")
 			require.Equal(t, uint64(1), client.rateLimiter.GetMetrics().Requests, "probe uses the configured Hardcover rate limiter")
 		})
 	}
@@ -125,19 +169,8 @@ func TestProbeInsertEditionCapabilityDryRunSkipsMutation(t *testing.T) {
 	require.Zero(t, requests.Load())
 }
 
-func TestProbeInsertEditionCapabilityDoesNotAcceptNearMatchNotFoundText(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"errors":[{"message":"Couldn't find Book for another reason"}],"data":null}`))
-	}))
-	defer server.Close()
-
-	got := CreateTestClient(server).ProbeInsertEditionCapability(context.Background())
-
-	require.Equal(t, EditionCapabilityProbeUnverified, got)
-}
-
 func TestProbeUpsertBookCapabilityClassifiesValidationAndScopeResponses(t *testing.T) {
+	const validationBody = `{"errors":[{"message":"missing required field 'book'","extensions":{"path":"$.selectionSet.upsert_book.args.book","code":"validation-failed"}}],"data":null}`
 	tests := []struct {
 		name   string
 		status int
@@ -147,25 +180,25 @@ func TestProbeUpsertBookCapabilityClassifiesValidationAndScopeResponses(t *testi
 		{
 			name:   "exact required book validation proves scope",
 			status: http.StatusOK,
-			body:   `{"errors":[{"message":"field 'upsert_book' argument 'book' of type 'CreateBookFromPlatformInput!' is required, but it was not provided","extensions":{"code":"validation-failed"}}],"data":null}`,
+			body:   validationBody,
 			want:   EditionCapabilityProbeAllowed,
 		},
 		{
 			name:   "matching validation body with HTTP 201 is unverified",
 			status: http.StatusCreated,
-			body:   `{"errors":[{"message":"field 'upsert_book' argument 'book' of type 'CreateBookFromPlatformInput!' is required, but it was not provided","extensions":{"code":"validation-failed"}}],"data":null}`,
+			body:   validationBody,
 			want:   EditionCapabilityProbeUnverified,
 		},
 		{
 			name:   "matching validation body with HTTP 202 is unverified",
 			status: http.StatusAccepted,
-			body:   `{"errors":[{"message":"field 'upsert_book' argument 'book' of type 'CreateBookFromPlatformInput!' is required, but it was not provided","extensions":{"code":"validation-failed"}}],"data":null}`,
+			body:   validationBody,
 			want:   EditionCapabilityProbeUnverified,
 		},
 		{
 			name:   "matching validation body with HTTP 206 is unverified",
 			status: http.StatusPartialContent,
-			body:   `{"errors":[{"message":"field 'upsert_book' argument 'book' of type 'CreateBookFromPlatformInput!' is required, but it was not provided","extensions":{"code":"validation-failed"}}],"data":null}`,
+			body:   validationBody,
 			want:   EditionCapabilityProbeUnverified,
 		},
 		{
@@ -175,15 +208,21 @@ func TestProbeUpsertBookCapabilityClassifiesValidationAndScopeResponses(t *testi
 			want:   EditionCapabilityProbeUnverified,
 		},
 		{
-			name:   "near match is unverified",
+			name:   "near match message is unverified",
 			status: http.StatusOK,
-			body:   `{"errors":[{"message":"field 'upsert_book' argument 'book' is required, but it was not provided","extensions":{"code":"validation-failed"}}],"data":null}`,
+			body:   `{"errors":[{"message":"missing required field 'edition'","extensions":{"path":"$.selectionSet.upsert_book.args.book","code":"validation-failed"}}],"data":null}`,
+			want:   EditionCapabilityProbeUnverified,
+		},
+		{
+			name:   "near match path is unverified",
+			status: http.StatusOK,
+			body:   `{"errors":[{"message":"missing required field 'book'","extensions":{"path":"$.other.path","code":"validation-failed"}}],"data":null}`,
 			want:   EditionCapabilityProbeUnverified,
 		},
 		{
 			name:   "validation response with data is unverified",
 			status: http.StatusOK,
-			body:   `{"errors":[{"message":"field 'upsert_book' argument 'book' of type 'CreateBookFromPlatformInput!' is required, but it was not provided","extensions":{"code":"validation-failed"}}],"data":{"upsert_book":null}}`,
+			body:   `{"errors":[{"message":"missing required field 'book'","extensions":{"path":"$.selectionSet.upsert_book.args.book","code":"validation-failed"}}],"data":{"upsert_book":null}}`,
 			want:   EditionCapabilityProbeUnverified,
 		},
 		{

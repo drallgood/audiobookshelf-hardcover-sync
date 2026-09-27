@@ -41,6 +41,7 @@ var ErrMutationOutcomeAmbiguous = errors.New("Hardcover mutation outcome is ambi
 // before executing the mutation.
 var ErrMutationScopeDenied = errors.New("Hardcover catalogue mutation scope is denied")
 
+var errInsertEditionMissingRequiredArgument = errors.New("insert_edition validation requires the book_id argument")
 var errUpsertBookMissingRequiredArgument = errors.New("upsert_book validation requires the book argument")
 
 // WithMinimumMutationBudget asks mutation requests made with ctx to require at
@@ -76,20 +77,39 @@ func ambiguousMutationError(err error) error {
 type graphQLError struct {
 	Message    string `json:"message"`
 	Extensions struct {
-		Code string `json:"code"`
+		Code string          `json:"code"`
+		Path json.RawMessage `json:"path"`
 	} `json:"extensions"`
 }
 
-// knownUpsertBookMissingRequiredArgument recognizes the exact validation-only
-// request and response used by the capability probe. A changed message, query,
-// result shape, or error code stays ambiguous.
-func knownUpsertBookMissingRequiredArgument(op graphqlOperation, query string, statusCode int, data json.RawMessage, gqlErrors []graphQLError) bool {
-	if op != mutationOperation || query != upsertBookCapabilityProbeMutation || statusCode != http.StatusOK ||
+// knownMissingRequiredMutationArgument recognizes only the exact validation
+// request and response used by a capability probe. A changed message, path,
+// query, result shape, status, or error code stays ambiguous.
+func knownMissingRequiredMutationArgument(op graphqlOperation, query string, statusCode int, data json.RawMessage, gqlErrors []graphQLError, expectedQuery, expectedMessage, expectedPath string) bool {
+	if op != mutationOperation || query != expectedQuery || statusCode != http.StatusOK ||
 		(len(data) > 0 && strings.TrimSpace(string(data)) != "null") || len(gqlErrors) != 1 {
 		return false
 	}
+	var path string
+	if json.Unmarshal(gqlErrors[0].Extensions.Path, &path) != nil || path != expectedPath {
+		return false
+	}
 	return gqlErrors[0].Extensions.Code == "validation-failed" &&
-		gqlErrors[0].Message == upsertBookCapabilityProbeMissingArgument
+		gqlErrors[0].Message == expectedMessage
+}
+
+func knownInsertEditionMissingRequiredArgument(op graphqlOperation, query string, statusCode int, data json.RawMessage, gqlErrors []graphQLError) bool {
+	return knownMissingRequiredMutationArgument(op, query, statusCode, data, gqlErrors,
+		insertEditionCapabilityProbeMutation,
+		insertEditionCapabilityProbeMissingArgument,
+		insertEditionCapabilityProbeMissingArgumentPath)
+}
+
+func knownUpsertBookMissingRequiredArgument(op graphqlOperation, query string, statusCode int, data json.RawMessage, gqlErrors []graphQLError) bool {
+	return knownMissingRequiredMutationArgument(op, query, statusCode, data, gqlErrors,
+		upsertBookCapabilityProbeMutation,
+		upsertBookCapabilityProbeMissingArgument,
+		upsertBookCapabilityProbeMissingArgumentPath)
 }
 
 // The observed catalogue-scope denial is an HTTP 403 rather than a GraphQL
@@ -765,6 +785,9 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"errors":  gqlResp.Errors,
 			})
 			if budgetedMutation {
+				if knownInsertEditionMissingRequiredArgument(op, query, resp.StatusCode, gqlResp.Data, gqlResp.Errors) {
+					return fmt.Errorf("%w: %w", errInsertEditionMissingRequiredArgument, lastErr)
+				}
 				if knownUpsertBookMissingRequiredArgument(op, query, resp.StatusCode, gqlResp.Data, gqlResp.Errors) {
 					return fmt.Errorf("%w: %w", errUpsertBookMissingRequiredArgument, lastErr)
 				}

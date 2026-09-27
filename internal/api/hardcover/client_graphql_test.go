@@ -409,6 +409,7 @@ func TestGraphQLMutationWithMinimumBudgetDoesNotRetryAfterPossibleSend(t *testin
 }
 
 func TestGraphQLMutationClassifiesOnlyObservedScopeDenialsAndProbeValidation(t *testing.T) {
+	const validationBody = `{"errors":[{"message":"missing required field 'book'","extensions":{"path":"$.selectionSet.upsert_book.args.book","code":"validation-failed"}}],"data":null}`
 	tests := []struct {
 		name           string
 		query          string
@@ -454,16 +455,31 @@ func TestGraphQLMutationClassifiesOnlyObservedScopeDenialsAndProbeValidation(t *
 			body:  `{"errors":[{"message":"field 'upsert_book' not found in type: 'mutation_root'","extensions":{"code":"validation-failed"}}]}`,
 		},
 		{
+			name:  "ordinary GraphQL array error path remains parseable",
+			query: `mutation ImportRegional { upsert_book { id } }`,
+			body:  `{"errors":[{"message":"field 'upsert_book' not found in type: 'mutation_root'","extensions":{"path":["mutation_root","upsert_book"],"code":"validation-failed"}}]}`,
+		},
+		{
 			name:           "exact validation-only probe proves missing required book argument",
 			query:          upsertBookCapabilityProbeMutation,
-			body:           `{"errors":[{"message":"field 'upsert_book' argument 'book' of type 'CreateBookFromPlatformInput!' is required, but it was not provided","extensions":{"code":"validation-failed"}}],"data":null}`,
+			body:           validationBody,
 			wantProbeProof: true,
 		},
 		{
 			name:   "exact validation message with HTTP 201 remains ambiguous",
 			query:  upsertBookCapabilityProbeMutation,
 			status: http.StatusCreated,
-			body:   `{"errors":[{"message":"field 'upsert_book' argument 'book' of type 'CreateBookFromPlatformInput!' is required, but it was not provided","extensions":{"code":"validation-failed"}}],"data":null}`,
+			body:   validationBody,
+		},
+		{
+			name:  "matching validation message with wrong path remains ambiguous",
+			query: upsertBookCapabilityProbeMutation,
+			body:  `{"errors":[{"message":"missing required field 'book'","extensions":{"path":"$.other.path","code":"validation-failed"}}],"data":null}`,
+		},
+		{
+			name:  "matching validation path with wrong message remains ambiguous",
+			query: upsertBookCapabilityProbeMutation,
+			body:  `{"errors":[{"message":"missing required field 'edition'","extensions":{"path":"$.selectionSet.upsert_book.args.book","code":"validation-failed"}}],"data":null}`,
 		},
 		{
 			name:  "different validation error remains ambiguous",
