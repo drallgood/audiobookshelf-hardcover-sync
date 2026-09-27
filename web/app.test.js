@@ -304,7 +304,6 @@ test('audiobook dialog shows region states, escapes ABS strings, and offers only
     assert.doesNotMatch(html, /name="audible_identifier"/);
     assert.doesNotMatch(html, /name="title"/);
     assert.doesNotMatch(html, /name="resync"/);
-    assert.match(html, /read status will be synced/);
 
     const unavailable = app.renderEditionDialog({ ...dialog, draft: { ...dialog.draft, region_status: 'temporarily_unavailable' } });
     assert.match(unavailable, /temporarily unavailable/);
@@ -365,7 +364,6 @@ test('dry run is labelled and offers neither creation nor resync', () => {
     });
     assert.match(html, /Dry run/);
     assert.doesNotMatch(html, /name="resync"/);
-    assert.doesNotMatch(html, /read status will be synced/);
     assert.match(html, /data-edition-dialog="confirm-create"[^>]*disabled/);
 });
 

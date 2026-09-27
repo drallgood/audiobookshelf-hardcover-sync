@@ -1995,19 +1995,24 @@ class SyncProfileApp {
         const record = dialog.record;
         const title = dialog.mode === 'forget' ? 'Forget saved match' : 'Add edition to Hardcover';
         let body;
+        let showSubject = true;
         if (dialog.mode === 'forget') {
             body = this.renderForgetBody(dialog);
         } else if (dialog.result) {
             body = this.renderCreateResult(dialog.result);
         } else {
             body = this.renderCreateBody(dialog);
+            // The loaded draft renders its own Audiobookshelf section with
+            // the cover and title/author, so skip the generic subject line.
+            showSubject = dialog.loading || !dialog.draft;
         }
-        return `<div class="modal-header"><h3>${title}</h3><button type="button" class="modal-close" data-edition-dialog="close" aria-label="Close">&times;</button></div>
-            <div class="edition-dialog-body" role="dialog" aria-label="${this.escapeHtmlAttribute(title)}">
-                <div class="edition-dialog-subject">
+        const subjectHtml = showSubject ? `<div class="edition-dialog-subject">
                     ${this.renderAudiobookshelfCover(record)}
                     <p><strong>${this.escapeHtml(record.title || 'Unknown title')}</strong>${record.author ? ` by ${this.escapeHtml(record.author)}` : ''}</p>
-                </div>
+                </div>` : '';
+        return `<div class="modal-header"><h3>${title}</h3><button type="button" class="modal-close" data-edition-dialog="close" aria-label="Close">&times;</button></div>
+            <div class="edition-dialog-body" role="dialog" aria-label="${this.escapeHtmlAttribute(title)}">
+                ${subjectHtml}
                 ${body}
             </div>`;
     }
@@ -2024,9 +2029,9 @@ class SyncProfileApp {
         const waiting = waitMs > 0;
         const retryLabel = waiting ? `Retry in ${Math.ceil(waitMs / 1000)}s` : 'Retry';
         if (dialog.loading) return '<p role="status">Loading edition preview…</p>';
-        const closeButton = '<button type="button" class="btn btn-secondary" data-edition-dialog="close">Close</button>';
+        const closeButton = '<button type="button" class="book-service-link edition-action-pill" data-edition-dialog="close">Close</button>';
         if (!dialog.draft) {
-            return `${errorHtml}<div class="form-actions"><button type="button" class="btn btn-primary" data-edition-dialog="retry" ${waiting ? 'disabled' : ''}>${retryLabel}</button>${closeButton}</div>`;
+            return `${errorHtml}<div class="form-actions"><button type="button" class="book-service-link edition-action-pill" data-edition-dialog="retry" ${waiting ? 'disabled' : ''}>${retryLabel}</button>${closeButton}</div>`;
         }
         const draft = dialog.draft;
         const isEbook = draft.reading_format === 'ebook';
@@ -2034,14 +2039,21 @@ class SyncProfileApp {
         const dryRun = Boolean(draft.dry_run || dialog.capability?.dry_run || dialog.runDryRun);
         const syncing = this.profileIsSyncing(dialog.profileId);
         const ids = draft.source_identifiers || {};
-        const sourceHtml = `<div class="edition-source-section">
+        const sourceHtml = `<section class="hardcover-candidate" aria-label="From Audiobookshelf">
             <h4>From Audiobookshelf</h4>
-            <div class="book-meta">
-                <span><strong>ASIN (source identifier):</strong> ${this.escapeHtml(ids.asin || 'none')}</span>
-                <span><strong>ISBN:</strong> ${this.escapeHtml(ids.isbn || 'none')}</span>
-                <span><strong>Format:</strong> ${this.escapeHtml(draft.reading_format || '')}</span>
+            <div class="hardcover-candidate-content">
+                <div class="hardcover-candidate-cover">${this.renderAudiobookshelfCover(record)}</div>
+                <div class="hardcover-candidate-details">
+                    <div class="book-meta">
+                        <span><strong>Title:</strong> ${this.escapeHtml(record.title || 'Unknown title')}</span>
+                        ${record.author ? `<span><strong>Author:</strong> ${this.escapeHtml(record.author)}</span>` : ''}
+                        <span><strong>ASIN (source identifier):</strong> ${this.escapeHtml(ids.asin || 'none')}</span>
+                        <span><strong>ISBN:</strong> ${this.escapeHtml(ids.isbn || 'none')}</span>
+                        <span><strong>Format:</strong> ${this.escapeHtml(draft.reading_format || '')}</span>
+                    </div>
+                </div>
             </div>
-        </div>`;
+        </section>`;
         const hardcoverTargetHtml = this.renderHardcoverCandidate(record);
         let regionHtml = '';
         let editHtml = '';
@@ -2063,7 +2075,7 @@ class SyncProfileApp {
             const confirmed = status === 'confirmed' && candidate.asin && draft.confirmed_region;
             const identifierValue = confirmed ? `${candidate.asin}:${draft.confirmed_region}` : '';
             if (confirmed) {
-                regionHtml = `<div class="edition-region confirmed">Audible identifier: <strong>${this.escapeHtml(identifierValue)}</strong> <span class="edition-note">(confirmed automatically; not editable)</span></div>`;
+                regionHtml = `<div class="edition-region confirmed">Audible identifier: <strong>${this.escapeHtml(identifierValue)}</strong> <span class="edition-note">(confirmed automatically)</span></div>`;
             } else if (status === 'temporarily_unavailable') {
                 regionHtml = '<div class="edition-region review">Region lookup is temporarily unavailable. Refresh the preview to try again, or create the edition and Hardcover will attempt its own region discovery.</div>';
             } else if (status === 'unknown') {
@@ -2092,17 +2104,15 @@ class SyncProfileApp {
         if (syncing) blockers.push('A sync is running for this profile; try again when it finishes.');
         const canConfirm = blockers.length === 0;
         return `${dryRun ? '<div class="edition-dry-run">Dry run</div>' : ''}
-            ${sourceHtml}${hardcoverTargetHtml}${regionHtml}
+            ${sourceHtml}${hardcoverTargetHtml}${audnexHtml}${regionHtml}
             ${!gate.blocked && gate.warning ? `<div class="edition-warning" data-warning="capability">${this.escapeHtml(gate.warning)}</div>` : ''}
             ${this.renderWarnings(draft)}
             <form class="edition-form" onsubmit="return false">${editHtml}</form>
-            ${audnexHtml}
-            ${dryRun ? '' : '<p class="edition-note">This book\'s read status will be synced right after the edition is created.</p>'}
             ${blockers.map(text => `<div class="edition-error" data-blocker>${this.escapeHtml(text)}</div>`).join('')}
             ${errorHtml}
             <div class="form-actions">
-                <button type="button" class="btn btn-primary" data-edition-dialog="confirm-create" ${canConfirm && !dialog.busy ? '' : 'disabled'}>${dialog.busy ? 'Creating…' : 'Create edition'}</button>
-                <button type="button" class="btn btn-secondary" data-edition-dialog="retry" title="Reload this preview and retry the region/candidate lookup — useful after a temporary lookup failure or if the source metadata changed." ${waiting || dialog.busy ? 'disabled' : ''}>${waiting ? retryLabel : 'Refresh preview'}</button>
+                <button type="button" class="book-service-link edition-action-pill" data-edition-dialog="confirm-create" ${canConfirm && !dialog.busy ? '' : 'disabled'}>${dialog.busy ? 'Creating…' : 'Create edition'}</button>
+                <button type="button" class="book-service-link edition-action-pill" data-edition-dialog="retry" title="Reload this preview and retry the region/candidate lookup — useful after a temporary lookup failure or if the source metadata changed." ${waiting || dialog.busy ? 'disabled' : ''}>${waiting ? retryLabel : 'Refresh preview'}</button>
                 ${closeButton}
             </div>`;
     }
