@@ -432,9 +432,6 @@ func markEditionCreateRemoteOutcomeAmbiguous(err error) error {
 }
 
 func (h *Handler) createEbook(ctx context.Context, item *models.AudiobookshelfBook, record sync.BookOutcomeRecord, request editionCreateRequest, client editionCreateHardcoverClient, outcome *editionCreateOutcome) (statepkg.Association, error) {
-	if request.AudibleIdentifier != "" {
-		return statepkg.Association{}, fmt.Errorf("%w: audible_identifier is only valid for an audiobook", errEditionCreateInvalidInput)
-	}
 	bookID, err := strconv.Atoi(record.HardcoverBookID)
 	if err != nil || bookID <= 0 {
 		return statepkg.Association{}, errStaleEditionCreateRun
