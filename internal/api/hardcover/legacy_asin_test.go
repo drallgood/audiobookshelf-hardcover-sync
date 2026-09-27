@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -82,26 +82,28 @@ func TestGetEditionByASINPreservesLegacyDuplicateLookup(t *testing.T) {
 
 func TestSearchBookByASINMatchesEditionASINOnlyForEbooks(t *testing.T) {
 	const asin = "B0LEGACY04"
+	// The fake Hardcover holds one edition that carries the ASIN in
+	// editions.asin and has no Audible mapping. It returns that edition only
+	// when the submitted where clause can match on editions.asin, as the real
+	// API would, so the test asserts the client's observable result.
+	editionASINFilter := regexp.MustCompile(`\{asin: \{_eq: \$asin\}`)
 	tests := []struct {
-		name        string
-		ctx         context.Context
-		wantMatch   bool
-		wantASINEQ  bool
-		responseFmt int
+		name      string
+		ctx       context.Context
+		formatID  int
+		wantMatch bool
 	}{
-		{name: "audiobook ignores editions.asin", ctx: context.Background(), wantMatch: false, wantASINEQ: false, responseFmt: 2},
-		{name: "ebook matches editions.asin", ctx: WithReadingFormat(context.Background(), "ebook"), wantMatch: true, wantASINEQ: true, responseFmt: 4},
+		{name: "audiobook ignores editions.asin", ctx: context.Background(), formatID: 2, wantMatch: false},
+		{name: "ebook matches editions.asin", ctx: WithReadingFormat(context.Background(), "ebook"), formatID: 4, wantMatch: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var request asinRequest
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request asinRequest
 				require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
 				w.Header().Set("Content-Type", "application/json")
-				// Hardcover applies the where clause; emulate it by returning
-				// the ASIN-only edition only when the query asks for editions.asin.
-				if strings.Contains(request.Query, "asin: {_eq: $asin}, reading_format") {
-					_, _ = w.Write([]byte(fmt.Sprintf(`{"data":{"books":[{"id":14,"title":"ASIN only","editions":[{"id":36,"asin":"B0LEGACY04","reading_format_id":%d,"book_mappings":[]}]}]}}`, tt.responseFmt)))
+				if request.Variables["format_id"] == float64(tt.formatID) && editionASINFilter.MatchString(request.Query) {
+					_, _ = fmt.Fprintf(w, `{"data":{"books":[{"id":14,"title":"ASIN only","editions":[{"id":36,"asin":"B0LEGACY04","reading_format_id":%d,"book_mappings":[]}]}]}}`, tt.formatID)
 					return
 				}
 				_, _ = w.Write([]byte(`{"data":{"books":[]}}`))
@@ -110,8 +112,13 @@ func TestSearchBookByASINMatchesEditionASINOnlyForEbooks(t *testing.T) {
 
 			book, err := CreateTestClient(server).SearchBookByASIN(tt.ctx, asin)
 			require.NoError(t, err)
-			require.Equal(t, tt.wantMatch, book != nil)
-			require.Equal(t, tt.wantASINEQ, strings.Contains(request.Query, "asin: {_eq: $asin}, reading_format"))
+			if !tt.wantMatch {
+				require.Nil(t, book)
+				return
+			}
+			require.NotNil(t, book)
+			require.Equal(t, "14", book.ID)
+			require.Equal(t, "36", book.EditionID)
 		})
 	}
 }
