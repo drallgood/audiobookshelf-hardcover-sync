@@ -17,12 +17,14 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/audnexregion"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/edition"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 )
 
 const (
+	maxCreateInputBytes = 1 << 20
 	// createHardcoverTimeout bounds each catalogue write, its polling, and its
 	// read-back, matching the create API's request timeout.
 	createHardcoverTimeout = 65 * time.Second
@@ -40,11 +42,12 @@ type editionCreateInput struct {
 }
 
 type createOptions struct {
-	InputPath       string
-	ABSItemID       string
-	StateFile       string
-	PreferredRegion string
-	DryRun          bool
+	InputPath                   string
+	ABSItemID                   string
+	StateFile                   string
+	PreferredRegion             string
+	DryRun                      bool
+	ConfirmIdentifierCorrection bool
 }
 
 type createOutput struct {
@@ -58,6 +61,7 @@ type createOutput struct {
 	ReadingFormat    string `json:"reading_format,omitempty"`
 	ABSItemID        string `json:"abs_item_id,omitempty"`
 	AssociationSaved bool   `json:"association_saved"`
+	Warning          string `json:"warning,omitempty"`
 }
 
 type createServices struct {
@@ -173,6 +177,7 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 	}
 
 	var absItem *models.AudiobookshelfBook
+	identifierWarning := ""
 	if input.ABSItemID != "" {
 		if services.fetchABSItem == nil {
 			return nil, errors.New("Audiobookshelf item verification is unavailable")
@@ -186,6 +191,10 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 		}
 		if absItem.ReadingFormat() != input.ReadingFormat {
 			return nil, fmt.Errorf("Audiobookshelf item %q is %s, but input reading_format is %s", input.ABSItemID, absItem.ReadingFormat(), input.ReadingFormat)
+		}
+		identifierWarning = sourceIdentifierWarning(absItem, input)
+		if identifierWarning != "" && !options.ConfirmIdentifierCorrection {
+			return nil, fmt.Errorf("%s; review the item and input, then pass --confirm-identifier-correction to proceed", identifierWarning)
 		}
 	}
 
@@ -202,6 +211,7 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 				ReadingFormat:    input.ReadingFormat,
 				ABSItemID:        input.ABSItemID,
 				AssociationSaved: false,
+				Warning:          identifierWarning,
 			}, nil
 		}
 		if services.importAudiobook == nil {
@@ -235,6 +245,7 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 			ReadingFormat:    models.ReadingFormatAudiobook,
 			ABSItemID:        input.ABSItemID,
 			AssociationSaved: false,
+			Warning:          identifierWarning,
 		}
 		if absItem != nil {
 			association := audiobookAssociation(absItem, input.ASIN, resolved)
@@ -261,7 +272,9 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 		if created == nil || !created.Success {
 			return nil, errors.New("ebook dry run did not return a successful result")
 		}
-		return ebookOutput(created, input, "dry_run"), nil
+		output := ebookOutput(created, input, "dry_run")
+		output.Warning = identifierWarning
+		return output, nil
 	}
 	if services.createEbook == nil {
 		return nil, errors.New("ebook edition creation is unavailable")
@@ -276,6 +289,7 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 		return nil, errors.New("ebook edition creation returned no confirmed edition")
 	}
 	output := ebookOutput(created, input, "created")
+	output.Warning = identifierWarning
 	if created.Existing {
 		output.Status = "existing"
 	}
@@ -337,9 +351,17 @@ func ebookCreateError(err error) error {
 }
 
 func readEditionCreateInput(path string) (editionCreateInput, error) {
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return editionCreateInput{}, fmt.Errorf("failed to read input file: %w", err)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxCreateInputBytes+1))
+	if err != nil {
+		return editionCreateInput{}, fmt.Errorf("failed to read input file: %w", err)
+	}
+	if len(data) > maxCreateInputBytes {
+		return editionCreateInput{}, fmt.Errorf("input file exceeds %d bytes", maxCreateInputBytes)
 	}
 	var input editionCreateInput
 	if err := json.Unmarshal(data, &input); err != nil {
@@ -393,6 +415,37 @@ func validateCreateInput(input *edition.EditionInput) error {
 		input.ASIN = canonicalASIN
 	}
 	return nil
+}
+
+// sourceIdentifierWarning identifies submitted values that do not identify the
+// fetched ABS item. A correction is allowed only after explicit confirmation.
+func sourceIdentifierWarning(item *models.AudiobookshelfBook, input editionCreateInput) string {
+	source := item.Media.Metadata
+	var conflicts []string
+	if input.ASIN != "" && !strings.EqualFold(strings.TrimSpace(source.ASIN), input.ASIN) {
+		conflicts = append(conflicts, "ASIN")
+	}
+	if input.ReadingFormat == models.ReadingFormatEbook {
+		for _, submitted := range []string{input.ISBN10, input.ISBN13} {
+			if submitted != "" && !sameISBN(source.ISBN, submitted) {
+				conflicts = append(conflicts, "ISBN")
+				break
+			}
+		}
+	}
+	if len(conflicts) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("WARNING: submitted %s does not match Audiobookshelf item %q; saving this match will pin that item to the selected Hardcover book", strings.Join(conflicts, " and "), item.ID)
+}
+
+func sameISBN(source, submitted string) bool {
+	sourceISBN, sourceOK := isbn.Parse(source)
+	submittedISBN, submittedOK := isbn.Parse(submitted)
+	if !sourceOK || !submittedOK {
+		return isbn.Normalize(source) != "" && isbn.Normalize(source) == isbn.Normalize(submitted)
+	}
+	return sourceISBN.Given == submittedISBN.Given || sourceISBN.Counterpart != "" && sourceISBN.Counterpart == submittedISBN.Given
 }
 
 // resolveAudibleRegion returns the region for the regional Audible import. An

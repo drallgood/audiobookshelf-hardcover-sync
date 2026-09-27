@@ -60,6 +60,10 @@ The `--abs-item-id` and `--state-file` flags apply to `create`. An
 item ID is present in either place, the command saves the match in
 `--state-file`, or in the configured `sync.state_file` when the flag is
 omitted. That default suits the single-user sync.
+If a submitted ASIN or ebook ISBN differs from the fetched item's identifier,
+the command stops before writing to Hardcover. Check the item and target book;
+pass `--confirm-identifier-correction` to make a deliberate correction. The
+JSON result includes a warning when a correction is confirmed.
 
 For a web-service profile, pass `--state-file` with that profile's state
 file. The multi-user service starts from the profile's
@@ -74,7 +78,8 @@ profile-specific filename.
 ## Audiobook input
 
 The audiobook input needs a positive Hardcover `book_id` and a bare ASIN of
-ten letters or digits. `reading_format` defaults to `audiobook`.
+ten letters or digits. `reading_format` defaults to `audiobook`. Input JSON is
+limited to 1 MiB.
 
 ```json
 {
@@ -148,6 +153,10 @@ while holding the state-file lock. If another sync holds the lock, the command
 returns an error before contacting Hardcover. A local save failure after a
 successful Hardcover operation is reported separately; verify the Hardcover
 result before retrying, because a retry may create another edition.
+The lock covers the ABS fetch and Hardcover import or insertion as well as the
+state save. A concurrent sync using the same state file can fail while create
+holds it. The Hardcover operation alone can take roughly 65 seconds, in
+addition to ABS fetch and region discovery.
 
 Without an ABS item ID, no match is saved. A `loaded` audiobook import without
 a saved mapping remains unresolved by later syncs. Dry run performs no

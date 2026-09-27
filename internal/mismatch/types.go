@@ -186,14 +186,9 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 
 	logger.Debug(fmt.Sprintf("Final AuthorIDs: %v, NarratorIDs: %v", authorIDs, narratorIDs))
 
-	// Keep the existing import fields present in JSON; the source item ID stays
-	// optional for older mismatch records that do not carry it.
+	// Only export an explicitly recorded source item ID. BookID can carry a
+	// Hardcover ID, so it cannot safely identify an Audiobookshelf item.
 	absItemID := b.ABSItemID
-	if strings.TrimSpace(absItemID) == "" {
-		// Direct mismatch records use BookID for their Audiobookshelf item ID.
-		// AddWithMetadata records preserve the unambiguous source ID separately.
-		absItemID = b.BookID
-	}
 	result := &EditionExport{
 		// Core book information (used for import)
 		BookID:        bookID,

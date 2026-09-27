@@ -58,9 +58,17 @@ func main() {
 }
 
 func isHelpOrVersion(args []string) bool {
-	for _, arg := range args {
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if arg == "--" {
+			return false
+		}
 		if arg == "--help" || arg == "-h" || arg == "--version" || arg == "-v" || arg == "help" {
 			return true
+		}
+		switch arg {
+		case "--config", "-c", "--input", "-i", "--abs-item-id", "--state-file", "--book-id", "--reading-format", "--output", "-o":
+			index++
 		}
 	}
 	return false
@@ -103,6 +111,10 @@ func newApp() *cli.App {
 					&cli.StringFlag{
 						Name:  "state-file",
 						Usage: "Sync state file for a confirmed Audiobookshelf association (default: sync.state_file)",
+					},
+					&cli.BoolFlag{
+						Name:  "confirm-identifier-correction",
+						Usage: "Confirm a submitted ASIN or ISBN that differs from the Audiobookshelf item",
 					},
 				},
 				Action: createEdition,
@@ -152,11 +164,12 @@ func createEdition(c *cli.Context) error {
 		return err
 	}
 	result, err := runCreate(context.Background(), createOptions{
-		InputPath:       c.String("input"),
-		ABSItemID:       c.String("abs-item-id"),
-		StateFile:       stateFile,
-		PreferredRegion: cfg.Audiobookshelf.AudnexusRegion,
-		DryRun:          dryRun,
+		InputPath:                   c.String("input"),
+		ABSItemID:                   c.String("abs-item-id"),
+		StateFile:                   stateFile,
+		PreferredRegion:             cfg.Audiobookshelf.AudnexusRegion,
+		DryRun:                      dryRun,
+		ConfirmIdentifierCorrection: c.Bool("confirm-identifier-correction"),
 	}, services)
 	if err != nil {
 		return err

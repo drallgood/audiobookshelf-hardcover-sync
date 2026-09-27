@@ -72,6 +72,50 @@ func TestReadEditionCreateInputAcceptsMismatchABSItemID(t *testing.T) {
 	}
 }
 
+func TestReadEditionCreateInputRejectsOversizedFile(t *testing.T) {
+	path := writeCreateInput(t, strings.Repeat(" ", maxCreateInputBytes+1))
+	_, err := readEditionCreateInput(path)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("expected input size error, got %v", err)
+	}
+}
+
+func TestRunCreateRequiresConfirmationForSourceIdentifierConflict(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "sync-state.json")
+	inputPath := writeCreateInput(t, `{"book_id":21,"asin":"B012345678","abs_item_id":"item-1","asin_region":"uk"}`)
+	item := testAudiobook("item-1", "B099999999")
+	services := createServices{
+		fetchABSItem: func(context.Context, string) (*models.AudiobookshelfBook, error) { return item, nil },
+		discoverAudible: func(context.Context, string, string) (string, error) {
+			t.Fatal("Audnex must not be contacted before correction confirmation")
+			return "", nil
+		},
+		importAudiobook: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+			t.Fatal("Hardcover must not be mutated before correction confirmation")
+			return nil, nil
+		},
+	}
+	_, err := runCreate(context.Background(), createOptions{InputPath: inputPath, StateFile: statePath}, services)
+	if err == nil || !strings.Contains(err.Error(), "--confirm-identifier-correction") {
+		t.Fatalf("expected correction confirmation error, got %v", err)
+	}
+	loaded, err := state.LoadState(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := loaded.GetAssociation(item.ID); exists {
+		t.Fatal("rejected correction saved an association")
+	}
+}
+
+func TestSourceIdentifierWarningAcceptsEquivalentISBN(t *testing.T) {
+	item := testEbook("item-1", "", "0-306-40615-2")
+	input := editionCreateInput{EditionInput: edition.EditionInput{ReadingFormat: models.ReadingFormatEbook, ISBN13: "9780306406157"}}
+	if warning := sourceIdentifierWarning(item, input); warning != "" {
+		t.Fatalf("equivalent ISBN forms should agree, got %q", warning)
+	}
+}
+
 func TestRunCreateStoresVerifiedAudiobookAssociationUnderLock(t *testing.T) {
 	tmp := t.TempDir()
 	statePath := filepath.Join(tmp, "sync-state.json")
@@ -406,12 +450,15 @@ func TestRunCreateRecordsEbookIdentifierDifferences(t *testing.T) {
 					return &models.Edition{ID: "34", BookID: "21", ReadingFormatID: "4"}, nil
 				},
 			}
-			result, err := runCreate(context.Background(), createOptions{InputPath: inputPath, StateFile: statePath}, services)
+			result, err := runCreate(context.Background(), createOptions{InputPath: inputPath, StateFile: statePath, ConfirmIdentifierCorrection: true}, services)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !result.AssociationSaved {
 				t.Fatalf("association was not saved: %#v", result)
+			}
+			if !strings.Contains(result.Warning, "WARNING:") {
+				t.Fatalf("correction warning is missing: %#v", result)
 			}
 			expected, err := readEditionCreateInput(inputPath)
 			if err != nil {
@@ -460,7 +507,7 @@ func TestRunCreateRecordsAudiobookASINCorrectionAndIgnoresISBN(t *testing.T) {
 		},
 	}
 	result, err := runCreate(context.Background(), createOptions{
-		InputPath: inputPath, ABSItemID: "item-1", StateFile: statePath,
+		InputPath: inputPath, ABSItemID: "item-1", StateFile: statePath, ConfirmIdentifierCorrection: true,
 	}, services)
 	if err != nil {
 		t.Fatal(err)
@@ -853,6 +900,18 @@ func TestFindConfigPathSupportsLongAndShortForms(t *testing.T) {
 		if got != test.want || explicit != test.wantExplicit {
 			t.Fatalf("findConfigPath(%#v) = %q, %t; want %q, %t", test.args, got, explicit, test.want, test.wantExplicit)
 		}
+	}
+}
+
+func TestIsHelpOrVersionIgnoresFlagValues(t *testing.T) {
+	if isHelpOrVersion([]string{"create", "--input", "-v"}) {
+		t.Fatal("an input filename was treated as a version flag")
+	}
+	if isHelpOrVersion([]string{"create", "--input", "help"}) {
+		t.Fatal("an input filename was treated as help")
+	}
+	if !isHelpOrVersion([]string{"create", "--input", "book.json", "--help"}) {
+		t.Fatal("create help was not recognized")
 	}
 }
 

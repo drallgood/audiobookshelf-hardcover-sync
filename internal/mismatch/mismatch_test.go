@@ -465,9 +465,14 @@ func TestEditionExportIncludesABSItemID(t *testing.T) {
 		},
 		{
 			name:        "direct mismatch uses its Audiobookshelf book ID",
-			record:      BookMismatch{BookID: "abs-item-789", HardcoverBookID: "789", Title: "Direct Book"},
+			record:      BookMismatch{BookID: "abs-item-789", ABSItemID: "abs-item-789", HardcoverBookID: "789", Title: "Direct Book"},
 			wantABSItem: "abs-item-789",
 			wantField:   true,
+		},
+		{
+			name:      "ambiguous BookID is not exported as an ABS item ID",
+			record:    BookMismatch{BookID: "789", HardcoverBookID: "789", Title: "Ambiguous Book"},
+			wantField: false,
 		},
 		{
 			name:      "missing source ID stays omitted for legacy exports",
