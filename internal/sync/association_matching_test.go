@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"testing"
 
@@ -79,66 +80,70 @@ func TestFindBookInHardcoverReusesMatchingAssociationFirst(t *testing.T) {
 
 func TestFindBookInHardcoverReusesMatchingEbookAssociationFirst(t *testing.T) {
 	tests := []struct {
-		name        string
-		provenance  string
-		asin        string
-		isbn        string
-		association func(bookID string) state.Association
+		name       string
+		provenance string
+		asin       string
+		isbn       string
 	}{
 		{
 			name:       "edition_asin provenance",
 			provenance: string(hardcover.ASINMatchEditionASIN),
 			asin:       " ASIN-123 ",
-			association: func(bookID string) state.Association {
-				return state.Association{
-					ABSItemID:          bookID,
-					SourceASIN:         "ASIN-123",
-					HardcoverBookID:    "901",
-					HardcoverEditionID: "902",
-					ReadingFormat:      models.ReadingFormatEbook,
-					Provenance:         string(hardcover.ASINMatchEditionASIN),
-				}
-			},
 		},
 		{
 			name:       "isbn provenance",
 			isbn:       "978-0-306-40615-7",
 			provenance: "isbn",
-			association: func(bookID string) state.Association {
-				return state.Association{
-					ABSItemID:          bookID,
-					SourceISBN13:       "9780306406157",
-					HardcoverBookID:    "901",
-					HardcoverEditionID: "902",
-					ReadingFormat:      models.ReadingFormatEbook,
-					Provenance:         "isbn",
-				}
-			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			svc, client := createTestService()
+			svc, firstClient := createTestService()
 			svc.config.Sync.SyncOwned = false
 			book := associationTestBook("association-ebook-first-"+tt.name, tt.asin, tt.isbn)
 			book.MediaType = "ebook"
-			association := tt.association(book.ID)
-			require.NoError(t, svc.state.SetAssociation(association))
+			if tt.asin != "" {
+				svc.hardcover = &associationLookupClient{
+					MockHardcoverClient: firstClient,
+					result: &hardcover.ASINLookupResult{
+						Book:      &models.HardcoverBook{ID: "901", EditionID: "902"},
+						MatchKind: hardcover.ASINMatchEditionASIN,
+					},
+				}
+			} else {
+				firstClient.On("SearchBookByISBN13", mock.Anything, "9780306406157").
+					Return(&models.HardcoverBook{ID: "901", EditionID: "902"}, nil).Once()
+			}
+			expectASINEditionRead(t, firstClient, "901", "902")
+			ctx := hardcover.WithReadingFormat(context.Background(), models.ReadingFormatEbook)
+			first, err := svc.findBookInHardcover(ctx, book)
+			require.NoError(t, err)
+			require.NotNil(t, first)
+			firstClient.AssertExpectations(t)
 
-			// No expectations are configured on client for any ASIN/ISBN search
-			// method, so the testify mock would fail this test immediately if
-			// findBookInHardcoverWithASINMatch made a live lookup call instead of
-			// reusing the persisted association.
-			got, err := svc.findBookInHardcover(context.Background(), book)
+			path := filepath.Join(t.TempDir(), "sync-state.json")
+			require.NoError(t, svc.state.Save(path))
+			reloaded, err := state.LoadState(path)
+			require.NoError(t, err)
+			association, saved := reloaded.GetAssociation(book.ID)
+			require.True(t, saved)
+			assert.Equal(t, tt.provenance, association.Provenance)
+			assert.Equal(t, "901", association.HardcoverBookID)
+			assert.Equal(t, "902", association.HardcoverEditionID)
 
+			nextSvc, nextClient := createTestService()
+			nextSvc.state = reloaded
+			nextSvc.config.Sync.SyncOwned = false
+			got, err := nextSvc.findBookInHardcover(ctx, book)
 			require.NoError(t, err)
 			require.NotNil(t, got)
-			assert.Equal(t, association.HardcoverBookID, got.ID)
-			assert.Equal(t, association.HardcoverEditionID, got.EditionID)
-			client.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
-			client.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
-			client.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
-			client.AssertExpectations(t)
+			assert.Equal(t, first.ID, got.ID)
+			assert.Equal(t, first.EditionID, got.EditionID)
+			// No Hardcover expectations are configured for the second lookup.
+			// Any live identifier search would fail the mock.
+			nextClient.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
+			nextClient.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
+			nextClient.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
 		})
 	}
 }
