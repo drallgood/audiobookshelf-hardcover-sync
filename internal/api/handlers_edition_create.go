@@ -203,7 +203,8 @@ func (h *Handler) verifiedEditionCreateRecord(profileID, runID, itemID string) (
 	}
 	if snapshot == nil || snapshot.RunID != runID ||
 		(snapshot.ProfileID != "" && snapshot.ProfileID != profileID) ||
-		snapshot.State != string(sync.RunPhaseCompleted) || snapshot.DryRun {
+		(snapshot.State != string(sync.RunPhaseCompleted) && snapshot.State != string(sync.RunPhaseCanceled)) ||
+		snapshot.DryRun {
 		return nil, sync.BookOutcomeRecord{}, errStaleEditionCreateRun
 	}
 	for _, record := range snapshot.BookOutcomes {

@@ -117,8 +117,13 @@ func configureEditionCreateRoute(t *testing.T, fixture *editionDraftTestFixture)
 
 func addCompletedNeedsReviewRun(t *testing.T, fixture *editionDraftTestFixture, runID string, record sync.BookOutcomeRecord) {
 	t.Helper()
+	addNeedsReviewRunWithState(t, fixture, runID, record, sync.RunPhaseCompleted, database.SyncRunPhaseCompleted)
+}
+
+func addNeedsReviewRunWithState(t *testing.T, fixture *editionDraftTestFixture, runID string, record sync.BookOutcomeRecord, snapshotState sync.RunPhase, reportPhase string) {
+	t.Helper()
 	snapshot := sync.SyncSnapshot{
-		ProfileID: "draft-profile", RunID: runID, State: string(sync.RunPhaseCompleted),
+		ProfileID: "draft-profile", RunID: runID, State: string(snapshotState),
 		BookOutcomes: []sync.BookOutcomeRecord{record},
 	}
 	snapshotJSON, err := json.Marshal(snapshot)
@@ -130,7 +135,7 @@ func addCompletedNeedsReviewRun(t *testing.T, fixture *editionDraftTestFixture, 
 	})
 	require.NoError(t, err)
 	finishedAt := queuedAt.Add(time.Second)
-	accepted.Phase = database.SyncRunPhaseCompleted
+	accepted.Phase = reportPhase
 	accepted.FinishedAt = &finishedAt
 	accepted.SnapshotJSON = database.SyncSnapshotJSON(snapshotJSON)
 	require.NoError(t, fixture.repository.UpsertSyncRunReportContext(context.Background(), accepted))
@@ -218,6 +223,42 @@ func TestCreateEditionFromDraftUsesExactRunAndPersistsVerifiedAssociation(t *tes
 	require.Equal(t, "42", association.HardcoverBookID)
 	require.Equal(t, "84", association.HardcoverEditionID)
 	require.Equal(t, "audiobook", association.ReadingFormat)
+}
+
+func TestCreateEditionFromDraftUsesRecordFromCanceledRun(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{
+		"id":"abs-item-1","mediaType":"book","media":{
+			"metadata":{"title":"Reviewed title","authorName":"Author","asin":" B0SOURCE12 ","isbn":"978-0-306-40615-7","publishedDate":"2020-02-03"},
+			"duration":100,"numTracks":1
+		}}`, "us")
+	configureEditionCreateRoute(t, fixture)
+	record := editionCreateRecord()
+	record.Title = "  reviewed TITLE "
+	record.Author = " author "
+	// A run can be canceled partway through (e.g. the service restarted) while
+	// still having already recorded a real, final outcome for this book before
+	// cancellation; that per-book record must remain usable.
+	addNeedsReviewRunWithState(t, fixture, "run-create-canceled", record, sync.RunPhaseCanceled, database.SyncRunPhaseCanceled)
+	var mutationCalls atomic.Int32
+	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+		return editionCreateHardcoverStub{importFn: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+			mutationCalls.Add(1)
+			return &hardcover.RegionalAudiobookResult{
+				Status: hardcover.RegionalAudiobookCreated, BookID: input.BookID, EditionID: 84,
+				ReadingFormatID:    models.ReadingFormatID(models.ReadingFormatAudiobook),
+				RegionalExternalID: input.ASIN + ":" + strings.ToLower(input.Region),
+			}, nil
+		}}
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/profiles/draft-profile/edition-drafts/create", strings.NewReader(
+		`{"run_id":"run-create-canceled","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`,
+	))
+	request.AddCookie(fixture.sessionCookie(t, fixture.owner))
+	response := httptest.NewRecorder()
+	fixture.routes.ServeHTTP(response, request)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.EqualValues(t, 1, mutationCalls.Load())
 }
 
 func TestCreateEditionFromDraftRejectsSupersededNeedsReviewCandidate(t *testing.T) {
