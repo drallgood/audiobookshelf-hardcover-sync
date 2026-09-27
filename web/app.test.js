@@ -251,6 +251,17 @@ test('matched items show their Hardcover target and a forget action', () => {
     assert.match(html, /data-edition-action="forget"/);
 });
 
+test('the Add edition button renders inside the Hardcover candidate box, styled like Forget match', () => {
+    const app = editionApp();
+    const record = { ...needsReview, hardcover_title: 'Dune', hardcover_slug: 'dune' };
+    const html = app.renderOutcomeRecord(record);
+    const candidateIndex = html.indexOf('hardcover-candidate');
+    const addButtonIndex = html.indexOf('data-edition-action="add"');
+    assert.ok(candidateIndex !== -1 && addButtonIndex !== -1 && addButtonIndex > candidateIndex,
+        'Add edition button should render inside the hardcover-candidate section');
+    assert.match(html.slice(addButtonIndex - 80, addButtonIndex), /book-service-link edition-action-pill/);
+});
+
 test('capability gate blocks on known denial, warns when unverified, and passes when allowed', () => {
     const app = editionApp();
     const cap = {

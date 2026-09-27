@@ -561,22 +561,28 @@ header p {
     border-color: #2d3748;
 }
 
-.forget-match-pill {
+.edition-action-pill {
     appearance: none;
     background: #e2e8f0;
+    border-color: #2d3748;
     font-family: inherit;
+    font-weight: 700;
     cursor: pointer;
 }
 
-.forget-match-pill:hover:not(:disabled),
-.forget-match-pill:focus-visible {
+.edition-action-pill:hover:not(:disabled),
+.edition-action-pill:focus-visible {
     background: #cbd5e0;
-    border-color: #2d3748;
+    border-color: #1a202c;
 }
 
-.forget-match-pill:disabled {
+.edition-action-pill:disabled {
+    background: #f7fafc;
+    border-color: #e2e8f0;
+    color: #a0aec0;
+    font-weight: 600;
     cursor: not-allowed;
-    opacity: 0.6;
+    opacity: 1;
 }
 
 @media (max-width: 480px) {

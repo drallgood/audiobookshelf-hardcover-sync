@@ -1624,8 +1624,8 @@ class SyncProfileApp {
         });
     }
 
-    renderHardcoverCandidate(record) {
-        if (!record || typeof record !== 'object') return '';
+    renderHardcoverCandidate(record, actionsHTML = '') {
+        if (!record || typeof record !== 'object') return actionsHTML;
 
         const value = (raw) => {
             if (typeof raw === 'string') return raw.trim();
@@ -1677,13 +1677,14 @@ class SyncProfileApp {
                     onerror="window.__absHandleImageError && window.__absHandleImageError(this)">`
             : '';
 
-        if (!fields.length && !coverHTML) return '';
+        if (!fields.length && !coverHTML) return actionsHTML;
         return `<section class="hardcover-candidate" aria-label="Hardcover candidate">
             <h4>Hardcover candidate</h4>
             <div class="hardcover-candidate-content">
                 ${coverHTML ? `<div class="hardcover-candidate-cover">${coverHTML}</div>` : ''}
                 ${fields.length ? `<div class="book-meta">${fields.join('')}</div>` : ''}
             </div>
+            ${actionsHTML}
         </section>`;
     }
 
@@ -1765,6 +1766,7 @@ class SyncProfileApp {
         const goodreadsURL = record.outcome === 'needs_review'
             ? this.buildGoodreadsSearchURL(isbn)
             : '';
+        const editionActionsHTML = this.renderEditionActions(record);
         const titleHTML = audiobookshelfURL
             ? `<a class="book-title-link" href="${this.escapeHtmlAttribute(audiobookshelfURL)}" target="_blank" rel="noopener noreferrer" title="Open in Audiobookshelf">${title} <span class="external-link-mark" aria-hidden="true">↗</span></a>`
             : title;
@@ -1792,10 +1794,10 @@ class SyncProfileApp {
                     ${record.author ? `<div><strong>Author:</strong> ${this.escapeHtml(record.author)}</div>` : ''}
                     <div class="book-meta">${asinHTML}${isbnHTML}${format ? `<span><strong>Format:</strong> ${this.escapeHtml(format)}</span>` : ''}${series ? `<span><strong>Series:</strong> ${this.escapeHtml(series)}</span>` : ''}</div>
                     ${record.match_method ? `<div><strong>Match method:</strong> ${this.escapeHtml(record.match_method)}</div>` : ''}
-                    ${record.outcome === 'needs_review' ? this.renderHardcoverCandidate(record) : ''}
+                    ${record.outcome === 'needs_review' ? this.renderHardcoverCandidate(record, editionActionsHTML) : ''}
                     ${record.reason ? `<div class="book-reason"><strong>Reason:</strong> ${this.escapeHtml(record.reason)}</div>` : ''}
                     ${record.error ? `<div class="book-error"><strong>Error:</strong> ${this.escapeHtml(record.error)}</div>` : ''}
-                    ${this.renderEditionActions(record)}
+                    ${record.outcome === 'needs_review' ? '' : editionActionsHTML}
                 </div>
             </div>
         </article>`;
@@ -1831,13 +1833,13 @@ class SyncProfileApp {
         if (record.outcome === 'needs_review') {
             const disabledReason = syncing ? syncingNote : this.editionCreateIneligibleReason(record, open.runContext);
             return `<div class="edition-actions">
-                <button type="button" class="btn btn-sm btn-primary" data-edition-action="add" ${disabledReason ? `disabled title="${this.escapeHtmlAttribute(disabledReason)}"` : ''}>Add edition</button>
+                <button type="button" class="book-service-link edition-action-pill" data-edition-action="add" ${disabledReason ? `disabled title="${this.escapeHtmlAttribute(disabledReason)}"` : ''}>Add edition</button>
             </div>`;
         }
         if (this.isMatchedRecord(record)) {
             return `<div class="edition-actions">
                 <span class="edition-note">Hardcover target: book ${this.escapeHtml(record.hardcover_book_id)}${record.edition_id ? `, edition ${this.escapeHtml(record.edition_id)}` : ''}</span>
-                <button type="button" class="book-service-link forget-match-pill" data-edition-action="forget" ${syncing ? `disabled title="${this.escapeHtmlAttribute(syncingNote)}"` : ''}>Forget match</button>
+                <button type="button" class="book-service-link edition-action-pill" data-edition-action="forget" ${syncing ? `disabled title="${this.escapeHtmlAttribute(syncingNote)}"` : ''}>Forget match</button>
             </div>`;
         }
         return '';
