@@ -65,6 +65,59 @@ func TestCreateEditionWithAssociationPersistsOnlyAfterOperationSucceeds(t *testi
 	require.Equal(t, testCreateAssociation("item-1"), association)
 }
 
+func TestCreateEditionWithAssociationInvalidatesExistingItemCheckpoints(t *testing.T) {
+	service, profileID := newEditionCreateService(t)
+	path := service.profileSpecificStatePath(profileID, "sync.json")
+	initial := statepkg.NewState()
+	initial.UpdateBook("item-1", 0.4, "IN_PROGRESS")
+	initial.UpdateBook("item-1:old-edition", 0.4, "IN_PROGRESS")
+	initial.SetHasProgressSeconds("item-1:old-edition")
+	initial.UpdateBook("item-other:edition", 0.8, "IN_PROGRESS")
+	initial.SetHasProgressSeconds("item-other:edition")
+	require.False(t, initial.NeedsSync("item-1", 0.4, "IN_PROGRESS", 0.001))
+	require.NoError(t, initial.Save(path))
+
+	err := service.CreateEditionWithAssociation(context.Background(), profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+		return testCreateAssociation("item-1"), nil
+	})
+	require.NoError(t, err)
+
+	stored, err := statepkg.LoadState(path)
+	require.NoError(t, err)
+	association, exists := stored.GetAssociation("item-1")
+	require.True(t, exists)
+	require.Equal(t, testCreateAssociation("item-1"), association)
+	require.True(t, stored.NeedsSync("item-1", 0.4, "IN_PROGRESS", 0.001), "create must force the next incremental sync past its base checkpoint")
+	require.NotContains(t, stored.Books, "item-1:old-edition")
+	require.Contains(t, stored.Books, "item-other:edition")
+	assertedUnrelated, exists := stored.GetBookState("item-other:edition")
+	require.True(t, exists)
+	require.True(t, assertedUnrelated.HasProgressSeconds)
+}
+
+func TestCreateEditionWithAssociationFailurePreservesExistingCheckpoints(t *testing.T) {
+	service, profileID := newEditionCreateService(t)
+	path := service.profileSpecificStatePath(profileID, "sync.json")
+	initial := statepkg.NewState()
+	initial.UpdateBook("item-1", 0.4, "IN_PROGRESS")
+	initial.SetHasProgressSeconds("item-1")
+	initial.UpdateBook("item-1:old-edition", 0.4, "IN_PROGRESS")
+	require.NoError(t, initial.Save(path))
+
+	remoteErr := errors.New("remote create rejected")
+	err := service.CreateEditionWithAssociation(context.Background(), profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+		return statepkg.Association{}, remoteErr
+	})
+	require.ErrorIs(t, err, remoteErr)
+
+	stored, err := statepkg.LoadState(path)
+	require.NoError(t, err)
+	_, exists := stored.GetAssociation("item-1")
+	require.False(t, exists)
+	require.False(t, stored.NeedsSync("item-1", 0.4, "IN_PROGRESS", 0.001))
+	require.Contains(t, stored.Books, "item-1:old-edition")
+}
+
 func TestCreateEditionWithAssociationDoesNotPersistWhenOperationFails(t *testing.T) {
 	service, profileID := newEditionCreateService(t)
 	remoteErr := errors.New("remote create rejected")

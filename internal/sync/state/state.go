@@ -235,6 +235,38 @@ func (s *State) GetAssociation(itemID string) (Association, bool) {
 	return *book.Association, true
 }
 
+// InvalidateItemCheckpoints removes an item's base and edition-specific
+// incremental checkpoints. If the base entry already carries an association,
+// it is retained without checkpoint data.
+func (s *State) InvalidateItemCheckpoints(itemID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	changed := false
+	if book, exists := s.Books[itemID]; exists {
+		if book.Association == nil {
+			delete(s.Books, itemID)
+			changed = true
+		} else {
+			associationOnly := Book{Association: book.Association}
+			if book != associationOnly {
+				s.Books[itemID] = associationOnly
+				changed = true
+			}
+		}
+	}
+
+	for key := range s.Books {
+		if strings.HasPrefix(key, itemID+":") {
+			delete(s.Books, key)
+			changed = true
+		}
+	}
+	if changed {
+		s.dirty = true
+	}
+}
+
 // RemoveAssociation forgets an ABS item's association and all incremental
 // checkpoints for that item. Missing associations are a safe no-op, so an old
 // request cannot erase checkpoints created after a prior forget operation.

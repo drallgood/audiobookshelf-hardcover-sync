@@ -249,6 +249,33 @@ func TestRemoveAssociationClearsOnlyAssociatedCheckpoints(t *testing.T) {
 	assert.Equal(t, 0.9, state.Books["item"].LastProgress)
 }
 
+func TestInvalidateItemCheckpointsClearsOnlyTargetCheckpoints(t *testing.T) {
+	t.Parallel()
+
+	state := NewState()
+	state.UpdateBook("item", 0.4, "IN_PROGRESS")
+	state.SetHasProgressSeconds("item")
+	state.UpdateBook("item:edition", 0.5, "IN_PROGRESS")
+	state.SetHasProgressSeconds("item:edition")
+	state.UpdateBook("item-other:edition", 0.8, "IN_PROGRESS")
+	association := Association{ABSItemID: "item", HardcoverBookID: "101", HardcoverEditionID: "202"}
+	require.NoError(t, state.SetAssociation(association))
+
+	state.InvalidateItemCheckpoints("item")
+
+	base, exists := state.GetBookState("item")
+	require.True(t, exists, "base entry must retain its association")
+	assert.Equal(t, Book{Association: &association}, base)
+	assert.True(t, state.NeedsSync("item", 0.4, "IN_PROGRESS", 0.001))
+	assert.NotContains(t, state.Books, "item:edition")
+	assert.Contains(t, state.Books, "item-other:edition")
+	assert.True(t, state.IsDirty())
+
+	require.NoError(t, state.Save(filepath.Join(t.TempDir(), "state.json")))
+	state.InvalidateItemCheckpoints("item")
+	assert.False(t, state.IsDirty(), "invalidating an already-clear item should be a no-op")
+}
+
 func TestSetAssociationRequiresItemAndHardcoverIDs(t *testing.T) {
 	t.Parallel()
 
