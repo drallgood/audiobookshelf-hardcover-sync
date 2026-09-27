@@ -38,7 +38,7 @@ var ErrMutationInsufficientBudget = errors.New("insufficient time remaining befo
 var ErrMutationOutcomeAmbiguous = errors.New("Hardcover mutation outcome is ambiguous")
 
 // ErrMutationScopeDenied indicates Hardcover rejected a known catalogue write
-// field during GraphQL validation, before executing the mutation.
+// before executing the mutation.
 var ErrMutationScopeDenied = errors.New("Hardcover catalogue mutation scope is denied")
 
 // WithMinimumMutationBudget asks mutation requests made with ctx to require at
@@ -111,6 +111,23 @@ func knownMutationScopeDenial(op graphqlOperation, query string, data json.RawMe
 		return true
 	}
 	return false
+}
+
+// The observed catalogue-scope denial is an HTTP 403 rather than a GraphQL
+// error. Recognize only this pre-execution response for the two create writes.
+func knownMutationScopeHTTPDenial(op graphqlOperation, query string, statusCode int, body []byte) bool {
+	if op != mutationOperation || statusCode != http.StatusForbidden ||
+		(!strings.Contains(query, "insert_edition") && !strings.Contains(query, "upsert_book")) {
+		return false
+	}
+
+	var denial map[string]string
+	if json.Unmarshal(body, &denial) != nil || len(denial) != 3 {
+		return false
+	}
+	return denial["error"] == "insufficient_scope" &&
+		denial["scope"] == "write:catalog:append" &&
+		denial["error_description"] == "Missing scopes: write:catalog:append"
 }
 
 // WithReadingFormat returns a context that carries the desired reading format string.
@@ -712,6 +729,9 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"attempt": attempt + 1,
 			})
 			if budgetedMutation {
+				if knownMutationScopeHTTPDenial(op, query, resp.StatusCode, body) {
+					return fmt.Errorf("%w: %w", ErrMutationScopeDenied, lastErr)
+				}
 				return ambiguousMutationError(lastErr)
 			}
 			if !isRetryableHTTPStatus(resp.StatusCode) {

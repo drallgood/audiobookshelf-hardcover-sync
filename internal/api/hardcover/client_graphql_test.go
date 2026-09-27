@@ -412,9 +412,36 @@ func TestGraphQLMutationClassifiesOnlyKnownPreExecutionScopeDenials(t *testing.T
 	tests := []struct {
 		name      string
 		query     string
+		status    int
 		body      string
 		wantScope bool
 	}{
+		{
+			name:      "observed insert edition HTTP scope denial",
+			query:     `mutation CreateEdition { insert_edition { id } }`,
+			status:    http.StatusForbidden,
+			body:      `{"error":"insufficient_scope","error_description":"Missing scopes: write:catalog:append","scope":"write:catalog:append"}`,
+			wantScope: true,
+		},
+		{
+			name:      "observed regional upsert HTTP scope denial",
+			query:     `mutation ImportRegional { upsert_book { id } }`,
+			status:    http.StatusForbidden,
+			body:      `{"error":"insufficient_scope","error_description":"Missing scopes: write:catalog:append","scope":"write:catalog:append"}`,
+			wantScope: true,
+		},
+		{
+			name:   "unrelated HTTP forbidden remains ambiguous",
+			query:  `mutation CreateEdition { insert_edition { id } }`,
+			status: http.StatusForbidden,
+			body:   `{"error":"insufficient_scope","error_description":"Missing scopes: write:catalog:edit","scope":"write:catalog:edit"}`,
+		},
+		{
+			name:   "HTTP denial with extra result remains ambiguous",
+			query:  `mutation CreateEdition { insert_edition { id } }`,
+			status: http.StatusForbidden,
+			body:   `{"error":"insufficient_scope","error_description":"Missing scopes: write:catalog:append","scope":"write:catalog:append","data":{"insert_edition":{"id":1}}}`,
+		},
 		{
 			name:      "insert edition scope denied",
 			query:     `mutation CreateEdition { insert_edition { id } }`,
@@ -450,6 +477,9 @@ func TestGraphQLMutationClassifiesOnlyKnownPreExecutionScopeDenials(t *testing.T
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				requests.Add(1)
 				w.Header().Set("Content-Type", "application/json")
+				if test.status != 0 {
+					w.WriteHeader(test.status)
+				}
 				_, _ = io.WriteString(w, test.body)
 			}))
 			defer server.Close()

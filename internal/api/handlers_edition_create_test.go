@@ -1393,12 +1393,13 @@ func (c editionCreateCatalogClient) GetEditionByISBN10(context.Context, string) 
 
 // newEditionCreateHardcoverServer returns a real Hardcover client whose server
 // answers every request with body and counts the requests it receives.
-func newEditionCreateHardcoverServer(t *testing.T, body string) (*hardcover.Client, *atomic.Int32) {
+func newEditionCreateHardcoverServer(t *testing.T, status int, body string) (*hardcover.Client, *atomic.Int32) {
 	t.Helper()
 	requests := &atomic.Int32{}
 	client, server := hardcover.CreateTestClientWithHandler(func(w http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
 		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
 	})
 	t.Cleanup(server.Close)
@@ -1437,7 +1438,7 @@ func newEditionCreateEbookFixture(t *testing.T, runID string, catalog editionCre
 }
 
 func TestCreateEditionFromDraftReusesExistingEbookEditionOfSameBook(t *testing.T) {
-	client, hardcoverRequests := newEditionCreateHardcoverServer(t, `{"data":{"insert_edition":{"id":999,"errors":[]}}}`)
+	client, hardcoverRequests := newEditionCreateHardcoverServer(t, http.StatusOK, `{"data":{"insert_edition":{"id":999,"errors":[]}}}`)
 	fixture := newEditionCreateEbookFixture(t, "run-existing-ebook", editionCreateCatalogClient{
 		Client: client, existing: &models.Edition{ID: "91", BookID: "42"},
 	})
@@ -1520,7 +1521,7 @@ func TestCreateEditionFromDraftMapsLocalStateReadFailureToInternalServerError(t 
 }
 
 func TestCreateEditionFromDraftRefusesISBNOwnedByAnotherBook(t *testing.T) {
-	client, hardcoverRequests := newEditionCreateHardcoverServer(t, `{"data":{"insert_edition":{"id":999,"errors":[]}}}`)
+	client, hardcoverRequests := newEditionCreateHardcoverServer(t, http.StatusOK, `{"data":{"insert_edition":{"id":999,"errors":[]}}}`)
 	fixture := newEditionCreateEbookFixture(t, "run-isbn-conflict", editionCreateCatalogClient{
 		Client: client, existing: &models.Edition{ID: "91", BookID: "77"},
 	})
@@ -1538,12 +1539,11 @@ func TestCreateEditionFromDraftRefusesISBNOwnedByAnotherBook(t *testing.T) {
 }
 
 func TestCreateEditionFromDraftSavesNothingWhenTokenLacksCatalogueScope(t *testing.T) {
-	// Hasura hides mutations a role cannot run, so a token without catalogue
-	// write scope sees the mutation field as missing.
-	const denied = `{"errors":[{"message":"field '%s' not found in type: 'mutation_root'","extensions":{"code":"validation-failed"}}]}`
+	// A limited live token received this pre-execution HTTP 403 for both writes.
+	const denied = `{"error":"insufficient_scope","error_description":"Missing scopes: write:catalog:append","scope":"write:catalog:append"}`
 
 	t.Run("ebook", func(t *testing.T) {
-		client, hardcoverRequests := newEditionCreateHardcoverServer(t, fmt.Sprintf(denied, "insert_edition"))
+		client, hardcoverRequests := newEditionCreateHardcoverServer(t, http.StatusForbidden, denied)
 		fixture := newEditionCreateEbookFixture(t, "run-ebook-no-scope", editionCreateCatalogClient{Client: client})
 
 		response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-ebook-no-scope","abs_item_id":"abs-item-1"}`)
@@ -1560,7 +1560,7 @@ func TestCreateEditionFromDraftSavesNothingWhenTokenLacksCatalogueScope(t *testi
 	})
 
 	t.Run("audiobook", func(t *testing.T) {
-		client, hardcoverRequests := newEditionCreateHardcoverServer(t, fmt.Sprintf(denied, "upsert_book"))
+		client, hardcoverRequests := newEditionCreateHardcoverServer(t, http.StatusForbidden, denied)
 		fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`, "us")
 		configureEditionCreateRoute(t, fixture)
 		addCompletedNeedsReviewRun(t, fixture, "run-audiobook-no-scope", editionCreateRecord())
