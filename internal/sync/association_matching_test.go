@@ -77,6 +77,72 @@ func TestFindBookInHardcoverReusesMatchingAssociationFirst(t *testing.T) {
 	client.AssertExpectations(t)
 }
 
+func TestFindBookInHardcoverReusesMatchingEbookAssociationFirst(t *testing.T) {
+	tests := []struct {
+		name        string
+		provenance  string
+		asin        string
+		isbn        string
+		association func(bookID string) state.Association
+	}{
+		{
+			name:       "edition_asin provenance",
+			provenance: string(hardcover.ASINMatchEditionASIN),
+			asin:       " ASIN-123 ",
+			association: func(bookID string) state.Association {
+				return state.Association{
+					ABSItemID:          bookID,
+					SourceASIN:         "ASIN-123",
+					HardcoverBookID:    "901",
+					HardcoverEditionID: "902",
+					ReadingFormat:      models.ReadingFormatEbook,
+					Provenance:         string(hardcover.ASINMatchEditionASIN),
+				}
+			},
+		},
+		{
+			name:       "isbn provenance",
+			isbn:       "978-0-306-40615-7",
+			provenance: "isbn",
+			association: func(bookID string) state.Association {
+				return state.Association{
+					ABSItemID:          bookID,
+					SourceISBN13:       "9780306406157",
+					HardcoverBookID:    "901",
+					HardcoverEditionID: "902",
+					ReadingFormat:      models.ReadingFormatEbook,
+					Provenance:         "isbn",
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, client := createTestService()
+			svc.config.Sync.SyncOwned = false
+			book := associationTestBook("association-ebook-first-"+tt.name, tt.asin, tt.isbn)
+			book.MediaType = "ebook"
+			association := tt.association(book.ID)
+			require.NoError(t, svc.state.SetAssociation(association))
+
+			// No expectations are configured on client for any ASIN/ISBN search
+			// method, so the testify mock would fail this test immediately if
+			// findBookInHardcoverWithASINMatch made a live lookup call instead of
+			// reusing the persisted association.
+			got, err := svc.findBookInHardcover(context.Background(), book)
+
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, association.HardcoverBookID, got.ID)
+			assert.Equal(t, association.HardcoverEditionID, got.EditionID)
+			client.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
+			client.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
+			client.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
+			client.AssertExpectations(t)
+		})
+	}
+}
+
 func TestFindBookInHardcoverPersistsVerifiedASINMatches(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -265,6 +331,40 @@ func TestFindBookInHardcoverIdentifierChangeInvalidatesAndRematches(t *testing.T
 	require.True(t, exists)
 	assert.Equal(t, "ASIN-NEW", association.SourceASIN)
 	assert.Equal(t, "901", association.HardcoverBookID)
+	mockClient.AssertExpectations(t)
+}
+
+func TestFindBookInHardcoverStaleEbookAssociationDiscardedAndRematches(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.config.Sync.SyncOwned = false
+	book := associationTestBook("association-ebook-changed", "ASIN-NEW", "")
+	book.MediaType = "ebook"
+	require.NoError(t, svc.state.SetAssociation(state.Association{
+		ABSItemID: book.ID, SourceASIN: "ASIN-OLD", HardcoverBookID: "old-book",
+		HardcoverEditionID: "old-edition", ReadingFormat: models.ReadingFormatEbook,
+		Provenance: string(hardcover.ASINMatchEditionASIN),
+	}))
+	client := &associationLookupClient{
+		MockHardcoverClient: mockClient,
+		result: &hardcover.ASINLookupResult{
+			Book:      &models.HardcoverBook{ID: "901", EditionID: "902"},
+			MatchKind: hardcover.ASINMatchEditionASIN,
+		},
+	}
+	svc.hardcover = client
+	ctx := hardcover.WithReadingFormat(context.Background(), models.ReadingFormatEbook)
+	expectASINEditionRead(t, mockClient, "901", "902")
+
+	got, err := svc.findBookInHardcover(ctx, book)
+
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "901", got.ID, "stale association must not be reused; a fresh lookup should run instead")
+	association, exists := svc.state.GetAssociation(book.ID)
+	require.True(t, exists)
+	assert.Equal(t, "ASIN-NEW", association.SourceASIN)
+	assert.Equal(t, "901", association.HardcoverBookID)
+	assert.Equal(t, string(hardcover.ASINMatchEditionASIN), association.Provenance)
 	mockClient.AssertExpectations(t)
 }
 
