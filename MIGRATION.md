@@ -46,6 +46,19 @@ must add a scheme. Audiobookshelf requests now connect directly and ignore
 proxy need a direct route to the configured Audiobookshelf server. These
 requirements apply to both network trust modes.
 
+### Audiobooks no longer match by edition ASIN
+
+Sync, the mismatch export, and the edition creator's duplicate check no longer
+match an audiobook through a Hardcover edition's `asin` field; only regional
+Audible mappings, saved matches, ISBN, and title/author search are used. Ebook
+ASIN matching is unchanged. A book whose only link was `editions.asin` becomes
+`needs_review` (title/author finds it; resolve it with the add-edition action)
+or `not_found` (fix it in Hardcover or with the `edition` CLI and a book ID)
+the next time it is processed. Incremental sync skips books whose progress and
+status have not changed, so an already-synced book keeps its existing Hardcover
+edition, reads, and ownership until its progress or status changes. Checkpoints
+are not cleared; use the forget-match action to rematch one book now.
+
 ### Sync Status API
 
 The legacy global sync, per-profile status, and summary endpoints were removed.

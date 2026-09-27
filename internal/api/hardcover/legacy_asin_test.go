@@ -3,8 +3,10 @@ package hardcover
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -76,4 +78,40 @@ func TestGetEditionByASINPreservesLegacyDuplicateLookup(t *testing.T) {
 	require.Equal(t, "Existing edition", edition.Title)
 	require.Len(t, requests, 2)
 	require.Contains(t, requests[0].Query, "external_id: {_eq: $asin_us}")
+}
+
+func TestSearchBookByASINMatchesEditionASINOnlyForEbooks(t *testing.T) {
+	const asin = "B0LEGACY04"
+	tests := []struct {
+		name        string
+		ctx         context.Context
+		wantMatch   bool
+		wantASINEQ  bool
+		responseFmt int
+	}{
+		{name: "audiobook ignores editions.asin", ctx: context.Background(), wantMatch: false, wantASINEQ: false, responseFmt: 2},
+		{name: "ebook matches editions.asin", ctx: WithReadingFormat(context.Background(), "ebook"), wantMatch: true, wantASINEQ: true, responseFmt: 4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var request asinRequest
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+				w.Header().Set("Content-Type", "application/json")
+				// Hardcover applies the where clause; emulate it by returning
+				// the ASIN-only edition only when the query asks for editions.asin.
+				if strings.Contains(request.Query, "asin: {_eq: $asin}, reading_format") {
+					_, _ = w.Write([]byte(fmt.Sprintf(`{"data":{"books":[{"id":14,"title":"ASIN only","editions":[{"id":36,"asin":"B0LEGACY04","reading_format_id":%d,"book_mappings":[]}]}]}}`, tt.responseFmt)))
+					return
+				}
+				_, _ = w.Write([]byte(`{"data":{"books":[]}}`))
+			}))
+			defer server.Close()
+
+			book, err := CreateTestClient(server).SearchBookByASIN(tt.ctx, asin)
+			require.NoError(t, err)
+			require.Equal(t, tt.wantMatch, book != nil)
+			require.Equal(t, tt.wantASINEQ, strings.Contains(request.Query, "asin: {_eq: $asin}, reading_format"))
+		})
+	}
 }

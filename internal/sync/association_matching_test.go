@@ -1246,3 +1246,58 @@ func TestSyncRefusesStateAlreadyLockedByAnotherProcess(t *testing.T) {
 	assert.ErrorIs(t, err, state.ErrStateFileLocked)
 	client.AssertNotCalled(t, "ClearUserBookCache")
 }
+
+func TestFindBookInHardcoverEditionASINOnlyAudiobookIsNotMatched(t *testing.T) {
+	tests := []struct {
+		name        string
+		searchBooks []models.HardcoverBook
+		wantOutcome SyncOutcome
+	}{
+		{name: "title and author finds the book", searchBooks: []models.HardcoverBook{{ID: "901", Title: "Association Book"}}, wantOutcome: OutcomeNeedsReview},
+		{name: "title and author finds nothing", searchBooks: nil, wantOutcome: OutcomeNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, mockClient := createTestService()
+			book := associationTestBook("asin-only-"+tt.name, "ASIN-123", "")
+			// The Hardcover lookup finds no Audible mapping: an edition that
+			// carries the ASIN only in editions.asin is not returned for audiobooks.
+			svc.hardcover = &associationLookupClient{MockHardcoverClient: mockClient}
+			mockClient.On("SearchBooks", mock.Anything, "Association Book Author", "").Return(tt.searchBooks, nil)
+			mockClient.On("GetBookByID", mock.Anything, "901").Return(&models.HardcoverBook{ID: "901", Title: "Association Book"}, nil).Maybe()
+
+			got, err := svc.findBookInHardcover(hardcover.WithReadingFormat(context.Background(), models.ReadingFormatAudiobook), book)
+
+			require.Error(t, err)
+			assert.Equal(t, tt.wantOutcome, classifyBookLookupOutcome(err))
+			if got != nil {
+				assert.Empty(t, got.EditionID, "no edition may be chosen")
+			}
+			_, saved := svc.state.GetAssociation(book.ID)
+			assert.False(t, saved)
+		})
+	}
+}
+
+func TestFindBookInHardcoverEbookEditionASINWinsOverConflictingISBN(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.config.Sync.SyncOwned = false
+	book := associationTestBook("ebook-asin-before-isbn", "ASIN-123", "9780306406157")
+	book.MediaType = "ebook"
+	svc.hardcover = &associationLookupClient{
+		MockHardcoverClient: mockClient,
+		result: &hardcover.ASINLookupResult{
+			Book:      &models.HardcoverBook{ID: "901", EditionID: "902"},
+			MatchKind: hardcover.ASINMatchEditionASIN,
+		},
+	}
+	expectASINEditionRead(t, mockClient, "901", "902")
+
+	got, err := svc.findBookInHardcover(hardcover.WithReadingFormat(context.Background(), models.ReadingFormatEbook), book)
+
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "902", got.EditionID)
+	mockClient.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
+}

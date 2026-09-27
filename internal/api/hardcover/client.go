@@ -1501,7 +1501,8 @@ func extractBookMappingsASIN(mappings []interface{}) string {
 
 // SearchBookByASIN searches for a book in the Hardcover database by ASIN.
 // It preserves the legacy configured-region lookup used by edition duplicate
-// checks and mismatch export. Sync identity resolution uses SearchBookByASINResult.
+// checks and mismatch export. Audiobook lookups match Audible mappings only;
+// editions.asin is used for ebooks alone. Sync identity resolution uses SearchBookByASINResult.
 func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.HardcoverBook, error) {
 	if asin == "" {
 		return nil, fmt.Errorf("ASIN cannot be empty")
@@ -1512,13 +1513,19 @@ func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.Har
 	log := c.logger.With(map[string]interface{}{"asin": asin, "method": "SearchBookByASIN"})
 
 	formatID := readingFormatIDFromCtx(ctx)
-	query := `
+	// An audiobook is never matched through editions.asin; only Audible
+	// mappings identify it. An ebook keeps its editions.asin match.
+	bookASINClause, editionASINClause := "", ""
+	if formatID != models.ReadingFormatID("audiobook") {
+		bookASINClause = "{editions: {asin: {_eq: $asin}, reading_format: {id: {_eq: $format_id}}}},\n        "
+		editionASINClause = "{asin: {_eq: $asin}, reading_format: {id: {_eq: $format_id}}},\n          "
+	}
+	query := fmt.Sprintf(`
 query BookByASIN($asin: String!, $asin_us: String!, $format_id: Int!) {
   books(
     where: {
       _or: [
-        {editions: {asin: {_eq: $asin}, reading_format: {id: {_eq: $format_id}}}},
-        {editions: {book_mappings: {external_id: {_eq: $asin}, platform: {name: {_eq: "Audible"}}}, reading_format: {id: {_eq: $format_id}}}},
+        %s{editions: {book_mappings: {external_id: {_eq: $asin}, platform: {name: {_eq: "Audible"}}}, reading_format: {id: {_eq: $format_id}}}},
         {editions: {book_mappings: {external_id: {_eq: $asin_us}, platform: {name: {_eq: "Audible"}}}, reading_format: {id: {_eq: $format_id}}}}
       ]
     },
@@ -1531,8 +1538,7 @@ query BookByASIN($asin: String!, $asin_us: String!, $format_id: Int!) {
     editions(
       where: {
         _or: [
-          {asin: {_eq: $asin}, reading_format: {id: {_eq: $format_id}}},
-          {book_mappings: {external_id: {_eq: $asin}, platform: {name: {_eq: "Audible"}}}, reading_format: {id: {_eq: $format_id}}},
+          %s{book_mappings: {external_id: {_eq: $asin}, platform: {name: {_eq: "Audible"}}}, reading_format: {id: {_eq: $format_id}}},
           {book_mappings: {external_id: {_eq: $asin_us}, platform: {name: {_eq: "Audible"}}}, reading_format: {id: {_eq: $format_id}}}
         ]
       },
@@ -1547,7 +1553,7 @@ query BookByASIN($asin: String!, $asin_us: String!, $format_id: Int!) {
       book_mappings { external_id platform { name } }
     }
   }
-}`
+}`, bookASINClause, editionASINClause)
 	variables := map[string]interface{}{
 		"asin":      asin,
 		"asin_us":   asin + ":" + getAudnexRegionFromCtx(ctx),

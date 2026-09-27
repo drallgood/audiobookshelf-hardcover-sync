@@ -208,11 +208,16 @@ be checked through read-only lookups but are not saved. For ebooks, it stores
 a match whenever an exact `editions.asin` match or an exact ISBN match
 confirms the edition. These associations live with the CLI sync state or the
 individual web profile's state and survive restarts when that file is kept.
-Audiobook ASIN lookup checks existing regional Audible mappings before its
-ASIN fallback; ebook ASIN lookup continues to use Kindle editions. Sync
-matching only reads the Hardcover catalogue; it does not add or change books
-or editions there. Dry run can reuse an existing association but does not save
-or forget one.
+Audiobook ASIN lookup uses regional Audible mappings only; an edition's own
+`asin` field is no longer used to match an audiobook. An audiobook whose only
+Hardcover link was that field becomes `needs_review` when title/author search
+finds the book (resolve it with the add-edition action) or `not_found` when it
+does not (fix it in Hardcover or with the `edition` CLI and a book ID). Ebook
+ASIN lookup continues to use Kindle editions, ahead of ISBN. An unchanged,
+already-synced book keeps its Hardcover edition until its progress or status
+changes; use forget match to rematch one now. Sync matching only reads the
+Hardcover catalogue; it does not add or change books or editions there. Dry
+run can reuse an existing association but does not save or forget one.
 
 A saved match is reused only while the item's source identifiers and reading
 format still match. ISBN punctuation and surrounding ASIN whitespace alone do
