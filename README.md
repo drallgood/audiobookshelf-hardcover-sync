@@ -85,6 +85,28 @@ item. Known Hardcover books link to Hardcover; a needs-review result instead
 shows the Hardcover candidate's series when available and links the candidate
 title, its ASIN to Audible, and its ISBN to a Goodreads search.
 
+#### Add an edition or forget a match from View Details
+
+Signed-in users who may change a profile see **Add edition** on a needs-review
+result from a completed run that has a Hardcover book, a format, and an ASIN or
+ISBN. The dialog previews the Audiobookshelf source identifier and, for
+audiobooks, whether the Audible region was confirmed, could not be determined,
+or is temporarily unavailable; in the latter two cases you enter the regional
+identifier (`ASIN:region`) yourself. Audiobook metadata is preview-only, so the
+regional identifier is the only editable audiobook field; ebooks also allow the
+ebook fields the server can insert. An unverified Hardcover permission shows a
+warning and may still fail on create (a permission failure is reported); a known
+denial disables creation. **Sync this book's read status** is an unchecked
+option, and neither it nor creation is available in dry run. A busy draft
+service is retried after its `Retry-After` wait. Create and forget are disabled
+while the profile is syncing, and a conflict from a sync that started later is
+reported.
+
+Matched results show their current Hardcover book and edition with **Forget
+match**. After confirmation, only this app's saved match is removed; nothing is
+deleted from Hardcover, and the next sync reruns normal matching and may select
+the same edition again if Hardcover has not changed.
+
 Each processed book is counted once as `synced`, `already_current`, `skipped`,
 `needs_review`, `not_found`, `failed`, or dry-run `would_sync`. A total of zero
 means the number of books is not known yet, so the processed count may still
