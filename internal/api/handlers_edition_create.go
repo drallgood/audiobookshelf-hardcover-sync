@@ -75,10 +75,6 @@ type editionCreateResponse struct {
 	MetadataPreview    *audiobookMetadataPreview `json:"metadata_preview,omitempty"`
 }
 
-type editionCreateOutcome struct {
-	response editionCreateResponse
-}
-
 type editionCreateHardcoverAdapter struct {
 	*hardcover.Client
 	log *logger.Logger
@@ -126,19 +122,19 @@ func (h *Handler) CreateEditionFromDraft(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	var outcome editionCreateOutcome
+	var response editionCreateResponse
 	err = h.multiUserService.CreateEditionWithAssociation(ctx, profileID, request.ABSItemID, func(profile *database.ProfileWithTokens) (statepkg.Association, error) {
 		snapshot, record, snapshotErr := h.verifiedEditionCreateRecord(profileID, request.RunID, request.ABSItemID)
 		if snapshotErr != nil {
 			return statepkg.Association{}, snapshotErr
 		}
-		return h.createVerifiedEdition(ctx, profile, snapshot, record, request, &outcome)
+		return h.createVerifiedEdition(ctx, profile, snapshot, record, request, &response)
 	})
 	if err != nil {
 		h.writeEditionCreateError(w, profileID, err)
 		return
 	}
-	h.writeSuccessResponse(w, outcome.response)
+	h.writeSuccessResponse(w, response)
 }
 
 func decodeEditionCreateRequest(w http.ResponseWriter, r *http.Request) (editionCreateRequest, error) {
@@ -217,7 +213,7 @@ func requireEditionCreateMutationBudget(ctx context.Context) error {
 	return nil
 }
 
-func (h *Handler) createVerifiedEdition(ctx context.Context, profile *database.ProfileWithTokens, snapshot *sync.SyncSnapshot, record sync.BookOutcomeRecord, request editionCreateRequest, outcome *editionCreateOutcome) (statepkg.Association, error) {
+func (h *Handler) createVerifiedEdition(ctx context.Context, profile *database.ProfileWithTokens, snapshot *sync.SyncSnapshot, record sync.BookOutcomeRecord, request editionCreateRequest, response *editionCreateResponse) (statepkg.Association, error) {
 	if profile.SyncConfig.DryRun {
 		return statepkg.Association{}, multiuser.ErrEditionCreateDryRun
 	}
@@ -248,9 +244,9 @@ func (h *Handler) createVerifiedEdition(ctx context.Context, profile *database.P
 
 	client := h.editionCreateHardcoverClient(profile.HardcoverToken)
 	if item.ReadingFormat() == models.ReadingFormatAudiobook {
-		return h.createRegionalAudiobook(ctx, profile, item, record, request, client, outcome)
+		return h.createRegionalAudiobook(ctx, profile, item, record, request, client, response)
 	}
-	return h.createEbook(ctx, item, record, request, client, outcome)
+	return h.createEbook(ctx, item, record, request, client, response)
 }
 
 func (r editionCreateRequest) hasAudiobookMetadataCorrection() bool {
@@ -286,7 +282,7 @@ func normalizeEditionCreateName(raw string) string {
 	return strings.ToLower(strings.TrimSpace(raw))
 }
 
-func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database.ProfileWithTokens, item *models.AudiobookshelfBook, record sync.BookOutcomeRecord, request editionCreateRequest, client editionCreateHardcoverClient, outcome *editionCreateOutcome) (statepkg.Association, error) {
+func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database.ProfileWithTokens, item *models.AudiobookshelfBook, record sync.BookOutcomeRecord, request editionCreateRequest, client editionCreateHardcoverClient, response *editionCreateResponse) (statepkg.Association, error) {
 	asin, region, err := parseSubmittedAudibleIdentifier(request.AudibleIdentifier)
 	if err != nil {
 		return statepkg.Association{}, err
@@ -392,7 +388,7 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 	}
 	association := createEditionAssociation(item, record.HardcoverBookID, strconv.Itoa(result.EditionID), regionalID,
 		correction, models.ReadingFormatAudiobook, "api_regional_"+string(result.Status))
-	outcome.response = editionCreateResponse{
+	*response = editionCreateResponse{
 		ABSItemID: item.ID, ReadingFormat: models.ReadingFormatAudiobook, Status: string(result.Status),
 		HardcoverBookID: strconv.Itoa(result.BookID), HardcoverEditionID: strconv.Itoa(result.EditionID), RegionalExternalID: regionalID,
 		MetadataPreview: preview,
@@ -431,7 +427,7 @@ func markEditionCreateRemoteOutcomeAmbiguous(err error) error {
 	return fmt.Errorf("%w: %w", errEditionCreateRemoteOutcomeAmbiguous, err)
 }
 
-func (h *Handler) createEbook(ctx context.Context, item *models.AudiobookshelfBook, record sync.BookOutcomeRecord, request editionCreateRequest, client editionCreateHardcoverClient, outcome *editionCreateOutcome) (statepkg.Association, error) {
+func (h *Handler) createEbook(ctx context.Context, item *models.AudiobookshelfBook, record sync.BookOutcomeRecord, request editionCreateRequest, client editionCreateHardcoverClient, response *editionCreateResponse) (statepkg.Association, error) {
 	bookID, err := strconv.Atoi(record.HardcoverBookID)
 	if err != nil || bookID <= 0 {
 		return statepkg.Association{}, errStaleEditionCreateRun
@@ -571,7 +567,7 @@ func (h *Handler) createEbook(ctx context.Context, item *models.AudiobookshelfBo
 		status = "existing"
 	}
 	association := createEditionAssociation(item, record.HardcoverBookID, strconv.Itoa(result.EditionID), "", "", models.ReadingFormatEbook, "api_ebook_"+status)
-	outcome.response = editionCreateResponse{
+	*response = editionCreateResponse{
 		ABSItemID: item.ID, ReadingFormat: models.ReadingFormatEbook, Status: status,
 		HardcoverBookID: record.HardcoverBookID, HardcoverEditionID: strconv.Itoa(result.EditionID),
 	}
