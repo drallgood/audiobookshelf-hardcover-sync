@@ -1678,13 +1678,15 @@ class SyncProfileApp {
             : '';
 
         if (!fields.length && !coverHTML) return actionsHTML;
+        const detailsColumn = fields.length || actionsHTML
+            ? `<div class="hardcover-candidate-details">${fields.length ? `<div class="book-meta">${fields.join('')}</div>` : ''}${actionsHTML}</div>`
+            : '';
         return `<section class="hardcover-candidate" aria-label="Hardcover candidate">
             <h4>Hardcover candidate</h4>
             <div class="hardcover-candidate-content">
                 ${coverHTML ? `<div class="hardcover-candidate-cover">${coverHTML}</div>` : ''}
-                ${fields.length ? `<div class="book-meta">${fields.join('')}</div>` : ''}
+                ${detailsColumn}
             </div>
-            ${actionsHTML}
         </section>`;
     }
 

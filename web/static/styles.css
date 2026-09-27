@@ -1375,7 +1375,7 @@ header p {
     margin: 0;
 }
 
-.hardcover-candidate-content > .book-meta:only-child {
+.hardcover-candidate-content > .hardcover-candidate-details:only-child {
     grid-column: 1 / -1;
 }
 
