@@ -2174,7 +2174,9 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 
 	// Find the book in Hardcover to get the edition ID
 	var foundByASIN bool
-	hcBook, findErr, foundByASIN = s.findBookInHardcoverWithASINMatch(ctx, book)
+	// ISBN/title matches are checked again before mutation. Keep a newly found
+	// ISBN out of local state until that second lookup has confirmed it.
+	hcBook, findErr, foundByASIN = s.findBookInHardcoverWithASINMatch(ctx, book, associationWriteASINOnly)
 	if findErr != nil {
 		// Handle mismatch case (found by title/author)
 		if errors.Is(findErr, errHardcoverTitleOnly) ||
@@ -2569,7 +2571,23 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 	// confirmed by the format-scoped lookup and must not depend on a positive
 	// cache to avoid repeating the same external request.
 	if !foundByASIN {
-		hcBook, findErr = s.findBookInHardcover(ctx, book)
+		firstMatch := hcBook
+		newEbookMatch := book.ReadingFormat() == models.ReadingFormatEbook
+		if newEbookMatch && s.state != nil {
+			_, exists := s.state.GetAssociation(book.ID)
+			newEbookMatch = !exists
+		}
+		hcBook, findErr, _ = s.findBookInHardcoverWithASINMatch(ctx, book, associationWriteNone)
+		if findErr == nil && newEbookMatch && firstMatch != nil && hcBook != nil {
+			if firstMatch.ID != hcBook.ID || firstMatch.EditionID != hcBook.EditionID {
+				findErr = fmt.Errorf("%w: Hardcover match changed between lookups for ABS item %s", errHardcoverLookupFailed, book.ID)
+			} else {
+				hcBook, findErr = s.processFoundBook(ctx, hcBook, book)
+				if findErr == nil {
+					s.recordVerifiedISBNAssociation(book, hcBook)
+				}
+			}
+		}
 	}
 	if findErr != nil {
 		outcomeError = findErr
@@ -5120,11 +5138,19 @@ func (s *Service) lookupBookByASIN(ctx context.Context, asin string) (*models.Ha
 // If those searches fail, it falls back to title/author search.
 // Callers must carry the item's reading format on ctx via hardcover.WithReadingFormat.
 func (s *Service) findBookInHardcover(ctx context.Context, book models.AudiobookshelfBook) (*models.HardcoverBook, error) {
-	hcBook, err, _ := s.findBookInHardcoverWithASINMatch(ctx, book)
+	hcBook, err, _ := s.findBookInHardcoverWithASINMatch(ctx, book, associationWriteAll)
 	return hcBook, err
 }
 
-func (s *Service) findBookInHardcoverWithASINMatch(ctx context.Context, book models.AudiobookshelfBook) (*models.HardcoverBook, error, bool) {
+type associationWriteMode uint8
+
+const (
+	associationWriteAll associationWriteMode = iota
+	associationWriteASINOnly
+	associationWriteNone
+)
+
+func (s *Service) findBookInHardcoverWithASINMatch(ctx context.Context, book models.AudiobookshelfBook, writeMode associationWriteMode) (*models.HardcoverBook, error, bool) {
 	var lookupErr error
 	// Create a logger with book context
 	logCtx := map[string]interface{}{
@@ -5192,7 +5218,12 @@ func (s *Service) findBookInHardcoverWithASINMatch(ctx context.Context, book mod
 			lookupErr = fmt.Errorf("%w: ASIN lookup: %w", errHardcoverLookupFailed, err)
 			log.Warn(fmt.Sprintf("Search by ASIN failed, will try other methods: %v", err), nil)
 		} else if hcBook != nil {
-			s.recordVerifiedASINAssociation(book, asinResult)
+			if writeMode != associationWriteNone {
+				s.recordVerifiedASINAssociation(book, asinResult)
+			}
+			if writeMode == associationWriteNone && book.ReadingFormat() == models.ReadingFormatEbook {
+				return hcBook, nil, true
+			}
 
 			// Get or create user book ID for this edition
 			editionIDStr := hcBook.EditionID
@@ -5274,7 +5305,12 @@ func (s *Service) findBookInHardcoverWithASINMatch(ctx context.Context, book mod
 				}
 				log.Warn(fmt.Sprintf("Search by %s failed, will try other identifiers or methods: %v", candidate.label(), err), nil)
 			} else if hcBook != nil {
-				s.recordVerifiedISBNAssociation(book, hcBook)
+				if writeMode == associationWriteAll {
+					s.recordVerifiedISBNAssociation(book, hcBook)
+				}
+				if writeMode != associationWriteAll && book.ReadingFormat() == models.ReadingFormatEbook {
+					return hcBook, nil, false
+				}
 				foundBook, err := s.processFoundBook(ctx, hcBook, book)
 				return foundBook, err, false
 			}

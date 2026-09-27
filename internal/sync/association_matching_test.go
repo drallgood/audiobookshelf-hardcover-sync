@@ -308,6 +308,88 @@ func TestProcessBookDoesNotRepeatTemporaryASINFallbackLookup(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
+func TestProcessBookRechecksEbookISBNBeforeSavingAssociation(t *testing.T) {
+	svc, client := createTestService()
+	svc.config.Sync.IncludeEbooks = true
+	svc.config.Sync.SyncOwned = false
+	book := isbnSearchBook(testISBN13NoTen)
+	book.MediaType = "ebook"
+	book.Progress.CurrentTime = 300
+
+	// The first result disappears before the pre-mutation lookup. The first
+	// result must not become a reusable association or be used for progress.
+	client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+		Return(&models.HardcoverBook{ID: "901", EditionID: "902"}, nil).Once()
+	client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+		Return((*models.HardcoverBook)(nil), nil).Maybe()
+
+	err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+
+	require.ErrorIs(t, err, ErrSkippedBook)
+	assert.Equal(t, OutcomeNotFound, recordedOutcome(svc, book.ID).Outcome)
+	_, saved := svc.state.GetAssociation(book.ID)
+	assert.False(t, saved, "the unconfirmed first result must not survive")
+	client.AssertExpectations(t)
+}
+
+func TestProcessBookRejectsChangedEbookISBNTarget(t *testing.T) {
+	svc, client := createTestService()
+	svc.config.Sync.IncludeEbooks = true
+	svc.config.Sync.SyncOwned = false
+	book := isbnSearchBook(testISBN13NoTen)
+	book.MediaType = "ebook"
+	book.Progress.CurrentTime = 300
+
+	client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+		Return(&models.HardcoverBook{ID: "901", EditionID: "902"}, nil).Once()
+	client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+		Return(&models.HardcoverBook{ID: "903", EditionID: "904"}, nil).Once()
+	client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+		Return((*models.HardcoverBook)(nil), nil).Maybe()
+	client.On("GetEdition", mock.Anything, "904").
+		Return(&models.Edition{ID: "904", BookID: "903"}, nil).Maybe()
+	client.On("GetBookByID", mock.Anything, "903").
+		Return(&models.HardcoverBook{ID: "903", EditionID: "904"}, nil).Maybe()
+
+	err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+
+	require.ErrorIs(t, err, ErrSkippedBook)
+	assert.Equal(t, OutcomeFailed, recordedOutcome(svc, book.ID).Outcome)
+	_, saved := svc.state.GetAssociation(book.ID)
+	assert.False(t, saved, "neither inconsistent result should be saved")
+	client.AssertExpectations(t)
+}
+
+func TestProcessBookSavesEbookISBNAfterStableRecheck(t *testing.T) {
+	svc, client := createTestService()
+	svc.config.Sync.IncludeEbooks = true
+	svc.config.Sync.SyncOwned = false
+	svc.config.Sync.ProcessUnreadBooks = true
+	svc.config.Sync.SyncWantToRead = true
+	book := isbnSearchBook(testISBN13NoTen)
+	book.MediaType = "ebook"
+
+	client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+		Return(&models.HardcoverBook{ID: "901", EditionID: "902"}, nil).Twice()
+	expectASINEditionRead(t, client, "901", "902")
+	client.On("GetEdition", mock.Anything, "902").
+		Return(&models.Edition{ID: "902", BookID: "901"}, nil).Maybe()
+	client.On("GetUserBookID", mock.Anything, 902).Return(9021, nil).Maybe()
+	client.On("UpdateUserBookStatus", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookStatusInput) bool {
+		return input.ID == 9021 && input.StatusID == 1
+	})).Return(nil).Once()
+
+	err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+
+	require.NoError(t, err)
+	association, saved := svc.state.GetAssociation(book.ID)
+	require.True(t, saved)
+	assert.Equal(t, "901", association.HardcoverBookID)
+	assert.Equal(t, "902", association.HardcoverEditionID)
+	assert.Equal(t, "isbn", association.Provenance)
+	client.AssertExpectations(t)
+}
+
 func TestFindBookInHardcoverIdentifierChangeInvalidatesAndRematches(t *testing.T) {
 	svc, mockClient := createTestService()
 	svc.config.Sync.SyncOwned = false
