@@ -176,20 +176,23 @@ finish within that time, the API returns 503 without a write; supply a known
 insertion (`insert_edition`) and audiobook import (`upsert_book`), whether the
 profile's Hardcover token may attempt to add an edition. It requires profile
 write access and makes no Audiobookshelf request. For a configured token on a
-non-dry-run profile, the route sends an `insert_edition` mutation using the
-impossible book ID `-1`. Only Hardcover's expected `Couldn't find Book`
-response is treated as evidence that ebook insertion is allowed; a recognized
-catalogue-write scope denial is reported as `denied`. Other responses,
-including timeouts, rate limits, and unexpected responses, leave ebook
-capability `unverified` with a `permission_unverified` warning. Probe results
-are cached by profile and token: allowed or denied results for 12 hours, and
-unverified results for 15 seconds. A changed token is probed separately.
+non-dry-run profile, the route probes ebook `insert_edition` with the
+impossible book ID `-1`, and audiobook `upsert_book` with its required `book`
+argument omitted. Only Hardcover's expected `Couldn't find Book` response
+counts as evidence that ebook insertion is allowed. For audiobook import,
+only the exact missing-argument GraphQL validation response counts as evidence
+that the token passed the observed catalogue-write scope gate; the mutation
+does not execute. A recognized catalogue-write scope denial is reported as
+`denied` for either operation. Other outcomes, including timeouts, rate limits,
+and unexpected responses, leave that operation `unverified` with a
+`permission_unverified` warning. A later audiobook import can still fail for
+other reasons. Probe results are cached by profile and token: allowed or
+denied results for 5 minutes, and unverified results for 15 seconds. A changed
+token is probed separately.
 
-Audiobook `upsert_book` remains `unverified` with a warning because a
-no-create probe for that operation has not been established. A later
-add-edition attempt may proceed when capability is unverified, but permission
-is not guaranteed. Profiles without a Hardcover token are reported as
-`denied`. With a configured token, a dry-run profile reports both operations
+A later add-edition attempt may proceed when capability is unverified, but
+permission is not guaranteed. Profiles without a Hardcover token are reported
+as `denied`. With a configured token, a dry-run profile reports both operations
 as `allowed` without sending a Hardcover request. See
 [OpenAPI](docs/openapi.yaml) for the response fields.
 

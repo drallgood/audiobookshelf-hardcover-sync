@@ -2,6 +2,7 @@ package multiuser
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,22 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
 	"github.com/stretchr/testify/require"
 )
+
+func respondToCapabilityProbe(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Query string `json:"query"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "invalid graphql request", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if strings.Contains(request.Query, "upsert_book") {
+		_, _ = w.Write([]byte(`{"errors":[{"message":"field 'upsert_book' argument 'book' of type 'CreateBookFromPlatformInput!' is required, but it was not provided","extensions":{"code":"validation-failed"}}],"data":null}`))
+		return
+	}
+	_, _ = w.Write([]byte(`{"errors":[{"message":"Couldn't find Book"}],"data":null}`))
+}
 
 func TestEditionCapabilityForProfileSkipsProbesInDryRun(t *testing.T) {
 	var requests atomic.Int32
@@ -114,7 +131,7 @@ func TestEditionCapabilityForProfileUsesUpdatedHardcoverToken(t *testing.T) {
 			_, _ = w.Write([]byte(`{"error":"insufficient_scope","error_description":"Missing scopes: write:catalog:append","scope":"write:catalog:append"}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"errors":[{"message":"Couldn't find Book"}],"data":null}`))
+		respondToCapabilityProbe(w, r)
 	}))
 	defer server.Close()
 
@@ -129,7 +146,8 @@ func TestEditionCapabilityForProfileUsesUpdatedHardcoverToken(t *testing.T) {
 	withOldToken, err := service.EditionCapabilityForProfile(context.Background(), profileID)
 	require.NoError(t, err)
 	require.Equal(t, EditionCapabilityAllowed, withOldToken.Ebook.Status)
-	require.Equal(t, int32(1), requests.Load())
+	require.Equal(t, EditionCapabilityAllowed, withOldToken.Audiobook.Status)
+	require.Equal(t, int32(2), requests.Load())
 
 	require.NoError(t, service.UpdateProfileConfig(
 		profileID, "http://abs.home", "", "new-hardcover-token", database.SyncConfigData{},
@@ -139,17 +157,16 @@ func TestEditionCapabilityForProfileUsesUpdatedHardcoverToken(t *testing.T) {
 	require.Equal(t, EditionCapabilityDenied, withUpdatedToken.Ebook.Status)
 	require.False(t, withUpdatedToken.Ebook.CanAttempt)
 	require.Equal(t, "insufficient_scope", withUpdatedToken.Ebook.Reason)
-	require.Equal(t, EditionCapabilityUnverified, withUpdatedToken.Audiobook.Status)
-	require.True(t, withUpdatedToken.Audiobook.CanAttempt)
-	require.Equal(t, int32(2), requests.Load(), "a token change invalidates the cached probe result")
+	require.Equal(t, EditionCapabilityDenied, withUpdatedToken.Audiobook.Status)
+	require.False(t, withUpdatedToken.Audiobook.CanAttempt)
+	require.Equal(t, int32(4), requests.Load(), "a token change invalidates each operation's cached probe result")
 }
 
 func TestEditionCapabilityForProfileCachesPerProfileAndExpires(t *testing.T) {
 	var requests atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"errors":[{"message":"Couldn't find Book"}],"data":null}`))
+		respondToCapabilityProbe(w, r)
 	}))
 	defer server.Close()
 
@@ -166,12 +183,27 @@ func TestEditionCapabilityForProfileCachesPerProfileAndExpires(t *testing.T) {
 		capability, err := service.EditionCapabilityForProfile(context.Background(), "cache-profile-one")
 		require.NoError(t, err)
 		require.Equal(t, EditionCapabilityAllowed, capability.Ebook.Status)
+		require.Equal(t, EditionCapabilityAllowed, capability.Audiobook.Status)
 	}
-	require.Equal(t, int32(1), requests.Load(), "same profile and operation reuses the definite result")
+	require.Equal(t, int32(2), requests.Load(), "same profile and operation reuse their definite results")
+	service.hardcoverClientMutex.Lock()
+	definiteEntries := make([]editionCapabilityCacheEntry, 0, 2)
+	for key, entry := range service.editionCapabilityCache {
+		if key.profileID == "cache-profile-one" {
+			definiteEntries = append(definiteEntries, entry)
+		}
+	}
+	service.hardcoverClientMutex.Unlock()
+	require.Len(t, definiteEntries, 2, "ebook and audiobook results have separate cache entries")
+	for _, entry := range definiteEntries {
+		remainingTTL := time.Until(entry.expiresAt)
+		require.Positive(t, remainingTTL)
+		require.LessOrEqual(t, remainingTTL, editionCapabilityDefiniteTTL)
+	}
 
 	_, err := service.EditionCapabilityForProfile(context.Background(), "cache-profile-two")
 	require.NoError(t, err)
-	require.Equal(t, int32(2), requests.Load(), "another profile has an independent result")
+	require.Equal(t, int32(4), requests.Load(), "another profile has independent operation results")
 
 	service.hardcoverClientMutex.Lock()
 	for key, entry := range service.editionCapabilityCache {
@@ -183,7 +215,7 @@ func TestEditionCapabilityForProfileCachesPerProfileAndExpires(t *testing.T) {
 	service.hardcoverClientMutex.Unlock()
 	_, err = service.EditionCapabilityForProfile(context.Background(), "cache-profile-one")
 	require.NoError(t, err)
-	require.Equal(t, int32(3), requests.Load(), "expired definite results are probed again")
+	require.Equal(t, int32(6), requests.Load(), "expired definite results are probed again")
 }
 
 func TestEditionCapabilityForProfileRetriesUnverifiedProbeAfterShortTTL(t *testing.T) {
@@ -206,31 +238,25 @@ func TestEditionCapabilityForProfileRetriesUnverifiedProbeAfterShortTTL(t *testi
 	require.NoError(t, err)
 	require.Equal(t, EditionCapabilityUnverified, capability.Ebook.Status)
 	service.hardcoverClientMutex.Lock()
-	cacheEntry := service.editionCapabilityCache[editionCapabilityCacheKey{
-		profileID: "transient-capability-profile",
-		operation: EditionCapabilityInsertEdition,
-	}]
-	service.hardcoverClientMutex.Unlock()
-	remainingTTL := time.Until(cacheEntry.expiresAt)
-	require.Positive(t, remainingTTL)
-	require.LessOrEqual(t, remainingTTL, editionCapabilityUnverifiedTTL)
-
-	service.hardcoverClientMutex.Lock()
-	cacheEntry.expiresAt = time.Now().Add(-time.Second)
-	service.editionCapabilityCache[editionCapabilityCacheKey{
-		profileID: "transient-capability-profile",
-		operation: EditionCapabilityInsertEdition,
-	}] = cacheEntry
+	for key, entry := range service.editionCapabilityCache {
+		if key.profileID == "transient-capability-profile" {
+			remainingTTL := time.Until(entry.expiresAt)
+			require.Positive(t, remainingTTL)
+			require.LessOrEqual(t, remainingTTL, editionCapabilityUnverifiedTTL)
+			entry.expiresAt = time.Now().Add(-time.Second)
+			service.editionCapabilityCache[key] = entry
+		}
+	}
 	service.hardcoverClientMutex.Unlock()
 	_, err = service.EditionCapabilityForProfile(context.Background(), "transient-capability-profile")
 	require.NoError(t, err)
-	require.Equal(t, int32(2), requests.Load(), "transient outcomes are retried after the short cache TTL")
+	require.Equal(t, int32(4), requests.Load(), "transient outcomes are retried after the short cache TTL")
 }
 
 func TestCapabilityAndProfileHardcoverClientsShareLimiter(t *testing.T) {
 	var active, maxActive atomic.Int32
 	var requests atomic.Int32
-	started := make(chan struct{}, 3)
+	started := make(chan struct{}, 4)
 	releaseFirst := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		current := active.Add(1)
@@ -307,7 +333,7 @@ func TestCapabilityAndProfileHardcoverClientsShareLimiter(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("capability probe did not finish")
 	}
-	require.Equal(t, int32(3), requests.Load())
+	require.Equal(t, int32(4), requests.Load())
 	require.Equal(t, int32(1), maxActive.Load(), "profile clients share one concurrent-request limit")
 
 	service.hardcoverClientMutex.Lock()
@@ -428,8 +454,7 @@ func TestEditionCapabilityForProfileDeduplicatesConcurrentProbes(t *testing.T) {
 		case <-r.Context().Done():
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"errors":[{"message":"Couldn't find Book"}],"data":null}`))
+		respondToCapabilityProbe(w, r)
 	}))
 	defer server.Close()
 
@@ -442,14 +467,14 @@ func TestEditionCapabilityForProfileDeduplicatesConcurrentProbes(t *testing.T) {
 	))
 
 	var wg sync.WaitGroup
-	results := make([]EditionCapabilityState, 2)
+	results := make([]EditionCapability, 2)
 	for i := range results {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
 			capability, err := service.EditionCapabilityForProfile(context.Background(), "dedupe-capability-profile")
 			require.NoError(t, err)
-			results[index] = capability.Ebook.Status
+			results[index] = capability
 		}(i)
 		if i == 0 {
 			<-started
@@ -459,6 +484,9 @@ func TestEditionCapabilityForProfileDeduplicatesConcurrentProbes(t *testing.T) {
 	close(release)
 	wg.Wait()
 
-	require.Equal(t, []EditionCapabilityState{EditionCapabilityAllowed, EditionCapabilityAllowed}, results)
-	require.Equal(t, int32(1), requests.Load(), "concurrent loads share one in-flight operation")
+	require.Equal(t, []EditionCapability{
+		{Ebook: allowedEditionCapability(EditionCapabilityInsertEdition), Audiobook: allowedEditionCapability(EditionCapabilityUpsertBook)},
+		{Ebook: allowedEditionCapability(EditionCapabilityInsertEdition), Audiobook: allowedEditionCapability(EditionCapabilityUpsertBook)},
+	}, results)
+	require.Equal(t, int32(2), requests.Load(), "concurrent loads share each operation's in-flight probe")
 }

@@ -41,6 +41,8 @@ var ErrMutationOutcomeAmbiguous = errors.New("Hardcover mutation outcome is ambi
 // before executing the mutation.
 var ErrMutationScopeDenied = errors.New("Hardcover catalogue mutation scope is denied")
 
+var errUpsertBookMissingRequiredArgument = errors.New("upsert_book validation requires the book argument")
+
 // WithMinimumMutationBudget asks mutation requests made with ctx to require at
 // least reserve time after rate-limit admission and immediately before sending.
 // Contexts without this opt-in retain the client's established behavior.
@@ -78,39 +80,16 @@ type graphQLError struct {
 	} `json:"extensions"`
 }
 
-// This intentionally brittle match recognizes only a specific pre-execution
-// GraphQL validation response. If its shape changes, keep the outcome
-// ambiguous rather than treating an unverified error as safe to retry.
-func knownMutationScopeDenial(op graphqlOperation, query string, data json.RawMessage, gqlErrors []graphQLError) bool {
-	if op != mutationOperation || (len(data) > 0 && strings.TrimSpace(string(data)) != "null") || len(gqlErrors) == 0 {
+// knownUpsertBookMissingRequiredArgument recognizes the exact validation-only
+// request and response used by the capability probe. A changed message, query,
+// result shape, or error code stays ambiguous.
+func knownUpsertBookMissingRequiredArgument(op graphqlOperation, query string, statusCode int, data json.RawMessage, gqlErrors []graphQLError) bool {
+	if op != mutationOperation || query != upsertBookCapabilityProbeMutation || statusCode != http.StatusOK ||
+		(len(data) > 0 && strings.TrimSpace(string(data)) != "null") || len(gqlErrors) != 1 {
 		return false
 	}
-
-	fields := []string{"insert_edition", "upsert_book"}
-	deniedField := ""
-	for _, field := range fields {
-		if strings.Contains(query, field) {
-			deniedField = field
-			break
-		}
-	}
-	if deniedField == "" {
-		return false
-	}
-
-	for _, gqlErr := range gqlErrors {
-		if gqlErr.Extensions.Code != "validation-failed" {
-			return false
-		}
-		message := strings.ToLower(gqlErr.Message)
-		singleQuotedField := "field '" + deniedField + "' not found in type: 'mutation_root'"
-		doubleQuotedField := `field "` + deniedField + `" not found in type: "mutation_root"`
-		if !strings.Contains(message, singleQuotedField) && !strings.Contains(message, doubleQuotedField) {
-			continue
-		}
-		return true
-	}
-	return false
+	return gqlErrors[0].Extensions.Code == "validation-failed" &&
+		gqlErrors[0].Message == upsertBookCapabilityProbeMissingArgument
 }
 
 // The observed catalogue-scope denial is an HTTP 403 rather than a GraphQL
@@ -786,8 +765,8 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"errors":  gqlResp.Errors,
 			})
 			if budgetedMutation {
-				if knownMutationScopeDenial(op, query, gqlResp.Data, gqlResp.Errors) {
-					return fmt.Errorf("%w: %w", ErrMutationScopeDenied, lastErr)
+				if knownUpsertBookMissingRequiredArgument(op, query, resp.StatusCode, gqlResp.Data, gqlResp.Errors) {
+					return fmt.Errorf("%w: %w", errUpsertBookMissingRequiredArgument, lastErr)
 				}
 				return ambiguousMutationError(lastErr)
 			}

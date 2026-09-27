@@ -42,7 +42,7 @@ type EditionCapabilityStatus struct {
 	Warning    string                     `json:"warning,omitempty"`
 }
 
-// EditionCapability keeps ebook insertion separate from Audible resolution.
+// EditionCapability keeps ebook insertion separate from audiobook import.
 type EditionCapability struct {
 	Ebook     EditionCapabilityStatus `json:"ebook"`
 	Audiobook EditionCapabilityStatus `json:"audiobook"`
@@ -50,7 +50,7 @@ type EditionCapability struct {
 }
 
 const (
-	editionCapabilityDefiniteTTL   = 12 * time.Hour
+	editionCapabilityDefiniteTTL   = 5 * time.Minute
 	editionCapabilityUnverifiedTTL = 15 * time.Second
 )
 
@@ -94,10 +94,9 @@ type profileHardcoverRateLimiterKey struct {
 }
 
 // EditionCapabilityForProfile returns operation-specific evidence for the
-// profile's Hardcover token. Ebook insert_edition capability is checked with
-// Hardcover's verified impossible-book probe. Audiobook upsert_book remains
-// unverified because its no-create behavior has not been established. Probe
-// results are cached by profile, operation, and current token.
+// profile's Hardcover token. Ebook insert_edition and audiobook upsert_book
+// use separate validation-only probes. Results are cached by profile,
+// operation, and current token.
 func (s *MultiUserService) EditionCapabilityForProfile(ctx context.Context, profileID string) (EditionCapability, error) {
 	profile, err := s.repository.GetProfileHardcoverSettings(profileID)
 	if err != nil {
@@ -124,9 +123,10 @@ func (s *MultiUserService) EditionCapabilityForProfile(ctx context.Context, prof
 	}
 
 	ebookState := s.cachedEditionCapabilityProbe(ctx, profileID, EditionCapabilityInsertEdition, profile.HardcoverToken)
+	audiobookState := s.cachedEditionCapabilityProbe(ctx, profileID, EditionCapabilityUpsertBook, profile.HardcoverToken)
 	return EditionCapability{
 		Ebook:     editionCapabilityStatus(EditionCapabilityInsertEdition, ebookState),
-		Audiobook: unverifiedEditionCapability(EditionCapabilityUpsertBook),
+		Audiobook: editionCapabilityStatus(EditionCapabilityUpsertBook, audiobookState),
 		DryRun:    false,
 	}, nil
 }
@@ -163,8 +163,11 @@ func (s *MultiUserService) cachedEditionCapabilityProbe(ctx context.Context, pro
 	s.hardcoverClientMutex.Unlock()
 
 	status := hardcover.EditionCapabilityProbeUnverified
-	if operation == EditionCapabilityInsertEdition {
+	switch operation {
+	case EditionCapabilityInsertEdition:
 		status = client.ProbeInsertEditionCapability(ctx)
+	case EditionCapabilityUpsertBook:
+		status = client.ProbeUpsertBookCapability(ctx)
 	}
 	state := EditionCapabilityState(status)
 
