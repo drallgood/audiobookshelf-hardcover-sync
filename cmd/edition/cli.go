@@ -282,10 +282,10 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 	}
 	if absItem != nil {
 		if services.getEditionUncached == nil {
-			return nil, errors.New("Hardcover ebook edition verification is unavailable")
+			return nil, fmt.Errorf("Hardcover returned ebook edition %d, but verification is unavailable. Check Hardcover before retrying; retrying may create another edition", created.EditionID)
 		}
 		if err := verifyCreatedEbookEdition(ctx, created.EditionID, input.BookID, services.getEditionUncached); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("Hardcover returned ebook edition %d, but it could not be verified. Check Hardcover before retrying; retrying may create another edition: %w", created.EditionID, err)
 		}
 		association := ebookAssociation(absItem, input.ASIN, output.Status, input.BookID, created.EditionID)
 		if err := saveAssociation(loadedState, associationStatePath, association); err != nil {

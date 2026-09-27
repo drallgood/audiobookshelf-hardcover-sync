@@ -582,6 +582,14 @@ func TestRunCreateReadsBackEbookBeforeSavingAssociation(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), test.wantError) {
 					t.Fatalf("expected %q error, got %v", test.wantError, err)
 				}
+				if !strings.Contains(err.Error(), "edition 34") ||
+					!strings.Contains(err.Error(), "Check Hardcover before retrying") ||
+					!strings.Contains(err.Error(), "may create another edition") {
+					t.Fatalf("verification error did not preserve the remote result and retry guidance: %v", err)
+				}
+				if test.readErr != nil && !errors.Is(err, test.readErr) {
+					t.Fatalf("verification error did not wrap the readback cause: %v", err)
+				}
 				if result != nil {
 					t.Fatalf("failed verification returned a result: %#v", result)
 				}
