@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audnex"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
@@ -536,6 +537,92 @@ func TestRunCreateKeepsEbookDryRunPath(t *testing.T) {
 	}
 	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
 		t.Fatalf("dry run unexpectedly wrote state: %v", err)
+	}
+}
+
+func TestRunCreateIgnoresAudibleRegionsForEbooks(t *testing.T) {
+	inputPath := writeCreateInput(t, `{"book_id":21,"title":"Ebook","isbn_13":"9780306406157","author_ids":[3],"reading_format":"ebook","asin_region":"xx","region":"uk"}`)
+	discovered, imported := false, false
+	result, err := runCreate(context.Background(), createOptions{InputPath: inputPath}, createServices{
+		discoverAudible: func(context.Context, string, string) (string, error) {
+			discovered = true
+			return "", nil
+		},
+		importAudiobook: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+			imported = true
+			return nil, nil
+		},
+		createEbook: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
+			return &edition.EditionResult{Success: true, EditionID: 34}, nil
+		},
+		getEditionUncached: func(context.Context, string) (*models.Edition, error) {
+			return &models.Edition{ID: "34", BookID: "21", ReadingFormatID: "4"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if discovered || imported || result.Status != "created" || result.EditionID != 34 {
+		t.Fatalf("ebook regions affected audiobook or ebook creation: discovered=%v imported=%v result=%#v", discovered, imported, result)
+	}
+}
+
+func TestRunCreateSharesEbookDeadlineThroughReadBackAndReleasesStateLock(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "sync-state.json")
+	inputPath := writeCreateInput(t, `{"book_id":21,"title":"Ebook","isbn_13":"9780306406157","author_ids":[3],"reading_format":"ebook","abs_item_id":"item-1"}`)
+	parentCtx, parentCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer parentCancel()
+	var createDeadline time.Time
+	_, err := runCreate(parentCtx, createOptions{InputPath: inputPath, StateFile: statePath}, createServices{
+		fetchABSItem: func(context.Context, string) (*models.AudiobookshelfBook, error) {
+			return testEbook("item-1", "", "9780306406157"), nil
+		},
+		createEbook: func(ctx context.Context, _ *edition.EditionInput) (*edition.EditionResult, error) {
+			var ok bool
+			createDeadline, ok = ctx.Deadline()
+			if !ok {
+				t.Fatal("ebook insertion did not receive a deadline")
+			}
+			return &edition.EditionResult{Success: true, EditionID: 34}, nil
+		},
+		getEditionUncached: func(ctx context.Context, _ string) (*models.Edition, error) {
+			readDeadline, ok := ctx.Deadline()
+			if !ok || !readDeadline.Equal(createDeadline) {
+				t.Fatalf("read-back did not share insertion deadline: insert=%v read=%v hasDeadline=%v", createDeadline, readDeadline, ok)
+			}
+			if err := ctx.Err(); err != nil {
+				t.Fatalf("read-back context was canceled before verification began: %v", err)
+			}
+			lock, lockErr := state.AcquireFileLock(statePath)
+			if lock != nil {
+				_ = lock.Close()
+			}
+			if !errors.Is(lockErr, state.ErrStateFileLocked) {
+				t.Fatalf("state lock was not held during ebook read-back: %v", lockErr)
+			}
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected read-back deadline error, got %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "could not be verified") {
+		t.Fatalf("timeout did not report unverified remote creation: %v", err)
+	}
+	lock, lockErr := state.AcquireFileLock(statePath)
+	if lockErr != nil {
+		t.Fatalf("state lock was not released after read-back timeout: %v", lockErr)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatalf("release state lock after verification: %v", err)
+	}
+	loaded, loadErr := state.LoadState(statePath)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if _, exists := loaded.GetAssociation("item-1"); exists {
+		t.Fatal("timed-out ebook verification persisted an association")
 	}
 }
 

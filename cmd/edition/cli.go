@@ -132,9 +132,11 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 	default:
 		return nil, fmt.Errorf("invalid reading_format %q, expected audiobook or ebook", input.ReadingFormat)
 	}
-	input.ASINRegion, err = input.selectedRegion()
-	if err != nil {
-		return nil, err
+	if input.ReadingFormat == models.ReadingFormatAudiobook {
+		input.ASINRegion, err = input.selectedRegion()
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := validateCreateInput(&input.EditionInput); err != nil {
 		return nil, err
@@ -265,8 +267,8 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 		return nil, errors.New("ebook edition creation is unavailable")
 	}
 	mutationCtx, cancel := withMutationBudget(ctx)
+	defer cancel()
 	created, createErr := services.createEbook(mutationCtx, &input.EditionInput)
-	cancel()
 	if createErr != nil {
 		return nil, ebookCreateError(createErr)
 	}
@@ -280,7 +282,7 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 	if services.getEditionUncached == nil {
 		return nil, fmt.Errorf("Hardcover returned ebook edition %d, but verification is unavailable. Check Hardcover before retrying; retrying may create another edition", created.EditionID)
 	}
-	if err := verifyCreatedEbookEdition(ctx, created.EditionID, input.BookID, services.getEditionUncached); err != nil {
+	if err := verifyCreatedEbookEdition(mutationCtx, created.EditionID, input.BookID, services.getEditionUncached); err != nil {
 		return nil, fmt.Errorf("Hardcover returned ebook edition %d, but it could not be verified. Check Hardcover before retrying; retrying may create another edition: %w", created.EditionID, err)
 	}
 	if absItem != nil {
