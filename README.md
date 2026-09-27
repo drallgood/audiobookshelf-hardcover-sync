@@ -69,6 +69,7 @@ Existing single-profile setups are **automatically migrated** on first startup:
 | `GET` | `/api/profiles/{id}/edition-capability` | Report separate ebook and audiobook edition-write capability evidence |
 | `GET` | `/api/profiles/{id}/runs/{runId}/details` | Get book-level details for a retained sync run |
 | `GET` | `/api/profiles/{id}/edition-drafts/source/{itemID}` | Prepare a read-only edition draft from an Audiobookshelf item |
+| `POST` | `/api/profiles/{id}/edition-drafts/create` | Create an edition from a verified needs-review sync record |
 | `DELETE` | `/api/profiles/{id}/edition-associations/{itemID}` | Forget the saved Hardcover match for one Audiobookshelf item |
 | `POST` | `/api/profiles/{id}/sync` | Start sync |
 | `DELETE` | `/api/profiles/{id}/sync` | Cancel sync |
@@ -124,8 +125,42 @@ See [OpenAPI](docs/openapi.yaml) for response fields and warnings.
 Use a trusted Audiobookshelf URL: this route fetches it with the saved token.
 Enable authentication when exposing the API beyond localhost. A draft may
 check up to ten Audnex regions, with retries, within its 25-second deadline.
-Each server instance prepares at most two drafts concurrently; extra requests
-receive HTTP 429 with `Retry-After: 1`.
+Each server instance has two shared slots for draft and edition-create
+requests. A single authorized caller can occupy both with concurrent creates,
+each of which has a 65-second handler deadline. Excess requests receive HTTP
+429 with `Retry-After: 1`. The HTTP server's 75-second write timeout applies to
+every route.
+
+### Create an edition
+
+`POST /api/profiles/{id}/edition-drafts/create` is the only API route that
+writes an edition to Hardcover, and only when you call it; sync never does.
+The profile's Hardcover token must include `write:catalog:append` for this
+action.
+
+Send the `run_id` and `abs_item_id` of a `needs_review` item from a completed,
+non-dry-run sync. The Hardcover book always comes from that sync record, never
+from the request.
+
+- **Audiobooks** are imported through Hardcover's regional Audible importer.
+  Omit `audible_identifier` to discover the ASIN's region with Audnex, or send
+  `ASIN:region` to choose it. Audiobook metadata cannot be edited.
+- **Ebooks** are inserted as ebook editions. You may correct `title`,
+  `subtitle`, `asin`, `isbn_10`, `isbn_13`, `release_date`, and
+  `edition_format`. An ebook needs an ASIN or ISBN.
+
+The item must still match the sync record: if its ASIN, ISBN, title, author,
+or format changed, run a new sync first. A profile that is syncing, in dry
+run, or already has a saved match is refused. On success the verified
+Hardcover book and edition are saved as the item's match for the next sync.
+
+If an error says Hardcover may already have processed the request, check the
+book in Hardcover before retrying; a retry may create another edition. See
+[OpenAPI](docs/openapi.yaml) for request fields, statuses, and retry guidance.
+If source lookup leaves too little time for the Hardcover write, the API returns
+503 with `Retry-After: 1` before sending the write. If region discovery cannot
+finish within that time, the API returns 503 without a write; supply a known
+`audible_identifier` (`ASIN:region`) to skip discovery.
 
 ### Edition capability
 
@@ -293,10 +328,12 @@ The project follows standard Go project layout:
 
 ### Prerequisites
 
-- Go 1.21 or later
+- Go 1.26 or later
 - Docker (optional, for containerized deployment)
 - Audiobookshelf instance with API access
-- Hardcover API token
+- Hardcover API token with `read:library`, `read:catalog`, `read:lists`,
+  `read:me`, `write:library`, and `write:catalog:append`
+  ([create a token with these scopes](https://hardcover.app/account/api/keys/new?scope=read%3Alibrary+read%3Acatalog+write%3Alibrary+read%3Alists+read%3Ame+write%3Acatalog%3Aappend)).
 
 ### Local Development
 
@@ -360,7 +397,7 @@ The application will automatically migrate settings from the old `app` section t
 
 - [Docker](https://docs.docker.com/engine/install/) installed on your system
 - [Docker Compose](https://docs.docker.com/compose/install/) (recommended for the main sync service)
-- [Hardcover API token](#getting-started) (requires scopes: `read:library`, `read:catalog`, `read:lists`, `read:me`, `write:library` — [create one with this link](https://hardcover.app/account/api/keys/new?scope=read%3Alibrary+read%3Acatalog+write%3Alibrary+read%3Alists+read%3Ame))
+- [Hardcover API token](#prerequisites) with all required scopes — [create one with this link](https://hardcover.app/account/api/keys/new?scope=read%3Alibrary+read%3Acatalog+write%3Alibrary+read%3Alists+read%3Ame+write%3Acatalog%3Aappend).
 - (Optional) [Audiobookshelf](https://www.audiobookshelf.org/) URL and token if using the sync service
 
 
@@ -761,7 +798,7 @@ The application supports two distinct operating modes controlled by the `enable_
 - `AUDIOBOOKSHELF_TOKEN`: Audiobookshelf API token (required for single-user mode)
 - `AUDIOBOOKSHELF_NETWORK_TRUST`: Deployment-wide ABS destination policy
   (`allow_private` by default or `public_only`)
-- `AUDIOBOOKSHELF_AUDNEXUS_REGION`: Legacy Audnex setting; used as the default region for sync when a profile has no `sync_config.audnexus_region`.
+- `AUDIOBOOKSHELF_AUDNEXUS_REGION`: Legacy Audnex setting; used as the default region for sync, edition drafts, and edition creation when a profile has no `sync_config.audnexus_region`.
 - `HARDCOVER_TOKEN`: Hardcover API token (required for single-user mode)
 
 #### Config File
@@ -785,7 +822,7 @@ hardcover:
 | `CONFIG_PATH` | Path to config file | - | `./config.yaml` |
 | `AUDIOBOOKSHELF_URL` | URL of your AudiobookShelf instance | `audiobookshelf.url` | Legacy mode only |
 | `AUDIOBOOKSHELF_TOKEN` | AudiobookShelf API token | `audiobookshelf.token` | Legacy mode only |
-| `AUDIOBOOKSHELF_AUDNEXUS_REGION` | Legacy Audnex setting | `audiobookshelf.audnexus_region` | Fallback region for sync when a profile has no `sync_config.audnexus_region`; carried into the default profile during single-user config migration. |
+| `AUDIOBOOKSHELF_AUDNEXUS_REGION` | Legacy Audnex setting | `audiobookshelf.audnexus_region` | Fallback region for sync, edition drafts, and edition creation when a profile has no `sync_config.audnexus_region`; carried into the default profile during single-user config migration. |
 | `HARDCOVER_TOKEN` | Hardcover API token | `hardcover.token` | Legacy mode only |
 | `HARDCOVER_BASE_URL` | Hardcover API base URL | `hardcover.base_url` | Override default endpoint |
 | `RATE_LIMIT_RATE` | Min time between requests | `rate_limit.rate` | e.g. `2s` (30 rpm) |
@@ -795,7 +832,7 @@ hardcover:
 | `SYNC_LIBRARIES_INCLUDE` | Comma-separated list of libraries to include | `sync.libraries.include` | Legacy mode only |
 | `SYNC_LIBRARIES_EXCLUDE` | Comma-separated list of libraries to exclude | `sync.libraries.exclude` | Legacy mode only |
 
-> **💡 Tip**: Set `sync_config.audnexus_region` on each profile for sync and draft lookups. When a profile has no region preference, sync falls back to the legacy `audiobookshelf.audnexus_region` setting, which is also carried into the default profile when a single-user config is migrated.
+> **💡 Tip**: Set `sync_config.audnexus_region` on each profile for sync, draft, and create lookups. When a profile has no region preference, these fall back to the legacy `audiobookshelf.audnexus_region` setting, which is also carried into the default profile when a single-user config is migrated.
 
 The profile region preference chooses the first marketplace to check, not the ASIN's
 assumed origin. Profile configuration updates preserve omitted settings;

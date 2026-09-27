@@ -43,6 +43,12 @@ var (
 	errCoverFormat = errors.New("cover image is not a PNG or JPEG")
 	// errCoverTooLarge means the downloaded cover exceeds maxCoverBytes.
 	errCoverTooLarge = errors.New("cover image is too large")
+	// ErrCreateEditionPreMutation marks a failure before insert_edition is sent.
+	// Callers can use it to distinguish a safe retry from an uncertain mutation.
+	ErrCreateEditionPreMutation = errors.New("edition creation failed before mutation")
+	// ErrCreateEditionInsufficientMutationBudget marks an opt-in creation request
+	// that could not safely begin insert_edition with its remaining deadline.
+	ErrCreateEditionInsufficientMutationBudget = errors.New("insufficient time remaining before edition mutation")
 )
 
 // EditionInput represents the input data for creating or updating an edition
@@ -419,6 +425,18 @@ func NewCreatorWithHTTPClient(client HardcoverClient, log *logger.Logger, dryRun
 // CreateEdition creates a new edition in Hardcover, an audiobook unless the input
 // says ebook.
 func (c *Creator) CreateEdition(ctx context.Context, input *EditionInput) (*EditionResult, error) {
+	return c.createEditionWithMutationReserve(ctx, input, 0)
+}
+
+// CreateEditionWithMutationReserve creates an edition only if reserve duration
+// remains immediately before insert_edition is sent. Existing-edition lookups
+// still run first, so a matching edition can be reused even when the reserve is
+// no longer available. A non-positive reserve disables the check.
+func (c *Creator) CreateEditionWithMutationReserve(ctx context.Context, input *EditionInput, reserve time.Duration) (*EditionResult, error) {
+	return c.createEditionWithMutationReserve(ctx, input, reserve)
+}
+
+func (c *Creator) createEditionWithMutationReserve(ctx context.Context, input *EditionInput, reserve time.Duration) (*EditionResult, error) {
 	// Validate input
 	if err := input.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid input: %w", err)
@@ -444,7 +462,7 @@ func (c *Creator) CreateEdition(ctx context.Context, input *EditionInput) (*Edit
 	}
 
 	// Step 1: Create the edition first (without image)
-	editionID, existing, err := c.createEdition(ctx, input, 0) // Pass 0 as imageID initially
+	editionID, existing, err := c.createEdition(ctx, input, 0, reserve) // Pass 0 as imageID initially
 	if err != nil {
 		return nil, fmt.Errorf("failed to create edition: %w", err)
 	}
@@ -1030,13 +1048,13 @@ func (c *Creator) findExistingEdition(ctx context.Context, input *EditionInput) 
 // it looks for an existing edition with the same ASIN, ISBN-13 or ISBN-10 (or a
 // converted ISBN form). One that belongs to the same book is returned with true
 // and left untouched; one of another book is an error.
-func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageID int) (int, bool, error) {
+func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageID int, mutationReserve time.Duration) (int, bool, error) {
 	if found, by, lookupErr := c.findExistingEdition(ctx, input); lookupErr != nil {
-		return 0, false, lookupErr
+		return 0, false, fmt.Errorf("%w: %w", ErrCreateEditionPreMutation, lookupErr)
 	} else if found != nil {
 		editionID, adoptErr := adoptExistingEdition(found, input)
 		if adoptErr != nil {
-			return 0, false, adoptErr
+			return 0, false, fmt.Errorf("%w: %w", ErrCreateEditionPreMutation, adoptErr)
 		}
 		c.log.Debug("Edition already exists", map[string]interface{}{
 			"edition_id": editionID,
@@ -1171,6 +1189,16 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 		"mutation":  mutation,
 		"variables": variables,
 	})
+	if mutationReserve > 0 {
+		insufficientBudget := ctx.Err() != nil
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) < mutationReserve {
+			insufficientBudget = true
+		}
+		if insufficientBudget {
+			return 0, false, fmt.Errorf("%w: %w", ErrCreateEditionPreMutation, ErrCreateEditionInsufficientMutationBudget)
+		}
+	}
 
 	// Execute the GraphQL mutation
 	if err := c.client.GraphQLMutation(ctx, mutation, variables, &response); err != nil {

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
 )
 
 const DefaultStateFile = "./data/sync_state.json"
@@ -183,6 +185,20 @@ func resolveStatePath(path string) (string, error) {
 	return resolveStatePathComponents(base, components, make(map[string]struct{}), 0)
 }
 
+// SourceIdentifiers splits an Audiobookshelf item's reported ASIN and ISBN
+// into an association's source identifier fields. The ISBN is recorded as
+// ISBN-10 when it normalizes to ten characters and otherwise as ISBN-13. A
+// malformed or empty ISBN keeps its reported value so a later source
+// correction invalidates the association.
+func SourceIdentifiers(rawASIN, rawISBN string) (asin, isbn10, isbn13 string) {
+	asin = strings.TrimSpace(rawASIN)
+	rawISBN = strings.TrimSpace(rawISBN)
+	if len(isbn.Normalize(rawISBN)) == 10 {
+		return asin, rawISBN, ""
+	}
+	return asin, "", rawISBN
+}
+
 // SetAssociation stores a confirmed Hardcover resolution with the ABS item's
 // base checkpoint. Checkpoint updates preserve this field, and atomic Save
 // persists both together.
@@ -217,6 +233,38 @@ func (s *State) GetAssociation(itemID string) (Association, bool) {
 		return Association{}, false
 	}
 	return *book.Association, true
+}
+
+// InvalidateItemCheckpoints removes an item's base and edition-specific
+// incremental checkpoints. If the base entry already carries an association,
+// it is retained without checkpoint data.
+func (s *State) InvalidateItemCheckpoints(itemID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	changed := false
+	if book, exists := s.Books[itemID]; exists {
+		if book.Association == nil {
+			delete(s.Books, itemID)
+			changed = true
+		} else {
+			associationOnly := Book{Association: book.Association}
+			if book != associationOnly {
+				s.Books[itemID] = associationOnly
+				changed = true
+			}
+		}
+	}
+
+	for key := range s.Books {
+		if strings.HasPrefix(key, itemID+":") {
+			delete(s.Books, key)
+			changed = true
+		}
+	}
+	if changed {
+		s.dirty = true
+	}
 }
 
 // RemoveAssociation forgets an ABS item's association and all incremental

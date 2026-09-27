@@ -30,6 +30,12 @@ type Handler struct {
 	editionDraftRequestTimeout time.Duration
 	// Bounds simultaneous source lookups, including their outbound requests.
 	editionDraftSlots chan struct{}
+	// These factories keep user-confirmed edition creation at external-client
+	// boundaries for focused HTTP tests. Production defaults use the shared
+	// Audiobookshelf URL policy and the global Hardcover client configuration.
+	editionCreateABSClientFactory    func(string, string, string) (editionCreateABSClient, error)
+	editionCreateHardcoverFactory    func(string) editionCreateHardcoverClient
+	editionCreateAudnexClientFactory func() editionCreateAudnexDiscoverer
 }
 
 // NewHandler creates a new API handler.

@@ -102,6 +102,15 @@ have an administrator remove the old profile to prevent duplicate syncs.
 
 Note: The Hardcover client now uses a unified configuration builder in both single-user and multi-user modes. It honors `hardcover.base_url` (defaulting to the official endpoint) and all `rate_limit.*` settings.
 
+### Audnex Region Preferences
+
+Service-mode sync, edition drafts, and edition creation use the legacy
+`AUDIOBOOKSHELF_AUDNEXUS_REGION` setting as a fallback when a profile has no
+saved `sync_config.audnexus_region`, and US when neither is set. When a
+single-user config is migrated to profile storage, its legacy region is copied
+to the `default` profile. To prefer a different region for one profile, set
+`audnexus_region` for it through `PUT /api/profiles/{id}/config`.
+
 ### Data Storage Changes
 - **State File**: The application now maintains state between runs in a JSON file
   - **Migration**: Ensure the directory for state files exists (default: "./data")

@@ -249,6 +249,33 @@ func TestRemoveAssociationClearsOnlyAssociatedCheckpoints(t *testing.T) {
 	assert.Equal(t, 0.9, state.Books["item"].LastProgress)
 }
 
+func TestInvalidateItemCheckpointsClearsOnlyTargetCheckpoints(t *testing.T) {
+	t.Parallel()
+
+	state := NewState()
+	state.UpdateBook("item", 0.4, "IN_PROGRESS")
+	state.SetHasProgressSeconds("item")
+	state.UpdateBook("item:edition", 0.5, "IN_PROGRESS")
+	state.SetHasProgressSeconds("item:edition")
+	state.UpdateBook("item-other:edition", 0.8, "IN_PROGRESS")
+	association := Association{ABSItemID: "item", HardcoverBookID: "101", HardcoverEditionID: "202"}
+	require.NoError(t, state.SetAssociation(association))
+
+	state.InvalidateItemCheckpoints("item")
+
+	base, exists := state.GetBookState("item")
+	require.True(t, exists, "base entry must retain its association")
+	assert.Equal(t, Book{Association: &association}, base)
+	assert.True(t, state.NeedsSync("item", 0.4, "IN_PROGRESS", 0.001))
+	assert.NotContains(t, state.Books, "item:edition")
+	assert.Contains(t, state.Books, "item-other:edition")
+	assert.True(t, state.IsDirty())
+
+	require.NoError(t, state.Save(filepath.Join(t.TempDir(), "state.json")))
+	state.InvalidateItemCheckpoints("item")
+	assert.False(t, state.IsDirty(), "invalidating an already-clear item should be a no-op")
+}
+
 func TestSetAssociationRequiresItemAndHardcoverIDs(t *testing.T) {
 	t.Parallel()
 
@@ -603,4 +630,25 @@ func TestCustomStatePath(t *testing.T) {
 	book, exists := loadedState.GetBookState("test:123")
 	require.True(t, exists)
 	assert.Equal(t, 0.5, book.LastProgress)
+}
+
+func TestSourceIdentifiers(t *testing.T) {
+	tests := []struct {
+		name                         string
+		rawASIN, rawISBN             string
+		wantASIN, wantISBN10, want13 string
+	}{
+		{name: "hyphenated ISBN-10", rawASIN: " B0SOURCE12 ", rawISBN: " 0-306-40615-2 ", wantASIN: "B0SOURCE12", wantISBN10: "0-306-40615-2"},
+		{name: "ISBN-13 keeps reported form", rawISBN: "978-0-306-40615-7", want13: "978-0-306-40615-7"},
+		{name: "malformed ISBN is retained", rawISBN: "12345", want13: "12345"},
+		{name: "no identifiers"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			asin, isbn10, isbn13 := SourceIdentifiers(test.rawASIN, test.rawISBN)
+			assert.Equal(t, test.wantASIN, asin)
+			assert.Equal(t, test.wantISBN10, isbn10)
+			assert.Equal(t, test.want13, isbn13)
+		})
+	}
 }

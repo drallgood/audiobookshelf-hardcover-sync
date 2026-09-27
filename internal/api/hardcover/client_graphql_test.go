@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type graphqlRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f graphqlRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 // TestGraphQLQuery_BookByASIN tests the GraphQL query functionality with a mock API server
 // This is a unit test that doesn't require a real token
@@ -286,6 +293,218 @@ func TestGraphQLQuery_FailsFastOn400(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, 1, int(atomic.LoadInt32(&attempts)))
 	assert.Contains(t, err.Error(), "non-retryable HTTP error")
+}
+
+func TestGraphQLMutationBudgetIsCheckedAfterRateLimitAdmission(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{}}`))
+	}))
+	defer server.Close()
+
+	client := CreateTestClient(server)
+	client.rateLimiter = util.NewRateLimiter(time.Nanosecond, 1, client.logger)
+	client.rateLimiter.OnRateLimit(75 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	ctx = WithMinimumMutationBudget(ctx, 150*time.Millisecond)
+	var result struct{}
+
+	err := client.GraphQLMutation(ctx, `mutation CreateEdition { insert_edition { id } }`, nil, &result)
+
+	require.ErrorIs(t, err, ErrMutationInsufficientBudget)
+	assert.NotErrorIs(t, err, ErrMutationOutcomeAmbiguous)
+	assert.Zero(t, requests.Load(), "the mutation must not reach HTTP after admission consumes the reserve")
+
+	client.rateLimiter.ResetRate()
+	release, err := client.rateLimiter.Acquire(context.Background())
+	require.NoError(t, err, "the permit must be released when the reserve guard exits")
+	release()
+}
+
+func TestGraphQLMutationWithMinimumBudgetDoesNotRetryAfterPossibleSend(t *testing.T) {
+	transportFailure := errors.New("connection reset after request write")
+	tests := []struct {
+		name          string
+		status        int
+		body          string
+		redirectTo    string
+		transportErr  error
+		wantHTTPError bool
+		wantMessage   string
+	}{
+		{
+			name:         "transport error",
+			transportErr: transportFailure,
+			wantMessage:  "connection reset after request write",
+		},
+		{
+			name:          "retryable HTTP response",
+			status:        http.StatusServiceUnavailable,
+			body:          "temporarily unavailable",
+			wantHTTPError: true,
+			wantMessage:   "temporarily unavailable",
+		},
+		{
+			name:        "redirect response",
+			status:      http.StatusTemporaryRedirect,
+			redirectTo:  "/replayed-mutation",
+			wantMessage: "HTTP redirect status 307",
+		},
+		{
+			name:        "GraphQL error response",
+			status:      http.StatusOK,
+			body:        `{"errors":[{"message":"edition insert rejected"}]}`,
+			wantMessage: "edition insert rejected",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if test.redirectTo != "" && r.URL.Path == "/" {
+					http.Redirect(w, r, test.redirectTo, test.status)
+					return
+				}
+				w.WriteHeader(test.status)
+				_, _ = io.WriteString(w, test.body)
+			}))
+			defer server.Close()
+
+			client := CreateTestClient(server)
+			client.maxRetries = 3
+			client.retryDelay = time.Millisecond
+			var attempts atomic.Int32
+			transport := client.httpClient.Transport.(*headerAddingTransport)
+			transport.rt = graphqlRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				attempts.Add(1)
+				if test.transportErr != nil {
+					return nil, test.transportErr
+				}
+				return http.DefaultTransport.RoundTrip(req)
+			})
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			ctx = WithMinimumMutationBudget(ctx, 500*time.Millisecond)
+			var result struct{}
+
+			err := client.GraphQLMutation(ctx, `mutation CreateEdition { insert_edition { id } }`, nil, &result)
+
+			require.ErrorIs(t, err, ErrMutationOutcomeAmbiguous)
+			assert.Equal(t, int32(1), attempts.Load(), "an opted-in mutation must not retry after its first possible send")
+			assert.Contains(t, err.Error(), test.wantMessage, "the original failure should remain visible")
+			if test.transportErr != nil {
+				assert.ErrorIs(t, err, transportFailure)
+			}
+			if test.wantHTTPError {
+				var httpErr *HTTPError
+				require.ErrorAs(t, err, &httpErr)
+				assert.Equal(t, test.status, httpErr.StatusCode)
+			}
+		})
+	}
+}
+
+func TestGraphQLMutationClassifiesOnlyKnownPreExecutionScopeDenials(t *testing.T) {
+	tests := []struct {
+		name      string
+		query     string
+		status    int
+		body      string
+		wantScope bool
+	}{
+		{
+			name:      "observed insert edition HTTP scope denial",
+			query:     `mutation CreateEdition { insert_edition { id } }`,
+			status:    http.StatusForbidden,
+			body:      `{"error":"insufficient_scope","error_description":"Missing scopes: write:catalog:append","scope":"write:catalog:append"}`,
+			wantScope: true,
+		},
+		{
+			name:      "observed regional upsert HTTP scope denial",
+			query:     `mutation ImportRegional { upsert_book { id } }`,
+			status:    http.StatusForbidden,
+			body:      `{"error":"insufficient_scope","error_description":"Missing scopes: write:catalog:append","scope":"write:catalog:append"}`,
+			wantScope: true,
+		},
+		{
+			name:   "unrelated HTTP forbidden remains ambiguous",
+			query:  `mutation CreateEdition { insert_edition { id } }`,
+			status: http.StatusForbidden,
+			body:   `{"error":"insufficient_scope","error_description":"Missing scopes: write:catalog:edit","scope":"write:catalog:edit"}`,
+		},
+		{
+			name:   "HTTP denial with extra result remains ambiguous",
+			query:  `mutation CreateEdition { insert_edition { id } }`,
+			status: http.StatusForbidden,
+			body:   `{"error":"insufficient_scope","error_description":"Missing scopes: write:catalog:append","scope":"write:catalog:append","data":{"insert_edition":{"id":1}}}`,
+		},
+		{
+			name:      "insert edition scope denied",
+			query:     `mutation CreateEdition { insert_edition { id } }`,
+			body:      `{"errors":[{"message":"field 'insert_edition' not found in type: 'mutation_root'","extensions":{"code":"validation-failed"}}]}`,
+			wantScope: true,
+		},
+		{
+			name:      "regional upsert scope denied",
+			query:     `mutation ImportRegional { upsert_book { id } }`,
+			body:      `{"errors":[{"message":"field 'upsert_book' not found in type: 'mutation_root'","extensions":{"code":"validation-failed"}}]}`,
+			wantScope: true,
+		},
+		{
+			name:  "different validation error remains ambiguous",
+			query: `mutation CreateEdition { insert_edition { id } }`,
+			body:  `{"errors":[{"message":"field 'update_book' not found in type: 'mutation_root'","extensions":{"code":"validation-failed"}}]}`,
+		},
+		{
+			name:  "authorization code without validation proof remains ambiguous",
+			query: `mutation CreateEdition { insert_edition { id } }`,
+			body:  `{"errors":[{"message":"field 'insert_edition' not found in type: 'mutation_root'","extensions":{"code":"permission-denied"}}]}`,
+		},
+		{
+			name:  "validation error with data remains ambiguous",
+			query: `mutation CreateEdition { insert_edition { id } }`,
+			body:  `{"data":{"insert_edition":{"id":1}},"errors":[{"message":"field 'insert_edition' not found in type: 'mutation_root'","extensions":{"code":"validation-failed"}}]}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				requests.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				if test.status != 0 {
+					w.WriteHeader(test.status)
+				}
+				_, _ = io.WriteString(w, test.body)
+			}))
+			defer server.Close()
+
+			client := CreateTestClient(server)
+			client.maxRetries = 3
+			client.retryDelay = time.Millisecond
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			ctx = WithMinimumMutationBudget(ctx, 500*time.Millisecond)
+			var result struct{}
+
+			err := client.GraphQLMutation(ctx, test.query, nil, &result)
+
+			require.Error(t, err)
+			assert.EqualValues(t, 1, requests.Load(), "budgeted mutations must not be retried after a possible send")
+			if test.wantScope {
+				require.ErrorIs(t, err, ErrMutationScopeDenied)
+				assert.NotErrorIs(t, err, ErrMutationOutcomeAmbiguous)
+			} else {
+				require.ErrorIs(t, err, ErrMutationOutcomeAmbiguous)
+				assert.NotErrorIs(t, err, ErrMutationScopeDenied)
+			}
+		})
+	}
 }
 
 func TestGraphQLQuery_BoundsRetryAfterPause(t *testing.T) {

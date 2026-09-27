@@ -26,6 +26,109 @@ import (
 type ctxKey string
 
 const ctxKeyAudnexRegion ctxKey = "hardcover_audnex_region"
+const ctxKeyMinimumMutationBudget ctxKey = "hardcover_minimum_mutation_budget"
+
+// ErrMutationInsufficientBudget indicates an opted-in mutation was stopped
+// before any HTTP attempt because too little request time remained or admission
+// was canceled while waiting.
+var ErrMutationInsufficientBudget = errors.New("insufficient time remaining before Hardcover mutation")
+
+// ErrMutationOutcomeAmbiguous indicates an opted-in mutation could not proceed
+// after an earlier HTTP attempt may already have reached Hardcover.
+var ErrMutationOutcomeAmbiguous = errors.New("Hardcover mutation outcome is ambiguous")
+
+// ErrMutationScopeDenied indicates Hardcover rejected a known catalogue write
+// before executing the mutation.
+var ErrMutationScopeDenied = errors.New("Hardcover catalogue mutation scope is denied")
+
+// WithMinimumMutationBudget asks mutation requests made with ctx to require at
+// least reserve time after rate-limit admission and immediately before sending.
+// Contexts without this opt-in retain the client's established behavior.
+func WithMinimumMutationBudget(ctx context.Context, reserve time.Duration) context.Context {
+	if reserve <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyMinimumMutationBudget, reserve)
+}
+
+func minimumMutationBudgetFromContext(ctx context.Context) (time.Duration, bool) {
+	reserve, ok := ctx.Value(ctxKeyMinimumMutationBudget).(time.Duration)
+	return reserve, ok && reserve > 0
+}
+
+func mutationBudgetRemaining(ctx context.Context, reserve time.Duration) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	deadline, ok := ctx.Deadline()
+	return ok && time.Until(deadline) >= reserve
+}
+
+func ambiguousMutationError(err error) error {
+	if err == nil {
+		return ErrMutationOutcomeAmbiguous
+	}
+	return fmt.Errorf("%w: %w", ErrMutationOutcomeAmbiguous, err)
+}
+
+type graphQLError struct {
+	Message    string `json:"message"`
+	Extensions struct {
+		Code string `json:"code"`
+	} `json:"extensions"`
+}
+
+// This intentionally brittle match recognizes only a specific pre-execution
+// GraphQL validation response. If its shape changes, keep the outcome
+// ambiguous rather than treating an unverified error as safe to retry.
+func knownMutationScopeDenial(op graphqlOperation, query string, data json.RawMessage, gqlErrors []graphQLError) bool {
+	if op != mutationOperation || (len(data) > 0 && strings.TrimSpace(string(data)) != "null") || len(gqlErrors) == 0 {
+		return false
+	}
+
+	fields := []string{"insert_edition", "upsert_book"}
+	deniedField := ""
+	for _, field := range fields {
+		if strings.Contains(query, field) {
+			deniedField = field
+			break
+		}
+	}
+	if deniedField == "" {
+		return false
+	}
+
+	for _, gqlErr := range gqlErrors {
+		if gqlErr.Extensions.Code != "validation-failed" {
+			return false
+		}
+		message := strings.ToLower(gqlErr.Message)
+		singleQuotedField := "field '" + deniedField + "' not found in type: 'mutation_root'"
+		doubleQuotedField := `field "` + deniedField + `" not found in type: "mutation_root"`
+		if !strings.Contains(message, singleQuotedField) && !strings.Contains(message, doubleQuotedField) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// The observed catalogue-scope denial is an HTTP 403 rather than a GraphQL
+// error. Recognize only this pre-execution response for the two create writes.
+func knownMutationScopeHTTPDenial(op graphqlOperation, query string, statusCode int, body []byte) bool {
+	if op != mutationOperation || statusCode != http.StatusForbidden ||
+		(!strings.Contains(query, "insert_edition") && !strings.Contains(query, "upsert_book")) {
+		return false
+	}
+
+	var denial map[string]string
+	if json.Unmarshal(body, &denial) != nil || len(denial) != 3 {
+		return false
+	}
+	return denial["error"] == "insufficient_scope" &&
+		denial["scope"] == "write:catalog:append" &&
+		denial["error_description"] == "Missing scopes: write:catalog:append"
+}
 
 // WithReadingFormat returns a context that carries the desired reading format string.
 // Accepted values typically include "audiobook" and "ebook". Case-insensitive.
@@ -465,14 +568,26 @@ func (c *Client) GraphQLMutation(ctx context.Context, mutation string, variables
 
 // executeGraphQLOperation is a helper function that handles the common logic for executing GraphQL operations
 func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperation, query string, variables map[string]interface{}, result interface{}) error {
+	minimumMutationBudget, hasMinimumMutationBudget := minimumMutationBudgetFromContext(ctx)
+	budgetedMutation := op == mutationOperation && hasMinimumMutationBudget
+
 	// Preserve the configured client (including timeout, redirects, cookies, and
 	// custom transport) while adding request/response logging around its
-	// transport. A few tests and callers construct Client values directly, so
-	// retain a safe default when no HTTP client or transport is configured.
+	// transport. Budgeted mutations disable redirects below to prevent a POST
+	// replay. A few tests and callers construct Client values directly, so retain
+	// a safe default when no HTTP client or transport is configured.
 	httpClient := &http.Client{}
 	if c.httpClient != nil {
 		clientCopy := *c.httpClient
 		httpClient = &clientCopy
+	}
+	if budgetedMutation {
+		// A 307 or 308 redirect can replay the mutation body within one Do call.
+		// Return redirects to the caller so a budgeted mutation makes one HTTP
+		// attempt even when the configured client normally follows redirects.
+		httpClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
 	}
 	transport := httpClient.Transport
 	if transport == nil {
@@ -525,6 +640,9 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		// Apply pacing and acquire a permit for the active HTTP request.
 		release, err := c.rateLimiter.Acquire(ctx)
 		if err != nil {
+			if budgetedMutation && ctx.Err() != nil {
+				return fmt.Errorf("%w: rate-limit admission ended before the mutation could be sent: %w", ErrMutationInsufficientBudget, err)
+			}
 			return fmt.Errorf("rate limiter error: %w", err)
 		}
 		// Release the permit exactly once. The explicit calls below free it as
@@ -545,6 +663,13 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		c.logger.Debug("GraphQL request body", map[string]interface{}{
 			"body": string(jsonBody),
 		})
+		if budgetedMutation && !mutationBudgetRemaining(ctx, minimumMutationBudget) {
+			releasePermit()
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return fmt.Errorf("%w: required %s to remain before sending: %w", ErrMutationInsufficientBudget, minimumMutationBudget, ctxErr)
+			}
+			return fmt.Errorf("%w: required %s to remain before sending", ErrMutationInsufficientBudget, minimumMutationBudget)
+		}
 
 		// Execute the request
 		resp, err := httpClient.Do(req)
@@ -555,6 +680,9 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"error":   lastErr.Error(),
 				"attempt": attempt + 1,
 			})
+			if budgetedMutation {
+				return ambiguousMutationError(lastErr)
+			}
 			continue
 		}
 
@@ -568,6 +696,9 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"error":   lastErr.Error(),
 				"attempt": attempt + 1,
 			})
+			if budgetedMutation {
+				return ambiguousMutationError(lastErr)
+			}
 			continue
 		}
 
@@ -583,6 +714,9 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		// can self-throttle proactively before hitting HTTP 429.
 		c.rateLimiter.WithRateLimitHeaders(resp)
 		releasePermit()
+		if budgetedMutation && resp.StatusCode >= 300 && resp.StatusCode < 400 {
+			return ambiguousMutationError(fmt.Errorf("mutation returned HTTP redirect status %d", resp.StatusCode))
+		}
 
 		// Check for HTTP errors
 		if resp.StatusCode >= 400 {
@@ -594,6 +728,12 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"error":   lastErr.Error(),
 				"attempt": attempt + 1,
 			})
+			if budgetedMutation {
+				if knownMutationScopeHTTPDenial(op, query, resp.StatusCode, body) {
+					return fmt.Errorf("%w: %w", ErrMutationScopeDenied, lastErr)
+				}
+				return ambiguousMutationError(lastErr)
+			}
 			if !isRetryableHTTPStatus(resp.StatusCode) {
 				return fmt.Errorf("non-retryable HTTP error: %w", lastErr)
 			}
@@ -604,9 +744,7 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		// First, try to parse as a standard GraphQL response with data/errors fields
 		var gqlResp struct {
 			Data   json.RawMessage `json:"data"`
-			Errors []struct {
-				Message string `json:"message"`
-			} `json:"errors,omitempty"`
+			Errors []graphQLError  `json:"errors,omitempty"`
 		}
 
 		directUnmarshal := false
@@ -641,6 +779,12 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"attempt": attempt + 1,
 				"errors":  gqlResp.Errors,
 			})
+			if budgetedMutation {
+				if knownMutationScopeDenial(op, query, gqlResp.Data, gqlResp.Errors) {
+					return fmt.Errorf("%w: %w", ErrMutationScopeDenied, lastErr)
+				}
+				return ambiguousMutationError(lastErr)
+			}
 			continue
 		}
 
@@ -658,6 +802,9 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 					"attempt": attempt + 1,
 					"body":    string(body),
 				})
+				if budgetedMutation {
+					return ambiguousMutationError(lastErr)
+				}
 				continue
 			}
 			return nil
@@ -670,6 +817,9 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"error":   lastErr.Error(),
 				"attempt": attempt + 1,
 			})
+			if budgetedMutation {
+				return ambiguousMutationError(lastErr)
+			}
 			continue
 		}
 
@@ -681,6 +831,9 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"attempt": attempt + 1,
 				"data":    string(gqlResp.Data),
 			})
+			if budgetedMutation {
+				return ambiguousMutationError(lastErr)
+			}
 			continue
 		}
 
