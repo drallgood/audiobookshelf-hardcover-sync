@@ -1132,7 +1132,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Authenticated caller lacks profile mutation access.
+          description: >-
+            Authenticated caller lacks profile mutation access, or Hardcover
+            confirmed the token lacks catalogue-write permission before
+            executing the mutation; no edition was created for a confirmed
+            catalogue-scope denial.
           content:
             application/json:
               schema:
