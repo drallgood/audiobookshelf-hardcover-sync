@@ -240,6 +240,9 @@ type ClientConfig struct {
 	RateLimit time.Duration
 	// MaxConcurrent specifies the maximum number of concurrent requests (default: from config or 3)
 	MaxConcurrent int
+	// RateLimiter optionally supplies a limiter shared with other profile clients.
+	// When nil, the client creates one from RateLimit and MaxConcurrent.
+	RateLimiter *util.RateLimiter
 }
 
 // headerAddingTransport is an http.RoundTripper that adds the required headers
@@ -389,8 +392,11 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 		Timeout: cfg.Timeout,
 	}
 
-	// Create rate limiter with max concurrent requests from config
-	rateLimiter := util.NewRateLimiter(cfg.RateLimit, cfg.MaxConcurrent, log)
+	// Reuse the profile's limiter when supplied, otherwise create one from config.
+	rateLimiter := cfg.RateLimiter
+	if rateLimiter == nil {
+		rateLimiter = util.NewRateLimiter(cfg.RateLimit, cfg.MaxConcurrent, log)
+	}
 
 	// Create logger if not provided
 	if log == nil {

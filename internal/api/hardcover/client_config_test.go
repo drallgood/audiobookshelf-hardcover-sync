@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -89,6 +90,17 @@ func TestNewClientWithConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNewClientWithConfigReusesProvidedRateLimiter(t *testing.T) {
+	logger.Setup(logger.Config{Level: "error", Format: "json"})
+	limiter := util.NewRateLimiter(time.Nanosecond, 2, logger.Get())
+	config := DefaultClientConfig()
+	config.RateLimiter = limiter
+
+	client := NewClientWithConfig(config, "profile-token", logger.Get())
+
+	require.Same(t, limiter, client.rateLimiter)
 }
 
 func TestClient_GetAuthHeader(t *testing.T) {

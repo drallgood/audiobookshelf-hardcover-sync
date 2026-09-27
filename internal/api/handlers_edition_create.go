@@ -284,7 +284,7 @@ func (h *Handler) createVerifiedEdition(ctx context.Context, profile *database.P
 		return statepkg.Association{}, fmt.Errorf("%w: audible_identifier is only valid for an audiobook", errEditionCreateInvalidInput)
 	}
 
-	client := h.editionCreateHardcoverClient(profile.HardcoverToken)
+	client := h.editionCreateHardcoverClient(profile.Profile.ID, profile.HardcoverToken)
 	var association statepkg.Association
 	if item.ReadingFormat() == models.ReadingFormatAudiobook {
 		association, err = h.createRegionalAudiobook(ctx, profile, item, record, request, client, response)
@@ -714,11 +714,11 @@ func createEditionAssociation(item *models.AudiobookshelfBook, bookID, editionID
 	}
 }
 
-func (h *Handler) editionCreateHardcoverClient(token string) editionCreateHardcoverClient {
+func (h *Handler) editionCreateHardcoverClient(profileID, token string) editionCreateHardcoverClient {
 	if h.editionCreateHardcoverFactory != nil {
 		return h.editionCreateHardcoverFactory(token)
 	}
-	client := h.multiUserService.NewHardcoverClient(token)
+	client := h.multiUserService.NewHardcoverClientForProfile(profileID, token)
 	return editionCreateHardcoverAdapter{Client: client, log: &h.log}
 }
 

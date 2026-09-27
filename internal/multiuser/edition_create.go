@@ -239,16 +239,33 @@ func (s *MultiUserService) ResyncBook(ctx context.Context, profile *database.Pro
 	if err != nil {
 		return sync.BookResyncResult{}, fmt.Errorf("invalid Audiobookshelf client configuration: %w", err)
 	}
-	service, err := sync.NewServiceWithRunIdentity(absClient, s.NewHardcoverClient(profile.HardcoverToken), s.createProfileSpecificConfig(profile), "", time.Time{})
+	service, err := sync.NewServiceWithRunIdentity(absClient, s.NewHardcoverClientForProfile(profile.Profile.ID, profile.HardcoverToken), s.createProfileSpecificConfig(profile), "", time.Time{})
 	if err != nil {
 		return sync.BookResyncResult{}, fmt.Errorf("failed to create sync service: %w", err)
 	}
 	return service.SyncBook(ctx, book, syncState, statePath)
 }
 
-// NewHardcoverClient constructs a profile-token client with the same global
-// endpoint and request pacing used by profile sync workers.
+// NewHardcoverClient constructs a standalone Hardcover client with deployment-
+// wide endpoint and pacing settings. Use NewHardcoverClientForProfile when a
+// profile-scoped shared limiter is required.
 func (s *MultiUserService) NewHardcoverClient(token string) *hardcover.Client {
+	return hardcover.NewClientWithConfig(s.hardcoverClientConfig(), token, s.logger)
+}
+
+// NewHardcoverClientForProfile constructs a token-specific client that shares
+// the profile's request limiter with sync, capability probes, and other create
+// clients. A token change receives a fresh limiter.
+func (s *MultiUserService) NewHardcoverClientForProfile(profileID, token string) *hardcover.Client {
+	clientConfig := s.hardcoverClientConfig()
+	fingerprint := hardcoverTokenFingerprint(token)
+	s.hardcoverClientMutex.Lock()
+	clientConfig.RateLimiter = s.profileHardcoverRateLimiterLocked(profileID, fingerprint)
+	s.hardcoverClientMutex.Unlock()
+	return hardcover.NewClientWithConfig(clientConfig, token, s.logger)
+}
+
+func (s *MultiUserService) hardcoverClientConfig() *hardcover.ClientConfig {
 	clientConfig := hardcover.DefaultClientConfig()
 	if s.globalConfig != nil {
 		if s.globalConfig.Hardcover.BaseURL != "" {
@@ -261,5 +278,5 @@ func (s *MultiUserService) NewHardcoverClient(token string) *hardcover.Client {
 			clientConfig.MaxConcurrent = s.globalConfig.RateLimit.MaxConcurrent
 		}
 	}
-	return hardcover.NewClientWithConfig(clientConfig, token, s.logger)
+	return clientConfig
 }
