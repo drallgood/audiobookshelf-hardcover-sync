@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audnex"
@@ -19,6 +20,16 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
+)
+
+const (
+	// createHardcoverTimeout bounds each catalogue write, its polling, and its
+	// read-back, matching the create API's request timeout.
+	createHardcoverTimeout = 65 * time.Second
+	// createMutationReserve is the time that must remain when a catalogue
+	// mutation is sent, matching the create API. It covers regional import
+	// polling and read-back, and makes the client send the mutation at most once.
+	createMutationReserve = 35 * time.Second
 )
 
 type editionCreateInput struct {
@@ -97,7 +108,7 @@ func newCreateServices(cfg *config.Config, log *logger.Logger, dryRun bool) (cre
 			return hc.ImportRegionalAudiobook(ctx, input)
 		},
 		createEbook: func(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
-			return creator.CreateEdition(ctx, input)
+			return creator.CreateEditionWithMutationReserve(ctx, input, createMutationReserve)
 		},
 		getEditionUncached: hc.GetEditionUncached,
 	}, nil
@@ -197,13 +208,15 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 		if services.importAudiobook == nil {
 			return nil, errors.New("regional audiobook import is unavailable")
 		}
-		resolved, importErr := services.importAudiobook(ctx, hardcover.RegionalAudiobookInput{
+		mutationCtx, cancel := withMutationBudget(ctx)
+		resolved, importErr := services.importAudiobook(mutationCtx, hardcover.RegionalAudiobookInput{
 			BookID: input.BookID,
 			ASIN:   input.ASIN,
 			Region: region,
 		})
+		cancel()
 		if importErr != nil {
-			return nil, fmt.Errorf("failed to import audiobook: %w", importErr)
+			return nil, audiobookImportError(importErr)
 		}
 		if resolved == nil {
 			return nil, errors.New("regional audiobook import returned no result")
@@ -254,9 +267,11 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 	if services.createEbook == nil {
 		return nil, errors.New("ebook edition creation is unavailable")
 	}
-	created, createErr := services.createEbook(ctx, &input.EditionInput)
+	mutationCtx, cancel := withMutationBudget(ctx)
+	created, createErr := services.createEbook(mutationCtx, &input.EditionInput)
+	cancel()
 	if createErr != nil {
-		return nil, fmt.Errorf("failed to create ebook edition: %w", createErr)
+		return nil, ebookCreateError(createErr)
 	}
 	if created == nil || !created.Success || created.EditionID <= 0 {
 		return nil, errors.New("ebook edition creation returned no confirmed edition")
@@ -279,6 +294,47 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 		output.AssociationSaved = true
 	}
 	return output, nil
+}
+
+// withMutationBudget bounds a catalogue write like the create API does. The
+// Hardcover client then refuses to send the mutation without the reserve left
+// and never retries it after an attempt that may have reached Hardcover.
+func withMutationBudget(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(ctx, createHardcoverTimeout)
+	return hardcover.WithMinimumMutationBudget(ctx, createMutationReserve), cancel
+}
+
+// audiobookImportError says whether a failed regional import could have
+// changed Hardcover, so the operator knows whether a retry is safe.
+func audiobookImportError(err error) error {
+	switch {
+	case errors.Is(err, hardcover.ErrMutationInsufficientBudget):
+		return fmt.Errorf("failed to import audiobook: too little time remained to send the import, and no Hardcover change was made; retry: %w", err)
+	case errors.Is(err, hardcover.ErrMutationScopeDenied):
+		return fmt.Errorf("failed to import audiobook: Hardcover catalogue write permission is required, and no edition was created: %w", err)
+	case errors.Is(err, hardcover.ErrRegionalAudiobookInvalidInput),
+		errors.Is(err, hardcover.ErrRegionalAudiobookDryRun),
+		errors.Is(err, hardcover.ErrRegionalAudiobookImportFailed):
+		return fmt.Errorf("failed to import audiobook: %w", err)
+	default:
+		return fmt.Errorf("failed to import audiobook: Hardcover may have processed the import; verify the book in Hardcover before retrying: %w", err)
+	}
+}
+
+// ebookCreateError says whether a failed ebook insertion could have changed
+// Hardcover, so the operator knows whether a retry is safe.
+func ebookCreateError(err error) error {
+	switch {
+	case errors.Is(err, hardcover.ErrMutationInsufficientBudget),
+		errors.Is(err, edition.ErrCreateEditionInsufficientMutationBudget):
+		return fmt.Errorf("failed to create ebook edition: too little time remained to send the insertion, and no Hardcover change was made; retry: %w", err)
+	case errors.Is(err, hardcover.ErrMutationScopeDenied):
+		return fmt.Errorf("failed to create ebook edition: Hardcover catalogue write permission is required, and no edition was created: %w", err)
+	case errors.Is(err, edition.ErrCreateEditionPreMutation):
+		return fmt.Errorf("failed to create ebook edition: %w", err)
+	default:
+		return fmt.Errorf("failed to create ebook edition: Hardcover may have processed the insertion; verify the book in Hardcover before retrying: %w", err)
+	}
 }
 
 func readEditionCreateInput(path string) (editionCreateInput, error) {

@@ -34,10 +34,18 @@ const (
 type fakeHardcover struct {
 	t *testing.T
 
-	upsertResponse string
-	importStatus   string
-	readbackBook   int
-	readbackFormat int
+	upsertResponse   string
+	upsertHTTPStatus int
+	insertResponse   string
+	insertHTTPStatus int
+	importStatus     string
+	readbackBook     int
+	readbackFormat   int
+	// emptyLookups answers unrecognized read queries, such as ebook duplicate
+	// lookups, with no matches.
+	emptyLookups bool
+	// onPoll runs when the regional import status is polled.
+	onPoll func()
 
 	mu               sync.Mutex
 	upsertCalls      int
@@ -71,14 +79,21 @@ func (f *fakeHardcover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.Contains(request.Query, "insert_edition"):
 		f.insertEditions++
-		http.Error(w, "unexpected insert_edition", http.StatusBadRequest)
+		if f.insertResponse == "" && f.insertHTTPStatus == 0 {
+			http.Error(w, "unexpected insert_edition", http.StatusBadRequest)
+			return
+		}
+		writeFakeResponse(w, f.insertHTTPStatus, f.insertResponse)
 	case strings.Contains(request.Query, "UpsertRegionalAudibleBook"):
 		f.upsertCalls++
 		if book, ok := request.Variables["book"].(map[string]interface{}); ok {
 			f.upsertExternalID, _ = book["external_id"].(string)
 		}
-		_, _ = w.Write([]byte(f.upsertResponse))
+		writeFakeResponse(w, f.upsertHTTPStatus, f.upsertResponse)
 	case strings.Contains(request.Query, "RegionalAudibleImport"):
+		if f.onPoll != nil {
+			f.onPoll()
+		}
 		statuses := []map[string]interface{}{{
 			"status": f.importStatus, "book_id": boundaryBookID, "edition_id": boundaryEditionID,
 			"external_id": boundaryRegional, "platform_id": 32,
@@ -91,10 +106,20 @@ func (f *fakeHardcover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(w, `{"data":{"editions":[{"id":%d,"book_id":%d,"reading_format_id":%d}]}}`, boundaryEditionID, f.readbackBook, f.readbackFormat)
 	case strings.Contains(request.Query, "GetBook"):
 		_, _ = fmt.Fprintf(w, `{"data":{"book":{"id":%d,"title":"Prepopulated","asin":%q,"isbn13":"9780306406157","authors":[{"id":3,"name":"Author"}],"narrators":[{"id":4,"name":"Narrator"}]}}}`, boundaryBookID, boundaryASIN)
+	case f.emptyLookups && !strings.HasPrefix(strings.TrimSpace(request.Query), "mutation"):
+		_, _ = w.Write([]byte(`{"data":{"books":[],"editions":[],"book_mappings":[]}}`))
 	default:
 		f.t.Errorf("unexpected Hardcover query: %s", request.Query)
 		http.Error(w, "unexpected query", http.StatusBadRequest)
 	}
+}
+
+func writeFakeResponse(w http.ResponseWriter, status int, body string) {
+	if status != 0 && status != http.StatusOK {
+		http.Error(w, "Hardcover unavailable", status)
+		return
+	}
+	_, _ = w.Write([]byte(body))
 }
 
 func (f *fakeHardcover) counts() (upserts, inserts int, externalID string) {
@@ -214,15 +239,37 @@ func TestCreateCommandImportsAudiobookAndSavesAssociation(t *testing.T) {
 func TestCreateCommandSavesNothingWhenHardcoverImportFails(t *testing.T) {
 	const scopeDenied = `{"errors":[{"message":"field 'upsert_book' not found in type: 'mutation_root'","extensions":{"code":"validation-failed"}}]}`
 	tests := []struct {
-		name  string
-		setup func(*fakeHardcover)
+		name      string
+		setup     func(*fakeHardcover)
+		wantError string
 	}{
-		{name: "missing catalogue write scope", setup: func(f *fakeHardcover) { f.upsertResponse = scopeDenied }},
-		{name: "import failure", setup: func(f *fakeHardcover) {
-			f.upsertResponse = `{"data":{"upsert_book":{"id":77,"status":"failed","book":null,"edition":null,"edition_id":null,"errors":["Audible lookup failed"]}}}`
-		}},
-		{name: "wrong book", setup: func(f *fakeHardcover) { f.readbackBook = boundaryBookID + 1 }},
-		{name: "wrong reading format", setup: func(f *fakeHardcover) { f.readbackFormat = 4 }},
+		{
+			name:      "missing catalogue write scope",
+			setup:     func(f *fakeHardcover) { f.upsertResponse = scopeDenied },
+			wantError: "catalogue write permission is required, and no edition was created",
+		},
+		{
+			name: "import failure",
+			setup: func(f *fakeHardcover) {
+				f.upsertResponse = `{"data":{"upsert_book":{"id":77,"status":"failed","book":null,"edition":null,"edition_id":null,"errors":["Audible lookup failed"]}}}`
+			},
+			wantError: "regional audiobook import failed",
+		},
+		{
+			name:      "unanswered import is not resent",
+			setup:     func(f *fakeHardcover) { f.upsertHTTPStatus = http.StatusBadGateway },
+			wantError: "Hardcover may have processed the import",
+		},
+		{
+			name:      "wrong book",
+			setup:     func(f *fakeHardcover) { f.readbackBook = boundaryBookID + 1 },
+			wantError: "Hardcover may have processed the import",
+		},
+		{
+			name:      "wrong reading format",
+			setup:     func(f *fakeHardcover) { f.readbackFormat = 4 },
+			wantError: "Hardcover may have processed the import",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -231,11 +278,12 @@ func TestCreateCommandSavesNothingWhenHardcoverImportFails(t *testing.T) {
 			env := newCommandEnv(t, hc, boundaryABSItemJS)
 			inputPath := writeCreateInput(t, fmt.Sprintf(`{"book_id":%d,"abs_item_id":%q,"asin":%q,"asin_region":"uk"}`, boundaryBookID, boundaryABSItem, boundaryASIN))
 
-			if _, err := env.run(t, "create", "--input", inputPath); err == nil {
-				t.Fatal("expected the failed import to exit with an error")
+			_, err := env.run(t, "create", "--input", inputPath)
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("expected error containing %q, got %v", tt.wantError, err)
 			}
-			if upserts, inserts, _ := hc.counts(); upserts == 0 || inserts != 0 {
-				t.Fatalf("expected an upsert_book attempt and no insert_edition fallback, got upserts=%d inserts=%d", upserts, inserts)
+			if upserts, inserts, _ := hc.counts(); upserts != 1 || inserts != 0 {
+				t.Fatalf("expected upsert_book sent once and no insert_edition fallback, got upserts=%d inserts=%d", upserts, inserts)
 			}
 			if _, ok := env.association(t); ok {
 				t.Fatal("a failed import saved an association")
@@ -311,10 +359,8 @@ func TestCreateCommandPrepopulatedTemplateImportsAudiobook(t *testing.T) {
 	}
 }
 
-func TestRunCreateSavesNothingWhenImportTimesOut(t *testing.T) {
-	hc := newFakeHardcover(t)
-	hc.importStatus = "fetching"
-	env := newCommandEnv(t, hc, boundaryABSItemJS)
+func realCreateServices(t *testing.T, env commandEnv) createServices {
+	t.Helper()
 	cfg, err := loadEditionConfig(env.configPath, true)
 	if err != nil {
 		t.Fatal(err)
@@ -323,19 +369,81 @@ func TestRunCreateSavesNothingWhenImportTimesOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inputPath := writeCreateInput(t, fmt.Sprintf(`{"book_id":%d,"abs_item_id":%q,"asin":%q,"asin_region":"uk"}`, boundaryBookID, boundaryABSItem, boundaryASIN))
-	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
-	defer cancel()
+	return services
+}
 
-	_, err = runCreate(ctx, createOptions{InputPath: inputPath, StateFile: env.statePath}, services)
-	if err == nil || !strings.Contains(err.Error(), "failed to import audiobook") {
-		t.Fatalf("expected an import timeout error, got %v", err)
+func TestRunCreateReportsPossibleImportWhenStoppedAfterSending(t *testing.T) {
+	hc := newFakeHardcover(t)
+	hc.importStatus = "fetching"
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// The operator stops the command while Hardcover is still importing.
+	hc.onPoll = cancel
+	env := newCommandEnv(t, hc, boundaryABSItemJS)
+	inputPath := writeCreateInput(t, fmt.Sprintf(`{"book_id":%d,"abs_item_id":%q,"asin":%q,"asin_region":"uk"}`, boundaryBookID, boundaryABSItem, boundaryASIN))
+
+	_, err := runCreate(ctx, createOptions{InputPath: inputPath, StateFile: env.statePath}, realCreateServices(t, env))
+	if err == nil || !strings.Contains(err.Error(), "Hardcover may have processed the import") {
+		t.Fatalf("expected a possible-import error, got %v", err)
 	}
 	if upserts, inserts, _ := hc.counts(); upserts != 1 || inserts != 0 {
 		t.Fatalf("expected one upsert_book and no insert_edition, got upserts=%d inserts=%d", upserts, inserts)
 	}
 	if _, ok := env.association(t); ok {
-		t.Fatal("a timed-out import saved an association")
+		t.Fatal("an unfinished import saved an association")
+	}
+}
+
+func TestRunCreateRefusesImportWithoutMutationReserve(t *testing.T) {
+	hc := newFakeHardcover(t)
+	env := newCommandEnv(t, hc, boundaryABSItemJS)
+	inputPath := writeCreateInput(t, fmt.Sprintf(`{"book_id":%d,"asin":%q,"asin_region":"uk"}`, boundaryBookID, boundaryASIN))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := runCreate(ctx, createOptions{InputPath: inputPath, StateFile: env.statePath}, realCreateServices(t, env))
+	if err == nil || !strings.Contains(err.Error(), "no Hardcover change was made") {
+		t.Fatalf("expected a no-change budget error, got %v", err)
+	}
+	if upserts, inserts, _ := hc.counts(); upserts != 0 || inserts != 0 {
+		t.Fatalf("a mutation was sent without its reserve: upserts=%d inserts=%d", upserts, inserts)
+	}
+}
+
+func TestCreateCommandSendsEbookInsertionOnce(t *testing.T) {
+	const scopeDenied = `{"errors":[{"message":"field 'insert_edition' not found in type: 'mutation_root'","extensions":{"code":"validation-failed"}}]}`
+	tests := []struct {
+		name      string
+		setup     func(*fakeHardcover)
+		wantError string
+	}{
+		{
+			name:      "missing catalogue write scope",
+			setup:     func(f *fakeHardcover) { f.insertResponse = scopeDenied },
+			wantError: "catalogue write permission is required, and no edition was created",
+		},
+		{
+			name:      "unanswered insertion is not resent",
+			setup:     func(f *fakeHardcover) { f.insertHTTPStatus = http.StatusBadGateway },
+			wantError: "Hardcover may have processed the insertion",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hc := newFakeHardcover(t)
+			hc.emptyLookups = true
+			tt.setup(hc)
+			env := newCommandEnv(t, hc, "")
+			inputPath := writeCreateInput(t, fmt.Sprintf(`{"book_id":%d,"title":"Ebook","isbn_13":"9780306406157","author_ids":[3],"reading_format":"ebook"}`, boundaryBookID))
+
+			_, err := env.run(t, "create", "--input", inputPath)
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("expected error containing %q, got %v", tt.wantError, err)
+			}
+			if upserts, inserts, _ := hc.counts(); upserts != 0 || inserts != 1 {
+				t.Fatalf("expected insert_edition sent once, got upserts=%d inserts=%d", upserts, inserts)
+			}
+		})
 	}
 }
 

@@ -116,6 +116,12 @@ book is refused.
 
 ## Results and saved matches
 
+Each Hardcover write is sent at most once and only when enough time remains to
+confirm it. If a write fails, the error says whether Hardcover may have
+processed it. When it says so, check the book in Hardcover before retrying. A
+missing catalogue-write permission is reported as such, with no edition
+created.
+
 The command prints a JSON result with `success`, `status`, `book_id`,
 `edition_id`, `image_id`, and `reading_format`; it may also include
 `image_error`, `existing`, `abs_item_id`, and `association_saved`. Audiobook
