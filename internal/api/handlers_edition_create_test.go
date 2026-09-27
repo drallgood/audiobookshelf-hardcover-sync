@@ -415,6 +415,60 @@ func TestCreateEditionFromDraftIgnoresTransientAudnexEnrichmentFailure(t *testin
 	require.Equal(t, "2020-02-03", envelope.Data.MetadataPreview.ReleaseDate)
 }
 
+func TestCreateEditionFromDraftBoundsExplicitAudnexEnrichmentBeforeWrite(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{
+		"id":"abs-item-1","mediaType":"book","media":{
+			"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0SOURCE12","isbn":"9780306406157","publishedDate":"2020-02-03"},
+			"duration":100,"numTracks":1
+		}}`, "us")
+	configureEditionCreateRoute(t, fixture)
+	record := editionCreateRecord()
+	record.Title = "Reviewed title"
+	record.Author = "Author"
+	addCompletedNeedsReviewRun(t, fixture, "run-explicit-enrichment-budget", record)
+	var lookupDeadline time.Time
+	fixture.handler.editionCreateAudnexClientFactory = func() editionCreateAudnexDiscoverer {
+		return editionCreateAudnexStub{getFn: func(ctx context.Context, _, _ string) (*audnex.Book, error) {
+			var ok bool
+			lookupDeadline, ok = ctx.Deadline()
+			require.True(t, ok)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}}
+	}
+	var counts editionCreateCallCounts
+	fixture.handler.editionCreateHardcoverFactory = countingEditionCreateClient(&counts)
+	requestCtx, cancel := context.WithTimeout(context.Background(), editionCreateMutationReserve+1500*time.Millisecond)
+	defer cancel()
+	request := httptest.NewRequest(http.MethodPost, "/api/profiles/draft-profile/edition-drafts/create", strings.NewReader(
+		`{"run_id":"run-explicit-enrichment-budget","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`,
+	)).WithContext(requestCtx)
+	request.AddCookie(fixture.sessionCookie(t, fixture.owner))
+	response := httptest.NewRecorder()
+	fixture.routes.ServeHTTP(response, request)
+
+	requestDeadline, ok := requestCtx.Deadline()
+	require.True(t, ok)
+	require.True(t, lookupDeadline.Before(requestDeadline), "optional enrichment must end before the request")
+	require.NoError(t, requestCtx.Err())
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.EqualValues(t, 1, counts.imports.Load())
+	stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+	require.NoError(t, err)
+	association, exists := stored.GetAssociation("abs-item-1")
+	require.True(t, exists)
+	require.Equal(t, "B0SOURCE12:uk", association.RegionalExternalID)
+	var envelope struct {
+		Data struct {
+			MetadataPreview struct {
+				ReleaseDate string `json:"release_date"`
+			} `json:"metadata_preview"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	require.Equal(t, "2020-02-03", envelope.Data.MetadataPreview.ReleaseDate)
+}
+
 func TestCreateEditionFromDraftCreatesEbookWhenOptionalPublisherSearchFails(t *testing.T) {
 	fixture := newEditionDraftTestFixture(t, `{
 		"id":"abs-item-1","mediaType":"ebook","media":{

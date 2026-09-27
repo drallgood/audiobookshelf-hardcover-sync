@@ -330,7 +330,14 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 		regionalBook = found
 	} else {
 		correction = request.AudibleIdentifier
-		found, lookupErr := h.editionCreateAudnexDiscoverer().GetBookByASIN(ctx, asin, region)
+		lookupCtx := ctx
+		if deadline, ok := ctx.Deadline(); ok {
+			// Leave a small margin to check the lookup result before admitting the write.
+			var cancel context.CancelFunc
+			lookupCtx, cancel = context.WithDeadline(ctx, deadline.Add(-editionCreateMutationReserve-time.Second))
+			defer cancel()
+		}
+		found, lookupErr := h.editionCreateAudnexDiscoverer().GetBookByASIN(lookupCtx, asin, region)
 		if ctx.Err() != nil {
 			return statepkg.Association{}, fmt.Errorf("Audnex lookup for corrected Audible identifier was canceled: %w", ctx.Err())
 		}
