@@ -2134,6 +2134,25 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 
 	// Early filtering for incremental sync - check if book needs syncing
 	if s.config.Sync.Incremental {
+		// Step 11 migration: editions.asin and bare-ISBN audiobook matching are
+		// no longer valid, and Step 8 persists a durable Association for every
+		// audiobook match method that remains valid after this step. So "this
+		// audiobook has a checkpoint but no persisted Association" identifies
+		// exactly the set that needs re-review, with no separate bookkeeping.
+		// Clear the stale checkpoint before NeedsSync runs below so this same
+		// sync pass falls through to a full match attempt (instead of coasting
+		// on unchanged progress/status) rather than requiring a second sync to
+		// notice. This must stay after every policy skip above so a book
+		// already skipped this run is never pulled into a match attempt here,
+		// and it never touches a book that already has a persisted association.
+		if s.state != nil && book.ReadingFormat() == models.ReadingFormatAudiobook {
+			if _, hasCheckpoint := s.state.GetBookState(book.ID); hasCheckpoint {
+				if _, hasAssociation := s.state.GetAssociation(book.ID); !hasAssociation {
+					s.state.InvalidateItemCheckpoints(book.ID)
+				}
+			}
+		}
+
 		// Calculate current progress and status
 		currentProgress := 0.0
 		if book.Media.Duration > 0 { // Ensure duration is not zero to avoid division by zero
@@ -5339,67 +5358,72 @@ func (s *Service) findBookInHardcoverWithASINMatch(ctx context.Context, book mod
 		}
 	}
 
-	// 2. Try to find by ISBN if available. The ABS value is searched as the form
-	// it has and as its derived ISBN-10/ISBN-13 counterpart, each in its own field.
-	if candidates := isbnSearchCandidates(book.Media.Metadata.ISBN); len(candidates) > 0 {
-		s.debugRequestIntent(log, fmt.Sprintf("Searching for book by ISBN: %s", book.Media.Metadata.ISBN), nil)
+	// 2. Try to find by ISBN if available. Ebooks only: a bare ISBN match is not
+	// a region-qualified, verified Audible identity, so it no longer applies to
+	// audiobooks (see Step 11 of the needs-review edition plan). The ABS value
+	// is searched as the form it has and as its derived ISBN-10/ISBN-13
+	// counterpart, each in its own field.
+	if book.ReadingFormat() == models.ReadingFormatEbook {
+		if candidates := isbnSearchCandidates(book.Media.Metadata.ISBN); len(candidates) > 0 {
+			s.debugRequestIntent(log, fmt.Sprintf("Searching for book by ISBN: %s", book.Media.Metadata.ISBN), nil)
 
-		for _, candidate := range candidates {
-			var hcBook *models.HardcoverBook
-			var err error
-			if candidate.is13 {
-				hcBook, err = s.hardcover.SearchBookByISBN13(ctx, candidate.value)
-			} else {
-				hcBook, err = s.hardcover.SearchBookByISBN10(ctx, candidate.value)
-			}
-			if err != nil {
-				// Check if this is a BookError with a book ID
-				var bookErr *hardcover.BookError
-				if errors.As(err, &bookErr) {
-					if candidate.is13 {
-						log.Debug("Found book ID in BookError from ISBN-13 search", map[string]interface{}{
-							"book_id": bookErr.BookID,
-							"error":   bookErr.Error(),
-						})
-						// Create a minimal book with just the ID
-						return &models.HardcoverBook{
-							ID: bookErr.BookID,
-						}, bookErr, false, nil
+			for _, candidate := range candidates {
+				var hcBook *models.HardcoverBook
+				var err error
+				if candidate.is13 {
+					hcBook, err = s.hardcover.SearchBookByISBN13(ctx, candidate.value)
+				} else {
+					hcBook, err = s.hardcover.SearchBookByISBN10(ctx, candidate.value)
+				}
+				if err != nil {
+					// Check if this is a BookError with a book ID
+					var bookErr *hardcover.BookError
+					if errors.As(err, &bookErr) {
+						if candidate.is13 {
+							log.Debug("Found book ID in BookError from ISBN-13 search", map[string]interface{}{
+								"book_id": bookErr.BookID,
+								"error":   bookErr.Error(),
+							})
+							// Create a minimal book with just the ID
+							return &models.HardcoverBook{
+								ID: bookErr.BookID,
+							}, bookErr, false, nil
+						}
+						if bookErr.BookID != "" {
+							log.Debug("Found book ID in BookError from ISBN-10 search", map[string]interface{}{
+								"book_id": bookErr.BookID,
+								"error":   bookErr.Error(),
+							})
+							// Create a minimal book with just the ID
+							return &models.HardcoverBook{
+								ID: bookErr.BookID,
+							}, nil, false, nil
+						}
 					}
-					if bookErr.BookID != "" {
-						log.Debug("Found book ID in BookError from ISBN-10 search", map[string]interface{}{
-							"book_id": bookErr.BookID,
-							"error":   bookErr.Error(),
-						})
-						// Create a minimal book with just the ID
-						return &models.HardcoverBook{
-							ID: bookErr.BookID,
-						}, nil, false, nil
+					if lookupErr == nil {
+						lookupErr = fmt.Errorf("%w: %s lookup: %w", errHardcoverLookupFailed, candidate.label(), err)
 					}
+					log.Warn(fmt.Sprintf("Search by %s failed, will try other identifiers or methods: %v", candidate.label(), err), nil)
+				} else if hcBook != nil {
+					if writeMode == associationWriteAll {
+						s.recordVerifiedISBNAssociation(book, hcBook)
+					}
+					if writeMode != associationWriteAll && book.ReadingFormat() == models.ReadingFormatEbook {
+						return hcBook, nil, false, nil
+					}
+					foundBook, err := s.processFoundBook(ctx, hcBook, book)
+					return foundBook, err, false, nil
 				}
-				if lookupErr == nil {
-					lookupErr = fmt.Errorf("%w: %s lookup: %w", errHardcoverLookupFailed, candidate.label(), err)
-				}
-				log.Warn(fmt.Sprintf("Search by %s failed, will try other identifiers or methods: %v", candidate.label(), err), nil)
-			} else if hcBook != nil {
-				if writeMode == associationWriteAll {
-					s.recordVerifiedISBNAssociation(book, hcBook)
-				}
-				if writeMode != associationWriteAll && book.ReadingFormat() == models.ReadingFormatEbook {
-					return hcBook, nil, false, nil
-				}
-				foundBook, err := s.processFoundBook(ctx, hcBook, book)
-				return foundBook, err, false, nil
 			}
+
+			log.Warn("Failed to find book by ISBN, will try other methods", map[string]interface{}{
+				"title":  book.Media.Metadata.Title,
+				"author": book.Media.Metadata.AuthorName,
+				"isbn":   book.Media.Metadata.ISBN,
+				"asin":   book.Media.Metadata.ASIN,
+			})
+			// Don't return here - fall through to try title/author search.
 		}
-
-		log.Warn("Failed to find book by ISBN, will try other methods", map[string]interface{}{
-			"title":  book.Media.Metadata.Title,
-			"author": book.Media.Metadata.AuthorName,
-			"isbn":   book.Media.Metadata.ISBN,
-			"asin":   book.Media.Metadata.ASIN,
-		})
-		// Don't return here - fall through to try title/author search.
 	}
 
 	// 3. If we get here, we couldn't find the book by ASIN or ISBN, try title/author search

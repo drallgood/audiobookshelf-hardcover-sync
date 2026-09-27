@@ -242,7 +242,6 @@ func TestFindBookInHardcoverPersistsVerifiedISBNMatches(t *testing.T) {
 	}{
 		{name: "ebook ISBN-13", format: models.ReadingFormatEbook, isbn: "978-0-306-40615-7", wantSaved: true},
 		{name: "ebook ISBN-10", format: models.ReadingFormatEbook, isbn: "0-306-40615-2", wantSaved: true},
-		{name: "audiobook ISBN stays ephemeral", format: models.ReadingFormatAudiobook, isbn: "978-0-306-40615-7"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -720,7 +719,7 @@ func TestProcessBookConfirmsEbookISBNBeforePostMatchSkips(t *testing.T) {
 	}
 }
 
-func TestProcessBookPreservesAudiobookISBNOwnershipOnPostMatchSkip(t *testing.T) {
+func TestProcessBookDoesNotReconcileAudiobookISBNOnPostMatchSkip(t *testing.T) {
 	tests := []struct {
 		name            string
 		progress        float64
@@ -738,26 +737,21 @@ func TestProcessBookPreservesAudiobookISBNOwnershipOnPostMatchSkip(t *testing.T)
 			svc.config.Sync.SyncOwned = true
 			svc.config.Sync.MinimumProgress = tt.minimumProgress
 			book := isbnSearchBook(testISBN13NoTen)
+			book.MediaType = "book"
 			book.ID = "association-audiobook-post-match-skip-" + tt.name
 			book.Progress.CurrentTime = tt.progress * book.Media.Duration
 			book.Progress.StartedAt = 0
-
-			client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
-				Return(&models.HardcoverBook{ID: "901", EditionID: "902"}, nil).Once()
-			client.On("GetEdition", mock.Anything, "902").
-				Return(&models.Edition{ID: "902", BookID: "901"}, nil).Once()
-			client.On("GetUserBookID", mock.Anything, 902).Return(9021, nil).Once()
-			client.On("CheckBookOwnership", mock.Anything, 901).Return(false, nil).Once()
-			client.On("MarkEditionAsOwned", mock.Anything, 902).Return(nil).Once()
 
 			err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
 
 			require.NoError(t, err)
 			_, saved := svc.state.GetAssociation(book.ID)
-			assert.False(t, saved, "audiobook ISBN matches remain ephemeral")
-			client.AssertNumberOfCalls(t, "SearchBookByISBN13", 1)
-			client.AssertNumberOfCalls(t, "CheckBookOwnership", 1)
-			client.AssertNumberOfCalls(t, "MarkEditionAsOwned", 1)
+			assert.False(t, saved, "audiobook ISBNs must not create saved matches")
+			client.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
+			client.AssertNotCalled(t, "CheckBookOwnership", mock.Anything, mock.Anything)
+			client.AssertNotCalled(t, "MarkEditionAsOwned", mock.Anything, mock.Anything)
+			client.AssertNotCalled(t, "GetUserBookID", mock.Anything, mock.Anything)
+			client.AssertNotCalled(t, "CreateUserBook", mock.Anything, mock.Anything, mock.Anything)
 			client.AssertExpectations(t)
 		})
 	}
@@ -1275,6 +1269,40 @@ func TestFindBookInHardcoverEditionASINOnlyAudiobookIsNotMatched(t *testing.T) {
 			}
 			_, saved := svc.state.GetAssociation(book.ID)
 			assert.False(t, saved)
+		})
+	}
+}
+
+func TestFindBookInHardcoverISBNOnlyAudiobookIsNotMatched(t *testing.T) {
+	tests := []struct {
+		name        string
+		searchBooks []models.HardcoverBook
+		wantOutcome SyncOutcome
+	}{
+		{name: "title and author finds the book", searchBooks: []models.HardcoverBook{{ID: "901", Title: "Association Book"}}, wantOutcome: OutcomeNeedsReview},
+		{name: "title and author finds nothing", searchBooks: nil, wantOutcome: OutcomeNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, mockClient := createTestService()
+			svc.config.Sync.SyncOwned = false
+			book := associationTestBook("isbn-only-"+tt.name, "", "978-0-306-40615-7")
+			// A bare ISBN match is not a region-qualified, verified Audible
+			// identity, so it no longer applies to audiobooks (Step 11).
+			mockClient.On("SearchBooks", mock.Anything, "Association Book Author", "").Return(tt.searchBooks, nil)
+			mockClient.On("GetBookByID", mock.Anything, "901").Return(&models.HardcoverBook{ID: "901", Title: "Association Book"}, nil).Maybe()
+
+			got, err := svc.findBookInHardcover(hardcover.WithReadingFormat(context.Background(), models.ReadingFormatAudiobook), book)
+
+			require.Error(t, err)
+			assert.Equal(t, tt.wantOutcome, classifyBookLookupOutcome(err))
+			if got != nil {
+				assert.Empty(t, got.EditionID, "no edition may be chosen")
+			}
+			_, saved := svc.state.GetAssociation(book.ID)
+			assert.False(t, saved)
+			mockClient.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
+			mockClient.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
 		})
 	}
 }

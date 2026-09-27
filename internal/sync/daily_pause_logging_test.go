@@ -45,6 +45,8 @@ func TestHardcoverSearchIntentLogsOnlyOutsideDailyPause(t *testing.T) {
 			name:    "ISBN",
 			message: "Searching for book by ISBN: 9781101926840",
 			setup: func(client *MockHardcoverClient, book *models.AudiobookshelfBook) {
+				// ISBN matching applies only to ebooks (Step 11).
+				book.MediaType = "ebook"
 				book.Media.Metadata.ISBN = "9781101926840"
 				client.On("SearchBookByISBN13", mock.Anything, "9781101926840").Return((*models.HardcoverBook)(nil), nil)
 				client.On("SearchBookByISBN10", mock.Anything, "1101926848").Return((*models.HardcoverBook)(nil), nil)

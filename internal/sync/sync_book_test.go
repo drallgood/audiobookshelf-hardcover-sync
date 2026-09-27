@@ -101,7 +101,7 @@ func TestSyncBookOutcomes(t *testing.T) {
 		hc.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
 	})
 
-	t.Run("already current", func(t *testing.T) {
+	t.Run("already current with a persisted association", func(t *testing.T) {
 		svc, hc, abs := newSyncBookService(t)
 		svc.config.Sync.Incremental = true
 		svc.config.Sync.ProcessUnreadBooks = true
@@ -109,6 +109,12 @@ func TestSyncBookOutcomes(t *testing.T) {
 		current := state.NewState()
 		current.UpdateBook(book.ID, 0, "WANT_TO_READ")
 		current.SetHasProgressSeconds(book.ID)
+		// A persisted association is required for "already current" to hold:
+		// without one, the Step 11 migration check clears the checkpoint and
+		// this same sync pass falls through to a full match attempt instead.
+		require.NoError(t, current.SetAssociation(state.Association{
+			ABSItemID: book.ID, HardcoverBookID: "hc-book-1", HardcoverEditionID: "hc-edition-1",
+		}))
 		abs.On("GetUserProgress", mock.Anything).Return(&models.AudiobookshelfUserProgress{}, nil).Once()
 
 		result, err := svc.SyncBook(context.Background(), *book, current, filepath.Join(t.TempDir(), "state.json"))
@@ -116,6 +122,30 @@ func TestSyncBookOutcomes(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, OutcomeAlreadyCurrent, result.Outcome)
 		assertNoHardcoverBookSearches(t, hc)
+	})
+
+	t.Run("already current with no persisted association reclassifies in the same run", func(t *testing.T) {
+		// Step 11 migration: an audiobook checkpoint with no persisted
+		// Association is cleared before NeedsSync runs, so this same sync
+		// pass falls through to a full match attempt instead of coasting on
+		// a stale editions.asin or ISBN match.
+		svc, hc, abs := newSyncBookService(t)
+		svc.config.Sync.Incremental = true
+		svc.config.Sync.ProcessUnreadBooks = true
+		book := toAudiobookshelfBook(createTestBook("resync-current-migrated", "Current", "Author", "", ""))
+		current := state.NewState()
+		current.UpdateBook(book.ID, 0, "WANT_TO_READ")
+		current.SetHasProgressSeconds(book.ID)
+		abs.On("GetUserProgress", mock.Anything).Return(&models.AudiobookshelfUserProgress{}, nil).Once()
+		hc.On("SearchBooks", mock.Anything, "Current Author", "").Return(nil, nil).Once()
+
+		result, err := svc.SyncBook(context.Background(), *book, current, filepath.Join(t.TempDir(), "state.json"))
+
+		require.NoError(t, err)
+		assert.Equal(t, OutcomeNotFound, result.Outcome)
+		_, hasCheckpoint := current.GetBookState(book.ID)
+		assert.False(t, hasCheckpoint, "the stale checkpoint is cleared rather than left coasting")
+		hc.AssertExpectations(t)
 	})
 
 	t.Run("skipped", func(t *testing.T) {

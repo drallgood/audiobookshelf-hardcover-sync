@@ -56,20 +56,28 @@ func TestProcessBookRecordsSkipAndIncrementalNoChange(t *testing.T) {
 		hc.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
 	})
 
-	t.Run("incremental no change", func(t *testing.T) {
+	t.Run("incremental no change with no persisted association reclassifies in the same run", func(t *testing.T) {
+		// Step 11 migration: an audiobook checkpoint with no persisted
+		// Association can no longer rest on a stale editions.asin or ISBN
+		// match, so it must not coast on "no significant changes." The
+		// checkpoint is cleared before NeedsSync runs, so this same sync
+		// pass falls through to a full match attempt.
 		svc, hc := createTestService()
 		svc.config.Sync.Incremental = true
 		svc.config.Sync.ProcessUnreadBooks = true
 		book := toAudiobookshelfBook(createTestBook("outcome-current", "Current", "Author", "", ""))
 		svc.state.UpdateBook(book.ID, 0, "WANT_TO_READ")
 		svc.state.SetHasProgressSeconds(book.ID)
+		hc.On("SearchBooks", mock.Anything, "Current Author", "").Return(nil, nil).Once()
+
 		require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
+
 		record := recordedOutcome(svc, book.ID)
-		assert.Equal(t, OutcomeAlreadyCurrent, record.Outcome)
-		assert.Equal(t, "incremental state is current", record.Reason)
-		assert.Empty(t, record.HardcoverBookID, "no persisted association means no fabricated match")
-		assert.Empty(t, record.EditionID)
+		assert.Equal(t, OutcomeNotFound, record.Outcome)
+		_, hasCheckpoint := svc.state.GetBookState(book.ID)
+		assert.False(t, hasCheckpoint, "the stale checkpoint is cleared rather than left coasting")
 		hc.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
+		hc.AssertExpectations(t)
 	})
 
 	t.Run("incremental no change with persisted association", func(t *testing.T) {
@@ -784,7 +792,8 @@ func TestProcessBookSnapshotKeepsTitleOnlyEnrichment(t *testing.T) {
 	book.Progress.CurrentTime = 300
 	absBook := toAudiobookshelfBook(book)
 
-	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return((*models.HardcoverBook)(nil), nil).Once()
+	// This is an audiobook, so ISBN no longer applies to its initial match
+	// attempt (Step 11); title/author search runs directly.
 	hc.On("SearchBooks", mock.Anything, "Title Only Author", "").Return([]models.HardcoverBook{{
 		ID: "901", Title: "Title Only Candidate", Slug: "candidate-slug",
 		Authors: []models.Author{{Name: "Candidate Author"}},
@@ -793,7 +802,8 @@ func TestProcessBookSnapshotKeepsTitleOnlyEnrichment(t *testing.T) {
 		ID: "901", Title: "Title Only Candidate", Slug: "candidate-slug",
 		Authors: []models.Author{{Name: "Candidate Author"}},
 	}, nil).Once()
-	// AddWithMetadata enriches the local record with identifier-derived fields.
+	// AddWithMetadata's own enrichment lookup is unaffected by Step 11 (it is
+	// mismatch-export enrichment, not audiobook matching).
 	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return(&models.HardcoverBook{
 		ID: "904", Title: "Enriched Hardcover", Authors: []models.Author{{Name: "Enriched Author"}},
 		EditionISBN13: book.Media.Metadata.ISBN,
@@ -815,9 +825,16 @@ func TestProcessBookSnapshotKeepsTitleOnlyEnrichment(t *testing.T) {
 func TestProcessBookSnapshotKeepsEnrichedSecondLookupFailure(t *testing.T) {
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
+	svc.config.Sync.IncludeEbooks = true
+	// Dry runs still revalidate ebook ISBN matches before any reading-state
+	// work and leave failed matches out of persistent state.
+	svc.config.Sync.DryRun = true
 	book := createTestBook("snapshot-second-lookup", "Second Lookup", "Author", "", "9781234567890")
 	book.Progress.CurrentTime = 300
 	absBook := toAudiobookshelfBook(book)
+	// ISBN matching, including the pre-mutation revalidation lookup below,
+	// applies only to ebooks (Step 11).
+	absBook.MediaType = "ebook"
 	absBook.Media.Metadata.PublishedYear = "2023"
 	absBook.Media.Metadata.Publisher = "Test Publisher"
 	lookupErr := errors.New("temporary identifier failure")
@@ -825,11 +842,6 @@ func TestProcessBookSnapshotKeepsEnrichedSecondLookupFailure(t *testing.T) {
 	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return(&models.HardcoverBook{
 		ID: "901", EditionID: "902",
 	}, nil).Once()
-	hc.On("GetEdition", mock.Anything, "902").Return(&models.Edition{
-		ID: "902", BookID: "901",
-	}, nil).Once()
-	hc.On("GetUserBookID", mock.Anything, 902).Return(0, nil)
-	hc.On("CreateUserBook", mock.Anything, "902", "IN_PROGRESS").Return("903", nil).Once()
 	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return((*models.HardcoverBook)(nil), lookupErr).Once()
 	hc.On("SearchBooks", mock.Anything, "Second Lookup Author", "").Return([]models.HardcoverBook{}, nil).Once()
 	// AddWithMetadata reuses the same Hardcover client to enrich the mismatch.
@@ -852,15 +864,24 @@ func TestProcessBookSnapshotKeepsEnrichedSecondLookupFailure(t *testing.T) {
 	assert.Equal(t, "https://example.test/cover.jpg", got.HardcoverCoverURL)
 	assert.Equal(t, "2021", got.HardcoverPublishedYear)
 	assert.Equal(t, OutcomeFailed, snapshot.BookOutcomes[0].Outcome)
+	hc.AssertNotCalled(t, "GetUserBookID", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "CreateUserBook", mock.Anything, mock.Anything, mock.Anything)
 	hc.AssertExpectations(t)
 }
 
 func TestProcessBookSnapshotKeepsSecondLookupNotFoundOutOfMismatches(t *testing.T) {
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
+	svc.config.Sync.IncludeEbooks = true
+	// Dry runs still revalidate ebook ISBN matches before any reading-state
+	// work and leave failed matches out of persistent state.
+	svc.config.Sync.DryRun = true
 	book := createTestBook("snapshot-second-lookup-not-found", "Second Lookup Not Found", "Author", "", "9781234567890")
 	book.Progress.CurrentTime = 300
 	absBook := toAudiobookshelfBook(book)
+	// ISBN matching, including the pre-mutation revalidation lookup below,
+	// applies only to ebooks (Step 11).
+	absBook.MediaType = "ebook"
 	absBook.Media.Metadata.Publisher = "Test Publisher"
 
 	// The first lookup succeeds, but the later lookup used before mutation no
@@ -869,10 +890,6 @@ func TestProcessBookSnapshotKeepsSecondLookupNotFoundOutOfMismatches(t *testing.
 	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return(&models.HardcoverBook{
 		ID: "901", EditionID: "902",
 	}, nil).Once()
-	hc.On("GetEdition", mock.Anything, "902").Return(&models.Edition{
-		ID: "902", BookID: "901",
-	}, nil).Once()
-	hc.On("GetUserBookID", mock.Anything, 902).Return(903, nil).Once()
 	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return((*models.HardcoverBook)(nil), nil).Once()
 	hc.On("SearchBooks", mock.Anything, "Second Lookup Not Found Author", "").Return([]models.HardcoverBook{}, nil).Once()
 	// AddWithMetadata enriches the run-local mismatch export after the not-found
@@ -891,15 +908,20 @@ func TestProcessBookSnapshotKeepsSecondLookupNotFoundOutOfMismatches(t *testing.
 	records := svc.mismatchCollector.GetAll()
 	require.Len(t, records, 1)
 	assert.Equal(t, absBook.ID, records[0].BookID)
+	hc.AssertNotCalled(t, "GetUserBookID", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "CreateUserBook", mock.Anything, mock.Anything, mock.Anything)
 	hc.AssertExpectations(t)
 }
 
 func TestProcessBookSnapshotKeepsEnrichedNoEditionMismatch(t *testing.T) {
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
+	svc.config.Sync.IncludeEbooks = true
 	book := createTestBook("snapshot-no-edition", "No Edition", "Author", "", "9781234567890")
 	book.Progress.CurrentTime = 300
 	absBook := toAudiobookshelfBook(book)
+	// ISBN matching applies only to ebooks (Step 11).
+	absBook.MediaType = "ebook"
 	absBook.Media.Metadata.PublishedYear = "2023"
 
 	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return(&models.HardcoverBook{

@@ -50,14 +50,36 @@ requirements apply to both network trust modes.
 
 Sync, the mismatch export, and the edition creator's duplicate check no longer
 match an audiobook through a Hardcover edition's `asin` field; only regional
-Audible mappings, saved matches, ISBN, and title/author search are used. Ebook
-ASIN matching is unchanged. A book whose only link was `editions.asin` becomes
-`needs_review` (title/author finds it; resolve it with the add-edition action)
-or `not_found` (fix it in Hardcover or with the `edition` CLI and a book ID)
-the next time it is processed. Incremental sync skips books whose progress and
-status have not changed, so an already-synced book keeps its existing Hardcover
-edition, reads, and ownership until its progress or status changes. Checkpoints
-are not cleared; use the forget-match action to rematch one book now.
+Audible mappings, saved matches, and title/author search are used (ISBN is also
+removed from audiobook matching; see the next section). Ebook ASIN matching is
+unchanged. A book whose only link was `editions.asin` becomes `needs_review`
+(title/author finds it; resolve it with the add-edition action) or `not_found`
+(fix it in Hardcover or with the `edition` CLI and a book ID) the next time it
+is processed.
+
+### Audiobooks no longer match by ISBN, and stale matches reclassify automatically
+
+A bare ISBN match is not a region-qualified, verified Audible identity, so it
+no longer matches an audiobook either; only regional Audible mappings, saved
+matches, and title/author search are used. Ebook ISBN matching is unchanged
+and continues to be saved after a successful match.
+
+Unlike the `editions.asin` change above, this one does not wait for an
+audiobook's progress or status to change. Every audiobook match method that
+remains valid after this change is saved as a local association (this has been
+true since the durable-association feature shipped), so "this audiobook has a
+sync checkpoint but no saved association" exactly identifies one whose current
+match relied on `editions.asin` or ISBN. Sync clears that stale checkpoint
+before its incremental "no changes" check runs, so the audiobook is
+reclassified as `needs_review` or `not_found` in the very same sync run that
+first evaluates it after upgrading, not a later one. No Hardcover mutation
+happens for that outcome, so the book's reads and status stop reaching
+Hardcover until it is resolved (through the add-edition action, or a later
+Hardcover-side mapping addition); its local Audiobookshelf-side progress
+tracking keeps updating as normal. A book that already has a saved association
+is unaffected and keeps syncing normally. This check runs on every sync going
+forward, not only once at upgrade time, so an audiobook whose association is
+later cleared by forget-match is picked up the same way on its next sync.
 
 ### Sync Status API
 

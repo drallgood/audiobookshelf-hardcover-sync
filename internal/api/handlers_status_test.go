@@ -809,7 +809,7 @@ func TestPublicStatusPublishesSecondLookupOutcomeBeforeEnrichment(t *testing.T) 
 		hardcoverServer.Server.Close()
 	})
 	profileID := "delayed-profile"
-	fixture.createProfile(t, profileID, "Delayed profile", absServer.Server.URL, "hardcover-token")
+	fixture.createEbookEnabledProfile(t, profileID, "Delayed profile", absServer.Server.URL, "hardcover-token")
 	accepted, err := fixture.multiUser.StartSyncWithAcceptedRun(profileID)
 	require.NoError(t, err)
 
@@ -846,7 +846,7 @@ func TestPublicStatusRunReplacementKeepsNewRunCurrent(t *testing.T) {
 		hardcoverServer.Server.Close()
 	})
 	profileID := "replacement-profile"
-	fixture.createProfile(t, profileID, "Replacement profile", absServer.Server.URL, "hardcover-token")
+	fixture.createEbookEnabledProfile(t, profileID, "Replacement profile", absServer.Server.URL, "hardcover-token")
 	_, err := fixture.multiUser.StartSyncWithAcceptedRun(profileID)
 	require.NoError(t, err)
 	select {
@@ -1196,10 +1196,32 @@ func statusBook(id, title, author string) map[string]interface{} {
 func statusBookWithEnrichment(id, title, author string) map[string]interface{} {
 	book := statusBook(id, title, author)
 	book["progress"] = map[string]interface{}{"currentTime": 40.0}
+	// ISBN matching applies only to ebooks (Step 11), and this fixture's
+	// delayed second-lookup path is driven entirely by an ISBN match.
+	book["mediaType"] = "ebook"
 	metadata := book["media"].(map[string]interface{})["metadata"].(map[string]interface{})
 	metadata["isbn"] = "9780306406157"
 	metadata["publisher"] = "Delayed Publisher"
 	return book
+}
+
+// createEbookEnabledProfile mirrors statusServiceFixture.createProfile but also
+// enables IncludeEbooks, required for a statusBookWithEnrichment fixture book.
+func (f *statusServiceFixture) createEbookEnabledProfile(t *testing.T, id, name, absURL, token string) {
+	t.Helper()
+	require.NoError(t, f.repo.CreateProfile(
+		id,
+		name,
+		absURL,
+		id,
+		token,
+		database.SyncConfigData{
+			StateFile:          filepath.Join(f.dataDir, "sync-state.json"),
+			ProcessUnreadBooks: true,
+			IncludeEbooks:      true,
+			DryRun:             true,
+		},
+	))
 }
 
 func waitForStatusRun(t *testing.T, service *multiuser.MultiUserService, profileID string) *multiuser.SyncProfileStatus {
