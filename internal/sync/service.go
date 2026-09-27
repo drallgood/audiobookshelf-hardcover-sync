@@ -2879,6 +2879,10 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		"edition_id": editionID,
 	})
 
+	// Reconcile ownership once for the verified match, including associations
+	// that bypass processFoundBook during identifier lookup.
+	s.reconcileBookOwnership(ctx, hcBook, book)
+
 	// Find or create a user book ID for this edition with the determined status
 	userBookID, err := s.findOrCreateUserBookID(ctx, editionID, status)
 	if err != nil {
@@ -2891,8 +2895,6 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 		})
 		return fmt.Errorf("failed to get or create user book ID: %w", err)
 	}
-
-	// Note: Ownership marking is handled in processFoundBook(). Avoid duplicating here to prevent repeated marking/logs.
 
 	// Log the book we're processing
 	editionIDStr := editionID // Keep original string for logging
@@ -4550,63 +4552,10 @@ func (s *Service) processFoundBook(ctx context.Context, hcBook *models.Hardcover
 	}
 	log := s.log.With(logCtx)
 
-	// Mark book as owned if sync_owned is enabled
-	if s.config.Sync.SyncOwned && hcBook.EditionID != "" && hcBook.EditionID != "0" {
-		editionID, err := strconv.Atoi(hcBook.EditionID)
-		if err != nil {
-			log.Warn("Invalid edition ID format for marking as owned", map[string]interface{}{
-				"edition_id": hcBook.EditionID,
-				"error":      err.Error(),
-			})
-		} else {
-			// Check if book is already marked as owned using Hardcover BOOK ID (client queries by book_id)
-			bookIDInt, err := strconv.Atoi(hcBook.ID)
-			if err != nil {
-				log.Warn("Invalid book ID format for ownership check", map[string]interface{}{
-					"book_id": hcBook.ID,
-					"error":   err.Error(),
-				})
-			} else {
-				isOwned, err := s.hardcover.CheckBookOwnership(ctx, bookIDInt)
-				if err != nil {
-					reportProcessBookOwnership(ctx, OutcomeFailed, "failed to verify Hardcover ownership", err)
-					log.Warn("Failed to check book ownership status", map[string]interface{}{
-						"book_id":    bookIDInt,
-						"edition_id": editionID,
-						"error":      err.Error(),
-					})
-				} else if !isOwned {
-					// Respect DryRun: only log what would happen
-					if s.config.Sync.DryRun {
-						reportProcessBookOwnership(ctx, OutcomeWouldSync, "would mark Hardcover edition as owned", nil)
-						log.Info("[DRY-RUN] Would mark edition as owned", map[string]interface{}{
-							"book_id":    bookIDInt,
-							"edition_id": editionID,
-						})
-					} else {
-						markErr := s.hardcover.MarkEditionAsOwned(ctx, editionID)
-						if markErr != nil {
-							reportProcessBookOwnership(ctx, OutcomeFailed, "failed to mark Hardcover edition as owned", markErr)
-							log.Warn("Failed to mark edition as owned", map[string]interface{}{
-								"edition_id": editionID,
-								"error":      markErr.Error(),
-							})
-						} else {
-							reportProcessBookOwnership(ctx, OutcomeSynced, "marked Hardcover edition as owned", nil)
-							log.Info("Successfully marked edition as owned", map[string]interface{}{
-								"book_id":    bookIDInt,
-								"edition_id": editionID,
-							})
-						}
-					}
-				} else {
-					log.Debug("Book is already marked as owned", map[string]interface{}{
-						"book_id":    bookIDInt,
-						"edition_id": editionID,
-					})
-				}
-			}
-		}
+	// processBook reconciles ownership after the final match is confirmed. Keep
+	// the existing behavior for callers that use processFoundBook directly.
+	if _, inProcessBook := ctx.Value(processBookOwnershipStateKey{}).(*processBookOwnershipState); !inProcessBook {
+		s.reconcileBookOwnership(ctx, hcBook, book)
 	}
 
 	// If we don't have an edition ID but have a book ID, try to get the first edition
@@ -4676,6 +4625,80 @@ func (s *Service) processFoundBook(ctx context.Context, hcBook *models.Hardcover
 	})
 
 	return hcBook, nil
+}
+
+// reconcileBookOwnership checks the user's Owned list before marking the
+// matched Hardcover edition as owned. processBook calls this once after its
+// final match is confirmed; processFoundBook also uses it for direct callers.
+func (s *Service) reconcileBookOwnership(ctx context.Context, hcBook *models.HardcoverBook, book models.AudiobookshelfBook) {
+	if !s.config.Sync.SyncOwned || hcBook == nil || hcBook.EditionID == "" || hcBook.EditionID == "0" {
+		return
+	}
+
+	log := s.log.With(map[string]interface{}{
+		"title":      book.Media.Metadata.Title,
+		"book_id":    hcBook.ID,
+		"edition_id": hcBook.EditionID,
+	})
+	editionID, err := strconv.Atoi(hcBook.EditionID)
+	if err != nil {
+		log.Warn("Invalid edition ID format for marking as owned", map[string]interface{}{
+			"edition_id": hcBook.EditionID,
+			"error":      err.Error(),
+		})
+		return
+	}
+
+	// Check ownership using Hardcover BOOK ID, matching the client's Owned-list query.
+	bookIDInt, err := strconv.Atoi(hcBook.ID)
+	if err != nil {
+		log.Warn("Invalid book ID format for ownership check", map[string]interface{}{
+			"book_id": hcBook.ID,
+			"error":   err.Error(),
+		})
+		return
+	}
+	isOwned, err := s.hardcover.CheckBookOwnership(ctx, bookIDInt)
+	if err != nil {
+		reportProcessBookOwnership(ctx, OutcomeFailed, "failed to verify Hardcover ownership", err)
+		log.Warn("Failed to check book ownership status", map[string]interface{}{
+			"book_id":    bookIDInt,
+			"edition_id": editionID,
+			"error":      err.Error(),
+		})
+		return
+	}
+	if isOwned {
+		log.Debug("Book is already marked as owned", map[string]interface{}{
+			"book_id":    bookIDInt,
+			"edition_id": editionID,
+		})
+		return
+	}
+
+	if s.config.Sync.DryRun {
+		reportProcessBookOwnership(ctx, OutcomeWouldSync, "would mark Hardcover edition as owned", nil)
+		log.Info("[DRY-RUN] Would mark edition as owned", map[string]interface{}{
+			"book_id":    bookIDInt,
+			"edition_id": editionID,
+		})
+		return
+	}
+
+	if err := s.hardcover.MarkEditionAsOwned(ctx, editionID); err != nil {
+		reportProcessBookOwnership(ctx, OutcomeFailed, "failed to mark Hardcover edition as owned", err)
+		log.Warn("Failed to mark edition as owned", map[string]interface{}{
+			"edition_id": editionID,
+			"error":      err.Error(),
+		})
+		return
+	}
+
+	reportProcessBookOwnership(ctx, OutcomeSynced, "marked Hardcover edition as owned", nil)
+	log.Info("Successfully marked edition as owned", map[string]interface{}{
+		"book_id":    bookIDInt,
+		"edition_id": editionID,
+	})
 }
 
 // calculateTitleSimilarity returns a similarity score between two titles

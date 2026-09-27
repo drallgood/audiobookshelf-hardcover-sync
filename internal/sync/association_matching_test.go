@@ -308,6 +308,55 @@ func TestProcessBookDoesNotRepeatTemporaryASINFallbackLookup(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
+func TestProcessBookReconcilesOwnershipForSavedEbookAssociation(t *testing.T) {
+	tests := []struct {
+		name    string
+		isOwned bool
+	}{
+		{name: "marks unowned book"},
+		{name: "leaves already owned book alone", isOwned: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, client := createTestService()
+			svc.config.Sync.IncludeEbooks = true
+			svc.config.Sync.SyncOwned = true
+			svc.config.Sync.ProcessUnreadBooks = true
+			svc.config.Sync.SyncWantToRead = true
+			book := associationTestBook("association-ebook-owned", "ASIN-123", "")
+			book.MediaType = "ebook"
+			require.NoError(t, svc.state.SetAssociation(state.Association{
+				ABSItemID:          book.ID,
+				SourceASIN:         "ASIN-123",
+				HardcoverBookID:    "901",
+				HardcoverEditionID: "902",
+				ReadingFormat:      models.ReadingFormatEbook,
+				Provenance:         string(hardcover.ASINMatchEditionASIN),
+			}))
+
+			expectASINEditionRead(t, client, "901", "902")
+			client.On("CheckBookOwnership", mock.Anything, 901).Return(tt.isOwned, nil).Once()
+			if !tt.isOwned {
+				client.On("MarkEditionAsOwned", mock.Anything, 902).Return(nil).Once()
+			}
+			client.On("UpdateUserBookStatus", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookStatusInput) bool {
+				return input.ID == 9021 && input.StatusID == 1
+			})).Return(nil).Once()
+
+			err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+
+			require.NoError(t, err)
+			client.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
+			client.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
+			client.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
+			if tt.isOwned {
+				client.AssertNotCalled(t, "MarkEditionAsOwned", mock.Anything, mock.Anything)
+			}
+			client.AssertExpectations(t)
+		})
+	}
+}
+
 func TestProcessBookRechecksEbookISBNBeforeSavingAssociation(t *testing.T) {
 	svc, client := createTestService()
 	svc.config.Sync.IncludeEbooks = true
