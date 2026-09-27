@@ -1796,10 +1796,9 @@ class SyncProfileApp {
                     ${record.author ? `<div><strong>Author:</strong> ${this.escapeHtml(record.author)}</div>` : ''}
                     <div class="book-meta">${asinHTML}${isbnHTML}${format ? `<span><strong>Format:</strong> ${this.escapeHtml(format)}</span>` : ''}${series ? `<span><strong>Series:</strong> ${this.escapeHtml(series)}</span>` : ''}</div>
                     ${record.match_method ? `<div><strong>Match method:</strong> ${this.escapeHtml(record.match_method)}</div>` : ''}
-                    ${record.outcome === 'needs_review' ? this.renderHardcoverCandidate(record, editionActionsHTML) : ''}
+                    ${record.outcome === 'needs_review' ? this.renderHardcoverCandidate(record, editionActionsHTML) : editionActionsHTML}
                     ${record.reason ? `<div class="book-reason"><strong>Reason:</strong> ${this.escapeHtml(record.reason)}</div>` : ''}
                     ${record.error ? `<div class="book-error"><strong>Error:</strong> ${this.escapeHtml(record.error)}</div>` : ''}
-                    ${record.outcome === 'needs_review' ? '' : editionActionsHTML}
                 </div>
             </div>
         </article>`;
