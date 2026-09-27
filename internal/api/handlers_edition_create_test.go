@@ -1657,3 +1657,106 @@ func TestEditionRegionDiscoveryUsesSyncRegionPreference(t *testing.T) {
 		})
 	}
 }
+
+func newEditionResyncFixture(t *testing.T, runID string) (*editionDraftTestFixture, *editionCreateCallCounts) {
+	t.Helper()
+	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"ebook","media":{
+		"metadata":{"title":"Ebook","authorName":"Author","asin":"b0ebook123"},"ebookFile":{},"ebookFormat":"epub"}}`, "us")
+	configureEditionCreateRoute(t, fixture)
+	addCompletedNeedsReviewRun(t, fixture, runID, sync.BookOutcomeRecord{
+		BookID: "abs-item-1", Outcome: sync.OutcomeNeedsReview, Title: "Ebook", Author: "Author", ASIN: "B0EBOOK123",
+		Format: "Ebook", HardcoverBookID: "42",
+	})
+	counts := &editionCreateCallCounts{}
+	fixture.handler.editionCreateHardcoverFactory = countingEditionCreateClient(counts)
+	return fixture, counts
+}
+
+func TestCreateEditionFromDraftResyncIsOptIn(t *testing.T) {
+	fixture, counts := newEditionResyncFixture(t, "run-resync-optin")
+	var resyncs atomic.Int32
+	fixture.handler.editionResyncRunner = func(context.Context, *database.ProfileWithTokens, models.AudiobookshelfBook, *statepkg.State, string) (sync.BookResyncResult, error) {
+		resyncs.Add(1)
+		return sync.BookResyncResult{Outcome: sync.OutcomeSynced}, nil
+	}
+
+	response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-resync-optin","abs_item_id":"abs-item-1"}`)
+
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.EqualValues(t, 1, counts.ebookCreates.Load())
+	require.Zero(t, resyncs.Load())
+	require.NotContains(t, response.Body.String(), `"resync"`)
+}
+
+func TestCreateEditionFromDraftResyncReportsOutcomeAfterAssociationIsSaved(t *testing.T) {
+	fixture, _ := newEditionResyncFixture(t, "run-resync-ok")
+	fixture.handler.editionResyncRunner = func(_ context.Context, _ *database.ProfileWithTokens, book models.AudiobookshelfBook, syncState *statepkg.State, statePath string) (sync.BookResyncResult, error) {
+		require.Equal(t, "abs-item-1", book.ID)
+		_, exists := syncState.GetAssociation("abs-item-1")
+		require.True(t, exists, "resync must see the new association")
+		wantPath, evalErr := filepath.EvalSymlinks(editionCreateProfileStatePath(fixture))
+		require.NoError(t, evalErr)
+		gotPath, evalErr := filepath.EvalSymlinks(statePath)
+		require.NoError(t, evalErr)
+		require.Equal(t, wantPath, gotPath)
+		return sync.BookResyncResult{Outcome: sync.OutcomeSynced, Reason: "progress updated"}, nil
+	}
+
+	response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-resync-ok","abs_item_id":"abs-item-1","resync":true}`)
+
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var body struct {
+		Data editionCreateResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+	require.NotNil(t, body.Data.Resync)
+	require.Equal(t, editionResyncResponse{Attempted: true, Outcome: "synced", Reason: "progress updated"}, *body.Data.Resync)
+	stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+	require.NoError(t, err)
+	_, exists := stored.GetAssociation("abs-item-1")
+	require.True(t, exists)
+}
+
+func TestCreateEditionFromDraftResyncFailureDoesNotFailCreate(t *testing.T) {
+	fixture, counts := newEditionResyncFixture(t, "run-resync-fail")
+	fixture.handler.editionResyncRunner = func(context.Context, *database.ProfileWithTokens, models.AudiobookshelfBook, *statepkg.State, string) (sync.BookResyncResult, error) {
+		return sync.BookResyncResult{}, errors.New("abs unavailable")
+	}
+
+	response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-resync-fail","abs_item_id":"abs-item-1","resync":true}`)
+
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.EqualValues(t, 1, counts.ebookCreates.Load())
+	var body struct {
+		Data editionCreateResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+	require.NotNil(t, body.Data.Resync)
+	require.True(t, body.Data.Resync.Attempted)
+	require.Contains(t, body.Data.Resync.Error, "abs unavailable")
+	stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+	require.NoError(t, err)
+	_, exists := stored.GetAssociation("abs-item-1")
+	require.True(t, exists, "a failed resync must not undo the saved association")
+}
+
+func TestCreateEditionFromDraftDryRunNeverResyncs(t *testing.T) {
+	fixture, counts := newEditionResyncFixture(t, "run-resync-dry")
+	profile, err := fixture.multiUserService.GetProfile("draft-profile")
+	require.NoError(t, err)
+	profile.SyncConfig.DryRun = true
+	require.NoError(t, fixture.multiUserService.UpdateProfileConfig(
+		profile.Profile.ID, profile.AudiobookshelfURL, profile.AudiobookshelfToken, profile.HardcoverToken, profile.SyncConfig,
+	))
+	var resyncs atomic.Int32
+	fixture.handler.editionResyncRunner = func(context.Context, *database.ProfileWithTokens, models.AudiobookshelfBook, *statepkg.State, string) (sync.BookResyncResult, error) {
+		resyncs.Add(1)
+		return sync.BookResyncResult{}, nil
+	}
+
+	response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-resync-dry","abs_item_id":"abs-item-1","resync":true}`)
+
+	require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+	require.Zero(t, resyncs.Load())
+	requireNoEditionCreateEffects(t, fixture, counts)
+}

@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 )
@@ -77,10 +79,25 @@ func (s *MultiUserService) GetLaterCompletedSyncRunOutcome(profileID, afterRunID
 // complete association only after Hardcover has returned a verified result.
 type EditionCreateOperation func(profile *database.ProfileWithTokens) (statepkg.Association, error)
 
+// EditionResyncOperation runs after a created edition's association has been
+// saved, while the profile gate and state-file lock are still held. It receives
+// the state loaded under that lock (already containing the association) and the
+// locked state path. It reports its own result to the caller, so a resync
+// failure never undoes or masks the edition that now exists.
+type EditionResyncOperation func(profile *database.ProfileWithTokens, syncState *statepkg.State, statePath string)
+
 // CreateEditionWithAssociation runs an edition create and persists its
 // profile-local association as one guarded operation. The callback runs after
 // confirming no sync is active and after acquiring the state-file lock.
 func (s *MultiUserService) CreateEditionWithAssociation(ctx context.Context, profileID, absItemID string, operation EditionCreateOperation) error {
+	return s.CreateEditionWithAssociationAndResync(ctx, profileID, absItemID, operation, nil)
+}
+
+// CreateEditionWithAssociationAndResync is CreateEditionWithAssociation plus an
+// optional resync that runs under the same profile gate and state-file lock
+// once the association is durably saved. Like the create itself, it is refused
+// up front (ErrSyncAlreadyActive) while a full sync is active for the profile.
+func (s *MultiUserService) CreateEditionWithAssociationAndResync(ctx context.Context, profileID, absItemID string, operation EditionCreateOperation, resync EditionResyncOperation) error {
 	if profileID == "" || absItemID == "" {
 		return errors.New("profile ID and ABS item ID are required")
 	}
@@ -183,6 +200,9 @@ func (s *MultiUserService) CreateEditionWithAssociation(ctx context.Context, pro
 	if isLegacy {
 		s.backupMigratedLegacyProfileState(profileID, loadPath)
 	}
+	if resync != nil {
+		resync(profile, state, fileLock.StatePath())
+	}
 	return nil
 }
 
@@ -208,6 +228,22 @@ func lockProfileGateContext(ctx context.Context, gate *profileRunGate) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+// ResyncBook synchronizes one Audiobookshelf item for a profile through the
+// regular per-book sync path. The caller must hold the profile gate and the
+// state-file lock for statePath, which CreateEditionWithAssociationAndResync
+// guarantees while it runs a resync operation.
+func (s *MultiUserService) ResyncBook(ctx context.Context, profile *database.ProfileWithTokens, book models.AudiobookshelfBook, syncState *statepkg.State, statePath string) (sync.BookResyncResult, error) {
+	absClient, err := audiobookshelf.NewClientWithNetworkTrust(profile.AudiobookshelfURL, profile.AudiobookshelfToken, s.AudiobookshelfNetworkTrust())
+	if err != nil {
+		return sync.BookResyncResult{}, fmt.Errorf("invalid Audiobookshelf client configuration: %w", err)
+	}
+	service, err := sync.NewServiceWithRunIdentity(absClient, s.NewHardcoverClient(profile.HardcoverToken), s.createProfileSpecificConfig(profile), "", time.Time{})
+	if err != nil {
+		return sync.BookResyncResult{}, fmt.Errorf("failed to create sync service: %w", err)
+	}
+	return service.SyncBook(ctx, book, syncState, statePath)
 }
 
 // NewHardcoverClient constructs a profile-token client with the same global

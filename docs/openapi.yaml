@@ -349,6 +349,32 @@ components:
         edition_format:
           type: string
           description: Optional ebook edition-format correction.
+        resync:
+          type: boolean
+          default: false
+          description: >-
+            Opt in to syncing this one book's read status right after the
+            edition is created. It runs under the same profile guard and state
+            lock as the create, so it never overlaps a full sync.
+
+    EditionResyncResult:
+      type: object
+      required: [attempted]
+      description: >-
+        Result of the optional one-book resync. A failed resync does not fail the
+        request: the edition already exists and its match is saved.
+      properties:
+        attempted:
+          type: boolean
+        outcome:
+          type: string
+          enum: [synced, already_current, skipped, needs_review, not_found, failed, would_sync]
+          description: Final per-book sync outcome, present when the resync ran to completion.
+        reason:
+          type: string
+        error:
+          type: string
+          description: Why the resync could not run or reported a failed outcome.
 
     EditionCreateResult:
       type: object
@@ -381,6 +407,8 @@ components:
             from the Audiobookshelf source ASIN.
         metadata_preview:
           $ref: '#/components/schemas/AudiobookMetadataPreview'
+        resync:
+          $ref: '#/components/schemas/EditionResyncResult'
 
     EditionDraftSourceIdentifiers:
       type: object
@@ -1100,7 +1128,12 @@ paths:
         Audiobooks use a regional `upsert_book` import with no `insert_edition`
         fallback. Ebooks use format-aware
         `insert_edition`. A successful result is verified and saved as a
-        profile-local match before the response is returned.
+        profile-local match before the response is returned. With `resync: true`,
+        the book's read status is then synced under the same profile guard and
+        state lock, and the result is returned in `resync`; a resync failure is
+        reported there and never fails the request. A full sync active for the
+        profile refuses the request (409) before any edition is created, with or
+        without `resync`.
       parameters:
         - name: id
           in: path

@@ -154,6 +154,14 @@ or format changed, run a new sync first. A profile that is syncing, in dry
 run, or already has a saved match is refused. On success the verified
 Hardcover book and edition are saved as the item's match for the next sync.
 
+Add `"resync": true` to also sync that one book's read status immediately,
+instead of waiting for the next sync. It is off by default, runs under the same
+lock as the create so it never overlaps a full sync, and is never attempted in
+dry run. The response then includes a `resync` block with `attempted`,
+`outcome` (such as `synced` or `already_current`), and any `reason` or `error`.
+A resync failure does not fail the request, because the edition already exists;
+the next sync retries the book.
+
 If an error says Hardcover may already have processed the request, check the
 book in Hardcover before retrying; a retry may create another edition. See
 [OpenAPI](docs/openapi.yaml) for request fields, statuses, and retry guidance.

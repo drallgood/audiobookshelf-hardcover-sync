@@ -63,6 +63,9 @@ type editionCreateRequest struct {
 	ISBN13            *string `json:"isbn_13,omitempty"`
 	ReleaseDate       *string `json:"release_date,omitempty"`
 	EditionFormat     *string `json:"edition_format,omitempty"`
+	// Resync opts in to syncing this book's read status right after the
+	// edition is created. It defaults to false.
+	Resync bool `json:"resync,omitempty"`
 }
 
 type editionCreateResponse struct {
@@ -73,6 +76,20 @@ type editionCreateResponse struct {
 	HardcoverEditionID string                    `json:"hardcover_edition_id"`
 	RegionalExternalID string                    `json:"regional_external_id,omitempty"`
 	MetadataPreview    *audiobookMetadataPreview `json:"metadata_preview,omitempty"`
+	// Resync is present only when the request asked for one. A failed resync is
+	// reported here rather than failing the request, because the edition exists.
+	Resync *editionResyncResponse `json:"resync,omitempty"`
+
+	// sourceItem is the verified Audiobookshelf item, kept for the optional
+	// resync so it does not need a second lookup.
+	sourceItem *models.AudiobookshelfBook
+}
+
+type editionResyncResponse struct {
+	Attempted bool   `json:"attempted"`
+	Outcome   string `json:"outcome,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 type editionCreateHardcoverAdapter struct {
@@ -123,18 +140,43 @@ func (h *Handler) CreateEditionFromDraft(w http.ResponseWriter, r *http.Request)
 	}
 
 	var response editionCreateResponse
-	err = h.multiUserService.CreateEditionWithAssociation(ctx, profileID, request.ABSItemID, func(profile *database.ProfileWithTokens) (statepkg.Association, error) {
+	var resync multiuser.EditionResyncOperation
+	if request.Resync {
+		resync = func(profile *database.ProfileWithTokens, syncState *statepkg.State, statePath string) {
+			response.Resync = h.resyncCreatedEdition(ctx, profile, response.sourceItem, syncState, statePath)
+		}
+	}
+	err = h.multiUserService.CreateEditionWithAssociationAndResync(ctx, profileID, request.ABSItemID, func(profile *database.ProfileWithTokens) (statepkg.Association, error) {
 		snapshot, record, snapshotErr := h.verifiedEditionCreateRecord(profileID, request.RunID, request.ABSItemID)
 		if snapshotErr != nil {
 			return statepkg.Association{}, snapshotErr
 		}
 		return h.createVerifiedEdition(ctx, profile, snapshot, record, request, &response)
-	})
+	}, resync)
 	if err != nil {
 		h.writeEditionCreateError(w, profileID, err)
 		return
 	}
 	h.writeSuccessResponse(w, response)
+}
+
+// resyncCreatedEdition runs the opt-in one-book resync after a successful
+// create. Any failure is returned in the result instead of as an error: the
+// edition already exists and its association is saved.
+func (h *Handler) resyncCreatedEdition(ctx context.Context, profile *database.ProfileWithTokens, item *models.AudiobookshelfBook, syncState *statepkg.State, statePath string) *editionResyncResponse {
+	if item == nil {
+		return &editionResyncResponse{Attempted: false, Error: "resync could not start: the Audiobookshelf item was unavailable"}
+	}
+	resync := h.editionResyncRunner
+	if resync == nil {
+		resync = h.multiUserService.ResyncBook
+	}
+	result, err := resync(ctx, profile, *item, syncState, statePath)
+	if err != nil {
+		h.log.Warn(fmt.Sprintf("Resync after edition creation failed for profile %s: %v", profile.Profile.ID, err))
+		return &editionResyncResponse{Attempted: true, Error: err.Error()}
+	}
+	return &editionResyncResponse{Attempted: true, Outcome: string(result.Outcome), Reason: result.Reason, Error: result.Error}
 }
 
 func decodeEditionCreateRequest(w http.ResponseWriter, r *http.Request) (editionCreateRequest, error) {
@@ -243,10 +285,16 @@ func (h *Handler) createVerifiedEdition(ctx context.Context, profile *database.P
 	}
 
 	client := h.editionCreateHardcoverClient(profile.HardcoverToken)
+	var association statepkg.Association
 	if item.ReadingFormat() == models.ReadingFormatAudiobook {
-		return h.createRegionalAudiobook(ctx, profile, item, record, request, client, response)
+		association, err = h.createRegionalAudiobook(ctx, profile, item, record, request, client, response)
+	} else {
+		association, err = h.createEbook(ctx, item, record, request, client, response)
 	}
-	return h.createEbook(ctx, item, record, request, client, response)
+	if err == nil {
+		response.sourceItem = item
+	}
+	return association, err
 }
 
 func (r editionCreateRequest) hasAudiobookMetadataCorrection() bool {

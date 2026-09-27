@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,8 +11,10 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/auth"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/multiuser"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
+	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 )
 
 const maxNewProfileIDBytes = 244
@@ -36,6 +39,8 @@ type Handler struct {
 	editionCreateABSClientFactory    func(string, string, string) (editionCreateABSClient, error)
 	editionCreateHardcoverFactory    func(string) editionCreateHardcoverClient
 	editionCreateAudnexClientFactory func() editionCreateAudnexDiscoverer
+	// editionResyncRunner replaces the profile-scoped one-book resync in tests.
+	editionResyncRunner func(context.Context, *database.ProfileWithTokens, models.AudiobookshelfBook, *statepkg.State, string) (sync.BookResyncResult, error)
 }
 
 // NewHandler creates a new API handler.
