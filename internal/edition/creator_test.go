@@ -534,10 +534,6 @@ func TestEditionCreator_PrepopulateFromBook(t *testing.T) {
 			name:   "successful prepopulation",
 			bookID: 123,
 			setupMock: func(m *MockHardcoverClient) {
-				// Mock GetEdition call
-				m.On("GetEdition", mock.Anything, "123").
-					Return(&models.Edition{ID: "123"}, nil)
-
 				// Mock GraphQLQuery call
 				m.On("GraphQLQuery", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 					Return(nil).
@@ -684,6 +680,7 @@ func TestEditionCreator_PrepopulateFromBook(t *testing.T) {
 				assert.Equal(t, tt.bookID, result.BookID)
 				assert.NotEmpty(t, result.Title)
 				assert.NotEmpty(t, result.AuthorIDs)
+				assert.Equal(t, models.ReadingFormatAudiobook, result.ReadingFormat)
 			}
 
 			mockClient.AssertExpectations(t)

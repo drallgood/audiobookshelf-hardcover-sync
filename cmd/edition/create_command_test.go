@@ -46,6 +46,7 @@ type fakeHardcover struct {
 	readbackFormat   int
 	readbackEdition  int
 	bookResponse     string
+	missingEditionID int
 	// emptyLookups answers unrecognized read queries, such as ebook duplicate
 	// lookups, with no matches.
 	emptyLookups bool
@@ -109,6 +110,10 @@ func (f *fakeHardcover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"book_mappings":        []interface{}{},
 		}})
 	case strings.Contains(request.Query, "GetEdition"):
+		if editionID, ok := request.Variables["editionId"].(float64); ok && int(editionID) == f.missingEditionID {
+			_, _ = w.Write([]byte(`{"data":{"editions":[]}}`))
+			return
+		}
 		_, _ = fmt.Fprintf(w, `{"data":{"editions":[{"id":%d,"book_id":%d,"reading_format_id":%d}]}}`, f.readbackEdition, f.readbackBook, f.readbackFormat)
 	case strings.Contains(request.Query, "GetBook"):
 		if f.bookResponse != "" {
@@ -478,6 +483,9 @@ func TestPrepopulateISBNOnlyBookCreatesEbookTemplate(t *testing.T) {
 	hc.insertResponse = `{"data":{"insert_edition":{"id":901,"errors":[]}}}`
 	hc.readbackEdition = 901
 	hc.readbackFormat = models.ReadingFormatID(models.ReadingFormatEbook)
+	// No edition has the same numeric ID as the book ID. Prepopulation must
+	// fetch the book itself instead of treating the book ID as an edition ID.
+	hc.missingEditionID = boundaryBookID
 	env := newCommandEnv(t, hc, "")
 	templatePath := filepath.Join(t.TempDir(), "edition.json")
 
@@ -525,6 +533,43 @@ func TestPrepopulateRejectsUnknownReadingFormat(t *testing.T) {
 	}
 	if upserts, inserts, _ := hc.counts(); upserts != 0 || inserts != 0 {
 		t.Fatalf("invalid format reached a Hardcover mutation: upserts=%d inserts=%d", upserts, inserts)
+	}
+}
+
+func TestPrepopulateValidatesFetchedBookIdentity(t *testing.T) {
+	tests := []struct {
+		name      string
+		book      string
+		wantError string
+	}{
+		{
+			name:      "book not found",
+			book:      `{"data":{"book":null}}`,
+			wantError: "Hardcover book 21 was not found",
+		},
+		{
+			name:      "different book returned",
+			book:      `{"data":{"book":{"id":22}}}`,
+			wantError: "requested Hardcover book 21 but received book 22",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hc := newFakeHardcover(t)
+			hc.bookResponse = tt.book
+			env := newCommandEnv(t, hc, "")
+			templatePath := filepath.Join(t.TempDir(), "edition.json")
+			app := newApp()
+			app.Writer = &bytes.Buffer{}
+			app.ErrWriter = &bytes.Buffer{}
+			err := app.Run([]string{"edition", "--config", env.configPath, "prepopulate", "--book-id", "21", "--output", templatePath})
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("expected error containing %q, got %v", tt.wantError, err)
+			}
+			if _, err := os.Stat(templatePath); !os.IsNotExist(err) {
+				t.Fatalf("invalid Hardcover book wrote a template: %v", err)
+			}
+		})
 	}
 }
 

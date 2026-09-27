@@ -1311,12 +1311,6 @@ func (c *Creator) PrepopulateFromBookWithFormat(ctx context.Context, bookID int,
 		"book_id": bookID,
 	})
 
-	// First, get the edition details to ensure the book exists
-	_, err := c.client.GetEdition(ctx, strconv.Itoa(bookID))
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch edition details: %w", err)
-	}
-
 	// Get the book details using GraphQL query
 	query := `
 	query GetBook($id: ID!) {
@@ -1392,6 +1386,12 @@ func (c *Creator) PrepopulateFromBookWithFormat(ctx context.Context, bookID int,
 
 	// Map the response to our input struct
 	book := response.Book
+	if book.ID == 0 {
+		return nil, fmt.Errorf("Hardcover book %d was not found", bookID)
+	}
+	if book.ID != bookID {
+		return nil, fmt.Errorf("requested Hardcover book %d but received book %d", bookID, book.ID)
+	}
 	if requestedFormat == "" {
 		requestedFormat = models.ReadingFormatAudiobook
 		if strings.TrimSpace(book.ASIN) == "" && (strings.TrimSpace(book.ISBN10) != "" || strings.TrimSpace(book.ISBN13) != "") {
