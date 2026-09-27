@@ -320,8 +320,10 @@ components:
           description: >-
             Optional audiobook correction in `ASIN:region` form, for example
             `B00XXXYYZZ:uk`. The ASIN and supported region are validated, and the
-            supplied region is authoritative. Audnex lookup for this explicit
-            identifier is optional release-date enrichment; a rate-limit or transient
+            supplied region is authoritative. The corrected ASIN may differ from
+            the Audiobookshelf source ASIN; the import uses this corrected
+            identifier. Audnex lookup for this explicit identifier is optional
+            release-date enrichment; a rate-limit or transient
             error does not block import, and the preview retains the Audiobookshelf
             date. Omit this field to discover the source ASIN's region with Audnex.
             Audiobook metadata fields are rejected as corrections.
@@ -372,7 +374,11 @@ components:
           description: Verified Hardcover edition ID.
         regional_external_id:
           type: string
-          description: Regional Audible identifier used by the import, present for audiobook results.
+          description: >-
+            Regional Audible identifier actually used by the import, present
+            for audiobook results. When `audible_identifier` corrected the
+            source, this reports the imported identifier, which may differ
+            from the Audiobookshelf source ASIN.
         metadata_preview:
           $ref: '#/components/schemas/AudiobookMetadataPreview'
 

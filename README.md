@@ -125,8 +125,11 @@ See [OpenAPI](docs/openapi.yaml) for response fields and warnings.
 Use a trusted Audiobookshelf URL: this route fetches it with the saved token.
 Enable authentication when exposing the API beyond localhost. A draft may
 check up to ten Audnex regions, with retries, within its 25-second deadline.
-Each server instance handles at most two draft or edition-create requests at
-once; additional requests receive HTTP 429 with `Retry-After: 1`.
+Each server instance has two shared slots for draft and edition-create
+requests. A single authorized caller can occupy both with concurrent creates,
+each of which has a 65-second handler deadline. Excess requests receive HTTP
+429 with `Retry-After: 1`. The HTTP server's 75-second write timeout applies to
+every route.
 
 ### Create an edition
 

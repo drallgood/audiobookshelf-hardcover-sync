@@ -157,7 +157,7 @@ func decodeEditionCreateRequest(w http.ResponseWriter, r *http.Request) (edition
 func (h *Handler) verifiedEditionCreateRecord(profileID, runID, itemID string) (*sync.SyncSnapshot, sync.BookOutcomeRecord, error) {
 	snapshot, err := h.multiUserService.GetSyncRunSnapshot(profileID, runID)
 	if err != nil {
-		return nil, sync.BookOutcomeRecord{}, fmt.Errorf("failed to retrieve requested sync run: %w", err)
+		return nil, sync.BookOutcomeRecord{}, fmt.Errorf("failed to retrieve requested sync run: %w: %w", multiuser.ErrEditionCreateLocalFailure, err)
 	}
 	if snapshot == nil || snapshot.RunID != runID ||
 		(snapshot.ProfileID != "" && snapshot.ProfileID != profileID) ||
@@ -177,7 +177,7 @@ func (h *Handler) verifiedEditionCreateRecord(profileID, runID, itemID string) (
 		}
 		laterRecord, found, laterErr := h.multiUserService.GetLaterCompletedSyncRunOutcome(profileID, runID, itemID)
 		if laterErr != nil {
-			return nil, sync.BookOutcomeRecord{}, fmt.Errorf("failed to inspect newer sync outcomes: %w", laterErr)
+			return nil, sync.BookOutcomeRecord{}, fmt.Errorf("failed to inspect newer sync outcomes: %w: %w", multiuser.ErrEditionCreateLocalFailure, laterErr)
 		}
 		if found && !sameEditionCreateCandidate(record, laterRecord) {
 			return nil, sync.BookOutcomeRecord{}, errStaleEditionCreateRun
@@ -651,6 +651,9 @@ func ebookAuthorIDs(ctx context.Context, client editionCreateHardcoverClient, bo
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("%w: no matching Hardcover author was found for %q", errEditionCreateInvalidInput, name)
 	}
+	if len(ids) > 1 {
+		return nil, fmt.Errorf("%w: multiple Hardcover authors named %q match; resolve the duplicate author records before creating an ebook edition", errEditionCreateInvalidInput, name)
+	}
 	return ids, nil
 }
 
@@ -703,6 +706,9 @@ func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID strin
 		h.writeErrorResponse(w, http.StatusTooManyRequests, "Profile sync state is busy; retry shortly")
 	case errors.Is(err, multiuser.ErrEditionCreateDryRun):
 		h.writeErrorResponse(w, http.StatusConflict, "Edition creation is disabled while this profile is in dry run")
+	case errors.Is(err, multiuser.ErrEditionCreateLocalFailure):
+		h.log.Error(fmt.Sprintf("Local profile or state failure before edition creation for profile %s: %v", profileID, err))
+		h.writeErrorResponse(w, http.StatusInternalServerError, "Local profile or state data could not be prepared for edition creation")
 	case errors.Is(err, hardcover.ErrMutationScopeDenied):
 		h.writeErrorResponse(w, http.StatusForbidden, "Hardcover token is missing catalogue write permission; no edition was created")
 	case errors.Is(err, edition.ErrCreateEditionInsufficientMutationBudget):

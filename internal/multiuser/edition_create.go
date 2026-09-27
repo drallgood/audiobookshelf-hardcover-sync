@@ -18,6 +18,10 @@ import (
 // create another edition.
 var ErrEditionAssociationSaveAfterRemoteSuccess = errors.New("Hardcover edition created but local association could not be saved")
 
+// ErrEditionCreateLocalFailure marks a local profile, repository, or state
+// failure before any Hardcover mutation has been attempted.
+var ErrEditionCreateLocalFailure = errors.New("local edition creation setup failed")
+
 // ErrEditionCreateDryRun indicates that edition creation is disabled for a
 // profile currently configured for dry run.
 var ErrEditionCreateDryRun = errors.New("edition creation is disabled while the profile is in dry run")
@@ -125,7 +129,7 @@ func (s *MultiUserService) CreateEditionWithAssociation(ctx context.Context, pro
 
 	profile, err := s.GetProfile(profileID)
 	if err != nil {
-		return fmt.Errorf("failed to load profile %s for edition creation: %w", profileID, err)
+		return fmt.Errorf("failed to load profile %s for edition creation: %w: %w", profileID, ErrEditionCreateLocalFailure, err)
 	}
 	if profile == nil {
 		return fmt.Errorf("%w: %s", ErrProfileNotFound, profileID)
@@ -134,7 +138,7 @@ func (s *MultiUserService) CreateEditionWithAssociation(ctx context.Context, pro
 		return ErrEditionCreateDryRun
 	}
 	if err := s.validatePersistedProfileStateFile(profileID, profile.SyncConfig.StateFile); err != nil {
-		return fmt.Errorf("invalid persisted state file for profile %s: %w", profileID, err)
+		return fmt.Errorf("invalid persisted state file for profile %s: %w: %w", profileID, ErrEditionCreateLocalFailure, err)
 	}
 
 	statePath := s.profileSpecificStatePath(profileID, profile.SyncConfig.StateFile)
@@ -143,20 +147,20 @@ func (s *MultiUserService) CreateEditionWithAssociation(ctx context.Context, pro
 		if errors.Is(err, statepkg.ErrStateFileLocked) {
 			return fmt.Errorf("%w for profile %s: %w", ErrProfileStateBusy, profileID, err)
 		}
-		return fmt.Errorf("failed to lock state file for profile %s: %w", profileID, err)
+		return fmt.Errorf("failed to lock state file for profile %s: %w: %w", profileID, ErrEditionCreateLocalFailure, err)
 	}
 	defer func() { _ = fileLock.Close() }()
 
 	_, loadPath, isLegacy, err := s.profileStateSourcePath(profileID, profile.SyncConfig.StateFile)
 	if err != nil {
-		return fmt.Errorf("failed to locate state file for profile %s: %w", profileID, err)
+		return fmt.Errorf("failed to locate state file for profile %s: %w: %w", profileID, ErrEditionCreateLocalFailure, err)
 	}
 	if !isLegacy {
 		loadPath = fileLock.StatePath()
 	}
 	state, err := statepkg.LoadState(loadPath)
 	if err != nil {
-		return fmt.Errorf("failed to load state file for profile %s: %w", profileID, err)
+		return fmt.Errorf("failed to load state file for profile %s: %w: %w", profileID, ErrEditionCreateLocalFailure, err)
 	}
 	if _, exists := state.GetAssociation(absItemID); exists {
 		return fmt.Errorf("%w: %s", ErrEditionAssociationAlreadyExists, absItemID)

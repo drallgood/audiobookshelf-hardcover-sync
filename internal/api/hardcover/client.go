@@ -37,7 +37,7 @@ var ErrMutationInsufficientBudget = errors.New("insufficient time remaining befo
 // after an earlier HTTP attempt may already have reached Hardcover.
 var ErrMutationOutcomeAmbiguous = errors.New("Hardcover mutation outcome is ambiguous")
 
-// ErrMutationScopeDenied indicates Hasura rejected a known catalogue write
+// ErrMutationScopeDenied indicates Hardcover rejected a known catalogue write
 // field during GraphQL validation, before executing the mutation.
 var ErrMutationScopeDenied = errors.New("Hardcover catalogue mutation scope is denied")
 
@@ -78,6 +78,9 @@ type graphQLError struct {
 	} `json:"extensions"`
 }
 
+// This intentionally brittle match recognizes only a specific pre-execution
+// GraphQL validation response. If its shape changes, keep the outcome
+// ambiguous rather than treating an unverified error as safe to retry.
 func knownMutationScopeDenial(op graphqlOperation, query string, data json.RawMessage, gqlErrors []graphQLError) bool {
 	if op != mutationOperation || (len(data) > 0 && strings.TrimSpace(string(data)) != "null") || len(gqlErrors) == 0 {
 		return false

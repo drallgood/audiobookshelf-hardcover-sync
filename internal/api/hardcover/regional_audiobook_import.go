@@ -171,9 +171,11 @@ type regionalImportStatus struct {
 }
 
 func (c *Client) pollRegionalAudiobookImport(ctx context.Context, bookID int, externalID, mutationStatus string, mutationEditionID *int, mutationEdition *regionalImportEdition) (RegionalAudiobookStatus, int, error) {
-	// book_import_statuses is documented in Hardcover's current upstream
-	// schema. Its response for an unmapped regional loaded import has not been
-	// independently verified against a live API token.
+	// Live tests observed failed, loaded, and created statuses. An ordinary-token
+	// created import for a previously unmapped regional Audible ID returned the
+	// expected book and edition IDs, and a fresh catalogue read found its exact
+	// mapping. This confirms behavior, not every response shape or nullable/error
+	// field; keep validation fail-closed for unknown or inconsistent results.
 	query := `
 query RegionalAudibleImport($entries: [ImportStatusEntryInput!]!, $platformId: Int!, $externalId: String!) {
   book_import_statuses(entries: $entries) {

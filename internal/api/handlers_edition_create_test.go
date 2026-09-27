@@ -1461,6 +1461,64 @@ func TestCreateEditionFromDraftReusesExistingEbookEditionOfSameBook(t *testing.T
 	require.Equal(t, models.ReadingFormatEbook, association.ReadingFormat)
 }
 
+func TestCreateEditionFromDraftRejectsAmbiguousSameNameAuthorFallback(t *testing.T) {
+	fixture := newEditionCreateEbookFixture(t, "run-ambiguous-author", editionCreateCatalogClient{})
+	var createCalls atomic.Int32
+	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+		return editionCreateHardcoverStub{
+			bookFn: func(context.Context, string) (*models.HardcoverBook, error) {
+				return &models.HardcoverBook{ID: "42", Authors: []models.Author{{ID: "invalid", Name: "Author"}}}, nil
+			},
+			authorsFn: func(_ context.Context, name string, limit int) ([]models.Author, error) {
+				require.Equal(t, "Author", name)
+				require.Equal(t, 10, limit)
+				return []models.Author{
+					{ID: "7", Name: "Author"},
+					{ID: "7", Name: "Author"},
+					{ID: "8", Name: "author"},
+				}, nil
+			},
+			createEbookFn: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
+				createCalls.Add(1)
+				return nil, errors.New("ebook mutation must not run")
+			},
+		}
+	}
+
+	response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-ambiguous-author","abs_item_id":"abs-item-1"}`)
+
+	require.Equal(t, http.StatusUnprocessableEntity, response.Code, response.Body.String())
+	require.Contains(t, response.Body.String(), "multiple Hardcover authors named")
+	require.Zero(t, createCalls.Load(), "ambiguous fallback must stop before the edition mutation")
+	stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+	require.NoError(t, err)
+	_, exists := stored.GetAssociation("abs-item-1")
+	require.False(t, exists)
+}
+
+func TestCreateEditionFromDraftMapsLocalStateReadFailureToInternalServerError(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{
+		"id":"abs-item-1","mediaType":"book","media":{
+			"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0SOURCE12","isbn":"9780306406157"},
+			"duration":100,"numTracks":1
+		}}`, "us")
+	configureEditionCreateRoute(t, fixture)
+	statePath := editionCreateProfileStatePath(fixture)
+	require.NoError(t, os.WriteFile(statePath, []byte("not valid state JSON"), 0600))
+
+	request := httptest.NewRequest(http.MethodPost, "/api/profiles/draft-profile/edition-drafts/create", strings.NewReader(
+		`{"run_id":"run-state-read-failure","abs_item_id":"abs-item-1"}`,
+	))
+	request.AddCookie(fixture.sessionCookie(t, fixture.owner))
+	response := httptest.NewRecorder()
+	fixture.routes.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusInternalServerError, response.Code, response.Body.String())
+	require.Contains(t, response.Body.String(), "Local profile or state data could not be prepared")
+	require.Zero(t, fixture.absRequests.Load(), "local state failure must stop before Audiobookshelf or Hardcover calls")
+	require.Zero(t, fixture.hardcoverRequests.Load())
+}
+
 func TestCreateEditionFromDraftRefusesISBNOwnedByAnotherBook(t *testing.T) {
 	client, hardcoverRequests := newEditionCreateHardcoverServer(t, `{"data":{"insert_edition":{"id":999,"errors":[]}}}`)
 	fixture := newEditionCreateEbookFixture(t, "run-isbn-conflict", editionCreateCatalogClient{
