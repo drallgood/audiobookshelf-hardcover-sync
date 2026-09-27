@@ -14,9 +14,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
+	absync "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 )
 
@@ -233,6 +236,105 @@ func TestCreateCommandImportsAudiobookAndSavesAssociation(t *testing.T) {
 				t.Fatalf("unexpected saved association: %#v", association)
 			}
 		})
+	}
+}
+
+// syncAssociationHardcover avoids unrelated network operations after the sync
+// service has loaded the state written by edition create. Its identifier
+// lookup is the boundary signal: a valid saved association should bypass it.
+type syncAssociationHardcover struct {
+	*hardcover.Client
+	identifierLookups int
+}
+
+func (c *syncAssociationHardcover) SearchBookByASINResult(context.Context, string) (*hardcover.ASINLookupResult, error) {
+	c.identifierLookups++
+	return nil, nil
+}
+
+func (c *syncAssociationHardcover) SearchBookByISBN10(context.Context, string) (*models.HardcoverBook, error) {
+	c.identifierLookups++
+	return nil, nil
+}
+
+func (c *syncAssociationHardcover) SearchBookByISBN13(context.Context, string) (*models.HardcoverBook, error) {
+	c.identifierLookups++
+	return nil, nil
+}
+
+func (c *syncAssociationHardcover) SearchBooks(context.Context, string, string) ([]models.HardcoverBook, error) {
+	c.identifierLookups++
+	return nil, nil
+}
+
+func (c *syncAssociationHardcover) GetEdition(_ context.Context, editionID string) (*models.Edition, error) {
+	return &models.Edition{ID: editionID, BookID: fmt.Sprint(boundaryBookID)}, nil
+}
+
+func (c *syncAssociationHardcover) GetEditionUncached(_ context.Context, editionID string) (*models.Edition, error) {
+	return &models.Edition{ID: editionID, BookID: fmt.Sprint(boundaryBookID)}, nil
+}
+
+func (c *syncAssociationHardcover) GetUserBookID(context.Context, int) (int, error) {
+	return 7, nil
+}
+
+func TestCreateCommandAssociationIsUsedByNextSync(t *testing.T) {
+	t.Chdir(t.TempDir()) // Audiobookshelf's client writes diagnostic response files.
+	hc := newFakeHardcover(t)
+	env := newCommandEnv(t, hc, boundaryABSItemJS)
+	inputPath := writeCreateInput(t, fmt.Sprintf(`{"book_id":%d,"abs_item_id":%q,"asin":%q,"asin_region":"uk"}`, boundaryBookID, boundaryABSItem, boundaryASIN))
+	if _, err := env.run(t, "create", "--input", inputPath); err != nil {
+		t.Fatal(err)
+	}
+
+	const syncItem = `{"id":"li_boundary","libraryId":"library-1","mediaType":"book","media":{"metadata":{"title":"Boundary Book","authorName":"Test Author","asin":"B0ABCDE123","isbn":"9780306406157"},"duration":100},"progress":{"currentTime":0,"isFinished":false}}`
+	absServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/me":
+			_, _ = w.Write([]byte(`{"mediaProgress":[]}`))
+		case "/api/libraries":
+			_, _ = w.Write([]byte(`{"libraries":[{"id":"library-1","name":"Test"}]}`))
+		case "/api/libraries/library-1/items":
+			_, _ = fmt.Fprintf(w, `{"results":[%s]}`, syncItem)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(absServer.Close)
+	absClient, err := audiobookshelf.NewClientWithNetworkTrust(absServer.URL, "abs-token", audiobookshelf.NetworkTrustAllowPrivate)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.Audiobookshelf.URL = absServer.URL
+	cfg.Audiobookshelf.Token = "abs-token"
+	cfg.Sync.StateFile = env.statePath
+	cfg.Sync.Incremental = false
+	cfg.Sync.SyncWantToRead = false
+	cfg.Paths.CacheDir = t.TempDir()
+	cfg.Paths.MismatchOutputDir = t.TempDir()
+	syncHC := &syncAssociationHardcover{Client: hardcover.NewClient("test-token", logger.Get())}
+	svc, err := absync.NewServiceWithRunIdentity(absClient, syncHC, cfg, "", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := svc.GetSnapshot()
+	if len(snapshot.BookOutcomes) != 1 {
+		t.Fatalf("expected one sync outcome, got %#v", snapshot.BookOutcomes)
+	}
+	outcome := snapshot.BookOutcomes[0]
+	if outcome.HardcoverBookID != fmt.Sprint(boundaryBookID) || outcome.EditionID != fmt.Sprint(boundaryEditionID) {
+		t.Fatalf("next sync did not use the CLI-saved association: %#v", outcome)
+	}
+	if syncHC.identifierLookups != 0 {
+		t.Fatalf("next sync performed %d identifier lookups despite the saved association", syncHC.identifierLookups)
 	}
 }
 
