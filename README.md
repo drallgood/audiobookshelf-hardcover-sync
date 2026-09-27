@@ -941,24 +941,24 @@ The project includes several utility tools to help with specific tasks:
 
 ### Edition Tool
 
-The `edition-tool` helps create and manage audiobook editions in Hardcover.
+The `edition` command adds a missing edition to an existing Hardcover book.
+Audiobooks are imported through Hardcover's regional Audible import; ebooks
+are inserted as ebook editions. It can also save the match for an
+Audiobookshelf item so the next sync uses the new edition.
 
 ```bash
 # Build the tool
 make build-tools
 
-# Show help
-./bin/edition-tool help
+# Create an edition from a mismatch export or JSON file
+./bin/edition --config ./config.yaml create --input edition.json
 
-# Create an edition interactively
-./bin/edition-tool create --interactive
-
-# Create an edition prepopulated with data from Hardcover
-./bin/edition-tool create --prepopulated
-
-# Create an edition from a JSON template file
-./bin/edition-tool create --file path/to/edition-template.json
+# Also save the match for this Audiobookshelf item in sync.state_file
+./bin/edition --config ./config.yaml create --input edition.json --abs-item-id li_123
 ```
+
+See [cmd/edition/README.md](cmd/edition/README.md) for input fields, regions,
+state files, and results.
 
 ### Image Tool
 
@@ -1050,7 +1050,7 @@ Use this workflow:
   - **Missing ASIN/ISBN in AudiobookShelf**: Add/correct identifiers, then re-run sync.
   - **Book exists, edition missing in Hardcover**:
     - Create the edition manually on Hardcover, or
-    - Use `edition-tool` with a generated mismatch JSON/template.
+    - Use the `edition` command with the generated mismatch JSON.
   - **Book missing in Hardcover**: Create the book and audiobook edition in Hardcover, then re-run sync.
   - **Token issue**: Generate a new Hardcover token and update configuration.
 
@@ -1058,21 +1058,27 @@ Use this workflow:
   - Re-run sync after your metadata or Hardcover updates.
   - The mismatch warning should disappear once the correct edition can be matched.
 
-#### Using `edition-tool` for faster fixes
+#### Using `edition` for faster fixes
 
 ```bash
 # Build tools
 make build-tools
 
-# Inspect commands
-./bin/edition-tool help
+# Preview without changing Hardcover
+./bin/edition --config ./config.yaml --dry-run create --input path/to/mismatch.json
 
-# Create edition interactively
-./bin/edition-tool create --interactive
-
-# Create edition from JSON template/mismatch data
-./bin/edition-tool create --file path/to/edition-template.json
+# Create the edition and save the match for the next sync
+./bin/edition --config ./config.yaml create --input path/to/mismatch.json
 ```
+
+Mismatch exports include `abs_item_id`, so the second command saves the match
+in `sync.state_file`. For a web-service profile, pass that profile's state file
+with `--state-file`. Without an item ID, no match is saved, and an audiobook
+import that reused an existing edition may still need review after the next
+sync.
+If a submitted ASIN or ebook ISBN differs from the ABS item, the command
+requires `--confirm-identifier-correction` before creating and saving the
+match. Check the ABS item and Hardcover book before confirming.
 
 Tip: Always review JSON data before creating editions to avoid linking to the wrong book/edition.
 

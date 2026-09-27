@@ -1,143 +1,177 @@
 # Edition Creation Tool
 
-This tool helps create and manage editions in Hardcover. It provides two main commands:
+The standalone `edition` command provides `prepopulate` templates and explicit
+edition creation. Audiobooks use a region-qualified Audible import; ebooks use
+Hardcover's format-aware edition insertion. Normal sync does not create
+catalogue editions.
 
-1. `prepopulate`: Generate a prepopulated JSON template from an existing book
-2. `create`: Create a new edition using a JSON input file
+## Requirements
 
-## Running with Docker
-
-The published Docker image runs the main `audiobookshelf-hardcover-sync`
-service and does not include the `edition` command. Run the edition workflows
-locally as described below.
-
-The edition command needs the Hardcover API token, set as `hardcover.token` in
-`config.yaml` or with `HARDCOVER_TOKEN`:
-
-  ```yaml
-  hardcover:
-    token: your_token
-  ```
-
-  The token needs these scopes:
-  - `read:library`
-  - `write:library`
-  - `read:catalog`
-  - `write:catalog:append`
-
-## Local Development
-
-### Installation
-
-Build the tool using Go:
+Build and run the command locally; the published Docker image contains only
+the main `audiobookshelf-hardcover-sync` service.
 
 ```bash
-go build -o edition cmd/edition/main.go
+go build -o edition ./cmd/edition
 ```
 
-### Usage
+The command reads `config.yaml` by default or the file passed with `--config`.
+The default file is optional; a file named with `--config` must exist. Set
+`hardcover.token`. When associating an Audiobookshelf item, also set
+`audiobookshelf.url` and `audiobookshelf.token`. Environment variables such as
+`HARDCOVER_TOKEN`, `AUDIOBOOKSHELF_URL`, `AUDIOBOOKSHELF_TOKEN`,
+`AUDIOBOOKSHELF_NETWORK_TRUST`, and `AUDIOBOOKSHELF_AUDNEXUS_REGION` override
+the file, as they do for the sync service. Hardcover requests follow the
+configured `rate_limit` settings, like sync. The command does not require the
+sync service's Audiobookshelf settings and prints no configuration summary.
 
-#### Prepopulate a Template
+The Hardcover token needs `read:catalog` for book/edition reads and duplicate
+checks, plus `write:catalog:append` or a broader catalogue-write scope for
+creation. Audiobook imports use `upsert_book`; ebook creation uses
+`insert_edition`. A missing catalogue-write scope leaves sync available but
+makes the explicit create operation fail.
+
+## Commands
 
 ```bash
 ./edition --config ./config.yaml prepopulate --book-id 12345 --output edition.json
-```
-
-#### Create a New Edition
-
-```bash
+# Choose the format when a book has both identifiers or should use another format.
+./edition --config ./config.yaml prepopulate --book-id 12345 --reading-format ebook --output ebook.json
+# Input has no abs_item_id, so this create saves no ABS association.
 ./edition --config ./config.yaml create --input edition.json
+# Single-user sync: saves the match in the configured sync.state_file.
+./edition --config ./config.yaml create --input edition.json --abs-item-id li_123
+# Web-service profile-123 with blank sync.state_file and paths.data_dir ./data.
+./edition --config ./config.yaml create --input edition.json --abs-item-id li_123 --state-file ./data/sync_state.profile-123
+# Dry run without an ABS association; input has no abs_item_id.
+./edition --config ./config.yaml --dry-run create --input edition.json
 ```
 
-## JSON Schema
+`prepopulate` writes `reading_format` and a matching `edition_format` into its
+JSON template. By default, it selects audiobook when Hardcover has an ASIN,
+including when the book also has ISBNs; this preserves the prior audiobook
+path for books with both identifiers. It selects ebook for an ISBN-only book.
+Use `--reading-format audiobook` or `--reading-format ebook` to override that
+inference. The selected format is written to the template, so `create` uses the
+same format without an additional flag. Audiobook templates still need a valid
+ASIN and a known or supplied Audible region before they can be imported.
 
-The input JSON should follow this structure:
+The `--abs-item-id` and `--state-file` flags apply to `create`. An
+`--abs-item-id` flag overrides `abs_item_id` in the input JSON. When an ABS
+item ID is present in either place, the command saves the match in
+`--state-file`, or in the configured `sync.state_file` when the flag is
+omitted. That default suits the single-user sync.
+If a submitted ASIN or ebook ISBN differs from the fetched item's identifier,
+the command stops before writing to Hardcover. Check the item and target book;
+pass `--confirm-identifier-correction` to make a deliberate correction. The
+JSON result includes a warning when a correction is confirmed.
+
+For a web-service profile, pass `--state-file` with that profile's state
+file. The multi-user service starts from the profile's
+`SyncConfig.StateFile`, resolving relative paths against `paths.data_dir`;
+when it is blank, the base path is `<data_dir>/sync_state.json`. It then
+removes a trailing `.json` and appends `.<encoded-profile-id>`. Thus
+`./data/sync_state.profile-123` applies only when `sync.state_file` is blank,
+`paths.data_dir` is the default `./data`, and the profile ID is
+`profile-123`. The CLI uses the path literally; it does not derive a
+profile-specific filename.
+
+## Audiobook input
+
+The audiobook input needs a positive Hardcover `book_id` and a bare ASIN of
+ten letters or digits. `reading_format` defaults to `audiobook`. Input JSON is
+limited to 1 MiB.
+
+```json
+{
+  "book_id": 12345,
+  "asin": "B00XXXYYZZ",
+  "reading_format": "audiobook",
+  "asin_region": "uk",
+  "abs_item_id": "li_123"
+}
+```
+
+`asin_region` is optional; `region` is an alias. If both are supplied they
+must agree. A supplied region is sent to Hardcover as given, without an Audnex
+lookup. Without one, the command discovers a region by finding the requested
+ASIN in Audnex; it prefers `audiobookshelf.audnexus_region` (default `us`) and
+does not assume a region from the ASIN. If discovery finds no region or Audnex
+is temporarily unavailable, the command stops before the Hardcover import;
+retry later or supply `asin_region`.
+
+For audiobook imports, the command uses only `book_id`, `asin`, region,
+`reading_format`, and the optional ABS item ID. Other JSON fields are ignored,
+so existing mismatch export fields remain acceptable.
+
+## Ebook input
+
+Set `reading_format` to `ebook` and provide the ebook metadata used by
+Hardcover insertion. The input requires a positive `book_id`, a `title`, at
+least one `author_ids` entry, and at least one ASIN or ISBN. If supplied,
+`release_date` must use `YYYY-MM-DD` format. For example:
 
 ```json
 {
   "book_id": 12345,
   "title": "Book Title",
-  "subtitle": "Unabridged Edition",
-  "image_url": "https://example.com/cover.jpg",
+  "subtitle": "Digital Edition",
   "asin": "B00XXXYYZZ",
-  "isbn_10": "1234567890",
   "isbn_13": "9781234567890",
-  "author_ids": [1, 2, 3],
-  "narrator_ids": [4, 5],
+  "author_ids": [1],
   "publisher_id": 10,
   "release_date": "2023-01-01",
-  "audio_seconds": 3600,
-  "edition_format": "Audible Audio",
-  "reading_format": "audiobook",
-  "edition_information": "Special edition with bonus content",
-  "language_id": 1,
-  "country_id": 1
+  "edition_format": "Ebook",
+  "reading_format": "ebook"
 }
 ```
 
-`reading_format` is optional: `audiobook` (the default) or `ebook`. An `ebook`
-edition is created with Hardcover's ebook reading format, an `Ebook` default
-`edition_format`, and without narrators or `audio_seconds`, and duplicate
-detection by ASIN and ISBN only considers ebook editions. Mismatch files
-exported for ebook items already carry `"reading_format": "ebook"`.
+The ebook path retains duplicate checks within ebook editions. An edition
+already present for the requested book is returned as `existing`; the command
+does not resend its metadata. An existing edition associated with another
+book is refused.
 
-## Configuration
+## Results and saved matches
 
-The tool reads `config.yaml` by default, or another file supplied with
-`--config`. The default file is optional; a file named with `--config` must
-exist. Environment variables such as `HARDCOVER_TOKEN`, `AUDIOBOOKSHELF_URL`,
-`AUDIOBOOKSHELF_TOKEN`, and `AUDIOBOOKSHELF_NETWORK_TRUST` override the file,
-as they do for the sync service. The edition commands do not require the sync
-service's Audiobookshelf settings and print no configuration summary.
+Each Hardcover write is sent at most once and only when enough time remains to
+confirm it. If a write fails, the error says whether Hardcover may have
+processed it. When it says so, check the book in Hardcover before retrying. A
+missing catalogue-write permission is reported as such, with no edition
+created.
 
-```yaml
-hardcover:
-  token: your_token
-```
+The command prints a JSON result with `success`, `status`, `book_id`,
+`edition_id`, `image_id`, and `reading_format`; it may also include
+`image_error`, `existing`, `abs_item_id`, and `association_saved`. Audiobook
+statuses are `loaded`, `created`, or `dry_run`. Ebook statuses are `existing`,
+`created`, or `dry_run`.
 
-An authenticated Audiobookshelf cover URL must match the configured
-`audiobookshelf.url` base URL's scheme, hostname, port, and canonical path
-prefix. A non-empty base must be an absolute `http://` or `https://` URL, and
-`audiobookshelf.network_trust` applies as described in the main README
-(`public_only` requires HTTPS). Aliases such as `localhost` and `127.0.0.1`,
-and different ports, intentionally receive no token.
+When an ABS item ID is supplied, the command fetches the item before making a
+Hardcover change and requires its format to match the input. The saved match
+keeps the item's own ASIN and ISBN; a different submitted ASIN is recorded as
+your correction. After verifying
+the Hardcover result, it saves a local match in the configured state file
+while holding the state-file lock. If another sync holds the lock, the command
+returns an error before contacting Hardcover. A local save failure after a
+successful Hardcover operation is reported separately; verify the Hardcover
+result before retrying, because a retry may create another edition.
+The lock covers the ABS fetch and Hardcover import or insertion as well as the
+state save. A concurrent sync using the same state file can fail while create
+holds it. The Hardcover operation alone can take roughly 65 seconds, in
+addition to ABS fetch and region discovery.
 
-## Examples
+Without an ABS item ID, no match is saved. A `loaded` audiobook import without
+a saved mapping remains unresolved by later syncs. Dry run performs no
+Hardcover mutation and saves no match. It can still fetch the ABS item and
+check Audnex when those steps are requested by the input.
 
-### Basic Usage
+## Audiobookshelf URL trust
 
-1. First, generate a template:
-   ```bash
-   ./edition --config ./config.yaml prepopulate --book-id 12345 --output my-audiobook.json
-   ```
+`audiobookshelf.network_trust` (or `AUDIOBOOKSHELF_NETWORK_TRUST`) controls
+which addresses this command may contact for Audiobookshelf requests.
+`allow_private` is the default for self-hosted addresses. `public_only`
+requires HTTPS and public addresses. Both modes require an absolute
+`http://` or `https://` base URL; invalid URLs or trust values stop the
+command. See the [main configuration reference](../../README.md#configuration-reference)
+for the deployment-wide setting.
 
-2. Edit the generated JSON file as needed
-
-3. Create the edition:
-   ```bash
-   ./edition --config ./config.yaml create --input my-audiobook.json
-   ```
-
-   Before creating, the tool looks for an existing edition in the requested
-   reading format with the same ASIN, ISBN-13 or ISBN-10 (an ISBN also under its
-   converted form). One of the same book is reused untouched (no cover or
-   metadata is sent) and the printed result includes `"existing": true`. An
-   existing edition of a different book, or one whose book cannot be confirmed,
-   is refused with an error.
-
-   No cover is uploaded for now: Hardcover's cover upload endpoint is not part of
-   its documented API and rejected a new scoped API token. An `image_url` in the
-   input is not fetched; the edition is still created and the printed result
-   carries an `image_error` saying so. The cover code is kept, switched off.
-
-### Dry Run
-
-```bash
-./edition --config ./config.yaml --dry-run create --input my-audiobook.json
-```
-
-## Error Handling
-
-- The tool will validate the input JSON before making any API calls
-- If an error occurs, it will be displayed with a helpful message
-- Use the `--dry-run` flag to test without making changes
+For ebook creation, an `image_url` is not fetched or uploaded; the result may
+include `image_error` for the unsupported cover upload.

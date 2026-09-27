@@ -43,6 +43,10 @@ var (
 	errCoverFormat = errors.New("cover image is not a PNG or JPEG")
 	// errCoverTooLarge means the downloaded cover exceeds maxCoverBytes.
 	errCoverTooLarge = errors.New("cover image is too large")
+	// ErrAudiobookRequiresRegionalImport means the legacy edition insertion
+	// method was used for an audiobook. Audiobooks must use Hardcover's regional
+	// Audible import path instead of insert_edition.
+	ErrAudiobookRequiresRegionalImport = errors.New("audiobooks require a confirmed regional Audible import")
 	// ErrCreateEditionPreMutation marks a failure before insert_edition is sent.
 	// Callers can use it to distinguish a safe retry from an uncertain mutation.
 	ErrCreateEditionPreMutation = errors.New("edition creation failed before mutation")
@@ -147,7 +151,8 @@ type HardcoverClient interface {
 	GetAuthHeader() string
 }
 
-// Creator handles the creation of audiobook editions in Hardcover
+// Creator handles format-aware ebook edition creation in Hardcover. Audiobooks
+// must use the regional Audible import operation in the Hardcover client.
 type Creator struct {
 	client              HardcoverClient
 	log                 *logger.Logger
@@ -422,8 +427,8 @@ func NewCreatorWithHTTPClient(client HardcoverClient, log *logger.Logger, dryRun
 	}
 }
 
-// CreateEdition creates a new edition in Hardcover, an audiobook unless the input
-// says ebook.
+// CreateEdition inserts a new ebook edition in Hardcover. Audiobooks must use
+// the regional Audible import operation in the Hardcover client.
 func (c *Creator) CreateEdition(ctx context.Context, input *EditionInput) (*EditionResult, error) {
 	return c.createEditionWithMutationReserve(ctx, input, 0)
 }
@@ -437,6 +442,14 @@ func (c *Creator) CreateEditionWithMutationReserve(ctx context.Context, input *E
 }
 
 func (c *Creator) createEditionWithMutationReserve(ctx context.Context, input *EditionInput, reserve time.Duration) (*EditionResult, error) {
+	if input == nil {
+		return nil, fmt.Errorf("invalid input: edition input is required")
+	}
+	readingFormat := strings.TrimSpace(input.ReadingFormat)
+	if readingFormat == "" || strings.EqualFold(readingFormat, models.ReadingFormatAudiobook) {
+		return nil, ErrAudiobookRequiresRegionalImport
+	}
+
 	// Validate input
 	if err := input.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid input: %w", err)
@@ -1278,15 +1291,25 @@ func (c *Creator) createEdition(ctx context.Context, input *EditionInput, imageI
 	return editionID, false, nil
 }
 func (c *Creator) PrepopulateFromBook(ctx context.Context, bookID int) (*EditionInput, error) {
+	return c.PrepopulateFromBookWithFormat(ctx, bookID, "")
+}
+
+// PrepopulateFromBookWithFormat loads book metadata into a create template.
+// An empty readingFormat infers audiobook when the book has an ASIN (including
+// books that have both ASIN and ISBNs), ebook for ISBN-only books, and
+// audiobook when the book has neither identifier. A non-empty value selects
+// the requested supported format.
+func (c *Creator) PrepopulateFromBookWithFormat(ctx context.Context, bookID int, readingFormat string) (*EditionInput, error) {
+	requestedFormat := strings.ToLower(strings.TrimSpace(readingFormat))
+	switch requestedFormat {
+	case "", models.ReadingFormatAudiobook, models.ReadingFormatEbook:
+	default:
+		return nil, fmt.Errorf("invalid reading_format %q, expected audiobook or ebook", readingFormat)
+	}
+
 	c.log.Debug("Prepopulating edition data from book", map[string]interface{}{
 		"book_id": bookID,
 	})
-
-	// First, get the edition details to ensure the book exists
-	_, err := c.client.GetEdition(ctx, strconv.Itoa(bookID))
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch edition details: %w", err)
-	}
 
 	// Get the book details using GraphQL query
 	query := `
@@ -1363,17 +1386,33 @@ func (c *Creator) PrepopulateFromBook(ctx context.Context, bookID int) (*Edition
 
 	// Map the response to our input struct
 	book := response.Book
+	if book.ID == 0 {
+		return nil, fmt.Errorf("Hardcover book %d was not found", bookID)
+	}
+	if book.ID != bookID {
+		return nil, fmt.Errorf("requested Hardcover book %d but received book %d", bookID, book.ID)
+	}
+	if requestedFormat == "" {
+		requestedFormat = models.ReadingFormatAudiobook
+		if strings.TrimSpace(book.ASIN) == "" && (strings.TrimSpace(book.ISBN10) != "" || strings.TrimSpace(book.ISBN13) != "") {
+			requestedFormat = models.ReadingFormatEbook
+		}
+	}
+	editionFormat := "Audiobook"
+	if requestedFormat == models.ReadingFormatEbook {
+		editionFormat = "Ebook"
+	}
 	input := &EditionInput{
-		BookID:      bookID,
-		Title:       book.Title,
-		Subtitle:    book.Subtitle,
-		ImageURL:    book.CoverImageURL,
-		ISBN10:      book.ISBN10,
-		ISBN13:      book.ISBN13,
-		ASIN:        book.ASIN,
-		ReleaseDate: book.PublishedDate,
-		// Set the edition format to Audiobook by default
-		EditionFormat: "Audiobook",
+		BookID:        bookID,
+		Title:         book.Title,
+		Subtitle:      book.Subtitle,
+		ImageURL:      book.CoverImageURL,
+		ISBN10:        book.ISBN10,
+		ISBN13:        book.ISBN13,
+		ASIN:          book.ASIN,
+		ReleaseDate:   book.PublishedDate,
+		EditionFormat: editionFormat,
+		ReadingFormat: requestedFormat,
 	}
 
 	// Add authors
@@ -1403,11 +1442,6 @@ func (c *Creator) PrepopulateFromBook(ctx context.Context, bookID int) (*Edition
 		input.CountryID = book.Country.ID
 	} else {
 		input.CountryID = 1 // Default to USA
-	}
-
-	// Set default values
-	if input.EditionFormat == "" {
-		input.EditionFormat = "Audiobook"
 	}
 
 	return input, nil

@@ -1,0 +1,633 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audnex"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/audnexregion"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/edition"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
+)
+
+const (
+	maxCreateInputBytes = 1 << 20
+	// createHardcoverTimeout bounds each catalogue write, its polling, and its
+	// read-back, matching the create API's request timeout.
+	createHardcoverTimeout = 65 * time.Second
+	// createMutationReserve is the time that must remain when a catalogue
+	// mutation is sent, matching the create API. It covers regional import
+	// polling and read-back, and makes the client send the mutation at most once.
+	createMutationReserve = 35 * time.Second
+)
+
+type editionCreateInput struct {
+	edition.EditionInput
+	ABSItemID  string `json:"abs_item_id,omitempty"`
+	ASINRegion string `json:"asin_region,omitempty"`
+	Region     string `json:"region,omitempty"`
+}
+
+type createOptions struct {
+	InputPath                   string
+	ABSItemID                   string
+	StateFile                   string
+	PreferredRegion             string
+	DryRun                      bool
+	ConfirmIdentifierCorrection bool
+}
+
+type createOutput struct {
+	Success          bool   `json:"success"`
+	Status           string `json:"status,omitempty"`
+	BookID           int    `json:"book_id,omitempty"`
+	EditionID        int    `json:"edition_id"`
+	ImageID          int    `json:"image_id"`
+	ImageError       string `json:"image_error,omitempty"`
+	Existing         bool   `json:"existing,omitempty"`
+	ReadingFormat    string `json:"reading_format,omitempty"`
+	ABSItemID        string `json:"abs_item_id,omitempty"`
+	AssociationSaved bool   `json:"association_saved"`
+	Warning          string `json:"warning,omitempty"`
+}
+
+type createServices struct {
+	fetchABSItem       func(context.Context, string) (*models.AudiobookshelfBook, error)
+	discoverAudible    func(context.Context, string, string) (string, error)
+	importAudiobook    func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error)
+	createEbook        func(context.Context, *edition.EditionInput) (*edition.EditionResult, error)
+	getEditionUncached func(context.Context, string) (*models.Edition, error)
+}
+
+func newCreateServices(cfg *config.Config, log *logger.Logger, dryRun bool) (createServices, error) {
+	clientConfig := hardcoverClientConfig(cfg)
+	hc := hardcover.NewClientWithConfig(clientConfig, cfg.Hardcover.Token, log)
+	hc.SetDryRun(dryRun)
+	creator := edition.NewCreator(hc, log, dryRun, cfg.Audiobookshelf.Token)
+	if err := creator.SetAudiobookshelfNetworkTrust(cfg.Audiobookshelf.NetworkTrust); err != nil {
+		return createServices{}, fmt.Errorf("invalid Audiobookshelf network trust: %w", err)
+	}
+	if err := creator.SetAudiobookshelfBaseURL(cfg.Audiobookshelf.URL); err != nil {
+		return createServices{}, fmt.Errorf("invalid Audiobookshelf URL: %w", err)
+	}
+	return createServices{
+		fetchABSItem: func(ctx context.Context, itemID string) (*models.AudiobookshelfBook, error) {
+			if strings.TrimSpace(cfg.Audiobookshelf.URL) == "" {
+				return nil, errors.New("audiobookshelf.url is required when associating an ABS item")
+			}
+			if strings.TrimSpace(cfg.Audiobookshelf.Token) == "" {
+				return nil, errors.New("audiobookshelf.token is required when associating an ABS item")
+			}
+			abs, err := audiobookshelf.NewClientWithNetworkTrust(
+				cfg.Audiobookshelf.URL,
+				cfg.Audiobookshelf.Token,
+				cfg.Audiobookshelf.NetworkTrust,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("invalid Audiobookshelf client configuration: %w", err)
+			}
+			return abs.GetLibraryItemByID(ctx, itemID)
+		},
+		discoverAudible: func(ctx context.Context, asin, preferred string) (string, error) {
+			_, region, err := audnex.NewClient(log).DiscoverBookByASIN(ctx, asin, preferred)
+			if err != nil {
+				return "", err
+			}
+			return region, nil
+		},
+		importAudiobook: func(ctx context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+			return hc.ImportRegionalAudiobook(ctx, input)
+		},
+		createEbook: func(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
+			return creator.CreateEditionWithMutationReserve(ctx, input, createMutationReserve)
+		},
+		getEditionUncached: hc.GetEditionUncached,
+	}, nil
+}
+
+func runCreate(ctx context.Context, options createOptions, services createServices) (result *createOutput, err error) {
+	input, err := readEditionCreateInput(options.InputPath)
+	if err != nil {
+		return nil, err
+	}
+	if itemID := strings.TrimSpace(options.ABSItemID); itemID != "" {
+		input.ABSItemID = itemID
+	}
+	input.ABSItemID = strings.TrimSpace(input.ABSItemID)
+	format := strings.ToLower(strings.TrimSpace(input.ReadingFormat))
+	switch format {
+	case "", models.ReadingFormatAudiobook:
+		input.ReadingFormat = models.ReadingFormatAudiobook
+	case models.ReadingFormatEbook:
+		input.ReadingFormat = models.ReadingFormatEbook
+	default:
+		return nil, fmt.Errorf("invalid reading_format %q, expected audiobook or ebook", input.ReadingFormat)
+	}
+	if input.ReadingFormat == models.ReadingFormatAudiobook {
+		input.ASINRegion, err = input.selectedRegion()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := validateCreateInput(&input.EditionInput); err != nil {
+		return nil, err
+	}
+
+	statePath := strings.TrimSpace(options.StateFile)
+	if statePath == "" {
+		statePath = state.DefaultStateFile
+	}
+	associationStatePath := statePath
+	var loadedState *state.State
+	if input.ABSItemID != "" {
+		fileLock, lockErr := state.AcquireFileLock(statePath)
+		if lockErr != nil {
+			return nil, fmt.Errorf("failed to lock sync state file: %w", lockErr)
+		}
+		defer func() {
+			if closeErr := fileLock.Close(); closeErr != nil && err == nil {
+				err = fmt.Errorf("failed to release sync state lock: %w", closeErr)
+				result = nil
+			}
+		}()
+		associationStatePath = fileLock.StatePath()
+		if associationStatePath == "" {
+			return nil, errors.New("state file lock did not resolve a state path")
+		}
+		loadedState, err = state.LoadState(associationStatePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load sync state: %w", err)
+		}
+		if _, exists := loadedState.GetAssociation(input.ABSItemID); exists {
+			return nil, fmt.Errorf("Audiobookshelf item %q already has a confirmed Hardcover association", input.ABSItemID)
+		}
+	}
+
+	var absItem *models.AudiobookshelfBook
+	identifierWarning := ""
+	if input.ABSItemID != "" {
+		if services.fetchABSItem == nil {
+			return nil, errors.New("Audiobookshelf item verification is unavailable")
+		}
+		absItem, err = services.fetchABSItem(ctx, input.ABSItemID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to verify Audiobookshelf item %q: %w", input.ABSItemID, err)
+		}
+		if absItem == nil || strings.TrimSpace(absItem.ID) != input.ABSItemID {
+			return nil, fmt.Errorf("Audiobookshelf returned a different item than %q", input.ABSItemID)
+		}
+		if absItem.ReadingFormat() != input.ReadingFormat {
+			return nil, fmt.Errorf("Audiobookshelf item %q is %s, but input reading_format is %s", input.ABSItemID, absItem.ReadingFormat(), input.ReadingFormat)
+		}
+		identifierWarning = sourceIdentifierWarning(absItem, input)
+		if identifierWarning != "" && !options.ConfirmIdentifierCorrection {
+			return nil, fmt.Errorf("%s; review the item and input, then pass --confirm-identifier-correction to proceed", identifierWarning)
+		}
+	}
+
+	if input.ReadingFormat == models.ReadingFormatAudiobook {
+		region, regionErr := resolveAudibleRegion(ctx, input.ASIN, input.ASINRegion, options.PreferredRegion, services)
+		if regionErr != nil {
+			return nil, regionErr
+		}
+		if options.DryRun {
+			return &createOutput{
+				Success:          true,
+				Status:           "dry_run",
+				BookID:           input.BookID,
+				ReadingFormat:    input.ReadingFormat,
+				ABSItemID:        input.ABSItemID,
+				AssociationSaved: false,
+				Warning:          identifierWarning,
+			}, nil
+		}
+		if services.importAudiobook == nil {
+			return nil, errors.New("regional audiobook import is unavailable")
+		}
+		mutationCtx, cancel := withMutationBudget(ctx)
+		resolved, importErr := services.importAudiobook(mutationCtx, hardcover.RegionalAudiobookInput{
+			BookID: input.BookID,
+			ASIN:   input.ASIN,
+			Region: region,
+		})
+		cancel()
+		if importErr != nil {
+			return nil, audiobookImportError(importErr)
+		}
+		if resolved == nil {
+			return nil, errors.New("regional audiobook import returned no result")
+		}
+		if resolved.Status != hardcover.RegionalAudiobookLoaded && resolved.Status != hardcover.RegionalAudiobookCreated {
+			return nil, fmt.Errorf("regional audiobook import returned unsupported status %q", resolved.Status)
+		}
+		expectedExternalID := strings.ToUpper(input.ASIN) + ":" + region
+		if resolved.BookID != input.BookID || resolved.EditionID <= 0 || resolved.ReadingFormatID != models.ReadingFormatID(models.ReadingFormatAudiobook) || resolved.RegionalExternalID != expectedExternalID {
+			return nil, fmt.Errorf("regional audiobook import returned an identity or reading format that did not match book %d", input.BookID)
+		}
+		output := &createOutput{
+			Success:          true,
+			Status:           string(resolved.Status),
+			BookID:           resolved.BookID,
+			EditionID:        resolved.EditionID,
+			ReadingFormat:    models.ReadingFormatAudiobook,
+			ABSItemID:        input.ABSItemID,
+			AssociationSaved: false,
+			Warning:          identifierWarning,
+		}
+		if absItem != nil {
+			association := audiobookAssociation(absItem, input.ASIN, resolved)
+			if err := saveAssociation(loadedState, associationStatePath, association); err != nil {
+				return nil, fmt.Errorf("Hardcover reported audiobook %s, but the local association could not be saved. Verify the Hardcover result before retrying; retrying may create another edition: %w", resolved.Status, err)
+			}
+			output.AssociationSaved = true
+		}
+		return output, nil
+	}
+
+	if err := input.EditionInput.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid ebook input: %w", err)
+	}
+	if options.DryRun {
+		// The Creator returns a zero edition ID in dry-run mode without writing.
+		if services.createEbook == nil {
+			return nil, errors.New("ebook edition creation is unavailable")
+		}
+		created, createErr := services.createEbook(ctx, &input.EditionInput)
+		if createErr != nil {
+			return nil, fmt.Errorf("failed to create ebook edition: %w", createErr)
+		}
+		if created == nil || !created.Success {
+			return nil, errors.New("ebook dry run did not return a successful result")
+		}
+		output := ebookOutput(created, input, "dry_run")
+		output.Warning = identifierWarning
+		return output, nil
+	}
+	if services.createEbook == nil {
+		return nil, errors.New("ebook edition creation is unavailable")
+	}
+	mutationCtx, cancel := withMutationBudget(ctx)
+	defer cancel()
+	created, createErr := services.createEbook(mutationCtx, &input.EditionInput)
+	if createErr != nil {
+		return nil, ebookCreateError(createErr)
+	}
+	if created == nil || !created.Success || created.EditionID <= 0 {
+		return nil, errors.New("ebook edition creation returned no confirmed edition")
+	}
+	output := ebookOutput(created, input, "created")
+	output.Warning = identifierWarning
+	if created.Existing {
+		output.Status = "existing"
+	}
+	if services.getEditionUncached == nil {
+		return nil, fmt.Errorf("Hardcover returned ebook edition %d, but verification is unavailable. Check Hardcover before retrying; retrying may create another edition", created.EditionID)
+	}
+	if err := verifyCreatedEbookEdition(mutationCtx, created.EditionID, input.BookID, services.getEditionUncached); err != nil {
+		return nil, fmt.Errorf("Hardcover returned ebook edition %d, but it could not be verified. Check Hardcover before retrying; retrying may create another edition: %w", created.EditionID, err)
+	}
+	if absItem != nil {
+		association := ebookAssociation(absItem, input.ASIN, output.Status, input.BookID, created.EditionID)
+		if err := saveAssociation(loadedState, associationStatePath, association); err != nil {
+			return nil, fmt.Errorf("Hardcover returned ebook edition %d, but the local association could not be saved. Verify the Hardcover result before retrying; retrying may create another edition: %w", created.EditionID, err)
+		}
+		output.AssociationSaved = true
+	}
+	return output, nil
+}
+
+// withMutationBudget bounds a catalogue write like the create API does. The
+// Hardcover client then refuses to send the mutation without the reserve left
+// and never retries it after an attempt that may have reached Hardcover.
+func withMutationBudget(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(ctx, createHardcoverTimeout)
+	return hardcover.WithMinimumMutationBudget(ctx, createMutationReserve), cancel
+}
+
+// audiobookImportError says whether a failed regional import could have
+// changed Hardcover, so the operator knows whether a retry is safe.
+func audiobookImportError(err error) error {
+	switch {
+	case errors.Is(err, hardcover.ErrMutationInsufficientBudget):
+		return fmt.Errorf("failed to import audiobook: too little time remained to send the import, and no Hardcover change was made; retry: %w", err)
+	case errors.Is(err, hardcover.ErrMutationScopeDenied):
+		return fmt.Errorf("failed to import audiobook: Hardcover catalogue write permission is required, and no edition was created: %w", err)
+	case errors.Is(err, hardcover.ErrRegionalAudiobookInvalidInput),
+		errors.Is(err, hardcover.ErrRegionalAudiobookDryRun),
+		errors.Is(err, hardcover.ErrRegionalAudiobookImportFailed):
+		return fmt.Errorf("failed to import audiobook: %w", err)
+	default:
+		return fmt.Errorf("failed to import audiobook: Hardcover may have processed the import; verify the book in Hardcover before retrying: %w", err)
+	}
+}
+
+// ebookCreateError says whether a failed ebook insertion could have changed
+// Hardcover, so the operator knows whether a retry is safe.
+func ebookCreateError(err error) error {
+	switch {
+	case errors.Is(err, hardcover.ErrMutationInsufficientBudget),
+		errors.Is(err, edition.ErrCreateEditionInsufficientMutationBudget):
+		return fmt.Errorf("failed to create ebook edition: too little time remained to send the insertion, and no Hardcover change was made; retry: %w", err)
+	case errors.Is(err, hardcover.ErrMutationScopeDenied):
+		return fmt.Errorf("failed to create ebook edition: Hardcover catalogue write permission is required, and no edition was created: %w", err)
+	case errors.Is(err, edition.ErrCreateEditionPreMutation):
+		return fmt.Errorf("failed to create ebook edition: %w", err)
+	default:
+		return fmt.Errorf("failed to create ebook edition: Hardcover may have processed the insertion; verify the book in Hardcover before retrying: %w", err)
+	}
+}
+
+func readEditionCreateInput(path string) (editionCreateInput, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return editionCreateInput{}, fmt.Errorf("failed to read input file: %w", err)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxCreateInputBytes+1))
+	if err != nil {
+		return editionCreateInput{}, fmt.Errorf("failed to read input file: %w", err)
+	}
+	if len(data) > maxCreateInputBytes {
+		return editionCreateInput{}, fmt.Errorf("input file exceeds %d bytes", maxCreateInputBytes)
+	}
+	var input editionCreateInput
+	if err := json.Unmarshal(data, &input); err != nil {
+		return editionCreateInput{}, fmt.Errorf("invalid JSON input: %w", err)
+	}
+	return input, nil
+}
+
+func (input editionCreateInput) selectedRegion() (string, error) {
+	asinRegion := strings.ToLower(strings.TrimSpace(input.ASINRegion))
+	regionAlias := strings.ToLower(strings.TrimSpace(input.Region))
+	if asinRegion != "" && regionAlias != "" && asinRegion != regionAlias {
+		return "", errors.New("asin_region and region specify different Audible regions")
+	}
+	if asinRegion == "" {
+		asinRegion = regionAlias
+	}
+	if asinRegion != "" && !audnexregion.IsRegion(asinRegion) {
+		return "", fmt.Errorf("unknown Audible region %q", asinRegion)
+	}
+	return asinRegion, nil
+}
+
+func validateCreateInput(input *edition.EditionInput) error {
+	if input.BookID <= 0 {
+		return errors.New("book_id must be a positive Hardcover book ID")
+	}
+	format := strings.ToLower(strings.TrimSpace(input.ReadingFormat))
+	switch format {
+	case "", models.ReadingFormatAudiobook:
+		input.ReadingFormat = models.ReadingFormatAudiobook
+	case models.ReadingFormatEbook:
+		input.ReadingFormat = models.ReadingFormatEbook
+	default:
+		return fmt.Errorf("invalid reading_format %q, expected audiobook or ebook", input.ReadingFormat)
+	}
+	input.ASIN = strings.TrimSpace(input.ASIN)
+	input.ISBN10 = strings.TrimSpace(input.ISBN10)
+	input.ISBN13 = strings.TrimSpace(input.ISBN13)
+	if input.ASIN == "" && input.ISBN10 == "" && input.ISBN13 == "" {
+		return errors.New("an ASIN or ISBN is required")
+	}
+	if input.ReadingFormat == models.ReadingFormatAudiobook {
+		if input.ASIN == "" {
+			return errors.New("an audiobook import requires a regional Audible ASIN")
+		}
+		canonicalASIN, valid := audnex.CanonicalASIN(input.ASIN)
+		if !valid {
+			return fmt.Errorf("audiobook ASIN %q must contain exactly ten letters or digits", input.ASIN)
+		}
+		input.ASIN = canonicalASIN
+	}
+	return nil
+}
+
+// sourceIdentifierWarning identifies submitted values that do not identify the
+// fetched ABS item. A correction is allowed only after explicit confirmation.
+func sourceIdentifierWarning(item *models.AudiobookshelfBook, input editionCreateInput) string {
+	source := item.Media.Metadata
+	var conflicts []string
+	if input.ASIN != "" && !strings.EqualFold(strings.TrimSpace(source.ASIN), input.ASIN) {
+		conflicts = append(conflicts, "ASIN")
+	}
+	if input.ReadingFormat == models.ReadingFormatEbook {
+		for _, submitted := range []string{input.ISBN10, input.ISBN13} {
+			if submitted != "" && !sameISBN(source.ISBN, submitted) {
+				conflicts = append(conflicts, "ISBN")
+				break
+			}
+		}
+	}
+	if len(conflicts) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("WARNING: submitted %s does not match Audiobookshelf item %q; saving this match will pin that item to the selected Hardcover book", strings.Join(conflicts, " and "), item.ID)
+}
+
+func sameISBN(source, submitted string) bool {
+	sourceISBN, sourceOK := isbn.Parse(source)
+	submittedISBN, submittedOK := isbn.Parse(submitted)
+	if !sourceOK || !submittedOK {
+		return isbn.Normalize(source) != "" && isbn.Normalize(source) == isbn.Normalize(submitted)
+	}
+	return sourceISBN.Given == submittedISBN.Given || sourceISBN.Counterpart != "" && sourceISBN.Counterpart == submittedISBN.Given
+}
+
+// resolveAudibleRegion returns the region for the regional Audible import. An
+// explicit region is the user's regional identifier and is used as given, like
+// the create API's audible_identifier; otherwise Audnex discovery must find it.
+func resolveAudibleRegion(ctx context.Context, asin, requested, preferred string, services createServices) (string, error) {
+	if requested != "" {
+		return requested, nil
+	}
+	preferred = strings.ToLower(strings.TrimSpace(preferred))
+	if preferred != "" && !audnexregion.IsRegion(preferred) {
+		return "", fmt.Errorf("configured audiobookshelf.audnexus_region %q is unsupported", preferred)
+	}
+	if services.discoverAudible == nil {
+		return "", errors.New("Audnex region discovery is unavailable")
+	}
+	region, err := services.discoverAudible(ctx, asin, preferred)
+	if err != nil {
+		if errors.Is(err, audnex.ErrRateLimited) || errors.Is(err, audnex.ErrTransient) || errors.Is(err, context.DeadlineExceeded) {
+			return "", fmt.Errorf("Audnex region discovery for ASIN %q is temporarily unavailable; retry later or set asin_region: %w", asin, err)
+		}
+		return "", fmt.Errorf("failed to discover an Audible region for ASIN %q; set asin_region to import it: %w", asin, err)
+	}
+	region = strings.ToLower(strings.TrimSpace(region))
+	if region == "" {
+		return "", fmt.Errorf("Audnex did not find ASIN %q in any supported region; set asin_region to import it", asin)
+	}
+	if !audnexregion.IsRegion(region) {
+		return "", fmt.Errorf("Audnex discovery returned unsupported region %q", region)
+	}
+	return region, nil
+}
+
+func audiobookAssociation(item *models.AudiobookshelfBook, requestedASIN string, resolved *hardcover.RegionalAudiobookResult) state.Association {
+	asin, isbn10, isbn13 := state.SourceIdentifiers(item.Media.Metadata.ASIN, item.Media.Metadata.ISBN)
+	return state.Association{
+		ABSItemID:          item.ID,
+		SourceASIN:         asin,
+		SourceISBN10:       isbn10,
+		SourceISBN13:       isbn13,
+		Correction:         asinCorrection(asin, requestedASIN),
+		RegionalExternalID: resolved.RegionalExternalID,
+		HardcoverBookID:    strconv.Itoa(resolved.BookID),
+		HardcoverEditionID: strconv.Itoa(resolved.EditionID),
+		ReadingFormat:      models.ReadingFormatAudiobook,
+		Provenance:         "cli_regional_" + string(resolved.Status),
+	}
+}
+
+func verifyCreatedEbookEdition(ctx context.Context, expectedEditionID, expectedBookID int, getEdition func(context.Context, string) (*models.Edition, error)) error {
+	verified, err := getEdition(ctx, strconv.Itoa(expectedEditionID))
+	if err != nil {
+		return fmt.Errorf("failed to read back Hardcover ebook edition %d: %w", expectedEditionID, err)
+	}
+	if verified == nil {
+		return fmt.Errorf("Hardcover ebook edition %d could not be read back", expectedEditionID)
+	}
+
+	verifiedEditionID, editionErr := strconv.Atoi(strings.TrimSpace(verified.ID))
+	verifiedBookID, bookErr := strconv.Atoi(strings.TrimSpace(verified.BookID))
+	verifiedFormatID, formatErr := strconv.Atoi(strings.TrimSpace(verified.ReadingFormatID))
+	expectedFormatID := models.ReadingFormatID(models.ReadingFormatEbook)
+	if editionErr != nil || bookErr != nil || formatErr != nil ||
+		verifiedEditionID != expectedEditionID || verifiedBookID != expectedBookID || verifiedFormatID != expectedFormatID {
+		return fmt.Errorf("Hardcover ebook edition identity did not match: expected edition %d on book %d with reading format %d, got edition %q book %q format %q",
+			expectedEditionID, expectedBookID, expectedFormatID, verified.ID, verified.BookID, verified.ReadingFormatID)
+	}
+	return nil
+}
+
+func ebookAssociation(item *models.AudiobookshelfBook, submittedASIN, status string, bookID, editionID int) state.Association {
+	asin, isbn10, isbn13 := state.SourceIdentifiers(item.Media.Metadata.ASIN, item.Media.Metadata.ISBN)
+	return state.Association{
+		ABSItemID:          item.ID,
+		SourceASIN:         asin,
+		SourceISBN10:       isbn10,
+		SourceISBN13:       isbn13,
+		Correction:         asinCorrection(asin, submittedASIN),
+		HardcoverBookID:    strconv.Itoa(bookID),
+		HardcoverEditionID: strconv.Itoa(editionID),
+		ReadingFormat:      models.ReadingFormatEbook,
+		Provenance:         "cli_ebook_" + status,
+	}
+}
+
+// asinCorrection returns the submitted ASIN when it differs from the ASIN the
+// Audiobookshelf item reports, so the saved match records the user's correction
+// alongside the item's own source identifiers.
+func asinCorrection(sourceASIN, submittedASIN string) string {
+	submittedASIN = strings.TrimSpace(submittedASIN)
+	if submittedASIN == "" || strings.EqualFold(strings.TrimSpace(sourceASIN), submittedASIN) {
+		return ""
+	}
+	return submittedASIN
+}
+
+func saveAssociation(loadedState *state.State, path string, association state.Association) error {
+	if loadedState == nil {
+		return errors.New("sync state was not loaded under the state-file lock")
+	}
+	if err := loadedState.SetAssociation(association); err != nil {
+		return err
+	}
+	if err := loadedState.Save(path); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ebookOutput(result *edition.EditionResult, input editionCreateInput, status string) *createOutput {
+	return &createOutput{
+		Success:       result.Success,
+		Status:        status,
+		BookID:        input.BookID,
+		EditionID:     result.EditionID,
+		ImageID:       result.ImageID,
+		ImageError:    result.ImageError,
+		Existing:      result.Existing,
+		ReadingFormat: models.ReadingFormatEbook,
+		ABSItemID:     input.ABSItemID,
+	}
+}
+
+func writeJSON(writer io.Writer, value any) error {
+	output, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to encode result: %w", err)
+	}
+	if _, err := fmt.Fprintln(writer, string(output)); err != nil {
+		return fmt.Errorf("failed to write result: %w", err)
+	}
+	return nil
+}
+
+func writeJSONFile(path string, value any) error {
+	output, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to encode template: %w", err)
+	}
+	if err := os.WriteFile(path, output, 0644); err != nil {
+		return err
+	}
+	return nil
+}
+
+// hardcoverClientConfig applies the configured Hardcover endpoint and request
+// pacing, as the sync service and create API do.
+func hardcoverClientConfig(cfg *config.Config) *hardcover.ClientConfig {
+	clientConfig := hardcover.DefaultClientConfig()
+	if baseURL := strings.TrimSpace(cfg.Hardcover.BaseURL); baseURL != "" {
+		clientConfig.BaseURL = baseURL
+	}
+	if cfg.RateLimit.Rate > 0 {
+		clientConfig.RateLimit = cfg.RateLimit.Rate
+	}
+	if cfg.RateLimit.MaxConcurrent > 0 {
+		clientConfig.MaxConcurrent = cfg.RateLimit.MaxConcurrent
+	}
+	return clientConfig
+}
+
+// findConfigPath returns the --config value before command parsing so logging
+// can be configured, and whether the path was named explicitly.
+func findConfigPath(args []string) (string, bool) {
+	path, explicit := defaultConfigPath, false
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		switch {
+		case arg == "--":
+			return path, explicit
+		case arg == "--config" || arg == "-c":
+			if index+1 < len(args) {
+				index++
+				path, explicit = args[index], true
+			}
+		case strings.HasPrefix(arg, "--config="):
+			path, explicit = strings.TrimPrefix(arg, "--config="), true
+		case strings.HasPrefix(arg, "-c="):
+			path, explicit = strings.TrimPrefix(arg, "-c="), true
+		case strings.HasPrefix(arg, "-c") && len(arg) > 2:
+			path, explicit = strings.TrimPrefix(arg, "-c"), true
+		}
+	}
+	return path, explicit
+}

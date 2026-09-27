@@ -323,6 +323,7 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 	mismatch := BookMismatch{
 		// Core book information
 		BookID:          bookID,
+		ABSItemID:       audiobookShelfID,
 		Title:           metadata.Title,
 		Subtitle:        metadata.Subtitle,
 		Author:          metadata.AuthorName,

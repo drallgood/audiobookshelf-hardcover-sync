@@ -578,6 +578,7 @@ func (s *Service) upsertAttentionCandidateLocked(book models.AudiobookshelfBook,
 	s.ensureOutcomeStateLocked()
 	mismatchRecord := mismatch.BookMismatch{
 		BookID:                 book.ID,
+		ABSItemID:              book.ID,
 		Title:                  book.Media.Metadata.Title,
 		Subtitle:               book.Media.Metadata.Subtitle,
 		Author:                 book.Media.Metadata.AuthorName,
@@ -2214,6 +2215,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			// Create mismatch with both Audiobookshelf and Hardcover details
 			mismatchData := mismatch.BookMismatch{
 				BookID:          book.ID,
+				ABSItemID:       book.ID,
 				Title:           book.Media.Metadata.Title,
 				Subtitle:        book.Media.Metadata.Subtitle,
 				Author:          book.Media.Metadata.AuthorName,

@@ -190,7 +190,8 @@ func TestCreateEditionReportsAFailedCoverWithoutFailingTheEdition(t *testing.T) 
 			creator.EnableCoverUpload()
 
 			result, err := creator.CreateEdition(context.Background(), &edition.EditionInput{
-				BookID: 123, Title: "T", AuthorIDs: []int{1}, ImageURL: tt.imageURL,
+				ReadingFormat: "ebook",
+				BookID:        123, Title: "T", AuthorIDs: []int{1}, ImageURL: tt.imageURL,
 			})
 
 			require.NoError(t, err, "a cover problem must not fail the edition")
@@ -220,7 +221,8 @@ func TestCreateEditionCoverRequestAuthorization(t *testing.T) {
 	creator.EnableCoverUpload()
 
 	result, err := creator.CreateEdition(context.Background(), &edition.EditionInput{
-		BookID: 123, Title: "T", AuthorIDs: []int{1}, ImageURL: "https://covers.example.test/cover.jpg",
+		ReadingFormat: "ebook",
+		BookID:        123, Title: "T", AuthorIDs: []int{1}, ImageURL: "https://covers.example.test/cover.jpg",
 	})
 
 	require.NoError(t, err)
@@ -257,7 +259,8 @@ func TestCreateEditionCoverFileExtensionFollowsTheImageBytes(t *testing.T) {
 			creator.EnableCoverUpload()
 
 			result, err := creator.CreateEdition(context.Background(), &edition.EditionInput{
-				BookID: 123, Title: "T", AuthorIDs: []int{1}, ImageURL: "https://covers.example.test/cover",
+				ReadingFormat: "ebook",
+				BookID:        123, Title: "T", AuthorIDs: []int{1}, ImageURL: "https://covers.example.test/cover",
 			})
 
 			require.NoError(t, err)
@@ -313,7 +316,8 @@ func TestCreateEditionRejectsACoverThatIsNotPNGOrJPEG(t *testing.T) {
 
 			requireCoverRejected(t, transport, func() (*edition.EditionResult, error) {
 				return creator.CreateEdition(context.Background(), &edition.EditionInput{
-					BookID: 123, Title: "T", AuthorIDs: []int{1}, ImageURL: "https://covers.example.test/cover.jpg",
+					ReadingFormat: "ebook",
+					BookID:        123, Title: "T", AuthorIDs: []int{1}, ImageURL: "https://covers.example.test/cover.jpg",
 				})
 			}, coverFormatLabel)
 		})
@@ -329,7 +333,8 @@ func TestCreateEditionCoverSizeLimit(t *testing.T) {
 		creator.EnableCoverUpload()
 		return func() (*edition.EditionResult, error) {
 			return creator.CreateEdition(context.Background(), &edition.EditionInput{
-				BookID: 123, Title: "T", AuthorIDs: []int{1}, ImageURL: "https://covers.example.test/cover.jpg",
+				ReadingFormat: "ebook",
+				BookID:        123, Title: "T", AuthorIDs: []int{1}, ImageURL: "https://covers.example.test/cover.jpg",
 			})
 		}
 	}
@@ -368,7 +373,8 @@ func TestCreateEditionDoesNotAttemptACoverWhileUploadIsOff(t *testing.T) {
 		&http.Client{Transport: transport})
 
 	result, err := creator.CreateEdition(context.Background(), &edition.EditionInput{
-		BookID: 123, Title: "T", AuthorIDs: []int{1}, ImageURL: "https://covers.example.test/cover.jpg",
+		ReadingFormat: "ebook",
+		BookID:        123, Title: "T", AuthorIDs: []int{1}, ImageURL: "https://covers.example.test/cover.jpg",
 	})
 
 	require.NoError(t, err)
