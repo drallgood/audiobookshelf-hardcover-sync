@@ -589,7 +589,7 @@ class SyncProfileApp {
     }
 
     async fetchJsonWithTimeout(url, options = {}) {
-        const { signal: requestSignal, ...fetchOptions } = options;
+        const { signal: requestSignal, timeoutMs, ...fetchOptions } = options;
         if (typeof AbortController === 'undefined') {
             const response = await fetch(url, fetchOptions);
             return { response, data: await response.json() };
@@ -600,7 +600,7 @@ class SyncProfileApp {
         const timeout = setTimeout(() => {
             timedOut = true;
             controller.abort();
-        }, STATUS_LOAD_TIMEOUT_MS);
+        }, timeoutMs || STATUS_LOAD_TIMEOUT_MS);
         const abortForRequest = () => controller.abort(requestSignal.reason);
 
         if (requestSignal) {
@@ -1947,7 +1947,9 @@ class SyncProfileApp {
         dialog.controller = controller;
         this.showEditionDialog();
         const base = this.profileUrl(dialog.profileId);
-        const options = { credentials: 'include', ...(controller ? { signal: controller.signal } : {}) };
+        // The server allows up to 25s for region/Audnex discovery on this
+        // endpoint (defaultEditionDraftRequestTimeout); give it enough room.
+        const options = { credentials: 'include', timeoutMs: 30000, ...(controller ? { signal: controller.signal } : {}) };
         try {
             const [draftResult, capabilityResult] = await Promise.all([
                 this.fetchJsonWithTimeout(`${base}/edition-drafts/source/${encodeURIComponent(dialog.record.book_id)}`, options),
@@ -2165,8 +2167,11 @@ class SyncProfileApp {
         dialog.error = '';
         this.showEditionDialog();
         try {
+            // The server allows up to 65s for this request (editionCreateRequestTimeout),
+            // covering region discovery, the Hardcover write, and an optional resync;
+            // the blanket status-poll timeout is far too short for it.
             const { response, data } = await this.fetchJsonWithTimeout(this.profileUrl(dialog.profileId, '/edition-drafts/create'), {
-                method: 'POST', credentials: 'include',
+                method: 'POST', credentials: 'include', timeoutMs: 70000,
                 headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
             });
             if (this.editionDialog !== dialog) return;

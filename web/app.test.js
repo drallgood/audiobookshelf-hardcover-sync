@@ -406,6 +406,22 @@ test('create body sends only changed ebook fields and the opt-in resync flag', (
     });
 });
 
+test('submitting an edition create uses a timeout long enough for the server\'s own budget', async () => {
+    const app = editionApp();
+    let capturedOptions;
+    app.fetchJsonWithTimeout = async (_url, options) => {
+        capturedOptions = options;
+        return { response: { ok: true, status: 200 }, data: { success: true, data: { status: 'created' } } };
+    };
+    app.readEditionFormFields = () => ({});
+    app.editionDialog = {
+        mode: 'create', profileId: 'p1', runId: 'run-1', record: needsReview, busy: false, error: '', result: null,
+        draft: { reading_format: 'audiobook', region_status: 'confirmed', confirmed_region: 'us', audible_identifier_candidate: { asin: 'B00ABC1234' }, dry_run: false }
+    };
+    await app.submitEditionCreate();
+    assert.ok(capturedOptions.timeoutMs >= 65000, 'client timeout must cover the 65s server-side editionCreateRequestTimeout');
+});
+
 function stubDialog(app, status, payload) {
     app.fetchJsonWithTimeout = async () => ({ response: { ok: status < 300, status, headers: { get: () => null } }, data: payload });
     app.readEditionFormFields = () => ({});
