@@ -508,7 +508,13 @@ func (h *Handler) createEbook(ctx context.Context, item *models.AudiobookshelfBo
 	if publisher := strings.TrimSpace(item.Media.Metadata.Publisher); publisher != "" {
 		publishers, searchErr := client.SearchPublishers(ctx, publisher, 10)
 		if searchErr != nil {
-			return statepkg.Association{}, fmt.Errorf("failed to resolve optional ebook publisher: %w", searchErr)
+			// Publisher is optional metadata. Ignore lookup failures while the
+			// request remains active; the mutation budget check below prevents a
+			// canceled or expired request from proceeding to Hardcover.
+			if ctx.Err() != nil {
+				return statepkg.Association{}, fmt.Errorf("ebook publisher lookup canceled: %w", ctx.Err())
+			}
+			publishers = nil
 		}
 		for _, candidate := range publishers {
 			if strings.EqualFold(strings.TrimSpace(candidate.Name), publisher) {

@@ -294,7 +294,7 @@ func validateRegionalImportMapping(mapping regionalImportMapping, bookID int, ex
 		return err
 	}
 	if strings.EqualFold(strings.TrimSpace(mapping.State), "failed") {
-		return fmt.Errorf("%w: Hardcover marked mapping %d failed", ErrRegionalAudiobookImportFailed, mapping.ID)
+		return fmt.Errorf("%w: Hardcover marked mapping %d failed without a terminal failed import status", ErrRegionalAudiobookIdentityConflict, mapping.ID)
 	}
 	mappingStatus := RegionalAudiobookStatus(strings.ToLower(strings.TrimSpace(mapping.State)))
 	if status != "" && (mappingStatus == RegionalAudiobookLoaded || mappingStatus == RegionalAudiobookCreated) && mappingStatus != status {

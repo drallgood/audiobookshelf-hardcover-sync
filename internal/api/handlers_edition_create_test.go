@@ -415,10 +415,10 @@ func TestCreateEditionFromDraftIgnoresTransientAudnexEnrichmentFailure(t *testin
 	require.Equal(t, "2020-02-03", envelope.Data.MetadataPreview.ReleaseDate)
 }
 
-func TestCreateEditionFromDraftCreatesEbookAtHTTPBoundary(t *testing.T) {
+func TestCreateEditionFromDraftCreatesEbookWhenOptionalPublisherSearchFails(t *testing.T) {
 	fixture := newEditionDraftTestFixture(t, `{
 		"id":"abs-item-1","mediaType":"ebook","media":{
-			"metadata":{"title":"Reviewed ebook","authorName":"Author","isbn":"9780306406157","publishedDate":"2020-02-03"},
+			"metadata":{"title":"Reviewed ebook","authorName":"Author","publisher":"Publisher","isbn":"9780306406157","publishedDate":"2020-02-03"},
 			"ebookFile":{},"ebookFormat":"epub"
 		}}`, "us")
 	configureEditionCreateRoute(t, fixture)
@@ -427,11 +427,18 @@ func TestCreateEditionFromDraftCreatesEbookAtHTTPBoundary(t *testing.T) {
 		Format: "Ebook", HardcoverBookID: "42",
 	})
 	var createCalls atomic.Int32
+	var publisherSearchCalls atomic.Int32
 	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
 		return editionCreateHardcoverStub{
 			bookFn: func(_ context.Context, id string) (*models.HardcoverBook, error) {
 				require.Equal(t, "42", id)
 				return &models.HardcoverBook{ID: "42", Authors: []models.Author{{ID: "7", Name: "Author"}}}, nil
+			},
+			publishersFn: func(_ context.Context, name string, limit int) ([]models.Publisher, error) {
+				publisherSearchCalls.Add(1)
+				require.Equal(t, "Publisher", name)
+				require.Equal(t, 10, limit)
+				return nil, errors.New("Hardcover publisher search unavailable")
 			},
 			createEbookFn: func(_ context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
 				createCalls.Add(1)
@@ -440,6 +447,7 @@ func TestCreateEditionFromDraftCreatesEbookAtHTTPBoundary(t *testing.T) {
 				require.Equal(t, []int{7}, input.AuthorIDs)
 				require.Equal(t, "ebook", input.ReadingFormat)
 				require.Equal(t, "9780306406157", input.ISBN13)
+				require.Zero(t, input.PublisherID)
 				return &edition.EditionResult{Success: true, EditionID: 84}, nil
 			},
 			editionFn: func(_ context.Context, id string) (*models.Edition, error) {
@@ -456,6 +464,7 @@ func TestCreateEditionFromDraftCreatesEbookAtHTTPBoundary(t *testing.T) {
 	fixture.routes.ServeHTTP(response, request)
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 	require.EqualValues(t, 1, createCalls.Load())
+	require.EqualValues(t, 1, publisherSearchCalls.Load())
 	var envelope struct {
 		Success bool `json:"success"`
 		Data    struct {

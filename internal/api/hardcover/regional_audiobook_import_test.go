@@ -30,10 +30,13 @@ func TestClient_ImportRegionalAudiobook(t *testing.T) {
 		formatID        int
 		wantStatus      RegionalAudiobookStatus
 		wantErr         error
+		wantNotErr      error
 	}{
 		{name: "created import with mapping", status: "created", includeMapping: true, mappingState: "created", mappingBook: 42, formatID: 2, wantStatus: RegionalAudiobookCreated},
 		{name: "loaded import without mapping", status: "loaded", formatID: 2, wantStatus: RegionalAudiobookLoaded},
-		{name: "failed import", status: "failed", wantErr: ErrRegionalAudiobookImportFailed},
+		{name: "failed import", status: "failed", includeMapping: true, mappingState: "failed", wantErr: ErrRegionalAudiobookImportFailed},
+		{name: "pending import with failed mapping", status: "fetching", includeMapping: true, mappingState: "failed", wantErr: ErrRegionalAudiobookIdentityConflict, wantNotErr: ErrRegionalAudiobookImportFailed},
+		{name: "missing import status with failed mapping", includeMapping: true, mappingState: "failed", wantErr: ErrRegionalAudiobookIdentityConflict, wantNotErr: ErrRegionalAudiobookImportFailed},
 		{name: "not found import", status: "not_found", wantErr: ErrRegionalAudiobookImportFailed},
 		{name: "unknown import outcome", status: "unknown", wantErr: ErrRegionalAudiobookIdentityConflict},
 		{name: "wrong status book", status: "created", statusBook: 43, wantErr: ErrRegionalAudiobookIdentityConflict},
@@ -105,12 +108,16 @@ func TestClient_ImportRegionalAudiobook(t *testing.T) {
 							"edition": map[string]interface{}{"id": mappingEdition, "book_id": mappingBook, "reading_format_id": 2},
 						}}
 					}
-					response, marshalErr := json.Marshal(map[string]interface{}{"data": map[string]interface{}{
-						"book_import_statuses": []map[string]interface{}{{
+					statuses := []map[string]interface{}{}
+					if tt.status != "" {
+						statuses = append(statuses, map[string]interface{}{
 							"status": tt.status, "book_id": statusBook, "edition_id": statusEdition,
 							"external_id": "B0ABCDE123:uk", "platform_id": 32,
-						}},
-						"book_mappings": mappings,
+						})
+					}
+					response, marshalErr := json.Marshal(map[string]interface{}{"data": map[string]interface{}{
+						"book_import_statuses": statuses,
+						"book_mappings":        mappings,
 					}})
 					require.NoError(t, marshalErr)
 					_, _ = w.Write(response)
@@ -129,6 +136,9 @@ func TestClient_ImportRegionalAudiobook(t *testing.T) {
 			})
 			if tt.wantErr != nil {
 				require.ErrorIs(t, err, tt.wantErr)
+				if tt.wantNotErr != nil {
+					require.NotErrorIs(t, err, tt.wantNotErr)
+				}
 				require.Nil(t, result)
 				if tt.status == "failed" || tt.status == "not_found" {
 					require.Equal(t, 1, mappingQueries)
