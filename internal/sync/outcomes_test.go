@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
@@ -95,6 +96,63 @@ func TestProcessBookRecordsSkipAndIncrementalNoChange(t *testing.T) {
 		hc.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
 	})
 
+}
+
+// TestProcessBookIncrementalDetailedCheckAlreadyCurrentKeepsLookupAssociation
+// exercises the second, detailed already_current check in processBook
+// (service.go's comparison against s.state.Books[stateKey] using the
+// composite bookID:editionID key), not the earlier coarse NeedsSync check
+// against the bare book ID.
+//
+// Reachability note: findBookInHardcoverWithASINMatch (service.go) never
+// returns a nil *models.HardcoverBook alongside a nil error on any current
+// return path, so by the time processBook reaches this detailed comparison,
+// hcBook is always already populated by the real lookup. The "hcBook == nil"
+// guard that would fall back to the composite state's persisted Association
+// is therefore unreachable with any of today's callers. This test proves the
+// guard correctly stays a no-op in that situation: it seeds the composite
+// state with a *different* stale Association and asserts the recorded
+// outcome still carries the real lookup's HardcoverBookID/EditionID, not the
+// stale association's.
+func TestProcessBookIncrementalDetailedCheckAlreadyCurrentKeepsLookupAssociation(t *testing.T) {
+	svc, hc := createTestService()
+	svc.config.Sync.Incremental = true
+	svc.config.Sync.ProcessUnreadBooks = true
+
+	testBook := createTestBook("outcome-detailed-current", "Detailed Current", "Author", "detailed-current-asin", "")
+	testBook.Media.Duration = 1000
+	testBook.Progress.CurrentTime = 300
+	book := toAudiobookshelfBook(testBook)
+
+	// No bare-key state exists yet, so the coarse pre-lookup NeedsSync check
+	// reports the book needs syncing and the real Hardcover lookup runs.
+	expectASINMatch(hc, "detailed-current-asin", "100", "200", 300)
+
+	// Seed the composite state key (bookID:editionID) with progress, status,
+	// and activity that match the current book so the detailed post-lookup
+	// comparison finds no changes and takes the second already_current path.
+	stateKey := book.ID + ":200"
+	svc.state.Books[stateKey] = state.Book{
+		LastProgress:       0.3,
+		LastUpdated:        time.Now().Unix(),
+		Status:             "IN_PROGRESS",
+		HasProgressSeconds: true,
+		Association: &state.Association{
+			ABSItemID:          book.ID,
+			HardcoverBookID:    "stale-book-id",
+			HardcoverEditionID: "stale-edition-id",
+		},
+	}
+
+	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
+
+	record := recordedOutcome(svc, book.ID)
+	assert.Equal(t, OutcomeAlreadyCurrent, record.Outcome)
+	assert.Equal(t, "incremental state is current", record.Reason)
+	assert.Equal(t, "100", record.HardcoverBookID,
+		"the real Hardcover lookup result must win over the composite state's stale association")
+	assert.Equal(t, "200", record.EditionID)
+	hc.AssertExpectations(t)
 }
 
 func TestProcessBookFinishedWithoutFinishedAtSkipsHardcoverMatching(t *testing.T) {
