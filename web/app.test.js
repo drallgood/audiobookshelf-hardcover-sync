@@ -301,7 +301,7 @@ test('audiobook dialog shows region states, escapes ABS strings, and offers only
     assert.doesNotMatch(html, /<script>|<img src=x|<b>Dune/);
     assert.match(html, /could not be confirmed/);
     assert.match(html, /Permission unverified/);
-    assert.match(html, /name="audible_identifier"/);
+    assert.doesNotMatch(html, /name="audible_identifier"/);
     assert.doesNotMatch(html, /name="title"/);
     assert.doesNotMatch(html, /name="resync"/);
     assert.match(html, /read status will be synced/);
@@ -310,7 +310,7 @@ test('audiobook dialog shows region states, escapes ABS strings, and offers only
     assert.match(unavailable, /temporarily unavailable/);
 });
 
-test('a confirmed Audible identifier is shown read-only, and an unconfirmed one stays editable', () => {
+test('the Audible identifier is always plain text, never an editable field', () => {
     const app = editionApp();
     const base = {
         mode: 'create', profileId: 'p1', runId: 'run-1', record: needsReview, loading: false, busy: false,
@@ -321,9 +321,27 @@ test('a confirmed Audible identifier is shown read-only, and an unconfirmed one 
         }
     };
     const confirmed = app.renderEditionDialog({ ...base, draft: { ...base.draft, region_status: 'confirmed', confirmed_region: 'us' } });
-    assert.match(confirmed, /name="audible_identifier"[^>]*readonly/);
+    assert.doesNotMatch(confirmed, /name="audible_identifier"/);
+    assert.match(confirmed, /B00ABC1234:us/);
     const unknown = app.renderEditionDialog({ ...base, draft: { ...base.draft, region_status: 'unknown' } });
-    assert.doesNotMatch(unknown, /name="audible_identifier"[^>]*readonly/);
+    assert.doesNotMatch(unknown, /name="audible_identifier"/);
+    assert.match(unknown, /attempt its own region discovery/);
+});
+
+test('the matched Hardcover book is shown for verification against the Audiobookshelf item', () => {
+    const app = editionApp();
+    const record = { ...needsReview, hardcover_title: 'Dune', hardcover_author: 'Frank Herbert', hardcover_slug: 'dune' };
+    const html = app.renderEditionDialog({
+        mode: 'create', profileId: 'p1', runId: 'run-1', record, loading: false, busy: false,
+        capability: null,
+        draft: {
+            reading_format: 'audiobook', eligible: true, dry_run: false, region_status: 'confirmed', confirmed_region: 'us',
+            source_identifiers: { asin: 'B00ABC1234' }, audible_identifier_candidate: { asin: 'B00ABC1234' }
+        }
+    });
+    assert.match(html, /From Audiobookshelf/);
+    assert.match(html, /Hardcover candidate/);
+    assert.match(html, /Frank Herbert/);
 });
 
 test('capability reason/warning codes are translated to plain-language text', () => {
@@ -376,18 +394,26 @@ test('create body sends only changed ebook fields and the opt-in resync flag', (
     });
     assert.equal(app.buildEditionCreateBody(dialog, fields, true).resync, true);
 
-    const audio = { runId: 'run-1', record: { book_id: 'li_9' }, draft: { reading_format: 'audiobook' } };
-    assert.deepEqual(app.buildEditionCreateBody(audio, { audible_identifier: { value: ' B00ABC1234:uk ', original: '' } }, false), {
+    const confirmedAudio = {
+        runId: 'run-1', record: { book_id: 'li_9' },
+        draft: { reading_format: 'audiobook', region_status: 'confirmed', confirmed_region: 'uk', audible_identifier_candidate: { asin: 'B00ABC1234' } }
+    };
+    assert.deepEqual(app.buildEditionCreateBody(confirmedAudio, {}, false), {
         run_id: 'run-1', abs_item_id: 'li_9', audible_identifier: 'B00ABC1234:uk'
+    });
+
+    const unconfirmedAudio = { runId: 'run-1', record: { book_id: 'li_9' }, draft: { reading_format: 'audiobook', region_status: 'unknown' } };
+    assert.deepEqual(app.buildEditionCreateBody(unconfirmedAudio, {}, false), {
+        run_id: 'run-1', abs_item_id: 'li_9'
     });
 });
 
 function stubDialog(app, status, payload) {
     app.fetchJsonWithTimeout = async () => ({ response: { ok: status < 300, status, headers: { get: () => null } }, data: payload });
-    app.readEditionFormFields = () => ({ audible_identifier: { value: 'B00ABC1234:us', original: '' } });
+    app.readEditionFormFields = () => ({});
     app.editionDialog = {
         mode: 'create', profileId: 'p1', runId: 'run-1', record: needsReview, busy: false, error: '', result: null,
-        draft: { reading_format: 'audiobook', region_status: 'confirmed', dry_run: false }
+        draft: { reading_format: 'audiobook', region_status: 'confirmed', confirmed_region: 'us', audible_identifier_candidate: { asin: 'B00ABC1234' }, dry_run: false }
     };
     return app.editionDialog;
 }

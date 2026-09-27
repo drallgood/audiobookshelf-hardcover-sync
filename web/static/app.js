@@ -1987,8 +1987,8 @@ class SyncProfileApp {
         this.showEditionDialog();
     }
 
-    renderDraftField(name, label, value, readOnly = false) {
-        return `<label class="edition-field"><span>${this.escapeHtml(label)}</span><input type="text" name="${name}" value="${this.escapeHtmlAttribute(value || '')}" data-original="${this.escapeHtmlAttribute(value || '')}" autocomplete="off" ${readOnly ? 'readonly title="Confirmed automatically from Audiobookshelf and Audnex; not editable here."' : ''}></label>`;
+    renderDraftField(name, label, value) {
+        return `<label class="edition-field"><span>${this.escapeHtml(label)}</span><input type="text" name="${name}" value="${this.escapeHtmlAttribute(value || '')}" data-original="${this.escapeHtmlAttribute(value || '')}" autocomplete="off"></label>`;
     }
 
     renderEditionDialog(dialog) {
@@ -2042,8 +2042,10 @@ class SyncProfileApp {
                 <span><strong>Format:</strong> ${this.escapeHtml(draft.reading_format || '')}</span>
             </div>
         </div>`;
+        const hardcoverTargetHtml = this.renderHardcoverCandidate(record);
         let regionHtml = '';
         let editHtml = '';
+        let audnexHtml = '';
         if (isEbook) {
             const c = draft.ebook_candidate || {};
             editHtml = `<fieldset class="edition-fields"><legend>Edition details (from Audiobookshelf — correct before creating)</legend>
@@ -2058,26 +2060,21 @@ class SyncProfileApp {
         } else {
             const status = draft.region_status || '';
             const candidate = draft.audible_identifier_candidate || {};
-            let prefill = '';
             const confirmed = status === 'confirmed' && candidate.asin && draft.confirmed_region;
+            const identifierValue = confirmed ? `${candidate.asin}:${draft.confirmed_region}` : '';
             if (confirmed) {
-                regionHtml = `<div class="edition-region confirmed">Audible region confirmed: <strong>${this.escapeHtml(draft.confirmed_region)}</strong></div>`;
-                prefill = `${candidate.asin}:${draft.confirmed_region}`;
+                regionHtml = `<div class="edition-region confirmed">Audible identifier: <strong>${this.escapeHtml(identifierValue)}</strong> <span class="edition-note">(confirmed automatically; not editable)</span></div>`;
             } else if (status === 'temporarily_unavailable') {
-                regionHtml = '<div class="edition-region review">Region lookup is temporarily unavailable. Retry the preview, or enter the regional identifier yourself.</div>';
+                regionHtml = '<div class="edition-region review">Region lookup is temporarily unavailable. Refresh the preview to try again, or create the edition and Hardcover will attempt its own region discovery.</div>';
             } else if (status === 'unknown') {
-                regionHtml = '<div class="edition-region review">The Audible region could not be confirmed. Enter the regional identifier (ASIN:region) to continue.</div>';
+                regionHtml = '<div class="edition-region review">The Audible region could not be confirmed from Audiobookshelf. Creating the edition will let Hardcover attempt its own region discovery.</div>';
             } else {
-                regionHtml = '<div class="edition-region review">No regional Audible identifier is available. Enter one (ASIN:region) to continue.</div>';
+                regionHtml = '<div class="edition-region review">No regional Audible identifier is available yet. Creating the edition will let Hardcover attempt its own region discovery.</div>';
             }
-            editHtml = `<fieldset class="edition-fields"><legend>Regional Audible identifier</legend>
-                ${this.renderDraftField('audible_identifier', 'Audible identifier (ASIN:region)', prefill, confirmed)}
-                ${confirmed ? '' : '<p class="edition-note">Enter the ASIN and region Hardcover should use for this edition, in the form ASIN:region.</p>'}
-            </fieldset>`;
             const m = draft.metadata_preview;
             if (m) {
-                editHtml += `<div class="edition-source-section">
-                    <h4>Audnex preview <span class="edition-note">(used to verify the match; not editable)</span></h4>
+                audnexHtml = `<details class="edition-source-section edition-audnex-preview">
+                    <summary>Audnex preview <span class="edition-note">(secondary — helps verify the match; not editable)</span></summary>
                     <div class="book-meta edition-preview">
                         <span><strong>Title:</strong> ${this.escapeHtml(m.title)}</span>
                         ${m.author ? `<span><strong>Author:</strong> ${this.escapeHtml(m.author)}</span>` : ''}
@@ -2085,7 +2082,7 @@ class SyncProfileApp {
                         ${m.release_date ? `<span><strong>Release date:</strong> ${this.escapeHtml(m.release_date)}</span>` : ''}
                         ${m.edition_information ? `<span><strong>Edition:</strong> ${this.escapeHtml(m.edition_information)}</span>` : ''}
                     </div>
-                </div>`;
+                </details>`;
             }
         }
         const blockers = [];
@@ -2095,10 +2092,11 @@ class SyncProfileApp {
         if (syncing) blockers.push('A sync is running for this profile; try again when it finishes.');
         const canConfirm = blockers.length === 0;
         return `${dryRun ? '<div class="edition-dry-run">Dry run</div>' : ''}
-            ${sourceHtml}${regionHtml}
+            ${sourceHtml}${hardcoverTargetHtml}${regionHtml}
             ${!gate.blocked && gate.warning ? `<div class="edition-warning" data-warning="capability">${this.escapeHtml(gate.warning)}</div>` : ''}
             ${this.renderWarnings(draft)}
             <form class="edition-form" onsubmit="return false">${editHtml}</form>
+            ${audnexHtml}
             ${dryRun ? '' : '<p class="edition-note">This book\'s read status will be synced right after the edition is created.</p>'}
             ${blockers.map(text => `<div class="edition-error" data-blocker>${this.escapeHtml(text)}</div>`).join('')}
             ${errorHtml}
@@ -2111,7 +2109,10 @@ class SyncProfileApp {
 
     // Builds the create POST body from the dialog's current form values.
     // Only fields the user changed are sent, and audiobook metadata is never
-    // sent because the server treats it as preview-only.
+    // sent because the server treats it as preview-only. The audible
+    // identifier is never user-entered; it is only sent when Audiobookshelf
+    // and Audnex already confirmed it, otherwise Hardcover attempts its own
+    // region discovery.
     buildEditionCreateBody(dialog, fields, resync) {
         const body = { run_id: dialog.runId, abs_item_id: String(dialog.record.book_id) };
         const isEbook = dialog.draft?.reading_format === 'ebook';
@@ -2125,8 +2126,11 @@ class SyncProfileApp {
                 body.isbn_13 = (fields.isbn_13?.value || '').trim();
             }
         } else {
-            const identifier = (fields.audible_identifier?.value || '').trim();
-            if (identifier) body.audible_identifier = identifier;
+            const draft = dialog.draft || {};
+            const candidate = draft.audible_identifier_candidate || {};
+            if (draft.region_status === 'confirmed' && candidate.asin && draft.confirmed_region) {
+                body.audible_identifier = `${candidate.asin}:${draft.confirmed_region}`;
+            }
         }
         if (resync) body.resync = true;
         return body;
@@ -2146,12 +2150,6 @@ class SyncProfileApp {
         if (!dialog || dialog.mode !== 'create' || !dialog.draft || dialog.busy) return;
         const fields = this.readEditionFormFields();
         const resync = !dialog.draft.dry_run;
-        const isEbook = dialog.draft.reading_format === 'ebook';
-        if (!isEbook && dialog.draft.region_status !== 'confirmed' && !(fields.audible_identifier?.value || '').trim()) {
-            dialog.error = 'Enter the regional Audible identifier (ASIN:region) before creating the edition.';
-            this.showEditionDialog();
-            return;
-        }
         const body = this.buildEditionCreateBody(dialog, fields, resync);
         dialog.busy = true;
         dialog.error = '';
