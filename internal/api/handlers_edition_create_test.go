@@ -20,6 +20,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/auth"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/edition"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
@@ -1361,4 +1362,182 @@ func TestCreateEditionFromDraftRefusesDryRunAndForeignProfiles(t *testing.T) {
 		require.Zero(t, fixture.absRequests.Load())
 		requireNoEditionCreateEffects(t, fixture, &counts)
 	})
+}
+
+// editionCreateCatalogClient backs a real edition.Creator: duplicate lookups
+// return existing (or not found), and every GraphQL request reaches Hardcover
+// through the real client.
+type editionCreateCatalogClient struct {
+	*hardcover.Client
+	existing *models.Edition
+}
+
+func (c editionCreateCatalogClient) lookup() (*models.Edition, error) {
+	if c.existing == nil {
+		return nil, models.ErrEditionNotFound
+	}
+	return c.existing, nil
+}
+
+func (c editionCreateCatalogClient) GetEditionByASIN(context.Context, string) (*models.Edition, error) {
+	return c.lookup()
+}
+
+func (c editionCreateCatalogClient) GetEditionByISBN13(context.Context, string) (*models.Edition, error) {
+	return c.lookup()
+}
+
+func (c editionCreateCatalogClient) GetEditionByISBN10(context.Context, string) (*models.Edition, error) {
+	return c.lookup()
+}
+
+// newEditionCreateHardcoverServer returns a real Hardcover client whose server
+// answers every request with body and counts the requests it receives.
+func newEditionCreateHardcoverServer(t *testing.T, body string) (*hardcover.Client, *atomic.Int32) {
+	t.Helper()
+	requests := &atomic.Int32{}
+	client, server := hardcover.CreateTestClientWithHandler(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	})
+	t.Cleanup(server.Close)
+	return client, requests
+}
+
+// newEditionCreateEbookFixture prepares a needs-review ebook run for book 42
+// whose ebook insertion goes through the production edition.Creator.
+func newEditionCreateEbookFixture(t *testing.T, runID string, catalog editionCreateCatalogClient) *editionDraftTestFixture {
+	t.Helper()
+	fixture := newEditionDraftTestFixture(t, `{
+		"id":"abs-item-1","mediaType":"ebook","media":{
+			"metadata":{"title":"Reviewed ebook","authorName":"Author","isbn":"9780306406157","publishedDate":"2020-02-03"},
+			"ebookFile":{},"ebookFormat":"epub"
+		}}`, "us")
+	configureEditionCreateRoute(t, fixture)
+	addCompletedNeedsReviewRun(t, fixture, runID, sync.BookOutcomeRecord{
+		BookID: "abs-item-1", Outcome: sync.OutcomeNeedsReview, Title: "Reviewed ebook", Author: "Author", ISBN: "9780306406157",
+		Format: "Ebook", HardcoverBookID: "42",
+	})
+	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+		return editionCreateHardcoverStub{
+			bookFn: func(context.Context, string) (*models.HardcoverBook, error) {
+				return &models.HardcoverBook{ID: "42", Authors: []models.Author{{ID: "7", Name: "Author"}}}, nil
+			},
+			createEbookFn: func(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
+				creator := edition.NewCreatorWithHTTPClient(catalog, logger.Get(), false, "", &http.Client{})
+				return creator.CreateEditionWithMutationReserve(ctx, input, editionCreateMutationReserve)
+			},
+			editionFn: func(_ context.Context, id string) (*models.Edition, error) {
+				return &models.Edition{ID: id, BookID: "42", ReadingFormatID: "4"}, nil
+			},
+		}
+	}
+	return fixture
+}
+
+func TestCreateEditionFromDraftReusesExistingEbookEditionOfSameBook(t *testing.T) {
+	client, hardcoverRequests := newEditionCreateHardcoverServer(t, `{"data":{"insert_edition":{"id":999,"errors":[]}}}`)
+	fixture := newEditionCreateEbookFixture(t, "run-existing-ebook", editionCreateCatalogClient{
+		Client: client, existing: &models.Edition{ID: "91", BookID: "42"},
+	})
+
+	response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-existing-ebook","abs_item_id":"abs-item-1"}`)
+
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var envelope struct {
+		Data editionCreateResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	require.Equal(t, "existing", envelope.Data.Status)
+	require.Equal(t, "42", envelope.Data.HardcoverBookID)
+	require.Equal(t, "91", envelope.Data.HardcoverEditionID)
+	require.Zero(t, hardcoverRequests.Load(), "an existing edition must not be inserted again")
+	stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+	require.NoError(t, err)
+	association, exists := stored.GetAssociation("abs-item-1")
+	require.True(t, exists)
+	require.Equal(t, "91", association.HardcoverEditionID)
+	require.Equal(t, models.ReadingFormatEbook, association.ReadingFormat)
+}
+
+func TestCreateEditionFromDraftRefusesISBNOwnedByAnotherBook(t *testing.T) {
+	client, hardcoverRequests := newEditionCreateHardcoverServer(t, `{"data":{"insert_edition":{"id":999,"errors":[]}}}`)
+	fixture := newEditionCreateEbookFixture(t, "run-isbn-conflict", editionCreateCatalogClient{
+		Client: client, existing: &models.Edition{ID: "91", BookID: "77"},
+	})
+
+	response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-isbn-conflict","abs_item_id":"abs-item-1"}`)
+
+	require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+	require.Contains(t, response.Body.String(), "different book")
+	require.NotContains(t, response.Body.String(), "may have processed")
+	require.Zero(t, hardcoverRequests.Load(), "a cross-book ISBN must stop before insert_edition")
+	stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+	require.NoError(t, err)
+	_, exists := stored.GetAssociation("abs-item-1")
+	require.False(t, exists)
+}
+
+func TestCreateEditionFromDraftSavesNothingWhenTokenLacksCatalogueScope(t *testing.T) {
+	// Hasura hides mutations a role cannot run, so a token without catalogue
+	// write scope sees the mutation field as missing.
+	const denied = `{"errors":[{"message":"field '%s' not found in type: 'mutation_root'","extensions":{"code":"validation-failed"}}]}`
+
+	t.Run("ebook", func(t *testing.T) {
+		client, hardcoverRequests := newEditionCreateHardcoverServer(t, fmt.Sprintf(denied, "insert_edition"))
+		fixture := newEditionCreateEbookFixture(t, "run-ebook-no-scope", editionCreateCatalogClient{Client: client})
+
+		response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-ebook-no-scope","abs_item_id":"abs-item-1"}`)
+
+		require.GreaterOrEqual(t, response.Code, http.StatusBadRequest, response.Body.String())
+		require.EqualValues(t, 1, hardcoverRequests.Load(), "a denied insert_edition must not be retried")
+		stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+		require.NoError(t, err)
+		_, exists := stored.GetAssociation("abs-item-1")
+		require.False(t, exists)
+	})
+
+	t.Run("audiobook", func(t *testing.T) {
+		client, hardcoverRequests := newEditionCreateHardcoverServer(t, fmt.Sprintf(denied, "upsert_book"))
+		fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`, "us")
+		configureEditionCreateRoute(t, fixture)
+		addCompletedNeedsReviewRun(t, fixture, "run-audiobook-no-scope", editionCreateRecord())
+		var ebookCreates atomic.Int32
+		fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+			return editionCreateHardcoverStub{
+				importFn: client.ImportRegionalAudiobook,
+				createEbookFn: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
+					ebookCreates.Add(1)
+					return nil, errors.New("unexpected insert_edition")
+				},
+			}
+		}
+
+		response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-audiobook-no-scope","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`)
+
+		require.GreaterOrEqual(t, response.Code, http.StatusBadRequest, response.Body.String())
+		require.EqualValues(t, 1, hardcoverRequests.Load(), "a denied upsert_book must not be retried")
+		require.Zero(t, ebookCreates.Load(), "a denied audiobook import must not fall back to insert_edition")
+		stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+		require.NoError(t, err)
+		_, exists := stored.GetAssociation("abs-item-1")
+		require.False(t, exists)
+	})
+}
+
+func TestCreateEditionFromDraftRefusesDuringShutdownBeforeAnyRequest(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`, "us")
+	configureEditionCreateRoute(t, fixture)
+	addCompletedNeedsReviewRun(t, fixture, "run-create-shutdown", editionCreateRecord())
+	var counts editionCreateCallCounts
+	fixture.handler.editionCreateHardcoverFactory = countingEditionCreateClient(&counts)
+	require.NoError(t, fixture.multiUserService.Shutdown(context.Background()))
+
+	response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-create-shutdown","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`)
+
+	require.Equal(t, http.StatusServiceUnavailable, response.Code, response.Body.String())
+	require.Contains(t, response.Body.String(), "shutting down")
+	require.Zero(t, fixture.absRequests.Load())
+	requireNoEditionCreateEffects(t, fixture, &counts)
 }
