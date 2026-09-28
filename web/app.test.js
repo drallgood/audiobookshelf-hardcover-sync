@@ -773,13 +773,24 @@ function stubDialog(app, status, payload) {
     return app.editionDialog;
 }
 
-test('successful create shows the outcome and a separate resync failure', async () => {
+test('successful create updates the book action immediately and shows a separate resync failure', async t => {
     const app = editionApp();
+    app.openSummary.records.set(String(needsReview.book_id), needsReview);
+    const button = { closest() { return { dataset: { bookId: needsReview.book_id } }; }, outerHTML: '' };
+    const previousDocument = global.document;
+    global.document = { ...previousDocument, getElementById(id) {
+        return id === 'sync-summary-content' ? { querySelectorAll() { return [button]; } } : null;
+    } };
+    t.after(() => { global.document = previousDocument; });
     const dialog = stubDialog(app, 200, { success: true, data: {
         status: 'created', hardcover_book_id: '42', hardcover_edition_id: '99',
         resync: { attempted: true, error: 'hardcover down' }
     } });
     await app.submitEditionCreate();
+    assert.match(button.outerHTML, /Hardcover Edition Added/);
+    assert.match(app.renderEditionActions(needsReview), /Hardcover Edition Added/);
+    assert.doesNotMatch(app.renderEditionActions(needsReview), /data-edition-action="add"/);
+    assert.equal(needsReview.outcome, 'needs_review');
     const html = app.renderEditionDialog(dialog);
     assert.match(html, /edition was created/);
     assert.match(html, /resync failed: hardcover down/);
@@ -788,6 +799,15 @@ test('successful create shows the outcome and a separate resync failure', async 
         resync: { attempted: true, outcome: 'already_current', reason: 'Hardcover finished status already current' }
     });
     assert.match(current, /data-resync>Resync finished \(Hardcover finished status already current\)\.<\/div>/);
+});
+
+test('successful create does not mark a different run as resolved', async () => {
+    const app = editionApp();
+    stubDialog(app, 200, { success: true, data: { status: 'created' } });
+    app.openSummary.runContext.runId = 'run-2';
+    await app.submitEditionCreate();
+    assert.match(app.renderEditionActions(needsReview), /data-edition-action="add"/);
+    assert.doesNotMatch(app.renderEditionActions(needsReview), /Hardcover Edition Added/);
 });
 
 test('create result describes loaded regional imports and reused ebook editions as existing', () => {
@@ -811,6 +831,7 @@ test('create failures surface permission denial and stale 409 clearly', async ()
     await app.submitEditionCreate();
     assert.match(dialog.error, /no longer contains/);
     assert.match(dialog.error, / The record may be stale, or a sync started after this page loaded; refresh and try again\.$/);
+    assert.match(app.renderEditionActions(needsReview), /data-edition-action="add"/);
     assert.equal(refreshed, 1);
 });
 

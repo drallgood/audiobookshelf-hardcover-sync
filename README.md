@@ -103,6 +103,8 @@ Hardcover scope when View Details opens; a confirmed denial disables **Add
 edition**, while an allowed or unverified result permits an attempt. This
 validation-only scope evidence does not guarantee the import will succeed; the
 create response reports Hardcover's result. After successful creation, the UI
+replaces the book's Add edition button in the current View Details session with
+green **Hardcover Edition Added** text without requiring a full sync. It also
 automatically resyncs that book's read status; the create response reports any
 resync failure separately. Create and forget confirmations, and resync, are
 unavailable in dry run; the preview remains available. A busy draft service can

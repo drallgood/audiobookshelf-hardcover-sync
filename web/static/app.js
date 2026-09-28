@@ -1363,6 +1363,7 @@ class SyncProfileApp {
             generation: (previous?.generation || 0) + 1,
             expandedIds: sameRun ? previous.expandedIds : new Set(),
             expandedOutcomes: sameRun && previous.expandedOutcomes instanceof Set ? previous.expandedOutcomes : new Set(),
+            addedEditionBookIds: sameRun ? previous.addedEditionBookIds : new Set(),
             editionCapability: null,
             editionCapabilityLoaded: false,
             scrollTop: 0
@@ -1443,6 +1444,10 @@ class SyncProfileApp {
             const bookId = button.closest('[data-book-id]')?.dataset.bookId;
             const record = open.records?.get(String(bookId));
             if (!record) return;
+            if (open.addedEditionBookIds?.has(String(bookId))) {
+                button.outerHTML = '<span class="edition-added" role="status">Hardcover Edition Added</span>';
+                return;
+            }
             const reason = this.editionActionDisabledReason(record, open);
             button.disabled = Boolean(reason);
             if (reason) button.title = reason;
@@ -1870,6 +1875,9 @@ class SyncProfileApp {
         const profileId = open.profileId;
         const syncing = this.profileIsSyncing(profileId);
         if (record.outcome === 'needs_review') {
+            if (open.addedEditionBookIds?.has(String(record.book_id))) {
+                return '<div class="edition-actions"><span class="edition-added" role="status">Hardcover Edition Added</span></div>';
+            }
             const disabledReason = this.editionActionDisabledReason(record, open);
             return `<div class="edition-actions">
                 <button type="button" class="book-service-link edition-action-pill" data-edition-action="add" ${disabledReason ? `disabled title="${this.escapeHtmlAttribute(disabledReason)}"` : ''}>Add edition</button>
@@ -1961,6 +1969,7 @@ class SyncProfileApp {
         const open = this.openSummary;
         const record = open?.records?.get(String(bookId));
         if (!open || !record || this.isViewer()) return;
+        if (open.addedEditionBookIds?.has(String(bookId))) return;
         if (this.editionCreateIneligibleReason(record, open.runContext)) return;
         if (this.profileIsSyncing(open.profileId)) return;
         if (!open.editionCapabilityLoaded) return;
@@ -2229,6 +2238,12 @@ class SyncProfileApp {
             if (response.status === 401) { this.closeEditionDialog(); this.handleAuthExpiry(); return; }
             if (response.ok && data?.success) {
                 dialog.result = data.data;
+                const open = this.openSummary;
+                if (open?.profileId === dialog.profileId && open.runContext?.runId === dialog.runId) {
+                    if (!open.addedEditionBookIds) open.addedEditionBookIds = new Set();
+                    open.addedEditionBookIds.add(String(dialog.record.book_id));
+                    this.refreshEditionActionStates(open);
+                }
                 this.showToast('Edition added. The next sync will use it.', 'success');
                 this.loadStatuses();
             } else {

@@ -2338,6 +2338,7 @@ header p {
 
 /* Edition create and forget-match dialog */
 .edition-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.edition-added { color: #22543d; font-weight: 600; }
 .edition-create-actions { flex-direction: row; flex-wrap: wrap; }
 .edition-create-actions [data-edition-dialog="close"] { margin-left: auto; }
 .edition-note { color: #666; font-size: 0.9rem; }
