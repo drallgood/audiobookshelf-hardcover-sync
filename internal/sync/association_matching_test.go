@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"testing"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 	"github.com/stretchr/testify/assert"
@@ -77,7 +79,110 @@ func TestFindBookInHardcoverReusesMatchingAssociationFirst(t *testing.T) {
 	client.AssertExpectations(t)
 }
 
-func TestFindBookInHardcoverPersistsOnlyVerifiedAudiobookMapping(t *testing.T) {
+func TestFindBookInHardcoverReusesMatchingEbookAssociationFirst(t *testing.T) {
+	tests := []struct {
+		name       string
+		provenance string
+		asin       string
+		isbn       string
+	}{
+		{
+			name:       "edition_asin provenance",
+			provenance: string(hardcover.ASINMatchEditionASIN),
+			asin:       " ASIN-123 ",
+		},
+		{
+			name:       "isbn provenance",
+			isbn:       "978-0-306-40615-7",
+			provenance: "isbn",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, firstClient := createTestService()
+			svc.config.Sync.SyncOwned = false
+			book := associationTestBook("association-ebook-first-"+tt.name, tt.asin, tt.isbn)
+			book.MediaType = "ebook"
+			if tt.asin != "" {
+				svc.hardcover = &associationLookupClient{
+					MockHardcoverClient: firstClient,
+					result: &hardcover.ASINLookupResult{
+						Book:      &models.HardcoverBook{ID: "901", EditionID: "902"},
+						MatchKind: hardcover.ASINMatchEditionASIN,
+					},
+				}
+			} else {
+				firstClient.On("SearchBookByISBN13", mock.Anything, "9780306406157").
+					Return(&models.HardcoverBook{ID: "901", EditionID: "902"}, nil).Once()
+			}
+			expectASINEditionRead(t, firstClient, "901", "902")
+			ctx := hardcover.WithReadingFormat(context.Background(), models.ReadingFormatEbook)
+			first, err := svc.findBookInHardcover(ctx, book)
+			require.NoError(t, err)
+			require.NotNil(t, first)
+			firstClient.AssertExpectations(t)
+
+			path := filepath.Join(t.TempDir(), "sync-state.json")
+			require.NoError(t, svc.state.Save(path))
+			reloaded, err := state.LoadState(path)
+			require.NoError(t, err)
+			association, saved := reloaded.GetAssociation(book.ID)
+			require.True(t, saved)
+			assert.Equal(t, tt.provenance, association.Provenance)
+			assert.Equal(t, "901", association.HardcoverBookID)
+			assert.Equal(t, "902", association.HardcoverEditionID)
+
+			nextSvc, nextClient := createTestService()
+			nextSvc.state = reloaded
+			nextSvc.config.Sync.SyncOwned = false
+			got, err := nextSvc.findBookInHardcover(ctx, book)
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, first.ID, got.ID)
+			assert.Equal(t, first.EditionID, got.EditionID)
+			// No Hardcover expectations are configured for the second lookup.
+			// Any live identifier search would fail the mock.
+			nextClient.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
+			nextClient.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
+			nextClient.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
+		})
+	}
+}
+
+func TestProcessBookReusedAssociationDoesNotReportSourceIdentifiersAsHardcover(t *testing.T) {
+	svc, client := createTestService()
+	svc.config.Sync.IncludeEbooks = true
+	svc.config.Sync.SyncOwned = false
+	svc.config.Sync.ProcessUnreadBooks = true
+	svc.config.Sync.SyncWantToRead = false
+	book := associationTestBook("association-ebook-source-identifiers", "ASIN-123", "978-0-306-40615-7")
+	book.MediaType = "ebook"
+	// The durable association stores ABS source identifiers but no verified
+	// Hardcover edition identifiers, so reuse must not expose them as such.
+	require.NoError(t, svc.state.SetAssociation(state.Association{
+		ABSItemID:          book.ID,
+		SourceASIN:         "ASIN-123",
+		SourceISBN13:       "9780306406157",
+		HardcoverBookID:    "901",
+		HardcoverEditionID: "902",
+		ReadingFormat:      models.ReadingFormatEbook,
+		Provenance:         string(hardcover.ASINMatchEditionASIN),
+	}))
+
+	err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+
+	require.NoError(t, err)
+	record := recordedOutcome(svc, book.ID)
+	assert.Equal(t, "901", record.HardcoverBookID)
+	assert.Equal(t, "902", record.EditionID)
+	assert.Empty(t, record.HardcoverASIN)
+	assert.Empty(t, record.HardcoverISBN)
+	client.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
+	client.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
+	client.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
+}
+
+func TestFindBookInHardcoverPersistsVerifiedASINMatches(t *testing.T) {
 	tests := []struct {
 		name       string
 		format     string
@@ -87,7 +192,7 @@ func TestFindBookInHardcoverPersistsOnlyVerifiedAudiobookMapping(t *testing.T) {
 	}{
 		{name: "verified audiobook mapping", format: models.ReadingFormatAudiobook, matchKind: hardcover.ASINMatchAudibleMapping, wantSaved: true, wantRegion: "ASIN-123:uk"},
 		{name: "temporary edition ASIN fallback", format: models.ReadingFormatAudiobook, matchKind: hardcover.ASINMatchEditionASIN},
-		{name: "ebook edition ASIN", format: models.ReadingFormatEbook, matchKind: hardcover.ASINMatchEditionASIN},
+		{name: "ebook edition ASIN", format: models.ReadingFormatEbook, matchKind: hardcover.ASINMatchEditionASIN, wantSaved: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -119,13 +224,93 @@ func TestFindBookInHardcoverPersistsOnlyVerifiedAudiobookMapping(t *testing.T) {
 			if tt.wantSaved {
 				assert.Equal(t, tt.wantRegion, association.RegionalExternalID)
 				assert.Equal(t, "ASIN-123", association.SourceASIN)
-				assert.Equal(t, string(hardcover.ASINMatchAudibleMapping), association.Provenance)
+				assert.Equal(t, string(tt.matchKind), association.Provenance)
 			} else {
 				assert.False(t, svc.state.IsDirty())
 			}
 			mockClient.AssertExpectations(t)
 		})
 	}
+}
+
+func TestFindBookInHardcoverPersistsVerifiedISBNMatches(t *testing.T) {
+	tests := []struct {
+		name      string
+		format    string
+		isbn      string
+		wantSaved bool
+	}{
+		{name: "ebook ISBN-13", format: models.ReadingFormatEbook, isbn: "978-0-306-40615-7", wantSaved: true},
+		{name: "ebook ISBN-10", format: models.ReadingFormatEbook, isbn: "0-306-40615-2", wantSaved: true},
+		{name: "audiobook ISBN stays ephemeral", format: models.ReadingFormatAudiobook, isbn: "978-0-306-40615-7"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, mockClient := createTestService()
+			svc.config.Sync.SyncOwned = false
+			book := associationTestBook("association-isbn-"+tt.name, "", tt.isbn)
+			if tt.format == models.ReadingFormatEbook {
+				book.MediaType = "ebook"
+			}
+			ctx := hardcover.WithReadingFormat(context.Background(), tt.format)
+			candidates := isbnSearchCandidates(book.Media.Metadata.ISBN)
+			require.NotEmpty(t, candidates)
+			for _, candidate := range candidates {
+				if candidate.is13 {
+					mockClient.On("SearchBookByISBN13", mock.Anything, candidate.value).Return(&models.HardcoverBook{ID: "901", EditionID: "902"}, nil).Maybe()
+				} else {
+					mockClient.On("SearchBookByISBN10", mock.Anything, candidate.value).Return(&models.HardcoverBook{ID: "901", EditionID: "902"}, nil).Maybe()
+				}
+			}
+			expectASINEditionRead(t, mockClient, "901", "902")
+
+			got, err := svc.findBookInHardcover(ctx, book)
+
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, "902", got.EditionID)
+			association, saved := svc.state.GetAssociation(book.ID)
+			assert.Equal(t, tt.wantSaved, saved)
+			if tt.wantSaved {
+				assert.Equal(t, "isbn", association.Provenance)
+				assert.Equal(t, "901", association.HardcoverBookID)
+				assert.Equal(t, "902", association.HardcoverEditionID)
+				assert.True(t, association.SourceISBN10 != "" || association.SourceISBN13 != "")
+			} else {
+				assert.False(t, svc.state.IsDirty())
+			}
+			mockClient.AssertExpectations(t)
+		})
+	}
+}
+
+func TestDryRunDoesNotStageVerifiedEbookMatches(t *testing.T) {
+	t.Run("editions.asin", func(t *testing.T) {
+		svc, _ := createTestService()
+		svc.config.Sync.DryRun = true
+		book := associationTestBook("association-ebook-dry-run-asin", "ASIN-123", "")
+		book.MediaType = "ebook"
+		svc.recordVerifiedASINAssociation(book, &hardcover.ASINLookupResult{
+			Book:      &models.HardcoverBook{ID: "901", EditionID: "902"},
+			MatchKind: hardcover.ASINMatchEditionASIN,
+		})
+
+		_, exists := svc.state.GetAssociation(book.ID)
+		assert.False(t, exists)
+		assert.False(t, svc.state.IsDirty())
+	})
+
+	t.Run("isbn", func(t *testing.T) {
+		svc, _ := createTestService()
+		svc.config.Sync.DryRun = true
+		book := associationTestBook("association-ebook-dry-run-isbn", "", "978-0-306-40615-7")
+		book.MediaType = "ebook"
+		svc.recordVerifiedISBNAssociation(book, &models.HardcoverBook{ID: "901", EditionID: "902"})
+
+		_, exists := svc.state.GetAssociation(book.ID)
+		assert.False(t, exists)
+		assert.False(t, svc.state.IsDirty())
+	})
 }
 
 func TestProcessBookDoesNotRepeatTemporaryASINFallbackLookup(t *testing.T) {
@@ -157,6 +342,474 @@ func TestProcessBookDoesNotRepeatTemporaryASINFallbackLookup(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
+func TestProcessBookReconcilesOwnershipForSavedEbookAssociation(t *testing.T) {
+	tests := []struct {
+		name    string
+		isOwned bool
+	}{
+		{name: "marks unowned book"},
+		{name: "leaves already owned book alone", isOwned: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, client := createTestService()
+			svc.config.Sync.IncludeEbooks = true
+			svc.config.Sync.SyncOwned = true
+			svc.config.Sync.ProcessUnreadBooks = true
+			svc.config.Sync.SyncWantToRead = true
+			book := associationTestBook("association-ebook-owned", "ASIN-123", "")
+			book.MediaType = "ebook"
+			require.NoError(t, svc.state.SetAssociation(state.Association{
+				ABSItemID:          book.ID,
+				SourceASIN:         "ASIN-123",
+				HardcoverBookID:    "901",
+				HardcoverEditionID: "902",
+				ReadingFormat:      models.ReadingFormatEbook,
+				Provenance:         string(hardcover.ASINMatchEditionASIN),
+			}))
+
+			expectASINEditionRead(t, client, "901", "902")
+			client.On("CheckBookOwnership", mock.Anything, 901).Return(tt.isOwned, nil).Once()
+			if !tt.isOwned {
+				client.On("MarkEditionAsOwned", mock.Anything, 902).Return(nil).Once()
+			}
+			client.On("UpdateUserBookStatus", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookStatusInput) bool {
+				return input.ID == 9021 && input.StatusID == 1
+			})).Return(nil).Once()
+
+			err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+
+			require.NoError(t, err)
+			client.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
+			client.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
+			client.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
+			if tt.isOwned {
+				client.AssertNotCalled(t, "MarkEditionAsOwned", mock.Anything, mock.Anything)
+			}
+			client.AssertExpectations(t)
+		})
+	}
+}
+
+func TestProcessBookReconcilesOwnershipForFreshEbookASINMatch(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.config.Sync.IncludeEbooks = true
+	svc.config.Sync.SyncOwned = true
+	svc.config.Sync.ProcessUnreadBooks = true
+	svc.config.Sync.SyncWantToRead = true
+	book := associationTestBook("association-ebook-fresh-owned", "ASIN-123", "978-0-306-40615-7")
+	book.MediaType = "ebook"
+	client := &associationLookupClient{
+		MockHardcoverClient: mockClient,
+		result: &hardcover.ASINLookupResult{
+			Book: &models.HardcoverBook{
+				ID: "901", EditionID: "902", EditionASIN: "ASIN-123",
+			},
+			MatchKind: hardcover.ASINMatchEditionASIN,
+		},
+	}
+	svc.hardcover = client
+	expectASINEditionRead(t, mockClient, "901", "902")
+	expectASINEditionRead(t, mockClient, "901", "902")
+	mockClient.On("CheckBookOwnership", mock.Anything, 901).Return(false, nil).Once()
+	mockClient.On("MarkEditionAsOwned", mock.Anything, 902).Return(nil).Once()
+	mockClient.On("UpdateUserBookStatus", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookStatusInput) bool {
+		return input.ID == 9021 && input.StatusID == 1
+	})).Return(nil).Once()
+
+	err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, client.searchCount, "a fresh ASIN match should make one identifier lookup")
+	association, exists := svc.state.GetAssociation(book.ID)
+	require.True(t, exists)
+	assert.Equal(t, "ASIN-123", association.SourceASIN)
+	assert.Equal(t, isbn.Normalize(book.Media.Metadata.ISBN), isbn.Normalize(association.SourceISBN13))
+	assert.Equal(t, "901", association.HardcoverBookID)
+	assert.Equal(t, "902", association.HardcoverEditionID)
+	mockClient.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
+	mockClient.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
+	mockClient.AssertExpectations(t)
+}
+
+func TestProcessBookReconcilesOwnershipForFreshAudiobookASINMatch(t *testing.T) {
+	tests := []struct {
+		name      string
+		matchKind hardcover.ASINMatchKind
+		regionID  string
+		wantSaved bool
+	}{
+		{
+			name:      "regional Audible mapping is remembered",
+			matchKind: hardcover.ASINMatchAudibleMapping,
+			regionID:  "ASIN-123:uk",
+			wantSaved: true,
+		},
+		{
+			name:      "edition ASIN fallback stays temporary",
+			matchKind: hardcover.ASINMatchEditionASIN,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, mockClient := createTestService()
+			svc.config.Sync.SyncOwned = true
+			svc.config.Sync.ProcessUnreadBooks = true
+			svc.config.Sync.SyncWantToRead = true
+			book := associationTestBook("association-audiobook-fresh-"+tt.name, "ASIN-123", "")
+			client := &associationLookupClient{
+				MockHardcoverClient: mockClient,
+				result: &hardcover.ASINLookupResult{
+					Book:               &models.HardcoverBook{ID: "901", EditionID: "902"},
+					MatchKind:          tt.matchKind,
+					RegionalExternalID: tt.regionID,
+				},
+			}
+			svc.hardcover = client
+			expectASINEditionRead(t, mockClient, "901", "902")
+			expectASINEditionRead(t, mockClient, "901", "902")
+			mockClient.On("CheckBookOwnership", mock.Anything, 901).Return(false, nil).Once()
+			mockClient.On("MarkEditionAsOwned", mock.Anything, 902).Return(nil).Once()
+			mockClient.On("UpdateUserBookStatus", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookStatusInput) bool {
+				return input.ID == 9021 && input.StatusID == 1
+			})).Return(nil).Once()
+
+			err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+
+			require.NoError(t, err)
+			assert.Equal(t, 1, client.searchCount)
+			association, saved := svc.state.GetAssociation(book.ID)
+			assert.Equal(t, tt.wantSaved, saved)
+			if tt.wantSaved {
+				assert.Equal(t, "ASIN-123:uk", association.RegionalExternalID)
+				assert.Equal(t, string(tt.matchKind), association.Provenance)
+			}
+			mockClient.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
+			mockClient.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
+			mockClient.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
+			mockClient.AssertExpectations(t)
+		})
+	}
+}
+
+func TestProcessBookReconcilesOwnershipForReusedAudiobookAssociation(t *testing.T) {
+	tests := []struct {
+		name    string
+		isOwned bool
+		dryRun  bool
+	}{
+		{name: "marks unowned edition"},
+		{name: "leaves already owned edition alone", isOwned: true},
+		{name: "dry run does not mark edition", dryRun: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, client := createTestService()
+			svc.config.Sync.SyncOwned = true
+			svc.config.Sync.ProcessUnreadBooks = true
+			svc.config.Sync.SyncWantToRead = true
+			svc.config.Sync.DryRun = tt.dryRun
+			book := associationTestBook("association-audiobook-reused-"+tt.name, "ASIN-123", "")
+			require.NoError(t, svc.state.SetAssociation(state.Association{
+				ABSItemID: book.ID, SourceASIN: "ASIN-123", RegionalExternalID: "ASIN-123:uk",
+				HardcoverBookID: "901", HardcoverEditionID: "902",
+				ReadingFormat: models.ReadingFormatAudiobook, Provenance: string(hardcover.ASINMatchAudibleMapping),
+			}))
+
+			expectASINEditionRead(t, client, "901", "902")
+			client.On("CheckBookOwnership", mock.Anything, 901).Return(tt.isOwned, nil).Once()
+			if !tt.isOwned && !tt.dryRun {
+				client.On("MarkEditionAsOwned", mock.Anything, 902).Return(nil).Once()
+			}
+			if !tt.dryRun {
+				client.On("UpdateUserBookStatus", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookStatusInput) bool {
+					return input.ID == 9021 && input.StatusID == 1
+				})).Return(nil).Once()
+			}
+
+			err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+
+			require.NoError(t, err)
+			client.AssertNumberOfCalls(t, "CheckBookOwnership", 1)
+			client.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
+			if tt.isOwned || tt.dryRun {
+				client.AssertNotCalled(t, "MarkEditionAsOwned", mock.Anything, mock.Anything)
+			} else {
+				client.AssertNumberOfCalls(t, "MarkEditionAsOwned", 1)
+			}
+			if tt.dryRun {
+				client.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+				assert.Equal(t, OutcomeWouldSync, recordedOutcome(svc, book.ID).Outcome)
+			} else {
+				client.AssertNumberOfCalls(t, "UpdateUserBookStatus", 1)
+			}
+			client.AssertExpectations(t)
+		})
+	}
+}
+
+func TestProcessBookRechecksEbookISBNBeforeSavingAssociation(t *testing.T) {
+	svc, client := createTestService()
+	svc.config.Sync.IncludeEbooks = true
+	svc.config.Sync.SyncOwned = false
+	book := isbnSearchBook(testISBN13NoTen)
+	book.MediaType = "ebook"
+	book.Progress.CurrentTime = 300
+
+	// The first result disappears before the pre-mutation lookup. The first
+	// result must not become a reusable association or be used for progress.
+	client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+		Return(&models.HardcoverBook{ID: "901", EditionID: "902"}, nil).Once()
+	client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+		Return((*models.HardcoverBook)(nil), nil).Maybe()
+
+	err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+
+	require.ErrorIs(t, err, ErrSkippedBook)
+	assert.Equal(t, OutcomeNotFound, recordedOutcome(svc, book.ID).Outcome)
+	_, saved := svc.state.GetAssociation(book.ID)
+	assert.False(t, saved, "the unconfirmed first result must not survive")
+	client.AssertExpectations(t)
+}
+
+func TestProcessBookRejectsChangedEbookISBNTarget(t *testing.T) {
+	svc, client := createTestService()
+	svc.config.Sync.IncludeEbooks = true
+	svc.config.Sync.SyncOwned = false
+	book := isbnSearchBook(testISBN13NoTen)
+	book.MediaType = "ebook"
+	book.Progress.CurrentTime = 300
+
+	client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+		Return(&models.HardcoverBook{ID: "901", EditionID: "902"}, nil).Once()
+	client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+		Return(&models.HardcoverBook{ID: "903", EditionID: "904"}, nil).Once()
+	client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+		Return((*models.HardcoverBook)(nil), nil).Maybe()
+	client.On("GetEdition", mock.Anything, "904").
+		Return(&models.Edition{ID: "904", BookID: "903"}, nil).Maybe()
+	client.On("GetBookByID", mock.Anything, "903").
+		Return(&models.HardcoverBook{ID: "903", EditionID: "904"}, nil).Maybe()
+
+	err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+
+	require.ErrorIs(t, err, ErrSkippedBook)
+	assert.Equal(t, OutcomeFailed, recordedOutcome(svc, book.ID).Outcome)
+	_, saved := svc.state.GetAssociation(book.ID)
+	assert.False(t, saved, "neither inconsistent result should be saved")
+	client.AssertExpectations(t)
+}
+
+func TestProcessBookSavesEbookISBNAfterStableRecheck(t *testing.T) {
+	svc, client := createTestService()
+	svc.config.Sync.IncludeEbooks = true
+	svc.config.Sync.SyncOwned = false
+	svc.config.Sync.ProcessUnreadBooks = true
+	svc.config.Sync.SyncWantToRead = true
+	book := isbnSearchBook(testISBN13NoTen)
+	book.MediaType = "ebook"
+
+	client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+		Return(&models.HardcoverBook{ID: "901", EditionID: "902"}, nil).Twice()
+	expectASINEditionRead(t, client, "901", "902")
+	client.On("GetEdition", mock.Anything, "902").
+		Return(&models.Edition{ID: "902", BookID: "901"}, nil).Maybe()
+	client.On("GetUserBookID", mock.Anything, 902).Return(9021, nil).Maybe()
+	client.On("UpdateUserBookStatus", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookStatusInput) bool {
+		return input.ID == 9021 && input.StatusID == 1
+	})).Return(nil).Once()
+
+	err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+
+	require.NoError(t, err)
+	association, saved := svc.state.GetAssociation(book.ID)
+	require.True(t, saved)
+	assert.Equal(t, "901", association.HardcoverBookID)
+	assert.Equal(t, "902", association.HardcoverEditionID)
+	assert.Equal(t, "isbn", association.Provenance)
+	client.AssertExpectations(t)
+}
+
+func TestProcessBookConfirmsEbookISBNBeforePostMatchSkips(t *testing.T) {
+	tests := []struct {
+		name             string
+		progress         float64
+		minimumProgress  float64
+		syncWantToRead   bool
+		incremental      bool
+		reuseAssociation bool
+		dryRun           bool
+	}{
+		{name: "unread when want-to-read sync is disabled"},
+		{name: "below minimum progress", progress: 0.25, minimumProgress: 0.5, syncWantToRead: true},
+		{name: "composite incremental state is current", progress: 0.5, syncWantToRead: true, incremental: true},
+		{name: "reused association on unread book", reuseAssociation: true},
+		{name: "dry-run unread match", dryRun: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, client := createTestService()
+			svc.config.Sync.IncludeEbooks = true
+			svc.config.Sync.ProcessUnreadBooks = true
+			svc.config.Sync.SyncWantToRead = tt.syncWantToRead
+			svc.config.Sync.SyncOwned = true
+			svc.config.Sync.Incremental = tt.incremental
+			svc.config.Sync.DryRun = tt.dryRun
+			svc.config.Sync.MinimumProgress = tt.minimumProgress
+			book := isbnSearchBook(testISBN13NoTen)
+			book.ID = "association-post-match-skip-" + tt.name
+			book.MediaType = "ebook"
+			book.Progress.CurrentTime = tt.progress * book.Media.Duration
+			book.Progress.StartedAt = 0
+
+			if tt.incremental {
+				// The base checkpoint differs enough to pass the pre-match filter,
+				// while the matched edition checkpoint is already current.
+				stateKey := book.ID + ":902"
+				svc.state.UpdateBook(stateKey, tt.progress, "IN_PROGRESS")
+				svc.state.SetHasProgressSeconds(stateKey)
+				svc.state.UpdateBook(book.ID, 0.1, "IN_PROGRESS")
+				svc.state.SetHasProgressSeconds(book.ID)
+			}
+			if tt.reuseAssociation {
+				require.NoError(t, svc.state.SetAssociation(state.Association{
+					ABSItemID: book.ID, SourceISBN13: testISBN13NoTen,
+					HardcoverBookID: "901", HardcoverEditionID: "902",
+					ReadingFormat: models.ReadingFormatEbook, Provenance: "isbn",
+				}))
+			} else {
+				client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+					Return(&models.HardcoverBook{ID: "901", EditionID: "902"}, nil).Twice()
+			}
+			client.On("CheckBookOwnership", mock.Anything, 901).Return(false, nil).Once()
+			if !tt.dryRun {
+				client.On("MarkEditionAsOwned", mock.Anything, 902).Return(nil).Once()
+			}
+
+			err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+
+			require.NoError(t, err)
+			association, saved := svc.state.GetAssociation(book.ID)
+			if tt.dryRun {
+				assert.False(t, saved, "dry runs must not persist a confirmed ISBN association")
+				assert.False(t, svc.state.IsDirty())
+			} else {
+				require.True(t, saved, "the stable ebook ISBN match should be remembered before a post-match skip")
+				assert.Equal(t, "901", association.HardcoverBookID)
+				assert.Equal(t, "902", association.HardcoverEditionID)
+				client.AssertNumberOfCalls(t, "MarkEditionAsOwned", 1)
+			}
+			client.AssertNumberOfCalls(t, "CheckBookOwnership", 1)
+			client.AssertNotCalled(t, "GetUserBookID", mock.Anything, mock.Anything)
+			client.AssertNotCalled(t, "CreateUserBook", mock.Anything, mock.Anything, mock.Anything)
+			client.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+			client.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+			client.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+			client.AssertNotCalled(t, "DeleteUserBookRead", mock.Anything, mock.Anything)
+			if tt.reuseAssociation {
+				client.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
+			} else {
+				client.AssertNumberOfCalls(t, "SearchBookByISBN13", 2)
+			}
+			if tt.dryRun {
+				client.AssertNotCalled(t, "MarkEditionAsOwned", mock.Anything, mock.Anything)
+			}
+			client.AssertExpectations(t)
+		})
+	}
+}
+
+func TestProcessBookPreservesAudiobookISBNOwnershipOnPostMatchSkip(t *testing.T) {
+	tests := []struct {
+		name            string
+		progress        float64
+		minimumProgress float64
+		syncWantToRead  bool
+	}{
+		{name: "unread when want-to-read sync is disabled"},
+		{name: "below minimum progress", progress: 0.25, minimumProgress: 0.5, syncWantToRead: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, client := createTestService()
+			svc.config.Sync.ProcessUnreadBooks = true
+			svc.config.Sync.SyncWantToRead = tt.syncWantToRead
+			svc.config.Sync.SyncOwned = true
+			svc.config.Sync.MinimumProgress = tt.minimumProgress
+			book := isbnSearchBook(testISBN13NoTen)
+			book.ID = "association-audiobook-post-match-skip-" + tt.name
+			book.Progress.CurrentTime = tt.progress * book.Media.Duration
+			book.Progress.StartedAt = 0
+
+			client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+				Return(&models.HardcoverBook{ID: "901", EditionID: "902"}, nil).Once()
+			client.On("GetEdition", mock.Anything, "902").
+				Return(&models.Edition{ID: "902", BookID: "901"}, nil).Once()
+			client.On("GetUserBookID", mock.Anything, 902).Return(9021, nil).Once()
+			client.On("CheckBookOwnership", mock.Anything, 901).Return(false, nil).Once()
+			client.On("MarkEditionAsOwned", mock.Anything, 902).Return(nil).Once()
+
+			err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+
+			require.NoError(t, err)
+			_, saved := svc.state.GetAssociation(book.ID)
+			assert.False(t, saved, "audiobook ISBN matches remain ephemeral")
+			client.AssertNumberOfCalls(t, "SearchBookByISBN13", 1)
+			client.AssertNumberOfCalls(t, "CheckBookOwnership", 1)
+			client.AssertNumberOfCalls(t, "MarkEditionAsOwned", 1)
+			client.AssertExpectations(t)
+		})
+	}
+}
+
+func TestProcessBookRejectsUnstableEbookISBNBeforePostMatchSkip(t *testing.T) {
+	temporaryErr := errors.New("temporary lookup failure")
+	tests := []struct {
+		name        string
+		secondBook  *models.HardcoverBook
+		secondErr   error
+		wantOutcome SyncOutcome
+	}{
+		{name: "missing", wantOutcome: OutcomeNotFound},
+		{name: "changed target", secondBook: &models.HardcoverBook{ID: "903", EditionID: "904"}, wantOutcome: OutcomeFailed},
+		{name: "lookup error", secondErr: temporaryErr, wantOutcome: OutcomeFailed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, client := createTestService()
+			svc.config.Sync.IncludeEbooks = true
+			svc.config.Sync.ProcessUnreadBooks = true
+			svc.config.Sync.SyncWantToRead = false
+			svc.config.Sync.SyncOwned = true
+			book := isbnSearchBook(testISBN13NoTen)
+			book.MediaType = "ebook"
+			client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+				Return(&models.HardcoverBook{ID: "901", EditionID: "902"}, nil).Once()
+			client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+				Return(tt.secondBook, tt.secondErr).Once()
+			client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+				Return((*models.HardcoverBook)(nil), nil).Maybe()
+			client.On("GetEdition", mock.Anything, mock.Anything).
+				Return((*models.Edition)(nil), nil).Maybe()
+			client.On("GetBookByID", mock.Anything, mock.Anything).
+				Return((*models.HardcoverBook)(nil), nil).Maybe()
+
+			err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+
+			require.ErrorIs(t, err, ErrSkippedBook)
+			assert.Equal(t, tt.wantOutcome, recordedOutcome(svc, book.ID).Outcome)
+			_, saved := svc.state.GetAssociation(book.ID)
+			assert.False(t, saved, "an unconfirmed ebook result must not be remembered")
+			client.AssertNotCalled(t, "CheckBookOwnership", mock.Anything, mock.Anything)
+			client.AssertNotCalled(t, "MarkEditionAsOwned", mock.Anything, mock.Anything)
+			client.AssertNotCalled(t, "GetUserBookID", mock.Anything, mock.Anything)
+			client.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+			client.AssertExpectations(t)
+		})
+	}
+}
+
 func TestFindBookInHardcoverIdentifierChangeInvalidatesAndRematches(t *testing.T) {
 	svc, mockClient := createTestService()
 	svc.config.Sync.SyncOwned = false
@@ -185,6 +838,40 @@ func TestFindBookInHardcoverIdentifierChangeInvalidatesAndRematches(t *testing.T
 	require.True(t, exists)
 	assert.Equal(t, "ASIN-NEW", association.SourceASIN)
 	assert.Equal(t, "901", association.HardcoverBookID)
+	mockClient.AssertExpectations(t)
+}
+
+func TestFindBookInHardcoverStaleEbookAssociationDiscardedAndRematches(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.config.Sync.SyncOwned = false
+	book := associationTestBook("association-ebook-changed", "ASIN-NEW", "")
+	book.MediaType = "ebook"
+	require.NoError(t, svc.state.SetAssociation(state.Association{
+		ABSItemID: book.ID, SourceASIN: "ASIN-OLD", HardcoverBookID: "old-book",
+		HardcoverEditionID: "old-edition", ReadingFormat: models.ReadingFormatEbook,
+		Provenance: string(hardcover.ASINMatchEditionASIN),
+	}))
+	client := &associationLookupClient{
+		MockHardcoverClient: mockClient,
+		result: &hardcover.ASINLookupResult{
+			Book:      &models.HardcoverBook{ID: "901", EditionID: "902"},
+			MatchKind: hardcover.ASINMatchEditionASIN,
+		},
+	}
+	svc.hardcover = client
+	ctx := hardcover.WithReadingFormat(context.Background(), models.ReadingFormatEbook)
+	expectASINEditionRead(t, mockClient, "901", "902")
+
+	got, err := svc.findBookInHardcover(ctx, book)
+
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "901", got.ID, "stale association must not be reused; a fresh lookup should run instead")
+	association, exists := svc.state.GetAssociation(book.ID)
+	require.True(t, exists)
+	assert.Equal(t, "ASIN-NEW", association.SourceASIN)
+	assert.Equal(t, "901", association.HardcoverBookID)
+	assert.Equal(t, string(hardcover.ASINMatchEditionASIN), association.Provenance)
 	mockClient.AssertExpectations(t)
 }
 
