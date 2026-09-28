@@ -2260,7 +2260,7 @@ class SyncProfileApp {
         return `<div class="edition-success" role="status">${outcome} The match is saved for the next sync.
             <div class="book-meta"><span><strong>Hardcover book:</strong> ${this.escapeHtml(result.hardcover_book_id || '')}</span><span><strong>Edition:</strong> ${this.escapeHtml(result.hardcover_edition_id || '')}</span>${result.status ? `<span><strong>Status:</strong> ${this.escapeHtml(result.status)}</span>` : ''}</div></div>
             ${resyncHtml}
-            <div class="form-actions edition-create-actions"><button type="button" class="btn btn-warning" data-edition-dialog="close">Cancel</button></div>`;
+            <div class="form-actions edition-create-actions"><button type="button" class="btn btn-warning" data-edition-dialog="close">Close</button></div>`;
     }
 
     async openForgetDialog(bookId) {
