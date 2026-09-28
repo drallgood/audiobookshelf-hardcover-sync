@@ -2068,9 +2068,9 @@ class SyncProfileApp {
         const waiting = waitMs > 0;
         const retryLabel = waiting ? `Retry in ${Math.ceil(waitMs / 1000)}s` : 'Retry';
         if (dialog.loading) return '<p role="status">Loading edition preview…</p>';
-        const closeButton = '<button type="button" class="book-service-link edition-action-pill" data-edition-dialog="close">Close</button>';
+        const closeButton = '<button type="button" class="btn btn-warning" data-edition-dialog="close">Cancel</button>';
         if (!dialog.draft) {
-            return `${errorHtml}<div class="form-actions"><button type="button" class="book-service-link edition-action-pill" data-edition-dialog="retry" ${waiting ? 'disabled' : ''}>${retryLabel}</button>${closeButton}</div>`;
+            return `${errorHtml}<div class="form-actions edition-create-actions"><button type="button" class="btn btn-secondary" data-edition-dialog="retry" ${waiting ? 'disabled' : ''}>${retryLabel}</button>${closeButton}</div>`;
         }
         const draft = dialog.draft;
         const isEbook = draft.reading_format === 'ebook';
@@ -2152,9 +2152,9 @@ class SyncProfileApp {
             <form class="edition-form" onsubmit="return false">${editHtml}</form>
             ${blockers.map(text => `<div class="edition-error" data-blocker>${this.escapeHtml(text)}</div>`).join('')}
             ${errorHtml}
-            <div class="form-actions">
-                <button type="button" class="book-service-link edition-action-pill" data-edition-dialog="confirm-create" ${canConfirm && !dialog.busy ? '' : 'disabled'}>${dialog.busy ? 'Creating…' : 'Create edition'}</button>
-                <button type="button" class="book-service-link edition-action-pill" data-edition-dialog="retry" title="Reload this preview and retry the region/candidate lookup — useful after a temporary lookup failure or if the source metadata changed." ${waiting || dialog.busy ? 'disabled' : ''}>${waiting ? retryLabel : 'Refresh preview'}</button>
+            <div class="form-actions edition-create-actions">
+                <button type="button" class="btn btn-primary" data-edition-dialog="confirm-create" ${canConfirm && !dialog.busy ? '' : 'disabled'}>${dialog.busy ? 'Creating…' : 'Add edition'}</button>
+                <button type="button" class="btn btn-secondary" data-edition-dialog="retry" title="Reload this preview and retry the region/candidate lookup — useful after a temporary lookup failure or if the source metadata changed." ${waiting || dialog.busy ? 'disabled' : ''}>${waiting ? retryLabel : 'Refresh preview'}</button>
                 ${closeButton}
             </div>`;
     }
@@ -2252,7 +2252,7 @@ class SyncProfileApp {
         return `<div class="edition-success" role="status">${outcome} The match is saved for the next sync.
             <div class="book-meta"><span><strong>Hardcover book:</strong> ${this.escapeHtml(result.hardcover_book_id || '')}</span><span><strong>Edition:</strong> ${this.escapeHtml(result.hardcover_edition_id || '')}</span>${result.status ? `<span><strong>Status:</strong> ${this.escapeHtml(result.status)}</span>` : ''}</div></div>
             ${resyncHtml}
-            <div class="form-actions"><button type="button" class="btn btn-secondary" data-edition-dialog="close">Close</button></div>`;
+            <div class="form-actions edition-create-actions"><button type="button" class="btn btn-warning" data-edition-dialog="close">Cancel</button></div>`;
     }
 
     async openForgetDialog(bookId) {

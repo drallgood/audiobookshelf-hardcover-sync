@@ -2338,6 +2338,8 @@ header p {
 
 /* Edition create and forget-match dialog */
 .edition-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.edition-create-actions { flex-direction: row; flex-wrap: wrap; }
+.edition-create-actions [data-edition-dialog="close"] { margin-left: auto; }
 .edition-note { color: #666; font-size: 0.9rem; }
 .edition-dialog-body { padding: 20px 30px 30px; overflow-y: auto; max-height: calc(95vh - 80px); }
 .edition-dialog-subject { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
