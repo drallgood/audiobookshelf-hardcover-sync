@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Add Edition dialog buttons**: Match Sync Status button styles, with primary Add edition, secondary Refresh preview, and warning-colored Cancel; only Cancel is aligned to the right.
 - **Add Edition dialog wording**: Label the metadata preview as "Audnexus details (helps to verify the match)", remove the scope-check explanation, and omit internal outcome codes from resync messages. Use Close after an edition is added and Cancel before creation.
 - **Add Edition dialog scrolling**: Preserve the scroll position when creation updates the modal.
+- **Add Edition conflict errors**: Show the retry guidance as a capitalized sentence instead of parenthesized text.
 
 - **Needs-review candidate details**: Hide Hardcover ASIN/ISBN in Sync Status and the Add Edition dialog; show the Audiobookshelf series when available and omit a missing source ISBN in the dialog.
 

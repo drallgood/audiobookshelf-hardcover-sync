@@ -2245,7 +2245,7 @@ class SyncProfileApp {
 
     editionCreateErrorMessage(status, message) {
         if (status === 403) return `Permission denied: ${message}`;
-        if (status === 409) return `${message} (the record may be stale, or a sync started after this page loaded; refresh and try again).`;
+        if (status === 409) return `${message} The record may be stale, or a sync started after this page loaded; refresh and try again.`;
         return message;
     }
 

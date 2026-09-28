@@ -810,7 +810,7 @@ test('create failures surface permission denial and stale 409 clearly', async ()
     dialog = stubDialog(app, 409, { success: false, error: 'sync run no longer contains a usable needs-review source record' });
     await app.submitEditionCreate();
     assert.match(dialog.error, /no longer contains/);
-    assert.match(dialog.error, /sync started after this page loaded/);
+    assert.match(dialog.error, / The record may be stale, or a sync started after this page loaded; refresh and try again\.$/);
     assert.equal(refreshed, 1);
 });
 
