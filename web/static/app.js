@@ -2255,7 +2255,7 @@ class SyncProfileApp {
             const r = result.resync;
             resyncHtml = r.error
                 ? `<div class="edition-error" data-resync-error>Edition saved, but the resync failed: ${this.escapeHtml(r.error)}</div>`
-                : `<div class="edition-note" data-resync>Resync ${r.attempted ? `finished: ${this.escapeHtml(r.outcome || 'done')}` : 'was not attempted'}${r.reason ? ` (${this.escapeHtml(r.reason)})` : ''}.</div>`;
+                : `<div class="edition-note" data-resync>Resync ${r.attempted ? 'finished' : 'was not attempted'}${r.reason ? ` (${this.escapeHtml(r.reason)})` : ''}.</div>`;
         }
         return `<div class="edition-success" role="status">${outcome} The match is saved for the next sync.
             <div class="book-meta"><span><strong>Hardcover book:</strong> ${this.escapeHtml(result.hardcover_book_id || '')}</span><span><strong>Edition:</strong> ${this.escapeHtml(result.hardcover_edition_id || '')}</span>${result.status ? `<span><strong>Status:</strong> ${this.escapeHtml(result.status)}</span>` : ''}</div></div>

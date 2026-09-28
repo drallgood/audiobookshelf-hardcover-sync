@@ -777,6 +777,11 @@ test('successful create shows the outcome and a separate resync failure', async 
     const html = app.renderEditionDialog(dialog);
     assert.match(html, /edition was created/);
     assert.match(html, /resync failed: hardcover down/);
+    const current = app.renderCreateResult({
+        status: 'created',
+        resync: { attempted: true, outcome: 'already_current', reason: 'Hardcover finished status already current' }
+    });
+    assert.match(current, /data-resync>Resync finished \(Hardcover finished status already current\)\.<\/div>/);
 });
 
 test('create result describes loaded regional imports and reused ebook editions as existing', () => {
