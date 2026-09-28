@@ -501,6 +501,30 @@ test('create body sends only changed ebook fields and the opt-in resync flag', (
     assert.deepEqual(app.buildEditionCreateBody(dialog, fields, false), {
         run_id: 'run-1', abs_item_id: 'li_9', asin: 'B00NEW1234'
     });
+    assert.deepEqual(app.buildEditionCreateBody(dialog, {
+        isbn_10: { value: '0-306-40615-2', original: '' },
+        isbn_13: { value: '', original: '' }
+    }, false), { run_id: 'run-1', abs_item_id: 'li_9', isbn_10: '0-306-40615-2' });
+    assert.deepEqual(app.buildEditionCreateBody(dialog, {
+        isbn_10: { value: '', original: '' },
+        isbn_13: { value: '9780306406157', original: '' }
+    }, false), { run_id: 'run-1', abs_item_id: 'li_9', isbn_13: '9780306406157' });
+    assert.deepEqual(app.buildEditionCreateBody(dialog, {
+        isbn_10: { value: '', original: '0306406152' },
+        isbn_13: { value: '9780306406157', original: '9780306406157' }
+    }, false), { run_id: 'run-1', abs_item_id: 'li_9', isbn_10: '' });
+    assert.deepEqual(app.buildEditionCreateBody(dialog, {
+        isbn_10: { value: '0306406152', original: '' },
+        isbn_13: { value: '9780306406157', original: '' }
+    }, false), { run_id: 'run-1', abs_item_id: 'li_9', isbn_10: '0306406152', isbn_13: '9780306406157' });
+    assert.deepEqual(app.buildEditionCreateBody(dialog, {
+        isbn_10: { value: '0306406152', original: '' },
+        isbn_13: { value: '9780000000002', original: '' }
+    }, false), { run_id: 'run-1', abs_item_id: 'li_9', isbn_10: '0306406152', isbn_13: '9780000000002' });
+    assert.deepEqual(app.buildEditionCreateBody(dialog, {
+        isbn_10: { value: '0306406152', original: '0306406152' },
+        isbn_13: { value: '9780000000002', original: '9780306406157' }
+    }, false), { run_id: 'run-1', abs_item_id: 'li_9', isbn_13: '9780000000002' });
     assert.equal(app.buildEditionCreateBody(dialog, fields, true).resync, true);
 
     const confirmedAudio = {
@@ -515,6 +539,57 @@ test('create body sends only changed ebook fields and the opt-in resync flag', (
     assert.deepEqual(app.buildEditionCreateBody(unconfirmedAudio, {}, false), {
         run_id: 'run-1', abs_item_id: 'li_9'
     });
+});
+
+test('failed ebook create redraw preserves escaped edits and retries the same request', async () => {
+    const app = editionApp();
+    const dialog = {
+        mode: 'create', profileId: 'p1', runId: 'run-1', record: needsReview, loading: false, busy: false, error: '', result: null,
+        draft: { reading_format: 'ebook', dry_run: false, eligible: true, warnings: [], source_identifiers: {}, ebook_candidate: {
+            title: 'Original', subtitle: '', asin: '', isbn_10: 'old10', isbn_13: 'old13', release_date: '', edition_format: 'Ebook'
+        } }
+    };
+    app.editionDialog = dialog;
+    app.showEditionDialog = SyncProfileApp.prototype.showEditionDialog;
+    const originalDocument = global.document;
+    const modal = { style: {} };
+    const content = { fields: {}, set innerHTML(html) {
+        this.html = html;
+        const decode = value => value.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+        this.fields = Object.fromEntries([...html.matchAll(/<input\b[^>]*>/g)].map(([input]) => {
+            const name = input.match(/\bname="([^"]*)"/)?.[1];
+            const value = input.match(/\bvalue="([^"]*)"/)?.[1] || '';
+            const original = input.match(/\bdata-original="([^"]*)"/)?.[1] || '';
+            return [name, { name, value: decode(value), dataset: { original: decode(original) } }];
+        }));
+    } };
+    global.document = {
+        getElementById(id) { return id === 'edition-modal' ? modal : id === 'edition-modal-content' ? content : null; },
+        createElement(...args) { return originalDocument.createElement(...args); },
+        querySelector() { return { querySelectorAll() { return Object.values(content.fields); } }; }
+    };
+    try {
+        app.showEditionDialog();
+        assert.ok(content.fields.title);
+        content.fields.title.value = '<New & title>';
+        content.fields.isbn_10.value = '';
+        content.fields.isbn_13.value = '9780000000002';
+        const requests = [];
+        app.fetchJsonWithTimeout = async (_url, options) => {
+            requests.push(JSON.parse(options.body));
+            return requests.length === 1
+                ? { response: { ok: false, status: 500 }, data: { success: false, error: 'temporary failure' } }
+                : { response: { ok: true, status: 200 }, data: { success: true, data: { status: 'created' } } };
+        };
+        await app.submitEditionCreate();
+        assert.match(content.html, /&lt;New &amp; title&gt;/);
+        assert.match(content.html, /name="isbn_10" value="" data-original="old10"/);
+        assert.deepEqual(requests[0], { run_id: 'run-1', abs_item_id: 'li_1', title: '<New & title>', isbn_10: '', isbn_13: '9780000000002', resync: true });
+        await app.submitEditionCreate();
+        assert.deepEqual(requests[1], requests[0]);
+    } finally {
+        global.document = originalDocument;
+    }
 });
 
 test('submitting an edition create uses a timeout long enough for the server\'s own budget', async () => {
@@ -553,6 +628,14 @@ test('successful create shows the outcome and a separate resync failure', async 
     const html = app.renderEditionDialog(dialog);
     assert.match(html, /edition was created/);
     assert.match(html, /resync failed: hardcover down/);
+});
+
+test('create result describes loaded regional imports and reused ebook editions as existing', () => {
+    const app = editionApp();
+    for (const status of ['loaded', 'reused', 'existing']) {
+        assert.match(app.renderCreateResult({ status }), /An existing Hardcover edition was reused/);
+    }
+    assert.match(app.renderCreateResult({ status: 'created' }), /The Hardcover edition was created/);
 });
 
 test('create failures surface permission denial and stale 409 clearly', async () => {

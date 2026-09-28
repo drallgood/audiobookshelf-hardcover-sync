@@ -472,7 +472,10 @@ class SyncProfileApp {
                 if (!button || button.disabled) return;
                 switch (button.dataset.editionDialog) {
                     case 'close': this.closeEditionDialog(); break;
-                    case 'retry': this.loadEditionDraft(); break;
+                    case 'retry':
+                        if (this.editionDialog?.mode === 'create') this.editionDialog.fieldValues = null;
+                        this.loadEditionDraft();
+                        break;
                     case 'confirm-create': this.submitEditionCreate(); break;
                     case 'confirm-forget': this.submitForget(); break;
                 }
@@ -2026,8 +2029,10 @@ class SyncProfileApp {
         this.showEditionDialog();
     }
 
-    renderDraftField(name, label, value) {
-        return `<label class="edition-field"><span>${this.escapeHtml(label)}</span><input type="text" name="${name}" value="${this.escapeHtmlAttribute(value || '')}" data-original="${this.escapeHtmlAttribute(value || '')}" autocomplete="off"></label>`;
+    renderDraftField(name, label, value, dialog) {
+        const original = value || '';
+        const current = dialog.fieldValues?.[name] ?? original;
+        return `<label class="edition-field"><span>${this.escapeHtml(label)}</span><input type="text" name="${name}" value="${this.escapeHtmlAttribute(current)}" data-original="${this.escapeHtmlAttribute(original)}" autocomplete="off"></label>`;
     }
 
     renderEditionDialog(dialog) {
@@ -2103,13 +2108,13 @@ class SyncProfileApp {
         if (isEbook) {
             const c = draft.ebook_candidate || {};
             editHtml = `<fieldset class="edition-fields"><legend>Edition details (from Audiobookshelf — correct before creating)</legend>
-                ${this.renderDraftField('title', 'Title', c.title)}
-                ${this.renderDraftField('subtitle', 'Subtitle', c.subtitle)}
-                ${this.renderDraftField('asin', 'ASIN', c.asin)}
-                ${this.renderDraftField('isbn_10', 'ISBN-10', c.isbn_10)}
-                ${this.renderDraftField('isbn_13', 'ISBN-13', c.isbn_13)}
-                ${this.renderDraftField('release_date', 'Release date', c.release_date)}
-                ${this.renderDraftField('edition_format', 'Edition format', c.edition_format)}
+                ${this.renderDraftField('title', 'Title', c.title, dialog)}
+                ${this.renderDraftField('subtitle', 'Subtitle', c.subtitle, dialog)}
+                ${this.renderDraftField('asin', 'ASIN', c.asin, dialog)}
+                ${this.renderDraftField('isbn_10', 'ISBN-10', c.isbn_10, dialog)}
+                ${this.renderDraftField('isbn_13', 'ISBN-13', c.isbn_13, dialog)}
+                ${this.renderDraftField('release_date', 'Release date', c.release_date, dialog)}
+                ${this.renderDraftField('edition_format', 'Edition format', c.edition_format, dialog)}
             </fieldset>`;
         } else {
             const status = draft.region_status || '';
@@ -2173,10 +2178,6 @@ class SyncProfileApp {
                 const field = fields[key];
                 if (field && field.value.trim() !== field.original.trim()) body[key] = field.value.trim();
             }
-            if ('isbn_10' in body || 'isbn_13' in body) {
-                body.isbn_10 = (fields.isbn_10?.value || '').trim();
-                body.isbn_13 = (fields.isbn_13?.value || '').trim();
-            }
         } else {
             const draft = dialog.draft || {};
             const candidate = draft.audible_identifier_candidate || {};
@@ -2194,6 +2195,9 @@ class SyncProfileApp {
         form?.querySelectorAll('input[type="text"]').forEach(input => {
             fields[input.name] = { value: input.value, original: input.dataset.original || '' };
         });
+        if (this.editionDialog?.mode === 'create') {
+            this.editionDialog.fieldValues = Object.fromEntries(Object.entries(fields).map(([name, field]) => [name, field.value]));
+        }
         return fields;
     }
 
@@ -2241,7 +2245,8 @@ class SyncProfileApp {
 
     renderCreateResult(result) {
         const created = String(result.status || '').toLowerCase();
-        const outcome = created === 'reused' || created === 'existing' ? 'An existing Hardcover edition was reused.' : 'The Hardcover edition was created.';
+        const outcome = ['reused', 'existing', 'loaded'].includes(created)
+            ? 'An existing Hardcover edition was reused.' : 'The Hardcover edition was created.';
         let resyncHtml = '';
         if (result.resync) {
             const r = result.resync;
@@ -2290,7 +2295,7 @@ class SyncProfileApp {
         }
         return `${dryRun ? '<div class="edition-dry-run">Dry run</div>' : ''}
             <div class="book-meta"><span><strong>Current Hardcover book:</strong> ${this.escapeHtml(record.hardcover_book_id)}</span>${record.edition_id ? `<span><strong>Current edition:</strong> ${this.escapeHtml(record.edition_id)}</span>` : ''}</div>
-            <p>This removes only this app's saved match and sync checkpoint for the item. Nothing is deleted from Hardcover. The next sync reruns normal matching and may select the same edition again if Hardcover has not changed.</p>
+            <p>If a saved match exists, this removes only that match and this app's sync checkpoint for the item. Nothing is deleted from Hardcover. The next sync reruns normal matching and may select the same edition again if Hardcover has not changed. If no saved match exists, forgetting is a no-op.</p>
             ${dryRun ? '<div class="edition-error" data-blocker>Forgetting a match is disabled while this profile is in dry run.</div>' : ''}
             ${syncing ? '<div class="edition-error" data-blocker>A sync is running for this profile; try again when it finishes.</div>' : ''}
             ${dialog.error ? `<div class="edition-error" role="alert">${this.escapeHtml(dialog.error)}</div>` : ''}

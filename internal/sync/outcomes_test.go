@@ -83,6 +83,7 @@ func TestProcessBookRecordsSkipAndIncrementalNoChange(t *testing.T) {
 			ABSItemID:          book.ID,
 			HardcoverBookID:    "hc-book-1",
 			HardcoverEditionID: "hc-edition-1",
+			ReadingFormat:      models.ReadingFormatAudiobook,
 		}))
 
 		require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
@@ -96,6 +97,92 @@ func TestProcessBookRecordsSkipAndIncrementalNoChange(t *testing.T) {
 		hc.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
 	})
 
+}
+
+func TestProcessBookIncrementalAlreadyCurrentEnrichesOnlyMatchingAssociation(t *testing.T) {
+	tests := []struct {
+		name              string
+		asin              string
+		isbn              string
+		isEbook           bool
+		associationASIN   string
+		associationISBN10 string
+		associationISBN13 string
+		associationFormat string
+		wantEnriched      bool
+	}{
+		{
+			name:              "stale ASIN",
+			asin:              "ASIN-NEW",
+			isbn:              "978-0-306-40615-7",
+			associationASIN:   "ASIN-OLD",
+			associationISBN13: "9780306406157",
+			associationFormat: models.ReadingFormatAudiobook,
+		},
+		{
+			name:              "stale ISBN",
+			isbn:              "978-0-306-40615-7",
+			associationISBN13: "9781492056355",
+			associationFormat: models.ReadingFormatAudiobook,
+		},
+		{
+			name:              "stale reading format",
+			asin:              "ASIN-123",
+			isEbook:           true,
+			associationASIN:   "ASIN-123",
+			associationFormat: models.ReadingFormatAudiobook,
+		},
+		{
+			name:              "normalized identifiers",
+			asin:              " ASIN-123 ",
+			isbn:              "978-0-306-40615-7",
+			associationASIN:   "ASIN-123",
+			associationISBN13: "9780306406157",
+			associationFormat: models.ReadingFormatAudiobook,
+			wantEnriched:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, hc := createTestService()
+			svc.config.Sync.Incremental = true
+			svc.config.Sync.ProcessUnreadBooks = true
+			book := toAudiobookshelfBook(createTestBook("outcome-current-"+tt.name, "Current", "Author", tt.asin, tt.isbn))
+			if tt.isEbook {
+				book.MediaType = "ebook"
+				svc.config.Sync.IncludeEbooks = true
+			}
+			svc.state.UpdateBook(book.ID, 0, "WANT_TO_READ")
+			svc.state.SetHasProgressSeconds(book.ID)
+			association := state.Association{
+				ABSItemID:          book.ID,
+				SourceASIN:         tt.associationASIN,
+				SourceISBN10:       tt.associationISBN10,
+				SourceISBN13:       tt.associationISBN13,
+				HardcoverBookID:    "hc-book-1",
+				HardcoverEditionID: "hc-edition-1",
+				ReadingFormat:      tt.associationFormat,
+			}
+			require.NoError(t, svc.state.SetAssociation(association))
+
+			require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
+
+			record := recordedOutcome(svc, book.ID)
+			assert.Equal(t, OutcomeAlreadyCurrent, record.Outcome)
+			if tt.wantEnriched {
+				assert.Equal(t, association.HardcoverBookID, record.HardcoverBookID)
+				assert.Equal(t, association.HardcoverEditionID, record.EditionID)
+			} else {
+				assert.Empty(t, record.HardcoverBookID)
+				assert.Empty(t, record.EditionID)
+			}
+			storedAssociation, exists := svc.state.GetAssociation(book.ID)
+			require.True(t, exists)
+			assert.Equal(t, association, storedAssociation, "outcome enrichment must not mutate the persisted association")
+			assertNoHardcoverBookSearches(t, hc)
+		})
+	}
 }
 
 // TestProcessBookIncrementalDetailedCheckAlreadyCurrentKeepsLookupAssociation

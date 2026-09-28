@@ -89,28 +89,29 @@ has been confirmed.
 
 #### Add an edition or forget a match from View Details
 
-Signed-in users who may change a profile see **Add edition** on a needs-review
-result from a completed run that has a Hardcover book, a format, and an ASIN or
-ISBN. The dialog shows the Audiobookshelf series and ISBN when available and
-previews the source identifier and, for
-audiobooks, whether the Audible region was confirmed, could not be determined,
-or is temporarily unavailable; in the latter two cases you enter the regional
-identifier (`ASIN:region`) yourself. Audiobook metadata is preview-only, so the
-regional identifier is the only editable audiobook field; ebooks also allow the
-ebook fields the server can insert. The UI checks the profile's format-specific
+Signed-in users who may change a profile see **Add edition** on an eligible
+needs-review result from a completed or canceled run that has a Hardcover book,
+a format, and an ASIN or ISBN. The dialog shows the Audiobookshelf series and
+ISBN when available and previews the source identifier. For audiobooks, it
+shows a region confirmed automatically when available; otherwise Hardcover
+attempts its own region discovery during creation. Audiobook metadata is
+preview-only, and ebooks allow correction of the fields the server can insert.
+The UI checks the profile's format-specific
 Hardcover scope when View Details opens; a confirmed denial disables **Add
 edition**, while an allowed or unverified result permits an attempt. This
 validation-only scope evidence does not guarantee the import will succeed; the
-create response reports Hardcover's result. **Sync this book's read status** is
-an unchecked option, and neither it nor creation is available in dry run. A
+create response reports Hardcover's result. After successful creation, the UI
+automatically resyncs that book's read status; the create response reports any
+resync failure separately. Creation and resync are unavailable in dry run. A
 busy draft service is retried after its `Retry-After` wait. Create and forget
 are disabled while the profile is syncing, and a conflict from a sync that
 started later is reported.
 
 Matched results show their current Hardcover book and edition with **Forget
-match**. After confirmation, only this app's saved match is removed; nothing is
-deleted from Hardcover, and the next sync reruns normal matching and may select
-the same edition again if Hardcover has not changed.
+match**. If a saved match exists, confirmation removes only this app's saved
+match and sync checkpoint; nothing is deleted from Hardcover, and the next sync
+reruns normal matching and may select the same edition again if Hardcover has
+not changed. If no saved match exists, forgetting is a no-op.
 
 Each processed book is counted once as `synced`, `already_current`, `skipped`,
 `needs_review`, `not_found`, `failed`, or dry-run `would_sync`. A total of zero

@@ -2169,6 +2169,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 			if hcBook == nil {
 				if preliminaryState, ok := s.state.GetBookState(preliminaryStateKey); ok &&
 					preliminaryState.Association != nil &&
+					associationMatchesBook(*preliminaryState.Association, book) &&
 					strings.TrimSpace(preliminaryState.Association.HardcoverBookID) != "" {
 					hcBook = &models.HardcoverBook{
 						ID:        preliminaryState.Association.HardcoverBookID,
@@ -2534,6 +2535,7 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 				})
 				bookProcessed = false // Explicitly mark as not processed when skipping due to no changes
 				if hcBook == nil && bookState.Association != nil &&
+					associationMatchesBook(*bookState.Association, book) &&
 					strings.TrimSpace(bookState.Association.HardcoverBookID) != "" {
 					hcBook = &models.HardcoverBook{
 						ID:        bookState.Association.HardcoverBookID,
