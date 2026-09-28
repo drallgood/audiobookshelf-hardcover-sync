@@ -27,9 +27,8 @@ one `validation-failed` error. For `insert_edition`, the message was
 `$.selectionSet.insert_edition.args.book_id`. For `upsert_book`, they were
 `missing required field 'book'` and `$.selectionSet.upsert_book.args.book`.
 
-These observations were recorded in section 15 of the plan branch's
-[`hardcover-audible-mapping-findings.md`](https://github.com/Snuffy2/audiobookshelf-hardcover-sync/blob/docs/needs-review-edition-plan/docs/hardcover-audible-mapping-findings.md#15-live-catalogue-write-scope-response-2026-09-27).
-They cover the tested credentials and argument-free requests on that date,
+These observations cover the tested credentials and argument-free requests
+on September 27, 2026,
 not valid-input creates, every denial variant, or future server behavior.
 No new live request was made for this maintainer-feedback update.
 
