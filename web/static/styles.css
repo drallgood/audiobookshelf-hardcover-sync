@@ -2350,11 +2350,9 @@ header p {
 .edition-field { display: flex; flex-direction: column; gap: 2px; margin: 8px 0; }
 .edition-field input { padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; }
 .edition-source-section { border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px 14px; margin: 12px 0; background: #f7fafc; }
-.edition-source-section h4 { margin: 0 0 8px; font-size: 0.9rem; color: #4a5568; }
 .edition-source-section .book-meta { margin: 0; }
 .edition-audnex-preview summary { cursor: pointer; font-size: 0.9rem; color: #4a5568; }
 .edition-audnex-preview[open] summary { margin-bottom: 8px; }
-.edition-audnex-preview .book-meta { margin: 0; }
 .edition-warning { background: #fff8e1; border-left: 4px solid #f0ad4e; padding: 8px 12px; margin: 8px 0; border-radius: 4px; }
 .edition-error { background: #fdecea; border-left: 4px solid #d9534f; padding: 8px 12px; margin: 8px 0; border-radius: 4px; }
 .edition-success { background: #e8f5e9; border-left: 4px solid #5cb85c; padding: 8px 12px; margin: 8px 0; border-radius: 4px; }

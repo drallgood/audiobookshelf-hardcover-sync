@@ -2534,14 +2534,6 @@ func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBoo
 					"current_status":   currentStatus,
 				})
 				bookProcessed = false // Explicitly mark as not processed when skipping due to no changes
-				if hcBook == nil && bookState.Association != nil &&
-					associationMatchesBook(*bookState.Association, book) &&
-					strings.TrimSpace(bookState.Association.HardcoverBookID) != "" {
-					hcBook = &models.HardcoverBook{
-						ID:        bookState.Association.HardcoverBookID,
-						EditionID: bookState.Association.HardcoverEditionID,
-					}
-				}
 				setOutcome(OutcomeAlreadyCurrent, "incremental state is current")
 				return nil
 			}

@@ -1932,9 +1932,6 @@ class SyncProfileApp {
         if (status.status === 'denied' || status.can_attempt === false) {
             return { blocked: true, reason: status.reason ? this.capabilityReasonText(status.reason) : 'The Hardcover token is not permitted to add this edition.' };
         }
-        if (status.status === 'unverified') {
-            return { blocked: false, warning: '' };
-        }
         return { blocked: false, warning: '' };
     }
 

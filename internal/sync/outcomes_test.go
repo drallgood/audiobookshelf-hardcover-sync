@@ -191,16 +191,8 @@ func TestProcessBookIncrementalAlreadyCurrentEnrichesOnlyMatchingAssociation(t *
 // composite bookID:editionID key), not the earlier coarse NeedsSync check
 // against the bare book ID.
 //
-// Reachability note: findBookInHardcoverWithASINMatch (service.go) never
-// returns a nil *models.HardcoverBook alongside a nil error on any current
-// return path, so by the time processBook reaches this detailed comparison,
-// hcBook is always already populated by the real lookup. The "hcBook == nil"
-// guard that would fall back to the composite state's persisted Association
-// is therefore unreachable with any of today's callers. This test proves the
-// guard correctly stays a no-op in that situation: it seeds the composite
-// state with a *different* stale Association and asserts the recorded
-// outcome still carries the real lookup's HardcoverBookID/EditionID, not the
-// stale association's.
+// This verifies that the detailed no-op outcome keeps the current lookup IDs
+// instead of using a stale association from persisted state.
 func TestProcessBookIncrementalDetailedCheckAlreadyCurrentKeepsLookupAssociation(t *testing.T) {
 	svc, hc := createTestService()
 	svc.config.Sync.Incremental = true
