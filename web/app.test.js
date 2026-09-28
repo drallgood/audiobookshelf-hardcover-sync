@@ -7,6 +7,7 @@ global.window = {
 };
 global.document = {
     addEventListener() {},
+    getElementById() { return null; },
     createElement() {
         let text = '';
         return {
@@ -201,7 +202,9 @@ function editionApp(overrides = {}) {
     app.openSummary = {
         profileId: 'p1',
         runContext: { runId: 'run-1', state: 'completed', dryRun: false },
-        records: new Map()
+        records: new Map(),
+        editionCapability: null,
+        editionCapabilityLoaded: true
     };
     return Object.assign(app, overrides);
 }
@@ -234,6 +237,98 @@ test('an ineligible needs-review record still shows a disabled Add edition butto
     assert.match(html, /data-edition-action="add"[^>]*disabled[^>]*title="No Hardcover book was matched for this item\."/);
 });
 
+test('Add edition waits for the profile capability and disables only a confirmed format denial', () => {
+    const app = editionApp();
+    app.openSummary.editionCapabilityLoaded = false;
+    let html = app.renderEditionActions(needsReview);
+    assert.match(html, /disabled title="Checking whether this profile can add this edition\."/);
+
+    app.openSummary.editionCapabilityLoaded = true;
+    app.openSummary.editionCapability = {
+        audiobook: { status: 'denied', can_attempt: false, reason: 'insufficient_scope' },
+        ebook: { status: 'allowed', can_attempt: true }
+    };
+    html = app.renderEditionActions(needsReview);
+    assert.match(html, /disabled title="This profile&#39;s Hardcover token does not have permission for this action\."/);
+
+    const ebook = app.renderEditionActions({ ...needsReview, format: 'ebook' });
+    assert.doesNotMatch(ebook, /disabled/);
+});
+
+test('unverified capability and failed probes leave Add edition available without a modal warning', async () => {
+    const app = editionApp();
+    app.openSummary.editionCapability = { audiobook: { status: 'unverified', can_attempt: true, warning: 'permission_unverified' } };
+    assert.doesNotMatch(app.renderEditionActions(needsReview), /disabled/);
+    assert.deepEqual(app.editionCapabilityGate(null, 'audiobook'), { blocked: false, warning: '' });
+
+    global.document.getElementById = () => null;
+    app.openSummary.editionCapabilityLoaded = false;
+    app.fetchJsonWithTimeout = async () => { throw new Error('offline'); };
+    await app.loadEditionCapability(app.openSummary);
+    assert.equal(app.openSummary.editionCapabilityLoaded, true);
+    assert.doesNotMatch(app.renderEditionActions(needsReview), /disabled/);
+});
+
+test('capability fetch refreshes the rendered Add edition button after pending, allowed, and denied results', async () => {
+    const app = editionApp();
+    const record = { ...needsReview };
+    const summary = app.openSummary;
+    summary.editionCapabilityLoaded = false;
+    summary.records.set(record.book_id, record);
+
+    const article = { dataset: { bookId: record.book_id } };
+    const button = {
+        disabled: true,
+        title: 'Checking whether this profile can add this edition.',
+        closest: () => article,
+        removeAttribute(name) { if (name === 'title') delete this.title; }
+    };
+    const content = { querySelectorAll: selector => selector === '[data-edition-action="add"]' ? [button] : [] };
+    const previousGetElementById = global.document.getElementById;
+    global.document.getElementById = id => id === 'sync-summary-content' ? content : null;
+
+    try {
+        assert.match(app.renderEditionActions(record), /disabled title="Checking whether this profile can add this edition\."/);
+        let resolveFetch;
+        app.profileUrl = (profileId, path) => `/profiles/${profileId}${path}`;
+        app.fetchJsonWithTimeout = () => new Promise(resolve => { resolveFetch = resolve; });
+        const allowedLoad = app.loadEditionCapability(summary);
+        assert.equal(button.disabled, true, 'the rendered action stays disabled while the probe is pending');
+        resolveFetch({ response: { ok: true }, data: { success: true, data: { audiobook: { status: 'allowed', can_attempt: true } } } });
+        await allowedLoad;
+        assert.equal(button.disabled, false);
+        assert.equal(button.title, undefined);
+
+        summary.editionCapabilityLoaded = false;
+        button.disabled = true;
+        button.title = 'Checking whether this profile can add this edition.';
+        const deniedLoad = app.loadEditionCapability(summary);
+        assert.equal(button.disabled, true, 'a new probe keeps the action pending');
+        resolveFetch({ response: { ok: true }, data: { success: true, data: { audiobook: { status: 'denied', can_attempt: false, reason: 'insufficient_scope' } } } });
+        await deniedLoad;
+        assert.equal(button.disabled, true);
+        assert.match(button.title, /does not have permission/);
+    } finally {
+        global.document.getElementById = previousGetElementById;
+    }
+});
+
+test('a capability response from a previous profile cannot update the currently open summary', async () => {
+    const app = editionApp();
+    let resolveFetch;
+    app.fetchJsonWithTimeout = () => new Promise(resolve => { resolveFetch = resolve; });
+    const oldSummary = app.openSummary;
+    oldSummary.editionCapabilityLoaded = false;
+    const load = app.loadEditionCapability(oldSummary);
+    const currentSummary = { ...oldSummary, profileId: 'p2', editionCapability: null, editionCapabilityLoaded: false };
+    app.openSummary = currentSummary;
+    resolveFetch({ response: { ok: true }, data: { success: true, data: { audiobook: { status: 'denied' } } } });
+    await load;
+    assert.equal(oldSummary.editionCapabilityLoaded, false);
+    assert.equal(currentSummary.editionCapabilityLoaded, false);
+    assert.equal(currentSummary.editionCapability, null);
+});
+
 test('create and forget are disabled with an explanation while the profile is syncing', () => {
     const app = editionApp();
     app.statuses.p1.snapshot.state = 'running';
@@ -262,7 +357,7 @@ test('the Add edition button renders inside the Hardcover candidate box, styled 
     assert.match(html.slice(addButtonIndex - 80, addButtonIndex), /book-service-link edition-action-pill/);
 });
 
-test('capability gate blocks on known denial, warns when unverified, and passes when allowed', () => {
+test('capability gate blocks on known denial, permits unverified attempts, and passes when allowed', () => {
     const app = editionApp();
     const cap = {
         ebook: { status: 'allowed', can_attempt: true },
@@ -272,7 +367,7 @@ test('capability gate blocks on known denial, warns when unverified, and passes 
     assert.deepEqual(app.editionCapabilityGate(cap, 'ebook'), { blocked: false, warning: '' });
     const unverified = app.editionCapabilityGate({ ebook: { status: 'unverified', can_attempt: true, warning: 'unverified!' } }, 'ebook');
     assert.equal(unverified.blocked, false);
-    assert.equal(unverified.warning, 'unverified!');
+    assert.equal(unverified.warning, '');
 });
 
 test('Retry-After is honored and older servers fall back to a short wait', () => {
@@ -300,7 +395,8 @@ test('audiobook dialog shows region states, escapes ABS strings, and offers only
     const html = app.renderEditionDialog(dialog);
     assert.doesNotMatch(html, /<script>|<img src=x|<b>Dune/);
     assert.match(html, /could not be confirmed/);
-    assert.match(html, /Permission unverified/);
+    assert.doesNotMatch(html, /Permission unverified|permission is unverified|cannot be checked/);
+    assert.match(html, /Scope checks are evidence about token permission/);
     assert.doesNotMatch(html, /name="audible_identifier"/);
     assert.doesNotMatch(html, /name="title"/);
     assert.doesNotMatch(html, /name="resync"/);
@@ -343,15 +439,11 @@ test('the matched Hardcover book is shown for verification against the Audiobook
     assert.match(html, /Frank Herbert/);
 });
 
-test('capability reason/warning codes are translated to plain-language text', () => {
+test('capability denial codes are translated to plain-language text', () => {
     const app = editionApp();
     assert.match(
         app.editionCapabilityGate({ audiobook: { status: 'denied', can_attempt: false, reason: 'hardcover_token_missing' } }, 'audiobook').reason,
         /no Hardcover token configured/
-    );
-    assert.match(
-        app.editionCapabilityGate({ ebook: { status: 'unverified', can_attempt: true, warning: 'permission_unverified' } }, 'ebook').warning,
-        /has not been verified/
     );
 });
 

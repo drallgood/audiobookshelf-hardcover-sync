@@ -1359,11 +1359,14 @@ class SyncProfileApp {
             generation: (previous?.generation || 0) + 1,
             expandedIds: sameRun ? previous.expandedIds : new Set(),
             expandedOutcomes: sameRun && previous.expandedOutcomes instanceof Set ? previous.expandedOutcomes : new Set(),
+            editionCapability: null,
+            editionCapabilityLoaded: false,
             scrollTop: 0
         };
         const open = this.openSummary;
         this.renderStatuses();
         if (!sameRun) this.renderDetailsState('loading', open);
+        this.loadEditionCapability(open);
         await this.fetchAndRenderDetails({ open });
         if (!sameRun && this.openSummary === open) container.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
@@ -1387,9 +1390,12 @@ class SyncProfileApp {
                 generation: previous.generation + 1,
                 expandedIds: new Set(),
                 expandedOutcomes: new Set(),
+                editionCapability: previous.editionCapability,
+                editionCapabilityLoaded: previous.editionCapabilityLoaded,
                 scrollTop: 0
             };
             this.renderDetailsState('loading', this.openSummary);
+            if (!this.openSummary.editionCapabilityLoaded) this.loadEditionCapability(this.openSummary);
         }
         await this.fetchAndRenderDetails({ open: this.openSummary, preservePosition: true });
     }
@@ -1405,6 +1411,39 @@ class SyncProfileApp {
         if (content) content.replaceChildren();
         if (tabs) tabs.replaceChildren();
         if (container) container.style.display = 'none';
+    }
+
+    async loadEditionCapability(open) {
+        const authGeneration = this.authSessionGeneration;
+        try {
+            const { response, data } = await this.fetchJsonWithTimeout(
+                this.profileUrl(open.profileId, '/edition-capability'),
+                { credentials: 'include' }
+            );
+            if (authGeneration !== this.authSessionGeneration || this.openSummary !== open) return;
+            open.editionCapability = response.ok && data?.success ? data.data : null;
+        } catch (_) {
+            if (authGeneration !== this.authSessionGeneration || this.openSummary !== open) return;
+            // A failed probe is treated as unverified, so creation remains
+            // available and the create response remains authoritative.
+            open.editionCapability = null;
+        }
+        open.editionCapabilityLoaded = true;
+        this.refreshEditionActionStates(open);
+    }
+
+    refreshEditionActionStates(open) {
+        if (this.openSummary !== open) return;
+        const content = document.getElementById('sync-summary-content');
+        content?.querySelectorAll('[data-edition-action="add"]').forEach(button => {
+            const bookId = button.closest('[data-book-id]')?.dataset.bookId;
+            const record = open.records?.get(String(bookId));
+            if (!record) return;
+            const reason = this.editionActionDisabledReason(record, open);
+            button.disabled = Boolean(reason);
+            if (reason) button.title = reason;
+            else button.removeAttribute('title');
+        });
     }
 
     captureDetailViewport(content) {
@@ -1830,20 +1869,29 @@ class SyncProfileApp {
         if (!open || this.isViewer()) return '';
         const profileId = open.profileId;
         const syncing = this.profileIsSyncing(profileId);
-        const syncingNote = 'A sync is running for this profile; this action will be available again when it finishes.';
         if (record.outcome === 'needs_review') {
-            const disabledReason = syncing ? syncingNote : this.editionCreateIneligibleReason(record, open.runContext);
+            const disabledReason = this.editionActionDisabledReason(record, open);
             return `<div class="edition-actions">
                 <button type="button" class="book-service-link edition-action-pill" data-edition-action="add" ${disabledReason ? `disabled title="${this.escapeHtmlAttribute(disabledReason)}"` : ''}>Add edition</button>
             </div>`;
         }
         if (this.isMatchedRecord(record)) {
+            const syncingNote = 'A sync is running for this profile; this action will be available again when it finishes.';
             return `<div class="edition-actions">
                 <span class="edition-note">Hardcover target: book ${this.escapeHtml(record.hardcover_book_id)}${record.edition_id ? `, edition ${this.escapeHtml(record.edition_id)}` : ''}</span>
                 <button type="button" class="book-service-link edition-action-pill" data-edition-action="forget" ${syncing ? `disabled title="${this.escapeHtmlAttribute(syncingNote)}"` : ''}>Forget match</button>
             </div>`;
         }
         return '';
+    }
+
+    editionActionDisabledReason(record, open) {
+        if (this.profileIsSyncing(open.profileId)) return 'A sync is running for this profile; this action will be available again when it finishes.';
+        const ineligible = this.editionCreateIneligibleReason(record, open.runContext);
+        if (ineligible) return ineligible;
+        if (!open.editionCapabilityLoaded) return 'Checking whether this profile can add this edition.';
+        const gate = this.editionCapabilityGate(open.editionCapability, record.format);
+        return gate.blocked ? gate.reason : '';
     }
 
     apiErrorMessage(data, fallback) {
@@ -1876,25 +1924,16 @@ class SyncProfileApp {
         return known[code] || code;
     }
 
-    capabilityWarningText(code) {
-        const known = {
-            permission_unverified: 'Hardcover has no way to check write permission ahead of time, so this has not been verified. The attempt may fail if the token lacks catalogue-write permission.'
-        };
-        return known[code] || code;
-    }
-
     // Applies capability evidence for the record's format.
     editionCapabilityGate(capability, format) {
-        if (!capability) {
-            return { blocked: false, warning: 'Hardcover write permission could not be checked. Creation may fail if the token lacks permission.' };
-        }
+        if (!capability) return { blocked: false, warning: '' };
         const status = String(format).toLowerCase() === 'ebook' ? capability.ebook : capability.audiobook;
         if (!status) return { blocked: false, warning: '' };
         if (status.status === 'denied' || status.can_attempt === false) {
             return { blocked: true, reason: status.reason ? this.capabilityReasonText(status.reason) : 'The Hardcover token is not permitted to add this edition.' };
         }
         if (status.status === 'unverified') {
-            return { blocked: false, warning: status.warning ? this.capabilityWarningText(status.warning) : 'Hardcover permission is unverified. The attempt may fail if the token lacks catalogue write permission.' };
+            return { blocked: false, warning: '' };
         }
         return { blocked: false, warning: '' };
     }
@@ -1924,6 +1963,8 @@ class SyncProfileApp {
         if (!open || !record || this.isViewer()) return;
         if (this.editionCreateIneligibleReason(record, open.runContext)) return;
         if (this.profileIsSyncing(open.profileId)) return;
+        if (!open.editionCapabilityLoaded) return;
+        if (this.editionCapabilityGate(open.editionCapability, record.format).blocked) return;
         this.closeEditionDialog();
         this.editionDialog = {
             mode: 'create', profileId: open.profileId, runId: open.runContext.runId,
@@ -2107,7 +2148,7 @@ class SyncProfileApp {
         const canConfirm = blockers.length === 0;
         return `${dryRun ? '<div class="edition-dry-run">Dry run</div>' : ''}
             ${sourceHtml}${hardcoverTargetHtml}${audnexHtml}${regionHtml}
-            ${!gate.blocked && gate.warning ? `<div class="edition-warning" data-warning="capability">${this.escapeHtml(gate.warning)}</div>` : ''}
+            <p class="edition-note" data-capability-note>Scope checks are evidence about token permission; the create response confirms whether Hardcover accepted this edition.</p>
             ${this.renderWarnings(draft)}
             <form class="edition-form" onsubmit="return false">${editHtml}</form>
             ${blockers.map(text => `<div class="edition-error" data-blocker>${this.escapeHtml(text)}</div>`).join('')}

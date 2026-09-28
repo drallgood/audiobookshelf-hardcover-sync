@@ -94,13 +94,15 @@ audiobooks, whether the Audible region was confirmed, could not be determined,
 or is temporarily unavailable; in the latter two cases you enter the regional
 identifier (`ASIN:region`) yourself. Audiobook metadata is preview-only, so the
 regional identifier is the only editable audiobook field; ebooks also allow the
-ebook fields the server can insert. An unverified Hardcover permission shows a
-warning and may still fail on create (a permission failure is reported); a known
-denial disables creation. **Sync this book's read status** is an unchecked
-option, and neither it nor creation is available in dry run. A busy draft
-service is retried after its `Retry-After` wait. Create and forget are disabled
-while the profile is syncing, and a conflict from a sync that started later is
-reported.
+ebook fields the server can insert. The UI checks the profile's format-specific
+Hardcover scope when View Details opens; a confirmed denial disables **Add
+edition**, while an allowed or unverified result permits an attempt. This
+validation-only scope evidence does not guarantee the import will succeed; the
+create response reports Hardcover's result. **Sync this book's read status** is
+an unchecked option, and neither it nor creation is available in dry run. A
+busy draft service is retried after its `Retry-After` wait. Create and forget
+are disabled while the profile is syncing, and a conflict from a sync that
+started later is reported.
 
 Matched results show their current Hardcover book and edition with **Forget
 match**. After confirmation, only this app's saved match is removed; nothing is
