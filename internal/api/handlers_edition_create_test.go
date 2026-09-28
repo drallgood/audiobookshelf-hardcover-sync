@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	stdsync "sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1759,4 +1760,163 @@ func TestCreateEditionFromDraftDryRunNeverResyncs(t *testing.T) {
 	require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
 	require.Zero(t, resyncs.Load())
 	requireNoEditionCreateEffects(t, fixture, counts)
+}
+
+func TestCreateEditionFromDraftResyncUsesConcreteClients(t *testing.T) {
+	const itemJSON = `{"id":"abs-item-1","mediaType":"book","media":{
+		"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0SOURCE12","isbn":"9780306406157"},
+		"duration":1000,"numTracks":1},"progress":{"currentTime":300}}`
+	fixture := newEditionDraftTestFixture(t, itemJSON, "us")
+	configureEditionCreateRoute(t, fixture)
+	record := editionCreateRecord()
+	record.Title = "Reviewed title"
+	record.Author = "Author"
+	addCompletedNeedsReviewRun(t, fixture, "run-resync-concrete", record)
+
+	var itemRequests, progressRequests atomic.Int32
+	absServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer abs-token" {
+			t.Errorf("unexpected Audiobookshelf request: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/items/abs-item-1" && r.URL.Query().Get("expanded") == "1":
+			itemRequests.Add(1)
+			_, _ = w.Write([]byte(itemJSON))
+		case r.URL.Path == "/api/me":
+			progressRequests.Add(1)
+			_, _ = w.Write([]byte(`{"id":"abs-user","mediaProgress":[],"listeningSessions":[]}`))
+		default:
+			t.Errorf("unexpected Audiobookshelf path: %s?%s", r.URL.Path, r.URL.RawQuery)
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(absServer.Close)
+	profile, err := fixture.multiUserService.GetProfile("draft-profile")
+	require.NoError(t, err)
+	require.NoError(t, fixture.multiUserService.UpdateProfileConfig(
+		profile.Profile.ID, absServer.URL, profile.AudiobookshelfToken, profile.HardcoverToken, profile.SyncConfig,
+	))
+
+	type graphqlRequest struct {
+		Query     string                 `json:"query"`
+		Variables map[string]interface{} `json:"variables"`
+	}
+	operationCounts := make(map[string]int)
+	var editionRequest, userBookLookupRequest, userBookRequest, readsRequest, updateRequest graphqlRequest
+	var captureMutex stdsync.Mutex
+	hardcoverServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer hardcover-token" {
+			t.Errorf("unexpected Hardcover request: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		var request graphqlRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode Hardcover request: %v", err)
+			http.Error(w, "invalid GraphQL request", http.StatusBadRequest)
+			return
+		}
+		fields := strings.Fields(request.Query)
+		operation := ""
+		if len(fields) > 1 {
+			operation = strings.SplitN(fields[1], "(", 2)[0]
+		}
+		captureMutex.Lock()
+		operationCounts[operation]++
+		captureMutex.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		var response string
+		switch operation {
+		case "UpsertRegionalAudibleBook":
+			response = `{"data":{"upsert_book":{"id":77,"status":"created","book":{"id":42},"edition":{"id":84,"book_id":42,"reading_format_id":2},"edition_id":84,"errors":[]}}}`
+		case "RegionalAudibleImport":
+			response = `{"data":{"book_import_statuses":[{"status":"created","book_id":42,"edition_id":84,"external_id":"B0SOURCE12:us","platform_id":32}],"book_mappings":[{"id":77,"state":"created","book_id":42,"platform_id":32,"external_id":"B0SOURCE12:us","edition_id":84,"edition":{"id":84,"book_id":42,"reading_format_id":2}}]}}`
+		case "GetEdition":
+			captureMutex.Lock()
+			editionRequest = request
+			captureMutex.Unlock()
+			response = `{"data":{"editions":[{"id":84,"book_id":42,"title":"Reviewed title","reading_format_id":2}]}}`
+		case "GetCurrentUserID":
+			response = `{"data":{"me":[{"id":7}]}}`
+		case "GetUserBookByBookOnly", "GetUserBookByBook":
+			captureMutex.Lock()
+			userBookLookupRequest = request
+			captureMutex.Unlock()
+			response = `{"data":{"user_books":[{"id":300,"book_id":42,"edition_id":84}]}}`
+		case "GetUserBook":
+			captureMutex.Lock()
+			userBookRequest = request
+			captureMutex.Unlock()
+			response = `{"data":{"user_books":[{"id":300,"book_id":42,"status_id":2,"book":{"id":42,"title":"Reviewed title"},"edition_id":84,"edition":{"id":84,"asin":"B0SOURCE12","book_mappings":[]}}]}}`
+		case "GetUserBookReadsAll":
+			captureMutex.Lock()
+			readsRequest = request
+			captureMutex.Unlock()
+			response = `{"data":{"user_book_reads":[{"id":400,"user_book_id":300,"progress":10,"progress_seconds":100,"started_at":"2025-09-01","finished_at":null,"edition_id":84}]}}`
+		case "UpdateUserBookRead":
+			captureMutex.Lock()
+			updateRequest = request
+			captureMutex.Unlock()
+			response = `{"data":{"update_user_book_read":{"id":400,"error":null,"user_book_read":{"id":400,"progress_seconds":300,"started_at":"2025-09-01","finished_at":null}}}}`
+		default:
+			t.Errorf("unexpected Hardcover GraphQL operation %q", operation)
+			http.Error(w, "unexpected GraphQL operation", http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(response))
+	}))
+	t.Cleanup(hardcoverServer.Close)
+	fixture.config.Hardcover.BaseURL = hardcoverServer.URL
+
+	response := postEditionCreate(t, fixture, fixture.owner,
+		`{"run_id":"run-resync-concrete","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:us","resync":true}`)
+
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var body struct {
+		Data editionCreateResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+	require.Equal(t, "created", body.Data.Status)
+	require.NotNil(t, body.Data.Resync)
+	require.True(t, body.Data.Resync.Attempted)
+	require.Equal(t, "synced", body.Data.Resync.Outcome)
+	require.Empty(t, body.Data.Resync.Error)
+	require.EqualValues(t, 1, itemRequests.Load())
+	require.EqualValues(t, 1, progressRequests.Load())
+	captureMutex.Lock()
+	upsertCalls := operationCounts["UpsertRegionalAudibleBook"]
+	progressWriteCalls := operationCounts["UpdateUserBookRead"]
+	queriedEdition := editionRequest
+	lookedUpUserBook := userBookLookupRequest
+	loadedUserBook := userBookRequest
+	loadedReads := readsRequest
+	updatedRead := updateRequest
+	captureMutex.Unlock()
+	require.EqualValues(t, 1, upsertCalls)
+	require.EqualValues(t, 1, progressWriteCalls)
+	require.EqualValues(t, 84, queriedEdition.Variables["editionId"], "resync should resolve the edition returned by creation")
+	require.EqualValues(t, 42, lookedUpUserBook.Variables["bookId"])
+	require.EqualValues(t, 300, loadedUserBook.Variables["id"])
+	require.EqualValues(t, 300, loadedReads.Variables["user_book_id"])
+	require.NotEmpty(t, updatedRead.Query)
+	require.EqualValues(t, 400, updatedRead.Variables["id"], "resync should update the existing read")
+	updateObject, ok := updatedRead.Variables["object"].(map[string]interface{})
+	require.True(t, ok)
+	require.EqualValues(t, 300, updateObject["progress_seconds"])
+	require.NotContains(t, updateObject, "edition_id", "resync must retain the existing read's edition")
+
+	stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+	require.NoError(t, err)
+	association, exists := stored.GetAssociation("abs-item-1")
+	require.True(t, exists)
+	require.Equal(t, "42", association.HardcoverBookID)
+	require.Equal(t, "84", association.HardcoverEditionID)
+	require.Equal(t, "audiobook", association.ReadingFormat)
+	bookState, exists := stored.Books["abs-item-1:84"]
+	require.True(t, exists, "successful resync should checkpoint progress under the associated edition")
+	require.InDelta(t, 0.3, bookState.LastProgress, 0.000001)
+	require.True(t, bookState.HasProgressSeconds)
 }
