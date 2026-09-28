@@ -83,13 +83,16 @@ category. Each result includes its Audiobookshelf cover, format, and series
 position when available, and its title links to the Audiobookshelf library
 item. Known Hardcover books link to Hardcover; a needs-review result instead
 shows the Hardcover candidate's series when available and links the candidate
-title, its ASIN to Audible, and its ISBN to a Goodreads search.
+title. The Audiobookshelf ASIN links to Audible, and its ISBN links to a Goodreads
+search. Hardcover candidate identifiers are omitted because no matching edition
+has been confirmed.
 
 #### Add an edition or forget a match from View Details
 
 Signed-in users who may change a profile see **Add edition** on a needs-review
 result from a completed run that has a Hardcover book, a format, and an ASIN or
-ISBN. The dialog previews the Audiobookshelf source identifier and, for
+ISBN. The dialog shows the Audiobookshelf series and ISBN when available and
+previews the source identifier and, for
 audiobooks, whether the Audible region was confirmed, could not be determined,
 or is temporarily unavailable; in the latter two cases you enter the regional
 identifier (`ASIN:region`) yourself. Audiobook metadata is preview-only, so the

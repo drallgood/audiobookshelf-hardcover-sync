@@ -1674,8 +1674,6 @@ class SyncProfileApp {
         const title = value(record.hardcover_title);
         const author = value(record.hardcover_author);
         const publishedYear = value(record.hardcover_published_year);
-        const asin = value(record.hardcover_asin);
-        const isbn = value(record.hardcover_isbn);
         const slug = value(record.hardcover_slug);
         const series = value(record.hardcover_series);
         const seriesNumber = value(record.hardcover_series_number);
@@ -1699,8 +1697,6 @@ class SyncProfileApp {
         }
         addField('Author', author);
         addField('Published', publishedYear);
-        addField('ASIN', asin);
-        addField('ISBN', isbn);
         addField('Slug', slug);
         addField('Series', this.formatSeries(series, seriesNumber));
 
@@ -2082,6 +2078,8 @@ class SyncProfileApp {
         const dryRun = Boolean(draft.dry_run || dialog.capability?.dry_run || dialog.runDryRun);
         const syncing = this.profileIsSyncing(dialog.profileId);
         const ids = draft.source_identifiers || {};
+        const isbn = String(ids.isbn || '').trim();
+        const series = this.formatSeries(record.series, record.series_number);
         const sourceHtml = `<section class="hardcover-candidate" aria-label="From Audiobookshelf">
             <h4>From Audiobookshelf</h4>
             <div class="hardcover-candidate-content">
@@ -2091,7 +2089,8 @@ class SyncProfileApp {
                         <span><strong>Title:</strong> ${this.escapeHtml(record.title || 'Unknown title')}</span>
                         ${record.author ? `<span><strong>Author:</strong> ${this.escapeHtml(record.author)}</span>` : ''}
                         <span><strong>ASIN (source identifier):</strong> ${this.escapeHtml(ids.asin || 'none')}</span>
-                        <span><strong>ISBN:</strong> ${this.escapeHtml(ids.isbn || 'none')}</span>
+                        ${isbn ? `<span><strong>ISBN:</strong> ${this.escapeHtml(isbn)}</span>` : ''}
+                        ${series ? `<span><strong>Series:</strong> ${this.escapeHtml(series)}</span>` : ''}
                         <span><strong>Format:</strong> ${this.escapeHtml(draft.reading_format || '')}</span>
                     </div>
                 </div>

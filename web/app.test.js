@@ -423,20 +423,39 @@ test('the Audible identifier is always plain text, never an editable field', () 
     assert.match(unknown, /attempt its own region discovery/);
 });
 
-test('the matched Hardcover book is shown for verification against the Audiobookshelf item', () => {
+test('candidate details omit Hardcover identifiers and show available Audiobookshelf metadata', () => {
     const app = editionApp();
-    const record = { ...needsReview, hardcover_title: 'Dune', hardcover_author: 'Frank Herbert', hardcover_slug: 'dune' };
-    const html = app.renderEditionDialog({
-        mode: 'create', profileId: 'p1', runId: 'run-1', record, loading: false, busy: false,
-        capability: null,
-        draft: {
-            reading_format: 'audiobook', eligible: true, dry_run: false, region_status: 'confirmed', confirmed_region: 'us',
-            source_identifiers: { asin: 'B00ABC1234' }, audible_identifier_candidate: { asin: 'B00ABC1234' }
-        }
-    });
-    assert.match(html, /From Audiobookshelf/);
-    assert.match(html, /Hardcover candidate/);
-    assert.match(html, /Frank Herbert/);
+    const candidate = {
+        ...needsReview, hardcover_title: 'Dune', hardcover_author: 'Frank Herbert', hardcover_slug: 'dune',
+        hardcover_asin: 'HC-ASIN', hardcover_isbn: 'HC-ISBN'
+    };
+    const statusHtml = app.renderOutcomeRecord(candidate);
+    assert.doesNotMatch(statusHtml, /HC-ASIN|HC-ISBN/);
+    assert.match(statusHtml, /Hardcover candidate/);
+    for (const [isbn, series, seriesNumber, expectedSeries] of [
+        ['', '', '', ''],
+        ['   ', '', '', ''],
+        ['9780441172719', 'Dune', '1', 'Dune #1'],
+        ['', '<Dune>', '', '&lt;Dune&gt;']
+    ]) {
+        const record = { ...candidate, series, series_number: seriesNumber };
+        const html = app.renderEditionDialog({
+            mode: 'create', profileId: 'p1', runId: 'run-1', record, loading: false, busy: false,
+            capability: null,
+            draft: {
+                reading_format: 'audiobook', eligible: true, dry_run: false, region_status: 'confirmed', confirmed_region: 'us',
+                source_identifiers: { asin: 'B00ABC1234', isbn }, audible_identifier_candidate: { asin: 'B00ABC1234' }
+            }
+        });
+        assert.match(html, /From Audiobookshelf/);
+        assert.match(html, /Hardcover candidate/);
+        assert.match(html, /Frank Herbert/);
+        assert.doesNotMatch(html, /HC-ASIN|HC-ISBN/);
+        if (isbn.trim()) assert.ok(html.includes(`<strong>ISBN:</strong> ${isbn}`));
+        else assert.doesNotMatch(html, /<strong>ISBN:/);
+        if (expectedSeries) assert.ok(html.includes(`<strong>Series:</strong> ${expectedSeries}`));
+        else assert.doesNotMatch(html, /<strong>Series:/);
+    }
 });
 
 test('capability denial codes are translated to plain-language text', () => {
