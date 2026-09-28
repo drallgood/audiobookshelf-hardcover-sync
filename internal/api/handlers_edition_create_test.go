@@ -1189,6 +1189,57 @@ func TestCreateEditionFromDraftAppliesEbookCorrections(t *testing.T) {
 	require.EqualValues(t, 1, counts.ebookCreates.Load())
 }
 
+func TestCreateEditionFromDraftRetainsCounterpartWhenClearingOneEbookISBN(t *testing.T) {
+	tests := []struct {
+		name       string
+		sourceISBN string
+		request    string
+		wantISBN10 string
+		wantISBN13 string
+	}{
+		{
+			name: "clear ISBN-10 while retaining ISBN-13", sourceISBN: "9780306406157",
+			request:    `{"isbn_10":"","isbn_13":"9780306406157"}`,
+			wantISBN13: "9780306406157",
+		},
+		{
+			name: "clear ISBN-13 while retaining ISBN-10", sourceISBN: "0306406152",
+			request:    `{"isbn_10":"0306406152","isbn_13":""}`,
+			wantISBN10: "0306406152",
+		},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			itemJSON := fmt.Sprintf(`{"id":"abs-item-1","mediaType":"ebook","media":{
+				"metadata":{"title":"Ebook","authorName":"Author","isbn":%q},"ebookFile":{},"ebookFormat":"epub"}}`, test.sourceISBN)
+			fixture := newEditionDraftTestFixture(t, itemJSON, "us")
+			configureEditionCreateRoute(t, fixture)
+			runID := fmt.Sprintf("run-clear-isbn-%d", index)
+			addCompletedNeedsReviewRun(t, fixture, runID, sync.BookOutcomeRecord{
+				BookID: "abs-item-1", Outcome: sync.OutcomeNeedsReview, Title: "Ebook", Author: "Author",
+				ISBN: test.sourceISBN, Format: "Ebook", HardcoverBookID: "42",
+			})
+			var counts editionCreateCallCounts
+			stub := countingEditionCreateClient(&counts)
+			fixture.handler.editionCreateHardcoverFactory = func(token string) editionCreateHardcoverClient {
+				client := stub(token).(editionCreateHardcoverStub)
+				create := client.createEbookFn
+				client.createEbookFn = func(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
+					require.Equal(t, test.wantISBN10, input.ISBN10)
+					require.Equal(t, test.wantISBN13, input.ISBN13)
+					return create(ctx, input)
+				}
+				return client
+			}
+
+			body := fmt.Sprintf(`{"run_id":%q,"abs_item_id":"abs-item-1",%s}`, runID, strings.TrimSuffix(strings.TrimPrefix(test.request, "{"), "}"))
+			response := postEditionCreate(t, fixture, fixture.owner, body)
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			require.EqualValues(t, 1, counts.ebookCreates.Load())
+		})
+	}
+}
+
 func TestCreateEditionFromDraftRejectsConflictingEbookISBNCorrections(t *testing.T) {
 	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"ebook","media":{
 		"metadata":{"title":"Ebook","authorName":"Author","isbn":"9780306406157"},"ebookFile":{},"ebookFormat":"epub"}}`, "us")

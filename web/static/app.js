@@ -2125,11 +2125,11 @@ class SyncProfileApp {
             if (confirmed) {
                 regionHtml = `<div class="edition-region confirmed">Audible identifier: <strong>${this.escapeHtml(identifierValue)}</strong> <span class="edition-note">(confirmed automatically)</span></div>`;
             } else if (status === 'temporarily_unavailable') {
-                regionHtml = '<div class="edition-region review">Region lookup is temporarily unavailable. Refresh the preview to try again, or create the edition and Hardcover will attempt its own region discovery.</div>';
+                regionHtml = '<div class="edition-region review">Region lookup is temporarily unavailable. Refresh the preview to try again, or create the edition and the app will retry Audible region discovery first. The import proceeds only if a region is confirmed.</div>';
             } else if (status === 'unknown') {
-                regionHtml = '<div class="edition-region review">The Audible region could not be confirmed from Audiobookshelf. Creating the edition will let Hardcover attempt its own region discovery.</div>';
+                regionHtml = '<div class="edition-region review">The Audible region could not be confirmed from Audiobookshelf. The app will retry region discovery during creation; the import proceeds only if a region is confirmed.</div>';
             } else {
-                regionHtml = '<div class="edition-region review">No regional Audible identifier is available yet. Creating the edition will let Hardcover attempt its own region discovery.</div>';
+                regionHtml = '<div class="edition-region review">No regional Audible identifier is available yet. The app will retry region discovery during creation; the import proceeds only if a region is confirmed.</div>';
             }
             const m = draft.metadata_preview;
             if (m) {
@@ -2166,11 +2166,12 @@ class SyncProfileApp {
     }
 
     // Builds the create POST body from the dialog's current form values.
-    // Only fields the user changed are sent, and audiobook metadata is never
-    // sent because the server treats it as preview-only. The audible
-    // identifier is never user-entered; it is only sent when Audiobookshelf
-    // and Audnex already confirmed it, otherwise Hardcover attempts its own
-    // region discovery.
+    // Only changed fields are sent, except that clearing one ISBN also sends
+    // the displayed counterpart so the server's ISBN correction can retain it.
+    // Audiobook metadata is never sent because the server treats it as
+    // preview-only. The Audible identifier is never user-entered; send it only
+    // when Audiobookshelf and Audnex already confirmed it. Otherwise the app
+    // retries region discovery before submitting the import.
     buildEditionCreateBody(dialog, fields, resync) {
         const body = { run_id: dialog.runId, abs_item_id: String(dialog.record.book_id) };
         const isEbook = dialog.draft?.reading_format === 'ebook';
@@ -2178,6 +2179,11 @@ class SyncProfileApp {
             for (const key of ['title', 'subtitle', 'asin', 'isbn_10', 'isbn_13', 'release_date', 'edition_format']) {
                 const field = fields[key];
                 if (field && field.value.trim() !== field.original.trim()) body[key] = field.value.trim();
+            }
+            if (body.isbn_10 === '' && !('isbn_13' in body) && fields.isbn_13) {
+                body.isbn_13 = fields.isbn_13.value.trim();
+            } else if (body.isbn_13 === '' && !('isbn_10' in body) && fields.isbn_10) {
+                body.isbn_10 = fields.isbn_10.value.trim();
             }
         } else {
             const draft = dialog.draft || {};

@@ -93,19 +93,22 @@ Signed-in users who may change a profile see **Add edition** on an eligible
 needs-review result from a completed or canceled run that has a Hardcover book,
 a format, and an ASIN or ISBN. The dialog shows the Audiobookshelf series and
 ISBN when available and previews the source identifier. For audiobooks, it
-shows a region confirmed automatically when available; otherwise Hardcover
-attempts its own region discovery during creation. Audiobook metadata is
-preview-only, and ebooks allow correction of the fields the server can insert.
+shows a region confirmed automatically when available. If the region is
+unknown or temporarily unavailable, the app retries Audible region discovery
+during creation; the import proceeds only when a region is confirmed.
+Audiobook metadata is preview-only, and ebooks allow correction of the fields
+the server can insert.
 The UI checks the profile's format-specific
 Hardcover scope when View Details opens; a confirmed denial disables **Add
 edition**, while an allowed or unverified result permits an attempt. This
 validation-only scope evidence does not guarantee the import will succeed; the
 create response reports Hardcover's result. After successful creation, the UI
 automatically resyncs that book's read status; the create response reports any
-resync failure separately. Creation and resync are unavailable in dry run. A
-busy draft service is retried after its `Retry-After` wait. Create and forget
-are disabled while the profile is syncing, and a conflict from a sync that
-started later is reported.
+resync failure separately. Create and forget confirmations, and resync, are
+unavailable in dry run; the preview remains available. A busy draft service can
+be retried after its `Retry-After` wait. Create and forget confirmations are
+disabled while the profile is syncing, and a conflict from a sync that started
+later is reported.
 
 Matched results show their current Hardcover book and edition with **Forget
 match**. If a saved match exists, confirmation removes only this app's saved

@@ -561,7 +561,8 @@ test('the Audible identifier is always plain text, never an editable field', () 
     assert.match(confirmed, /B00ABC1234:us/);
     const unknown = app.renderEditionDialog({ ...base, draft: { ...base.draft, region_status: 'unknown' } });
     assert.doesNotMatch(unknown, /name="audible_identifier"/);
-    assert.match(unknown, /attempt its own region discovery/);
+    assert.match(unknown, /retry region discovery during creation/);
+    assert.match(unknown, /import proceeds only if a region is confirmed/);
 });
 
 test('candidate details omit Hardcover identifiers and show available Audiobookshelf metadata', () => {
@@ -653,7 +654,15 @@ test('create body sends only changed ebook fields and the opt-in resync flag', (
     assert.deepEqual(app.buildEditionCreateBody(dialog, {
         isbn_10: { value: '', original: '0306406152' },
         isbn_13: { value: '9780306406157', original: '9780306406157' }
-    }, false), { run_id: 'run-1', abs_item_id: 'li_9', isbn_10: '' });
+    }, false), { run_id: 'run-1', abs_item_id: 'li_9', isbn_10: '', isbn_13: '9780306406157' });
+    assert.deepEqual(app.buildEditionCreateBody(dialog, {
+        isbn_10: { value: '0306406152', original: '0306406152' },
+        isbn_13: { value: '', original: '9780306406157' }
+    }, false), { run_id: 'run-1', abs_item_id: 'li_9', isbn_13: '', isbn_10: '0306406152' });
+    assert.deepEqual(app.buildEditionCreateBody(dialog, {
+        isbn_10: { value: '', original: '0306406152' },
+        isbn_13: { value: '', original: '9780306406157' }
+    }, false), { run_id: 'run-1', abs_item_id: 'li_9', isbn_10: '', isbn_13: '' });
     assert.deepEqual(app.buildEditionCreateBody(dialog, {
         isbn_10: { value: '0306406152', original: '' },
         isbn_13: { value: '9780306406157', original: '' }
