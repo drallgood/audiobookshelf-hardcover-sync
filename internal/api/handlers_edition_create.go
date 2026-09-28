@@ -154,6 +154,12 @@ func (h *Handler) CreateEditionFromDraft(w http.ResponseWriter, r *http.Request)
 		return h.createVerifiedEdition(ctx, profile, snapshot, record, request, &response)
 	}, resync)
 	if err != nil {
+		h.log.Warn("Edition creation failed", map[string]interface{}{
+			"profile_id":  profileID,
+			"run_id":      request.RunID,
+			"abs_item_id": request.ABSItemID,
+			"error":       err.Error(),
+		})
 		h.writeEditionCreateError(w, profileID, err)
 		return
 	}
