@@ -47,7 +47,13 @@ func (s *Service) SyncBook(ctx context.Context, book models.AudiobookshelfBook, 
 
 	userProgress, err := s.audiobookshelf.GetUserProgress(ctx)
 	if err != nil {
-		return BookResyncResult{}, fmt.Errorf("failed to fetch user progress data: %w", err)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return BookResyncResult{}, ctxErr
+		}
+		if !hasReliableEmbeddedProgress(book) {
+			return BookResyncResult{}, fmt.Errorf("failed to fetch user progress data: %w", err)
+		}
+		userProgress = nil
 	}
 	if err := ctx.Err(); err != nil {
 		return BookResyncResult{}, err

@@ -67,6 +67,23 @@ func TestSyncBookOutcomes(t *testing.T) {
 		hc.AssertExpectations(t)
 	})
 
+	t.Run("reliable embedded progress is used when progress fetch fails", func(t *testing.T) {
+		svc, hc, abs := newSyncBookService(t)
+		book := inProgressBook("resync-embedded-progress")
+		abs.On("GetUserProgress", mock.Anything).Return((*models.AudiobookshelfUserProgress)(nil), errors.New("abs down")).Once()
+		expectProgressUpdate(hc, book, false)
+		statePath := filepath.Join(t.TempDir(), "state.json")
+
+		result, err := svc.SyncBook(context.Background(), *book, state.NewState(), statePath)
+
+		require.NoError(t, err)
+		assert.Equal(t, OutcomeSynced, result.Outcome)
+		stored, loadErr := state.LoadState(statePath)
+		require.NoError(t, loadErr)
+		assert.Contains(t, stored.Books, book.ID+":200")
+		hc.AssertExpectations(t)
+	})
+
 	t.Run("dry run mutates and persists nothing", func(t *testing.T) {
 		svc, hc, abs := newSyncBookService(t)
 		svc.config.Sync.DryRun = true
@@ -135,12 +152,39 @@ func TestSyncBookOutcomes(t *testing.T) {
 func TestSyncBookErrors(t *testing.T) {
 	t.Run("progress fetch failure", func(t *testing.T) {
 		svc, hc, abs := newSyncBookService(t)
-		book := inProgressBook("resync-no-progress")
+		book := toAudiobookshelfBook(createTestBook("resync-no-progress", "No Progress", "Author", "no-progress-asin", ""))
 		abs.On("GetUserProgress", mock.Anything).Return((*models.AudiobookshelfUserProgress)(nil), errors.New("abs down")).Once()
+		current := state.NewState()
+		current.UpdateBook("existing-book", 0.25, "READING")
+		statePath := filepath.Join(t.TempDir(), "state.json")
+		require.NoError(t, current.Save(statePath))
+		before, err := os.ReadFile(statePath)
+		require.NoError(t, err)
 
-		_, err := svc.SyncBook(context.Background(), *book, state.NewState(), filepath.Join(t.TempDir(), "state.json"))
+		_, err = svc.SyncBook(context.Background(), *book, current, statePath)
 
 		require.ErrorContains(t, err, "abs down")
+		after, readErr := os.ReadFile(statePath)
+		require.NoError(t, readErr)
+		assert.Equal(t, before, after, "an unreliable progress failure must not checkpoint state")
+		assert.NotContains(t, current.Books, book.ID)
+		assertNoHardcoverBookSearches(t, hc)
+	})
+
+	t.Run("cancellation during failed progress fetch wins over embedded fallback", func(t *testing.T) {
+		svc, hc, abs := newSyncBookService(t)
+		book := inProgressBook("resync-canceled-progress-error")
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		abs.On("GetUserProgress", mock.Anything).Run(func(mock.Arguments) { cancel() }).
+			Return((*models.AudiobookshelfUserProgress)(nil), errors.New("request canceled")).Once()
+		statePath := filepath.Join(t.TempDir(), "state.json")
+
+		_, err := svc.SyncBook(ctx, *book, state.NewState(), statePath)
+
+		require.ErrorIs(t, err, context.Canceled)
+		_, statErr := os.Stat(statePath)
+		assert.True(t, os.IsNotExist(statErr), "canceled resync must not checkpoint state")
 		assertNoHardcoverBookSearches(t, hc)
 	})
 
