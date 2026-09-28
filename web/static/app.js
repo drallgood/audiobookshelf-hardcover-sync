@@ -2271,9 +2271,15 @@ class SyncProfileApp {
         let resyncHtml = '';
         if (result.resync) {
             const r = result.resync;
+            const resyncMessage = !r.attempted ? 'Resync was not attempted'
+                : r.outcome === 'skipped' ? 'Read status was not synced because this book was skipped'
+                : r.outcome === 'needs_review' ? 'Read status was not synced because the match still needs review'
+                : r.outcome === 'not_found' ? 'Read status was not synced because no matching Hardcover edition was found'
+                : r.outcome === 'would_sync' ? 'Read status was not synced because this was a dry run'
+                : 'Resync finished';
             resyncHtml = r.error
                 ? `<div class="edition-error" data-resync-error>Edition saved, but the resync failed: ${this.escapeHtml(r.error)}</div>`
-                : `<div class="edition-note" data-resync>Resync ${r.attempted ? 'finished' : 'was not attempted'}${r.reason ? ` (${this.escapeHtml(r.reason)})` : ''}.</div>`;
+                : `<div class="edition-note" data-resync>${resyncMessage}${r.reason ? ` (${this.escapeHtml(r.reason)})` : ''}.</div>`;
         }
         return `<div class="edition-success" role="status">${outcome} The match is saved for the next sync.
             <div class="book-meta"><span><strong>Hardcover book:</strong> ${this.escapeHtml(result.hardcover_book_id || '')}</span><span><strong>Edition:</strong> ${this.escapeHtml(result.hardcover_edition_id || '')}</span>${result.status ? `<span><strong>Status:</strong> ${this.escapeHtml(result.status)}</span>` : ''}</div></div>

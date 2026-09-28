@@ -193,7 +193,9 @@ lock as the create so it never overlaps a full sync, and is never attempted in
 dry run. The response then includes a `resync` block with `attempted`,
 `outcome` (such as `synced` or `already_current`), and any `reason` or `error`.
 A resync failure does not fail the request, because the edition already exists;
-the next sync retries the book.
+the next sync retries the book. The resync shares the create request's 65-second
+deadline, so a slow creation can leave too little time to finish resync.
+The modal distinguishes a finished resync from a skipped or unresolved match.
 
 If an error says Hardcover may already have processed the request, check the
 book in Hardcover before retrying; a retry may create another edition. See

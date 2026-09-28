@@ -287,6 +287,56 @@ func TestCreateEditionFromDraftRejectsSupersededNeedsReviewCandidate(t *testing.
 	require.Zero(t, mutationCalls.Load())
 }
 
+func TestCreateEditionFromDraftChecksNewerCanceledItemOutcomes(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		bookID          string
+		hardcoverBookID string
+		outcome         sync.SyncOutcome
+		wantStatus      int
+	}{
+		{name: "changed candidate", bookID: "abs-item-1", hardcoverBookID: "43", outcome: sync.OutcomeNeedsReview, wantStatus: http.StatusConflict},
+		{name: "resolved item", bookID: "abs-item-1", hardcoverBookID: "42", outcome: sync.OutcomeSynced, wantStatus: http.StatusConflict},
+		{name: "unchanged candidate", bookID: "abs-item-1", hardcoverBookID: "42", outcome: sync.OutcomeNeedsReview, wantStatus: http.StatusOK},
+		{name: "unrelated item", bookID: "another-item", hardcoverBookID: "43", outcome: sync.OutcomeSynced, wantStatus: http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`, "us")
+			configureEditionCreateRoute(t, fixture)
+			addCompletedNeedsReviewRun(t, fixture, "older-run", editionCreateRecord())
+			newerRecord := editionCreateRecord()
+			newerRecord.BookID = test.bookID
+			newerRecord.HardcoverBookID = test.hardcoverBookID
+			newerRecord.Outcome = test.outcome
+			addNeedsReviewRunWithState(t, fixture, "newer-canceled-run", newerRecord, sync.RunPhaseCanceled, database.SyncRunPhaseCanceled)
+			var mutations atomic.Int32
+			fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+				return editionCreateHardcoverStub{importFn: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+					mutations.Add(1)
+					return &hardcover.RegionalAudiobookResult{
+						Status: hardcover.RegionalAudiobookLoaded, BookID: input.BookID, EditionID: 84,
+						ReadingFormatID:    models.ReadingFormatID(models.ReadingFormatAudiobook),
+						RegionalExternalID: input.ASIN + ":" + strings.ToLower(input.Region),
+					}, nil
+				}}
+			}
+			response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"older-run","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:us"}`)
+			require.Equal(t, test.wantStatus, response.Code, response.Body.String())
+			stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+			require.NoError(t, err)
+			_, associated := stored.GetAssociation("abs-item-1")
+			if test.wantStatus == http.StatusConflict {
+				require.Zero(t, mutations.Load())
+				require.Zero(t, fixture.absRequests.Load())
+				require.False(t, associated)
+			} else {
+				require.EqualValues(t, 1, mutations.Load())
+				require.True(t, associated)
+			}
+		})
+	}
+}
+
 func TestCreateEditionFromDraftAllowsCandidateAfterUnrelatedLaterRun(t *testing.T) {
 	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`, "us")
 	configureEditionCreateRoute(t, fixture)

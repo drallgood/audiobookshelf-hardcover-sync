@@ -801,6 +801,26 @@ test('successful create updates the book action immediately and shows a separate
     assert.match(current, /data-resync>Resync finished \(Hardcover finished status already current\)\.<\/div>/);
 });
 
+test('create result explains resync outcomes that did not apply read status', () => {
+    const app = editionApp();
+    const cases = [
+        ['skipped', 'book was skipped'],
+        ['needs_review', 'match still needs review'],
+        ['not_found', 'no matching Hardcover edition was found'],
+        ['would_sync', 'this was a dry run']
+    ];
+    for (const [outcome, explanation] of cases) {
+        const html = app.renderCreateResult({ status: 'created', resync: {
+            attempted: true, outcome, reason: 'Reason <from API>'
+        } });
+        assert.match(html, /The Hardcover edition was created/);
+        assert.match(html, /Read status was not synced/);
+        assert.ok(html.includes(explanation));
+        assert.match(html, /Reason &lt;from API&gt;/);
+        assert.doesNotMatch(html, /Resync finished/);
+    }
+});
+
 test('successful create does not mark a different run as resolved', async () => {
     const app = editionApp();
     stubDialog(app, 200, { success: true, data: { status: 'created' } });

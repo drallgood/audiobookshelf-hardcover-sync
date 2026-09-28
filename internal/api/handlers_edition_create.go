@@ -103,8 +103,8 @@ func (c editionCreateHardcoverAdapter) CreateEbook(ctx context.Context, input *e
 }
 
 // CreateEditionFromDraft handles POST /api/profiles/{id}/edition-drafts/create.
-// The run and item IDs identify the exact completed source snapshot; the book
-// ID always comes from that verified snapshot, never from the request.
+// The run and item IDs identify the exact completed or canceled source snapshot.
+// The book ID comes from that verified snapshot, never from the request.
 func (h *Handler) CreateEditionFromDraft(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), editionCreateRequestTimeout)
 	defer cancel()
@@ -224,7 +224,7 @@ func (h *Handler) verifiedEditionCreateRecord(profileID, runID, itemID string) (
 		if _, err := strconv.Atoi(record.HardcoverBookID); err != nil {
 			return nil, sync.BookOutcomeRecord{}, errStaleEditionCreateRun
 		}
-		laterRecord, found, laterErr := h.multiUserService.GetLaterCompletedSyncRunOutcome(profileID, runID, itemID)
+		laterRecord, found, laterErr := h.multiUserService.GetLaterUsableSyncRunOutcome(profileID, runID, itemID)
 		if laterErr != nil {
 			return nil, sync.BookOutcomeRecord{}, fmt.Errorf("failed to inspect newer sync outcomes: %w: %w", multiuser.ErrEditionCreateLocalFailure, laterErr)
 		}

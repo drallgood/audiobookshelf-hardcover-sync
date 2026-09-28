@@ -32,9 +32,9 @@ var ErrEditionCreateDryRun = errors.New("edition creation is disabled while the 
 // replacing a confirmed mapping saved by a later sync or create operation.
 var ErrEditionAssociationAlreadyExists = errors.New("Audiobookshelf item already has a confirmed Hardcover association")
 
-// GetLaterCompletedSyncRunOutcome returns the newest retained completed,
+// GetLaterUsableSyncRunOutcome returns the newest retained completed or canceled,
 // non-dry-run outcome for an item from a run newer than afterRunID.
-func (s *MultiUserService) GetLaterCompletedSyncRunOutcome(profileID, afterRunID, absItemID string) (sync.BookOutcomeRecord, bool, error) {
+func (s *MultiUserService) GetLaterUsableSyncRunOutcome(profileID, afterRunID, absItemID string) (sync.BookOutcomeRecord, bool, error) {
 	if s.repository == nil {
 		return sync.BookOutcomeRecord{}, false, nil
 	}
@@ -51,7 +51,7 @@ func (s *MultiUserService) GetLaterCompletedSyncRunOutcome(profileID, afterRunID
 			}
 			return sync.BookOutcomeRecord{}, false, nil
 		}
-		if report.Phase != database.SyncRunPhaseCompleted || report.DryRun {
+		if (report.Phase != database.SyncRunPhaseCompleted && report.Phase != database.SyncRunPhaseCanceled) || report.DryRun {
 			continue
 		}
 		snapshot, err := snapshotFromRetainedReport(profileID, report)
