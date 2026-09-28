@@ -1015,6 +1015,7 @@ class SyncProfileApp {
         this.abortSessionMutations();
         this.editProfileRequest?.controller?.abort();
         this.editProfileRequest = null;
+        this.closeEditionDialog();
         this.users = [];
         this.statuses = Object.create(null);
         this.closeEditModal();

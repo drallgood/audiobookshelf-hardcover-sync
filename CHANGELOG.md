@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Restore ownership reconciliation for matched books**: When `sync_owned: true`, eligible books matched by ASIN, a confirmed ebook identifier, or a saved association are checked against Hardcover's Owned list and their matched edition is marked owned when needed. The first eligible sync after this update may mark previously matched, currently unowned books as owned; books skipped before matching are not affected. By @Snuffy2. (#211)
 - **Sync Status UI polish**: "Forget match" and "Add edition" now share a pill shape matching the Hardcover link (without its arrow), with a clearly distinct disabled state; "Add edition" sits inside the Hardcover candidate box and stays visible (disabled, with its reason on hover) instead of disappearing when ineligible; and a canceled run now offers "Add edition" for eligible needs-review items the same way a completed run does. By @Snuffy2.
 - **Sync Status edition corrections**: Ebook creation sends only fields the user changed and preserves corrections when a request fails; regional imports reported as loaded are described as reused editions. Forget-match confirmation now explains that it is a no-op when no saved match exists. By @Snuffy2.
+- **Sync Status session cleanup**: Close and clear edition dialogs when the authenticated user or role changes, so pending preview, create, or forget responses cannot reveal old-session data or affect the new session. By @Snuffy2.
 
 ### Fixed
 

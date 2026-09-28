@@ -192,6 +192,147 @@ test('run details fall back to the latest available earlier phase timestamp', ()
 
 // ---- Edition creation and forget-match ----
 
+function pendingDialogApp() {
+    const app = createApp();
+    app.actionErrors = new Map();
+    app.terminalErrorCache = new Map();
+    app.terminalErrorRetries = new Map();
+    app.terminalErrorRequests = new Map();
+    app.trackedRunIds = new Map();
+    app.sessionMutationRequests = new Map();
+    app.statusRefreshWaiters = [];
+    app.users = [{ id: 'private-profile' }];
+    app.statuses = { 'private-profile': { private: true } };
+    app.statusRefreshError = 'private status';
+    app.statusLoadController = null;
+    app.authSessionGeneration = 10;
+    app.statusLoadSequence = 20;
+    app.openSummary = { private: true };
+    app.editProfileRequest = null;
+    app.resetProfileRetry = () => {};
+    app.closeEditModal = () => {};
+    app.clearOpenSummary = () => { app.openSummary = null; };
+    app.renderProfiles = () => {};
+    app.renderStatuses = () => {};
+    app.handleAuthExpiry = () => { app.authExpiryCalls = (app.authExpiryCalls || 0) + 1; };
+    app.showToast = () => { app.toastCalls = (app.toastCalls || 0) + 1; };
+
+    const modal = { style: { display: 'block' } };
+    let html = 'private dialog';
+    let htmlWrites = 0;
+    const content = {
+        get innerHTML() { return html; },
+        set innerHTML(value) { html = value; htmlWrites++; },
+        replaceChildren() { html = ''; }
+    };
+    const previousDocument = global.document;
+    global.document = {
+        getElementById(id) { return id === 'edition-modal' ? modal : id === 'edition-modal-content' ? content : null; },
+        createElement(...args) { return previousDocument.createElement(...args); },
+        querySelector() { return null; }
+    };
+    return {
+        app, modal, content,
+        get htmlWrites() { return htmlWrites; },
+        restore() { global.document = previousDocument; }
+    };
+}
+
+function deferred() {
+    let resolve;
+    const promise = new Promise(done => { resolve = done; });
+    return { promise, resolve };
+}
+
+test('session reset closes a pending edition preview and ignores its late response', async t => {
+    const harness = pendingDialogApp();
+    t.after(harness.restore);
+    const { app, modal, content } = harness;
+    const pending = [];
+    app.fetchJsonWithTimeout = url => {
+        const request = deferred();
+        pending.push({ url, ...request });
+        return request.promise;
+    };
+    app.editionDialog = {
+        mode: 'create', profileId: 'private-profile', record: { book_id: 'li_1', title: 'Private title' },
+        draft: null, loading: true, busy: false, error: '', retryAt: 0
+    };
+    const loading = app.loadEditionDraft();
+    const previewController = app.editionDialog.controller;
+
+    app.resetSessionBoundState();
+    assert.equal(app.editionDialog, null);
+    assert.equal(app.authSessionGeneration, 11);
+    assert.equal(app.statusLoadSequence, 21);
+    assert.deepEqual(app.users, []);
+    assert.deepEqual(Object.keys(app.statuses), []);
+    assert.equal(app.openSummary, null);
+    assert.equal(previewController.signal.aborted, true);
+    assert.equal(content.innerHTML, '');
+    assert.equal(modal.style.display, 'none');
+
+    const newSessionDialog = { mode: 'forget', record: { book_id: 'new-session-item' } };
+    app.editionDialog = newSessionDialog;
+    content.innerHTML = 'new session dialog';
+    modal.style.display = 'block';
+    const writesForNewSession = harness.htmlWrites;
+
+    pending.find(item => item.url.includes('/edition-drafts/source/')).resolve({
+        response: { ok: true, status: 200 }, data: { success: true, data: { private: 'draft' } }
+    });
+    pending.find(item => item.url.includes('/edition-capability')).resolve({ response: { ok: true, status: 200 }, data: { success: true, data: {} } });
+    await loading;
+    assert.equal(app.editionDialog, newSessionDialog);
+    assert.equal(harness.htmlWrites, writesForNewSession);
+    assert.equal(content.innerHTML, 'new session dialog');
+    assert.equal(app.authExpiryCalls || 0, 0);
+});
+
+test('session reset ignores a late successful create without toast or dialog redraw', async t => {
+    const harness = pendingDialogApp();
+    t.after(harness.restore);
+    const { app, content } = harness;
+    const request = deferred();
+    app.fetchJsonWithTimeout = () => request.promise;
+    app.readEditionFormFields = () => ({});
+    app.editionDialog = {
+        mode: 'create', profileId: 'private-profile', runId: 'run-1', record: needsReview,
+        draft: { reading_format: 'audiobook', dry_run: false }, busy: false, error: '', result: null
+    };
+    const submitting = app.submitEditionCreate();
+    const writesBeforeReset = harness.htmlWrites;
+    app.resetSessionBoundState();
+    request.resolve({ response: { ok: true, status: 200 }, data: { success: true, data: { private: 'result' } } });
+    await submitting;
+    assert.equal(app.editionDialog, null);
+    assert.equal(app.toastCalls || 0, 0);
+    assert.equal(app.authExpiryCalls || 0, 0);
+    assert.equal(harness.htmlWrites, writesBeforeReset);
+    assert.equal(content.innerHTML, '');
+});
+
+test('session reset ignores a late forget 401 without expiring the new session', async t => {
+    const harness = pendingDialogApp();
+    t.after(harness.restore);
+    const { app, content } = harness;
+    const request = deferred();
+    app.fetchJsonWithTimeout = () => request.promise;
+    app.editionDialog = {
+        mode: 'forget', profileId: 'private-profile', record: { book_id: 'li_2', hardcover_book_id: '42' },
+        busy: false, error: '', result: null
+    };
+    const submitting = app.submitForget();
+    const writesBeforeReset = harness.htmlWrites;
+    app.resetSessionBoundState();
+    request.resolve({ response: { ok: false, status: 401 }, data: { success: false } });
+    await submitting;
+    assert.equal(app.editionDialog, null);
+    assert.equal(app.authExpiryCalls || 0, 0);
+    assert.equal(harness.htmlWrites, writesBeforeReset);
+    assert.equal(content.innerHTML, '');
+});
+
 function editionApp(overrides = {}) {
     const app = createApp();
     app.statuses = { p1: { snapshot: { run_id: 'run-1', state: 'completed' } } };
