@@ -83,11 +83,6 @@ type editionCapabilityClientEntry struct {
 	client           *hardcover.Client
 }
 
-type profileHardcoverRateLimiterEntry struct {
-	tokenFingerprint string
-	limiter          *util.RateLimiter
-}
-
 type profileHardcoverRateLimiterKey struct {
 	profileID        string
 	tokenFingerprint string
@@ -233,15 +228,12 @@ func (s *MultiUserService) editionCapabilityProbeClientLocked(profileID, token, 
 // It must be called with hardcoverClientMutex held.
 func (s *MultiUserService) profileHardcoverRateLimiterLocked(profileID, fingerprint string) *util.RateLimiter {
 	key := profileHardcoverRateLimiterKey{profileID: profileID, tokenFingerprint: fingerprint}
-	if entry, ok := s.profileHardcoverRateLimiters[key]; ok {
-		return entry.limiter
+	if limiter, ok := s.profileHardcoverRateLimiters[key]; ok {
+		return limiter
 	}
 	clientConfig := s.hardcoverClientConfig()
 	limiter := util.NewRateLimiter(clientConfig.RateLimit, clientConfig.MaxConcurrent, s.logger)
-	s.profileHardcoverRateLimiters[key] = profileHardcoverRateLimiterEntry{
-		tokenFingerprint: fingerprint,
-		limiter:          limiter,
-	}
+	s.profileHardcoverRateLimiters[key] = limiter
 	return limiter
 }
 

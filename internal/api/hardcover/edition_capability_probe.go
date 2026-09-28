@@ -33,27 +33,7 @@ const upsertBookCapabilityProbeMissingArgumentPath = "$.selectionSet.upsert_book
 // validation response proves the mutation is available; the known HTTP 403
 // scope response proves denial. Dry run short-circuits without a request.
 func (c *Client) ProbeInsertEditionCapability(ctx context.Context) EditionCapabilityProbeState {
-	if c.dryRun {
-		return EditionCapabilityProbeAllowed
-	}
-
-	timeout := DefaultTimeout
-	if c.httpClient != nil && c.httpClient.Timeout > 0 {
-		timeout = c.httpClient.Timeout
-	}
-	probeCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	probeCtx = WithMinimumMutationBudget(probeCtx, editionCapabilityProbeMutationReserve)
-
-	var response struct{}
-	err := c.GraphQLMutation(probeCtx, insertEditionCapabilityProbeMutation, nil, &response)
-	if isExpectedInsertEditionCapabilityMissingArgument(err) {
-		return EditionCapabilityProbeAllowed
-	}
-	if isEditionCapabilityScopeDenial(err, insertEditionCapabilityProbeMutation) {
-		return EditionCapabilityProbeDenied
-	}
-	return EditionCapabilityProbeUnverified
+	return c.probeEditionCapability(ctx, insertEditionCapabilityProbeMutation, errInsertEditionMissingRequiredArgument)
 }
 
 // ProbeUpsertBookCapability checks audiobook upsert_book capability by
@@ -62,6 +42,10 @@ func (c *Client) ProbeInsertEditionCapability(ctx context.Context) EditionCapabi
 // validation response proves the mutation is available; the known HTTP 403
 // scope response proves denial. Dry run short-circuits without a request.
 func (c *Client) ProbeUpsertBookCapability(ctx context.Context) EditionCapabilityProbeState {
+	return c.probeEditionCapability(ctx, upsertBookCapabilityProbeMutation, errUpsertBookMissingRequiredArgument)
+}
+
+func (c *Client) probeEditionCapability(ctx context.Context, query string, expectedMissingArgument error) EditionCapabilityProbeState {
 	if c.dryRun {
 		return EditionCapabilityProbeAllowed
 	}
@@ -75,22 +59,14 @@ func (c *Client) ProbeUpsertBookCapability(ctx context.Context) EditionCapabilit
 	probeCtx = WithMinimumMutationBudget(probeCtx, editionCapabilityProbeMutationReserve)
 
 	var response struct{}
-	err := c.GraphQLMutation(probeCtx, upsertBookCapabilityProbeMutation, nil, &response)
-	if isExpectedUpsertBookCapabilityMissingArgument(err) {
+	err := c.GraphQLMutation(probeCtx, query, nil, &response)
+	if errors.Is(err, expectedMissingArgument) {
 		return EditionCapabilityProbeAllowed
 	}
-	if isEditionCapabilityScopeDenial(err, upsertBookCapabilityProbeMutation) {
+	if isEditionCapabilityScopeDenial(err, query) {
 		return EditionCapabilityProbeDenied
 	}
 	return EditionCapabilityProbeUnverified
-}
-
-func isExpectedUpsertBookCapabilityMissingArgument(err error) bool {
-	return errors.Is(err, errUpsertBookMissingRequiredArgument)
-}
-
-func isExpectedInsertEditionCapabilityMissingArgument(err error) bool {
-	return errors.Is(err, errInsertEditionMissingRequiredArgument)
 }
 
 func isEditionCapabilityScopeDenial(err error, query string) bool {

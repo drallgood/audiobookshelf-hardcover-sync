@@ -19,6 +19,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/util"
 )
 
 const maxStateFileComponentBytes = 255
@@ -108,7 +109,7 @@ type MultiUserService struct {
 	editionCapabilityFlights     map[editionCapabilityFlightKey]*editionCapabilityFlight
 	editionCapabilityClients     map[string]editionCapabilityClientEntry
 	editionCapabilityGenerations map[string]uint64
-	profileHardcoverRateLimiters map[profileHardcoverRateLimiterKey]profileHardcoverRateLimiterEntry
+	profileHardcoverRateLimiters map[profileHardcoverRateLimiterKey]*util.RateLimiter
 	profileStatuses              map[string]*SyncProfileStatus
 	statusMutex                  stdSync.RWMutex
 	activeSyncs                  map[string]context.CancelFunc
@@ -141,7 +142,7 @@ func NewMultiUserService(repo *database.Repository, globalConfig *config.Config,
 		editionCapabilityFlights:     make(map[editionCapabilityFlightKey]*editionCapabilityFlight),
 		editionCapabilityClients:     make(map[string]editionCapabilityClientEntry),
 		editionCapabilityGenerations: make(map[string]uint64),
-		profileHardcoverRateLimiters: make(map[profileHardcoverRateLimiterKey]profileHardcoverRateLimiterEntry),
+		profileHardcoverRateLimiters: make(map[profileHardcoverRateLimiterKey]*util.RateLimiter),
 		profileStatuses:              make(map[string]*SyncProfileStatus),
 		activeSyncs:                  make(map[string]context.CancelFunc),
 		activeRuns:                   make(map[string]activeSyncRun),

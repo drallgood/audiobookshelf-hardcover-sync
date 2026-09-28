@@ -339,7 +339,7 @@ func TestCapabilityAndProfileHardcoverClientsShareLimiter(t *testing.T) {
 	service.hardcoverClientMutex.Lock()
 	originalLimiter := service.profileHardcoverRateLimiters[profileHardcoverRateLimiterKey{
 		profileID: profileID, tokenFingerprint: hardcoverTokenFingerprint(token),
-	}].limiter
+	}]
 	service.hardcoverClientMutex.Unlock()
 
 	rotatedClient := service.NewHardcoverClientForProfile(profileID, "rotated-hardcover-token")
@@ -348,10 +348,10 @@ func TestCapabilityAndProfileHardcoverClientsShareLimiter(t *testing.T) {
 	service.hardcoverClientMutex.Lock()
 	rotatedLimiter := service.profileHardcoverRateLimiters[profileHardcoverRateLimiterKey{
 		profileID: profileID, tokenFingerprint: hardcoverTokenFingerprint("rotated-hardcover-token"),
-	}].limiter
+	}]
 	currentLimiter := service.profileHardcoverRateLimiters[profileHardcoverRateLimiterKey{
 		profileID: profileID, tokenFingerprint: hardcoverTokenFingerprint(token),
-	}].limiter
+	}]
 	service.hardcoverClientMutex.Unlock()
 	require.NotSame(t, originalLimiter, rotatedLimiter, "different tokens must not share a limiter")
 	require.Same(t, originalLimiter, currentLimiter, "clients for the same token reuse its limiter")
@@ -396,7 +396,7 @@ func TestConfigOnlyProfileUpdatePreservesLimiterForExistingClient(t *testing.T) 
 	oldClient := service.NewHardcoverClientForProfile(profileID, token)
 	limiterKey := profileHardcoverRateLimiterKey{profileID: profileID, tokenFingerprint: hardcoverTokenFingerprint(token)}
 	service.hardcoverClientMutex.Lock()
-	oldLimiter := service.profileHardcoverRateLimiters[limiterKey].limiter
+	oldLimiter := service.profileHardcoverRateLimiters[limiterKey]
 	service.hardcoverClientMutex.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -415,7 +415,7 @@ func TestConfigOnlyProfileUpdatePreservesLimiterForExistingClient(t *testing.T) 
 		profileID, "http://abs.updated", "", token, database.SyncConfigData{},
 	))
 	service.hardcoverClientMutex.Lock()
-	limiterAfterUpdate := service.profileHardcoverRateLimiters[limiterKey].limiter
+	limiterAfterUpdate := service.profileHardcoverRateLimiters[limiterKey]
 	service.hardcoverClientMutex.Unlock()
 	require.Same(t, oldLimiter, limiterAfterUpdate, "unchanged token must preserve the active limiter")
 
