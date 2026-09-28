@@ -1,4 +1,4 @@
-# Step 9: edition capability evidence and probe dependency
+# Edition capability evidence and probe dependency
 
 This note supports the immediate-resync and edition-capability changes in
 [upstream PR #212](https://github.com/drallgood/audiobookshelf-hardcover-sync/pull/212). It records the live evidence used by the classifier and its

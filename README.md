@@ -189,7 +189,7 @@ later edition creation or audiobook import will succeed. Probe results are
 cached by profile and token: allowed or denied results for 5 minutes, and
 unverified results for 15 seconds. A changed token is probed separately.
 
-See the [implementation evidence and validation dependency](docs/implementations/step-9-edition-capability-evidence.md)
+See the [implementation evidence and validation dependency](docs/implementations/edition-capability-evidence.md)
 for the recorded live responses and the upstream behavior these probes rely on.
 
 A later add-edition attempt may proceed when capability is unverified, but
