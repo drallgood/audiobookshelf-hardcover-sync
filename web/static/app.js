@@ -1950,8 +1950,11 @@ class SyncProfileApp {
         const modal = document.getElementById('edition-modal');
         const content = document.getElementById('edition-modal-content');
         if (!modal || !content || !this.editionDialog) return;
+        const scrollTop = content.querySelector?.('.edition-dialog-body')?.scrollTop || 0;
         content.innerHTML = this.renderEditionDialog(this.editionDialog);
         modal.style.display = 'block';
+        const body = content.querySelector?.('.edition-dialog-body');
+        if (body) body.scrollTop = scrollTop;
     }
 
     async openEditionDialog(bookId) {

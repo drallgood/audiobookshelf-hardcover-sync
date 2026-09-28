@@ -690,7 +690,7 @@ test('create body sends only changed ebook fields and the opt-in resync flag', (
     });
 });
 
-test('failed ebook create redraw preserves escaped edits and retries the same request', async () => {
+test('failed ebook create redraw preserves scroll and escaped edits and retries the same request', async () => {
     const app = editionApp();
     const dialog = {
         mode: 'create', profileId: 'p1', runId: 'run-1', record: needsReview, loading: false, busy: false, error: '', result: null,
@@ -702,8 +702,11 @@ test('failed ebook create redraw preserves escaped edits and retries the same re
     app.showEditionDialog = SyncProfileApp.prototype.showEditionDialog;
     const originalDocument = global.document;
     const modal = { style: {} };
-    const content = { fields: {}, set innerHTML(html) {
+    const content = { fields: {}, body: null,
+        querySelector() { return this.body; },
+        set innerHTML(html) {
         this.html = html;
+        this.body = { scrollTop: 0 };
         const decode = value => value.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
         this.fields = Object.fromEntries([...html.matchAll(/<input\b[^>]*>/g)].map(([input]) => {
             const name = input.match(/\bname="([^"]*)"/)?.[1];
@@ -719,6 +722,7 @@ test('failed ebook create redraw preserves escaped edits and retries the same re
     };
     try {
         app.showEditionDialog();
+        content.body.scrollTop = 500;
         assert.ok(content.fields.title);
         content.fields.title.value = '<New & title>';
         content.fields.isbn_10.value = '';
@@ -731,10 +735,12 @@ test('failed ebook create redraw preserves escaped edits and retries the same re
                 : { response: { ok: true, status: 200 }, data: { success: true, data: { status: 'created' } } };
         };
         await app.submitEditionCreate();
+        assert.equal(content.body.scrollTop, 500);
         assert.match(content.html, /&lt;New &amp; title&gt;/);
         assert.match(content.html, /name="isbn_10" value="" data-original="old10"/);
         assert.deepEqual(requests[0], { run_id: 'run-1', abs_item_id: 'li_1', title: '<New & title>', isbn_10: '', isbn_13: '9780000000002', resync: true });
         await app.submitEditionCreate();
+        assert.equal(content.body.scrollTop, 500);
         assert.deepEqual(requests[1], requests[0]);
     } finally {
         global.document = originalDocument;
