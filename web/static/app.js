@@ -2131,7 +2131,7 @@ class SyncProfileApp {
             const m = draft.metadata_preview;
             if (m) {
                 audnexHtml = `<details class="edition-source-section edition-audnex-preview">
-                    <summary>Audnex preview <span class="edition-note">(secondary — helps verify the match; not editable)</span></summary>
+                    <summary>Audnexus details <span class="edition-note">(helps to verify the match)</span></summary>
                     <div class="book-meta edition-preview">
                         <span><strong>Title:</strong> ${this.escapeHtml(m.title)}</span>
                         ${m.author ? `<span><strong>Author:</strong> ${this.escapeHtml(m.author)}</span>` : ''}
@@ -2150,7 +2150,6 @@ class SyncProfileApp {
         const canConfirm = blockers.length === 0;
         return `${dryRun ? '<div class="edition-dry-run">Dry run</div>' : ''}
             ${sourceHtml}${hardcoverTargetHtml}${audnexHtml}${regionHtml}
-            <p class="edition-note" data-capability-note>Scope checks are evidence about token permission; the create response confirms whether Hardcover accepted this edition.</p>
             ${this.renderWarnings(draft)}
             <form class="edition-form" onsubmit="return false">${editHtml}</form>
             ${blockers.map(text => `<div class="edition-error" data-blocker>${this.escapeHtml(text)}</div>`).join('')}

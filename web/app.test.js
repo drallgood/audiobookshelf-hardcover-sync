@@ -537,7 +537,6 @@ test('audiobook dialog shows region states, escapes ABS strings, and offers only
     assert.doesNotMatch(html, /<script>|<img src=x|<b>Dune/);
     assert.match(html, /could not be confirmed/);
     assert.doesNotMatch(html, /Permission unverified|permission is unverified|cannot be checked/);
-    assert.match(html, /Scope checks are evidence about token permission/);
     assert.doesNotMatch(html, /name="audible_identifier"/);
     assert.doesNotMatch(html, /name="title"/);
     assert.doesNotMatch(html, /name="resync"/);
