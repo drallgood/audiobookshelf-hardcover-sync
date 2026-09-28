@@ -46,6 +46,11 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-go-
 
+    - name: Set up Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: 'lts/*'
+
     - name: Run linters
       run: |
         go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
@@ -56,3 +61,6 @@ jobs:
         # Run tests with coverage but don't fail if coverage is low
         # The coverage report is still generated and can be viewed locally with: go tool cover -html=coverage.txt
         go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
+
+    - name: Run web UI tests
+      run: node --test web/app.test.js
