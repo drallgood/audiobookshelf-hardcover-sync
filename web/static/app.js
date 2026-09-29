@@ -1942,13 +1942,13 @@ class SyncProfileApp {
 
     // Applies capability evidence for the record's format.
     editionCapabilityGate(capability, format) {
-        if (!capability) return { blocked: false, warning: '' };
+        if (!capability) return { blocked: false };
         const status = String(format).toLowerCase() === 'ebook' ? capability.ebook : capability.audiobook;
-        if (!status) return { blocked: false, warning: '' };
+        if (!status) return { blocked: false };
         if (status.status === 'denied' || status.can_attempt === false) {
             return { blocked: true, reason: status.reason ? this.capabilityReasonText(status.reason) : 'The Hardcover token is not permitted to add this edition.' };
         }
-        return { blocked: false, warning: '' };
+        return { blocked: false };
     }
 
     closeEditionDialog() {

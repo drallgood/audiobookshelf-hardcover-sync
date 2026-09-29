@@ -405,7 +405,7 @@ test('unverified capability and failed probes leave Add edition available withou
     const app = editionApp();
     app.openSummary.editionCapability = { audiobook: { status: 'unverified', can_attempt: true, warning: 'permission_unverified' } };
     assert.doesNotMatch(app.renderEditionActions(needsReview), /disabled/);
-    assert.deepEqual(app.editionCapabilityGate(null, 'audiobook'), { blocked: false, warning: '' });
+    assert.deepEqual(app.editionCapabilityGate(null, 'audiobook'), { blocked: false });
 
     global.document.getElementById = () => null;
     app.openSummary.editionCapabilityLoaded = false;
@@ -510,10 +510,9 @@ test('capability gate blocks on known denial, permits unverified attempts, and p
         audiobook: { status: 'denied', can_attempt: false, reason: 'no scope' }
     };
     assert.deepEqual(app.editionCapabilityGate(cap, 'audiobook'), { blocked: true, reason: 'no scope' });
-    assert.deepEqual(app.editionCapabilityGate(cap, 'ebook'), { blocked: false, warning: '' });
+    assert.deepEqual(app.editionCapabilityGate(cap, 'ebook'), { blocked: false });
     const unverified = app.editionCapabilityGate({ ebook: { status: 'unverified', can_attempt: true, warning: 'unverified!' } }, 'ebook');
-    assert.equal(unverified.blocked, false);
-    assert.equal(unverified.warning, '');
+    assert.deepEqual(unverified, { blocked: false });
 });
 
 test('Retry-After is honored and older servers fall back to a short wait', () => {
