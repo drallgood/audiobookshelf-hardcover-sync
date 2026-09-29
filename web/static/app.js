@@ -2031,8 +2031,16 @@ class SyncProfileApp {
                 dialog.error = this.apiErrorMessage(data, 'The edition service is busy.');
                 dialog.timer = setInterval(() => {
                     if (this.editionDialog !== dialog) { clearInterval(dialog.timer); return; }
-                    if (Date.now() >= dialog.retryAt) { clearInterval(dialog.timer); dialog.timer = null; }
-                    this.showEditionDialog();
+                    const waitMs = Math.max(0, dialog.retryAt - Date.now());
+                    const retryButton = document.getElementById('edition-modal-content')
+                        ?.querySelector?.('[data-edition-dialog="retry"]');
+                    if (retryButton) {
+                        retryButton.textContent = waitMs > 0
+                            ? `Retry in ${Math.ceil(waitMs / 1000)}s`
+                            : dialog.draft ? 'Refresh preview' : 'Retry';
+                        retryButton.disabled = waitMs > 0 || dialog.busy;
+                    }
+                    if (waitMs === 0) { clearInterval(dialog.timer); dialog.timer = null; }
                 }, 1000);
             } else if (!response.ok || !data?.success) {
                 dialog.error = this.apiErrorMessage(data, `The edition preview failed (${response.status}).`);

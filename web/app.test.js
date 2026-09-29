@@ -919,6 +919,78 @@ test('draft preview 429 defers retry by Retry-After and shows the wait', async (
     assert.match(app.renderEditionDialog(dialog), /data-edition-dialog="retry"[^>]*disabled/);
 });
 
+test('draft preview 429 countdown preserves edits in the loaded ebook form', async t => {
+    const app = editionApp();
+    const dialog = {
+        mode: 'create', profileId: 'p1', runId: 'run-1', record: { ...needsReview, format: 'ebook' },
+        busy: false, loading: false, error: '', draft: {
+            reading_format: 'ebook', eligible: true, ebook_candidate: {
+                title: 'Original title', isbn_13: '9780000000001'
+            }
+        }, capability: null, retryAt: 0, fieldValues: null
+    };
+    app.editionDialog = dialog;
+    app.profileUrl = () => '/profile';
+    app.fetchJsonWithTimeout = async url => url.includes('edition-capability')
+        ? { response: { ok: true, status: 200 }, data: { success: true, data: {} } }
+        : { response: { ok: false, status: 429, headers: { get: () => '2' } }, data: { success: false, error: 'busy' } };
+
+    let now = 100000;
+    const originalNow = Date.now;
+    const originalSetInterval = global.setInterval;
+    const originalClearInterval = global.clearInterval;
+    let tick;
+    let fields = [];
+    const retryButton = { textContent: 'Refresh preview', disabled: false };
+    const content = {
+        set innerHTML(_html) {
+            fields = [
+                { name: 'title', value: 'Original title', dataset: { original: 'Original title' } },
+                { name: 'isbn_13', value: '9780000000001', dataset: { original: '9780000000001' } }
+            ];
+        },
+        querySelector(selector) { return selector === '[data-edition-dialog="retry"]' ? retryButton : null; }
+    };
+    const previousDocument = global.document;
+    global.document = {
+        getElementById(id) { return id === 'edition-modal-content' ? content : id === 'edition-modal' ? { style: {} } : null; },
+        createElement(...args) { return previousDocument.createElement(...args); },
+        querySelector(selector) {
+            return selector === '#edition-modal-content .edition-form'
+                ? { querySelectorAll: () => fields }
+                : null;
+        }
+    };
+    Date.now = () => now;
+    global.setInterval = callback => { tick = callback; return 1; };
+    global.clearInterval = () => {};
+    t.after(() => {
+        global.document = previousDocument;
+        Date.now = originalNow;
+        global.setInterval = originalSetInterval;
+        global.clearInterval = originalClearInterval;
+    });
+
+    app.showEditionDialog = SyncProfileApp.prototype.showEditionDialog.bind(app);
+    await app.loadEditionDraft();
+    fields.find(field => field.name === 'title').value = 'Corrected title';
+    fields.find(field => field.name === 'isbn_13').value = '9780000000002';
+
+    now += 1000;
+    tick();
+    assert.equal(retryButton.textContent, 'Retry in 1s');
+    assert.deepEqual(app.buildEditionCreateBody(dialog, app.readEditionFormFields(), false), {
+        run_id: 'run-1', abs_item_id: String(needsReview.book_id),
+        title: 'Corrected title', isbn_13: '9780000000002'
+    });
+
+    now += 1000;
+    tick();
+    assert.equal(retryButton.textContent, 'Refresh preview');
+    assert.equal(retryButton.disabled, false);
+    assert.equal(dialog.timer, null);
+});
+
 test('forget confirmation explains rematching, is disabled in dry run, and reports the result', async () => {
     const app = editionApp();
     const record = { book_id: 'li_2', outcome: 'synced', title: 'T', hardcover_book_id: '7', edition_id: '9' };
