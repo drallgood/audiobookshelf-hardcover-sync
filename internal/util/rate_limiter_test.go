@@ -1045,3 +1045,31 @@ func TestRateLimiterDailyPauseLastsAsLongAsRequestsAreHeld(t *testing.T) {
 	rl.ResetRate()
 	assert.False(t, rl.DailyQuotaPaused())
 }
+
+func TestRateLimiterReportsOnlyAnActiveDailyQuotaPacingWait(t *testing.T) {
+	rl := NewRateLimiter(10*time.Millisecond, 1, nil)
+	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+		"Ratelimit":        {`"daily";r=48;t=3600`},
+		"Ratelimit-Policy": {`"daily";q=5000;w=86400`},
+	}})
+
+	require.True(t, rl.DailyQuotaConstrainingAdmission())
+	assert.False(t, rl.DailyQuotaPaused(), "positive remaining requests are low quota, not exhausted")
+
+	rl.mu.Lock()
+	rl.backoffUntil = time.Now().Add(2 * rl.dailyQuotaRate)
+	rl.mu.Unlock()
+	assert.False(t, rl.DailyQuotaConstrainingAdmission(), "a longer independent backoff takes precedence")
+
+	rl.mu.Lock()
+	rl.backoffUntil = time.Time{}
+	rl.dailyQuotaResetAt = time.Now().Add(-time.Second)
+	rl.mu.Unlock()
+	assert.False(t, rl.DailyQuotaConstrainingAdmission(), "a daily quota snapshot expires at its reset")
+
+	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+		"Ratelimit":        {`"daily";r=4000;t=3600`},
+		"Ratelimit-Policy": {`"daily";q=5000;w=86400`},
+	}})
+	assert.False(t, rl.DailyQuotaConstrainingAdmission(), "a refreshed healthy daily bucket restores ordinary pacing")
+}

@@ -771,3 +771,110 @@ func TestGraphQLQuery_UsesConfiguredTimeoutAndReleasesPermit(t *testing.T) {
 		t.Fatal("stalled test handler did not finish")
 	}
 }
+
+func TestBudgetedMutationAdmissionReportsQuotaOnlyWhenQuotaCausedTheWait(t *testing.T) {
+	tests := []struct {
+		name               string
+		configure          func(*util.RateLimiter)
+		occupyPermit       bool
+		wantDailyLow       bool
+		wantDailyExhausted bool
+	}{
+		{
+			name: "daily quota is low",
+			configure: func(rl *util.RateLimiter) {
+				rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+					"Ratelimit":        {`"daily";r=48;t=3600`},
+					"Ratelimit-Policy": {`"daily";q=5000;w=86400`},
+				}})
+			},
+			wantDailyLow: true,
+		},
+		{
+			name: "daily quota is exhausted",
+			configure: func(rl *util.RateLimiter) {
+				rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+					"Ratelimit":        {`"daily";r=0;t=3600`},
+					"Ratelimit-Policy": {`"daily";q=5000;w=86400`},
+				}})
+			},
+			wantDailyExhausted: true,
+		},
+		{
+			name:      "ordinary rate delay",
+			configure: func(rl *util.RateLimiter) { rl.OnRateLimit(time.Hour) },
+		},
+		{
+			name: "concurrency wait with stale low quota",
+			configure: func(rl *util.RateLimiter) {
+				rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+					"Ratelimit":        {`"daily";r=48;t=3600`},
+					"Ratelimit-Policy": {`"daily";q=5000;w=86400`},
+				}})
+			},
+			occupyPermit: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				requests.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"data":{}}`)
+			}))
+			defer server.Close()
+
+			client := CreateTestClient(server)
+			client.rateLimiter = util.NewRateLimiter(10*time.Millisecond, 1, client.logger)
+			var release func()
+			if test.occupyPermit {
+				var err error
+				release, err = client.rateLimiter.Acquire(context.Background())
+				require.NoError(t, err)
+				defer release()
+			}
+			test.configure(client.rateLimiter)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+			defer cancel()
+			ctx = WithMinimumMutationBudget(ctx, 5*time.Millisecond)
+			var result struct{}
+			err := client.GraphQLMutation(ctx, `mutation AddEdition { insert_edition { id } }`, nil, &result)
+
+			require.ErrorIs(t, err, ErrMutationInsufficientBudget)
+			require.ErrorIs(t, err, context.DeadlineExceeded)
+			assert.Equal(t, test.wantDailyLow, errors.Is(err, ErrMutationDailyQuotaLow))
+			assert.Equal(t, test.wantDailyExhausted, errors.Is(err, ErrMutationDailyQuotaExhausted))
+			assert.NotErrorIs(t, err, ErrMutationOutcomeAmbiguous)
+			assert.Zero(t, requests.Load(), "a mutation canceled before admission must not reach HTTP")
+		})
+	}
+}
+
+func TestBudgetedMutationThatUsesLowQuotaPacingRetainsQuotaCauseAtReserveGuard(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":{}}`)
+	}))
+	defer server.Close()
+
+	client := CreateTestClient(server)
+	client.rateLimiter = util.NewRateLimiter(10*time.Millisecond, 1, client.logger)
+	client.rateLimiter.WithRateLimitHeaders(&http.Response{Header: http.Header{
+		"Ratelimit":        {`"daily";r=48;t=48`},
+		"Ratelimit-Policy": {`"daily";q=5000;w=86400`},
+	}})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	ctx = WithMinimumMutationBudget(ctx, 2900*time.Millisecond)
+	var result struct{}
+	err := client.GraphQLMutation(ctx, `mutation AddEdition { insert_edition { id } }`, nil, &result)
+
+	require.ErrorIs(t, err, ErrMutationInsufficientBudget)
+	require.ErrorIs(t, err, ErrMutationDailyQuotaLow)
+	assert.NotErrorIs(t, err, ErrMutationOutcomeAmbiguous)
+	assert.Zero(t, requests.Load(), "a quota delay that consumes the reserve must stop before HTTP")
+}

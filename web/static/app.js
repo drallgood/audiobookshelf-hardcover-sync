@@ -2295,7 +2295,7 @@ class SyncProfileApp {
             ${blockers.map(text => `<div class="edition-error" data-blocker>${this.escapeHtml(text)}</div>`).join('')}
             ${errorHtml}
             <div class="form-actions edition-create-actions">
-                ${dialog.retryCreate ? `<button type="button" class="btn btn-primary" data-edition-dialog="retry-create" ${canConfirm && !dialog.busy ? '' : 'disabled'}>Retry import</button>` : `<button type="button" class="btn btn-primary" data-edition-dialog="confirm-create" ${canConfirm && !dialog.busy && dialog.outcome !== 'failed' ? '' : 'disabled'}>${dialog.busy ? 'Creating…' : 'Add edition'}</button>`}
+                ${dialog.retryCreate ? `<button type="button" class="btn btn-primary" data-edition-dialog="retry-create" ${canConfirm && !dialog.busy ? '' : 'disabled'}>Retry add edition</button>` : `<button type="button" class="btn btn-primary" data-edition-dialog="confirm-create" ${canConfirm && !dialog.busy && dialog.outcome !== 'failed' ? '' : 'disabled'}>${dialog.busy ? 'Creating…' : 'Add edition'}</button>`}
                 <button type="button" class="btn btn-secondary" data-edition-dialog="retry" title="Reload this preview and retry the region/candidate lookup — useful after a temporary lookup failure or if the source metadata changed." ${waiting || dialog.busy ? 'disabled' : ''}>${waiting ? retryLabel : 'Refresh preview'}</button>
                 ${closeButton}
             </div>`;

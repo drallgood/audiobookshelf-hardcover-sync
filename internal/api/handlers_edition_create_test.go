@@ -1078,7 +1078,8 @@ func TestWriteEditionCreateErrorForInsufficientMutationBudgetIsRetryable(t *test
 
 	require.Equal(t, http.StatusServiceUnavailable, response.Code)
 	require.Equal(t, "1", response.Header().Get("Retry-After"))
-	require.Contains(t, response.Body.String(), "no edition mutation was sent")
+	require.Contains(t, response.Body.String(), "The request took too long to add this edition")
+	require.Contains(t, response.Body.String(), "Nothing was added to Hardcover")
 	require.NotContains(t, response.Body.String(), "may have processed")
 }
 
@@ -1131,7 +1132,7 @@ func TestEditionCreateMapsPreSendMutationBudgetGuardToRetryableNoSend(t *testing
 			require.Equal(t, http.StatusServiceUnavailable, response.Code, response.Body.String())
 			require.Equal(t, "1", response.Header().Get("Retry-After"))
 			require.EqualValues(t, 1, mutationCalls.Load())
-			require.Contains(t, response.Body.String(), "mutation was sent")
+			require.Contains(t, response.Body.String(), "Nothing was added to Hardcover")
 			require.NotContains(t, response.Body.String(), "may have processed")
 			stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
 			require.NoError(t, err)
@@ -2544,4 +2545,54 @@ func TestCheckEditionImportRecoveryWithConcreteClients(t *testing.T) {
 	require.Equal(t, "42", association.HardcoverBookID)
 	require.Equal(t, "84", association.HardcoverEditionID)
 	require.Equal(t, "B0SOURCE12:uk", association.RegionalExternalID)
+}
+
+func TestWriteEditionCreateErrorExplainsDailyQuotaBudgetWithoutRetryAfter(t *testing.T) {
+	tests := []struct {
+		name        string
+		budgetCause error
+		quotaCause  error
+		wantMessage string
+	}{
+		{
+			name:        "low quota in audiobook wrapper",
+			budgetCause: errEditionCreateInsufficientBudget,
+			quotaCause:  hardcover.ErrMutationDailyQuotaLow,
+			wantMessage: "Hardcover's daily API quota is running low. Nothing was added to Hardcover. Please wait until Hardcover's daily API quota resets, then try again.",
+		},
+		{
+			name:        "low quota in ebook wrapper",
+			budgetCause: errors.Join(edition.ErrCreateEditionPreMutation, edition.ErrCreateEditionInsufficientMutationBudget),
+			quotaCause:  hardcover.ErrMutationDailyQuotaLow,
+			wantMessage: "Hardcover's daily API quota is running low. Nothing was added to Hardcover. Please wait until Hardcover's daily API quota resets, then try again.",
+		},
+		{
+			name:        "exhausted quota in ebook wrapper",
+			budgetCause: errors.Join(edition.ErrCreateEditionPreMutation, edition.ErrCreateEditionInsufficientMutationBudget),
+			quotaCause:  hardcover.ErrMutationDailyQuotaExhausted,
+			wantMessage: "Hardcover's daily API quota is exhausted. Nothing was added to Hardcover. Please wait until Hardcover's daily API quota resets, then try again.",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler := &Handler{}
+			response := httptest.NewRecorder()
+
+			err := errors.Join(test.budgetCause, hardcover.ErrMutationInsufficientBudget, test.quotaCause)
+			handler.writeEditionCreateError(response, "profile", err, nil)
+
+			require.Equal(t, http.StatusServiceUnavailable, response.Code)
+			require.Empty(t, response.Header().Get("Retry-After"), "the server does not know the quota reset time")
+			var payload struct {
+				Error     string `json:"error"`
+				ErrorCode string `json:"error_code"`
+				Outcome   string `json:"outcome"`
+			}
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &payload))
+			require.Equal(t, test.wantMessage, payload.Error)
+			require.Equal(t, "edition_create_not_submitted", payload.ErrorCode)
+			require.Equal(t, editionOutcomeNotSubmitted, payload.Outcome)
+			require.NotContains(t, payload.Error, "may have processed")
+		})
+	}
 }

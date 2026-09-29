@@ -1349,7 +1349,8 @@ paths:
         '503':
           description: >-
             The create service is shutting down, source lookup leaves too little
-            time for a Hardcover write (with Retry-After: 1), a dependency request timed out,
+            time for a Hardcover write (with Retry-After: 1), low or exhausted daily
+            Hardcover quota prevents admission before the write deadline, a dependency request timed out,
             source-ASIN Audnexus region discovery was rate limited or transiently
             unavailable, or the Hardcover regional import timed out. Region
             discovery stops before the reserved Hardcover write time; when it

@@ -1413,11 +1413,18 @@ test('closing an ambiguous import and reopening the item restores recovery witho
 });
 
 test('not-submitted create response offers retry while generic proxy errors and transport timeouts do not', async () => {
-    const safeRetry = editionApp();
-    const retryDialog = stubDialog(safeRetry, 503, { success: false, error: 'Hardcover was not contacted', error_code: 'edition_not_submitted', outcome: 'not_submitted' });
-    await safeRetry.submitEditionCreate();
-    assert.match(safeRetry.renderEditionDialog(retryDialog), /data-edition-dialog="retry-create"/);
-    assert.match(safeRetry.renderEditionDialog(retryDialog), /class="edition-form"/);
+    for (const message of [
+        'The request took too long to add this edition. Nothing was added to Hardcover. Please try again.',
+        "Hardcover's daily API quota is running low. Nothing was added to Hardcover. Please wait until Hardcover's daily API quota resets, then try again."
+    ]) {
+        const safeRetry = editionApp();
+        const retryDialog = stubDialog(safeRetry, 503, { success: false, error: message, error_code: 'edition_create_not_submitted', outcome: 'not_submitted' });
+        await safeRetry.submitEditionCreate();
+        const html = safeRetry.renderEditionDialog(retryDialog);
+        assert.ok(html.includes(safeRetry.escapeHtml(message)));
+        assert.match(html, /data-edition-dialog="retry-create"[^>]*>Retry add edition<\/button>/);
+        assert.match(html, /class="edition-form"/);
+    }
 
     const proxyError = editionApp();
     const unknownDialog = stubDialog(proxyError, 503, {});
@@ -1426,7 +1433,7 @@ test('not-submitted create response offers retry while generic proxy errors and 
     assert.match(html, /The import result is unknown/);
     assert.match(html, /HTTP 503/);
     assert.match(html, /Open Hardcover/);
-    assert.doesNotMatch(html, /data-edition-dialog="confirm-create"|data-edition-dialog="check-import"|Retry import/);
+    assert.doesNotMatch(html, /data-edition-dialog="confirm-create"|data-edition-dialog="check-import"|Retry add edition/);
 
     const timeout = editionApp();
     const timeoutDialog = stubDialog(timeout, 0, {});

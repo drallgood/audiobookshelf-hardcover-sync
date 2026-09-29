@@ -29,6 +29,9 @@ var (
 	ErrRateLimited = errors.New("rate limited")
 	// ErrRetryAfter is returned when the server specifies a retry-after duration
 	ErrRetryAfter = errors.New("retry after")
+	// ErrAdmissionWaitCanceled marks cancellation while waiting for rate pacing,
+	// after the concurrency permit was acquired. It always wraps the context error.
+	ErrAdmissionWaitCanceled = errors.New("rate-limit admission wait canceled")
 	// DefaultRate is the default minimum time between requests (2s = 0.5 req/s)
 	DefaultRate = 2 * time.Second
 	// DefaultMaxBackoff is the default maximum backoff time (increased for more conservative behavior)
@@ -57,9 +60,11 @@ type RateLimiter struct {
 	scheduleChanged chan struct{}
 
 	// Daily limit tracking from IETF RateLimit headers
-	dailyRemaining int
-	dailyLimit     int
-	dailyResetSec  int
+	dailyRemaining    int
+	dailyLimit        int
+	dailyResetSec     int
+	dailyQuotaRate    time.Duration
+	dailyQuotaResetAt time.Time
 
 	// Concurrency control
 	semaphore chan struct{} // Buffered channel used as a semaphore
@@ -122,6 +127,24 @@ func (r *RateLimiter) DailyQuotaPaused() bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return time.Now().Before(r.dailyPauseUntil)
+}
+
+// DailyQuotaConstrainingAdmission reports whether a known, non-exhausted daily
+// quota is currently causing the next request's pacing wait. The result is
+// false after the reported reset, when another backoff takes precedence, or
+// when a later daily header restores ordinary pacing.
+func (r *RateLimiter) DailyQuotaConstrainingAdmission() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	now := time.Now()
+	readyAt := r.last.Add(r.rate)
+	return r.dailyQuotaRate > r.minRate &&
+		r.rate == r.dailyQuotaRate &&
+		!r.dailyQuotaResetAt.IsZero() &&
+		now.Before(r.dailyQuotaResetAt) &&
+		readyAt.After(now) &&
+		!r.backoffUntil.After(readyAt)
 }
 
 // NewRateLimiter creates a new RateLimiter with the specified pacing and concurrency limits.
@@ -222,7 +245,7 @@ func (r *RateLimiter) Acquire(ctx context.Context) (func(), error) {
 		case <-ctx.Done():
 			stopAndDrainTimer(timer)
 			release()
-			return nil, ctx.Err()
+			return nil, fmt.Errorf("%w: %w", ErrAdmissionWaitCanceled, ctx.Err())
 		case <-scheduleChanged:
 			stopAndDrainTimer(timer)
 			// Recalculate immediately when rate-limit headers change the
@@ -292,6 +315,8 @@ func (r *RateLimiter) ResetRate() {
 	// Reset the backoff period
 	r.backoffUntil = time.Time{}
 	r.dailyPauseUntil = time.Time{}
+	r.dailyQuotaRate = r.minRate
+	r.dailyQuotaResetAt = time.Time{}
 	// Reset the backoff factor to the default
 	r.backoffFactor = DefaultBackoffFactor
 	// Reset the jitter factor to the default
@@ -667,8 +692,12 @@ func (r *RateLimiter) applyIETFHeaders(remaining, reset map[string]int, h http.H
 			r.dailyResetSec = t
 		}
 
+		// A new daily bucket snapshot supersedes any prior low-quota pacing.
+		r.dailyQuotaRate = r.minRate
+		r.dailyQuotaResetAt = time.Time{}
 		if r.dailyRemaining <= 0 && reset[dailyName] > 0 {
 			resetSeconds := reset[dailyName]
+			r.dailyQuotaResetAt = time.Now().Add(boundedSecondsDuration(resetSeconds, 1, DefaultMaxDailyResetWait))
 			appliedPause := r.applyDailyResetWait(resetSeconds)
 			logs = append(logs, rateLimiterLogEntry{
 				level:   rateLimiterLogWarn,
@@ -685,10 +714,14 @@ func (r *RateLimiter) applyIETFHeaders(remaining, reset map[string]int, h http.H
 			if pct < 1.0 {
 				recoveryWindow := boundedSecondsDuration(reset[dailyName], 1, DefaultMaxDailyResetWait)
 				if recoveryWindow > 0 {
-					desiredRate = max(desiredRate, recoveryWindow/time.Duration(r.dailyRemaining))
+					r.dailyQuotaRate = max(r.minRate, recoveryWindow/time.Duration(r.dailyRemaining))
 				} else {
-					desiredRate = max(desiredRate, r.minRate*2)
+					r.dailyQuotaRate = r.minRate * 2
 				}
+				if reset[dailyName] > 0 {
+					r.dailyQuotaResetAt = time.Now().Add(recoveryWindow)
+				}
+				desiredRate = max(desiredRate, r.dailyQuotaRate)
 				logs = append(logs, rateLimiterLogEntry{
 					level:   rateLimiterLogWarn,
 					message: "Daily rate limit nearly exhausted, slowing down",

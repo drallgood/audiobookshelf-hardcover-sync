@@ -125,7 +125,9 @@ unconfirmed and preserves its recovery details so the status check can be
 retried. Reloading during creation also preserves an unknown-outcome marker
 and blocks another import; inspect Hardcover and run a new sync when no
 confirmation was received. Expand technical details for the HTTP status and
-error code.
+error code. If low daily Hardcover API quota prevents submission, the dialog
+explains that nothing was added and asks you to wait until the quota resets.
+Use **Retry add edition** once the service is available again.
 
 Matched results show their current Hardcover book and edition with **Forget
 match**. If a saved match exists, confirmation removes only this app's saved

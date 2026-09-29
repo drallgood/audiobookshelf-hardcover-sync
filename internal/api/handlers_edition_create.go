@@ -949,9 +949,16 @@ func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID strin
 		respond(http.StatusConflict, err.Error())
 	case errors.Is(err, multiuser.ErrServiceShuttingDown):
 		respond(http.StatusServiceUnavailable, "Edition creation service is shutting down; retry shortly")
-	case errors.Is(err, errEditionCreateInsufficientBudget):
-		w.Header().Set("Retry-After", "1")
-		respond(http.StatusServiceUnavailable, "Too little request time remained to safely start the Hardcover write; no mutation was sent. Retry the edition create")
+	case errors.Is(err, errEditionCreateInsufficientBudget), errors.Is(err, edition.ErrCreateEditionInsufficientMutationBudget):
+		switch {
+		case errors.Is(err, hardcover.ErrMutationDailyQuotaLow):
+			respond(http.StatusServiceUnavailable, "Hardcover's daily API quota is running low. Nothing was added to Hardcover. Please wait until Hardcover's daily API quota resets, then try again.")
+		case errors.Is(err, hardcover.ErrMutationDailyQuotaExhausted):
+			respond(http.StatusServiceUnavailable, "Hardcover's daily API quota is exhausted. Nothing was added to Hardcover. Please wait until Hardcover's daily API quota resets, then try again.")
+		default:
+			w.Header().Set("Retry-After", "1")
+			respond(http.StatusServiceUnavailable, "The request took too long to add this edition. Nothing was added to Hardcover. Please try again.")
+		}
 	case errors.Is(err, errEditionCreateDiscoveryBudget):
 		respond(http.StatusServiceUnavailable, "Audnexus region discovery could not finish before the Hardcover write deadline; no mutation was sent. Supply audible_identifier (ASIN:region) to skip discovery")
 	case errors.Is(err, multiuser.ErrProfileStateBusy):
@@ -964,9 +971,6 @@ func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID strin
 		respond(http.StatusInternalServerError, "Local profile or state data could not be prepared for edition creation")
 	case errors.Is(err, hardcover.ErrMutationScopeDenied):
 		respond(http.StatusForbidden, "Hardcover token is missing catalogue write permission; no edition was created")
-	case errors.Is(err, edition.ErrCreateEditionInsufficientMutationBudget):
-		w.Header().Set("Retry-After", "1")
-		respond(http.StatusServiceUnavailable, "Edition lookups left too little time to safely start a Hardcover write; no edition mutation was sent. Retry the edition create")
 	case errors.Is(err, edition.ErrCreateEditionPreMutation):
 		if errors.Is(err, edition.ErrEditionBelongsToOtherBook) {
 			respond(http.StatusConflict, err.Error())
