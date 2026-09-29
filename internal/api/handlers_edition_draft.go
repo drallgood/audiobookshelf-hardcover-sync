@@ -33,6 +33,7 @@ type editionDraftResponse struct {
 	ConfirmedRegion            string                      `json:"confirmed_region,omitempty"`
 	AudibleIdentifierCandidate *audibleIdentifierCandidate `json:"audible_identifier_candidate,omitempty"`
 	MetadataPreview            *audiobookMetadataPreview   `json:"metadata_preview,omitempty"`
+	AudnexusDetails            *audnexusDetails            `json:"audnexus_details,omitempty"`
 	EbookCandidate             *ebookEditionCandidate      `json:"ebook_candidate,omitempty"`
 	Warnings                   []editionDraftWarning       `json:"warnings,omitempty"`
 }
@@ -68,6 +69,14 @@ type audiobookMetadataPreview struct {
 	EditionInformation string `json:"edition_information"`
 	AudioSeconds       int    `json:"audio_seconds"`
 	editionDraftISBNFields
+}
+
+type audnexusDetails struct {
+	Title       string `json:"title"`
+	Author      string `json:"author,omitempty"`
+	Narrator    string `json:"narrator,omitempty"`
+	ReleaseDate string `json:"release_date,omitempty"`
+	FormatType  string `json:"format_type,omitempty"`
 }
 
 type ebookEditionCandidate struct {
@@ -192,6 +201,7 @@ func (h *Handler) GetEditionSourceDraft(w http.ResponseWriter, r *http.Request) 
 				draft.RegionStatus = "confirmed"
 				draft.ConfirmedRegion = region
 				draft.AudibleIdentifierCandidate.Region = region
+				draft.AudnexusDetails = buildAudnexusDetails(found)
 				if found.ReleaseDate != "" {
 					if date, ok := normalizeDraftDate(found.ReleaseDate); ok {
 						draft.MetadataPreview.ReleaseDate = date
@@ -208,6 +218,29 @@ func (h *Handler) GetEditionSourceDraft(w http.ResponseWriter, r *http.Request) 
 	}
 
 	h.writeSuccessResponse(w, draft)
+}
+
+func buildAudnexusDetails(book *audnex.Book) *audnexusDetails {
+	details := &audnexusDetails{
+		Title:      strings.TrimSpace(book.Title),
+		Author:     joinAudnexNames(book.GetAuthorsAsStrings()),
+		Narrator:   joinAudnexNames(book.GetNarratorsAsStrings()),
+		FormatType: strings.TrimSpace(book.FormatType),
+	}
+	if releaseDate, ok := normalizeDraftDate(book.ReleaseDate); ok {
+		details.ReleaseDate = releaseDate
+	}
+	return details
+}
+
+func joinAudnexNames(values []string) string {
+	names := make([]string, 0, len(values))
+	for _, value := range values {
+		if name := strings.TrimSpace(value); name != "" {
+			names = append(names, name)
+		}
+	}
+	return strings.Join(names, ", ")
 }
 
 func buildEditionSourceDraft(book *models.AudiobookshelfBook, dryRun bool) *editionDraftResponse {

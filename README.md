@@ -150,8 +150,13 @@ successful non-dry-run completion.
 `GET /api/profiles/{id}/edition-drafts/source/{itemID}` previews an
 Audiobookshelf item's identifiers and metadata for a later add-edition flow.
 Audiobook drafts keep the source ASIN separate from any region confirmed by
-Audnex; an unknown or temporarily unavailable region is never guessed. Ebook
-drafts include candidate edition fields. A usable ASIN or ISBN is required for
+Audnex; an unknown or temporarily unavailable region is never guessed. The
+Audiobookshelf metadata preview stays sourced from Audiobookshelf, apart from
+its existing release-date override when Audnex returns a usable date. A
+separate Audnexus details section appears only when Audnex confirms the exact
+source ASIN and region. The Sync Status add-edition flow requires audiobooks to
+have a valid Audiobookshelf ASIN; ebooks may use an ISBN. Ebook drafts include
+candidate edition fields. A usable ASIN or ISBN is required for draft
 eligibility. The endpoint makes no Hardcover requests or catalogue changes.
 See [OpenAPI](docs/openapi.yaml) for response fields and warnings.
 

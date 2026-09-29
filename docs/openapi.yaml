@@ -249,7 +249,7 @@ components:
 
     EditionSourceDraft:
       type: object
-      description: Read-only edition candidate built from one expanded Audiobookshelf item. The handler reads Audiobookshelf and may read Audnex; it makes no Hardcover requests and performs no catalogue mutation. `metadata_preview` is present only for audiobooks, and `ebook_candidate` is present only for ebooks.
+      description: Read-only edition candidate built from one expanded Audiobookshelf item. The handler reads Audiobookshelf and may read Audnex; it makes no Hardcover requests and performs no catalogue mutation. `metadata_preview` is present only for audiobooks and remains Audiobookshelf metadata apart from its established release-date override from a confirmed Audnex result. `audnexus_details` is present only after Audnex returns the exact source ASIN in a confirmed region. `ebook_candidate` is present only for ebooks.
       required: [abs_item_id, reading_format, dry_run, eligible, source_identifiers]
       properties:
         abs_item_id:
@@ -290,6 +290,8 @@ components:
           $ref: '#/components/schemas/AudibleIdentifierCandidate'
         metadata_preview:
           $ref: '#/components/schemas/AudiobookMetadataPreview'
+        audnexus_details:
+          $ref: '#/components/schemas/AudnexusDetails'
         ebook_candidate:
           $ref: '#/components/schemas/EbookEditionCandidate'
         warnings:
@@ -440,6 +442,26 @@ components:
         correction_allowed:
           type: boolean
           description: Whether the regional Audible identifier can be corrected in a later add-edition workflow.
+
+    AudnexusDetails:
+      type: object
+      description: Read-only details from the Audnex book returned for the exact source ASIN in a confirmed region. Omitted when discovery is unavailable, misses, or returns a different ASIN.
+      required: [title]
+      properties:
+        title: {type: string}
+        author:
+          type: string
+          description: Author names from Audnex, joined when more than one is present.
+        narrator:
+          type: string
+          description: Narrator names from Audnex, joined when more than one is present.
+        release_date:
+          type: string
+          format: date
+          description: Normalized Audnex release date when recognized; omitted when Audnex has no usable date.
+        format_type:
+          type: string
+          description: Audnex formatType value as returned, without translating it into an abridgment label.
 
     EditionDraftISBNFields:
       type: object

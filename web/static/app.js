@@ -1865,8 +1865,16 @@ class SyncProfileApp {
         if (!runContext || !['completed', 'canceled'].includes(runContext.state)) return 'Wait for the run to complete.';
         if (!/^\d+$/.test(String(record.hardcover_book_id || '').trim())) return 'No Hardcover book was matched for this item.';
         if (!['audiobook', 'ebook'].includes(String(record.format || '').trim().toLowerCase())) return 'The reading format is unknown.';
+        const audioASINReason = this.audiobookSourceASINIneligibleReason(record.format, record.asin);
+        if (audioASINReason) return audioASINReason;
         if (!String(record.asin || '').trim() && !String(record.isbn || '').trim()) return 'The item needs an ASIN or ISBN.';
         return null;
+    }
+
+    audiobookSourceASINIneligibleReason(format, asin) {
+        if (String(format || '').trim().toLowerCase() !== 'audiobook') return '';
+        if (/^[a-z0-9]{10}$/i.test(String(asin || '').trim())) return '';
+        return 'Audiobook edition creation requires a valid 10-character ASIN from Audiobookshelf.';
     }
 
     renderEditionActions(record) {
@@ -2093,6 +2101,7 @@ class SyncProfileApp {
         const dryRun = Boolean(draft.dry_run || dialog.capability?.dry_run || dialog.runDryRun);
         const syncing = this.profileIsSyncing(dialog.profileId);
         const ids = draft.source_identifiers || {};
+        const audioASINReason = this.audiobookSourceASINIneligibleReason(draft.reading_format, ids.asin);
         const isbn = String(ids.isbn || '').trim();
         const series = this.formatSeries(record.series, record.series_number);
         const sourceHtml = `<section class="hardcover-candidate" aria-label="From Audiobookshelf">
@@ -2140,22 +2149,23 @@ class SyncProfileApp {
             } else {
                 regionHtml = '<div class="edition-region review">No regional Audible identifier is available yet. The app will retry region discovery during creation; the import proceeds only if a region is confirmed.</div>';
             }
-            const m = draft.metadata_preview;
-            if (m) {
+            const audnexus = draft.audnexus_details;
+            if (audnexus) {
                 audnexHtml = `<details class="edition-source-section edition-audnex-preview">
                     <summary>Audnexus details <span class="edition-note">(helps to verify the match)</span></summary>
                     <div class="book-meta edition-preview">
-                        <span><strong>Title:</strong> ${this.escapeHtml(m.title)}</span>
-                        ${m.author ? `<span><strong>Author:</strong> ${this.escapeHtml(m.author)}</span>` : ''}
-                        ${m.narrator ? `<span><strong>Narrator:</strong> ${this.escapeHtml(m.narrator)}</span>` : ''}
-                        ${m.release_date ? `<span><strong>Release date:</strong> ${this.escapeHtml(m.release_date)}</span>` : ''}
-                        ${m.edition_information ? `<span><strong>Edition:</strong> ${this.escapeHtml(m.edition_information)}</span>` : ''}
+                        <span><strong>Title:</strong> ${this.escapeHtml(audnexus.title)}</span>
+                        ${audnexus.author ? `<span><strong>Author:</strong> ${this.escapeHtml(audnexus.author)}</span>` : ''}
+                        ${audnexus.narrator ? `<span><strong>Narrator:</strong> ${this.escapeHtml(audnexus.narrator)}</span>` : ''}
+                        ${audnexus.release_date ? `<span><strong>Release date:</strong> ${this.escapeHtml(audnexus.release_date)}</span>` : ''}
+                        ${audnexus.format_type ? `<span><strong>Format type:</strong> ${this.escapeHtml(audnexus.format_type)}</span>` : ''}
                     </div>
                 </details>`;
             }
         }
         const blockers = [];
         if (!draft.eligible) blockers.push(draft.ineligible_reason || 'This item is not eligible for edition creation.');
+        if (audioASINReason) blockers.push(audioASINReason);
         if (gate.blocked) blockers.push(gate.reason);
         if (dryRun) blockers.push('This profile is in dry run: no edition can be created and no resync is offered.');
         if (syncing) blockers.push('A sync is running for this profile; try again when it finishes.');

@@ -359,7 +359,10 @@ test('create action requires an eligible needs-review record with an identifier 
     const app = editionApp();
     const ctx = app.openSummary.runContext;
     assert.equal(app.editionCreateIneligibleReason(needsReview, ctx), null);
-    assert.match(app.editionCreateIneligibleReason({ ...needsReview, asin: '', isbn: '' }, ctx), /ASIN or ISBN/);
+    assert.match(app.editionCreateIneligibleReason({ ...needsReview, asin: '', isbn: '' }, ctx), /valid 10-character ASIN from Audiobookshelf/);
+    assert.match(app.editionCreateIneligibleReason({ ...needsReview, asin: '', isbn: '9780306406157' }, ctx), /valid 10-character ASIN from Audiobookshelf/);
+    assert.match(app.editionCreateIneligibleReason({ ...needsReview, asin: 'bad', isbn: '9780306406157' }, ctx), /valid 10-character ASIN from Audiobookshelf/);
+    assert.equal(app.editionCreateIneligibleReason({ ...needsReview, format: 'ebook', asin: '', isbn: '9780306406157' }, ctx), null);
     assert.ok(app.editionCreateIneligibleReason({ ...needsReview, hardcover_book_id: '' }, ctx));
     assert.ok(app.editionCreateIneligibleReason({ ...needsReview, outcome: 'not_found' }, ctx));
     assert.ok(app.editionCreateIneligibleReason(needsReview, { ...ctx, state: 'running' }));
@@ -376,6 +379,8 @@ test('an ineligible needs-review record still shows a disabled Add edition butto
     const app = editionApp();
     const html = app.renderEditionActions({ ...needsReview, hardcover_book_id: '' });
     assert.match(html, /data-edition-action="add"[^>]*disabled[^>]*title="No Hardcover book was matched for this item\."/);
+    const isbnOnlyAudio = app.renderEditionActions({ ...needsReview, asin: '', isbn: '9780306406157' });
+    assert.match(isbnOnlyAudio, /data-edition-action="add"[^>]*disabled[^>]*valid 10-character ASIN from Audiobookshelf/);
 });
 
 test('Add edition waits for the profile capability and disables only a confirmed format denial', () => {
@@ -535,6 +540,7 @@ test('audiobook dialog shows region states, escapes ABS strings, and offers only
     };
     const html = app.renderEditionDialog(dialog);
     assert.doesNotMatch(html, /<script>|<img src=x|<b>Dune/);
+    assert.doesNotMatch(html, /Audnexus details/);
     assert.match(html, /could not be confirmed/);
     assert.doesNotMatch(html, /Permission unverified|permission is unverified|cannot be checked/);
     assert.doesNotMatch(html, /name="audible_identifier"/);
@@ -543,6 +549,50 @@ test('audiobook dialog shows region states, escapes ABS strings, and offers only
 
     const unavailable = app.renderEditionDialog({ ...dialog, draft: { ...dialog.draft, region_status: 'temporarily_unavailable' } });
     assert.match(unavailable, /temporarily unavailable/);
+});
+
+test('Audnexus details render only the independent Audnex preview fields', () => {
+    const app = editionApp();
+    const html = app.renderEditionDialog({
+        mode: 'create', profileId: 'p1', runId: 'run-1', record: needsReview, loading: false, busy: false,
+        capability: null,
+        draft: {
+            reading_format: 'audiobook', eligible: true, dry_run: false, region_status: 'confirmed', confirmed_region: 'uk',
+            source_identifiers: { asin: 'B00ABC1234' }, audible_identifier_candidate: { asin: 'B00ABC1234' },
+            metadata_preview: { title: 'ABS title', author: 'ABS author', narrator: 'ABS narrator', edition_information: 'Abridged' },
+            audnexus_details: { title: 'Audnex title', author: 'Audnex author', narrator: 'Audnex narrator', release_date: '2023-08-09', format_type: 'Enhanced Audio' }
+        }
+    });
+    const section = html.match(/<details class="edition-source-section edition-audnex-preview">([\s\S]*?)<\/details>/)?.[1] || '';
+    assert.match(html, /Audnexus details <span class="edition-note">\(helps to verify the match\)<\/span>/);
+    assert.match(section, /Audnex title/);
+    assert.match(section, /Audnex author/);
+    assert.match(section, /Audnex narrator/);
+    assert.match(section, /2023-08-09/);
+    assert.match(section, /Format type:<\/strong> Enhanced Audio/);
+    assert.doesNotMatch(section, /ABS title|ABS author|ABS narrator|Abridged/);
+});
+
+test('an audiobook preview with no valid source ASIN cannot be confirmed, even if the draft was eligible', () => {
+    const app = editionApp();
+    const dialog = {
+        mode: 'create', profileId: 'p1', runId: 'run-1', record: needsReview, loading: false, busy: false,
+        capability: null,
+        draft: {
+            reading_format: 'audiobook', eligible: true, dry_run: false, region_status: 'unknown',
+            source_identifiers: { asin: '', isbn: '9780306406157' },
+            audible_identifier_candidate: { asin: '' }
+        }
+    };
+    const html = app.renderEditionDialog(dialog);
+    assert.match(html, /Audiobook edition creation requires a valid 10-character ASIN from Audiobookshelf/);
+    assert.match(html, /data-edition-dialog="confirm-create"[^>]*disabled/);
+
+    const validUnknownRegion = app.renderEditionDialog({
+        ...dialog,
+        draft: { ...dialog.draft, source_identifiers: { asin: 'B00ABC1234', isbn: '9780306406157' } }
+    });
+    assert.doesNotMatch(validUnknownRegion, /data-edition-dialog="confirm-create"[^>]*disabled/);
 });
 
 test('the Audible identifier is always plain text, never an editable field', () => {
