@@ -299,7 +299,7 @@ func (h *Handler) CheckEditionImport(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if errors.Is(err, errEditionRecoveryInvalid) {
-			h.writeEditionCreateStructuredError(w, http.StatusConflict, "Recovery token is invalid or expired; refresh the edition draft and inspect Hardcover", "edition_recovery_invalid", editionOutcomeNotSubmitted, nil)
+			h.writeEditionCreateStructuredError(w, http.StatusConflict, "Recovery token is invalid; refresh the edition draft and inspect Hardcover", "edition_recovery_invalid", editionOutcomeNotSubmitted, nil)
 			return
 		}
 		h.writeEditionCreateError(w, profileID, err, recovery)

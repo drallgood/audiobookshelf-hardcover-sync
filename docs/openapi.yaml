@@ -1462,7 +1462,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '502':
-          description: Hardcover confirmed the edition but local association saving failed.
+          description: Hardcover import failed, was not found, or the local association could not be saved after a confirmed result.
           content:
             application/json:
               schema:
