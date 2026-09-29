@@ -2005,7 +2005,7 @@ class SyncProfileApp {
         dialog.controller = controller;
         this.showEditionDialog();
         const base = this.profileUrl(dialog.profileId);
-        // The server allows up to 25s for region/Audnex discovery on this
+        // The server allows up to 25s for region/Audnexus discovery on this
         // endpoint (defaultEditionDraftRequestTimeout); give it enough room.
         const options = { credentials: 'include', timeoutMs: 30000, ...(controller ? { signal: controller.signal } : {}) };
         try {
@@ -2188,7 +2188,7 @@ class SyncProfileApp {
     // the displayed counterpart so the server's ISBN correction can retain it.
     // Audiobook metadata is never sent because the server treats it as
     // preview-only. The Audible identifier is never user-entered; send it only
-    // when Audiobookshelf and Audnex already confirmed it. Otherwise the app
+    // when Audiobookshelf and Audnexus already confirmed it. Otherwise the app
     // retries region discovery before submitting the import.
     buildEditionCreateBody(dialog, fields, resync) {
         const body = { run_id: dialog.runId, abs_item_id: String(dialog.record.book_id) };

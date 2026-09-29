@@ -630,7 +630,7 @@ func TestGetEditionSourceDraftMalformedASINWithValidISBNRemainsEligible(t *testi
 	require.Equal(t, 1, countEditionDraftWarnings(envelope.Data, "invalid_source_asin"), "invalid_source_asin warning should appear exactly once")
 	warning := editionDraftWarningByCode(envelope.Data, "invalid_source_asin")
 	require.NotNil(t, warning)
-	require.Contains(t, warning.Message, "Audnex region discovery is skipped")
+	require.Contains(t, warning.Message, "Audnexus region discovery is skipped")
 	require.Zero(t, fixture.hardcoverRequests.Load())
 }
 

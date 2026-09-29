@@ -13,7 +13,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 )
 
-// Client represents an Audnex API client
+// Client represents an Audnexus API client
 type Client struct {
 	httpClient *http.Client
 	baseURL    string
@@ -21,17 +21,17 @@ type Client struct {
 }
 
 var (
-	// ErrNotFound identifies an Audnex response indicating that a book is absent
+	// ErrNotFound identifies an Audnexus response indicating that a book is absent
 	// from the requested region.
-	ErrNotFound = errors.New("Audnex book not found")
-	// ErrRateLimited identifies an Audnex rate-limit response.
-	ErrRateLimited = errors.New("Audnex rate limited")
+	ErrNotFound = errors.New("Audnexus book not found")
+	// ErrRateLimited identifies an Audnexus rate-limit response.
+	ErrRateLimited = errors.New("Audnexus rate limited")
 	// ErrTransient identifies a request that failed temporarily after retries, or
 	// a 400 or 403 response, which is retryable rather than evidence of absence.
-	ErrTransient = errors.New("Audnex request temporarily unavailable")
+	ErrTransient = errors.New("Audnexus request temporarily unavailable")
 )
 
-// APIError describes a typed Audnex API failure. Use errors.Is with
+// APIError describes a typed Audnexus API failure. Use errors.Is with
 // ErrNotFound, ErrRateLimited, or ErrTransient to classify it.
 type APIError struct {
 	Kind       error
@@ -62,13 +62,13 @@ func (e *APIError) Unwrap() []error {
 
 const regionDiscoveryTimeout = 30 * time.Second
 
-// Author represents an author from the Audnex API
+// Author represents an author from the Audnexus API
 type Author struct {
 	Name string `json:"name,omitempty"`
 	// Add other author fields as they become known
 }
 
-// Book represents a book from the Audnex API
+// Book represents a book from the Audnexus API
 type Book struct {
 	ASIN             string      `json:"asin"`
 	Title            string      `json:"title"`
@@ -145,7 +145,7 @@ func (b *Book) GetNarratorsAsStrings() []string {
 	return narrators
 }
 
-// NewClient creates a new Audnex API client
+// NewClient creates a new Audnexus API client
 func NewClient(logger *logger.Logger) *Client {
 	return &Client{
 		httpClient: &http.Client{
@@ -203,7 +203,7 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 		url = fmt.Sprintf("%s?region=%s", url, region)
 	}
 
-	c.logger.Debug("Making request to Audnex API", map[string]interface{}{
+	c.logger.Debug("Making request to Audnexus API", map[string]interface{}{
 		"method": "GetBookByASIN",
 		"asin":   asin,
 		"region": region,
@@ -221,7 +221,7 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 		// If this is a retry, log it and wait with exponential backoff
 		if attempt > 0 {
 			backoff := initialBackoff * time.Duration(1<<uint(attempt-1))
-			c.logger.Debug("Retrying Audnex API request", map[string]interface{}{
+			c.logger.Debug("Retrying Audnexus API request", map[string]interface{}{
 				"attempt":    attempt + 1,
 				"max":        maxRetries,
 				"asin":       asin,
@@ -252,12 +252,12 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 		}
 
 		// Retry server errors and request timeouts. GET is safe to retry, and
-		// Audnex 408 responses indicate a temporary failure rather than a bad
+		// Audnexus 408 responses indicate a temporary failure rather than a bad
 		// request for this region.
 		if resp.StatusCode == http.StatusRequestTimeout || (resp.StatusCode >= 500 && resp.StatusCode < 600) {
 			lastStatusCode = resp.StatusCode
 			_ = resp.Body.Close()
-			c.logger.Warn("Received retryable response from Audnex API", map[string]interface{}{
+			c.logger.Warn("Received retryable response from Audnexus API", map[string]interface{}{
 				"method":      "GetBookByASIN",
 				"asin":        asin,
 				"region":      region,
@@ -272,7 +272,7 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusNotFound {
-				c.logger.Debug("Audnex book was not found in region", map[string]interface{}{
+				c.logger.Debug("Audnexus book was not found in region", map[string]interface{}{
 					"method":      "GetBookByASIN",
 					"asin":        asin,
 					"region":      region,
@@ -281,7 +281,7 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 				return nil, &APIError{Kind: ErrNotFound, StatusCode: resp.StatusCode}
 			}
 			if resp.StatusCode == http.StatusTooManyRequests {
-				c.logger.Warn("Audnex rate limit reached", map[string]interface{}{
+				c.logger.Warn("Audnexus rate limit reached", map[string]interface{}{
 					"method":      "GetBookByASIN",
 					"asin":        asin,
 					"region":      region,
@@ -290,9 +290,9 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 				return nil, &APIError{Kind: ErrRateLimited, StatusCode: resp.StatusCode}
 			}
 			if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusForbidden {
-				// Audnex can answer a region with 400 or 403 for a temporary or
+				// Audnexus can answer a region with 400 or 403 for a temporary or
 				// regional reason, so callers must not read it as an absent ASIN.
-				c.logger.Warn("Audnex rejected the request for region", map[string]interface{}{
+				c.logger.Warn("Audnexus rejected the request for region", map[string]interface{}{
 					"method":      "GetBookByASIN",
 					"asin":        asin,
 					"region":      region,
@@ -344,7 +344,7 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 	}
 
 	// If we get here, we've exhausted all retries
-	c.logger.Error("Exhausted all retries for Audnex API request", map[string]interface{}{
+	c.logger.Error("Exhausted all retries for Audnexus API request", map[string]interface{}{
 		"method":      "GetBookByASIN",
 		"asin":        asin,
 		"max_retries": maxRetries,
@@ -357,9 +357,9 @@ func (c *Client) GetBookByASIN(ctx context.Context, asin, region string) (*Book,
 	}
 }
 
-// DiscoverBookByASIN searches the preferred Audnex region first, then each
+// DiscoverBookByASIN searches the preferred Audnexus region first, then each
 // remaining supported region once. A successful result is returned only when
-// Audnex reports the requested ASIN exactly. A completed sweep with no match
+// Audnexus reports the requested ASIN exactly. A completed sweep with no match
 // returns a nil book, empty region, and nil error; rate limits and transient
 // failures stop the sweep and return a typed error. The 30-second overall
 // deadline includes each region's request retries and can be shortened by ctx.

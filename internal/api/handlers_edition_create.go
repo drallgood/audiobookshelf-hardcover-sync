@@ -250,7 +250,7 @@ var errStaleEditionCreateRun = errors.New("sync run no longer contains a usable 
 var errEditionCreateSourceChanged = errors.New("Audiobookshelf source data or reading format changed; run a new sync before adding an edition")
 var errEditionCreateInvalidInput = errors.New("invalid edition create input")
 var errEditionCreateInsufficientBudget = errors.New("edition create has too little time remaining for a Hardcover write")
-var errEditionCreateDiscoveryBudget = errors.New("Audnex region discovery could not finish before the Hardcover write deadline")
+var errEditionCreateDiscoveryBudget = errors.New("Audnexus region discovery could not finish before the Hardcover write deadline")
 
 func requireEditionCreateMutationBudget(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
@@ -369,7 +369,7 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 		}
 		if discoverErr != nil {
 			if errors.Is(discoverErr, audnex.ErrRateLimited) || errors.Is(discoverErr, audnex.ErrTransient) || errors.Is(discoverErr, context.DeadlineExceeded) {
-				return statepkg.Association{}, fmt.Errorf("Audnex region discovery is temporarily unavailable: %w", discoverErr)
+				return statepkg.Association{}, fmt.Errorf("Audnexus region discovery is temporarily unavailable: %w", discoverErr)
 			}
 			return statepkg.Association{}, fmt.Errorf("failed to discover the Audible region: %w", discoverErr)
 		}
@@ -390,7 +390,7 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 		}
 		found, lookupErr := h.editionCreateAudnexDiscoverer().GetBookByASIN(lookupCtx, asin, region)
 		if ctx.Err() != nil {
-			return statepkg.Association{}, fmt.Errorf("Audnex lookup for corrected Audible identifier was canceled: %w", ctx.Err())
+			return statepkg.Association{}, fmt.Errorf("Audnexus lookup for corrected Audible identifier was canceled: %w", ctx.Err())
 		}
 		if lookupErr == nil {
 			foundASIN, valid := audnex.CanonicalASIN(foundASINValue(found))
@@ -474,7 +474,7 @@ func parseSubmittedAudibleIdentifier(raw string) (string, string, error) {
 	return asin, region, nil
 }
 
-var errAudibleRegionUnknown = errors.New("Audnex did not confirm an Audible region; supply an explicit regional Audible identifier")
+var errAudibleRegionUnknown = errors.New("Audnexus did not confirm an Audible region; supply an explicit regional Audible identifier")
 var errHardcoverEditionIdentityConflict = errors.New("Hardcover returned an edition that does not match the reviewed book and format")
 var errEditionCreateRemoteOutcomeAmbiguous = errors.New("Hardcover may have processed the edition request but its result could not be verified")
 
@@ -755,7 +755,7 @@ func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID strin
 		w.Header().Set("Retry-After", "1")
 		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Too little request time remained to safely start the Hardcover write; no mutation was sent. Retry the edition create")
 	case errors.Is(err, errEditionCreateDiscoveryBudget):
-		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Audnex region discovery could not finish before the Hardcover write deadline; no mutation was sent. Supply audible_identifier (ASIN:region) to skip discovery")
+		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Audnexus region discovery could not finish before the Hardcover write deadline; no mutation was sent. Supply audible_identifier (ASIN:region) to skip discovery")
 	case errors.Is(err, multiuser.ErrProfileStateBusy):
 		w.Header().Set("Retry-After", "1")
 		h.writeErrorResponse(w, http.StatusTooManyRequests, "Profile sync state is busy; retry shortly")
@@ -799,7 +799,7 @@ func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID strin
 	case errors.Is(err, hardcover.ErrRegionalAudiobookIdentityConflict):
 		h.writeErrorResponse(w, http.StatusConflict, err.Error())
 	case errors.Is(err, audnex.ErrRateLimited), errors.Is(err, audnex.ErrTransient), errors.Is(err, context.DeadlineExceeded):
-		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Audiobookshelf, Audnex, or Hardcover is temporarily unavailable; retry the edition create")
+		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Audiobookshelf, Audnexus, or Hardcover is temporarily unavailable; retry the edition create")
 	case errors.Is(err, hardcover.ErrRegionalAudiobookImportTimeout):
 		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Hardcover regional import timed out; retry the edition create")
 	case errors.Is(err, hardcover.ErrRegionalAudiobookImportFailed):

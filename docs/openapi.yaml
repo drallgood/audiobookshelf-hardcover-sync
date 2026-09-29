@@ -237,7 +237,7 @@ components:
           type: integer
         audnexus_region:
           type: string
-          description: Region preference stored for the profile. Values are trimmed and lowercased. `us`, `ca`, `uk`, `au`, `de`, `fr`, `es`, `in`, `it`, and `jp` are supported for Audnex draft discovery. Unsupported non-empty values warn and normalize to `us`. An explicit empty string clears the saved preference; omitting this field preserves it.
+          description: Region preference stored for the profile. Values are trimmed and lowercased. `us`, `ca`, `uk`, `au`, `de`, `fr`, `es`, `in`, `it`, and `jp` are supported for Audnexus draft discovery. Unsupported non-empty values warn and normalize to `us`. An explicit empty string clears the saved preference; omitting this field preserves it.
     
     ProfileWithConfig:
       allOf:
@@ -249,7 +249,7 @@ components:
 
     EditionSourceDraft:
       type: object
-      description: Read-only edition candidate built from one expanded Audiobookshelf item. The handler reads Audiobookshelf and may read Audnex; it makes no Hardcover requests and performs no catalogue mutation. `metadata_preview` is present only for audiobooks and remains Audiobookshelf metadata apart from its established release-date override from a confirmed Audnex result. `audnexus_details` is present only after Audnex returns the exact source ASIN in a confirmed region. `ebook_candidate` is present only for ebooks.
+      description: Read-only edition candidate built from one expanded Audiobookshelf item. The handler reads Audiobookshelf and may read Audnexus; it makes no Hardcover requests and performs no catalogue mutation. `metadata_preview` is present only for audiobooks and remains Audiobookshelf metadata apart from its established release-date override from a confirmed Audnexus result. `audnexus_details` is present only after Audnexus returns the exact source ASIN in a confirmed region. `ebook_candidate` is present only for ebooks.
       required: [abs_item_id, reading_format, dry_run, eligible, source_identifiers]
       properties:
         abs_item_id:
@@ -269,7 +269,7 @@ components:
             or an ISBN accepted by shape is available. A malformed non-empty
             source ASIN is not usable: it is retained in the draft and produces
             an `invalid_source_asin` warning (with `region_status` `unknown` for
-            audiobooks and Audnex lookup skipped), and the item is eligible only
+            audiobooks and Audnexus lookup skipped), and the item is eligible only
             if it has an ISBN. An ISBN with a bad checksum remains a candidate
             with a validity warning, so checksum warnings do not by themselves
             make an ISBN-shaped value ineligible.
@@ -281,11 +281,11 @@ components:
         region_status:
           type: string
           enum: [confirmed, unknown, temporarily_unavailable, not_applicable]
-          description: Audiobook source-ASIN lookup state. `confirmed` means Audnex returned the same ASIN in the reported region; `unknown` means the supported-region sweep completed without a matching ASIN or the source ASIN was malformed; `temporarily_unavailable` means a rate-limit, transient, or 400/403 Audnex response stopped the sweep; `not_applicable` means an audiobook has no source ASIN. Omitted for ebooks.
+          description: Audiobook source-ASIN lookup state. `confirmed` means Audnexus returned the same ASIN in the reported region; `unknown` means the supported-region sweep completed without a matching ASIN or the source ASIN was malformed; `temporarily_unavailable` means a rate-limit, transient, or 400/403 Audnexus response stopped the sweep; `not_applicable` means an audiobook has no source ASIN. Omitted for ebooks.
         confirmed_region:
           type: string
           enum: [us, ca, uk, au, de, fr, es, in, it, jp]
-          description: Audnex region that returned the exact source ASIN. Omitted unless the region is confirmed; it is not inferred from the configured preference.
+          description: Audnexus region that returned the exact source ASIN. Omitted unless the region is confirmed; it is not inferred from the configured preference.
         audible_identifier_candidate:
           $ref: '#/components/schemas/AudibleIdentifierCandidate'
         metadata_preview:
@@ -297,7 +297,7 @@ components:
         warnings:
           type: array
           description: >-
-            Non-fatal source or draft issues. Retryable Audnex failures are
+            Non-fatal source or draft issues. Retryable Audnexus failures are
             returned here with `retryable: true` and a
             `temporarily_unavailable` region status; they do not cause a
             guessed region to be returned.
@@ -329,10 +329,10 @@ components:
             `B00XXXYYZZ:uk`. The ASIN and supported region are validated, and the
             supplied region is authoritative. The corrected ASIN may differ from
             the Audiobookshelf source ASIN; the import uses this corrected
-            identifier. Audnex lookup for this explicit identifier is optional
+            identifier. Audnexus lookup for this explicit identifier is optional
             release-date enrichment; a rate-limit or transient
             error does not block import, and the preview retains the Audiobookshelf
-            date. Omit this field to discover the source ASIN's region with Audnex.
+            date. Omit this field to discover the source ASIN's region with Audnexus.
             Audiobook metadata fields are rejected as corrections.
         title:
           type: string
@@ -430,7 +430,7 @@ components:
 
     AudibleIdentifierCandidate:
       type: object
-      description: Audiobook identifier candidate. Present for audiobooks, including when no source ASIN is available. The ASIN remains the bare source value; region is empty when Audnex has not confirmed a marketplace, so clients must not assume US. This candidate does not write `edition.asin` or create a Hardcover mapping.
+      description: Audiobook identifier candidate. Present for audiobooks, including when no source ASIN is available. The ASIN remains the bare source value; region is empty when Audnexus has not confirmed a marketplace, so clients must not assume US. This candidate does not write `edition.asin` or create a Hardcover mapping.
       required: [asin, region, correction_allowed]
       properties:
         asin:
@@ -438,30 +438,30 @@ components:
           description: Bare source ASIN when present, retained with its source casing even when malformed. Empty when the ABS item has no ASIN.
         region:
           type: string
-          description: Confirmed Audnex region, or an empty string when unknown, temporarily unavailable, or not applicable. A later user correction may supply a regional Audible identifier.
+          description: Confirmed Audnexus region, or an empty string when unknown, temporarily unavailable, or not applicable. A later user correction may supply a regional Audible identifier.
         correction_allowed:
           type: boolean
           description: Whether the regional Audible identifier can be corrected in a later add-edition workflow.
 
     AudnexusDetails:
       type: object
-      description: Read-only details from the Audnex book returned for the exact source ASIN in a confirmed region. Omitted when discovery is unavailable, misses, or returns a different ASIN.
+      description: Read-only details from the Audnexus book returned for the exact source ASIN in a confirmed region. Omitted when discovery is unavailable, misses, or returns a different ASIN.
       required: [title]
       properties:
         title: {type: string}
         author:
           type: string
-          description: Author names from Audnex, joined when more than one is present.
+          description: Author names from Audnexus, joined when more than one is present.
         narrator:
           type: string
-          description: Narrator names from Audnex, joined when more than one is present.
+          description: Narrator names from Audnexus, joined when more than one is present.
         release_date:
           type: string
           format: date
-          description: Normalized Audnex release date when recognized; omitted when Audnex has no usable date.
+          description: Normalized Audnexus release date when recognized; omitted when Audnexus has no usable date.
         format_type:
           type: string
-          description: Audnex formatType value as returned, without translating it into an abridgment label.
+          description: Audnexus formatType value as returned, without translating it into an abridgment label.
 
     EditionDraftISBNFields:
       type: object
@@ -496,7 +496,7 @@ components:
             release_date:
               type: string
               format: date
-              description: Audnex release date for the matching ASIN and region used by the draft or create request when available; otherwise the normalized Audiobookshelf `publishedDate`, then `publishedYear`. If the Audiobookshelf date is an ambiguous slash-formatted value, it is ignored in favor of `publishedYear` when available.
+              description: Audnexus release date for the matching ASIN and region used by the draft or create request when available; otherwise the normalized Audiobookshelf `publishedDate`, then `publishedYear`. If the Audiobookshelf date is an ambiguous slash-formatted value, it is ignored in favor of `publishedYear` when available.
             edition_format: {type: string}
             edition_information:
               type: string
@@ -535,13 +535,13 @@ components:
         code:
           type: string
           enum: [missing_identifier, invalid_isbn, invalid_source_asin, date_unavailable, missing_author, language_defaults_to_english, published_date_unrecognized, published_date_ambiguous, unsupported_audnex_region, audnex_temporarily_unavailable, audnex_date_unrecognized]
-          description: Current warning code identifying the source or draft issue. `invalid_source_asin` means a non-empty ASIN is not exactly 10 ASCII alphanumeric characters; it does not count toward eligibility, and audiobook region status is `unknown`. `invalid_isbn` covers unsupported ISBN shape and a bad checksum; a bad-checksum ISBN that has a supported shape remains eligible, with its validity flag false. Date warnings describe Audiobookshelf source metadata; a confirmed Audnex release date can still replace the preview date. `published_date_ambiguous` means both month-first and day-first slash parsing succeed, so `publishedYear` is the Audiobookshelf fallback when available.
+          description: Current warning code identifying the source or draft issue. `invalid_source_asin` means a non-empty ASIN is not exactly 10 ASCII alphanumeric characters; it does not count toward eligibility, and audiobook region status is `unknown`. `invalid_isbn` covers unsupported ISBN shape and a bad checksum; a bad-checksum ISBN that has a supported shape remains eligible, with its validity flag false. Date warnings describe Audiobookshelf source metadata; a confirmed Audnexus release date can still replace the preview date. `published_date_ambiguous` means both month-first and day-first slash parsing succeed, so `publishedYear` is the Audiobookshelf fallback when available.
         message:
           type: string
           description: Human-readable detail for this warning.
         retryable:
           type: boolean
-          description: Present and true when the caller can retry after a temporary Audnex failure; omitted for non-retryable warnings.
+          description: Present and true when the caller can retry after a temporary Audnexus failure; omitted for non-retryable warnings.
 
     AggregateSyncStatus:
       type: object
@@ -1064,9 +1064,9 @@ paths:
       summary: Prepare a read-only edition draft from an Audiobookshelf item
       description: >-
         Fetches the expanded Audiobookshelf item and, for an audiobook with a
-        source ASIN, may check Audnex across its supported regions. A complete
+        source ASIN, may check Audnexus across its supported regions. A complete
         region miss is returned as `unknown`; a rate limit, transient
-        failure, or 400/403 Audnex response is returned as `temporarily_unavailable` with a
+        failure, or 400/403 Audnexus response is returned as `temporarily_unavailable` with a
         retryable warning. A legacy unsupported region preference warns and
         uses US. The endpoint makes no Hardcover requests and performs no
         catalogue writes. Audiobook metadata is preview-only; ebook fields are
@@ -1138,7 +1138,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '502':
-          description: The Audiobookshelf item lookup failed, including when the item was not found upstream, or Audnex returned a non-retryable error. Audnex rate-limit and transient region-discovery failures instead return a successful draft with a retryable warning.
+          description: The Audiobookshelf item lookup failed, including when the item was not found upstream, or Audnexus returned a non-retryable error. Audnexus rate-limit and transient region-discovery failures instead return a successful draft with a retryable warning.
           content:
             application/json:
               schema:
@@ -1246,7 +1246,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
           description: >-
-            The correction fields or identifiers are invalid, or Audnex did
+            The correction fields or identifiers are invalid, or Audnexus did
             not find the source ASIN in a supported region. Supply a valid
             regional `audible_identifier` to proceed without region discovery.
           content:
@@ -1284,15 +1284,15 @@ paths:
           description: >-
             The create service is shutting down, source lookup leaves too little
             time for a Hardcover write (with Retry-After: 1), a dependency request timed out,
-            source-ASIN Audnex region discovery was rate limited or transiently
+            source-ASIN Audnexus region discovery was rate limited or transiently
             unavailable, or the Hardcover regional import timed out. Region
             discovery stops before the reserved Hardcover write time; when it
             cannot finish in that time, supply `audible_identifier` to skip it.
-            A rate-limit or transient error from Audnex `GetBookByASIN` for an explicit
+            A rate-limit or transient error from Audnexus `GetBookByASIN` for an explicit
             `audible_identifier` is ignored while the request context remains
             active; the supplied region is used and the preview falls back to the
             Audiobookshelf date. If the request context expires during
-            Audiobookshelf or Audnex lookup, the request fails before a Hardcover
+            Audiobookshelf or Audnexus lookup, the request fails before a Hardcover
             write. If a timeout occurs during a Hardcover mutation, verify the Hardcover
             result before retrying because another edition may have been created.
           content:

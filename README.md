@@ -150,10 +150,10 @@ successful non-dry-run completion.
 `GET /api/profiles/{id}/edition-drafts/source/{itemID}` previews an
 Audiobookshelf item's identifiers and metadata for a later add-edition flow.
 Audiobook drafts keep the source ASIN separate from any region confirmed by
-Audnex; an unknown or temporarily unavailable region is never guessed. The
+Audnexus; an unknown or temporarily unavailable region is never guessed. The
 Audiobookshelf metadata preview stays sourced from Audiobookshelf, apart from
-its existing release-date override when Audnex returns a usable date. A
-separate Audnexus details section appears only when Audnex confirms the exact
+its existing release-date override when Audnexus returns a usable date. A
+separate Audnexus details section appears only when Audnexus confirms the exact
 source ASIN and region. The Sync Status add-edition flow requires audiobooks to
 have a valid Audiobookshelf ASIN; ebooks may use an ISBN. Ebook drafts include
 candidate edition fields. A usable ASIN or ISBN is required for draft
@@ -162,7 +162,7 @@ See [OpenAPI](docs/openapi.yaml) for response fields and warnings.
 
 Use a trusted Audiobookshelf URL: this route fetches it with the saved token.
 Enable authentication when exposing the API beyond localhost. A draft may
-check up to ten Audnex regions, with retries, within its 25-second deadline.
+check up to ten Audnexus regions, with retries, within its 25-second deadline.
 Each server instance has two shared slots for draft and edition-create
 requests. A single authorized caller can occupy both with concurrent creates,
 each of which has a 65-second handler deadline. Excess requests receive HTTP
@@ -181,7 +181,7 @@ canceled, non-dry-run sync. The Hardcover book always comes from that sync
 record, never from the request.
 
 - **Audiobooks** are imported through Hardcover's regional Audible importer.
-  Omit `audible_identifier` to discover the ASIN's region with Audnex, or send
+  Omit `audible_identifier` to discover the ASIN's region with Audnexus, or send
   `ASIN:region` to choose it. Audiobook metadata cannot be edited.
 - **Ebooks** are inserted as ebook editions. You may correct `title`,
   `subtitle`, `asin`, `isbn_10`, `isbn_13`, `release_date`, and
@@ -863,7 +863,7 @@ The application supports two distinct operating modes controlled by the `enable_
 - `AUDIOBOOKSHELF_TOKEN`: Audiobookshelf API token (required for single-user mode)
 - `AUDIOBOOKSHELF_NETWORK_TRUST`: Deployment-wide ABS destination policy
   (`allow_private` by default or `public_only`)
-- `AUDIOBOOKSHELF_AUDNEXUS_REGION`: Legacy Audnex setting; used as the default region for sync, edition drafts, and edition creation when a profile has no `sync_config.audnexus_region`.
+- `AUDIOBOOKSHELF_AUDNEXUS_REGION`: Legacy Audnexus setting; used as the default region for sync, edition drafts, and edition creation when a profile has no `sync_config.audnexus_region`.
 - `HARDCOVER_TOKEN`: Hardcover API token (required for single-user mode)
 
 #### Config File
@@ -887,7 +887,7 @@ hardcover:
 | `CONFIG_PATH` | Path to config file | - | `./config.yaml` |
 | `AUDIOBOOKSHELF_URL` | URL of your AudiobookShelf instance | `audiobookshelf.url` | Legacy mode only |
 | `AUDIOBOOKSHELF_TOKEN` | AudiobookShelf API token | `audiobookshelf.token` | Legacy mode only |
-| `AUDIOBOOKSHELF_AUDNEXUS_REGION` | Legacy Audnex setting | `audiobookshelf.audnexus_region` | Fallback region for sync, edition drafts, and edition creation when a profile has no `sync_config.audnexus_region`; carried into the default profile during single-user config migration. |
+| `AUDIOBOOKSHELF_AUDNEXUS_REGION` | Legacy Audnexus setting | `audiobookshelf.audnexus_region` | Fallback region for sync, edition drafts, and edition creation when a profile has no `sync_config.audnexus_region`; carried into the default profile during single-user config migration. |
 | `HARDCOVER_TOKEN` | Hardcover API token | `hardcover.token` | Legacy mode only |
 | `HARDCOVER_BASE_URL` | Hardcover API base URL | `hardcover.base_url` | Override default endpoint |
 | `RATE_LIMIT_RATE` | Min time between requests | `rate_limit.rate` | e.g. `2s` (30 rpm) |
