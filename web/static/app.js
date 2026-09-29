@@ -2356,6 +2356,12 @@ class SyncProfileApp {
         const resync = !dialog.draft.dry_run;
         const body = this.buildEditionCreateBody(dialog, fields, resync);
         dialog.submittedBody = { ...body };
+        // Persist before sending: a reload can discard the response even when
+        // Hardcover received the import. Only a definite response clears this.
+        this.savePendingEditionRecovery({
+            ...dialog, outcome: 'transport_unknown', recovery: null,
+            transportError: 'The create request started, but no result was received before the page reloaded. Check Hardcover, then run a new sync before trying again.'
+        });
         dialog.busy = true;
         dialog.error = '';
         this.showEditionDialog();

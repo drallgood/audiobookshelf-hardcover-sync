@@ -249,14 +249,14 @@ func (h *Handler) CheckEditionImport(w http.ResponseWriter, r *http.Request) {
 		}
 		absClient, clientErr := h.editionCreateABSClient(profile.AudiobookshelfURL, profile.AudiobookshelfToken, h.multiUserService.AudiobookshelfNetworkTrust())
 		if clientErr != nil {
-			return statepkg.Association{}, fmt.Errorf("invalid Audiobookshelf client configuration: %w", clientErr)
+			return statepkg.Association{}, fmt.Errorf("%w: invalid Audiobookshelf client configuration: %w", errEditionImportUnconfirmed, clientErr)
 		}
 		item, itemErr := absClient.GetLibraryItemByID(ctx, request.ABSItemID)
 		if itemErr != nil {
-			return statepkg.Association{}, fmt.Errorf("failed to retrieve Audiobookshelf item: %w", itemErr)
+			return statepkg.Association{}, fmt.Errorf("%w: failed to retrieve Audiobookshelf item: %w", errEditionImportUnconfirmed, itemErr)
 		}
 		if item == nil {
-			return statepkg.Association{}, errors.New("Audiobookshelf returned no item for edition recovery")
+			return statepkg.Association{}, fmt.Errorf("%w: Audiobookshelf returned no item for edition recovery", errEditionImportUnconfirmed)
 		}
 		mediaType := strings.ToLower(strings.TrimSpace(item.MediaType))
 		if (mediaType != "book" && mediaType != "ebook") || item.ReadingFormat() != models.ReadingFormatAudiobook {

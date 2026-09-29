@@ -97,8 +97,9 @@ ISBN when available and previews the source identifier. For audiobooks, it
 shows a region confirmed automatically when available. If the region is
 unknown or temporarily unavailable, the app retries Audible region discovery
 during creation; the import proceeds only when a region is confirmed.
-Audiobook metadata is preview-only, and ebooks allow correction of the fields
-the server can insert.
+Audiobook identifiers and metadata are read-only; the UI requires a valid
+Audiobookshelf source ASIN. Ebooks allow correction of the fields the server
+can insert.
 The UI checks the profile's format-specific
 Hardcover scope when View Details opens; a confirmed denial disables **Add
 edition**, while an allowed or unverified result permits an attempt. This
@@ -119,7 +120,12 @@ visible.
 
 For an unconfirmed audiobook import, use **Check import status** to verify it
 and save its match without submitting another import, or **Open Hardcover** to
-inspect the book. Expand technical details for the HTTP status and error code.
+inspect the book. A temporary failure reading source data keeps the import
+unconfirmed and preserves its recovery details so the status check can be
+retried. Reloading during creation also preserves an unknown-outcome marker
+and blocks another import; inspect Hardcover and run a new sync when no
+confirmation was received. Expand technical details for the HTTP status and
+error code.
 
 Matched results show their current Hardcover book and edition with **Forget
 match**. If a saved match exists, confirmation removes only this app's saved

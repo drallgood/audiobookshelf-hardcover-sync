@@ -1247,6 +1247,39 @@ test('failed creates and unavailable or malformed browser storage do not restore
     assert.equal(app.editionDialog.error, '');
 });
 
+test('reload during an in-flight create blocks another import until a definite response', async () => {
+    for (const terminal of [
+        { response: { ok: true, status: 200 }, data: { success: true, data: { status: 'created' } } },
+        { response: { ok: false, status: 503 }, data: { success: false, outcome: 'not_submitted', error: 'No import was sent' } }
+    ]) {
+        const app = editionApp();
+        stubDialog(app, 200, {});
+        const request = deferred();
+        let creates = 0;
+        app.fetchJsonWithTimeout = () => { creates++; return request.promise; };
+        const submitting = app.submitEditionCreate();
+        const refreshed = Object.assign(createApp(), {
+            openSummary: { ...app.openSummary, records: new Map([[needsReview.book_id, needsReview]]) },
+            statuses: app.statuses, showEditionDialog() {},
+            fetchJsonWithTimeout() { creates++; throw new Error('Unexpected second create'); }
+        });
+        await refreshed.openEditionDialog(needsReview.book_id);
+        assert.equal(refreshed.editionDialog.outcome, 'transport_unknown');
+        assert.deepEqual(refreshed.editionDialog.submittedBody, {
+            run_id: 'run-1', abs_item_id: 'li_1', audible_identifier: 'B00ABC1234:us', resync: true
+        });
+        const html = refreshed.renderEditionDialog(refreshed.editionDialog);
+        assert.match(html, /import result is unknown/);
+        assert.match(html, /Open Hardcover/);
+        assert.doesNotMatch(html, /confirm-create|retry-create|check-import/);
+        await refreshed.submitEditionCreate();
+        assert.equal(creates, 1);
+        request.resolve(terminal);
+        await submitting;
+        assert.equal(createApp().loadPendingEditionRecovery('p1', 'run-1', 'li_1'), null);
+    }
+});
+
 test('ambiguous create shows a safe recovery action and preserves submitted identifiers', async () => {
     const app = editionApp();
     const dialog = stubDialog(app, 503, { success: false, error: 'Hardcover response timed out', error_code: 'hardcover_import_unconfirmed', outcome: 'unconfirmed', data: {
