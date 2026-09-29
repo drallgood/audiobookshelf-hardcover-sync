@@ -962,7 +962,7 @@ func TestWriteEditionCreateErrorForInsufficientMutationBudgetIsRetryable(t *test
 	response := httptest.NewRecorder()
 	err := errors.Join(edition.ErrCreateEditionPreMutation, edition.ErrCreateEditionInsufficientMutationBudget)
 
-	handler.writeEditionCreateError(response, "profile", err)
+	handler.writeEditionCreateError(response, "profile", err, nil)
 
 	require.Equal(t, http.StatusServiceUnavailable, response.Code)
 	require.Equal(t, "1", response.Header().Get("Retry-After"))

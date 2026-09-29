@@ -937,11 +937,7 @@ func (h *Handler) writeEditionCreateStructuredError(w http.ResponseWriter, statu
 	})
 }
 
-func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID string, err error, recoveryInfo ...*editionRecoveryData) {
-	var recovery *editionRecoveryData
-	if len(recoveryInfo) > 0 {
-		recovery = recoveryInfo[0]
-	}
+func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID string, err error, recovery *editionRecoveryData) {
 	errorCode, outcome := editionCreateErrorMetadata(err)
 	respond := func(status int, message string) {
 		h.writeEditionCreateStructuredError(w, status, message, errorCode, outcome, recovery)
