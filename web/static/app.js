@@ -2200,8 +2200,7 @@ class SyncProfileApp {
         if (dialog.loading) return '<p role="status">Loading edition preview…</p>';
         const closeButton = `<button type="button" class="btn btn-warning" data-edition-dialog="close" ${dialog.busy ? 'disabled' : ''}>Cancel</button>`;
         if (dialog.outcome === 'created' || dialog.outcome === 'transport_unknown') {
-            const url = this.buildHardcoverBookURL({ ...record, hardcover_book_id: dialog.recoveryBookId || record.hardcover_book_id });
-            const openLink = url ? `<a class="btn btn-secondary" href="${this.escapeHtmlAttribute(url)}" target="_blank" rel="noopener noreferrer">Open Hardcover</a>` : '';
+            const openLink = this.renderOpenHardcoverLink(dialog);
             const created = dialog.outcome === 'created';
             const title = created ? 'Edition created; match not saved.' : 'The import result is unknown.';
             const description = created ? dialog.error : (dialog.transportError || 'The server returned no usable confirmation. The import may still have been submitted; check Hardcover before trying again.');
@@ -2475,6 +2474,11 @@ class SyncProfileApp {
         return `Edition creation failed (${status}). The import result may be unknown; check Hardcover before trying again.`;
     }
 
+    renderOpenHardcoverLink(dialog) {
+        const url = this.buildHardcoverBookURL({ ...dialog.record, hardcover_book_id: dialog.recoveryBookId || dialog.record.hardcover_book_id });
+        return url ? `<a class="btn btn-secondary" href="${this.escapeHtmlAttribute(url)}" target="_blank" rel="noopener noreferrer">Open Hardcover</a>` : '';
+    }
+
     renderEditionTechnicalDetails(dialog) {
         const status = Number(dialog.recoveryHttpStatus || dialog.errorHttpStatus || 0);
         const code = String(dialog.recoveryErrorCode || dialog.errorCode || '').replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 80);
@@ -2483,8 +2487,7 @@ class SyncProfileApp {
     }
 
     renderEditionImportUnconfirmed(dialog) {
-        const url = this.buildHardcoverBookURL({ ...dialog.record, hardcover_book_id: dialog.recoveryBookId || dialog.record.hardcover_book_id });
-        const openLink = url ? `<a class="btn btn-secondary" href="${this.escapeHtmlAttribute(url)}" target="_blank" rel="noopener noreferrer">Open Hardcover</a>` : '';
+        const openLink = this.renderOpenHardcoverLink(dialog);
         const submittedTitle = dialog.recoveryTitle || dialog.record.title || 'this audiobook';
         const technical = this.renderEditionTechnicalDetails(dialog);
         return `<div class="edition-warning" role="alert"><strong>Hardcover’s import result is still unconfirmed</strong>
