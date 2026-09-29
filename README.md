@@ -107,10 +107,14 @@ replaces the book's Add edition button in the current View Details session with
 green **Hardcover Edition Added** text without requiring a full sync. It also
 automatically resyncs that book's read status; the create response reports any
 resync failure separately. Create and forget confirmations, and resync, are
-unavailable in dry run; the preview remains available. A busy draft service can
-be retried after its `Retry-After` wait. Create and forget confirmations are
-disabled while the profile is syncing, and a conflict from a sync that started
-later is reported.
+unavailable in dry run; the preview remains available. The forget confirmation
+uses the current profile's capability check, stays disabled while that check is
+pending, and lets the server decide if the check is unavailable. A busy draft
+service can be retried after its `Retry-After` wait. Create and forget
+confirmations are disabled while the profile is syncing, and a conflict from a
+sync that started later is reported. The create dialog stays open while its
+request is in progress so a completed creation and its resync result remain
+visible.
 
 Matched results show their current Hardcover book and edition with **Forget
 match**. If a saved match exists, confirmation removes only this app's saved

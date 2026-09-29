@@ -312,6 +312,37 @@ test('session reset ignores a late successful create without toast or dialog red
     assert.equal(content.innerHTML, '');
 });
 
+test('closing a pending create is ignored and its successful result is processed', async t => {
+    const harness = pendingDialogApp();
+    t.after(harness.restore);
+    const { app } = harness;
+    const request = deferred();
+    app.fetchJsonWithTimeout = () => request.promise;
+    app.readEditionFormFields = () => ({});
+    app.refreshEditionActionStates = () => { app.actionRefreshes = (app.actionRefreshes || 0) + 1; };
+    app.openSummary = { profileId: 'private-profile', runContext: { runId: 'run-1' }, addedEditionBookIds: new Set() };
+    const dialog = {
+        mode: 'create', profileId: 'private-profile', runId: 'run-1', record: { book_id: 'li_1' },
+        draft: { reading_format: 'audiobook', dry_run: false }, busy: false, error: '', result: null
+    };
+    app.editionDialog = dialog;
+
+    const creating = app.submitEditionCreate();
+    app.closeEditionDialog();
+    assert.equal(app.editionDialog, dialog);
+    request.resolve({ response: { ok: true, status: 200 }, data: { success: true, data: {
+        status: 'created', hardcover_book_id: '42', hardcover_edition_id: '99',
+        resync: { attempted: true, outcome: 'synced' }
+    } } });
+    await creating;
+
+    assert.equal(dialog.busy, false);
+    assert.equal(dialog.result.status, 'created');
+    assert.ok(app.openSummary.addedEditionBookIds.has('li_1'));
+    assert.equal(app.actionRefreshes, 1);
+    assert.match(app.renderEditionDialog(dialog), /data-resync/);
+});
+
 test('session reset ignores a late forget 401 without expiring the new session', async t => {
     const harness = pendingDialogApp();
     t.after(harness.restore);
@@ -1010,4 +1041,48 @@ test('forget confirmation explains rematching, is disabled in dry run, and repor
     app.fetchJsonWithTimeout = async () => ({ response: { ok: false, status: 409 }, data: { success: false, error: 'Sync already in progress' } });
     await app.submitForget();
     assert.match(dialog.error, /Sync already in progress/);
+});
+
+test('forget uses fresh capability, waits while checking, and lets the server decide when unavailable', async () => {
+    const record = { book_id: 'li_2', outcome: 'synced', title: 'T', hardcover_book_id: '7', edition_id: '9' };
+    const makeApp = runDryRun => {
+        const app = editionApp({ isMatchedRecord: () => true, isViewer: () => false, profileIsSyncing: () => false });
+        app.openSummary.runContext.dryRun = runDryRun;
+        app.openSummary.records.set(String(record.book_id), record);
+        return app;
+    };
+
+    for (const runDryRun of [true, false]) {
+        const app = makeApp(runDryRun);
+        const capability = { dry_run: !runDryRun };
+        app.fetchJsonWithTimeout = async () => ({ response: { ok: true, status: 200 }, data: { success: true, data: capability } });
+        await app.openForgetDialog(record.book_id);
+        assert.equal(app.editionDialog.loading, false);
+        assert.equal(app.renderEditionDialog(app.editionDialog).includes('data-edition-dialog="confirm-forget" disabled'), capability.dry_run);
+    }
+
+    const pendingApp = makeApp(false);
+    const capabilityRequest = deferred();
+    let requests = 0;
+    pendingApp.fetchJsonWithTimeout = () => { requests++; return capabilityRequest.promise; };
+    const opening = pendingApp.openForgetDialog(record.book_id);
+    assert.match(pendingApp.renderEditionDialog(pendingApp.editionDialog), /Checking this profile/);
+    assert.match(pendingApp.renderEditionDialog(pendingApp.editionDialog), /confirm-forget" disabled/);
+    await pendingApp.submitForget();
+    assert.equal(requests, 1);
+    capabilityRequest.resolve({ response: { ok: true, status: 200 }, data: { success: true, data: { dry_run: false } } });
+    await opening;
+    assert.doesNotMatch(pendingApp.renderEditionDialog(pendingApp.editionDialog), /confirm-forget"[^>]*disabled/);
+
+    const unknownApp = makeApp(true);
+    unknownApp.fetchJsonWithTimeout = async (_url, options) => options?.method === 'DELETE'
+        ? { response: { ok: true, status: 200 }, data: { success: true, data: {
+            association_removed: false, dry_run: true,
+            previous_resolution: { hardcover_book_id: '7', hardcover_edition_id: '9' }
+        } } }
+        : Promise.reject(new Error('capability unavailable'));
+    await unknownApp.openForgetDialog(record.book_id);
+    assert.doesNotMatch(unknownApp.renderEditionDialog(unknownApp.editionDialog), /confirm-forget"[^>]*disabled/);
+    await unknownApp.submitForget();
+    assert.match(unknownApp.renderEditionDialog(unknownApp.editionDialog), /saved match was retained/);
 });

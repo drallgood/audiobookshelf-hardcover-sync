@@ -1015,7 +1015,7 @@ class SyncProfileApp {
         this.abortSessionMutations();
         this.editProfileRequest?.controller?.abort();
         this.editProfileRequest = null;
-        this.closeEditionDialog();
+        this.closeEditionDialog(true);
         this.users = [];
         this.statuses = Object.create(null);
         this.closeEditModal();
@@ -1951,8 +1951,9 @@ class SyncProfileApp {
         return { blocked: false };
     }
 
-    closeEditionDialog() {
+    closeEditionDialog(force = false) {
         const dialog = this.editionDialog;
+        if (!force && dialog?.mode === 'create' && dialog.busy) return false;
         dialog?.controller?.abort();
         if (dialog?.timer) clearInterval(dialog.timer);
         this.editionDialog = null;
@@ -1960,6 +1961,7 @@ class SyncProfileApp {
         const content = document.getElementById('edition-modal-content');
         if (content) content.replaceChildren();
         if (modal) modal.style.display = 'none';
+        return true;
     }
 
     showEditionDialog() {
@@ -1974,6 +1976,7 @@ class SyncProfileApp {
     }
 
     async openEditionDialog(bookId) {
+        if (this.editionDialog?.mode === 'create' && this.editionDialog.busy) return;
         const open = this.openSummary;
         const record = open?.records?.get(String(bookId));
         if (!open || !record || this.isViewer()) return;
@@ -2080,7 +2083,8 @@ class SyncProfileApp {
                     ${this.renderAudiobookshelfCover(record)}
                     <p><strong>${this.escapeHtml(record.title || 'Unknown title')}</strong>${record.author ? ` by ${this.escapeHtml(record.author)}` : ''}</p>
                 </div>` : '';
-        return `<div class="modal-header"><h3>${title}</h3><button type="button" class="modal-close" data-edition-dialog="close" aria-label="Close">&times;</button></div>
+        const closeDisabled = dialog.mode === 'create' && dialog.busy ? ' disabled' : '';
+        return `<div class="modal-header"><h3>${title}</h3><button type="button" class="modal-close" data-edition-dialog="close" aria-label="Close"${closeDisabled}>&times;</button></div>
             <div class="edition-dialog-body" role="dialog" aria-label="${this.escapeHtmlAttribute(title)}">
                 ${subjectHtml}
                 ${body}
@@ -2099,7 +2103,7 @@ class SyncProfileApp {
         const waiting = waitMs > 0;
         const retryLabel = waiting ? `Retry in ${Math.ceil(waitMs / 1000)}s` : 'Retry';
         if (dialog.loading) return '<p role="status">Loading edition preview…</p>';
-        const closeButton = '<button type="button" class="btn btn-warning" data-edition-dialog="close">Cancel</button>';
+        const closeButton = `<button type="button" class="btn btn-warning" data-edition-dialog="close" ${dialog.busy ? 'disabled' : ''}>Cancel</button>`;
         if (!dialog.draft) {
             return `${errorHtml}<div class="form-actions edition-create-actions"><button type="button" class="btn btn-secondary" data-edition-dialog="retry" ${waiting ? 'disabled' : ''}>${retryLabel}</button>${closeButton}</div>`;
         }
@@ -2306,6 +2310,7 @@ class SyncProfileApp {
     }
 
     async openForgetDialog(bookId) {
+        if (this.editionDialog?.mode === 'create' && this.editionDialog.busy) return;
         const open = this.openSummary;
         const record = open?.records?.get(String(bookId));
         if (!open || !record || this.isViewer() || !this.isMatchedRecord(record)) return;
@@ -2313,46 +2318,51 @@ class SyncProfileApp {
         this.closeEditionDialog();
         const dialog = {
             mode: 'forget', profileId: open.profileId, record, capability: null,
-            busy: false, error: '', result: null, runDryRun: open.runContext?.dryRun
+            loading: true, busy: false, error: '', result: null
         };
         this.editionDialog = dialog;
         this.showEditionDialog();
         try {
             const { response, data } = await this.fetchJsonWithTimeout(this.profileUrl(dialog.profileId, '/edition-capability'), { credentials: 'include' });
-            if (response.ok && data?.success && this.editionDialog === dialog) {
-                dialog.capability = data.data;
-                this.showEditionDialog();
-            }
+            if (this.editionDialog !== dialog) return;
+            if (response.ok && data?.success) dialog.capability = data.data;
         } catch (_) {
-            // Dry-run detection falls back to the run's own flag.
+            // If the capability check is unavailable, let the server decide.
         }
+        if (this.editionDialog !== dialog) return;
+        dialog.loading = false;
+        this.showEditionDialog();
     }
 
     renderForgetBody(dialog) {
         const record = dialog.record;
-        const dryRun = Boolean(dialog.capability?.dry_run || dialog.runDryRun);
+        const dryRun = Boolean(dialog.capability?.dry_run);
         const syncing = this.profileIsSyncing(dialog.profileId);
         if (dialog.result) {
-            return `<div class="edition-success" role="status">${dialog.result.association_removed
+            const message = dialog.result.association_removed
                 ? 'The saved match was forgotten. The next sync will run normal matching for this item; it may select the same edition again if Hardcover has not changed.'
-                : 'No saved match was stored for this item, so nothing changed.'}</div>
+                : dialog.result.dry_run && dialog.result.previous_resolution
+                    ? 'No changes were made because this profile is in dry run; the saved match was retained.'
+                    : 'No saved match was stored for this item, so nothing changed.';
+            return `<div class="edition-success" role="status">${message}</div>
                 <div class="form-actions"><button type="button" class="btn btn-secondary" data-edition-dialog="close">Close</button></div>`;
         }
         return `${dryRun ? '<div class="edition-dry-run">Dry run</div>' : ''}
+            ${dialog.loading ? '<p role="status">Checking this profile…</p>' : ''}
             <div class="book-meta"><span><strong>Current Hardcover book:</strong> ${this.escapeHtml(record.hardcover_book_id)}</span>${record.edition_id ? `<span><strong>Current edition:</strong> ${this.escapeHtml(record.edition_id)}</span>` : ''}</div>
             <p>If a saved match exists, this removes only that match and this app's sync checkpoint for the item. Nothing is deleted from Hardcover. The next sync reruns normal matching and may select the same edition again if Hardcover has not changed. If no saved match exists, forgetting is a no-op.</p>
             ${dryRun ? '<div class="edition-error" data-blocker>Forgetting a match is disabled while this profile is in dry run.</div>' : ''}
             ${syncing ? '<div class="edition-error" data-blocker>A sync is running for this profile; try again when it finishes.</div>' : ''}
             ${dialog.error ? `<div class="edition-error" role="alert">${this.escapeHtml(dialog.error)}</div>` : ''}
             <div class="form-actions">
-                <button type="button" class="btn btn-primary" data-edition-dialog="confirm-forget" ${dryRun || syncing || dialog.busy ? 'disabled' : ''}>${dialog.busy ? 'Forgetting…' : 'Forget match'}</button>
+                <button type="button" class="btn btn-primary" data-edition-dialog="confirm-forget" ${dialog.loading || dryRun || syncing || dialog.busy ? 'disabled' : ''}>${dialog.busy ? 'Forgetting…' : 'Forget match'}</button>
                 <button type="button" class="btn btn-secondary" data-edition-dialog="close">Cancel</button>
             </div>`;
     }
 
     async submitForget() {
         const dialog = this.editionDialog;
-        if (!dialog || dialog.mode !== 'forget' || dialog.busy) return;
+        if (!dialog || dialog.mode !== 'forget' || dialog.loading || dialog.busy) return;
         dialog.busy = true;
         dialog.error = '';
         this.showEditionDialog();
