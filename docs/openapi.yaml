@@ -307,15 +307,16 @@ components:
       additionalProperties: false
       required: [run_id, abs_item_id]
       description: >-
-        Identifies one item in one completed, non-dry-run sync run. The API
-        uses the Hardcover book ID in that needs-review record; clients cannot
-        choose a Hardcover book or author ID. For an audiobook, only
+        Identifies one item in one completed or canceled, non-dry-run sync run.
+        The API uses the Hardcover book ID in that needs-review record; clients
+        cannot choose a Hardcover book or author ID. For an audiobook, only
         `audible_identifier` may be corrected. The remaining correction fields
         apply to ebooks.
       properties:
         run_id:
           type: string
-          description: Exact completed sync run containing the needs-review item.
+          description: >-
+            Exact completed or canceled sync run containing the needs-review item.
         abs_item_id:
           type: string
           description: Audiobookshelf item ID from that run.
@@ -1133,11 +1134,12 @@ paths:
       summary: Create an edition from a verified needs-review sync record
       description: >-
         Requires profile write access and an explicit user request. The body
-        must identify a completed, non-dry-run sync run and its needs-review
-        Audiobookshelf item. The API refetches the item and compares its ID, title,
-        author, ASIN, ISBN, and reading format with the verified sync record before
-        any Hardcover mutation. For ebooks, subtitle and release date come from the
-        freshly fetched Audiobookshelf item unless corrected in the request;
+        must identify a completed or canceled, non-dry-run sync run and its
+        needs-review Audiobookshelf item. The API refetches the item and compares
+        its ID, title, author, ASIN, ISBN, and reading format with the verified
+        sync record before any Hardcover mutation. For ebooks, subtitle and
+        release date come from the freshly fetched Audiobookshelf item unless
+        corrected in the request;
         publisher always comes from the fresh item. It uses the Hardcover book ID
         recorded by that sync run; no book or author ID is accepted from the caller.
         Audiobooks use a regional `upsert_book` import with no `insert_edition`

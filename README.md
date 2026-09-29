@@ -171,9 +171,9 @@ writes an edition to Hardcover, and only when you call it; sync never does.
 The profile's Hardcover token must include `write:catalog:append` for this
 action.
 
-Send the `run_id` and `abs_item_id` of a `needs_review` item from a completed,
-non-dry-run sync. The Hardcover book always comes from that sync record, never
-from the request.
+Send the `run_id` and `abs_item_id` of a `needs_review` item from a completed or
+canceled, non-dry-run sync. The Hardcover book always comes from that sync
+record, never from the request.
 
 - **Audiobooks** are imported through Hardcover's regional Audible importer.
   Omit `audible_identifier` to discover the ASIN's region with Audnex, or send
