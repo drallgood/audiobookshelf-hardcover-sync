@@ -1345,6 +1345,36 @@ class SyncProfileApp {
         await this.showSyncSummary(profileId);
     }
     
+    addedEditionStorageKey(profileId) {
+        const userId = this.authEnabled ? this.currentUser?.id : 'anonymous';
+        return `added-editions:${JSON.stringify([userId, profileId])}`;
+    }
+
+    loadAddedEditionBookIds(profileId, runId) {
+        try {
+            const saved = JSON.parse(window.localStorage.getItem(this.addedEditionStorageKey(profileId)));
+            if (saved?.runId === runId && Array.isArray(saved.bookIds)
+                && saved.bookIds.every(id => typeof id === 'string')) {
+                return new Set(saved.bookIds);
+            }
+        } catch (_) {
+            // Browser storage may be unavailable or contain invalid data.
+        }
+        return new Set();
+    }
+
+    saveAddedEditionBookId(profileId, runId, bookId) {
+        const bookIds = this.loadAddedEditionBookIds(profileId, runId);
+        bookIds.add(String(bookId));
+        try {
+            window.localStorage.setItem(this.addedEditionStorageKey(profileId), JSON.stringify({
+                runId, bookIds: [...bookIds]
+            }));
+        } catch (_) {
+            // Keep the successful create usable even when storage is blocked.
+        }
+    }
+
     async showSyncSummary(profileId) {
         const status = this.statuses[profileId];
         const runId = status?.snapshot?.run_id;
@@ -1364,7 +1394,7 @@ class SyncProfileApp {
             generation: (previous?.generation || 0) + 1,
             expandedIds: sameRun ? previous.expandedIds : new Set(),
             expandedOutcomes: sameRun && previous.expandedOutcomes instanceof Set ? previous.expandedOutcomes : new Set(),
-            addedEditionBookIds: sameRun ? previous.addedEditionBookIds : new Set(),
+            addedEditionBookIds: sameRun ? previous.addedEditionBookIds : this.loadAddedEditionBookIds(profileId, runId),
             editionCapability: null,
             editionCapabilityLoaded: false,
             scrollTop: 0
@@ -2301,6 +2331,7 @@ class SyncProfileApp {
             if (response.status === 401) { this.closeEditionDialog(); this.handleAuthExpiry(); return; }
             if (response.ok && data?.success) {
                 dialog.result = data.data;
+                this.saveAddedEditionBookId(dialog.profileId, dialog.runId, dialog.record.book_id);
                 const open = this.openSummary;
                 if (open?.profileId === dialog.profileId && open.runContext?.runId === dialog.runId) {
                     if (!open.addedEditionBookIds) open.addedEditionBookIds = new Set();

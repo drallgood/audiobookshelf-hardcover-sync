@@ -1145,3 +1145,63 @@ test('edition dialog keeps Tab focus inside the modal', () => {
         global.document = originalDocument;
     }
 });
+
+
+test('added edition labels survive a page reload and remain scoped to user, profile, and run', async t => {
+    const previousStorage = window.localStorage;
+    const previousDocument = global.document;
+    const stored = new Map();
+    window.localStorage = {
+        getItem(key) { return stored.get(key) ?? null; },
+        setItem(key, value) { stored.set(key, value); }
+    };
+    global.document = { ...previousDocument, getElementById() { return { scrollIntoView() {} }; } };
+    t.after(() => { window.localStorage = previousStorage; global.document = previousDocument; });
+
+    const app = editionApp({ authEnabled: true, currentUser: { id: 'user-1' } });
+    stubDialog(app, 200, { success: true, data: { status: 'created', resync: { attempted: true, error: 'offline' } } });
+    await app.submitEditionCreate();
+    app.editionDialog = null;
+    app.saveAddedEditionBookId('p1', 'run-1', 'li_2');
+
+    async function reload(userId, profileId, runId) {
+        const refreshed = editionApp({ authEnabled: true, currentUser: { id: userId }, openSummary: null });
+        refreshed.statuses = { [profileId]: { snapshot: { run_id: runId, state: 'completed' } } };
+        refreshed.renderStatuses = () => {};
+        refreshed.renderDetailsState = () => {};
+        refreshed.loadEditionCapability = () => {};
+        refreshed.fetchAndRenderDetails = async () => {};
+        await refreshed.showSyncSummary(profileId);
+        return refreshed;
+    }
+    const refreshed = await reload('user-1', 'p1', 'run-1');
+    assert.match(refreshed.renderEditionActions(needsReview), /Hardcover Edition Added/);
+    assert.match(refreshed.renderEditionActions({ ...needsReview, book_id: 'li_2' }), /Hardcover Edition Added/);
+    assert.match(refreshed.renderEditionActions({ ...needsReview, book_id: 'li_3' }), /data-edition-action="add"/);
+    for (const scope of [['user-2', 'p1', 'run-1'], ['user-1', 'p2', 'run-1'], ['user-1', 'p1', 'run-2']]) {
+        const other = await reload(...scope);
+        assert.doesNotMatch(other.renderEditionActions(needsReview), /Hardcover Edition Added/);
+    }
+});
+
+test('failed creates and unavailable or malformed browser storage do not restore added labels', async t => {
+    const previousStorage = window.localStorage;
+    t.after(() => { window.localStorage = previousStorage; });
+    let writes = 0;
+    window.localStorage = { getItem() { return '{invalid'; }, setItem() { writes++; } };
+    const app = editionApp();
+    assert.equal(app.loadAddedEditionBookIds('p1', 'run-1').size, 0);
+    stubDialog(app, 500, { success: false, error: 'failed' });
+    await app.submitEditionCreate();
+    assert.equal(writes, 0);
+    assert.doesNotMatch(app.renderEditionActions(needsReview), /Hardcover Edition Added/);
+
+    window.localStorage = {
+        getItem() { throw new Error('storage blocked'); },
+        setItem() { throw new Error('storage blocked'); }
+    };
+    stubDialog(app, 200, { success: true, data: { status: 'created' } });
+    await app.submitEditionCreate();
+    assert.match(app.renderEditionActions(needsReview), /Hardcover Edition Added/);
+    assert.equal(app.editionDialog.error, '');
+});
