@@ -154,6 +154,14 @@ or format changed, run a new sync first. A profile that is syncing, in dry
 run, or already has a saved match is refused. On success the verified
 Hardcover book and edition are saved as the item's match for the next sync.
 
+Add `"resync": true` to also sync that one book's read status immediately,
+instead of waiting for the next sync. It is off by default, runs under the same
+lock as the create so it never overlaps a full sync, and is never attempted in
+dry run. The response then includes a `resync` block with `attempted`,
+`outcome` (such as `synced` or `already_current`), and any `reason` or `error`.
+A resync failure does not fail the request, because the edition already exists;
+the next sync retries the book.
+
 If an error says Hardcover may already have processed the request, check the
 book in Hardcover before retrying; a retry may create another edition. See
 [OpenAPI](docs/openapi.yaml) for request fields, statuses, and retry guidance.
@@ -167,11 +175,27 @@ finish within that time, the API returns 503 without a write; supply a known
 `GET /api/profiles/{id}/edition-capability` reports, separately for ebook
 insertion (`insert_edition`) and audiobook import (`upsert_book`), whether the
 profile's Hardcover token may attempt to add an edition. It requires profile
-write access and makes no Hardcover or Audiobookshelf request. Hardcover offers
-no read-only way to check a token's scopes, so a configured token is reported
-as `unverified` with a `permission_unverified` warning. That status lets a
-later add-edition attempt proceed with the warning; it does not guarantee
-permission. A profile without a Hardcover token is reported as `denied`. See
+write access and makes no Audiobookshelf request. For a configured token on a
+non-dry-run profile, the route probes ebook `insert_edition` without its
+required `book_id` and `edition` arguments, and audiobook `upsert_book` without
+its required `book` argument. These requests fail GraphQL validation before
+either mutation resolver runs. Only the exact observed `validation-failed`
+response for each operation counts as evidence that the token passed the
+observed catalogue-write scope gate. A recognized HTTP 403 scope denial is
+reported as `denied`; other outcomes, including timeouts, rate limits, and
+unexpected responses, leave that operation `unverified` with a
+`permission_unverified` warning. This scope evidence does not guarantee that a
+later edition creation or audiobook import will succeed. Probe results are
+cached by profile and token: allowed or denied results for 5 minutes, and
+unverified results for 15 seconds. A changed token is probed separately.
+
+See the [implementation evidence and validation dependency](docs/implementations/edition-capability-evidence.md)
+for the recorded live responses and the upstream behavior these probes rely on.
+
+A later add-edition attempt may proceed when capability is unverified, but
+permission is not guaranteed. Profiles without a Hardcover token are reported
+as `denied`. With a configured token, a dry-run profile reports both operations
+as `allowed` without sending a Hardcover request. See
 [OpenAPI](docs/openapi.yaml) for the response fields.
 
 ### Remembered edition matches

@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestEditionCapabilityRouteReportsSeparateUnverifiedStatuses(t *testing.T) {
+func TestEditionCapabilityRouteDryRunReportsAllowedWithoutProbing(t *testing.T) {
 	var hardcoverRequests atomic.Int32
 	hardcoverServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hardcoverRequests.Add(1)
@@ -44,13 +44,13 @@ func TestEditionCapabilityRouteReportsSeparateUnverifiedStatuses(t *testing.T) {
 	require.True(t, payload.Success)
 	require.True(t, payload.Data.DryRun)
 	require.Equal(t, multiuser.EditionCapabilityInsertEdition, payload.Data.Ebook.Operation)
-	require.Equal(t, multiuser.EditionCapabilityUnverified, payload.Data.Ebook.Status)
+	require.Equal(t, multiuser.EditionCapabilityAllowed, payload.Data.Ebook.Status)
 	require.True(t, payload.Data.Ebook.CanAttempt)
-	require.Equal(t, "permission_unverified", payload.Data.Ebook.Warning)
+	require.Empty(t, payload.Data.Ebook.Warning)
 	require.Equal(t, multiuser.EditionCapabilityUpsertBook, payload.Data.Audiobook.Operation)
-	require.Equal(t, multiuser.EditionCapabilityUnverified, payload.Data.Audiobook.Status)
+	require.Equal(t, multiuser.EditionCapabilityAllowed, payload.Data.Audiobook.Status)
 	require.True(t, payload.Data.Audiobook.CanAttempt)
-	require.Equal(t, "permission_unverified", payload.Data.Audiobook.Warning)
+	require.Empty(t, payload.Data.Audiobook.Warning)
 	require.NotContains(t, response.Body.String(), "hardcover-token")
 	require.Equal(t, int32(0), hardcoverRequests.Load(), "capability reporting must not probe a Hardcover write")
 }
@@ -103,7 +103,7 @@ func TestEditionCapabilityRouteUsesProfileWriteAuthorization(t *testing.T) {
 	} {
 		require.NoError(t, fixture.repo.CreateProfileForUser(
 			profile.id, profile.id, "http://abs.home", "abs-token", "hc-token",
-			database.SyncConfigData{}, profile.ownerID,
+			database.SyncConfigData{DryRun: true}, profile.ownerID,
 		))
 	}
 

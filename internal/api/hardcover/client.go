@@ -41,6 +41,9 @@ var ErrMutationOutcomeAmbiguous = errors.New("Hardcover mutation outcome is ambi
 // before executing the mutation.
 var ErrMutationScopeDenied = errors.New("Hardcover catalogue mutation scope is denied")
 
+var errInsertEditionMissingRequiredArgument = errors.New("insert_edition validation requires the book_id argument")
+var errUpsertBookMissingRequiredArgument = errors.New("upsert_book validation requires the book argument")
+
 // WithMinimumMutationBudget asks mutation requests made with ctx to require at
 // least reserve time after rate-limit admission and immediately before sending.
 // Contexts without this opt-in retain the client's established behavior.
@@ -74,43 +77,39 @@ func ambiguousMutationError(err error) error {
 type graphQLError struct {
 	Message    string `json:"message"`
 	Extensions struct {
-		Code string `json:"code"`
+		Code string          `json:"code"`
+		Path json.RawMessage `json:"path"`
 	} `json:"extensions"`
 }
 
-// This intentionally brittle match recognizes only a specific pre-execution
-// GraphQL validation response. If its shape changes, keep the outcome
-// ambiguous rather than treating an unverified error as safe to retry.
-func knownMutationScopeDenial(op graphqlOperation, query string, data json.RawMessage, gqlErrors []graphQLError) bool {
-	if op != mutationOperation || (len(data) > 0 && strings.TrimSpace(string(data)) != "null") || len(gqlErrors) == 0 {
+// knownMissingRequiredMutationArgument recognizes only the exact validation
+// request and response used by a capability probe. A changed message, path,
+// query, result shape, status, or error code stays ambiguous.
+func knownMissingRequiredMutationArgument(op graphqlOperation, query string, statusCode int, data json.RawMessage, gqlErrors []graphQLError, expectedQuery, expectedMessage, expectedPath string) bool {
+	if op != mutationOperation || query != expectedQuery || statusCode != http.StatusOK ||
+		(len(data) > 0 && strings.TrimSpace(string(data)) != "null") || len(gqlErrors) != 1 {
 		return false
 	}
-
-	fields := []string{"insert_edition", "upsert_book"}
-	deniedField := ""
-	for _, field := range fields {
-		if strings.Contains(query, field) {
-			deniedField = field
-			break
-		}
-	}
-	if deniedField == "" {
+	var path string
+	if json.Unmarshal(gqlErrors[0].Extensions.Path, &path) != nil || path != expectedPath {
 		return false
 	}
+	return gqlErrors[0].Extensions.Code == "validation-failed" &&
+		gqlErrors[0].Message == expectedMessage
+}
 
-	for _, gqlErr := range gqlErrors {
-		if gqlErr.Extensions.Code != "validation-failed" {
-			return false
-		}
-		message := strings.ToLower(gqlErr.Message)
-		singleQuotedField := "field '" + deniedField + "' not found in type: 'mutation_root'"
-		doubleQuotedField := `field "` + deniedField + `" not found in type: "mutation_root"`
-		if !strings.Contains(message, singleQuotedField) && !strings.Contains(message, doubleQuotedField) {
-			continue
-		}
-		return true
-	}
-	return false
+func knownInsertEditionMissingRequiredArgument(op graphqlOperation, query string, statusCode int, data json.RawMessage, gqlErrors []graphQLError) bool {
+	return knownMissingRequiredMutationArgument(op, query, statusCode, data, gqlErrors,
+		insertEditionCapabilityProbeMutation,
+		insertEditionCapabilityProbeMissingArgument,
+		insertEditionCapabilityProbeMissingArgumentPath)
+}
+
+func knownUpsertBookMissingRequiredArgument(op graphqlOperation, query string, statusCode int, data json.RawMessage, gqlErrors []graphQLError) bool {
+	return knownMissingRequiredMutationArgument(op, query, statusCode, data, gqlErrors,
+		upsertBookCapabilityProbeMutation,
+		upsertBookCapabilityProbeMissingArgument,
+		upsertBookCapabilityProbeMissingArgumentPath)
 }
 
 // The observed catalogue-scope denial is an HTTP 403 rather than a GraphQL
@@ -240,6 +239,9 @@ type ClientConfig struct {
 	RateLimit time.Duration
 	// MaxConcurrent specifies the maximum number of concurrent requests (default: from config or 3)
 	MaxConcurrent int
+	// RateLimiter optionally supplies a limiter shared with other profile clients.
+	// When nil, the client creates one from RateLimit and MaxConcurrent.
+	RateLimiter *util.RateLimiter
 }
 
 // headerAddingTransport is an http.RoundTripper that adds the required headers
@@ -389,8 +391,11 @@ func NewClientWithConfig(cfg *ClientConfig, token string, log *logger.Logger) *C
 		Timeout: cfg.Timeout,
 	}
 
-	// Create rate limiter with max concurrent requests from config
-	rateLimiter := util.NewRateLimiter(cfg.RateLimit, cfg.MaxConcurrent, log)
+	// Reuse the profile's limiter when supplied, otherwise create one from config.
+	rateLimiter := cfg.RateLimiter
+	if rateLimiter == nil {
+		rateLimiter = util.NewRateLimiter(cfg.RateLimit, cfg.MaxConcurrent, log)
+	}
 
 	// Create logger if not provided
 	if log == nil {
@@ -780,8 +785,11 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				"errors":  gqlResp.Errors,
 			})
 			if budgetedMutation {
-				if knownMutationScopeDenial(op, query, gqlResp.Data, gqlResp.Errors) {
-					return fmt.Errorf("%w: %w", ErrMutationScopeDenied, lastErr)
+				if knownInsertEditionMissingRequiredArgument(op, query, resp.StatusCode, gqlResp.Data, gqlResp.Errors) {
+					return fmt.Errorf("%w: %w", errInsertEditionMissingRequiredArgument, lastErr)
+				}
+				if knownUpsertBookMissingRequiredArgument(op, query, resp.StatusCode, gqlResp.Data, gqlResp.Errors) {
+					return fmt.Errorf("%w: %w", errUpsertBookMissingRequiredArgument, lastErr)
 				}
 				return ambiguousMutationError(lastErr)
 			}

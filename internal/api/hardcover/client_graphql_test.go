@@ -408,13 +408,15 @@ func TestGraphQLMutationWithMinimumBudgetDoesNotRetryAfterPossibleSend(t *testin
 	}
 }
 
-func TestGraphQLMutationClassifiesOnlyKnownPreExecutionScopeDenials(t *testing.T) {
+func TestGraphQLMutationClassifiesOnlyObservedScopeDenialsAndProbeValidation(t *testing.T) {
+	const validationBody = `{"errors":[{"message":"missing required field 'book'","extensions":{"path":"$.selectionSet.upsert_book.args.book","code":"validation-failed"}}],"data":null}`
 	tests := []struct {
-		name      string
-		query     string
-		status    int
-		body      string
-		wantScope bool
+		name           string
+		query          string
+		status         int
+		body           string
+		wantScope      bool
+		wantProbeProof bool
 	}{
 		{
 			name:      "observed insert edition HTTP scope denial",
@@ -443,16 +445,41 @@ func TestGraphQLMutationClassifiesOnlyKnownPreExecutionScopeDenials(t *testing.T
 			body:   `{"error":"insufficient_scope","error_description":"Missing scopes: write:catalog:append","scope":"write:catalog:append","data":{"insert_edition":{"id":1}}}`,
 		},
 		{
-			name:      "insert edition scope denied",
-			query:     `mutation CreateEdition { insert_edition { id } }`,
-			body:      `{"errors":[{"message":"field 'insert_edition' not found in type: 'mutation_root'","extensions":{"code":"validation-failed"}}]}`,
-			wantScope: true,
+			name:  "unknown insert edition field remains ambiguous",
+			query: `mutation CreateEdition { insert_edition { id } }`,
+			body:  `{"errors":[{"message":"field 'insert_edition' not found in type: 'mutation_root'","extensions":{"code":"validation-failed"}}]}`,
 		},
 		{
-			name:      "regional upsert scope denied",
-			query:     `mutation ImportRegional { upsert_book { id } }`,
-			body:      `{"errors":[{"message":"field 'upsert_book' not found in type: 'mutation_root'","extensions":{"code":"validation-failed"}}]}`,
-			wantScope: true,
+			name:  "unknown upsert book field remains ambiguous",
+			query: `mutation ImportRegional { upsert_book { id } }`,
+			body:  `{"errors":[{"message":"field 'upsert_book' not found in type: 'mutation_root'","extensions":{"code":"validation-failed"}}]}`,
+		},
+		{
+			name:  "ordinary GraphQL array error path remains parseable",
+			query: `mutation ImportRegional { upsert_book { id } }`,
+			body:  `{"errors":[{"message":"field 'upsert_book' not found in type: 'mutation_root'","extensions":{"path":["mutation_root","upsert_book"],"code":"validation-failed"}}]}`,
+		},
+		{
+			name:           "exact validation-only probe proves missing required book argument",
+			query:          upsertBookCapabilityProbeMutation,
+			body:           validationBody,
+			wantProbeProof: true,
+		},
+		{
+			name:   "exact validation message with HTTP 201 remains ambiguous",
+			query:  upsertBookCapabilityProbeMutation,
+			status: http.StatusCreated,
+			body:   validationBody,
+		},
+		{
+			name:  "matching validation message with wrong path remains ambiguous",
+			query: upsertBookCapabilityProbeMutation,
+			body:  `{"errors":[{"message":"missing required field 'book'","extensions":{"path":"$.other.path","code":"validation-failed"}}],"data":null}`,
+		},
+		{
+			name:  "matching validation path with wrong message remains ambiguous",
+			query: upsertBookCapabilityProbeMutation,
+			body:  `{"errors":[{"message":"missing required field 'edition'","extensions":{"path":"$.selectionSet.upsert_book.args.book","code":"validation-failed"}}],"data":null}`,
 		},
 		{
 			name:  "different validation error remains ambiguous",
@@ -498,6 +525,10 @@ func TestGraphQLMutationClassifiesOnlyKnownPreExecutionScopeDenials(t *testing.T
 			assert.EqualValues(t, 1, requests.Load(), "budgeted mutations must not be retried after a possible send")
 			if test.wantScope {
 				require.ErrorIs(t, err, ErrMutationScopeDenied)
+				assert.NotErrorIs(t, err, ErrMutationOutcomeAmbiguous)
+			} else if test.wantProbeProof {
+				require.ErrorIs(t, err, errUpsertBookMissingRequiredArgument)
+				assert.NotErrorIs(t, err, ErrMutationScopeDenied)
 				assert.NotErrorIs(t, err, ErrMutationOutcomeAmbiguous)
 			} else {
 				require.ErrorIs(t, err, ErrMutationOutcomeAmbiguous)

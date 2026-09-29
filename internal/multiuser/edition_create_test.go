@@ -336,3 +336,89 @@ func TestCreateEditionWithAssociationSavesToLockedTargetAfterSymlinkRetarget(t *
 	_, foundInSecond := second.GetAssociation("item-1")
 	require.False(t, foundInSecond)
 }
+
+func TestCreateEditionWithAssociationAndResyncRunsAfterSaveUnderGateAndStateLock(t *testing.T) {
+	service, profileID := newEditionCreateService(t)
+	statePath := service.profileSpecificStatePath(profileID, "sync.json")
+	resynced := false
+	err := service.CreateEditionWithAssociationAndResync(context.Background(), profileID, "item-1",
+		func(*database.ProfileWithTokens) (statepkg.Association, error) {
+			return testCreateAssociation("item-1"), nil
+		},
+		func(profile *database.ProfileWithTokens, syncState *statepkg.State, lockedPath string) {
+			resynced = true
+			require.Equal(t, profileID, profile.Profile.ID)
+			_, exists := syncState.GetAssociation("item-1")
+			require.True(t, exists, "resync must see the just-created association")
+			stored, loadErr := statepkg.LoadState(lockedPath)
+			require.NoError(t, loadErr)
+			_, exists = stored.GetAssociation("item-1")
+			require.True(t, exists, "association must be durable before the resync starts")
+
+			gate := service.profileGate(profileID)
+			if gate.mu.TryLock() {
+				gate.mu.Unlock()
+				t.Error("profile run gate was not held during resync")
+			}
+			if lock, lockErr := statepkg.AcquireFileLock(statePath); lockErr == nil {
+				_ = lock.Close()
+				t.Error("state-file lock was not held during resync")
+			} else {
+				require.ErrorIs(t, lockErr, statepkg.ErrStateFileLocked)
+			}
+		})
+	require.NoError(t, err)
+	require.True(t, resynced)
+}
+
+func TestCreateEditionWithAssociationAndResyncSkipsResyncWhenNothingWasCreated(t *testing.T) {
+	noResync := func(t *testing.T) EditionResyncOperation {
+		return func(*database.ProfileWithTokens, *statepkg.State, string) {
+			t.Error("resync must not run when no edition was created")
+		}
+	}
+	create := func(*database.ProfileWithTokens) (statepkg.Association, error) {
+		return testCreateAssociation("item-1"), nil
+	}
+
+	t.Run("full sync active", func(t *testing.T) {
+		service, profileID := newEditionCreateService(t)
+		service.syncMutex.Lock()
+		service.activeSyncs[profileID] = func() {}
+		service.syncMutex.Unlock()
+		err := service.CreateEditionWithAssociationAndResync(context.Background(), profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+			t.Error("edition must not be created while a full sync is active")
+			return statepkg.Association{}, nil
+		}, noResync(t))
+		require.ErrorIs(t, err, ErrSyncAlreadyActive)
+	})
+
+	t.Run("create fails", func(t *testing.T) {
+		service, profileID := newEditionCreateService(t)
+		failure := errors.New("hardcover rejected the edition")
+		err := service.CreateEditionWithAssociationAndResync(context.Background(), profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+			return statepkg.Association{}, failure
+		}, noResync(t))
+		require.ErrorIs(t, err, failure)
+	})
+
+	t.Run("dry run", func(t *testing.T) {
+		service, profileID := newEditionCreateService(t)
+		profile, err := service.GetProfile(profileID)
+		require.NoError(t, err)
+		profile.SyncConfig.DryRun = true
+		require.NoError(t, service.repository.UpdateUserConfig(
+			profileID, profile.AudiobookshelfURL, profile.AudiobookshelfToken, profile.HardcoverToken, profile.SyncConfig,
+		))
+		err = service.CreateEditionWithAssociationAndResync(context.Background(), profileID, "item-1", create, noResync(t))
+		require.ErrorIs(t, err, ErrEditionCreateDryRun)
+	})
+
+	t.Run("association save fails", func(t *testing.T) {
+		service, profileID := newEditionCreateService(t)
+		err := service.CreateEditionWithAssociationAndResync(context.Background(), profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+			return testCreateAssociation("other-item"), nil
+		}, noResync(t))
+		require.ErrorIs(t, err, ErrEditionAssociationSaveAfterRemoteSuccess)
+	})
+}

@@ -14,12 +14,12 @@ import (
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/util"
 )
 
 const maxStateFileComponentBytes = 255
@@ -101,22 +101,28 @@ type profileRunGate struct {
 
 // MultiUserService manages sync operations for multiple users
 type MultiUserService struct {
-	repository       *database.Repository
-	logger           *logger.Logger
-	globalConfig     *config.Config
-	profileStatuses  map[string]*SyncProfileStatus
-	statusMutex      stdSync.RWMutex
-	activeSyncs      map[string]context.CancelFunc
-	activeRuns       map[string]activeSyncRun
-	syncMutex        stdSync.RWMutex
-	syncWaitGroup    stdSync.WaitGroup
-	syncServices     map[string]*sync.Service // Maps profile ID to its sync service
-	serviceRuns      map[string]uint64
-	latestRuns       map[string]activeSyncRun
-	profileGates     map[string]*profileRunGate
-	servicesMutex    stdSync.RWMutex
-	admissionMutex   stdSync.Mutex
-	deletingProfiles map[string]struct{}
+	repository                   *database.Repository
+	logger                       *logger.Logger
+	globalConfig                 *config.Config
+	hardcoverClientMutex         stdSync.Mutex
+	editionCapabilityCache       map[editionCapabilityCacheKey]editionCapabilityCacheEntry
+	editionCapabilityFlights     map[editionCapabilityFlightKey]*editionCapabilityFlight
+	editionCapabilityClients     map[string]editionCapabilityClientEntry
+	editionCapabilityGenerations map[string]uint64
+	profileHardcoverRateLimiters map[profileHardcoverRateLimiterKey]*util.RateLimiter
+	profileStatuses              map[string]*SyncProfileStatus
+	statusMutex                  stdSync.RWMutex
+	activeSyncs                  map[string]context.CancelFunc
+	activeRuns                   map[string]activeSyncRun
+	syncMutex                    stdSync.RWMutex
+	syncWaitGroup                stdSync.WaitGroup
+	syncServices                 map[string]*sync.Service // Maps profile ID to its sync service
+	serviceRuns                  map[string]uint64
+	latestRuns                   map[string]activeSyncRun
+	profileGates                 map[string]*profileRunGate
+	servicesMutex                stdSync.RWMutex
+	admissionMutex               stdSync.Mutex
+	deletingProfiles             map[string]struct{}
 	// deletedProfiles are lifecycle tombstones: they prevent late callbacks or
 	// new admissions from recreating a removed profile's gate after cleanup.
 	deletedProfiles       map[string]struct{}
@@ -129,18 +135,23 @@ type MultiUserService struct {
 // NewMultiUserService creates a new multi-user service
 func NewMultiUserService(repo *database.Repository, globalConfig *config.Config, log *logger.Logger) *MultiUserService {
 	return &MultiUserService{
-		repository:       repo,
-		logger:           log,
-		globalConfig:     globalConfig,
-		profileStatuses:  make(map[string]*SyncProfileStatus),
-		activeSyncs:      make(map[string]context.CancelFunc),
-		activeRuns:       make(map[string]activeSyncRun),
-		syncServices:     make(map[string]*sync.Service),
-		serviceRuns:      make(map[string]uint64),
-		latestRuns:       make(map[string]activeSyncRun),
-		profileGates:     make(map[string]*profileRunGate),
-		deletingProfiles: make(map[string]struct{}),
-		deletedProfiles:  make(map[string]struct{}),
+		repository:                   repo,
+		logger:                       log,
+		globalConfig:                 globalConfig,
+		editionCapabilityCache:       make(map[editionCapabilityCacheKey]editionCapabilityCacheEntry),
+		editionCapabilityFlights:     make(map[editionCapabilityFlightKey]*editionCapabilityFlight),
+		editionCapabilityClients:     make(map[string]editionCapabilityClientEntry),
+		editionCapabilityGenerations: make(map[string]uint64),
+		profileHardcoverRateLimiters: make(map[profileHardcoverRateLimiterKey]*util.RateLimiter),
+		profileStatuses:              make(map[string]*SyncProfileStatus),
+		activeSyncs:                  make(map[string]context.CancelFunc),
+		activeRuns:                   make(map[string]activeSyncRun),
+		syncServices:                 make(map[string]*sync.Service),
+		serviceRuns:                  make(map[string]uint64),
+		latestRuns:                   make(map[string]activeSyncRun),
+		profileGates:                 make(map[string]*profileRunGate),
+		deletingProfiles:             make(map[string]struct{}),
+		deletedProfiles:              make(map[string]struct{}),
 	}
 }
 
@@ -350,6 +361,7 @@ func (s *MultiUserService) CreateProfileForUser(profileID, name, audiobookshelfU
 	if err := s.repository.CreateProfileForUser(profileID, name, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig, ownerUserID); err != nil {
 		return err
 	}
+	s.invalidateEditionCapabilityProfile(profileID, true)
 	s.admissionMutex.Lock()
 	delete(s.deletedProfiles, profileID)
 	s.admissionMutex.Unlock()
@@ -398,7 +410,22 @@ func (s *MultiUserService) UpdateProfileConfig(profileID, audiobookshelfURL, aud
 			return err
 		}
 	}
-	return s.repository.UpdateUserConfig(profileID, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig)
+	invalidateRateLimiter := false
+	if hardcoverToken != "" {
+		currentSettings, err := s.repository.GetProfileHardcoverSettings(profileID)
+		if err != nil {
+			return fmt.Errorf("failed to read current Hardcover token for profile %s: %w", profileID, err)
+		}
+		if currentSettings == nil {
+			return fmt.Errorf("%w: %s", ErrProfileNotFound, profileID)
+		}
+		invalidateRateLimiter = hardcoverTokenFingerprint(currentSettings.HardcoverToken) != hardcoverTokenFingerprint(hardcoverToken)
+	}
+	if err := s.repository.UpdateUserConfig(profileID, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig); err != nil {
+		return err
+	}
+	s.invalidateEditionCapabilityProfile(profileID, invalidateRateLimiter)
+	return nil
 }
 
 // ProfileAudnexusRegion returns the Audnex region preference that sync, edition
@@ -461,6 +488,7 @@ func (s *MultiUserService) DeleteProfile(profileID string) error {
 		s.admissionMutex.Unlock()
 		return deleteErr
 	}
+	s.invalidateEditionCapabilityProfile(profileID, true)
 	gate.mu.Unlock()
 
 	// Starts admitted before the deletion marker wait at the gate; workers are
@@ -1340,19 +1368,9 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
 		return
 	}
 
-	// Build Hardcover client config using global settings (rate limits/base URL)
-	hcCfg := hardcover.DefaultClientConfig()
-	if s.globalConfig != nil {
-		if s.globalConfig.Hardcover.BaseURL != "" {
-			hcCfg.BaseURL = s.globalConfig.Hardcover.BaseURL
-		}
-		if s.globalConfig.RateLimit.Rate > 0 {
-			hcCfg.RateLimit = s.globalConfig.RateLimit.Rate
-		}
-		if s.globalConfig.RateLimit.MaxConcurrent > 0 {
-			hcCfg.MaxConcurrent = s.globalConfig.RateLimit.MaxConcurrent
-		}
-	}
+	// Build the profile's Hardcover client with the same token-scoped request
+	// limiter used by create and capability operations.
+	hcCfg := s.hardcoverClientConfig()
 
 	s.logger.Debug("Initializing Hardcover client (multi-user)", map[string]interface{}{
 		"profile_id":     profileID,
@@ -1361,7 +1379,7 @@ func (s *MultiUserService) performSync(ctx context.Context, profileID string, pr
 		"max_concurrent": hcCfg.MaxConcurrent,
 	})
 
-	hcClient := hardcover.NewClientWithConfig(hcCfg, profileConfig.HardcoverToken, s.logger)
+	hcClient := s.NewHardcoverClientForProfile(profileID, profileConfig.HardcoverToken)
 
 	// Create sync service bound to the accepted run identity. This preserves the
 	// queued run ID/timestamp through service initialization and Sync startup.

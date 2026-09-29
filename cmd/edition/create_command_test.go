@@ -131,6 +131,11 @@ func (f *fakeHardcover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func writeFakeResponse(w http.ResponseWriter, status int, body string) {
 	if status != 0 && status != http.StatusOK {
+		if body != "" {
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
+			return
+		}
 		http.Error(w, "Hardcover unavailable", status)
 		return
 	}
@@ -351,7 +356,8 @@ func TestCreateCommandAssociationIsUsedByNextSync(t *testing.T) {
 }
 
 func TestCreateCommandSavesNothingWhenHardcoverImportFails(t *testing.T) {
-	const scopeDenied = `{"errors":[{"message":"field 'upsert_book' not found in type: 'mutation_root'","extensions":{"code":"validation-failed"}}]}`
+	const scopeDenied = `{"error":"insufficient_scope","error_description":"Missing scopes: write:catalog:append","scope":"write:catalog:append"}`
+	const unknownField = `{"errors":[{"message":"field 'upsert_book' not found in type: 'mutation_root'","extensions":{"code":"validation-failed"}}]}`
 	tests := []struct {
 		name      string
 		setup     func(*fakeHardcover)
@@ -359,8 +365,13 @@ func TestCreateCommandSavesNothingWhenHardcoverImportFails(t *testing.T) {
 	}{
 		{
 			name:      "missing catalogue write scope",
-			setup:     func(f *fakeHardcover) { f.upsertResponse = scopeDenied },
+			setup:     func(f *fakeHardcover) { f.upsertHTTPStatus, f.upsertResponse = http.StatusForbidden, scopeDenied },
 			wantError: "catalogue write permission is required, and no edition was created",
+		},
+		{
+			name:      "unknown mutation field remains ambiguous",
+			setup:     func(f *fakeHardcover) { f.upsertResponse = unknownField },
+			wantError: "Hardcover may have processed the import",
 		},
 		{
 			name: "import failure",
@@ -649,7 +660,8 @@ func TestRunCreateRefusesImportWithoutMutationReserve(t *testing.T) {
 }
 
 func TestCreateCommandSendsEbookInsertionOnce(t *testing.T) {
-	const scopeDenied = `{"errors":[{"message":"field 'insert_edition' not found in type: 'mutation_root'","extensions":{"code":"validation-failed"}}]}`
+	const scopeDenied = `{"error":"insufficient_scope","error_description":"Missing scopes: write:catalog:append","scope":"write:catalog:append"}`
+	const unknownField = `{"errors":[{"message":"field 'insert_edition' not found in type: 'mutation_root'","extensions":{"code":"validation-failed"}}]}`
 	tests := []struct {
 		name      string
 		setup     func(*fakeHardcover)
@@ -657,8 +669,13 @@ func TestCreateCommandSendsEbookInsertionOnce(t *testing.T) {
 	}{
 		{
 			name:      "missing catalogue write scope",
-			setup:     func(f *fakeHardcover) { f.insertResponse = scopeDenied },
+			setup:     func(f *fakeHardcover) { f.insertHTTPStatus, f.insertResponse = http.StatusForbidden, scopeDenied },
 			wantError: "catalogue write permission is required, and no edition was created",
+		},
+		{
+			name:      "unknown mutation field remains ambiguous",
+			setup:     func(f *fakeHardcover) { f.insertResponse = unknownField },
+			wantError: "Hardcover may have processed the insertion",
 		},
 		{
 			name:      "unanswered insertion is not resent",
