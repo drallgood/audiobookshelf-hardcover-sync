@@ -480,6 +480,7 @@ class SyncProfileApp {
                     case 'confirm-forget': this.submitForget(); break;
                 }
             });
+            editionModal.addEventListener('keydown', (event) => this.handleEditionDialogKeydown(event));
         }
 
         // Tab switching
@@ -1961,7 +1962,42 @@ class SyncProfileApp {
         const content = document.getElementById('edition-modal-content');
         if (content) content.replaceChildren();
         if (modal) modal.style.display = 'none';
+        const opener = this.editionDialogOpener;
+        this.editionDialogOpener = null;
+        if (!force && opener?.isConnected) opener.focus?.({ preventScroll: true });
         return true;
+    }
+
+    editionDialogFocusables() {
+        const content = document.getElementById('edition-modal-content');
+        return [...(content?.querySelectorAll?.('button:not([disabled]), input:not([disabled])') || [])];
+    }
+
+    // Escape closes the dialog (closeEditionDialog refuses while a create is
+    // in flight) and Tab wraps inside it so focus cannot reach the page behind.
+    handleEditionDialogKeydown(event) {
+        if (!this.editionDialog) return;
+        if (event.key === 'Escape') {
+            event.preventDefault?.();
+            this.closeEditionDialog();
+            return;
+        }
+        if (event.key !== 'Tab') return;
+        const focusables = this.editionDialogFocusables();
+        if (focusables.length === 0) {
+            event.preventDefault?.();
+            return;
+        }
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        const active = document.activeElement;
+        if (event.shiftKey && (active === first || !focusables.includes(active))) {
+            event.preventDefault?.();
+            last.focus();
+        } else if (!event.shiftKey && (active === last || !focusables.includes(active))) {
+            event.preventDefault?.();
+            first.focus();
+        }
     }
 
     showEditionDialog() {
@@ -1969,10 +2005,15 @@ class SyncProfileApp {
         const content = document.getElementById('edition-modal-content');
         if (!modal || !content || !this.editionDialog) return;
         const scrollTop = content.querySelector?.('.edition-dialog-body')?.scrollTop || 0;
+        if (modal.style.display !== 'block') this.editionDialogOpener = document.activeElement || null;
         content.innerHTML = this.renderEditionDialog(this.editionDialog);
         modal.style.display = 'block';
         const body = content.querySelector?.('.edition-dialog-body');
         if (body) body.scrollTop = scrollTop;
+        // Re-rendering replaces the controls, so put focus back inside the dialog.
+        if (!content.contains?.(document.activeElement)) {
+            (this.editionDialogFocusables()[0] || body)?.focus?.({ preventScroll: true });
+        }
     }
 
     async openEditionDialog(bookId) {
@@ -2085,7 +2126,7 @@ class SyncProfileApp {
                 </div>` : '';
         const closeDisabled = dialog.mode === 'create' && dialog.busy ? ' disabled' : '';
         return `<div class="modal-header"><h3>${title}</h3><button type="button" class="modal-close" data-edition-dialog="close" aria-label="Close"${closeDisabled}>&times;</button></div>
-            <div class="edition-dialog-body" role="dialog" aria-label="${this.escapeHtmlAttribute(title)}">
+            <div class="edition-dialog-body" role="dialog" aria-modal="true" tabindex="-1" aria-label="${this.escapeHtmlAttribute(title)}">
                 ${subjectHtml}
                 ${body}
             </div>`;

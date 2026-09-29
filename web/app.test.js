@@ -1086,3 +1086,62 @@ test('forget uses fresh capability, waits while checking, and lets the server de
     await unknownApp.submitForget();
     assert.match(unknownApp.renderEditionDialog(unknownApp.editionDialog), /saved match was retained/);
 });
+
+test('edition dialog closes on Escape except while creating, and restores focus to its opener', () => {
+    const originalDocument = global.document;
+    const opener = { isConnected: true, focused: 0, focus() { this.focused += 1; } };
+    const modal = { style: { display: 'block' } };
+    const content = { replaceChildren() {} };
+    global.document = {
+        ...originalDocument,
+        activeElement: null,
+        getElementById(id) { return id === 'edition-modal' ? modal : id === 'edition-modal-content' ? content : null; }
+    };
+    try {
+        const app = createApp();
+        app.editionDialog = { mode: 'create', busy: true };
+        app.editionDialogOpener = opener;
+        app.handleEditionDialogKeydown({ key: 'Escape' });
+        assert.ok(app.editionDialog, 'Escape must not close a create request in flight');
+        assert.equal(opener.focused, 0);
+
+        app.editionDialog.busy = false;
+        app.handleEditionDialogKeydown({ key: 'Escape' });
+        assert.equal(app.editionDialog, null);
+        assert.equal(modal.style.display, 'none');
+        assert.equal(opener.focused, 1);
+
+        // A forced close (session reset) and a detached opener never take focus.
+        app.editionDialog = { mode: 'forget' };
+        app.editionDialogOpener = opener;
+        app.closeEditionDialog(true);
+        app.editionDialog = { mode: 'forget' };
+        app.editionDialogOpener = { ...opener, isConnected: false };
+        app.closeEditionDialog();
+        assert.equal(opener.focused, 1);
+    } finally {
+        global.document = originalDocument;
+    }
+});
+
+test('edition dialog keeps Tab focus inside the modal', () => {
+    const originalDocument = global.document;
+    const makeButton = () => ({ focused: false, focus() { global.document.activeElement = this; } });
+    const [first, last] = [makeButton(), makeButton()];
+    const content = { querySelectorAll() { return [first, last]; } };
+    global.document = { ...originalDocument, activeElement: last, getElementById(id) { return id === 'edition-modal-content' ? content : null; } };
+    try {
+        const app = createApp();
+        app.editionDialog = { mode: 'forget' };
+        app.handleEditionDialogKeydown({ key: 'Tab', shiftKey: false, preventDefault() {} });
+        assert.equal(global.document.activeElement, first);
+        app.handleEditionDialogKeydown({ key: 'Tab', shiftKey: true, preventDefault() {} });
+        assert.equal(global.document.activeElement, last);
+        const outside = {};
+        global.document.activeElement = outside;
+        app.handleEditionDialogKeydown({ key: 'Tab', shiftKey: false, preventDefault() {} });
+        assert.equal(global.document.activeElement, first);
+    } finally {
+        global.document = originalDocument;
+    }
+});
