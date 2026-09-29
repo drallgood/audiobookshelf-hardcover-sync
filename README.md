@@ -70,6 +70,7 @@ Existing single-profile setups are **automatically migrated** on first startup:
 | `GET` | `/api/profiles/{id}/runs/{runId}/details` | Get book-level details for a retained sync run |
 | `GET` | `/api/profiles/{id}/edition-drafts/source/{itemID}` | Prepare a read-only edition draft from an Audiobookshelf item |
 | `POST` | `/api/profiles/{id}/edition-drafts/create` | Create an edition from a verified needs-review sync record |
+| `POST` | `/api/profiles/{id}/edition-drafts/check-import` | Check an Audible import and save its verified match |
 | `DELETE` | `/api/profiles/{id}/edition-associations/{itemID}` | Forget the saved Hardcover match for one Audiobookshelf item |
 | `POST` | `/api/profiles/{id}/sync` | Start sync |
 | `DELETE` | `/api/profiles/{id}/sync` | Cancel sync |
@@ -115,6 +116,10 @@ confirmations are disabled while the profile is syncing, and a conflict from a
 sync that started later is reported. The create dialog stays open while its
 request is in progress so a completed creation and its resync result remain
 visible.
+
+For an unconfirmed audiobook import, use **Check import status** to verify it
+and save its match without submitting another import, or **Open Hardcover** to
+inspect the book. Expand technical details for the HTTP status and error code.
 
 Matched results show their current Hardcover book and edition with **Forget
 match**. If a saved match exists, confirmation removes only this app's saved
@@ -167,11 +172,10 @@ See [OpenAPI](docs/openapi.yaml) for response fields and warnings.
 Use a trusted Audiobookshelf URL: this route fetches it with the saved token.
 Enable authentication when exposing the API beyond localhost. A draft may
 check up to ten Audnexus regions, with retries, within its 25-second deadline.
-Each server instance has two shared slots for draft and edition-create
-requests. A single authorized caller can occupy both with concurrent creates,
-each of which has a 65-second handler deadline. Excess requests receive HTTP
-429 with `Retry-After: 1`. The HTTP server's 75-second write timeout applies to
-every route.
+Each server instance has two shared slots for drafts, edition creation, and
+import-status checks. Creates have a 65-second deadline; drafts and status
+checks have 25 seconds. Excess requests receive HTTP 429 with `Retry-After: 1`.
+The HTTP server's 75-second write timeout applies to every route.
 
 ### Create an edition
 
@@ -206,9 +210,11 @@ the next sync retries the book. The resync shares the create request's 65-second
 deadline, so a slow creation can leave too little time to finish resync.
 The modal distinguishes a finished resync from a skipped or unresolved match.
 
-If an error says Hardcover may already have processed the request, check the
-book in Hardcover before retrying; a retry may create another edition. See
-[OpenAPI](docs/openapi.yaml) for request fields, statuses, and retry guidance.
+An audiobook import polling timeout returns HTTP 503 with `outcome: unconfirmed`.
+Use `edition-drafts/check-import` with the original run/item IDs and returned
+recovery details to verify it and save its match without another import.
+The next sync applies read status. Check the import or Hardcover before retrying
+to avoid duplicates. See [OpenAPI](docs/openapi.yaml) for fields and retry guidance.
 If source lookup leaves too little time for the Hardcover write, the API returns
 503 with `Retry-After: 1` before sending the write. If region discovery cannot
 finish within that time, the API returns 503 without a write; supply a known

@@ -477,6 +477,8 @@ class SyncProfileApp {
                         this.loadEditionDraft();
                         break;
                     case 'confirm-create': this.submitEditionCreate(); break;
+                    case 'check-import': this.checkEditionImport(); break;
+                    case 'retry-create': this.submitEditionCreate(); break;
                     case 'confirm-forget': this.submitForget(); break;
                 }
             });
@@ -1914,6 +1916,10 @@ class SyncProfileApp {
         const profileId = open.profileId;
         const syncing = this.profileIsSyncing(profileId);
         if (record.outcome === 'needs_review') {
+            const pendingRecovery = this.loadPendingEditionRecovery(profileId, open.runContext?.runId, record.book_id);
+            if (pendingRecovery) {
+                return `<div class="edition-actions"><button type="button" class="book-service-link edition-action-pill" data-edition-action="add">Resolve pending edition request</button></div>`;
+            }
             if (open.addedEditionBookIds?.has(String(record.book_id))) {
                 return '<div class="edition-actions"><span class="edition-added" role="status">Hardcover Edition Added</span></div>';
             }
@@ -2051,17 +2057,33 @@ class SyncProfileApp {
         const open = this.openSummary;
         const record = open?.records?.get(String(bookId));
         if (!open || !record || this.isViewer()) return;
-        if (open.addedEditionBookIds?.has(String(bookId))) return;
-        if (this.editionCreateIneligibleReason(record, open.runContext)) return;
-        if (this.profileIsSyncing(open.profileId)) return;
-        if (!open.editionCapabilityLoaded) return;
-        if (this.editionCapabilityGate(open.editionCapability, record.format).blocked) return;
+        const recovery = this.loadPendingEditionRecovery(open.profileId, open.runContext?.runId, record.book_id);
+        if (!recovery) {
+            if (open.addedEditionBookIds?.has(String(bookId))) return;
+            if (this.editionCreateIneligibleReason(record, open.runContext)) return;
+            if (this.profileIsSyncing(open.profileId)) return;
+            if (!open.editionCapabilityLoaded) return;
+            if (this.editionCapabilityGate(open.editionCapability, record.format).blocked) return;
+        }
         this.closeEditionDialog();
         this.editionDialog = {
             mode: 'create', profileId: open.profileId, runId: open.runContext.runId,
             runDryRun: open.runContext.dryRun, record, draft: null, capability: null,
             loading: true, busy: false, error: '', retryAt: 0, result: null
         };
+        if (recovery) {
+            Object.assign(this.editionDialog, {
+                draft: recovery.draft || null, loading: false, outcome: recovery.outcome || 'unconfirmed',
+                recovery: recovery.recovery, submittedBody: recovery.submittedBody,
+                recoveryTitle: recovery.title || record.title,
+                recoveryBookId: recovery.recoveryBookId || recovery.recovery?.hardcoverBookId,
+                error: recovery.error || '', transportError: recovery.transportError || '',
+                errorHttpStatus: recovery.errorHttpStatus || 0, errorCode: recovery.errorCode || '',
+                recoveryHttpStatus: recovery.recoveryHttpStatus || 0, recoveryErrorCode: recovery.recoveryErrorCode || ''
+            });
+            this.showEditionDialog();
+            return;
+        }
         this.showEditionDialog();
         await this.loadEditionDraft();
     }
@@ -2144,6 +2166,8 @@ class SyncProfileApp {
             body = this.renderForgetBody(dialog);
         } else if (dialog.result) {
             body = this.renderCreateResult(dialog.result);
+        } else if (dialog.outcome === 'unconfirmed') {
+            body = this.renderEditionImportUnconfirmed(dialog);
         } else {
             body = this.renderCreateBody(dialog);
             // The loaded draft renders its own Audiobookshelf section with
@@ -2169,12 +2193,23 @@ class SyncProfileApp {
 
     renderCreateBody(dialog) {
         const record = dialog.record;
-        const errorHtml = dialog.error ? `<div class="edition-error" role="alert">${this.escapeHtml(dialog.error)}</div>` : '';
+        const errorHtml = dialog.error ? `<div class="edition-error" role="alert">${this.escapeHtml(dialog.error)}${this.renderEditionTechnicalDetails(dialog)}</div>` : '';
         const waitMs = dialog.retryAt ? Math.max(0, dialog.retryAt - Date.now()) : 0;
         const waiting = waitMs > 0;
         const retryLabel = waiting ? `Retry in ${Math.ceil(waitMs / 1000)}s` : 'Retry';
         if (dialog.loading) return '<p role="status">Loading edition preview…</p>';
         const closeButton = `<button type="button" class="btn btn-warning" data-edition-dialog="close" ${dialog.busy ? 'disabled' : ''}>Cancel</button>`;
+        if (dialog.outcome === 'created' || dialog.outcome === 'transport_unknown') {
+            const url = this.buildHardcoverBookURL({ ...record, hardcover_book_id: dialog.recoveryBookId || record.hardcover_book_id });
+            const openLink = url ? `<a class="btn btn-secondary" href="${this.escapeHtmlAttribute(url)}" target="_blank" rel="noopener noreferrer">Open Hardcover</a>` : '';
+            const created = dialog.outcome === 'created';
+            const title = created ? 'Edition created; match not saved.' : 'The import result is unknown.';
+            const description = created ? dialog.error : (dialog.transportError || 'The server returned no usable confirmation. The import may still have been submitted; check Hardcover before trying again.');
+            const technicalDialog = created ? dialog : { ...dialog, recoveryHttpStatus: dialog.errorHttpStatus };
+            const recoveryAction = created && dialog.recovery?.recoveryToken
+                ? `<button type="button" class="btn btn-primary" data-edition-dialog="check-import" ${dialog.busy ? 'disabled' : ''}>${dialog.busy ? 'Saving…' : 'Save match'}</button>` : '';
+            return `<div class="edition-warning" role="alert"><strong>${title}</strong><p>${this.escapeHtml(description)}</p>${this.renderEditionTechnicalDetails(technicalDialog)}</div><div class="form-actions edition-create-actions">${recoveryAction}${openLink}${closeButton}</div>${dialog.checkError ? `<div class="edition-error" role="alert">${this.escapeHtml(dialog.checkError)}</div>` : ''}`;
+        }
         if (!dialog.draft) {
             return `${errorHtml}<div class="form-actions edition-create-actions"><button type="button" class="btn btn-secondary" data-edition-dialog="retry" ${waiting ? 'disabled' : ''}>${retryLabel}</button>${closeButton}</div>`;
         }
@@ -2252,6 +2287,7 @@ class SyncProfileApp {
         if (gate.blocked) blockers.push(gate.reason);
         if (dryRun) blockers.push('This profile is in dry run: no edition can be created and no resync is offered.');
         if (syncing) blockers.push('A sync is running for this profile; try again when it finishes.');
+        if (dialog.outcome === 'failed') blockers.push('Hardcover returned a failed result after receiving the import. Another create is disabled to avoid submitting it again.');
         const canConfirm = blockers.length === 0;
         return `${dryRun ? '<div class="edition-dry-run">Dry run</div>' : ''}
             ${sourceHtml}${hardcoverTargetHtml}${audnexHtml}${regionHtml}
@@ -2260,7 +2296,7 @@ class SyncProfileApp {
             ${blockers.map(text => `<div class="edition-error" data-blocker>${this.escapeHtml(text)}</div>`).join('')}
             ${errorHtml}
             <div class="form-actions edition-create-actions">
-                <button type="button" class="btn btn-primary" data-edition-dialog="confirm-create" ${canConfirm && !dialog.busy ? '' : 'disabled'}>${dialog.busy ? 'Creating…' : 'Add edition'}</button>
+                ${dialog.retryCreate ? `<button type="button" class="btn btn-primary" data-edition-dialog="retry-create" ${canConfirm && !dialog.busy ? '' : 'disabled'}>Retry import</button>` : `<button type="button" class="btn btn-primary" data-edition-dialog="confirm-create" ${canConfirm && !dialog.busy && dialog.outcome !== 'failed' ? '' : 'disabled'}>${dialog.busy ? 'Creating…' : 'Add edition'}</button>`}
                 <button type="button" class="btn btn-secondary" data-edition-dialog="retry" title="Reload this preview and retry the region/candidate lookup — useful after a temporary lookup failure or if the source metadata changed." ${waiting || dialog.busy ? 'disabled' : ''}>${waiting ? retryLabel : 'Refresh preview'}</button>
                 ${closeButton}
             </div>`;
@@ -2311,10 +2347,16 @@ class SyncProfileApp {
 
     async submitEditionCreate() {
         const dialog = this.editionDialog;
-        if (!dialog || dialog.mode !== 'create' || !dialog.draft || dialog.busy) return;
+        if (!dialog || dialog.mode !== 'create' || !dialog.draft || dialog.busy
+            || ['unconfirmed', 'created', 'transport_unknown', 'failed'].includes(dialog.outcome)) return;
+        dialog.outcome = '';
+        dialog.retryCreate = false;
+        dialog.errorCode = '';
+        dialog.errorHttpStatus = 0;
         const fields = this.readEditionFormFields();
         const resync = !dialog.draft.dry_run;
         const body = this.buildEditionCreateBody(dialog, fields, resync);
+        dialog.submittedBody = { ...body };
         dialog.busy = true;
         dialog.error = '';
         this.showEditionDialog();
@@ -2329,9 +2371,10 @@ class SyncProfileApp {
             if (this.editionDialog !== dialog) return;
             dialog.busy = false;
             if (response.status === 401) { this.closeEditionDialog(); this.handleAuthExpiry(); return; }
-            if (response.ok && data?.success) {
+            if (response.ok && data?.success && data?.data && typeof data.data === 'object' && !Array.isArray(data.data)) {
                 dialog.result = data.data;
                 this.saveAddedEditionBookId(dialog.profileId, dialog.runId, dialog.record.book_id);
+                this.clearPendingEditionRecovery(dialog.profileId, dialog.runId, dialog.record.book_id);
                 const open = this.openSummary;
                 if (open?.profileId === dialog.profileId && open.runContext?.runId === dialog.runId) {
                     if (!open.addedEditionBookIds) open.addedEditionBookIds = new Set();
@@ -2341,13 +2384,80 @@ class SyncProfileApp {
                 this.showToast('Edition added. The next sync will use it.', 'success');
                 this.loadStatuses();
             } else {
-                dialog.error = this.editionCreateErrorMessage(response.status, this.apiErrorMessage(data, `Edition creation failed (${response.status}).`));
+                const outcome = String(data?.outcome || '').toLowerCase();
+                if (outcome === 'unconfirmed') {
+                    dialog.outcome = 'unconfirmed';
+                    dialog.recovery = {
+                        runId: dialog.submittedBody.run_id,
+                        absItemId: dialog.submittedBody.abs_item_id,
+                        audibleIdentifier: data?.data?.audible_identifier || dialog.submittedBody.audible_identifier || '',
+                        recoveryToken: data?.data?.recovery_token || '',
+                        hardcoverBookId: data?.data?.hardcover_book_id || ''
+                    };
+                    dialog.recoveryTitle = data?.data?.title || dialog.record.title || 'this audiobook';
+                    dialog.recoveryBookId = dialog.recovery.hardcoverBookId;
+                    dialog.recoveryHttpStatus = response.status;
+                    dialog.recoveryErrorCode = data?.error_code || '';
+                    dialog.error = '';
+                    this.savePendingEditionRecovery(dialog);
+                } else if (outcome === 'created') {
+                    dialog.outcome = 'created';
+                    dialog.recovery = {
+                        runId: dialog.submittedBody.run_id,
+                        absItemId: dialog.submittedBody.abs_item_id,
+                        audibleIdentifier: data?.data?.audible_identifier || dialog.submittedBody.audible_identifier || '',
+                        recoveryToken: data?.data?.recovery_token || '',
+                        hardcoverBookId: data?.data?.hardcover_book_id || ''
+                    };
+                    dialog.recoveryBookId = dialog.recovery?.hardcoverBookId || '';
+                    dialog.recoveryHttpStatus = response.status;
+                    dialog.recoveryErrorCode = data?.error_code || '';
+                    dialog.error = this.apiErrorMessage(data, 'Hardcover created the edition, but the app could not save its local match. Check Hardcover before trying again.');
+                    this.savePendingEditionRecovery(dialog);
+                } else {
+                    const message = this.apiErrorMessage(data, '');
+                    if (!outcome && (response.status >= 500 || (response.ok && (!data?.success || !data?.data || typeof data.data !== 'object' || Array.isArray(data.data))))) {
+                        dialog.outcome = 'transport_unknown';
+                        dialog.errorHttpStatus = response.status;
+                        dialog.errorCode = data?.error_code || '';
+                        const context = message ? `${message} ` : '';
+                        dialog.transportError = `${context}The import result is unknown; check Hardcover before trying again.`;
+                        dialog.error = '';
+                        this.savePendingEditionRecovery(dialog);
+                    } else if (!outcome && !message && response.status >= 400) {
+                        dialog.outcome = 'transport_unknown';
+                        dialog.errorHttpStatus = response.status;
+                        dialog.errorCode = data?.error_code || '';
+                        dialog.transportError = response.status === 403
+                            ? 'The server returned HTTP 403 without a readable explanation. Review the profile access and check Hardcover before trying again.'
+                            : 'The server returned no usable confirmation. The import result is unknown; check Hardcover before trying again.';
+                        dialog.error = '';
+                        this.savePendingEditionRecovery(dialog);
+                    } else {
+                        dialog.outcome = outcome;
+                        const fallback = response.status === 403 && !message
+                            ? 'The server returned HTTP 403 without a readable explanation. Review the profile access before trying again.'
+                            : this.editionFailureMessage(outcome, response.status);
+                        dialog.error = response.status === 403 && !message
+                            ? fallback
+                            : this.editionCreateErrorMessage(response.status, message || fallback);
+                        dialog.errorCode = data?.error_code || '';
+                        dialog.errorHttpStatus = response.status;
+                        dialog.retryCreate = outcome === 'not_submitted';
+                    }
+                    if (['not_submitted', 'failed'].includes(outcome)) this.clearPendingEditionRecovery(dialog.profileId, dialog.runId, dialog.record.book_id);
+                }
                 if (response.status === 409) this.loadStatuses();
             }
         } catch (error) {
             if (this.editionDialog !== dialog) return;
             dialog.busy = false;
-            dialog.error = `The edition request did not finish: ${error.message}. Check Hardcover before retrying; a retry may create another edition.`;
+            dialog.outcome = 'transport_unknown';
+            dialog.transportError = error?.name === 'AbortError' || /timed? ?out/i.test(String(error?.message || ''))
+                ? 'The request timed out before the app received a result.'
+                : 'The request ended before the app received a result.';
+            dialog.error = '';
+            this.savePendingEditionRecovery(dialog);
         }
         this.showEditionDialog();
     }
@@ -2356,6 +2466,165 @@ class SyncProfileApp {
         if (status === 403) return `Permission denied: ${message}`;
         if (status === 409) return `${message} The record may be stale, or a sync started after this page loaded; refresh and try again.`;
         return message;
+    }
+
+    editionFailureMessage(outcome, status) {
+        if (outcome === 'not_submitted') return 'The import was not submitted to Hardcover. You can safely try again.';
+        if (outcome === 'failed') return 'Hardcover rejected the import. Review the details and correct any edition information before trying again.';
+        if (status === 503) return 'The service returned an unexpected 503 response. The import result is unknown; check Hardcover before trying again.';
+        return `Edition creation failed (${status}). The import result may be unknown; check Hardcover before trying again.`;
+    }
+
+    renderEditionTechnicalDetails(dialog) {
+        const status = Number(dialog.recoveryHttpStatus || dialog.errorHttpStatus || 0);
+        const code = String(dialog.recoveryErrorCode || dialog.errorCode || '').replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 80);
+        if (!status && !code) return '';
+        return `<details class="edition-technical-details"><summary>Technical details</summary><div>${status ? `HTTP ${status}` : ''}${code ? `${status ? ' · ' : ''}Error code: ${this.escapeHtml(code)}` : ''}</div></details>`;
+    }
+
+    renderEditionImportUnconfirmed(dialog) {
+        const url = this.buildHardcoverBookURL({ ...dialog.record, hardcover_book_id: dialog.recoveryBookId || dialog.record.hardcover_book_id });
+        const openLink = url ? `<a class="btn btn-secondary" href="${this.escapeHtmlAttribute(url)}" target="_blank" rel="noopener noreferrer">Open Hardcover</a>` : '';
+        const submittedTitle = dialog.recoveryTitle || dialog.record.title || 'this audiobook';
+        const technical = this.renderEditionTechnicalDetails(dialog);
+        return `<div class="edition-warning" role="alert"><strong>Hardcover’s import result is still unconfirmed</strong>
+            <p>The request for “${this.escapeHtml(submittedTitle)}” was submitted, but the app could not confirm the result. Hardcover may still be processing it. Check the import status before trying again.</p>
+            ${technical}</div>
+            <div class="form-actions edition-create-actions"><button type="button" class="btn btn-primary" data-edition-dialog="check-import" ${dialog.busy || !dialog.recovery?.recoveryToken ? 'disabled' : ''}>${dialog.busy ? 'Checking…' : 'Check import status'}</button>${openLink}<button type="button" class="btn btn-warning" data-edition-dialog="close">Close</button></div>
+            ${dialog.checkError ? `<div class="edition-error" role="alert">${this.escapeHtml(dialog.checkError)}</div>` : ''}`;
+    }
+
+    async checkEditionImport() {
+        const dialog = this.editionDialog;
+        const recovery = dialog?.recovery;
+        if (!dialog || dialog.mode !== 'create' || !['unconfirmed', 'created'].includes(dialog.outcome) || !recovery?.recoveryToken || dialog.busy) return;
+        dialog.busy = true;
+        dialog.checkError = '';
+        this.showEditionDialog();
+        const payload = {
+            run_id: recovery.runId,
+            abs_item_id: recovery.absItemId,
+            audible_identifier: recovery.audibleIdentifier
+        };
+        if (recovery.recoveryToken) payload.recovery_token = recovery.recoveryToken;
+        try {
+            const { response, data } = await this.fetchJsonWithTimeout(this.profileUrl(dialog.profileId, '/edition-drafts/check-import'), {
+                method: 'POST', credentials: 'include', timeoutMs: 30000,
+                headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+            });
+            if (this.editionDialog !== dialog) return;
+            dialog.busy = false;
+            if (response.status === 401) { this.closeEditionDialog(); this.handleAuthExpiry(); return; }
+            if (response.ok && data?.success && data?.data && typeof data.data === 'object' && !Array.isArray(data.data)) {
+                dialog.result = data.data;
+                dialog.outcome = 'created';
+                this.saveAddedEditionBookId(dialog.profileId, recovery.runId, recovery.absItemId);
+                const open = this.openSummary;
+                if (open?.profileId === dialog.profileId && open.runContext?.runId === recovery.runId) {
+                    if (!open.addedEditionBookIds) open.addedEditionBookIds = new Set();
+                    open.addedEditionBookIds.add(String(recovery.absItemId));
+                    this.refreshEditionActionStates(open);
+                }
+                this.showToast('Edition added. The next sync will use it.', 'success');
+                this.loadStatuses();
+            } else if (String(data?.outcome || '').toLowerCase() === 'unconfirmed') {
+                recovery.audibleIdentifier = data?.data?.audible_identifier || recovery.audibleIdentifier;
+                recovery.recoveryToken = data?.data?.recovery_token || recovery.recoveryToken;
+                dialog.recoveryHttpStatus = response.status;
+                dialog.recoveryErrorCode = data?.error_code || '';
+                dialog.checkError = this.apiErrorMessage(data, 'Hardcover has not confirmed the import yet. It may still be processing; check again later.');
+                this.savePendingEditionRecovery(dialog);
+            } else if (String(data?.outcome || '').toLowerCase() === 'failed') {
+                dialog.outcome = 'failed';
+                dialog.recovery = null;
+                dialog.recoveryHttpStatus = 0;
+                dialog.recoveryErrorCode = '';
+                dialog.errorHttpStatus = response.status;
+                dialog.errorCode = data.error_code || '';
+                dialog.error = this.apiErrorMessage(data, 'Hardcover confirmed that the import failed. Review the edition details before taking another action.');
+                dialog.checkError = '';
+                this.clearPendingEditionRecovery(dialog.profileId, recovery.runId, recovery.absItemId);
+            } else if (
+                String(data?.outcome || '').toLowerCase() === 'not_submitted'
+                && ['edition_recovery_invalid', 'edition_create_conflict'].includes(String(data?.error_code || '').toLowerCase())
+            ) {
+                const serverMessage = this.apiErrorMessage(data, 'The recovery check is no longer valid.');
+                dialog.outcome = 'transport_unknown';
+                dialog.recovery = null;
+                dialog.recoveryHttpStatus = 0;
+                dialog.recoveryErrorCode = '';
+                dialog.checkError = '';
+                dialog.errorCode = data.error_code;
+                dialog.errorHttpStatus = response.status;
+                dialog.transportError = `${serverMessage} Open Hardcover to inspect the result, then close this dialog and run a new sync to refresh the match. This status check submitted no new import.`;
+                this.savePendingEditionRecovery(dialog);
+            } else {
+                dialog.checkError = this.apiErrorMessage(data, `Could not check the import status (HTTP ${response.status}).`);
+            }
+        } catch (error) {
+            if (this.editionDialog !== dialog) return;
+            dialog.busy = false;
+            dialog.checkError = 'The status check did not finish. No new import was submitted; you can check again later.';
+        }
+        if (dialog.result) this.clearPendingEditionRecovery(dialog.profileId, recovery.runId, recovery.absItemId);
+        this.showEditionDialog();
+    }
+
+    pendingEditionRecoveryKey(profileId, runId, bookId) {
+        const userId = this.currentUser?.id ? String(this.currentUser.id) : (this.authEnabled ? 'authenticated' : 'anonymous');
+        return `abs-hardcover-pending-edition:${encodeURIComponent(userId)}:${encodeURIComponent(String(profileId))}:${encodeURIComponent(String(runId))}:${encodeURIComponent(String(bookId))}`;
+    }
+
+    loadPendingEditionRecovery(profileId, runId, bookId) {
+        this.pendingEditionRecoveries ||= new Map();
+        const key = this.pendingEditionRecoveryKey(profileId, runId, bookId);
+        if (this.pendingEditionRecoveries.has(key)) return this.pendingEditionRecoveries.get(key);
+        try {
+            const raw = window.sessionStorage?.getItem(key);
+            if (!raw) return null;
+            const saved = JSON.parse(raw);
+            const recovery = saved?.recovery;
+            const body = saved?.submittedBody;
+            const outcome = saved?.outcome || 'unconfirmed';
+            if (!['unconfirmed', 'created', 'transport_unknown'].includes(outcome)
+                || !body || String(body.run_id) !== String(runId) || String(body.abs_item_id) !== String(bookId)) return null;
+            if (outcome !== 'transport_unknown' && recovery && (
+                typeof recovery.recoveryToken !== 'string'
+                || typeof recovery.audibleIdentifier !== 'string' || !recovery.audibleIdentifier
+                || String(recovery.runId) !== String(runId) || String(recovery.absItemId) !== String(bookId)
+                || (body.audible_identifier && String(body.audible_identifier) !== recovery.audibleIdentifier))) {
+                saved.recovery = null;
+            }
+            return saved;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    savePendingEditionRecovery(dialog) {
+        if (!dialog?.submittedBody || (!dialog.recovery && dialog.outcome !== 'transport_unknown')) return;
+        this.pendingEditionRecoveries ||= new Map();
+        const key = this.pendingEditionRecoveryKey(dialog.profileId, dialog.runId, dialog.record.book_id);
+        const saved = {
+            recovery: dialog.recovery || null, submittedBody: dialog.submittedBody,
+            title: dialog.recoveryTitle || dialog.record.title || '', draft: dialog.draft || null,
+                outcome: dialog.outcome || 'unconfirmed', error: dialog.error || '',
+                recoveryBookId: dialog.recoveryBookId || '',
+                transportError: dialog.transportError || '', errorHttpStatus: dialog.errorHttpStatus || 0,
+            errorCode: dialog.errorCode || '', recoveryHttpStatus: dialog.recoveryHttpStatus || 0,
+            recoveryErrorCode: dialog.recoveryErrorCode || ''
+        };
+        this.pendingEditionRecoveries.set(key, saved);
+        try {
+            window.sessionStorage?.setItem(key, JSON.stringify(saved));
+        } catch (_) { /* Recovery remains available for the life of this dialog. */ }
+    }
+
+    clearPendingEditionRecovery(profileId, runId, bookId) {
+        this.pendingEditionRecoveries?.delete(this.pendingEditionRecoveryKey(profileId, runId, bookId));
+        try {
+            window.sessionStorage?.removeItem(this.pendingEditionRecoveryKey(profileId, runId, bookId));
+        } catch (_) { /* Storage can be unavailable in private browsing contexts. */ }
     }
 
     renderCreateResult(result) {

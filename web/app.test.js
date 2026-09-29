@@ -3,7 +3,16 @@ const test = require('node:test');
 
 global.window = {
     addEventListener() {},
-    location: { pathname: '/' }
+    location: { pathname: '/' },
+    sessionStorage: (() => {
+        const values = new Map();
+        return {
+            getItem(key) { return values.get(key) ?? null; },
+            setItem(key, value) { values.set(key, String(value)); },
+            removeItem(key) { values.delete(key); },
+            clear() { values.clear(); }
+        };
+    })()
 };
 global.document = {
     addEventListener() {},
@@ -365,6 +374,7 @@ test('session reset ignores a late forget 401 without expiring the new session',
 });
 
 function editionApp(overrides = {}) {
+    global.window.sessionStorage?.clear();
     const app = createApp();
     app.statuses = { p1: { snapshot: { run_id: 'run-1', state: 'completed' } } };
     app.trackedRunIds = new Map();
@@ -770,7 +780,7 @@ test('create body sends only changed ebook fields and the opt-in resync flag', (
     });
 });
 
-test('failed ebook create redraw preserves scroll and escaped edits and retries the same request', async () => {
+test('legacy unclassified server errors remain visible and do not trigger a second import', async () => {
     const app = editionApp();
     const dialog = {
         mode: 'create', profileId: 'p1', runId: 'run-1', record: needsReview, loading: false, busy: false, error: '', result: null,
@@ -810,18 +820,17 @@ test('failed ebook create redraw preserves scroll and escaped edits and retries 
         const requests = [];
         app.fetchJsonWithTimeout = async (_url, options) => {
             requests.push(JSON.parse(options.body));
-            return requests.length === 1
-                ? { response: { ok: false, status: 500 }, data: { success: false, error: 'temporary failure' } }
-                : { response: { ok: true, status: 200 }, data: { success: true, data: { status: 'created' } } };
+            return { response: { ok: false, status: 500 }, data: { success: false, error: 'temporary failure' } };
         };
         await app.submitEditionCreate();
         assert.equal(content.body.scrollTop, 500);
-        assert.match(content.html, /&lt;New &amp; title&gt;/);
-        assert.match(content.html, /name="isbn_10" value="" data-original="old10"/);
+        assert.match(content.html, /temporary failure/);
+        assert.match(content.html, /HTTP 500/);
+        assert.doesNotMatch(content.html, /data-edition-dialog="confirm-create"/);
         assert.deepEqual(requests[0], { run_id: 'run-1', abs_item_id: 'li_1', title: '<New & title>', isbn_10: '', isbn_13: '9780000000002', resync: true });
         await app.submitEditionCreate();
         assert.equal(content.body.scrollTop, 500);
-        assert.deepEqual(requests[1], requests[0]);
+        assert.equal(requests.length, 1);
     } finally {
         global.document = originalDocument;
     }
@@ -879,6 +888,38 @@ test('successful create updates the book action immediately and shows a separate
         resync: { attempted: true, outcome: 'already_current', reason: 'Hardcover finished status already current' }
     });
     assert.match(current, /data-resync>Resync finished \(Hardcover finished status already current\)\.<\/div>/);
+});
+
+test('malformed create success envelopes stay unknown and never mark the item added', async () => {
+    for (const malformedData of [undefined, 'created', []]) {
+        const app = editionApp();
+        const dialog = stubDialog(app, 200, { success: true, data: malformedData });
+        await app.submitEditionCreate();
+        assert.equal(dialog.outcome, 'transport_unknown');
+        assert.equal(dialog.result, null);
+        assert.doesNotMatch(app.renderEditionDialog(dialog), /data-edition-dialog="confirm-create"/);
+        assert.equal(app.openSummary.addedEditionBookIds?.has('li_1') || false, false);
+    }
+});
+
+test('malformed check-import success stays pending and does not mark the item added', async () => {
+    for (const malformedData of [undefined, 'created', []]) {
+        const app = editionApp();
+        const dialog = stubDialog(app, 503, { success: false, outcome: 'unconfirmed', data: {
+            audible_identifier: 'B00ABC1234:us', hardcover_book_id: '42', recovery_token: 'opaque-token'
+        } });
+        await app.submitEditionCreate();
+        const recoveryBefore = dialog.recovery;
+        app.fetchJsonWithTimeout = async () => ({ response: { ok: true, status: 200 }, data: { success: true, data: malformedData } });
+        await app.checkEditionImport();
+
+        assert.equal(dialog.outcome, 'unconfirmed');
+        assert.equal(dialog.result, null);
+        assert.equal(dialog.recovery, recoveryBefore);
+        assert.match(dialog.checkError, /Could not check the import status/);
+        assert.ok(app.loadPendingEditionRecovery('p1', 'run-1', 'li_1'));
+        assert.equal(app.openSummary.addedEditionBookIds?.has('li_1') || false, false);
+    }
 });
 
 test('create result explains resync outcomes that did not apply read status', () => {
@@ -1204,4 +1245,195 @@ test('failed creates and unavailable or malformed browser storage do not restore
     await app.submitEditionCreate();
     assert.match(app.renderEditionActions(needsReview), /Hardcover Edition Added/);
     assert.equal(app.editionDialog.error, '');
+});
+
+test('ambiguous create shows a safe recovery action and preserves submitted identifiers', async () => {
+    const app = editionApp();
+    const dialog = stubDialog(app, 503, { success: false, error: 'Hardcover response timed out', error_code: 'hardcover_import_unconfirmed', outcome: 'unconfirmed', data: {
+        audible_identifier: 'B00ABC1234:us', hardcover_book_id: '42', recovery_token: 'opaque-token'
+    } });
+    await app.submitEditionCreate();
+
+    const html = app.renderEditionDialog(dialog);
+    assert.match(html, /Hardcover’s import result is still unconfirmed/);
+    assert.match(html, /data-edition-dialog="check-import"/);
+    assert.match(html, /hardcover\.app\/book\/42/);
+    assert.doesNotMatch(html, /data-edition-dialog="confirm-create"/);
+    assert.equal(app.loadPendingEditionRecovery('p1', 'run-1', needsReview.book_id).recovery.recoveryToken, 'opaque-token');
+});
+
+test('check import status uses the saved token and original identifiers, then records recovered success', async () => {
+    const app = editionApp();
+    const dialog = stubDialog(app, 503, { success: false, error_code: 'hardcover_import_unconfirmed', outcome: 'unconfirmed', data: {
+        audible_identifier: 'B00ABC1234:us', hardcover_book_id: '42', recovery_token: 'opaque-token'
+    } });
+    app.openSummary.runContext.runId = 'run-1';
+    app.openSummary.addedEditionBookIds = new Set();
+    app.refreshEditionActionStates = () => {};
+    app.saveAddedEditionBookId = (...args) => { app.persistedAdded = args; };
+    await app.submitEditionCreate();
+    dialog.fieldValues = { title: 'Edited after submission' };
+    let captured;
+    app.fetchJsonWithTimeout = async (url, options) => {
+        captured = { url, options, body: JSON.parse(options.body) };
+        return { response: { ok: true, status: 200 }, data: { success: true, data: { status: 'created', hardcover_book_id: '42', hardcover_edition_id: '99' } } };
+    };
+
+    await app.checkEditionImport();
+
+    assert.equal(captured.url, '/api/profiles/p1/edition-drafts/check-import');
+    assert.deepEqual(captured.body, {
+        run_id: 'run-1', abs_item_id: 'li_1', audible_identifier: 'B00ABC1234:us', recovery_token: 'opaque-token'
+    });
+    assert.equal(captured.body.resync, undefined);
+    assert.equal(dialog.result.hardcover_edition_id, '99');
+    assert.ok(app.openSummary.addedEditionBookIds.has('li_1'));
+    assert.deepEqual(app.persistedAdded, ['p1', 'run-1', 'li_1']);
+    assert.equal(app.loadPendingEditionRecovery('p1', 'run-1', 'li_1'), null);
+    assert.match(app.renderEditionDialog(dialog), /The match is saved for the next sync/);
+});
+
+test('terminal failed status check clears recovery and prevents another create', async () => {
+    const app = editionApp();
+    const dialog = stubDialog(app, 503, { success: false, outcome: 'unconfirmed', data: {
+        audible_identifier: 'B00ABC1234:us', hardcover_book_id: '42', recovery_token: 'opaque-token'
+    } });
+    await app.submitEditionCreate();
+    app.fetchJsonWithTimeout = async () => ({ response: { ok: false, status: 502 }, data: {
+        success: false, outcome: 'failed', error_code: 'hardcover_import_failed', error: 'Hardcover reported import failure'
+    } });
+
+    await app.checkEditionImport();
+
+    assert.equal(dialog.outcome, 'failed');
+    assert.equal(app.loadPendingEditionRecovery('p1', 'run-1', 'li_1'), null);
+    assert.match(app.renderEditionDialog(dialog), /Hardcover reported import failure/);
+    assert.match(app.renderEditionDialog(dialog), /HTTP 502.*hardcover_import_failed/);
+    assert.match(app.renderEditionDialog(dialog), /Another create is disabled/);
+    assert.match(app.renderEditionDialog(dialog), /confirm-create" disabled/);
+});
+
+test('invalid recovery token and stale create conflict persist as unknown and direct a fresh sync', async () => {
+    const terminalErrors = [
+        { error_code: 'edition_recovery_invalid', error: 'The recovery token is no longer valid.' },
+        { error_code: 'edition_create_conflict', error: 'The source record changed.' }
+    ];
+    for (const terminalError of terminalErrors) {
+        const app = editionApp();
+        const dialog = stubDialog(app, 503, { success: false, outcome: 'unconfirmed', data: {
+            audible_identifier: 'B00ABC1234:us', hardcover_book_id: '42', recovery_token: 'opaque-token'
+        } });
+        app.openSummary.records.set(String(needsReview.book_id), needsReview);
+        await app.submitEditionCreate();
+        app.fetchJsonWithTimeout = async () => ({ response: { ok: false, status: 409 }, data: {
+            success: false, outcome: 'not_submitted', ...terminalError
+        } });
+
+        await app.checkEditionImport();
+
+        assert.equal(dialog.outcome, 'transport_unknown');
+        assert.equal(dialog.recovery, null);
+        let html = app.renderEditionDialog(dialog);
+        assert.match(html, /run a new sync to refresh the match/);
+        assert.match(html, /This status check submitted no new import/);
+        assert.match(html, /Open Hardcover/);
+        assert.ok(html.includes(`HTTP 409 · Error code: ${terminalError.error_code}`));
+        assert.doesNotMatch(html, /data-edition-dialog="check-import"|data-edition-dialog="confirm-create"/);
+        assert.equal(app.loadPendingEditionRecovery('p1', 'run-1', 'li_1').outcome, 'transport_unknown');
+
+        app.editionDialog = null;
+        await app.openEditionDialog(needsReview.book_id);
+        html = app.renderEditionDialog(app.editionDialog);
+        assert.equal(app.editionDialog.outcome, 'transport_unknown');
+        assert.match(html, /run a new sync to refresh the match/);
+        assert.doesNotMatch(html, /data-edition-dialog="check-import"|data-edition-dialog="confirm-create"/);
+    }
+});
+
+test('created but unsaved edition offers only token-backed match recovery', async () => {
+    const app = editionApp();
+    const dialog = stubDialog(app, 502, { success: false, error: 'Local save failed', error_code: 'edition_association_save_failed', outcome: 'created', data: {
+        audible_identifier: 'B00ABC1234:us', hardcover_book_id: '42', recovery_token: 'opaque-token'
+    } });
+    await app.submitEditionCreate();
+    const html = app.renderEditionDialog(dialog);
+    assert.match(html, /Edition created; match not saved/);
+    assert.match(html, /data-edition-dialog="check-import"/);
+    assert.doesNotMatch(html, /data-edition-dialog="confirm-create"/);
+});
+
+test('closing an ambiguous import and reopening the item restores recovery without a new create', async () => {
+    const app = editionApp();
+    const dialog = stubDialog(app, 503, { success: false, outcome: 'unconfirmed', data: {
+        audible_identifier: 'B00ABC1234:us', hardcover_book_id: '42', recovery_token: 'opaque-token'
+    } });
+    await app.submitEditionCreate();
+    app.editionDialog = null;
+    app.openSummary.records.set(String(needsReview.book_id), needsReview);
+    app.openSummary.editionCapabilityLoaded = false;
+
+    await app.openEditionDialog(needsReview.book_id);
+
+    assert.equal(app.editionDialog.outcome, 'unconfirmed');
+    assert.match(app.renderEditionDialog(app.editionDialog), /data-edition-dialog="check-import"/);
+    assert.doesNotMatch(app.renderEditionDialog(app.editionDialog), /data-edition-dialog="confirm-create"/);
+});
+
+test('not-submitted create response offers retry while generic proxy errors and transport timeouts do not', async () => {
+    const safeRetry = editionApp();
+    const retryDialog = stubDialog(safeRetry, 503, { success: false, error: 'Hardcover was not contacted', error_code: 'edition_not_submitted', outcome: 'not_submitted' });
+    await safeRetry.submitEditionCreate();
+    assert.match(safeRetry.renderEditionDialog(retryDialog), /data-edition-dialog="retry-create"/);
+    assert.match(safeRetry.renderEditionDialog(retryDialog), /class="edition-form"/);
+
+    const proxyError = editionApp();
+    const unknownDialog = stubDialog(proxyError, 503, {});
+    await proxyError.submitEditionCreate();
+    const html = proxyError.renderEditionDialog(unknownDialog);
+    assert.match(html, /The import result is unknown/);
+    assert.match(html, /HTTP 503/);
+    assert.match(html, /Open Hardcover/);
+    assert.doesNotMatch(html, /data-edition-dialog="confirm-create"|data-edition-dialog="check-import"|Retry import/);
+
+    const timeout = editionApp();
+    const timeoutDialog = stubDialog(timeout, 0, {});
+    timeout.fetchJsonWithTimeout = async () => { throw new Error('The request timed out'); };
+    await timeout.submitEditionCreate();
+    assert.match(timeout.renderEditionDialog(timeoutDialog), /The request timed out before the app received a result/);
+    assert.doesNotMatch(timeout.renderEditionDialog(timeoutDialog), /data-edition-dialog="confirm-create"|data-edition-dialog="check-import"/);
+});
+
+test('readable 503 and unusable success envelopes remain unknown and block another import', async () => {
+    const readable503 = editionApp();
+    const readableDialog = stubDialog(readable503, 503, { success: false, error: 'Service Unavailable' });
+    await readable503.submitEditionCreate();
+    const readableHTML = readable503.renderEditionDialog(readableDialog);
+    assert.match(readableHTML, /Service Unavailable/);
+    assert.match(readableHTML, /import result is unknown/);
+    assert.match(readableHTML, /HTTP 503/);
+    assert.doesNotMatch(readableHTML, /confirm-create/);
+
+    const unusable200 = editionApp();
+    const unusableDialog = stubDialog(unusable200, 200, { success: false });
+    unusable200.fetchJsonWithTimeout = async () => ({ response: { ok: true, status: 200 }, data: { success: false } });
+    await unusable200.submitEditionCreate();
+    const unusableHTML = unusable200.renderEditionDialog(unusableDialog);
+    assert.match(unusableHTML, /import result is unknown/);
+    assert.match(unusableHTML, /HTTP 200/);
+    assert.doesNotMatch(unusableHTML, /confirm-create/);
+});
+
+test('import recovery preserves auth expiry handling and escapes server supplied title', async () => {
+    const app = editionApp();
+    app.handleAuthExpiry = () => { app.authExpiryCalls = (app.authExpiryCalls || 0) + 1; };
+    const dialog = stubDialog(app, 503, { success: false, outcome: 'unconfirmed', data: {
+        audible_identifier: 'B00ABC1234:us', hardcover_book_id: '42', recovery_token: 'opaque-token', title: '<img src=x onerror=alert(1)>'
+    } });
+    await app.submitEditionCreate();
+    assert.match(app.renderEditionDialog(dialog), /&lt;img src=x onerror=alert\(1\)&gt;/);
+    assert.doesNotMatch(app.renderEditionDialog(dialog), /<img src=x/);
+    app.fetchJsonWithTimeout = async () => ({ response: { ok: false, status: 401 }, data: { success: false } });
+    await app.checkEditionImport();
+    assert.equal(app.authExpiryCalls, 1);
+    assert.equal(app.editionDialog, null);
 });

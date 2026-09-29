@@ -224,6 +224,108 @@ func TestClient_ImportRegionalAudiobookStopsWhenContextExpires(t *testing.T) {
 	require.Equal(t, 1, mappingQueries)
 }
 
+func TestClient_CheckRegionalAudiobookImportIsReadOnlyAndVerifiesCompletedMapping(t *testing.T) {
+	tests := []struct {
+		name       string
+		statuses   []map[string]interface{}
+		mappings   []map[string]interface{}
+		wantStatus RegionalAudiobookStatus
+		confirmed  bool
+		wantErr    error
+	}{
+		{
+			name: "pending import", statuses: []map[string]interface{}{{
+				"status": "fetching", "external_id": "B0ABCDE123:uk", "platform_id": 32,
+			}},
+		},
+		{
+			name: "completed import", statuses: []map[string]interface{}{{
+				"status": "created", "book_id": 42, "edition_id": 900, "external_id": "B0ABCDE123:uk", "platform_id": 32,
+			}}, mappings: []map[string]interface{}{{
+				"id": 77, "state": "created", "book_id": 42, "platform_id": 32,
+				"external_id": "B0ABCDE123:uk", "edition_id": 900,
+				"edition": map[string]interface{}{"id": 900, "book_id": 42, "reading_format_id": 2},
+			}}, wantStatus: RegionalAudiobookCreated, confirmed: true,
+		},
+		{
+			name: "normalized mapping remains after status expiry", mappings: []map[string]interface{}{{
+				"id": 77, "state": "normalized", "book_id": 42, "platform_id": 32,
+				"external_id": "B0ABCDE123:uk", "edition_id": 900,
+				"edition": map[string]interface{}{"id": 900, "book_id": 42, "reading_format_id": 2},
+			}}, wantStatus: RegionalAudiobookLoaded, confirmed: true,
+		},
+		{
+			name: "failed import", statuses: []map[string]interface{}{{
+				"status": "failed", "external_id": "B0ABCDE123:uk", "platform_id": 32, "error": "rejected",
+			}}, wantErr: ErrRegionalAudiobookImportFailed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var importQueries, editionReads, mutations int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					Query     string                 `json:"query"`
+					Variables map[string]interface{} `json:"variables"`
+				}
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case strings.Contains(request.Query, "RegionalAudibleImport"):
+					importQueries++
+					require.Equal(t, "B0ABCDE123:uk", request.Variables["externalId"])
+					payload, err := json.Marshal(map[string]interface{}{"data": map[string]interface{}{
+						"book_import_statuses": tt.statuses, "book_mappings": tt.mappings,
+					}})
+					require.NoError(t, err)
+					_, _ = w.Write(payload)
+				case strings.Contains(request.Query, "GetEdition"):
+					editionReads++
+					_, _ = w.Write([]byte(`{"data":{"editions":[{"id":900,"book_id":42,"reading_format_id":2}]}}`))
+				case strings.Contains(request.Query, "mutation"):
+					mutations++
+					http.Error(w, "unexpected mutation", http.StatusBadRequest)
+				default:
+					t.Errorf("unexpected query: %s", request.Query)
+					http.Error(w, "unexpected query", http.StatusBadRequest)
+				}
+			}))
+			defer server.Close()
+
+			result, confirmed, err := regionalImportTestClient(server.URL).CheckRegionalAudiobookImport(context.Background(), RegionalAudiobookInput{
+				BookID: 42, ASIN: "b0abcde123", Region: " UK ",
+			})
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				require.False(t, confirmed)
+				require.Nil(t, result)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, tt.confirmed, confirmed)
+				if confirmed {
+					require.Equal(t, tt.wantStatus, result.Status)
+					require.Equal(t, 42, result.BookID)
+					require.Equal(t, 900, result.EditionID)
+					require.Equal(t, 2, result.ReadingFormatID)
+				} else {
+					require.Nil(t, result)
+				}
+			}
+			require.Equal(t, 1, importQueries, "recovery performs one import-status query")
+			require.Equal(t, boolInt(tt.confirmed), editionReads, "only terminal results are read back")
+			require.Zero(t, mutations, "recovery never submits a Hardcover mutation")
+		})
+	}
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
 func regionalImportTestClient(baseURL string) *Client {
 	log := logger.Get()
 	return &Client{

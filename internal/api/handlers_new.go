@@ -96,9 +96,11 @@ type UpdateProfileConfigRequest struct {
 
 // APIResponse represents a standard API response
 type APIResponse struct {
-	Success bool        `json:"success"`
-	Data    interface{} `json:"data,omitempty"`
-	Error   string      `json:"error,omitempty"`
+	Success   bool        `json:"success"`
+	Data      interface{} `json:"data,omitempty"`
+	Error     string      `json:"error,omitempty"`
+	ErrorCode string      `json:"error_code,omitempty"`
+	Outcome   string      `json:"outcome,omitempty"`
 }
 
 // aggregateSnapshotResponse is intentionally separate from sync.SyncSnapshot:

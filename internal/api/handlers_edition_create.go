@@ -28,6 +28,7 @@ import (
 const (
 	editionCreateRequestTimeout  = 65 * time.Second
 	editionCreateMutationReserve = 35 * time.Second
+	editionImportCheckTimeout    = 25 * time.Second
 )
 
 type editionCreateABSClient interface {
@@ -38,8 +39,13 @@ type editionCreateRegionalAudiobookImporter interface {
 	ImportRegionalAudiobook(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error)
 }
 
+type editionCreateRegionalAudiobookChecker interface {
+	CheckRegionalAudiobookImport(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, bool, error)
+}
+
 type editionCreateHardcoverClient interface {
 	editionCreateRegionalAudiobookImporter
+	editionCreateRegionalAudiobookChecker
 	GetBookByID(context.Context, string) (*models.HardcoverBook, error)
 	GetEditionUncached(context.Context, string) (*models.Edition, error)
 	SearchAuthors(context.Context, string, int) ([]models.Author, error)
@@ -68,6 +74,13 @@ type editionCreateRequest struct {
 	Resync bool `json:"resync,omitempty"`
 }
 
+type editionImportCheckRequest struct {
+	RunID             string `json:"run_id"`
+	ABSItemID         string `json:"abs_item_id"`
+	AudibleIdentifier string `json:"audible_identifier"`
+	RecoveryToken     string `json:"recovery_token"`
+}
+
 type editionCreateResponse struct {
 	ABSItemID          string                    `json:"abs_item_id"`
 	ReadingFormat      string                    `json:"reading_format"`
@@ -83,6 +96,9 @@ type editionCreateResponse struct {
 	// sourceItem is the verified Audiobookshelf item, kept for the optional
 	// resync so it does not need a second lookup.
 	sourceItem *models.AudiobookshelfBook
+	// recovery preserves the signed attempted-import identity for error
+	// responses only. It is never exposed on successful create responses.
+	recovery *editionRecoveryData
 }
 
 type editionResyncResponse struct {
@@ -111,7 +127,7 @@ func (h *Handler) CreateEditionFromDraft(w http.ResponseWriter, r *http.Request)
 	r = r.WithContext(ctx)
 	profileID := profileIDFromRequest(r)
 	if profileID == "" {
-		h.writeErrorResponse(w, http.StatusBadRequest, "Profile ID is required")
+		h.writeEditionCreateStructuredError(w, http.StatusBadRequest, "Profile ID is required", "edition_create_invalid_request", editionOutcomeNotSubmitted, nil)
 		return
 	}
 	if !h.authorizeProfile(w, r, profileID, true) {
@@ -123,19 +139,19 @@ func (h *Handler) CreateEditionFromDraft(w http.ResponseWriter, r *http.Request)
 		defer func() { <-h.editionDraftSlots }()
 	default:
 		w.Header().Set("Retry-After", "1")
-		h.writeErrorResponse(w, http.StatusTooManyRequests, "Edition creation service is busy; retry shortly")
+		h.writeEditionCreateStructuredError(w, http.StatusTooManyRequests, "Edition creation service is busy; retry shortly", "edition_create_busy", editionOutcomeNotSubmitted, nil)
 		return
 	}
 
 	request, err := decodeEditionCreateRequest(w, r)
 	if err != nil {
-		h.writeErrorResponse(w, http.StatusBadRequest, err.Error())
+		h.writeEditionCreateStructuredError(w, http.StatusBadRequest, err.Error(), "edition_create_invalid_request", editionOutcomeNotSubmitted, nil)
 		return
 	}
 	request.RunID = strings.TrimSpace(request.RunID)
 	request.ABSItemID = strings.TrimSpace(request.ABSItemID)
 	if request.RunID == "" || request.ABSItemID == "" {
-		h.writeErrorResponse(w, http.StatusBadRequest, "run_id and abs_item_id are required")
+		h.writeEditionCreateStructuredError(w, http.StatusBadRequest, "run_id and abs_item_id are required", "edition_create_invalid_request", editionOutcomeNotSubmitted, nil)
 		return
 	}
 
@@ -160,10 +176,150 @@ func (h *Handler) CreateEditionFromDraft(w http.ResponseWriter, r *http.Request)
 			"abs_item_id": request.ABSItemID,
 			"error":       err.Error(),
 		})
-		h.writeEditionCreateError(w, profileID, err)
+		h.writeEditionCreateError(w, profileID, err, response.recovery)
 		return
 	}
 	h.writeSuccessResponse(w, response)
+}
+
+// CheckEditionImport handles POST /api/profiles/{id}/edition-drafts/check-import.
+// It verifies an earlier signed audiobook import attempt and saves its local
+// association. This endpoint performs only Hardcover reads.
+func (h *Handler) CheckEditionImport(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), editionImportCheckTimeout)
+	defer cancel()
+	r = r.WithContext(ctx)
+	profileID := profileIDFromRequest(r)
+	if profileID == "" {
+		h.writeEditionCreateStructuredError(w, http.StatusBadRequest, "Profile ID is required", "edition_create_invalid_request", editionOutcomeNotSubmitted, nil)
+		return
+	}
+	if !h.authorizeProfile(w, r, profileID, true) {
+		return
+	}
+	select {
+	case h.editionDraftSlots <- struct{}{}:
+		defer func() { <-h.editionDraftSlots }()
+	default:
+		w.Header().Set("Retry-After", "1")
+		h.writeEditionCreateStructuredError(w, http.StatusTooManyRequests, "Edition recovery service is busy; retry shortly", "edition_create_busy", editionOutcomeNotSubmitted, nil)
+		return
+	}
+	request, err := decodeEditionImportCheckRequest(w, r)
+	if err != nil {
+		h.writeEditionCreateStructuredError(w, http.StatusBadRequest, err.Error(), "edition_create_invalid_request", editionOutcomeNotSubmitted, nil)
+		return
+	}
+	request.RunID = strings.TrimSpace(request.RunID)
+	request.ABSItemID = strings.TrimSpace(request.ABSItemID)
+	request.AudibleIdentifier = strings.TrimSpace(request.AudibleIdentifier)
+	request.RecoveryToken = strings.TrimSpace(request.RecoveryToken)
+	if request.RunID == "" || request.ABSItemID == "" || request.AudibleIdentifier == "" || request.RecoveryToken == "" {
+		h.writeEditionCreateStructuredError(w, http.StatusBadRequest, "run_id, abs_item_id, audible_identifier, and recovery_token are required", "edition_create_invalid_request", editionOutcomeNotSubmitted, nil)
+		return
+	}
+	asin, region, err := parseSubmittedAudibleIdentifier(request.AudibleIdentifier)
+	if err != nil {
+		h.writeEditionCreateStructuredError(w, http.StatusUnprocessableEntity, err.Error(), "edition_create_invalid_input", editionOutcomeNotSubmitted, nil)
+		return
+	}
+	externalID := asin + ":" + region
+	var response editionCreateResponse
+	var recovery *editionRecoveryData
+	err = h.multiUserService.RecoverEditionAssociation(ctx, profileID, request.ABSItemID, func(profile *database.ProfileWithTokens) (statepkg.Association, error) {
+		_, record, snapshotErr := h.verifiedEditionCreateRecord(profileID, request.RunID, request.ABSItemID)
+		if snapshotErr != nil {
+			return statepkg.Association{}, snapshotErr
+		}
+		bookID, parseErr := strconv.Atoi(record.HardcoverBookID)
+		if parseErr != nil || bookID <= 0 || normalizedEditionCreateFormat(record.Format) != models.ReadingFormatAudiobook {
+			return statepkg.Association{}, errStaleEditionCreateRun
+		}
+		claims := editionRecoveryClaims{
+			ProfileID: profileID, RunID: request.RunID, ABSItemID: request.ABSItemID,
+			HardcoverBookID: record.HardcoverBookID, AudibleIdentifier: externalID,
+		}
+		verifiedClaims, validToken := verifyEditionRecoveryToken(profile.HardcoverToken, request.RecoveryToken, claims)
+		if !validToken {
+			return statepkg.Association{}, errEditionRecoveryInvalid
+		}
+		recovery = &editionRecoveryData{
+			AudibleIdentifier: externalID, HardcoverBookID: record.HardcoverBookID,
+			RecoveryToken: request.RecoveryToken, claims: verifiedClaims,
+		}
+		absClient, clientErr := h.editionCreateABSClient(profile.AudiobookshelfURL, profile.AudiobookshelfToken, h.multiUserService.AudiobookshelfNetworkTrust())
+		if clientErr != nil {
+			return statepkg.Association{}, fmt.Errorf("invalid Audiobookshelf client configuration: %w", clientErr)
+		}
+		item, itemErr := absClient.GetLibraryItemByID(ctx, request.ABSItemID)
+		if itemErr != nil {
+			return statepkg.Association{}, fmt.Errorf("failed to retrieve Audiobookshelf item: %w", itemErr)
+		}
+		if item == nil {
+			return statepkg.Association{}, errors.New("Audiobookshelf returned no item for edition recovery")
+		}
+		mediaType := strings.ToLower(strings.TrimSpace(item.MediaType))
+		if (mediaType != "book" && mediaType != "ebook") || item.ReadingFormat() != models.ReadingFormatAudiobook {
+			return statepkg.Association{}, errEditionCreateSourceChanged
+		}
+		if !editionCreateSourceMatches(record, item) {
+			return statepkg.Association{}, errEditionCreateSourceChanged
+		}
+		client := h.editionCreateHardcoverClient(profile.Profile.ID, profile.HardcoverToken)
+		result, confirmed, checkErr := client.CheckRegionalAudiobookImport(ctx, hardcover.RegionalAudiobookInput{
+			BookID: bookID, ASIN: asin, Region: region,
+		})
+		if checkErr != nil {
+			if errors.Is(checkErr, hardcover.ErrRegionalAudiobookImportFailed) {
+				return statepkg.Association{}, checkErr
+			}
+			if errors.Is(checkErr, hardcover.ErrRegionalAudiobookIdentityConflict) {
+				return statepkg.Association{}, fmt.Errorf("%w: %w", errEditionRecoveryIdentityUnconfirmed, checkErr)
+			}
+			return statepkg.Association{}, fmt.Errorf("%w: %w", errEditionImportUnconfirmed, checkErr)
+		}
+		if !confirmed || result == nil {
+			return statepkg.Association{}, errEditionImportUnconfirmed
+		}
+		if result.BookID != bookID || result.EditionID <= 0 || result.ReadingFormatID != models.ReadingFormatID(models.ReadingFormatAudiobook) ||
+			(result.Status != hardcover.RegionalAudiobookLoaded && result.Status != hardcover.RegionalAudiobookCreated) ||
+			!strings.EqualFold(result.RegionalExternalID, externalID) {
+			return statepkg.Association{}, fmt.Errorf("%w: %w", errEditionImportUnconfirmed, errHardcoverEditionIdentityConflict)
+		}
+		correction := verifiedClaims.Correction
+		association := createEditionAssociation(item, record.HardcoverBookID, strconv.Itoa(result.EditionID), externalID,
+			correction, models.ReadingFormatAudiobook, "api_regional_recovered")
+		response = editionCreateResponse{
+			ABSItemID: item.ID, ReadingFormat: models.ReadingFormatAudiobook, Status: string(result.Status),
+			HardcoverBookID: record.HardcoverBookID, HardcoverEditionID: strconv.Itoa(result.EditionID),
+			RegionalExternalID: externalID, MetadataPreview: buildEditionSourceDraft(item, false).MetadataPreview,
+			sourceItem: item,
+		}
+		return association, nil
+	})
+	if err != nil {
+		if errors.Is(err, errEditionRecoveryInvalid) {
+			h.writeEditionCreateStructuredError(w, http.StatusConflict, "Recovery token is invalid or expired; refresh the edition draft and inspect Hardcover", "edition_recovery_invalid", editionOutcomeNotSubmitted, nil)
+			return
+		}
+		h.writeEditionCreateError(w, profileID, err, recovery)
+		return
+	}
+	h.writeSuccessResponse(w, response)
+}
+
+func decodeEditionImportCheckRequest(w http.ResponseWriter, r *http.Request) (editionImportCheckRequest, error) {
+	var request editionImportCheckRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		return editionImportCheckRequest{}, fmt.Errorf("invalid edition import check request: %w", err)
+	}
+	var trailing interface{}
+	if !errors.Is(decoder.Decode(&trailing), io.EOF) {
+		return editionImportCheckRequest{}, errors.New("invalid edition import check request: trailing JSON value")
+	}
+	return request, nil
 }
 
 // resyncCreatedEdition runs the opt-in one-book resync after a successful
@@ -249,6 +405,9 @@ func sameEditionCreateCandidate(requested, latest sync.BookOutcomeRecord) bool {
 var errStaleEditionCreateRun = errors.New("sync run no longer contains a usable needs-review source record")
 var errEditionCreateSourceChanged = errors.New("Audiobookshelf source data or reading format changed; run a new sync before adding an edition")
 var errEditionCreateInvalidInput = errors.New("invalid edition create input")
+var errEditionRecoveryInvalid = errors.New("edition import recovery token is invalid")
+var errEditionImportUnconfirmed = errors.New("Hardcover has not confirmed the regional audiobook import")
+var errEditionRecoveryIdentityUnconfirmed = errors.New("Hardcover returned an unverified regional audiobook identity")
 var errEditionCreateInsufficientBudget = errors.New("edition create has too little time remaining for a Hardcover write")
 var errEditionCreateDiscoveryBudget = errors.New("Audnexus region discovery could not finish before the Hardcover write deadline")
 
@@ -276,6 +435,9 @@ func (h *Handler) createVerifiedEdition(ctx context.Context, profile *database.P
 			return statepkg.Association{}, fmt.Errorf("Audiobookshelf item lookup timed out: %w", err)
 		}
 		return statepkg.Association{}, fmt.Errorf("failed to retrieve Audiobookshelf item: %w", err)
+	}
+	if item == nil {
+		return statepkg.Association{}, errors.New("Audiobookshelf returned no item for edition creation")
 	}
 	mediaType := strings.ToLower(strings.TrimSpace(item.MediaType))
 	if mediaType != "book" && mediaType != "ebook" {
@@ -410,6 +572,16 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 		}
 		return statepkg.Association{}, err
 	}
+	externalID := asin + ":" + region
+	claims := editionRecoveryClaims{
+		ProfileID: profile.Profile.ID, RunID: request.RunID, ABSItemID: item.ID,
+		HardcoverBookID: record.HardcoverBookID, AudibleIdentifier: externalID,
+		Correction: correction,
+	}
+	response.recovery = &editionRecoveryData{
+		AudibleIdentifier: externalID, HardcoverBookID: record.HardcoverBookID,
+		RecoveryToken: signEditionRecoveryToken(profile.HardcoverToken, claims), claims: claims,
+	}
 	mutationCtx := hardcover.WithMinimumMutationBudget(ctx, editionCreateMutationReserve)
 	result, err := client.ImportRegionalAudiobook(mutationCtx, hardcover.RegionalAudiobookInput{BookID: bookID, ASIN: asin, Region: region})
 	if err != nil {
@@ -428,7 +600,7 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 		(result.Status != hardcover.RegionalAudiobookLoaded && result.Status != hardcover.RegionalAudiobookCreated) {
 		return statepkg.Association{}, markEditionCreateRemoteOutcomeAmbiguous(errHardcoverEditionIdentityConflict)
 	}
-	regionalID := asin + ":" + region
+	regionalID := externalID
 	if result.RegionalExternalID != "" {
 		if !strings.EqualFold(result.RegionalExternalID, regionalID) {
 			return statepkg.Association{}, markEditionCreateRemoteOutcomeAmbiguous(errHardcoverEditionIdentityConflict)
@@ -443,10 +615,11 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 	}
 	association := createEditionAssociation(item, record.HardcoverBookID, strconv.Itoa(result.EditionID), regionalID,
 		correction, models.ReadingFormatAudiobook, "api_regional_"+string(result.Status))
+	recovery := response.recovery
 	*response = editionCreateResponse{
 		ABSItemID: item.ID, ReadingFormat: models.ReadingFormatAudiobook, Status: string(result.Status),
 		HardcoverBookID: strconv.Itoa(result.BookID), HardcoverEditionID: strconv.Itoa(result.EditionID), RegionalExternalID: regionalID,
-		MetadataPreview: preview,
+		MetadataPreview: preview, recovery: recovery,
 	}
 	return association, nil
 }
@@ -743,71 +916,131 @@ func (h *Handler) editionCreateAudnexDiscoverer() editionCreateAudnexDiscoverer 
 	return audnex.NewClient(&h.log)
 }
 
-func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID string, err error) {
+const (
+	editionOutcomeNotSubmitted = "not_submitted"
+	editionOutcomeUnconfirmed  = "unconfirmed"
+	editionOutcomeFailed       = "failed"
+	editionOutcomeCreated      = "created"
+)
+
+func (h *Handler) writeEditionCreateStructuredError(w http.ResponseWriter, status int, message, errorCode, outcome string, recovery *editionRecoveryData) {
+	var data *editionRecoveryData
+	if (outcome == editionOutcomeUnconfirmed || outcome == editionOutcomeCreated) && recovery != nil {
+		data = &editionRecoveryData{
+			AudibleIdentifier: recovery.AudibleIdentifier,
+			HardcoverBookID:   recovery.HardcoverBookID,
+			RecoveryToken:     recovery.RecoveryToken,
+		}
+	}
+	h.writeJSONResponse(w, status, APIResponse{
+		Success: false, Error: message, ErrorCode: errorCode, Outcome: outcome, Data: data,
+	})
+}
+
+func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID string, err error, recoveryInfo ...*editionRecoveryData) {
+	var recovery *editionRecoveryData
+	if len(recoveryInfo) > 0 {
+		recovery = recoveryInfo[0]
+	}
+	errorCode, outcome := editionCreateErrorMetadata(err)
+	respond := func(status int, message string) {
+		h.writeEditionCreateStructuredError(w, status, message, errorCode, outcome, recovery)
+	}
 	switch {
 	case errors.Is(err, multiuser.ErrProfileNotFound):
-		h.writeErrorResponse(w, http.StatusNotFound, "Sync profile not found")
+		respond(http.StatusNotFound, "Sync profile not found")
 	case errors.Is(err, multiuser.ErrSyncAlreadyActive), errors.Is(err, multiuser.ErrProfileDeleting), errors.Is(err, multiuser.ErrEditionAssociationAlreadyExists), errors.Is(err, errStaleEditionCreateRun), errors.Is(err, errEditionCreateSourceChanged):
-		h.writeErrorResponse(w, http.StatusConflict, err.Error())
+		respond(http.StatusConflict, err.Error())
 	case errors.Is(err, multiuser.ErrServiceShuttingDown):
-		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Edition creation service is shutting down; retry shortly")
+		respond(http.StatusServiceUnavailable, "Edition creation service is shutting down; retry shortly")
 	case errors.Is(err, errEditionCreateInsufficientBudget):
 		w.Header().Set("Retry-After", "1")
-		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Too little request time remained to safely start the Hardcover write; no mutation was sent. Retry the edition create")
+		respond(http.StatusServiceUnavailable, "Too little request time remained to safely start the Hardcover write; no mutation was sent. Retry the edition create")
 	case errors.Is(err, errEditionCreateDiscoveryBudget):
-		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Audnexus region discovery could not finish before the Hardcover write deadline; no mutation was sent. Supply audible_identifier (ASIN:region) to skip discovery")
+		respond(http.StatusServiceUnavailable, "Audnexus region discovery could not finish before the Hardcover write deadline; no mutation was sent. Supply audible_identifier (ASIN:region) to skip discovery")
 	case errors.Is(err, multiuser.ErrProfileStateBusy):
 		w.Header().Set("Retry-After", "1")
-		h.writeErrorResponse(w, http.StatusTooManyRequests, "Profile sync state is busy; retry shortly")
+		respond(http.StatusTooManyRequests, "Profile sync state is busy; retry shortly")
 	case errors.Is(err, multiuser.ErrEditionCreateDryRun):
-		h.writeErrorResponse(w, http.StatusConflict, "Edition creation is disabled while this profile is in dry run")
+		respond(http.StatusConflict, "Edition creation is disabled while this profile is in dry run")
 	case errors.Is(err, multiuser.ErrEditionCreateLocalFailure):
 		h.log.Error(fmt.Sprintf("Local profile or state failure before edition creation for profile %s: %v", profileID, err))
-		h.writeErrorResponse(w, http.StatusInternalServerError, "Local profile or state data could not be prepared for edition creation")
+		respond(http.StatusInternalServerError, "Local profile or state data could not be prepared for edition creation")
 	case errors.Is(err, hardcover.ErrMutationScopeDenied):
-		h.writeErrorResponse(w, http.StatusForbidden, "Hardcover token is missing catalogue write permission; no edition was created")
+		respond(http.StatusForbidden, "Hardcover token is missing catalogue write permission; no edition was created")
 	case errors.Is(err, edition.ErrCreateEditionInsufficientMutationBudget):
 		w.Header().Set("Retry-After", "1")
-		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Edition lookups left too little time to safely start a Hardcover write; no edition mutation was sent. Retry the edition create")
+		respond(http.StatusServiceUnavailable, "Edition lookups left too little time to safely start a Hardcover write; no edition mutation was sent. Retry the edition create")
 	case errors.Is(err, edition.ErrCreateEditionPreMutation):
 		if errors.Is(err, edition.ErrEditionBelongsToOtherBook) {
-			h.writeErrorResponse(w, http.StatusConflict, err.Error())
+			respond(http.StatusConflict, err.Error())
 			return
 		}
 		h.log.Error(fmt.Sprintf("Hardcover edition lookup failed before insertion for profile %s: %v", profileID, err))
-		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Hardcover could not check for an existing edition before insertion; retry the edition create")
+		respond(http.StatusServiceUnavailable, "Hardcover could not check for an existing edition before insertion; retry the edition create")
 	case errors.Is(err, multiuser.ErrEditionAssociationSaveAfterRemoteSuccess):
 		h.log.Error(fmt.Sprintf("Hardcover returned a verified edition but association save failed for profile %s: %v", profileID, err))
-		h.writeErrorResponse(w, http.StatusBadGateway, "Hardcover returned a verified edition, but the local match could not be saved. Verify the Hardcover result before retrying; retrying may create another edition.")
+		respond(http.StatusBadGateway, "Hardcover returned a verified edition, but the local match could not be saved. Verify the Hardcover result before retrying; retrying may create another edition.")
+	case errors.Is(err, errEditionImportUnconfirmed):
+		respond(http.StatusServiceUnavailable, "Hardcover has not confirmed this regional import yet. Check its status before trying edition creation again.")
+	case errors.Is(err, errEditionRecoveryIdentityUnconfirmed):
+		respond(http.StatusConflict, "Hardcover returned an edition that does not match the submitted book or audiobook format; the match was not saved")
 	case errors.Is(err, errEditionCreateRemoteOutcomeAmbiguous):
 		message := "Hardcover may have processed the edition request, but its result could not be confirmed. Verify the Hardcover result before retrying; retrying may create another edition."
 		switch {
 		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, hardcover.ErrRegionalAudiobookImportTimeout):
-			h.writeErrorResponse(w, http.StatusServiceUnavailable, message)
+			respond(http.StatusServiceUnavailable, message)
 		case errors.Is(err, errHardcoverEditionIdentityConflict), errors.Is(err, hardcover.ErrRegionalAudiobookIdentityConflict):
-			h.writeErrorResponse(w, http.StatusConflict, fmt.Sprintf("%s: %v", message, err))
+			respond(http.StatusConflict, fmt.Sprintf("%s: %v", message, err))
 		default:
 			h.log.Error(fmt.Sprintf("Hardcover edition result could not be confirmed for profile %s: %v", profileID, err))
-			h.writeErrorResponse(w, http.StatusBadGateway, message)
+			respond(http.StatusBadGateway, message)
 		}
 	case errors.Is(err, errEditionCreateInvalidInput):
-		h.writeErrorResponse(w, http.StatusUnprocessableEntity, err.Error())
+		respond(http.StatusUnprocessableEntity, err.Error())
 	case errors.Is(err, errAudibleRegionUnknown):
-		h.writeErrorResponse(w, http.StatusUnprocessableEntity, err.Error())
+		respond(http.StatusUnprocessableEntity, err.Error())
 	case errors.Is(err, hardcover.ErrRegionalAudiobookInvalidInput):
-		h.writeErrorResponse(w, http.StatusUnprocessableEntity, err.Error())
+		respond(http.StatusUnprocessableEntity, err.Error())
 	case errors.Is(err, hardcover.ErrRegionalAudiobookIdentityConflict):
-		h.writeErrorResponse(w, http.StatusConflict, err.Error())
+		respond(http.StatusConflict, err.Error())
 	case errors.Is(err, audnex.ErrRateLimited), errors.Is(err, audnex.ErrTransient), errors.Is(err, context.DeadlineExceeded):
-		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Audiobookshelf, Audnexus, or Hardcover is temporarily unavailable; retry the edition create")
+		respond(http.StatusServiceUnavailable, "Audiobookshelf, Audnexus, or Hardcover is temporarily unavailable; retry the edition create")
 	case errors.Is(err, hardcover.ErrRegionalAudiobookImportTimeout):
-		h.writeErrorResponse(w, http.StatusServiceUnavailable, "Hardcover regional import timed out; retry the edition create")
+		respond(http.StatusServiceUnavailable, "Hardcover regional import timed out; retry the edition create")
 	case errors.Is(err, hardcover.ErrRegionalAudiobookImportFailed):
-		h.writeErrorResponse(w, http.StatusBadGateway, "Hardcover could not import the regional Audible identifier")
+		respond(http.StatusBadGateway, "Hardcover could not import the regional Audible identifier")
 	case errors.Is(err, errHardcoverEditionIdentityConflict):
-		h.writeErrorResponse(w, http.StatusConflict, err.Error())
+		respond(http.StatusConflict, err.Error())
 	default:
 		h.log.Error(fmt.Sprintf("Failed to create edition for profile %s: %v", profileID, err))
-		h.writeErrorResponse(w, http.StatusBadGateway, "Failed to create and verify the Hardcover edition")
+		respond(http.StatusBadGateway, "Failed to create and verify the Hardcover edition")
+	}
+}
+
+func editionCreateErrorMetadata(err error) (errorCode, outcome string) {
+	switch {
+	case errors.Is(err, errEditionCreateRemoteOutcomeAmbiguous), errors.Is(err, errEditionImportUnconfirmed), errors.Is(err, errEditionRecoveryIdentityUnconfirmed):
+		return "hardcover_import_unconfirmed", editionOutcomeUnconfirmed
+	case errors.Is(err, multiuser.ErrEditionAssociationSaveAfterRemoteSuccess):
+		return "edition_association_save_failed", editionOutcomeCreated
+	case errors.Is(err, errEditionRecoveryInvalid):
+		return "edition_recovery_invalid", editionOutcomeNotSubmitted
+	case errors.Is(err, hardcover.ErrRegionalAudiobookImportFailed):
+		return "hardcover_import_failed", editionOutcomeFailed
+	case errors.Is(err, hardcover.ErrMutationScopeDenied):
+		return "hardcover_write_permission_denied", editionOutcomeNotSubmitted
+	case errors.Is(err, multiuser.ErrEditionCreateDryRun):
+		return "edition_create_dry_run", editionOutcomeNotSubmitted
+	case errors.Is(err, errEditionCreateInvalidInput), errors.Is(err, errAudibleRegionUnknown), errors.Is(err, hardcover.ErrRegionalAudiobookInvalidInput):
+		return "edition_create_invalid_input", editionOutcomeNotSubmitted
+	case errors.Is(err, errStaleEditionCreateRun), errors.Is(err, errEditionCreateSourceChanged), errors.Is(err, multiuser.ErrEditionAssociationAlreadyExists):
+		return "edition_create_conflict", editionOutcomeNotSubmitted
+	case errors.Is(err, errEditionCreateInsufficientBudget), errors.Is(err, errEditionCreateDiscoveryBudget), errors.Is(err, edition.ErrCreateEditionInsufficientMutationBudget), errors.Is(err, edition.ErrCreateEditionPreMutation):
+		return "edition_create_not_submitted", editionOutcomeNotSubmitted
+	case errors.Is(err, multiuser.ErrEditionCreateLocalFailure):
+		return "edition_create_local_failure", editionOutcomeNotSubmitted
+	default:
+		return "edition_create_failed", editionOutcomeNotSubmitted
 	}
 }

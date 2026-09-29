@@ -70,6 +70,17 @@ components:
         error:
           type: string
           example: "Profile not found"
+        error_code:
+          type: string
+          description: Stable machine-readable code on edition-create and import-recovery errors.
+        outcome:
+          type: string
+          enum: [not_submitted, unconfirmed, failed, created]
+          description: >-
+            Remote-operation state for edition creation. `created` means
+            Hardcover verified the edition but local association saving failed.
+        data:
+          $ref: '#/components/schemas/EditionImportRecovery'
     
     SuccessResponse:
       type: object
@@ -416,6 +427,61 @@ components:
           $ref: '#/components/schemas/AudiobookMetadataPreview'
         resync:
           $ref: '#/components/schemas/EditionResyncResult'
+
+    EditionImportRecovery:
+      type: object
+      description: >-
+        Recovery identity included only when an audiobook import was submitted
+        but not confirmed, or when Hardcover confirmed it but local saving failed.
+        The signed token is tied to this profile, sync run, Audiobookshelf item,
+        Hardcover book, and Audible identifier. Rotating the profile's Hardcover
+        token invalidates it.
+      required: [audible_identifier, hardcover_book_id, recovery_token]
+      properties:
+        audible_identifier:
+          type: string
+          description: Exact canonical ASIN:region sent to Hardcover for this attempt.
+        hardcover_book_id:
+          type: string
+          description: Hardcover book ID taken from the verified needs-review sync record.
+        recovery_token:
+          type: string
+          description: Opaque signed proof that the client received this exact submitted attempt.
+
+    EditionImportCheckRequest:
+      type: object
+      additionalProperties: false
+      required: [run_id, abs_item_id, audible_identifier, recovery_token]
+      properties:
+        run_id:
+          type: string
+        abs_item_id:
+          type: string
+        audible_identifier:
+          type: string
+          description: Exact ASIN:region returned in the original ambiguous create response.
+        recovery_token:
+          type: string
+          description: Signed token returned in the original ambiguous create response.
+
+    EditionCreateOutcomeError:
+      type: object
+      required: [success, error, error_code, outcome]
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+          description: Human-readable explanation retained for existing clients.
+        error_code:
+          type: string
+          description: Stable machine-readable edition-create outcome code.
+        outcome:
+          type: string
+          enum: [not_submitted, unconfirmed, failed, created]
+        data:
+          $ref: '#/components/schemas/EditionImportRecovery'
 
     EditionDraftSourceIdentifiers:
       type: object
@@ -1299,6 +1365,118 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /profiles/{id}/edition-drafts/check-import:
+    post:
+      tags: [Edition Creation]
+      summary: Check a previously submitted regional audiobook import
+      description: >-
+        Requires profile write access and a recovery token returned by an
+        ambiguous edition-create response. The API verifies the token against
+        the exact profile, run, item, Hardcover book, and `ASIN:region`, then
+        revalidates the retained needs-review snapshot and freshly fetched
+        Audiobookshelf source item while holding the profile and state-file
+        guards. It performs one read-only Hardcover import-status/mapping query
+        and, only for a terminal result, an uncached edition readback that must
+        match the reviewed Hardcover book and audiobook format. A pending result
+        returns HTTP 503 with `outcome: unconfirmed` and the same recovery data;
+        retry this check rather than submitting edition creation again. A
+        confirmed result saves the local association and returns the ordinary
+        edition-create success shape. Repeating a check for the same saved
+        association is idempotent. This endpoint never submits a Hardcover
+        mutation or resyncs read status. Rotating the profile's Hardcover token
+        invalidates outstanding recovery tokens.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+          example: profile-123
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EditionImportCheckRequest'
+      responses:
+        '200':
+          description: Import verified and local association saved or already matching.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: {type: boolean, enum: [true]}
+                  data:
+                    $ref: '#/components/schemas/EditionCreateResult'
+        '400':
+          description: Request JSON or one of its required fields is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication is required when authentication is enabled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Authenticated caller lacks profile mutation access.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The profile is unavailable to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >-
+            The recovery token is invalid, the run/item is stale, the source
+            changed, profile dry run is enabled, a different local association
+            already exists, or Hardcover returned an identity conflict. Refresh
+            the draft and inspect the Hardcover result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EditionCreateOutcomeError'
+        '422':
+          description: The submitted Audible identifier is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Edition recovery capacity or profile state is busy.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying; currently 1.
+              schema:
+                type: string
+                example: "1"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: Hardcover confirmed the edition but local association saving failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EditionCreateOutcomeError'
+        '503':
+          description: >-
+            The import remains unconfirmed or a required read was temporarily
+            unavailable. The response includes `error_code`, `outcome`, and the
+            recovery data while the signed token remains valid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EditionCreateOutcomeError'
+
   /profiles/{id}/edition-associations/{itemID}:
     delete:
       tags: [Edition Associations]

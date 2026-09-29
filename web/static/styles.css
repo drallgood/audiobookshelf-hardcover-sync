@@ -2356,6 +2356,8 @@ header p {
 .edition-audnex-preview[open] summary { margin-bottom: 8px; }
 .edition-warning { background: #fff8e1; border-left: 4px solid #f0ad4e; padding: 8px 12px; margin: 8px 0; border-radius: 4px; }
 .edition-error { background: #fdecea; border-left: 4px solid #d9534f; padding: 8px 12px; margin: 8px 0; border-radius: 4px; }
+.edition-technical-details { margin-top: 8px; font-size: 0.9rem; }
+.edition-technical-details summary { cursor: pointer; }
 .edition-success { background: #e8f5e9; border-left: 4px solid #5cb85c; padding: 8px 12px; margin: 8px 0; border-radius: 4px; }
 .edition-region { padding: 8px 12px; margin: 8px 0; border-radius: 4px; }
 .edition-region.confirmed { background: #e8f5e9; }
