@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -31,26 +32,52 @@ func TestSearchBookByASINPreservesConfiguredRegionLookup(t *testing.T) {
 	require.Equal(t, asin, book.EditionASIN)
 	require.Equal(t, asin+":uk", request.Variables["asin_us"])
 	require.Equal(t, float64(2), request.Variables["format_id"])
-	require.Contains(t, request.Query, "external_id: {_eq: $asin}")
+	require.NotContains(t, request.Query, `external_id: {_eq: $asin}, platform: {name: {_eq: "Audible"}}`)
 	require.Contains(t, request.Query, "external_id: {_eq: $asin_us}")
 	require.Contains(t, request.Query, "limit: 1")
 	require.NotContains(t, request.Query, "$asin_ca")
 }
 
-func TestSearchBookByASINPreservesLegacyBareMappingMatch(t *testing.T) {
+func TestSearchBookByASINUsesBareMappingOnlyForEbooks(t *testing.T) {
 	const asin = "B0LEGACY03"
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"books":[{"id":13,"title":"Bare mapping book","editions":[{"id":35,"asin":null,"reading_format_id":2,"book_mappings":[{"external_id":"B0LEGACY03","platform":{"name":"Audible"}}]}]}]}}`))
-	}))
-	defer server.Close()
+	const bareMappingClause = `external_id: {_eq: $asin}, platform: {name: {_eq: "Audible"}}`
+	for _, tt := range []struct {
+		name      string
+		ctx       context.Context
+		formatID  float64
+		wantMatch bool
+	}{
+		{name: "audiobook requires regional mapping", ctx: context.Background(), formatID: 2},
+		{name: "ebook retains bare mapping", ctx: WithReadingFormat(context.Background(), "ebook"), formatID: 4, wantMatch: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var request asinRequest
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+				w.Header().Set("Content-Type", "application/json")
+				if strings.Contains(request.Query, bareMappingClause) {
+					_, _ = fmt.Fprintf(w, `{"data":{"books":[{"id":13,"title":"Bare mapping book","editions":[{"id":35,"asin":null,"reading_format_id":%.0f,"book_mappings":[{"external_id":"B0LEGACY03","platform":{"name":"Audible"}}]}]}]}}`, tt.formatID)
+					return
+				}
+				_, _ = w.Write([]byte(`{"data":{"books":[]}}`))
+			}))
+			defer server.Close()
 
-	book, err := CreateTestClient(server).SearchBookByASIN(context.Background(), asin)
-	require.NoError(t, err)
-	require.NotNil(t, book)
-	require.Equal(t, "13", book.ID)
-	require.Equal(t, "35", book.EditionID)
-	require.Equal(t, asin, book.EditionASIN)
+			book, err := CreateTestClient(server).SearchBookByASIN(tt.ctx, asin)
+			require.NoError(t, err)
+			if tt.wantMatch {
+				require.NotNil(t, book)
+				require.Equal(t, "13", book.ID)
+				require.Equal(t, "35", book.EditionID)
+			} else {
+				require.Nil(t, book)
+				require.NotContains(t, request.Query, bareMappingClause)
+				require.NotContains(t, request.Variables, "asin")
+				require.Contains(t, request.Query, "external_id: {_eq: $asin_us}")
+				require.Equal(t, asin+":us", request.Variables["asin_us"])
+			}
+		})
+	}
 }
 
 func TestGetEditionByASINPreservesLegacyDuplicateLookup(t *testing.T) {

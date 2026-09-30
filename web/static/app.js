@@ -1422,23 +1422,26 @@ class SyncProfileApp {
             this.clearOpenSummary();
             return;
         }
-        // Replace the open state object rather than mutating it. An older
-        // details response can then never clear or publish the new run.
+        // Advance the run generation so an older details response can never
+        // clear or publish the new run.
         if (runId !== this.openSummary.runId) {
             const previous = this.openSummary;
             previous.detailsController?.abort();
-            this.openSummary = {
-                profileId: previous.profileId,
-                runId,
-                generation: previous.generation + 1,
-                expandedIds: new Set(),
-                expandedOutcomes: new Set(),
-                editionCapability: previous.editionCapability,
-                editionCapabilityLoaded: previous.editionCapabilityLoaded,
-                scrollTop: 0
-            };
-            this.renderDetailsState('loading', this.openSummary);
-            if (!this.openSummary.editionCapabilityLoaded) this.loadEditionCapability(this.openSummary);
+            // Keep the profile-scoped capability request/session alive across
+            // run changes. Incrementing generation still invalidates details
+            // responses for the previous run.
+            previous.runId = runId;
+            previous.generation += 1;
+            previous.expandedIds = new Set();
+            previous.expandedOutcomes = new Set();
+            previous.addedEditionBookIds = this.loadAddedEditionBookIds(previous.profileId, runId);
+            previous.scrollTop = 0;
+            previous.detailsController = null;
+            previous.loading = false;
+            previous.renderedRunId = null;
+            previous.records = new Map();
+            this.renderDetailsState('loading', previous);
+            if (!previous.editionCapabilityLoaded && !previous.editionCapabilityRefreshing) this.loadEditionCapability(previous);
         }
         await this.fetchAndRenderDetails({ open: this.openSummary, preservePosition: true });
     }
@@ -1510,7 +1513,8 @@ class SyncProfileApp {
 
     async refreshOpenEditionCapability() {
         const open = this.openSummary;
-        if (!open || open.editionCapabilityRefreshing || this.isViewer() || open.runContext?.dryRun) return;
+        const dryRun = open?.editionCapability?.dry_run ?? open?.runContext?.dryRun;
+        if (!open || open.editionCapabilityRefreshing || this.isViewer() || dryRun) return;
         open.editionCapabilityRefreshing = true;
         const authGeneration = this.authSessionGeneration;
         const requestGeneration = (open.editionCapabilityRequestGeneration || 0) + 1;
@@ -1705,8 +1709,10 @@ class SyncProfileApp {
                 console.error('Error loading sync run details:', error);
             }
         } finally {
-            open.loading = false;
-            if (open.detailsController === requestController) open.detailsController = null;
+            if (open.generation === requestGeneration && open.runId === requestRunId) {
+                open.loading = false;
+                if (open.detailsController === requestController) open.detailsController = null;
+            }
         }
     }
 

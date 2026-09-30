@@ -247,6 +247,63 @@ func TestEditionCapabilityForProfileCachesUnverifiedBeyondOldTTLUntilRefresh(t *
 	require.Equal(t, int32(4), requests.Load(), "explicit refresh recovers after Hardcover begins accepting probes")
 }
 
+func TestEditionCapabilityDoesNotCacheCanceledProbe(t *testing.T) {
+	firstRequestStarted := make(chan struct{})
+	releaseFirstRequest := make(chan struct{})
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			close(firstRequestStarted)
+			<-releaseFirstRequest
+		}
+		respondToCapabilityProbe(w, r)
+	}))
+	defer server.Close()
+
+	service, _ := newStatusLookupService(t)
+	service.globalConfig.Hardcover.BaseURL = server.URL
+	service.globalConfig.RateLimit.Rate = time.Nanosecond
+	const profileID = "canceled-capability-profile"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Canceled capability profile", "http://abs.home", "abs-token", "hardcover-token",
+		database.SyncConfigData{},
+	))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type probeResult struct {
+		capability EditionCapability
+		err        error
+	}
+	done := make(chan probeResult, 1)
+	go func() {
+		capability, err := service.EditionCapabilityForProfile(ctx, profileID)
+		done <- probeResult{capability: capability, err: err}
+	}()
+	select {
+	case <-firstRequestStarted:
+		cancel()
+		close(releaseFirstRequest)
+	case <-time.After(2 * time.Second):
+		cancel()
+		close(releaseFirstRequest)
+		t.Fatal("canceled capability probe did not reach Hardcover")
+	}
+	select {
+	case result := <-done:
+		require.NoError(t, result.err)
+		require.Equal(t, EditionCapabilityUnverified, result.capability.Ebook.Status)
+		require.Equal(t, EditionCapabilityUnverified, result.capability.Audiobook.Status)
+	case <-time.After(2 * time.Second):
+		t.Fatal("canceled capability probe did not finish")
+	}
+
+	recovered, err := service.EditionCapabilityForProfile(context.Background(), profileID)
+	require.NoError(t, err)
+	require.Equal(t, EditionCapabilityAllowed, recovered.Ebook.Status)
+	require.Equal(t, EditionCapabilityAllowed, recovered.Audiobook.Status)
+	require.Equal(t, int32(3), requests.Load(), "a canceled result is returned to its caller but is probed again later")
+}
+
 func TestCapabilityAndProfileHardcoverClientsShareLimiter(t *testing.T) {
 	var active, maxActive atomic.Int32
 	var requests atomic.Int32

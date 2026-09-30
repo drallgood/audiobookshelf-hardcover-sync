@@ -624,6 +624,103 @@ test('View Details permission refresh is hidden from viewers and disabled during
     assert.doesNotMatch(content.innerHTML, /data-edition-capability-refresh/);
 });
 
+test('permission refresh follows current capability dry-run state instead of the historical run', async () => {
+    const app = editionApp();
+    const summary = app.openSummary;
+    summary.runContext.dryRun = true;
+    summary.editionCapability = { audiobook: { status: 'denied', can_attempt: false }, dry_run: false };
+    const previousDocument = global.document;
+    global.document = { ...previousDocument, querySelector: () => null };
+    try {
+        let request;
+        app.profileUrl = (profileId, path) => `/api/profiles/${profileId}${path}`;
+        app.fetchJsonWithTimeout = (url, options) => {
+            request = { url, options };
+            return Promise.resolve({
+                response: { ok: true, status: 200 },
+                data: { success: true, data: { audiobook: { status: 'allowed', can_attempt: true }, dry_run: false } }
+            });
+        };
+
+        await app.refreshOpenEditionCapability();
+
+        assert.equal(request.url, '/api/profiles/p1/edition-capability/refresh');
+        assert.equal(request.options.method, 'POST');
+        assert.equal(summary.editionCapability.audiobook.status, 'allowed');
+    } finally {
+        global.document = previousDocument;
+    }
+});
+
+test('pending permission refresh survives replacement of the run summary', async () => {
+    const app = editionApp();
+    const summary = app.openSummary;
+    summary.runId = 'run-1';
+    summary.editionCapability = {
+        audiobook: { status: 'denied', can_attempt: false, reason: 'insufficient_scope' },
+        dry_run: false
+    };
+    app.statuses.p1.snapshot.run_id = 'run-2';
+    app.renderDetailsState = () => {};
+    app.profileUrl = profileId => `/profiles/${profileId}`;
+    const previousDocument = global.document;
+    const content = { querySelectorAll: () => [] };
+    const container = { style: {} };
+    global.document = {
+        ...previousDocument,
+        activeElement: null,
+        getElementById: id => id === 'sync-summary-content' ? content : id === 'sync-summary-container' ? container : null,
+        querySelector: () => null
+    };
+    const pendingCapability = deferred();
+    const oldRunDetails = deferred();
+    const newRunDetails = deferred();
+    const detailRequests = [];
+    app.fetchJsonWithTimeout = (url, options) => {
+        if (options?.method === 'POST') return pendingCapability.promise;
+        detailRequests.push(url);
+        if (url.endsWith('/runs/run-1/details')) {
+            options.signal.addEventListener('abort', () => {
+                const error = new Error('aborted');
+                error.name = 'AbortError';
+                oldRunDetails.resolve(Promise.reject(error));
+            });
+            return oldRunDetails.promise;
+        }
+        return newRunDetails.promise;
+    };
+
+    try {
+        const refresh = app.refreshOpenEditionCapability();
+        const oldDetails = app.fetchAndRenderDetails();
+        const updatedSummary = app.refreshOpenSummary();
+        assert.equal(app.openSummary, summary);
+        assert.equal(summary.runId, 'run-2');
+        assert.deepEqual(detailRequests, [
+            '/profiles/p1/runs/run-1/details',
+            '/profiles/p1/runs/run-2/details'
+        ]);
+        await oldDetails;
+        assert.equal(summary.loading, true, 'finishing the aborted old request must not clear the new request loading state');
+
+        newRunDetails.resolve({ response: { ok: false, status: 500 }, data: {} });
+        await updatedSummary;
+
+        pendingCapability.resolve({
+            response: { ok: true, status: 200 },
+            data: { success: true, data: { audiobook: { status: 'allowed', can_attempt: true }, dry_run: false } }
+        });
+        await refresh;
+
+        assert.equal(summary.editionCapability.audiobook.status, 'allowed');
+        assert.equal(summary.editionCapabilityLoaded, true);
+    } finally {
+        oldRunDetails.resolve({ response: { ok: false, status: 500 }, data: {} });
+        newRunDetails.resolve({ response: { ok: false, status: 500 }, data: {} });
+        global.document = previousDocument;
+    }
+});
+
 test('a capability response from a previous profile cannot update the currently open summary', async () => {
     const app = editionApp();
     let resolveFetch;

@@ -235,7 +235,7 @@ func (s *MultiUserService) cachedEditionCapabilityProbe(ctx context.Context, pro
 
 	s.hardcoverClientMutex.Lock()
 	flight.status = state
-	if s.editionCapabilityGenerations[profileID] == flight.generation {
+	if ctx.Err() == nil && s.editionCapabilityGenerations[profileID] == flight.generation {
 		if cached, ok := s.editionCapabilityCache[cacheKey]; !ok || cached.tokenFingerprint == fingerprint {
 			s.editionCapabilityCache[cacheKey] = editionCapabilityCacheEntry{
 				tokenFingerprint: fingerprint,

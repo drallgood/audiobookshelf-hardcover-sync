@@ -1513,20 +1513,39 @@ func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.Har
 	log := c.logger.With(map[string]interface{}{"asin": asin, "method": "SearchBookByASIN"})
 
 	formatID := readingFormatIDFromCtx(ctx)
-	// An audiobook is never matched through editions.asin; only Audible
-	// mappings identify it. An ebook keeps its editions.asin match.
-	bookASINClause, editionASINClause := "", ""
-	if formatID != models.ReadingFormatID("audiobook") {
-		bookASINClause = "{editions: {asin: {_eq: $asin}, reading_format: {id: {_eq: $format_id}}}},\n        "
-		editionASINClause = "{asin: {_eq: $asin}, reading_format: {id: {_eq: $format_id}}},\n          "
+	// Audiobooks require a region-qualified Audible mapping. Ebooks retain
+	// their bare ASIN matches through both editions.asin and legacy mappings.
+	bookASINClauses := make([]string, 0, 3)
+	editionASINClauses := make([]string, 0, 3)
+	asinVariableDeclaration := ""
+	variables := map[string]interface{}{
+		"asin_us":   asin + ":" + getAudnexRegionFromCtx(ctx),
+		"format_id": formatID,
 	}
+	if formatID != models.ReadingFormatID("audiobook") {
+		asinVariableDeclaration = "$asin: String!, "
+		variables["asin"] = asin
+		bookASINClauses = append(bookASINClauses,
+			"{editions: {asin: {_eq: $asin}, reading_format: {id: {_eq: $format_id}}}}",
+			"{editions: {book_mappings: {external_id: {_eq: $asin}, platform: {name: {_eq: \"Audible\"}}}, reading_format: {id: {_eq: $format_id}}}}",
+		)
+		editionASINClauses = append(editionASINClauses,
+			"{asin: {_eq: $asin}, reading_format: {id: {_eq: $format_id}}}",
+			"{book_mappings: {external_id: {_eq: $asin}, platform: {name: {_eq: \"Audible\"}}}, reading_format: {id: {_eq: $format_id}}}",
+		)
+	}
+	bookASINClauses = append(bookASINClauses,
+		"{editions: {book_mappings: {external_id: {_eq: $asin_us}, platform: {name: {_eq: \"Audible\"}}}, reading_format: {id: {_eq: $format_id}}}}",
+	)
+	editionASINClauses = append(editionASINClauses,
+		"{book_mappings: {external_id: {_eq: $asin_us}, platform: {name: {_eq: \"Audible\"}}}, reading_format: {id: {_eq: $format_id}}}",
+	)
 	query := fmt.Sprintf(`
-query BookByASIN($asin: String!, $asin_us: String!, $format_id: Int!) {
+query BookByASIN(%s$asin_us: String!, $format_id: Int!) {
   books(
     where: {
       _or: [
-        %s{editions: {book_mappings: {external_id: {_eq: $asin}, platform: {name: {_eq: "Audible"}}}, reading_format: {id: {_eq: $format_id}}}},
-        {editions: {book_mappings: {external_id: {_eq: $asin_us}, platform: {name: {_eq: "Audible"}}}, reading_format: {id: {_eq: $format_id}}}}
+        %s
       ]
     },
     limit: 1
@@ -1538,8 +1557,7 @@ query BookByASIN($asin: String!, $asin_us: String!, $format_id: Int!) {
     editions(
       where: {
         _or: [
-          %s{book_mappings: {external_id: {_eq: $asin}, platform: {name: {_eq: "Audible"}}}, reading_format: {id: {_eq: $format_id}}},
-          {book_mappings: {external_id: {_eq: $asin_us}, platform: {name: {_eq: "Audible"}}}, reading_format: {id: {_eq: $format_id}}}
+          %s
         ]
       },
       limit: 1
@@ -1553,12 +1571,7 @@ query BookByASIN($asin: String!, $asin_us: String!, $format_id: Int!) {
       book_mappings { external_id platform { name } }
     }
   }
-}`, bookASINClause, editionASINClause)
-	variables := map[string]interface{}{
-		"asin":      asin,
-		"asin_us":   asin + ":" + getAudnexRegionFromCtx(ctx),
-		"format_id": formatID,
-	}
+}`, asinVariableDeclaration, strings.Join(bookASINClauses, ",\n        "), strings.Join(editionASINClauses, ",\n          "))
 	var response struct {
 		Books json.RawMessage `json:"books"`
 	}

@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Permission refresh and audiobook matching edge cases**: Audiobook duplicate checks require region-qualified Audible mappings, canceled capability probes remain retryable, and permission refresh stays consistent with current dry-run evidence and survives a sync run changing while the refresh is pending.
 - **ISBN counterpart matching**: Match an Audiobookshelf ISBN-10 to its valid ISBN-13 counterpart, and the reverse, without changing audiobook and ebook reading-format separation. By @Snuffy2. (#200)
 - **Honor the legacy Audnex region for service-mode sync**: The legacy `audiobookshelf.audnexus_region` (and `AUDIOBOOKSHELF_AUDNEXUS_REGION`) is now used as the default region for sync when a profile has no `sync_config.audnexus_region`, so service-mode and periodic sync match `--one-time-sync`, which already built its config directly from the loaded settings. Single-user config→profile migration now carries the region into the default profile. Previously the setting was loaded and echoed in the startup dump but never reached the Audnex lookup, so non-US ASINs returned 404 and fell back to title/author matching. (#203)
 
