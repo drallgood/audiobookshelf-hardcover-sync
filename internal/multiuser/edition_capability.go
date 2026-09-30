@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/util"
@@ -49,11 +48,6 @@ type EditionCapability struct {
 	DryRun    bool                    `json:"dry_run"`
 }
 
-const (
-	editionCapabilityDefiniteTTL   = 5 * time.Minute
-	editionCapabilityUnverifiedTTL = 15 * time.Second
-)
-
 type editionCapabilityCacheKey struct {
 	profileID string
 	operation EditionCapabilityOperation
@@ -62,7 +56,6 @@ type editionCapabilityCacheKey struct {
 type editionCapabilityCacheEntry struct {
 	tokenFingerprint string
 	status           EditionCapabilityState
-	expiresAt        time.Time
 }
 
 type editionCapabilityFlightKey struct {
@@ -72,10 +65,22 @@ type editionCapabilityFlightKey struct {
 	generation       uint64
 }
 
+type editionCapabilityRefreshKey struct {
+	profileID        string
+	tokenFingerprint string
+	generation       uint64
+}
+
 type editionCapabilityFlight struct {
 	done       chan struct{}
 	status     EditionCapabilityState
 	generation uint64
+}
+
+type editionCapabilityRefreshFlight struct {
+	done       chan struct{}
+	capability EditionCapability
+	err        error
 }
 
 type editionCapabilityClientEntry struct {
@@ -93,6 +98,17 @@ type profileHardcoverRateLimiterKey struct {
 // use separate validation-only probes. Results are cached by profile,
 // operation, and current token.
 func (s *MultiUserService) EditionCapabilityForProfile(ctx context.Context, profileID string) (EditionCapability, error) {
+	return s.editionCapabilityForProfile(ctx, profileID, false)
+}
+
+// RefreshEditionCapabilityForProfile probes Hardcover again for the profile's
+// current token, replacing any cached permission evidence. It shares the
+// existing profile client and rate limiter with other Hardcover operations.
+func (s *MultiUserService) RefreshEditionCapabilityForProfile(ctx context.Context, profileID string) (EditionCapability, error) {
+	return s.editionCapabilityForProfile(ctx, profileID, true)
+}
+
+func (s *MultiUserService) editionCapabilityForProfile(ctx context.Context, profileID string, refresh bool) (EditionCapability, error) {
 	profile, err := s.repository.GetProfileHardcoverSettings(profileID)
 	if err != nil {
 		return EditionCapability{}, fmt.Errorf("failed to load profile %s for edition capability: %w", profileID, err)
@@ -116,14 +132,65 @@ func (s *MultiUserService) EditionCapabilityForProfile(ctx context.Context, prof
 			DryRun:    true,
 		}, nil
 	}
+	if refresh {
+		return s.refreshEditionCapabilityProbes(ctx, profileID, profile.HardcoverToken)
+	}
+	return s.probeEditionCapabilityForProfile(ctx, profileID, profile.HardcoverToken)
+}
 
-	ebookState := s.cachedEditionCapabilityProbe(ctx, profileID, EditionCapabilityInsertEdition, profile.HardcoverToken)
-	audiobookState := s.cachedEditionCapabilityProbe(ctx, profileID, EditionCapabilityUpsertBook, profile.HardcoverToken)
+func (s *MultiUserService) probeEditionCapabilityForProfile(ctx context.Context, profileID, token string) (EditionCapability, error) {
+	ebookState := s.cachedEditionCapabilityProbe(ctx, profileID, EditionCapabilityInsertEdition, token)
+	audiobookState := s.cachedEditionCapabilityProbe(ctx, profileID, EditionCapabilityUpsertBook, token)
 	return EditionCapability{
 		Ebook:     editionCapabilityStatus(EditionCapabilityInsertEdition, ebookState),
 		Audiobook: editionCapabilityStatus(EditionCapabilityUpsertBook, audiobookState),
 		DryRun:    false,
 	}, nil
+}
+
+func (s *MultiUserService) refreshEditionCapabilityProbes(ctx context.Context, profileID, token string) (EditionCapability, error) {
+	fingerprint := hardcoverTokenFingerprint(token)
+	s.hardcoverClientMutex.Lock()
+	key := editionCapabilityRefreshKey{
+		profileID: profileID, tokenFingerprint: fingerprint,
+		generation: s.editionCapabilityGenerations[profileID],
+	}
+	if flight, ok := s.editionCapabilityRefreshFlights[key]; ok {
+		s.hardcoverClientMutex.Unlock()
+		return waitForEditionCapabilityRefresh(ctx, flight)
+	}
+
+	for cacheKey := range s.editionCapabilityCache {
+		if cacheKey.profileID == profileID {
+			delete(s.editionCapabilityCache, cacheKey)
+		}
+	}
+	key.generation++
+	s.editionCapabilityGenerations[profileID] = key.generation
+	flight := &editionCapabilityRefreshFlight{done: make(chan struct{})}
+	s.editionCapabilityRefreshFlights[key] = flight
+	s.hardcoverClientMutex.Unlock()
+
+	capability, err := s.probeEditionCapabilityForProfile(ctx, profileID, token)
+	s.hardcoverClientMutex.Lock()
+	flight.capability = capability
+	flight.err = err
+	delete(s.editionCapabilityRefreshFlights, key)
+	close(flight.done)
+	s.hardcoverClientMutex.Unlock()
+	return capability, err
+}
+
+func waitForEditionCapabilityRefresh(ctx context.Context, flight *editionCapabilityRefreshFlight) (EditionCapability, error) {
+	select {
+	case <-ctx.Done():
+		return EditionCapability{
+			Ebook:     unverifiedEditionCapability(EditionCapabilityInsertEdition),
+			Audiobook: unverifiedEditionCapability(EditionCapabilityUpsertBook),
+		}, nil
+	case <-flight.done:
+		return flight.capability, flight.err
+	}
 }
 
 func (s *MultiUserService) cachedEditionCapabilityProbe(ctx context.Context, profileID string, operation EditionCapabilityOperation, token string) EditionCapabilityState {
@@ -136,7 +203,7 @@ func (s *MultiUserService) cachedEditionCapabilityProbe(ctx context.Context, pro
 		profileID: profileID, operation: operation, tokenFingerprint: fingerprint, generation: generation,
 	}
 	if cached, ok := s.editionCapabilityCache[cacheKey]; ok {
-		if cached.tokenFingerprint == fingerprint && time.Now().Before(cached.expiresAt) {
+		if cached.tokenFingerprint == fingerprint {
 			s.hardcoverClientMutex.Unlock()
 			return cached.status
 		}
@@ -168,16 +235,11 @@ func (s *MultiUserService) cachedEditionCapabilityProbe(ctx context.Context, pro
 
 	s.hardcoverClientMutex.Lock()
 	flight.status = state
-	duration := editionCapabilityDefiniteTTL
-	if state == EditionCapabilityUnverified {
-		duration = editionCapabilityUnverifiedTTL
-	}
 	if s.editionCapabilityGenerations[profileID] == flight.generation {
 		if cached, ok := s.editionCapabilityCache[cacheKey]; !ok || cached.tokenFingerprint == fingerprint {
 			s.editionCapabilityCache[cacheKey] = editionCapabilityCacheEntry{
 				tokenFingerprint: fingerprint,
 				status:           state,
-				expiresAt:        time.Now().Add(duration),
 			}
 		}
 	}

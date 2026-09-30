@@ -537,6 +537,93 @@ test('late capability denial keeps a pending request open for inspection without
     }
 });
 
+test('View Details refreshes denied permissions and ignores an older capability response', async t => {
+    const app = editionApp();
+    const summary = app.openSummary;
+    summary.editionCapabilityLoaded = true;
+    summary.editionCapability = {
+        audiobook: { status: 'denied', can_attempt: false, reason: 'insufficient_scope' },
+        dry_run: false
+    };
+    summary.expandedOutcomes = new Set();
+    app.statuses = { p1: { profile_name: 'Profile One' } };
+
+    const content = { innerHTML: '', querySelectorAll: () => [] };
+    const tabs = { innerHTML: '' };
+    const refreshButton = { disabled: false, textContent: 'Refresh permissions' };
+    const previousDocument = global.document;
+    global.document = {
+        ...previousDocument,
+        getElementById(id) { return id === 'sync-summary-content' ? content : id === 'sync-summary-tabs' ? tabs : null; },
+        querySelector(selector) { return selector === '#sync-summary-content [data-edition-capability-refresh]' ? refreshButton : null; }
+    };
+    t.after(() => { global.document = previousDocument; });
+
+    app.renderDetailsSnapshot({ run_id: 'run-1', state: 'completed', outcome_counts: {}, book_outcomes: [] });
+    assert.match(content.innerHTML, /data-edition-capability-refresh[^>]*>Refresh permissions/);
+
+    const previousCapability = deferred();
+    const refreshedCapability = deferred();
+    let requests = 0;
+    app.fetchJsonWithTimeout = (url, options) => {
+        requests++;
+        if (options?.method === 'POST') {
+            assert.equal(url, '/api/profiles/p1/edition-capability/refresh');
+            return refreshedCapability.promise;
+        }
+        assert.equal(url, '/api/profiles/p1/edition-capability');
+        return previousCapability.promise;
+    };
+    const oldLoad = app.loadEditionCapability(summary);
+    const refresh = app.refreshOpenEditionCapability();
+    const duplicateRefresh = app.refreshOpenEditionCapability();
+    assert.equal(requests, 2, 'a second click does not send another refresh request');
+    assert.equal(refreshButton.disabled, true);
+    assert.equal(refreshButton.textContent, 'Checking…');
+
+    refreshedCapability.resolve({
+        response: { ok: true, status: 200 },
+        data: { success: true, data: { audiobook: { status: 'allowed', can_attempt: true }, dry_run: false } }
+    });
+    await refresh;
+    previousCapability.resolve({
+        response: { ok: true, status: 200 },
+        data: { success: true, data: { audiobook: { status: 'denied', can_attempt: false, reason: 'insufficient_scope' }, dry_run: false } }
+    });
+    await Promise.all([oldLoad, duplicateRefresh]);
+
+    assert.equal(summary.editionCapability.audiobook.status, 'allowed');
+    assert.equal(summary.editionCapabilityLoaded, true);
+    assert.equal(refreshButton.disabled, false);
+    assert.equal(refreshButton.textContent, 'Refresh permissions');
+});
+
+test('View Details permission refresh is hidden from viewers and disabled during dry run', t => {
+    const app = editionApp();
+    const summary = app.openSummary;
+    summary.editionCapabilityLoaded = true;
+    summary.editionCapability = { audiobook: { status: 'unverified', can_attempt: true }, dry_run: false };
+    summary.expandedOutcomes = new Set();
+    app.statuses = { p1: { profile_name: 'Profile One' } };
+    const content = { innerHTML: '', querySelectorAll: () => [] };
+    const tabs = { innerHTML: '' };
+    const previousDocument = global.document;
+    global.document = { ...previousDocument, getElementById: id => id === 'sync-summary-content' ? content : id === 'sync-summary-tabs' ? tabs : null };
+    t.after(() => { global.document = previousDocument; });
+
+    app.renderDetailsSnapshot({ run_id: 'run-1', state: 'completed', outcome_counts: {}, book_outcomes: [] });
+    assert.match(content.innerHTML, /data-edition-capability-refresh[^>]*>Refresh permissions/);
+
+    summary.editionCapability = { audiobook: { status: 'allowed', can_attempt: true }, dry_run: true };
+    app.renderDetailsSnapshot({ run_id: 'run-1', state: 'completed', outcome_counts: {}, book_outcomes: [] });
+    assert.match(content.innerHTML, /data-edition-capability-refresh[^>]*disabled[^>]*>Refresh permissions/);
+
+    app.authEnabled = true;
+    app.currentUser = { role: 'viewer' };
+    app.renderDetailsSnapshot({ run_id: 'run-1', state: 'completed', outcome_counts: {}, book_outcomes: [] });
+    assert.doesNotMatch(content.innerHTML, /data-edition-capability-refresh/);
+});
+
 test('a capability response from a previous profile cannot update the currently open summary', async () => {
     const app = editionApp();
     let resolveFetch;

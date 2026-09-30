@@ -17,8 +17,9 @@ const (
 	// import flow was verified against platform 32 in the implementation plan.
 	audiblePlatformID = 32
 
-	regionalImportPollInterval = time.Second
-	regionalImportMaxWait      = 30 * time.Second
+	regionalImportInitialPollInterval = time.Second
+	regionalImportMaxPollInterval     = 5 * time.Second
+	regionalImportMaxWait             = 30 * time.Second
 )
 
 var (
@@ -53,6 +54,8 @@ type RegionalAudiobookResult struct {
 	EditionID          int
 	ReadingFormatID    int
 	RegionalExternalID string
+	// Edition is the freshly verified snapshot for reuse within this operation.
+	Edition *models.Edition `json:"-"`
 }
 
 // ImportRegionalAudiobook imports or resolves a region-qualified Audible ID
@@ -124,14 +127,14 @@ mutation UpsertRegionalAudibleBook($book: CreateBookFromPlatformInput!) {
 	if err != nil {
 		return nil, err
 	}
-	verifiedBookID, verifiedFormatID, err := c.verifyRegionalAudiobookEdition(ctx, input.BookID, editionID, "verify regional Audible edition")
+	verifiedBookID, verifiedFormatID, verified, err := c.verifyRegionalAudiobookEdition(ctx, input.BookID, editionID, "verify regional Audible edition")
 	if err != nil {
 		return nil, err
 	}
 
 	return &RegionalAudiobookResult{
 		Status: status, BookID: verifiedBookID, EditionID: editionID,
-		ReadingFormatID: verifiedFormatID, RegionalExternalID: externalID,
+		ReadingFormatID: verifiedFormatID, RegionalExternalID: externalID, Edition: verified,
 	}, nil
 }
 
@@ -222,14 +225,14 @@ func (c *Client) CheckRegionalAudiobookImport(ctx context.Context, input Regiona
 			return nil, false, err
 		}
 	}
-	verifiedBookID, verifiedFormatID, err := c.verifyRegionalAudiobookEdition(ctx, input.BookID, editionID, "verify recovered regional Audible edition")
+	verifiedBookID, verifiedFormatID, verified, err := c.verifyRegionalAudiobookEdition(ctx, input.BookID, editionID, "verify recovered regional Audible edition")
 	if err != nil {
 		return nil, false, err
 	}
 
 	return &RegionalAudiobookResult{
 		Status: status, BookID: verifiedBookID, EditionID: editionID,
-		ReadingFormatID: verifiedFormatID, RegionalExternalID: externalID,
+		ReadingFormatID: verifiedFormatID, RegionalExternalID: externalID, Edition: verified,
 	}, true, nil
 }
 
@@ -242,24 +245,24 @@ func normalizeRegionalAudiobookInput(input RegionalAudiobookInput) (string, stri
 	return asin, region, nil
 }
 
-func (c *Client) verifyRegionalAudiobookEdition(ctx context.Context, bookID, editionID int, fetchContext string) (int, int, error) {
+func (c *Client) verifyRegionalAudiobookEdition(ctx context.Context, bookID, editionID int, fetchContext string) (int, int, *models.Edition, error) {
 	verified, err := c.GetEditionUncached(ctx, strconv.Itoa(editionID))
 	if err != nil {
-		return 0, 0, fmt.Errorf("%s %d: %w", fetchContext, editionID, err)
+		return 0, 0, nil, fmt.Errorf("%s %d: %w", fetchContext, editionID, err)
 	}
 	if verified == nil {
-		return 0, 0, fmt.Errorf("%w: edition %d could not be read back", ErrRegionalAudiobookIdentityConflict, editionID)
+		return 0, 0, nil, fmt.Errorf("%w: edition %d could not be read back", ErrRegionalAudiobookIdentityConflict, editionID)
 	}
 	verifiedEditionID, editionErr := strconv.Atoi(verified.ID)
 	verifiedBookID, bookErr := strconv.Atoi(verified.BookID)
 	verifiedFormatID, formatErr := strconv.Atoi(verified.ReadingFormatID)
 	if editionErr != nil || bookErr != nil || verifiedEditionID != editionID || verifiedBookID != bookID {
-		return 0, 0, fmt.Errorf("%w: expected edition %d on book %d, got edition %s on book %s", ErrRegionalAudiobookIdentityConflict, editionID, bookID, verified.ID, verified.BookID)
+		return 0, 0, nil, fmt.Errorf("%w: expected edition %d on book %d, got edition %s on book %s", ErrRegionalAudiobookIdentityConflict, editionID, bookID, verified.ID, verified.BookID)
 	}
 	if formatErr != nil || verifiedFormatID != models.ReadingFormatID(models.ReadingFormatAudiobook) {
-		return 0, 0, fmt.Errorf("%w: edition %d on book %d has reading format %s; expected audiobook (ID 2)", ErrRegionalAudiobookIdentityConflict, editionID, bookID, regionalReadingFormatDescription(verified.ReadingFormatID))
+		return 0, 0, nil, fmt.Errorf("%w: edition %d on book %d has reading format %s; expected audiobook (ID 2)", ErrRegionalAudiobookIdentityConflict, editionID, bookID, regionalReadingFormatDescription(verified.ReadingFormatID))
 	}
-	return verifiedBookID, verifiedFormatID, nil
+	return verifiedBookID, verifiedFormatID, verified, nil
 }
 
 // regionalReadingFormatDescription names Hardcover formats in import diagnostics.
@@ -313,6 +316,7 @@ func (c *Client) pollRegionalAudiobookImport(ctx context.Context, bookID int, ex
 	// field; keep validation fail-closed for unknown or inconsistent results.
 	pollCtx, cancel := context.WithTimeout(ctx, regionalImportMaxWait)
 	defer cancel()
+	pollInterval := regionalImportInitialPollInterval
 	for {
 		statuses, mappings, err := c.queryRegionalAudiobookImport(pollCtx, externalID)
 		if err != nil {
@@ -370,16 +374,22 @@ func (c *Client) pollRegionalAudiobookImport(ctx context.Context, bookID int, ex
 				return "", 0, err
 			}
 		}
+		// Keep the first checks responsive, then reduce quota usage while
+		// Hardcover imports its upstream data. The deadline still bounds the wait.
+		timer := time.NewTimer(pollInterval)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return "", 0, fmt.Errorf("regional audiobook import polling canceled: %w", ctx.Err())
 		case <-pollCtx.Done():
+			timer.Stop()
 			if ctx.Err() != nil {
 				return "", 0, fmt.Errorf("regional audiobook import polling canceled: %w", ctx.Err())
 			}
 			return "", 0, fmt.Errorf("%w: regional Audible import did not reach a terminal state", ErrRegionalAudiobookImportTimeout)
-		case <-time.After(regionalImportPollInterval):
+		case <-timer.C:
 		}
+		pollInterval = min(2*pollInterval, regionalImportMaxPollInterval)
 	}
 }
 

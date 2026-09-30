@@ -120,6 +120,16 @@ func TestEditionCapabilityRouteUsesProfileWriteAuthorization(t *testing.T) {
 	viewerPath := "/api/profiles/capability-viewer-profile/edition-capability"
 	viewerResponse := fixture.requestWithCookies(http.MethodGet, viewerPath, nil, []*http.Cookie{viewer.cookie})
 	require.Equal(t, http.StatusForbidden, viewerResponse.Code, viewerResponse.Body.String())
+
+	refreshPath := path + "/refresh"
+	unauthenticatedRefresh := fixture.request(http.MethodPost, refreshPath, nil)
+	require.Equal(t, http.StatusUnauthorized, unauthenticatedRefresh.Code, unauthenticatedRefresh.Body.String())
+	ownedRefresh := fixture.requestWithCookies(http.MethodPost, refreshPath, nil, []*http.Cookie{owner.cookie})
+	require.Equal(t, http.StatusOK, ownedRefresh.Code, ownedRefresh.Body.String())
+	foreignRefresh := fixture.requestWithCookies(http.MethodPost, refreshPath, nil, []*http.Cookie{foreign.cookie})
+	require.Equal(t, http.StatusNotFound, foreignRefresh.Code, foreignRefresh.Body.String())
+	viewerRefresh := fixture.requestWithCookies(http.MethodPost, viewerPath+"/refresh", nil, []*http.Cookie{viewer.cookie})
+	require.Equal(t, http.StatusForbidden, viewerRefresh.Code, viewerRefresh.Body.String())
 }
 
 func TestEditionCapabilityRouteDistinguishesMissingProfileFromStorageFailure(t *testing.T) {

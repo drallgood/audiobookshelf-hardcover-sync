@@ -449,6 +449,11 @@ class SyncProfileApp {
         bindProfileActions('sync-status', '.status-card[data-profile-id]');
 
         document.getElementById('sync-summary-content').addEventListener('click', (event) => {
+            const refreshPermissions = event.target.closest('button[data-edition-capability-refresh]');
+            if (refreshPermissions) {
+                if (!refreshPermissions.disabled) this.refreshOpenEditionCapability();
+                return;
+            }
             if (!event.target.closest('[data-details-retry]')) return;
             const open = this.openSummary;
             if (open) this.fetchAndRenderDetails({ open, preservePosition: true });
@@ -1453,15 +1458,17 @@ class SyncProfileApp {
 
     async loadEditionCapability(open) {
         const authGeneration = this.authSessionGeneration;
+        const requestGeneration = (open.editionCapabilityRequestGeneration || 0) + 1;
+        open.editionCapabilityRequestGeneration = requestGeneration;
         try {
             const { response, data } = await this.fetchJsonWithTimeout(
                 this.profileUrl(open.profileId, '/edition-capability'),
                 { credentials: 'include' }
             );
-            if (authGeneration !== this.authSessionGeneration || this.openSummary !== open) return;
+            if (authGeneration !== this.authSessionGeneration || this.openSummary !== open || open.editionCapabilityRequestGeneration !== requestGeneration) return;
             open.editionCapability = response.ok && data?.success ? data.data : null;
         } catch (_) {
-            if (authGeneration !== this.authSessionGeneration || this.openSummary !== open) return;
+            if (authGeneration !== this.authSessionGeneration || this.openSummary !== open || open.editionCapabilityRequestGeneration !== requestGeneration) return;
             // A failed probe is treated as unverified, so creation remains
             // available and the create response remains authoritative.
             open.editionCapability = null;
@@ -1473,6 +1480,13 @@ class SyncProfileApp {
     refreshEditionActionStates(open) {
         if (this.openSummary !== open) return;
         const content = document.getElementById('sync-summary-content');
+        const capabilityRefresh = content?.querySelector?.('[data-edition-capability-refresh]');
+        if (capabilityRefresh) {
+            const dryRun = open.editionCapability?.dry_run ?? open.runContext?.dryRun;
+            capabilityRefresh.hidden = Boolean(dryRun);
+            capabilityRefresh.disabled = !open.editionCapabilityLoaded || Boolean(dryRun) || Boolean(open.editionCapabilityRefreshing);
+            capabilityRefresh.textContent = open.editionCapabilityRefreshing ? 'Checking…' : 'Refresh permissions';
+        }
         content?.querySelectorAll('[data-edition-action="add"]').forEach(button => {
             const bookId = button.closest('[data-book-id]')?.dataset.bookId;
             const record = open.records?.get(String(bookId));
@@ -1492,6 +1506,56 @@ class SyncProfileApp {
             if (reason) button.title = reason;
             else button.removeAttribute('title');
         });
+    }
+
+    async refreshOpenEditionCapability() {
+        const open = this.openSummary;
+        if (!open || open.editionCapabilityRefreshing || this.isViewer() || open.runContext?.dryRun) return;
+        open.editionCapabilityRefreshing = true;
+        const authGeneration = this.authSessionGeneration;
+        const requestGeneration = (open.editionCapabilityRequestGeneration || 0) + 1;
+        open.editionCapabilityRequestGeneration = requestGeneration;
+        const button = document.querySelector('#sync-summary-content [data-edition-capability-refresh]');
+        if (button) {
+            button.disabled = true;
+            button.textContent = 'Checking…';
+        }
+        this.refreshEditionActionStates(open);
+        try {
+            const { response, data } = await this.fetchJsonWithTimeout(
+                this.profileUrl(open.profileId, '/edition-capability/refresh'),
+                { method: 'POST', credentials: 'include' }
+            );
+            if (authGeneration !== this.authSessionGeneration || this.openSummary !== open
+                || open.editionCapabilityRequestGeneration !== requestGeneration) return;
+            if (response.status === 401 || response.status === 403) {
+                this.handleAuthExpiry();
+                return;
+            }
+            if (response.ok && data?.success) {
+                open.editionCapability = data.data;
+                open.editionCapabilityLoaded = true;
+                this.refreshEditionActionStates(open);
+            } else {
+                this.showToast(this.apiErrorMessage(data, `Could not refresh permissions (HTTP ${response.status}).`), 'error');
+            }
+        } catch (_) {
+            if (authGeneration === this.authSessionGeneration && this.openSummary === open
+                && open.editionCapabilityRequestGeneration === requestGeneration) {
+                this.showToast('Could not refresh permissions. Try again.', 'error');
+            }
+        } finally {
+            if (authGeneration === this.authSessionGeneration && this.openSummary === open
+                && open.editionCapabilityRequestGeneration === requestGeneration) {
+                open.editionCapabilityRefreshing = false;
+                const currentButton = document.querySelector('#sync-summary-content [data-edition-capability-refresh]');
+                if (currentButton) {
+                    currentButton.disabled = false;
+                    currentButton.textContent = 'Refresh permissions';
+                }
+                this.refreshEditionActionStates(open);
+            }
+        }
     }
 
     captureDetailViewport(content) {
@@ -1695,9 +1759,11 @@ class SyncProfileApp {
             statusMessage = 'Finalizing sync results.';
         }
         const runError = snapshot.run_error || this.statuses[open.profileId]?.terminal_error || '';
+        const capabilityRefreshDryRun = open.editionCapability?.dry_run ?? open.runContext.dryRun;
+        const capabilityRefreshAction = this.isViewer() ? '' : `<button type="button" class="btn btn-secondary" data-edition-capability-refresh ${!open.editionCapabilityLoaded || capabilityRefreshDryRun ? 'disabled' : ''} ${open.editionCapabilityRefreshing ? 'disabled' : ''}>${open.editionCapabilityRefreshing ? 'Checking…' : 'Refresh permissions'}</button>`;
         content.innerHTML = `
             <div class="sync-summary" data-run-id="${this.escapeHtmlAttribute(snapshot.run_id)}">
-                <div class="summary-header"><h3>Run details</h3><div class="last-sync">${this.escapeHtml(statusTimestamp.label)}${statusTimestamp.timestamp ? `: ${new Date(statusTimestamp.timestamp).toLocaleString()}` : ''}</div></div>
+                <div class="summary-header"><h3>Run details</h3><div class="last-sync">${this.escapeHtml(statusTimestamp.label)}${statusTimestamp.timestamp ? `: ${new Date(statusTimestamp.timestamp).toLocaleString()}` : ''}</div>${capabilityRefreshAction}</div>
                 <p class="status-message">${statusMessage}</p>
                 ${runError ? `<div class="status-message status-error" data-run-error><strong>Run error:</strong> ${this.escapeHtml(runError)}</div>` : ''}
                 <div class="summary-stats">${groups.map(group => `<div class="stat-item ${group.tone}"><span class="stat-value">${group.count}</span><span class="stat-label">${group.label}</span></div>`).join('')}</div>
@@ -1948,6 +2014,7 @@ class SyncProfileApp {
         if (this.profileIsSyncing(open.profileId)) return 'A sync is running for this profile; this action will be available again when it finishes.';
         const ineligible = this.editionCreateIneligibleReason(record, open.runContext);
         if (ineligible) return ineligible;
+        if (open.editionCapabilityRefreshing) return 'Checking whether this profile can add this edition.';
         if (!open.editionCapabilityLoaded) return 'Checking whether this profile can add this edition.';
         const gate = this.editionCapabilityGate(open.editionCapability, record.format);
         return gate.blocked ? gate.reason : '';

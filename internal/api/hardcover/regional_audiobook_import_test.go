@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
@@ -228,6 +229,76 @@ func TestClient_ImportRegionalAudiobookStopsWhenContextExpires(t *testing.T) {
 	require.Nil(t, result)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.Equal(t, 1, mappingQueries)
+}
+
+type regionalImportPollingTransport func(*http.Request) (*http.Response, error)
+
+func (f regionalImportPollingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+// Polling is part of the quota budget: pending imports must back off without
+// delaying an immediately completed import or retrying the catalogue write.
+func TestRegionalImportPollingRequestBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		timeout       time.Duration
+		completeAfter int
+		wantPolls     int
+		wantErr       error
+	}{
+		{name: "pending import backs off until cancellation", timeout: 2500 * time.Millisecond, wantPolls: 2, wantErr: context.DeadlineExceeded},
+		{name: "pending import respects full deadline and quota budget", timeout: 35 * time.Second, wantPolls: 8, wantErr: ErrRegionalAudiobookImportTimeout},
+		{name: "pending import eventually verifies edition", timeout: 10 * time.Second, completeAfter: 3, wantPolls: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var mutations, polls, readbacks int
+				client := regionalImportTestClient("http://hardcover.test")
+				client.httpClient.Transport = regionalImportPollingTransport(func(r *http.Request) (*http.Response, error) {
+					w := httptest.NewRecorder()
+					var request struct {
+						Query string `json:"query"`
+					}
+					require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+					w.Header().Set("Content-Type", "application/json")
+					switch {
+					case strings.Contains(request.Query, "UpsertRegionalAudibleBook"):
+						mutations++
+						_, _ = w.Write([]byte(`{"data":{"upsert_book":{"status":"fetching","book":{"id":42},"errors":[]}}}`))
+					case strings.Contains(request.Query, "RegionalAudibleImport"):
+						polls++
+						status := "fetching"
+						if tc.completeAfter > 0 && polls >= tc.completeAfter {
+							status = "created"
+						}
+						_, _ = w.Write([]byte(`{"data":{"book_import_statuses":[{"status":"` + status + `","book_id":42,"edition_id":900,"external_id":"B0ABCDE123:uk","platform_id":32}],"book_mappings":[]}}`))
+					case strings.Contains(request.Query, "GetEdition"):
+						readbacks++
+						_, _ = w.Write([]byte(`{"data":{"editions":[{"id":900,"book_id":42,"reading_format_id":2}]}}`))
+					default:
+						t.Errorf("unexpected query: %s", request.Query)
+						http.Error(w, "unexpected query", http.StatusBadRequest)
+					}
+					return w.Result(), nil
+				})
+				ctx, cancel := context.WithTimeout(context.Background(), tc.timeout)
+				defer cancel()
+				result, err := client.ImportRegionalAudiobook(ctx, RegionalAudiobookInput{BookID: 42, ASIN: "B0ABCDE123", Region: "uk"})
+				require.Equal(t, 1, mutations)
+				require.Equal(t, tc.wantPolls, polls)
+				if tc.completeAfter == 0 {
+					require.ErrorIs(t, err, tc.wantErr)
+					require.Nil(t, result)
+					require.Zero(t, readbacks)
+				} else {
+					require.NoError(t, err)
+					require.Equal(t, 900, result.EditionID)
+					require.Equal(t, 1, readbacks)
+				}
+			})
+		})
+	}
 }
 
 func TestClient_CheckRegionalAudiobookImportIsReadOnlyAndVerifiesCompletedMapping(t *testing.T) {

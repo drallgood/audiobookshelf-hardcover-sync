@@ -1081,7 +1081,7 @@ func TestProcessBookChecksSavedAssociationAfterCreateUserBookFailure(t *testing.
 			mockClient.On("GetEdition", mock.Anything, "902").Return(&models.Edition{
 				ID: "902", BookID: "901",
 			}, nil).Once()
-			mockClient.On("GetUserBookID", mock.Anything, 902).Return(0, nil).Twice()
+			mockClient.On("GetUserBookID", mock.Anything, 902).Return(0, nil).Once()
 			mockClient.On("CreateUserBook", mock.Anything, "902", "IN_PROGRESS").Return("", errors.New("create failed")).Once()
 			client := &associationLookupClient{
 				MockHardcoverClient: mockClient,

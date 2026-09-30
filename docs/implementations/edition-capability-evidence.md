@@ -32,6 +32,16 @@ on September 27, 2026,
 not valid-input creates, every denial variant, or future server behavior.
 No new live request was made for this maintainer-feedback update.
 
+## Cache and explicit refresh
+
+Permission evidence is kept in memory for each profile and token until the
+user requests a refresh or the token changes. View Details requests evidence
+on demand; sync startup does not run probes. Allowed, denied, and unverified
+results use the same lifetime. The write-authorized
+`POST /api/profiles/{id}/edition-capability/refresh` route reruns both probes
+without resetting the profile rate limiter. The View Details **Refresh
+permissions** action allows recovery after token scopes are granted.
+
 ## Create-time denial handling
 
 Both ebook insertion and regional audiobook import opt into the concrete

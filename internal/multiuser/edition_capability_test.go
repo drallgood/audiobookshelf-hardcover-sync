@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
@@ -150,6 +151,14 @@ func TestEditionCapabilityForProfileUsesUpdatedHardcoverToken(t *testing.T) {
 	require.Equal(t, int32(2), requests.Load())
 
 	require.NoError(t, service.UpdateProfileConfig(
+		profileID, "http://abs.home", "", "", database.SyncConfigData{AudnexusRegion: "uk"},
+	))
+	withUnchangedToken, err := service.EditionCapabilityForProfile(context.Background(), profileID)
+	require.NoError(t, err)
+	require.Equal(t, EditionCapabilityAllowed, withUnchangedToken.Ebook.Status)
+	require.Equal(t, int32(2), requests.Load(), "same-token profile edits retain capability evidence")
+
+	require.NoError(t, service.UpdateProfileConfig(
 		profileID, "http://abs.home", "", "new-hardcover-token", database.SyncConfigData{},
 	))
 	withUpdatedToken, err := service.EditionCapabilityForProfile(context.Background(), profileID)
@@ -162,7 +171,7 @@ func TestEditionCapabilityForProfileUsesUpdatedHardcoverToken(t *testing.T) {
 	require.Equal(t, int32(4), requests.Load(), "a token change invalidates each operation's cached probe result")
 }
 
-func TestEditionCapabilityForProfileCachesPerProfileAndExpires(t *testing.T) {
+func TestEditionCapabilityForProfileCachesPerProfileUntilRefresh(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -186,43 +195,27 @@ func TestEditionCapabilityForProfileCachesPerProfileAndExpires(t *testing.T) {
 		require.Equal(t, EditionCapabilityAllowed, capability.Audiobook.Status)
 	}
 	require.Equal(t, int32(2), requests.Load(), "same profile and operation reuse their definite results")
-	service.hardcoverClientMutex.Lock()
-	definiteEntries := make([]editionCapabilityCacheEntry, 0, 2)
-	for key, entry := range service.editionCapabilityCache {
-		if key.profileID == "cache-profile-one" {
-			definiteEntries = append(definiteEntries, entry)
-		}
-	}
-	service.hardcoverClientMutex.Unlock()
-	require.Len(t, definiteEntries, 2, "ebook and audiobook results have separate cache entries")
-	for _, entry := range definiteEntries {
-		remainingTTL := time.Until(entry.expiresAt)
-		require.Positive(t, remainingTTL)
-		require.LessOrEqual(t, remainingTTL, editionCapabilityDefiniteTTL)
-	}
 
 	_, err := service.EditionCapabilityForProfile(context.Background(), "cache-profile-two")
 	require.NoError(t, err)
 	require.Equal(t, int32(4), requests.Load(), "another profile has independent operation results")
 
-	service.hardcoverClientMutex.Lock()
-	for key, entry := range service.editionCapabilityCache {
-		if key.profileID == "cache-profile-one" {
-			entry.expiresAt = time.Now().Add(-time.Second)
-			service.editionCapabilityCache[key] = entry
-		}
-	}
-	service.hardcoverClientMutex.Unlock()
-	_, err = service.EditionCapabilityForProfile(context.Background(), "cache-profile-one")
+	_, err = service.RefreshEditionCapabilityForProfile(context.Background(), "cache-profile-one")
 	require.NoError(t, err)
-	require.Equal(t, int32(6), requests.Load(), "expired definite results are probed again")
+	require.Equal(t, int32(6), requests.Load(), "explicit refresh probes each operation again")
 }
 
-func TestEditionCapabilityForProfileRetriesUnverifiedProbeAfterShortTTL(t *testing.T) {
+func TestEditionCapabilityForProfileCachesUnverifiedBeyondOldTTLUntilRefresh(t *testing.T) {
 	var requests atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	var recovered atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
-		http.Error(w, "temporary failure", http.StatusServiceUnavailable)
+		if recovered.Load() {
+			respondToCapabilityProbe(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"errors":[{"message":"unrecognized validation response"}]}`))
 	}))
 	defer server.Close()
 
@@ -237,20 +230,21 @@ func TestEditionCapabilityForProfileRetriesUnverifiedProbeAfterShortTTL(t *testi
 	capability, err := service.EditionCapabilityForProfile(context.Background(), "transient-capability-profile")
 	require.NoError(t, err)
 	require.Equal(t, EditionCapabilityUnverified, capability.Ebook.Status)
-	service.hardcoverClientMutex.Lock()
-	for key, entry := range service.editionCapabilityCache {
-		if key.profileID == "transient-capability-profile" {
-			remainingTTL := time.Until(entry.expiresAt)
-			require.Positive(t, remainingTTL)
-			require.LessOrEqual(t, remainingTTL, editionCapabilityUnverifiedTTL)
-			entry.expiresAt = time.Now().Add(-time.Second)
-			service.editionCapabilityCache[key] = entry
-		}
-	}
-	service.hardcoverClientMutex.Unlock()
+	recovered.Store(true)
+	// Wait past the former 15-second unverified cache lifetime. A later read
+	// must keep the original result until the user explicitly refreshes it.
+	synctest.Test(t, func(t *testing.T) {
+		time.Sleep(16 * time.Second)
+	})
 	_, err = service.EditionCapabilityForProfile(context.Background(), "transient-capability-profile")
 	require.NoError(t, err)
-	require.Equal(t, int32(4), requests.Load(), "transient outcomes are retried after the short cache TTL")
+	require.Equal(t, int32(2), requests.Load(), "an old unverified result remains cached after the former TTL")
+
+	refreshed, err := service.RefreshEditionCapabilityForProfile(context.Background(), "transient-capability-profile")
+	require.NoError(t, err)
+	require.Equal(t, EditionCapabilityAllowed, refreshed.Ebook.Status)
+	require.Equal(t, EditionCapabilityAllowed, refreshed.Audiobook.Status)
+	require.Equal(t, int32(4), requests.Load(), "explicit refresh recovers after Hardcover begins accepting probes")
 }
 
 func TestCapabilityAndProfileHardcoverClientsShareLimiter(t *testing.T) {
@@ -292,7 +286,7 @@ func TestCapabilityAndProfileHardcoverClientsShareLimiter(t *testing.T) {
 	probeDone := make(chan struct{})
 	go func() {
 		defer close(probeDone)
-		_, _ = service.EditionCapabilityForProfile(context.Background(), profileID)
+		_, _ = service.RefreshEditionCapabilityForProfile(context.Background(), profileID)
 	}()
 	select {
 	case <-started:
@@ -489,4 +483,159 @@ func TestEditionCapabilityForProfileDeduplicatesConcurrentProbes(t *testing.T) {
 		{Ebook: allowedEditionCapability(EditionCapabilityInsertEdition), Audiobook: allowedEditionCapability(EditionCapabilityUpsertBook)},
 	}, results)
 	require.Equal(t, int32(2), requests.Load(), "concurrent loads share each operation's in-flight probe")
+}
+
+func TestEditionCapabilityRefreshDoesNotCacheAnOlderProbe(t *testing.T) {
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch requests.Add(1) {
+		case 1:
+			close(firstStarted)
+			select {
+			case <-releaseFirst:
+			case <-r.Context().Done():
+				return
+			}
+			respondToCapabilityProbe(w, r)
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"insufficient_scope","error_description":"Missing scopes: write:catalog:append","scope":"write:catalog:append"}`))
+		}
+	}))
+	defer server.Close()
+
+	service, _ := newStatusLookupService(t)
+	service.globalConfig.Hardcover.BaseURL = server.URL
+	service.globalConfig.RateLimit.Rate = time.Nanosecond
+	service.globalConfig.RateLimit.MaxConcurrent = 3
+	const profileID = "refresh-generation-profile"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Capability profile", "http://abs.home", "abs-token", "hardcover-token",
+		database.SyncConfigData{},
+	))
+	type result struct {
+		capability EditionCapability
+		err        error
+	}
+	oldProbeDone := make(chan result, 1)
+	go func() {
+		capability, err := service.EditionCapabilityForProfile(context.Background(), profileID)
+		oldProbeDone <- result{capability: capability, err: err}
+	}()
+	select {
+	case <-firstStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("initial capability probe did not reach Hardcover")
+	}
+
+	refreshDone := make(chan result, 1)
+	go func() {
+		capability, err := service.RefreshEditionCapabilityForProfile(context.Background(), profileID)
+		refreshDone <- result{capability: capability, err: err}
+	}()
+	select {
+	case refreshed := <-refreshDone:
+		require.NoError(t, refreshed.err)
+		require.Equal(t, EditionCapabilityDenied, refreshed.capability.Ebook.Status)
+		require.Equal(t, EditionCapabilityDenied, refreshed.capability.Audiobook.Status)
+	case <-time.After(2 * time.Second):
+		t.Fatal("explicit refresh did not finish while the old probe was in flight")
+	}
+	close(releaseFirst)
+	select {
+	case old := <-oldProbeDone:
+		require.NoError(t, old.err)
+		require.Equal(t, EditionCapabilityAllowed, old.capability.Ebook.Status)
+	case <-time.After(2 * time.Second):
+		t.Fatal("initial capability probe did not finish")
+	}
+
+	current, err := service.EditionCapabilityForProfile(context.Background(), profileID)
+	require.NoError(t, err)
+	require.Equal(t, EditionCapabilityDenied, current.Ebook.Status)
+	require.Equal(t, EditionCapabilityDenied, current.Audiobook.Status)
+	require.Equal(t, int32(3), requests.Load(), "the pre-refresh probe cannot overwrite the refreshed cache")
+}
+
+func TestEditionCapabilityRefreshCoalescesConcurrentRequests(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			close(started)
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		respondToCapabilityProbe(w, r)
+	}))
+	defer server.Close()
+
+	service, _ := newStatusLookupService(t)
+	service.globalConfig.Hardcover.BaseURL = server.URL
+	service.globalConfig.RateLimit.Rate = time.Nanosecond
+	service.globalConfig.RateLimit.MaxConcurrent = 5
+	const profileID = "coalesced-refresh-profile"
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Capability profile", "http://abs.home", "abs-token", "hardcover-token",
+		database.SyncConfigData{},
+	))
+	type result struct {
+		capability EditionCapability
+		err        error
+	}
+	leaderDone := make(chan result, 1)
+	go func() {
+		capability, err := service.RefreshEditionCapabilityForProfile(context.Background(), profileID)
+		leaderDone <- result{capability: capability, err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresh probe did not reach Hardcover")
+	}
+
+	waiterContext, cancelWaiter := context.WithCancel(context.Background())
+	waiterStarted := make(chan struct{})
+	waiterDone := make(chan result, 1)
+	go func() {
+		close(waiterStarted)
+		capability, err := service.RefreshEditionCapabilityForProfile(waiterContext, profileID)
+		waiterDone <- result{capability: capability, err: err}
+	}()
+	<-waiterStarted
+	time.Sleep(20 * time.Millisecond)
+	cancelWaiter()
+	select {
+	case got := <-waiterDone:
+		require.NoError(t, got.err)
+		require.Equal(t, EditionCapabilityUnverified, got.capability.Ebook.Status, "a canceled waiter returns without canceling the shared probe")
+	case <-time.After(time.Second):
+		t.Fatal("canceled refresh waiter did not return")
+	}
+
+	secondDone := make(chan result, 1)
+	go func() {
+		capability, err := service.RefreshEditionCapabilityForProfile(context.Background(), profileID)
+		secondDone <- result{capability: capability, err: err}
+	}()
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+	for _, done := range []<-chan result{leaderDone, secondDone} {
+		select {
+		case got := <-done:
+			require.NoError(t, got.err)
+			require.Equal(t, EditionCapabilityAllowed, got.capability.Ebook.Status)
+			require.Equal(t, EditionCapabilityAllowed, got.capability.Audiobook.Status)
+		case <-time.After(2 * time.Second):
+			t.Fatal("coalesced permission refresh did not finish")
+		}
+	}
+	require.Equal(t, int32(2), requests.Load(), "overlapping refreshes share a single probe per operation")
 }

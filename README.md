@@ -94,6 +94,12 @@ After a sync finishes or is canceled, open **View Details** and select **Add
 edition** on an eligible needs-review book. You need permission to change the
 profile and a Hardcover token with `write:catalog:append` access.
 
+Permission results are retained for the profile and token while the app is
+running. Use **Refresh permissions** in View Details after granting token
+scopes; changing the token also clears the result. Pending Audible imports
+are checked with increasing waits of up to five seconds to conserve API
+requests, and the immediate resync reuses freshly verified data.
+
 Review the preview, then confirm to add or reuse a Hardcover edition. Audiobooks
 need an Audible ASIN in Audiobookshelf; their metadata is read-only, and the app
 finds the Audible region automatically. Ebooks need an ASIN or ISBN, and you can
@@ -192,6 +198,12 @@ and retry guidance.
 `GET /api/profiles/{id}/edition-capability` checks whether the profile's Hardcover
 token permits adding audiobook or ebook editions. It requires profile write
 access and does not change the Hardcover catalogue.
+
+Results are cached per profile and token without automatic expiry while the
+app is running. View Details checks them on demand; sync startup does not
+probe them. `POST /api/profiles/{id}/edition-capability/refresh` checks both
+permissions again and requires profile write access. **Refresh permissions**
+in View Details calls this route. Changing the token clears cached evidence.
 
 A confirmed permission denial disables **Add edition**. An inconclusive check
 allows an attempt, but does not guarantee success. Dry run skips the permission

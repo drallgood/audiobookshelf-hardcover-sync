@@ -2424,6 +2424,8 @@ func TestCreateEditionFromDraftResyncUsesConcreteClients(t *testing.T) {
 	captureMutex.Lock()
 	upsertCalls := operationCounts["UpsertRegionalAudibleBook"]
 	progressWriteCalls := operationCounts["UpdateUserBookRead"]
+	verifiedEditionReadCalls := operationCounts["GetEdition"]
+	userBookSnapshotReadCalls := operationCounts["GetUserBook"]
 	queriedEdition := editionRequest
 	lookedUpUserBook := userBookLookupRequest
 	loadedUserBook := userBookRequest
@@ -2432,7 +2434,9 @@ func TestCreateEditionFromDraftResyncUsesConcreteClients(t *testing.T) {
 	captureMutex.Unlock()
 	require.EqualValues(t, 1, upsertCalls)
 	require.EqualValues(t, 1, progressWriteCalls)
-	require.EqualValues(t, 84, queriedEdition.Variables["editionId"], "resync should resolve the edition returned by creation")
+	require.EqualValues(t, 1, verifiedEditionReadCalls, "resync should reuse the edition freshly verified during creation")
+	require.EqualValues(t, 1, userBookSnapshotReadCalls, "resync should reuse the fetched user-book snapshot")
+	require.EqualValues(t, 84, queriedEdition.Variables["editionId"], "creation should verify the returned edition")
 	require.EqualValues(t, 42, lookedUpUserBook.Variables["bookId"])
 	require.EqualValues(t, 300, loadedUserBook.Variables["id"])
 	require.EqualValues(t, 300, loadedReads.Variables["user_book_id"])

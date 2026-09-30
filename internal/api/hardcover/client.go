@@ -3210,7 +3210,39 @@ func (c *Client) GetUserBookID(ctx context.Context, editionID int) (int, error) 
 		})
 		return 0, fmt.Errorf("failed to get edition details: %w", err)
 	}
+	return c.lookupUserBookIDForEdition(ctx, editionID, edition, userID)
+}
 
+// GetUserBookIDWithEdition uses an edition snapshot that the caller has already
+// verified. It preserves positive user-book cache hits and performs a fresh
+// existence check on a cache miss without retrieving the edition again.
+func (c *Client) GetUserBookIDWithEdition(ctx context.Context, editionID int, edition *models.Edition) (int, error) {
+	log := c.logger.With(map[string]interface{}{
+		"editionID": editionID,
+		"method":    "GetUserBookIDWithEdition",
+	})
+	if edition == nil || edition.ID != strconv.Itoa(editionID) {
+		return 0, fmt.Errorf("verified edition does not match edition ID %d", editionID)
+	}
+	if userBookID, exists := c.userBookIDCache.Get(editionID); exists {
+		return userBookID, nil
+	}
+	userID, err := c.GetCurrentUserID(ctx)
+	if err != nil {
+		log.Error("Failed to get current user ID", map[string]interface{}{"error": err.Error()})
+		return 0, fmt.Errorf("failed to get current user ID: %w", err)
+	}
+	return c.lookupUserBookIDForEdition(ctx, editionID, edition, userID)
+}
+
+func (c *Client) lookupUserBookIDForEdition(ctx context.Context, editionID int, edition *models.Edition, userID int) (int, error) {
+	if edition == nil {
+		return 0, errors.New("hardcover returned no edition details")
+	}
+	log := c.logger.With(map[string]interface{}{
+		"editionID": editionID,
+		"method":    "GetUserBookID",
+	})
 	// Convert book ID to int
 	bookID, err := strconv.Atoi(edition.BookID)
 	if err != nil {
@@ -3522,18 +3554,15 @@ var statusNameToID = map[string]int{
 	"FINISHED":    3, // FINISHED is an alias for READ in the API
 }
 
-// CreateUserBook creates a new user book entry for the given edition ID and status
+// CreateUserBook creates a new user book entry for the given edition ID and status.
 func (c *Client) CreateUserBook(ctx context.Context, editionID, status string) (string, error) {
 	if c.dryRun {
 		c.logSkippedMutation("CreateUserBook")
 		return "-1", nil
 	}
-
-	// First, get the edition to ensure it exists and get the book_id
 	c.debugRequestIntent(c.logger, "Getting edition details for user book creation", map[string]interface{}{
 		"editionID": editionID,
 	})
-
 	edition, err := c.GetEdition(ctx, editionID)
 	if err != nil {
 		c.logger.Error("Failed to get edition details", map[string]interface{}{
@@ -3542,12 +3571,27 @@ func (c *Client) CreateUserBook(ctx context.Context, editionID, status string) (
 		})
 		return "", errors.New("failed to get edition details")
 	}
-
 	c.logger.Debug("Retrieved edition details", map[string]interface{}{
 		"editionID": editionID,
 		"bookID":    edition.BookID,
 	})
+	return c.createUserBookWithEdition(ctx, editionID, status, edition)
+}
 
+// CreateUserBookWithEdition inserts a user book using a verified edition
+// snapshot so the caller does not need a second edition lookup.
+func (c *Client) CreateUserBookWithEdition(ctx context.Context, editionID, status string, edition *models.Edition) (string, error) {
+	if c.dryRun {
+		c.logSkippedMutation("CreateUserBook")
+		return "-1", nil
+	}
+	if edition == nil || edition.ID != editionID {
+		return "", fmt.Errorf("verified edition does not match edition ID %s", editionID)
+	}
+	return c.createUserBookWithEdition(ctx, editionID, status, edition)
+}
+
+func (c *Client) createUserBookWithEdition(ctx context.Context, editionID, status string, edition *models.Edition) (string, error) {
 	// Get status ID based on status string
 	statusID, ok := statusNameToID[status]
 	if !ok {

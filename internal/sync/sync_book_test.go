@@ -49,6 +49,28 @@ func inProgressBook(id string) *models.AudiobookshelfBook {
 	return book
 }
 
+func TestSyncBookWithEditionRejectsSnapshotThatDoesNotMatchCurrentItem(t *testing.T) {
+	svc, hc, abs := newSyncBookService(t)
+	book := inProgressBook("resync-edition-mismatch")
+	syncState := state.NewState()
+	asin, isbn10, isbn13 := state.SourceIdentifiers(book.Media.Metadata.ASIN, book.Media.Metadata.ISBN)
+	require.NoError(t, syncState.SetAssociation(state.Association{
+		ABSItemID: book.ID, SourceASIN: asin, SourceISBN10: isbn10, SourceISBN13: isbn13,
+		HardcoverBookID: "100", HardcoverEditionID: "200", ReadingFormat: book.ReadingFormat(),
+	}))
+	book.Media.Metadata.ASIN = "changed-after-association"
+	abs.AssertNotCalled(t, "GetUserProgress", mock.Anything)
+
+	_, err := svc.SyncBookWithEdition(context.Background(), *book, &models.Edition{
+		ID: "200", BookID: "100", ReadingFormatID: "2",
+	}, syncState, filepath.Join(t.TempDir(), "state.json"))
+
+	require.ErrorContains(t, err, "matching saved association")
+	hc.AssertNotCalled(t, "ClearUserBookCache")
+	hc.AssertExpectations(t)
+	abs.AssertExpectations(t)
+}
+
 func TestSyncBookOutcomes(t *testing.T) {
 	t.Run("synced persists state for a later sync", func(t *testing.T) {
 		svc, hc, abs := newSyncBookService(t)

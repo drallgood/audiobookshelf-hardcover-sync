@@ -2,14 +2,22 @@ package sync
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 // TestFindOrCreateUserBookID_InvalidEditionID tests the case where the edition ID is invalid
@@ -117,8 +125,8 @@ func TestFindOrCreateUserBookID_DryRun(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
-// TestFindOrCreateUserBookID_SecondCheckFindsUserBook tests the case where the second check finds a user book
-func TestFindOrCreateUserBookID_SecondCheckFindsUserBook(t *testing.T) {
+// TestFindOrCreateUserBookID_LookupFindsUserBook tests the case where the second check finds a user book
+func TestFindOrCreateUserBookID_LookupFindsUserBook(t *testing.T) {
 	// Create test service and mock client
 	svc, mockClient := createTestService()
 
@@ -133,10 +141,7 @@ func TestFindOrCreateUserBookID_SecondCheckFindsUserBook(t *testing.T) {
 	// Mock the findExistingUserBookForBook to return no existing user book
 	// This requires type asserting to the concrete client, so we'll handle it differently
 
-	// Mock the first GetUserBookID call to return no existing user book ID
-	mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, nil).Once()
-
-	// Mock the second GetUserBookID call to return an existing user book ID
+	// The single fresh lookup finds a user book before any insertion.
 	expectedUserBookID := 789
 	mockClient.On("GetUserBookID", mock.Anything, 456).Return(expectedUserBookID, nil).Once()
 
@@ -144,13 +149,13 @@ func TestFindOrCreateUserBookID_SecondCheckFindsUserBook(t *testing.T) {
 	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "WANT_TO_READ")
 
 	// Verify results
-	assert.NoError(t, err, "Should not return an error when second check finds user book")
-	assert.Equal(t, int64(expectedUserBookID), userBookID, "Should return the user book ID found in second check")
+	assert.NoError(t, err, "Should not return an error when the lookup finds a user book")
+	assert.Equal(t, int64(expectedUserBookID), userBookID, "Should return the user book ID found before insertion")
 	mockClient.AssertExpectations(t)
 }
 
-// TestFindOrCreateUserBookID_SecondCheckError tests the case where the second check returns an error
-func TestFindOrCreateUserBookID_SecondCheckError(t *testing.T) {
+// TestFindOrCreateUserBookID_LookupError tests the case where the second check returns an error
+func TestFindOrCreateUserBookID_LookupError(t *testing.T) {
 	// Create test service and mock client
 	svc, mockClient := createTestService()
 
@@ -165,10 +170,7 @@ func TestFindOrCreateUserBookID_SecondCheckError(t *testing.T) {
 	// Mock the findExistingUserBookForBook to return no existing user book
 	// This requires type asserting to the concrete client, so we'll handle it differently
 
-	// Mock the first GetUserBookID call to return no existing user book ID
-	mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, nil).Once()
-
-	// Mock the second GetUserBookID call to return an error
+	// The fresh lookup fails, so the service must not attempt insertion.
 	expectedErr := errors.New("API error")
 	mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, expectedErr).Once()
 
@@ -176,9 +178,9 @@ func TestFindOrCreateUserBookID_SecondCheckError(t *testing.T) {
 	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "WANT_TO_READ")
 
 	// Verify results
-	assert.Error(t, err, "Should return an error when second check fails")
-	assert.Contains(t, err.Error(), "error in second check for existing user book ID")
-	assert.Equal(t, int64(0), userBookID, "Should return 0 when second check fails")
+	assert.Error(t, err, "Should return an error when the fresh lookup fails")
+	assert.Contains(t, err.Error(), "error checking for existing user book ID")
+	assert.Equal(t, int64(0), userBookID, "Should return 0 when the fresh lookup fails")
 	mockClient.AssertExpectations(t)
 }
 
@@ -198,10 +200,7 @@ func TestFindOrCreateUserBookID_CreateUserBookError(t *testing.T) {
 	// Mock the findExistingUserBookForBook to return no existing user book
 	// This requires type asserting to the concrete client, so we'll handle it differently
 
-	// Mock the first GetUserBookID call to return no existing user book ID
-	mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, nil).Once()
-
-	// Mock the second GetUserBookID call to also return no existing user book ID
+	// The fresh edition-specific check must succeed before attempting insertion.
 	mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, nil).Once()
 
 	// Mock the CreateUserBook call to return an error
@@ -234,10 +233,6 @@ func TestFindOrCreateUserBookID_InvalidUserBookIDFormat(t *testing.T) {
 	// Mock the findExistingUserBookForBook to return no existing user book
 	// This requires type asserting to the concrete client, so we'll handle it differently
 
-	// Mock the first GetUserBookID call to return no existing user book ID
-	mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, nil).Once()
-
-	// Mock the second GetUserBookID call to also return no existing user book ID
 	mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, nil).Once()
 
 	// Mock the CreateUserBook call to return an invalid user book ID
@@ -269,10 +264,6 @@ func TestFindOrCreateUserBookID_Success(t *testing.T) {
 	// Mock the findExistingUserBookForBook to return no existing user book
 	// This requires type asserting to the concrete client, so we'll handle it differently
 
-	// Mock the first GetUserBookID call to return no existing user book ID
-	mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, nil).Once()
-
-	// Mock the second GetUserBookID call to also return no existing user book ID
 	mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, nil).Once()
 
 	// Mock the CreateUserBook call to return a valid user book ID
@@ -296,7 +287,7 @@ func TestFindOrCreateUserBookID_FinishedBookCreatesWantToReadFirst(t *testing.T)
 		ID:     editionID,
 		BookID: "432575",
 	}, nil).Once()
-	mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, nil).Twice()
+	mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, nil).Once()
 	mockClient.On("CreateUserBook", mock.Anything, editionID, "WANT_TO_READ").Return("789", nil).Once()
 
 	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "FINISHED")
@@ -320,14 +311,10 @@ func TestFindOrCreateUserBookID_FindsExistingUserBookForDifferentEdition(t *test
 	}
 	mockClient.On("GetEdition", mock.Anything, editionID).Return(mockEdition, nil).Once()
 
-	// The function should call findExistingUserBookForBook first
-	// Since we can't easily mock the concrete method in this test structure,
-	// we'll just verify it doesn't error out and continues to check for the specific edition
+	// Since this test uses an interface mock, no book-level lookup is configured;
+	// the fresh edition-specific lookup still occurs before any insertion.
 
 	// Mock the GetUserBookID call (this will be called after findExistingUserBookForBook)
-	mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, nil).Once()
-
-	// Mock the second GetUserBookID call (for race condition check)
 	mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, nil).Once()
 
 	// Mock the CreateUserBook call (since no existing user book is found)
@@ -339,6 +326,206 @@ func TestFindOrCreateUserBookID_FindsExistingUserBookForDifferentEdition(t *test
 	// Verify the function doesn't error out
 	assert.NoError(t, err, "Should not return an error")
 	mockClient.AssertExpectations(t)
+}
+
+func TestFindOrCreateUserBookIDReusesFetchedSnapshotOnlyForCurrentBookOperation(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.userBookCache = NewPersistentUserBookCache(t.TempDir())
+	require.NoError(t, svc.userBookCache.Load())
+	svc.findExistingUserBookForBookFunc = func(context.Context, int64) (int64, error) { return 789, nil }
+	targetEdition := &models.Edition{ID: "456", BookID: "432575", ReadingFormatID: "4"}
+	existing := &models.HardcoverBook{ID: "432575", UserBookID: "789", EditionID: "456", BookStatusID: 2}
+	mockClient.On("GetEdition", mock.Anything, "456").Return(targetEdition, nil).Once()
+	mockClient.On("GetUserBook", mock.Anything, "789").Return(existing, nil).Once()
+	ctx := withOperationUserBookSnapshots(context.Background())
+
+	userBookID, err := svc.findOrCreateUserBookID(ctx, "456", "IN_PROGRESS")
+
+	require.NoError(t, err)
+	require.Equal(t, int64(789), userBookID)
+	reused, found := svc.getUserBookSnapshot(ctx, 789)
+	require.True(t, found)
+	require.Same(t, existing, reused)
+	_, found = svc.userBookCache.GetByUserBook(789)
+	assert.False(t, found, "a fetched snapshot must not be persisted across sync operations")
+	mockClient.AssertExpectations(t)
+}
+
+func TestFindOrCreateUserBookIDUpdatesOperationSnapshotAfterEditionCorrection(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.userBookCache = NewPersistentUserBookCache(t.TempDir())
+	require.NoError(t, svc.userBookCache.Load())
+	svc.findExistingUserBookForBookFunc = func(context.Context, int64) (int64, error) { return 789, nil }
+	targetEdition := &models.Edition{
+		ID: "456", BookID: "432575", ReadingFormatID: "4", ASIN: "NEWASIN123", ISBN10: "0306406152", ISBN13: "9780306406157",
+	}
+	existing := &models.HardcoverBook{ID: "432575", UserBookID: "789", EditionID: "123", BookStatusID: 2, Title: "Preserved title"}
+	svc.userBookCache.SetByUserBook(789, &models.HardcoverBook{ID: "432575", UserBookID: "789", EditionID: "123"})
+	mockClient.On("GetEdition", mock.Anything, "456").Return(targetEdition, nil).Once()
+	mockClient.On("GetUserBook", mock.Anything, "789").Return(existing, nil).Once()
+	mockClient.On("UpdateUserBookEdition", mock.Anything, 789, 456).Return(nil).Once()
+	ctx := withOperationUserBookSnapshots(context.Background())
+
+	userBookID, err := svc.findOrCreateUserBookID(ctx, "456", "IN_PROGRESS")
+
+	require.NoError(t, err)
+	require.Equal(t, int64(789), userBookID)
+	corrected, found := svc.getUserBookSnapshot(ctx, 789)
+	require.True(t, found)
+	require.Equal(t, "456", corrected.EditionID)
+	require.Equal(t, "NEWASIN123", corrected.EditionASIN)
+	require.Equal(t, "0306406152", corrected.EditionISBN10)
+	require.Equal(t, "9780306406157", corrected.EditionISBN13)
+	require.Equal(t, 2, corrected.BookStatusID)
+	require.Equal(t, "Preserved title", corrected.Title)
+	_, found = svc.userBookCache.GetByUserBook(789)
+	assert.False(t, found, "the corrected snapshot remains scoped to this book operation")
+	mockClient.AssertExpectations(t)
+}
+
+func TestFindOrCreateUserBookIDReusesSnapshotDuringDryRunEditionCorrection(t *testing.T) {
+	cfg := createTestConfig(false)
+	cfg.Sync.DryRun = true
+	svc, mockClient := createTestServiceWithConfig(cfg)
+	svc.findExistingUserBookForBookFunc = func(context.Context, int64) (int64, error) { return 789, nil }
+	targetEdition := &models.Edition{ID: "456", BookID: "432575", ReadingFormatID: "4"}
+	existing := &models.HardcoverBook{ID: "432575", UserBookID: "789", EditionID: "123", BookStatusID: 2}
+	mockClient.On("GetEdition", mock.Anything, "456").Return(targetEdition, nil).Once()
+	mockClient.On("GetUserBook", mock.Anything, "789").Return(existing, nil).Once()
+	ctx := withOperationUserBookSnapshots(context.Background())
+
+	userBookID, err := svc.findOrCreateUserBookID(ctx, "456", "IN_PROGRESS")
+
+	require.NoError(t, err)
+	require.Equal(t, int64(789), userBookID)
+	reused, found := svc.getUserBookSnapshot(ctx, 789)
+	require.True(t, found)
+	require.Same(t, existing, reused)
+	assert.Equal(t, "123", reused.EditionID, "dry run must retain the live edition snapshot")
+	assert.Equal(t, 2, reused.BookStatusID)
+	mockClient.AssertNotCalled(t, "UpdateUserBookEdition", mock.Anything, mock.Anything, mock.Anything)
+	mockClient.AssertExpectations(t)
+}
+
+func TestFindOrCreateUserBookIDInvalidatesPersistentSnapshotWhenEditionCorrectionFails(t *testing.T) {
+	svc, mockClient := createTestService()
+	svc.userBookCache = NewPersistentUserBookCache(t.TempDir())
+	require.NoError(t, svc.userBookCache.Load())
+	svc.findExistingUserBookForBookFunc = func(context.Context, int64) (int64, error) { return 789, nil }
+	targetEdition := &models.Edition{ID: "456", BookID: "432575", ReadingFormatID: "4"}
+	stale := &models.HardcoverBook{ID: "432575", UserBookID: "789", EditionID: "123"}
+	svc.userBookCache.SetByUserBook(789, stale)
+	mockClient.On("GetEdition", mock.Anything, "456").Return(targetEdition, nil).Once()
+	mockClient.On("GetUserBook", mock.Anything, "789").Return(stale, nil).Once()
+	mockClient.On("UpdateUserBookEdition", mock.Anything, 789, 456).Return(errors.New("write failed")).Once()
+	ctx := withOperationUserBookSnapshots(context.Background())
+
+	_, err := svc.findOrCreateUserBookID(ctx, "456", "IN_PROGRESS")
+
+	require.ErrorContains(t, err, "failed to update user book edition")
+	_, found := svc.userBookCache.GetByUserBook(789)
+	assert.False(t, found, "an ambiguous failed mutation must not leave a stale edition snapshot cached")
+	_, found = svc.getUserBookSnapshot(ctx, 789)
+	assert.False(t, found)
+	mockClient.AssertExpectations(t)
+}
+
+func TestFindOrCreateUserBookIDWithVerifiedEditionUsesFreshGraphQLCheckWithoutRefetchingEdition(t *testing.T) {
+	tests := []struct {
+		name              string
+		userBookExists    bool
+		lookupFails       bool
+		dryRun            bool
+		wantID            int64
+		wantErr           bool
+		wantEditionLookup int
+		wantInsert        int
+	}{
+		{name: "existing user book", userBookExists: true, wantID: 789, wantEditionLookup: 0},
+		{name: "new user book", wantID: 789, wantEditionLookup: 1, wantInsert: 1},
+		{name: "lookup failure", lookupFails: true, wantErr: true, wantEditionLookup: 0},
+		{name: "dry run", dryRun: true, wantID: -1, wantEditionLookup: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			counts := make(map[string]int)
+			var countsMu sync.Mutex
+			recordRequest := func(operation string) {
+				countsMu.Lock()
+				counts[operation]++
+				countsMu.Unlock()
+			}
+			requestCount := func(operation string) int {
+				countsMu.Lock()
+				defer countsMu.Unlock()
+				return counts[operation]
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					Query string `json:"query"`
+				}
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+				query := request.Query
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case strings.Contains(query, "GetCurrentUserID"):
+					recordRequest("current_user")
+					_, _ = w.Write([]byte(`{"data":{"me":[{"id":99}]}}`))
+				case strings.Contains(query, "GetUserBookByBook("):
+					recordRequest("by_book_and_edition")
+					if tt.lookupFails {
+						_, _ = w.Write([]byte(`{"errors":[{"message":"lookup failed"}]}`))
+						return
+					}
+					if tt.userBookExists {
+						_, _ = w.Write([]byte(`{"data":{"user_books":[{"id":789,"book_id":432575,"edition_id":456}]}}`))
+						return
+					}
+					_, _ = w.Write([]byte(`{"data":{"user_books":[]}}`))
+				case strings.Contains(query, "GetUserBookByEdition"):
+					recordRequest("by_edition")
+					_, _ = w.Write([]byte(`{"data":{"user_books":[]}}`))
+				case strings.Contains(query, "GetEdition"):
+					recordRequest("get_edition")
+					_, _ = w.Write([]byte(`{"data":{"editions":[]}}`))
+				case strings.Contains(query, "InsertUserBook"):
+					recordRequest("insert")
+					_, _ = w.Write([]byte(`{"data":{"insert_user_book":{"id":789,"user_book":{"id":789,"status_id":1},"error":null}}}`))
+				default:
+					t.Errorf("unexpected GraphQL operation: %s", query)
+					http.Error(w, "unexpected operation", http.StatusBadRequest)
+				}
+			}))
+			defer server.Close()
+
+			clientConfig := hardcover.DefaultClientConfig()
+			clientConfig.BaseURL = server.URL
+			clientConfig.RateLimit = time.Nanosecond
+			clientConfig.MaxRetries = 0
+			client := hardcover.NewClientWithConfig(clientConfig, "test-token", logger.Get())
+			client.SetDryRun(tt.dryRun)
+			cfg := createTestConfig(false)
+			cfg.Sync.DryRun = tt.dryRun
+			svc, _ := createTestServiceWithConfig(cfg)
+			svc.hardcover = client
+			svc.findExistingUserBookForBookFunc = func(context.Context, int64) (int64, error) { return 0, nil }
+			edition := &models.Edition{ID: "456", BookID: "432575", ReadingFormatID: "4"}
+
+			id, err := svc.findOrCreateUserBookIDWithEdition(context.Background(), edition.ID, "WANT_TO_READ", edition)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantID, id)
+			}
+			assert.Equal(t, 1, requestCount("current_user"))
+			assert.Equal(t, 1, requestCount("by_book_and_edition"), "the concrete path must do a fresh existence check")
+			assert.Equal(t, tt.wantEditionLookup, requestCount("by_edition"))
+			assert.Zero(t, requestCount("get_edition"), "the verified edition should be reused")
+			assert.Equal(t, tt.wantInsert, requestCount("insert"))
+		})
+	}
 }
 
 // Helper function to create a test service with a custom config

@@ -1064,9 +1064,8 @@ paths:
         before any catalogue write can execute; neither probe supplies a book
         or external ID. An exact HTTP 403 insufficient_scope response is
         reported denied for either operation; any other result remains
-        unverified. Probe outcomes are cached per profile and operation:
-        definite outcomes for 5 minutes and unverified outcomes for 15 seconds;
-        changing the Hardcover token causes the next check to probe again. A
+        unverified. Probe outcomes are cached per profile and operation until
+        an explicit refresh or a Hardcover token change. A
         dry-run profile skips both probes and reports allowed because it
         performs no catalogue mutation.
         The create endpoint remains disabled for dry-run profiles. A profile
@@ -1099,6 +1098,58 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication is required when authentication is enabled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Authenticated caller lacks profile mutation access.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Profile not found or unavailable to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Profile configuration could not be loaded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /profiles/{id}/edition-capability/refresh:
+    post:
+      tags: [Edition Capability]
+      summary: Refresh ebook and audiobook edition capability evidence
+      description: >-
+        Requires profile write access. Reruns both validation-only Hardcover
+        permission probes for the current token, replacing any cached result.
+        The refresh reuses the profile's configured Hardcover request pacing
+        and concurrency limiter. Dry-run profiles continue to skip probes.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+          example: profile-123
+      responses:
+        '200':
+          description: Refreshed capability evidence for ebook and audiobook creation.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: {type: boolean, enum: [true]}
+                  data:
+                    $ref: '#/components/schemas/EditionCapability'
         '401':
           description: Authentication is required when authentication is enabled.
           content:
