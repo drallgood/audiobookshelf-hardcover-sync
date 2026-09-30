@@ -5377,9 +5377,9 @@ func (s *Service) findBookInHardcoverByTitleAuthor(ctx context.Context, book mod
 	// Attempt to enrich with full book details (especially authors) via GetBookByID
 	// This does NOT change the mismatch semantics; we still return an error below.
 	// The search document already carries the authors when Hardcover includes its
-	// contributions, and the cover and slug always come from the search hit, so
-	// the extra request is only needed when the authors are missing.
-	if bestMatch.ID != "" && len(bestMatch.Authors) == 0 {
+	// contributions, cover and slug, so the extra request is skipped only when
+	// the search hit already supplies all three.
+	if bestMatch.ID != "" && (len(bestMatch.Authors) == 0 || bestMatch.CoverImageURL == "" || bestMatch.Slug == "") {
 		if fullBook, err := s.hardcover.GetBookByID(ctx, bestMatch.ID); err == nil && fullBook != nil {
 			// Only overwrite or supplement fields that are safe and helpful for display
 			if len(fullBook.Authors) > 0 {

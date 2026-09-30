@@ -833,10 +833,10 @@ func TestProcessBookSnapshotKeepsTitleOnlyEnrichment(t *testing.T) {
 	// title-only attention path after an ASIN miss.
 	hc.On("SearchBookByASIN", mock.Anything, "B0AUDIO001").Return((*models.HardcoverBook)(nil), nil)
 	hc.On("SearchBooks", mock.Anything, "Title Only Author", "").Return([]models.HardcoverBook{{
-		ID: "901", Title: "Title Only Candidate", Slug: "candidate-slug",
+		ID: "901", Title: "Title Only Candidate", Slug: "candidate-slug", CoverImageURL: "candidate-cover",
 		Authors: []models.Author{{Name: "Candidate Author"}},
 	}}, nil).Once()
-	// The search hit already carries the authors, so no follow-up book lookup is made.
+	// The search hit already carries authors, cover and slug, so no follow-up book lookup is made.
 	// Enrichment must not replace the title candidate using an ISBN when
 	// the source has a valid ASIN.
 	hc.On("SearchBooks", mock.Anything, "Title Only", "Author").Return([]models.HardcoverBook{}, nil).Once()

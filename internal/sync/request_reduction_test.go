@@ -94,17 +94,39 @@ func TestFindBookInHardcoverByTitleAuthorSkipsBookLookupWhenSearchHasAuthors(t *
 		hit         models.HardcoverBook
 		wantLookups int
 		wantAuthor  string
+		wantCover   string
+		wantSlug    string
 	}{
 		{
-			name:       "search supplies authors",
-			hit:        models.HardcoverBook{ID: "901", Title: "Match Title", Slug: "match-title", Authors: []models.Author{{Name: "Search Author"}}},
+			name:       "search supplies authors cover and slug",
+			hit:        models.HardcoverBook{ID: "901", Title: "Match Title", Slug: "match-title", CoverImageURL: "search-cover", Authors: []models.Author{{Name: "Search Author"}}},
 			wantAuthor: "Search Author",
+			wantCover:  "search-cover",
+			wantSlug:   "match-title",
 		},
 		{
 			name:        "search has no authors",
-			hit:         models.HardcoverBook{ID: "901", Title: "Match Title", Slug: "match-title"},
+			hit:         models.HardcoverBook{ID: "901", Title: "Match Title", Slug: "match-title", CoverImageURL: "search-cover"},
 			wantLookups: 1,
 			wantAuthor:  "Full Author",
+			wantCover:   "search-cover",
+			wantSlug:    "match-title",
+		},
+		{
+			name:        "search has authors but no cover",
+			hit:         models.HardcoverBook{ID: "901", Title: "Match Title", Slug: "match-title", Authors: []models.Author{{Name: "Search Author"}}},
+			wantLookups: 1,
+			wantAuthor:  "Full Author",
+			wantCover:   "full-cover",
+			wantSlug:    "match-title",
+		},
+		{
+			name:        "search has authors but no slug",
+			hit:         models.HardcoverBook{ID: "901", Title: "Match Title", CoverImageURL: "search-cover", Authors: []models.Author{{Name: "Search Author"}}},
+			wantLookups: 1,
+			wantAuthor:  "Full Author",
+			wantCover:   "search-cover",
+			wantSlug:    "full-slug",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -112,7 +134,7 @@ func TestFindBookInHardcoverByTitleAuthorSkipsBookLookupWhenSearchHasAuthors(t *
 			book := toAudiobookshelfBook(createTestBook("title-only-"+tt.name, "Match Title", "Author", "", ""))
 			hc.On("SearchBooks", mock.Anything, "Match Title Author", "").Return([]models.HardcoverBook{tt.hit}, nil).Once()
 			hc.On("GetBookByID", mock.Anything, "901").Return(&models.HardcoverBook{
-				ID: "901", Authors: []models.Author{{Name: "Full Author"}},
+				ID: "901", Slug: "full-slug", CoverImageURL: "full-cover", Authors: []models.Author{{Name: "Full Author"}},
 			}, nil).Maybe()
 
 			found, err := svc.findBookInHardcoverByTitleAuthor(context.Background(), *book)
@@ -121,7 +143,8 @@ func TestFindBookInHardcoverByTitleAuthorSkipsBookLookupWhenSearchHasAuthors(t *
 			require.NotNil(t, found)
 			require.Len(t, found.Authors, 1)
 			assert.Equal(t, tt.wantAuthor, found.Authors[0].Name)
-			assert.Equal(t, "match-title", found.Slug)
+			assert.Equal(t, tt.wantCover, found.CoverImageURL)
+			assert.Equal(t, tt.wantSlug, found.Slug)
 			hc.AssertNumberOfCalls(t, "GetBookByID", tt.wantLookups)
 		})
 	}
