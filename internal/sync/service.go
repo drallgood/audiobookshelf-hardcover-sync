@@ -1228,7 +1228,18 @@ func (s *Service) findOrCreateUserBookIDWithEdition(ctx context.Context, edition
 		})
 
 		// If the existing user_book is linked to a different edition, update it
-		existingUB, ubErr := s.hardcover.GetUserBook(ctx, strconv.FormatInt(existingUserBookID, 10))
+		var existingUB *models.HardcoverBook
+		var existingReads []hardcover.UserBookRead
+		var ubErr error
+		readsFetched := false
+		if combined, ok := s.hardcover.(hardcoverUserBookWithReadsClient); ok {
+			// The status and progress handlers need the reads next, so fetch them
+			// with the user book instead of in a second request.
+			existingUB, existingReads, ubErr = combined.GetUserBookWithReads(ctx, strconv.FormatInt(existingUserBookID, 10))
+			readsFetched = ubErr == nil
+		} else {
+			existingUB, ubErr = s.hardcover.GetUserBook(ctx, strconv.FormatInt(existingUserBookID, 10))
+		}
 		if ubErr != nil {
 			logCtx.Error("Failed to get existing user book details", map[string]interface{}{
 				"error":                ubErr.Error(),
@@ -1267,6 +1278,11 @@ func (s *Service) findOrCreateUserBookIDWithEdition(ctx context.Context, edition
 		} else if existingUB != nil {
 			// The common status/progress path consumes this within the same item sync.
 			setOperationUserBookSnapshot(ctx, int(existingUserBookID), existingUB)
+			// The reads were read before any mutation and the edition is unchanged,
+			// so the handler can use them without asking Hardcover again.
+			if readsFetched {
+				setOperationUserBookReadsSnapshot(ctx, int(existingUserBookID), existingReads)
+			}
 		}
 
 		return existingUserBookID, nil
@@ -2044,6 +2060,24 @@ func (s *Service) enhanceBookProgressFromUserData(book *models.AudiobookshelfBoo
 }
 
 // processBook processes a single book and updates its status in Hardcover.
+// savedAssociationHardcoverBook returns the Hardcover book and edition saved for
+// an item when its association still matches the Audiobookshelf identifiers. It
+// makes no Hardcover request and returns nil when there is no usable match.
+func (s *Service) savedAssociationHardcoverBook(stateKey string, book models.AudiobookshelfBook) *models.HardcoverBook {
+	if s.state == nil {
+		return nil
+	}
+	saved, ok := s.state.GetBookState(stateKey)
+	if !ok || saved.Association == nil || !associationMatchesBook(*saved.Association, book) ||
+		strings.TrimSpace(saved.Association.HardcoverBookID) == "" {
+		return nil
+	}
+	return &models.HardcoverBook{
+		ID:        saved.Association.HardcoverBookID,
+		EditionID: saved.Association.HardcoverEditionID,
+	}
+}
+
 func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBook, userProgress *models.AudiobookshelfUserProgress) error {
 	return s.processBookWithVerifiedEdition(ctx, book, userProgress, nil)
 }
@@ -2305,15 +2339,7 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 			})
 			bookProcessed = false // Explicitly mark as not processed when skipping due to no changes
 			if hcBook == nil {
-				if preliminaryState, ok := s.state.GetBookState(preliminaryStateKey); ok &&
-					preliminaryState.Association != nil &&
-					associationMatchesBook(*preliminaryState.Association, book) &&
-					strings.TrimSpace(preliminaryState.Association.HardcoverBookID) != "" {
-					hcBook = &models.HardcoverBook{
-						ID:        preliminaryState.Association.HardcoverBookID,
-						EditionID: preliminaryState.Association.HardcoverEditionID,
-					}
-				}
+				hcBook = s.savedAssociationHardcoverBook(preliminaryStateKey, book)
 			}
 			setOutcome(OutcomeAlreadyCurrent, "incremental state is current")
 			return nil
@@ -2324,6 +2350,24 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 			"current_status":   currentStatus,
 			"change_threshold": minChangeThreshold,
 		})
+	}
+
+	// An audiobook below the minimum progress depends only on Audiobookshelf
+	// data, so skip it before spending Hardcover requests on a match that cannot
+	// be used, as unread books are skipped above. Ebooks keep the later post-match
+	// skip because their verified match and ownership are saved even when the item
+	// is not synced. A book with no Hardcover status to sync still runs the match
+	// below: with ProcessUnreadBooks enabled, that match is how an unmatched book
+	// reaches the attention list. A saved match is shown when one exists.
+	if book.ReadingFormat() == models.ReadingFormatAudiobook && progress < s.config.Sync.MinimumProgress && progress > 0 {
+		bookLog.Debug("Skipping audiobook below minimum progress before Hardcover lookup", map[string]interface{}{
+			"progress":         progress,
+			"minimum_progress": s.config.Sync.MinimumProgress,
+		})
+		bookProcessed = false
+		hcBook = s.savedAssociationHardcoverBook(book.ID, book)
+		setOutcome(OutcomeSkipped, "below minimum progress threshold")
+		return nil
 	}
 
 	// Find the book in Hardcover to get the edition ID
@@ -3344,9 +3388,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 		"user_book_id": userBookID,
 	})
 
-	readStatuses, err := s.hardcover.GetUserBookReads(ctx, hardcover.GetUserBookReadsInput{
-		UserBookID: userBookID,
-	})
+	readStatuses, err := s.getUserBookReads(ctx, userBookID)
 
 	if err != nil {
 		reportProcessBookOutcome(ctx, OutcomeFailed, "failed to load Hardcover read statuses")
@@ -3817,9 +3859,7 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 
 	// Get all reads for this user book — fetch once and reuse throughout the function
 	// to avoid multiple redundant API calls.
-	readStatuses, err := s.hardcover.GetUserBookReads(ctx, hardcover.GetUserBookReadsInput{
-		UserBookID: userBookID,
-	})
+	readStatuses, err := s.getUserBookReads(ctx, userBookID)
 	if err != nil {
 		errCtx := make(map[string]interface{}, len(logCtx)+1)
 		errCtx["error"] = err.Error()
@@ -4975,47 +5015,12 @@ func (s *Service) processFoundBook(ctx context.Context, hcBook *models.Hardcover
 		}
 	}
 
-	// Calculate progress
-	progress := 0.0
-	isFinished := book.Progress.IsFinished
-	finishedAt := book.Progress.FinishedAt
-	if book.Media.Duration > 0 {
-		// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
-		// because Audiobookshelf sometimes reports CurrentTime as 0 for finished books
-		if isFinished {
-			progress = 1.0
-		} else {
-			progress = book.Progress.CurrentTime / book.Media.Duration
-		}
-	}
-
-	// Determine the status based on progress and isFinished flag
-	status := s.determineBookStatus(progress, isFinished, finishedAt)
-
-	// Only try to get/create user book ID if we have a valid edition ID
-	if hcBook.EditionID != "" && hcBook.EditionID != "0" {
-		userBookID, err := s.findOrCreateUserBookID(ctx, hcBook.EditionID, status)
-		if err != nil {
-			fields := map[string]interface{}{
-				"edition_id": hcBook.EditionID,
-				"error":      err.Error(),
-			}
-			log.Warn("Failed to get or create user book ID", fields)
-		} else {
-			hcBook.UserBookID = strconv.FormatInt(userBookID, 10)
-		}
-	} else {
-		log.Warn("Skipping user book ID creation: no valid edition ID available", nil)
-	}
-
+	// The user book is resolved once by processBook after the final match is
+	// verified and the skip guards have run. Resolving it here as well repeated
+	// those requests and could create a user book for an item that is then skipped.
 	log.Debug("Processed found book", map[string]interface{}{
-		"book_id":      hcBook.ID,
-		"edition_id":   hcBook.EditionID,
-		"user_book_id": hcBook.UserBookID,
-		"progress":     progress,
-		"is_finished":  isFinished,
-		"finished_at":  finishedAt,
-		"status":       status,
+		"book_id":    hcBook.ID,
+		"edition_id": hcBook.EditionID,
 	})
 
 	return hcBook, nil
@@ -5052,6 +5057,12 @@ func (s *Service) reconcileBookOwnership(ctx context.Context, hcBook *models.Har
 		})
 		return
 	}
+	// Ownership rarely changes, so a recent confirmation for this saved match
+	// replaces the per-sync check. The check repeats after ownershipRecheckInterval.
+	if s.state != nil && s.state.OwnershipVerifiedSince(book.ID, hcBook.ID, hcBook.EditionID, time.Now().Add(-ownershipRecheckInterval)) {
+		log.Debug("Skipping ownership check: recently verified for this saved match", nil)
+		return
+	}
 	isOwned, err := s.hardcover.CheckBookOwnership(ctx, bookIDInt)
 	if err != nil {
 		reportProcessBookOwnership(ctx, OutcomeFailed, "failed to verify Hardcover ownership", err)
@@ -5067,6 +5078,7 @@ func (s *Service) reconcileBookOwnership(ctx context.Context, hcBook *models.Har
 			"book_id":    bookIDInt,
 			"edition_id": editionID,
 		})
+		s.rememberOwnershipVerified(book, hcBook)
 		return
 	}
 
@@ -5088,11 +5100,25 @@ func (s *Service) reconcileBookOwnership(ctx context.Context, hcBook *models.Har
 		return
 	}
 
+	s.rememberOwnershipVerified(book, hcBook)
 	reportProcessBookOwnership(ctx, OutcomeSynced, "marked Hardcover edition as owned", nil)
 	log.Info("Successfully marked edition as owned", map[string]interface{}{
 		"book_id":    bookIDInt,
 		"edition_id": editionID,
 	})
+}
+
+// ownershipRecheckInterval is how long a confirmed ownership result is reused
+// before the Owned list is checked again for the same saved match.
+const ownershipRecheckInterval = 30 * 24 * time.Hour
+
+// rememberOwnershipVerified saves that the matched book and edition are on the
+// Owned list. Dry runs persist nothing, and only a saved association can carry it.
+func (s *Service) rememberOwnershipVerified(book models.AudiobookshelfBook, hcBook *models.HardcoverBook) {
+	if s.state == nil || s.config.Sync.DryRun {
+		return
+	}
+	s.state.RecordOwnershipVerified(book.ID, hcBook.ID, hcBook.EditionID, time.Now())
 }
 
 func hasValidHardcoverOwnershipIDs(hcBook *models.HardcoverBook) bool {
@@ -5349,8 +5375,11 @@ func (s *Service) findBookInHardcoverByTitleAuthor(ctx context.Context, book mod
 	})
 
 	// Attempt to enrich with full book details (especially authors) via GetBookByID
-	// This does NOT change the mismatch semantics; we still return an error below
-	if bestMatch.ID != "" {
+	// This does NOT change the mismatch semantics; we still return an error below.
+	// The search document already carries the authors when Hardcover includes its
+	// contributions, and the cover and slug always come from the search hit, so
+	// the extra request is only needed when the authors are missing.
+	if bestMatch.ID != "" && len(bestMatch.Authors) == 0 {
 		if fullBook, err := s.hardcover.GetBookByID(ctx, bestMatch.ID); err == nil && fullBook != nil {
 			// Only overwrite or supplement fields that are safe and helpful for display
 			if len(fullBook.Authors) > 0 {
@@ -5660,41 +5689,11 @@ func (s *Service) findBookInHardcoverWithASINMatch(ctx context.Context, book mod
 			if writeMode != associationWriteNone {
 				s.recordVerifiedASINAssociation(book, asinResult)
 			}
-			if writeMode == associationWriteNone && book.ReadingFormat() == models.ReadingFormatEbook {
-				return hcBook, nil, true, asinResult
-			}
-
-			// Get or create user book ID for this edition
-			editionIDStr := hcBook.EditionID
-			progress := 0.0
-			isFinished := book.Progress.IsFinished
-			finishedAt := book.Progress.FinishedAt
-			if book.Media.Duration > 0 {
-				// For finished books, use 1.0 (100%) instead of CurrentTime/Duration
-				// because Audiobookshelf sometimes reports CurrentTime as 0 for finished books
-				if isFinished {
-					progress = 1.0
-				} else {
-					progress = book.Progress.CurrentTime / book.Media.Duration
-				}
-			}
-
-			// Determine the status based on progress and isFinished flag
-			status := s.determineBookStatus(progress, isFinished, finishedAt)
-			userBookID, err := s.findOrCreateUserBookID(ctx, editionIDStr, status)
-			if err != nil {
-				s.log.Warn("Failed to get or create user book ID for edition", map[string]interface{}{
-					"edition_id": editionIDStr,
-					"error":      err.Error(),
-				})
-			} else {
-				hcBook.UserBookID = strconv.FormatInt(userBookID, 10)
-			}
-
+			// The user book is resolved once by processBook after this match is
+			// verified and the skip guards have run.
 			s.log.Debug("Found book by ASIN", map[string]interface{}{
-				"book_id":      hcBook.ID,
-				"edition_id":   hcBook.EditionID,
-				"user_book_id": hcBook.UserBookID,
+				"book_id":    hcBook.ID,
+				"edition_id": hcBook.EditionID,
 			})
 
 			return hcBook, nil, true, asinResult

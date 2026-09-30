@@ -46,10 +46,12 @@ func expectASINEditionRead(t *testing.T, client *MockHardcoverClient, bookID, ed
 	t.Helper()
 	editionInt, err := strconv.Atoi(editionID)
 	require.NoError(t, err)
+	// Only the final sync path reads the edition and user book, so a test that
+	// stops earlier never reaches these. They are not the subject of these tests.
 	client.On("GetEdition", mock.Anything, editionID).Return(&models.Edition{
 		ID: editionID, BookID: bookID,
-	}, nil).Once()
-	client.On("GetUserBookID", mock.Anything, editionInt).Return(9021, nil).Once()
+	}, nil).Maybe()
+	client.On("GetUserBookID", mock.Anything, editionInt).Return(9021, nil).Maybe()
 }
 
 func TestFindBookInHardcoverReusesMatchingAssociationFirst(t *testing.T) {
@@ -333,8 +335,8 @@ func TestProcessBookDoesNotRepeatTemporaryASINFallbackLookup(t *testing.T) {
 	svc.hardcover = client
 	editionInt, err := strconv.Atoi("902")
 	require.NoError(t, err)
-	mockClient.On("GetEdition", mock.Anything, "902").Return(&models.Edition{ID: "902", BookID: "901"}, nil).Once()
-	mockClient.On("GetUserBookID", mock.Anything, editionInt).Return(9021, nil).Once()
+	mockClient.On("GetEdition", mock.Anything, "902").Return(&models.Edition{ID: "902", BookID: "901"}, nil).Maybe()
+	mockClient.On("GetUserBookID", mock.Anything, editionInt).Return(9021, nil).Maybe()
 
 	err = svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
 

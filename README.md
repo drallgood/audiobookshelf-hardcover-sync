@@ -379,7 +379,7 @@ The project follows standard Go project layout:
 ### 📚 Core Sync Features
 - **Full Library Sync**: Syncs your entire Audiobookshelf library with Hardcover
 - **Smart Status Management**: Automatically sets "Want to Read", "Currently Reading", and "Read" status based on progress
-- **Ownership Tracking**: Marks synced books as "owned" to distinguish from wishlist items
+- **Ownership Tracking**: Marks synced books as "owned" to distinguish from wishlist items. A confirmed result is remembered with the book's saved match and rechecked after 30 days, so later syncs skip that request
 - **Incremental Sync**: Efficient state-based syncing to only process changed books
   - Tracks sync state between runs
   - Configurable minimum change threshold
@@ -744,7 +744,7 @@ hardcover:
 # Sync settings
 sync:
   sync_interval: "1h"
-  minimum_progress: 0.01  # Minimum progress threshold (0.0 to 1.0)
+  minimum_progress: 0.01  # Minimum progress threshold (0.0 to 1.0). Audiobooks below it are skipped before any Hardcover request
   sync_want_to_read: true  # Sync books with 0% progress as "Want to Read"
   sync_owned: true        # Mark synced books as owned in Hardcover
   include_ebooks: false    # Include ebook-only Audiobookshelf items in sync

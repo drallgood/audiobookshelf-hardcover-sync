@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
@@ -17,12 +18,53 @@ type operationUserBookSnapshotKey struct{}
 type operationUserBookSnapshots struct {
 	mu        sync.RWMutex
 	userBooks map[int]*models.HardcoverBook
+	// reads holds a user book's reads fetched in the same request as the user
+	// book, before any mutation in this operation. Each entry is used once.
+	reads map[int][]hardcover.UserBookRead
 }
 
 func withOperationUserBookSnapshots(ctx context.Context) context.Context {
 	return context.WithValue(ctx, operationUserBookSnapshotKey{}, &operationUserBookSnapshots{
 		userBooks: make(map[int]*models.HardcoverBook),
+		reads:     make(map[int][]hardcover.UserBookRead),
 	})
+}
+
+func setOperationUserBookReadsSnapshot(ctx context.Context, userBookID int, reads []hardcover.UserBookRead) {
+	if snapshots := operationUserBookSnapshotsFromContext(ctx); snapshots != nil {
+		snapshots.mu.Lock()
+		snapshots.reads[userBookID] = reads
+		snapshots.mu.Unlock()
+	}
+}
+
+// takeOperationUserBookReadsSnapshot returns and removes the reads fetched
+// together with the user book, so a later call in the same operation reads fresh.
+func takeOperationUserBookReadsSnapshot(ctx context.Context, userBookID int) ([]hardcover.UserBookRead, bool) {
+	snapshots := operationUserBookSnapshotsFromContext(ctx)
+	if snapshots == nil {
+		return nil, false
+	}
+	snapshots.mu.Lock()
+	defer snapshots.mu.Unlock()
+	reads, found := snapshots.reads[userBookID]
+	delete(snapshots.reads, userBookID)
+	return reads, found
+}
+
+// hardcoverUserBookWithReadsClient is implemented by the concrete client, which
+// can return a user book and its reads in one request.
+type hardcoverUserBookWithReadsClient interface {
+	GetUserBookWithReads(context.Context, string) (*models.HardcoverBook, []hardcover.UserBookRead, error)
+}
+
+// getUserBookReads returns a user book's reads, using the copy fetched together
+// with the user book when this operation has one and requesting them otherwise.
+func (s *Service) getUserBookReads(ctx context.Context, userBookID int64) ([]hardcover.UserBookRead, error) {
+	if reads, found := takeOperationUserBookReadsSnapshot(ctx, int(userBookID)); found {
+		return reads, nil
+	}
+	return s.hardcover.GetUserBookReads(ctx, hardcover.GetUserBookReadsInput{UserBookID: userBookID})
 }
 
 func operationUserBookSnapshotsFromContext(ctx context.Context) *operationUserBookSnapshots {
