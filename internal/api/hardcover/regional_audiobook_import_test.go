@@ -31,6 +31,7 @@ func TestClient_ImportRegionalAudiobook(t *testing.T) {
 		wantStatus      RegionalAudiobookStatus
 		wantErr         error
 		wantNotErr      error
+		wantMessage     string
 	}{
 		{name: "created import with mapping", status: "created", includeMapping: true, mappingState: "created", mappingBook: 42, formatID: 2, wantStatus: RegionalAudiobookCreated},
 		{name: "loaded import without mapping", status: "loaded", formatID: 2, wantStatus: RegionalAudiobookLoaded},
@@ -44,8 +45,10 @@ func TestClient_ImportRegionalAudiobook(t *testing.T) {
 		{name: "mapping and status edition disagree", status: "created", includeMapping: true, mappingState: "created", mappingBook: 42, mappingEdition: 901, wantErr: ErrRegionalAudiobookIdentityConflict},
 		{name: "mutation and status edition disagree", status: "created", statusEdition: 901, wantErr: ErrRegionalAudiobookIdentityConflict},
 		{name: "mutation and polled status disagree", status: "created", mutationStatus: "loaded", wantErr: ErrRegionalAudiobookIdentityConflict},
-		{name: "wrong readback edition", status: "created", readbackEdition: 901, formatID: 2, wantErr: ErrRegionalAudiobookIdentityConflict},
-		{name: "wrong format readback", status: "created", formatID: 4, wantErr: ErrRegionalAudiobookIdentityConflict},
+		{name: "wrong readback edition", status: "created", readbackEdition: 901, formatID: 2, wantErr: ErrRegionalAudiobookIdentityConflict, wantMessage: "expected edition 900 on book 42, got edition 901 on book 42"},
+		{name: "physical format readback", status: "created", formatID: 1, wantErr: ErrRegionalAudiobookIdentityConflict, wantMessage: "edition 900 on book 42 has reading format physical book (ID 1); expected audiobook (ID 2)"},
+		{name: "ebook format readback", status: "created", formatID: 4, wantErr: ErrRegionalAudiobookIdentityConflict, wantMessage: "edition 900 on book 42 has reading format ebook (ID 4); expected audiobook (ID 2)"},
+		{name: "unknown format readback", status: "created", formatID: 99, wantErr: ErrRegionalAudiobookIdentityConflict, wantMessage: "edition 900 on book 42 has reading format unknown (ID 99); expected audiobook (ID 2)"},
 	}
 
 	for _, tt := range tests {
@@ -140,6 +143,9 @@ func TestClient_ImportRegionalAudiobook(t *testing.T) {
 					require.NotErrorIs(t, err, tt.wantNotErr)
 				}
 				require.Nil(t, result)
+				if tt.wantMessage != "" {
+					require.Contains(t, err.Error(), tt.wantMessage)
+				}
 				if tt.status == "failed" || tt.status == "not_found" {
 					require.Equal(t, 1, mappingQueries)
 				}

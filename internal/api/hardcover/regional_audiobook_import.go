@@ -253,10 +253,31 @@ func (c *Client) verifyRegionalAudiobookEdition(ctx context.Context, bookID, edi
 	verifiedEditionID, editionErr := strconv.Atoi(verified.ID)
 	verifiedBookID, bookErr := strconv.Atoi(verified.BookID)
 	verifiedFormatID, formatErr := strconv.Atoi(verified.ReadingFormatID)
-	if editionErr != nil || bookErr != nil || formatErr != nil || verifiedEditionID != editionID || verifiedBookID != bookID || verifiedFormatID != models.ReadingFormatID(models.ReadingFormatAudiobook) {
-		return 0, 0, fmt.Errorf("%w: expected edition %d on book %d with audiobook format, got edition %q book %q format %q", ErrRegionalAudiobookIdentityConflict, editionID, bookID, verified.ID, verified.BookID, verified.ReadingFormatID)
+	if editionErr != nil || bookErr != nil || verifiedEditionID != editionID || verifiedBookID != bookID {
+		return 0, 0, fmt.Errorf("%w: expected edition %d on book %d, got edition %s on book %s", ErrRegionalAudiobookIdentityConflict, editionID, bookID, verified.ID, verified.BookID)
+	}
+	if formatErr != nil || verifiedFormatID != models.ReadingFormatID(models.ReadingFormatAudiobook) {
+		return 0, 0, fmt.Errorf("%w: edition %d on book %d has reading format %s; expected audiobook (ID 2)", ErrRegionalAudiobookIdentityConflict, editionID, bookID, regionalReadingFormatDescription(verified.ReadingFormatID))
 	}
 	return verifiedBookID, verifiedFormatID, nil
+}
+
+// regionalReadingFormatDescription names Hardcover formats in import diagnostics.
+func regionalReadingFormatDescription(formatID string) string {
+	switch formatID {
+	case "1":
+		return "physical book (ID 1)"
+	case "2":
+		return "audiobook (ID 2)"
+	case "3":
+		return "both formats (ID 3)"
+	case "4":
+		return "ebook (ID 4)"
+	case "":
+		return "missing"
+	default:
+		return fmt.Sprintf("unknown (ID %s)", formatID)
+	}
 }
 
 type regionalImportEdition struct {
@@ -439,7 +460,7 @@ func validateRegionalImportEdition(edition *regionalImportEdition, bookID int) e
 		return fmt.Errorf("%w: expected book %d, upsert returned edition book %d", ErrRegionalAudiobookIdentityConflict, bookID, edition.BookID)
 	}
 	if edition.ReadingFormatID != nil && *edition.ReadingFormatID != models.ReadingFormatID(models.ReadingFormatAudiobook) {
-		return fmt.Errorf("%w: returned edition %d has reading format %d", ErrRegionalAudiobookIdentityConflict, edition.ID, *edition.ReadingFormatID)
+		return fmt.Errorf("%w: edition %d on book %d has reading format %s; expected audiobook (ID 2)", ErrRegionalAudiobookIdentityConflict, edition.ID, bookID, regionalReadingFormatDescription(strconv.Itoa(*edition.ReadingFormatID)))
 	}
 	return nil
 }
