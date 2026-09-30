@@ -1838,6 +1838,7 @@ test('an import resolved to a non-audiobook edition is final and links to report
         assert.equal(dialog.outcome, 'failed');
         assert.match(html, /existing edition 32307716, which Hardcover lists as a physical book/);
         assert.match(html, /<a class="btn btn-primary" href="https:\/\/hardcover\.app\/editions\/32307716"[^>]*>Report a problem on Hardcover<\/a>/);
+        assert.doesNotMatch(html, /may be stale/);
         assert.doesNotMatch(html, /evil\.example/);
         assert.match(html, /HTTP 409.*hardcover_edition_wrong_format/);
         assert.doesNotMatch(html, /data-edition-dialog="(check-import|confirm-create|retry-create)"/);

@@ -2534,13 +2534,17 @@ class SyncProfileApp {
                         const fallback = response.status === 403 && !message
                             ? 'The server returned HTTP 403 without a readable explanation. Review the profile access before trying again.'
                             : this.editionFailureMessage(outcome, response.status);
-                        dialog.error = response.status === 403 && !message
-                            ? fallback
-                            : this.editionCreateErrorMessage(response.status, message || fallback);
+                        dialog.wrongFormat = this.editionWrongFormatDetails(outcome, data);
+                        // The wrong-format message is final and self-contained, so it
+                        // omits the generic stale-record hint added for other 409s.
+                        dialog.error = dialog.wrongFormat
+                            ? message
+                            : response.status === 403 && !message
+                                ? fallback
+                                : this.editionCreateErrorMessage(response.status, message || fallback);
                         dialog.errorCode = data?.error_code || '';
                         dialog.errorHttpStatus = response.status;
                         dialog.retryCreate = outcome === 'not_submitted';
-                        dialog.wrongFormat = this.editionWrongFormatDetails(outcome, data);
                     }
                     if (['not_submitted', 'failed'].includes(outcome)) this.clearPendingEditionRecovery(dialog.profileId, dialog.runId, dialog.record.book_id);
                 }

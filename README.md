@@ -126,8 +126,8 @@ If an import cannot be confirmed, follow the dialog's recovery guidance:
 Some Audible ASINs are also ISBN-10s. Hardcover may attach such an import to an
 existing edition with that ISBN that is not an audiobook. The app does not save
 that edition as the match, and trying again returns the same edition. Use
-**Report a problem on Hardcover** to open that edition, sign in, and report it
-so its format can be corrected, then run a new sync.
+**Report a problem on Hardcover** to open that edition, sign in, and report it so its
+format can be corrected, then run a new sync.
 
 Matched books offer **Forget match** to clear this app's saved match. Nothing is
 deleted from Hardcover. The next sync searches again and may find the same
