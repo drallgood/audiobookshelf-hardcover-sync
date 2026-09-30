@@ -203,8 +203,8 @@ func (h *Handler) GetEditionSourceDraft(w http.ResponseWriter, r *http.Request) 
 				draft.AudibleIdentifierCandidate.Region = region
 				draft.AudnexusDetails = buildAudnexusDetails(found)
 				if found.ReleaseDate != "" {
-					if date, ok := normalizeDraftDate(found.ReleaseDate); ok {
-						draft.MetadataPreview.ReleaseDate = date
+					if draft.AudnexusDetails.ReleaseDate != "" {
+						draft.MetadataPreview.ReleaseDate = draft.AudnexusDetails.ReleaseDate
 					} else {
 						draft.addWarning("audnex_date_unrecognized", "Audnexus returned a release date that could not be normalized; the Audiobookshelf date is shown instead.", false)
 					}
