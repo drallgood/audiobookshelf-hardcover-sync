@@ -2390,7 +2390,11 @@ class SyncProfileApp {
             });
             if (this.editionDialog !== dialog) return;
             dialog.busy = false;
-            if (response.status === 401) { this.closeEditionDialog(); this.handleAuthExpiry(); return; }
+            const preWriteDenial = this.knownEditionCreatePreWriteDenial(response.status, data);
+            if (response.status === 401) {
+                if (preWriteDenial) this.clearPendingEditionRecovery(dialog.profileId, dialog.runId, dialog.record.book_id);
+                this.closeEditionDialog(); this.handleAuthExpiry(); return;
+            }
             const validSuccessEnvelope = response.ok && data?.success === true && this.isValidEditionCreateResult(
                 data.data, dialog.record.book_id, dialog.draft.reading_format, dialog.record.hardcover_book_id
             );
@@ -2409,7 +2413,6 @@ class SyncProfileApp {
             } else {
                 const outcome = String(data?.outcome || '').toLowerCase();
                 if (outcome === 'unconfirmed') {
-                    dialog.outcome = 'unconfirmed';
                     dialog.recovery = {
                         runId: dialog.submittedBody.run_id,
                         absItemId: dialog.submittedBody.abs_item_id,
@@ -2422,6 +2425,14 @@ class SyncProfileApp {
                     dialog.recoveryHttpStatus = response.status;
                     dialog.recoveryErrorCode = data?.error_code || '';
                     dialog.error = '';
+                    if (!dialog.recovery.recoveryToken) {
+                        dialog.outcome = 'transport_unknown';
+                        dialog.errorHttpStatus = response.status;
+                        dialog.errorCode = data?.error_code || '';
+                        dialog.transportError = 'The import result is unknown because this response did not include a recovery token. Inspect Hardcover, then close this dialog and run a new sync to refresh the match before taking further action.';
+                    } else {
+                        dialog.outcome = 'unconfirmed';
+                    }
                     this.savePendingEditionRecovery(dialog);
                 } else if (outcome === 'created') {
                     dialog.outcome = 'created';
@@ -2439,21 +2450,19 @@ class SyncProfileApp {
                     this.savePendingEditionRecovery(dialog);
                 } else {
                     const message = this.apiErrorMessage(data, '');
-                    if (!outcome && (response.status >= 500 || (response.ok && !validSuccessEnvelope))) {
+                    if (!outcome && preWriteDenial) {
+                        dialog.outcome = 'not_submitted';
+                        dialog.errorHttpStatus = response.status;
+                        dialog.errorCode = data?.error?.code || data?.error_code || '';
+                        dialog.error = this.editionCreateErrorMessage(response.status, message || preWriteDenial.message);
+                        dialog.retryCreate = true;
+                        this.clearPendingEditionRecovery(dialog.profileId, dialog.runId, dialog.record.book_id);
+                    } else if (!outcome) {
                         dialog.outcome = 'transport_unknown';
                         dialog.errorHttpStatus = response.status;
-                        dialog.errorCode = data?.error_code || '';
-                        const context = message ? `${message} ` : '';
-                        dialog.transportError = `${context}The import result is unknown; check Hardcover before trying again.`;
-                        dialog.error = '';
-                        this.savePendingEditionRecovery(dialog);
-                    } else if (!outcome && !message && response.status >= 400) {
-                        dialog.outcome = 'transport_unknown';
-                        dialog.errorHttpStatus = response.status;
-                        dialog.errorCode = data?.error_code || '';
-                        dialog.transportError = response.status === 403
-                            ? 'The server returned HTTP 403 without a readable explanation. Review the profile access and check Hardcover before trying again.'
-                            : 'The server returned no usable confirmation. The import result is unknown; check Hardcover before trying again.';
+                        dialog.errorCode = data?.error?.code || data?.error_code || '';
+                        const context = message ? `${this.editionCreateErrorMessage(response.status, message)} ` : `The server returned no usable confirmation (HTTP ${response.status}). `;
+                        dialog.transportError = `${context}The import result is unknown; inspect Hardcover, then run a new sync before trying again.`;
                         dialog.error = '';
                         this.savePendingEditionRecovery(dialog);
                     } else {
@@ -2491,6 +2500,20 @@ class SyncProfileApp {
         return message;
     }
 
+    knownEditionCreatePreWriteDenial(status, data) {
+        if (data?.outcome) return null;
+        const handlerError = typeof data?.error === 'string' ? data.error : '';
+        const middlewareError = data?.error && typeof data.error === 'object' ? data.error : null;
+        const message = middlewareError?.message;
+        const code = middlewareError?.code;
+        // Match authorizeProfileMetadata and AuthMiddleware.handleAuthError's pre-write envelopes.
+        const handlerMessages = { 401: 'Authentication required', 403: 'Insufficient permissions', 404: 'Sync profile not found' };
+        if (data?.success === false && handlerError === handlerMessages[status]) return { message: handlerError };
+        if (status === 401 && code === 'authentication_required' && typeof message === 'string' && message.trim()) return { message };
+        if (status === 403 && code === 'insufficient_permissions' && message === 'Insufficient permissions') return { message };
+        return null;
+    }
+
     editionFailureMessage(outcome, status) {
         if (outcome === 'not_submitted') return 'The import was not submitted to Hardcover. You can safely try again.';
         if (outcome === 'failed') return 'Hardcover rejected the import. Review the details and correct any edition information before trying again.';
@@ -2511,6 +2534,13 @@ class SyncProfileApp {
     }
 
     renderEditionImportUnconfirmed(dialog) {
+        if (!dialog.recovery?.recoveryToken) {
+            const bookLink = this.renderOpenHardcoverLink(dialog);
+            return `<div class="edition-warning" role="alert"><strong>Hardcover’s import result is still unconfirmed</strong>
+                <p>No recovery token was returned, so the app cannot check this import safely. Inspect Hardcover, then close this dialog and run a new sync to refresh the match before taking further action.</p>
+                ${this.renderEditionTechnicalDetails(dialog)}</div>
+                <div class="form-actions edition-create-actions">${bookLink}<button type="button" class="btn btn-warning" data-edition-dialog="close">Close</button></div>`;
+        }
         const openLink = this.renderOpenHardcoverLink(dialog);
         const submittedTitle = dialog.recoveryTitle || dialog.record.title || 'this audiobook';
         const technical = this.renderEditionTechnicalDetails(dialog);
@@ -2630,6 +2660,14 @@ class SyncProfileApp {
             const outcome = saved?.outcome || 'unconfirmed';
             if (!['unconfirmed', 'created', 'transport_unknown'].includes(outcome)
                 || !body || String(body.run_id) !== String(runId) || String(body.abs_item_id) !== String(bookId)) return null;
+            if (outcome === 'unconfirmed' && !recovery?.recoveryToken) {
+                saved.outcome = 'transport_unknown';
+                saved.recovery = null;
+                saved.errorHttpStatus ||= saved.recoveryHttpStatus || 0;
+                saved.errorCode ||= saved.recoveryErrorCode || '';
+                saved.transportError = 'The import result is unknown because this saved request has no recovery token. Inspect Hardcover, then run a new sync to refresh the match before taking further action.';
+                return saved;
+            }
             if (outcome !== 'transport_unknown' && recovery && (
                 typeof recovery.recoveryToken !== 'string'
                 || typeof recovery.audibleIdentifier !== 'string' || !recovery.audibleIdentifier

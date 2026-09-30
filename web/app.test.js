@@ -1028,15 +1028,101 @@ test('create failures surface permission denial and stale 409 clearly', async ()
     app.loadStatuses = async () => { refreshed++; };
     let dialog = stubDialog(app, 403, { success: false, error: 'Hardcover token is missing catalogue write permission' });
     await app.submitEditionCreate();
-    assert.match(dialog.error, /Permission denied: Hardcover token is missing/);
+    assert.equal(dialog.outcome, 'transport_unknown');
+    assert.match(app.renderEditionDialog(dialog), /Hardcover token is missing catalogue write permission/);
     assert.equal(dialog.result, null);
 
     dialog = stubDialog(app, 409, { success: false, error: 'sync run no longer contains a usable needs-review source record' });
     await app.submitEditionCreate();
-    assert.match(dialog.error, /no longer contains/);
-    assert.match(dialog.error, / The record may be stale, or a sync started after this page loaded; refresh and try again\.$/);
+    assert.equal(dialog.outcome, 'transport_unknown');
+    assert.match(app.renderEditionDialog(dialog), /no longer contains.*record may be stale, or a sync started after this page loaded; refresh and try again/);
     assert.match(app.renderEditionActions(needsReview), /data-edition-action="add"/);
     assert.equal(refreshed, 1);
+});
+
+test('known pre-write authorization denials clear the user marker and permit a later create', async () => {
+    const cases = [
+        [403, { success: false, error: 'Insufficient permissions' }],
+        [404, { success: false, error: 'Sync profile not found' }],
+        [403, { error: { code: 'insufficient_permissions', message: 'Insufficient permissions' } }]
+    ];
+    for (const [status, payload] of cases) {
+        const app = editionApp({ authEnabled: true, currentUser: { id: 'user-7' } });
+        const dialog = stubDialog(app, status, payload);
+        const key = app.pendingEditionRecoveryKey('p1', 'run-1', 'li_1');
+        let creates = 0;
+        app.fetchJsonWithTimeout = async () => {
+            creates++;
+            return creates === 1
+                ? { response: { ok: false, status }, data: payload }
+                : { response: { ok: true, status: 200 }, data: { success: true, data: validCreateResult() } };
+        };
+        await app.submitEditionCreate();
+        assert.equal(dialog.outcome, 'not_submitted');
+        assert.equal(window.sessionStorage.getItem(key), null);
+        assert.match(dialog.error, /Permission denied|not found/);
+        const reloaded = Object.assign(createApp(), { authEnabled: true, currentUser: { id: 'user-7' } });
+        assert.equal(reloaded.loadPendingEditionRecovery('p1', 'run-1', 'li_1'), null);
+        await app.submitEditionCreate();
+        assert.equal(creates, 2);
+        assert.ok(dialog.result);
+    }
+});
+
+test('recognized auth expiry payloads clear the user marker before resetting the signed-in user', async () => {
+    for (const payload of [
+        { success: false, error: 'Authentication required' },
+        { error: { code: 'authentication_required', message: 'No authentication token provided' } },
+        { error: { code: 'authentication_required', message: 'Invalid or expired token' } }
+    ]) {
+        const app = editionApp({ authEnabled: true, currentUser: { id: 'user-8' } });
+        const dialog = stubDialog(app, 401, payload);
+        const key = app.pendingEditionRecoveryKey('p1', 'run-1', 'li_1');
+        app.closeEditionDialog = () => { app.editionDialog = null; };
+        app.abortSessionMutations = () => {};
+        app.closeEditModal = () => {};
+        app.clearOpenSummary = () => { app.openSummary = null; };
+        app.resetProfileRetry = () => {};
+        app.renderProfiles = () => {};
+        app.renderStatuses = () => {};
+        app.stopAutoRefresh = () => {};
+        app.showToast = () => {};
+        app.redirectToLogin = () => { app.redirectCalls = (app.redirectCalls || 0) + 1; };
+        app.terminalErrorCache = new Map();
+        app.terminalErrorRetries = new Map();
+        app.terminalErrorRequests = new Map();
+        app.trackedRunIds = new Map();
+        app.statusRefreshWaiters = [];
+        await app.submitEditionCreate();
+        assert.equal(window.sessionStorage.getItem(key), null);
+        assert.equal(app.currentUser, null);
+        assert.equal(app.redirectCalls, 1);
+        assert.equal(app.editionDialog, null);
+        assert.equal(dialog.outcome, '');
+    }
+});
+
+test('unidentified authorization denials remain unknown and cannot be retried in the dialog', async () => {
+    for (const [status, payload] of [
+        [403, { success: false, error: 'proxy denied' }],
+        [404, { success: false, error: 'not found' }],
+        [401, { success: false }]
+    ]) {
+        const app = editionApp();
+        const dialog = stubDialog(app, status, payload);
+        const key = app.pendingEditionRecoveryKey('p1', 'run-1', 'li_1');
+        let creates = 0;
+        app.fetchJsonWithTimeout = async () => { creates++; return { response: { ok: false, status }, data: payload }; };
+        app.closeEditionDialog = () => { app.editionDialog = null; };
+        app.handleAuthExpiry = () => {};
+        await app.submitEditionCreate();
+        assert.notEqual(window.sessionStorage.getItem(key), null);
+        if (status !== 401) {
+            assert.equal(dialog.outcome, 'transport_unknown');
+            await app.submitEditionCreate();
+            assert.equal(creates, 1);
+        }
+    }
 });
 
 test('draft preview 429 defers retry by Retry-After and shows the wait', async () => {
@@ -1469,6 +1555,40 @@ test('ambiguous create shows a safe recovery action and preserves submitted iden
     assert.equal(app.loadPendingEditionRecovery('p1', 'run-1', needsReview.book_id).recovery.recoveryToken, 'opaque-token');
 });
 
+test('tokenless ambiguous ebook create persists manual recovery and never offers another create', async () => {
+    const app = editionApp();
+    const dialog = stubDialog(app, 502, { success: false, outcome: 'unconfirmed', error_code: 'hardcover_import_unconfirmed', error: 'Import response was ambiguous', data: { hardcover_book_id: '42' } });
+    dialog.record = { ...needsReview, format: 'ebook' };
+    dialog.draft = { ...dialog.draft, reading_format: 'ebook', ebook_candidate: { title: 'Dune', isbn_13: '9780000000002' } };
+    await app.submitEditionCreate();
+    assert.equal(dialog.outcome, 'transport_unknown');
+    let html = app.renderEditionDialog(dialog);
+    assert.match(html, /Inspect Hardcover/);
+    assert.match(html, /run a new sync/);
+    assert.match(html, /HTTP 502.*hardcover_import_unconfirmed/);
+    assert.doesNotMatch(html, /check-import|confirm-create|retry-create/);
+    let creates = 0;
+    app.fetchJsonWithTimeout = async () => { creates++; throw new Error('Must not submit another import'); };
+    await app.submitEditionCreate();
+    assert.equal(creates, 0);
+
+    const saved = app.loadPendingEditionRecovery('p1', 'run-1', 'li_1');
+    saved.outcome = 'unconfirmed';
+    saved.recovery = null;
+    saved.errorHttpStatus = 0;
+    saved.errorCode = '';
+    window.sessionStorage.setItem(app.pendingEditionRecoveryKey('p1', 'run-1', 'li_1'), JSON.stringify(saved));
+    app.pendingEditionRecoveries.clear();
+    const reloaded = createApp();
+    const recovered = reloaded.loadPendingEditionRecovery('p1', 'run-1', 'li_1');
+    assert.equal(recovered.outcome, 'transport_unknown');
+    reloaded.editionDialog = { ...dialog, ...recovered };
+    html = reloaded.renderEditionDialog(reloaded.editionDialog);
+    assert.match(html, /run a new sync/);
+    assert.match(html, /HTTP 502.*hardcover_import_unconfirmed/);
+    assert.doesNotMatch(html, /check-import|confirm-create|retry-create/);
+});
+
 test('check import status uses the saved token and original identifiers, then records recovered success', async () => {
     const app = editionApp();
     const dialog = stubDialog(app, 503, { success: false, error_code: 'hardcover_import_unconfirmed', outcome: 'unconfirmed', data: {
@@ -1567,6 +1687,19 @@ test('created but unsaved edition offers only token-backed match recovery', asyn
     assert.match(html, /Edition created; match not saved/);
     assert.match(html, /data-edition-dialog="check-import"/);
     assert.doesNotMatch(html, /data-edition-dialog="confirm-create"/);
+});
+
+test('created ebook without a recovery token clearly reports the saved-match failure and blocks create', async () => {
+    const app = editionApp();
+    const dialog = stubDialog(app, 502, { success: false, error: 'Local save failed', outcome: 'created', data: { hardcover_book_id: '42' } });
+    dialog.record = { ...needsReview, format: 'ebook' };
+    dialog.draft = { ...dialog.draft, reading_format: 'ebook' };
+    await app.submitEditionCreate();
+    const html = app.renderEditionDialog(dialog);
+    assert.equal(dialog.outcome, 'created');
+    assert.match(html, /Edition created; match not saved/);
+    assert.match(html, /Local save failed/);
+    assert.doesNotMatch(html, /check-import|confirm-create|retry-create/);
 });
 
 test('closing an ambiguous import and reopening the item restores recovery without a new create', async () => {

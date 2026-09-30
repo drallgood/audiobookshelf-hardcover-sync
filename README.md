@@ -124,10 +124,16 @@ inspect the book. A temporary failure reading source data keeps the import
 unconfirmed and preserves its recovery details so the status check can be
 retried. Reloading during creation also preserves an unknown-outcome marker
 and blocks another import; inspect Hardcover and run a new sync when no
-confirmation was received. Expand technical details for the HTTP status and
-error code. If low daily Hardcover API quota prevents submission, the dialog
-explains that nothing was added and asks you to wait until the quota resets.
-Use **Retry add edition** once the service is available again.
+confirmation was received. Ebook insertions do not provide the audiobook
+recovery token, so an ambiguous ebook result requires manual Hardcover
+inspection followed by a new sync; the dialog will not offer a status check or
+another create. Recognized sign-in, profile-access, and missing-profile
+responses are safe to retry after access is restored. Other unreadable or
+unrecognized denial responses remain marked as unknown to prevent a duplicate.
+Expand technical details for the HTTP status and error code. If low daily
+Hardcover API quota prevents submission, the dialog explains that nothing was
+added and asks you to wait until the quota resets. Use **Retry add edition**
+once the service is available again.
 For View Details creates, the browser must save and verify a pending-request
 marker in session storage first. If storage is unavailable, the dialog sends
 nothing and lets you retry when storage is available. Direct API and CLI calls
