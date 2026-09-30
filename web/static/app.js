@@ -2240,6 +2240,8 @@ class SyncProfileApp {
             body = this.renderForgetBody(dialog);
         } else if (dialog.result) {
             body = this.renderCreateResult(dialog.result);
+        } else if (dialog.outcome === 'failed' && dialog.wrongFormat) {
+            body = this.renderEditionWrongFormat(dialog);
         } else if (dialog.outcome === 'unconfirmed') {
             body = this.renderEditionImportUnconfirmed(dialog);
         } else {
@@ -2543,6 +2545,7 @@ class SyncProfileApp {
                         dialog.errorCode = data?.error_code || '';
                         dialog.errorHttpStatus = response.status;
                         dialog.retryCreate = outcome === 'not_submitted';
+                        dialog.wrongFormat = this.editionWrongFormatDetails(outcome, data);
                     }
                     if (['not_submitted', 'failed'].includes(outcome)) this.clearPendingEditionRecovery(dialog.profileId, dialog.runId, dialog.record.book_id);
                 }
@@ -2598,6 +2601,26 @@ class SyncProfileApp {
         const code = String(dialog.recoveryErrorCode || dialog.errorCode || '').replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 80);
         if (!status && !code) return '';
         return `<details class="edition-technical-details"><summary>Technical details</summary><div>${status ? `HTTP ${status}` : ''}${code ? `${status ? ' · ' : ''}Error code: ${this.escapeHtml(code)}` : ''}</div></details>`;
+    }
+
+    // Hardcover resolved the import to an existing edition of the reviewed book
+    // that is not an audiobook. Only a positive numeric edition ID is used, and
+    // the link is built here rather than trusting a server-supplied URL.
+    editionWrongFormatDetails(outcome, data) {
+        if (outcome !== 'failed' || String(data?.error_code || '') !== 'hardcover_edition_wrong_format') return null;
+        const editionId = String(data?.data?.hardcover_edition_id ?? '');
+        if (!/^\d+$/.test(editionId) || Number(editionId) <= 0) return null;
+        return { editionId, editionURL: `https://hardcover.app/editions/${editionId}` };
+    }
+
+    renderEditionWrongFormat(dialog) {
+        const details = dialog.wrongFormat;
+        const message = dialog.error || `Hardcover linked this Audible identifier to existing edition ${details.editionId}, which is not an audiobook. The match was not saved.`;
+        return `<div class="edition-error" role="alert" data-wrong-format><strong>Hardcover added this Audible identifier to a non-audiobook edition</strong>
+            <p>${this.escapeHtml(message)}</p>
+            <p>On the Hardcover edition page, sign in and use <strong>Report</strong> to ask for its format to be changed to Audiobook.</p>
+            ${this.renderEditionTechnicalDetails(dialog)}</div>
+            <div class="form-actions edition-create-actions"><a class="btn btn-primary" href="${this.escapeHtmlAttribute(details.editionURL)}" target="_blank" rel="noopener noreferrer" data-report-edition>Report a problem on Hardcover</a><button type="button" class="btn btn-warning" data-edition-dialog="close">Close</button></div>`;
     }
 
     renderEditionImportUnconfirmed(dialog) {
@@ -2669,6 +2692,7 @@ class SyncProfileApp {
                 dialog.errorHttpStatus = response.status;
                 dialog.errorCode = data.error_code || '';
                 dialog.error = this.apiErrorMessage(data, 'Hardcover confirmed that the import failed. Review the edition details before taking another action.');
+                dialog.wrongFormat = this.editionWrongFormatDetails('failed', data);
                 dialog.checkError = '';
                 this.clearPendingEditionRecovery(dialog.profileId, recovery.runId, recovery.absItemId);
             } else if (

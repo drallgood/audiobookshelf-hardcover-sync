@@ -2584,6 +2584,101 @@ func TestCheckEditionImportRecoveryWithConcreteClients(t *testing.T) {
 	require.Equal(t, "B0SOURCE12:uk", association.RegionalExternalID)
 }
 
+// Hardcover can resolve an ISBN-shaped Audible ASIN to an existing edition
+// with that ISBN that is not an audiobook. Create and check-import must report
+// that verified edition as a final failure, with no recovery data or match.
+func TestEditionImportReportsExistingNonAudiobookEditionAsFinal(t *testing.T) {
+	const itemJSON = `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Reviewed title","authorName":"Author","asin":"0306406152","isbn":"9780306406157"},"duration":100,"numTracks":1}}`
+	fixture := newEditionDraftTestFixture(t, itemJSON, "us")
+	configureEditionCreateRoute(t, fixture)
+	record := editionCreateRecord()
+	record.Title = "Reviewed title"
+	record.Author = "Author"
+	record.ASIN = "0306406152"
+	addCompletedNeedsReviewRun(t, fixture, "run-wrong-format", record)
+
+	var upserts atomic.Int32
+	var statusAvailable atomic.Bool
+	hardcoverServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode Hardcover request: %v", err)
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(request.Query, "UpsertRegionalAudibleBook"):
+			upserts.Add(1)
+			_, _ = w.Write([]byte(`{"data":{"upsert_book":{"id":77,"status":"loaded","book":{"id":42},"edition":{"id":84,"book_id":42,"reading_format_id":1},"edition_id":84,"errors":[]}}}`))
+		case strings.Contains(request.Query, "RegionalAudibleImport"):
+			if !statusAvailable.Load() {
+				_, _ = w.Write([]byte(`{"errors":[{"message":"temporary status lookup failure"}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"data":{"book_import_statuses":[{"status":"loaded","book_id":42,"edition_id":84,"external_id":"0306406152:us","platform_id":32}],"book_mappings":[{"id":77,"state":"loaded","book_id":42,"platform_id":32,"external_id":"0306406152:us","edition_id":84,"edition":{"id":84,"book_id":42,"reading_format_id":1}}]}}`))
+		case strings.Contains(request.Query, "GetEdition"):
+			_, _ = w.Write([]byte(`{"data":{"editions":[{"id":84,"book_id":42,"title":"Reviewed title","reading_format_id":1}]}}`))
+		default:
+			t.Errorf("unexpected Hardcover query: %s", request.Query)
+			http.Error(w, "unexpected query", http.StatusBadRequest)
+		}
+	}))
+	t.Cleanup(hardcoverServer.Close)
+	fixture.config.Hardcover.BaseURL = hardcoverServer.URL
+
+	type wrongFormatEnvelope struct {
+		Error     string `json:"error"`
+		ErrorCode string `json:"error_code"`
+		Outcome   string `json:"outcome"`
+		Data      struct {
+			HardcoverBookID     string `json:"hardcover_book_id"`
+			HardcoverEditionID  string `json:"hardcover_edition_id"`
+			HardcoverEditionURL string `json:"hardcover_edition_url"`
+			RecoveryToken       string `json:"recovery_token"`
+		} `json:"data"`
+	}
+	requireWrongFormat := func(t *testing.T, response *httptest.ResponseRecorder) {
+		t.Helper()
+		require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+		var envelope wrongFormatEnvelope
+		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+		require.Equal(t, "hardcover_edition_wrong_format", envelope.ErrorCode)
+		require.Equal(t, editionOutcomeFailed, envelope.Outcome)
+		require.Contains(t, envelope.Error, "existing edition 84, which Hardcover lists as a physical book")
+		require.Equal(t, "42", envelope.Data.HardcoverBookID)
+		require.Equal(t, "84", envelope.Data.HardcoverEditionID)
+		require.Equal(t, "https://hardcover.app/editions/84", envelope.Data.HardcoverEditionURL)
+		require.Empty(t, envelope.Data.RecoveryToken, "a final result offers no recovery check")
+		stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+		require.NoError(t, err)
+		_, exists := stored.GetAssociation("abs-item-1")
+		require.False(t, exists, "a non-audiobook edition must not be saved as the match")
+	}
+
+	t.Run("create", func(t *testing.T) {
+		statusAvailable.Store(true)
+		requireWrongFormat(t, postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-wrong-format","abs_item_id":"abs-item-1","audible_identifier":"0306406152:us"}`))
+	})
+
+	t.Run("check import after an unconfirmed create", func(t *testing.T) {
+		statusAvailable.Store(false)
+		created := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-wrong-format","abs_item_id":"abs-item-1","audible_identifier":"0306406152:us"}`)
+		require.Equal(t, http.StatusBadGateway, created.Code, created.Body.String())
+		var envelope wrongFormatEnvelope
+		require.NoError(t, json.Unmarshal(created.Body.Bytes(), &envelope))
+		require.NotEmpty(t, envelope.Data.RecoveryToken)
+		upsertsBeforeCheck := upserts.Load()
+
+		statusAvailable.Store(true)
+		requireWrongFormat(t, postEditionImportCheck(t, fixture, fixture.owner, fmt.Sprintf(
+			`{"run_id":"run-wrong-format","abs_item_id":"abs-item-1","audible_identifier":"0306406152:us","recovery_token":%q}`, envelope.Data.RecoveryToken)))
+		require.Equal(t, upsertsBeforeCheck, upserts.Load(), "check-import must not resubmit the import")
+	})
+}
+
 func TestWriteEditionCreateErrorExplainsDailyQuotaBudgetWithoutRetryAfter(t *testing.T) {
 	tests := []struct {
 		name        string

@@ -1727,6 +1727,38 @@ test('terminal failed status check clears recovery and prevents another create',
     assert.match(app.renderEditionDialog(dialog), /confirm-create" disabled/);
 });
 
+test('an import resolved to a non-audiobook edition is final and links to report that edition', async () => {
+    const wrongFormat = {
+        success: false, outcome: 'failed', error_code: 'hardcover_edition_wrong_format',
+        error: 'Hardcover linked this Audible identifier to existing edition 32307716, which Hardcover lists as a physical book, not an audiobook.',
+        data: { hardcover_book_id: '42', hardcover_edition_id: '32307716', hardcover_edition_url: 'https://evil.example/phish' }
+    };
+    const requireFinal = (app, dialog) => {
+        const html = app.renderEditionDialog(dialog);
+        assert.equal(dialog.outcome, 'failed');
+        assert.match(html, /existing edition 32307716, which Hardcover lists as a physical book/);
+        assert.match(html, /<a class="btn btn-primary" href="https:\/\/hardcover\.app\/editions\/32307716"[^>]*>Report a problem on Hardcover<\/a>/);
+        assert.doesNotMatch(html, /evil\.example/);
+        assert.match(html, /HTTP 409.*hardcover_edition_wrong_format/);
+        assert.doesNotMatch(html, /data-edition-dialog="(check-import|confirm-create|retry-create)"/);
+        assert.equal(app.loadPendingEditionRecovery('p1', 'run-1', 'li_1'), null);
+    };
+
+    const createApp = editionApp();
+    const createDialog = stubDialog(createApp, 409, wrongFormat);
+    await createApp.submitEditionCreate();
+    requireFinal(createApp, createDialog);
+
+    const checkApp = editionApp();
+    const checkDialog = stubDialog(checkApp, 503, { success: false, outcome: 'unconfirmed', error_code: 'hardcover_import_unconfirmed', data: {
+        audible_identifier: '0593396960:us', hardcover_book_id: '42', recovery_token: 'opaque-token'
+    } });
+    await checkApp.submitEditionCreate();
+    checkApp.fetchJsonWithTimeout = async () => ({ response: { ok: false, status: 409 }, data: wrongFormat });
+    await checkApp.checkEditionImport();
+    requireFinal(checkApp, checkDialog);
+});
+
 test('invalid recovery token and stale create conflict persist as unknown and direct a fresh sync', async () => {
     const terminalErrors = [
         { error_code: 'edition_recovery_invalid', error: 'The recovery token is no longer valid.' },

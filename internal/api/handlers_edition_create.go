@@ -272,7 +272,7 @@ func (h *Handler) CheckEditionImport(w http.ResponseWriter, r *http.Request) {
 			BookID: bookID, ASIN: asin, Region: region,
 		})
 		if checkErr != nil {
-			if errors.Is(checkErr, hardcover.ErrRegionalAudiobookImportFailed) {
+			if errors.Is(checkErr, hardcover.ErrRegionalAudiobookImportFailed) || errors.Is(checkErr, hardcover.ErrRegionalAudiobookWrongFormat) {
 				return statepkg.Association{}, checkErr
 			}
 			if errors.Is(checkErr, hardcover.ErrRegionalAudiobookIdentityConflict) {
@@ -598,7 +598,8 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 		if errors.Is(err, hardcover.ErrMutationScopeDenied) {
 			return statepkg.Association{}, fmt.Errorf("Hardcover catalogue write permission is required: %w", err)
 		}
-		if errors.Is(err, hardcover.ErrRegionalAudiobookInvalidInput) || errors.Is(err, hardcover.ErrRegionalAudiobookDryRun) || errors.Is(err, hardcover.ErrRegionalAudiobookImportFailed) {
+		if errors.Is(err, hardcover.ErrRegionalAudiobookInvalidInput) || errors.Is(err, hardcover.ErrRegionalAudiobookDryRun) || errors.Is(err, hardcover.ErrRegionalAudiobookImportFailed) ||
+			errors.Is(err, hardcover.ErrRegionalAudiobookWrongFormat) {
 			return statepkg.Association{}, fmt.Errorf("Hardcover regional audiobook import failed: %w", err)
 		}
 		return statepkg.Association{}, fmt.Errorf("Hardcover regional audiobook import failed: %w", markEditionCreateRemoteOutcomeAmbiguous(err))
@@ -946,6 +947,11 @@ func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID strin
 	respond := func(status int, message string) {
 		h.writeEditionCreateStructuredError(w, status, message, errorCode, outcome, recovery)
 	}
+	var wrongFormat *hardcover.RegionalAudiobookWrongFormatError
+	if errors.As(err, &wrongFormat) {
+		h.writeEditionWrongFormatError(w, errorCode, outcome, wrongFormat)
+		return
+	}
 	switch {
 	case errors.Is(err, multiuser.ErrProfileNotFound):
 		respond(http.StatusNotFound, "Sync profile not found")
@@ -1022,8 +1028,51 @@ func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID strin
 	}
 }
 
+// editionWrongFormatData identifies the existing Hardcover edition that a
+// regional import resolved to, so the user can ask Hardcover to correct it.
+type editionWrongFormatData struct {
+	HardcoverBookID     string `json:"hardcover_book_id"`
+	HardcoverEditionID  string `json:"hardcover_edition_id"`
+	ReadingFormatID     string `json:"reading_format_id,omitempty"`
+	HardcoverEditionURL string `json:"hardcover_edition_url"`
+}
+
+// writeEditionWrongFormatError reports a definitive regional import result on
+// the reviewed book whose verified edition is not an audiobook. Hardcover
+// returns the same edition on every resubmission or status check, so no
+// recovery data is offered.
+func (h *Handler) writeEditionWrongFormatError(w http.ResponseWriter, errorCode, outcome string, wrongFormat *hardcover.RegionalAudiobookWrongFormatError) {
+	editionID := strconv.Itoa(wrongFormat.EditionID)
+	message := fmt.Sprintf("Hardcover linked this Audible identifier to existing edition %s, which Hardcover lists as %s, not an audiobook. The match was not saved, and trying again returns the same edition. Report the problem on Hardcover so the edition's format can be corrected, then run a new sync.",
+		editionID, hardcoverReadingFormatName(wrongFormat.ReadingFormatID))
+	h.writeJSONResponse(w, http.StatusConflict, APIResponse{
+		Success: false, Error: message, ErrorCode: errorCode, Outcome: outcome,
+		Data: editionWrongFormatData{
+			HardcoverBookID: strconv.Itoa(wrongFormat.BookID), HardcoverEditionID: editionID,
+			ReadingFormatID:     wrongFormat.ReadingFormatID,
+			HardcoverEditionURL: "https://hardcover.app/editions/" + editionID,
+		},
+	})
+}
+
+// hardcoverReadingFormatName names a Hardcover reading_format_id for users.
+func hardcoverReadingFormatName(formatID string) string {
+	switch formatID {
+	case "1":
+		return "a physical book"
+	case "3":
+		return "both physical and audiobook formats"
+	case "4":
+		return "an ebook"
+	default:
+		return "another format"
+	}
+}
+
 func editionCreateErrorMetadata(err error) (errorCode, outcome string) {
 	switch {
+	case errors.Is(err, hardcover.ErrRegionalAudiobookWrongFormat):
+		return "hardcover_edition_wrong_format", editionOutcomeFailed
 	case errors.Is(err, errEditionCreateRemoteOutcomeAmbiguous), errors.Is(err, errEditionImportUnconfirmed), errors.Is(err, errEditionRecoveryIdentityUnconfirmed):
 		return "hardcover_import_unconfirmed", editionOutcomeUnconfirmed
 	case errors.Is(err, multiuser.ErrEditionAssociationSaveAfterRemoteSuccess):

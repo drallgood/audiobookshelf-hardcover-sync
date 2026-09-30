@@ -28,7 +28,31 @@ var (
 	ErrRegionalAudiobookImportTimeout    = errors.New("regional audiobook import timed out")
 	ErrRegionalAudiobookIdentityConflict = errors.New("regional audiobook import returned conflicting identity")
 	ErrRegionalAudiobookDryRun           = errors.New("regional audiobook import skipped during dry run")
+	// ErrRegionalAudiobookWrongFormat identifies a terminal import whose freshly
+	// read edition is on the requested book but is not an audiobook. Hardcover
+	// can attach an ISBN-shaped Audible ASIN to an existing edition with that
+	// ISBN, so resubmitting or rechecking returns the same edition.
+	ErrRegionalAudiobookWrongFormat = errors.New("regional audiobook import returned a non-audiobook edition")
 )
+
+// RegionalAudiobookWrongFormatError reports the edition Hardcover returned for
+// a regional import when a fresh read shows the requested book but a
+// non-audiobook reading format. It matches ErrRegionalAudiobookWrongFormat and
+// ErrRegionalAudiobookIdentityConflict.
+type RegionalAudiobookWrongFormatError struct {
+	BookID          int
+	EditionID       int
+	ReadingFormatID string
+}
+
+func (e *RegionalAudiobookWrongFormatError) Error() string {
+	return fmt.Sprintf("%s: edition %d on book %d has reading format %s; expected audiobook (ID 2)",
+		ErrRegionalAudiobookIdentityConflict, e.EditionID, e.BookID, regionalReadingFormatDescription(e.ReadingFormatID))
+}
+
+func (e *RegionalAudiobookWrongFormatError) Unwrap() []error {
+	return []error{ErrRegionalAudiobookWrongFormat, ErrRegionalAudiobookIdentityConflict}
+}
 
 // RegionalAudiobookInput identifies an audiobook import for a known Hardcover
 // book using an Audible ASIN and its confirmed region.
@@ -260,7 +284,7 @@ func (c *Client) verifyRegionalAudiobookEdition(ctx context.Context, bookID, edi
 		return 0, 0, nil, fmt.Errorf("%w: expected edition %d on book %d, got edition %s on book %s", ErrRegionalAudiobookIdentityConflict, editionID, bookID, verified.ID, verified.BookID)
 	}
 	if formatErr != nil || verifiedFormatID != models.ReadingFormatID(models.ReadingFormatAudiobook) {
-		return 0, 0, nil, fmt.Errorf("%w: edition %d on book %d has reading format %s; expected audiobook (ID 2)", ErrRegionalAudiobookIdentityConflict, editionID, bookID, regionalReadingFormatDescription(verified.ReadingFormatID))
+		return 0, 0, nil, &RegionalAudiobookWrongFormatError{BookID: bookID, EditionID: editionID, ReadingFormatID: verified.ReadingFormatID}
 	}
 	return verifiedBookID, verifiedFormatID, verified, nil
 }
@@ -469,9 +493,8 @@ func validateRegionalImportEdition(edition *regionalImportEdition, bookID int) e
 	if edition.ID < 0 || (edition.BookID != 0 && edition.BookID != bookID) {
 		return fmt.Errorf("%w: expected book %d, upsert returned edition book %d", ErrRegionalAudiobookIdentityConflict, bookID, edition.BookID)
 	}
-	if edition.ReadingFormatID != nil && *edition.ReadingFormatID != models.ReadingFormatID(models.ReadingFormatAudiobook) {
-		return fmt.Errorf("%w: edition %d on book %d has reading format %s; expected audiobook (ID 2)", ErrRegionalAudiobookIdentityConflict, edition.ID, bookID, regionalReadingFormatDescription(strconv.Itoa(*edition.ReadingFormatID)))
-	}
+	// Reading format is checked only by the fresh edition read after a terminal
+	// status, so a wrong-format result is reported with its verified edition.
 	return nil
 }
 

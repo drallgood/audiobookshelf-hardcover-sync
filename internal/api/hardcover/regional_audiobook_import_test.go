@@ -29,10 +29,13 @@ func TestClient_ImportRegionalAudiobook(t *testing.T) {
 		mappingEdition  int
 		readbackEdition int
 		formatID        int
-		wantStatus      RegionalAudiobookStatus
-		wantErr         error
-		wantNotErr      error
-		wantMessage     string
+		// reportedFormat is the reading format in the upsert and mapping
+		// responses; zero means audiobook.
+		reportedFormat int
+		wantStatus     RegionalAudiobookStatus
+		wantErr        error
+		wantNotErr     error
+		wantMessage    string
 	}{
 		{name: "created import with mapping", status: "created", includeMapping: true, mappingState: "created", mappingBook: 42, formatID: 2, wantStatus: RegionalAudiobookCreated},
 		{name: "loaded import without mapping", status: "loaded", formatID: 2, wantStatus: RegionalAudiobookLoaded},
@@ -47,9 +50,11 @@ func TestClient_ImportRegionalAudiobook(t *testing.T) {
 		{name: "mutation and status edition disagree", status: "created", statusEdition: 901, wantErr: ErrRegionalAudiobookIdentityConflict},
 		{name: "mutation and polled status disagree", status: "created", mutationStatus: "loaded", wantErr: ErrRegionalAudiobookIdentityConflict},
 		{name: "wrong readback edition", status: "created", readbackEdition: 901, formatID: 2, wantErr: ErrRegionalAudiobookIdentityConflict, wantMessage: "expected edition 900 on book 42, got edition 901 on book 42"},
-		{name: "physical format readback", status: "created", formatID: 1, wantErr: ErrRegionalAudiobookIdentityConflict, wantMessage: "edition 900 on book 42 has reading format physical book (ID 1); expected audiobook (ID 2)"},
-		{name: "ebook format readback", status: "created", formatID: 4, wantErr: ErrRegionalAudiobookIdentityConflict, wantMessage: "edition 900 on book 42 has reading format ebook (ID 4); expected audiobook (ID 2)"},
-		{name: "unknown format readback", status: "created", formatID: 99, wantErr: ErrRegionalAudiobookIdentityConflict, wantMessage: "edition 900 on book 42 has reading format unknown (ID 99); expected audiobook (ID 2)"},
+		{name: "physical format readback", status: "created", formatID: 1, wantErr: ErrRegionalAudiobookWrongFormat, wantMessage: "edition 900 on book 42 has reading format physical book (ID 1); expected audiobook (ID 2)"},
+		{name: "ebook format readback", status: "created", formatID: 4, wantErr: ErrRegionalAudiobookWrongFormat, wantMessage: "edition 900 on book 42 has reading format ebook (ID 4); expected audiobook (ID 2)"},
+		{name: "unknown format readback", status: "created", formatID: 99, wantErr: ErrRegionalAudiobookWrongFormat, wantMessage: "edition 900 on book 42 has reading format unknown (ID 99); expected audiobook (ID 2)"},
+		{name: "existing physical edition loaded by ISBN-shaped ASIN", status: "loaded", includeMapping: true, mappingState: "loaded", reportedFormat: 1, formatID: 1, wantErr: ErrRegionalAudiobookWrongFormat, wantMessage: "physical book (ID 1)"},
+		{name: "reported physical format corrected by readback", status: "loaded", includeMapping: true, mappingState: "loaded", reportedFormat: 1, formatID: 2, wantStatus: RegionalAudiobookLoaded},
 	}
 
 	for _, tt := range tests {
@@ -81,6 +86,10 @@ func TestClient_ImportRegionalAudiobook(t *testing.T) {
 			if mutationStatus == "" {
 				mutationStatus = "fetching"
 			}
+			reportedFormat := tt.reportedFormat
+			if reportedFormat == 0 {
+				reportedFormat = 2
+			}
 			readbackEdition := tt.readbackEdition
 			if readbackEdition == 0 {
 				readbackEdition = 900
@@ -96,7 +105,7 @@ func TestClient_ImportRegionalAudiobook(t *testing.T) {
 				case strings.Contains(request.Query, "UpsertRegionalAudibleBook"):
 					mutationQuery = request.Query
 					mutationVariables = request.Variables
-					_, _ = w.Write([]byte(`{"data":{"upsert_book":{"id":77,"status":"` + mutationStatus + `","book":{"id":42},"edition":{"id":900,"book_id":42,"reading_format_id":2},"edition_id":900,"errors":[]}}}`))
+					_, _ = w.Write([]byte(`{"data":{"upsert_book":{"id":77,"status":"` + mutationStatus + `","book":{"id":42},"edition":{"id":900,"book_id":42,"reading_format_id":` + intString(reportedFormat) + `},"edition_id":900,"errors":[]}}}`))
 				case strings.Contains(request.Query, "RegionalAudibleImport"):
 					require.Contains(t, request.Query, "book_mappings(where:")
 					require.Contains(t, request.Query, "platform_id: {_eq: $platformId}")
@@ -109,7 +118,7 @@ func TestClient_ImportRegionalAudiobook(t *testing.T) {
 						mappings = []map[string]interface{}{{
 							"id": 77, "state": mappingState, "book_id": mappingBook, "platform_id": 32,
 							"external_id": "B0ABCDE123:uk", "edition_id": mappingEdition,
-							"edition": map[string]interface{}{"id": mappingEdition, "book_id": mappingBook, "reading_format_id": 2},
+							"edition": map[string]interface{}{"id": mappingEdition, "book_id": mappingBook, "reading_format_id": reportedFormat},
 						}}
 					}
 					statuses := []map[string]interface{}{}
@@ -146,6 +155,12 @@ func TestClient_ImportRegionalAudiobook(t *testing.T) {
 				require.Nil(t, result)
 				if tt.wantMessage != "" {
 					require.Contains(t, err.Error(), tt.wantMessage)
+				}
+				if tt.wantErr == ErrRegionalAudiobookWrongFormat {
+					var wrongFormat *RegionalAudiobookWrongFormatError
+					require.ErrorAs(t, err, &wrongFormat)
+					require.Equal(t, RegionalAudiobookWrongFormatError{BookID: 42, EditionID: 900, ReadingFormatID: strconv.Itoa(tt.formatID)}, *wrongFormat)
+					require.ErrorIs(t, err, ErrRegionalAudiobookIdentityConflict)
 				}
 				if tt.status == "failed" || tt.status == "not_found" {
 					require.Equal(t, 1, mappingQueries)

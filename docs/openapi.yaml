@@ -481,7 +481,36 @@ components:
           type: string
           enum: [not_submitted, unconfirmed, failed, created]
         data:
-          $ref: '#/components/schemas/EditionImportRecovery'
+          description: >-
+            Recovery data for `unconfirmed` and `created` outcomes, or the
+            existing edition for `error_code: hardcover_edition_wrong_format`.
+          oneOf:
+            - $ref: '#/components/schemas/EditionImportRecovery'
+            - $ref: '#/components/schemas/EditionWrongFormat'
+
+    EditionWrongFormat:
+      type: object
+      description: >-
+        Returned with HTTP 409, `outcome: failed`, and `error_code:
+        hardcover_edition_wrong_format` when a terminal regional import resolves
+        to an edition of the reviewed book whose fresh readback is not an
+        audiobook. Hardcover can do this when the Audible ASIN is also an ISBN-10
+        that an existing edition already carries. No match is saved and no
+        recovery token is returned; resubmitting or checking returns the same
+        edition until Hardcover corrects its format.
+      required: [hardcover_book_id, hardcover_edition_id, hardcover_edition_url]
+      properties:
+        hardcover_book_id:
+          type: string
+        hardcover_edition_id:
+          type: string
+        reading_format_id:
+          type: string
+          description: Hardcover reading_format_id from the readback (1 physical, 3 both, 4 ebook).
+        hardcover_edition_url:
+          type: string
+          format: uri
+          example: https://hardcover.app/editions/32307716
 
     EditionDraftSourceIdentifiers:
       type: object
@@ -1356,7 +1385,10 @@ paths:
             enabled, or Hardcover returned an identity conflict. Run a fresh sync
             after source changes. Turn off dry run before creating an edition. For
             an identity conflict, verify the Hardcover result before retrying because
-            another edition may have been created.
+            another edition may have been created. An import resolved to an
+            existing non-audiobook edition of the reviewed book returns
+            `outcome: failed` with `error_code: hardcover_edition_wrong_format`
+            and that edition in `data`.
           content:
             application/json:
               schema:
@@ -1490,7 +1522,10 @@ paths:
             The recovery token is invalid, the run/item is stale, the source
             changed, profile dry run is enabled, a different local association
             already exists, or Hardcover returned an identity conflict. Refresh
-            the draft and inspect the Hardcover result.
+            the draft and inspect the Hardcover result. A terminal import on an
+            existing non-audiobook edition returns `outcome: failed` with
+            `error_code: hardcover_edition_wrong_format` and that edition in
+            `data`.
           content:
             application/json:
               schema:
