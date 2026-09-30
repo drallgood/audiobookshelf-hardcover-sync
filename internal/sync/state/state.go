@@ -132,6 +132,9 @@ type Association struct {
 	// ownership request, and is dropped with the association when it is replaced
 	// or forgotten.
 	OwnershipVerifiedAt int64 `json:"ownershipVerifiedAt,omitempty"`
+	// OwnershipTokenFingerprint scopes a confirmation to the Hardcover account
+	// that produced it. It stores a SHA-256 fingerprint, never the raw token.
+	OwnershipTokenFingerprint string `json:"ownershipTokenFingerprint,omitempty"`
 }
 
 func NewState() *State {
@@ -299,6 +302,7 @@ func (s *State) SetAssociation(association Association) error {
 		// Reconfirming the same match keeps what was already verified about it.
 		previous := *book.Association
 		previous.OwnershipVerifiedAt = association.OwnershipVerifiedAt
+		previous.OwnershipTokenFingerprint = association.OwnershipTokenFingerprint
 		if previous == association {
 			return nil
 		}
@@ -321,10 +325,11 @@ func (s *State) GetAssociation(itemID string) (Association, bool) {
 	return *book.Association, true
 }
 
-// RecordOwnershipVerified remembers that Hardcover's Owned list included the
-// item's saved book and edition at the given time. It does nothing when the item
-// has no association for exactly that book and edition.
-func (s *State) RecordOwnershipVerified(itemID, hardcoverBookID, hardcoverEditionID string, at time.Time) {
+// RecordOwnershipVerified remembers that the Hardcover account identified by
+// tokenFingerprint's SHA-256 fingerprint had the item's saved book and edition
+// on its Owned list at the given time. It does nothing when the item has no
+// association for exactly that book and edition.
+func (s *State) RecordOwnershipVerified(itemID, hardcoverBookID, hardcoverEditionID, tokenFingerprint string, at time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -335,14 +340,21 @@ func (s *State) RecordOwnershipVerified(itemID, hardcoverBookID, hardcoverEditio
 	}
 	association := *book.Association
 	association.OwnershipVerifiedAt = at.Unix()
+	association.OwnershipTokenFingerprint = tokenFingerprint
 	book.Association = &association
 	s.Books[itemID] = book
 	s.dirty = true
 }
 
-// OwnershipVerifiedSince reports whether ownership of the item's saved book and
-// edition was verified at or after the cutoff.
-func (s *State) OwnershipVerifiedSince(itemID, hardcoverBookID, hardcoverEditionID string, cutoff time.Time) bool {
+// OwnershipVerifiedSince reports whether the Hardcover account identified by
+// tokenFingerprint's SHA-256 fingerprint had the item's saved book and edition
+// on its Owned list at or after the cutoff. Empty fingerprints never reuse a
+// confirmation.
+func (s *State) OwnershipVerifiedSince(itemID, hardcoverBookID, hardcoverEditionID, tokenFingerprint string, cutoff time.Time) bool {
+	if tokenFingerprint == "" {
+		return false
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -351,7 +363,9 @@ func (s *State) OwnershipVerifiedSince(itemID, hardcoverBookID, hardcoverEdition
 		book.Association.HardcoverBookID != hardcoverBookID || book.Association.HardcoverEditionID != hardcoverEditionID {
 		return false
 	}
-	return book.Association.OwnershipVerifiedAt != 0 && book.Association.OwnershipVerifiedAt >= cutoff.Unix()
+	return book.Association.OwnershipVerifiedAt != 0 &&
+		book.Association.OwnershipVerifiedAt >= cutoff.Unix() &&
+		book.Association.OwnershipTokenFingerprint == tokenFingerprint
 }
 
 // InvalidateItemCheckpoints removes an item's base and edition-specific

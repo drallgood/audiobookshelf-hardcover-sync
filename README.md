@@ -379,7 +379,7 @@ The project follows standard Go project layout:
 ### 📚 Core Sync Features
 - **Full Library Sync**: Syncs your entire Audiobookshelf library with Hardcover
 - **Smart Status Management**: Automatically sets "Want to Read", "Currently Reading", and "Read" status based on progress
-- **Ownership Tracking**: Marks synced books as "owned" to distinguish from wishlist items. A confirmed result is remembered with the book's saved match and rechecked after 30 days, so later syncs skip that request
+- **Ownership Tracking**: Marks synced books as "owned" to distinguish from wishlist items. A confirmed result is remembered with the saved match for 30 days; changing the Hardcover token or loading older state requires a fresh check when ownership is next reconciled
 - **Incremental Sync**: Efficient state-based syncing to only process changed books
   - Tracks sync state between runs
   - Configurable minimum change threshold

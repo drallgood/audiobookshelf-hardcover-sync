@@ -2,6 +2,8 @@ package sync
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -240,6 +242,7 @@ func TestReconcileBookOwnershipReusesRecentConfirmation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			svc, hc := createTestService()
 			svc.config.Sync.SyncOwned = true
+			svc.config.Hardcover.Token = "ownership-token"
 			book := ownershipTestBook("ownership-" + tt.name)
 			saveOwnershipAssociation(t, svc, book)
 			hcBook := &models.HardcoverBook{ID: "123", EditionID: "456"}
@@ -253,7 +256,7 @@ func TestReconcileBookOwnershipReusesRecentConfirmation(t *testing.T) {
 
 			hc.AssertNumberOfCalls(t, "CheckBookOwnership", 1)
 			hc.AssertNumberOfCalls(t, "MarkEditionAsOwned", tt.wantMarks)
-			assert.True(t, svc.state.OwnershipVerifiedSince(book.ID, "123", "456", time.Now().Add(-time.Minute)))
+			assert.True(t, svc.state.OwnershipVerifiedSince(book.ID, "123", "456", ownershipTokenFingerprint(svc.config.Hardcover.Token), time.Now().Add(-time.Minute)))
 		})
 	}
 }
@@ -270,9 +273,10 @@ func TestReconcileBookOwnershipChecksAgainAfterIntervalOrMatchChange(t *testing.
 		t.Run(tt.name, func(t *testing.T) {
 			svc, hc := createTestService()
 			svc.config.Sync.SyncOwned = true
+			svc.config.Hardcover.Token = "ownership-token"
 			book := ownershipTestBook("ownership-recheck-" + tt.name)
 			saveOwnershipAssociation(t, svc, book)
-			svc.state.RecordOwnershipVerified(book.ID, "123", "456", tt.verified)
+			svc.state.RecordOwnershipVerified(book.ID, "123", "456", ownershipTokenFingerprint(svc.config.Hardcover.Token), tt.verified)
 			hc.On("CheckBookOwnership", mock.Anything, 123).Return(true, nil).Once()
 
 			svc.reconcileBookOwnership(context.Background(), tt.hcBook, *book)
@@ -295,6 +299,7 @@ func TestReconcileBookOwnershipDoesNotRememberDryRunOrFailure(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			svc, hc := createTestService()
 			svc.config.Sync.SyncOwned = true
+			svc.config.Hardcover.Token = "ownership-token"
 			svc.config.Sync.DryRun = tt.dryRun
 			book := ownershipTestBook("ownership-not-saved-" + tt.name)
 			saveOwnershipAssociation(t, svc, book)
@@ -305,7 +310,70 @@ func TestReconcileBookOwnershipDoesNotRememberDryRunOrFailure(t *testing.T) {
 			svc.reconcileBookOwnership(context.Background(), hcBook, *book)
 
 			hc.AssertNumberOfCalls(t, "CheckBookOwnership", 2)
-			assert.False(t, svc.state.OwnershipVerifiedSince(book.ID, "123", "456", time.Now().Add(-time.Hour)))
+			assert.False(t, svc.state.OwnershipVerifiedSince(book.ID, "123", "456", ownershipTokenFingerprint(svc.config.Hardcover.Token), time.Now().Add(-time.Hour)))
 		})
 	}
+}
+
+func TestReconcileBookOwnershipScopesConfirmationToHardcoverToken(t *testing.T) {
+	svc, hc := createTestService()
+	svc.config.Sync.SyncOwned = true
+	const previousToken = "previous-account-token"
+	const replacementToken = "replacement-account-token"
+	svc.config.Hardcover.Token = previousToken
+	book := ownershipTestBook("ownership-token-replacement")
+	saveOwnershipAssociation(t, svc, book)
+	hcBook := &models.HardcoverBook{ID: "123", EditionID: "456"}
+	hc.On("CheckBookOwnership", mock.Anything, 123).Return(true, nil).Once()
+
+	svc.reconcileBookOwnership(context.Background(), hcBook, *book)
+	statePath := filepath.Join(t.TempDir(), "sync_state.json")
+	require.NoError(t, svc.state.Save(statePath))
+	reloadedState, err := state.LoadState(statePath)
+	require.NoError(t, err)
+	svc.state = reloadedState
+
+	// The reloaded confirmation is reusable while the profile keeps its token.
+	svc.reconcileBookOwnership(context.Background(), hcBook, *book)
+	hc.AssertNumberOfCalls(t, "CheckBookOwnership", 1)
+
+	// A replacement token must check the new account and mark the match if it
+	// is absent from that account's Owned list.
+	svc.config.Hardcover.Token = replacementToken
+	hc.On("CheckBookOwnership", mock.Anything, 123).Return(false, nil).Once()
+	hc.On("MarkEditionAsOwned", mock.Anything, 456).Return(nil).Once()
+	svc.reconcileBookOwnership(context.Background(), hcBook, *book)
+
+	hc.AssertExpectations(t)
+	hc.AssertNumberOfCalls(t, "CheckBookOwnership", 2)
+	hc.AssertNumberOfCalls(t, "MarkEditionAsOwned", 1)
+	assert.False(t, svc.state.OwnershipVerifiedSince(book.ID, "123", "456", ownershipTokenFingerprint(previousToken), time.Time{}))
+	assert.True(t, svc.state.OwnershipVerifiedSince(book.ID, "123", "456", ownershipTokenFingerprint(replacementToken), time.Now().Add(-time.Minute)))
+	require.NoError(t, svc.state.Save(statePath))
+	persisted, err := os.ReadFile(statePath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(persisted), previousToken)
+	assert.NotContains(t, string(persisted), replacementToken)
+}
+
+func TestReconcileBookOwnershipRechecksLegacyConfirmation(t *testing.T) {
+	svc, hc := createTestService()
+	svc.config.Sync.SyncOwned = true
+	svc.config.Hardcover.Token = "current-account-token"
+	book := ownershipTestBook("ownership-legacy-confirmation")
+	saveOwnershipAssociation(t, svc, book)
+	// A timestamp with no token fingerprint represents state written before the
+	// account scope was added.
+	svc.state.RecordOwnershipVerified(book.ID, "123", "456", "", time.Now())
+	statePath := filepath.Join(t.TempDir(), "sync_state.json")
+	require.NoError(t, svc.state.Save(statePath))
+	reloadedState, err := state.LoadState(statePath)
+	require.NoError(t, err)
+	svc.state = reloadedState
+	hc.On("CheckBookOwnership", mock.Anything, 123).Return(true, nil).Once()
+
+	svc.reconcileBookOwnership(context.Background(), &models.HardcoverBook{ID: "123", EditionID: "456"}, *book)
+
+	hc.AssertExpectations(t)
+	hc.AssertNumberOfCalls(t, "CheckBookOwnership", 1)
 }

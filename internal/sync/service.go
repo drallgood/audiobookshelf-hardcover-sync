@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math"
@@ -5059,7 +5060,8 @@ func (s *Service) reconcileBookOwnership(ctx context.Context, hcBook *models.Har
 	}
 	// Ownership rarely changes, so a recent confirmation for this saved match
 	// replaces the per-sync check. The check repeats after ownershipRecheckInterval.
-	if s.state != nil && s.state.OwnershipVerifiedSince(book.ID, hcBook.ID, hcBook.EditionID, time.Now().Add(-ownershipRecheckInterval)) {
+	tokenFingerprint := ownershipTokenFingerprint(s.config.Hardcover.Token)
+	if s.state != nil && s.state.OwnershipVerifiedSince(book.ID, hcBook.ID, hcBook.EditionID, tokenFingerprint, time.Now().Add(-ownershipRecheckInterval)) {
 		log.Debug("Skipping ownership check: recently verified for this saved match", nil)
 		return
 	}
@@ -5118,7 +5120,15 @@ func (s *Service) rememberOwnershipVerified(book models.AudiobookshelfBook, hcBo
 	if s.state == nil || s.config.Sync.DryRun {
 		return
 	}
-	s.state.RecordOwnershipVerified(book.ID, hcBook.ID, hcBook.EditionID, time.Now())
+	s.state.RecordOwnershipVerified(book.ID, hcBook.ID, hcBook.EditionID, ownershipTokenFingerprint(s.config.Hardcover.Token), time.Now())
+}
+
+func ownershipTokenFingerprint(token string) string {
+	if token == "" {
+		return ""
+	}
+	fingerprint := sha256.Sum256([]byte(token))
+	return fmt.Sprintf("%x", fingerprint[:])
 }
 
 func hasValidHardcoverOwnershipIDs(hcBook *models.HardcoverBook) bool {
