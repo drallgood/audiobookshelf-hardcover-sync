@@ -1519,11 +1519,6 @@ class SyncProfileApp {
         const authGeneration = this.authSessionGeneration;
         const requestGeneration = (open.editionCapabilityRequestGeneration || 0) + 1;
         open.editionCapabilityRequestGeneration = requestGeneration;
-        const button = document.querySelector('#sync-summary-content [data-edition-capability-refresh]');
-        if (button) {
-            button.disabled = true;
-            button.textContent = 'Checking…';
-        }
         this.refreshEditionActionStates(open);
         try {
             const { response, data } = await this.fetchJsonWithTimeout(
@@ -1539,7 +1534,6 @@ class SyncProfileApp {
             if (response.ok && data?.success) {
                 open.editionCapability = data.data;
                 open.editionCapabilityLoaded = true;
-                this.refreshEditionActionStates(open);
             } else {
                 this.showToast(this.apiErrorMessage(data, `Could not refresh permissions (HTTP ${response.status}).`), 'error');
             }
@@ -1552,11 +1546,6 @@ class SyncProfileApp {
             if (authGeneration === this.authSessionGeneration && this.openSummary === open
                 && open.editionCapabilityRequestGeneration === requestGeneration) {
                 open.editionCapabilityRefreshing = false;
-                const currentButton = document.querySelector('#sync-summary-content [data-edition-capability-refresh]');
-                if (currentButton) {
-                    currentButton.disabled = false;
-                    currentButton.textContent = 'Refresh permissions';
-                }
                 this.refreshEditionActionStates(open);
             }
         }

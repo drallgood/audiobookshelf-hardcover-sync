@@ -1515,7 +1515,6 @@ func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.Har
 	formatID := readingFormatIDFromCtx(ctx)
 	// Audiobooks require a region-qualified Audible mapping. Ebooks retain
 	// their bare ASIN matches through both editions.asin and legacy mappings.
-	bookASINClauses := make([]string, 0, 3)
 	editionASINClauses := make([]string, 0, 3)
 	asinVariableDeclaration := ""
 	variables := map[string]interface{}{
@@ -1525,21 +1524,18 @@ func (c *Client) SearchBookByASIN(ctx context.Context, asin string) (*models.Har
 	if formatID != models.ReadingFormatID("audiobook") {
 		asinVariableDeclaration = "$asin: String!, "
 		variables["asin"] = asin
-		bookASINClauses = append(bookASINClauses,
-			"{editions: {asin: {_eq: $asin}, reading_format: {id: {_eq: $format_id}}}}",
-			"{editions: {book_mappings: {external_id: {_eq: $asin}, platform: {name: {_eq: \"Audible\"}}}, reading_format: {id: {_eq: $format_id}}}}",
-		)
 		editionASINClauses = append(editionASINClauses,
 			"{asin: {_eq: $asin}, reading_format: {id: {_eq: $format_id}}}",
 			"{book_mappings: {external_id: {_eq: $asin}, platform: {name: {_eq: \"Audible\"}}}, reading_format: {id: {_eq: $format_id}}}",
 		)
 	}
-	bookASINClauses = append(bookASINClauses,
-		"{editions: {book_mappings: {external_id: {_eq: $asin_us}, platform: {name: {_eq: \"Audible\"}}}, reading_format: {id: {_eq: $format_id}}}}",
-	)
 	editionASINClauses = append(editionASINClauses,
 		"{book_mappings: {external_id: {_eq: $asin_us}, platform: {name: {_eq: \"Audible\"}}}, reading_format: {id: {_eq: $format_id}}}",
 	)
+	bookASINClauses := make([]string, 0, len(editionASINClauses))
+	for _, editionClause := range editionASINClauses {
+		bookASINClauses = append(bookASINClauses, "{editions: "+editionClause+"}")
+	}
 	query := fmt.Sprintf(`
 query BookByASIN(%s$asin_us: String!, $format_id: Int!) {
   books(

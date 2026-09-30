@@ -548,14 +548,17 @@ test('View Details refreshes denied permissions and ignores an older capability 
     summary.expandedOutcomes = new Set();
     app.statuses = { p1: { profile_name: 'Profile One' } };
 
-    const content = { innerHTML: '', querySelectorAll: () => [] };
-    const tabs = { innerHTML: '' };
     const refreshButton = { disabled: false, textContent: 'Refresh permissions' };
+    const content = {
+        innerHTML: '',
+        querySelector: selector => selector === '[data-edition-capability-refresh]' ? refreshButton : null,
+        querySelectorAll: () => []
+    };
+    const tabs = { innerHTML: '' };
     const previousDocument = global.document;
     global.document = {
         ...previousDocument,
-        getElementById(id) { return id === 'sync-summary-content' ? content : id === 'sync-summary-tabs' ? tabs : null; },
-        querySelector(selector) { return selector === '#sync-summary-content [data-edition-capability-refresh]' ? refreshButton : null; }
+        getElementById(id) { return id === 'sync-summary-content' ? content : id === 'sync-summary-tabs' ? tabs : null; }
     };
     t.after(() => { global.document = previousDocument; });
 
