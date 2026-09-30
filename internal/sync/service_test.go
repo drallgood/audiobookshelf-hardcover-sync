@@ -597,7 +597,7 @@ func TestProcessFoundBook_OwnershipSync(t *testing.T) {
 			expectError: false, // Error is logged but doesn't fail the function
 			expectOwned: false,
 			setupMocks: func(m *MockHardcoverClient) {
-				// Expect GetUserBookID and CheckBookOwnership with error
+				// Expect CheckBookOwnership with error
 				// BOOK ID is used for ownership check
 				m.On("CheckBookOwnership", mock.Anything, 123).Return(false, errors.New("ownership check failed"))
 			},

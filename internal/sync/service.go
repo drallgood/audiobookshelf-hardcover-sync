@@ -2060,25 +2060,24 @@ func (s *Service) enhanceBookProgressFromUserData(book *models.AudiobookshelfBoo
 	return log
 }
 
-// processBook processes a single book and updates its status in Hardcover.
 // savedAssociationHardcoverBook returns the Hardcover book and edition saved for
 // an item when its association still matches the Audiobookshelf identifiers. It
 // makes no Hardcover request and returns nil when there is no usable match.
-func (s *Service) savedAssociationHardcoverBook(stateKey string, book models.AudiobookshelfBook) *models.HardcoverBook {
+func (s *Service) savedAssociationHardcoverBook(book models.AudiobookshelfBook) *models.HardcoverBook {
 	if s.state == nil {
 		return nil
 	}
-	saved, ok := s.state.GetBookState(stateKey)
-	if !ok || saved.Association == nil || !associationMatchesBook(*saved.Association, book) ||
-		strings.TrimSpace(saved.Association.HardcoverBookID) == "" {
+	association, ok := s.state.GetAssociation(book.ID)
+	if !ok || !associationMatchesBook(association, book) || strings.TrimSpace(association.HardcoverBookID) == "" {
 		return nil
 	}
 	return &models.HardcoverBook{
-		ID:        saved.Association.HardcoverBookID,
-		EditionID: saved.Association.HardcoverEditionID,
+		ID:        association.HardcoverBookID,
+		EditionID: association.HardcoverEditionID,
 	}
 }
 
+// processBook processes a single book and updates its status in Hardcover.
 func (s *Service) processBook(ctx context.Context, book models.AudiobookshelfBook, userProgress *models.AudiobookshelfUserProgress) error {
 	return s.processBookWithVerifiedEdition(ctx, book, userProgress, nil)
 }
@@ -2340,7 +2339,7 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 			})
 			bookProcessed = false // Explicitly mark as not processed when skipping due to no changes
 			if hcBook == nil {
-				hcBook = s.savedAssociationHardcoverBook(preliminaryStateKey, book)
+				hcBook = s.savedAssociationHardcoverBook(book)
 			}
 			setOutcome(OutcomeAlreadyCurrent, "incremental state is current")
 			return nil
@@ -2366,7 +2365,7 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 			"minimum_progress": s.config.Sync.MinimumProgress,
 		})
 		bookProcessed = false
-		hcBook = s.savedAssociationHardcoverBook(book.ID, book)
+		hcBook = s.savedAssociationHardcoverBook(book)
 		setOutcome(OutcomeSkipped, "below minimum progress threshold")
 		return nil
 	}

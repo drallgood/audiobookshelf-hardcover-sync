@@ -88,9 +88,9 @@ func TestFindBookInHardcoverByASINDoesNotResolveUserBook(t *testing.T) {
 	hc.AssertNotCalled(t, "CreateUserBook", mock.Anything, mock.Anything, mock.Anything)
 }
 
-// A title-only candidate whose search hit carries its authors needs no second
-// request; a hit without authors still falls back to the full book lookup.
-func TestFindBookInHardcoverByTitleAuthorSkipsBookLookupWhenSearchHasAuthors(t *testing.T) {
+// A title-only candidate needs no second request only when its search hit has
+// authors, cover, and slug; incomplete hits fall back to the full book lookup.
+func TestFindBookInHardcoverByTitleAuthorSkipsBookLookupWhenSearchHasRequiredMetadata(t *testing.T) {
 	for _, tt := range []struct {
 		name        string
 		hit         models.HardcoverBook
