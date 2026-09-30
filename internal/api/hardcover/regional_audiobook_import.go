@@ -124,18 +124,9 @@ mutation UpsertRegionalAudibleBook($book: CreateBookFromPlatformInput!) {
 	if err != nil {
 		return nil, err
 	}
-	verified, err := c.GetEditionUncached(ctx, strconv.Itoa(editionID))
+	verifiedBookID, verifiedFormatID, err := c.verifyRegionalAudiobookEdition(ctx, input.BookID, editionID, "verify regional Audible edition")
 	if err != nil {
-		return nil, fmt.Errorf("verify regional Audible edition %d: %w", editionID, err)
-	}
-	if verified == nil {
-		return nil, fmt.Errorf("%w: edition %d could not be read back", ErrRegionalAudiobookIdentityConflict, editionID)
-	}
-	verifiedEditionID, editionErr := strconv.Atoi(verified.ID)
-	verifiedBookID, bookErr := strconv.Atoi(verified.BookID)
-	verifiedFormatID, formatErr := strconv.Atoi(verified.ReadingFormatID)
-	if editionErr != nil || bookErr != nil || formatErr != nil || verifiedEditionID != editionID || verifiedBookID != input.BookID || verifiedFormatID != models.ReadingFormatID(models.ReadingFormatAudiobook) {
-		return nil, fmt.Errorf("%w: expected edition %d on book %d with audiobook format, got edition %q book %q format %q", ErrRegionalAudiobookIdentityConflict, editionID, input.BookID, verified.ID, verified.BookID, verified.ReadingFormatID)
+		return nil, err
 	}
 
 	return &RegionalAudiobookResult{
@@ -231,18 +222,9 @@ func (c *Client) CheckRegionalAudiobookImport(ctx context.Context, input Regiona
 			return nil, false, err
 		}
 	}
-	verified, err := c.GetEditionUncached(ctx, strconv.Itoa(editionID))
+	verifiedBookID, verifiedFormatID, err := c.verifyRegionalAudiobookEdition(ctx, input.BookID, editionID, "verify recovered regional Audible edition")
 	if err != nil {
-		return nil, false, fmt.Errorf("verify recovered regional Audible edition %d: %w", editionID, err)
-	}
-	if verified == nil {
-		return nil, false, fmt.Errorf("%w: edition %d could not be read back", ErrRegionalAudiobookIdentityConflict, editionID)
-	}
-	verifiedEditionID, editionErr := strconv.Atoi(verified.ID)
-	verifiedBookID, bookErr := strconv.Atoi(verified.BookID)
-	verifiedFormatID, formatErr := strconv.Atoi(verified.ReadingFormatID)
-	if editionErr != nil || bookErr != nil || formatErr != nil || verifiedEditionID != editionID || verifiedBookID != input.BookID || verifiedFormatID != models.ReadingFormatID(models.ReadingFormatAudiobook) {
-		return nil, false, fmt.Errorf("%w: expected edition %d on book %d with audiobook format, got edition %q book %q format %q", ErrRegionalAudiobookIdentityConflict, editionID, input.BookID, verified.ID, verified.BookID, verified.ReadingFormatID)
+		return nil, false, err
 	}
 
 	return &RegionalAudiobookResult{
@@ -258,6 +240,23 @@ func normalizeRegionalAudiobookInput(input RegionalAudiobookInput) (string, stri
 		return "", "", fmt.Errorf("%w: book ID, ten-character ASIN, and supported region are required", ErrRegionalAudiobookInvalidInput)
 	}
 	return asin, region, nil
+}
+
+func (c *Client) verifyRegionalAudiobookEdition(ctx context.Context, bookID, editionID int, fetchContext string) (int, int, error) {
+	verified, err := c.GetEditionUncached(ctx, strconv.Itoa(editionID))
+	if err != nil {
+		return 0, 0, fmt.Errorf("%s %d: %w", fetchContext, editionID, err)
+	}
+	if verified == nil {
+		return 0, 0, fmt.Errorf("%w: edition %d could not be read back", ErrRegionalAudiobookIdentityConflict, editionID)
+	}
+	verifiedEditionID, editionErr := strconv.Atoi(verified.ID)
+	verifiedBookID, bookErr := strconv.Atoi(verified.BookID)
+	verifiedFormatID, formatErr := strconv.Atoi(verified.ReadingFormatID)
+	if editionErr != nil || bookErr != nil || formatErr != nil || verifiedEditionID != editionID || verifiedBookID != bookID || verifiedFormatID != models.ReadingFormatID(models.ReadingFormatAudiobook) {
+		return 0, 0, fmt.Errorf("%w: expected edition %d on book %d with audiobook format, got edition %q book %q format %q", ErrRegionalAudiobookIdentityConflict, editionID, bookID, verified.ID, verified.BookID, verified.ReadingFormatID)
+	}
+	return verifiedBookID, verifiedFormatID, nil
 }
 
 type regionalImportEdition struct {

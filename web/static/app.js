@@ -2391,9 +2391,10 @@ class SyncProfileApp {
             if (this.editionDialog !== dialog) return;
             dialog.busy = false;
             if (response.status === 401) { this.closeEditionDialog(); this.handleAuthExpiry(); return; }
-            if (response.ok && data?.success === true && this.isValidEditionCreateResult(
+            const validSuccessEnvelope = response.ok && data?.success === true && this.isValidEditionCreateResult(
                 data.data, dialog.record.book_id, dialog.draft.reading_format, dialog.record.hardcover_book_id
-            )) {
+            );
+            if (validSuccessEnvelope) {
                 dialog.result = data.data;
                 this.saveAddedEditionBookId(dialog.profileId, dialog.runId, dialog.record.book_id);
                 this.clearPendingEditionRecovery(dialog.profileId, dialog.runId, dialog.record.book_id);
@@ -2438,9 +2439,7 @@ class SyncProfileApp {
                     this.savePendingEditionRecovery(dialog);
                 } else {
                     const message = this.apiErrorMessage(data, '');
-                    if (!outcome && (response.status >= 500 || (response.ok && (data?.success !== true || !this.isValidEditionCreateResult(
-                        data?.data, dialog.record.book_id, dialog.draft.reading_format, dialog.record.hardcover_book_id
-                    ))))) {
+                    if (!outcome && (response.status >= 500 || (response.ok && !validSuccessEnvelope))) {
                         dialog.outcome = 'transport_unknown';
                         dialog.errorHttpStatus = response.status;
                         dialog.errorCode = data?.error_code || '';

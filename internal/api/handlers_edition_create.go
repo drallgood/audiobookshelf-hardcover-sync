@@ -245,7 +245,7 @@ func (h *Handler) CheckEditionImport(w http.ResponseWriter, r *http.Request) {
 		}
 		recovery = &editionRecoveryData{
 			AudibleIdentifier: externalID, HardcoverBookID: record.HardcoverBookID,
-			RecoveryToken: request.RecoveryToken, claims: verifiedClaims,
+			RecoveryToken: request.RecoveryToken,
 		}
 		absClient, clientErr := h.editionCreateABSClient(profile.AudiobookshelfURL, profile.AudiobookshelfToken, h.multiUserService.AudiobookshelfNetworkTrust())
 		if clientErr != nil {
@@ -580,7 +580,7 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 	}
 	response.recovery = &editionRecoveryData{
 		AudibleIdentifier: externalID, HardcoverBookID: record.HardcoverBookID,
-		RecoveryToken: signEditionRecoveryToken(profile.HardcoverToken, claims), claims: claims,
+		RecoveryToken: signEditionRecoveryToken(profile.HardcoverToken, claims),
 	}
 	mutationCtx := hardcover.WithMinimumMutationBudget(ctx, editionCreateMutationReserve)
 	result, err := client.ImportRegionalAudiobook(mutationCtx, hardcover.RegionalAudiobookInput{BookID: bookID, ASIN: asin, Region: region})
