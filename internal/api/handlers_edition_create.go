@@ -926,11 +926,7 @@ const (
 func (h *Handler) writeEditionCreateStructuredError(w http.ResponseWriter, status int, message, errorCode, outcome string, recovery *editionRecoveryData) {
 	var data *editionRecoveryData
 	if (outcome == editionOutcomeUnconfirmed || outcome == editionOutcomeCreated) && recovery != nil {
-		data = &editionRecoveryData{
-			AudibleIdentifier: recovery.AudibleIdentifier,
-			HardcoverBookID:   recovery.HardcoverBookID,
-			RecoveryToken:     recovery.RecoveryToken,
-		}
+		data = recovery
 	}
 	h.writeJSONResponse(w, status, APIResponse{
 		Success: false, Error: message, ErrorCode: errorCode, Outcome: outcome, Data: data,
