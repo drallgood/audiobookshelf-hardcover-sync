@@ -128,6 +128,10 @@ confirmation was received. Expand technical details for the HTTP status and
 error code. If low daily Hardcover API quota prevents submission, the dialog
 explains that nothing was added and asks you to wait until the quota resets.
 Use **Retry add edition** once the service is available again.
+For View Details creates, the browser must save and verify a pending-request
+marker in session storage first. If storage is unavailable, the dialog sends
+nothing and lets you retry when storage is available. Direct API and CLI calls
+do not use this browser marker.
 
 Matched results show their current Hardcover book and edition with **Forget
 match**. If a saved match exists, confirmation removes only this app's saved

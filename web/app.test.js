@@ -331,7 +331,7 @@ test('closing a pending create is ignored and its successful result is processed
     app.refreshEditionActionStates = () => { app.actionRefreshes = (app.actionRefreshes || 0) + 1; };
     app.openSummary = { profileId: 'private-profile', runContext: { runId: 'run-1' }, addedEditionBookIds: new Set() };
     const dialog = {
-        mode: 'create', profileId: 'private-profile', runId: 'run-1', record: { book_id: 'li_1' },
+        mode: 'create', profileId: 'private-profile', runId: 'run-1', record: { ...needsReview },
         draft: { reading_format: 'audiobook', dry_run: false }, busy: false, error: '', result: null
     };
     app.editionDialog = dialog;
@@ -340,7 +340,7 @@ test('closing a pending create is ignored and its successful result is processed
     app.closeEditionDialog();
     assert.equal(app.editionDialog, dialog);
     request.resolve({ response: { ok: true, status: 200 }, data: { success: true, data: {
-        status: 'created', hardcover_book_id: '42', hardcover_edition_id: '99',
+        ...validCreateResult(),
         resync: { attempted: true, outcome: 'synced' }
     } } });
     await creating;
@@ -374,7 +374,7 @@ test('session reset ignores a late forget 401 without expiring the new session',
 });
 
 function editionApp(overrides = {}) {
-    global.window.sessionStorage?.clear();
+    global.window.sessionStorage?.clear?.();
     const app = createApp();
     app.statuses = { p1: { snapshot: { run_id: 'run-1', state: 'completed' } } };
     app.trackedRunIds = new Map();
@@ -395,6 +395,13 @@ const needsReview = {
     book_id: 'li_1', outcome: 'needs_review', title: '<b>Dune</b>', format: 'audiobook',
     asin: 'B00ABC1234', hardcover_book_id: '42'
 };
+
+function validCreateResult(overrides = {}) {
+    return {
+        abs_item_id: 'li_1', reading_format: 'audiobook', status: 'created',
+        hardcover_book_id: '42', hardcover_edition_id: '99', ...overrides
+    };
+}
 
 test('create action requires an eligible needs-review record with an identifier and a permitted profile', () => {
     const app = editionApp();
@@ -495,6 +502,36 @@ test('capability fetch refreshes the rendered Add edition button after pending, 
         await deniedLoad;
         assert.equal(button.disabled, true);
         assert.match(button.title, /does not have permission/);
+    } finally {
+        global.document.getElementById = previousGetElementById;
+    }
+});
+
+test('late capability denial keeps a pending request open for inspection without another create', async () => {
+    const app = editionApp();
+    const record = { ...needsReview };
+    const summary = app.openSummary;
+    summary.records.set(record.book_id, record);
+    const pending = {
+        submittedBody: { run_id: 'run-1', abs_item_id: 'li_1' }, outcome: 'transport_unknown',
+        draft: { reading_format: 'audiobook' }, transportError: 'Check Hardcover before trying again.'
+    };
+    app.savePendingEditionRecovery({ ...pending, profileId: 'p1', runId: 'run-1', record });
+    const button = { disabled: true, title: 'Denied', closest: () => ({ dataset: { bookId: 'li_1' } }), removeAttribute(name) { if (name === 'title') delete this.title; } };
+    const previousGetElementById = global.document.getElementById;
+    global.document.getElementById = id => id === 'sync-summary-content' ? { querySelectorAll: () => [button] } : null;
+    try {
+        summary.editionCapabilityLoaded = true;
+        summary.editionCapability = { audiobook: { status: 'denied', can_attempt: false } };
+        app.refreshEditionActionStates(summary);
+        assert.equal(button.disabled, false);
+        app.editionDialog = null;
+        let requests = 0;
+        app.fetchJsonWithTimeout = async () => { requests++; throw new Error('Recovery must not create'); };
+        await app.openEditionDialog(record.book_id);
+        assert.equal(requests, 0);
+        assert.equal(app.editionDialog.outcome, 'transport_unknown');
+        assert.doesNotMatch(app.renderEditionDialog(app.editionDialog), /confirm-create|retry-create/);
     } finally {
         global.document.getElementById = previousGetElementById;
     }
@@ -841,7 +878,7 @@ test('submitting an edition create uses a timeout long enough for the server\'s 
     let capturedOptions;
     app.fetchJsonWithTimeout = async (_url, options) => {
         capturedOptions = options;
-        return { response: { ok: true, status: 200 }, data: { success: true, data: { status: 'created' } } };
+        return { response: { ok: true, status: 200 }, data: { success: true, data: validCreateResult() } };
     };
     app.readEditionFormFields = () => ({});
     app.editionDialog = {
@@ -872,7 +909,7 @@ test('successful create updates the book action immediately and shows a separate
     } };
     t.after(() => { global.document = previousDocument; });
     const dialog = stubDialog(app, 200, { success: true, data: {
-        status: 'created', hardcover_book_id: '42', hardcover_edition_id: '99',
+        ...validCreateResult(),
         resync: { attempted: true, error: 'hardcover down' }
     } });
     await app.submitEditionCreate();
@@ -891,7 +928,12 @@ test('successful create updates the book action immediately and shows a separate
 });
 
 test('malformed create success envelopes stay unknown and never mark the item added', async () => {
-    for (const malformedData of [undefined, 'created', []]) {
+    for (const malformedData of [undefined, 'created', [], {},
+        validCreateResult({ abs_item_id: 'another-item' }),
+        validCreateResult({ hardcover_book_id: '43' }),
+        validCreateResult({ reading_format: 'ebook' }),
+        validCreateResult({ status: 'pending' }),
+        validCreateResult({ hardcover_edition_id: '0' })]) {
         const app = editionApp();
         const dialog = stubDialog(app, 200, { success: true, data: malformedData });
         await app.submitEditionCreate();
@@ -900,10 +942,31 @@ test('malformed create success envelopes stay unknown and never mark the item ad
         assert.doesNotMatch(app.renderEditionDialog(dialog), /data-edition-dialog="confirm-create"/);
         assert.equal(app.openSummary.addedEditionBookIds?.has('li_1') || false, false);
     }
+    const app = editionApp();
+    const dialog = stubDialog(app, 200, { success: 1, data: validCreateResult() });
+    await app.submitEditionCreate();
+    assert.equal(dialog.outcome, 'transport_unknown');
+    assert.equal(dialog.result, null);
+});
+
+test('valid loaded, reused, and existing create results are accepted', async () => {
+    for (const status of ['loaded', 'reused', 'existing']) {
+        const app = editionApp();
+        const dialog = stubDialog(app, 200, { success: true, data: validCreateResult({ status }) });
+        await app.submitEditionCreate();
+        assert.equal(dialog.outcome, '');
+        assert.equal(dialog.result.status, status);
+        assert.ok(app.openSummary.addedEditionBookIds.has('li_1'));
+    }
 });
 
 test('malformed check-import success stays pending and does not mark the item added', async () => {
-    for (const malformedData of [undefined, 'created', []]) {
+    for (const malformedData of [undefined, 'created', [], {},
+        validCreateResult({ abs_item_id: 'another-item' }),
+        validCreateResult({ hardcover_book_id: '43' }),
+        validCreateResult({ reading_format: 'ebook' }),
+        validCreateResult({ status: 'pending' }),
+        validCreateResult({ hardcover_edition_id: '-1' })]) {
         const app = editionApp();
         const dialog = stubDialog(app, 503, { success: false, outcome: 'unconfirmed', data: {
             audible_identifier: 'B00ABC1234:us', hardcover_book_id: '42', recovery_token: 'opaque-token'
@@ -944,7 +1007,7 @@ test('create result explains resync outcomes that did not apply read status', ()
 
 test('successful create does not mark a different run as resolved', async () => {
     const app = editionApp();
-    stubDialog(app, 200, { success: true, data: { status: 'created' } });
+    stubDialog(app, 200, { success: true, data: validCreateResult() });
     app.openSummary.runContext.runId = 'run-2';
     await app.submitEditionCreate();
     assert.match(app.renderEditionActions(needsReview), /data-edition-action="add"/);
@@ -1251,7 +1314,7 @@ test('added edition labels survive a page reload and remain scoped to user, prof
     t.after(() => { window.localStorage = previousStorage; global.document = previousDocument; });
 
     const app = editionApp({ authEnabled: true, currentUser: { id: 'user-1' } });
-    stubDialog(app, 200, { success: true, data: { status: 'created', resync: { attempted: true, error: 'offline' } } });
+    stubDialog(app, 200, { success: true, data: { ...validCreateResult(), resync: { attempted: true, error: 'offline' } } });
     await app.submitEditionCreate();
     app.editionDialog = null;
     app.saveAddedEditionBookId('p1', 'run-1', 'li_2');
@@ -1292,15 +1355,75 @@ test('failed creates and unavailable or malformed browser storage do not restore
         getItem() { throw new Error('storage blocked'); },
         setItem() { throw new Error('storage blocked'); }
     };
-    stubDialog(app, 200, { success: true, data: { status: 'created' } });
+    stubDialog(app, 200, { success: true, data: validCreateResult() });
     await app.submitEditionCreate();
     assert.match(app.renderEditionActions(needsReview), /Hardcover Edition Added/);
     assert.equal(app.editionDialog.error, '');
 });
 
+test('create is not sent unless the pending marker is durably saved in session storage', async () => {
+    const originalStorage = window.sessionStorage;
+    const partiallyWritten = new Map();
+    const blockedCases = [
+        { name: 'missing', storage: null },
+        { name: 'throws', storage: { getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); } } },
+        { name: 'silently ignores writes', storage: { getItem() { return null; }, setItem() {} } },
+        { name: 'readback fails after writing', storage: {
+            clear() { partiallyWritten.clear(); },
+            getItem() { throw new Error('readback blocked'); },
+            setItem(key, value) { partiallyWritten.set(key, value); },
+            removeItem(key) { partiallyWritten.delete(key); }
+        }, verify() {
+            const reloaded = createApp();
+            assert.equal(reloaded.loadPendingEditionRecovery('p1', 'run-1', 'li_1'), null);
+            assert.equal(partiallyWritten.size, 0);
+        } }
+    ];
+    try {
+        for (const blocked of blockedCases) {
+            window.sessionStorage = blocked.storage;
+            const app = editionApp();
+            const dialog = stubDialog(app, 200, {});
+            app.readEditionFormFields = () => {
+                dialog.fieldValues = { title: 'Edited title' };
+                return { title: { value: 'Edited title', original: 'Original title' } };
+            };
+            let creates = 0;
+            app.fetchJsonWithTimeout = async () => { creates++; throw new Error('must not send'); };
+            await app.submitEditionCreate();
+            assert.equal(creates, 0, blocked.name);
+            assert.equal(dialog.outcome, 'not_submitted');
+            assert.equal(dialog.retryCreate, true);
+            assert.deepEqual(dialog.fieldValues, { title: 'Edited title' });
+            assert.match(dialog.error, /nothing was sent/);
+            assert.equal(app.pendingEditionRecoveries?.size || 0, 0);
+            blocked.verify?.();
+        }
+
+        window.sessionStorage = originalStorage;
+        originalStorage.clear();
+        const app = editionApp();
+        const dialog = stubDialog(app, 200, {});
+        const request = deferred();
+        let creates = 0;
+        app.fetchJsonWithTimeout = () => { creates++; return request.promise; };
+        const submitting = app.submitEditionCreate();
+        assert.equal(creates, 1);
+        const refreshed = createApp();
+        assert.equal(refreshed.loadPendingEditionRecovery('p1', 'run-1', 'li_1').outcome, 'transport_unknown');
+        request.resolve({ response: { ok: false, status: 503 }, data: { success: false, outcome: 'not_submitted' } });
+        await submitting;
+        assert.equal(app.loadPendingEditionRecovery('p1', 'run-1', 'li_1'), null);
+        assert.equal(dialog.outcome, 'not_submitted');
+    } finally {
+        window.sessionStorage = originalStorage;
+        originalStorage.clear();
+    }
+});
+
 test('reload during an in-flight create blocks another import until a definite response', async () => {
     for (const terminal of [
-        { response: { ok: true, status: 200 }, data: { success: true, data: { status: 'created' } } },
+        { response: { ok: true, status: 200 }, data: { success: true, data: validCreateResult() } },
         { response: { ok: false, status: 503 }, data: { success: false, outcome: 'not_submitted', error: 'No import was sent' } }
     ]) {
         const app = editionApp();
@@ -1360,7 +1483,7 @@ test('check import status uses the saved token and original identifiers, then re
     let captured;
     app.fetchJsonWithTimeout = async (url, options) => {
         captured = { url, options, body: JSON.parse(options.body) };
-        return { response: { ok: true, status: 200 }, data: { success: true, data: { status: 'created', hardcover_book_id: '42', hardcover_edition_id: '99' } } };
+        return { response: { ok: true, status: 200 }, data: { success: true, data: validCreateResult() } };
     };
 
     await app.checkEditionImport();

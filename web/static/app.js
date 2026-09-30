@@ -1477,6 +1477,12 @@ class SyncProfileApp {
             const bookId = button.closest('[data-book-id]')?.dataset.bookId;
             const record = open.records?.get(String(bookId));
             if (!record) return;
+            const pendingRecovery = this.loadPendingEditionRecovery(open.profileId, open.runContext?.runId, record.book_id);
+            if (pendingRecovery) {
+                button.disabled = false;
+                button.removeAttribute('title');
+                return;
+            }
             if (open.addedEditionBookIds?.has(String(bookId))) {
                 button.outerHTML = '<span class="edition-added" role="status">Hardcover Edition Added</span>';
                 return;
@@ -2359,10 +2365,18 @@ class SyncProfileApp {
         dialog.submittedBody = { ...body };
         // Persist before sending: a reload can discard the response even when
         // Hardcover received the import. Only a definite response clears this.
-        this.savePendingEditionRecovery({
+        const pending = {
             ...dialog, outcome: 'transport_unknown', recovery: null,
             transportError: 'The create request started, but no result was received before the page reloaded. Check Hardcover, then run a new sync before trying again.'
-        });
+        };
+        if (!this.savePendingEditionRecovery(pending, { requireDurable: true })) {
+            this.clearPendingEditionRecovery(dialog.profileId, dialog.runId, dialog.record.book_id);
+            dialog.outcome = 'not_submitted';
+            dialog.retryCreate = true;
+            dialog.error = 'The pending request could not be saved in browser session storage, so nothing was sent. Keep this dialog open and retry after storage is available.';
+            this.showEditionDialog();
+            return;
+        }
         dialog.busy = true;
         dialog.error = '';
         this.showEditionDialog();
@@ -2377,7 +2391,9 @@ class SyncProfileApp {
             if (this.editionDialog !== dialog) return;
             dialog.busy = false;
             if (response.status === 401) { this.closeEditionDialog(); this.handleAuthExpiry(); return; }
-            if (response.ok && data?.success && data?.data && typeof data.data === 'object' && !Array.isArray(data.data)) {
+            if (response.ok && data?.success === true && this.isValidEditionCreateResult(
+                data.data, dialog.record.book_id, dialog.draft.reading_format, dialog.record.hardcover_book_id
+            )) {
                 dialog.result = data.data;
                 this.saveAddedEditionBookId(dialog.profileId, dialog.runId, dialog.record.book_id);
                 this.clearPendingEditionRecovery(dialog.profileId, dialog.runId, dialog.record.book_id);
@@ -2422,7 +2438,9 @@ class SyncProfileApp {
                     this.savePendingEditionRecovery(dialog);
                 } else {
                     const message = this.apiErrorMessage(data, '');
-                    if (!outcome && (response.status >= 500 || (response.ok && (!data?.success || !data?.data || typeof data.data !== 'object' || Array.isArray(data.data))))) {
+                    if (!outcome && (response.status >= 500 || (response.ok && (data?.success !== true || !this.isValidEditionCreateResult(
+                        data?.data, dialog.record.book_id, dialog.draft.reading_format, dialog.record.hardcover_book_id
+                    ))))) {
                         dialog.outcome = 'transport_unknown';
                         dialog.errorHttpStatus = response.status;
                         dialog.errorCode = data?.error_code || '';
@@ -2525,7 +2543,10 @@ class SyncProfileApp {
             if (this.editionDialog !== dialog) return;
             dialog.busy = false;
             if (response.status === 401) { this.closeEditionDialog(); this.handleAuthExpiry(); return; }
-            if (response.ok && data?.success && data?.data && typeof data.data === 'object' && !Array.isArray(data.data)) {
+            if (response.ok && data?.success === true && this.isValidEditionCreateResult(
+                data.data, recovery.absItemId, dialog.draft?.reading_format || dialog.record.format,
+                recovery.hardcoverBookId || dialog.record.hardcover_book_id
+            )) {
                 dialog.result = data.data;
                 dialog.outcome = 'created';
                 this.saveAddedEditionBookId(dialog.profileId, recovery.runId, recovery.absItemId);
@@ -2585,6 +2606,18 @@ class SyncProfileApp {
         return `abs-hardcover-pending-edition:${encodeURIComponent(userId)}:${encodeURIComponent(String(profileId))}:${encodeURIComponent(String(runId))}:${encodeURIComponent(String(bookId))}`;
     }
 
+    isValidEditionCreateResult(data, absItemId, readingFormat, hardcoverBookId) {
+        if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+        const positiveId = value => /^\d+$/.test(String(value ?? '')) && Number(value) > 0;
+        return String(data.abs_item_id ?? '') === String(absItemId)
+            && String(data.reading_format ?? '').toLowerCase() === String(readingFormat ?? '').toLowerCase()
+            && ['created', 'loaded', 'reused', 'existing'].includes(String(data.status ?? '').toLowerCase())
+            && positiveId(data.hardcover_book_id)
+            && positiveId(data.hardcover_edition_id)
+            && positiveId(hardcoverBookId)
+            && String(data.hardcover_book_id) === String(hardcoverBookId);
+    }
+
     loadPendingEditionRecovery(profileId, runId, bookId) {
         this.pendingEditionRecoveries ||= new Map();
         const key = this.pendingEditionRecoveryKey(profileId, runId, bookId);
@@ -2611,8 +2644,8 @@ class SyncProfileApp {
         }
     }
 
-    savePendingEditionRecovery(dialog) {
-        if (!dialog?.submittedBody || (!dialog.recovery && dialog.outcome !== 'transport_unknown')) return;
+    savePendingEditionRecovery(dialog, { requireDurable = false } = {}) {
+        if (!dialog?.submittedBody || (!dialog.recovery && dialog.outcome !== 'transport_unknown')) return false;
         this.pendingEditionRecoveries ||= new Map();
         const key = this.pendingEditionRecoveryKey(dialog.profileId, dialog.runId, dialog.record.book_id);
         const saved = {
@@ -2626,8 +2659,13 @@ class SyncProfileApp {
         };
         this.pendingEditionRecoveries.set(key, saved);
         try {
-            window.sessionStorage?.setItem(key, JSON.stringify(saved));
+            if (!window.sessionStorage) return false;
+            const serialized = JSON.stringify(saved);
+            window.sessionStorage.setItem(key, serialized);
+            if (requireDurable && window.sessionStorage.getItem(key) !== serialized) return false;
+            return true;
         } catch (_) { /* Recovery remains available for the life of this dialog. */ }
+        return !requireDurable;
     }
 
     clearPendingEditionRecovery(profileId, runId, bookId) {
