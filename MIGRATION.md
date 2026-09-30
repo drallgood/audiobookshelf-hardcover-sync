@@ -64,9 +64,9 @@ no longer matches an audiobook either; only regional Audible mappings, saved
 matches, and title/author search are used. Ebook ISBN matching is unchanged
 and continues to be saved after a successful match.
 
-Unlike the `editions.asin` change above, this one does not wait for an
-audiobook's progress or status to change. Every audiobook match method that
-remains valid after this change is saved as a local association (this has been
+Audiobooks previously matched only by `editions.asin` or ISBN are evaluated
+without waiting for their progress or status to change. Every audiobook match
+method that remains valid after this change is saved as a local association (this has been
 true since the durable-association feature shipped), so "this audiobook has a
 sync checkpoint but no saved association" exactly identifies one whose current
 match relied on `editions.asin` or ISBN. Sync clears that stale checkpoint
