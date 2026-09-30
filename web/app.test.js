@@ -1167,7 +1167,7 @@ test('edition dialog closes on Escape except while creating, and restores focus 
 
 test('edition dialog keeps Tab focus inside the modal', () => {
     const originalDocument = global.document;
-    const makeButton = () => ({ focused: false, focus() { global.document.activeElement = this; } });
+    const makeButton = () => ({ tabIndex: 0, focused: false, focus() { global.document.activeElement = this; } });
     const [first, last] = [makeButton(), makeButton()];
     const content = { querySelectorAll() { return [first, last]; } };
     global.document = { ...originalDocument, activeElement: last, getElementById(id) { return id === 'edition-modal-content' ? content : null; } };
@@ -1182,6 +1182,57 @@ test('edition dialog keeps Tab focus inside the modal', () => {
         global.document.activeElement = outside;
         app.handleEditionDialogKeydown({ key: 'Tab', shiftKey: false, preventDefault() {} });
         assert.equal(global.document.activeElement, first);
+    } finally {
+        global.document = originalDocument;
+    }
+});
+
+test('edition dialog allows Tab through recovery details and links in DOM order', () => {
+    const originalDocument = global.document;
+    const control = (tagName, attributes = {}, options = {}) => ({
+        tagName, attributes, tabIndex: 0, ...options,
+        focus() { global.document.activeElement = this; }
+    });
+    const headerClose = control('button');
+    const details = control('summary');
+    const checkImport = control('button');
+    const hardcoverLink = control('a', { href: 'https://hardcover.app/books/test' });
+    const disabledCheck = control('button', {}, { disabled: true });
+    const hiddenControl = control('input', {}, { hidden: true });
+    const programmaticControl = control('div', { tabindex: '-1' }, { tabIndex: -1 });
+    const customControl = control('div', { tabindex: '0' });
+    const footerClose = control('button');
+    const controls = [headerClose, details, checkImport, hardcoverLink, disabledCheck, hiddenControl, programmaticControl, customControl, footerClose];
+    const content = {
+        querySelectorAll(selector) {
+            // Model tag and attribute selection while retaining document order.
+            return controls.filter(element => selector.split(',').some(part => {
+                const tag = part.trim().match(/^[a-z]+/i)?.[0];
+                const attributes = [...part.matchAll(/\[([a-z]+)\]/gi)].map(match => match[1]);
+                return (!tag || element.tagName === tag) && attributes.every(name => name in element.attributes);
+            }));
+        }
+    };
+    global.document = { ...originalDocument, getElementById(id) { return id === 'edition-modal-content' ? content : null; } };
+    try {
+        const app = createApp();
+        app.editionDialog = { mode: 'create', outcome: 'unconfirmed' };
+        const expected = [headerClose, details, checkImport, hardcoverLink, customControl, footerClose];
+        assert.deepEqual(app.editionDialogFocusables(), expected);
+        for (const active of expected.slice(1, -1)) {
+            global.document.activeElement = active;
+            for (const shiftKey of [false, true]) {
+                let prevented = false;
+                app.handleEditionDialogKeydown({ key: 'Tab', shiftKey, preventDefault() { prevented = true; } });
+                assert.equal(prevented, false, `${active.tagName} should advance in native Tab order`);
+                assert.equal(global.document.activeElement, active);
+            }
+        }
+        global.document.activeElement = footerClose;
+        app.handleEditionDialogKeydown({ key: 'Tab', preventDefault() {} });
+        assert.equal(global.document.activeElement, headerClose);
+        app.handleEditionDialogKeydown({ key: 'Tab', shiftKey: true, preventDefault() {} });
+        assert.equal(global.document.activeElement, footerClose);
     } finally {
         global.document = originalDocument;
     }

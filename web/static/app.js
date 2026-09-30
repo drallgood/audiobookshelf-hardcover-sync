@@ -2006,7 +2006,8 @@ class SyncProfileApp {
 
     editionDialogFocusables() {
         const content = document.getElementById('edition-modal-content');
-        return [...(content?.querySelectorAll?.('button:not([disabled]), input:not([disabled])') || [])];
+        const controls = content?.querySelectorAll?.('a[href], button, input, select, textarea, summary, [tabindex]') || [];
+        return [...controls].filter(control => control.tabIndex >= 0 && !control.disabled && !control.hidden);
     }
 
     // Escape closes the dialog (closeEditionDialog refuses while a create is
