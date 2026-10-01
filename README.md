@@ -108,8 +108,9 @@ metadata has changed since the displayed run, run a new sync first.
 If an import cannot be confirmed, follow the dialog's recovery guidance:
 
 - Use **Check import status** when available to confirm an audiobook import and
-  save its match without submitting it again. Retry the check if it temporarily
-  fails; run a sync afterward to update reading progress.
+  save its match without submitting it again. The recovery link is valid for 48
+  hours; after it expires, inspect Hardcover before running a new sync. Retry a
+  check if it temporarily fails; run a sync afterward to update reading progress.
 - If no status check is available, including for an uncertain ebook import,
   open Hardcover to inspect the book, then run a new sync. Avoid submitting
   another import while its outcome is unknown, including after a page reload.

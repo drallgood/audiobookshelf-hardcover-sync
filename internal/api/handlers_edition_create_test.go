@@ -360,6 +360,7 @@ func TestCheckEditionImportPersistsReadOnlyRecoveryAndIsIdempotent(t *testing.T)
 	require.Equal(t, "42", successEnvelope.Data.HardcoverBookID)
 	require.Equal(t, "84", successEnvelope.Data.HardcoverEditionID)
 	require.Equal(t, "B0SOURCE12:uk", successEnvelope.Data.RegionalExternalID)
+	require.NotContains(t, first.Body.String(), "recovery_token", "recovery details are returned only for recoverable errors")
 
 	checksBeforeRepeat := checks.Load()
 	second := postEditionImportCheck(t, fixture, fixture.owner, body)
@@ -403,6 +404,38 @@ func TestCheckEditionImportRejectsTamperedTokenBeforeExternalLookup(t *testing.T
 	require.Equal(t, editionOutcomeNotSubmitted, envelope.Outcome)
 	require.Zero(t, externalCalls.Load())
 	require.Zero(t, fixture.absRequests.Load(), "token validation precedes the fresh ABS source lookup")
+}
+
+func TestCheckEditionImportRejectsExpiredTokenBeforeExternalLookup(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`, "us")
+	configureEditionCreateRoute(t, fixture)
+	addCompletedNeedsReviewRun(t, fixture, "run-check-expired", editionCreateRecord())
+	var externalCalls atomic.Int32
+	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+		return editionCreateHardcoverStub{checkFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, bool, error) {
+			externalCalls.Add(1)
+			return nil, false, nil
+		}}
+	}
+	claims := editionRecoveryClaims{
+		ProfileID: "draft-profile", RunID: "run-check-expired", ABSItemID: "abs-item-1",
+		HardcoverBookID: "42", AudibleIdentifier: "B0SOURCE12:uk",
+	}
+	token := signEditionRecoveryTokenAt("hardcover-token", claims, time.Now().Add(-49*time.Hour))
+	response := postEditionImportCheck(t, fixture, fixture.owner,
+		fmt.Sprintf(`{"run_id":"run-check-expired","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk","recovery_token":%q}`, token))
+	require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+	var envelope struct {
+		ErrorCode string `json:"error_code"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	require.Equal(t, "edition_recovery_invalid", envelope.ErrorCode)
+	require.Zero(t, externalCalls.Load())
+	require.Zero(t, fixture.absRequests.Load(), "expired recovery is rejected before the ABS source lookup")
+	stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+	require.NoError(t, err)
+	_, exists := stored.GetAssociation("abs-item-1")
+	require.False(t, exists)
 }
 
 func TestCheckEditionImportABSReadFailuresPreserveRecoveryAndCanRetry(t *testing.T) {

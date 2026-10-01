@@ -98,7 +98,7 @@ type editionCreateResponse struct {
 	sourceItem *models.AudiobookshelfBook
 	// recovery preserves the signed attempted-import identity for error
 	// responses only. It is never exposed on successful create responses.
-	recovery *editionRecoveryData
+	recovery *editionRecoveryData `json:"-"`
 }
 
 type editionResyncResponse struct {

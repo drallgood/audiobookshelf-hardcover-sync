@@ -6,7 +6,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"strings"
+	"time"
 )
+
+const editionRecoveryLifetime = 48 * time.Hour
 
 type editionRecoveryClaims struct {
 	Version           int    `json:"v"`
@@ -16,6 +19,8 @@ type editionRecoveryClaims struct {
 	HardcoverBookID   string `json:"b"`
 	AudibleIdentifier string `json:"a"`
 	Correction        string `json:"c"`
+	IssuedAt          int64  `json:"issued_at"`
+	ExpiresAt         int64  `json:"expires_at"`
 }
 
 type editionRecoveryData struct {
@@ -25,7 +30,13 @@ type editionRecoveryData struct {
 }
 
 func signEditionRecoveryToken(hardcoverToken string, claims editionRecoveryClaims) string {
+	return signEditionRecoveryTokenAt(hardcoverToken, claims, time.Now())
+}
+
+func signEditionRecoveryTokenAt(hardcoverToken string, claims editionRecoveryClaims, now time.Time) string {
 	claims.Version = 1
+	claims.IssuedAt = now.Unix()
+	claims.ExpiresAt = now.Add(editionRecoveryLifetime).Unix()
 	payload, _ := json.Marshal(claims)
 	encodedPayload := base64.RawURLEncoding.EncodeToString(payload)
 	signature := editionRecoverySignature(hardcoverToken, encodedPayload)
@@ -33,6 +44,10 @@ func signEditionRecoveryToken(hardcoverToken string, claims editionRecoveryClaim
 }
 
 func verifyEditionRecoveryToken(hardcoverToken, token string, expected editionRecoveryClaims) (editionRecoveryClaims, bool) {
+	return verifyEditionRecoveryTokenAt(hardcoverToken, token, expected, time.Now())
+}
+
+func verifyEditionRecoveryTokenAt(hardcoverToken, token string, expected editionRecoveryClaims, now time.Time) (editionRecoveryClaims, bool) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return editionRecoveryClaims{}, false
@@ -51,6 +66,12 @@ func verifyEditionRecoveryToken(hardcoverToken, token string, expected editionRe
 	}
 	var claims editionRecoveryClaims
 	if err := json.Unmarshal(payload, &claims); err != nil {
+		return editionRecoveryClaims{}, false
+	}
+	nowUnix := now.Unix()
+	if claims.IssuedAt <= 0 || claims.ExpiresAt <= claims.IssuedAt ||
+		claims.ExpiresAt-claims.IssuedAt > int64(editionRecoveryLifetime/time.Second) ||
+		claims.IssuedAt > nowUnix || nowUnix >= claims.ExpiresAt {
 		return editionRecoveryClaims{}, false
 	}
 	if claims.Version != 1 || claims.ProfileID != expected.ProfileID || claims.RunID != expected.RunID ||
