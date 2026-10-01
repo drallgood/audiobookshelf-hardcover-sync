@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Show confirmed edition additions across browsers and server restarts using saved matches, while preserving the original sync outcomes and counts.
+
 ### Added
 
 - **Audiobook ISBN fallback and insertion**: Sync may search an Audiobookshelf ISBN only when the source ASIN is absent or malformed; a valid canonical ASIN remains authoritative if regional lookup fails. Incremental sync rechecks ISBN matches while preserving checkpoints to avoid repeated writes for unchanged books. Add Edition can create an audiobook-format edition from the read-only Audiobookshelf ISBN preview in that case. Normal sync still makes no Hardcover catalogue writes. By @Snuffy2 (#217)

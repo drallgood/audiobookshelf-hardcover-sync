@@ -608,6 +608,12 @@ func (h *Handler) GetRunDetails(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := h.multiUserService.AnnotateEditionAdditions(profileID, snapshot); err != nil {
+		h.log.Error("Failed to load saved edition additions: " + err.Error())
+		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to retrieve saved edition additions")
+		return
+	}
+
 	h.writeSuccessResponse(w, snapshot)
 }
 

@@ -111,6 +111,7 @@ func (c OutcomeCounts) Total() int32 {
 // BookOutcomeRecord describes one attempted item. Records are keyed by the
 // Audiobookshelf item ID and replaced if a caller retries the same item.
 type BookOutcomeRecord struct {
+	EditionAdded           bool        `json:"edition_added,omitempty"`
 	BookID                 string      `json:"book_id"`
 	Outcome                SyncOutcome `json:"outcome"`
 	Title                  string      `json:"title,omitempty"`

@@ -1494,14 +1494,14 @@ class SyncProfileApp {
             const bookId = button.closest('[data-book-id]')?.dataset.bookId;
             const record = open.records?.get(String(bookId));
             if (!record) return;
+            if (record.edition_added === true || open.addedEditionBookIds?.has(String(bookId))) {
+                button.outerHTML = '<span class="edition-added" role="status">Hardcover Edition Added</span>';
+                return;
+            }
             const pendingRecovery = this.loadPendingEditionRecovery(open.profileId, open.runContext?.runId, record.book_id);
             if (pendingRecovery) {
                 button.disabled = false;
                 button.removeAttribute('title');
-                return;
-            }
-            if (open.addedEditionBookIds?.has(String(bookId))) {
-                button.outerHTML = '<span class="edition-added" role="status">Hardcover Edition Added</span>';
                 return;
             }
             const reason = this.editionActionDisabledReason(record, open);
@@ -1714,6 +1714,9 @@ class SyncProfileApp {
         open.renderedRunId = snapshot.run_id;
         open.runContext = { runId: snapshot.run_id, state: String(snapshot.state || '').toLowerCase(), dryRun: this.toBool(snapshot.dry_run, false) };
         open.records = new Map((snapshot.book_outcomes || []).map(record => [String(record.book_id), record]));
+        // Fresh details are authoritative, including when a saved match was forgotten.
+        open.addedEditionBookIds = new Set((snapshot.book_outcomes || [])
+            .filter(record => record.edition_added === true).map(record => String(record.book_id)));
         const categories = this.outcomeCategories(snapshot.outcome_counts || {});
         const records = new Map((snapshot.book_outcomes || []).map(record => [record.book_id, record]));
         tabs.innerHTML = `<button class="tab-button active" type="button">${this.escapeHtml(this.statuses[open.profileId]?.profile_name || `Profile ${open.profileId}`)}</button>`;
@@ -1988,12 +1991,13 @@ class SyncProfileApp {
         const profileId = open.profileId;
         const syncing = this.profileIsSyncing(profileId);
         if (record.outcome === 'needs_review') {
+            if (record.edition_added === true || open.addedEditionBookIds?.has(String(record.book_id))) {
+                return '<div class="edition-actions"><span class="edition-added" role="status">Hardcover Edition Added</span></div>';
+            }
+
             const pendingRecovery = this.loadPendingEditionRecovery(profileId, open.runContext?.runId, record.book_id);
             if (pendingRecovery) {
                 return `<div class="edition-actions"><button type="button" class="book-service-link edition-action-pill" data-edition-action="add">Resolve pending edition request</button></div>`;
-            }
-            if (open.addedEditionBookIds?.has(String(record.book_id))) {
-                return '<div class="edition-actions"><span class="edition-added" role="status">Hardcover Edition Added</span></div>';
             }
             const disabledReason = this.editionActionDisabledReason(record, open);
             return `<div class="edition-actions">
@@ -2133,6 +2137,7 @@ class SyncProfileApp {
         const open = this.openSummary;
         const record = open?.records?.get(String(bookId));
         if (!open || !record || this.isViewer()) return;
+        if (record.edition_added === true) return;
         const recovery = this.loadPendingEditionRecovery(open.profileId, open.runContext?.runId, record.book_id);
         if (!recovery) {
             if (open.addedEditionBookIds?.has(String(bookId))) return;

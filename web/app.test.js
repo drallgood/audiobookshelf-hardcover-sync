@@ -2092,3 +2092,41 @@ test('import recovery preserves auth expiry handling and escapes server supplied
     assert.equal(app.authExpiryCalls, 1);
     assert.equal(app.editionDialog, null);
 });
+
+test('server-confirmed additions render on a different browser without local storage', async t => {
+    const previousStorage = window.localStorage;
+    window.localStorage = { getItem() { return null; }, setItem() {} };
+    t.after(() => { window.localStorage = previousStorage; });
+    const app = editionApp();
+    const record = { ...needsReview, edition_added: true };
+    app.openSummary.addedEditionBookIds = new Set();
+    app.openSummary.records = new Map([[String(record.book_id), record]]);
+    app.loadPendingEditionRecovery = () => ({ outcome: 'transport_unknown' });
+    assert.match(app.renderEditionActions(record), /Hardcover Edition Added/);
+    assert.doesNotMatch(app.renderEditionActions(record), /data-edition-action/);
+    app.editionDialog = null;
+    await app.openEditionDialog(record.book_id);
+    assert.equal(app.editionDialog, null);
+    assert.match(app.renderEditionActions({ ...record, edition_added: false }), /Resolve pending edition request/);
+});
+
+test('fresh server details replace stale browser markers after a match is forgotten', t => {
+    const app = editionApp();
+    app.statuses = { p1: { profile_name: 'Profile One' } };
+    app.openSummary.addedEditionBookIds = new Set([String(needsReview.book_id)]);
+    const content = { innerHTML: '', querySelector: () => null, querySelectorAll: () => [] };
+    const tabs = { innerHTML: '' };
+    const previousDocument = global.document;
+    global.document = {
+        ...previousDocument,
+        getElementById(id) { return id === 'sync-summary-content' ? content : id === 'sync-summary-tabs' ? tabs : null; }
+    };
+    t.after(() => { global.document = previousDocument; });
+    const snapshot = { run_id: 'run-1', state: 'completed', outcome_counts: { needs_review: 1 }, book_outcomes: [{ ...needsReview, edition_added: true }] };
+    app.renderDetailsSnapshot(snapshot);
+    assert.match(content.innerHTML, /Hardcover Edition Added/);
+    snapshot.book_outcomes = [{ ...needsReview }];
+    app.renderDetailsSnapshot(snapshot);
+    assert.doesNotMatch(content.innerHTML, /Hardcover Edition Added/);
+    assert.match(content.innerHTML, /data-edition-action="add"/);
+});

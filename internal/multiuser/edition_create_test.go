@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
+	syncsvc "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 	"github.com/stretchr/testify/require"
 )
@@ -457,4 +458,42 @@ func TestCreateEditionWithAssociationAndResyncSkipsResyncWhenNothingWasCreated(t
 		}, noResync(t))
 		require.ErrorIs(t, err, ErrEditionAssociationSaveAfterRemoteSuccess)
 	})
+}
+
+func TestAnnotateEditionAdditionsRequiresMatchingSavedAPIAssociation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*statepkg.Association)
+		want   bool
+	}{
+		{"confirmed create", func(*statepkg.Association) {}, true},
+		{"other book", func(a *statepkg.Association) { a.HardcoverBookID = "99" }, false},
+		{"other source", func(a *statepkg.Association) { a.SourceASIN = "B099999999" }, false},
+		{"other format", func(a *statepkg.Association) { a.ReadingFormat = "audiobook" }, false},
+		{"ordinary sync", func(a *statepkg.Association) { a.Provenance = "regional_mapping" }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service, profileID := newEditionCreateService(t)
+			a := testCreateAssociation("item")
+			tc.change(&a)
+			require.NoError(t, service.CreateEditionWithAssociation(context.Background(), profileID, "item", func(*database.ProfileWithTokens) (statepkg.Association, error) { return a, nil }))
+			snapshot := syncsvc.SyncSnapshot{State: "canceled", BookOutcomes: []syncsvc.BookOutcomeRecord{{BookID: "item", Outcome: syncsvc.OutcomeNeedsReview, Format: "ebook", ASIN: "B012345678", ISBN: "9780306406157", HardcoverBookID: "41"}}}
+			require.NoError(t, service.AnnotateEditionAdditions(profileID, &snapshot))
+			require.Equal(t, tc.want, snapshot.BookOutcomes[0].EditionAdded)
+		})
+	}
+}
+
+func TestAnnotateEditionAdditionsStateFailureAndDryRun(t *testing.T) {
+	service, profileID := newEditionCreateService(t)
+	path := service.profileSpecificStatePath(profileID, "sync.json")
+	require.NoError(t, os.WriteFile(path, []byte("invalid state"), 0600))
+	snapshot := syncsvc.SyncSnapshot{State: "completed", BookOutcomes: []syncsvc.BookOutcomeRecord{{BookID: "item", Outcome: syncsvc.OutcomeNeedsReview}}}
+	require.Error(t, service.AnnotateEditionAdditions(profileID, &snapshot))
+	require.False(t, snapshot.BookOutcomes[0].EditionAdded)
+	snapshot.DryRun = true
+	require.NoError(t, service.AnnotateEditionAdditions(profileID, &snapshot))
+	contents, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, "invalid state", string(contents))
 }

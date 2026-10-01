@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
@@ -322,4 +323,48 @@ func (s *MultiUserService) hardcoverClientConfig() *hardcover.ClientConfig {
 		}
 	}
 	return clientConfig
+}
+
+// AnnotateEditionAdditions overlays current saved edition additions on a detached
+// run-details snapshot. Historical outcomes and counts remain unchanged.
+func (s *MultiUserService) AnnotateEditionAdditions(profileID string, snapshot *sync.SyncSnapshot) error {
+	if snapshot == nil || snapshot.DryRun || (snapshot.State != "completed" && snapshot.State != "canceled") {
+		return nil
+	}
+	needsReview := false
+	for _, record := range snapshot.BookOutcomes {
+		if record.Outcome == sync.OutcomeNeedsReview {
+			needsReview = true
+			break
+		}
+	}
+	if !needsReview {
+		return nil
+	}
+	config, err := s.repository.GetProfileSyncConfig(profileID)
+	if err != nil {
+		return err
+	}
+	if err := s.validatePersistedProfileStateFile(profileID, config.StateFile); err != nil {
+		return err
+	}
+	_, path, _, err := s.profileStateSourcePath(profileID, config.StateFile)
+	if err != nil {
+		return err
+	}
+	state, err := statepkg.LoadState(path)
+	if err != nil {
+		return fmt.Errorf("load saved edition additions: %w", err)
+	}
+	for i := range snapshot.BookOutcomes {
+		record := &snapshot.BookOutcomes[i]
+		association, exists := state.GetAssociation(record.BookID)
+		record.EditionAdded = record.Outcome == sync.OutcomeNeedsReview && exists &&
+			strings.HasPrefix(association.Provenance, "api_") &&
+			association.HardcoverBookID == record.HardcoverBookID &&
+			association.ReadingFormat == record.Format &&
+			association.SourceASIN == record.ASIN &&
+			(record.ISBN == "" || record.ISBN == association.SourceISBN10 || record.ISBN == association.SourceISBN13)
+	}
+	return nil
 }

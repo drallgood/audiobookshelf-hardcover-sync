@@ -755,6 +755,9 @@ components:
         match_method: {type: string}
         hardcover_book_id: {type: string}
         edition_id: {type: string}
+        edition_added:
+          type: boolean
+          description: A matching confirmed edition addition is currently saved for this needs-review item. Historical outcomes and counts are unchanged.
         hardcover_title: {type: string}
         hardcover_author: {type: string}
         hardcover_published_year: {type: string}

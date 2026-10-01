@@ -667,6 +667,15 @@ func (r *Repository) parseSyncConfig(profileID, serialized string) (SyncConfigDa
 	return syncConfig, nil
 }
 
+// GetProfileSyncConfig reads sync settings without loading or decrypting tokens.
+func (r *Repository) GetProfileSyncConfig(profileID string) (SyncConfigData, error) {
+	var config SyncProfileConfig
+	if err := r.db.GetDB().Select("sync_config").Where("profile_id = ?", profileID).First(&config).Error; err != nil {
+		return SyncConfigData{}, fmt.Errorf("get profile sync settings: %w", err)
+	}
+	return r.parseSyncConfig(profileID, config.SyncConfig)
+}
+
 // GetProfileMetadata retrieves an active profile without loading its config or
 // decrypting its tokens. It is used for authorization decisions.
 func (r *Repository) GetProfileMetadata(profileID string) (*SyncProfile, error) {
