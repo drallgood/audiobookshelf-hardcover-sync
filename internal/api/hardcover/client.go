@@ -651,15 +651,14 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		reqModifier(req)
 
 		// Apply pacing and acquire a permit for the active HTTP request.
-		dailyQuotaWait := budgetedMutation && c.rateLimiter.DailyQuotaConstrainingAdmission()
-		release, err := c.rateLimiter.Acquire(ctx)
+		release, dailyQuotaWait, err := c.rateLimiter.AcquireWithDailyQuotaPacing(ctx)
 		if err != nil {
 			if budgetedMutation && ctx.Err() != nil {
 				if errors.Is(err, util.ErrAdmissionWaitCanceled) {
 					if c.rateLimiter.DailyQuotaPaused() {
 						return fmt.Errorf("%w: daily request quota held admission before the mutation could be sent: %w: %w", ErrMutationInsufficientBudget, ErrMutationDailyQuotaExhausted, err)
 					}
-					if c.rateLimiter.DailyQuotaConstrainingAdmission() {
+					if dailyQuotaWait {
 						return fmt.Errorf("%w: daily request quota pacing ended before the mutation could be sent: %w: %w", ErrMutationInsufficientBudget, ErrMutationDailyQuotaLow, err)
 					}
 				}
@@ -688,12 +687,12 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		if budgetedMutation && !mutationBudgetRemaining(ctx, minimumMutationBudget) {
 			releasePermit()
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				if dailyQuotaWait && c.rateLimiter.DailyQuotaConstrainingAdmission() {
+				if dailyQuotaWait {
 					return fmt.Errorf("%w: daily request quota pacing consumed the mutation reserve: %w: %w", ErrMutationInsufficientBudget, ErrMutationDailyQuotaLow, ctxErr)
 				}
 				return fmt.Errorf("%w: required %s to remain before sending: %w", ErrMutationInsufficientBudget, minimumMutationBudget, ctxErr)
 			}
-			if dailyQuotaWait && c.rateLimiter.DailyQuotaConstrainingAdmission() {
+			if dailyQuotaWait {
 				return fmt.Errorf("%w: daily request quota pacing consumed the mutation reserve: %w", ErrMutationInsufficientBudget, ErrMutationDailyQuotaLow)
 			}
 			return fmt.Errorf("%w: required %s to remain before sending", ErrMutationInsufficientBudget, minimumMutationBudget)

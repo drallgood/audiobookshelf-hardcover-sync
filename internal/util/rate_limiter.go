@@ -136,8 +136,10 @@ func (r *RateLimiter) DailyQuotaPaused() bool {
 func (r *RateLimiter) DailyQuotaConstrainingAdmission() bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	return r.dailyQuotaConstrainingAdmissionLocked(time.Now())
+}
 
-	now := time.Now()
+func (r *RateLimiter) dailyQuotaConstrainingAdmissionLocked(now time.Time) bool {
 	readyAt := r.last.Add(r.rate)
 	return r.dailyQuotaRate > r.minRate &&
 		r.rate == r.dailyQuotaRate &&
@@ -194,11 +196,19 @@ func NewRateLimiter(rate time.Duration, maxConcurrent int, log *logger.Logger) *
 // Acquire blocks until request admission is available or the context is
 // cancelled. The returned function releases the concurrent-request permit.
 func (r *RateLimiter) Acquire(ctx context.Context) (func(), error) {
+	release, _, err := r.AcquireWithDailyQuotaPacing(ctx)
+	return release, err
+}
+
+// AcquireWithDailyQuotaPacing blocks until request admission is available or
+// the context is cancelled. Its bool reports whether this acquisition entered
+// a wait imposed by the active daily quota pacing schedule.
+func (r *RateLimiter) AcquireWithDailyQuotaPacing(ctx context.Context) (func(), bool, error) {
 	// Limit the number of concurrently admitted active requests.
 	select {
 	case <-r.semaphore:
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, false, ctx.Err()
 	}
 
 	release := func() {
@@ -209,6 +219,7 @@ func (r *RateLimiter) Acquire(ctx context.Context) (func(), error) {
 	r.metrics.Requests++
 	r.mu.Unlock()
 
+	dailyQuotaPacingWait := false
 	for {
 		r.mu.Lock()
 		now := time.Now()
@@ -224,6 +235,9 @@ func (r *RateLimiter) Acquire(ctx context.Context) (func(), error) {
 				},
 			}
 		}
+		if r.dailyQuotaConstrainingAdmissionLocked(now) {
+			dailyQuotaPacingWait = true
+		}
 		if !readyAt.After(now) {
 			// Record actual admission rather than a future reservation. Other
 			// waiters re-check this value before they may proceed.
@@ -232,7 +246,7 @@ func (r *RateLimiter) Acquire(ctx context.Context) (func(), error) {
 			if logEntry != nil {
 				r.writeLogs([]rateLimiterLogEntry{*logEntry})
 			}
-			return release, nil
+			return release, dailyQuotaPacingWait, nil
 		}
 		scheduleChanged := r.scheduleChanged
 		r.mu.Unlock()
@@ -245,7 +259,7 @@ func (r *RateLimiter) Acquire(ctx context.Context) (func(), error) {
 		case <-ctx.Done():
 			stopAndDrainTimer(timer)
 			release()
-			return nil, fmt.Errorf("%w: %w", ErrAdmissionWaitCanceled, ctx.Err())
+			return nil, dailyQuotaPacingWait, fmt.Errorf("%w: %w", ErrAdmissionWaitCanceled, ctx.Err())
 		case <-scheduleChanged:
 			stopAndDrainTimer(timer)
 			// Recalculate immediately when rate-limit headers change the

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
@@ -813,6 +814,7 @@ func TestBudgetedMutationAdmissionReportsQuotaOnlyWhenQuotaCausedTheWait(t *test
 				}})
 			},
 			occupyPermit: true,
+			wantDailyLow: false,
 		},
 	}
 	for _, test := range tests {
@@ -849,6 +851,60 @@ func TestBudgetedMutationAdmissionReportsQuotaOnlyWhenQuotaCausedTheWait(t *test
 			assert.Zero(t, requests.Load(), "a mutation canceled before admission must not reach HTTP")
 		})
 	}
+}
+
+func TestBudgetedMutationConcurrencyWaitDoesNotReportDailyQuotaPacing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var requests atomic.Int32
+		client := &Client{
+			baseURL:     "http://hardcover.test/graphql",
+			authToken:   "test-token",
+			logger:      logger.Get(),
+			rateLimiter: util.NewRateLimiter(10*time.Millisecond, 1, logger.Get()),
+			maxRetries:  0,
+			httpClient: &http.Client{Transport: graphqlRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				requests.Add(1)
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"data":{}}`)),
+					Request:    req,
+				}, nil
+			})},
+		}
+		releaseHeldPermit, err := client.rateLimiter.Acquire(context.Background())
+		require.NoError(t, err)
+		client.rateLimiter.WithRateLimitHeaders(&http.Response{Header: http.Header{
+			"Ratelimit":        {`"daily";r=48;t=48`},
+			"Ratelimit-Policy": {`"daily";q=5000;w=86400`},
+		}})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		ctx = WithMinimumMutationBudget(ctx, 2*time.Second)
+		started := make(chan struct{})
+		result := make(chan error, 1)
+		go func() {
+			close(started)
+			var response struct{}
+			result <- client.GraphQLMutation(ctx, `mutation AddEdition { insert_edition { id } }`, nil, &response)
+		}()
+		<-started
+		synctest.Wait() // the mutation is blocked on the held concurrency permit
+		go func() {
+			time.Sleep(1200 * time.Millisecond)
+			releaseHeldPermit()
+		}()
+		err = <-result
+
+		require.ErrorIs(t, err, ErrMutationInsufficientBudget)
+		assert.NotErrorIs(t, err, ErrMutationDailyQuotaLow)
+		assert.Zero(t, requests.Load(), "a mutation rejected by the reserve guard must not reach HTTP")
+		client.rateLimiter.ResetRate()
+		release, acquireErr := client.rateLimiter.Acquire(context.Background())
+		require.NoError(t, acquireErr, "reserve rejection releases the acquired permit")
+		release()
+	})
 }
 
 func TestBudgetedMutationThatUsesLowQuotaPacingRetainsQuotaCauseAtReserveGuard(t *testing.T) {
