@@ -70,6 +70,7 @@ Existing single-profile setups are **automatically migrated** on first startup:
 | `GET` | `/api/profiles/{id}/runs/{runId}/details` | Get book-level details for a retained sync run |
 | `GET` | `/api/profiles/{id}/edition-drafts/source/{itemID}` | Prepare a read-only edition draft from an Audiobookshelf item |
 | `POST` | `/api/profiles/{id}/edition-drafts/create` | Create an edition from a verified needs-review sync record |
+| `POST` | `/api/profiles/{id}/edition-drafts/check-import` | Check an Audible import and save its verified match |
 | `DELETE` | `/api/profiles/{id}/edition-associations/{itemID}` | Forget the saved Hardcover match for one Audiobookshelf item |
 | `POST` | `/api/profiles/{id}/sync` | Start sync |
 | `DELETE` | `/api/profiles/{id}/sync` | Cancel sync |
@@ -83,7 +84,42 @@ category. Each result includes its Audiobookshelf cover, format, and series
 position when available, and its title links to the Audiobookshelf library
 item. Known Hardcover books link to Hardcover; a needs-review result instead
 shows the Hardcover candidate's series when available and links the candidate
-title, its ASIN to Audible, and its ISBN to a Goodreads search.
+title. The Audiobookshelf ASIN links to Audible, and its ISBN links to a Goodreads
+search. Hardcover candidate identifiers are omitted because no matching edition
+has been confirmed.
+
+#### Add an edition or forget a match from View Details
+
+After a sync finishes or is canceled, open **View Details** and select **Add
+edition** on an eligible needs-review book. You need permission to change the
+profile and a Hardcover token with `write:catalog:append` access.
+
+Review the preview, then confirm to add or reuse a Hardcover edition. Audiobooks
+need an Audible ASIN in Audiobookshelf; their metadata is read-only, and the app
+finds the Audible region automatically. Ebooks need an ASIN or ISBN, and you can
+correct their details before confirming. After success, **Hardcover Edition
+Added** appears and the app resyncs that book's reading progress. If resync
+fails, the edition remains added; run another sync to retry progress updates.
+
+You can preview in dry run, but cannot add editions or forget matches. Wait for
+an active sync to finish before making changes. If the book's Audiobookshelf
+metadata has changed since the displayed run, run a new sync first.
+
+If an import cannot be confirmed, follow the dialog's recovery guidance:
+
+- Use **Check import status** when available to confirm an audiobook import and
+  save its match without submitting it again. The recovery link is valid for 48
+  hours; after it expires, inspect Hardcover before running a new sync. Retry a
+  check if it temporarily fails; run a sync afterward to update reading progress.
+- If no status check is available, including for an uncertain ebook import,
+  open Hardcover to inspect the book, then run a new sync. Avoid submitting
+  another import while its outcome is unknown, including after a page reload.
+- Use **Retry add edition** when the dialog confirms nothing was submitted.
+  Restore access or wait for the displayed service/quota limit before retrying.
+
+Matched books offer **Forget match** to clear this app's saved match. Nothing is
+deleted from Hardcover. The next sync searches again and may find the same
+edition if the catalogue has not changed.
 
 Each processed book is counted once as `synced`, `already_current`, `skipped`,
 `needs_review`, `not_found`, `failed`, or dry-run `would_sync`. A total of zero
@@ -114,89 +150,54 @@ successful non-dry-run completion.
 
 ### Read-only edition draft
 
-`GET /api/profiles/{id}/edition-drafts/source/{itemID}` previews an
-Audiobookshelf item's identifiers and metadata for a later add-edition flow.
-Audiobook drafts keep the source ASIN separate from any region confirmed by
-Audnex; an unknown or temporarily unavailable region is never guessed. Ebook
-drafts include candidate edition fields. A usable ASIN or ISBN is required for
-eligibility. The endpoint makes no Hardcover requests or catalogue changes.
-See [OpenAPI](docs/openapi.yaml) for response fields and warnings.
+`GET /api/profiles/{id}/edition-drafts/source/{itemID}` previews Audiobookshelf
+metadata without changing Hardcover. Audiobook previews may also show confirmed
+Audnexus details. Audiobooks need an Audible ASIN for the Sync Status creation
+flow; ebooks may use an ASIN or ISBN.
 
-Use a trusted Audiobookshelf URL: this route fetches it with the saved token.
-Enable authentication when exposing the API beyond localhost. A draft may
-check up to ten Audnex regions, with retries, within its 25-second deadline.
-Each server instance has two shared slots for draft and edition-create
-requests. A single authorized caller can occupy both with concurrent creates,
-each of which has a 65-second handler deadline. Excess requests receive HTTP
-429 with `Retry-After: 1`. The HTTP server's 75-second write timeout applies to
-every route.
+Use a trusted Audiobookshelf URL and enable authentication when exposing the
+API beyond localhost. See [OpenAPI](docs/openapi.yaml) for fields, warnings,
+request limits, and retry guidance.
 
 ### Create an edition
 
-`POST /api/profiles/{id}/edition-drafts/create` is the only API route that
-writes an edition to Hardcover, and only when you call it; sync never does.
-The profile's Hardcover token must include `write:catalog:append` for this
-action.
+`POST /api/profiles/{id}/edition-drafts/create` adds or reuses a Hardcover edition
+only when requested; normal sync never creates editions. It requires a
+Hardcover token with `write:catalog:append` access.
 
-Send the `run_id` and `abs_item_id` of a `needs_review` item from a completed,
-non-dry-run sync. The Hardcover book always comes from that sync record, never
-from the request.
+Send the `run_id` and `abs_item_id` of a needs-review item from a completed or
+canceled run. The app uses the Hardcover book identified by that run.
 
-- **Audiobooks** are imported through Hardcover's regional Audible importer.
-  Omit `audible_identifier` to discover the ASIN's region with Audnex, or send
-  `ASIN:region` to choose it. Audiobook metadata cannot be edited.
-- **Ebooks** are inserted as ebook editions. You may correct `title`,
-  `subtitle`, `asin`, `isbn_10`, `isbn_13`, `release_date`, and
-  `edition_format`. An ebook needs an ASIN or ISBN.
+- **Audiobooks** use their Audible ASIN and region. Omit `audible_identifier`
+  for automatic region discovery, or provide `ASIN:region`. Audiobook metadata
+  cannot be edited.
+- **Ebooks** need an ASIN or ISBN and allow corrections to their edition details.
 
-The item must still match the sync record: if its ASIN, ISBN, title, author,
-or format changed, run a new sync first. A profile that is syncing, in dry
-run, or already has a saved match is refused. On success the verified
-Hardcover book and edition are saved as the item's match for the next sync.
+Creation is unavailable during a sync or in dry run. If the source metadata
+has changed, run a new sync first. A successful request saves the verified match
+for future syncs. Set `"resync": true` to update that book's reading progress
+immediately; otherwise, progress updates on the next sync. Resync failures are
+reported separately and do not undo edition creation.
 
-Add `"resync": true` to also sync that one book's read status immediately,
-instead of waiting for the next sync. It is off by default, runs under the same
-lock as the create so it never overlaps a full sync, and is never attempted in
-dry run. The response then includes a `resync` block with `attempted`,
-`outcome` (such as `synced` or `already_current`), and any `reason` or `error`.
-A resync failure does not fail the request, because the edition already exists;
-the next sync retries the book.
-
-If an error says Hardcover may already have processed the request, check the
-book in Hardcover before retrying; a retry may create another edition. See
-[OpenAPI](docs/openapi.yaml) for request fields, statuses, and retry guidance.
-If source lookup leaves too little time for the Hardcover write, the API returns
-503 with `Retry-After: 1` before sending the write. If region discovery cannot
-finish within that time, the API returns 503 without a write; supply a known
-`audible_identifier` (`ASIN:region`) to skip discovery.
+For an unconfirmed audiobook import, use
+`POST /api/profiles/{id}/edition-drafts/check-import` with the original run/item
+IDs and returned recovery details. This checks the existing import and saves
+its confirmed match without creating another edition. When recovery details
+are unavailable, inspect Hardcover and run a new sync before attempting
+another import. See [OpenAPI](docs/openapi.yaml) for request fields, outcomes,
+and retry guidance.
 
 ### Edition capability
 
-`GET /api/profiles/{id}/edition-capability` reports, separately for ebook
-insertion (`insert_edition`) and audiobook import (`upsert_book`), whether the
-profile's Hardcover token may attempt to add an edition. It requires profile
-write access and makes no Audiobookshelf request. For a configured token on a
-non-dry-run profile, the route probes ebook `insert_edition` without its
-required `book_id` and `edition` arguments, and audiobook `upsert_book` without
-its required `book` argument. These requests fail GraphQL validation before
-either mutation resolver runs. Only the exact observed `validation-failed`
-response for each operation counts as evidence that the token passed the
-observed catalogue-write scope gate. A recognized HTTP 403 scope denial is
-reported as `denied`; other outcomes, including timeouts, rate limits, and
-unexpected responses, leave that operation `unverified` with a
-`permission_unverified` warning. This scope evidence does not guarantee that a
-later edition creation or audiobook import will succeed. Probe results are
-cached by profile and token: allowed or denied results for 5 minutes, and
-unverified results for 15 seconds. A changed token is probed separately.
+`GET /api/profiles/{id}/edition-capability` checks whether the profile's Hardcover
+token permits adding audiobook or ebook editions. It requires profile write
+access and does not change the Hardcover catalogue.
 
-See the [implementation evidence and validation dependency](docs/implementations/edition-capability-evidence.md)
-for the recorded live responses and the upstream behavior these probes rely on.
-
-A later add-edition attempt may proceed when capability is unverified, but
-permission is not guaranteed. Profiles without a Hardcover token are reported
-as `denied`. With a configured token, a dry-run profile reports both operations
-as `allowed` without sending a Hardcover request. See
-[OpenAPI](docs/openapi.yaml) for the response fields.
+A confirmed permission denial disables **Add edition**. An inconclusive check
+allows an attempt, but does not guarantee success. Dry run skips the permission
+check and never creates an edition. See [OpenAPI](docs/openapi.yaml) for response
+fields and [capability evidence](docs/implementations/edition-capability-evidence.md)
+for implementation details.
 
 ### Remembered edition matches
 
@@ -823,7 +824,7 @@ The application supports two distinct operating modes controlled by the `enable_
 - `AUDIOBOOKSHELF_TOKEN`: Audiobookshelf API token (required for single-user mode)
 - `AUDIOBOOKSHELF_NETWORK_TRUST`: Deployment-wide ABS destination policy
   (`allow_private` by default or `public_only`)
-- `AUDIOBOOKSHELF_AUDNEXUS_REGION`: Legacy Audnex setting; used as the default region for sync, edition drafts, and edition creation when a profile has no `sync_config.audnexus_region`.
+- `AUDIOBOOKSHELF_AUDNEXUS_REGION`: Legacy Audnexus setting; used as the default region for sync, edition drafts, and edition creation when a profile has no `sync_config.audnexus_region`.
 - `HARDCOVER_TOKEN`: Hardcover API token (required for single-user mode)
 
 #### Config File
@@ -847,7 +848,7 @@ hardcover:
 | `CONFIG_PATH` | Path to config file | - | `./config.yaml` |
 | `AUDIOBOOKSHELF_URL` | URL of your AudiobookShelf instance | `audiobookshelf.url` | Legacy mode only |
 | `AUDIOBOOKSHELF_TOKEN` | AudiobookShelf API token | `audiobookshelf.token` | Legacy mode only |
-| `AUDIOBOOKSHELF_AUDNEXUS_REGION` | Legacy Audnex setting | `audiobookshelf.audnexus_region` | Fallback region for sync, edition drafts, and edition creation when a profile has no `sync_config.audnexus_region`; carried into the default profile during single-user config migration. |
+| `AUDIOBOOKSHELF_AUDNEXUS_REGION` | Legacy Audnexus setting | `audiobookshelf.audnexus_region` | Fallback region for sync, edition drafts, and edition creation when a profile has no `sync_config.audnexus_region`; carried into the default profile during single-user config migration. |
 | `HARDCOVER_TOKEN` | Hardcover API token | `hardcover.token` | Legacy mode only |
 | `HARDCOVER_BASE_URL` | Hardcover API base URL | `hardcover.base_url` | Override default endpoint |
 | `RATE_LIMIT_RATE` | Min time between requests | `rate_limit.rate` | e.g. `2s` (30 rpm) |

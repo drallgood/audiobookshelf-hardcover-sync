@@ -33,6 +33,14 @@ const ctxKeyMinimumMutationBudget ctxKey = "hardcover_minimum_mutation_budget"
 // was canceled while waiting.
 var ErrMutationInsufficientBudget = errors.New("insufficient time remaining before Hardcover mutation")
 
+// ErrMutationDailyQuotaLow marks an insufficient-budget mutation stopped while
+// a non-exhausted daily quota was actively imposing its pacing delay.
+var ErrMutationDailyQuotaLow = errors.New("Hardcover daily API quota is running low")
+
+// ErrMutationDailyQuotaExhausted marks an insufficient-budget mutation stopped
+// while Hardcover's exhausted daily quota was holding request admission.
+var ErrMutationDailyQuotaExhausted = errors.New("Hardcover daily API quota is exhausted")
+
 // ErrMutationOutcomeAmbiguous indicates an opted-in mutation could not proceed
 // after an earlier HTTP attempt may already have reached Hardcover.
 var ErrMutationOutcomeAmbiguous = errors.New("Hardcover mutation outcome is ambiguous")
@@ -643,9 +651,17 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		reqModifier(req)
 
 		// Apply pacing and acquire a permit for the active HTTP request.
-		release, err := c.rateLimiter.Acquire(ctx)
+		release, dailyQuotaWait, err := c.rateLimiter.AcquireWithDailyQuotaPacing(ctx)
 		if err != nil {
 			if budgetedMutation && ctx.Err() != nil {
+				if errors.Is(err, util.ErrAdmissionWaitCanceled) {
+					if c.rateLimiter.DailyQuotaPaused() {
+						return fmt.Errorf("%w: daily request quota held admission before the mutation could be sent: %w: %w", ErrMutationInsufficientBudget, ErrMutationDailyQuotaExhausted, err)
+					}
+					if dailyQuotaWait {
+						return fmt.Errorf("%w: daily request quota pacing ended before the mutation could be sent: %w: %w", ErrMutationInsufficientBudget, ErrMutationDailyQuotaLow, err)
+					}
+				}
 				return fmt.Errorf("%w: rate-limit admission ended before the mutation could be sent: %w", ErrMutationInsufficientBudget, err)
 			}
 			return fmt.Errorf("rate limiter error: %w", err)
@@ -671,7 +687,13 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		if budgetedMutation && !mutationBudgetRemaining(ctx, minimumMutationBudget) {
 			releasePermit()
 			if ctxErr := ctx.Err(); ctxErr != nil {
+				if dailyQuotaWait {
+					return fmt.Errorf("%w: daily request quota pacing consumed the mutation reserve: %w: %w", ErrMutationInsufficientBudget, ErrMutationDailyQuotaLow, ctxErr)
+				}
 				return fmt.Errorf("%w: required %s to remain before sending: %w", ErrMutationInsufficientBudget, minimumMutationBudget, ctxErr)
+			}
+			if dailyQuotaWait {
+				return fmt.Errorf("%w: daily request quota pacing consumed the mutation reserve: %w", ErrMutationInsufficientBudget, ErrMutationDailyQuotaLow)
 			}
 			return fmt.Errorf("%w: required %s to remain before sending", ErrMutationInsufficientBudget, minimumMutationBudget)
 		}

@@ -6,10 +6,12 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -62,9 +64,174 @@ func TestProcessBookRecordsSkipAndIncrementalNoChange(t *testing.T) {
 		svc.state.UpdateBook(book.ID, 0, "WANT_TO_READ")
 		svc.state.SetHasProgressSeconds(book.ID)
 		require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
-		assert.Equal(t, OutcomeAlreadyCurrent, recordedOutcome(svc, book.ID).Outcome)
+		record := recordedOutcome(svc, book.ID)
+		assert.Equal(t, OutcomeAlreadyCurrent, record.Outcome)
+		assert.Equal(t, "incremental state is current", record.Reason)
+		assert.Empty(t, record.HardcoverBookID, "no persisted association means no fabricated match")
+		assert.Empty(t, record.EditionID)
 		hc.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
 	})
+
+	t.Run("incremental no change with persisted association", func(t *testing.T) {
+		svc, hc := createTestService()
+		svc.config.Sync.Incremental = true
+		svc.config.Sync.ProcessUnreadBooks = true
+		book := toAudiobookshelfBook(createTestBook("outcome-current-associated", "Current", "Author", "", ""))
+		svc.state.UpdateBook(book.ID, 0, "WANT_TO_READ")
+		svc.state.SetHasProgressSeconds(book.ID)
+		require.NoError(t, svc.state.SetAssociation(state.Association{
+			ABSItemID:          book.ID,
+			HardcoverBookID:    "hc-book-1",
+			HardcoverEditionID: "hc-edition-1",
+			ReadingFormat:      models.ReadingFormatAudiobook,
+		}))
+
+		require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
+
+		record := recordedOutcome(svc, book.ID)
+		assert.Equal(t, OutcomeAlreadyCurrent, record.Outcome)
+		assert.Equal(t, "incremental state is current", record.Reason)
+		assert.Equal(t, "hc-book-1", record.HardcoverBookID,
+			"the local association must enrich an already_current outcome so the UI can offer forget-match")
+		assert.Equal(t, "hc-edition-1", record.EditionID)
+		hc.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
+	})
+
+}
+
+func TestProcessBookIncrementalAlreadyCurrentEnrichesOnlyMatchingAssociation(t *testing.T) {
+	tests := []struct {
+		name              string
+		asin              string
+		isbn              string
+		isEbook           bool
+		associationASIN   string
+		associationISBN10 string
+		associationISBN13 string
+		associationFormat string
+		wantEnriched      bool
+	}{
+		{
+			name:              "stale ASIN",
+			asin:              "ASIN-NEW",
+			isbn:              "978-0-306-40615-7",
+			associationASIN:   "ASIN-OLD",
+			associationISBN13: "9780306406157",
+			associationFormat: models.ReadingFormatAudiobook,
+		},
+		{
+			name:              "stale ISBN",
+			isbn:              "978-0-306-40615-7",
+			associationISBN13: "9781492056355",
+			associationFormat: models.ReadingFormatAudiobook,
+		},
+		{
+			name:              "stale reading format",
+			asin:              "ASIN-123",
+			isEbook:           true,
+			associationASIN:   "ASIN-123",
+			associationFormat: models.ReadingFormatAudiobook,
+		},
+		{
+			name:              "normalized identifiers",
+			asin:              " ASIN-123 ",
+			isbn:              "978-0-306-40615-7",
+			associationASIN:   "ASIN-123",
+			associationISBN13: "9780306406157",
+			associationFormat: models.ReadingFormatAudiobook,
+			wantEnriched:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, hc := createTestService()
+			svc.config.Sync.Incremental = true
+			svc.config.Sync.ProcessUnreadBooks = true
+			book := toAudiobookshelfBook(createTestBook("outcome-current-"+tt.name, "Current", "Author", tt.asin, tt.isbn))
+			if tt.isEbook {
+				book.MediaType = "ebook"
+				svc.config.Sync.IncludeEbooks = true
+			}
+			svc.state.UpdateBook(book.ID, 0, "WANT_TO_READ")
+			svc.state.SetHasProgressSeconds(book.ID)
+			association := state.Association{
+				ABSItemID:          book.ID,
+				SourceASIN:         tt.associationASIN,
+				SourceISBN10:       tt.associationISBN10,
+				SourceISBN13:       tt.associationISBN13,
+				HardcoverBookID:    "hc-book-1",
+				HardcoverEditionID: "hc-edition-1",
+				ReadingFormat:      tt.associationFormat,
+			}
+			require.NoError(t, svc.state.SetAssociation(association))
+
+			require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
+
+			record := recordedOutcome(svc, book.ID)
+			assert.Equal(t, OutcomeAlreadyCurrent, record.Outcome)
+			if tt.wantEnriched {
+				assert.Equal(t, association.HardcoverBookID, record.HardcoverBookID)
+				assert.Equal(t, association.HardcoverEditionID, record.EditionID)
+			} else {
+				assert.Empty(t, record.HardcoverBookID)
+				assert.Empty(t, record.EditionID)
+			}
+			storedAssociation, exists := svc.state.GetAssociation(book.ID)
+			require.True(t, exists)
+			assert.Equal(t, association, storedAssociation, "outcome enrichment must not mutate the persisted association")
+			assertNoHardcoverBookSearches(t, hc)
+		})
+	}
+}
+
+// TestProcessBookIncrementalDetailedCheckAlreadyCurrentKeepsLookupAssociation
+// exercises the second, detailed already_current check in processBook
+// (service.go's comparison against s.state.Books[stateKey] using the
+// composite bookID:editionID key), not the earlier coarse NeedsSync check
+// against the bare book ID.
+//
+// This verifies that the detailed no-op outcome keeps the current lookup IDs
+// instead of using a stale association from persisted state.
+func TestProcessBookIncrementalDetailedCheckAlreadyCurrentKeepsLookupAssociation(t *testing.T) {
+	svc, hc := createTestService()
+	svc.config.Sync.Incremental = true
+	svc.config.Sync.ProcessUnreadBooks = true
+
+	testBook := createTestBook("outcome-detailed-current", "Detailed Current", "Author", "detailed-current-asin", "")
+	testBook.Media.Duration = 1000
+	testBook.Progress.CurrentTime = 300
+	book := toAudiobookshelfBook(testBook)
+
+	// No bare-key state exists yet, so the coarse pre-lookup NeedsSync check
+	// reports the book needs syncing and the real Hardcover lookup runs.
+	expectASINMatch(hc, "detailed-current-asin", "100", "200", 300)
+
+	// Seed the composite state key (bookID:editionID) with progress, status,
+	// and activity that match the current book so the detailed post-lookup
+	// comparison finds no changes and takes the second already_current path.
+	stateKey := book.ID + ":200"
+	svc.state.Books[stateKey] = state.Book{
+		LastProgress:       0.3,
+		LastUpdated:        time.Now().Unix(),
+		Status:             "IN_PROGRESS",
+		HasProgressSeconds: true,
+		Association: &state.Association{
+			ABSItemID:          book.ID,
+			HardcoverBookID:    "stale-book-id",
+			HardcoverEditionID: "stale-edition-id",
+		},
+	}
+
+	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
+
+	record := recordedOutcome(svc, book.ID)
+	assert.Equal(t, OutcomeAlreadyCurrent, record.Outcome)
+	assert.Equal(t, "incremental state is current", record.Reason)
+	assert.Equal(t, "100", record.HardcoverBookID,
+		"the real Hardcover lookup result must win over the composite state's stale association")
+	assert.Equal(t, "200", record.EditionID)
+	hc.AssertExpectations(t)
 }
 
 func TestProcessBookFinishedWithoutFinishedAtSkipsHardcoverMatching(t *testing.T) {

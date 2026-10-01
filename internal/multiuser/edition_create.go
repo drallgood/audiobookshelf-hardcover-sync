@@ -32,9 +32,9 @@ var ErrEditionCreateDryRun = errors.New("edition creation is disabled while the 
 // replacing a confirmed mapping saved by a later sync or create operation.
 var ErrEditionAssociationAlreadyExists = errors.New("Audiobookshelf item already has a confirmed Hardcover association")
 
-// GetLaterCompletedSyncRunOutcome returns the newest retained completed,
+// GetLaterUsableSyncRunOutcome returns the newest retained completed or canceled,
 // non-dry-run outcome for an item from a run newer than afterRunID.
-func (s *MultiUserService) GetLaterCompletedSyncRunOutcome(profileID, afterRunID, absItemID string) (sync.BookOutcomeRecord, bool, error) {
+func (s *MultiUserService) GetLaterUsableSyncRunOutcome(profileID, afterRunID, absItemID string) (sync.BookOutcomeRecord, bool, error) {
 	if s.repository == nil {
 		return sync.BookOutcomeRecord{}, false, nil
 	}
@@ -51,7 +51,7 @@ func (s *MultiUserService) GetLaterCompletedSyncRunOutcome(profileID, afterRunID
 			}
 			return sync.BookOutcomeRecord{}, false, nil
 		}
-		if report.Phase != database.SyncRunPhaseCompleted || report.DryRun {
+		if (report.Phase != database.SyncRunPhaseCompleted && report.Phase != database.SyncRunPhaseCanceled) || report.DryRun {
 			continue
 		}
 		snapshot, err := snapshotFromRetainedReport(profileID, report)
@@ -98,6 +98,19 @@ func (s *MultiUserService) CreateEditionWithAssociation(ctx context.Context, pro
 // once the association is durably saved. Like the create itself, it is refused
 // up front (ErrSyncAlreadyActive) while a full sync is active for the profile.
 func (s *MultiUserService) CreateEditionWithAssociationAndResync(ctx context.Context, profileID, absItemID string, operation EditionCreateOperation, resync EditionResyncOperation) error {
+	return s.createEditionWithAssociationAndResync(ctx, profileID, absItemID, operation, resync, false)
+}
+
+// RecoverEditionAssociation verifies a previously submitted remote operation
+// and saves its association under the same profile and state-file guards used
+// by edition creation. If the exact association is already saved, the
+// verification succeeds idempotently. Ordinary create requests continue to
+// reject existing associations.
+func (s *MultiUserService) RecoverEditionAssociation(ctx context.Context, profileID, absItemID string, operation EditionCreateOperation) error {
+	return s.createEditionWithAssociationAndResync(ctx, profileID, absItemID, operation, nil, true)
+}
+
+func (s *MultiUserService) createEditionWithAssociationAndResync(ctx context.Context, profileID, absItemID string, operation EditionCreateOperation, resync EditionResyncOperation, allowMatchingExisting bool) error {
 	if profileID == "" || absItemID == "" {
 		return errors.New("profile ID and ABS item ID are required")
 	}
@@ -179,7 +192,8 @@ func (s *MultiUserService) CreateEditionWithAssociationAndResync(ctx context.Con
 	if err != nil {
 		return fmt.Errorf("failed to load state file for profile %s: %w: %w", profileID, ErrEditionCreateLocalFailure, err)
 	}
-	if _, exists := state.GetAssociation(absItemID); exists {
+	existing, exists := state.GetAssociation(absItemID)
+	if exists && !allowMatchingExisting {
 		return fmt.Errorf("%w: %s", ErrEditionAssociationAlreadyExists, absItemID)
 	}
 
@@ -189,6 +203,12 @@ func (s *MultiUserService) CreateEditionWithAssociationAndResync(ctx context.Con
 	}
 	if association.ABSItemID != absItemID {
 		return fmt.Errorf("%w: edition create operation returned an association for a different ABS item", ErrEditionAssociationSaveAfterRemoteSuccess)
+	}
+	if exists {
+		if !sameRecoveredEditionAssociation(existing, association) {
+			return fmt.Errorf("%w: a different confirmed association is already saved for %s", ErrEditionAssociationAlreadyExists, absItemID)
+		}
+		return nil
 	}
 	if err := state.SetAssociation(association); err != nil {
 		return fmt.Errorf("%w: invalid confirmed edition association: %w", ErrEditionAssociationSaveAfterRemoteSuccess, err)
@@ -204,6 +224,14 @@ func (s *MultiUserService) CreateEditionWithAssociationAndResync(ctx context.Con
 		resync(profile, state, fileLock.StatePath())
 	}
 	return nil
+}
+
+func sameRecoveredEditionAssociation(existing, verified statepkg.Association) bool {
+	// Provenance records how the local match was first established. Recovery
+	// verifies the same identifiers again but must preserve the original value.
+	existing.Provenance = ""
+	verified.Provenance = ""
+	return existing == verified
 }
 
 // lockProfileGateContext waits for the shared profile gate while allowing an

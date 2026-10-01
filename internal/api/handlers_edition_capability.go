@@ -10,8 +10,7 @@ import (
 
 // GetEditionCapability handles GET /api/profiles/{id}/edition-capability.
 // It reports separate, read-only capability evidence for ebook and audiobook
-// creation. A configured token is unverified because Hardcover does not expose
-// a documented read-only scope introspection API.
+// creation using validation-only probes that omit required mutation inputs.
 func (h *Handler) GetEditionCapability(w http.ResponseWriter, r *http.Request) {
 	profileID := profileIDFromRequest(r)
 	if profileID == "" {

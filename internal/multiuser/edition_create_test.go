@@ -129,6 +129,42 @@ func TestCreateEditionWithAssociationDoesNotPersistWhenOperationFails(t *testing
 	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
+func TestRecoverEditionAssociationIsIdempotentOnlyForSameVerifiedIdentity(t *testing.T) {
+	service, profileID := newEditionCreateService(t)
+	original := testCreateAssociation("item-1")
+	require.NoError(t, service.CreateEditionWithAssociation(context.Background(), profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+		return original, nil
+	}))
+
+	verified := original
+	verified.Provenance = "api_regional_recovered"
+	called := false
+	err := service.RecoverEditionAssociation(context.Background(), profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+		called = true
+		return verified, nil
+	})
+	require.NoError(t, err)
+	require.True(t, called)
+
+	stored, err := statepkg.LoadState(service.profileSpecificStatePath(profileID, "sync.json"))
+	require.NoError(t, err)
+	association, exists := stored.GetAssociation("item-1")
+	require.True(t, exists)
+	require.Equal(t, original, association, "recovery preserves the original association provenance")
+
+	conflict := verified
+	conflict.HardcoverEditionID = "999"
+	err = service.RecoverEditionAssociation(context.Background(), profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+		return conflict, nil
+	})
+	require.ErrorIs(t, err, ErrEditionAssociationAlreadyExists)
+	stored, err = statepkg.LoadState(service.profileSpecificStatePath(profileID, "sync.json"))
+	require.NoError(t, err)
+	association, exists = stored.GetAssociation("item-1")
+	require.True(t, exists)
+	require.Equal(t, original, association, "a conflict cannot replace a previously confirmed association")
+}
+
 func TestCreateEditionWithAssociationDistinguishesLocalSaveFailureAfterRemoteSuccess(t *testing.T) {
 	service, profileID := newEditionCreateService(t)
 	statePath := service.profileSpecificStatePath(profileID, "sync.json")

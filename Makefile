@@ -42,7 +42,7 @@ endif
 
 # Default target
 .PHONY: all
-all: test lint build build-tools
+all: test test-web lint build build-tools
 
 # Help target
 .PHONY: help
@@ -53,6 +53,7 @@ help:
 	@echo "  build-all     - Build main binary for all platforms"
 	@echo "  install       - Install the binary"
 	@echo "  test          - Run tests with race detection and coverage"
+	@echo "  test-web      - Run the web UI JavaScript tests (requires Node.js)"
 	@echo "  test-verbose  - Run tests with verbose output"
 	@echo "  coverage      - Generate and display test coverage"
 	@echo "  coverage-html - Generate HTML coverage report"
@@ -122,6 +123,12 @@ test: test-race
 
 # Run core tests with race detector
 test-race: test-core
+
+# Run web UI JavaScript tests with Node's built-in test runner
+.PHONY: test-web
+test-web:
+	@echo "Running web UI tests"
+	node --test web/app.test.js
 
 # Run core tests only
 test-core:

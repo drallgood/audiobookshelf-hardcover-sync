@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
@@ -1044,4 +1045,94 @@ func TestRateLimiterDailyPauseLastsAsLongAsRequestsAreHeld(t *testing.T) {
 
 	rl.ResetRate()
 	assert.False(t, rl.DailyQuotaPaused())
+}
+
+func TestRateLimiterAcquisitionRetainsDailyQuotaWaitCauseAcrossScheduleChanges(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rl := NewRateLimiter(10*time.Millisecond, 1, nil)
+		rl.mu.Lock()
+		rl.last = time.Now().Add(10 * time.Second)
+		rl.mu.Unlock()
+
+		updatesStarted := make(chan struct{}, 2)
+		go func() {
+			updatesStarted <- struct{}{}
+			time.Sleep(time.Second)
+			rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+				"Ratelimit":        {`"daily";r=48;t=3600`},
+				"Ratelimit-Policy": {`"daily";q=5000;w=86400`},
+			}})
+		}()
+		go func() {
+			updatesStarted <- struct{}{}
+			time.Sleep(2 * time.Second)
+			rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+				"Ratelimit":        {`"daily";r=4000;t=3600`},
+				"Ratelimit-Policy": {`"daily";q=5000;w=86400`},
+			}})
+		}()
+		<-updatesStarted
+		<-updatesStarted
+
+		release, dailyQuotaWait, err := rl.AcquireWithDailyQuotaPacing(context.Background())
+		require.NoError(t, err)
+		require.True(t, dailyQuotaWait, "the schedule changed to daily quota pacing while admission waited")
+		release()
+	})
+}
+
+func TestRateLimiterCanceledDailyQuotaWaitReleasesPermit(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rl := NewRateLimiter(10*time.Millisecond, 1, nil)
+		rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+			"Ratelimit":        {`"daily";r=48;t=3600`},
+			"Ratelimit-Policy": {`"daily";q=5000;w=86400`},
+		}})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		cancelScheduled := make(chan struct{})
+		go func() {
+			close(cancelScheduled)
+			time.Sleep(time.Second)
+			cancel()
+		}()
+		<-cancelScheduled
+
+		release, dailyQuotaWait, err := rl.AcquireWithDailyQuotaPacing(ctx)
+		require.Nil(t, release)
+		require.True(t, dailyQuotaWait)
+		require.ErrorIs(t, err, ErrAdmissionWaitCanceled)
+		rl.ResetRate()
+		release, err = rl.Acquire(context.Background())
+		require.NoError(t, err, "a canceled pacing wait releases its semaphore permit")
+		release()
+	})
+}
+
+func TestRateLimiterReportsOnlyAnActiveDailyQuotaPacingWait(t *testing.T) {
+	rl := NewRateLimiter(10*time.Millisecond, 1, nil)
+	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+		"Ratelimit":        {`"daily";r=48;t=3600`},
+		"Ratelimit-Policy": {`"daily";q=5000;w=86400`},
+	}})
+
+	require.True(t, rl.DailyQuotaConstrainingAdmission())
+	assert.False(t, rl.DailyQuotaPaused(), "positive remaining requests are low quota, not exhausted")
+
+	rl.mu.Lock()
+	rl.backoffUntil = time.Now().Add(2 * rl.dailyQuotaRate)
+	rl.mu.Unlock()
+	assert.False(t, rl.DailyQuotaConstrainingAdmission(), "a longer independent backoff takes precedence")
+
+	rl.mu.Lock()
+	rl.backoffUntil = time.Time{}
+	rl.dailyQuotaResetAt = time.Now().Add(-time.Second)
+	rl.mu.Unlock()
+	assert.False(t, rl.DailyQuotaConstrainingAdmission(), "a daily quota snapshot expires at its reset")
+
+	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+		"Ratelimit":        {`"daily";r=4000;t=3600`},
+		"Ratelimit-Policy": {`"daily";q=5000;w=86400`},
+	}})
+	assert.False(t, rl.DailyQuotaConstrainingAdmission(), "a refreshed healthy daily bucket restores ordinary pacing")
 }
