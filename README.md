@@ -211,6 +211,15 @@ probe them. `POST /api/profiles/{id}/edition-capability/refresh` checks both
 permissions again and requires profile write access. **Refresh permissions**
 in View Details calls this route. Changing the token clears cached evidence.
 
+Hardcover-side scope changes or token revocation do not clear this local
+cache. After changing permissions, refresh them before relying on the displayed
+result. A cached allowed result does not override Hardcover's authorization:
+a revoked token can still fail an edition write. API clients can call the
+refresh route above. The standalone `edition create` CLI uses a fresh client
+for each invocation and does not use the server's permission cache; after
+correcting a confirmed permission denial, rerun the command with the current
+token. For an uncertain write result, inspect Hardcover before retrying.
+
 A confirmed permission denial disables **Add edition**. An inconclusive check
 allows an attempt, but does not guarantee success. Dry run skips the permission
 check and never creates an edition. See [OpenAPI](docs/openapi.yaml) for response

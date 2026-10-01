@@ -1291,6 +1291,18 @@ func (s *Service) findOrCreateUserBookIDWithEdition(ctx context.Context, edition
 
 	newUserBookID, err := s.createUserBookWithEdition(ctx, editionID, creationStatus, edition)
 	if err != nil {
+		// An insert can persist even when its response is lost or reports a
+		// conflict. Recheck once while the request context is still usable and
+		// continue with the existing row if it is now visible.
+		if ctx.Err() == nil {
+			recoveredUserBookID, lookupErr := s.getUserBookIDWithEdition(ctx, int(editionIDInt), edition)
+			if lookupErr == nil && recoveredUserBookID > 0 {
+				logCtx.Debug("Recovered existing user book after insert failure", map[string]interface{}{
+					"userBookID": recoveredUserBookID,
+				})
+				return int64(recoveredUserBookID), nil
+			}
+		}
 		reportProcessBookUserBookCreation(ctx, OutcomeFailed, "failed to create Hardcover user book", err)
 		errMsg := fmt.Sprintf("Failed to create user book: %v", err)
 		s.log.Error(errMsg, map[string]interface{}{

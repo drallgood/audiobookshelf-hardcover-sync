@@ -184,40 +184,52 @@ func TestFindOrCreateUserBookID_LookupError(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
-// TestFindOrCreateUserBookID_CreateUserBookError tests the case where CreateUserBook returns an error
-func TestFindOrCreateUserBookID_CreateUserBookError(t *testing.T) {
-	// Create test service and mock client
-	svc, mockClient := createTestService()
-
-	// Mock the GetEdition call
-	editionID := "456"
-	mockEdition := &models.Edition{
-		ID:     "456",
-		BookID: "432575", // Some book ID
+// TestFindOrCreateUserBookIDCreateFailureRecoveryPreservesOriginalError verifies that failed recovery keeps the insertion error.
+func TestFindOrCreateUserBookIDCreateFailureRecoveryPreservesOriginalError(t *testing.T) {
+	createErr := errors.New("insert failed")
+	lookupErr := errors.New("recovery lookup failed")
+	tests := []struct {
+		name            string
+		recoveryErr     error
+		cancelOnCreate  bool
+		wantLookupCalls int
+	}{
+		{name: "no row after insert failure", wantLookupCalls: 2},
+		{name: "recovery read fails", recoveryErr: lookupErr, wantLookupCalls: 2},
+		{name: "context canceled after insert failure", cancelOnCreate: true, wantLookupCalls: 1},
 	}
-	mockClient.On("GetEdition", mock.Anything, editionID).Return(mockEdition, nil).Once()
 
-	// Mock the findExistingUserBookForBook to return no existing user book
-	// This requires type asserting to the concrete client, so we'll handle it differently
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, mockClient := createTestService()
+			const editionID = "456"
+			mockClient.On("GetEdition", mock.Anything, editionID).Return(&models.Edition{
+				ID: editionID, BookID: "432575",
+			}, nil).Once()
+			mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, nil).Once()
+			if tt.wantLookupCalls == 2 {
+				mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, tt.recoveryErr).Once()
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			createExpectation := mockClient.On("CreateUserBook", mock.Anything, editionID, "WANT_TO_READ").Return("", createErr).Once()
+			if tt.cancelOnCreate {
+				createExpectation.Run(func(mock.Arguments) { cancel() })
+			}
 
-	// The fresh edition-specific check must succeed before attempting insertion.
-	mockClient.On("GetUserBookID", mock.Anything, 456).Return(0, nil).Once()
+			userBookID, err := svc.findOrCreateUserBookID(ctx, editionID, "WANT_TO_READ")
 
-	// Mock the CreateUserBook call to return an error
-	expectedErr := errors.New("API error")
-	mockClient.On("CreateUserBook", mock.Anything, editionID, "WANT_TO_READ").Return("", expectedErr).Once()
-
-	// Call the function
-	userBookID, err := svc.findOrCreateUserBookID(context.Background(), editionID, "WANT_TO_READ")
-
-	// Verify results
-	assert.Error(t, err, "Should return an error when CreateUserBook fails")
-	assert.Contains(t, err.Error(), "failed to create user book")
-	assert.Equal(t, int64(0), userBookID, "Should return 0 when CreateUserBook fails")
-	mockClient.AssertExpectations(t)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, createErr, "the original insertion error remains caller-visible")
+			assert.Zero(t, userBookID)
+			mockClient.AssertNumberOfCalls(t, "GetUserBookID", tt.wantLookupCalls)
+			mockClient.AssertNumberOfCalls(t, "CreateUserBook", 1)
+			mockClient.AssertExpectations(t)
+		})
+	}
 }
 
-// TestFindOrCreateUserBookID_InvalidUserBookIDFormat tests the case where the new user book ID has an invalid format
+// TestFindOrCreateUserBookID_InvalidUserBookIDFormat tests the case where the new user book ID has an invalid format.
 func TestFindOrCreateUserBookID_InvalidUserBookIDFormat(t *testing.T) {
 	// Create test service and mock client
 	svc, mockClient := createTestService()
@@ -432,19 +444,28 @@ func TestFindOrCreateUserBookIDInvalidatesPersistentSnapshotWhenEditionCorrectio
 
 func TestFindOrCreateUserBookIDWithVerifiedEditionUsesFreshGraphQLCheckWithoutRefetchingEdition(t *testing.T) {
 	tests := []struct {
-		name              string
-		userBookExists    bool
-		lookupFails       bool
-		dryRun            bool
-		wantID            int64
-		wantErr           bool
-		wantEditionLookup int
-		wantInsert        int
+		name                string
+		userBookExists      bool
+		lookupFails         bool
+		recoveryRowAppears  bool
+		recoveryLookupFails bool
+		insertErrorResponse string
+		dryRun              bool
+		wantID              int64
+		wantErr             bool
+		wantErrorContains   string
+		wantBookLookup      int
+		wantEditionLookup   int
+		wantInsert          int
 	}{
-		{name: "existing user book", userBookExists: true, wantID: 789, wantEditionLookup: 0},
-		{name: "new user book", wantID: 789, wantEditionLookup: 1, wantInsert: 1},
-		{name: "lookup failure", lookupFails: true, wantErr: true, wantEditionLookup: 0},
-		{name: "dry run", dryRun: true, wantID: -1, wantEditionLookup: 1},
+		{name: "existing user book", userBookExists: true, wantID: 789, wantEditionLookup: 0, wantBookLookup: 1},
+		{name: "new user book", wantID: 789, wantEditionLookup: 1, wantInsert: 1, wantBookLookup: 1},
+		{name: "lookup failure", lookupFails: true, wantErr: true, wantEditionLookup: 0, wantBookLookup: 1},
+		{name: "dry run", dryRun: true, wantID: -1, wantEditionLookup: 1, wantBookLookup: 1},
+		{name: "recover after GraphQL insert error", insertErrorResponse: `{"errors":[{"message":"insert response lost"}]}`, recoveryRowAppears: true, wantID: 789, wantBookLookup: 2, wantEditionLookup: 1, wantInsert: 1},
+		{name: "recover after nested insert error", insertErrorResponse: `{"data":{"insert_user_book":{"id":0,"user_book":{"id":0,"status_id":0},"error":"conflict"}}}`, recoveryRowAppears: true, wantID: 789, wantBookLookup: 2, wantEditionLookup: 1, wantInsert: 1},
+		{name: "preserve insert error when no row appears", insertErrorResponse: `{"data":{"insert_user_book":{"id":0,"user_book":{"id":0,"status_id":0},"error":"conflict"}}}`, wantErr: true, wantErrorContains: "conflict", wantBookLookup: 2, wantEditionLookup: 2, wantInsert: 1},
+		{name: "preserve insert error when recovery lookup fails", insertErrorResponse: `{"data":{"insert_user_book":{"id":0,"user_book":{"id":0,"status_id":0},"error":"conflict"}}}`, recoveryLookupFails: true, wantErr: true, wantErrorContains: "conflict", wantBookLookup: 2, wantEditionLookup: 1, wantInsert: 1},
 	}
 
 	for _, tt := range tests {
@@ -474,11 +495,12 @@ func TestFindOrCreateUserBookIDWithVerifiedEditionUsesFreshGraphQLCheckWithoutRe
 					_, _ = w.Write([]byte(`{"data":{"me":[{"id":99}]}}`))
 				case strings.Contains(query, "GetUserBookByBook("):
 					recordRequest("by_book_and_edition")
-					if tt.lookupFails {
+					lookupNumber := requestCount("by_book_and_edition")
+					if lookupNumber == 1 && tt.lookupFails || lookupNumber > 1 && tt.recoveryLookupFails {
 						_, _ = w.Write([]byte(`{"errors":[{"message":"lookup failed"}]}`))
 						return
 					}
-					if tt.userBookExists {
+					if lookupNumber == 1 && tt.userBookExists || lookupNumber > 1 && tt.recoveryRowAppears {
 						_, _ = w.Write([]byte(`{"data":{"user_books":[{"id":789,"book_id":432575,"edition_id":456}]}}`))
 						return
 					}
@@ -491,7 +513,11 @@ func TestFindOrCreateUserBookIDWithVerifiedEditionUsesFreshGraphQLCheckWithoutRe
 					_, _ = w.Write([]byte(`{"data":{"editions":[]}}`))
 				case strings.Contains(query, "InsertUserBook"):
 					recordRequest("insert")
-					_, _ = w.Write([]byte(`{"data":{"insert_user_book":{"id":789,"user_book":{"id":789,"status_id":1},"error":null}}}`))
+					response := `{"data":{"insert_user_book":{"id":789,"user_book":{"id":789,"status_id":1},"error":null}}}`
+					if tt.insertErrorResponse != "" {
+						response = tt.insertErrorResponse
+					}
+					_, _ = w.Write([]byte(response))
 				default:
 					t.Errorf("unexpected GraphQL operation: %s", query)
 					http.Error(w, "unexpected operation", http.StatusBadRequest)
@@ -515,12 +541,16 @@ func TestFindOrCreateUserBookIDWithVerifiedEditionUsesFreshGraphQLCheckWithoutRe
 			id, err := svc.findOrCreateUserBookIDWithEdition(context.Background(), edition.ID, "WANT_TO_READ", edition)
 			if tt.wantErr {
 				require.Error(t, err)
+				if tt.wantErrorContains != "" {
+					assert.Contains(t, err.Error(), tt.wantErrorContains)
+					assert.NotContains(t, err.Error(), "lookup failed", "a recovery read error must not replace the original insert error")
+				}
 			} else {
 				require.NoError(t, err)
 				assert.Equal(t, tt.wantID, id)
 			}
 			assert.Equal(t, 1, requestCount("current_user"))
-			assert.Equal(t, 1, requestCount("by_book_and_edition"), "the concrete path must do a fresh existence check")
+			assert.Equal(t, tt.wantBookLookup, requestCount("by_book_and_edition"), "the concrete path must do the initial existence check and at most one recovery check")
 			assert.Equal(t, tt.wantEditionLookup, requestCount("by_edition"))
 			assert.Zero(t, requestCount("get_edition"), "the verified edition should be reused")
 			assert.Equal(t, tt.wantInsert, requestCount("insert"))
