@@ -52,6 +52,7 @@ func TestEditionCapabilityForProfileSkipsProbesInDryRun(t *testing.T) {
 	capability, err := service.EditionCapabilityForProfile(context.Background(), profileID)
 	require.NoError(t, err)
 	require.True(t, capability.DryRun)
+	require.Equal(t, capability.Ebook, capability.AudiobookISBN)
 	require.Equal(t, EditionCapabilityInsertEdition, capability.Ebook.Operation)
 	require.Equal(t, EditionCapabilityAllowed, capability.Ebook.Status)
 	require.True(t, capability.Ebook.CanAttempt)
@@ -80,6 +81,7 @@ func TestEditionCapabilityForProfileBlocksMissingHardcoverToken(t *testing.T) {
 	capability, err := service.EditionCapabilityForProfile(context.Background(), profileID)
 	require.NoError(t, err)
 	require.Equal(t, EditionCapabilityDenied, capability.Ebook.Status)
+	require.Equal(t, capability.Ebook, capability.AudiobookISBN)
 	require.False(t, capability.Ebook.CanAttempt)
 	require.Equal(t, "hardcover_token_missing", capability.Ebook.Reason)
 	require.Equal(t, EditionCapabilityDenied, capability.Audiobook.Status)
@@ -536,8 +538,8 @@ func TestEditionCapabilityForProfileDeduplicatesConcurrentProbes(t *testing.T) {
 	wg.Wait()
 
 	require.Equal(t, []EditionCapability{
-		{Ebook: allowedEditionCapability(EditionCapabilityInsertEdition), Audiobook: allowedEditionCapability(EditionCapabilityUpsertBook)},
-		{Ebook: allowedEditionCapability(EditionCapabilityInsertEdition), Audiobook: allowedEditionCapability(EditionCapabilityUpsertBook)},
+		{Ebook: allowedEditionCapability(EditionCapabilityInsertEdition), AudiobookISBN: allowedEditionCapability(EditionCapabilityInsertEdition), Audiobook: allowedEditionCapability(EditionCapabilityUpsertBook)},
+		{Ebook: allowedEditionCapability(EditionCapabilityInsertEdition), AudiobookISBN: allowedEditionCapability(EditionCapabilityInsertEdition), Audiobook: allowedEditionCapability(EditionCapabilityUpsertBook)},
 	}, results)
 	require.Equal(t, int32(2), requests.Load(), "concurrent loads share each operation's in-flight probe")
 }

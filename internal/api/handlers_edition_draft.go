@@ -170,7 +170,7 @@ func (h *Handler) GetEditionSourceDraft(w http.ResponseWriter, r *http.Request) 
 	if !book.IsEbook() && draft.SourceIdentifiers.ASIN != "" {
 		lookupASIN, validASIN := audnex.CanonicalASIN(draft.SourceIdentifiers.ASIN)
 		if !validASIN {
-			draft.RegionStatus = "unknown"
+			draft.RegionStatus = "not_applicable"
 		} else {
 			preference := h.multiUserService.ProfileAudnexusRegion(profile.SyncConfig)
 			preferredRegion, supported := supportedAudnexPreference(preference)

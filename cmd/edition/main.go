@@ -96,7 +96,7 @@ func newApp() *cli.App {
 		Commands: []*cli.Command{
 			{
 				Name:  "create",
-				Usage: "Import an audiobook or create an ebook edition",
+				Usage: "Import an audiobook by ASIN or insert an ISBN-backed edition",
 				Flags: []cli.Flag{
 					&cli.StringFlag{
 						Name:     "input",

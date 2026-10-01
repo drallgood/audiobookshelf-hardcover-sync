@@ -43,7 +43,7 @@ func expectProgressUpdate(hc *MockHardcoverClient, book *models.AudiobookshelfBo
 }
 
 func inProgressBook(id string) *models.AudiobookshelfBook {
-	book := toAudiobookshelfBook(createTestBook(id, "Resync", "Author", id+"-asin", ""))
+	book := toAudiobookshelfBook(createTestBook(id, "Resync", "Author", "B0SYNC0001", ""))
 	book.Media.Duration = 1000
 	book.Progress.CurrentTime = 300
 	return book
@@ -171,6 +171,8 @@ func TestSyncBookOutcomes(t *testing.T) {
 			}
 			current.UpdateBook("other-item:201", 0.5, "IN_PROGRESS")
 			abs.On("GetUserProgress", mock.Anything).Return(&models.AudiobookshelfUserProgress{}, nil).Once()
+			hc.On("SearchBookByISBN13", mock.Anything, "9780306406157").Return((*models.HardcoverBook)(nil), nil).Once()
+			hc.On("SearchBookByISBN10", mock.Anything, "0306406152").Return((*models.HardcoverBook)(nil), nil).Once()
 			hc.On("SearchBooks", mock.Anything, "Current Author", "").Return(nil, nil).Once()
 			statePath := filepath.Join(t.TempDir(), "state.json")
 
@@ -183,10 +185,8 @@ func TestSyncBookOutcomes(t *testing.T) {
 			assert.NotContains(t, stored.Books, book.ID, "clear the stale base checkpoint in the first pass")
 			assert.NotContains(t, stored.Books, book.ID+":200", "clear the stale edition checkpoint in the first pass")
 			assert.Contains(t, stored.Books, "other-item:201", "preserve other items' checkpoints")
-			// Only read-only lookup/cache calls are configured. Any mutation
-			// would fail the mock; also verify that ISBN identity is not reused.
-			hc.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
-			hc.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
+			// Only read-only lookups are configured. Any mutation would fail
+			// the mock, and the old checkpoint must not survive the migration.
 			hc.AssertExpectations(t)
 		})
 	}

@@ -16,6 +16,8 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audnex"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -270,6 +272,34 @@ func TestAudiobookMismatchExportDoesNotAttachEditionASINOnlyBook(t *testing.T) {
 			require.NoError(t, json.Unmarshal(data, &exported))
 			require.Equal(t, tt.wantBookID, exported.BookID)
 			require.Equal(t, asin, exported.ASIN)
+		})
+	}
+}
+
+func TestAudiobookEnrichmentValidASINBlocksISBNTargetSelection(t *testing.T) {
+	const asin = "B0AUDIO001"
+	audnexServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"asin":"B0AUDIO001","title":"Book","authors":[],"narrators":[]}`))
+	}))
+	defer audnexServer.Close()
+	originalFactory := newAudnexClient
+	newAudnexClient = func(log *logger.Logger) *audnex.Client { return audnex.NewClientForTesting(audnexServer.URL, log) }
+	t.Cleanup(func() { newAudnexClient = originalFactory })
+	for _, editionID := range []string{"", "84"} {
+		t.Run("edition_"+editionID, func(t *testing.T) {
+			client := &MockHardcoverClient{}
+			client.On("SearchBookByASIN", mock.Anything, asin).Return((*models.HardcoverBook)(nil), nil)
+			client.On("SearchBookByISBN13", mock.Anything, mock.Anything).Return(&models.HardcoverBook{ID: "904", Title: "Conflicting ISBN book"}, nil).Maybe()
+			client.On("SearchBooks", mock.Anything, "Book", "").Return([]models.HardcoverBook{{ID: "901", Title: "Book"}}, nil)
+			if editionID != "" {
+				client.On("GetEdition", mock.Anything, editionID).Return(&models.Edition{ID: editionID, BookID: "901", ASIN: asin, ISBN13: "9780306406157"}, nil)
+				client.On("GetBookByID", mock.Anything, "901").Return(&models.HardcoverBook{ID: "901", Title: "Book"}, nil)
+			}
+			got := NewCollector().AddWithMetadata(MediaMetadata{Title: "Book", ASIN: asin, ISBN: "9780306406157", ReadingFormat: "audiobook"}, "abs1", editionID, "reason", 0, "abs1", client, "us")
+			require.Equal(t, "901", got.HardcoverBookID)
+			client.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
+			client.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
 		})
 	}
 }

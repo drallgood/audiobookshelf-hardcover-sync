@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audnex"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
@@ -44,8 +45,8 @@ var (
 	// errCoverTooLarge means the downloaded cover exceeds maxCoverBytes.
 	errCoverTooLarge = errors.New("cover image is too large")
 	// ErrAudiobookRequiresRegionalImport means the legacy edition insertion
-	// method was used for an audiobook. Audiobooks must use Hardcover's regional
-	// Audible import path instead of insert_edition.
+	// method was used for an audiobook with a valid ASIN or without an explicit
+	// reading format. Those cases must use the regional Audible import path.
 	ErrAudiobookRequiresRegionalImport = errors.New("audiobooks require a confirmed regional Audible import")
 	// ErrCreateEditionPreMutation marks a failure before insert_edition is sent.
 	// Callers can use it to distinguish a safe retry from an uncertain mutation.
@@ -151,8 +152,10 @@ type HardcoverClient interface {
 	GetAuthHeader() string
 }
 
-// Creator handles format-aware ebook edition creation in Hardcover. Audiobooks
-// must use the regional Audible import operation in the Hardcover client.
+// Creator handles format-aware edition creation in Hardcover. Audiobooks with
+// a valid ASIN use the regional Audible import operation; an explicitly marked
+// audiobook with only a parseable ISBN may use insert_edition after duplicate
+// checks.
 type Creator struct {
 	client              HardcoverClient
 	log                 *logger.Logger
@@ -427,8 +430,9 @@ func NewCreatorWithHTTPClient(client HardcoverClient, log *logger.Logger, dryRun
 	}
 }
 
-// CreateEdition inserts a new ebook edition in Hardcover. Audiobooks must use
-// the regional Audible import operation in the Hardcover client.
+// CreateEdition inserts an ebook or an explicitly identified ISBN-only
+// audiobook edition in Hardcover. Audiobooks with a valid ASIN use the regional
+// Audible import operation in the Hardcover client.
 func (c *Creator) CreateEdition(ctx context.Context, input *EditionInput) (*EditionResult, error) {
 	return c.createEditionWithMutationReserve(ctx, input, 0)
 }
@@ -446,13 +450,32 @@ func (c *Creator) createEditionWithMutationReserve(ctx context.Context, input *E
 		return nil, fmt.Errorf("invalid input: edition input is required")
 	}
 	readingFormat := strings.TrimSpace(input.ReadingFormat)
-	if readingFormat == "" || strings.EqualFold(readingFormat, models.ReadingFormatAudiobook) {
+	if readingFormat == "" {
 		return nil, ErrAudiobookRequiresRegionalImport
+	}
+	isAudiobook := strings.EqualFold(readingFormat, models.ReadingFormatAudiobook)
+	if isAudiobook {
+		if _, validASIN := audnex.CanonicalASIN(input.ASIN); validASIN {
+			return nil, ErrAudiobookRequiresRegionalImport
+		}
 	}
 
 	// Validate input
 	if err := input.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid input: %w", err)
+	}
+	if isAudiobook {
+		if !hasParseableISBN(input) {
+			return nil, fmt.Errorf("invalid input: an audiobook edition without a valid ASIN requires a parseable ISBN")
+		}
+
+		// A malformed source ASIN is not an identity. Remove it from the
+		// proactive duplicate lookups and the insert DTO while leaving the
+		// caller's input unchanged.
+		sanitizedInput := *input
+		sanitizedInput.ASIN = ""
+		sanitizedInput.ReadingFormat = models.ReadingFormatAudiobook
+		input = &sanitizedInput
 	}
 
 	// The duplicate lookups only consider editions of the input's own format.
@@ -528,6 +551,17 @@ func (c *Creator) createEditionWithMutationReserve(ctx context.Context, input *E
 		ImageID:    imageID,
 		ImageError: imageError,
 	}, nil
+}
+
+func hasParseableISBN(input *EditionInput) bool {
+	if input == nil {
+		return false
+	}
+	if _, ok := isbn.Parse(input.ISBN10); ok {
+		return true
+	}
+	_, ok := isbn.Parse(input.ISBN13)
+	return ok
 }
 
 // uploadImageToGCS uploads an image to Google Cloud Storage and returns the public URL

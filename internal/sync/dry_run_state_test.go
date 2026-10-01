@@ -44,9 +44,9 @@ func TestProcessWantToReadDryRunDoesNotAdvanceState(t *testing.T) {
 	svc.config.Sync.ProcessUnreadBooks = true
 	svc.config.Sync.SyncOwned = false
 
-	book := toAudiobookshelfBook(createTestBook("dry-run-want-to-read", "Dry Run Want To Read", "Test Author", "DRYRUN-WANT", ""))
+	book := toAudiobookshelfBook(createTestBook("dry-run-want-to-read", "Dry Run Want To Read", "Test Author", "B0WANT1234", ""))
 	stateKey := book.ID + ":456"
-	mockClient.On("SearchBookByASIN", mock.Anything, "DRYRUN-WANT").Return(&models.HardcoverBook{
+	mockClient.On("SearchBookByASIN", mock.Anything, "B0WANT1234").Return(&models.HardcoverBook{
 		ID:        "123",
 		EditionID: "456",
 	}, nil).Once()

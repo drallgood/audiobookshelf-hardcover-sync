@@ -407,9 +407,12 @@ test('create action requires an eligible needs-review record with an identifier 
     const app = editionApp();
     const ctx = app.openSummary.runContext;
     assert.equal(app.editionCreateIneligibleReason(needsReview, ctx), null);
-    assert.match(app.editionCreateIneligibleReason({ ...needsReview, asin: '', isbn: '' }, ctx), /valid 10-character ASIN from Audiobookshelf/);
-    assert.match(app.editionCreateIneligibleReason({ ...needsReview, asin: '', isbn: '9780306406157' }, ctx), /valid 10-character ASIN from Audiobookshelf/);
-    assert.match(app.editionCreateIneligibleReason({ ...needsReview, asin: 'bad', isbn: '9780306406157' }, ctx), /valid 10-character ASIN from Audiobookshelf/);
+    assert.match(app.editionCreateIneligibleReason({ ...needsReview, asin: '', isbn: '' }, ctx), /valid ASIN or ISBN from Audiobookshelf/);
+    assert.equal(app.editionCreateIneligibleReason({ ...needsReview, asin: '', isbn: '9780306406157' }, ctx), null);
+    assert.equal(app.editionCreateIneligibleReason({ ...needsReview, asin: 'bad', isbn: '0-306-40615-2' }, ctx), null);
+    assert.equal(app.editionCreateIneligibleReason({ ...needsReview, asin: 'bad', isbn: '0–306–40615–2' }, ctx), null);
+    assert.match(app.editionCreateIneligibleReason({ ...needsReview, asin: 'bad', isbn: 'not-an-isbn' }, ctx), /valid ASIN or ISBN from Audiobookshelf/);
+    assert.equal(app.editionCreateIneligibleReason({ ...needsReview, asin: 'B00ABC1234', isbn: 'not-an-isbn' }, ctx), null);
     assert.equal(app.editionCreateIneligibleReason({ ...needsReview, format: 'ebook', asin: '', isbn: '9780306406157' }, ctx), null);
     assert.ok(app.editionCreateIneligibleReason({ ...needsReview, hardcover_book_id: '' }, ctx));
     assert.ok(app.editionCreateIneligibleReason({ ...needsReview, outcome: 'not_found' }, ctx));
@@ -427,8 +430,11 @@ test('an ineligible needs-review record still shows a disabled Add edition butto
     const app = editionApp();
     const html = app.renderEditionActions({ ...needsReview, hardcover_book_id: '' });
     assert.match(html, /data-edition-action="add"[^>]*disabled[^>]*title="No Hardcover book was matched for this item\."/);
+    const noIdentifiers = app.renderEditionActions({ ...needsReview, asin: '', isbn: '' });
+    assert.match(noIdentifiers, /data-edition-action="add"[^>]*disabled[^>]*valid ASIN or ISBN from Audiobookshelf/);
     const isbnOnlyAudio = app.renderEditionActions({ ...needsReview, asin: '', isbn: '9780306406157' });
-    assert.match(isbnOnlyAudio, /data-edition-action="add"[^>]*disabled[^>]*valid 10-character ASIN from Audiobookshelf/);
+    assert.match(isbnOnlyAudio, /data-edition-action="add"/);
+    assert.doesNotMatch(isbnOnlyAudio, /disabled/);
 });
 
 test('Add edition waits for the profile capability and disables only a confirmed format denial', () => {
@@ -447,6 +453,30 @@ test('Add edition waits for the profile capability and disables only a confirmed
 
     const ebook = app.renderEditionActions({ ...needsReview, format: 'ebook' });
     assert.doesNotMatch(ebook, /disabled/);
+});
+
+test('audiobook capability evidence follows the selected ASIN or ISBN insertion path', () => {
+    const app = editionApp();
+    const capability = {
+        ebook: { status: 'allowed', can_attempt: true },
+        audiobook_isbn: { status: 'denied', can_attempt: false, reason: 'insufficient_scope' },
+        audiobook: { status: 'allowed', can_attempt: true }
+    };
+    assert.deepEqual(app.editionCapabilityGate(capability, 'audiobook', ''), {
+        blocked: true, reason: "This profile's Hardcover token does not have permission for this action."
+    });
+    assert.deepEqual(app.editionCapabilityGate(capability, 'audiobook', 'B00ABC1234'), { blocked: false });
+    assert.deepEqual(app.editionCapabilityGate({
+        ebook: { status: 'allowed', can_attempt: true },
+        audiobook_isbn: { status: 'allowed', can_attempt: true },
+        audiobook: { status: 'denied', can_attempt: false, reason: 'no scope' }
+    }, 'audiobook', 'B00ABC1234'), { blocked: true, reason: 'no scope' });
+
+    app.openSummary.editionCapability = capability;
+    const isbnRecord = { ...needsReview, asin: 'malformed', isbn: '9780306406157' };
+    assert.match(app.renderEditionActions(isbnRecord), /disabled title="This profile&#39;s Hardcover token does not have permission/);
+    app.openSummary.editionCapability = { ...capability, audiobook_isbn: { status: 'allowed', can_attempt: true } };
+    assert.doesNotMatch(app.renderEditionActions(isbnRecord), /disabled/);
 });
 
 test('unverified capability and failed probes leave Add edition available without a modal warning', async () => {
@@ -774,7 +804,7 @@ test('capability gate blocks on known denial, permits unverified attempts, and p
         ebook: { status: 'allowed', can_attempt: true },
         audiobook: { status: 'denied', can_attempt: false, reason: 'no scope' }
     };
-    assert.deepEqual(app.editionCapabilityGate(cap, 'audiobook'), { blocked: true, reason: 'no scope' });
+    assert.deepEqual(app.editionCapabilityGate(cap, 'audiobook', 'B00ABC1234'), { blocked: true, reason: 'no scope' });
     assert.deepEqual(app.editionCapabilityGate(cap, 'ebook'), { blocked: false });
     const unverified = app.editionCapabilityGate({ ebook: { status: 'unverified', can_attempt: true, warning: 'unverified!' } }, 'ebook');
     assert.deepEqual(unverified, { blocked: false });
@@ -837,26 +867,52 @@ test('Audnexus details render only the independent Audnex preview fields', () =>
     assert.doesNotMatch(section, /ABS title|ABS author|ABS narrator|Abridged/);
 });
 
-test('an audiobook preview with no valid source ASIN cannot be confirmed, even if the draft was eligible', () => {
+test('an ISBN-only audiobook can be confirmed while malformed identifiers remain ineligible', () => {
     const app = editionApp();
     const dialog = {
         mode: 'create', profileId: 'p1', runId: 'run-1', record: needsReview, loading: false, busy: false,
         capability: null,
         draft: {
             reading_format: 'audiobook', eligible: true, dry_run: false, region_status: 'unknown',
-            source_identifiers: { asin: '', isbn: '9780306406157' },
+            source_identifiers: { asin: '', isbn: '9780306406157' }, metadata_preview: {
+                title: '<ABS audio title>', author: 'ABS author', narrator: 'ABS narrator', publisher: 'Audio Publisher',
+                language: 'en', release_date: '2024-01-02', edition_format: 'libro.fm',
+                edition_information: 'Unabridged', audio_seconds: 3660, isbn_13: '9780306406157'
+            },
             audible_identifier_candidate: { asin: '' }
         }
     };
     const html = app.renderEditionDialog(dialog);
-    assert.match(html, /Audiobook edition creation requires a valid 10-character ASIN from Audiobookshelf/);
-    assert.match(html, /data-edition-dialog="confirm-create"[^>]*disabled/);
+    assert.match(html, /Audiobookshelf audiobook details/);
+    assert.match(html, /&lt;ABS audio title&gt;/);
+    assert.match(html, /Narrator:<\/strong> ABS narrator/);
+    assert.match(html, /Publisher:<\/strong> Audio Publisher/);
+    assert.match(html, /Audio length:<\/strong> 1 hr 1 min/);
+    assert.match(html, /ISBN:<\/strong> 9780306406157/);
+    assert.match(html, /data-edition-dialog="confirm-create"(?![^>]*disabled)/);
+    assert.doesNotMatch(html, /<input[^>]+name="(?:title|narrator|release_date|edition_format)"/);
+
+    const malformed = app.renderEditionDialog({
+        ...dialog, draft: { ...dialog.draft, source_identifiers: { asin: 'bad', isbn: 'not-an-isbn' } }
+    });
+    assert.match(malformed, /valid ASIN or ISBN from Audiobookshelf/);
+    assert.match(malformed, /no usable source ASIN or ISBN/);
+    assert.match(malformed, /data-edition-dialog="confirm-create"[^>]*disabled/);
+
+    const malformedASINWithISBN = app.renderEditionDialog({
+        ...dialog, draft: { ...dialog.draft, source_identifiers: { asin: 'bad', isbn: '0-306-40615-2' } }
+    });
+    assert.doesNotMatch(malformedASINWithISBN, /valid ASIN or ISBN from Audiobookshelf/);
+    assert.match(malformedASINWithISBN, /will be added using its Audiobookshelf ISBN/);
 
     const validUnknownRegion = app.renderEditionDialog({
         ...dialog,
-        draft: { ...dialog.draft, source_identifiers: { asin: 'B00ABC1234', isbn: '9780306406157' } }
+        draft: { ...dialog.draft, region_status: 'unknown', source_identifiers: { asin: 'B00ABC1234', isbn: '9780306406157' } }
     });
-    assert.doesNotMatch(validUnknownRegion, /data-edition-dialog="confirm-create"[^>]*disabled/);
+    assert.match(validUnknownRegion, /app will retry region discovery during creation/);
+    assert.doesNotMatch(validUnknownRegion, /will be added using its Audiobookshelf ISBN/);
+    assert.doesNotMatch(validUnknownRegion, /Audiobookshelf audiobook details/);
+    assert.match(validUnknownRegion, /data-edition-dialog="confirm-create"(?![^>]*disabled)/);
 });
 
 test('the Audible identifier is always plain text, never an editable field', () => {
@@ -916,7 +972,7 @@ test('candidate details omit Hardcover identifiers and show available Audiobooks
 test('capability denial codes are translated to plain-language text', () => {
     const app = editionApp();
     assert.match(
-        app.editionCapabilityGate({ audiobook: { status: 'denied', can_attempt: false, reason: 'hardcover_token_missing' } }, 'audiobook').reason,
+        app.editionCapabilityGate({ audiobook: { status: 'denied', can_attempt: false, reason: 'hardcover_token_missing' } }, 'audiobook', 'B00ABC1234').reason,
         /no Hardcover token configured/
     );
 });
@@ -938,7 +994,7 @@ test('known capability denial disables confirmation', () => {
     const html = app.renderEditionDialog({
         mode: 'create', profileId: 'p1', runId: 'run-1', record: needsReview, loading: false, busy: false,
         capability: { audiobook: { status: 'denied', can_attempt: false, reason: 'Token lacks scope' } },
-        draft: { reading_format: 'audiobook', eligible: true, region_status: 'confirmed', confirmed_region: 'us', source_identifiers: {}, audible_identifier_candidate: { asin: 'B00ABC1234' } }
+        draft: { reading_format: 'audiobook', eligible: true, region_status: 'confirmed', confirmed_region: 'us', source_identifiers: { asin: 'B00ABC1234' }, audible_identifier_candidate: { asin: 'B00ABC1234' } }
     });
     assert.match(html, /Token lacks scope/);
     assert.match(html, /data-edition-dialog="confirm-create"[^>]*disabled/);
@@ -992,13 +1048,28 @@ test('create body sends only changed ebook fields and the opt-in resync flag', (
 
     const confirmedAudio = {
         runId: 'run-1', record: { book_id: 'li_9' },
-        draft: { reading_format: 'audiobook', region_status: 'confirmed', confirmed_region: 'uk', audible_identifier_candidate: { asin: 'B00ABC1234' } }
+        draft: { reading_format: 'audiobook', region_status: 'confirmed', confirmed_region: 'uk', source_identifiers: { asin: 'B00ABC1234' }, audible_identifier_candidate: { asin: 'B00ABC1234' } }
     };
     assert.deepEqual(app.buildEditionCreateBody(confirmedAudio, {}, false), {
         run_id: 'run-1', abs_item_id: 'li_9', audible_identifier: 'B00ABC1234:uk'
     });
 
-    const unconfirmedAudio = { runId: 'run-1', record: { book_id: 'li_9' }, draft: { reading_format: 'audiobook', region_status: 'unknown' } };
+    const isbnAudio = {
+        runId: 'run-1', record: { book_id: 'li_9', asin: 'B00ABC1234' },
+        draft: {
+            reading_format: 'audiobook', region_status: 'confirmed', confirmed_region: 'uk',
+            source_identifiers: { asin: '', isbn: '9780306406157' },
+            audible_identifier_candidate: { asin: 'B00ABC1234' }
+        }
+    };
+    assert.deepEqual(app.buildEditionCreateBody(isbnAudio, {}, false), {
+        run_id: 'run-1', abs_item_id: 'li_9'
+    });
+
+    const unconfirmedAudio = {
+        runId: 'run-1', record: { book_id: 'li_9' },
+        draft: { reading_format: 'audiobook', region_status: 'unknown', source_identifiers: { asin: 'B00ABC1234', isbn: '9780306406157' } }
+    };
     assert.deepEqual(app.buildEditionCreateBody(unconfirmedAudio, {}, false), {
         run_id: 'run-1', abs_item_id: 'li_9'
     });
@@ -1070,7 +1141,7 @@ test('submitting an edition create uses a timeout long enough for the server\'s 
     app.readEditionFormFields = () => ({});
     app.editionDialog = {
         mode: 'create', profileId: 'p1', runId: 'run-1', record: needsReview, busy: false, error: '', result: null,
-        draft: { reading_format: 'audiobook', region_status: 'confirmed', confirmed_region: 'us', audible_identifier_candidate: { asin: 'B00ABC1234' }, dry_run: false }
+        draft: { reading_format: 'audiobook', region_status: 'confirmed', confirmed_region: 'us', source_identifiers: { asin: 'B00ABC1234' }, audible_identifier_candidate: { asin: 'B00ABC1234' }, dry_run: false }
     };
     await app.submitEditionCreate();
     assert.ok(capturedOptions.timeoutMs >= 65000, 'client timeout must cover the 65s server-side editionCreateRequestTimeout');
@@ -1081,7 +1152,7 @@ function stubDialog(app, status, payload) {
     app.readEditionFormFields = () => ({});
     app.editionDialog = {
         mode: 'create', profileId: 'p1', runId: 'run-1', record: needsReview, busy: false, error: '', result: null,
-        draft: { reading_format: 'audiobook', region_status: 'confirmed', confirmed_region: 'us', audible_identifier_candidate: { asin: 'B00ABC1234' }, dry_run: false }
+        draft: { reading_format: 'audiobook', region_status: 'confirmed', confirmed_region: 'us', source_identifiers: { asin: 'B00ABC1234' }, audible_identifier_candidate: { asin: 'B00ABC1234' }, dry_run: false }
     };
     return app.editionDialog;
 }
@@ -1830,12 +1901,13 @@ test('terminal failed status check clears recovery and prevents another create',
 test('an import resolved to a non-audiobook edition is final and links to report that edition', async () => {
     const wrongFormat = {
         success: false, outcome: 'failed', error_code: 'hardcover_edition_wrong_format',
-        error: 'Hardcover linked this Audible identifier to existing edition 32307716, which Hardcover lists as a physical book, not an audiobook.',
+        error: 'Hardcover returned existing edition 32307716, which Hardcover lists as a physical book, not an audiobook.',
         data: { hardcover_book_id: '42', hardcover_edition_id: '32307716', hardcover_edition_url: 'https://evil.example/phish' }
     };
     const requireFinal = (app, dialog) => {
         const html = app.renderEditionDialog(dialog);
         assert.equal(dialog.outcome, 'failed');
+        assert.match(html, /Hardcover returned a non-audiobook edition/);
         assert.match(html, /existing edition 32307716, which Hardcover lists as a physical book/);
         assert.match(html, /<a class="btn btn-primary" href="https:\/\/hardcover\.app\/editions\/32307716"[^>]*>Report a problem on Hardcover<\/a>/);
         assert.doesNotMatch(html, /may be stale/);
@@ -1849,6 +1921,22 @@ test('an import resolved to a non-audiobook edition is final and links to report
     const createDialog = stubDialog(createApp, 409, wrongFormat);
     await createApp.submitEditionCreate();
     requireFinal(createApp, createDialog);
+
+    const isbnApp = editionApp();
+    const isbnDialog = stubDialog(isbnApp, 409, wrongFormat);
+    isbnDialog.draft = {
+        reading_format: 'audiobook', eligible: true, dry_run: false, region_status: 'not_applicable',
+        source_identifiers: { asin: '', isbn: '9780306406157' }, audible_identifier_candidate: { asin: '' }
+    };
+    let submittedBody;
+    isbnApp.fetchJsonWithTimeout = async (_url, options) => {
+        submittedBody = JSON.parse(options.body);
+        return { response: { ok: false, status: 409 }, data: wrongFormat };
+    };
+    await isbnApp.submitEditionCreate();
+    requireFinal(isbnApp, isbnDialog);
+    assert.equal(submittedBody.audible_identifier, undefined);
+    assert.equal(submittedBody.resync, true);
 
     const checkApp = editionApp();
     const checkDialog = stubDialog(checkApp, 503, { success: false, outcome: 'unconfirmed', error_code: 'hardcover_import_unconfirmed', data: {

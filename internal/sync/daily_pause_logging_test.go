@@ -32,10 +32,10 @@ func TestHardcoverSearchIntentLogsOnlyOutsideDailyPause(t *testing.T) {
 	}{
 		{
 			name:    "ASIN",
-			message: "Searching for book by ASIN: B000TEST",
+			message: "Searching for book by ASIN: B000TEST01",
 			setup: func(client *MockHardcoverClient, book *models.AudiobookshelfBook) {
-				book.Media.Metadata.ASIN = "B000TEST"
-				client.On("SearchBookByASIN", mock.Anything, "B000TEST").Return((*models.HardcoverBook)(nil), nil)
+				book.Media.Metadata.ASIN = "B000TEST01"
+				client.On("SearchBookByASIN", mock.Anything, "B000TEST01").Return((*models.HardcoverBook)(nil), nil)
 			},
 			run: func(service *Service, book models.AudiobookshelfBook) {
 				_, _ = service.findBookInHardcover(context.Background(), book)
@@ -45,7 +45,7 @@ func TestHardcoverSearchIntentLogsOnlyOutsideDailyPause(t *testing.T) {
 			name:    "ISBN",
 			message: "Searching for book by ISBN: 9781101926840",
 			setup: func(client *MockHardcoverClient, book *models.AudiobookshelfBook) {
-				// ISBN matching applies only to ebooks (Step 11).
+				// Keep this logging case on the ebook ISBN path.
 				book.MediaType = "ebook"
 				book.Media.Metadata.ISBN = "9781101926840"
 				client.On("SearchBookByISBN13", mock.Anything, "9781101926840").Return((*models.HardcoverBook)(nil), nil)

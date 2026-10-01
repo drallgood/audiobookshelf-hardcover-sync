@@ -125,8 +125,9 @@ components:
           type: string
           enum: [allowed, denied, unverified]
           description: >-
-            Ebook insert_edition may be allowed from the exact validation
-            response returned when its required book_id argument is omitted.
+            Ebook and ISBN-based audiobook insert_edition may be allowed from
+            the exact validation response returned when its required book_id
+            argument is omitted.
             Audiobook upsert_book may be allowed from the exact validation
             response returned when its required book argument is omitted.
             Either operation is denied only for the recognized HTTP 403
@@ -155,12 +156,18 @@ components:
 
     EditionCapability:
       type: object
-      required: [ebook, audiobook, dry_run]
+      required: [ebook, audiobook_isbn, audiobook, dry_run]
       properties:
         ebook:
           allOf:
             - $ref: '#/components/schemas/EditionCapabilityStatus'
           description: Capability evidence for ebook insert_edition.
+        audiobook_isbn:
+          allOf:
+            - $ref: '#/components/schemas/EditionCapabilityStatus'
+          description: >-
+            Capability evidence for inserting an audiobook edition from an ISBN;
+            uses the same insert_edition operation as ebook creation.
         audiobook:
           allOf:
             - $ref: '#/components/schemas/EditionCapabilityStatus'
@@ -277,13 +284,16 @@ components:
           type: boolean
           description: >-
             True when a valid source ASIN (exactly 10 ASCII letters or digits)
-            or an ISBN accepted by shape is available. A malformed non-empty
-            source ASIN is not usable: it is retained in the draft and produces
-            an `invalid_source_asin` warning (with `region_status` `unknown` for
-            audiobooks and Audnexus lookup skipped), and the item is eligible only
-            if it has an ISBN. An ISBN with a bad checksum remains a candidate
-            with a validity warning, so checksum warnings do not by themselves
-            make an ISBN-shaped value ineligible.
+            or an ISBN accepted by shape is available. For audiobooks, a valid
+            source ASIN selects regional Audible creation and remains
+            authoritative when discovery or import fails; an ISBN fallback is
+            eligible only when that source ASIN is absent or malformed. A
+            malformed non-empty source ASIN is retained in the draft and
+            produces an `invalid_source_asin` warning (with `region_status`
+            `not_applicable` for audiobooks and Audnexus lookup skipped). An
+            ISBN with a bad checksum remains a candidate with a validity warning, so
+            checksum warnings do not by themselves make an ISBN-shaped value
+            ineligible.
         ineligible_reason:
           type: string
           description: Present when the source item has neither a usable ASIN nor an ISBN accepted by shape; author or date warnings do not change eligibility.
@@ -292,7 +302,14 @@ components:
         region_status:
           type: string
           enum: [confirmed, unknown, temporarily_unavailable, not_applicable]
-          description: Audiobook source-ASIN lookup state. `confirmed` means Audnexus returned the same ASIN in the reported region; `unknown` means the supported-region sweep completed without a matching ASIN or the source ASIN was malformed; `temporarily_unavailable` means a rate-limit, transient, or 400/403 Audnexus response stopped the sweep; `not_applicable` means an audiobook has no source ASIN. Omitted for ebooks.
+          description: >-
+            Audiobook source-ASIN lookup state. `confirmed` means Audnexus
+            returned the same ASIN in the reported region; `unknown` means the
+            supported-region sweep completed without a matching ASIN;
+            `temporarily_unavailable` means a rate-limit, transient, or 400/403
+            Audnexus response stopped the sweep; `not_applicable` means the
+            source ASIN is absent or malformed and Audnexus lookup was skipped.
+            Omitted for ebooks.
         confirmed_region:
           type: string
           enum: [us, ca, uk, au, de, fr, es, in, it, jp]
@@ -322,9 +339,12 @@ components:
       description: >-
         Identifies one item in one completed or canceled, non-dry-run sync run.
         The API uses the Hardcover book ID in that needs-review record; clients
-        cannot choose a Hardcover book or author ID. For an audiobook, only
-        `audible_identifier` may be corrected. The remaining correction fields
-        apply to ebooks.
+        cannot choose a Hardcover book or author ID. Audiobooks with a valid
+        source ASIN use regional Audible import. If the source ASIN is absent or
+        malformed, the read-only Audiobookshelf ISBN can be inserted as an
+        audiobook edition. A valid source ASIN blocks ISBN fallback if its
+        discovery or import fails. For an audiobook, only `audible_identifier`
+        may be corrected; the remaining correction fields apply to ebooks.
       properties:
         run_id:
           type: string
@@ -492,12 +512,13 @@ components:
       type: object
       description: >-
         Returned with HTTP 409, `outcome: failed`, and `error_code:
-        hardcover_edition_wrong_format` when a terminal regional import resolves
-        to an edition of the reviewed book whose fresh readback is not an
-        audiobook. Hardcover can do this when the Audible ASIN is also an ISBN-10
-        that an existing edition already carries. No match is saved and no
-        recovery token is returned; resubmitting or checking returns the same
-        edition until Hardcover corrects its format.
+        hardcover_edition_wrong_format` when an audiobook create resolves to an
+        edition of the reviewed book whose fresh readback is not an audiobook.
+        This can happen when an Audible ASIN is also an ISBN-10 carried by a
+        non-audiobook edition, or when an ISBN-only audiobook insertion resolves
+        to an existing non-audiobook edition. No match is saved and no recovery
+        token is returned; resubmitting returns the same edition until
+        Hardcover corrects its format.
       required: [hardcover_book_id, hardcover_edition_id, hardcover_edition_url]
       properties:
         hardcover_book_id:
@@ -1084,14 +1105,16 @@ paths:
   /profiles/{id}/edition-capability:
     get:
       tags: [Edition Capability]
-      summary: Report ebook and audiobook edition capability separately
+      summary: Report edition capability by creation method
       description: >-
         Requires profile write access. For a live profile, the endpoint probes
         ebook insert_edition without its required book_id argument and
         audiobook upsert_book without its required book argument. Each exact
         missing-argument validation response proves its mutation is available
         before any catalogue write can execute; neither probe supplies a book
-        or external ID. An exact HTTP 403 insufficient_scope response is
+        or external ID. `audiobook_isbn` reports the same insert_edition
+        capability evidence as `ebook`, because both creation paths use that
+        operation. An exact HTTP 403 insufficient_scope response is
         reported denied for either operation; any other result remains
         unverified. Probe outcomes are cached per profile and operation until
         an explicit refresh or a Hardcover token change. A
@@ -1111,7 +1134,9 @@ paths:
           example: profile-123
       responses:
         '200':
-          description: Separate capability evidence for ebook and audiobook creation.
+          description: >-
+            Capability evidence for ebook insertion, ISBN-based audiobook
+            insertion, and regional Audible audiobook import.
           content:
             application/json:
               schema:
@@ -1155,7 +1180,7 @@ paths:
   /profiles/{id}/edition-capability/refresh:
     post:
       tags: [Edition Capability]
-      summary: Refresh ebook and audiobook edition capability evidence
+      summary: Refresh edition capability evidence by creation method
       description: >-
         Requires profile write access. Reruns both validation-only Hardcover
         permission probes for the current token, replacing any cached result.
@@ -1169,7 +1194,9 @@ paths:
           example: profile-123
       responses:
         '200':
-          description: Refreshed capability evidence for ebook and audiobook creation.
+          description: >-
+            Refreshed capability evidence for ebook insertion, ISBN-based
+            audiobook insertion, and regional Audible audiobook import.
           content:
             application/json:
               schema:

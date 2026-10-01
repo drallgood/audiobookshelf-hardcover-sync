@@ -815,19 +815,19 @@ func TestProcessBookMergesUserProgressBeforeUnreadSkip(t *testing.T) {
 	// The library item reports no playback, but the authoritative /me media
 	// progress says the book is started. The merge must happen before the
 	// unread skip, so the book has to reach the Hardcover lookup.
-	book := toAudiobookshelfBook(createTestBook("started-book", "Started Book", "Test Author", "ASIN123", ""))
+	book := toAudiobookshelfBook(createTestBook("started-book", "Started Book", "Test Author", "B0ASIN1234", ""))
 	book.Progress.CurrentTime = 0
 	book.Progress.IsFinished = false
 
 	userProgress := &models.AudiobookshelfUserProgress{}
 	addMediaProgress(userProgress, book.ID, 120, 0, 200)
 
-	mockClient.On("SearchBookByASIN", mock.Anything, "ASIN123").Return((*models.HardcoverBook)(nil), assert.AnError)
+	mockClient.On("SearchBookByASIN", mock.Anything, "B0ASIN1234").Return((*models.HardcoverBook)(nil), assert.AnError)
 	mockClient.On("SearchBooks", mock.Anything, mock.Anything, mock.Anything).Return([]models.HardcoverBook{}, nil)
 
 	_ = svc.processBook(context.Background(), *book, userProgress)
 
-	mockClient.AssertCalled(t, "SearchBookByASIN", mock.Anything, "ASIN123")
+	mockClient.AssertCalled(t, "SearchBookByASIN", mock.Anything, "B0ASIN1234")
 }
 
 func TestEnhanceBookProgressFromUserData(t *testing.T) {

@@ -554,7 +554,7 @@ func TestProcessBookClassifiesProgressMutationOutcomes(t *testing.T) {
 			svc.config.Sync.SyncOwned = false
 			svc.config.Sync.DryRun = tt.dryRun
 			book := toAudiobookshelfBook(createTestBook(
-				"outcome-"+tt.name, "Progress", "Author", "outcome-"+tt.name+"-asin", ""))
+				"outcome-"+tt.name, "Progress", "Author", "B0SYNC0001", ""))
 			book.Media.Duration = 1000
 			book.Progress.CurrentTime = 300
 			expectASINMatch(hc, book.Media.Metadata.ASIN, "100", "200", 300)
@@ -658,11 +658,11 @@ func TestProcessBookSkipsAudiobookshelfEbooksUnlessIncluded(t *testing.T) {
 func TestProcessBookThresholdSkipRecordsSkipped(t *testing.T) {
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
-	testBook := createTestBook("outcome-threshold", "Progress", "Author", "outcome-threshold-asin", "")
+	testBook := createTestBook("outcome-threshold", "Progress", "Author", "B0SYNC0001", "")
 	testBook.Media.Duration = 1000
 	testBook.Progress.CurrentTime = 300
 	book := toAudiobookshelfBook(testBook)
-	expectASINMatch(hc, "outcome-threshold-asin", "110", "210", 310)
+	expectASINMatch(hc, "B0SYNC0001", "110", "210", 310)
 	hc.On("GetUserBook", mock.Anything, "310").Return(&models.HardcoverBook{
 		ID: "110", EditionID: "210", BookStatusID: 2,
 	}, nil).Once()
@@ -700,7 +700,7 @@ func TestRecordBookOutcomeReplacementClearsPreviousError(t *testing.T) {
 
 func TestProcessBookSeparatesNotFoundAndTechnicalLookupFailure(t *testing.T) {
 	newBook := func(id string) models.AudiobookshelfBook {
-		book := createTestBook(id, id, "Author", id+"-asin", "978-0-306-40615-7")
+		book := createTestBook(id, id, "Author", "", "978-0-306-40615-7")
 		book.Progress.CurrentTime = 300
 		return *toAudiobookshelfBook(book)
 	}
@@ -708,7 +708,6 @@ func TestProcessBookSeparatesNotFoundAndTechnicalLookupFailure(t *testing.T) {
 	t.Run("conclusive no result", func(t *testing.T) {
 		svc, hc := createTestService()
 		book := newBook("outcome-not-found")
-		hc.On("SearchBookByASIN", mock.Anything, "outcome-not-found-asin").Return((*models.HardcoverBook)(nil), nil).Once()
 		hc.On("SearchBookByISBN13", mock.Anything, "9780306406157").Return((*models.HardcoverBook)(nil), nil).Once()
 		hc.On("SearchBookByISBN10", mock.Anything, "0306406152").Return((*models.HardcoverBook)(nil), nil).Once()
 		hc.On("SearchBooks", mock.Anything, "outcome-not-found Author", "").Return([]models.HardcoverBook{}, nil).Once()
@@ -719,7 +718,6 @@ func TestProcessBookSeparatesNotFoundAndTechnicalLookupFailure(t *testing.T) {
 	t.Run("technical lookup failure", func(t *testing.T) {
 		svc, hc := createTestService()
 		book := newBook("outcome-lookup-failed")
-		hc.On("SearchBookByASIN", mock.Anything, "outcome-lookup-failed-asin").Return((*models.HardcoverBook)(nil), errors.New("temporary API failure")).Once()
 		hc.On("SearchBookByISBN13", mock.Anything, "9780306406157").Return((*models.HardcoverBook)(nil), errors.New("temporary API failure")).Once()
 		hc.On("SearchBookByISBN10", mock.Anything, "0306406152").Return((*models.HardcoverBook)(nil), nil).Once()
 		hc.On("SearchBooks", mock.Anything, "outcome-lookup-failed Author", "").Return([]models.HardcoverBook{}, nil).Once()
@@ -732,11 +730,11 @@ func TestProcessBookSeparatesNotFoundAndTechnicalLookupFailure(t *testing.T) {
 
 func TestProcessBookKeepsIdentifierFailureWhenTitleSearchFindsCandidate(t *testing.T) {
 	svc, hc := createTestService()
-	book := createTestBook("outcome-incomplete-lookup", "Possible Match", "Author", "failed-asin", "")
+	book := createTestBook("outcome-incomplete-lookup", "Possible Match", "Author", "B0FAIL0001", "")
 	book.Progress.CurrentTime = 300
 	absBook := toAudiobookshelfBook(book)
 	lookupErr := errors.New("identifier lookup unavailable")
-	hc.On("SearchBookByASIN", mock.Anything, "failed-asin").Return((*models.HardcoverBook)(nil), lookupErr).Once()
+	hc.On("SearchBookByASIN", mock.Anything, "B0FAIL0001").Return((*models.HardcoverBook)(nil), lookupErr).Once()
 	hc.On("SearchBooks", mock.Anything, "Possible Match Author", "").Return([]models.HardcoverBook{{
 		ID: "901", Title: "Possible Match", Slug: "possible-match",
 	}}, nil).Once()
@@ -783,7 +781,7 @@ func TestProcessBookIdentifierFailureMismatchExportsByReadingFormat(t *testing.T
 		t.Run(tt.name, func(t *testing.T) {
 			svc, hc := createTestService()
 			svc.config.Sync.IncludeEbooks = true
-			testBook := createTestBook("lookup-failed-format", "Possible Match", "Author", "failed-asin", tt.isbn)
+			testBook := createTestBook("lookup-failed-format", "Possible Match", "Author", "B0FAIL0001", tt.isbn)
 			testBook.Media.Duration = 1000
 			testBook.Progress.CurrentTime = 300
 			if tt.ebook {
@@ -793,7 +791,7 @@ func TestProcessBookIdentifierFailureMismatchExportsByReadingFormat(t *testing.T
 			absBook.Media.Metadata.Abridged = tt.abridged
 			require.Equal(t, tt.ebook, absBook.IsEbook())
 			lookupErr := errors.New("identifier lookup unavailable")
-			hc.On("SearchBookByASIN", mock.Anything, "failed-asin").Return((*models.HardcoverBook)(nil), lookupErr).Once()
+			hc.On("SearchBookByASIN", mock.Anything, "B0FAIL0001").Return((*models.HardcoverBook)(nil), lookupErr).Once()
 			hc.On("SearchBookByISBN13", mock.Anything, mock.Anything).Return((*models.HardcoverBook)(nil), nil).Maybe()
 			hc.On("SearchBookByISBN10", mock.Anything, mock.Anything).Return((*models.HardcoverBook)(nil), nil).Maybe()
 			hc.On("SearchBooks", mock.Anything, "Possible Match Author", "").Return([]models.HardcoverBook{{
@@ -827,12 +825,13 @@ func TestProcessBookIdentifierFailureMismatchExportsByReadingFormat(t *testing.T
 func TestProcessBookSnapshotKeepsTitleOnlyEnrichment(t *testing.T) {
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
-	book := createTestBook("snapshot-title-only", "Title Only", "Author", "", "9781234567890")
+	book := createTestBook("snapshot-title-only", "Title Only", "Author", "B0AUDIO001", "9781234567890")
 	book.Progress.CurrentTime = 300
 	absBook := toAudiobookshelfBook(book)
 
-	// This is an audiobook, so ISBN no longer applies to its initial match
-	// attempt (Step 11); title/author search runs directly.
+	// A valid ASIN blocks the audiobook ISBN fallback, so this exercises the
+	// title-only attention path after an ASIN miss.
+	hc.On("SearchBookByASIN", mock.Anything, "B0AUDIO001").Return((*models.HardcoverBook)(nil), nil)
 	hc.On("SearchBooks", mock.Anything, "Title Only Author", "").Return([]models.HardcoverBook{{
 		ID: "901", Title: "Title Only Candidate", Slug: "candidate-slug",
 		Authors: []models.Author{{Name: "Candidate Author"}},
@@ -841,12 +840,9 @@ func TestProcessBookSnapshotKeepsTitleOnlyEnrichment(t *testing.T) {
 		ID: "901", Title: "Title Only Candidate", Slug: "candidate-slug",
 		Authors: []models.Author{{Name: "Candidate Author"}},
 	}, nil).Once()
-	// AddWithMetadata's own enrichment lookup is unaffected by Step 11 (it is
-	// mismatch-export enrichment, not audiobook matching).
-	hc.On("SearchBookByISBN13", mock.Anything, book.Media.Metadata.ISBN).Return(&models.HardcoverBook{
-		ID: "904", Title: "Enriched Hardcover", Authors: []models.Author{{Name: "Enriched Author"}},
-		EditionISBN13: book.Media.Metadata.ISBN,
-	}, nil).Once()
+	// Enrichment must not replace the title candidate using an ISBN when
+	// the source has a valid ASIN.
+	hc.On("SearchBooks", mock.Anything, "Title Only", "Author").Return([]models.HardcoverBook{}, nil).Once()
 
 	require.NoError(t, svc.processBook(context.Background(), *absBook, &models.AudiobookshelfUserProgress{}))
 
@@ -854,10 +850,12 @@ func TestProcessBookSnapshotKeepsTitleOnlyEnrichment(t *testing.T) {
 	require.Len(t, snapshot.BookOutcomes, 1)
 	got := snapshot.BookOutcomes[0]
 	assert.Equal(t, absBook.ID, got.BookID)
-	assert.Equal(t, "904", got.HardcoverBookID)
-	assert.Empty(t, got.HardcoverSlug, "candidate metadata from a different Hardcover book must not be mixed")
-	assert.Equal(t, "Enriched Author", got.HardcoverAuthor)
+	assert.Equal(t, "901", got.HardcoverBookID)
+	assert.Equal(t, "candidate-slug", got.HardcoverSlug)
+	assert.Equal(t, "Candidate Author", got.HardcoverAuthor)
 	assert.Equal(t, OutcomeNeedsReview, snapshot.BookOutcomes[0].Outcome)
+	hc.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
 	hc.AssertExpectations(t)
 }
 
@@ -871,8 +869,7 @@ func TestProcessBookSnapshotKeepsEnrichedSecondLookupFailure(t *testing.T) {
 	book := createTestBook("snapshot-second-lookup", "Second Lookup", "Author", "", "9781234567890")
 	book.Progress.CurrentTime = 300
 	absBook := toAudiobookshelfBook(book)
-	// ISBN matching, including the pre-mutation revalidation lookup below,
-	// applies only to ebooks (Step 11).
+	// Ebook ISBN matches are revalidated before any reading-state work.
 	absBook.MediaType = "ebook"
 	absBook.Media.Metadata.PublishedYear = "2023"
 	absBook.Media.Metadata.Publisher = "Test Publisher"
@@ -918,8 +915,7 @@ func TestProcessBookSnapshotKeepsSecondLookupNotFoundOutOfMismatches(t *testing.
 	book := createTestBook("snapshot-second-lookup-not-found", "Second Lookup Not Found", "Author", "", "9781234567890")
 	book.Progress.CurrentTime = 300
 	absBook := toAudiobookshelfBook(book)
-	// ISBN matching, including the pre-mutation revalidation lookup below,
-	// applies only to ebooks (Step 11).
+	// Ebook ISBN matches are revalidated before any reading-state work.
 	absBook.MediaType = "ebook"
 	absBook.Media.Metadata.Publisher = "Test Publisher"
 
@@ -959,7 +955,7 @@ func TestProcessBookSnapshotKeepsEnrichedNoEditionMismatch(t *testing.T) {
 	book := createTestBook("snapshot-no-edition", "No Edition", "Author", "", "9781234567890")
 	book.Progress.CurrentTime = 300
 	absBook := toAudiobookshelfBook(book)
-	// ISBN matching applies only to ebooks (Step 11).
+	// This case exercises the ebook ISBN matching path.
 	absBook.MediaType = "ebook"
 	absBook.Media.Metadata.PublishedYear = "2023"
 
@@ -1073,7 +1069,7 @@ func TestSyncTestBookLimitCountsFailedBookAttempt(t *testing.T) {
 	svc.userBookCache = NewPersistentUserBookCache(cacheDir)
 	require.NoError(t, svc.userBookCache.Load())
 
-	failedBook := toAudiobookshelfBook(createTestBook("limit-failed", "Failed Book", "Author", "limit-failed-asin", ""))
+	failedBook := toAudiobookshelfBook(createTestBook("limit-failed", "Failed Book", "Author", "B0FAIL0001", ""))
 	failedBook.Progress.CurrentTime = 300
 	secondBook := toAudiobookshelfBook(createTestBook("limit-second", "Second Book", "Author", "limit-second-asin", ""))
 	secondBook.Progress.CurrentTime = 300
@@ -1089,7 +1085,7 @@ func TestSyncTestBookLimitCountsFailedBookAttempt(t *testing.T) {
 	mockABS.On("GetLibraryItems", mock.Anything, "library-a").Return([]models.AudiobookshelfBook{*failedBook}, nil).Once()
 	mockABS.On("GetLibraryItems", mock.Anything, "library-b").Return([]models.AudiobookshelfBook{*secondBook}, nil).Once()
 	hc.On("ClearUserBookCache").Return().Once()
-	hc.On("SearchBookByASIN", mock.Anything, "limit-failed-asin").Return(&models.HardcoverBook{
+	hc.On("SearchBookByASIN", mock.Anything, "B0FAIL0001").Return(&models.HardcoverBook{
 		ID: "101", EditionID: "not-a-number",
 	}, nil).Once()
 	svc.audiobookshelf = mockABS
@@ -1156,12 +1152,12 @@ func TestSyncReportsRetriedLibraryFetchFailure(t *testing.T) {
 func TestProcessBookOutcomeStaleRereadMutationWinsOverNoOp(t *testing.T) {
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
-	book := createTestBook("outcome-stale-reread", "Stale Reread", "Author", "stale-reread-asin", "")
+	book := createTestBook("outcome-stale-reread", "Stale Reread", "Author", "B0SYNC0001", "")
 	book.Media.Duration = 1000
 	book.Progress.CurrentTime = 500
 	book.Progress.StartedAt = 1767225600000 // 2026-01-01
 	absBook := toAudiobookshelfBook(book)
-	expectASINMatch(hc, "stale-reread-asin", "103", "203", 303)
+	expectASINMatch(hc, "B0SYNC0001", "103", "203", 303)
 	hc.On("GetUserBook", mock.Anything, "303").Return(&models.HardcoverBook{
 		ID: "103", EditionID: "203", BookStatusID: 2,
 	}, nil).Once()

@@ -190,7 +190,7 @@ func TestFindBookInHardcoverPersistsVerifiedASINMatches(t *testing.T) {
 		wantSaved  bool
 		wantRegion string
 	}{
-		{name: "verified audiobook mapping", format: models.ReadingFormatAudiobook, matchKind: hardcover.ASINMatchAudibleMapping, wantSaved: true, wantRegion: "ASIN-123:uk"},
+		{name: "verified audiobook mapping", format: models.ReadingFormatAudiobook, matchKind: hardcover.ASINMatchAudibleMapping, wantSaved: true, wantRegion: "B0AUDIO001:uk"},
 		{name: "temporary edition ASIN fallback", format: models.ReadingFormatAudiobook, matchKind: hardcover.ASINMatchEditionASIN},
 		{name: "ebook edition ASIN", format: models.ReadingFormatEbook, matchKind: hardcover.ASINMatchEditionASIN, wantSaved: true},
 	}
@@ -198,7 +198,11 @@ func TestFindBookInHardcoverPersistsVerifiedASINMatches(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			svc, mockClient := createTestService()
 			svc.config.Sync.SyncOwned = false
-			book := associationTestBook("association-"+tt.name, "ASIN-123", "")
+			sourceASIN := "ASIN-123"
+			if tt.format == models.ReadingFormatAudiobook {
+				sourceASIN = "B0AUDIO001"
+			}
+			book := associationTestBook("association-"+tt.name, sourceASIN, "")
 			if tt.format == models.ReadingFormatEbook {
 				book.MediaType = "ebook"
 			}
@@ -223,7 +227,7 @@ func TestFindBookInHardcoverPersistsVerifiedASINMatches(t *testing.T) {
 			assert.Equal(t, tt.wantSaved, saved)
 			if tt.wantSaved {
 				assert.Equal(t, tt.wantRegion, association.RegionalExternalID)
-				assert.Equal(t, "ASIN-123", association.SourceASIN)
+				assert.Equal(t, sourceASIN, association.SourceASIN)
 				assert.Equal(t, string(tt.matchKind), association.Provenance)
 			} else {
 				assert.False(t, svc.state.IsDirty())
@@ -316,7 +320,7 @@ func TestProcessBookDoesNotRepeatTemporaryASINFallbackLookup(t *testing.T) {
 	svc, mockClient := createTestService()
 	svc.config.Sync.SyncOwned = false
 	svc.config.Sync.SyncWantToRead = false
-	book := associationTestBook("association-temporary-process", "ASIN-123", "")
+	book := associationTestBook("association-temporary-process", "B0AUDIO001", "")
 	svc.config.Sync.ProcessUnreadBooks = true
 	book.Progress.CurrentTime = 0
 	client := &associationLookupClient{
@@ -442,7 +446,7 @@ func TestProcessBookReconcilesOwnershipForFreshAudiobookASINMatch(t *testing.T) 
 		{
 			name:      "regional Audible mapping is remembered",
 			matchKind: hardcover.ASINMatchAudibleMapping,
-			regionID:  "ASIN-123:uk",
+			regionID:  "B0AUDIO001:uk",
 			wantSaved: true,
 		},
 		{
@@ -456,7 +460,7 @@ func TestProcessBookReconcilesOwnershipForFreshAudiobookASINMatch(t *testing.T) 
 			svc.config.Sync.SyncOwned = true
 			svc.config.Sync.ProcessUnreadBooks = true
 			svc.config.Sync.SyncWantToRead = true
-			book := associationTestBook("association-audiobook-fresh-"+tt.name, "ASIN-123", "")
+			book := associationTestBook("association-audiobook-fresh-"+tt.name, "B0AUDIO001", "")
 			client := &associationLookupClient{
 				MockHardcoverClient: mockClient,
 				result: &hardcover.ASINLookupResult{
@@ -481,7 +485,7 @@ func TestProcessBookReconcilesOwnershipForFreshAudiobookASINMatch(t *testing.T) 
 			association, saved := svc.state.GetAssociation(book.ID)
 			assert.Equal(t, tt.wantSaved, saved)
 			if tt.wantSaved {
-				assert.Equal(t, "ASIN-123:uk", association.RegionalExternalID)
+				assert.Equal(t, "B0AUDIO001:uk", association.RegionalExternalID)
 				assert.Equal(t, string(tt.matchKind), association.Provenance)
 			}
 			mockClient.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
@@ -509,9 +513,9 @@ func TestProcessBookReconcilesOwnershipForReusedAudiobookAssociation(t *testing.
 			svc.config.Sync.ProcessUnreadBooks = true
 			svc.config.Sync.SyncWantToRead = true
 			svc.config.Sync.DryRun = tt.dryRun
-			book := associationTestBook("association-audiobook-reused-"+tt.name, "ASIN-123", "")
+			book := associationTestBook("association-audiobook-reused-"+tt.name, "B0AUDIO001", "")
 			require.NoError(t, svc.state.SetAssociation(state.Association{
-				ABSItemID: book.ID, SourceASIN: "ASIN-123", RegionalExternalID: "ASIN-123:uk",
+				ABSItemID: book.ID, SourceASIN: "B0AUDIO001", RegionalExternalID: "B0AUDIO001:uk",
 				HardcoverBookID: "901", HardcoverEditionID: "902",
 				ReadingFormat: models.ReadingFormatAudiobook, Provenance: string(hardcover.ASINMatchAudibleMapping),
 			}))
@@ -741,13 +745,15 @@ func TestProcessBookDoesNotReconcileAudiobookISBNOnPostMatchSkip(t *testing.T) {
 			book.ID = "association-audiobook-post-match-skip-" + tt.name
 			book.Progress.CurrentTime = tt.progress * book.Media.Duration
 			book.Progress.StartedAt = 0
+			client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+				Return(hardcoverHit(), nil).Once()
 
 			err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
 
 			require.NoError(t, err)
 			_, saved := svc.state.GetAssociation(book.ID)
 			assert.False(t, saved, "audiobook ISBNs must not create saved matches")
-			client.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
+			client.AssertNumberOfCalls(t, "SearchBookByISBN13", 1)
 			client.AssertNotCalled(t, "CheckBookOwnership", mock.Anything, mock.Anything)
 			client.AssertNotCalled(t, "MarkEditionAsOwned", mock.Anything, mock.Anything)
 			client.AssertNotCalled(t, "GetUserBookID", mock.Anything, mock.Anything)
@@ -807,7 +813,7 @@ func TestProcessBookRejectsUnstableEbookISBNBeforePostMatchSkip(t *testing.T) {
 func TestFindBookInHardcoverIdentifierChangeInvalidatesAndRematches(t *testing.T) {
 	svc, mockClient := createTestService()
 	svc.config.Sync.SyncOwned = false
-	book := associationTestBook("association-changed", "ASIN-NEW", "")
+	book := associationTestBook("association-changed", "B0NEWASIN1", "")
 	require.NoError(t, svc.state.SetAssociation(state.Association{
 		ABSItemID: book.ID, SourceASIN: "ASIN-OLD", HardcoverBookID: "old-book",
 		HardcoverEditionID: "old-edition", ReadingFormat: models.ReadingFormatAudiobook,
@@ -817,7 +823,7 @@ func TestFindBookInHardcoverIdentifierChangeInvalidatesAndRematches(t *testing.T
 		result: &hardcover.ASINLookupResult{
 			Book:               &models.HardcoverBook{ID: "901", EditionID: "902"},
 			MatchKind:          hardcover.ASINMatchAudibleMapping,
-			RegionalExternalID: "ASIN-NEW:us",
+			RegionalExternalID: "B0NEWASIN1:us",
 		},
 	}
 	svc.hardcover = client
@@ -830,7 +836,7 @@ func TestFindBookInHardcoverIdentifierChangeInvalidatesAndRematches(t *testing.T
 	assert.Equal(t, "901", got.ID)
 	association, exists := svc.state.GetAssociation(book.ID)
 	require.True(t, exists)
-	assert.Equal(t, "ASIN-NEW", association.SourceASIN)
+	assert.Equal(t, "B0NEWASIN1", association.SourceASIN)
 	assert.Equal(t, "901", association.HardcoverBookID)
 	mockClient.AssertExpectations(t)
 }
@@ -1253,7 +1259,7 @@ func TestFindBookInHardcoverEditionASINOnlyAudiobookIsNotMatched(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			svc, mockClient := createTestService()
-			book := associationTestBook("asin-only-"+tt.name, "ASIN-123", "")
+			book := associationTestBook("asin-only-"+tt.name, "B0AUDIO001", "")
 			// The Hardcover lookup finds no Audible mapping: an edition that
 			// carries the ASIN only in editions.asin is not returned for audiobooks.
 			svc.hardcover = &associationLookupClient{MockHardcoverClient: mockClient}
@@ -1273,34 +1279,70 @@ func TestFindBookInHardcoverEditionASINOnlyAudiobookIsNotMatched(t *testing.T) {
 	}
 }
 
-func TestFindBookInHardcoverISBNOnlyAudiobookIsNotMatched(t *testing.T) {
+func TestFindBookInHardcoverMatchesAudiobookISBNWithoutValidASIN(t *testing.T) {
 	tests := []struct {
-		name        string
-		searchBooks []models.HardcoverBook
-		wantOutcome SyncOutcome
+		name string
+		asin string
 	}{
-		{name: "title and author finds the book", searchBooks: []models.HardcoverBook{{ID: "901", Title: "Association Book"}}, wantOutcome: OutcomeNeedsReview},
-		{name: "title and author finds nothing", searchBooks: nil, wantOutcome: OutcomeNotFound},
+		{name: "missing ASIN"},
+		{name: "malformed ASIN", asin: "not-a-valid-ASIN"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			svc, mockClient := createTestService()
 			svc.config.Sync.SyncOwned = false
-			book := associationTestBook("isbn-only-"+tt.name, "", "978-0-306-40615-7")
-			// A bare ISBN match is not a region-qualified, verified Audible
-			// identity, so it no longer applies to audiobooks (Step 11).
-			mockClient.On("SearchBooks", mock.Anything, "Association Book Author", "").Return(tt.searchBooks, nil)
-			mockClient.On("GetBookByID", mock.Anything, "901").Return(&models.HardcoverBook{ID: "901", Title: "Association Book"}, nil).Maybe()
+			book := associationTestBook("audiobook-isbn-"+tt.name, tt.asin, "978-0-306-40615-7")
+			expectUserBook(mockClient)
+			searchContext := mock.MatchedBy(func(ctx context.Context) bool {
+				format, _ := models.ReadingFormatFromContext(ctx)
+				return format == models.ReadingFormatAudiobook
+			})
+			mockClient.On("SearchBookByISBN13", searchContext, "9780306406157").
+				Return(hardcoverHit(), nil).Once()
 
 			got, err := svc.findBookInHardcover(hardcover.WithReadingFormat(context.Background(), models.ReadingFormatAudiobook), book)
 
-			require.Error(t, err)
-			assert.Equal(t, tt.wantOutcome, classifyBookLookupOutcome(err))
-			if got != nil {
-				assert.Empty(t, got.EditionID, "no edition may be chosen")
-			}
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, "901", got.ID)
+			assert.Equal(t, "902", got.EditionID)
 			_, saved := svc.state.GetAssociation(book.ID)
-			assert.False(t, saved)
+			assert.False(t, saved, "automatic audiobook ISBN matches must remain ephemeral")
+			mockClient.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
+			mockClient.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
+			mockClient.AssertExpectations(t)
+		})
+	}
+}
+
+func TestFindBookInHardcoverValidAudiobookASINBlocksISBNFallback(t *testing.T) {
+	lookupErr := errors.New("temporary ASIN lookup failure")
+	tests := []struct {
+		name      string
+		searchErr error
+	}{
+		{name: "ASIN miss"},
+		{name: "ASIN error", searchErr: lookupErr},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, mockClient := createTestService()
+			book := associationTestBook("audiobook-valid-asin-"+tt.name, "b0audio001", "978-0-306-40615-7")
+			book.Media.Metadata.Title = ""
+			book.Media.Metadata.AuthorName = ""
+			lookupClient := &associationLookupClient{MockHardcoverClient: mockClient, searchErr: tt.searchErr}
+			svc.hardcover = lookupClient
+
+			_, err := svc.findBookInHardcover(hardcover.WithReadingFormat(context.Background(), models.ReadingFormatAudiobook), book)
+
+			require.Error(t, err)
+			assert.Equal(t, 1, lookupClient.searchCount)
+			if tt.searchErr != nil {
+				assert.ErrorIs(t, err, errHardcoverLookupFailed)
+				assert.ErrorIs(t, err, lookupErr)
+			} else {
+				assert.ErrorIs(t, err, errHardcoverBookNotFound)
+			}
 			mockClient.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
 			mockClient.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
 		})

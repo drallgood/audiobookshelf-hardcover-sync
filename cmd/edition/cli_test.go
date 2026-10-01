@@ -319,11 +319,12 @@ func TestRunCreateRejectsUnknownRegionBeforeExternalCalls(t *testing.T) {
 
 func TestRunCreateAudibleRegionOutcomes(t *testing.T) {
 	tests := []struct {
-		name        string
-		inputJSON   string
-		discoverErr error
-		wantRegion  string
-		wantError   string
+		name         string
+		inputJSON    string
+		discoverErr  error
+		wantRegion   string
+		wantDiscover bool
+		wantError    string
 	}{
 		{
 			name:        "explicit region imports without Audnex",
@@ -332,15 +333,16 @@ func TestRunCreateAudibleRegionOutcomes(t *testing.T) {
 			wantRegion:  "uk",
 		},
 		{
-			name:        "rate-limited discovery is retryable and imports nothing",
-			inputJSON:   `{"book_id":21,"asin":"B012345678"}`,
-			discoverErr: audnex.ErrRateLimited,
-			wantError:   "temporarily unavailable; retry later or set asin_region",
+			name:         "rate-limited discovery is retryable and imports nothing",
+			inputJSON:    `{"book_id":21,"asin":"B012345678"}`,
+			discoverErr:  audnex.ErrRateLimited,
+			wantDiscover: true,
+			wantError:    "temporarily unavailable; retry later or set asin_region",
 		},
 		{
-			name:      "malformed ASIN is rejected before external calls",
+			name:      "malformed ASIN is treated as missing without an ISBN",
 			inputJSON: `{"book_id":21,"asin":"B0123","asin_region":"uk"}`,
-			wantError: "exactly ten letters or digits",
+			wantError: "an ASIN or ISBN is required",
 		},
 	}
 	for _, test := range tests {
@@ -369,6 +371,9 @@ func TestRunCreateAudibleRegionOutcomes(t *testing.T) {
 				}
 				if imported != nil {
 					t.Fatalf("failed region resolution reached Hardcover: %#v", imported)
+				}
+				if discovered != test.wantDiscover {
+					t.Fatalf("Audnex discovery called = %t, want %t", discovered, test.wantDiscover)
 				}
 				return
 			}
@@ -442,7 +447,7 @@ func TestRunCreateRecordsEbookIdentifierDifferences(t *testing.T) {
 				fetchABSItem: func(context.Context, string) (*models.AudiobookshelfBook, error) {
 					return test.item, nil
 				},
-				createEbook: func(_ context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
+				createEdition: func(_ context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
 					submitted = *input
 					return &edition.EditionResult{Success: true, EditionID: 34}, nil
 				},
@@ -561,7 +566,7 @@ func TestRunCreateKeepsEbookDryRunPath(t *testing.T) {
 		fetchABSItem: func(context.Context, string) (*models.AudiobookshelfBook, error) {
 			return testEbook("item-1", "", "9780306406157"), nil
 		},
-		createEbook: func(_ context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
+		createEdition: func(_ context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
 			called = true
 			if input.ReadingFormat != models.ReadingFormatEbook {
 				t.Fatalf("ebook was sent with reading format %q", input.ReadingFormat)
@@ -599,7 +604,7 @@ func TestRunCreateIgnoresAudibleRegionsForEbooks(t *testing.T) {
 			imported = true
 			return nil, nil
 		},
-		createEbook: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
+		createEdition: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
 			return &edition.EditionResult{Success: true, EditionID: 34}, nil
 		},
 		getEditionUncached: func(context.Context, string) (*models.Edition, error) {
@@ -624,7 +629,7 @@ func TestRunCreateSharesEbookDeadlineThroughReadBackAndReleasesStateLock(t *test
 		fetchABSItem: func(context.Context, string) (*models.AudiobookshelfBook, error) {
 			return testEbook("item-1", "", "9780306406157"), nil
 		},
-		createEbook: func(ctx context.Context, _ *edition.EditionInput) (*edition.EditionResult, error) {
+		createEdition: func(ctx context.Context, _ *edition.EditionInput) (*edition.EditionResult, error) {
 			var ok bool
 			createDeadline, ok = ctx.Deadline()
 			if !ok {
@@ -695,7 +700,7 @@ func TestRunCreateReadsBackEbookBeforeSavingAssociation(t *testing.T) {
 				fetchABSItem: func(context.Context, string) (*models.AudiobookshelfBook, error) {
 					return testEbook("item-1", "", "9780306406157"), nil
 				},
-				createEbook: func(_ context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
+				createEdition: func(_ context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
 					if input.BookID != 21 || input.ReadingFormat != models.ReadingFormatEbook {
 						t.Fatalf("unexpected ebook creation input: %#v", input)
 					}
@@ -773,7 +778,7 @@ func TestRunCreateVerifiesEbookWithoutABSAssociation(t *testing.T) {
 			inputPath := writeCreateInput(t, `{"book_id":21,"title":"Ebook","isbn_13":"9780306406157","author_ids":[3],"reading_format":"ebook"}`)
 			readBackCalled := false
 			result, err := runCreate(context.Background(), createOptions{InputPath: inputPath}, createServices{
-				createEbook: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
+				createEdition: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
 					return &edition.EditionResult{Success: true, EditionID: 34}, nil
 				},
 				getEditionUncached: func(_ context.Context, editionID string) (*models.Edition, error) {
@@ -912,6 +917,28 @@ func TestIsHelpOrVersionIgnoresFlagValues(t *testing.T) {
 	}
 	if !isHelpOrVersion([]string{"create", "--input", "book.json", "--help"}) {
 		t.Fatal("create help was not recognized")
+	}
+}
+
+func TestRunCreateReturnsRegionalAudiobookWrongFormatForInsertedEdition(t *testing.T) {
+	inputPath := writeCreateInput(t, `{"book_id":21,"title":"Audio Book","isbn_13":"9780306406157","author_ids":[3],"reading_format":"audiobook"}`)
+	_, err := runCreate(context.Background(), createOptions{InputPath: inputPath}, createServices{
+		createEdition: func(_ context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
+			if input.ReadingFormat != models.ReadingFormatAudiobook || input.ASIN != "" {
+				t.Fatalf("unexpected ISBN-only audiobook insertion input: %#v", input)
+			}
+			return &edition.EditionResult{Success: true, EditionID: 34}, nil
+		},
+		getEditionUncached: func(context.Context, string) (*models.Edition, error) {
+			return &models.Edition{ID: "34", BookID: "21", ReadingFormatID: "4"}, nil
+		},
+	})
+	var wrongFormat *hardcover.RegionalAudiobookWrongFormatError
+	if !errors.As(err, &wrongFormat) || !errors.Is(err, hardcover.ErrRegionalAudiobookWrongFormat) {
+		t.Fatalf("wrong insert_edition format error = %v, want RegionalAudiobookWrongFormatError", err)
+	}
+	if wrongFormat.BookID != 21 || wrongFormat.EditionID != 34 || wrongFormat.ReadingFormatID != "4" {
+		t.Fatalf("wrong-format error lost the verified Hardcover identity: %#v", wrongFormat)
 	}
 }
 

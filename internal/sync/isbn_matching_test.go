@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -21,8 +22,7 @@ const (
 
 // isbnSearchBook builds an Audiobookshelf ebook item that has only an ISBN (no
 // ASIN, no title or author), so a miss ends in not-found rather than a title
-// search. ISBN matching applies only to ebooks (Step 11), so this always
-// builds an ebook item.
+// search. Tests that need another source identity or format should adjust it.
 func isbnSearchBook(isbn string) models.AudiobookshelfBook {
 	book := *toAudiobookshelfBook(createTestBook("isbn-match", "", "", "", isbn))
 	book.MediaType = "ebook"
@@ -192,6 +192,25 @@ func TestFindBookInHardcoverISBNSearchErrors(t *testing.T) {
 		assert.Equal(t, "901", got.ID)
 		hc.AssertExpectations(t)
 	})
+}
+
+func TestFindBookInHardcoverEbookASINMissStillFallsBackToISBN(t *testing.T) {
+	svc, client := createTestService()
+	svc.config.Sync.SyncOwned = false
+	book := isbnSearchBook(testISBN13NoTen)
+	book.Media.Metadata.ASIN = "B0AUDIO001"
+	lookupClient := &associationLookupClient{MockHardcoverClient: client}
+	svc.hardcover = lookupClient
+	expectUserBook(client)
+	client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).Return(hardcoverHit(), nil).Once()
+
+	got, err := svc.findBookInHardcover(hardcover.WithReadingFormat(context.Background(), models.ReadingFormatEbook), book)
+
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "902", got.EditionID)
+	assert.Equal(t, 1, lookupClient.searchCount)
+	client.AssertExpectations(t)
 }
 
 func TestFindBookInHardcoverIgnoresBlankIdentifiers(t *testing.T) {

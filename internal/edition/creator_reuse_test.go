@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -489,8 +490,103 @@ func TestCreateEditionRejectsAudiobooksWithoutRegionalImport(t *testing.T) {
 	if err == nil || errors.Is(err, edition.ErrAudiobookRequiresRegionalImport) {
 		t.Fatalf("CreateEdition() invalid reading format error = %v, want input validation error", err)
 	}
+
+	_, err = creator.CreateEdition(context.Background(), &edition.EditionInput{
+		BookID: 123, Title: "A Title", AuthorIDs: []int{1}, ASIN: "malformed", ReadingFormat: models.ReadingFormatAudiobook,
+	})
+	if err == nil || errors.Is(err, edition.ErrAudiobookRequiresRegionalImport) {
+		t.Fatalf("CreateEdition() audiobook without a parseable ISBN error = %v, want ISBN validation error", err)
+	}
 	if len(client.lookups) != 0 || len(client.mutations) != 0 {
 		t.Fatalf("audiobook insertion made lookups %v and mutations %v, want no Hardcover calls", len(client.lookups), len(client.mutations))
+	}
+}
+
+func TestCreateEditionInsertsExplicitISBNOnlyAudiobook(t *testing.T) {
+	client := &reuseClient{insertID: 777}
+	creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "token", &http.Client{Transport: failingTransport{}})
+	input := &edition.EditionInput{
+		BookID: 123, Title: "An Audio Edition", ASIN: " malformed ", ISBN13: "978-0-306-40615-7",
+		AuthorIDs: []int{1}, NarratorIDs: []int{8}, AudioLength: 5400, ReadingFormat: " AUDIOBOOK ",
+	}
+
+	result, err := creator.CreateEdition(context.Background(), input)
+
+	if err != nil {
+		t.Fatalf("CreateEdition() error = %v", err)
+	}
+	if result.EditionID != 777 || result.Existing {
+		t.Fatalf("CreateEdition() = %+v, want new audiobook edition 777", result)
+	}
+	if input.ASIN != " malformed " {
+		t.Errorf("CreateEdition() changed caller ASIN to %q", input.ASIN)
+	}
+	if len(client.lookups) != 2 || client.lookups[0] != "ISBN-13:9780306406157" || client.lookups[1] != "ISBN-10:0306406152" {
+		t.Errorf("duplicate lookups = %v, want only the ISBN forms", client.lookups)
+	}
+	if len(client.sent) != 1 {
+		t.Fatalf("insert_edition attempts = %d, want 1", len(client.sent))
+	}
+	dto := client.sent[0]
+	if dto["reading_format_id"] != models.ReadingFormatID(models.ReadingFormatAudiobook) || dto["audio_seconds"] != 5400 {
+		t.Errorf("audio DTO format/duration = %v/%v, want audiobook/5400", dto["reading_format_id"], dto["audio_seconds"])
+	}
+	if _, sentASIN := dto["asin"]; sentASIN {
+		t.Errorf("malformed ASIN was sent in insert DTO: %v", dto["asin"])
+	}
+	if dto["isbn_13"] != "978-0-306-40615-7" {
+		t.Errorf("dto isbn_13 = %v, want reported ISBN", dto["isbn_13"])
+	}
+	if got, want := dto["contributions"], []map[string]interface{}{
+		{"author_id": 1, "contribution": nil},
+		{"author_id": 8, "contribution": "Narrator"},
+	}; !reflect.DeepEqual(got, want) {
+		t.Errorf("audio contributions = %#v, want %#v", got, want)
+	}
+	if len(client.mutations) != 1 || !strings.Contains(client.mutations[0], "insert_edition") || strings.Contains(client.mutations[0], "upsert_book") {
+		t.Errorf("mutations = %v, want only insert_edition and no book upsert", client.mutations)
+	}
+}
+
+func TestCreateEditionAudiobookISBNDuplicateBelongingToAnotherBookIsRejected(t *testing.T) {
+	client := &reuseClient{byISBN13: &models.Edition{ID: "555", BookID: "999"}}
+	creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "token", &http.Client{Transport: failingTransport{}})
+	input := &edition.EditionInput{
+		BookID: 123, Title: "An Audio Edition", ASIN: "malformed", ISBN13: "9780306406157",
+		AuthorIDs: []int{1}, ReadingFormat: models.ReadingFormatAudiobook,
+	}
+
+	_, err := creator.CreateEdition(context.Background(), input)
+
+	if !errors.Is(err, edition.ErrEditionBelongsToOtherBook) {
+		t.Fatalf("CreateEdition() error = %v, want ErrEditionBelongsToOtherBook", err)
+	}
+	if len(client.lookups) == 0 || strings.Contains(client.lookups[0], "ASIN:") {
+		t.Errorf("duplicate lookups = %v, want ISBN-only checks", client.lookups)
+	}
+	if len(client.mutations) != 0 {
+		t.Errorf("mutations = %v, want none for a cross-book duplicate", client.mutations)
+	}
+}
+
+func TestCreateEditionDryRunDoesNotLookUpOrInsertExplicitISBNOnlyAudiobook(t *testing.T) {
+	client := &reuseClient{}
+	creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), true, "token", &http.Client{Transport: failingTransport{}})
+	input := &edition.EditionInput{
+		BookID: 123, Title: "An Audio Edition", ASIN: "malformed", ISBN10: "0-306-40615-2",
+		AuthorIDs: []int{1}, ReadingFormat: models.ReadingFormatAudiobook,
+	}
+
+	result, err := creator.CreateEdition(context.Background(), input)
+
+	if err != nil {
+		t.Fatalf("CreateEdition() dry run error = %v", err)
+	}
+	if result == nil || !result.Success || result.EditionID != 0 {
+		t.Errorf("CreateEdition() dry run = %+v, want a successful preview without an edition ID", result)
+	}
+	if len(client.lookups) != 0 || len(client.mutations) != 0 {
+		t.Errorf("dry run made lookups %v and mutations %v, want no Hardcover calls", client.lookups, client.mutations)
 	}
 }
 

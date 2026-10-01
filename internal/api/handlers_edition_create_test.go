@@ -29,13 +29,14 @@ import (
 )
 
 type editionCreateHardcoverStub struct {
-	importFn      func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error)
-	checkFn       func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, bool, error)
-	bookFn        func(context.Context, string) (*models.HardcoverBook, error)
-	editionFn     func(context.Context, string) (*models.Edition, error)
-	authorsFn     func(context.Context, string, int) ([]models.Author, error)
-	publishersFn  func(context.Context, string, int) ([]models.Publisher, error)
-	createEbookFn func(context.Context, *edition.EditionInput) (*edition.EditionResult, error)
+	narratorsFn     func(context.Context, string, int) ([]models.Author, error)
+	importFn        func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error)
+	checkFn         func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, bool, error)
+	bookFn          func(context.Context, string) (*models.HardcoverBook, error)
+	editionFn       func(context.Context, string) (*models.Edition, error)
+	authorsFn       func(context.Context, string, int) ([]models.Author, error)
+	publishersFn    func(context.Context, string, int) ([]models.Publisher, error)
+	insertEditionFn func(context.Context, *edition.EditionInput) (*edition.EditionResult, error)
 }
 
 type editionCreateAudnexStub struct {
@@ -89,6 +90,13 @@ func (s editionCreateHardcoverStub) SearchAuthors(ctx context.Context, name stri
 	return nil, nil
 }
 
+func (s editionCreateHardcoverStub) SearchNarrators(ctx context.Context, name string, limit int) ([]models.Author, error) {
+	if s.narratorsFn != nil {
+		return s.narratorsFn(ctx, name, limit)
+	}
+	return nil, nil
+}
+
 func (s editionCreateHardcoverStub) SearchPublishers(ctx context.Context, name string, limit int) ([]models.Publisher, error) {
 	if s.publishersFn != nil {
 		return s.publishersFn(ctx, name, limit)
@@ -96,9 +104,9 @@ func (s editionCreateHardcoverStub) SearchPublishers(ctx context.Context, name s
 	return nil, nil
 }
 
-func (s editionCreateHardcoverStub) CreateEbook(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
-	if s.createEbookFn != nil {
-		return s.createEbookFn(ctx, input)
+func (s editionCreateHardcoverStub) InsertEdition(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
+	if s.insertEditionFn != nil {
+		return s.insertEditionFn(ctx, input)
 	}
 	return nil, nil
 }
@@ -178,7 +186,7 @@ func TestCreateEditionFromDraftUsesExactRunAndPersistsVerifiedAssociation(t *tes
 	fixture.handler.editionCreateHardcoverFactory = func(token string) editionCreateHardcoverClient {
 		require.Equal(t, "hardcover-token", token)
 		return editionCreateHardcoverStub{
-			createEbookFn: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
+			insertEditionFn: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
 				insertEditionCalls.Add(1)
 				return nil, errors.New("audiobook create must not call insert_edition")
 			},
@@ -970,7 +978,7 @@ func TestCreateEditionFromDraftCreatesEbookWhenOptionalPublisherSearchFails(t *t
 				require.Equal(t, 10, limit)
 				return nil, errors.New("Hardcover publisher search unavailable")
 			},
-			createEbookFn: func(_ context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
+			insertEditionFn: func(_ context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
 				createCalls.Add(1)
 				require.Equal(t, 42, input.BookID)
 				require.Equal(t, "Reviewed ebook", input.Title)
@@ -1036,7 +1044,7 @@ func TestCreateEditionFromDraftRejectsMismatchedReadBackEbookEditionID(t *testin
 				require.Equal(t, "42", id)
 				return &models.HardcoverBook{ID: "42", Authors: []models.Author{{ID: "7", Name: "Author"}}}, nil
 			},
-			createEbookFn: func(_ context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
+			insertEditionFn: func(_ context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
 				require.Equal(t, 42, input.BookID)
 				return &edition.EditionResult{Success: true, EditionID: 84}, nil
 			},
@@ -1079,7 +1087,7 @@ func TestCreateEditionFromDraftLookupFailureBeforeInsertAllowsOrdinaryRetry(t *t
 				require.Equal(t, "42", id)
 				return &models.HardcoverBook{ID: "42", Authors: []models.Author{{ID: "7", Name: "Author"}}}, nil
 			},
-			createEbookFn: func(_ context.Context, _ *edition.EditionInput) (*edition.EditionResult, error) {
+			insertEditionFn: func(_ context.Context, _ *edition.EditionInput) (*edition.EditionResult, error) {
 				createCalls.Add(1)
 				return nil, errors.Join(edition.ErrCreateEditionPreMutation, context.DeadlineExceeded)
 			},
@@ -1154,7 +1162,7 @@ func TestEditionCreateMapsPreSendMutationBudgetGuardToRetryableNoSend(t *testing
 					bookFn: func(context.Context, string) (*models.HardcoverBook, error) {
 						return &models.HardcoverBook{ID: "42", Authors: []models.Author{{ID: "7", Name: "Author"}}}, nil
 					},
-					createEbookFn: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
+					insertEditionFn: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
 						mutationCalls.Add(1)
 						return nil, hardcover.ErrMutationInsufficientBudget
 					},
@@ -1408,7 +1416,7 @@ func countingEditionCreateClient(counts *editionCreateCallCounts) func(string) e
 			bookFn: func(context.Context, string) (*models.HardcoverBook, error) {
 				return &models.HardcoverBook{ID: "42", Authors: []models.Author{{ID: "7", Name: "Author"}}}, nil
 			},
-			createEbookFn: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
+			insertEditionFn: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
 				counts.ebookCreates.Add(1)
 				return &edition.EditionResult{Success: true, EditionID: 84}, nil
 			},
@@ -1542,8 +1550,8 @@ func TestCreateEditionFromDraftCreatesASINOnlyEbook(t *testing.T) {
 	stub := countingEditionCreateClient(&counts)
 	fixture.handler.editionCreateHardcoverFactory = func(token string) editionCreateHardcoverClient {
 		client := stub(token).(editionCreateHardcoverStub)
-		create := client.createEbookFn
-		client.createEbookFn = func(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
+		create := client.insertEditionFn
+		client.insertEditionFn = func(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
 			require.Equal(t, "B0EBOOK123", input.ASIN)
 			require.Empty(t, input.ISBN10)
 			require.Empty(t, input.ISBN13)
@@ -1586,8 +1594,8 @@ func TestCreateEditionFromDraftCreatesISBNOnlyEbookWhenSourceASINIsMalformed(t *
 	stub := countingEditionCreateClient(&counts)
 	fixture.handler.editionCreateHardcoverFactory = func(token string) editionCreateHardcoverClient {
 		client := stub(token).(editionCreateHardcoverStub)
-		create := client.createEbookFn
-		client.createEbookFn = func(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
+		create := client.insertEditionFn
+		client.insertEditionFn = func(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
 			require.Empty(t, input.ASIN, "malformed source ASIN is omitted from the default insert")
 			require.Equal(t, "0306406152", input.ISBN10)
 			require.Equal(t, "9780306406157", input.ISBN13)
@@ -1615,8 +1623,8 @@ func TestCreateEditionFromDraftAppliesEbookCorrections(t *testing.T) {
 	stub := countingEditionCreateClient(&counts)
 	fixture.handler.editionCreateHardcoverFactory = func(token string) editionCreateHardcoverClient {
 		client := stub(token).(editionCreateHardcoverStub)
-		create := client.createEbookFn
-		client.createEbookFn = func(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
+		create := client.insertEditionFn
+		client.insertEditionFn = func(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
 			require.Equal(t, "Corrected title", input.Title)
 			require.Equal(t, "0306406152", input.ISBN10)
 			require.Equal(t, "9780306406157", input.ISBN13)
@@ -1666,8 +1674,8 @@ func TestCreateEditionFromDraftRetainsCounterpartWhenClearingOneEbookISBN(t *tes
 			stub := countingEditionCreateClient(&counts)
 			fixture.handler.editionCreateHardcoverFactory = func(token string) editionCreateHardcoverClient {
 				client := stub(token).(editionCreateHardcoverStub)
-				create := client.createEbookFn
-				client.createEbookFn = func(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
+				create := client.insertEditionFn
+				client.insertEditionFn = func(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
 					require.Equal(t, test.wantISBN10, input.ISBN10)
 					require.Equal(t, test.wantISBN13, input.ISBN13)
 					return create(ctx, input)
@@ -1961,7 +1969,7 @@ func newEditionCreateEbookFixture(t *testing.T, runID string, catalog editionCre
 			bookFn: func(context.Context, string) (*models.HardcoverBook, error) {
 				return &models.HardcoverBook{ID: "42", Authors: []models.Author{{ID: "7", Name: "Author"}}}, nil
 			},
-			createEbookFn: func(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
+			insertEditionFn: func(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
 				creator := edition.NewCreatorWithHTTPClient(catalog, logger.Get(), false, "", &http.Client{})
 				return creator.CreateEditionWithMutationReserve(ctx, input, editionCreateMutationReserve)
 			},
@@ -2015,7 +2023,7 @@ func TestCreateEditionFromDraftRejectsAmbiguousSameNameAuthorFallback(t *testing
 					{ID: "8", Name: "author"},
 				}, nil
 			},
-			createEbookFn: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
+			insertEditionFn: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
 				createCalls.Add(1)
 				return nil, errors.New("ebook mutation must not run")
 			},
@@ -2104,7 +2112,7 @@ func TestCreateEditionFromDraftSavesNothingWhenTokenLacksCatalogueScope(t *testi
 		fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
 			return editionCreateHardcoverStub{
 				importFn: client.ImportRegionalAudiobook,
-				createEbookFn: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
+				insertEditionFn: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
 					ebookCreates.Add(1)
 					return nil, errors.New("unexpected insert_edition")
 				},
@@ -2725,6 +2733,103 @@ func TestWriteEditionCreateErrorExplainsDailyQuotaBudgetWithoutRetryAfter(t *tes
 			require.Equal(t, "edition_create_not_submitted", payload.ErrorCode)
 			require.Equal(t, editionOutcomeNotSubmitted, payload.Outcome)
 			require.NotContains(t, payload.Error, "may have processed")
+		})
+	}
+}
+
+func TestCreateEditionFromDraftInsertsISBNOnlyAudiobook(t *testing.T) {
+	for _, tc := range []struct {
+		name, asin, formatID string
+		existing             bool
+	}{
+		{name: "missing ASIN", formatID: "2"},
+		{name: "malformed ASIN", asin: "not-an-asin", formatID: "2"},
+		{name: "existing audiobook", formatID: "2", existing: true},
+		{name: "wrong format", formatID: "4", existing: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newEditionDraftTestFixture(t, fmt.Sprintf(`{
+				"id":"abs-item-1","mediaType":"book","media":{
+				"metadata":{"title":"ISBN audiobook","authorName":"Author","narratorName":"Narrator","asin":%q,"isbn":"9780306406157","abridged":true,"publishedDate":"2020-02-03"},
+				"duration":100,"numTracks":1}}`, tc.asin), "us")
+			configureEditionCreateRoute(t, fixture)
+			addCompletedNeedsReviewRun(t, fixture, "run-isbn-audio", sync.BookOutcomeRecord{
+				BookID: "abs-item-1", Outcome: sync.OutcomeNeedsReview, Title: "ISBN audiobook", Author: "Author", ASIN: tc.asin,
+				ISBN: "9780306406157", Format: "Audiobook", HardcoverBookID: "42",
+			})
+			fixture.handler.editionCreateAudnexClientFactory = func() editionCreateAudnexDiscoverer {
+				t.Fatal("ISBN-only audiobook must not use Audnexus")
+				return nil
+			}
+			fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+				return editionCreateHardcoverStub{
+					importFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+						t.Fatal("ISBN-only audiobook must not use upsert_book")
+						return nil, nil
+					},
+					bookFn: func(context.Context, string) (*models.HardcoverBook, error) {
+						return &models.HardcoverBook{ID: "42", Authors: []models.Author{{ID: "7", Name: "Author"}}}, nil
+					},
+					narratorsFn: func(_ context.Context, name string, _ int) ([]models.Author, error) {
+						require.Equal(t, "Narrator", name)
+						return []models.Author{{ID: "9", Name: "Narrator"}, {ID: "10", Name: "Other"}}, nil
+					},
+					insertEditionFn: func(_ context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
+						require.Equal(t, models.ReadingFormatAudiobook, input.ReadingFormat)
+						require.Empty(t, input.ASIN)
+						require.Equal(t, "9780306406157", input.ISBN13)
+						require.Equal(t, "0306406152", input.ISBN10)
+						require.Equal(t, "ISBN audiobook", input.Title)
+						require.Equal(t, "2020-02-03", input.ReleaseDate)
+						require.Equal(t, 100, input.AudioLength)
+						require.Equal(t, "Abridged", input.EditionInfo)
+						require.Equal(t, "Audiobook", input.EditionFormat)
+						require.Equal(t, []int{7}, input.AuthorIDs)
+						require.Equal(t, []int{9}, input.NarratorIDs)
+						return &edition.EditionResult{Success: true, EditionID: 84, Existing: tc.existing}, nil
+					},
+					editionFn: func(context.Context, string) (*models.Edition, error) {
+						return &models.Edition{ID: "84", BookID: "42", ReadingFormatID: tc.formatID}, nil
+					},
+				}
+			}
+			request := httptest.NewRequest(http.MethodPost, "/api/profiles/draft-profile/edition-drafts/create", strings.NewReader(`{"run_id":"run-isbn-audio","abs_item_id":"abs-item-1"}`))
+			request.AddCookie(fixture.sessionCookie(t, fixture.owner))
+			response := httptest.NewRecorder()
+			fixture.routes.ServeHTTP(response, request)
+			if tc.formatID != "2" {
+				require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+				var envelope struct {
+					ErrorCode string                 `json:"error_code"`
+					Outcome   string                 `json:"outcome"`
+					Data      editionWrongFormatData `json:"data"`
+				}
+				require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+				require.Equal(t, "hardcover_edition_wrong_format", envelope.ErrorCode)
+				require.Equal(t, editionOutcomeFailed, envelope.Outcome)
+				require.Equal(t, "https://hardcover.app/editions/84", envelope.Data.HardcoverEditionURL)
+			} else {
+				require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+				var envelope struct {
+					Data editionCreateResponse `json:"data"`
+				}
+				require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+				require.Equal(t, models.ReadingFormatAudiobook, envelope.Data.ReadingFormat)
+				if tc.existing {
+					require.Equal(t, "existing", envelope.Data.Status)
+				} else {
+					require.Equal(t, "created", envelope.Data.Status)
+				}
+			}
+			stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+			require.NoError(t, err)
+			association, exists := stored.GetAssociation("abs-item-1")
+			require.Equal(t, tc.formatID == "2", exists)
+			if exists {
+				require.Equal(t, models.ReadingFormatAudiobook, association.ReadingFormat)
+				require.Equal(t, "84", association.HardcoverEditionID)
+				require.Empty(t, association.RegionalExternalID)
+			}
 		})
 	}
 }

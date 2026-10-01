@@ -46,40 +46,36 @@ must add a scheme. Audiobookshelf requests now connect directly and ignore
 proxy need a direct route to the configured Audiobookshelf server. These
 requirements apply to both network trust modes.
 
-### Audiobooks no longer match by edition ASIN
+### Audiobooks no longer match by direct edition ASIN
 
 Sync, the mismatch export, and the edition creator's duplicate check no longer
 match an audiobook through a Hardcover edition's `asin` field; only regional
-Audible mappings, saved matches, and title/author search are used (ISBN is also
-removed from audiobook matching; see the next section). Ebook ASIN matching is
-unchanged. A book whose only link was `editions.asin` becomes `needs_review`
-(title/author finds it; resolve it with the add-edition action) or `not_found`
-(fix it in Hardcover or with the `edition` CLI and a book ID) the next time it
-is processed.
+Audible mappings, saved matches, and title/author search are used. Audiobook
+ISBN lookup is available only when the Audiobookshelf source ASIN is missing or
+malformed; see the next section. Ebook ASIN matching is unchanged. A book whose
+only link was `editions.asin` becomes `needs_review` (title/author finds it; use
+the add-edition action) or `not_found` (fix it in Hardcover or with the
+`edition` CLI and a book ID) the next time it is processed, unless its source
+ISBN independently matches while there is no valid ASIN.
 
-### Audiobooks no longer match by ISBN, and stale matches reclassify automatically
+### Audiobook ISBN fallback and stale checkpoint re-evaluation
 
-A bare ISBN match is not a region-qualified, verified Audible identity, so it
-no longer matches an audiobook either; only regional Audible mappings, saved
-matches, and title/author search are used. Ebook ISBN matching is unchanged
-and continues to be saved after a successful match.
+A bare ISBN is not a region-qualified Audible identity, but sync can use it to
+match an audiobook when Audiobookshelf has no valid ASIN. A valid source ASIN
+(exactly 10 ASCII letters or digits) remains authoritative: if its regional
+lookup misses or fails, sync does not fall back to ISBN. Ebook ISBN matching
+is unchanged and continues to be saved after a successful match. Audiobook
+ISBN matches are looked up again whenever the item is processed; they are not
+stored as local associations.
 
-Audiobooks previously matched only by `editions.asin` or ISBN are evaluated
-without waiting for their progress or status to change. Every audiobook match
-method that remains valid after this change is saved as a local association (this has been
-true since the durable-association feature shipped), so "this audiobook has a
-sync checkpoint but no saved association" exactly identifies one whose current
-match relied on `editions.asin` or ISBN. Sync clears that stale checkpoint
-before its incremental "no changes" check runs, so the audiobook is
-reclassified as `needs_review` or `not_found` in the very same sync run that
-first evaluates it after upgrading, not a later one. No Hardcover mutation
-happens for that outcome, so the book's reads and status stop reaching
-Hardcover until it is resolved (through the add-edition action, or a later
-Hardcover-side mapping addition); its local Audiobookshelf-side progress
-tracking keeps updating as normal. A book that already has a saved association
-is unaffected and keeps syncing normally. This check runs on every sync going
-forward, not only once at upgrade time, so an audiobook whose association is
-later cleared by forget-match is picked up the same way on its next sync.
+Audiobooks previously matched without a saved association are evaluated
+without waiting for progress or status to change. Sync clears their stale
+checkpoint before the incremental "no changes" check, so each item is matched
+again whenever it is processed. An ISBN fallback may now find and sync the
+audiobook when its source ASIN is missing or malformed; otherwise the item is
+reclassified as `needs_review` or `not_found`. A book that already has a saved
+association is unaffected and keeps syncing normally. No configuration or
+state-file migration is required.
 
 ### Sync Status API
 
