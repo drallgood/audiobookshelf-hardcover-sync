@@ -2176,10 +2176,10 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 		// already skipped this run is never pulled into a match attempt here,
 		// and it never touches a book that already has a persisted association.
 		if s.state != nil && book.ReadingFormat() == models.ReadingFormatAudiobook {
-			if _, hasCheckpoint := s.state.GetBookState(book.ID); hasCheckpoint {
-				if _, hasAssociation := s.state.GetAssociation(book.ID); !hasAssociation {
-					s.state.InvalidateItemCheckpoints(book.ID)
-				}
+			if _, hasAssociation := s.state.GetAssociation(book.ID); !hasAssociation {
+				// Older state may contain only itemID:editionID checkpoints.
+				// Invalidation is a no-op when neither key form exists.
+				s.state.InvalidateItemCheckpoints(book.ID)
 			}
 		}
 

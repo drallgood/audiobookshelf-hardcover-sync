@@ -146,29 +146,50 @@ func TestSyncBookOutcomes(t *testing.T) {
 		assertNoHardcoverBookSearches(t, hc)
 	})
 
-	t.Run("already current with no persisted association reclassifies in the same run", func(t *testing.T) {
-		// Step 11 migration: an audiobook checkpoint with no persisted
-		// Association is cleared before NeedsSync runs, so this same sync
-		// pass falls through to a full match attempt instead of coasting on
-		// a stale editions.asin or ISBN match.
-		svc, hc, abs := newSyncBookService(t)
-		svc.config.Sync.Incremental = true
-		svc.config.Sync.ProcessUnreadBooks = true
-		book := toAudiobookshelfBook(createTestBook("resync-current-migrated", "Current", "Author", "", ""))
-		current := state.NewState()
-		current.UpdateBook(book.ID, 0, "WANT_TO_READ")
-		current.SetHasProgressSeconds(book.ID)
-		abs.On("GetUserProgress", mock.Anything).Return(&models.AudiobookshelfUserProgress{}, nil).Once()
-		hc.On("SearchBooks", mock.Anything, "Current Author", "").Return(nil, nil).Once()
+	for _, checkpointKeys := range []struct {
+		name      string
+		base      bool
+		composite bool
+	}{
+		{name: "base only", base: true},
+		{name: "composite only", composite: true},
+		{name: "base and composite", base: true, composite: true},
+	} {
+		t.Run("legacy ISBN match reclassifies in the same run/"+checkpointKeys.name, func(t *testing.T) {
+			svc, hc, abs := newSyncBookService(t)
+			svc.config.Sync.Incremental = true
+			svc.config.Sync.ProcessUnreadBooks = true
+			book := toAudiobookshelfBook(createTestBook("resync-current-migrated", "Current", "Author", "", "9780306406157"))
+			current := state.NewState()
+			for key, enabled := range map[string]bool{
+				book.ID:          checkpointKeys.base,
+				book.ID + ":200": checkpointKeys.composite,
+			} {
+				if enabled {
+					current.Books[key] = state.Book{Status: "WANT_TO_READ", HasProgressSeconds: true}
+				}
+			}
+			current.UpdateBook("other-item:201", 0.5, "IN_PROGRESS")
+			abs.On("GetUserProgress", mock.Anything).Return(&models.AudiobookshelfUserProgress{}, nil).Once()
+			hc.On("SearchBooks", mock.Anything, "Current Author", "").Return(nil, nil).Once()
+			statePath := filepath.Join(t.TempDir(), "state.json")
 
-		result, err := svc.SyncBook(context.Background(), *book, current, filepath.Join(t.TempDir(), "state.json"))
+			result, err := svc.SyncBook(context.Background(), *book, current, statePath)
 
-		require.NoError(t, err)
-		assert.Equal(t, OutcomeNotFound, result.Outcome)
-		_, hasCheckpoint := current.GetBookState(book.ID)
-		assert.False(t, hasCheckpoint, "the stale checkpoint is cleared rather than left coasting")
-		hc.AssertExpectations(t)
-	})
+			require.NoError(t, err)
+			assert.Equal(t, OutcomeNotFound, result.Outcome)
+			stored, loadErr := state.LoadState(statePath)
+			require.NoError(t, loadErr)
+			assert.NotContains(t, stored.Books, book.ID, "clear the stale base checkpoint in the first pass")
+			assert.NotContains(t, stored.Books, book.ID+":200", "clear the stale edition checkpoint in the first pass")
+			assert.Contains(t, stored.Books, "other-item:201", "preserve other items' checkpoints")
+			// Only read-only lookup/cache calls are configured. Any mutation
+			// would fail the mock; also verify that ISBN identity is not reused.
+			hc.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
+			hc.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
+			hc.AssertExpectations(t)
+		})
+	}
 
 	t.Run("skipped", func(t *testing.T) {
 		svc, _, abs := newSyncBookService(t)

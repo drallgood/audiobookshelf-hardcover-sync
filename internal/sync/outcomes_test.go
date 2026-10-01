@@ -232,8 +232,8 @@ func TestProcessBookIncrementalAlreadyCurrentEnrichesOnlyMatchingAssociation(t *
 // composite bookID:editionID key), not the earlier coarse NeedsSync check
 // against the bare book ID.
 //
-// This verifies that the detailed no-op outcome keeps the current lookup IDs
-// instead of using a stale association from persisted state.
+// This verifies that the detailed no-op outcome keeps the current saved match
+// instead of using a stale association from the composite checkpoint.
 func TestProcessBookIncrementalDetailedCheckAlreadyCurrentKeepsLookupAssociation(t *testing.T) {
 	svc, hc := createTestService()
 	svc.config.Sync.Incremental = true
@@ -244,9 +244,15 @@ func TestProcessBookIncrementalDetailedCheckAlreadyCurrentKeepsLookupAssociation
 	testBook.Progress.CurrentTime = 300
 	book := toAudiobookshelfBook(testBook)
 
-	// No bare-key state exists yet, so the coarse pre-lookup NeedsSync check
-	// reports the book needs syncing and the real Hardcover lookup runs.
-	expectASINMatch(hc, "detailed-current-asin", "100", "200", 300)
+	// A saved association without progress forces the coarse NeedsSync check
+	// to continue, while preserving the edition checkpoint for the detailed
+	// comparison. Legacy audiobook checkpoints without an association are
+	// invalidated before matching.
+	require.NoError(t, svc.state.SetAssociation(state.Association{
+		ABSItemID: book.ID, SourceASIN: "detailed-current-asin",
+		HardcoverBookID: "100", HardcoverEditionID: "200",
+		ReadingFormat: models.ReadingFormatAudiobook,
+	}))
 
 	// Seed the composite state key (bookID:editionID) with progress, status,
 	// and activity that match the current book so the detailed post-lookup
@@ -270,7 +276,7 @@ func TestProcessBookIncrementalDetailedCheckAlreadyCurrentKeepsLookupAssociation
 	assert.Equal(t, OutcomeAlreadyCurrent, record.Outcome)
 	assert.Equal(t, "incremental state is current", record.Reason)
 	assert.Equal(t, "100", record.HardcoverBookID,
-		"the real Hardcover lookup result must win over the composite state's stale association")
+		"the current saved match must win over the composite state's stale association")
 	assert.Equal(t, "200", record.EditionID)
 	hc.AssertExpectations(t)
 }
