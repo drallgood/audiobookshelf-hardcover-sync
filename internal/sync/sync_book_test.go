@@ -308,8 +308,8 @@ func TestSyncBookErrors(t *testing.T) {
 	})
 }
 
-// Verify the finished read and status transition both send the historical date.
-func TestSyncBookWithEditionSendsFinishedDateInStatusTransition(t *testing.T) {
+// Verify the real client restores the read date after Hardcover overwrites it.
+func TestSyncBookWithEditionRestoresFinishedDateAfterStatusTransition(t *testing.T) {
 	const finishedDate = "2025-06-01"
 	svc, _, abs := newSyncBookService(t)
 	book := toAudiobookshelfBook(createTestFinishedBook("resync-finished-date", "Salvage Merc One", "Jake Bible", "B0FRJZ7HJY", ""))
@@ -323,7 +323,7 @@ func TestSyncBookWithEditionSendsFinishedDateInStatusTransition(t *testing.T) {
 	}))
 	var insertedReadDate string
 	var finalStatusID interface{}
-	var finalStatusDate string
+	var remoteReadDate string
 	var created, transitioned bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -342,10 +342,15 @@ func TestSyncBookWithEditionSendsFinishedDateInStatusTransition(t *testing.T) {
 		case strings.Contains(req.Query, "InsertUserBookRead"):
 			if dates, ok := req.Variables["user_book_read"].(map[string]interface{}); ok {
 				insertedReadDate, _ = dates["finished_at"].(string)
+				remoteReadDate = insertedReadDate
 			} else {
 				t.Errorf("user_book_read variable has type %T", req.Variables["user_book_read"])
 			}
 			response = `{"data":{"insert_user_book_read":{"id":6998539,"error":null}}}`
+		case strings.Contains(req.Query, "UpdateUserBookRead"):
+			object := req.Variables["object"].(map[string]interface{})
+			remoteReadDate = object["finished_at"].(string)
+			response = `{"data":{"update_user_book_read":{"id":6998539,"error":null}}}`
 		case strings.Contains(req.Query, "InsertUserBook"):
 			if object, ok := req.Variables["object"].(map[string]interface{}); ok {
 				assert.Equal(t, float64(1), object["status_id"], "create as WANT_TO_READ")
@@ -356,16 +361,12 @@ func TestSyncBookWithEditionSendsFinishedDateInStatusTransition(t *testing.T) {
 			response = `{"data":{"insert_user_book":{"id":19149476,"user_book":{"id":19149476,"status_id":1},"error":null}}}`
 		case strings.Contains(req.Query, "UpdateUserBookStatus"):
 			transitioned = true
-			if object, ok := req.Variables["object"].(map[string]interface{}); ok {
-				finalStatusID = object["status_id"]
-				finalStatusDate, _ = object["last_read_date"].(string)
-			} else {
-				t.Errorf("object variable has type %T", req.Variables["object"])
-			}
+			finalStatusID = req.Variables["status_id"]
+			remoteReadDate = "2026-10-02"
 			response = `{"data":{"update_user_book":{"id":19149476,"error":null}}}`
 		case strings.Contains(req.Query, "GetUserBookReads"):
 			if insertedReadDate != "" {
-				response = `{"data":{"user_book_reads":[{"id":6998539,"started_at":"2025-06-01","finished_at":"` + insertedReadDate + `","progress":100,"progress_seconds":24960}]}}`
+				response = `{"data":{"user_book_reads":[{"id":6998539,"started_at":"2025-06-01","finished_at":"` + remoteReadDate + `","progress":100,"progress_seconds":24960}]}}`
 			} else {
 				response = `{"data":{"user_book_reads":[]}}`
 			}
@@ -395,7 +396,7 @@ func TestSyncBookWithEditionSendsFinishedDateInStatusTransition(t *testing.T) {
 	assert.Equal(t, finishedDate, insertedReadDate)
 	assert.True(t, transitioned)
 	assert.Equal(t, float64(3), finalStatusID)
-	assert.Equal(t, finishedDate, finalStatusDate)
+	assert.Equal(t, finishedDate, remoteReadDate)
 	stored, err := state.LoadState(statePath)
 	require.NoError(t, err)
 	assert.Equal(t, "FINISHED", stored.Books[book.ID+":33360390"].Status)

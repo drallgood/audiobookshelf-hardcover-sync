@@ -2094,10 +2094,9 @@ func (c *Client) InsertUserBookRead(ctx context.Context, input InsertUserBookRea
 
 // UpdateUserBookStatusInput represents the input for updating a user book status
 type UpdateUserBookStatusInput struct {
-	ID           int64  `json:"id"`
-	StatusID     int    `json:"status_id"`
-	Status       string `json:"status,omitempty"`
-	LastReadDate string `json:"last_read_date,omitempty"`
+	ID       int64  `json:"id"`
+	StatusID int    `json:"status_id"`
+	Status   string `json:"status,omitempty"`
 }
 
 // UpdateUserBookStatus updates the status of a user book in Hardcover
@@ -2108,8 +2107,8 @@ func (c *Client) UpdateUserBookStatus(ctx context.Context, input UpdateUserBookS
 	}
 
 	const mutation = `
-	mutation UpdateUserBookStatus($id: Int!, $object: UserBookUpdateInput!) {
-	  update_user_book(id: $id, object: $object) {
+	mutation UpdateUserBookStatus($id: Int!, $status_id: Int!) {
+	  update_user_book(id: $id, object: { status_id: $status_id }) {
 		id
 		error
 	  }
@@ -2138,13 +2137,9 @@ func (c *Client) UpdateUserBookStatus(ctx context.Context, input UpdateUserBookS
 	}
 
 	// Prepare variables
-	object := map[string]interface{}{"status_id": input.StatusID}
-	if input.LastReadDate != "" {
-		object["last_read_date"] = input.LastReadDate
-	}
 	variables := map[string]interface{}{
-		"id":     input.ID,
-		"object": object,
+		"id":        input.ID,
+		"status_id": input.StatusID,
 	}
 
 	// Execute the mutation

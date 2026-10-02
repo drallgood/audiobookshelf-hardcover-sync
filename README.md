@@ -385,7 +385,7 @@ The project follows standard Go project layout:
   - Configurable minimum change threshold
   - Checkpoints changed state after each processed book (except dry runs); each run still scans the library from the beginning
   - For books that would be newly matched, an item explicitly marked finished or computed at 100% progress without `finished_at` is excluded from Hardcover matching until a finished date is available. This fix applies to new matches and does not repair existing reads created with the old sync-time synthetic date.
-  - Finished-status updates, including immediate resync after adding an edition, send the most recent completion date from Audiobookshelf and existing Hardcover reads when closing or creating a read, or the most recent existing Hardcover date when available during status-only reconciliation. The individual read request uses Audiobookshelf’s completion date. Whether Hardcover preserves each individual read’s history still needs live confirmation.
+  - Full sync and immediate edition resync preserve historical completion dates across Hardcover's `FINISHED` transition. Sync saves the intended individual read dates before changing status, restores dates overwritten by Hardcover, and verifies them before marking the book synced. Failed restorations remain saved for retry, including after a restart; existing reread dates are preserved. Hardcover's summary completion date refreshes asynchronously. This does not automatically repair reads corrupted before this update.
 
 - **Smart Caching**: Intelligent caching of author/narrator lookups with cross-role discovery
 - **Enhanced Progress Detection**: Uses `/api/me` endpoint for accurate finished book detection, preventing false re-read scenarios

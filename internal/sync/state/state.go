@@ -22,10 +22,85 @@ const DefaultStateFile = "./data/sync_state.json"
 const CurrentVersion = "4.0"
 
 type State struct {
-	Version string          `json:"version"`
-	Books   map[string]Book `json:"books,omitempty"`
-	mu      sync.RWMutex    `json:"-"`
-	dirty   bool            `json:"-"`
+	Version              string                             `json:"version"`
+	Books                map[string]Book                    `json:"books,omitempty"`
+	PendingFinishedDates map[string]FinishedDateRestoration `json:"pendingFinishedDates,omitempty"`
+	mu                   sync.RWMutex                       `json:"-"`
+	dirty                bool                               `json:"-"`
+}
+
+// FinishedDateRestoration preserves completion dates across Hardcover's status
+// mutation, which can replace an existing read's finished_at with today's date.
+type FinishedDateRestoration struct {
+	ABSItemID string           `json:"absItemId"`
+	Dates     map[int64]string `json:"dates"`
+}
+
+// SetFinishedDateRestoration records an intent that must be saved before changing status.
+func (s *State) SetFinishedDateRestoration(userBookID string, itemID string, dates map[int64]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.PendingFinishedDates == nil {
+		s.PendingFinishedDates = make(map[string]FinishedDateRestoration)
+	}
+	copied := make(map[int64]string, len(dates))
+	for id, date := range dates {
+		copied[id] = date
+	}
+	s.PendingFinishedDates[userBookID] = FinishedDateRestoration{ABSItemID: itemID, Dates: copied}
+	s.dirty = true
+}
+
+// GetFinishedDateRestoration returns a copy so callers cannot mutate state without locking.
+func (s *State) GetFinishedDateRestoration(userBookID string) (map[int64]string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	intent, ok := s.PendingFinishedDates[userBookID]
+	copied := make(map[int64]string, len(intent.Dates))
+	for id, date := range intent.Dates {
+		copied[id] = date
+	}
+	return copied, ok
+}
+
+// HasFinishedDateRestoration keeps incomplete repairs eligible for incremental sync.
+func (s *State) HasFinishedDateRestoration(itemID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, intent := range s.PendingFinishedDates {
+		if intent.ABSItemID == itemID {
+			return true
+		}
+	}
+	return false
+}
+
+// GetItemFinishedDateRestorations returns independently owned date maps for an ABS item.
+func (s *State) GetItemFinishedDateRestorations(itemID string) map[string]map[int64]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make(map[string]map[int64]string)
+	for userBookID, intent := range s.PendingFinishedDates {
+		if intent.ABSItemID != itemID {
+			continue
+		}
+		dates := make(map[int64]string, len(intent.Dates))
+		for id, date := range intent.Dates {
+			dates[id] = date
+		}
+		result[userBookID] = dates
+	}
+	return result
+}
+
+// ClearFinishedDateRestoration removes an intent only after its dates are verified.
+func (s *State) ClearFinishedDateRestoration(userBookID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.PendingFinishedDates[userBookID]; ok {
+		delete(s.PendingFinishedDates, userBookID)
+		s.dirty = true
+	}
 }
 
 type Book struct {
