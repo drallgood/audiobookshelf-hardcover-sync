@@ -385,6 +385,7 @@ The project follows standard Go project layout:
   - Configurable minimum change threshold
   - Checkpoints changed state after each processed book (except dry runs); each run still scans the library from the beginning
   - For books that would be newly matched, an item explicitly marked finished or computed at 100% progress without `finished_at` is excluded from Hardcover matching until a finished date is available. This fix applies to new matches and does not repair existing reads created with the old sync-time synthetic date.
+  - Finished-status updates, including immediate resync after adding an edition, send the completion date explicitly with the status instead of relying on Hardcover to retain the preceding read’s date. Existing finished history keeps its most recent completion date.
 
 - **Smart Caching**: Intelligent caching of author/narrator lookups with cross-role discovery
 - **Enhanced Progress Detection**: Uses `/api/me` endpoint for accurate finished book detection, preventing false re-read scenarios

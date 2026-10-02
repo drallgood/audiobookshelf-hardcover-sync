@@ -2,7 +2,14 @@ package sync
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"time"
+
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"os"
 	"path/filepath"
 	"testing"
@@ -300,4 +307,90 @@ func TestSyncBookErrors(t *testing.T) {
 		_, err = svc.SyncBook(context.Background(), *inProgressBook("x"), nil, "")
 		require.Error(t, err)
 	})
+}
+
+// Model the completion-date default implicated by the Salvage Merc One logs.
+// Verify the concrete client sends the historical date with the final status,
+// rather than relying on the preceding read insertion to supply it.
+func TestSyncBookWithEditionPreservesFinishedDateAcrossStatusTransition(t *testing.T) {
+	const finishedDate = "2025-06-01"
+	svc, _, abs := newSyncBookService(t)
+	book := toAudiobookshelfBook(createTestFinishedBook("resync-finished-date", "Salvage Merc One", "Jake Bible", "B0FRJZ7HJY", ""))
+	book.Progress.StartedAt = 1748790312628
+	book.Progress.FinishedAt = 1748790312628
+	abs.On("GetUserProgress", mock.Anything).Return(&models.AudiobookshelfUserProgress{}, nil).Once()
+	current := state.NewState()
+	require.NoError(t, current.SetAssociation(state.Association{
+		ABSItemID: book.ID, SourceASIN: book.Media.Metadata.ASIN,
+		HardcoverBookID: "1852014", HardcoverEditionID: "33360390", ReadingFormat: models.ReadingFormatAudiobook,
+	}))
+	var finalDate string
+	var created, transitioned bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query     string                 `json:"query"`
+			Variables map[string]interface{} `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+			http.Error(w, "bad request", 400)
+			return
+		}
+		response := `{"data":{"user_books":[]}}`
+		switch {
+		case strings.Contains(req.Query, "GetCurrentUserID"):
+			response = `{"data":{"me":[{"id":99}]}}`
+		case strings.Contains(req.Query, "InsertUserBookRead"):
+			dates := req.Variables["user_book_read"].(map[string]interface{})
+			finalDate, _ = dates["finished_at"].(string)
+			assert.Equal(t, finishedDate, finalDate)
+			response = `{"data":{"insert_user_book_read":{"id":6998539,"error":null}}}`
+		case strings.Contains(req.Query, "InsertUserBook"):
+			object := req.Variables["object"].(map[string]interface{})
+			assert.Equal(t, float64(1), object["status_id"], "create as WANT_TO_READ")
+			created = true
+			response = `{"data":{"insert_user_book":{"id":19149476,"user_book":{"id":19149476,"status_id":1},"error":null}}}`
+		case strings.Contains(req.Query, "UpdateUserBookStatus"):
+			transitioned = true
+			finalDate = "2026-10-01"
+			if object, ok := req.Variables["object"].(map[string]interface{}); ok {
+				if date, ok := object["last_read_date"].(string); ok {
+					finalDate = date
+				}
+			}
+			response = `{"data":{"update_user_book":{"id":19149476,"error":null}}}`
+		case strings.Contains(req.Query, "GetUserBookReads"):
+			if finalDate != "" {
+				response = `{"data":{"user_book_reads":[{"id":6998539,"started_at":"2025-06-01","finished_at":"` + finalDate + `","progress":100,"progress_seconds":24960}]}}`
+			} else {
+				response = `{"data":{"user_book_reads":[]}}`
+			}
+		case strings.Contains(req.Query, "GetUserBook("):
+			response = `{"data":{"user_books":[{"id":19149476,"book_id":1852014,"edition_id":33360390,"status_id":1}]}}`
+		case strings.Contains(req.Query, "GetUserBookByBookOnly"), strings.Contains(req.Query, "GetUserBookByBook("), strings.Contains(req.Query, "GetUserBookByEdition"):
+			if created {
+				response = `{"data":{"user_books":[{"id":19149476,"book_id":1852014,"edition_id":33360390}]}}`
+			}
+		default:
+			t.Errorf("unexpected operation: %s", req.Query)
+			http.Error(w, "unexpected operation", 400)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(response))
+	}))
+	defer server.Close()
+	cfg := hardcover.DefaultClientConfig()
+	cfg.BaseURL, cfg.RateLimit, cfg.MaxRetries = server.URL, time.Nanosecond, 0
+	svc.hardcover = hardcover.NewClientWithConfig(cfg, "test-token", logger.Get())
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	result, err := svc.SyncBookWithEdition(context.Background(), *book, &models.Edition{ID: "33360390", BookID: "1852014", ReadingFormatID: "2"}, current, statePath)
+	require.NoError(t, err)
+	require.Equal(t, OutcomeSynced, result.Outcome, result.Error)
+	assert.True(t, transitioned)
+	assert.Equal(t, finishedDate, finalDate)
+	stored, err := state.LoadState(statePath)
+	require.NoError(t, err)
+	assert.Equal(t, "FINISHED", stored.Books[book.ID+":33360390"].Status)
+	abs.AssertExpectations(t)
 }

@@ -3317,6 +3317,12 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 	}
 
 	needsStatusUpdate := true
+	// A FINISHED transition can overwrite the latest read's completion date.
+	// Supply the date with the status so Hardcover does not default it to today.
+	lastReadDate := ""
+	if book.Progress.FinishedAt > 0 {
+		lastReadDate = time.Unix(book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
+	}
 
 	if latestUnfinishedRead != nil {
 		// Close the unfinished read and mark as finished.
@@ -3428,6 +3434,10 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 		log.Info("Successfully created new read record")
 		reportProcessBookOutcome(ctx, OutcomeSynced, "created Hardcover finished read")
 	} else {
+		// Preserve existing finished history when only its status needs updating.
+		if !latestFinishedReadTime.IsZero() {
+			lastReadDate = latestFinishedReadTime.Format("2006-01-02")
+		}
 		// Book already has finished reads — no new read to create.
 		// Only update status if it's not already FINISHED.
 		if userBook != nil && userBook.BookStatusID == 3 {
@@ -3453,8 +3463,9 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 		})
 
 		statusErr := s.hardcover.UpdateUserBookStatus(ctx, hardcover.UpdateUserBookStatusInput{
-			ID:     userBookID,
-			Status: "FINISHED",
+			ID:           userBookID,
+			Status:       "FINISHED",
+			LastReadDate: lastReadDate,
 		})
 
 		if statusErr != nil {

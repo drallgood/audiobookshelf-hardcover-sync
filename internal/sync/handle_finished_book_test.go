@@ -265,8 +265,9 @@ func TestHandleFinishedBookCreatesReadWithAudiobookshelfFinishedDate(t *testing.
 			input.DatesRead.FinishedAt != nil && *input.DatesRead.FinishedAt == finishedAtDate
 	})).Return(0, nil).Once()
 	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
-		ID:     userBookID,
-		Status: "FINISHED",
+		ID:           userBookID,
+		Status:       "FINISHED",
+		LastReadDate: finishedAtDate,
 	}).Return(nil).Once()
 
 	err := svc.HandleFinishedBook(context.Background(), book, editionID, userBookID)
@@ -357,8 +358,9 @@ func TestHandleFinishedBook_StatusFailureDoesNotAdvanceState(t *testing.T) {
 		return input.ID == readID && input.Object["finished_at"] == finishedAt
 	})).Return(true, nil).Once()
 	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
-		ID:     userBookID,
-		Status: "FINISHED",
+		ID:           userBookID,
+		Status:       "FINISHED",
+		LastReadDate: finishedAt,
 	}).Return(statusErr).Once()
 
 	err := svc.HandleFinishedBook(context.Background(), convertTestBookToModel(book), "32059490", userBookID)
@@ -397,8 +399,9 @@ func TestHandleFinishedBook_ExistingFinishedReadStatusFailureDoesNotAdvanceState
 		ProgressSeconds: intPointer(21234),
 	}}, nil).Once()
 	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
-		ID:     userBookID,
-		Status: "FINISHED",
+		ID:           userBookID,
+		Status:       "FINISHED",
+		LastReadDate: finishedAt,
 	}).Return(statusErr).Once()
 
 	err := svc.HandleFinishedBook(context.Background(), convertTestBookToModel(book), "32059491", userBookID)
@@ -476,4 +479,20 @@ func createTestConfigForTests(syncOwned bool) *config.Config {
 	cfg.Server.ShutdownTimeout = 30 * time.Second
 
 	return cfg
+}
+
+func TestHandleFinishedBookPreservesExistingCompletionDateWhenReconcilingStatus(t *testing.T) {
+	svc, hc := createTestService()
+	book := convertTestBookToModel(createTestFinishedBook("existing-finished-history", "History", "Author", "B123", ""))
+	book.Progress.FinishedAt = 1748790312628
+	hc.On("GetUserBook", mock.Anything, "789").Return(&models.HardcoverBook{BookStatusID: 2}, nil).Once()
+	hc.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: 789}).Return([]hardcover.UserBookRead{
+		{ID: 1, FinishedAt: stringPointer("2024-01-01")},
+		{ID: 2, FinishedAt: stringPointer("2025-05-12")},
+	}, nil)
+	hc.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{ID: 789, Status: "FINISHED", LastReadDate: "2025-05-12"}).Return(nil).Once()
+	assert.NoError(t, svc.HandleFinishedBook(context.Background(), book, "456", 789))
+	hc.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+	hc.AssertExpectations(t)
 }
