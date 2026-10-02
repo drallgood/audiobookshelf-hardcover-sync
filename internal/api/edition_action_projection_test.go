@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/auth"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 	"github.com/stretchr/testify/require"
 )
@@ -19,17 +20,23 @@ func TestRunDetailsEditionRecoveryCapabilities(t *testing.T) {
 		signingKey string
 		wantToken  bool
 		wantManual bool
+		clearToken bool
 	}{
-		{"owner", auth.RoleUser, time.Now(), "hardcover-token", true, false},
-		{"admin", auth.RoleAdmin, time.Now(), "hardcover-token", true, false},
-		{"viewer", auth.RoleViewer, time.Now(), "hardcover-token", false, false},
-		{"expired", auth.RoleUser, time.Now().Add(-49 * time.Hour), "hardcover-token", false, true},
-		{"rotated", auth.RoleUser, time.Now(), "old-hardcover-token", false, true},
+		{"owner", auth.RoleUser, time.Now(), "hardcover-token", true, false, false},
+		{"admin", auth.RoleAdmin, time.Now(), "hardcover-token", true, false, false},
+		{"viewer", auth.RoleViewer, time.Now(), "hardcover-token", false, false, false},
+		{"expired", auth.RoleUser, time.Now().Add(-49 * time.Hour), "hardcover-token", false, true, false},
+		{"rotated", auth.RoleUser, time.Now(), "old-hardcover-token", false, true, false},
+		{"missing Hardcover token", auth.RoleUser, time.Now(), "hardcover-token", false, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := newEditionDraftTestFixture(t, `{}`, "us")
 			configureEditionCreateRoute(t, fixture)
 			require.NoError(t, fixture.db.GetDB().Model(&auth.AuthUser{}).Where("id = ?", fixture.owner.ID).Update("role", tc.role).Error)
+			if tc.clearToken {
+				require.NoError(t, fixture.db.GetDB().Model(&database.SyncProfileConfig{}).
+					Where("profile_id = ?", "draft-profile").Update("hardcover_token_encrypted", "").Error)
+			}
 			const runID = "pending-details"
 			addCompletedNeedsReviewRun(t, fixture, runID, editionCreateRecord())
 			claims := editionRecoveryClaims{ProfileID: "draft-profile", RunID: runID, ABSItemID: "abs-item-1", HardcoverBookID: "42", AudibleIdentifier: "B0SOURCE12:us"}

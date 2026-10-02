@@ -2887,7 +2887,7 @@ class SyncProfileApp {
     }
 
     savePendingEditionRecovery(dialog) {
-        if (!dialog?.submittedBody || (!dialog.recovery && dialog.outcome !== 'transport_unknown')) return false;
+        if (!dialog?.submittedBody || (!dialog.recovery && dialog.outcome !== 'transport_unknown')) return;
         this.pendingEditionRecoveries ||= new Map();
         const key = this.pendingEditionRecoveryKey(dialog.profileId, dialog.runId, dialog.record.book_id);
         const saved = {
@@ -2901,12 +2901,10 @@ class SyncProfileApp {
         };
         this.pendingEditionRecoveries.set(key, saved);
         try {
-            if (!window.sessionStorage) return false;
+            if (!window.sessionStorage) return;
             const serialized = JSON.stringify(saved);
             window.sessionStorage.setItem(key, serialized);
-            return true;
         } catch (_) { /* Recovery remains available for the life of this dialog. */ }
-        return true;
     }
 
     clearPendingEditionRecovery(profileId, runId, bookId) {

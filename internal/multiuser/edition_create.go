@@ -459,7 +459,7 @@ func (s *MultiUserService) AnnotateEditionAdditions(profileID string, snapshot *
 		}
 		associationConfirmsAction := associationMatchesSource && submittedAction && regionalIdentifierMatches
 		record.EditionAdded = apiAssociation || associationConfirmsAction
-		if record.EditionAdded || associationConfirmsAction {
+		if record.EditionAdded {
 			// The saved association is authoritative. It suppresses any stale
 			// journal marker left behind by an interrupted cleanup or a later
 			// ordinary sync that independently confirmed the same target.

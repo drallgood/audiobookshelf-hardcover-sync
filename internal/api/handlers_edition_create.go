@@ -32,6 +32,18 @@ const (
 
 	editionCreateExistingBookConflictGuidance = "An existing Hardcover edition belongs to a different book. No edition was added."
 	editionCreateAmbiguousIdentityGuidance    = "Hardcover may have processed the edition request, but its result could not be confirmed. The returned edition identity conflicted with the reviewed book. Verify the Hardcover result before retrying; retrying may create another edition."
+	editionCreateLocalFailureGuidance         = "Local profile or state data could not be prepared for edition creation"
+	editionCreateFailedGuidance               = "Failed to create and verify the Hardcover edition"
+	editionAssociationSaveFailureGuidance     = "Hardcover returned a verified edition, but the local match could not be saved. Verify the Hardcover result before retrying; retrying may create another edition."
+	editionImportFailureGuidance              = "Hardcover could not import the regional Audible identifier"
+	editionImportUnconfirmedGuidance          = "Hardcover has not confirmed this regional import yet. Check its status before trying edition creation again."
+	editionImportOutcomeAmbiguousGuidance     = "Hardcover may have processed the edition request, but its result could not be confirmed. Verify the Hardcover result before retrying; retrying may create another edition."
+	editionImportIdentityUnconfirmedGuidance  = "Hardcover returned an edition that does not match the submitted book or audiobook format; the match was not saved"
+	editionCreateRequestTooSlowGuidance       = "The request took too long to add this edition. Nothing was added to Hardcover. Please try again."
+	editionCreateQuotaLowGuidance             = "Hardcover's daily API quota is running low. Nothing was added to Hardcover. Please wait until Hardcover's daily API quota resets, then try again."
+	editionCreateQuotaExhaustedGuidance       = "Hardcover's daily API quota is exhausted. Nothing was added to Hardcover. Please wait until Hardcover's daily API quota resets, then try again."
+	editionCreateDiscoveryBudgetGuidance      = "Audnexus region discovery could not finish before the Hardcover write deadline; no mutation was sent. Supply audible_identifier (ASIN:region) to skip discovery"
+	editionCreateExistingEditionCheckGuidance = "Hardcover could not finish an edition preparation lookup or check for an existing edition; retry the edition create"
 )
 
 type editionCreateABSClient interface {
@@ -290,7 +302,7 @@ func (h *Handler) CheckEditionImport(w http.ResponseWriter, r *http.Request) {
 			// saved by RecoverEditionAssociation below.
 			action = &sync.EditionActionRecord{
 				Outcome:   editionOutcomeUnconfirmed,
-				Error:     "Hardcover has not confirmed this regional import yet. Check its status before trying edition creation again.",
+				Error:     editionImportUnconfirmedGuidance,
 				ErrorCode: "hardcover_import_unconfirmed",
 				Data: &sync.EditionActionData{
 					AudibleIdentifier: externalID, HardcoverBookID: record.HardcoverBookID,
@@ -1409,42 +1421,41 @@ func editionCreatePublicErrorMessage(err error) string {
 	case errors.Is(err, errEditionCreateInsufficientBudget), errors.Is(err, edition.ErrCreateEditionInsufficientMutationBudget):
 		switch {
 		case errors.Is(err, hardcover.ErrMutationDailyQuotaLow):
-			return "Hardcover's daily API quota is running low. Nothing was added to Hardcover. Please wait until Hardcover's daily API quota resets, then try again."
+			return editionCreateQuotaLowGuidance
 		case errors.Is(err, hardcover.ErrMutationDailyQuotaExhausted):
-			return "Hardcover's daily API quota is exhausted. Nothing was added to Hardcover. Please wait until Hardcover's daily API quota resets, then try again."
+			return editionCreateQuotaExhaustedGuidance
 		default:
-			return "The request took too long to add this edition. Nothing was added to Hardcover. Please try again."
+			return editionCreateRequestTooSlowGuidance
 		}
 	case errors.Is(err, errEditionCreateDiscoveryBudget):
-		return "Audnexus region discovery could not finish before the Hardcover write deadline; no mutation was sent. Supply audible_identifier (ASIN:region) to skip discovery"
+		return editionCreateDiscoveryBudgetGuidance
 	case errors.Is(err, multiuser.ErrProfileStateBusy):
 		return "Profile sync state is busy; retry shortly"
 	case errors.Is(err, multiuser.ErrEditionCreateDryRun):
 		return "Edition creation is disabled while this profile is in dry run"
 	case errors.Is(err, multiuser.ErrEditionCreateLocalFailure):
-		return "Local profile or state data could not be prepared for edition creation"
+		return editionCreateLocalFailureGuidance
 	case errors.Is(err, hardcover.ErrMutationScopeDenied):
 		return "Hardcover token is missing catalogue write permission; no edition was created"
 	case errors.Is(err, edition.ErrCreateEditionPreMutation):
 		if errors.Is(err, edition.ErrEditionBelongsToOtherBook) {
 			return editionCreateExistingBookConflictGuidance
 		}
-		return "Hardcover could not finish an edition preparation lookup or check for an existing edition; retry the edition create"
+		return editionCreateExistingEditionCheckGuidance
 	case errors.Is(err, multiuser.ErrEditionAssociationSaveAfterRemoteSuccess):
-		return "Hardcover returned a verified edition, but the local match could not be saved. Verify the Hardcover result before retrying; retrying may create another edition."
+		return editionAssociationSaveFailureGuidance
 	case errors.Is(err, errEditionImportUnconfirmed):
-		return "Hardcover has not confirmed this regional import yet. Check its status before trying edition creation again."
+		return editionImportUnconfirmedGuidance
 	case errors.Is(err, errEditionRecoveryIdentityUnconfirmed):
-		return "Hardcover returned an edition that does not match the submitted book or audiobook format; the match was not saved"
+		return editionImportIdentityUnconfirmedGuidance
 	case errors.Is(err, errEditionCreateRemoteOutcomeAmbiguous):
-		message := "Hardcover may have processed the edition request, but its result could not be confirmed. Verify the Hardcover result before retrying; retrying may create another edition."
 		switch {
 		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, hardcover.ErrRegionalAudiobookImportTimeout):
-			return message
+			return editionImportOutcomeAmbiguousGuidance
 		case errors.Is(err, errHardcoverEditionIdentityConflict), errors.Is(err, hardcover.ErrRegionalAudiobookIdentityConflict):
 			return editionCreateAmbiguousIdentityGuidance
 		default:
-			return message
+			return editionImportOutcomeAmbiguousGuidance
 		}
 	case errors.Is(err, errEditionCreateInvalidInput), errors.Is(err, errAudibleRegionUnknown), errors.Is(err, hardcover.ErrRegionalAudiobookInvalidInput), errors.Is(err, hardcover.ErrRegionalAudiobookIdentityConflict):
 		return err.Error()
@@ -1453,11 +1464,11 @@ func editionCreatePublicErrorMessage(err error) string {
 	case errors.Is(err, hardcover.ErrRegionalAudiobookImportTimeout):
 		return "Hardcover regional import timed out; retry the edition create"
 	case errors.Is(err, hardcover.ErrRegionalAudiobookImportFailed):
-		return "Hardcover could not import the regional Audible identifier"
+		return editionImportFailureGuidance
 	case errors.Is(err, errHardcoverEditionIdentityConflict):
 		return err.Error()
 	default:
-		return "Failed to create and verify the Hardcover edition"
+		return editionCreateFailedGuidance
 	}
 }
 
@@ -1474,17 +1485,17 @@ func editionActionPublicErrorMessage(action *sync.EditionActionRecord) string {
 	}
 	switch action.ErrorCode {
 	case "edition_create_local_failure":
-		return "Local profile or state data could not be prepared for edition creation"
+		return editionCreateLocalFailureGuidance
 	case "edition_create_not_submitted":
 		return "The edition request was not submitted to Hardcover. Retry the edition create."
 	case "hardcover_import_unconfirmed":
-		return "Hardcover may have processed the edition request, but its result could not be confirmed. Verify the Hardcover result before retrying; retrying may create another edition."
+		return editionImportOutcomeAmbiguousGuidance
 	case "edition_association_save_failed":
-		return "Hardcover returned a verified edition, but the local match could not be saved. Verify the Hardcover result before retrying; retrying may create another edition."
+		return editionAssociationSaveFailureGuidance
 	case "hardcover_import_failed":
-		return "Hardcover could not import the regional Audible identifier"
+		return editionImportFailureGuidance
 	case "edition_create_failed":
-		return "Failed to create and verify the Hardcover edition"
+		return editionCreateFailedGuidance
 	default:
 		// Validation and explicit conflict messages are public API guidance and
 		// must retain their existing detail.
@@ -1495,25 +1506,25 @@ func editionActionPublicErrorMessage(action *sync.EditionActionRecord) string {
 func knownPublicEditionActionError(errorCode, message string) bool {
 	switch errorCode {
 	case "edition_create_local_failure":
-		return message == "Local profile or state data could not be prepared for edition creation"
+		return message == editionCreateLocalFailureGuidance
 	case "edition_create_not_submitted":
-		return message == "The request took too long to add this edition. Nothing was added to Hardcover. Please try again." ||
-			message == "Hardcover's daily API quota is running low. Nothing was added to Hardcover. Please wait until Hardcover's daily API quota resets, then try again." ||
-			message == "Hardcover's daily API quota is exhausted. Nothing was added to Hardcover. Please wait until Hardcover's daily API quota resets, then try again." ||
-			message == "Audnexus region discovery could not finish before the Hardcover write deadline; no mutation was sent. Supply audible_identifier (ASIN:region) to skip discovery" ||
-			message == "Hardcover could not finish an edition preparation lookup or check for an existing edition; retry the edition create" ||
+		return message == editionCreateRequestTooSlowGuidance ||
+			message == editionCreateQuotaLowGuidance ||
+			message == editionCreateQuotaExhaustedGuidance ||
+			message == editionCreateDiscoveryBudgetGuidance ||
+			message == editionCreateExistingEditionCheckGuidance ||
 			message == editionCreateExistingBookConflictGuidance
 	case "hardcover_import_unconfirmed":
-		return message == "Hardcover has not confirmed this regional import yet. Check its status before trying edition creation again." ||
-			message == "Hardcover returned an edition that does not match the submitted book or audiobook format; the match was not saved" ||
-			message == "Hardcover may have processed the edition request, but its result could not be confirmed. Verify the Hardcover result before retrying; retrying may create another edition." ||
+		return message == editionImportUnconfirmedGuidance ||
+			message == editionImportIdentityUnconfirmedGuidance ||
+			message == editionImportOutcomeAmbiguousGuidance ||
 			message == editionCreateAmbiguousIdentityGuidance
 	case "edition_association_save_failed":
-		return message == "Hardcover returned a verified edition, but the local match could not be saved. Verify the Hardcover result before retrying; retrying may create another edition."
+		return message == editionAssociationSaveFailureGuidance
 	case "hardcover_import_failed":
-		return message == "Hardcover could not import the regional Audible identifier"
+		return message == editionImportFailureGuidance
 	case "edition_create_failed":
-		return message == "Failed to create and verify the Hardcover edition"
+		return message == editionCreateFailedGuidance
 	default:
 		return false
 	}

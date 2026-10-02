@@ -655,30 +655,20 @@ func (h *Handler) projectEditionRecoveryCapabilities(r *http.Request, profileID 
 		return
 	}
 	settings, settingsErr := h.multiUserService.GetProfileHardcoverSettings(profileID)
-	if settingsErr != nil || settings == nil || settings.HardcoverToken == "" {
-		for i := range snapshot.BookOutcomes {
-			if action := snapshot.BookOutcomes[i].EditionAction; action != nil && action.Data != nil && action.Data.RecoveryToken != "" {
-				action.Data.RecoveryToken = ""
-				action.Outcome = editionOutcomeTransportUnknown
-				action.HTTPStatus = http.StatusConflict
-				action.ErrorCode = "edition_recovery_unavailable"
-				action.Error = editionRecoveryUnavailableGuidance
-				action.Data.Guidance = editionRecoveryUnavailableGuidance
-			}
-		}
-		return
-	}
+	canVerifyRecoveryTokens := settingsErr == nil && settings != nil && settings.HardcoverToken != ""
 	for i := range snapshot.BookOutcomes {
 		action := snapshot.BookOutcomes[i].EditionAction
 		if action == nil || action.Data == nil || action.Data.RecoveryToken == "" {
 			continue
 		}
-		claims := editionRecoveryClaims{
-			ProfileID: profileID, RunID: snapshot.RunID, ABSItemID: snapshot.BookOutcomes[i].BookID,
-			HardcoverBookID: action.Data.HardcoverBookID, AudibleIdentifier: action.Data.AudibleIdentifier,
-		}
-		if _, valid := verifyEditionRecoveryToken(settings.HardcoverToken, action.Data.RecoveryToken, claims); valid {
-			continue
+		if canVerifyRecoveryTokens {
+			claims := editionRecoveryClaims{
+				ProfileID: profileID, RunID: snapshot.RunID, ABSItemID: snapshot.BookOutcomes[i].BookID,
+				HardcoverBookID: action.Data.HardcoverBookID, AudibleIdentifier: action.Data.AudibleIdentifier,
+			}
+			if _, valid := verifyEditionRecoveryToken(settings.HardcoverToken, action.Data.RecoveryToken, claims); valid {
+				continue
+			}
 		}
 		action.Data.RecoveryToken = ""
 		action.Outcome = editionOutcomeTransportUnknown
