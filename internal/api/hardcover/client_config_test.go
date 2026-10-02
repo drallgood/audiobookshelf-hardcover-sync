@@ -1,6 +1,12 @@
 package hardcover
 
 import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,74 +28,58 @@ func TestDefaultClientConfig(t *testing.T) {
 	assert.Equal(t, 1, cfg.MaxConcurrent)
 }
 
-func TestNewClient(t *testing.T) {
-	// Initialize logger for test
-	logger.Setup(logger.Config{Level: "debug", Format: "json"})
-	log := logger.Get()
+func TestNewClientWithConfigUsesConfiguredEndpointAuthenticationAndRetryLimit(t *testing.T) {
+	logger.Setup(logger.Config{Level: "error", Format: "json"})
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		assert.Equal(t, "/graphql", r.URL.Path)
+		assert.Equal(t, "Bearer configured-token", r.Header.Get("Authorization"))
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
 
-	token := "test-token"
-	client := NewClient(token, log)
-
-	require.NotNil(t, client)
-	assert.Equal(t, DefaultBaseURL, client.baseURL)
-	assert.Equal(t, token, client.authToken)
-	assert.NotNil(t, client.httpClient)
-	assert.NotNil(t, client.logger)
-	assert.NotNil(t, client.rateLimiter)
-	assert.Equal(t, DefaultMaxRetries, client.maxRetries)
-	assert.Equal(t, DefaultRetryDelay, client.retryDelay)
+	client := NewClientWithConfig(&ClientConfig{
+		BaseURL:       server.URL + "/graphql",
+		Timeout:       time.Second,
+		MaxRetries:    1,
+		RetryDelay:    time.Nanosecond,
+		RateLimit:     time.Nanosecond,
+		MaxConcurrent: 1,
+	}, "configured-token", logger.Get())
+	var result struct {
+		Books []struct {
+			ID int `json:"id"`
+		} `json:"books"`
+	}
+	err := client.GraphQLQuery(context.Background(), "query ConfiguredClient { books { id } }", nil, &result)
+	var httpErr *HTTPError
+	require.Error(t, err)
+	require.True(t, errors.As(err, &httpErr), "expected the last HTTP failure to remain inspectable: %v", err)
+	assert.Equal(t, http.StatusBadGateway, httpErr.StatusCode)
+	assert.Equal(t, 2, requests, "one configured retry should make two total requests")
 }
 
-func TestNewClientWithConfig(t *testing.T) {
-	// Initialize logger for test
-	logger.Setup(logger.Config{Level: "debug", Format: "json"})
-	log := logger.Get()
-
-	tests := []struct {
-		name   string
-		config *ClientConfig
-		token  string
-	}{
-		{
-			name: "custom config",
-			config: &ClientConfig{
-				BaseURL:       "https://custom.api.com/graphql",
-				Timeout:       15 * time.Second,
-				MaxRetries:    5,
-				RetryDelay:    1 * time.Second,
-				RateLimit:     200 * time.Millisecond,
-				MaxConcurrent: 2,
-			},
-			token: "custom-token",
-		},
-		{
-			name:   "nil config uses defaults",
-			config: nil,
-			token:  "default-token",
-		},
+func TestNewClientWithConfigNilUsesDefaultEndpoint(t *testing.T) {
+	client := NewClientWithConfig(nil, "default-token", logger.Get())
+	client.httpClient.Transport = graphqlRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		assert.Equal(t, DefaultBaseURL, req.URL.String())
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"data":{"books":[{"id":42}]}}`)),
+			Request:    req,
+		}, nil
+	})
+	var result struct {
+		Books []struct {
+			ID int `json:"id"`
+		} `json:"books"`
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			client := NewClientWithConfig(tt.config, tt.token, log)
-
-			require.NotNil(t, client)
-			assert.Equal(t, tt.token, client.authToken)
-			assert.NotNil(t, client.httpClient)
-			assert.NotNil(t, client.logger)
-			assert.NotNil(t, client.rateLimiter)
-
-			if tt.config != nil {
-				assert.Equal(t, tt.config.BaseURL, client.baseURL)
-				assert.Equal(t, tt.config.MaxRetries, client.maxRetries)
-				assert.Equal(t, tt.config.RetryDelay, client.retryDelay)
-			} else {
-				assert.Equal(t, DefaultBaseURL, client.baseURL)
-				assert.Equal(t, DefaultMaxRetries, client.maxRetries)
-				assert.Equal(t, DefaultRetryDelay, client.retryDelay)
-			}
-		})
-	}
+	require.NoError(t, client.GraphQLQuery(context.Background(), "query DefaultClient { books { id } }", nil, &result))
+	require.Len(t, result.Books, 1)
+	assert.Equal(t, 42, result.Books[0].ID)
 }
 
 func TestNewClientWithConfigReusesProvidedRateLimiter(t *testing.T) {
