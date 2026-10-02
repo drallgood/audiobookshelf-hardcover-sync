@@ -1321,8 +1321,8 @@ func TestRunDetailsRestoreSavedEditionAdditionsAcrossClientsAndRestart(t *testin
 		ProfileID: profileID, RunID: runID, State: "completed",
 		OutcomeCounts: syncsvc.OutcomeCounts{NeedsReview: 2},
 		BookOutcomes: []syncsvc.BookOutcomeRecord{
-			{BookID: "added", Outcome: syncsvc.OutcomeNeedsReview, Format: "audiobook", ASIN: "B012345678", HardcoverBookID: "41"},
-			{BookID: "untouched", Outcome: syncsvc.OutcomeNeedsReview, Format: "audiobook", ASIN: "B012345679", HardcoverBookID: "42"},
+			{BookID: "added", Outcome: syncsvc.OutcomeNeedsReview, Format: "Audiobook", ASIN: " b012345678 ", ISBN: "978-0-306-40615-7", HardcoverBookID: "41"},
+			{BookID: "untouched", Outcome: syncsvc.OutcomeNeedsReview, Format: "Audiobook", ASIN: "B012345679", HardcoverBookID: "42"},
 		},
 	}
 	encoded, err := json.Marshal(original)
@@ -1345,7 +1345,10 @@ func TestRunDetailsRestoreSavedEditionAdditionsAcrossClientsAndRestart(t *testin
 	}
 	require.False(t, readDetails(fixture.multiUser).BookOutcomes[0].EditionAdded)
 	operation := func(*database.ProfileWithTokens) (statepkg.Association, error) {
-		return statepkg.Association{ABSItemID: "added", SourceASIN: "B012345678", HardcoverBookID: "41", HardcoverEditionID: "82", ReadingFormat: "audiobook", Provenance: "api_regional_recovered"}, nil
+		return statepkg.Association{
+			ABSItemID: "added", SourceASIN: "B012345678", SourceISBN13: "9780306406157",
+			HardcoverBookID: "41", HardcoverEditionID: "82", ReadingFormat: "audiobook", Provenance: "api_regional_recovered",
+		}, nil
 	}
 	require.NoError(t, fixture.multiUser.RecoverEditionAssociation(context.Background(), profileID, "added", operation))
 	cfg := config.DefaultConfig()

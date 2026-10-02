@@ -1255,6 +1255,29 @@ func TestEditionCreateMapsPreSendMutationBudgetGuardToRetryableNoSend(t *testing
 			require.EqualValues(t, 1, mutationCalls.Load())
 			require.Contains(t, response.Body.String(), "Nothing was added to Hardcover")
 			require.NotContains(t, response.Body.String(), "may have processed")
+			var envelope struct {
+				Outcome string `json:"outcome"`
+				Data    struct {
+					RecoveryToken string `json:"recovery_token"`
+				} `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+			require.Equal(t, editionOutcomeNotSubmitted, envelope.Outcome)
+			require.Empty(t, envelope.Data.RecoveryToken)
+			action, found, err := fixture.multiUserService.GetEditionAction("draft-profile", tt.runID, "abs-item-1")
+			require.NoError(t, err)
+			require.True(t, found)
+			require.Equal(t, editionOutcomeNotSubmitted, action.Outcome)
+			require.Nil(t, action.Data)
+
+			retry := postEditionCreate(t, fixture, fixture.owner, tt.body)
+			require.Equal(t, http.StatusServiceUnavailable, retry.Code, retry.Body.String())
+			require.EqualValues(t, 2, mutationCalls.Load(), "the same request should reach the pre-send mutation guard again")
+			action, found, err = fixture.multiUserService.GetEditionAction("draft-profile", tt.runID, "abs-item-1")
+			require.NoError(t, err)
+			require.True(t, found)
+			require.Equal(t, editionOutcomeNotSubmitted, action.Outcome)
+			require.Nil(t, action.Data)
 			stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
 			require.NoError(t, err)
 			_, exists := stored.GetAssociation("abs-item-1")

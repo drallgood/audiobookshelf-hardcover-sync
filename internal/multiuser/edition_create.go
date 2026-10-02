@@ -11,6 +11,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
@@ -447,9 +448,9 @@ func (s *MultiUserService) AnnotateEditionAdditions(profileID string, snapshot *
 		association, exists := state.GetAssociation(record.BookID)
 		associationMatchesSource := record.Outcome == sync.OutcomeNeedsReview && exists &&
 			association.HardcoverBookID == record.HardcoverBookID &&
-			association.ReadingFormat == record.Format &&
-			association.SourceASIN == record.ASIN &&
-			(record.ISBN == "" || record.ISBN == association.SourceISBN10 || record.ISBN == association.SourceISBN13)
+			strings.EqualFold(strings.TrimSpace(association.ReadingFormat), strings.TrimSpace(record.Format)) &&
+			strings.EqualFold(strings.TrimSpace(association.SourceASIN), strings.TrimSpace(record.ASIN)) &&
+			(record.ISBN == "" || isbn.Normalize(record.ISBN) == isbn.Normalize(association.SourceISBN10) || isbn.Normalize(record.ISBN) == isbn.Normalize(association.SourceISBN13))
 		apiAssociation := associationMatchesSource && strings.HasPrefix(association.Provenance, "api_")
 		submittedAction := record.EditionAction != nil && record.EditionAction.SubmittedBody != nil && record.EditionAction.Outcome != "not_submitted"
 		regionalIdentifierMatches := true

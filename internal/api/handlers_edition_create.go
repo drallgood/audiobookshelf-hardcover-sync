@@ -692,7 +692,10 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 	result, err := client.ImportRegionalAudiobook(mutationCtx, hardcover.RegionalAudiobookInput{BookID: bookID, ASIN: asin, Region: region})
 	if err != nil {
 		if errors.Is(err, hardcover.ErrMutationInsufficientBudget) {
-			return statepkg.Association{}, errors.Join(errEditionCreateInsufficientBudget, err)
+			writeErr := errors.Join(errEditionCreateInsufficientBudget, err)
+			response.recovery = nil
+			h.finalizeEditionCreateAction(profile.Profile.ID, response, writeErr)
+			return statepkg.Association{}, writeErr
 		}
 		if errors.Is(err, hardcover.ErrMutationScopeDenied) {
 			writeErr := fmt.Errorf("Hardcover catalogue write permission is required: %w", err)

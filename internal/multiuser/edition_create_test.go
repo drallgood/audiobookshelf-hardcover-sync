@@ -462,22 +462,35 @@ func TestCreateEditionWithAssociationAndResyncSkipsResyncWhenNothingWasCreated(t
 
 func TestAnnotateEditionAdditionsRequiresMatchingSavedAPIAssociation(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		change func(*statepkg.Association)
-		want   bool
+		name         string
+		recordFormat string
+		recordASIN   string
+		recordISBN   string
+		change       func(*statepkg.Association)
+		want         bool
 	}{
-		{"confirmed create", func(*statepkg.Association) {}, true},
-		{"other book", func(a *statepkg.Association) { a.HardcoverBookID = "99" }, false},
-		{"other source", func(a *statepkg.Association) { a.SourceASIN = "B099999999" }, false},
-		{"other format", func(a *statepkg.Association) { a.ReadingFormat = "audiobook" }, false},
-		{"ordinary sync", func(a *statepkg.Association) { a.Provenance = "regional_mapping" }, false},
+		{name: "confirmed ebook create", recordFormat: "Ebook", change: func(*statepkg.Association) {}, want: true},
+		{name: "confirmed audiobook create", recordFormat: "Audiobook", change: func(a *statepkg.Association) { a.ReadingFormat = "audiobook" }, want: true},
+		{name: "normalized source identifiers", recordFormat: "Ebook", recordASIN: " b012345678 ", recordISBN: "978-0-306-40615-7", change: func(*statepkg.Association) {}, want: true},
+		{name: "other book", recordFormat: "Ebook", change: func(a *statepkg.Association) { a.HardcoverBookID = "99" }, want: false},
+		{name: "other source", recordFormat: "Ebook", change: func(a *statepkg.Association) { a.SourceASIN = "B099999999" }, want: false},
+		{name: "changed source identifier", recordFormat: "Ebook", recordASIN: "B099999999", change: func(*statepkg.Association) {}, want: false},
+		{name: "other format", recordFormat: "Ebook", change: func(a *statepkg.Association) { a.ReadingFormat = "audiobook" }, want: false},
+		{name: "ordinary sync", recordFormat: "Ebook", change: func(a *statepkg.Association) { a.Provenance = "regional_mapping" }, want: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			service, profileID := newEditionCreateService(t)
 			a := testCreateAssociation("item")
 			tc.change(&a)
 			require.NoError(t, service.CreateEditionWithAssociation(context.Background(), profileID, "item", func(*database.ProfileWithTokens) (statepkg.Association, error) { return a, nil }))
-			snapshot := syncsvc.SyncSnapshot{State: "canceled", BookOutcomes: []syncsvc.BookOutcomeRecord{{BookID: "item", Outcome: syncsvc.OutcomeNeedsReview, Format: "ebook", ASIN: "B012345678", ISBN: "9780306406157", HardcoverBookID: "41"}}}
+			recordASIN, recordISBN := tc.recordASIN, tc.recordISBN
+			if recordASIN == "" {
+				recordASIN = "B012345678"
+			}
+			if recordISBN == "" {
+				recordISBN = "9780306406157"
+			}
+			snapshot := syncsvc.SyncSnapshot{State: "canceled", BookOutcomes: []syncsvc.BookOutcomeRecord{{BookID: "item", Outcome: syncsvc.OutcomeNeedsReview, Format: tc.recordFormat, ASIN: recordASIN, ISBN: recordISBN, HardcoverBookID: "41"}}}
 			require.NoError(t, service.AnnotateEditionAdditions(profileID, &snapshot))
 			require.Equal(t, tc.want, snapshot.BookOutcomes[0].EditionAdded)
 		})
