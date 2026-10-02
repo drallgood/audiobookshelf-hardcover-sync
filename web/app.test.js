@@ -46,11 +46,11 @@ function visibleText(html) {
     return html
         .replace(/<[^>]*>/g, ' ')
         .replace(/&nbsp;/g, ' ')
-        .replace(/&amp;/g, '&')
         .replace(/&lt;/g, '<')
         .replace(/&gt;/g, '>')
         .replace(/&quot;/g, '"')
         .replace(/&#39;/g, "'")
+        .replace(/&amp;/g, '&')
         .replace(/\s+/g, ' ')
         .trim();
 }
@@ -1047,7 +1047,8 @@ test('candidate details omit Hardcover identifiers and show available Audiobooks
         ['', '', '', ''],
         ['   ', '', '', ''],
         ['9780441172719', 'Dune', '1', 'Dune #1'],
-        ['', '<Dune>', '', '<Dune>']
+        ['', '<Dune>', '', '<Dune>'],
+        ['', '&lt;Dune&gt;', '', '&lt;Dune&gt;']
     ]) {
         const record = { ...candidate, series, series_number: seriesNumber };
         const html = app.renderEditionDialog({

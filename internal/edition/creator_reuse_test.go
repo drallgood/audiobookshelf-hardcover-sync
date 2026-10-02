@@ -319,6 +319,63 @@ func TestCreateEditionRejectsNegativeBookIDWithoutMutation(t *testing.T) {
 	}
 }
 
+func TestCreateEditionResolvesCompetingIdentifiersByPriority(t *testing.T) {
+	tests := []struct {
+		name                       string
+		asin                       string
+		byASIN, byISBN13, byISBN10 *models.Edition
+		wantID                     int
+		wantErr                    error
+	}{
+		{
+			name:     "same-book ASIN wins over conflicting ISBN",
+			asin:     "B0EXISTING1",
+			byASIN:   &models.Edition{ID: "555", BookID: "123"},
+			byISBN13: &models.Edition{ID: "666", BookID: "999"},
+			wantID:   555,
+		},
+		{
+			name:     "foreign-book ASIN is not bypassed by same-book ISBN",
+			asin:     "B0EXISTING1",
+			byASIN:   &models.Edition{ID: "555", BookID: "999"},
+			byISBN13: &models.Edition{ID: "666", BookID: "123"},
+			wantErr:  edition.ErrEditionBelongsToOtherBook,
+		},
+		{
+			name:     "given ISBN-13 wins over conflicting given ISBN-10",
+			byISBN13: &models.Edition{ID: "666", BookID: "123"},
+			byISBN10: &models.Edition{ID: "777", BookID: "999"},
+			wantID:   666,
+		},
+		{
+			name:     "foreign-book ISBN-13 is not bypassed by same-book ISBN-10",
+			byISBN13: &models.Edition{ID: "666", BookID: "999"},
+			byISBN10: &models.Edition{ID: "777", BookID: "123"},
+			wantErr:  edition.ErrEditionBelongsToOtherBook,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := &reuseClient{byASIN: test.byASIN, byISBN13: test.byISBN13, byISBN10: test.byISBN10}
+			creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "token", &http.Client{Transport: failingTransport{}})
+			result, err := creator.CreateEdition(context.Background(), &edition.EditionInput{
+				ReadingFormat: "ebook", BookID: 123, Title: "A Title", AuthorIDs: []int{1},
+				ASIN: test.asin, ISBN13: "9780306406157", ISBN10: "0061120081",
+			})
+			if test.wantErr != nil {
+				if !errors.Is(err, test.wantErr) {
+					t.Fatalf("CreateEdition() error = %v, want %v", err, test.wantErr)
+				}
+			} else if err != nil || result == nil || !result.Existing || result.EditionID != test.wantID {
+				t.Fatalf("CreateEdition() = %+v, %v, want existing edition %d", result, err, test.wantID)
+			}
+			if len(client.mutations) != 0 {
+				t.Fatalf("competing identifiers caused mutations: %v", client.mutations)
+			}
+		})
+	}
+}
+
 func TestCreateEditionLooksUpEachNormalizedIdentifierOnce(t *testing.T) {
 	client := &reuseClient{insertID: 777}
 	creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "token", &http.Client{Transport: failingTransport{}})

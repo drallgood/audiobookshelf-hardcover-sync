@@ -1,7 +1,9 @@
 package util
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -794,8 +796,11 @@ func TestRateLimiterHonorsAuthoritativeTooManyRequestsGuidance(t *testing.T) {
 }
 
 func TestRateLimiterRecoversFromHeaderDrivenSlowdown(t *testing.T) {
+	testutils.SetGlobalLogLevel(t, zerolog.DebugLevel)
 	configuredRate := 2 * time.Second
-	rl := NewRateLimiter(configuredRate, 1, nil)
+	var output bytes.Buffer
+	log := &logger.Logger{Logger: zerolog.New(&output).Level(zerolog.DebugLevel)}
+	rl := NewRateLimiter(configuredRate, 1, log)
 
 	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
 		"Ratelimit":        {`"Free";r=8;t=42, "daily";r=1;t=10`},
@@ -808,16 +813,40 @@ func TestRateLimiterRecoversFromHeaderDrivenSlowdown(t *testing.T) {
 		"Ratelimit-Policy": {`"Free";q=60;w=60;burst=10, "daily";q=5000;w=86400`},
 	}})
 	assert.Equal(t, configuredRate, rl.GetRate())
+
+	var emittedRecovery bool
+	for _, event := range rateLimiterLogEvents(t, &output) {
+		if event["component"] == "rate_limiter" &&
+			event["previous_rate"] == (10*time.Second).String() &&
+			event["new_rate"] == configuredRate.String() {
+			emittedRecovery = true
+		}
+	}
+	require.True(t, emittedRecovery, "a normal pacing recovery should be visible in the structured logs")
 }
 
 func TestRateLimiterDailyQuotaPauseStillUpdatesOrdinaryPacing(t *testing.T) {
-	rl := NewRateLimiter(2*time.Second, 1, nil)
+	testutils.SetGlobalLogLevel(t, zerolog.DebugLevel)
+	var output bytes.Buffer
+	log := &logger.Logger{Logger: zerolog.New(&output).Level(zerolog.DebugLevel)}
+	rl := NewRateLimiter(2*time.Second, 1, log)
 
 	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
-		"Ratelimit":        {`"Free";r=8;t=42, "daily";r=1;t=10`},
+		"Ratelimit":        {`"Free";r=1;t=42, "daily";r=1;t=10`},
 		"Ratelimit-Policy": {`"Free";q=60;w=60;burst=10, "daily";q=5000;w=86400`},
 	}})
 	require.Equal(t, 10*time.Second, rl.GetRate())
+	require.False(t, rl.DailyQuotaPaused(), "a positive daily balance does not hold requests")
+	var emittedOrdinaryWindowEvent bool
+	for _, event := range rateLimiterLogEvents(t, &output) {
+		if event["component"] == "rate_limiter" &&
+			event["bucket"] == "free" &&
+			event["remaining"] == float64(1) {
+			emittedOrdinaryWindowEvent = true
+		}
+	}
+	require.True(t, emittedOrdinaryWindowEvent, "ordinary window exhaustion should be visible outside a daily pause")
+	output.Reset()
 
 	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
 		"Ratelimit":        {`"Free";r=1;t=42, "daily";r=0;t=3600`},
@@ -827,8 +856,38 @@ func TestRateLimiterDailyQuotaPauseStillUpdatesOrdinaryPacing(t *testing.T) {
 	assert.True(t, rl.DailyQuotaPaused())
 	assert.Equal(t, 2*time.Second, rl.GetRate(), "ordinary pacing still updates")
 
+	events := rateLimiterLogEvents(t, &output)
+	var emittedDailyQuotaEvent bool
+	for _, event := range events {
+		require.NotContains(t, event, "previous_rate", "recovery logs are suppressed while the daily pause holds requests")
+		require.NotContains(t, event, "bucket", "ordinary window slowdowns are suppressed while the daily pause holds requests")
+		if event["component"] == "rate_limiter" &&
+			event["daily_remaining"] == float64(0) &&
+			event["daily_limit"] == float64(5000) {
+			if pause, ok := event["pause"].(string); ok && pause != "" {
+				emittedDailyQuotaEvent = true
+			}
+		}
+	}
+	require.True(t, emittedDailyQuotaEvent, "daily exhaustion should remain visible in the structured logs")
+
 	rl.ResetRate()
 	assert.False(t, rl.DailyQuotaPaused())
+}
+
+func rateLimiterLogEvents(t *testing.T, output *bytes.Buffer) []map[string]interface{} {
+	t.Helper()
+	if output.Len() == 0 {
+		return nil
+	}
+
+	var events []map[string]interface{}
+	for _, line := range bytes.Split(bytes.TrimSpace(output.Bytes()), []byte("\n")) {
+		var event map[string]interface{}
+		require.NoError(t, json.Unmarshal(line, &event))
+		events = append(events, event)
+	}
+	return events
 }
 
 func TestRateLimiterRecoveryLogsOutsideLock(t *testing.T) {
