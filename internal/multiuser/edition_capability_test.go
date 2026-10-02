@@ -309,26 +309,34 @@ func TestEditionCapabilityDoesNotCacheCanceledProbe(t *testing.T) {
 func TestCapabilityAndProfileHardcoverClientsShareLimiter(t *testing.T) {
 	var active, maxActive atomic.Int32
 	var requests atomic.Int32
-	started := make(chan struct{}, 4)
+	sameTokenArrived := make(chan struct{}, 8)
 	rotatedTokenArrived := make(chan struct{}, 1)
 	releaseFirst := make(chan struct{})
+	releaseRotated := make(chan struct{})
+	const token = "shared-hardcover-token"
+	const rotatedToken = "rotated-hardcover-token"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		current := active.Add(1)
 		for previous := maxActive.Load(); current > previous && !maxActive.CompareAndSwap(previous, current); previous = maxActive.Load() {
 		}
 		defer active.Add(-1)
-		if requests.Add(1) == 1 {
-			started <- struct{}{}
+		requestNumber := requests.Add(1)
+		if r.Header.Get("Authorization") == "Bearer "+rotatedToken {
+			rotatedTokenArrived <- struct{}{}
 			select {
-			case <-releaseFirst:
+			case <-releaseRotated:
 			case <-r.Context().Done():
 				return
 			}
 		} else {
-			started <- struct{}{}
-		}
-		if r.Header.Get("Authorization") == "Bearer rotated-hardcover-token" {
-			rotatedTokenArrived <- struct{}{}
+			sameTokenArrived <- struct{}{}
+			if requestNumber == 1 {
+				select {
+				case <-releaseFirst:
+				case <-r.Context().Done():
+					return
+				}
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":{}}`))
@@ -340,11 +348,12 @@ func TestCapabilityAndProfileHardcoverClientsShareLimiter(t *testing.T) {
 	service.globalConfig.RateLimit.Rate = time.Nanosecond
 	service.globalConfig.RateLimit.MaxConcurrent = 1
 	const profileID = "shared-hardcover-limiter-profile"
-	const token = "shared-hardcover-token"
-	const rotatedToken = "rotated-hardcover-token"
 	var releaseFirstOnce sync.Once
 	releaseFirstRequest := func() { releaseFirstOnce.Do(func() { close(releaseFirst) }) }
 	defer releaseFirstRequest()
+	var releaseRotatedOnce sync.Once
+	releaseRotatedRequest := func() { releaseRotatedOnce.Do(func() { close(releaseRotated) }) }
+	defer releaseRotatedRequest()
 	require.NoError(t, service.repository.CreateProfile(
 		profileID, "Shared limiter", "http://abs.home", "abs-token", token,
 		database.SyncConfigData{},
@@ -356,7 +365,7 @@ func TestCapabilityAndProfileHardcoverClientsShareLimiter(t *testing.T) {
 		_, _ = service.RefreshEditionCapabilityForProfile(context.Background(), profileID)
 	}()
 	select {
-	case <-started:
+	case <-sameTokenArrived:
 	case <-time.After(2 * time.Second):
 		t.Fatal("capability probe did not reach Hardcover")
 	}
@@ -375,7 +384,7 @@ func TestCapabilityAndProfileHardcoverClientsShareLimiter(t *testing.T) {
 	// Keep the probe request inside its HTTP handler. The other profile clients
 	// must wait on the same one-request concurrency permit.
 	select {
-	case <-started:
+	case <-sameTokenArrived:
 		t.Fatal("another profile client bypassed the active probe's limiter")
 	case <-time.After(50 * time.Millisecond):
 	}
@@ -391,7 +400,22 @@ func TestCapabilityAndProfileHardcoverClientsShareLimiter(t *testing.T) {
 		releaseFirstRequest()
 		t.Fatal("a rotated token did not receive independent request admission")
 	}
+
+	// This client is created after the rotated-token client has already reached
+	// Hardcover. It must still use the original token's active permit.
+	lateSameTokenClient := service.NewHardcoverClientForProfile(profileID, token)
+	lateClientDone := make(chan error, 1)
+	go func() {
+		lateClientDone <- lateSameTokenClient.GraphQLMutation(context.Background(), "mutation { test }", nil, &map[string]any{})
+	}()
+	select {
+	case <-sameTokenArrived:
+		t.Fatal("a same-token client created after rotation bypassed the active probe's limiter")
+	case <-time.After(50 * time.Millisecond):
+	}
+
 	releaseFirstRequest()
+	releaseRotatedRequest()
 
 	for range clients {
 		select {
@@ -400,6 +424,12 @@ func TestCapabilityAndProfileHardcoverClientsShareLimiter(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("profile Hardcover request did not finish")
 		}
+	}
+	select {
+	case err := <-lateClientDone:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("late same-token Hardcover request did not finish")
 	}
 	select {
 	case <-probeDone:
@@ -412,7 +442,7 @@ func TestCapabilityAndProfileHardcoverClientsShareLimiter(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("rotated-token request did not finish")
 	}
-	require.Equal(t, int32(5), requests.Load())
+	require.Equal(t, int32(6), requests.Load())
 	require.Equal(t, int32(2), maxActive.Load(), "same-token requests share one limit while a rotated token can proceed independently")
 }
 

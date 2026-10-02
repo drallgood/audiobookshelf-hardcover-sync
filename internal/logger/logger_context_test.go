@@ -45,3 +45,12 @@ func TestContextHelpersIgnoreNilLogger(t *testing.T) {
 		})
 	}
 }
+
+func TestWithOnNilLoggerReturnsUsableLogger(t *testing.T) {
+	log := (*Logger)(nil).With(nil)
+
+	assert.NotNil(t, log)
+	assert.NotPanics(t, func() {
+		log.Info("nil receiver smoke")
+	})
+}

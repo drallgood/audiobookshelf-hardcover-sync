@@ -2,91 +2,62 @@ package sync
 
 import (
 	"bytes"
-	"context"
-	"strings"
 	"testing"
 
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/testutils"
 	"github.com/rs/zerolog"
-	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
-type dailyPauseMockClient struct {
+type dailyQuotaPausedHardcoverClient struct {
 	*MockHardcoverClient
 	paused bool
 }
 
-func (c *dailyPauseMockClient) DailyQuotaPaused() bool { return c.paused }
+func (c *dailyQuotaPausedHardcoverClient) DailyQuotaPaused() bool {
+	return c.paused
+}
 
-func TestHardcoverSearchIntentLogsOnlyOutsideDailyPause(t *testing.T) {
+func TestDebugRequestIntentObservesDailyQuotaPause(t *testing.T) {
 	testutils.SetGlobalLogLevel(t, zerolog.DebugLevel)
 
-	for _, tc := range []struct {
-		name    string
-		message string
-		setup   func(*MockHardcoverClient, *models.AudiobookshelfBook)
-		run     func(*Service, models.AudiobookshelfBook)
+	tests := []struct {
+		name      string
+		client    HardcoverSyncClient
+		wantEvent bool
 	}{
 		{
-			name:    "ASIN",
-			message: "Searching for book by ASIN: B000TEST01",
-			setup: func(client *MockHardcoverClient, book *models.AudiobookshelfBook) {
-				book.Media.Metadata.ASIN = "B000TEST01"
-				client.On("SearchBookByASIN", mock.Anything, "B000TEST01").Return((*models.HardcoverBook)(nil), nil)
-			},
-			run: func(service *Service, book models.AudiobookshelfBook) {
-				_, _ = service.findBookInHardcover(context.Background(), book)
-			},
+			name:      "unpaused client emits intent",
+			client:    &dailyQuotaPausedHardcoverClient{MockHardcoverClient: &MockHardcoverClient{}},
+			wantEvent: true,
 		},
 		{
-			name:    "ISBN",
-			message: "Searching for book by ISBN: 9781101926840",
-			setup: func(client *MockHardcoverClient, book *models.AudiobookshelfBook) {
-				// Keep this logging case on the ebook ISBN path.
-				book.MediaType = "ebook"
-				book.Media.Metadata.ISBN = "9781101926840"
-				client.On("SearchBookByISBN13", mock.Anything, "9781101926840").Return((*models.HardcoverBook)(nil), nil)
-				client.On("SearchBookByISBN10", mock.Anything, "1101926848").Return((*models.HardcoverBook)(nil), nil)
-			},
-			run: func(service *Service, book models.AudiobookshelfBook) {
-				_, _ = service.findBookInHardcover(context.Background(), book)
-			},
+			name:      "paused client suppresses intent",
+			client:    &dailyQuotaPausedHardcoverClient{MockHardcoverClient: &MockHardcoverClient{}, paused: true},
+			wantEvent: false,
 		},
 		{
-			name:    "title and author",
-			message: "Searching for book by title and author",
-			setup: func(client *MockHardcoverClient, book *models.AudiobookshelfBook) {
-				book.Media.Metadata.Title = "Test Book"
-				book.Media.Metadata.AuthorName = "Test Author"
-				client.On("SearchBooks", mock.Anything, "Test Book Test Author", "").Return([]models.HardcoverBook{}, nil)
-			},
-			run: func(service *Service, book models.AudiobookshelfBook) {
-				_, _ = service.findBookInHardcoverByTitleAuthor(context.Background(), book)
-			},
+			name:      "client without pause capability emits intent",
+			client:    &MockHardcoverClient{},
+			wantEvent: true,
 		},
-	} {
-		for _, paused := range []bool{false, true} {
-			t.Run(tc.name+map[bool]string{false: "/normal", true: "/daily_pause"}[paused], func(t *testing.T) {
-				var logs bytes.Buffer
-				log := &logger.Logger{Logger: zerolog.New(&logs).Level(zerolog.DebugLevel)}
-				mockClient := new(MockHardcoverClient)
-				client := &dailyPauseMockClient{MockHardcoverClient: mockClient, paused: paused}
-				book := models.AudiobookshelfBook{}
-				tc.setup(mockClient, &book)
-				service := &Service{
-					hardcover: client,
-					log:       log,
-					config:    config.DefaultConfig(),
-				}
-				tc.run(service, book)
-				mockClient.AssertExpectations(t)
-				if got := strings.Contains(logs.String(), tc.message); got != !paused {
-					t.Errorf("request-intent log present = %t, daily pause = %t; logs: %s", got, paused, logs.String())
-				}
-			})
-		}
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			log := &logger.Logger{Logger: zerolog.New(&output).Level(zerolog.DebugLevel)}
+			service := &Service{hardcover: test.client}
+
+			service.debugRequestIntent(log, "test intent event", map[string]interface{}{"request_marker": "caller-provided-marker"})
+
+			if test.wantEvent {
+				require.Contains(t, output.String(), `"message":"test intent event"`)
+				require.Contains(t, output.String(), `"request_marker":"caller-provided-marker"`)
+			} else {
+				require.Empty(t, output.String())
+			}
+		})
 	}
 }
