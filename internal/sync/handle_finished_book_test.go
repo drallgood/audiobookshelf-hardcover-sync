@@ -276,6 +276,53 @@ func TestHandleFinishedBookCreatesReadWithAudiobookshelfFinishedDate(t *testing.
 	mockClient.AssertExpectations(t)
 }
 
+func TestHandleFinishedBookClosingReadUsesMostRecentCompletionDate(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		audiobookshelfDate   string
+		existingReadDate     string
+		expectedLastReadDate string
+	}{
+		{
+			name:                 "existing completion is later",
+			audiobookshelfDate:   "2025-06-11",
+			existingReadDate:     "2025-08-12",
+			expectedLastReadDate: "2025-08-12",
+		},
+		{
+			name:                 "Audiobookshelf completion is later",
+			audiobookshelfDate:   "2025-09-12",
+			existingReadDate:     "2025-08-12",
+			expectedLastReadDate: "2025-09-12",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, mockClient := createTestService()
+			const userBookID = int64(790)
+			book := convertTestBookToModel(createTestFinishedBook("closing-read", "Test Book", "Test Author", "B123456789", ""))
+			finishedAt, err := time.Parse("2006-01-02", tc.audiobookshelfDate)
+			assert.NoError(t, err)
+			book.Progress.FinishedAt = time.Date(finishedAt.Year(), finishedAt.Month(), finishedAt.Day(), 12, 0, 0, 0, time.Local).UnixMilli()
+
+			reads := []hardcover.UserBookRead{
+				{ID: 50, UserBookID: userBookID, FinishedAt: stringPointer(tc.existingReadDate), Progress: 100, ProgressSeconds: intPointer(100)},
+				{ID: 10, UserBookID: userBookID, StartedAt: stringPointer("2025-06-01"), Progress: 50, ProgressSeconds: intPointer(50)},
+			}
+			mockClient.On("GetUserBook", mock.Anything, "790").Return(&models.HardcoverBook{BookStatusID: 2}, nil).Once()
+			mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return(reads, nil)
+			mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+				return input.ID == 10 && input.Object["finished_at"] == tc.audiobookshelfDate
+			})).Return(true, nil).Once()
+			mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+				ID: userBookID, Status: "FINISHED", LastReadDate: tc.expectedLastReadDate,
+			}).Return(nil).Once()
+
+			assert.NoError(t, svc.HandleFinishedBook(context.Background(), book, "", userBookID))
+			mockClient.AssertExpectations(t)
+		})
+	}
+}
+
 func TestHandleFinishedBook_MissingFinishedAtSkipsReadMutation(t *testing.T) {
 	logger.Setup(logger.Config{Level: "debug", Format: "json"})
 
@@ -487,8 +534,8 @@ func TestHandleFinishedBookPreservesExistingCompletionDateWhenReconcilingStatus(
 	book.Progress.FinishedAt = 1748790312628
 	hc.On("GetUserBook", mock.Anything, "789").Return(&models.HardcoverBook{BookStatusID: 2}, nil).Once()
 	hc.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: 789}).Return([]hardcover.UserBookRead{
-		{ID: 1, FinishedAt: stringPointer("2024-01-01")},
-		{ID: 2, FinishedAt: stringPointer("2025-05-12")},
+		{ID: 99, FinishedAt: stringPointer("2024-01-01")},
+		{ID: 1, FinishedAt: stringPointer("2025-05-12")},
 	}, nil)
 	hc.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{ID: 789, Status: "FINISHED", LastReadDate: "2025-05-12"}).Return(nil).Once()
 	assert.NoError(t, svc.HandleFinishedBook(context.Background(), book, "456", 789))

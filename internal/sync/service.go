@@ -3336,6 +3336,10 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 		}
 
 		finishedAt := time.Unix(book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
+		// Keep the book's most recent completion date when closing an older read.
+		if latestFinishedReadTime.Format("2006-01-02") > lastReadDate {
+			lastReadDate = latestFinishedReadTime.Format("2006-01-02")
+		}
 
 		updateObj := map[string]interface{}{
 			"finished_at": finishedAt,
