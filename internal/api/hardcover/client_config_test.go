@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,9 +31,9 @@ func TestDefaultClientConfig(t *testing.T) {
 
 func TestNewClientWithConfigUsesConfiguredEndpointAuthenticationAndRetryLimit(t *testing.T) {
 	logger.Setup(logger.Config{Level: "error", Format: "json"})
-	var requests int
+	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
+		requests.Add(1)
 		assert.Equal(t, "/graphql", r.URL.Path)
 		assert.Equal(t, "Bearer configured-token", r.Header.Get("Authorization"))
 		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
@@ -58,7 +59,7 @@ func TestNewClientWithConfigUsesConfiguredEndpointAuthenticationAndRetryLimit(t 
 	require.Error(t, err)
 	require.True(t, errors.As(err, &httpErr), "expected the last HTTP failure to remain inspectable: %v", err)
 	assert.Equal(t, http.StatusBadGateway, httpErr.StatusCode)
-	assert.Equal(t, 2, requests, "one configured retry should make two total requests")
+	assert.Equal(t, int32(2), requests.Load(), "one configured retry should make two total requests")
 }
 
 func TestNewClientWithConfigNilUsesDefaultEndpoint(t *testing.T) {

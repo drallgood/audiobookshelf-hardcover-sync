@@ -7,7 +7,12 @@ log level and restores the previous level during test cleanup. Use it instead of
 changing the global level without synchronization.
 
 ```go
-import "github.com/drallgood/audiobookshelf-hardcover-sync/internal/testutils"
+import (
+	"testing"
+
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/testutils"
+	"github.com/rs/zerolog"
+)
 
 func TestExample(t *testing.T) {
     testutils.SetGlobalLogLevel(t, zerolog.DebugLevel)
