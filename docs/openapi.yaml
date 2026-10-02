@@ -1337,12 +1337,17 @@ paths:
         corrected in the request;
         publisher always comes from the fresh item. It uses the Hardcover book ID
         recorded by that sync run; no book or author ID is accepted from the caller.
-        Audiobooks use a regional `upsert_book` import with no `insert_edition`
-        fallback. Ebooks use format-aware
-        `insert_edition`. A successful result is verified and saved as a
-        profile-local match before the response is returned. With `resync: true`,
-        the book's read status is then synced under the same profile guard and
-        state lock, and the result is returned in `resync`; a resync failure is
+        Audiobooks with a valid source ASIN or a supplied `audible_identifier`
+        use a regional `upsert_book` import; discovery or import failure does
+        not fall back to `insert_edition`. When the source ASIN is absent or
+        malformed and no `audible_identifier` is supplied, a parseable source
+        ISBN may be used for format-aware audiobook edition creation. A matching
+        audiobook edition of the recorded book is reused; otherwise
+        `insert_edition` is used. Ebooks use format-aware `insert_edition`. A
+        successful result is verified and saved as a profile-local match before
+        the response is returned. With `resync: true`, the book's read status is
+        then synced under the same profile guard and state lock, and the result
+        is returned in `resync`; a resync failure is
         reported there and never fails the request. A full sync active for the
         profile refuses the request (409) before any edition is created, with or
         without `resync`.
