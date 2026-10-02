@@ -1156,7 +1156,7 @@ in `sync.state_file`. For a web-service profile, pass that profile's state file
 with `--state-file`. Without an item ID, no match is saved, and an audiobook
 import that reused an existing edition may still need review after the next
 sync.
-If a submitted ASIN or ebook ISBN differs from the ABS item, the
+If a submitted ASIN or ISBN differs from the ABS item, the
 command requires `--confirm-identifier-correction` before creating and saving
 the match. Check the ABS item and Hardcover book before confirming.
 
