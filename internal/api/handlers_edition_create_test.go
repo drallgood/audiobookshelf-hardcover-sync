@@ -117,6 +117,7 @@ func configureEditionCreateRoute(t *testing.T, fixture *editionDraftTestFixture)
 	apiMux.HandleFunc("GET /api/profiles/{id}/edition-drafts/source/{itemID}", fixture.handler.GetEditionSourceDraft)
 	apiMux.HandleFunc("POST /api/profiles/{id}/edition-drafts/create", fixture.handler.CreateEditionFromDraft)
 	apiMux.HandleFunc("POST /api/profiles/{id}/edition-drafts/check-import", fixture.handler.CheckEditionImport)
+	apiMux.HandleFunc("GET /api/profiles/{id}/runs/{runID}/details", fixture.handler.GetRunDetails)
 	authConfig := auth.DefaultAuthConfig()
 	authConfig.Enabled = true
 	fixture.routes = auth.NewAuthMiddleware(fixture.authService.GetSessionManager(), authConfig).RequireAuth(apiMux)
@@ -3015,4 +3016,135 @@ func TestCreateEditionFromDraftStopsWhenNarratorLookupFails(t *testing.T) {
 	require.NoError(t, err)
 	_, exists := stored.GetAssociation("abs-item-1")
 	require.False(t, exists)
+}
+
+func TestEditionCreateErrorGuidanceIsConsistentAcrossResponseJournalDetailsAndDuplicate(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`, "us")
+	configureEditionCreateRoute(t, fixture)
+	addCompletedNeedsReviewRun(t, fixture, "run-error-guidance", editionCreateRecord())
+	const diagnostic = "upstream private diagnostic sentinel at /srv/private/token-cache"
+	var importCalls atomic.Int32
+	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+		return editionCreateHardcoverStub{importFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+			importCalls.Add(1)
+			return nil, errors.New(diagnostic)
+		}}
+	}
+	body := `{"run_id":"run-error-guidance","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`
+	first := postEditionCreate(t, fixture, fixture.owner, body)
+	require.Equal(t, http.StatusBadGateway, first.Code, first.Body.String())
+	var firstEnvelope struct {
+		Error     string `json:"error"`
+		ErrorCode string `json:"error_code"`
+		Outcome   string `json:"outcome"`
+	}
+	require.NoError(t, json.Unmarshal(first.Body.Bytes(), &firstEnvelope))
+	require.Equal(t, "Hardcover may have processed the edition request, but its result could not be confirmed. Verify the Hardcover result before retrying; retrying may create another edition.", firstEnvelope.Error)
+	require.Equal(t, "hardcover_import_unconfirmed", firstEnvelope.ErrorCode)
+	require.Equal(t, editionOutcomeUnconfirmed, firstEnvelope.Outcome)
+	require.NotContains(t, first.Body.String(), diagnostic)
+
+	stored, found, err := fixture.multiUserService.GetEditionAction("draft-profile", "run-error-guidance", "abs-item-1")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, firstEnvelope.Error, stored.Error)
+	require.NotContains(t, stored.Error, diagnostic)
+
+	detailsRequest := httptest.NewRequest(http.MethodGet, "/api/profiles/draft-profile/runs/run-error-guidance/details", nil)
+	detailsRequest.AddCookie(fixture.sessionCookie(t, fixture.owner))
+	detailsResponse := httptest.NewRecorder()
+	fixture.routes.ServeHTTP(detailsResponse, detailsRequest)
+	require.Equal(t, http.StatusOK, detailsResponse.Code, detailsResponse.Body.String())
+	var details struct {
+		Data struct {
+			BookOutcomes []struct {
+				EditionAction *sync.EditionActionRecord `json:"edition_action"`
+			} `json:"book_outcomes"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(detailsResponse.Body.Bytes(), &details))
+	require.Len(t, details.Data.BookOutcomes, 1)
+	require.NotNil(t, details.Data.BookOutcomes[0].EditionAction)
+	require.Equal(t, firstEnvelope.Error, details.Data.BookOutcomes[0].EditionAction.Error)
+	require.NotContains(t, detailsResponse.Body.String(), diagnostic)
+
+	duplicate := postEditionCreate(t, fixture, fixture.owner, body)
+	require.Equal(t, http.StatusConflict, duplicate.Code, duplicate.Body.String())
+	var duplicateEnvelope struct {
+		Error         string                   `json:"error"`
+		EditionAction sync.EditionActionRecord `json:"edition_action"`
+	}
+	require.NoError(t, json.Unmarshal(duplicate.Body.Bytes(), &duplicateEnvelope))
+	require.Equal(t, firstEnvelope.Error, duplicateEnvelope.Error)
+	require.Equal(t, firstEnvelope.Error, duplicateEnvelope.EditionAction.Error)
+	require.NotContains(t, duplicate.Body.String(), diagnostic)
+	require.EqualValues(t, 1, importCalls.Load(), "the duplicate must not send another regional import")
+}
+
+func TestLegacyEditionActionDiagnosticsAreProjectedBeforeDetailsAndDuplicate(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`, "us")
+	configureEditionCreateRoute(t, fixture)
+	addCompletedNeedsReviewRun(t, fixture, "run-legacy-error-guidance", editionCreateRecord())
+	const diagnostic = "legacy upstream private diagnostic sentinel at /srv/private/token-cache"
+	require.NoError(t, fixture.multiUserService.SaveEditionAction("draft-profile", "run-legacy-error-guidance", "abs-item-1", sync.EditionActionRecord{
+		Outcome: editionOutcomeTransportUnknown, HTTPStatus: http.StatusBadGateway,
+		Error: diagnostic, ErrorCode: "hardcover_import_unconfirmed",
+		SubmittedBody: &sync.EditionActionSubmittedBody{RunID: "run-legacy-error-guidance", ABSItemID: "abs-item-1"},
+	}))
+
+	const publicGuidance = "Hardcover may have processed the edition request, but its result could not be confirmed. Verify the Hardcover result before retrying; retrying may create another edition."
+	detailsRequest := httptest.NewRequest(http.MethodGet, "/api/profiles/draft-profile/runs/run-legacy-error-guidance/details", nil)
+	detailsRequest.AddCookie(fixture.sessionCookie(t, fixture.owner))
+	detailsResponse := httptest.NewRecorder()
+	fixture.routes.ServeHTTP(detailsResponse, detailsRequest)
+	require.Equal(t, http.StatusOK, detailsResponse.Code, detailsResponse.Body.String())
+	require.Contains(t, detailsResponse.Body.String(), publicGuidance)
+	require.NotContains(t, detailsResponse.Body.String(), diagnostic)
+
+	duplicate := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-legacy-error-guidance","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`)
+	require.Equal(t, http.StatusConflict, duplicate.Code, duplicate.Body.String())
+	require.Contains(t, duplicate.Body.String(), publicGuidance)
+	require.NotContains(t, duplicate.Body.String(), diagnostic)
+}
+
+func TestEditionCreateIdentityErrorsUseCanonicalJournalGuidance(t *testing.T) {
+	foreignBook := fmt.Errorf("Hardcover ebook pre-insertion checks failed: %w",
+		fmt.Errorf("failed to create edition: %w", fmt.Errorf("%w: %w", edition.ErrCreateEditionPreMutation, edition.ErrEditionBelongsToOtherBook)))
+	ambiguousIdentity := fmt.Errorf("Hardcover regional audiobook import failed: %w",
+		markEditionCreateRemoteOutcomeAmbiguous(fmt.Errorf("%w: upstream private diagnostic sentinel", hardcover.ErrRegionalAudiobookIdentityConflict)))
+	tests := []struct {
+		name        string
+		err         error
+		wantCode    string
+		wantOutcome string
+		wantMessage string
+	}{
+		{
+			name:        "existing edition belongs to another book",
+			err:         foreignBook,
+			wantCode:    "edition_create_not_submitted",
+			wantOutcome: editionOutcomeNotSubmitted,
+			wantMessage: editionCreateExistingBookConflictGuidance,
+		},
+		{
+			name:        "ambiguous regional import identity",
+			err:         ambiguousIdentity,
+			wantCode:    "hardcover_import_unconfirmed",
+			wantOutcome: editionOutcomeUnconfirmed,
+			wantMessage: editionCreateAmbiguousIdentityGuidance,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			message := editionCreatePublicErrorMessage(test.err)
+			code, outcome := editionCreateErrorMetadata(test.err)
+			require.Equal(t, test.wantMessage, message)
+			require.Equal(t, test.wantCode, code)
+			require.Equal(t, test.wantOutcome, outcome)
+			require.NotContains(t, message, "upstream private diagnostic sentinel")
+
+			action := &sync.EditionActionRecord{ErrorCode: code, Error: message}
+			require.Equal(t, message, editionActionPublicErrorMessage(action), "current journal guidance must remain identical in details and duplicate responses")
+		})
+	}
 }

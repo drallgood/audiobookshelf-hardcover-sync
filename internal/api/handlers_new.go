@@ -614,6 +614,7 @@ func (h *Handler) GetRunDetails(w http.ResponseWriter, r *http.Request) {
 		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to retrieve saved edition additions")
 		return
 	}
+	projectEditionCreateActionErrors(snapshot)
 	h.projectEditionRecoveryCapabilities(r, profileID, profileMetadata, snapshot)
 
 	h.writeSuccessResponse(w, snapshot)

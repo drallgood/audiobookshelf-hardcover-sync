@@ -1908,6 +1908,78 @@ test('check import status uses the saved token and original identifiers, then re
     assert.match(app.renderEditionDialog(dialog), /The match is saved for the next sync/);
 });
 
+test('details requests started before an accepted edition action cannot erase its added state', async t => {
+    const previousDocument = global.document;
+    const content = { contains: () => false };
+    const container = { style: {} };
+    global.document = {
+        ...previousDocument,
+        activeElement: null,
+        getElementById(id) { return id === 'sync-summary-content' ? content : id === 'sync-summary-container' ? container : null; }
+    };
+    t.after(() => { global.document = previousDocument; });
+
+    async function verifyAction(action) {
+        const app = editionApp();
+        app.openSummary.runId = 'run-1';
+        app.openSummary.generation = 1;
+        app.openSummary.editionActionRevision = 0;
+        app.openSummary.addedEditionBookIds = new Set();
+        app.openSummary.loading = false;
+        app.openSummary.renderedRunId = 'run-1';
+        app.statuses.p1 = { profile_name: 'Profile One', snapshot: { run_id: 'run-1' } };
+        app.restoreDetailViewport = () => {};
+        app.renderDetailsSnapshot = snapshot => {
+            app.openSummary.addedEditionBookIds = new Set((snapshot.book_outcomes || [])
+                .filter(record => record.edition_added === true).map(record => String(record.book_id)));
+        };
+        const oldDetails = deferred();
+        app.fetchJsonWithTimeout = () => oldDetails.promise;
+        const loading = app.fetchAndRenderDetails();
+        await action(app);
+        assert.ok(app.openSummary.addedEditionBookIds.has('li_1'));
+
+        oldDetails.resolve({ response: { ok: true, status: 200 }, data: {
+            run_id: 'run-1', state: 'completed', outcome_counts: {},
+            book_outcomes: [{ ...needsReview, edition_added: false }]
+        } });
+        await loading;
+        assert.ok(app.openSummary.addedEditionBookIds.has('li_1'), 'the earlier snapshot must not overwrite accepted local state');
+
+        app.fetchJsonWithTimeout = async () => ({ response: { ok: true, status: 200 }, data: {
+            run_id: 'run-1', state: 'completed', outcome_counts: {},
+            book_outcomes: [{ ...needsReview, edition_added: false }]
+        } });
+        await app.fetchAndRenderDetails();
+        assert.equal(app.openSummary.addedEditionBookIds.has('li_1'), false, 'a later server snapshot remains authoritative');
+    }
+
+    await verifyAction(async app => {
+        app.fetchJsonWithTimeout = async (_url, options) => options?.method === 'POST'
+            ? { response: { ok: true, status: 200 }, data: { success: true, data: validCreateResult() } }
+            : { response: { ok: true, status: 200 }, data: {} };
+        app.readEditionFormFields = () => ({});
+        app.saveAddedEditionBookId = () => {};
+        app.clearPendingEditionRecovery = () => {};
+        app.editionDialog = {
+            mode: 'create', profileId: 'p1', runId: 'run-1', record: { ...needsReview },
+            draft: { reading_format: 'audiobook', dry_run: false }, busy: false, error: ''
+        };
+        await app.submitEditionCreate();
+    });
+
+    await verifyAction(async app => {
+        app.fetchJsonWithTimeout = async () => ({ response: { ok: true, status: 200 }, data: { success: true, data: validCreateResult() } });
+        app.saveAddedEditionBookId = () => {};
+        app.editionDialog = {
+            mode: 'create', profileId: 'p1', runId: 'run-1', record: { ...needsReview },
+            draft: { reading_format: 'audiobook' }, outcome: 'unconfirmed', busy: false,
+            recovery: { runId: 'run-1', absItemId: 'li_1', audibleIdentifier: 'B00ABC1234:us', recoveryToken: 'token', hardcoverBookId: '42' }
+        };
+        await app.checkEditionImport();
+    });
+});
+
 test('terminal failed status check clears recovery and prevents another create', async () => {
     const app = editionApp();
     const dialog = stubDialog(app, 503, { success: false, outcome: 'unconfirmed', data: {

@@ -1640,6 +1640,7 @@ class SyncProfileApp {
         const authGeneration = this.authSessionGeneration;
         const requestGeneration = open.generation;
         const requestRunId = open.runId;
+        const editionActionRevision = open.editionActionRevision || 0;
         const requestController = typeof AbortController === 'undefined' ? null : new AbortController();
         open.detailsController = requestController;
         open.loading = true;
@@ -1663,6 +1664,7 @@ class SyncProfileApp {
             const currentRequest = this.openSummary === open && open.generation === requestGeneration && open.runId === requestRunId;
             const replacingRun = !open.renderedRunId || open.renderedRunId !== requestRunId;
             if (!currentRequest) return;
+            if ((open.editionActionRevision || 0) !== editionActionRevision) return;
             if (!response.ok || !snapshot || snapshot.run_id !== requestRunId || currentRunId !== requestRunId) {
                 if (replacingRun) this.renderDetailsState('error', open);
                 else this.renderDetailsStale(open, `refresh failed (${response.status})`);
@@ -2525,6 +2527,7 @@ class SyncProfileApp {
                 this.clearPendingEditionRecovery(dialog.profileId, dialog.runId, dialog.record.book_id);
                 const open = this.openSummary;
                 if (open?.profileId === dialog.profileId && open.runContext?.runId === dialog.runId) {
+                    open.editionActionRevision = (open.editionActionRevision || 0) + 1;
                     if (!open.addedEditionBookIds) open.addedEditionBookIds = new Set();
                     open.addedEditionBookIds.add(String(dialog.record.book_id));
                     this.refreshEditionActionStates(open);
@@ -2731,6 +2734,7 @@ class SyncProfileApp {
                 this.saveAddedEditionBookId(dialog.profileId, recovery.runId, recovery.absItemId);
                 const open = this.openSummary;
                 if (open?.profileId === dialog.profileId && open.runContext?.runId === recovery.runId) {
+                    open.editionActionRevision = (open.editionActionRevision || 0) + 1;
                     if (!open.addedEditionBookIds) open.addedEditionBookIds = new Set();
                     open.addedEditionBookIds.add(String(recovery.absItemId));
                     this.refreshEditionActionStates(open);

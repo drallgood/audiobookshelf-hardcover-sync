@@ -29,6 +29,9 @@ const (
 	editionCreateRequestTimeout  = 65 * time.Second
 	editionCreateMutationReserve = 35 * time.Second
 	editionImportCheckTimeout    = 25 * time.Second
+
+	editionCreateExistingBookConflictGuidance = "An existing Hardcover edition belongs to a different book. No edition was added."
+	editionCreateAmbiguousIdentityGuidance    = "Hardcover may have processed the edition request, but its result could not be confirmed. The returned edition identity conflicted with the reviewed book. Verify the Hardcover result before retrying; retrying may create another edition."
 )
 
 type editionCreateABSClient interface {
@@ -1238,7 +1241,7 @@ func (h *Handler) finalizeEditionCreateAction(profileID string, response *editio
 		action.Outcome = editionOutcomeUnconfirmed
 	}
 	action.HTTPStatus = editionActionHTTPStatus(err)
-	action.Error = err.Error()
+	action.Error = editionCreatePublicErrorMessage(err)
 	action.ErrorCode, _ = editionCreateErrorMetadata(err)
 	if action.Outcome == editionOutcomeFailed {
 		var wrongFormat *hardcover.RegionalAudiobookWrongFormatError
@@ -1293,10 +1296,11 @@ func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID strin
 
 func (h *Handler) writeEditionCreateErrorWithAction(w http.ResponseWriter, profileID string, err error, recovery *editionRecoveryData, action *sync.EditionActionRecord) {
 	if errors.Is(err, multiuser.ErrEditionActionRequiresResolution) && action != nil {
-		message := action.Error
+		message := editionActionPublicErrorMessage(action)
 		if message == "" {
 			message = "A previous edition request must be resolved before another create can be submitted."
 		}
+		action.Error = message
 		h.writeJSONResponse(w, http.StatusConflict, APIResponse{
 			Success: false, Error: message, ErrorCode: action.ErrorCode,
 			Outcome: action.Outcome, Data: action.Data, EditionAction: action,
@@ -1304,8 +1308,8 @@ func (h *Handler) writeEditionCreateErrorWithAction(w http.ResponseWriter, profi
 		return
 	}
 	errorCode, outcome := editionCreateErrorMetadata(err)
-	respond := func(status int, message string) {
-		h.writeEditionCreateStructuredError(w, status, message, errorCode, outcome, recovery)
+	respond := func(status int) {
+		h.writeEditionCreateStructuredError(w, status, editionCreatePublicErrorMessage(err), errorCode, outcome, recovery)
 	}
 	var wrongFormat *hardcover.RegionalAudiobookWrongFormatError
 	if errors.As(err, &wrongFormat) {
@@ -1314,77 +1318,215 @@ func (h *Handler) writeEditionCreateErrorWithAction(w http.ResponseWriter, profi
 	}
 	switch {
 	case errors.Is(err, multiuser.ErrProfileNotFound):
-		respond(http.StatusNotFound, "Sync profile not found")
+		respond(http.StatusNotFound)
 	case errors.Is(err, multiuser.ErrSyncAlreadyActive), errors.Is(err, multiuser.ErrProfileDeleting), errors.Is(err, multiuser.ErrEditionAssociationAlreadyExists), errors.Is(err, errStaleEditionCreateRun), errors.Is(err, errEditionCreateSourceChanged):
-		respond(http.StatusConflict, err.Error())
+		respond(http.StatusConflict)
 	case errors.Is(err, multiuser.ErrServiceShuttingDown):
-		respond(http.StatusServiceUnavailable, "Edition creation service is shutting down; retry shortly")
+		respond(http.StatusServiceUnavailable)
 	case errors.Is(err, errEditionCreateInsufficientBudget), errors.Is(err, edition.ErrCreateEditionInsufficientMutationBudget):
 		switch {
 		case errors.Is(err, hardcover.ErrMutationDailyQuotaLow):
-			respond(http.StatusServiceUnavailable, "Hardcover's daily API quota is running low. Nothing was added to Hardcover. Please wait until Hardcover's daily API quota resets, then try again.")
+			respond(http.StatusServiceUnavailable)
 		case errors.Is(err, hardcover.ErrMutationDailyQuotaExhausted):
-			respond(http.StatusServiceUnavailable, "Hardcover's daily API quota is exhausted. Nothing was added to Hardcover. Please wait until Hardcover's daily API quota resets, then try again.")
+			respond(http.StatusServiceUnavailable)
 		default:
 			w.Header().Set("Retry-After", "1")
-			respond(http.StatusServiceUnavailable, "The request took too long to add this edition. Nothing was added to Hardcover. Please try again.")
+			respond(http.StatusServiceUnavailable)
 		}
 	case errors.Is(err, errEditionCreateDiscoveryBudget):
-		respond(http.StatusServiceUnavailable, "Audnexus region discovery could not finish before the Hardcover write deadline; no mutation was sent. Supply audible_identifier (ASIN:region) to skip discovery")
+		respond(http.StatusServiceUnavailable)
 	case errors.Is(err, multiuser.ErrProfileStateBusy):
 		w.Header().Set("Retry-After", "1")
-		respond(http.StatusTooManyRequests, "Profile sync state is busy; retry shortly")
+		respond(http.StatusTooManyRequests)
 	case errors.Is(err, multiuser.ErrEditionCreateDryRun):
-		respond(http.StatusConflict, "Edition creation is disabled while this profile is in dry run")
+		respond(http.StatusConflict)
 	case errors.Is(err, multiuser.ErrEditionCreateLocalFailure):
 		h.log.Error(fmt.Sprintf("Local profile or state failure before edition creation for profile %s: %v", profileID, err))
-		respond(http.StatusInternalServerError, "Local profile or state data could not be prepared for edition creation")
+		respond(http.StatusInternalServerError)
 	case errors.Is(err, hardcover.ErrMutationScopeDenied):
-		respond(http.StatusForbidden, "Hardcover token is missing catalogue write permission; no edition was created")
+		respond(http.StatusForbidden)
 	case errors.Is(err, edition.ErrCreateEditionPreMutation):
 		if errors.Is(err, edition.ErrEditionBelongsToOtherBook) {
-			respond(http.StatusConflict, err.Error())
+			respond(http.StatusConflict)
 			return
 		}
 		h.log.Error(fmt.Sprintf("Hardcover edition preparation failed before insertion for profile %s: %v", profileID, err))
-		respond(http.StatusServiceUnavailable, "Hardcover could not finish an edition preparation lookup or check for an existing edition; retry the edition create")
+		respond(http.StatusServiceUnavailable)
 	case errors.Is(err, multiuser.ErrEditionAssociationSaveAfterRemoteSuccess):
 		h.log.Error(fmt.Sprintf("Hardcover returned a verified edition but association save failed for profile %s: %v", profileID, err))
-		respond(http.StatusBadGateway, "Hardcover returned a verified edition, but the local match could not be saved. Verify the Hardcover result before retrying; retrying may create another edition.")
+		respond(http.StatusBadGateway)
 	case errors.Is(err, errEditionImportUnconfirmed):
-		respond(http.StatusServiceUnavailable, "Hardcover has not confirmed this regional import yet. Check its status before trying edition creation again.")
+		respond(http.StatusServiceUnavailable)
 	case errors.Is(err, errEditionRecoveryIdentityUnconfirmed):
-		respond(http.StatusConflict, "Hardcover returned an edition that does not match the submitted book or audiobook format; the match was not saved")
+		respond(http.StatusConflict)
+	case errors.Is(err, errEditionCreateRemoteOutcomeAmbiguous):
+		switch {
+		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, hardcover.ErrRegionalAudiobookImportTimeout):
+			respond(http.StatusServiceUnavailable)
+		case errors.Is(err, errHardcoverEditionIdentityConflict), errors.Is(err, hardcover.ErrRegionalAudiobookIdentityConflict):
+			respond(http.StatusConflict)
+		default:
+			h.log.Error(fmt.Sprintf("Hardcover edition result could not be confirmed for profile %s: %v", profileID, err))
+			respond(http.StatusBadGateway)
+		}
+	case errors.Is(err, errEditionCreateInvalidInput):
+		respond(http.StatusUnprocessableEntity)
+	case errors.Is(err, errAudibleRegionUnknown):
+		respond(http.StatusUnprocessableEntity)
+	case errors.Is(err, hardcover.ErrRegionalAudiobookInvalidInput):
+		respond(http.StatusUnprocessableEntity)
+	case errors.Is(err, hardcover.ErrRegionalAudiobookIdentityConflict):
+		respond(http.StatusConflict)
+	case errors.Is(err, audnex.ErrRateLimited), errors.Is(err, audnex.ErrTransient), errors.Is(err, context.DeadlineExceeded):
+		respond(http.StatusServiceUnavailable)
+	case errors.Is(err, hardcover.ErrRegionalAudiobookImportTimeout):
+		respond(http.StatusServiceUnavailable)
+	case errors.Is(err, hardcover.ErrRegionalAudiobookImportFailed):
+		respond(http.StatusBadGateway)
+	case errors.Is(err, errHardcoverEditionIdentityConflict):
+		respond(http.StatusConflict)
+	default:
+		h.log.Error(fmt.Sprintf("Failed to create edition for profile %s: %v", profileID, err))
+		respond(http.StatusBadGateway)
+	}
+}
+
+// editionCreatePublicErrorMessage is the shared projection from an internal
+// create failure to the message returned to the caller and saved in the
+// edition-action journal. Detailed wrapped errors remain available to logs.
+func editionCreatePublicErrorMessage(err error) string {
+	var wrongFormat *hardcover.RegionalAudiobookWrongFormatError
+	if errors.As(err, &wrongFormat) {
+		return editionWrongFormatMessage(wrongFormat)
+	}
+	switch {
+	case errors.Is(err, multiuser.ErrProfileNotFound):
+		return "Sync profile not found"
+	case errors.Is(err, multiuser.ErrSyncAlreadyActive), errors.Is(err, multiuser.ErrProfileDeleting), errors.Is(err, multiuser.ErrEditionAssociationAlreadyExists), errors.Is(err, errStaleEditionCreateRun), errors.Is(err, errEditionCreateSourceChanged):
+		return err.Error()
+	case errors.Is(err, multiuser.ErrServiceShuttingDown):
+		return "Edition creation service is shutting down; retry shortly"
+	case errors.Is(err, errEditionCreateInsufficientBudget), errors.Is(err, edition.ErrCreateEditionInsufficientMutationBudget):
+		switch {
+		case errors.Is(err, hardcover.ErrMutationDailyQuotaLow):
+			return "Hardcover's daily API quota is running low. Nothing was added to Hardcover. Please wait until Hardcover's daily API quota resets, then try again."
+		case errors.Is(err, hardcover.ErrMutationDailyQuotaExhausted):
+			return "Hardcover's daily API quota is exhausted. Nothing was added to Hardcover. Please wait until Hardcover's daily API quota resets, then try again."
+		default:
+			return "The request took too long to add this edition. Nothing was added to Hardcover. Please try again."
+		}
+	case errors.Is(err, errEditionCreateDiscoveryBudget):
+		return "Audnexus region discovery could not finish before the Hardcover write deadline; no mutation was sent. Supply audible_identifier (ASIN:region) to skip discovery"
+	case errors.Is(err, multiuser.ErrProfileStateBusy):
+		return "Profile sync state is busy; retry shortly"
+	case errors.Is(err, multiuser.ErrEditionCreateDryRun):
+		return "Edition creation is disabled while this profile is in dry run"
+	case errors.Is(err, multiuser.ErrEditionCreateLocalFailure):
+		return "Local profile or state data could not be prepared for edition creation"
+	case errors.Is(err, hardcover.ErrMutationScopeDenied):
+		return "Hardcover token is missing catalogue write permission; no edition was created"
+	case errors.Is(err, edition.ErrCreateEditionPreMutation):
+		if errors.Is(err, edition.ErrEditionBelongsToOtherBook) {
+			return editionCreateExistingBookConflictGuidance
+		}
+		return "Hardcover could not finish an edition preparation lookup or check for an existing edition; retry the edition create"
+	case errors.Is(err, multiuser.ErrEditionAssociationSaveAfterRemoteSuccess):
+		return "Hardcover returned a verified edition, but the local match could not be saved. Verify the Hardcover result before retrying; retrying may create another edition."
+	case errors.Is(err, errEditionImportUnconfirmed):
+		return "Hardcover has not confirmed this regional import yet. Check its status before trying edition creation again."
+	case errors.Is(err, errEditionRecoveryIdentityUnconfirmed):
+		return "Hardcover returned an edition that does not match the submitted book or audiobook format; the match was not saved"
 	case errors.Is(err, errEditionCreateRemoteOutcomeAmbiguous):
 		message := "Hardcover may have processed the edition request, but its result could not be confirmed. Verify the Hardcover result before retrying; retrying may create another edition."
 		switch {
 		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, hardcover.ErrRegionalAudiobookImportTimeout):
-			respond(http.StatusServiceUnavailable, message)
+			return message
 		case errors.Is(err, errHardcoverEditionIdentityConflict), errors.Is(err, hardcover.ErrRegionalAudiobookIdentityConflict):
-			respond(http.StatusConflict, fmt.Sprintf("%s: %v", message, err))
+			return editionCreateAmbiguousIdentityGuidance
 		default:
-			h.log.Error(fmt.Sprintf("Hardcover edition result could not be confirmed for profile %s: %v", profileID, err))
-			respond(http.StatusBadGateway, message)
+			return message
 		}
-	case errors.Is(err, errEditionCreateInvalidInput):
-		respond(http.StatusUnprocessableEntity, err.Error())
-	case errors.Is(err, errAudibleRegionUnknown):
-		respond(http.StatusUnprocessableEntity, err.Error())
-	case errors.Is(err, hardcover.ErrRegionalAudiobookInvalidInput):
-		respond(http.StatusUnprocessableEntity, err.Error())
-	case errors.Is(err, hardcover.ErrRegionalAudiobookIdentityConflict):
-		respond(http.StatusConflict, err.Error())
+	case errors.Is(err, errEditionCreateInvalidInput), errors.Is(err, errAudibleRegionUnknown), errors.Is(err, hardcover.ErrRegionalAudiobookInvalidInput), errors.Is(err, hardcover.ErrRegionalAudiobookIdentityConflict):
+		return err.Error()
 	case errors.Is(err, audnex.ErrRateLimited), errors.Is(err, audnex.ErrTransient), errors.Is(err, context.DeadlineExceeded):
-		respond(http.StatusServiceUnavailable, "Audiobookshelf, Audnexus, or Hardcover is temporarily unavailable; retry the edition create")
+		return "Audiobookshelf, Audnexus, or Hardcover is temporarily unavailable; retry the edition create"
 	case errors.Is(err, hardcover.ErrRegionalAudiobookImportTimeout):
-		respond(http.StatusServiceUnavailable, "Hardcover regional import timed out; retry the edition create")
+		return "Hardcover regional import timed out; retry the edition create"
 	case errors.Is(err, hardcover.ErrRegionalAudiobookImportFailed):
-		respond(http.StatusBadGateway, "Hardcover could not import the regional Audible identifier")
+		return "Hardcover could not import the regional Audible identifier"
 	case errors.Is(err, errHardcoverEditionIdentityConflict):
-		respond(http.StatusConflict, err.Error())
+		return err.Error()
 	default:
-		h.log.Error(fmt.Sprintf("Failed to create edition for profile %s: %v", profileID, err))
-		respond(http.StatusBadGateway, "Failed to create and verify the Hardcover edition")
+		return "Failed to create and verify the Hardcover edition"
+	}
+}
+
+// editionActionPublicErrorMessage projects older journal rows that may still
+// contain internal error strings. Messages emitted by the current public
+// projection are retained exactly, while known log-only categories receive
+// the same safe guidance used by the create endpoint.
+func editionActionPublicErrorMessage(action *sync.EditionActionRecord) string {
+	if action == nil || action.Error == "" {
+		return ""
+	}
+	if knownPublicEditionActionError(action.ErrorCode, action.Error) {
+		return action.Error
+	}
+	switch action.ErrorCode {
+	case "edition_create_local_failure":
+		return "Local profile or state data could not be prepared for edition creation"
+	case "edition_create_not_submitted":
+		return "The edition request was not submitted to Hardcover. Retry the edition create."
+	case "hardcover_import_unconfirmed":
+		return "Hardcover may have processed the edition request, but its result could not be confirmed. Verify the Hardcover result before retrying; retrying may create another edition."
+	case "edition_association_save_failed":
+		return "Hardcover returned a verified edition, but the local match could not be saved. Verify the Hardcover result before retrying; retrying may create another edition."
+	case "hardcover_import_failed":
+		return "Hardcover could not import the regional Audible identifier"
+	case "edition_create_failed":
+		return "Failed to create and verify the Hardcover edition"
+	default:
+		// Validation and explicit conflict messages are public API guidance and
+		// must retain their existing detail.
+		return action.Error
+	}
+}
+
+func knownPublicEditionActionError(errorCode, message string) bool {
+	switch errorCode {
+	case "edition_create_local_failure":
+		return message == "Local profile or state data could not be prepared for edition creation"
+	case "edition_create_not_submitted":
+		return message == "The request took too long to add this edition. Nothing was added to Hardcover. Please try again." ||
+			message == "Hardcover's daily API quota is running low. Nothing was added to Hardcover. Please wait until Hardcover's daily API quota resets, then try again." ||
+			message == "Hardcover's daily API quota is exhausted. Nothing was added to Hardcover. Please wait until Hardcover's daily API quota resets, then try again." ||
+			message == "Audnexus region discovery could not finish before the Hardcover write deadline; no mutation was sent. Supply audible_identifier (ASIN:region) to skip discovery" ||
+			message == "Hardcover could not finish an edition preparation lookup or check for an existing edition; retry the edition create" ||
+			message == editionCreateExistingBookConflictGuidance
+	case "hardcover_import_unconfirmed":
+		return message == "Hardcover has not confirmed this regional import yet. Check its status before trying edition creation again." ||
+			message == "Hardcover returned an edition that does not match the submitted book or audiobook format; the match was not saved" ||
+			message == "Hardcover may have processed the edition request, but its result could not be confirmed. Verify the Hardcover result before retrying; retrying may create another edition." ||
+			message == editionCreateAmbiguousIdentityGuidance
+	case "edition_association_save_failed":
+		return message == "Hardcover returned a verified edition, but the local match could not be saved. Verify the Hardcover result before retrying; retrying may create another edition."
+	case "hardcover_import_failed":
+		return message == "Hardcover could not import the regional Audible identifier"
+	case "edition_create_failed":
+		return message == "Failed to create and verify the Hardcover edition"
+	default:
+		return false
+	}
+}
+
+func projectEditionCreateActionErrors(snapshot *sync.SyncSnapshot) {
+	if snapshot == nil {
+		return
+	}
+	for i := range snapshot.BookOutcomes {
+		if action := snapshot.BookOutcomes[i].EditionAction; action != nil {
+			action.Error = editionActionPublicErrorMessage(action)
+		}
 	}
 }
 
