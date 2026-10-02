@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Preserve edition-added labels, pending requests, unsaved-match recovery, unknown results, final failure guidance, and safe retries across browsers and server restarts. Track requests before catalogue writes and prevent repeated creates for unresolved requests while preserving original sync outcomes and counts.
+- Preserve edition-added labels, pending requests, unsaved-match recovery, unknown results, final failure guidance, and safe retries across browsers and server restarts. Track requests before catalogue writes and prevent repeated creates for unresolved requests while preserving original sync outcomes and counts. By @Snuffy2. (#218)
 
 ### Added
 
