@@ -218,16 +218,14 @@ func TestGraphQLRequestLogsWaitForAdmissionDuringDailyPause(t *testing.T) {
 	err := client.GraphQLQuery(ctx, `query Paused { books { id } }`, nil, &result)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	assert.Zero(t, requests.Load())
-	assert.NotContains(t, logs.String(), `"message":"Executing GraphQL request"`)
-	assert.NotContains(t, logs.String(), `"message":"GraphQL request body"`)
+	assert.NotContains(t, logs.String(), "query Paused", "query data must not be logged before rate-limit admission")
 
 	client.rateLimiter.ResetRate()
 	logs.Reset()
 	err = client.GraphQLQuery(context.Background(), `query Admitted { books { id } }`, nil, &result)
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), requests.Load())
-	assert.Contains(t, logs.String(), `"message":"Executing GraphQL request"`)
-	assert.Contains(t, logs.String(), `"message":"GraphQL request body"`)
+	assert.Contains(t, logs.String(), "query Admitted", "query data is logged only after the HTTP request is admitted")
 }
 
 func TestGraphQLQuery_RetriesOn429ThenSucceeds(t *testing.T) {

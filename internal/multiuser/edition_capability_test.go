@@ -310,6 +310,7 @@ func TestCapabilityAndProfileHardcoverClientsShareLimiter(t *testing.T) {
 	var active, maxActive atomic.Int32
 	var requests atomic.Int32
 	started := make(chan struct{}, 4)
+	rotatedTokenArrived := make(chan struct{}, 1)
 	releaseFirst := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		current := active.Add(1)
@@ -326,6 +327,9 @@ func TestCapabilityAndProfileHardcoverClientsShareLimiter(t *testing.T) {
 		} else {
 			started <- struct{}{}
 		}
+		if r.Header.Get("Authorization") == "Bearer rotated-hardcover-token" {
+			rotatedTokenArrived <- struct{}{}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":{}}`))
 	}))
@@ -337,6 +341,10 @@ func TestCapabilityAndProfileHardcoverClientsShareLimiter(t *testing.T) {
 	service.globalConfig.RateLimit.MaxConcurrent = 1
 	const profileID = "shared-hardcover-limiter-profile"
 	const token = "shared-hardcover-token"
+	const rotatedToken = "rotated-hardcover-token"
+	var releaseFirstOnce sync.Once
+	releaseFirstRequest := func() { releaseFirstOnce.Do(func() { close(releaseFirst) }) }
+	defer releaseFirstRequest()
 	require.NoError(t, service.repository.CreateProfile(
 		profileID, "Shared limiter", "http://abs.home", "abs-token", token,
 		database.SyncConfigData{},
@@ -371,7 +379,19 @@ func TestCapabilityAndProfileHardcoverClientsShareLimiter(t *testing.T) {
 		t.Fatal("another profile client bypassed the active probe's limiter")
 	case <-time.After(50 * time.Millisecond):
 	}
-	close(releaseFirst)
+
+	rotatedClient := service.NewHardcoverClientForProfile(profileID, rotatedToken)
+	rotatedDone := make(chan error, 1)
+	go func() {
+		rotatedDone <- rotatedClient.GraphQLMutation(context.Background(), "mutation { test }", nil, &map[string]any{})
+	}()
+	select {
+	case <-rotatedTokenArrived:
+	case <-time.After(2 * time.Second):
+		releaseFirstRequest()
+		t.Fatal("a rotated token did not receive independent request admission")
+	}
+	releaseFirstRequest()
 
 	for range clients {
 		select {
@@ -386,28 +406,14 @@ func TestCapabilityAndProfileHardcoverClientsShareLimiter(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("capability probe did not finish")
 	}
-	require.Equal(t, int32(4), requests.Load())
-	require.Equal(t, int32(1), maxActive.Load(), "profile clients share one concurrent-request limit")
-
-	service.hardcoverClientMutex.Lock()
-	originalLimiter := service.profileHardcoverRateLimiters[profileHardcoverRateLimiterKey{
-		profileID: profileID, tokenFingerprint: hardcoverTokenFingerprint(token),
-	}]
-	service.hardcoverClientMutex.Unlock()
-
-	rotatedClient := service.NewHardcoverClientForProfile(profileID, "rotated-hardcover-token")
-	require.NotNil(t, rotatedClient)
-	service.NewHardcoverClientForProfile(profileID, token)
-	service.hardcoverClientMutex.Lock()
-	rotatedLimiter := service.profileHardcoverRateLimiters[profileHardcoverRateLimiterKey{
-		profileID: profileID, tokenFingerprint: hardcoverTokenFingerprint("rotated-hardcover-token"),
-	}]
-	currentLimiter := service.profileHardcoverRateLimiters[profileHardcoverRateLimiterKey{
-		profileID: profileID, tokenFingerprint: hardcoverTokenFingerprint(token),
-	}]
-	service.hardcoverClientMutex.Unlock()
-	require.NotSame(t, originalLimiter, rotatedLimiter, "different tokens must not share a limiter")
-	require.Same(t, originalLimiter, currentLimiter, "clients for the same token reuse its limiter")
+	select {
+	case err := <-rotatedDone:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("rotated-token request did not finish")
+	}
+	require.Equal(t, int32(5), requests.Load())
+	require.Equal(t, int32(2), maxActive.Load(), "same-token requests share one limit while a rotated token can proceed independently")
 }
 
 func TestConfigOnlyProfileUpdatePreservesLimiterForExistingClient(t *testing.T) {
@@ -447,10 +453,6 @@ func TestConfigOnlyProfileUpdatePreservesLimiterForExistingClient(t *testing.T) 
 	))
 
 	oldClient := service.NewHardcoverClientForProfile(profileID, token)
-	limiterKey := profileHardcoverRateLimiterKey{profileID: profileID, tokenFingerprint: hardcoverTokenFingerprint(token)}
-	service.hardcoverClientMutex.Lock()
-	oldLimiter := service.profileHardcoverRateLimiters[limiterKey]
-	service.hardcoverClientMutex.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	oldDone := make(chan error, 1)
@@ -467,11 +469,6 @@ func TestConfigOnlyProfileUpdatePreservesLimiterForExistingClient(t *testing.T) 
 	require.NoError(t, service.UpdateProfileConfig(
 		profileID, "http://abs.updated", "", token, database.SyncConfigData{},
 	))
-	service.hardcoverClientMutex.Lock()
-	limiterAfterUpdate := service.profileHardcoverRateLimiters[limiterKey]
-	service.hardcoverClientMutex.Unlock()
-	require.Same(t, oldLimiter, limiterAfterUpdate, "unchanged token must preserve the active limiter")
-
 	newClient := service.NewHardcoverClientForProfile(profileID, token)
 	newDone := make(chan error, 1)
 	go func() {
