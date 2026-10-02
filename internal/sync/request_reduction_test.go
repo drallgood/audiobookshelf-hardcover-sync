@@ -156,13 +156,18 @@ func TestFindBookInHardcoverByTitleAuthorSkipsBookLookupWhenSearchHasRequiredMet
 // concrete Hardcover client does.
 type userBookWithReadsClient struct {
 	*MockHardcoverClient
-	calls int
-	reads []hardcover.UserBookRead
+	calls     int
+	editionID string
+	reads     []hardcover.UserBookRead
 }
 
 func (c *userBookWithReadsClient) GetUserBookWithReads(_ context.Context, userBookID string) (*models.HardcoverBook, []hardcover.UserBookRead, error) {
 	c.calls++
-	return &models.HardcoverBook{ID: "100", EditionID: "200", BookStatusID: 2, UserBookID: userBookID}, c.reads, nil
+	editionID := c.editionID
+	if editionID == "" {
+		editionID = "200"
+	}
+	return &models.HardcoverBook{ID: "100", EditionID: editionID, BookStatusID: 2, UserBookID: userBookID}, c.reads, nil
 }
 
 // The user book and its reads are read in one request, and the status handler
@@ -192,6 +197,43 @@ func TestProcessBookReadsUserBookAndReadsInOneRequest(t *testing.T) {
 	assert.Equal(t, 1, client.calls)
 	hc.AssertNotCalled(t, "GetUserBook", mock.Anything, mock.Anything)
 	hc.AssertNotCalled(t, "GetUserBookReads", mock.Anything, mock.Anything)
+	assert.Equal(t, OutcomeSynced, recordedOutcome(svc, book.ID).Outcome)
+	hc.AssertExpectations(t)
+}
+
+// Reads from before an edition correction cannot identify the read to update;
+// progress must use a fresh read for the corrected edition.
+func TestProcessBookRefreshesReadsAfterCorrectingUserBookEdition(t *testing.T) {
+	svc, hc := createTestService()
+	svc.config.Sync.SyncOwned = false
+	staleEditionID := int64(201)
+	staleProgress := 100
+	client := &userBookWithReadsClient{
+		MockHardcoverClient: hc,
+		editionID:           "201",
+		reads:               []hardcover.UserBookRead{{ID: 400, EditionID: &staleEditionID, ProgressSeconds: &staleProgress}},
+	}
+	svc.hardcover = client
+	svc.findExistingUserBookForBookFunc = func(context.Context, int64) (int64, error) { return 300, nil }
+	book := toAudiobookshelfBook(createTestBook("corrected-edition", "Progress", "Author", "B0CORRECT1", ""))
+	book.Media.Duration = 1000
+	book.Progress.CurrentTime = 300
+	hc.On("SearchBookByASIN", mock.Anything, "B0CORRECT1").Return(&models.HardcoverBook{ID: "100", EditionID: "200"}, nil).Once()
+	hc.On("GetEdition", mock.Anything, "200").Return(&models.Edition{ID: "200", BookID: "100"}, nil).Maybe()
+	hc.On("UpdateUserBookEdition", mock.Anything, 300, 200).Return(nil).Once()
+	freshEditionID := int64(200)
+	freshProgress := 100
+	hc.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: 300}).
+		Return([]hardcover.UserBookRead{{ID: 401, EditionID: &freshEditionID, ProgressSeconds: &freshProgress}}, nil).Once()
+	hc.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+		return input.ID == 401 && input.Object["progress_seconds"] == int64(300)
+	})).Return(true, nil).Once()
+
+	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
+
+	assert.Equal(t, 1, client.calls, "the existing user book should be fetched once with its reads")
+	hc.AssertNotCalled(t, "GetUserBook", mock.Anything, mock.Anything)
+	hc.AssertNumberOfCalls(t, "GetUserBookReads", 1)
 	assert.Equal(t, OutcomeSynced, recordedOutcome(svc, book.ID).Outcome)
 	hc.AssertExpectations(t)
 }

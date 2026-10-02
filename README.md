@@ -744,7 +744,7 @@ hardcover:
 # Sync settings
 sync:
   sync_interval: "1h"
-  minimum_progress: 0.01  # Minimum progress threshold (0.0 to 1.0). Audiobooks below it are skipped before any Hardcover request
+  minimum_progress: 0.01  # Minimum progress threshold (0.0 to 1.0). Audiobooks with positive progress below it skip Hardcover requests; zero-progress books may still match when process_unread_books is enabled for attention or want-to-read handling
   sync_want_to_read: true  # Sync books with 0% progress as "Want to Read"
   sync_owned: true        # Mark synced books as owned in Hardcover
   include_ebooks: false    # Include ebook-only Audiobookshelf items in sync
