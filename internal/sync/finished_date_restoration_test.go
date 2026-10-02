@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -235,6 +236,7 @@ func TestPendingFinishedDatesRecoverThenProcessReread(t *testing.T) {
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
 	svc.config.Sync.Incremental = true
+	svc.config.Sync.PreserveDNF = true
 	book := inProgressBook("pending-reread")
 	book.Progress.StartedAt = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
 	svc.statePath = filepath.Join(t.TempDir(), "state.json")
@@ -246,6 +248,9 @@ func TestPendingFinishedDatesRecoverThenProcessReread(t *testing.T) {
 	editionID := int64(200)
 	reads := []hardcover.UserBookRead{{ID: 400, EditionID: &editionID, FinishedAt: stringPointer("2026-10-02"), ProgressSeconds: intPointer(1000)}}
 	remote := &models.HardcoverBook{ID: "100", EditionID: "200", BookStatusID: 3}
+	hc.On("GetUserBook", mock.Anything, "300").Return(&models.HardcoverBook{
+		ID: "100", EditionID: "200", BookStatusID: 5,
+	}, nil).Once()
 	hc.On("GetUserBook", mock.Anything, "300").Return(remote, nil)
 	getReads := hc.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: 300})
 	getReads.Run(func(mock.Arguments) { getReads.ReturnArguments[0] = reads }).Return(reads, nil)
@@ -277,6 +282,26 @@ func TestPendingFinishedDatesRecoverThenProcessReread(t *testing.T) {
 		}
 	}).Return(nil).Twice()
 	expectASINMatch(hc, book.Media.Metadata.ASIN, "100", "200", 300)
+	// A DNF found while repairing an older read must defer this item's matching
+	// until a later attempt observes that the user book is no longer DNF.
+	beforeDNFAttempt, err := os.ReadFile(svc.statePath)
+	require.NoError(t, err)
+	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
+	assert.Equal(t, OutcomeSkipped, recordedOutcome(svc, book.ID).Outcome)
+	assert.True(t, svc.state.HasFinishedDateRestoration(book.ID))
+	_, hasCheckpoint := svc.state.GetBookState(book.ID + ":200")
+	assert.False(t, hasCheckpoint, "a preserved DNF must not checkpoint the current target")
+	afterDNFAttempt, err := os.ReadFile(svc.statePath)
+	require.NoError(t, err)
+	assert.Equal(t, beforeDNFAttempt, afterDNFAttempt, "a DNF retry must leave persisted intent and checkpoints unchanged")
+	assertNoHardcoverBookSearches(t, hc)
+	hc.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "CreateUserBook", mock.Anything, mock.Anything, mock.Anything)
+
+	// The next attempt fetches the current Hardcover status again. Once DNF is
+	// removed, it repairs the old read and processes the current reread target.
 	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
 	require.Len(t, reads, 2)
 	assert.Nil(t, reads[0].FinishedAt)
@@ -301,5 +326,28 @@ func TestPendingFinishedDatesRecoverThenProcessReread(t *testing.T) {
 	checkpoint, ok := later.state.GetBookState(book.ID + ":200")
 	require.True(t, ok)
 	assert.Equal(t, "FINISHED", checkpoint.Status)
+	hc.AssertExpectations(t)
+}
+
+func TestHandleFinishedBookStopsWhenRecoveryFindsPreservedDNF(t *testing.T) {
+	svc, hc := createTestService()
+	svc.config.Sync.PreserveDNF = true
+	book := convertTestBookToModel(createTestFinishedBook("pending-direct-dnf", "Title", "Author", "ASIN", ""))
+	svc.state.SetFinishedDateRestoration("789", book.ID, map[int64]string{100: "2025-06-01"})
+	hc.On("GetUserBook", mock.Anything, "789").Return(&models.HardcoverBook{
+		ID: "100", EditionID: "200", BookStatusID: 3,
+	}, nil).Once()
+	hc.On("GetUserBook", mock.Anything, "789").Return(&models.HardcoverBook{
+		ID: "100", EditionID: "200", BookStatusID: 5,
+	}, nil).Once()
+
+	require.NoError(t, svc.HandleFinishedBook(context.Background(), book, "200", 789))
+	assert.True(t, svc.state.HasFinishedDateRestoration(book.ID))
+	_, hasCheckpoint := svc.state.GetBookState(book.ID + ":200")
+	assert.False(t, hasCheckpoint, "a DNF found during recovery must not checkpoint the current target")
+	hc.AssertNotCalled(t, "GetUserBookReads", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
 	hc.AssertExpectations(t)
 }

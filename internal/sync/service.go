@@ -2140,16 +2140,28 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 	// target. Repair it before missing-date, unread, and incremental guards.
 	hadPendingDateRestoration := s.state.HasFinishedDateRestoration(book.ID)
 	if !s.config.Sync.DryRun {
+		preservedDNF := false
 		for userBookID, dates := range s.state.GetItemFinishedDateRestorations(book.ID) {
 			id, err := strconv.ParseInt(userBookID, 10, 64)
 			if err != nil || id <= 0 {
 				return fmt.Errorf("invalid pending finished-date user book ID %q", userBookID)
 			}
-			if err := s.recoverFinishedReadDates(ctx, id, dates); err != nil {
+			deferred, err := s.recoverFinishedReadDates(ctx, id, dates)
+			if err != nil {
 				outcomeError = err
 				setOutcome(OutcomeFailed, "failed to restore Hardcover finished history")
 				return err
 			}
+			preservedDNF = preservedDNF || deferred
+		}
+		if preservedDNF {
+			// A pending repair for a preserved DNF user book must remain eligible
+			// for retry, but matching the current Audiobookshelf target would repeat
+			// this work on every incremental run. Recovery fetched the status without
+			// caching it, so the next attempt will observe a later DNF change.
+			bookProcessed = false
+			setOutcome(OutcomeSkipped, "preserved Hardcover DNF status during finished-date recovery")
+			return nil
 		}
 	}
 
@@ -3263,8 +3275,13 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 	// Repair the previous mutation's history, then process the current target.
 	// In particular, a new unfinished reread must still be closed below.
 	if hasPendingDates && !s.config.Sync.DryRun {
-		if err := s.recoverFinishedReadDates(ctx, userBookID, pendingDates); err != nil {
+		preservedDNF, err := s.recoverFinishedReadDates(ctx, userBookID, pendingDates)
+		if err != nil {
 			return err
+		}
+		if preservedDNF {
+			reportProcessBookOutcome(ctx, OutcomeSkipped, "preserved Hardcover DNF status during finished-date recovery")
+			return nil
 		}
 	}
 
@@ -3522,27 +3539,28 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 }
 
 // recoverFinishedReadDates restores a previous mutation's history without
-// changing the user-book status: the current ABS target is processed afterward.
-func (s *Service) recoverFinishedReadDates(ctx context.Context, userBookID int64, dates map[int64]string) error {
+// changing the user-book status. It returns true when DNF preservation deferred
+// recovery, so callers can skip the current target without losing the intent.
+func (s *Service) recoverFinishedReadDates(ctx context.Context, userBookID int64, dates map[int64]string) (bool, error) {
 	userBookIDStr := strconv.FormatInt(userBookID, 10)
 	userBook, err := s.hardcover.GetUserBook(ctx, userBookIDStr)
 	if err != nil {
-		return fmt.Errorf("get user book for finished-date recovery: %w", err)
+		return false, fmt.Errorf("get user book for finished-date recovery: %w", err)
 	}
 	if userBook == nil {
-		return fmt.Errorf("cannot restore finished dates: Hardcover user book is missing")
+		return false, fmt.Errorf("cannot restore finished dates: Hardcover user book is missing")
 	}
 	if s.config.Sync.PreserveDNF && s.isBookDNF(userBook) {
-		return nil
+		return true, nil
 	}
 	if err := s.restoreFinishedReadDates(ctx, userBookID, dates); err != nil {
-		return err
+		return false, err
 	}
 	s.state.ClearFinishedDateRestoration(userBookIDStr)
 	s.userBookCache.InvalidateByUserBook(int(userBookID))
 	setOperationUserBookSnapshot(ctx, int(userBookID), userBook)
 	reportProcessBookOutcome(ctx, OutcomeSynced, "restored Hardcover finished read dates")
-	return nil
+	return false, nil
 }
 
 // restoreFinishedReadDates repairs only the snapshotted read IDs. Hardcover's
