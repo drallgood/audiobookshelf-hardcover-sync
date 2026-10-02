@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -43,6 +44,7 @@ func TestHTTPMiddleware(t *testing.T) {
 		path           string
 		handler        http.HandlerFunc
 		expectedStatus int
+		expectedBody   string
 		expectedLogs   []string
 	}{
 		{
@@ -56,6 +58,7 @@ func TestHTTPMiddleware(t *testing.T) {
 				}
 			},
 			expectedStatus: http.StatusOK,
+			expectedBody:   "test response",
 			expectedLogs: []string{
 				`"method":"GET"`,
 				`"status":200`,
@@ -123,6 +126,9 @@ func TestHTTPMiddleware(t *testing.T) {
 
 			// Check the response status code
 			assert.Equal(t, tt.expectedStatus, rr.Code, "Unexpected status code")
+			if tt.expectedBody != "" {
+				assert.Equal(t, tt.expectedBody, rr.Body.String(), "Unexpected response body")
+			}
 
 			// Get the log output
 			output := buf.String()
@@ -142,56 +148,38 @@ func TestHTTPMiddleware(t *testing.T) {
 	}
 }
 
-func TestResponseWriterWrapper(t *testing.T) {
-	// Create a test response writer
-	rr := httptest.NewRecorder()
+func TestHTTPMiddlewarePropagatesResponseWriteError(t *testing.T) {
+	ResetForTesting()
+	Setup(Config{Level: "debug", Format: FormatJSON, Output: &bytes.Buffer{}})
 
-	// Create a response writer wrapper
-	w := &responseWriterWrapper{
-		ResponseWriter: rr,
-		status:         http.StatusOK,
-	}
+	responseErr := errors.New("response write failed")
+	writer := &failingResponseWriter{err: responseErr}
+	var observedErr error
+	handler := HTTPMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, observedErr = w.Write([]byte("response"))
+	}))
+	handler.ServeHTTP(writer, httptest.NewRequest(http.MethodGet, "/write-error", nil))
 
-	// Test WriteHeader
-	testStatus := http.StatusCreated
-	w.WriteHeader(testStatus)
-	assert.Equal(t, testStatus, w.status, "Status should be set")
-	assert.Equal(t, testStatus, rr.Code, "Underlying response writer status should be set")
-
-	// Test Write
-	testBody := []byte("test response")
-	n, err := w.Write(testBody)
-	assert.NoError(t, err, "Write should not return an error")
-	assert.Equal(t, len(testBody), n, "Write should return the number of bytes written")
-	assert.Equal(t, testBody, rr.Body.Bytes(), "Response body should match")
-
-	// Test Write with error
-	w = &responseWriterWrapper{
-		ResponseWriter: &errorResponseWriter{},
-		status:         http.StatusOK,
-	}
-	n, err = w.Write([]byte("test"))
-	assert.Error(t, err, "Write should return an error")
-	assert.Equal(t, 0, n, "Write should return 0 bytes written on error")
+	require.ErrorIs(t, observedErr, responseErr)
 }
 
-// errorResponseWriter is a mock http.ResponseWriter that always returns an error on Write
-type errorResponseWriter struct {
+type failingResponseWriter struct {
 	headers http.Header
+	err     error
 }
 
-func (w *errorResponseWriter) Header() http.Header {
+func (w *failingResponseWriter) Header() http.Header {
 	if w.headers == nil {
 		w.headers = make(http.Header)
 	}
 	return w.headers
 }
 
-func (w *errorResponseWriter) Write([]byte) (int, error) {
-	return 0, assert.AnError
+func (w *failingResponseWriter) Write([]byte) (int, error) {
+	return 0, w.err
 }
 
-func (w *errorResponseWriter) WriteHeader(statusCode int) {}
+func (w *failingResponseWriter) WriteHeader(int) {}
 
 func TestWithRequestID(t *testing.T) {
 	// Create a test request

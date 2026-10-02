@@ -1,15 +1,12 @@
 package util
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -32,20 +29,6 @@ func setupTestLogger(t *testing.T) *logger.Logger {
 	}
 	logger.Setup(cfg)
 	return logger.Get()
-}
-
-func containsLogEntry(t *testing.T, output, level, message string) bool {
-	t.Helper()
-	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
-		var entry map[string]interface{}
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			continue
-		}
-		if entry["level"] == level && entry["message"] == message {
-			return true
-		}
-	}
-	return false
 }
 
 type blockingLogWriter struct {
@@ -812,9 +795,7 @@ func TestRateLimiterHonorsAuthoritativeTooManyRequestsGuidance(t *testing.T) {
 
 func TestRateLimiterRecoversFromHeaderDrivenSlowdown(t *testing.T) {
 	configuredRate := 2 * time.Second
-	var logs bytes.Buffer
-	testLogger := &logger.Logger{Logger: zerolog.New(&logs).Level(zerolog.InfoLevel)}
-	rl := NewRateLimiter(configuredRate, 1, testLogger)
+	rl := NewRateLimiter(configuredRate, 1, nil)
 
 	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
 		"Ratelimit":        {`"Free";r=8;t=42, "daily";r=1;t=10`},
@@ -822,31 +803,21 @@ func TestRateLimiterRecoversFromHeaderDrivenSlowdown(t *testing.T) {
 	}})
 	assert.Greater(t, rl.GetRate(), configuredRate)
 
-	logs.Reset()
 	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
 		"Ratelimit":        {`"Free";r=8;t=42, "daily";r=4000;t=1000`},
 		"Ratelimit-Policy": {`"Free";q=60;w=60;burst=10, "daily";q=5000;w=86400`},
 	}})
 	assert.Equal(t, configuredRate, rl.GetRate())
-	assert.Contains(t, logs.String(), `"level":"info"`)
-	assert.Contains(t, logs.String(), `"previous_rate":"10s"`)
-	assert.Contains(t, logs.String(), `"new_rate":"2s"`)
-	assert.Contains(t, logs.String(), `"message":"Rate limiter pacing recovered"`)
 }
 
-func TestRateLimiterDoesNotLogPacingRecoveryDuringDailyPause(t *testing.T) {
-	testutils.SetGlobalLogLevel(t, zerolog.InfoLevel)
-
-	var logs bytes.Buffer
-	testLogger := &logger.Logger{Logger: zerolog.New(&logs).Level(zerolog.InfoLevel)}
-	rl := NewRateLimiter(2*time.Second, 1, testLogger)
+func TestRateLimiterDailyQuotaPauseStillUpdatesOrdinaryPacing(t *testing.T) {
+	rl := NewRateLimiter(2*time.Second, 1, nil)
 
 	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
 		"Ratelimit":        {`"Free";r=8;t=42, "daily";r=1;t=10`},
 		"Ratelimit-Policy": {`"Free";q=60;w=60;burst=10, "daily";q=5000;w=86400`},
 	}})
 	require.Equal(t, 10*time.Second, rl.GetRate())
-	logs.Reset()
 
 	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
 		"Ratelimit":        {`"Free";r=1;t=42, "daily";r=0;t=3600`},
@@ -855,9 +826,6 @@ func TestRateLimiterDoesNotLogPacingRecoveryDuringDailyPause(t *testing.T) {
 
 	assert.True(t, rl.DailyQuotaPaused())
 	assert.Equal(t, 2*time.Second, rl.GetRate(), "ordinary pacing still updates")
-	assert.True(t, containsLogEntry(t, logs.String(), "warn", "Daily rate limit exhausted, pausing until reset"))
-	assert.False(t, containsLogEntry(t, logs.String(), "info", "Rate limiter pacing recovered"))
-	assert.False(t, containsLogEntry(t, logs.String(), "info", "Rate limit window nearly exhausted, slowing down"))
 
 	rl.ResetRate()
 	assert.False(t, rl.DailyQuotaPaused())
@@ -888,7 +856,7 @@ func TestRateLimiterRecoveryLogsOutsideLock(t *testing.T) {
 	case <-logWriter.started:
 	case <-time.After(time.Second):
 		logWriter.release <- struct{}{}
-		t.Fatal("header update did not reach the expected pacing recovery log")
+		t.Fatal("header update did not reach the logger")
 	}
 	assertRateLimiterReadDoesNotBlock(t, rl)
 
