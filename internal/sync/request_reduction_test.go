@@ -89,22 +89,46 @@ func TestFindBookInHardcoverByASINDoesNotResolveUserBook(t *testing.T) {
 }
 
 // A title-only candidate needs no second request only when its search hit has
-// authors, cover, and slug; incomplete hits fall back to the full book lookup.
+// authors, cover, slug, and a usable release date; incomplete hits fall back to
+// the full book lookup.
 func TestFindBookInHardcoverByTitleAuthorSkipsBookLookupWhenSearchHasRequiredMetadata(t *testing.T) {
 	for _, tt := range []struct {
-		name        string
-		hit         models.HardcoverBook
-		wantLookups int
-		wantAuthor  string
-		wantCover   string
-		wantSlug    string
+		name            string
+		hit             models.HardcoverBook
+		fullReleaseDate string
+		wantLookups     int
+		wantAuthor      string
+		wantCover       string
+		wantSlug        string
+		wantReleaseDate string
 	}{
 		{
-			name:       "search supplies authors cover and slug",
-			hit:        models.HardcoverBook{ID: "901", Title: "Match Title", Slug: "match-title", CoverImageURL: "search-cover", Authors: []models.Author{{Name: "Search Author"}}},
-			wantAuthor: "Search Author",
-			wantCover:  "search-cover",
-			wantSlug:   "match-title",
+			name:            "search supplies authors cover and slug",
+			hit:             models.HardcoverBook{ID: "901", Title: "Match Title", Slug: "match-title", CoverImageURL: "search-cover", ReleaseDate: "2020-01-02", Authors: []models.Author{{Name: "Search Author"}}},
+			wantAuthor:      "Search Author",
+			wantCover:       "search-cover",
+			wantSlug:        "match-title",
+			wantReleaseDate: "2020-01-02",
+		},
+		{
+			name:            "search has required metadata but no date",
+			hit:             models.HardcoverBook{ID: "901", Title: "Match Title", Slug: "match-title", CoverImageURL: "search-cover", Authors: []models.Author{{Name: "Search Author"}}},
+			fullReleaseDate: "2021-04-05",
+			wantLookups:     1,
+			wantAuthor:      "Full Author",
+			wantCover:       "search-cover",
+			wantSlug:        "match-title",
+			wantReleaseDate: "2021-04-05",
+		},
+		{
+			name:            "search has invalid date",
+			hit:             models.HardcoverBook{ID: "901", Title: "Match Title", Slug: "match-title", CoverImageURL: "search-cover", ReleaseDate: "2021", Authors: []models.Author{{Name: "Search Author"}}},
+			fullReleaseDate: "2022-06-07",
+			wantLookups:     1,
+			wantAuthor:      "Full Author",
+			wantCover:       "search-cover",
+			wantSlug:        "match-title",
+			wantReleaseDate: "2022-06-07",
 		},
 		{
 			name:        "search has no authors",
@@ -136,7 +160,7 @@ func TestFindBookInHardcoverByTitleAuthorSkipsBookLookupWhenSearchHasRequiredMet
 			book := toAudiobookshelfBook(createTestBook("title-only-"+tt.name, "Match Title", "Author", "", ""))
 			hc.On("SearchBooks", mock.Anything, "Match Title Author", "").Return([]models.HardcoverBook{tt.hit}, nil).Once()
 			hc.On("GetBookByID", mock.Anything, "901").Return(&models.HardcoverBook{
-				ID: "901", Slug: "full-slug", CoverImageURL: "full-cover", Authors: []models.Author{{Name: "Full Author"}},
+				ID: "901", Slug: "full-slug", CoverImageURL: "full-cover", ReleaseDate: tt.fullReleaseDate, Authors: []models.Author{{Name: "Full Author"}},
 			}, nil).Maybe()
 
 			found, err := svc.findBookInHardcoverByTitleAuthor(context.Background(), *book)
@@ -147,9 +171,38 @@ func TestFindBookInHardcoverByTitleAuthorSkipsBookLookupWhenSearchHasRequiredMet
 			assert.Equal(t, tt.wantAuthor, found.Authors[0].Name)
 			assert.Equal(t, tt.wantCover, found.CoverImageURL)
 			assert.Equal(t, tt.wantSlug, found.Slug)
+			assert.Equal(t, tt.wantReleaseDate, found.ReleaseDate)
 			hc.AssertNumberOfCalls(t, "GetBookByID", tt.wantLookups)
 		})
 	}
+}
+
+// An identifier lookup failure publishes its title/author candidate immediately.
+// Keep the candidate's year by looking up a complete search hit that omits its date.
+func TestProcessBookKeepsCandidateYearAfterIdentifierFailure(t *testing.T) {
+	svc, hc := createTestService()
+	svc.config.Sync.SyncOwned = false
+	book := toAudiobookshelfBook(createTestBook("candidate-year", "Possible Match", "Author", "failed-asin", ""))
+	book.Progress.CurrentTime = 300
+	lookupErr := assert.AnError
+	hc.On("SearchBookByASIN", mock.Anything, "failed-asin").Return((*models.HardcoverBook)(nil), lookupErr).Once()
+	hc.On("SearchBooks", mock.Anything, "Possible Match Author", "").Return([]models.HardcoverBook{{
+		ID: "901", Title: "Possible Match", Slug: "possible-match", CoverImageURL: "candidate-cover",
+		Authors: []models.Author{{Name: "Candidate Author"}},
+	}}, nil).Once()
+	hc.On("GetBookByID", mock.Anything, "901").Return(&models.HardcoverBook{
+		ID: "901", Title: "Possible Match", Slug: "possible-match", CoverImageURL: "candidate-cover",
+		ReleaseDate: "2021-04-05", Authors: []models.Author{{Name: "Candidate Author"}},
+	}, nil).Once()
+
+	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
+
+	record := recordedOutcome(svc, book.ID)
+	assert.Equal(t, OutcomeFailed, record.Outcome)
+	assert.Contains(t, record.Error, lookupErr.Error())
+	assert.Equal(t, "901", record.HardcoverBookID)
+	assert.Equal(t, "2021", record.HardcoverPublishedYear)
+	hc.AssertExpectations(t)
 }
 
 // userBookWithReadsClient returns a user book and its reads in one call, as the

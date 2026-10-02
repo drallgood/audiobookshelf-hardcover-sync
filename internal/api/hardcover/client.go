@@ -1043,6 +1043,7 @@ func (c *Client) SearchBooks(ctx context.Context, title, author string) ([]model
 			ID:            r.ID,
 			Title:         r.Title,
 			Slug:          r.Slug,
+			ReleaseDate:   r.ReleaseDate,
 			CoverImageURL: r.Image, // Populate cover from search response (document.image.url)
 			Authors:       r.Authors,
 		}
@@ -1978,10 +1979,11 @@ func (c *Client) searchBooksWithLimit(ctx context.Context, query string, limit i
 		var apiResponse struct {
 			Hits []struct {
 				Document struct {
-					ID    string `json:"id"`
-					Title string `json:"title"`
-					Slug  string `json:"slug"`
-					Image struct {
+					ID          string          `json:"id"`
+					Title       string          `json:"title"`
+					Slug        string          `json:"slug"`
+					ReleaseDate json.RawMessage `json:"release_date"`
+					Image       struct {
 						URL string `json:"url"`
 					} `json:"image"`
 					Contributions json.RawMessage `json:"contributions"`
@@ -2000,11 +2002,12 @@ func (c *Client) searchBooksWithLimit(ctx context.Context, query string, limit i
 		// Process the search results
 		for _, hit := range apiResponse.Hits {
 			res := models.SearchResult{
-				ID:    hit.Document.ID,
-				Title: hit.Document.Title,
-				Type:  "book",
-				Image: hit.Document.Image.URL,
-				Slug:  hit.Document.Slug,
+				ID:          hit.Document.ID,
+				Title:       hit.Document.Title,
+				Type:        "book",
+				Image:       hit.Document.Image.URL,
+				Slug:        hit.Document.Slug,
+				ReleaseDate: searchDocumentReleaseDate(hit.Document.ReleaseDate),
 			}
 			res.Authors = searchDocumentAuthors(hit.Document.Contributions)
 			if res.Slug != "" {
@@ -2064,6 +2067,14 @@ func searchDocumentAuthors(raw json.RawMessage) []models.Author {
 		authors = append(authors, models.Author{ID: contribution.Author.ID.String(), Name: contribution.Author.Name})
 	}
 	return authors
+}
+
+func searchDocumentReleaseDate(raw json.RawMessage) string {
+	var releaseDate string
+	if err := json.Unmarshal(raw, &releaseDate); err != nil {
+		return ""
+	}
+	return releaseDate
 }
 
 // DatesReadInput represents the input for date-related fields when creating or updating a user book read entry

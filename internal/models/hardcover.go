@@ -57,6 +57,8 @@ type SearchResult struct {
 	Type  string `json:"type"` // "book", "author", etc.
 	Slug  string `json:"slug,omitempty"`
 	Image string `json:"image,omitempty"`
+	// ReleaseDate is available only when the search document includes it.
+	ReleaseDate string `json:"release_date,omitempty"`
 	// Authors are taken from the search document's contributions when it
 	// carries them, so callers can avoid a follow-up book lookup.
 	Authors []Author `json:"authors,omitempty"`

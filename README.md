@@ -84,9 +84,10 @@ category. Each result includes its Audiobookshelf cover, format, and series
 position when available, and its title links to the Audiobookshelf library
 item. Known Hardcover books link to Hardcover; a needs-review result instead
 shows the Hardcover candidate's series when available and links the candidate
-title. The Audiobookshelf ASIN links to Audible, and its ISBN links to a Goodreads
-search. Hardcover candidate identifiers are omitted because no matching edition
-has been confirmed.
+title. A candidate's published year is retained when Hardcover provides a usable
+release date, including when the title search omits it. The Audiobookshelf ASIN
+links to Audible, and its ISBN links to a Goodreads search. Hardcover candidate
+identifiers are omitted because no matching edition has been confirmed.
 
 #### Add an edition or forget a match from View Details
 

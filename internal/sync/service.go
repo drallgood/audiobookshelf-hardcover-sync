@@ -5385,10 +5385,10 @@ func (s *Service) findBookInHardcoverByTitleAuthor(ctx context.Context, book mod
 
 	// Attempt to enrich with full book details (especially authors) via GetBookByID
 	// This does NOT change the mismatch semantics; we still return an error below.
-	// The search document already carries the authors when Hardcover includes its
-	// contributions, cover and slug, so the extra request is skipped only when
-	// the search hit already supplies all three.
-	if bestMatch.ID != "" && (len(bestMatch.Authors) == 0 || bestMatch.CoverImageURL == "" || bestMatch.Slug == "") {
+	// The search document may carry authors, cover, slug, and release date. Keep
+	// the full-book request when any required display metadata is missing or its
+	// date cannot produce the published year shown in attention records.
+	if bestMatch.ID != "" && (len(bestMatch.Authors) == 0 || bestMatch.CoverImageURL == "" || bestMatch.Slug == "" || !isUsableHardcoverReleaseDate(bestMatch.ReleaseDate)) {
 		if fullBook, err := s.hardcover.GetBookByID(ctx, bestMatch.ID); err == nil && fullBook != nil {
 			// Only overwrite or supplement fields that are safe and helpful for display
 			if len(fullBook.Authors) > 0 {
@@ -5404,7 +5404,7 @@ func (s *Service) findBookInHardcoverByTitleAuthor(ctx context.Context, book mod
 			if bestMatch.Publisher == "" && fullBook.Publisher != "" {
 				bestMatch.Publisher = fullBook.Publisher
 			}
-			if bestMatch.ReleaseDate == "" && fullBook.ReleaseDate != "" {
+			if !isUsableHardcoverReleaseDate(bestMatch.ReleaseDate) && fullBook.ReleaseDate != "" {
 				bestMatch.ReleaseDate = fullBook.ReleaseDate
 			}
 			log.Debug("Enriched title/author search result with GetBookByID", map[string]interface{}{
@@ -5419,6 +5419,11 @@ func (s *Service) findBookInHardcoverByTitleAuthor(ctx context.Context, book mod
 
 	// Return the book data we have from search results
 	return bestMatch, errHardcoverTitleOnly
+}
+
+func isUsableHardcoverReleaseDate(releaseDate string) bool {
+	_, err := time.Parse("2006-01-02", releaseDate)
+	return err == nil
 }
 
 // isbnCandidate is one identifier lookup: a normalized ISBN searched in either
