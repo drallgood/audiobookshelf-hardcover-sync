@@ -1327,6 +1327,39 @@ test('known pre-write authorization denials clear the user marker and permit a l
     }
 });
 
+test('known create denials replace the row pending marker so a reopened draft can safely retry', async () => {
+    const app = editionApp({ authEnabled: true, currentUser: { id: 'user-7' } });
+    const record = { ...needsReview };
+    app.openSummary.records.set(String(record.book_id), record);
+    const dialog = stubDialog(app, 403, { success: false, error: 'Insufficient permissions' });
+    dialog.record = record;
+    let creates = 0;
+    app.fetchJsonWithTimeout = async () => {
+        creates++;
+        return creates === 1
+            ? { response: { ok: false, status: 403 }, data: { success: false, error: 'Insufficient permissions' } }
+            : { response: { ok: true, status: 200 }, data: { success: true, data: validCreateResult() } };
+    };
+
+    await app.submitEditionCreate();
+
+    assert.equal(dialog.outcome, 'not_submitted');
+    const savedRecord = app.openSummary.records.get(String(record.book_id));
+    assert.equal(savedRecord.edition_action.outcome, 'not_submitted');
+    assert.match(app.renderEditionActions(savedRecord), /Retry add edition/);
+    app.closeEditionDialog();
+    app.loadEditionDraft = async () => {
+        app.editionDialog.draft = { reading_format: 'audiobook', eligible: true, source_identifiers: {}, warnings: [] };
+        app.editionDialog.loading = false;
+    };
+    await app.openEditionDialog(record.book_id);
+    assert.equal(app.editionDialog.outcome, 'not_submitted');
+    assert.equal(app.editionDialog.retryCreate, true);
+    await app.submitEditionCreate();
+    assert.equal(creates, 2);
+    assert.ok(app.editionDialog.result);
+});
+
 test('recognized auth expiry payloads clear the user marker before resetting the signed-in user', async () => {
     for (const payload of [
         { success: false, error: 'Authentication required' },

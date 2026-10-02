@@ -2577,6 +2577,8 @@ class SyncProfileApp {
                         dialog.errorCode = data?.error?.code || data?.error_code || '';
                         dialog.error = this.editionCreateErrorMessage(response.status, message || preWriteDenial.message);
                         dialog.retryCreate = true;
+                        this.rememberEditionAction(dialog, { outcome: 'not_submitted', error: dialog.error,
+                            error_code: dialog.errorCode, http_status: response.status });
                         this.clearPendingEditionRecovery(dialog.profileId, dialog.runId, dialog.record.book_id);
                     } else if (!outcome) {
                         dialog.outcome = 'transport_unknown';
