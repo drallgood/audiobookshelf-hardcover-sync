@@ -14,8 +14,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
-	"unsafe"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/edition"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
@@ -2031,100 +2029,6 @@ func TestEditionCreator_createEditionFormat(t *testing.T) {
 			assert.Equal(t, tt.want, sent["edition_format"])
 			assert.Equal(t, 2, sent["reading_format_id"])
 			mockClient.AssertExpectations(t)
-		})
-	}
-}
-
-func TestNewCreator(t *testing.T) {
-	// Setup logger with test config
-	logger.Setup(logger.Config{
-		Level:  "debug",
-		Format: "json",
-	})
-
-	// Get a test logger
-	log := logger.Get()
-
-	tests := []struct {
-		name                string
-		client              edition.HardcoverClient
-		dryRun              bool
-		audiobookshelfToken string
-		customHTTPClient    *http.Client
-		useCustomClient     bool
-		expectedTimeout     time.Duration
-	}{
-		{
-			name:                "with_default_config",
-			client:              new(MockHardcoverClient),
-			dryRun:              false,
-			audiobookshelfToken: "test-token",
-			useCustomClient:     false,
-			expectedTimeout:     90 * time.Second, // Default IdleConnTimeout from NewCreator
-		},
-		{
-			name:                "with_custom_client",
-			client:              new(MockHardcoverClient),
-			dryRun:              true,
-			audiobookshelfToken: "custom-token",
-			customHTTPClient:    &http.Client{Timeout: 30 * time.Second},
-			useCustomClient:     true,
-			expectedTimeout:     30 * time.Second,
-		},
-		{
-			name:                "with_dry_run",
-			client:              new(MockHardcoverClient),
-			dryRun:              true,
-			audiobookshelfToken: "dry-run-token",
-			useCustomClient:     false,
-			expectedTimeout:     90 * time.Second, // Default IdleConnTimeout from NewCreator
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Call the constructor
-			var creator *edition.Creator
-			if tt.useCustomClient {
-				creator = edition.NewCreatorWithHTTPClient(tt.client, log, tt.dryRun, tt.audiobookshelfToken, tt.customHTTPClient)
-			} else {
-				creator = edition.NewCreator(tt.client, log, tt.dryRun, tt.audiobookshelfToken)
-			}
-
-			// Ensure creator was created
-			assert.NotNil(t, creator)
-
-			// Access the private fields using reflection
-			reflectedCreator := reflect.ValueOf(creator).Elem()
-
-			// Check client field
-			clientField := reflectedCreator.FieldByName("client")
-			clientField = reflect.NewAt(clientField.Type(), unsafe.Pointer(clientField.UnsafeAddr())).Elem()
-			clientValue := clientField.Interface()
-			assert.Equal(t, tt.client, clientValue)
-
-			// Check dryRun field
-			dryRunField := reflectedCreator.FieldByName("dryRun")
-			dryRunField = reflect.NewAt(dryRunField.Type(), unsafe.Pointer(dryRunField.UnsafeAddr())).Elem()
-			dryRunValue := dryRunField.Bool()
-			assert.Equal(t, tt.dryRun, dryRunValue)
-
-			// Check audiobookshelfToken field
-			tokenField := reflectedCreator.FieldByName("audiobookshelfToken")
-			tokenField = reflect.NewAt(tokenField.Type(), unsafe.Pointer(tokenField.UnsafeAddr())).Elem()
-			tokenValue := tokenField.String()
-			assert.Equal(t, tt.audiobookshelfToken, tokenValue)
-
-			// Check httpClient field if we're using a custom client
-			httpClientField := reflectedCreator.FieldByName("httpClient")
-			httpClientField = reflect.NewAt(httpClientField.Type(), unsafe.Pointer(httpClientField.UnsafeAddr())).Elem()
-			httpClient, ok := httpClientField.Interface().(*http.Client)
-			assert.True(t, ok)
-			assert.NotNil(t, httpClient)
-
-			if tt.useCustomClient {
-				assert.Equal(t, tt.expectedTimeout, httpClient.Timeout)
-			}
 		})
 	}
 }

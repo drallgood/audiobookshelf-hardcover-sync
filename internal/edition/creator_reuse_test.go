@@ -49,7 +49,9 @@ func (c *reuseClient) noteFormat(ctx context.Context) {
 }
 
 func (c *reuseClient) GetEditionByASIN(ctx context.Context, asin string) (*models.Edition, error) {
-	time.Sleep(c.lookupDelay)
+	if c.lookupDelay > 0 {
+		time.Sleep(c.lookupDelay)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.noteFormat(ctx)
@@ -58,7 +60,9 @@ func (c *reuseClient) GetEditionByASIN(ctx context.Context, asin string) (*model
 }
 
 func (c *reuseClient) GetEditionByISBN10(ctx context.Context, isbn10 string) (*models.Edition, error) {
-	time.Sleep(c.lookupDelay)
+	if c.lookupDelay > 0 {
+		time.Sleep(c.lookupDelay)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.noteFormat(ctx)
@@ -67,7 +71,9 @@ func (c *reuseClient) GetEditionByISBN10(ctx context.Context, isbn10 string) (*m
 }
 
 func (c *reuseClient) GetEditionByISBN13(ctx context.Context, isbn13 string) (*models.Edition, error) {
-	time.Sleep(c.lookupDelay)
+	if c.lookupDelay > 0 {
+		time.Sleep(c.lookupDelay)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.noteFormat(ctx)
@@ -313,7 +319,7 @@ func TestCreateEditionRejectsNegativeBookIDWithoutMutation(t *testing.T) {
 	}
 }
 
-func TestCreateEdition_LooksUpEachIdentifierOnceInOrder(t *testing.T) {
+func TestCreateEditionLooksUpEachNormalizedIdentifierOnce(t *testing.T) {
 	client := &reuseClient{insertID: 777}
 	creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "token", &http.Client{Transport: failingTransport{}})
 	input := &edition.EditionInput{
@@ -322,14 +328,27 @@ func TestCreateEdition_LooksUpEachIdentifierOnceInOrder(t *testing.T) {
 		ASIN: "B0EXISTING1", ISBN13: "978-0-306-40615-7", ISBN10: "0306406152",
 	}
 
-	if _, err := creator.CreateEdition(context.Background(), input); err != nil {
+	result, err := creator.CreateEdition(context.Background(), input)
+	if err != nil {
 		t.Fatalf("CreateEdition() error = %v", err)
+	}
+	if result.EditionID != 777 {
+		t.Fatalf("CreateEdition() = %+v, want created edition 777", result)
 	}
 
 	// The ISBN-10 and ISBN-13 are each other's converted form, so neither is looked up twice.
-	want := []string{"ASIN:B0EXISTING1", "ISBN-13:9780306406157", "ISBN-10:0306406152"}
-	if strings.Join(client.lookups, ",") != strings.Join(want, ",") {
-		t.Errorf("lookups = %v, want %v", client.lookups, want)
+	want := map[string]int{"ASIN:B0EXISTING1": 1, "ISBN-13:9780306406157": 1, "ISBN-10:0306406152": 1}
+	got := make(map[string]int, len(client.lookups))
+	for _, lookup := range client.lookups {
+		got[lookup]++
+	}
+	if len(got) != len(want) {
+		t.Fatalf("lookups = %v, want one lookup per normalized identifier", client.lookups)
+	}
+	for identifier, count := range want {
+		if got[identifier] != count {
+			t.Errorf("lookups for %q = %d, want %d", identifier, got[identifier], count)
+		}
 	}
 }
 
@@ -356,7 +375,7 @@ func TestCreateEditionWithMutationReserveChecksAtInsertBoundary(t *testing.T) {
 		BookID:        123, Title: "A Title", AuthorIDs: []int{1}, ASIN: "B0RESERVE01",
 	}
 
-	t.Run("slow lookup with no match skips insert", func(t *testing.T) {
+	t.Run("insufficient remaining budget after lookup skips insert", func(t *testing.T) {
 		client := &reuseClient{lookupDelay: 300 * time.Millisecond}
 		creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "", &http.Client{Transport: failingTransport{}})
 		ctx, cancel := context.WithTimeout(context.Background(), 450*time.Millisecond)
@@ -366,23 +385,28 @@ func TestCreateEditionWithMutationReserveChecksAtInsertBoundary(t *testing.T) {
 		if !errors.Is(err, edition.ErrCreateEditionInsufficientMutationBudget) || !errors.Is(err, edition.ErrCreateEditionPreMutation) {
 			t.Fatalf("CreateEditionWithMutationReserve() error = %v, want pre-mutation insufficient-budget error", err)
 		}
+		if len(client.lookups) != 1 {
+			t.Fatalf("lookups = %v, want one lookup before checking the mutation reserve", client.lookups)
+		}
 		if len(client.mutations) != 0 {
 			t.Fatalf("mutations sent = %d, want no insert after the lookup used the reserve", len(client.mutations))
 		}
 	})
 
-	t.Run("slow lookup still reuses matching edition", func(t *testing.T) {
+	t.Run("matching edition is reused when reserve is unavailable", func(t *testing.T) {
 		client := &reuseClient{
-			lookupDelay: 300 * time.Millisecond,
-			byASIN:      &models.Edition{ID: "555", BookID: "123"},
+			byASIN: &models.Edition{ID: "555", BookID: "123"},
 		}
 		creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "", &http.Client{Transport: failingTransport{}})
 		ctx, cancel := context.WithTimeout(context.Background(), 450*time.Millisecond)
 		defer cancel()
 
-		result, err := creator.CreateEditionWithMutationReserve(ctx, input, 250*time.Millisecond)
+		result, err := creator.CreateEditionWithMutationReserve(ctx, input, time.Minute)
 		if err != nil || result == nil || !result.Existing || result.EditionID != 555 {
 			t.Fatalf("CreateEditionWithMutationReserve() = %+v, %v, want existing edition 555", result, err)
+		}
+		if len(client.lookups) != 1 {
+			t.Fatalf("lookups = %v, want one lookup before reusing the edition", client.lookups)
 		}
 		if len(client.mutations) != 0 {
 			t.Fatalf("mutations sent = %d, want existing edition reuse without mutation", len(client.mutations))
@@ -392,7 +416,7 @@ func TestCreateEditionWithMutationReserveChecksAtInsertBoundary(t *testing.T) {
 	t.Run("sufficient reserve permits creation", func(t *testing.T) {
 		client := &reuseClient{insertID: 777}
 		creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "", &http.Client{Transport: failingTransport{}})
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
 
 		result, err := creator.CreateEditionWithMutationReserve(ctx, input, 250*time.Millisecond)

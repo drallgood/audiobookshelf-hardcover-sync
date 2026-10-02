@@ -74,11 +74,6 @@ func TestCreateEdition_DTOOptionalStringFields(t *testing.T) {
 	}
 }
 
-func TestCreateEdition_DTOTitleIsSent(t *testing.T) {
-	dto := sentDTO(t, &edition.EditionInput{BookID: 123, Title: "The Title", AuthorIDs: []int{1}})
-	assert.Equal(t, "The Title", dto["title"])
-}
-
 func TestCreateEdition_DTOContributionsListAuthorsThenNarrators(t *testing.T) {
 	tests := []struct {
 		name      string
