@@ -99,10 +99,8 @@ func (m *MockHardcoverClient) GraphQLMutation(ctx context.Context, mutation stri
 	if args.Error(0) == nil {
 		// We need to handle different operations differently
 		if strings.Contains(mutation, "insert_image") {
-			// Use reflection to set the ID regardless of the exact struct type
-			// Only the structure (having InsertImage.ID) matters
-			returnImageID := 456 // Test ID for successful cases
-			setImageIDViaReflection(result, returnImageID)
+			// Return the same JSON shape as the Hardcover insert_image response.
+			return json.Unmarshal([]byte(`{"insert_image":{"id":456}}`), result)
 		}
 	}
 
@@ -116,49 +114,14 @@ func (m *ZeroIDMockHardcoverClient) GraphQLMutation(ctx context.Context, mutatio
 
 	// Only manipulate the result if we didn't return an error
 	if args.Error(0) == nil {
-		// For the ZeroID mock, we explicitly set the ID to 0 to test validation logic
+		// For the ZeroID mock, return an image response with ID 0 to test validation logic.
 		if strings.Contains(mutation, "insert_image") {
-			// Use reflection to set the ID to 0
-			setImageIDViaReflection(result, 0)
+			// Return the same JSON shape as the Hardcover insert_image response.
+			return json.Unmarshal([]byte(`{"insert_image":{"id":0}}`), result)
 		}
 	}
 
 	return args.Error(0)
-}
-
-// Helper function to set ID in response structures via reflection
-func setImageIDViaReflection(result interface{}, id int) {
-	// Get the value of the result pointer
-	val := reflect.ValueOf(result).Elem()
-
-	// Get the field for InsertImage
-	insertImageField := val.FieldByName("InsertImage")
-	if !insertImageField.IsValid() {
-		return // No InsertImage field, nothing to do
-	}
-
-	// Get the ID field inside InsertImage
-	idField := insertImageField.FieldByName("ID")
-	if !idField.IsValid() || !idField.CanSet() {
-		return // No settable ID field
-	}
-
-	// Handle different ID field types
-	switch idField.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		// For integer types
-		idField.SetInt(int64(id))
-	case reflect.Interface:
-		// For interface{} types
-		idField.Set(reflect.ValueOf(id))
-	default:
-		// Try direct setting for other types
-		try := func() {
-			defer func() { _ = recover() }() // Ignore panics
-			idField.Set(reflect.ValueOf(id))
-		}
-		try()
-	}
 }
 
 // isUpdateEditionResult is a custom matcher function that checks if the struct
@@ -453,11 +416,10 @@ func TestEditionCreator_CreateEdition(t *testing.T) {
 							assert.Fail(t, "Unexpected type for bookId: %T", v)
 						}
 
-						editionInput, ok := variables["edition"].(map[string]interface{})
+						_, ok := variables["edition"].(map[string]interface{})
 						if !ok {
 							t.Error("edition input is not a map")
 						}
-						_ = editionInput // Use the variable to avoid unused variable error
 
 						// Set the response with the edition ID
 						respPtr := args.Get(3).(*struct {
@@ -818,7 +780,7 @@ func TestEditionCreator_CreateImageRecord(t *testing.T) {
 				// Cast to MockHardcoverClient
 				mockClient := m.(*MockHardcoverClient)
 
-				// Our mock now uses reflection to handle response
+				// The mock returns a successful insert_image response.
 				mockClient.On("GraphQLMutation",
 					mock.Anything,
 					mock.MatchedBy(func(query string) bool {
@@ -1316,10 +1278,7 @@ func TestEditionCreator_UploadEditionImage(t *testing.T) {
 					mock.Anything, // context
 					mock.MatchedBy(func(query string) bool { return strings.Contains(query, "insert_image") }),
 					mock.AnythingOfType("map[string]interface {}"),
-					mock.MatchedBy(func(v interface{}) bool {
-						// We just need to verify it has the right structure and can be set by reflection
-						return true
-					}),
+					mock.Anything,
 				).Return(nil)
 
 				// Mock GraphQLMutation for updating the edition
@@ -1367,10 +1326,7 @@ func TestEditionCreator_UploadEditionImage(t *testing.T) {
 					mock.Anything, // context
 					mock.MatchedBy(func(query string) bool { return strings.Contains(query, "insert_image") }),
 					mock.AnythingOfType("map[string]interface {}"),
-					mock.MatchedBy(func(v interface{}) bool {
-						// We just need to verify it has the right structure and can be set by reflection
-						return true
-					}),
+					mock.Anything,
 				).Return(fmt.Errorf("image record creation failed"))
 			},
 			expectError:   true,
@@ -1390,10 +1346,7 @@ func TestEditionCreator_UploadEditionImage(t *testing.T) {
 					mock.Anything, // context
 					mock.MatchedBy(func(query string) bool { return strings.Contains(query, "insert_image") }),
 					mock.AnythingOfType("map[string]interface {}"),
-					mock.MatchedBy(func(v interface{}) bool {
-						// We just need to verify it has the right structure and can be set by reflection
-						return true
-					}),
+					mock.Anything,
 				).Return(nil)
 
 				// Make GraphQLMutation for updating the edition fail
