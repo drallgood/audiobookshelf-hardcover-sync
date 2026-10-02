@@ -96,11 +96,12 @@ type UpdateProfileConfigRequest struct {
 
 // APIResponse represents a standard API response
 type APIResponse struct {
-	Success   bool        `json:"success"`
-	Data      interface{} `json:"data,omitempty"`
-	Error     string      `json:"error,omitempty"`
-	ErrorCode string      `json:"error_code,omitempty"`
-	Outcome   string      `json:"outcome,omitempty"`
+	Success       bool                      `json:"success"`
+	Data          interface{}               `json:"data,omitempty"`
+	Error         string                    `json:"error,omitempty"`
+	ErrorCode     string                    `json:"error_code,omitempty"`
+	Outcome       string                    `json:"outcome,omitempty"`
+	EditionAction *sync.EditionActionRecord `json:"edition_action,omitempty"`
 }
 
 // aggregateSnapshotResponse is intentionally separate from sync.SyncSnapshot:
@@ -613,8 +614,78 @@ func (h *Handler) GetRunDetails(w http.ResponseWriter, r *http.Request) {
 		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to retrieve saved edition additions")
 		return
 	}
+	h.projectEditionRecoveryCapabilities(r, profileID, profileMetadata, snapshot)
 
 	h.writeSuccessResponse(w, snapshot)
+}
+
+const editionRecoveryUnavailableGuidance = "The signed recovery window expired or the Hardcover token changed. Inspect Hardcover manually before retrying; this request remains blocked from resubmission."
+
+func (h *Handler) projectEditionRecoveryCapabilities(r *http.Request, profileID string, profile *database.SyncProfile, snapshot *sync.SyncSnapshot) {
+	if snapshot == nil {
+		return
+	}
+	canMutate := !h.authEnabled
+	if h.authEnabled {
+		user, authenticated := auth.GetUserFromRequest(r)
+		if authenticated && user != nil {
+			role := auth.UserRole(user.Role)
+			canMutate = role == auth.RoleAdmin ||
+				(profile != nil && profile.OwnerUserID != nil && *profile.OwnerUserID == user.ID && role.HasPermission(auth.PermissionWriteOwn))
+		}
+	}
+	hasRecoveryToken := false
+	for i := range snapshot.BookOutcomes {
+		action := snapshot.BookOutcomes[i].EditionAction
+		if action != nil && action.Data != nil && action.Data.RecoveryToken != "" {
+			hasRecoveryToken = true
+			break
+		}
+	}
+	if !hasRecoveryToken {
+		return
+	}
+	if !canMutate {
+		for i := range snapshot.BookOutcomes {
+			if action := snapshot.BookOutcomes[i].EditionAction; action != nil && action.Data != nil {
+				action.Data.RecoveryToken = ""
+			}
+		}
+		return
+	}
+	settings, settingsErr := h.multiUserService.GetProfileHardcoverSettings(profileID)
+	if settingsErr != nil || settings == nil || settings.HardcoverToken == "" {
+		for i := range snapshot.BookOutcomes {
+			if action := snapshot.BookOutcomes[i].EditionAction; action != nil && action.Data != nil && action.Data.RecoveryToken != "" {
+				action.Data.RecoveryToken = ""
+				action.Outcome = editionOutcomeTransportUnknown
+				action.HTTPStatus = http.StatusConflict
+				action.ErrorCode = "edition_recovery_unavailable"
+				action.Error = editionRecoveryUnavailableGuidance
+				action.Data.Guidance = editionRecoveryUnavailableGuidance
+			}
+		}
+		return
+	}
+	for i := range snapshot.BookOutcomes {
+		action := snapshot.BookOutcomes[i].EditionAction
+		if action == nil || action.Data == nil || action.Data.RecoveryToken == "" {
+			continue
+		}
+		claims := editionRecoveryClaims{
+			ProfileID: profileID, RunID: snapshot.RunID, ABSItemID: snapshot.BookOutcomes[i].BookID,
+			HardcoverBookID: action.Data.HardcoverBookID, AudibleIdentifier: action.Data.AudibleIdentifier,
+		}
+		if _, valid := verifyEditionRecoveryToken(settings.HardcoverToken, action.Data.RecoveryToken, claims); valid {
+			continue
+		}
+		action.Data.RecoveryToken = ""
+		action.Outcome = editionOutcomeTransportUnknown
+		action.HTTPStatus = http.StatusConflict
+		action.ErrorCode = "edition_recovery_unavailable"
+		action.Error = editionRecoveryUnavailableGuidance
+		action.Data.Guidance = editionRecoveryUnavailableGuidance
+	}
 }
 
 // GetAllProfileStatuses handles GET /api/status

@@ -1160,7 +1160,7 @@ function stubDialog(app, status, payload) {
 test('successful create updates the book action immediately and shows a separate resync failure', async t => {
     const app = editionApp();
     app.openSummary.records.set(String(needsReview.book_id), needsReview);
-    const button = { closest() { return { dataset: { bookId: needsReview.book_id } }; }, outerHTML: '' };
+    const button = { closest() { return { dataset: { bookId: needsReview.book_id } }; }, outerHTML: '', removeAttribute() {} };
     const previousDocument = global.document;
     global.document = { ...previousDocument, getElementById(id) {
         return id === 'sync-summary-content' ? { querySelectorAll() { return [button]; } } : null;
@@ -1705,7 +1705,7 @@ test('failed creates and unavailable or malformed browser storage do not restore
     assert.equal(app.editionDialog.error, '');
 });
 
-test('create is not sent unless the pending marker is durably saved in session storage', async () => {
+test('edition creation relies on server persistence when browser session storage is unavailable', async () => {
     const originalStorage = window.sessionStorage;
     const partiallyWritten = new Map();
     const blockedCases = [
@@ -1717,10 +1717,6 @@ test('create is not sent unless the pending marker is durably saved in session s
             getItem() { throw new Error('readback blocked'); },
             setItem(key, value) { partiallyWritten.set(key, value); },
             removeItem(key) { partiallyWritten.delete(key); }
-        }, verify() {
-            const reloaded = createApp();
-            assert.equal(reloaded.loadPendingEditionRecovery('p1', 'run-1', 'li_1'), null);
-            assert.equal(partiallyWritten.size, 0);
         } }
     ];
     try {
@@ -1733,15 +1729,16 @@ test('create is not sent unless the pending marker is durably saved in session s
                 return { title: { value: 'Edited title', original: 'Original title' } };
             };
             let creates = 0;
-            app.fetchJsonWithTimeout = async () => { creates++; throw new Error('must not send'); };
+            app.fetchJsonWithTimeout = async () => { creates++; return { response: { ok: false, status: 503 }, data: {
+                success: false, outcome: 'unconfirmed', data: { audible_identifier: 'B00ABC1234:us', hardcover_book_id: '42', recovery_token: 'saved-token' }
+            } }; };
             await app.submitEditionCreate();
-            assert.equal(creates, 0, blocked.name);
-            assert.equal(dialog.outcome, 'not_submitted');
-            assert.equal(dialog.retryCreate, true);
+            assert.equal(creates, 1, blocked.name);
+            assert.equal(dialog.outcome, 'unconfirmed');
             assert.deepEqual(dialog.fieldValues, { title: 'Edited title' });
-            assert.match(dialog.error, /nothing was sent/);
-            assert.equal(app.pendingEditionRecoveries?.size || 0, 0);
-            blocked.verify?.();
+            assert.match(app.renderEditionDialog(dialog), /Check import status/);
+            await app.submitEditionCreate();
+            assert.equal(creates, 1);
         }
 
         window.sessionStorage = originalStorage;
@@ -1894,8 +1891,8 @@ test('terminal failed status check clears recovery and prevents another create',
     assert.equal(app.loadPendingEditionRecovery('p1', 'run-1', 'li_1'), null);
     assert.match(app.renderEditionDialog(dialog), /Hardcover reported import failure/);
     assert.match(app.renderEditionDialog(dialog), /HTTP 502.*hardcover_import_failed/);
-    assert.match(app.renderEditionDialog(dialog), /Another create is disabled/);
-    assert.match(app.renderEditionDialog(dialog), /confirm-create" disabled/);
+    assert.doesNotMatch(app.renderEditionDialog(dialog), /data-edition-dialog="confirm-create"/);
+    assert.doesNotMatch(app.renderEditionDialog(dialog), /data-edition-dialog="check-import"/);
 });
 
 test('an import resolved to a non-audiobook edition is final and links to report that edition', async () => {
@@ -2129,4 +2126,88 @@ test('fresh server details replace stale browser markers after a match is forgot
     app.renderDetailsSnapshot(snapshot);
     assert.doesNotMatch(content.innerHTML, /Hardcover Edition Added/);
     assert.match(content.innerHTML, /data-edition-action="add"/);
+});
+
+test('server edition request states restore in a browser without session recovery', async t => {
+    const previousStorage = window.sessionStorage;
+    window.sessionStorage = null;
+    t.after(() => { window.sessionStorage = previousStorage; });
+    const cases = [
+        { outcome: 'unconfirmed', label: 'Resolve pending edition request', dialog: /Check import status/, token: 'saved-token' },
+        { outcome: 'created', label: 'Resolve pending edition request', dialog: /Save match/, token: 'saved-token' },
+        { outcome: 'transport_unknown', label: 'Resolve pending edition request', dialog: /import result is unknown/ },
+        { outcome: 'unconfirmed', label: 'Resolve pending edition request', dialog: /cannot check this import safely/ },
+        { outcome: 'failed', label: 'Review edition request', dialog: /edition request failed/ },
+        { outcome: 'failed', label: 'Review edition request', dialog: /Report a problem on Hardcover/,
+            error_code: 'hardcover_edition_wrong_format', edition: '123' }
+    ];
+    for (const scenario of cases) {
+        const app = editionApp();
+        const record = { ...needsReview, edition_action: {
+            outcome: scenario.outcome, error_code: scenario.error_code || '', http_status: 409,
+            submitted_body: { run_id: 'run-1', abs_item_id: needsReview.book_id, audible_identifier: 'B00ABC1234:us' },
+            data: { recovery_token: scenario.token, hardcover_book_id: '42', hardcover_edition_id: scenario.edition,
+                audible_identifier: 'B00ABC1234:us' }
+        } };
+        app.openSummary.records.set(record.book_id, record);
+        let requests = 0;
+        app.fetchJsonWithTimeout = async () => { requests++; throw new Error('must not send a create'); };
+        assert.match(app.renderEditionActions(record), new RegExp(scenario.label));
+        await app.openEditionDialog(record.book_id);
+        assert.match(app.renderEditionDialog(app.editionDialog), scenario.dialog);
+        await app.submitEditionCreate();
+        assert.equal(requests, 0, scenario.outcome);
+        if (!scenario.token) assert.doesNotMatch(app.renderEditionDialog(app.editionDialog), /data-edition-dialog="check-import"/);
+    }
+});
+
+test('saved not-submitted request refreshes its draft and retains edited fields for safe retry', async () => {
+    const app = editionApp();
+    const record = { ...needsReview, format: 'ebook', edition_action: {
+        outcome: 'not_submitted', error: 'Nothing was submitted', http_status: 503,
+        submitted_body: { run_id: 'run-1', abs_item_id: needsReview.book_id, title: 'Corrected title', isbn_10: '' }
+    } };
+    app.openSummary.records.set(record.book_id, record);
+    let previews = 0;
+    app.loadEditionDraft = async () => {
+        previews++;
+        app.editionDialog.draft = { reading_format: 'ebook', eligible: true, source_identifiers: {}, warnings: [] };
+        app.editionDialog.loading = false;
+    };
+    assert.match(app.renderEditionActions(record), /Retry add edition/);
+    await app.openEditionDialog(record.book_id);
+    assert.equal(previews, 1);
+    assert.equal(app.editionDialog.retryCreate, true);
+    assert.equal(app.editionDialog.error, 'Nothing was submitted');
+    assert.deepEqual(app.editionDialog.fieldValues, { title: 'Corrected title', isbn_10: '' });
+});
+
+test('a new browser resolves a server-saved request through status checks without creating again', async () => {
+    const app = editionApp();
+    const record = { ...needsReview, edition_action: {
+        outcome: 'unconfirmed', http_status: 503,
+        submitted_body: { run_id: 'run-1', abs_item_id: needsReview.book_id, resync: true },
+        data: { recovery_token: 'server-token', audible_identifier: 'B00ABC1234:us', hardcover_book_id: '42' }
+    } };
+    app.openSummary.records.set(record.book_id, record);
+    const requests = [];
+    app.fetchJsonWithTimeout = async (url, options) => {
+        requests.push({ url, body: JSON.parse(options.body) });
+        return { response: { ok: true, status: 200 }, data: { success: true, data: validCreateResult() } };
+    };
+    await app.openEditionDialog(record.book_id);
+    await app.checkEditionImport();
+    assert.deepEqual(requests, [{ url: '/api/profiles/p1/edition-drafts/check-import', body: {
+        run_id: 'run-1', abs_item_id: needsReview.book_id, audible_identifier: 'B00ABC1234:us', recovery_token: 'server-token'
+    } }]);
+    assert.match(app.renderEditionActions(record), /Hardcover Edition Added/);
+});
+
+test('a saved edition request from a different run or item cannot change the action', () => {
+    const app = editionApp();
+    for (const body of [{ run_id: 'other-run', abs_item_id: needsReview.book_id }, { run_id: 'run-1', abs_item_id: 'other-item' }]) {
+        const record = { ...needsReview, edition_action: { outcome: 'failed', submitted_body: body } };
+        assert.match(app.renderEditionActions(record), />Add edition<\/button>/);
+        assert.equal(app.editionRequestState(record, app.openSummary), null);
+    }
 });

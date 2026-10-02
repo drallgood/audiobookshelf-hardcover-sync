@@ -90,6 +90,17 @@ type SyncRunReport struct {
 	SnapshotJSON        SyncSnapshotJSON `gorm:"column:snapshot_json" json:"snapshot_json"`
 }
 
+// EditionActionJournal stores encrypted, profile/run/item-scoped progress for
+// user-confirmed edition requests. The payload can include a short-lived
+// recovery bearer token, so it is never serialized directly to API responses.
+type EditionActionJournal struct {
+	ProfileID        string    `gorm:"primaryKey;column:profile_id" json:"-"`
+	RunID            string    `gorm:"primaryKey;column:run_id" json:"-"`
+	ABSItemID        string    `gorm:"primaryKey;column:abs_item_id" json:"-"`
+	PayloadEncrypted string    `gorm:"type:text;not null" json:"-"`
+	UpdatedAt        time.Time `json:"-"`
+}
+
 const (
 	SyncRunPhaseQueued     = "queued"
 	SyncRunPhaseRunning    = "running"

@@ -216,6 +216,13 @@ func (s *MultiUserService) GetProfile(profileID string) (*database.ProfileWithTo
 	return s.repository.GetProfile(profileID)
 }
 
+// GetProfileHardcoverSettings loads only the current Hardcover credential and
+// sync configuration. Run-detail projection uses it to suppress expired or
+// token-rotated recovery capabilities without decrypting the ABS token.
+func (s *MultiUserService) GetProfileHardcoverSettings(profileID string) (*database.ProfileHardcoverSettings, error) {
+	return s.repository.GetProfileHardcoverSettings(profileID)
+}
+
 // ForgetAssociationResult describes a profile-local request to forget an ABS
 // item's confirmed Hardcover match.
 type ForgetAssociationResult struct {
@@ -317,7 +324,15 @@ func (s *MultiUserService) ForgetEditionAssociation(profileID, absItemID string)
 			Provenance:         association.Provenance,
 		}
 	}
-	if result.DryRun || result.PreviousResolution == nil {
+	if result.DryRun {
+		return result, nil
+	}
+	// Remove pending recovery state before changing the local association. If
+	// this write fails, leave the association intact so a later forget can retry.
+	if err := s.ClearEditionActionsForProfileItem(profileID, absItemID); err != nil {
+		return nil, fmt.Errorf("failed to clear pending edition requests for profile %s item %s: %w", profileID, absItemID, err)
+	}
+	if result.PreviousResolution == nil {
 		return result, nil
 	}
 
@@ -2144,6 +2159,40 @@ func encodeProfileID(profileID string) string {
 func cloneSyncSnapshot(snapshot sync.SyncSnapshot) *sync.SyncSnapshot {
 	copyOf := snapshot
 	copyOf.BookOutcomes = append([]sync.BookOutcomeRecord(nil), snapshot.BookOutcomes...)
+	for i := range copyOf.BookOutcomes {
+		copyOf.BookOutcomes[i].EditionAction = cloneEditionAction(copyOf.BookOutcomes[i].EditionAction)
+	}
+	return &copyOf
+}
+
+func cloneEditionAction(action *sync.EditionActionRecord) *sync.EditionActionRecord {
+	if action == nil {
+		return nil
+	}
+	copyOf := *action
+	if action.Data != nil {
+		data := *action.Data
+		copyOf.Data = &data
+	}
+	if action.SubmittedBody != nil {
+		body := *action.SubmittedBody
+		body.Title = cloneString(action.SubmittedBody.Title)
+		body.Subtitle = cloneString(action.SubmittedBody.Subtitle)
+		body.ASIN = cloneString(action.SubmittedBody.ASIN)
+		body.ISBN10 = cloneString(action.SubmittedBody.ISBN10)
+		body.ISBN13 = cloneString(action.SubmittedBody.ISBN13)
+		body.ReleaseDate = cloneString(action.SubmittedBody.ReleaseDate)
+		body.EditionFormat = cloneString(action.SubmittedBody.EditionFormat)
+		copyOf.SubmittedBody = &body
+	}
+	return &copyOf
+}
+
+func cloneString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	copyOf := *value
 	return &copyOf
 }
 

@@ -467,6 +467,10 @@ components:
         recovery_token:
           type: string
           description: Opaque signed proof that the client received this exact submitted attempt.
+        recovery_expires_at:
+          type: integer
+          format: int64
+          description: Unix timestamp of the original recovery token's expiry.
 
     EditionImportCheckRequest:
       type: object
@@ -758,6 +762,8 @@ components:
         edition_added:
           type: boolean
           description: A matching confirmed edition addition is currently saved for this needs-review item. Historical outcomes and counts are unchanged.
+        edition_action:
+          $ref: '#/components/schemas/EditionActionState'
         hardcover_title: {type: string}
         hardcover_author: {type: string}
         hardcover_published_year: {type: string}
@@ -769,6 +775,52 @@ components:
         hardcover_series: {type: string}
         hardcover_series_number: {type: string}
         updated_at: {type: string, format: date-time}
+
+    EditionActionState:
+      type: object
+      description: >-
+        Durable edition request state for this exact profile, run, and item.
+        Restores pending recovery, final failure guidance, or safe retry without
+        changing historical outcomes or counts. Recovery tokens are returned
+        only to callers with profile write access and remain subject to their
+        original expiry and Hardcover token binding.
+      required: [outcome, submitted_body]
+      properties:
+        outcome:
+          type: string
+          enum: [unconfirmed, created, transport_unknown, failed, not_submitted]
+        http_status:
+          type: integer
+        error:
+          type: string
+        error_code:
+          type: string
+        submitted_body:
+          type: object
+          description: Original request fields needed to restore the recovery or retry dialog.
+          required: [run_id, abs_item_id]
+          properties:
+            run_id: {type: string}
+            abs_item_id: {type: string}
+            audible_identifier: {type: string}
+          additionalProperties: true
+        data:
+          description: Recovery data or the final wrong-format edition result, when available.
+          type: object
+          properties:
+            audible_identifier: {type: string}
+            hardcover_book_id: {type: string}
+            recovery_token:
+              type: string
+              description: Present only when usable and the caller can change this profile.
+            recovery_expires_at:
+              type: integer
+              format: int64
+              description: Original signed recovery expiry, as Unix seconds.
+            hardcover_edition_id: {type: string}
+            reading_format_id: {type: string}
+            hardcover_edition_url: {type: string, format: uri}
+            guidance: {type: string}
 
     SyncSnapshot:
       type: object
@@ -1346,8 +1398,11 @@ paths:
         malformed and no `audible_identifier` is supplied, a parseable source
         ISBN may be used for format-aware audiobook edition creation. A matching
         audiobook edition of the recorded book is reused; otherwise
-        `insert_edition` is used. Ebooks use format-aware `insert_edition`. A
-        successful result is verified and saved as a profile-local match before
+        `insert_edition` is used. Ebooks use format-aware `insert_edition`.
+        The server durably records the attempt before a catalogue write and
+        exposes its state as `edition_action` in run details. Unresolved and
+        final failed attempts block another create for the same run and item;
+        a definitive `not_submitted` result allows retry. A successful result is verified and saved as a profile-local match before
         the response is returned. With `resync: true`, the book's read status is
         then synced under the same profile guard and state lock, and the result
         is returned in `resync`; a resync failure is

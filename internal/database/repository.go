@@ -364,6 +364,87 @@ func (r *Repository) ListTerminalSyncRunReports(profileID string, limit int) ([]
 	return reports, nil
 }
 
+// SaveEditionAction stores a JSON action payload encrypted at rest. The
+// profile/run/item tuple is the journal identity; callers hold the profile
+// operation gate while updating it.
+func (r *Repository) SaveEditionAction(profileID, runID, absItemID string, payload []byte) error {
+	if profileID == "" || runID == "" || absItemID == "" {
+		return errors.New("profile ID, run ID, and ABS item ID are required for an edition action")
+	}
+	if !json.Valid(payload) {
+		return errors.New("edition action payload must be valid JSON")
+	}
+	if r.encryptor == nil {
+		return errors.New("edition action encryption is unavailable")
+	}
+	encrypted, err := r.encryptor.Encrypt(string(payload))
+	if err != nil {
+		return fmt.Errorf("failed to encrypt edition action: %w", err)
+	}
+	journal := EditionActionJournal{
+		ProfileID: profileID, RunID: runID, ABSItemID: absItemID,
+		PayloadEncrypted: encrypted, UpdatedAt: time.Now().UTC(),
+	}
+	if err := r.db.GetDB().Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "profile_id"}, {Name: "run_id"}, {Name: "abs_item_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"payload_encrypted", "updated_at"}),
+	}).Create(&journal).Error; err != nil {
+		return fmt.Errorf("failed to persist edition action: %w", err)
+	}
+	return nil
+}
+
+// GetEditionAction retrieves and decrypts one exact action journal entry.
+func (r *Repository) GetEditionAction(profileID, runID, absItemID string) ([]byte, bool, error) {
+	var journal EditionActionJournal
+	err := r.db.GetDB().Where("profile_id = ? AND run_id = ? AND abs_item_id = ?", profileID, runID, absItemID).First(&journal).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to retrieve edition action: %w", err)
+	}
+	if r.encryptor == nil {
+		return nil, false, errors.New("edition action decryption is unavailable")
+	}
+	plaintext, err := r.encryptor.Decrypt(journal.PayloadEncrypted)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to decrypt edition action: %w", err)
+	}
+	return []byte(plaintext), true, nil
+}
+
+// ListEditionActionsForRun retrieves all decrypted item actions for one
+// profile/run pair. It never crosses either scope boundary.
+func (r *Repository) ListEditionActionsForRun(profileID, runID string) (map[string][]byte, error) {
+	var journals []EditionActionJournal
+	if err := r.db.GetDB().Where("profile_id = ? AND run_id = ?", profileID, runID).Find(&journals).Error; err != nil {
+		return nil, fmt.Errorf("failed to list edition actions: %w", err)
+	}
+	actions := make(map[string][]byte, len(journals))
+	for _, journal := range journals {
+		if r.encryptor == nil {
+			return nil, errors.New("edition action decryption is unavailable")
+		}
+		plaintext, err := r.encryptor.Decrypt(journal.PayloadEncrypted)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decrypt edition action for item %s: %w", journal.ABSItemID, err)
+		}
+		actions[journal.ABSItemID] = []byte(plaintext)
+	}
+	return actions, nil
+}
+
+// DeleteEditionActionsForProfileItem clears every run-scoped action for an
+// item after its local association is confirmed or explicitly forgotten.
+func (r *Repository) DeleteEditionActionsForProfileItem(profileID, absItemID string) error {
+	if err := r.db.GetDB().Where("profile_id = ? AND abs_item_id = ?", profileID, absItemID).
+		Delete(&EditionActionJournal{}).Error; err != nil {
+		return fmt.Errorf("failed to clear edition actions for item %s: %w", absItemID, err)
+	}
+	return nil
+}
+
 func loadOrCreateSyncStateForUpdate(tx *gorm.DB, profileID string) (*ProfileSyncState, error) {
 	var state ProfileSyncState
 	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("profile_id = ?", profileID).First(&state).Error
@@ -400,6 +481,10 @@ func (r *Repository) retainNewestSyncRunReports(tx *gorm.DB, profileID string) e
 		SyncRunPhaseCompleted, SyncRunPhaseCanceled, SyncRunPhaseFailed,
 	}, keepRunIDs).Delete(&SyncRunReport{}).Error; err != nil {
 		return fmt.Errorf("failed to retain newest sync run reports: %w", err)
+	}
+	if err := tx.Where("profile_id = ? AND run_id NOT IN ?", profileID, keepRunIDs).
+		Delete(&EditionActionJournal{}).Error; err != nil {
+		return fmt.Errorf("failed to remove edition actions for evicted sync runs: %w", err)
 	}
 	return nil
 }
@@ -849,12 +934,21 @@ func (r *Repository) UpdateUserConfig(profileID, audiobookshelfURL, audiobookshe
 
 // DeleteProfile soft deletes a sync profile by setting active to false
 func (r *Repository) DeleteProfile(profileID string) error {
-	result := r.db.GetDB().Model(&SyncProfile{}).Where("id = ?", profileID).Update("active", false)
-	if result.Error != nil {
-		return fmt.Errorf("failed to delete sync profile: %w", result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return fmt.Errorf("sync profile not found: %s", profileID)
+	err := r.db.GetDB().Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&SyncProfile{}).Where("id = ?", profileID).Update("active", false)
+		if result.Error != nil {
+			return fmt.Errorf("failed to delete sync profile: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return fmt.Errorf("sync profile not found: %s", profileID)
+		}
+		if err := tx.Where("profile_id = ?", profileID).Delete(&EditionActionJournal{}).Error; err != nil {
+			return fmt.Errorf("failed to clear edition actions for deleted profile: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
 	r.logger.Info("Deleted sync profile", map[string]interface{}{

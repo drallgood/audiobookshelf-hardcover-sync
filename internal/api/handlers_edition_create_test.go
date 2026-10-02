@@ -291,6 +291,60 @@ func TestCreateEditionFromDraftReturnsStructuredRecoveryForSubmittedTimeout(t *t
 	require.False(t, exists, "an unconfirmed attempt must not save local state")
 }
 
+func TestCreateEditionFromDraftJournalFailureSendsNoCatalogueWrite(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`, "us")
+	configureEditionCreateRoute(t, fixture)
+	addCompletedNeedsReviewRun(t, fixture, "run-journal-save-fail", editionCreateRecord())
+	var importCalls atomic.Int32
+	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+		return editionCreateHardcoverStub{importFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+			importCalls.Add(1)
+			return nil, errors.New("the catalogue write must not be reached")
+		}}
+	}
+	require.NoError(t, fixture.db.GetDB().Migrator().DropTable(&database.EditionActionJournal{}))
+
+	response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-journal-save-fail","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`)
+	require.Equal(t, http.StatusInternalServerError, response.Code, response.Body.String())
+	require.EqualValues(t, 0, importCalls.Load(), "the remote catalogue mutation is fail-closed on journal persistence errors")
+}
+
+func TestCreateEditionFromDraftDuplicatePreservesPendingJournalWithoutResubmitting(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`, "us")
+	configureEditionCreateRoute(t, fixture)
+	addCompletedNeedsReviewRun(t, fixture, "run-duplicate-pending", editionCreateRecord())
+	var importCalls atomic.Int32
+	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+		return editionCreateHardcoverStub{importFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+			importCalls.Add(1)
+			return nil, hardcover.ErrRegionalAudiobookImportTimeout
+		}}
+	}
+	body := `{"run_id":"run-duplicate-pending","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`
+	first := postEditionCreate(t, fixture, fixture.owner, body)
+	require.Equal(t, http.StatusServiceUnavailable, first.Code, first.Body.String())
+	var firstEnvelope struct {
+		Data struct {
+			RecoveryToken string `json:"recovery_token"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(first.Body.Bytes(), &firstEnvelope))
+	require.NotEmpty(t, firstEnvelope.Data.RecoveryToken)
+
+	duplicate := postEditionCreate(t, fixture, fixture.owner, body)
+	require.Equal(t, http.StatusConflict, duplicate.Code, duplicate.Body.String())
+	var duplicateEnvelope struct {
+		Outcome       string                   `json:"outcome"`
+		EditionAction sync.EditionActionRecord `json:"edition_action"`
+	}
+	require.NoError(t, json.Unmarshal(duplicate.Body.Bytes(), &duplicateEnvelope))
+	require.Equal(t, editionOutcomeUnconfirmed, duplicateEnvelope.Outcome)
+	require.Equal(t, editionOutcomeUnconfirmed, duplicateEnvelope.EditionAction.Outcome)
+	require.Equal(t, firstEnvelope.Data.RecoveryToken, duplicateEnvelope.EditionAction.Data.RecoveryToken)
+	require.Equal(t, "run-duplicate-pending", duplicateEnvelope.EditionAction.SubmittedBody.RunID)
+	require.EqualValues(t, 1, importCalls.Load(), "a duplicate request must preserve the pending action without another import")
+}
+
 func TestCheckEditionImportPersistsReadOnlyRecoveryAndIsIdempotent(t *testing.T) {
 	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`, "us")
 	configureEditionCreateRoute(t, fixture)
@@ -390,18 +444,29 @@ func TestCheckEditionImportRejectsTamperedTokenBeforeExternalLookup(t *testing.T
 	addCompletedNeedsReviewRun(t, fixture, "run-check-tampered", editionCreateRecord())
 	var externalCalls atomic.Int32
 	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
-		return editionCreateHardcoverStub{checkFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, bool, error) {
-			externalCalls.Add(1)
-			return nil, false, nil
-		}}
+		return editionCreateHardcoverStub{
+			importFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+				return nil, hardcover.ErrRegionalAudiobookImportTimeout
+			},
+			checkFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, bool, error) {
+				externalCalls.Add(1)
+				return nil, false, nil
+			},
+		}
 	}
-	claims := editionRecoveryClaims{
-		ProfileID: "draft-profile", RunID: "run-check-tampered", ABSItemID: "abs-item-1",
-		HardcoverBookID: "42", AudibleIdentifier: "B0SOURCE12:uk",
+	created := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-check-tampered","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`)
+	require.Equal(t, http.StatusServiceUnavailable, created.Code, created.Body.String())
+	var createdEnvelope struct {
+		Data struct {
+			RecoveryToken string `json:"recovery_token"`
+		} `json:"data"`
 	}
-	token := signEditionRecoveryToken("hardcover-token", claims)
+	require.NoError(t, json.Unmarshal(created.Body.Bytes(), &createdEnvelope))
+	require.NotEmpty(t, createdEnvelope.Data.RecoveryToken)
+	beforeABS := fixture.absRequests.Load()
+	tamperedToken := createdEnvelope.Data.RecoveryToken + "x"
 	response := postEditionImportCheck(t, fixture, fixture.owner,
-		fmt.Sprintf(`{"run_id":"run-check-tampered","abs_item_id":"abs-item-1","audible_identifier":"B0OTHER123:uk","recovery_token":%q}`, token))
+		fmt.Sprintf(`{"run_id":"run-check-tampered","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk","recovery_token":%q}`, tamperedToken))
 	require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
 	var envelope struct {
 		ErrorCode string `json:"error_code"`
@@ -411,7 +476,13 @@ func TestCheckEditionImportRejectsTamperedTokenBeforeExternalLookup(t *testing.T
 	require.Equal(t, "edition_recovery_invalid", envelope.ErrorCode)
 	require.Equal(t, editionOutcomeNotSubmitted, envelope.Outcome)
 	require.Zero(t, externalCalls.Load())
-	require.Zero(t, fixture.absRequests.Load(), "token validation precedes the fresh ABS source lookup")
+	require.Equal(t, beforeABS, fixture.absRequests.Load(), "token validation precedes the fresh ABS source lookup")
+	storedAction, found, err := fixture.multiUserService.GetEditionAction("draft-profile", "run-check-tampered", "abs-item-1")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, editionOutcomeUnconfirmed, storedAction.Outcome)
+	require.Equal(t, createdEnvelope.Data.RecoveryToken, storedAction.Data.RecoveryToken,
+		"an invalid request token must not revoke the still-valid stored recovery capability")
 }
 
 func TestCheckEditionImportRejectsExpiredTokenBeforeExternalLookup(t *testing.T) {
@@ -552,7 +623,7 @@ func TestCheckEditionImportABSReadFailuresPreserveRecoveryAndCanRetry(t *testing
 	}
 }
 
-func TestCheckEditionImportTokenRotationInvalidatesRecoveryButLeavesCreateAvailable(t *testing.T) {
+func TestCheckEditionImportTokenRotationBlocksResubmissionWithManualRecoveryState(t *testing.T) {
 	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`, "us")
 	configureEditionCreateRoute(t, fixture)
 	addCompletedNeedsReviewRun(t, fixture, "run-check-token-rotation", editionCreateRecord())
@@ -605,15 +676,24 @@ func TestCheckEditionImportTokenRotationInvalidatesRecoveryButLeavesCreateAvaila
 		Outcome   string `json:"outcome"`
 	}
 	require.NoError(t, json.Unmarshal(invalidated.Body.Bytes(), &invalidatedEnvelope))
-	require.Equal(t, "edition_recovery_invalid", invalidatedEnvelope.ErrorCode)
-	require.Equal(t, editionOutcomeNotSubmitted, invalidatedEnvelope.Outcome)
+	require.Equal(t, "edition_recovery_unavailable", invalidatedEnvelope.ErrorCode)
+	require.Equal(t, editionOutcomeTransportUnknown, invalidatedEnvelope.Outcome)
 	require.Zero(t, checkCalls.Load())
 	require.Equal(t, beforeABS, fixture.absRequests.Load(), "rotated tokens are rejected before source or Hardcover lookups")
 
-	// Recovery-token rotation must not disable a later ordinary create action.
+	// A rotated token removes recovery capability but does not make a possibly
+	// submitted import safe to repeat.
 	createdAgain := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-check-token-rotation","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`)
-	require.Equal(t, http.StatusOK, createdAgain.Code, createdAgain.Body.String())
-	require.EqualValues(t, 2, importCalls.Load())
+	require.Equal(t, http.StatusConflict, createdAgain.Code, createdAgain.Body.String())
+	var duplicateEnvelope struct {
+		Outcome       string                   `json:"outcome"`
+		EditionAction sync.EditionActionRecord `json:"edition_action"`
+	}
+	require.NoError(t, json.Unmarshal(createdAgain.Body.Bytes(), &duplicateEnvelope))
+	require.Equal(t, editionOutcomeTransportUnknown, duplicateEnvelope.Outcome)
+	require.Equal(t, editionOutcomeTransportUnknown, duplicateEnvelope.EditionAction.Outcome)
+	require.Empty(t, duplicateEnvelope.EditionAction.Data.RecoveryToken)
+	require.EqualValues(t, 1, importCalls.Load())
 }
 
 func TestCreateEditionFromDraftUsesRecordFromCanceledRun(t *testing.T) {
@@ -1332,19 +1412,28 @@ func TestCreateEditionFromDraftSaveFailureExplainsRecovery(t *testing.T) {
 	addCompletedNeedsReviewRun(t, fixture, "run-create-save-fail", record)
 	var importCalls atomic.Int32
 	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
-		return editionCreateHardcoverStub{importFn: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
-			statePath := editionCreateProfileStatePath(fixture)
-			importCalls.Add(1)
-			if importCalls.Load() == 1 {
-				// The association file is a directory by the time the transaction saves.
-				require.NoError(t, os.Mkdir(statePath, 0700))
-			}
-			return &hardcover.RegionalAudiobookResult{
-				Status: hardcover.RegionalAudiobookCreated, BookID: input.BookID, EditionID: 84,
-				ReadingFormatID:    models.ReadingFormatID(models.ReadingFormatAudiobook),
-				RegionalExternalID: input.ASIN + ":" + strings.ToLower(input.Region),
-			}, nil
-		}}
+		return editionCreateHardcoverStub{
+			importFn: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+				statePath := editionCreateProfileStatePath(fixture)
+				importCalls.Add(1)
+				if importCalls.Load() == 1 {
+					// The association file is a directory by the time the transaction saves.
+					require.NoError(t, os.Mkdir(statePath, 0700))
+				}
+				return &hardcover.RegionalAudiobookResult{
+					Status: hardcover.RegionalAudiobookCreated, BookID: input.BookID, EditionID: 84,
+					ReadingFormatID:    models.ReadingFormatID(models.ReadingFormatAudiobook),
+					RegionalExternalID: input.ASIN + ":" + strings.ToLower(input.Region),
+				}, nil
+			},
+			checkFn: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, bool, error) {
+				return &hardcover.RegionalAudiobookResult{
+					Status: hardcover.RegionalAudiobookCreated, BookID: input.BookID, EditionID: 84,
+					ReadingFormatID:    models.ReadingFormatID(models.ReadingFormatAudiobook),
+					RegionalExternalID: input.ASIN + ":" + strings.ToLower(input.Region),
+				}, true, nil
+			},
+		}
 	}
 	body := `{"run_id":"run-create-save-fail","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`
 	request := httptest.NewRequest(http.MethodPost, "/api/profiles/draft-profile/edition-drafts/create", strings.NewReader(body))
@@ -1354,13 +1443,24 @@ func TestCreateEditionFromDraftSaveFailureExplainsRecovery(t *testing.T) {
 	require.Equal(t, http.StatusBadGateway, response.Code, response.Body.String())
 	require.Contains(t, response.Body.String(), "Verify the Hardcover result before retrying; retrying may create another edition")
 	require.EqualValues(t, 1, importCalls.Load())
+	var failedSaveEnvelope struct {
+		Data struct {
+			AudibleIdentifier string `json:"audible_identifier"`
+			RecoveryToken     string `json:"recovery_token"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &failedSaveEnvelope))
+	require.NotEmpty(t, failedSaveEnvelope.Data.RecoveryToken)
 	require.NoError(t, os.Remove(editionCreateProfileStatePath(fixture)))
 
-	retry := httptest.NewRequest(http.MethodPost, "/api/profiles/draft-profile/edition-drafts/create", strings.NewReader(body))
-	retry.AddCookie(fixture.sessionCookie(t, fixture.owner))
-	retryResponse := httptest.NewRecorder()
-	fixture.routes.ServeHTTP(retryResponse, retry)
-	require.Equal(t, http.StatusOK, retryResponse.Code, retryResponse.Body.String())
+	retry := postEditionCreate(t, fixture, fixture.owner, body)
+	require.Equal(t, http.StatusConflict, retry.Code, retry.Body.String())
+	require.EqualValues(t, 1, importCalls.Load(), "association-save recovery must not issue a second import")
+	checkBody := fmt.Sprintf(`{"run_id":"run-create-save-fail","abs_item_id":"abs-item-1","audible_identifier":%q,"recovery_token":%q}`,
+		failedSaveEnvelope.Data.AudibleIdentifier, failedSaveEnvelope.Data.RecoveryToken)
+	recovered := postEditionImportCheck(t, fixture, fixture.owner, checkBody)
+	require.Equal(t, http.StatusOK, recovered.Code, recovered.Body.String())
+	require.EqualValues(t, 1, importCalls.Load())
 	saved, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
 	require.NoError(t, err)
 	association, exists := saved.GetAssociation("abs-item-1")
@@ -2604,6 +2704,7 @@ func TestEditionImportReportsExistingNonAudiobookEditionAsFinal(t *testing.T) {
 	record.Author = "Author"
 	record.ASIN = "0306406152"
 	addCompletedNeedsReviewRun(t, fixture, "run-wrong-format", record)
+	addCompletedNeedsReviewRun(t, fixture, "run-wrong-format-check", record)
 
 	var upserts atomic.Int32
 	var statusAvailable atomic.Bool
@@ -2648,7 +2749,7 @@ func TestEditionImportReportsExistingNonAudiobookEditionAsFinal(t *testing.T) {
 			RecoveryToken       string `json:"recovery_token"`
 		} `json:"data"`
 	}
-	requireWrongFormat := func(t *testing.T, response *httptest.ResponseRecorder) {
+	requireWrongFormat := func(t *testing.T, runID string, response *httptest.ResponseRecorder) {
 		t.Helper()
 		require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
 		var envelope wrongFormatEnvelope
@@ -2664,16 +2765,27 @@ func TestEditionImportReportsExistingNonAudiobookEditionAsFinal(t *testing.T) {
 		require.NoError(t, err)
 		_, exists := stored.GetAssociation("abs-item-1")
 		require.False(t, exists, "a non-audiobook edition must not be saved as the match")
+		action, found, err := fixture.multiUserService.GetEditionAction("draft-profile", runID, "abs-item-1")
+		require.NoError(t, err)
+		require.True(t, found, "the definitive remote result must survive a browser restart")
+		require.Equal(t, editionOutcomeFailed, action.Outcome)
+		require.Equal(t, "84", action.Data.HardcoverEditionID)
+		require.Equal(t, "1", action.Data.ReadingFormatID)
+		require.NotEmpty(t, action.Data.Guidance)
 	}
 
 	t.Run("create", func(t *testing.T) {
 		statusAvailable.Store(true)
-		requireWrongFormat(t, postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-wrong-format","abs_item_id":"abs-item-1","audible_identifier":"0306406152:us"}`))
+		requireWrongFormat(t, "run-wrong-format", postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-wrong-format","abs_item_id":"abs-item-1","audible_identifier":"0306406152:us"}`))
+		beforeDuplicate := upserts.Load()
+		duplicate := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-wrong-format","abs_item_id":"abs-item-1","audible_identifier":"0306406152:us"}`)
+		require.Equal(t, http.StatusConflict, duplicate.Code, duplicate.Body.String())
+		require.Equal(t, beforeDuplicate, upserts.Load(), "a terminal wrong-format result must not resubmit")
 	})
 
 	t.Run("check import after an unconfirmed create", func(t *testing.T) {
 		statusAvailable.Store(false)
-		created := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-wrong-format","abs_item_id":"abs-item-1","audible_identifier":"0306406152:us"}`)
+		created := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-wrong-format-check","abs_item_id":"abs-item-1","audible_identifier":"0306406152:us"}`)
 		require.Equal(t, http.StatusBadGateway, created.Code, created.Body.String())
 		var envelope wrongFormatEnvelope
 		require.NoError(t, json.Unmarshal(created.Body.Bytes(), &envelope))
@@ -2681,9 +2793,13 @@ func TestEditionImportReportsExistingNonAudiobookEditionAsFinal(t *testing.T) {
 		upsertsBeforeCheck := upserts.Load()
 
 		statusAvailable.Store(true)
-		requireWrongFormat(t, postEditionImportCheck(t, fixture, fixture.owner, fmt.Sprintf(
-			`{"run_id":"run-wrong-format","abs_item_id":"abs-item-1","audible_identifier":"0306406152:us","recovery_token":%q}`, envelope.Data.RecoveryToken)))
+		requireWrongFormat(t, "run-wrong-format-check", postEditionImportCheck(t, fixture, fixture.owner, fmt.Sprintf(
+			`{"run_id":"run-wrong-format-check","abs_item_id":"abs-item-1","audible_identifier":"0306406152:us","recovery_token":%q}`, envelope.Data.RecoveryToken)))
 		require.Equal(t, upsertsBeforeCheck, upserts.Load(), "check-import must not resubmit the import")
+		beforeDuplicate := upserts.Load()
+		duplicate := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-wrong-format-check","abs_item_id":"abs-item-1","audible_identifier":"0306406152:us"}`)
+		require.Equal(t, http.StatusConflict, duplicate.Code, duplicate.Body.String())
+		require.Equal(t, beforeDuplicate, upserts.Load(), "a recovered terminal wrong-format result must not resubmit")
 	})
 }
 
