@@ -19,10 +19,14 @@ const (
 	testISBN13NoTen = "9791032305690"
 )
 
-// isbnSearchBook builds an Audiobookshelf item that has only an ISBN (no ASIN,
-// no title or author), so a miss ends in not-found rather than a title search.
+// isbnSearchBook builds an Audiobookshelf ebook item that has only an ISBN (no
+// ASIN, no title or author), so a miss ends in not-found rather than a title
+// search. ISBN matching applies only to ebooks (Step 11), so this always
+// builds an ebook item.
 func isbnSearchBook(isbn string) models.AudiobookshelfBook {
-	return *toAudiobookshelfBook(createTestBook("isbn-match", "", "", "", isbn))
+	book := *toAudiobookshelfBook(createTestBook("isbn-match", "", "", "", isbn))
+	book.MediaType = "ebook"
+	return book
 }
 
 func hardcoverHit() *models.HardcoverBook {

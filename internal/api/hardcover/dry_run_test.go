@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -41,6 +42,10 @@ func TestClientDryRunSkipsMutations(t *testing.T) {
 	require.NoError(t, client.UpdateUserBookEdition(ctx, 1, 2))
 
 	createdID, err := client.CreateUserBook(ctx, "2", "FINISHED")
+	require.NoError(t, err)
+	assert.Equal(t, "-1", createdID)
+
+	createdID, err = client.CreateUserBookWithEdition(ctx, "2", "FINISHED", &models.Edition{ID: "2", BookID: "1"})
 	require.NoError(t, err)
 	assert.Equal(t, "-1", createdID)
 

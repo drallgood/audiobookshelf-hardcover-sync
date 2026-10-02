@@ -56,7 +56,8 @@ type asinLookupBookEdition struct {
 
 // SearchBookByASINResult finds an edition by exact ASIN criteria and reports
 // whether the result came from editions.asin or a regional Audible mapping.
-// Audiobook Audible mappings take precedence over editions.asin fallbacks.
+// An audiobook matches only through a regional Audible mapping; editions.asin
+// matches ebooks alone.
 func (c *Client) SearchBookByASINResult(ctx context.Context, asin string) (*ASINLookupResult, error) {
 	if asin == "" {
 		return nil, fmt.Errorf("ASIN cannot be empty")
@@ -114,7 +115,8 @@ func (c *Client) SearchBookByASINResult(ctx context.Context, asin string) (*ASIN
 			if formatID == models.ReadingFormatID("audiobook") && exactAudibleMappingID(asin, edition.bookMappings) != "" {
 				mappingCandidates = append(mappingCandidates, candidate)
 			}
-			if edition.asin == asin {
+			// editions.asin identifies only ebooks; audiobooks match by mapping.
+			if formatID != models.ReadingFormatID("audiobook") && edition.asin == asin {
 				fallbackCandidates = append(fallbackCandidates, candidate)
 			}
 		}
@@ -142,7 +144,10 @@ func (c *Client) SearchBookByASINResult(ctx context.Context, asin string) (*ASIN
 }
 
 func asinLookupQuery(asin string, formatID int) (string, map[string]interface{}) {
-	variables := map[string]interface{}{"asin": asin, "format_id": formatID}
+	variables := map[string]interface{}{"format_id": formatID}
+	if formatID != models.ReadingFormatID("audiobook") {
+		variables["asin"] = asin
+	}
 	editionOR := "{asin: {_eq: $asin}}"
 	if formatID == models.ReadingFormatID("audiobook") {
 		regions := audnexregion.Regions()
@@ -151,10 +156,10 @@ func asinLookupQuery(asin string, formatID int) (string, map[string]interface{})
 			variables[variable] = asin + ":" + region
 		}
 		mappingPredicates := strings.Join(asinLookupMappingPredicates(), ", ")
-		editionOR = fmt.Sprintf(`{_or: [{asin: {_eq: $asin}}, {book_mappings: {_or: [%s]}}]}`, mappingPredicates)
+		editionOR = fmt.Sprintf(`{book_mappings: {_or: [%s]}}`, mappingPredicates)
 	}
 	query := fmt.Sprintf(`
-query BookByASIN($asin: String!, $format_id: Int!%s) {
+query BookByASIN($format_id: Int!%s) {
   books(where: {editions: {_and: [{reading_format_id: {_eq: $format_id}}, %s]}}) {
     id
     title
@@ -175,7 +180,7 @@ query BookByASIN($asin: String!, $format_id: Int!%s) {
 
 func asinLookupVariableDeclarations(formatID int) string {
 	if formatID != models.ReadingFormatID("audiobook") {
-		return ""
+		return ", $asin: String!"
 	}
 	regions := audnexregion.Regions()
 	declarations := make([]string, 0, len(regions))

@@ -8,10 +8,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"sync"
 	"testing"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audnex"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/stretchr/testify/require"
@@ -196,5 +198,78 @@ func TestAddWithMetadataCarriesAbridgedIntoTheExport(t *testing.T) {
 		record := NewCollector().AddWithMetadata(MediaMetadata{Title: "Book", Abridged: abridged}, "1", "", "reason", 60, "abs1", nil, "")
 		export := record.ToEditionExport(logger.WithLogger(context.Background(), logger.Get()), nil)
 		require.Equal(t, want, export.EditionInfo, "abridged=%v", abridged)
+	}
+}
+
+// TestAudiobookMismatchExportDoesNotAttachEditionASINOnlyBook exercises the
+// enrichment and saved JSON boundary when Hardcover has an ASIN-only edition.
+func TestAudiobookMismatchExportDoesNotAttachEditionASINOnlyBook(t *testing.T) {
+	const asin = "B0LEGACY04"
+	audnexServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"asin":"B0LEGACY04","title":"ASIN only","authors":[],"narrators":[]}`))
+	}))
+	defer audnexServer.Close()
+	originalFactory := newAudnexClient
+	newAudnexClient = func(log *logger.Logger) *audnex.Client {
+		return audnex.NewClientForTesting(audnexServer.URL, log)
+	}
+	t.Cleanup(func() { newAudnexClient = originalFactory })
+
+	// Model a catalogue with an edition ASIN but no Audible mapping. Return
+	// that book only when the request's filter can actually select it.
+	editionASINFilter := regexp.MustCompile(`\{asin: \{_eq: \$asin\}`)
+	for _, tt := range []struct {
+		name          string
+		readingFormat string
+		formatID      int
+		wantBookID    int
+	}{
+		{name: "audiobook excludes ASIN-only edition", readingFormat: "audiobook", formatID: 2},
+		{name: "ebook retains ASIN-only edition", readingFormat: "ebook", formatID: 4, wantBookID: 14},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					Query     string                 `json:"query"`
+					Variables map[string]interface{} `json:"variables"`
+				}
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+				w.Header().Set("Content-Type", "application/json")
+				if request.Variables["asin"] == asin && request.Variables["format_id"] == float64(tt.formatID) && editionASINFilter.MatchString(request.Query) {
+					response := map[string]interface{}{"data": map[string]interface{}{"books": []interface{}{
+						map[string]interface{}{"id": 14, "title": "ASIN only", "editions": []interface{}{
+							map[string]interface{}{"id": 36, "asin": asin, "reading_format_id": tt.formatID, "book_mappings": []interface{}{}},
+						}},
+					}}}
+					require.NoError(t, json.NewEncoder(w).Encode(response))
+					return
+				}
+				_, _ = w.Write([]byte(`{"data":{"books":[]}}`))
+			}))
+			defer server.Close()
+			hc := hardcover.CreateTestClient(server)
+			collector := NewCollector()
+			record := collector.AddWithMetadata(MediaMetadata{
+				Title: "ASIN only", ASIN: asin, ReadingFormat: tt.readingFormat,
+			}, "abs-item", "", "No verified edition match", 3600, "abs-item", hc, "us")
+			if tt.wantBookID == 0 {
+				require.Empty(t, record.HardcoverBookID)
+			} else {
+				require.Equal(t, "14", record.HardcoverBookID)
+			}
+
+			dir := t.TempDir()
+			require.NoError(t, saveToFile(context.Background(), nil, dir, nil, collector.GetAll()))
+			files, err := filepath.Glob(filepath.Join(dir, "edition_*.json"))
+			require.NoError(t, err)
+			require.Len(t, files, 1)
+			data, err := os.ReadFile(files[0])
+			require.NoError(t, err)
+			var exported EditionExport
+			require.NoError(t, json.Unmarshal(data, &exported))
+			require.Equal(t, tt.wantBookID, exported.BookID)
+			require.Equal(t, asin, exported.ASIN)
+		})
 	}
 }

@@ -94,6 +94,12 @@ After a sync finishes or is canceled, open **View Details** and select **Add
 edition** on an eligible needs-review book. You need permission to change the
 profile and a Hardcover token with `write:catalog:append` access.
 
+Permission results are retained for the profile and token while the app is
+running. Use **Refresh permissions** in View Details after granting token
+scopes; changing the token also clears the result. Pending Audible imports
+are checked with increasing waits of up to five seconds to conserve API
+requests, and the immediate resync reuses freshly verified data.
+
 Review the preview, then confirm to add or reuse a Hardcover edition. Audiobooks
 need an Audible ASIN in Audiobookshelf; their metadata is read-only, and the app
 finds the Audible region automatically. Ebooks need an ASIN or ISBN, and you can
@@ -116,6 +122,12 @@ If an import cannot be confirmed, follow the dialog's recovery guidance:
   another import while its outcome is unknown, including after a page reload.
 - Use **Retry add edition** when the dialog confirms nothing was submitted.
   Restore access or wait for the displayed service/quota limit before retrying.
+
+Some Audible ASINs are also ISBN-10s. Hardcover may attach such an import to an
+existing edition with that ISBN that is not an audiobook. The app does not save
+that edition as the match, and trying again returns the same edition. Use
+**Report a problem on Hardcover** to open that edition, sign in, and report it so its
+format can be corrected, then run a new sync.
 
 Matched books offer **Forget match** to clear this app's saved match. Nothing is
 deleted from Hardcover. The next sync searches again and may find the same
@@ -193,6 +205,21 @@ and retry guidance.
 token permits adding audiobook or ebook editions. It requires profile write
 access and does not change the Hardcover catalogue.
 
+Results are cached per profile and token without automatic expiry while the
+app is running. View Details checks them on demand; sync startup does not
+probe them. `POST /api/profiles/{id}/edition-capability/refresh` checks both
+permissions again and requires profile write access. **Refresh permissions**
+in View Details calls this route. Changing the token clears cached evidence.
+
+Hardcover-side scope changes or token revocation do not clear this local
+cache. After changing permissions, refresh them before relying on the displayed
+result. A cached allowed result does not override Hardcover's authorization:
+a revoked token can still fail an edition write. API clients can call the
+refresh route above. The standalone `edition create` CLI uses a fresh client
+for each invocation and does not use the server's permission cache; after
+correcting a confirmed permission denial, rerun the command with the current
+token. For an uncertain write result, inspect Hardcover before retrying.
+
 A confirmed permission denial disables **Add edition**. An inconclusive check
 allows an attempt, but does not guarantee success. Dry run skips the permission
 check and never creates an edition. See [OpenAPI](docs/openapi.yaml) for response
@@ -203,13 +230,25 @@ for implementation details.
 
 Sync checks a saved local match before searching Hardcover. It stores an
 audiobook match only when an exact, region-qualified Audible mapping confirms
-the edition; other audiobook ASIN, ISBN, and title/author results continue to
-be checked through read-only lookups but are not saved. For ebooks, it stores
-a match whenever an exact `editions.asin` match or an exact ISBN match
-confirms the edition. These associations live with the CLI sync state or the
-individual web profile's state and survive restarts when that file is kept.
-Audiobook ASIN lookup checks existing regional Audible mappings before its
-ASIN fallback; ebook ASIN lookup continues to use Kindle editions. Sync
+the edition; audiobook title/author results continue to be checked through
+read-only lookups but are not saved. For ebooks, it stores a match whenever an
+exact `editions.asin` match or an exact ISBN match confirms the edition. These
+associations live with the CLI sync state or the individual web profile's
+state and survive restarts when that file is kept. Audiobook ASIN lookup uses
+regional Audible mappings only; an edition's own `asin` field is no longer used
+to match an audiobook, and neither is ISBN, whether an edition's own field or a
+bare ISBN search. An audiobook whose only Hardcover link was one of those
+becomes `needs_review` when title/author search finds the book (resolve it
+with the add-edition action) or `not_found` when it does not (fix it in
+Hardcover or with the `edition` CLI and a book ID). Because every audiobook
+match method that remains valid is saved as an association, an audiobook whose
+checkpoint has no saved association is reclassified the very next time it is
+evaluated, in the same sync run, rather than waiting for its progress or
+status to change or for a second sync to notice; see
+[MIGRATION.md](MIGRATION.md) for what this means for an existing deployment.
+Ebook ASIN lookup continues to use Kindle editions, ahead of ISBN, both
+unchanged. An unchanged, already-synced book keeps its Hardcover edition until
+its progress or status changes; use forget match to rematch one now. Sync
 matching only reads the Hardcover catalogue; it does not add or change books
 or editions there. Dry run can reuse an existing association but does not save
 or forget one.
@@ -1051,10 +1090,11 @@ If sync reports:
 
 it means the app could not confidently match your AudiobookShelf item to a specific Hardcover audiobook edition.
 
-For ISBN matching, sync checks the ISBN recorded in Audiobookshelf and, when
-its checksum permits conversion, the corresponding ISBN-10 or ISBN-13 form.
-It matches only Hardcover editions of the item's reading format, so an ebook
-ISBN cannot select an audiobook edition.
+For ebooks, sync checks the ISBN recorded in Audiobookshelf and, when its
+checksum permits conversion, the corresponding ISBN-10 or ISBN-13 form. It
+matches only ebook editions. Audiobooks require a saved match or an exact
+regional Audible mapping; ISBN does not match them. If title/author search
+finds the book, use **Add edition** in View Details to resolve it.
 
 The web UI does not include a one-click "link edition" action. API clients can
 request a read-only draft for an Audiobookshelf item using the profile-scoped

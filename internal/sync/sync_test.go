@@ -563,6 +563,7 @@ func TestProcessLibraryReturnsCheckpointFailure(t *testing.T) {
 func TestProcessLibraryCheckpointsOnceThenReturnsCancellation(t *testing.T) {
 	svc, mockHC := createTestService()
 	svc.config.Sync.ProcessUnreadBooks = false
+	svc.config.Sync.IncludeEbooks = true
 	svc.statePath = filepath.Join(t.TempDir(), "sync_state.json")
 
 	mockABS := new(MockAudiobookshelfClient)
@@ -572,6 +573,8 @@ func TestProcessLibraryCheckpointsOnceThenReturnsCancellation(t *testing.T) {
 		if i == 0 {
 			// Give the first book enough progress to reach the deterministic
 			// lookup failure path, which records its state before cancellation.
+			// ISBN matching applies only to ebooks (Step 11).
+			book.MediaType = "ebook"
 			book.Media.Metadata.ISBN = "ISBN"
 			book.Progress.CurrentTime = book.Media.Duration / 2
 		} else {

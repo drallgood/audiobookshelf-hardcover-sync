@@ -90,19 +90,19 @@ func TestSearchBookByASINResultAcceptsAudiblePlatformCase(t *testing.T) {
 	require.NotContains(t, request.Query, `name: {_eq: "Audible"}`)
 }
 
-func TestSearchBookByASINResultReturnsAudiobookEditionASINFallback(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+func TestSearchBookByASINResultDoesNotMatchAudiobookByEditionASIN(t *testing.T) {
+	var request asinRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"books":[{"id":5,"title":"Audiobook fallback","editions":[{"id":55,"asin":"B0EXAMPLE05","reading_format_id":2,"book_mappings":[]}]}]}}`))
+		_, _ = w.Write([]byte(`{"data":{"books":[{"id":5,"title":"ASIN-only audiobook","editions":[{"id":55,"asin":"B0EXAMPLE05","reading_format_id":2,"book_mappings":[]}]}]}}`))
 	}))
 	defer server.Close()
 
 	result, err := CreateTestClient(server).SearchBookByASINResult(context.Background(), "B0EXAMPLE05")
 	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Equal(t, "55", result.Book.EditionID)
-	require.Equal(t, ASINMatchEditionASIN, result.MatchKind)
-	require.Empty(t, result.RegionalExternalID)
+	require.Nil(t, result, "an editions.asin-only audiobook must not match")
+	require.NotContains(t, request.Query, "asin: {_eq: $asin}")
 }
 
 func TestSearchBookByASINResultKeepsEbookASINMatchingAndIgnoresMappings(t *testing.T) {
@@ -123,6 +123,7 @@ func TestSearchBookByASINResultKeepsEbookASINMatchingAndIgnoresMappings(t *testi
 	require.Empty(t, result.RegionalExternalID)
 	require.Equal(t, float64(4), request.Variables["format_id"])
 	require.NotContains(t, request.Query, "book_mappings")
+	require.Contains(t, request.Query, "asin: {_eq: $asin}")
 }
 
 func TestSearchBookByASINResultRejectsUnexpectedReadingFormat(t *testing.T) {

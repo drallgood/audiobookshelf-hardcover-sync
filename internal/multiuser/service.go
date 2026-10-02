@@ -101,28 +101,29 @@ type profileRunGate struct {
 
 // MultiUserService manages sync operations for multiple users
 type MultiUserService struct {
-	repository                   *database.Repository
-	logger                       *logger.Logger
-	globalConfig                 *config.Config
-	hardcoverClientMutex         stdSync.Mutex
-	editionCapabilityCache       map[editionCapabilityCacheKey]editionCapabilityCacheEntry
-	editionCapabilityFlights     map[editionCapabilityFlightKey]*editionCapabilityFlight
-	editionCapabilityClients     map[string]editionCapabilityClientEntry
-	editionCapabilityGenerations map[string]uint64
-	profileHardcoverRateLimiters map[profileHardcoverRateLimiterKey]*util.RateLimiter
-	profileStatuses              map[string]*SyncProfileStatus
-	statusMutex                  stdSync.RWMutex
-	activeSyncs                  map[string]context.CancelFunc
-	activeRuns                   map[string]activeSyncRun
-	syncMutex                    stdSync.RWMutex
-	syncWaitGroup                stdSync.WaitGroup
-	syncServices                 map[string]*sync.Service // Maps profile ID to its sync service
-	serviceRuns                  map[string]uint64
-	latestRuns                   map[string]activeSyncRun
-	profileGates                 map[string]*profileRunGate
-	servicesMutex                stdSync.RWMutex
-	admissionMutex               stdSync.Mutex
-	deletingProfiles             map[string]struct{}
+	repository                      *database.Repository
+	logger                          *logger.Logger
+	globalConfig                    *config.Config
+	hardcoverClientMutex            stdSync.Mutex
+	editionCapabilityCache          map[editionCapabilityCacheKey]editionCapabilityCacheEntry
+	editionCapabilityFlights        map[editionCapabilityFlightKey]*editionCapabilityFlight
+	editionCapabilityRefreshFlights map[editionCapabilityRefreshKey]*editionCapabilityRefreshFlight
+	editionCapabilityClients        map[string]editionCapabilityClientEntry
+	editionCapabilityGenerations    map[string]uint64
+	profileHardcoverRateLimiters    map[profileHardcoverRateLimiterKey]*util.RateLimiter
+	profileStatuses                 map[string]*SyncProfileStatus
+	statusMutex                     stdSync.RWMutex
+	activeSyncs                     map[string]context.CancelFunc
+	activeRuns                      map[string]activeSyncRun
+	syncMutex                       stdSync.RWMutex
+	syncWaitGroup                   stdSync.WaitGroup
+	syncServices                    map[string]*sync.Service // Maps profile ID to its sync service
+	serviceRuns                     map[string]uint64
+	latestRuns                      map[string]activeSyncRun
+	profileGates                    map[string]*profileRunGate
+	servicesMutex                   stdSync.RWMutex
+	admissionMutex                  stdSync.Mutex
+	deletingProfiles                map[string]struct{}
 	// deletedProfiles are lifecycle tombstones: they prevent late callbacks or
 	// new admissions from recreating a removed profile's gate after cleanup.
 	deletedProfiles       map[string]struct{}
@@ -135,23 +136,24 @@ type MultiUserService struct {
 // NewMultiUserService creates a new multi-user service
 func NewMultiUserService(repo *database.Repository, globalConfig *config.Config, log *logger.Logger) *MultiUserService {
 	return &MultiUserService{
-		repository:                   repo,
-		logger:                       log,
-		globalConfig:                 globalConfig,
-		editionCapabilityCache:       make(map[editionCapabilityCacheKey]editionCapabilityCacheEntry),
-		editionCapabilityFlights:     make(map[editionCapabilityFlightKey]*editionCapabilityFlight),
-		editionCapabilityClients:     make(map[string]editionCapabilityClientEntry),
-		editionCapabilityGenerations: make(map[string]uint64),
-		profileHardcoverRateLimiters: make(map[profileHardcoverRateLimiterKey]*util.RateLimiter),
-		profileStatuses:              make(map[string]*SyncProfileStatus),
-		activeSyncs:                  make(map[string]context.CancelFunc),
-		activeRuns:                   make(map[string]activeSyncRun),
-		syncServices:                 make(map[string]*sync.Service),
-		serviceRuns:                  make(map[string]uint64),
-		latestRuns:                   make(map[string]activeSyncRun),
-		profileGates:                 make(map[string]*profileRunGate),
-		deletingProfiles:             make(map[string]struct{}),
-		deletedProfiles:              make(map[string]struct{}),
+		repository:                      repo,
+		logger:                          log,
+		globalConfig:                    globalConfig,
+		editionCapabilityCache:          make(map[editionCapabilityCacheKey]editionCapabilityCacheEntry),
+		editionCapabilityFlights:        make(map[editionCapabilityFlightKey]*editionCapabilityFlight),
+		editionCapabilityRefreshFlights: make(map[editionCapabilityRefreshKey]*editionCapabilityRefreshFlight),
+		editionCapabilityClients:        make(map[string]editionCapabilityClientEntry),
+		editionCapabilityGenerations:    make(map[string]uint64),
+		profileHardcoverRateLimiters:    make(map[profileHardcoverRateLimiterKey]*util.RateLimiter),
+		profileStatuses:                 make(map[string]*SyncProfileStatus),
+		activeSyncs:                     make(map[string]context.CancelFunc),
+		activeRuns:                      make(map[string]activeSyncRun),
+		syncServices:                    make(map[string]*sync.Service),
+		serviceRuns:                     make(map[string]uint64),
+		latestRuns:                      make(map[string]activeSyncRun),
+		profileGates:                    make(map[string]*profileRunGate),
+		deletingProfiles:                make(map[string]struct{}),
+		deletedProfiles:                 make(map[string]struct{}),
 	}
 }
 
@@ -424,7 +426,9 @@ func (s *MultiUserService) UpdateProfileConfig(profileID, audiobookshelfURL, aud
 	if err := s.repository.UpdateUserConfig(profileID, audiobookshelfURL, audiobookshelfToken, hardcoverToken, syncConfig); err != nil {
 		return err
 	}
-	s.invalidateEditionCapabilityProfile(profileID, invalidateRateLimiter)
+	if invalidateRateLimiter {
+		s.invalidateEditionCapabilityProfile(profileID, true)
+	}
 	return nil
 }
 

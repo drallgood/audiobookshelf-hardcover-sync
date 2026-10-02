@@ -537,6 +537,193 @@ test('late capability denial keeps a pending request open for inspection without
     }
 });
 
+test('View Details refreshes denied permissions and ignores an older capability response', async t => {
+    const app = editionApp();
+    const summary = app.openSummary;
+    summary.editionCapabilityLoaded = true;
+    summary.editionCapability = {
+        audiobook: { status: 'denied', can_attempt: false, reason: 'insufficient_scope' },
+        dry_run: false
+    };
+    summary.expandedOutcomes = new Set();
+    app.statuses = { p1: { profile_name: 'Profile One' } };
+
+    const refreshButton = { disabled: false, textContent: 'Refresh permissions' };
+    const content = {
+        innerHTML: '',
+        querySelector: selector => selector === '[data-edition-capability-refresh]' ? refreshButton : null,
+        querySelectorAll: () => []
+    };
+    const tabs = { innerHTML: '' };
+    const previousDocument = global.document;
+    global.document = {
+        ...previousDocument,
+        getElementById(id) { return id === 'sync-summary-content' ? content : id === 'sync-summary-tabs' ? tabs : null; }
+    };
+    t.after(() => { global.document = previousDocument; });
+
+    app.renderDetailsSnapshot({ run_id: 'run-1', state: 'completed', outcome_counts: {}, book_outcomes: [] });
+    assert.match(content.innerHTML, /data-edition-capability-refresh[^>]*>Refresh permissions/);
+
+    const previousCapability = deferred();
+    const refreshedCapability = deferred();
+    let requests = 0;
+    app.fetchJsonWithTimeout = (url, options) => {
+        requests++;
+        if (options?.method === 'POST') {
+            assert.equal(url, '/api/profiles/p1/edition-capability/refresh');
+            return refreshedCapability.promise;
+        }
+        assert.equal(url, '/api/profiles/p1/edition-capability');
+        return previousCapability.promise;
+    };
+    const oldLoad = app.loadEditionCapability(summary);
+    const refresh = app.refreshOpenEditionCapability();
+    const duplicateRefresh = app.refreshOpenEditionCapability();
+    assert.equal(requests, 2, 'a second click does not send another refresh request');
+    assert.equal(refreshButton.disabled, true);
+    assert.equal(refreshButton.textContent, 'Checking…');
+
+    refreshedCapability.resolve({
+        response: { ok: true, status: 200 },
+        data: { success: true, data: { audiobook: { status: 'allowed', can_attempt: true }, dry_run: false } }
+    });
+    await refresh;
+    previousCapability.resolve({
+        response: { ok: true, status: 200 },
+        data: { success: true, data: { audiobook: { status: 'denied', can_attempt: false, reason: 'insufficient_scope' }, dry_run: false } }
+    });
+    await Promise.all([oldLoad, duplicateRefresh]);
+
+    assert.equal(summary.editionCapability.audiobook.status, 'allowed');
+    assert.equal(summary.editionCapabilityLoaded, true);
+    assert.equal(refreshButton.disabled, false);
+    assert.equal(refreshButton.textContent, 'Refresh permissions');
+});
+
+test('View Details permission refresh is hidden from viewers and disabled during dry run', t => {
+    const app = editionApp();
+    const summary = app.openSummary;
+    summary.editionCapabilityLoaded = true;
+    summary.editionCapability = { audiobook: { status: 'unverified', can_attempt: true }, dry_run: false };
+    summary.expandedOutcomes = new Set();
+    app.statuses = { p1: { profile_name: 'Profile One' } };
+    const content = { innerHTML: '', querySelectorAll: () => [] };
+    const tabs = { innerHTML: '' };
+    const previousDocument = global.document;
+    global.document = { ...previousDocument, getElementById: id => id === 'sync-summary-content' ? content : id === 'sync-summary-tabs' ? tabs : null };
+    t.after(() => { global.document = previousDocument; });
+
+    app.renderDetailsSnapshot({ run_id: 'run-1', state: 'completed', outcome_counts: {}, book_outcomes: [] });
+    assert.match(content.innerHTML, /data-edition-capability-refresh[^>]*>Refresh permissions/);
+
+    summary.editionCapability = { audiobook: { status: 'allowed', can_attempt: true }, dry_run: true };
+    app.renderDetailsSnapshot({ run_id: 'run-1', state: 'completed', outcome_counts: {}, book_outcomes: [] });
+    assert.match(content.innerHTML, /data-edition-capability-refresh[^>]*disabled[^>]*>Refresh permissions/);
+
+    app.authEnabled = true;
+    app.currentUser = { role: 'viewer' };
+    app.renderDetailsSnapshot({ run_id: 'run-1', state: 'completed', outcome_counts: {}, book_outcomes: [] });
+    assert.doesNotMatch(content.innerHTML, /data-edition-capability-refresh/);
+});
+
+test('permission refresh follows current capability dry-run state instead of the historical run', async () => {
+    const app = editionApp();
+    const summary = app.openSummary;
+    summary.runContext.dryRun = true;
+    summary.editionCapability = { audiobook: { status: 'denied', can_attempt: false }, dry_run: false };
+    const previousDocument = global.document;
+    global.document = { ...previousDocument, querySelector: () => null };
+    try {
+        let request;
+        app.profileUrl = (profileId, path) => `/api/profiles/${profileId}${path}`;
+        app.fetchJsonWithTimeout = (url, options) => {
+            request = { url, options };
+            return Promise.resolve({
+                response: { ok: true, status: 200 },
+                data: { success: true, data: { audiobook: { status: 'allowed', can_attempt: true }, dry_run: false } }
+            });
+        };
+
+        await app.refreshOpenEditionCapability();
+
+        assert.equal(request.url, '/api/profiles/p1/edition-capability/refresh');
+        assert.equal(request.options.method, 'POST');
+        assert.equal(summary.editionCapability.audiobook.status, 'allowed');
+    } finally {
+        global.document = previousDocument;
+    }
+});
+
+test('pending permission refresh survives replacement of the run summary', async () => {
+    const app = editionApp();
+    const summary = app.openSummary;
+    summary.runId = 'run-1';
+    summary.editionCapability = {
+        audiobook: { status: 'denied', can_attempt: false, reason: 'insufficient_scope' },
+        dry_run: false
+    };
+    app.statuses.p1.snapshot.run_id = 'run-2';
+    app.renderDetailsState = () => {};
+    app.profileUrl = profileId => `/profiles/${profileId}`;
+    const previousDocument = global.document;
+    const content = { querySelectorAll: () => [] };
+    const container = { style: {} };
+    global.document = {
+        ...previousDocument,
+        activeElement: null,
+        getElementById: id => id === 'sync-summary-content' ? content : id === 'sync-summary-container' ? container : null,
+        querySelector: () => null
+    };
+    const pendingCapability = deferred();
+    const oldRunDetails = deferred();
+    const newRunDetails = deferred();
+    const detailRequests = [];
+    app.fetchJsonWithTimeout = (url, options) => {
+        if (options?.method === 'POST') return pendingCapability.promise;
+        detailRequests.push(url);
+        if (url.endsWith('/runs/run-1/details')) {
+            options.signal.addEventListener('abort', () => {
+                const error = new Error('aborted');
+                error.name = 'AbortError';
+                oldRunDetails.resolve(Promise.reject(error));
+            });
+            return oldRunDetails.promise;
+        }
+        return newRunDetails.promise;
+    };
+
+    try {
+        const refresh = app.refreshOpenEditionCapability();
+        const oldDetails = app.fetchAndRenderDetails();
+        const updatedSummary = app.refreshOpenSummary();
+        assert.equal(app.openSummary, summary);
+        assert.equal(summary.runId, 'run-2');
+        assert.deepEqual(detailRequests, [
+            '/profiles/p1/runs/run-1/details',
+            '/profiles/p1/runs/run-2/details'
+        ]);
+        await oldDetails;
+        assert.equal(summary.loading, true, 'finishing the aborted old request must not clear the new request loading state');
+
+        newRunDetails.resolve({ response: { ok: false, status: 500 }, data: {} });
+        await updatedSummary;
+
+        pendingCapability.resolve({
+            response: { ok: true, status: 200 },
+            data: { success: true, data: { audiobook: { status: 'allowed', can_attempt: true }, dry_run: false } }
+        });
+        await refresh;
+
+        assert.equal(summary.editionCapability.audiobook.status, 'allowed');
+        assert.equal(summary.editionCapabilityLoaded, true);
+    } finally {
+        oldRunDetails.resolve({ response: { ok: false, status: 500 }, data: {} });
+        newRunDetails.resolve({ response: { ok: false, status: 500 }, data: {} });
+        global.document = previousDocument;
+    }
+});
+
 test('a capability response from a previous profile cannot update the currently open summary', async () => {
     const app = editionApp();
     let resolveFetch;
@@ -1638,6 +1825,39 @@ test('terminal failed status check clears recovery and prevents another create',
     assert.match(app.renderEditionDialog(dialog), /HTTP 502.*hardcover_import_failed/);
     assert.match(app.renderEditionDialog(dialog), /Another create is disabled/);
     assert.match(app.renderEditionDialog(dialog), /confirm-create" disabled/);
+});
+
+test('an import resolved to a non-audiobook edition is final and links to report that edition', async () => {
+    const wrongFormat = {
+        success: false, outcome: 'failed', error_code: 'hardcover_edition_wrong_format',
+        error: 'Hardcover linked this Audible identifier to existing edition 32307716, which Hardcover lists as a physical book, not an audiobook.',
+        data: { hardcover_book_id: '42', hardcover_edition_id: '32307716', hardcover_edition_url: 'https://evil.example/phish' }
+    };
+    const requireFinal = (app, dialog) => {
+        const html = app.renderEditionDialog(dialog);
+        assert.equal(dialog.outcome, 'failed');
+        assert.match(html, /existing edition 32307716, which Hardcover lists as a physical book/);
+        assert.match(html, /<a class="btn btn-primary" href="https:\/\/hardcover\.app\/editions\/32307716"[^>]*>Report a problem on Hardcover<\/a>/);
+        assert.doesNotMatch(html, /may be stale/);
+        assert.doesNotMatch(html, /evil\.example/);
+        assert.match(html, /HTTP 409.*hardcover_edition_wrong_format/);
+        assert.doesNotMatch(html, /data-edition-dialog="(check-import|confirm-create|retry-create)"/);
+        assert.equal(app.loadPendingEditionRecovery('p1', 'run-1', 'li_1'), null);
+    };
+
+    const createApp = editionApp();
+    const createDialog = stubDialog(createApp, 409, wrongFormat);
+    await createApp.submitEditionCreate();
+    requireFinal(createApp, createDialog);
+
+    const checkApp = editionApp();
+    const checkDialog = stubDialog(checkApp, 503, { success: false, outcome: 'unconfirmed', error_code: 'hardcover_import_unconfirmed', data: {
+        audible_identifier: '0593396960:us', hardcover_book_id: '42', recovery_token: 'opaque-token'
+    } });
+    await checkApp.submitEditionCreate();
+    checkApp.fetchJsonWithTimeout = async () => ({ response: { ok: false, status: 409 }, data: wrongFormat });
+    await checkApp.checkEditionImport();
+    requireFinal(checkApp, checkDialog);
 });
 
 test('invalid recovery token and stale create conflict persist as unknown and direct a fresh sync', async () => {

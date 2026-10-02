@@ -4,11 +4,57 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"sync"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 )
+
+type operationUserBookSnapshotKey struct{}
+
+type operationUserBookSnapshots struct {
+	mu        sync.RWMutex
+	userBooks map[int]*models.HardcoverBook
+}
+
+func withOperationUserBookSnapshots(ctx context.Context) context.Context {
+	return context.WithValue(ctx, operationUserBookSnapshotKey{}, &operationUserBookSnapshots{
+		userBooks: make(map[int]*models.HardcoverBook),
+	})
+}
+
+func operationUserBookSnapshotsFromContext(ctx context.Context) *operationUserBookSnapshots {
+	if ctx == nil {
+		return nil
+	}
+	snapshots, _ := ctx.Value(operationUserBookSnapshotKey{}).(*operationUserBookSnapshots)
+	return snapshots
+}
+
+func (s *Service) getUserBookSnapshot(ctx context.Context, userBookID int) (*models.HardcoverBook, bool) {
+	if snapshots := operationUserBookSnapshotsFromContext(ctx); snapshots != nil {
+		snapshots.mu.RLock()
+		book, found := snapshots.userBooks[userBookID]
+		snapshots.mu.RUnlock()
+		if found {
+			return book, true
+		}
+	}
+	if s.userBookCache == nil {
+		return nil, false
+	}
+	return s.userBookCache.GetByUserBook(userBookID)
+}
+
+func setOperationUserBookSnapshot(ctx context.Context, userBookID int, book *models.HardcoverBook) {
+	if snapshots := operationUserBookSnapshotsFromContext(ctx); snapshots != nil && book != nil {
+		snapshots.mu.Lock()
+		snapshots.userBooks[userBookID] = book
+		snapshots.mu.Unlock()
+	}
+}
 
 // BookResyncResult is the final outcome of a single-book resync.
 type BookResyncResult struct {
@@ -26,6 +72,49 @@ type BookResyncResult struct {
 // state loaded under that lock; it is checkpointed to statePath after the book
 // unless the service is in dry run, in which case nothing is persisted.
 func (s *Service) SyncBook(ctx context.Context, book models.AudiobookshelfBook, syncState *state.State, statePath string) (BookResyncResult, error) {
+	return s.syncBook(ctx, book, nil, syncState, statePath)
+}
+
+// SyncBookWithEdition follows the same per-book sync path as SyncBook while
+// reusing a fresh edition snapshot supplied by the operation that created the
+// matching association. The snapshot must match the association in syncState.
+func (s *Service) SyncBookWithEdition(ctx context.Context, book models.AudiobookshelfBook, verifiedEdition *models.Edition, syncState *state.State, statePath string) (BookResyncResult, error) {
+	if err := validateResyncEdition(book, verifiedEdition, syncState); err != nil {
+		return BookResyncResult{}, err
+	}
+	return s.syncBook(ctx, book, verifiedEdition, syncState, statePath)
+}
+
+func validateResyncEdition(book models.AudiobookshelfBook, edition *models.Edition, syncState *state.State) error {
+	if book.ID == "" {
+		return errors.New("audiobookshelf item ID is required")
+	}
+	if edition == nil {
+		return errors.New("verified Hardcover edition is required")
+	}
+	if syncState == nil {
+		return errors.New("sync state is required")
+	}
+	association, exists := syncState.GetAssociation(book.ID)
+	if !exists {
+		return fmt.Errorf("verified Hardcover edition has no saved association for Audiobookshelf item %s", book.ID)
+	}
+	if !associationMatchesBook(association, book) {
+		return fmt.Errorf("verified Hardcover edition has no matching saved association for Audiobookshelf item %s", book.ID)
+	}
+	editionID, editionIDErr := strconv.Atoi(edition.ID)
+	bookID, bookIDErr := strconv.Atoi(edition.BookID)
+	formatID, formatIDErr := strconv.Atoi(edition.ReadingFormatID)
+	if editionIDErr != nil || editionID <= 0 || bookIDErr != nil || bookID <= 0 || formatIDErr != nil ||
+		(association.ReadingFormat != models.ReadingFormatAudiobook && association.ReadingFormat != models.ReadingFormatEbook) ||
+		association.ABSItemID != book.ID || association.HardcoverEditionID != edition.ID || association.HardcoverBookID != edition.BookID ||
+		formatID != models.ReadingFormatID(association.ReadingFormat) {
+		return fmt.Errorf("verified Hardcover edition does not match the saved association for Audiobookshelf item %s", book.ID)
+	}
+	return nil
+}
+
+func (s *Service) syncBook(ctx context.Context, book models.AudiobookshelfBook, verifiedEdition *models.Edition, syncState *state.State, statePath string) (BookResyncResult, error) {
 	if book.ID == "" {
 		return BookResyncResult{}, errors.New("audiobookshelf item ID is required")
 	}
@@ -59,7 +148,7 @@ func (s *Service) SyncBook(ctx context.Context, book models.AudiobookshelfBook, 
 		return BookResyncResult{}, err
 	}
 
-	processErr := s.processBook(ctx, book, userProgress)
+	processErr := s.processBookWithVerifiedEdition(ctx, book, userProgress, verifiedEdition)
 	if checkpointErr := s.checkpointState(book.ID); checkpointErr != nil {
 		return BookResyncResult{}, checkpointErr
 	}

@@ -136,7 +136,10 @@ Each Hardcover write is sent at most once and only when enough time remains to
 confirm it. If a write fails, the error says whether Hardcover may have
 processed it. When it says so, check the book in Hardcover before retrying. A
 missing catalogue-write permission is reported as such, with no edition
-created.
+created. Each invocation uses a fresh Hardcover client and does not read the
+server's cached permission evidence, so no permission-refresh command is
+needed. After correcting a confirmed permission denial, rerun with the current
+token.
 
 The command prints a JSON result with `success`, `status`, `book_id`,
 `edition_id`, `image_id`, and `reading_format`; it may also include

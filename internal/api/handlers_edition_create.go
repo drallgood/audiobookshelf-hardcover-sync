@@ -92,6 +92,8 @@ type editionCreateResponse struct {
 	// Resync is present only when the request asked for one. A failed resync is
 	// reported here rather than failing the request, because the edition exists.
 	Resync *editionResyncResponse `json:"resync,omitempty"`
+	// sourceEdition is the freshly verified edition snapshot reused by resync.
+	sourceEdition *models.Edition
 
 	// sourceItem is the verified Audiobookshelf item, kept for the optional
 	// resync so it does not need a second lookup.
@@ -159,7 +161,7 @@ func (h *Handler) CreateEditionFromDraft(w http.ResponseWriter, r *http.Request)
 	var resync multiuser.EditionResyncOperation
 	if request.Resync {
 		resync = func(profile *database.ProfileWithTokens, syncState *statepkg.State, statePath string) {
-			response.Resync = h.resyncCreatedEdition(ctx, profile, response.sourceItem, syncState, statePath)
+			response.Resync = h.resyncCreatedEdition(ctx, profile, response.sourceItem, response.sourceEdition, syncState, statePath)
 		}
 	}
 	err = h.multiUserService.CreateEditionWithAssociationAndResync(ctx, profileID, request.ABSItemID, func(profile *database.ProfileWithTokens) (statepkg.Association, error) {
@@ -270,7 +272,7 @@ func (h *Handler) CheckEditionImport(w http.ResponseWriter, r *http.Request) {
 			BookID: bookID, ASIN: asin, Region: region,
 		})
 		if checkErr != nil {
-			if errors.Is(checkErr, hardcover.ErrRegionalAudiobookImportFailed) {
+			if errors.Is(checkErr, hardcover.ErrRegionalAudiobookImportFailed) || errors.Is(checkErr, hardcover.ErrRegionalAudiobookWrongFormat) {
 				return statepkg.Association{}, checkErr
 			}
 			if errors.Is(checkErr, hardcover.ErrRegionalAudiobookIdentityConflict) {
@@ -325,15 +327,20 @@ func decodeEditionImportCheckRequest(w http.ResponseWriter, r *http.Request) (ed
 // resyncCreatedEdition runs the opt-in one-book resync after a successful
 // create. Any failure is returned in the result instead of as an error: the
 // edition already exists and its association is saved.
-func (h *Handler) resyncCreatedEdition(ctx context.Context, profile *database.ProfileWithTokens, item *models.AudiobookshelfBook, syncState *statepkg.State, statePath string) *editionResyncResponse {
+func (h *Handler) resyncCreatedEdition(ctx context.Context, profile *database.ProfileWithTokens, item *models.AudiobookshelfBook, verifiedEdition *models.Edition, syncState *statepkg.State, statePath string) *editionResyncResponse {
 	if item == nil {
 		return &editionResyncResponse{Attempted: false, Error: "resync could not start: the Audiobookshelf item was unavailable"}
 	}
-	resync := h.editionResyncRunner
-	if resync == nil {
-		resync = h.multiUserService.ResyncBook
+	if verifiedEdition == nil {
+		return &editionResyncResponse{Attempted: false, Error: "resync could not start: the verified Hardcover edition was unavailable"}
 	}
-	result, err := resync(ctx, profile, *item, syncState, statePath)
+	var result sync.BookResyncResult
+	var err error
+	if h.editionResyncRunner == nil {
+		result, err = h.multiUserService.ResyncBookWithEdition(ctx, profile, *item, verifiedEdition, syncState, statePath)
+	} else {
+		result, err = h.editionResyncRunner(ctx, profile, *item, syncState, statePath)
+	}
 	if err != nil {
 		h.log.Warn(fmt.Sprintf("Resync after edition creation failed for profile %s: %v", profile.Profile.ID, err))
 		return &editionResyncResponse{Attempted: true, Error: err.Error()}
@@ -591,7 +598,8 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 		if errors.Is(err, hardcover.ErrMutationScopeDenied) {
 			return statepkg.Association{}, fmt.Errorf("Hardcover catalogue write permission is required: %w", err)
 		}
-		if errors.Is(err, hardcover.ErrRegionalAudiobookInvalidInput) || errors.Is(err, hardcover.ErrRegionalAudiobookDryRun) || errors.Is(err, hardcover.ErrRegionalAudiobookImportFailed) {
+		if errors.Is(err, hardcover.ErrRegionalAudiobookInvalidInput) || errors.Is(err, hardcover.ErrRegionalAudiobookDryRun) || errors.Is(err, hardcover.ErrRegionalAudiobookImportFailed) ||
+			errors.Is(err, hardcover.ErrRegionalAudiobookWrongFormat) {
 			return statepkg.Association{}, fmt.Errorf("Hardcover regional audiobook import failed: %w", err)
 		}
 		return statepkg.Association{}, fmt.Errorf("Hardcover regional audiobook import failed: %w", markEditionCreateRemoteOutcomeAmbiguous(err))
@@ -619,7 +627,7 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 	*response = editionCreateResponse{
 		ABSItemID: item.ID, ReadingFormat: models.ReadingFormatAudiobook, Status: string(result.Status),
 		HardcoverBookID: strconv.Itoa(result.BookID), HardcoverEditionID: strconv.Itoa(result.EditionID), RegionalExternalID: regionalID,
-		MetadataPreview: preview, recovery: recovery,
+		MetadataPreview: preview, recovery: recovery, sourceEdition: result.Edition,
 	}
 	return association, nil
 }
@@ -798,6 +806,7 @@ func (h *Handler) createEbook(ctx context.Context, item *models.AudiobookshelfBo
 	*response = editionCreateResponse{
 		ABSItemID: item.ID, ReadingFormat: models.ReadingFormatEbook, Status: status,
 		HardcoverBookID: record.HardcoverBookID, HardcoverEditionID: strconv.Itoa(result.EditionID),
+		sourceEdition: createdEdition,
 	}
 	return association, nil
 }
@@ -938,6 +947,11 @@ func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID strin
 	respond := func(status int, message string) {
 		h.writeEditionCreateStructuredError(w, status, message, errorCode, outcome, recovery)
 	}
+	var wrongFormat *hardcover.RegionalAudiobookWrongFormatError
+	if errors.As(err, &wrongFormat) {
+		h.writeEditionWrongFormatError(w, errorCode, outcome, wrongFormat)
+		return
+	}
 	switch {
 	case errors.Is(err, multiuser.ErrProfileNotFound):
 		respond(http.StatusNotFound, "Sync profile not found")
@@ -1014,8 +1028,51 @@ func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID strin
 	}
 }
 
+// editionWrongFormatData identifies the existing Hardcover edition that a
+// regional import resolved to, so the user can ask Hardcover to correct it.
+type editionWrongFormatData struct {
+	HardcoverBookID     string `json:"hardcover_book_id"`
+	HardcoverEditionID  string `json:"hardcover_edition_id"`
+	ReadingFormatID     string `json:"reading_format_id,omitempty"`
+	HardcoverEditionURL string `json:"hardcover_edition_url"`
+}
+
+// writeEditionWrongFormatError reports a definitive regional import result on
+// the reviewed book whose verified edition is not an audiobook. Hardcover
+// returns the same edition on every resubmission or status check, so no
+// recovery data is offered.
+func (h *Handler) writeEditionWrongFormatError(w http.ResponseWriter, errorCode, outcome string, wrongFormat *hardcover.RegionalAudiobookWrongFormatError) {
+	editionID := strconv.Itoa(wrongFormat.EditionID)
+	message := fmt.Sprintf("Hardcover linked this Audible identifier to existing edition %s, which Hardcover lists as %s, not an audiobook. The match was not saved, and trying again returns the same edition. Report the problem on Hardcover so the edition's format can be corrected, then run a new sync.",
+		editionID, hardcoverReadingFormatName(wrongFormat.ReadingFormatID))
+	h.writeJSONResponse(w, http.StatusConflict, APIResponse{
+		Success: false, Error: message, ErrorCode: errorCode, Outcome: outcome,
+		Data: editionWrongFormatData{
+			HardcoverBookID: strconv.Itoa(wrongFormat.BookID), HardcoverEditionID: editionID,
+			ReadingFormatID:     wrongFormat.ReadingFormatID,
+			HardcoverEditionURL: "https://hardcover.app/editions/" + editionID,
+		},
+	})
+}
+
+// hardcoverReadingFormatName names a Hardcover reading_format_id for users.
+func hardcoverReadingFormatName(formatID string) string {
+	switch formatID {
+	case "1":
+		return "a physical book"
+	case "3":
+		return "both physical and audiobook formats"
+	case "4":
+		return "an ebook"
+	default:
+		return "another format"
+	}
+}
+
 func editionCreateErrorMetadata(err error) (errorCode, outcome string) {
 	switch {
+	case errors.Is(err, hardcover.ErrRegionalAudiobookWrongFormat):
+		return "hardcover_edition_wrong_format", editionOutcomeFailed
 	case errors.Is(err, errEditionCreateRemoteOutcomeAmbiguous), errors.Is(err, errEditionImportUnconfirmed), errors.Is(err, errEditionRecoveryIdentityUnconfirmed):
 		return "hardcover_import_unconfirmed", editionOutcomeUnconfirmed
 	case errors.Is(err, multiuser.ErrEditionAssociationSaveAfterRemoteSuccess):

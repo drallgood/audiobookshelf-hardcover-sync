@@ -263,6 +263,18 @@ func lockProfileGateContext(ctx context.Context, gate *profileRunGate) error {
 // state-file lock for statePath, which CreateEditionWithAssociationAndResync
 // guarantees while it runs a resync operation.
 func (s *MultiUserService) ResyncBook(ctx context.Context, profile *database.ProfileWithTokens, book models.AudiobookshelfBook, syncState *statepkg.State, statePath string) (sync.BookResyncResult, error) {
+	return s.resyncBook(ctx, profile, book, nil, syncState, statePath)
+}
+
+// ResyncBookWithEdition reuses the fresh edition snapshot returned by the
+// operation that created or confirmed the association. SyncBookWithEdition
+// validates the snapshot against the locked state before it skips an edition
+// lookup.
+func (s *MultiUserService) ResyncBookWithEdition(ctx context.Context, profile *database.ProfileWithTokens, book models.AudiobookshelfBook, verifiedEdition *models.Edition, syncState *statepkg.State, statePath string) (sync.BookResyncResult, error) {
+	return s.resyncBook(ctx, profile, book, verifiedEdition, syncState, statePath)
+}
+
+func (s *MultiUserService) resyncBook(ctx context.Context, profile *database.ProfileWithTokens, book models.AudiobookshelfBook, verifiedEdition *models.Edition, syncState *statepkg.State, statePath string) (sync.BookResyncResult, error) {
 	absClient, err := audiobookshelf.NewClientWithNetworkTrust(profile.AudiobookshelfURL, profile.AudiobookshelfToken, s.AudiobookshelfNetworkTrust())
 	if err != nil {
 		return sync.BookResyncResult{}, fmt.Errorf("invalid Audiobookshelf client configuration: %w", err)
@@ -271,7 +283,10 @@ func (s *MultiUserService) ResyncBook(ctx context.Context, profile *database.Pro
 	if err != nil {
 		return sync.BookResyncResult{}, fmt.Errorf("failed to create sync service: %w", err)
 	}
-	return service.SyncBook(ctx, book, syncState, statePath)
+	if verifiedEdition == nil {
+		return service.SyncBook(ctx, book, syncState, statePath)
+	}
+	return service.SyncBookWithEdition(ctx, book, verifiedEdition, syncState, statePath)
 }
 
 // NewHardcoverClient constructs a standalone Hardcover client with deployment-

@@ -449,6 +449,11 @@ class SyncProfileApp {
         bindProfileActions('sync-status', '.status-card[data-profile-id]');
 
         document.getElementById('sync-summary-content').addEventListener('click', (event) => {
+            const refreshPermissions = event.target.closest('button[data-edition-capability-refresh]');
+            if (refreshPermissions) {
+                if (!refreshPermissions.disabled) this.refreshOpenEditionCapability();
+                return;
+            }
             if (!event.target.closest('[data-details-retry]')) return;
             const open = this.openSummary;
             if (open) this.fetchAndRenderDetails({ open, preservePosition: true });
@@ -1417,23 +1422,26 @@ class SyncProfileApp {
             this.clearOpenSummary();
             return;
         }
-        // Replace the open state object rather than mutating it. An older
-        // details response can then never clear or publish the new run.
+        // Advance the run generation so an older details response can never
+        // clear or publish the new run.
         if (runId !== this.openSummary.runId) {
             const previous = this.openSummary;
             previous.detailsController?.abort();
-            this.openSummary = {
-                profileId: previous.profileId,
-                runId,
-                generation: previous.generation + 1,
-                expandedIds: new Set(),
-                expandedOutcomes: new Set(),
-                editionCapability: previous.editionCapability,
-                editionCapabilityLoaded: previous.editionCapabilityLoaded,
-                scrollTop: 0
-            };
-            this.renderDetailsState('loading', this.openSummary);
-            if (!this.openSummary.editionCapabilityLoaded) this.loadEditionCapability(this.openSummary);
+            // Keep the profile-scoped capability request/session alive across
+            // run changes. Incrementing generation still invalidates details
+            // responses for the previous run.
+            previous.runId = runId;
+            previous.generation += 1;
+            previous.expandedIds = new Set();
+            previous.expandedOutcomes = new Set();
+            previous.addedEditionBookIds = this.loadAddedEditionBookIds(previous.profileId, runId);
+            previous.scrollTop = 0;
+            previous.detailsController = null;
+            previous.loading = false;
+            previous.renderedRunId = null;
+            previous.records = new Map();
+            this.renderDetailsState('loading', previous);
+            if (!previous.editionCapabilityLoaded && !previous.editionCapabilityRefreshing) this.loadEditionCapability(previous);
         }
         await this.fetchAndRenderDetails({ open: this.openSummary, preservePosition: true });
     }
@@ -1453,15 +1461,17 @@ class SyncProfileApp {
 
     async loadEditionCapability(open) {
         const authGeneration = this.authSessionGeneration;
+        const requestGeneration = (open.editionCapabilityRequestGeneration || 0) + 1;
+        open.editionCapabilityRequestGeneration = requestGeneration;
         try {
             const { response, data } = await this.fetchJsonWithTimeout(
                 this.profileUrl(open.profileId, '/edition-capability'),
                 { credentials: 'include' }
             );
-            if (authGeneration !== this.authSessionGeneration || this.openSummary !== open) return;
+            if (authGeneration !== this.authSessionGeneration || this.openSummary !== open || open.editionCapabilityRequestGeneration !== requestGeneration) return;
             open.editionCapability = response.ok && data?.success ? data.data : null;
         } catch (_) {
-            if (authGeneration !== this.authSessionGeneration || this.openSummary !== open) return;
+            if (authGeneration !== this.authSessionGeneration || this.openSummary !== open || open.editionCapabilityRequestGeneration !== requestGeneration) return;
             // A failed probe is treated as unverified, so creation remains
             // available and the create response remains authoritative.
             open.editionCapability = null;
@@ -1473,6 +1483,13 @@ class SyncProfileApp {
     refreshEditionActionStates(open) {
         if (this.openSummary !== open) return;
         const content = document.getElementById('sync-summary-content');
+        const capabilityRefresh = content?.querySelector?.('[data-edition-capability-refresh]');
+        if (capabilityRefresh) {
+            const dryRun = open.editionCapability?.dry_run ?? open.runContext?.dryRun;
+            capabilityRefresh.hidden = Boolean(dryRun);
+            capabilityRefresh.disabled = !open.editionCapabilityLoaded || Boolean(dryRun) || Boolean(open.editionCapabilityRefreshing);
+            capabilityRefresh.textContent = open.editionCapabilityRefreshing ? 'Checking…' : 'Refresh permissions';
+        }
         content?.querySelectorAll('[data-edition-action="add"]').forEach(button => {
             const bookId = button.closest('[data-book-id]')?.dataset.bookId;
             const record = open.records?.get(String(bookId));
@@ -1492,6 +1509,46 @@ class SyncProfileApp {
             if (reason) button.title = reason;
             else button.removeAttribute('title');
         });
+    }
+
+    async refreshOpenEditionCapability() {
+        const open = this.openSummary;
+        const dryRun = open?.editionCapability?.dry_run ?? open?.runContext?.dryRun;
+        if (!open || open.editionCapabilityRefreshing || this.isViewer() || dryRun) return;
+        open.editionCapabilityRefreshing = true;
+        const authGeneration = this.authSessionGeneration;
+        const requestGeneration = (open.editionCapabilityRequestGeneration || 0) + 1;
+        open.editionCapabilityRequestGeneration = requestGeneration;
+        this.refreshEditionActionStates(open);
+        try {
+            const { response, data } = await this.fetchJsonWithTimeout(
+                this.profileUrl(open.profileId, '/edition-capability/refresh'),
+                { method: 'POST', credentials: 'include' }
+            );
+            if (authGeneration !== this.authSessionGeneration || this.openSummary !== open
+                || open.editionCapabilityRequestGeneration !== requestGeneration) return;
+            if (response.status === 401 || response.status === 403) {
+                this.handleAuthExpiry();
+                return;
+            }
+            if (response.ok && data?.success) {
+                open.editionCapability = data.data;
+                open.editionCapabilityLoaded = true;
+            } else {
+                this.showToast(this.apiErrorMessage(data, `Could not refresh permissions (HTTP ${response.status}).`), 'error');
+            }
+        } catch (_) {
+            if (authGeneration === this.authSessionGeneration && this.openSummary === open
+                && open.editionCapabilityRequestGeneration === requestGeneration) {
+                this.showToast('Could not refresh permissions. Try again.', 'error');
+            }
+        } finally {
+            if (authGeneration === this.authSessionGeneration && this.openSummary === open
+                && open.editionCapabilityRequestGeneration === requestGeneration) {
+                open.editionCapabilityRefreshing = false;
+                this.refreshEditionActionStates(open);
+            }
+        }
     }
 
     captureDetailViewport(content) {
@@ -1641,8 +1698,10 @@ class SyncProfileApp {
                 console.error('Error loading sync run details:', error);
             }
         } finally {
-            open.loading = false;
-            if (open.detailsController === requestController) open.detailsController = null;
+            if (open.generation === requestGeneration && open.runId === requestRunId) {
+                open.loading = false;
+                if (open.detailsController === requestController) open.detailsController = null;
+            }
         }
     }
 
@@ -1695,9 +1754,11 @@ class SyncProfileApp {
             statusMessage = 'Finalizing sync results.';
         }
         const runError = snapshot.run_error || this.statuses[open.profileId]?.terminal_error || '';
+        const capabilityRefreshDryRun = open.editionCapability?.dry_run ?? open.runContext.dryRun;
+        const capabilityRefreshAction = this.isViewer() ? '' : `<button type="button" class="btn btn-secondary" data-edition-capability-refresh ${!open.editionCapabilityLoaded || capabilityRefreshDryRun ? 'disabled' : ''} ${open.editionCapabilityRefreshing ? 'disabled' : ''}>${open.editionCapabilityRefreshing ? 'Checking…' : 'Refresh permissions'}</button>`;
         content.innerHTML = `
             <div class="sync-summary" data-run-id="${this.escapeHtmlAttribute(snapshot.run_id)}">
-                <div class="summary-header"><h3>Run details</h3><div class="last-sync">${this.escapeHtml(statusTimestamp.label)}${statusTimestamp.timestamp ? `: ${new Date(statusTimestamp.timestamp).toLocaleString()}` : ''}</div></div>
+                <div class="summary-header"><h3>Run details</h3><div class="last-sync">${this.escapeHtml(statusTimestamp.label)}${statusTimestamp.timestamp ? `: ${new Date(statusTimestamp.timestamp).toLocaleString()}` : ''}</div>${capabilityRefreshAction}</div>
                 <p class="status-message">${statusMessage}</p>
                 ${runError ? `<div class="status-message status-error" data-run-error><strong>Run error:</strong> ${this.escapeHtml(runError)}</div>` : ''}
                 <div class="summary-stats">${groups.map(group => `<div class="stat-item ${group.tone}"><span class="stat-value">${group.count}</span><span class="stat-label">${group.label}</span></div>`).join('')}</div>
@@ -1948,6 +2009,7 @@ class SyncProfileApp {
         if (this.profileIsSyncing(open.profileId)) return 'A sync is running for this profile; this action will be available again when it finishes.';
         const ineligible = this.editionCreateIneligibleReason(record, open.runContext);
         if (ineligible) return ineligible;
+        if (open.editionCapabilityRefreshing) return 'Checking whether this profile can add this edition.';
         if (!open.editionCapabilityLoaded) return 'Checking whether this profile can add this edition.';
         const gate = this.editionCapabilityGate(open.editionCapability, record.format);
         return gate.blocked ? gate.reason : '';
@@ -2173,6 +2235,8 @@ class SyncProfileApp {
             body = this.renderForgetBody(dialog);
         } else if (dialog.result) {
             body = this.renderCreateResult(dialog.result);
+        } else if (dialog.outcome === 'failed' && dialog.wrongFormat) {
+            body = this.renderEditionWrongFormat(dialog);
         } else if (dialog.outcome === 'unconfirmed') {
             body = this.renderEditionImportUnconfirmed(dialog);
         } else {
@@ -2470,9 +2534,14 @@ class SyncProfileApp {
                         const fallback = response.status === 403 && !message
                             ? 'The server returned HTTP 403 without a readable explanation. Review the profile access before trying again.'
                             : this.editionFailureMessage(outcome, response.status);
-                        dialog.error = response.status === 403 && !message
-                            ? fallback
-                            : this.editionCreateErrorMessage(response.status, message || fallback);
+                        dialog.wrongFormat = this.editionWrongFormatDetails(outcome, data);
+                        // The wrong-format message is final and self-contained, so it
+                        // omits the generic stale-record hint added for other 409s.
+                        dialog.error = dialog.wrongFormat
+                            ? message
+                            : response.status === 403 && !message
+                                ? fallback
+                                : this.editionCreateErrorMessage(response.status, message || fallback);
                         dialog.errorCode = data?.error_code || '';
                         dialog.errorHttpStatus = response.status;
                         dialog.retryCreate = outcome === 'not_submitted';
@@ -2531,6 +2600,26 @@ class SyncProfileApp {
         const code = String(dialog.recoveryErrorCode || dialog.errorCode || '').replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 80);
         if (!status && !code) return '';
         return `<details class="edition-technical-details"><summary>Technical details</summary><div>${status ? `HTTP ${status}` : ''}${code ? `${status ? ' · ' : ''}Error code: ${this.escapeHtml(code)}` : ''}</div></details>`;
+    }
+
+    // Hardcover resolved the import to an existing edition of the reviewed book
+    // that is not an audiobook. Only a positive numeric edition ID is used, and
+    // the link is built here rather than trusting a server-supplied URL.
+    editionWrongFormatDetails(outcome, data) {
+        if (outcome !== 'failed' || String(data?.error_code || '') !== 'hardcover_edition_wrong_format') return null;
+        const editionId = String(data?.data?.hardcover_edition_id ?? '');
+        if (!/^\d+$/.test(editionId) || Number(editionId) <= 0) return null;
+        return { editionId, editionURL: `https://hardcover.app/editions/${editionId}` };
+    }
+
+    renderEditionWrongFormat(dialog) {
+        const details = dialog.wrongFormat;
+        const message = dialog.error || `Hardcover linked this Audible identifier to existing edition ${details.editionId}, which is not an audiobook. The match was not saved.`;
+        return `<div class="edition-error" role="alert" data-wrong-format><strong>Hardcover added this Audible identifier to a non-audiobook edition</strong>
+            <p>${this.escapeHtml(message)}</p>
+            <p>On the Hardcover edition page, sign in and use <strong>Report</strong> to ask for its format to be changed to Audiobook.</p>
+            ${this.renderEditionTechnicalDetails(dialog)}</div>
+            <div class="form-actions edition-create-actions"><a class="btn btn-primary" href="${this.escapeHtmlAttribute(details.editionURL)}" target="_blank" rel="noopener noreferrer" data-report-edition>Report a problem on Hardcover</a><button type="button" class="btn btn-warning" data-edition-dialog="close">Close</button></div>`;
     }
 
     renderEditionImportUnconfirmed(dialog) {
@@ -2602,6 +2691,7 @@ class SyncProfileApp {
                 dialog.errorHttpStatus = response.status;
                 dialog.errorCode = data.error_code || '';
                 dialog.error = this.apiErrorMessage(data, 'Hardcover confirmed that the import failed. Review the edition details before taking another action.');
+                dialog.wrongFormat = this.editionWrongFormatDetails('failed', data);
                 dialog.checkError = '';
                 this.clearPendingEditionRecovery(dialog.profileId, recovery.runId, recovery.absItemId);
             } else if (
