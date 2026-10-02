@@ -131,9 +131,8 @@ func TestSyncBookOutcomes(t *testing.T) {
 		current := state.NewState()
 		current.UpdateBook(book.ID, 0, "WANT_TO_READ")
 		current.SetHasProgressSeconds(book.ID)
-		// A persisted association is required for "already current" to hold:
-		// without one, the Step 11 migration check clears the checkpoint and
-		// this same sync pass falls through to a full match attempt instead.
+		// Without a source identifier or persisted association, this item must
+		// discard its old checkpoint and attempt a fresh title lookup instead.
 		require.NoError(t, current.SetAssociation(state.Association{
 			ABSItemID: book.ID, HardcoverBookID: "hc-book-1", HardcoverEditionID: "hc-edition-1",
 		}))
@@ -155,7 +154,7 @@ func TestSyncBookOutcomes(t *testing.T) {
 		{name: "composite only", composite: true},
 		{name: "base and composite", base: true, composite: true},
 	} {
-		t.Run("legacy ISBN match reclassifies in the same run/"+checkpointKeys.name, func(t *testing.T) {
+		t.Run("unassociated ISBN checkpoint cannot suppress rematching/"+checkpointKeys.name, func(t *testing.T) {
 			svc, hc, abs := newSyncBookService(t)
 			svc.config.Sync.Incremental = true
 			svc.config.Sync.ProcessUnreadBooks = true
@@ -182,11 +181,19 @@ func TestSyncBookOutcomes(t *testing.T) {
 			assert.Equal(t, OutcomeNotFound, result.Outcome)
 			stored, loadErr := state.LoadState(statePath)
 			require.NoError(t, loadErr)
-			assert.NotContains(t, stored.Books, book.ID, "clear the stale base checkpoint in the first pass")
-			assert.NotContains(t, stored.Books, book.ID+":200", "clear the stale edition checkpoint in the first pass")
+			for key, enabled := range map[string]bool{
+				book.ID:          checkpointKeys.base,
+				book.ID + ":200": checkpointKeys.composite,
+			} {
+				checkpoint, exists := stored.GetBookState(key)
+				assert.Equal(t, enabled, exists)
+				if enabled {
+					assert.Equal(t, state.Book{Status: "WANT_TO_READ", HasProgressSeconds: true}, checkpoint)
+				}
+			}
 			assert.Contains(t, stored.Books, "other-item:201", "preserve other items' checkpoints")
-			// Only read-only lookups are configured. Any mutation would fail
-			// the mock, and the old checkpoint must not survive the migration.
+			// Only read-only lookups are configured. Retained checkpoints must
+			// neither suppress the not-found result nor cause any mutation.
 			hc.AssertExpectations(t)
 		})
 	}

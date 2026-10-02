@@ -69,11 +69,13 @@ ISBN matches are looked up again whenever the item is processed; they are not
 stored as local associations.
 
 Audiobooks previously matched without a saved association are evaluated
-without waiting for progress or status to change. Sync clears their stale
-checkpoint before the incremental "no changes" check, so each item is matched
-again whenever it is processed. An ISBN fallback may now find and sync the
-audiobook when its source ASIN is missing or malformed; otherwise the item is
-reclassified as `needs_review` or `not_found`. A book that already has a saved
+without waiting for progress or status to change. ISBN-only audiobooks keep
+their progress checkpoints but bypass the preliminary "no changes" check so
+their identifiers are resolved again. If the resulting edition, progress,
+status, and activity are unchanged, incremental sync skips writes. Other unassociated
+audiobooks clear stale checkpoints before matching. An ISBN fallback may now
+find and sync the audiobook when its source ASIN is missing or malformed;
+otherwise the item is reclassified as `needs_review` or `not_found`. A book that already has a saved
 association is unaffected and keeps syncing normally. No configuration or
 state-file migration is required.
 

@@ -763,6 +763,77 @@ func TestProcessBookDoesNotReconcileAudiobookISBNOnPostMatchSkip(t *testing.T) {
 	}
 }
 
+func TestProcessBookIncrementalAudiobookISBNRechecksWithoutRepeatingWrites(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		asin        string
+		changedISBN bool
+	}{
+		{name: "missing ASIN"},
+		{name: "malformed ASIN", asin: "not-a-valid-ASIN"},
+		{name: "changed ISBN selects a new edition", changedISBN: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, client := createTestService()
+			svc.config.Sync.Incremental = true
+			svc.config.Sync.ProcessUnreadBooks = true
+			svc.config.Sync.SyncWantToRead = true
+			svc.config.Sync.SyncOwned = false
+			book := isbnSearchBook(testISBN13NoTen)
+			book.MediaType = "book"
+			book.Media.Metadata.ASIN = tt.asin
+			firstLookupCount := 3
+			if tt.changedISBN {
+				firstLookupCount = 2
+			}
+			client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+				Return(hardcoverHit(), nil).Times(firstLookupCount)
+			client.On("GetEdition", mock.Anything, "902").Return(&models.Edition{
+				ID: "902", BookID: "901", ReadingFormatID: "2",
+			}, nil).Once()
+			client.On("GetUserBookID", mock.Anything, 902).Return(903, nil).Once()
+			client.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+				ID: 903, StatusID: 1,
+			}).Return(nil).Once()
+
+			require.NoError(t, svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{}))
+			firstCheckpoint, exists := svc.state.GetBookState(book.ID + ":902")
+			require.True(t, exists)
+			require.Equal(t, "WANT_TO_READ", firstCheckpoint.Status)
+
+			if tt.changedISBN {
+				book.Media.Metadata.ISBN = testISBN13
+				client.On("SearchBookByISBN13", mock.Anything, testISBN13).
+					Return(&models.HardcoverBook{ID: "905", EditionID: "904"}, nil).Twice()
+				client.On("GetEdition", mock.Anything, "904").Return(&models.Edition{
+					ID: "904", BookID: "905", ReadingFormatID: "2",
+				}, nil).Once()
+				client.On("GetUserBookID", mock.Anything, 904).Return(906, nil).Once()
+				client.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+					ID: 906, StatusID: 1,
+				}).Return(nil).Once()
+			}
+
+			require.NoError(t, svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{}))
+			if tt.changedISBN {
+				assert.Equal(t, OutcomeSynced, recordedOutcome(svc, book.ID).Outcome)
+				newCheckpoint, exists := svc.state.GetBookState(book.ID + ":904")
+				require.True(t, exists)
+				assert.Equal(t, "WANT_TO_READ", newCheckpoint.Status)
+			} else {
+				assert.Equal(t, OutcomeAlreadyCurrent, recordedOutcome(svc, book.ID).Outcome)
+				checkpoint, exists := svc.state.GetBookState(book.ID + ":902")
+				require.True(t, exists)
+				assert.Equal(t, firstCheckpoint, checkpoint)
+				client.AssertNumberOfCalls(t, "UpdateUserBookStatus", 1)
+			}
+			_, saved := svc.state.GetAssociation(book.ID)
+			assert.False(t, saved, "fresh ISBN lookups must remain ephemeral")
+			client.AssertExpectations(t)
+		})
+	}
+}
+
 func TestProcessBookRechecksAudiobookISBNIdentityBeforeMutations(t *testing.T) {
 	tests := []struct {
 		name       string

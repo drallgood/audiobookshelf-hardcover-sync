@@ -2179,21 +2179,19 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 
 	// Early filtering for incremental sync - check if book needs syncing
 	if s.config.Sync.Incremental {
-		// Only an exact regional Audible ASIN mapping creates a durable
-		// audiobook association. ISBN-only matches remain ephemeral, and title
-		// candidates require review. Re-resolve items without an association
-		// every run so stale checkpoints cannot hide identifier changes.
-		// Clear the stale checkpoint before NeedsSync runs below so this same
-		// sync pass falls through to a full match attempt (instead of coasting
-		// on unchanged progress/status) rather than requiring a second sync to
-		// notice. This must stay after every policy skip above so a book
-		// already skipped this run is never pulled into a match attempt here,
-		// and it never touches a book that already has a persisted association.
+		// Re-resolve association-free audiobooks before trusting a checkpoint.
+		// ISBN-only matches keep their progress checkpoints so an unchanged,
+		// freshly resolved edition can skip writes at the post-match guard.
+		// Other unassociated audiobooks must discard legacy checkpoints that
+		// could hide unsupported direct-ASIN matches or title-only candidates.
+		reResolveAudiobookISBN := false
 		if s.state != nil && book.ReadingFormat() == models.ReadingFormatAudiobook {
 			if _, hasAssociation := s.state.GetAssociation(book.ID); !hasAssociation {
-				// Older state may contain only itemID:editionID checkpoints.
-				// Invalidation is a no-op when neither key form exists.
-				s.state.InvalidateItemCheckpoints(book.ID)
+				_, validASIN := audnex.CanonicalASIN(book.Media.Metadata.ASIN)
+				reResolveAudiobookISBN = !validASIN && len(isbnSearchCandidates(book.Media.Metadata.ISBN)) > 0
+				if !reResolveAudiobookISBN {
+					s.state.InvalidateItemCheckpoints(book.ID)
+				}
 			}
 		}
 
@@ -2222,7 +2220,7 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 			minChangeThreshold = float64(s.config.Sync.MinChangeThreshold) / book.Media.Duration
 		}
 
-		if !s.state.NeedsSync(preliminaryStateKey, currentProgress, currentStatus, minChangeThreshold) {
+		if !reResolveAudiobookISBN && !s.state.NeedsSync(preliminaryStateKey, currentProgress, currentStatus, minChangeThreshold) {
 			bookLog.Debug("Skipping book - no significant changes since last sync", map[string]interface{}{
 				"current_progress": currentProgress,
 				"current_status":   currentStatus,

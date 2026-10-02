@@ -255,10 +255,11 @@ whose only link is a direct `editions.asin` match becomes `needs_review` when
 title/author search finds the book or `not_found` when it does not, unless its
 source ISBN independently matches while there is no valid ASIN. Audiobook ISBN
 matches are not saved as associations and are looked up again whenever the
-item is processed. See
+item is processed. Incremental sync keeps their progress checkpoints and skips
+writes when the freshly resolved edition, progress, status, and activity are unchanged. See
 [MIGRATION.md](MIGRATION.md) for how existing checkpoints are re-evaluated.
 Ebook ASIN lookup continues to use Kindle editions, ahead of ISBN, both
-unchanged. An unchanged, already-synced book keeps its Hardcover edition until
+unchanged. An unchanged book with a saved match keeps its Hardcover edition until
 its progress or status changes; use forget match to rematch one now. Sync
 matching only reads the Hardcover catalogue; it does not add or change books
 or editions there. Dry run can reuse an existing association but does not save
