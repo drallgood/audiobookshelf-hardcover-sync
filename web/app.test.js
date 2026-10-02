@@ -435,6 +435,37 @@ const needsReview = {
     asin: 'B00ABC1234', hardcover_book_id: '42'
 };
 
+const audibleImportRecord = {
+    book_id: 'li_asin', outcome: 'needs_review', reason: 'audible_import_available',
+    title: 'ABS title', author: 'ABS author', asin: 'B00ABC1234', format: 'audiobook'
+};
+
+function confirmedAudibleDraft(overrides = {}) {
+    return {
+        abs_item_id: 'li_asin', reading_format: 'audiobook', eligible: true, dry_run: false,
+        region_status: 'confirmed', confirmed_region: 'uk',
+        source_identifiers: { asin: 'B00ABC1234' },
+        audible_identifier_candidate: { asin: 'B00ABC1234', region: 'uk', correction_allowed: true },
+        metadata_preview: {
+            title: 'ABS title', subtitle: 'ABS subtitle', author: 'ABS author', narrator: 'ABS narrator',
+            series: 'ABS series', series_position: '1', publisher: 'ABS publisher', release_date: '2024-01-01',
+            audio_seconds: 3600, language: 'English', cover_url: 'https://abs.example/cover'
+        },
+        audnexus_record: {
+            asin: 'B00ABC1234', title: 'Audnexus title', subtitle: 'Audnexus subtitle', authors: ['Audnexus author'],
+            narrators: ['Audnexus narrator'], series: ['Audnexus series'], series_position: '2',
+            publisher: 'Audnexus publisher', release_date: '2024-02-01', runtime_seconds: 3660,
+            language: 'English', cover_url: 'https://audnexus.example/cover'
+        },
+        audnexus_comparison: {
+            title: 'differs', subtitle: 'match', authors: 'differs', narrators: 'match', series: 'differs',
+            series_position: 'differs', publisher: 'differs', release_date: 'differs', runtime: 'differs',
+            language: 'match', cover_url: 'differs'
+        },
+        ...overrides
+    };
+}
+
 function validCreateResult(overrides = {}) {
     return {
         abs_item_id: 'li_1', reading_format: 'audiobook', status: 'created',
@@ -925,6 +956,101 @@ test('the Add edition button renders inside the Hardcover candidate region', () 
     assert.match(candidate, /data-edition-action="add"/, 'Add edition action should belong to the candidate region');
 });
 
+test('an Audible import row reuses the Add edition pill without a Hardcover candidate', () => {
+    const app = editionApp();
+    const record = { ...audibleImportRecord };
+    app.openSummary.records.set(record.book_id, record);
+    const html = app.renderOutcomeRecord(record);
+    assert.equal(app.editionCreateIneligibleReason(record, app.openSummary.runContext), null);
+    assert.match(html, /data-edition-action="add"/);
+    assert.match(html, /book-service-link edition-action-pill/);
+    assert.doesNotMatch(html, /Hardcover candidate|hardcover-candidate/);
+    assert.doesNotMatch(html, /<strong>Hardcover:<\/strong>/);
+});
+
+test('Audible import modal shows every comparison and escapes ABS and Audnexus values', () => {
+    const app = editionApp();
+    const draft = confirmedAudibleDraft({
+        metadata_preview: { ...confirmedAudibleDraft().metadata_preview, title: '<img src=x onerror=alert(1)>' },
+        audnexus_record: { ...confirmedAudibleDraft().audnexus_record, title: '<script>bad()</script>' }
+    });
+    const dialog = {
+        mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record: audibleImportRecord,
+        loading: false, busy: false, runDryRun: false, capability: null, draft
+    };
+    const html = app.renderEditionDialog(dialog);
+    for (const key of ['title', 'subtitle', 'authors', 'narrators', 'series', 'series_position', 'publisher', 'release_date', 'runtime', 'language', 'cover_url']) {
+        assert.match(html, new RegExp(`data-comparison="${key}"`));
+    }
+    assert.match(html, /status-differs/);
+    assert.match(html, /status-match/);
+    assert.match(html, /Different/);
+    assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+    assert.match(html, /&lt;script&gt;bad\(\)&lt;\/script&gt;/);
+    assert.doesNotMatch(html, /<img src=x|<script>bad/);
+    assert.doesNotMatch(html, /Hardcover candidate|type="checkbox"/);
+    assert.match(html, /data-edition-dialog="confirm-create"/);
+});
+
+test('unknown, unavailable, dry-run, and unpreviewed corrected Audible identifiers cannot submit', () => {
+    const app = editionApp();
+    const base = {
+        mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record: audibleImportRecord,
+        loading: false, busy: false, runDryRun: false, capability: null
+    };
+    for (const region_status of ['unknown', 'temporarily_unavailable']) {
+        const html = app.renderEditionDialog({ ...base, draft: confirmedAudibleDraft({ region_status, confirmed_region: '', audnexus_record: undefined }) });
+        assert.match(html, /confirm-create" disabled/);
+    }
+    assert.match(app.renderEditionDialog({ ...base, runDryRun: true, draft: confirmedAudibleDraft() }), /confirm-create" disabled/);
+    assert.match(app.renderEditionDialog({ ...base, audibleIdentifierUnpreviewed: true, draft: confirmedAudibleDraft() }), /confirm-create" disabled/);
+});
+
+test('corrected Audible identifier is re-previewed before confirmation is possible', async () => {
+    const app = editionApp();
+    const previousDocument = global.document;
+    const input = { value: 'B00DEF5678:ca' };
+    global.document = { ...previousDocument, querySelector: selector => selector.includes('audible_identifier_preview') ? input : null };
+    app.profileUrl = () => '/api/profiles/p1';
+    app.showEditionDialog = () => {};
+    const requests = [];
+    app.fetchJsonWithTimeout = async url => {
+        requests.push(url);
+        return url.includes('edition-capability')
+            ? { response: { ok: true, status: 200 }, data: { success: true, data: {} } }
+            : { response: { ok: true, status: 200 }, data: { success: true, data: confirmedAudibleDraft({ audible_identifier_candidate: { asin: 'B00DEF5678', region: 'ca' }, confirmed_region: 'ca', audnexus_record: { ...confirmedAudibleDraft().audnexus_record, asin: 'B00DEF5678' } }) } };
+    };
+    const dialog = app.editionDialog = {
+        mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record: audibleImportRecord,
+        loading: false, busy: false, error: '', retryAt: 0, capability: null, draft: confirmedAudibleDraft()
+    };
+    try {
+        await app.previewAudibleIdentifier();
+        assert.equal(requests[0], '/api/profiles/p1/edition-drafts/source/li_asin?audible_identifier=B00DEF5678%3Aca');
+        assert.equal(dialog.audibleIdentifier, 'B00DEF5678:ca');
+        assert.equal(dialog.draft.confirmed_region, 'ca');
+        assert.deepEqual(app.buildEditionCreateBody(dialog, {}, true), {
+            run_id: 'run-1', abs_item_id: 'li_asin', audible_identifier: 'B00DEF5678:ca', audnexus_confirmed: true, resync: true
+        });
+    } finally {
+        global.document = previousDocument;
+    }
+});
+
+test('an edited regional identifier cannot submit the old confirmed preview', async () => {
+    const app = editionApp();
+    const dialog = {
+        mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record: audibleImportRecord,
+        loading: false, busy: false, runDryRun: false, audibleIdentifierUnpreviewed: true,
+        draft: confirmedAudibleDraft()
+    };
+    app.editionDialog = dialog;
+    let creates = 0;
+    app.fetchJsonWithTimeout = async () => { creates++; return {}; };
+    await app.submitEditionCreate();
+    assert.equal(creates, 0);
+});
+
 test('capability gate blocks on known denial, permits unverified attempts, and passes when allowed', () => {
     const app = editionApp();
     const cap = {
@@ -1206,6 +1332,141 @@ test('create body sends only changed ebook fields and the opt-in resync flag', (
     assert.deepEqual(app.buildEditionCreateBody(unconfirmedAudio, {}, false), {
         run_id: 'run-1', abs_item_id: 'li_9'
     });
+});
+
+test('unanchored Audible create confirms the reviewed identifier and accepts the resolved Hardcover identity', async () => {
+    const app = editionApp();
+    const record = { ...audibleImportRecord };
+    const dialog = {
+        mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record,
+        loading: false, busy: false, error: '', result: null, runDryRun: false,
+        draft: confirmedAudibleDraft()
+    };
+    app.editionDialog = dialog;
+    app.readEditionFormFields = () => ({});
+    app.showEditionDialog = () => {};
+    app.fetchJsonWithTimeout = async (_url, options) => {
+        const body = JSON.parse(options.body);
+        assert.deepEqual(body, {
+            run_id: 'run-1', abs_item_id: 'li_asin', audible_identifier: 'B00ABC1234:uk',
+            audnexus_confirmed: true, resync: true
+        });
+        return { response: { ok: true, status: 200 }, data: { success: true, data: {
+            abs_item_id: 'li_asin', reading_format: 'audiobook', status: 'loaded',
+            hardcover_book_id: '71', hardcover_edition_id: '99', hardcover_title: '<b>Imported book</b>'
+        } } };
+    };
+    await app.submitEditionCreate();
+    assert.equal(dialog.result.hardcover_book_id, '71');
+    const html = app.renderCreateResult(dialog.result);
+    assert.match(html, /&lt;b&gt;Imported book&lt;\/b&gt;/);
+    assert.doesNotMatch(html, /<b>Imported book/);
+    assert.match(html, /Hardcover book ID:<\/strong> 71/);
+    assert.match(html, /Edition ID:<\/strong> 99/);
+});
+
+test('dry-run Audible modal blocks submission at the UI boundary', async () => {
+    const app = editionApp();
+    const dialog = {
+        mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record: audibleImportRecord,
+        loading: false, busy: false, runDryRun: true, draft: confirmedAudibleDraft()
+    };
+    app.editionDialog = dialog;
+    let creates = 0;
+    app.fetchJsonWithTimeout = async () => { creates++; return {}; };
+    await app.submitEditionCreate();
+    assert.equal(creates, 0);
+    assert.match(app.renderEditionDialog(dialog), /Dry run/);
+    assert.match(app.renderEditionDialog(dialog), /confirm-create" disabled/);
+});
+
+test('ambiguous unanchored create errors offer recovery without another import button', async () => {
+    const app = editionApp();
+    const dialog = {
+        mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record: audibleImportRecord,
+        loading: false, busy: false, error: '', result: null, runDryRun: false, draft: confirmedAudibleDraft()
+    };
+    app.editionDialog = dialog;
+    app.readEditionFormFields = () => ({});
+    app.showEditionDialog = () => {};
+    app.fetchJsonWithTimeout = async () => ({ response: { ok: false, status: 503 }, data: { success: false, error: 'proxy timed out' } });
+    await app.submitEditionCreate();
+    assert.equal(dialog.outcome, 'transport_unknown');
+    assert.ok(app.loadPendingEditionRecovery('p1', 'run-1', 'li_asin'));
+    const html = app.renderEditionDialog(dialog);
+    assert.match(html, /import result is unknown/);
+    assert.doesNotMatch(html, /data-edition-dialog="(confirm-create|retry-create)"/);
+});
+
+test('Audnexus 429 honors Retry-After and holds the corrected preview action', async () => {
+    const app = editionApp();
+    app.profileUrl = () => '/profile';
+    app.showEditionDialog = () => {};
+    app.fetchJsonWithTimeout = async url => url.includes('edition-capability')
+        ? { response: { ok: true, status: 200 }, data: { success: true, data: {} } }
+        : { response: { ok: false, status: 429, headers: { get: () => '20' } }, data: { success: false, error: 'busy' } };
+    const dialog = app.editionDialog = {
+        mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record: audibleImportRecord,
+        audibleIdentifier: 'B00ABC1234:uk', loading: false, busy: false, error: '', retryAt: 0, draft: confirmedAudibleDraft()
+    };
+    await app.loadEditionDraft();
+    clearInterval(dialog.timer);
+    assert.equal(dialog.draft, null);
+    assert.ok(dialog.retryAt - Date.now() > 15000);
+    const html = app.renderEditionDialog(dialog);
+    assert.match(html, /Retry in \d+s/);
+    assert.match(html, /data-edition-dialog="retry"[^>]*disabled/);
+});
+
+test('unanchored pending import recovery accepts resolved IDs without changing its ABS and run identity', async () => {
+    const app = editionApp();
+    app.openSummary.records.set(audibleImportRecord.book_id, audibleImportRecord);
+    const dialog = {
+        mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record: audibleImportRecord,
+        loading: false, busy: false, error: '', result: null, runDryRun: false,
+        draft: confirmedAudibleDraft()
+    };
+    app.editionDialog = dialog;
+    app.readEditionFormFields = () => ({});
+    app.showEditionDialog = () => {};
+    let createBody;
+    app.fetchJsonWithTimeout = async (_url, options) => {
+        createBody = JSON.parse(options.body);
+        return { response: { ok: false, status: 503 }, data: { success: false, outcome: 'unconfirmed', data: {
+            audible_identifier: 'B00ABC1234:uk', recovery_token: 'opaque-token'
+        } } };
+    };
+    await app.submitEditionCreate();
+    assert.equal(dialog.outcome, 'unconfirmed');
+    assert.equal(dialog.recovery.hardcoverBookId, '');
+    const key = app.pendingEditionRecoveryKey('p1', 'run-1', 'li_asin');
+    assert.ok(window.sessionStorage.getItem(key));
+    assert.equal(createBody.abs_item_id, 'li_asin');
+    assert.equal(createBody.run_id, 'run-1');
+
+    app.editionDialog = null;
+    await app.openEditionDialog('li_asin');
+    const restoredDialog = app.editionDialog;
+    assert.equal(restoredDialog.outcome, 'unconfirmed');
+    assert.equal(restoredDialog.record.book_id, 'li_asin');
+    assert.equal(restoredDialog.runId, 'run-1');
+    assert.equal(restoredDialog.draft.reading_format, 'audiobook');
+    assert.equal(restoredDialog.recovery.hardcoverBookId, '');
+
+    let recoveryBody;
+    app.fetchJsonWithTimeout = async (_url, options) => {
+        recoveryBody = JSON.parse(options.body);
+        return { response: { ok: true, status: 200 }, data: { success: true, data: {
+            abs_item_id: 'li_asin', reading_format: 'audiobook', status: 'loaded',
+            hardcover_book_id: '71', hardcover_edition_id: '99', hardcover_title: 'Recovered title'
+        } } };
+    };
+    await app.checkEditionImport();
+    assert.deepEqual(recoveryBody, {
+        run_id: 'run-1', abs_item_id: 'li_asin', audible_identifier: 'B00ABC1234:uk', recovery_token: 'opaque-token'
+    });
+    assert.equal(restoredDialog.result.hardcover_book_id, '71');
+    assert.equal(app.loadPendingEditionRecovery('p1', 'run-1', 'li_asin'), null);
 });
 
 test('legacy unclassified server errors remain visible and do not trigger a second import', async () => {

@@ -96,12 +96,18 @@ matching edition has been confirmed.
 After a sync finishes or is canceled, open **View Details** and select **Add
 edition** on an eligible needs-review book. When the run has a Hardcover
 candidate, this adds or reuses an edition on that selected Hardcover book. An
-`audible_import_available` item has no candidate to select. The **Import by
-Audible ASIN** workflow is available through the create API and `edition
-create`; it reviews a regional Audnexus record and imports by its confirmed
-`ASIN:region` without selecting a Hardcover book first. Sync Status does not
-yet expose this review flow. Creating editions requires profile edit access and
-a Hardcover token with `write:catalog:append` access.
+`audible_import_available` audiobook has no candidate to select, so the same
+button opens the **Import by Audible ASIN** review. It compares the
+Audiobookshelf item with its regional Audnexus record, with comparison
+statuses for comparable fields. It imports using the reviewed regional ASIN
+without selecting a Hardcover book first. Review that the record identifies
+the item. Enter a corrected `ASIN:region` and select **Preview identifier** to
+review it again. Selecting **Add edition** confirms the displayed record and
+starts the import; there is no separate confirmation checkbox. The action
+stays unavailable until Audnexus confirms the region, and waits out any
+requested retry delay. Creating editions requires profile edit access and a
+Hardcover token with
+`write:catalog:append` access.
 
 Permission results are retained for the profile and token while the app is
 running. Use **Refresh permissions** in View Details after granting token
@@ -115,7 +121,9 @@ Audiobookshelf ASIN (10 ASCII letters or digits) uses regional Audible import
 on that book. If the source ASIN is absent or malformed, the selected-book
 workflow can insert an audiobook edition from the read-only Audiobookshelf
 ISBN preview. A valid source ASIN remains authoritative if discovery or import
-fails. Ebooks need an ASIN or ISBN and allow detail corrections. After success,
+fails. Ebooks need an ASIN or ISBN and allow detail corrections. After an
+Audible import, the dialog shows the returned Hardcover book and edition. After
+success,
 **Hardcover Edition Added** appears and the app resyncs that book's reading
 progress. If resync fails, the edition remains added; run another sync to retry
 progress updates.
