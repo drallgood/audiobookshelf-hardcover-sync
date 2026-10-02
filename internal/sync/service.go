@@ -3318,7 +3318,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 
 	needsStatusUpdate := true
 	// A FINISHED transition can overwrite the latest read's completion date.
-	// Supply the date with the status so Hardcover does not default it to today.
+	// Include a completion date in the status request instead of relying on Hardcover's server default.
 	lastReadDate := ""
 	if book.Progress.FinishedAt > 0 {
 		lastReadDate = time.Unix(book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
