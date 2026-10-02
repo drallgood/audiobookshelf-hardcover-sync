@@ -2833,3 +2833,47 @@ func TestCreateEditionFromDraftInsertsISBNOnlyAudiobook(t *testing.T) {
 		})
 	}
 }
+
+func TestCreateEditionFromDraftStopsWhenNarratorLookupFails(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{
+		"id":"abs-item-1","mediaType":"book","media":{
+		"metadata":{"title":"ISBN audiobook","authorName":"Author","narratorName":"Narrator","isbn":"9780306406157"},
+		"duration":100,"numTracks":1}}`, "us")
+	configureEditionCreateRoute(t, fixture)
+	addCompletedNeedsReviewRun(t, fixture, "run-narrator-failure", sync.BookOutcomeRecord{
+		BookID: "abs-item-1", Outcome: sync.OutcomeNeedsReview, Title: "ISBN audiobook", Author: "Author",
+		ISBN: "9780306406157", Format: "Audiobook", HardcoverBookID: "42",
+	})
+	lookupErr := errors.New("temporary narrator search failure")
+	var counts editionCreateCallCounts
+	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+		return editionCreateHardcoverStub{
+			bookFn: func(context.Context, string) (*models.HardcoverBook, error) {
+				return &models.HardcoverBook{ID: "42", Authors: []models.Author{{ID: "7", Name: "Author"}}}, nil
+			},
+			narratorsFn: func(context.Context, string, int) ([]models.Author, error) {
+				return nil, lookupErr
+			},
+			insertEditionFn: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
+				counts.ebookCreates.Add(1)
+				return &edition.EditionResult{Success: true, EditionID: 84}, nil
+			},
+		}
+	}
+
+	response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-narrator-failure","abs_item_id":"abs-item-1"}`)
+
+	require.Equal(t, http.StatusServiceUnavailable, response.Code, response.Body.String())
+	var envelope struct {
+		ErrorCode string `json:"error_code"`
+		Outcome   string `json:"outcome"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	require.Equal(t, "edition_create_not_submitted", envelope.ErrorCode)
+	require.Equal(t, editionOutcomeNotSubmitted, envelope.Outcome)
+	require.Zero(t, counts.ebookCreates.Load(), "a narrator lookup failure must stop before insert_edition")
+	stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+	require.NoError(t, err)
+	_, exists := stored.GetAssociation("abs-item-1")
+	require.False(t, exists)
+}

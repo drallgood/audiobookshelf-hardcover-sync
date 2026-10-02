@@ -763,6 +763,90 @@ func TestProcessBookDoesNotReconcileAudiobookISBNOnPostMatchSkip(t *testing.T) {
 	}
 }
 
+func TestProcessBookRechecksAudiobookISBNIdentityBeforeMutations(t *testing.T) {
+	tests := []struct {
+		name       string
+		secondBook *models.HardcoverBook
+		wantSynced bool
+	}{
+		{name: "stable match", secondBook: &models.HardcoverBook{ID: "901", EditionID: "902"}, wantSynced: true},
+		{name: "changed book", secondBook: &models.HardcoverBook{ID: "903", EditionID: "902"}},
+		{name: "changed edition", secondBook: &models.HardcoverBook{ID: "901", EditionID: "904"}},
+		{name: "disappeared match"},
+	}
+	for _, sourceASIN := range []string{"", "not-a-valid-ASIN"} {
+		asinName := "missing ASIN"
+		if sourceASIN != "" {
+			asinName = "malformed ASIN"
+		}
+		verificationCases := tests
+		if sourceASIN != "" {
+			// The malformed identifier case verifies the normal ISBN fallback;
+			// failure outcomes also run mismatch enrichment, which would issue a
+			// live Audnex request for any non-empty source ASIN.
+			verificationCases = tests[:1]
+		}
+		for _, tt := range verificationCases {
+			t.Run(asinName+"/"+tt.name, func(t *testing.T) {
+				svc, client := createTestService()
+				svc.config.Sync.ProcessUnreadBooks = true
+				svc.config.Sync.SyncOwned = true
+				svc.config.Sync.SyncWantToRead = true
+				book := isbnSearchBook(testISBN13NoTen)
+				book.ID = "audiobook-isbn-recheck-" + asinName + "-" + tt.name
+				book.MediaType = "book"
+				book.Media.Metadata.ASIN = sourceASIN
+
+				client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+					Return(&models.HardcoverBook{ID: "901", EditionID: "902"}, nil).Once()
+				client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+					Return(tt.secondBook, nil).Once()
+				if tt.wantSynced {
+					client.On("CheckBookOwnership", mock.Anything, 901).Return(false, nil).Once()
+					client.On("MarkEditionAsOwned", mock.Anything, 902).Return(nil).Once()
+					client.On("GetEdition", mock.Anything, "902").Return(&models.Edition{
+						ID: "902", BookID: "901", ReadingFormatID: "2",
+					}, nil).Once()
+					client.On("GetUserBookID", mock.Anything, 902).Return(903, nil).Once()
+					client.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+						ID: 903, StatusID: 1,
+					}).Return(nil).Once()
+				} else {
+					client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+						Return((*models.HardcoverBook)(nil), nil).Maybe()
+					client.On("GetEdition", mock.Anything, mock.Anything).
+						Return((*models.Edition)(nil), nil).Maybe()
+					client.On("GetBookByID", mock.Anything, mock.Anything).
+						Return((*models.HardcoverBook)(nil), nil).Maybe()
+				}
+
+				err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+
+				stateKey := book.ID + ":902"
+				bookState, hasCheckpoint := svc.state.GetBookState(stateKey)
+				_, hasAssociation := svc.state.GetAssociation(book.ID)
+				assert.False(t, hasAssociation, "audiobook ISBN matches remain ephemeral")
+				if tt.wantSynced {
+					require.NoError(t, err)
+					require.True(t, hasCheckpoint)
+					assert.Equal(t, "WANT_TO_READ", bookState.Status)
+					assert.Equal(t, OutcomeSynced, recordedOutcome(svc, book.ID).Outcome)
+				} else {
+					require.ErrorIs(t, err, ErrSkippedBook)
+					assert.Equal(t, OutcomeFailed, recordedOutcome(svc, book.ID).Outcome)
+					require.True(t, hasCheckpoint)
+					assert.Equal(t, "SKIPPED", bookState.Status, "an unstable target must not receive a successful checkpoint")
+					client.AssertNotCalled(t, "CheckBookOwnership", mock.Anything, mock.Anything)
+					client.AssertNotCalled(t, "MarkEditionAsOwned", mock.Anything, mock.Anything)
+					client.AssertNotCalled(t, "GetUserBookID", mock.Anything, mock.Anything)
+					client.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+				}
+				client.AssertExpectations(t)
+			})
+		}
+	}
+}
+
 func TestProcessBookRejectsUnstableEbookISBNBeforePostMatchSkip(t *testing.T) {
 	temporaryErr := errors.New("temporary lookup failure")
 	tests := []struct {

@@ -2030,16 +2030,18 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 	editionCorrectionState := &processBookOwnershipState{}
 	userBookCreationState := &processBookOwnershipState{}
 	var (
-		hcBook                      *models.HardcoverBook
-		findErr                     error
-		editionID                   string
-		stateKey                    string
-		matchMethod                 string
-		verifiedEbookISBNMatch      *models.HardcoverBook
-		ebookISBNVerificationRun    bool
-		postMatchVerificationFailed bool
-		ownershipReconciled         bool
-		associationReused           bool
+		hcBook                       *models.HardcoverBook
+		findErr                      error
+		editionID                    string
+		stateKey                     string
+		matchMethod                  string
+		verifiedEbookISBNMatch       *models.HardcoverBook
+		ebookISBNVerificationRun     bool
+		verifiedAudiobookISBNMatch   *models.HardcoverBook
+		audiobookISBNVerificationRun bool
+		postMatchVerificationFailed  bool
+		ownershipReconciled          bool
+		associationReused            bool
 	)
 	setOutcome := func(outcome SyncOutcome, reason string) {
 		// A completed mutation is authoritative. Later no-op guards can run
@@ -2488,6 +2490,16 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 		if hcBook.EditionID != "" {
 			editionID = hcBook.EditionID
 		}
+		_, validASIN := audnex.CanonicalASIN(book.Media.Metadata.ASIN)
+		if book.ReadingFormat() == models.ReadingFormatAudiobook && !validASIN &&
+			!associationReused && len(isbnSearchCandidates(book.Media.Metadata.ISBN)) > 0 {
+			// Audiobook ISBN matches are ephemeral, so resolve them again before
+			// mutation. Keep a value snapshot to ensure the second lookup still
+			// identifies the same book and edition.
+			firstMatch := *hcBook
+			verifiedAudiobookISBNMatch = &firstMatch
+			audiobookISBNVerificationRun = true
+		}
 	}
 
 	// Create a composite key for state tracking: bookID:editionID
@@ -2693,6 +2705,19 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 		}
 	} else if !foundByASIN {
 		hcBook, findErr, _, _ = s.findBookInHardcoverWithASINMatch(ctx, book, associationWriteNone)
+		if audiobookISBNVerificationRun {
+			switch {
+			case findErr == nil && hcBook == nil:
+				hcBook = verifiedAudiobookISBNMatch
+				findErr = fmt.Errorf("%w: audiobook ISBN match disappeared between lookups for ABS item %s", errHardcoverLookupFailed, book.ID)
+			case errors.Is(findErr, errHardcoverBookNotFound):
+				hcBook = verifiedAudiobookISBNMatch
+				findErr = fmt.Errorf("%w: audiobook ISBN match disappeared between lookups for ABS item %s: %w", errHardcoverLookupFailed, book.ID, findErr)
+			case findErr == nil && (hcBook.ID != verifiedAudiobookISBNMatch.ID || hcBook.EditionID != verifiedAudiobookISBNMatch.EditionID):
+				hcBook = verifiedAudiobookISBNMatch
+				findErr = fmt.Errorf("%w: audiobook ISBN match changed between lookups for ABS item %s", errHardcoverLookupFailed, book.ID)
+			}
+		}
 	}
 	if findErr != nil {
 		outcomeError = findErr

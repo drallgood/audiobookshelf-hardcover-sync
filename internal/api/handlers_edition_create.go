@@ -755,8 +755,11 @@ func (h *Handler) createInsertedEdition(ctx context.Context, item *models.Audiob
 				continue
 			}
 			narrators, lookupErr := client.SearchNarrators(ctx, name, 10)
-			if lookupErr != nil && ctx.Err() != nil {
-				return statepkg.Association{}, fmt.Errorf("narrator lookup canceled: %w", ctx.Err())
+			if lookupErr != nil {
+				if ctx.Err() != nil {
+					return statepkg.Association{}, fmt.Errorf("narrator lookup canceled: %w", ctx.Err())
+				}
+				return statepkg.Association{}, fmt.Errorf("narrator lookup failed before insertion: %w: %w", edition.ErrCreateEditionPreMutation, lookupErr)
 			}
 			var ids []int
 			for _, narrator := range narrators {
@@ -1019,8 +1022,8 @@ func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID strin
 			respond(http.StatusConflict, err.Error())
 			return
 		}
-		h.log.Error(fmt.Sprintf("Hardcover edition lookup failed before insertion for profile %s: %v", profileID, err))
-		respond(http.StatusServiceUnavailable, "Hardcover could not check for an existing edition before insertion; retry the edition create")
+		h.log.Error(fmt.Sprintf("Hardcover edition preparation failed before insertion for profile %s: %v", profileID, err))
+		respond(http.StatusServiceUnavailable, "Hardcover could not finish an edition preparation lookup or check for an existing edition; retry the edition create")
 	case errors.Is(err, multiuser.ErrEditionAssociationSaveAfterRemoteSuccess):
 		h.log.Error(fmt.Sprintf("Hardcover returned a verified edition but association save failed for profile %s: %v", profileID, err))
 		respond(http.StatusBadGateway, "Hardcover returned a verified edition, but the local match could not be saved. Verify the Hardcover result before retrying; retrying may create another edition.")
