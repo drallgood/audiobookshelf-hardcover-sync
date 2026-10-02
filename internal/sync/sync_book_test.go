@@ -6,15 +6,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
-	"time"
-
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 	"github.com/stretchr/testify/assert"
@@ -309,10 +308,8 @@ func TestSyncBookErrors(t *testing.T) {
 	})
 }
 
-// Model the completion-date default implicated by the Salvage Merc One logs.
-// Verify the concrete client sends the historical date with the final status,
-// rather than relying on the preceding read insertion to supply it.
-func TestSyncBookWithEditionPreservesFinishedDateAcrossStatusTransition(t *testing.T) {
+// Verify the finished read and status transition both send the historical date.
+func TestSyncBookWithEditionSendsFinishedDateInStatusTransition(t *testing.T) {
 	const finishedDate = "2025-06-01"
 	svc, _, abs := newSyncBookService(t)
 	book := toAudiobookshelfBook(createTestFinishedBook("resync-finished-date", "Salvage Merc One", "Jake Bible", "B0FRJZ7HJY", ""))
@@ -324,7 +321,9 @@ func TestSyncBookWithEditionPreservesFinishedDateAcrossStatusTransition(t *testi
 		ABSItemID: book.ID, SourceASIN: book.Media.Metadata.ASIN,
 		HardcoverBookID: "1852014", HardcoverEditionID: "33360390", ReadingFormat: models.ReadingFormatAudiobook,
 	}))
-	var finalDate string
+	var insertedReadDate string
+	var finalStatusID interface{}
+	var finalStatusDate string
 	var created, transitioned bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -341,27 +340,32 @@ func TestSyncBookWithEditionPreservesFinishedDateAcrossStatusTransition(t *testi
 		case strings.Contains(req.Query, "GetCurrentUserID"):
 			response = `{"data":{"me":[{"id":99}]}}`
 		case strings.Contains(req.Query, "InsertUserBookRead"):
-			dates := req.Variables["user_book_read"].(map[string]interface{})
-			finalDate, _ = dates["finished_at"].(string)
-			assert.Equal(t, finishedDate, finalDate)
+			if dates, ok := req.Variables["user_book_read"].(map[string]interface{}); ok {
+				insertedReadDate, _ = dates["finished_at"].(string)
+			} else {
+				t.Errorf("user_book_read variable has type %T", req.Variables["user_book_read"])
+			}
 			response = `{"data":{"insert_user_book_read":{"id":6998539,"error":null}}}`
 		case strings.Contains(req.Query, "InsertUserBook"):
-			object := req.Variables["object"].(map[string]interface{})
-			assert.Equal(t, float64(1), object["status_id"], "create as WANT_TO_READ")
+			if object, ok := req.Variables["object"].(map[string]interface{}); ok {
+				assert.Equal(t, float64(1), object["status_id"], "create as WANT_TO_READ")
+			} else {
+				t.Errorf("object variable has type %T", req.Variables["object"])
+			}
 			created = true
 			response = `{"data":{"insert_user_book":{"id":19149476,"user_book":{"id":19149476,"status_id":1},"error":null}}}`
 		case strings.Contains(req.Query, "UpdateUserBookStatus"):
 			transitioned = true
-			finalDate = "2026-10-01"
 			if object, ok := req.Variables["object"].(map[string]interface{}); ok {
-				if date, ok := object["last_read_date"].(string); ok {
-					finalDate = date
-				}
+				finalStatusID = object["status_id"]
+				finalStatusDate, _ = object["last_read_date"].(string)
+			} else {
+				t.Errorf("object variable has type %T", req.Variables["object"])
 			}
 			response = `{"data":{"update_user_book":{"id":19149476,"error":null}}}`
 		case strings.Contains(req.Query, "GetUserBookReads"):
-			if finalDate != "" {
-				response = `{"data":{"user_book_reads":[{"id":6998539,"started_at":"2025-06-01","finished_at":"` + finalDate + `","progress":100,"progress_seconds":24960}]}}`
+			if insertedReadDate != "" {
+				response = `{"data":{"user_book_reads":[{"id":6998539,"started_at":"2025-06-01","finished_at":"` + insertedReadDate + `","progress":100,"progress_seconds":24960}]}}`
 			} else {
 				response = `{"data":{"user_book_reads":[]}}`
 			}
@@ -387,8 +391,11 @@ func TestSyncBookWithEditionPreservesFinishedDateAcrossStatusTransition(t *testi
 	result, err := svc.SyncBookWithEdition(context.Background(), *book, &models.Edition{ID: "33360390", BookID: "1852014", ReadingFormatID: "2"}, current, statePath)
 	require.NoError(t, err)
 	require.Equal(t, OutcomeSynced, result.Outcome, result.Error)
+	assert.True(t, created)
+	assert.Equal(t, finishedDate, insertedReadDate)
 	assert.True(t, transitioned)
-	assert.Equal(t, finishedDate, finalDate)
+	assert.Equal(t, float64(3), finalStatusID)
+	assert.Equal(t, finishedDate, finalStatusDate)
 	stored, err := state.LoadState(statePath)
 	require.NoError(t, err)
 	assert.Equal(t, "FINISHED", stored.Books[book.ID+":33360390"].Status)

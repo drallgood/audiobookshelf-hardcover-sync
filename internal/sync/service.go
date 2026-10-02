@@ -3319,10 +3319,11 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 	needsStatusUpdate := true
 	// A FINISHED transition can overwrite the latest read's completion date.
 	// Include a completion date in the status request instead of relying on Hardcover's server default.
-	lastReadDate := ""
+	finishedDate := ""
 	if book.Progress.FinishedAt > 0 {
-		lastReadDate = time.Unix(book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
+		finishedDate = time.Unix(book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
 	}
+	lastReadDate := finishedDate
 
 	if latestUnfinishedRead != nil {
 		// Close the unfinished read and mark as finished.
@@ -3335,14 +3336,13 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 			return nil
 		}
 
-		finishedAt := time.Unix(book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
 		// Keep the book's most recent completion date when closing an older read.
 		if latestFinishedReadTime.Format("2006-01-02") > lastReadDate {
 			lastReadDate = latestFinishedReadTime.Format("2006-01-02")
 		}
 
 		updateObj := map[string]interface{}{
-			"finished_at": finishedAt,
+			"finished_at": finishedDate,
 			"progress":    100.0,
 		}
 
@@ -3357,7 +3357,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 		} else if book.Progress.StartedAt > 0 {
 			updateObj["started_at"] = time.Unix(book.Progress.StartedAt/1000, 0).Format("2006-01-02")
 		} else {
-			updateObj["started_at"] = finishedAt
+			updateObj["started_at"] = finishedDate
 		}
 
 		if latestUnfinishedRead.EditionID != nil {
@@ -3400,13 +3400,11 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 			return nil
 		}
 
-		finishedAt := time.Unix(book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
-
 		var startedAt string
 		if book.Progress.StartedAt > 0 {
 			startedAt = time.Unix(book.Progress.StartedAt/1000, 0).Format("2006-01-02")
 		} else {
-			startedAt = finishedAt
+			startedAt = finishedDate
 		}
 
 		var finalProgressSeconds int
@@ -3421,7 +3419,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 		_, err = s.hardcover.InsertUserBookRead(ctx, hardcover.InsertUserBookReadInput{
 			UserBookID: userBookID,
 			DatesRead: hardcover.DatesReadInput{
-				FinishedAt:      &finishedAt,
+				FinishedAt:      &finishedDate,
 				StartedAt:       &startedAt,
 				ProgressSeconds: &finalProgressSeconds,
 			},
