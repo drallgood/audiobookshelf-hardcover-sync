@@ -429,16 +429,14 @@ func validateCreateInput(input *edition.EditionInput, hasABSItem bool) error {
 // A valid ABS ASIN is the default, while a valid submitted ASIN can explicitly
 // correct it or fill a missing ABS ASIN after correction confirmation.
 func audiobookASIN(submitted string, item *models.AudiobookshelfBook) string {
+	submittedASIN, submittedValid := audnex.CanonicalASIN(submitted)
+	if submittedValid {
+		return submittedASIN
+	}
 	if item != nil {
 		if asin, valid := audnex.CanonicalASIN(item.Media.Metadata.ASIN); valid {
-			if submittedASIN, submittedValid := audnex.CanonicalASIN(submitted); submittedValid {
-				return submittedASIN
-			}
 			return asin
 		}
-	}
-	if asin, valid := audnex.CanonicalASIN(submitted); valid {
-		return asin
 	}
 	return ""
 }
@@ -448,27 +446,22 @@ func audiobookASIN(submitted string, item *models.AudiobookshelfBook) string {
 func sourceIdentifierWarning(item *models.AudiobookshelfBook, input editionCreateInput) string {
 	source := item.Media.Metadata
 	var conflicts []string
-	if input.ReadingFormat == models.ReadingFormatAudiobook {
-		if sourceASIN, valid := audnex.CanonicalASIN(source.ASIN); valid {
-			if inputASIN, submittedValid := audnex.CanonicalASIN(input.ASIN); submittedValid && inputASIN != sourceASIN {
-				conflicts = append(conflicts, "ASIN")
-			}
-		} else {
-			if _, submittedValid := audnex.CanonicalASIN(input.ASIN); submittedValid {
-				conflicts = append(conflicts, "ASIN")
-			} else {
-				for _, submitted := range []string{input.ISBN10, input.ISBN13} {
-					if submitted != "" && !sameISBN(source.ISBN, submitted) {
-						conflicts = append(conflicts, "ISBN")
-						break
-					}
-				}
-			}
+	isAudiobook := input.ReadingFormat == models.ReadingFormatAudiobook
+	var sourceASINValid, submittedASINValid bool
+	if isAudiobook {
+		sourceASIN, valid := audnex.CanonicalASIN(source.ASIN)
+		sourceASINValid = valid
+		submittedASIN, valid := audnex.CanonicalASIN(input.ASIN)
+		submittedASINValid = valid
+		if submittedASINValid && (!sourceASINValid || submittedASIN != sourceASIN) {
+			conflicts = append(conflicts, "ASIN")
 		}
 	} else {
 		if input.ASIN != "" && !strings.EqualFold(strings.TrimSpace(source.ASIN), input.ASIN) {
 			conflicts = append(conflicts, "ASIN")
 		}
+	}
+	if !isAudiobook || (!sourceASINValid && !submittedASINValid) {
 		for _, submitted := range []string{input.ISBN10, input.ISBN13} {
 			if submitted != "" && !sameISBN(source.ISBN, submitted) {
 				conflicts = append(conflicts, "ISBN")

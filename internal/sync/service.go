@@ -5490,8 +5490,7 @@ func (s *Service) findBookInHardcoverWithASINMatch(ctx context.Context, book mod
 					if writeMode == associationWriteAll {
 						s.recordVerifiedISBNAssociation(book, hcBook)
 					}
-					if writeMode != associationWriteAll && (book.ReadingFormat() == models.ReadingFormatEbook ||
-						(book.ReadingFormat() == models.ReadingFormatAudiobook && !validASIN)) {
+					if writeMode != associationWriteAll {
 						return hcBook, nil, false, nil
 					}
 					foundBook, err := s.processFoundBook(ctx, hcBook, book)
