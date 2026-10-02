@@ -378,7 +378,7 @@ func (h *Handler) CheckEditionImport(w http.ResponseWriter, r *http.Request) {
 			h.writeEditionCreateStructuredError(w, http.StatusConflict, "Recovery token is invalid; refresh the edition draft and inspect Hardcover", "edition_recovery_invalid", editionOutcomeNotSubmitted, nil)
 			return
 		}
-		h.writeEditionCreateError(w, profileID, err, recovery)
+		h.writeEditionCreateErrorWithAction(w, profileID, err, recovery, nil)
 		return
 	}
 	h.writeSuccessResponse(w, response)
@@ -1300,10 +1300,6 @@ func (h *Handler) writeEditionCreateStructuredError(w http.ResponseWriter, statu
 	h.writeJSONResponse(w, status, APIResponse{
 		Success: false, Error: message, ErrorCode: errorCode, Outcome: outcome, Data: data,
 	})
-}
-
-func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID string, err error, recovery *editionRecoveryData) {
-	h.writeEditionCreateErrorWithAction(w, profileID, err, recovery, nil)
 }
 
 func (h *Handler) writeEditionCreateErrorWithAction(w http.ResponseWriter, profileID string, err error, recovery *editionRecoveryData, action *sync.EditionActionRecord) {

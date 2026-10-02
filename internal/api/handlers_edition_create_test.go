@@ -1196,7 +1196,7 @@ func TestWriteEditionCreateErrorForInsufficientMutationBudgetIsRetryable(t *test
 	response := httptest.NewRecorder()
 	err := errors.Join(edition.ErrCreateEditionPreMutation, edition.ErrCreateEditionInsufficientMutationBudget)
 
-	handler.writeEditionCreateError(response, "profile", err, nil)
+	handler.writeEditionCreateErrorWithAction(response, "profile", err, nil, nil)
 
 	require.Equal(t, http.StatusServiceUnavailable, response.Code)
 	require.Equal(t, "1", response.Header().Get("Retry-After"))
@@ -2859,7 +2859,7 @@ func TestWriteEditionCreateErrorExplainsDailyQuotaBudgetWithoutRetryAfter(t *tes
 			response := httptest.NewRecorder()
 
 			err := errors.Join(test.budgetCause, hardcover.ErrMutationInsufficientBudget, test.quotaCause)
-			handler.writeEditionCreateError(response, "profile", err, nil)
+			handler.writeEditionCreateErrorWithAction(response, "profile", err, nil, nil)
 
 			require.Equal(t, http.StatusServiceUnavailable, response.Code)
 			require.Empty(t, response.Header().Get("Retry-After"), "the server does not know the quota reset time")
