@@ -1065,6 +1065,24 @@ for (const runState of ['completed', 'canceled']) {
     });
 }
 
+test('outcome match methods render as readable labels and humanize unknown methods', () => {
+    const app = editionApp();
+    const cases = [
+        ['title_author', 'Title and author'],
+        ['audible_asin', 'Audible ASIN'],
+        ['isbn_13', 'ISBN-13'],
+        ['manual_association', 'Manual association'],
+        ['title_author_candidate', 'Title and author candidate'],
+        ['override', 'Manual override'],
+        ['existing_match', 'Existing match'],
+        ['unfamiliar_method_value', 'Unfamiliar method value']
+    ];
+    for (const [match_method, label] of cases) {
+        const html = app.renderOutcomeRecord({ ...needsReview, match_method });
+        assert.ok(html.includes(`<strong>Match method:</strong> ${label}`), `${match_method} should render as ${label}`);
+    }
+});
+
 test('Audible import modal shows every comparison and escapes ABS and Audnexus values', () => {
     const app = editionApp();
     const draft = confirmedAudibleDraft({

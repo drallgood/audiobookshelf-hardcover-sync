@@ -1926,10 +1926,39 @@ class SyncProfileApp {
     }
 
     syncMatchMethodText(matchMethod) {
+        const value = String(matchMethod || '').trim().toLowerCase();
         const known = {
-            audible_asin: 'Audible ASIN'
+            audible_asin: 'Audible ASIN',
+            title_author: 'Title and author',
+            title_author_candidate: 'Title and author candidate',
+            title_author_only: 'Title and author only',
+            title_author_full: 'Full title and author',
+            full_title_author: 'Full title and author',
+            asin: 'ASIN',
+            isbn: 'ISBN',
+            isbn_10: 'ISBN-10',
+            isbn_13: 'ISBN-13',
+            isbn10: 'ISBN-10',
+            isbn13: 'ISBN-13',
+            manual: 'Manual',
+            manual_association: 'Manual association',
+            manual_override: 'Manual override',
+            override: 'Manual override',
+            existing: 'Existing match',
+            existing_match: 'Existing match',
+            full_match: 'Full match',
+            candidate: 'Candidate'
         };
-        return known[matchMethod] || matchMethod;
+        if (Object.prototype.hasOwnProperty.call(known, value)) return known[value];
+
+        const words = value.split(/[\s_-]+/).filter(Boolean);
+        if (words[0] === 'isbn' && ['10', '13'].includes(words[1])) {
+            words.splice(0, 2, `ISBN-${words[1]}`);
+        }
+        const labels = { asin: 'ASIN', isbn: 'ISBN', audible: 'Audible', hardcover: 'Hardcover', and: 'and' };
+        return words.map((word, index) => Object.prototype.hasOwnProperty.call(labels, word) ? labels[word] : (index === 0
+            ? word.charAt(0).toUpperCase() + word.slice(1)
+            : word)).join(' ');
     }
 
     renderOutcomeRecord(record, audiobookshelfBaseURL = '') {
