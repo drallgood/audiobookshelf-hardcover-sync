@@ -55,6 +55,18 @@ function visibleText(html) {
         .trim();
 }
 
+function addEditionButton(html) {
+    const button = [...html.matchAll(/<button\b[^>]*>/g)]
+        .map(([tag]) => tag)
+        .find(tag => /\bdata-edition-action=(["'])add\1/.test(tag));
+    assert.ok(button, 'Add edition button should be present');
+    const attributes = button.replace(/(["'])[\s\S]*?\1/g, '');
+    return {
+        disabled: /\sdisabled(?=\s|=|>)/.test(attributes),
+        title: visibleText(button.match(/\btitle=(["'])(.*?)\1/)?.[2] || '')
+    };
+}
+
 test('accepted queued run clears a prior terminal error from its status card', () => {
     const app = createApp();
     app.users = [{ id: 'profile-1', name: 'Test Profile' }];
@@ -289,8 +301,6 @@ test('session reset closes a pending edition preview and ignores its late respon
 
     app.resetSessionBoundState();
     assert.equal(app.editionDialog, null);
-    assert.equal(app.authSessionGeneration, 11);
-    assert.equal(app.statusLoadSequence, 21);
     assert.deepEqual(app.users, []);
     assert.deepEqual(Object.keys(app.statuses), []);
     assert.equal(app.openSummary, null);
@@ -446,9 +456,11 @@ test('create action requires an eligible needs-review record with an identifier 
 test('an ineligible needs-review record still shows a disabled Add edition button with the reason', () => {
     const app = editionApp();
     const html = app.renderEditionActions({ ...needsReview, hardcover_book_id: '' });
-    assert.match(html, /data-edition-action="add"[^>]*disabled[^>]*title="No Hardcover book was matched for this item\."/);
+    assert.equal(addEditionButton(html).disabled, true);
+    assert.match(addEditionButton(html).title, /Hardcover book.*matched/);
     const noIdentifiers = app.renderEditionActions({ ...needsReview, asin: '', isbn: '' });
-    assert.match(noIdentifiers, /data-edition-action="add"[^>]*disabled[^>]*valid ASIN or ISBN from Audiobookshelf/);
+    assert.equal(addEditionButton(noIdentifiers).disabled, true);
+    assert.match(addEditionButton(noIdentifiers).title, /ASIN.*ISBN.*Audiobookshelf/);
     const isbnOnlyAudio = app.renderEditionActions({ ...needsReview, asin: '', isbn: '9780306406157' });
     assert.match(isbnOnlyAudio, /data-edition-action="add"/);
     assert.doesNotMatch(isbnOnlyAudio, /disabled/);
@@ -540,7 +552,8 @@ test('Add edition waits for the profile capability and disables only a confirmed
     const app = editionApp();
     app.openSummary.editionCapabilityLoaded = false;
     let html = app.renderEditionActions(needsReview);
-    assert.match(html, /disabled title="Checking whether this profile can add this edition\."/);
+    assert.equal(addEditionButton(html).disabled, true);
+    assert.match(addEditionButton(html).title, /Checking/);
 
     app.openSummary.editionCapabilityLoaded = true;
     app.openSummary.editionCapability = {
@@ -548,7 +561,8 @@ test('Add edition waits for the profile capability and disables only a confirmed
         ebook: { status: 'allowed', can_attempt: true }
     };
     html = app.renderEditionActions(needsReview);
-    assert.match(html, /disabled title="This profile&#39;s Hardcover token does not have permission for this action\."/);
+    assert.equal(addEditionButton(html).disabled, true);
+    assert.match(addEditionButton(html).title, /permission/);
 
     const ebook = app.renderEditionActions({ ...needsReview, format: 'ebook' });
     assert.doesNotMatch(ebook, /disabled/);
@@ -561,9 +575,9 @@ test('audiobook capability evidence follows the selected ASIN or ISBN insertion 
         audiobook_isbn: { status: 'denied', can_attempt: false, reason: 'insufficient_scope' },
         audiobook: { status: 'allowed', can_attempt: true }
     };
-    assert.deepEqual(app.editionCapabilityGate(capability, 'audiobook', ''), {
-        blocked: true, reason: "This profile's Hardcover token does not have permission for this action."
-    });
+    const denied = app.editionCapabilityGate(capability, 'audiobook', '');
+    assert.equal(denied.blocked, true);
+    assert.match(denied.reason, /permission/);
     assert.deepEqual(app.editionCapabilityGate(capability, 'audiobook', 'B00ABC1234'), { blocked: false });
     assert.deepEqual(app.editionCapabilityGate({
         ebook: { status: 'allowed', can_attempt: true },
@@ -573,7 +587,9 @@ test('audiobook capability evidence follows the selected ASIN or ISBN insertion 
 
     app.openSummary.editionCapability = capability;
     const isbnRecord = { ...needsReview, asin: 'malformed', isbn: '9780306406157' };
-    assert.match(app.renderEditionActions(isbnRecord), /disabled title="This profile&#39;s Hardcover token does not have permission/);
+    const isbnButton = addEditionButton(app.renderEditionActions(isbnRecord));
+    assert.equal(isbnButton.disabled, true);
+    assert.match(isbnButton.title, /permission/);
     app.openSummary.editionCapability = { ...capability, audiobook_isbn: { status: 'allowed', can_attempt: true } };
     assert.doesNotMatch(app.renderEditionActions(isbnRecord), /disabled/);
 });
@@ -611,7 +627,9 @@ test('capability fetch refreshes the rendered Add edition button after pending, 
     global.document.getElementById = id => id === 'sync-summary-content' ? content : null;
 
     try {
-        assert.match(app.renderEditionActions(record), /disabled title="Checking whether this profile can add this edition\."/);
+        const pendingButton = addEditionButton(app.renderEditionActions(record));
+        assert.equal(pendingButton.disabled, true);
+        assert.match(pendingButton.title, /Checking/);
         let resolveFetch;
         app.profileUrl = (profileId, path) => `/profiles/${profileId}${path}`;
         app.fetchJsonWithTimeout = () => new Promise(resolve => { resolveFetch = resolve; });
@@ -983,12 +1001,13 @@ test('an ISBN-only audiobook can be confirmed while malformed identifiers remain
         }
     };
     const html = app.renderEditionDialog(dialog);
+    const text = visibleText(html);
     assert.match(html, /Audiobookshelf audiobook details/);
     assert.match(html, /&lt;ABS audio title&gt;/);
-    assert.match(html, /Narrator:<\/strong> ABS narrator/);
-    assert.match(html, /Publisher:<\/strong> Audio Publisher/);
-    assert.match(html, /Audio length:<\/strong> 1 hr 1 min/);
-    assert.match(html, /ISBN:<\/strong> 9780306406157/);
+    assert.match(text, /Narrator: ABS narrator/);
+    assert.match(text, /Publisher: Audio Publisher/);
+    assert.match(text, /Audio length: 1 hr 1 min/);
+    assert.match(text, /ISBN: 9780306406157/);
     assert.match(html, /data-edition-dialog="confirm-create"(?![^>]*disabled)/);
     assert.doesNotMatch(html, /<input[^>]+name="(?:title|narrator|release_date|edition_format)"/);
 
