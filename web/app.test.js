@@ -282,7 +282,7 @@ function deferred() {
     return { promise, resolve };
 }
 
-test('session reset closes a pending edition preview and ignores its late response', async t => {
+test('session reset closes pending preview and status requests and ignores their late responses', async t => {
     const harness = pendingDialogApp();
     t.after(harness.restore);
     const { app, modal, content } = harness;
@@ -298,6 +298,8 @@ test('session reset closes a pending edition preview and ignores its late respon
     };
     const loading = app.loadEditionDraft();
     const previewController = app.editionDialog.controller;
+    app.activeStatusRequests = 0;
+    const statusLoading = app.loadStatuses({ silent: true });
 
     app.resetSessionBoundState();
     assert.equal(app.editionDialog, null);
@@ -310,6 +312,9 @@ test('session reset closes a pending edition preview and ignores its late respon
 
     const newSessionDialog = { mode: 'forget', record: { book_id: 'new-session-item' } };
     app.editionDialog = newSessionDialog;
+    app.users = [{ id: 'new-session-profile' }];
+    const newSessionStatuses = { 'new-session-profile': { profile_id: 'new-session-profile' } };
+    app.statuses = newSessionStatuses;
     content.innerHTML = 'new session dialog';
     modal.style.display = 'block';
     const writesForNewSession = harness.htmlWrites;
@@ -318,8 +323,14 @@ test('session reset closes a pending edition preview and ignores its late respon
         response: { ok: true, status: 200 }, data: { success: true, data: { private: 'draft' } }
     });
     pending.find(item => item.url.includes('/edition-capability')).resolve({ response: { ok: true, status: 200 }, data: { success: true, data: {} } });
-    await loading;
+    pending.find(item => item.url === '/api/status').resolve({
+        response: { ok: true, status: 200 },
+        data: { success: true, data: [{ profile_id: 'private-profile', profile_name: 'Private profile' }] }
+    });
+    await Promise.all([loading, statusLoading]);
     assert.equal(app.editionDialog, newSessionDialog);
+    assert.equal(app.statuses, newSessionStatuses, 'a prior session must not replace the new session status');
+    assert.deepEqual(app.users, [{ id: 'new-session-profile' }]);
     assert.equal(harness.htmlWrites, writesForNewSession);
     assert.equal(content.innerHTML, 'new session dialog');
     assert.equal(app.authExpiryCalls || 0, 0);
