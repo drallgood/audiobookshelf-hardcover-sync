@@ -237,40 +237,16 @@ func (e *AuthError) Error() string {
 	return e.Message
 }
 
-// CSRF protection middleware
+// CSRFProtection rejects unsafe cross-origin browser requests.
+//
+// Requests without browser origin metadata remain available to non-browser
+// clients, while safe methods are handled by net/http's standard protection.
 func (am *AuthMiddleware) CSRFProtection(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !am.enabled {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		// Skip CSRF for GET, HEAD, OPTIONS requests
-		if r.Method == "GET" || r.Method == "HEAD" || r.Method == "OPTIONS" {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		// Check CSRF token for state-changing requests
-		token := r.Header.Get("X-CSRF-Token")
-		if token == "" {
-			token = r.FormValue("csrf_token")
-		}
-
-		if token == "" {
-			if am.isAPIRequest(r) {
-				am.writeJSONError(w, http.StatusForbidden, "csrf_token_missing", "CSRF token required")
-			} else {
-				http.Error(w, "CSRF token required", http.StatusForbidden)
-			}
-			return
-		}
-
-		// TODO: Implement proper CSRF token validation
-		// For now, just check that a token is present
-
-		next.ServeHTTP(w, r)
-	})
+	protection := http.NewCrossOriginProtection()
+	protection.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		am.writeJSONError(w, http.StatusForbidden, "csrf_request_rejected", "Cross-origin request rejected")
+	}))
+	return protection.Handler(next)
 }
 
 // CORSMiddleware handles CORS headers
@@ -280,7 +256,6 @@ func (am *AuthMiddleware) CORSMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", "*") // Configure appropriately for production
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CSRF-Token")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
 
 		// Handle preflight requests
 		if r.Method == "OPTIONS" {

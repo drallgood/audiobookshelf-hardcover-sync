@@ -27,6 +27,7 @@ type editionRecoveryData struct {
 	AudibleIdentifier string `json:"audible_identifier"`
 	HardcoverBookID   string `json:"hardcover_book_id"`
 	RecoveryToken     string `json:"recovery_token"`
+	RecoveryExpiresAt int64  `json:"recovery_expires_at,omitempty"`
 }
 
 func signEditionRecoveryToken(hardcoverToken string, claims editionRecoveryClaims) string {

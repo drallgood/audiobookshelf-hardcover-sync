@@ -111,54 +111,98 @@ func (c OutcomeCounts) Total() int32 {
 // BookOutcomeRecord describes one attempted item. Records are keyed by the
 // Audiobookshelf item ID and replaced if a caller retries the same item.
 type BookOutcomeRecord struct {
-	BookID                 string      `json:"book_id"`
-	Outcome                SyncOutcome `json:"outcome"`
-	Title                  string      `json:"title,omitempty"`
-	Author                 string      `json:"author,omitempty"`
-	ASIN                   string      `json:"asin,omitempty"`
-	ISBN                   string      `json:"isbn,omitempty"`
-	CoverURL               string      `json:"cover_url,omitempty"`
-	Format                 string      `json:"format,omitempty"`
-	Series                 string      `json:"series,omitempty"`
-	SeriesNumber           string      `json:"series_number,omitempty"`
-	Reason                 string      `json:"reason,omitempty"`
-	Error                  string      `json:"error,omitempty"`
-	MatchMethod            string      `json:"match_method,omitempty"`
-	HardcoverBookID        string      `json:"hardcover_book_id,omitempty"`
-	EditionID              string      `json:"edition_id,omitempty"`
-	HardcoverTitle         string      `json:"hardcover_title,omitempty"`
-	HardcoverAuthor        string      `json:"hardcover_author,omitempty"`
-	HardcoverPublishedYear string      `json:"hardcover_published_year,omitempty"`
-	HardcoverCoverURL      string      `json:"hardcover_cover_url,omitempty"`
-	HardcoverPublisher     string      `json:"hardcover_publisher,omitempty"`
-	HardcoverASIN          string      `json:"hardcover_asin,omitempty"`
-	HardcoverISBN          string      `json:"hardcover_isbn,omitempty"`
-	HardcoverSlug          string      `json:"hardcover_slug,omitempty"`
-	HardcoverSeries        string      `json:"hardcover_series,omitempty"`
-	HardcoverSeriesNumber  string      `json:"hardcover_series_number,omitempty"`
-	UpdatedAt              time.Time   `json:"updated_at"`
+	EditionAdded           bool                 `json:"edition_added,omitempty"`
+	EditionAction          *EditionActionRecord `json:"edition_action,omitempty"`
+	BookID                 string               `json:"book_id"`
+	Outcome                SyncOutcome          `json:"outcome"`
+	Title                  string               `json:"title,omitempty"`
+	Author                 string               `json:"author,omitempty"`
+	ASIN                   string               `json:"asin,omitempty"`
+	ISBN                   string               `json:"isbn,omitempty"`
+	CoverURL               string               `json:"cover_url,omitempty"`
+	Format                 string               `json:"format,omitempty"`
+	Series                 string               `json:"series,omitempty"`
+	SeriesNumber           string               `json:"series_number,omitempty"`
+	Reason                 string               `json:"reason,omitempty"`
+	Error                  string               `json:"error,omitempty"`
+	MatchMethod            string               `json:"match_method,omitempty"`
+	HardcoverBookID        string               `json:"hardcover_book_id,omitempty"`
+	EditionID              string               `json:"edition_id,omitempty"`
+	HardcoverTitle         string               `json:"hardcover_title,omitempty"`
+	HardcoverAuthor        string               `json:"hardcover_author,omitempty"`
+	HardcoverPublishedYear string               `json:"hardcover_published_year,omitempty"`
+	HardcoverCoverURL      string               `json:"hardcover_cover_url,omitempty"`
+	HardcoverPublisher     string               `json:"hardcover_publisher,omitempty"`
+	HardcoverASIN          string               `json:"hardcover_asin,omitempty"`
+	HardcoverISBN          string               `json:"hardcover_isbn,omitempty"`
+	HardcoverSlug          string               `json:"hardcover_slug,omitempty"`
+	HardcoverSeries        string               `json:"hardcover_series,omitempty"`
+	HardcoverSeriesNumber  string               `json:"hardcover_series_number,omitempty"`
+	UpdatedAt              time.Time            `json:"updated_at"`
+}
+
+// EditionActionRecord exposes the server-persisted state of a user-confirmed
+// edition request for this exact run and Audiobookshelf item.
+type EditionActionRecord struct {
+	Outcome       string                      `json:"outcome"`
+	HTTPStatus    int                         `json:"http_status"`
+	Error         string                      `json:"error,omitempty"`
+	ErrorCode     string                      `json:"error_code,omitempty"`
+	Data          *EditionActionData          `json:"data,omitempty"`
+	SubmittedBody *EditionActionSubmittedBody `json:"submitted_body,omitempty"`
+}
+
+// EditionActionData carries verified result details or a signed read-only
+// recovery capability. Persisted payloads are encrypted by the database layer.
+type EditionActionData struct {
+	AudibleIdentifier   string `json:"audible_identifier,omitempty"`
+	HardcoverBookID     string `json:"hardcover_book_id,omitempty"`
+	HardcoverEditionID  string `json:"hardcover_edition_id,omitempty"`
+	RecoveryToken       string `json:"recovery_token,omitempty"`
+	RecoveryExpiresAt   int64  `json:"recovery_expires_at,omitempty"`
+	ReadingFormatID     string `json:"reading_format_id,omitempty"`
+	HardcoverEditionURL string `json:"hardcover_edition_url,omitempty"`
+	Guidance            string `json:"guidance,omitempty"`
+}
+
+// EditionActionSubmittedBody preserves the user's edited create fields so a
+// later browser session can reconstruct a safe retry after a definitive
+// not_submitted result.
+type EditionActionSubmittedBody struct {
+	RunID             string  `json:"run_id"`
+	ABSItemID         string  `json:"abs_item_id"`
+	AudibleIdentifier string  `json:"audible_identifier,omitempty"`
+	Title             *string `json:"title,omitempty"`
+	Subtitle          *string `json:"subtitle,omitempty"`
+	ASIN              *string `json:"asin,omitempty"`
+	ISBN10            *string `json:"isbn_10,omitempty"`
+	ISBN13            *string `json:"isbn_13,omitempty"`
+	ReleaseDate       *string `json:"release_date,omitempty"`
+	EditionFormat     *string `json:"edition_format,omitempty"`
+	Resync            bool    `json:"resync,omitempty"`
 }
 
 // SyncSnapshot is a coherent, current-run view for status/API callers.
 // GetSnapshot returns deep-copied slices so callers can safely retain or
 // modify a response while the sync continues.
 type SyncSnapshot struct {
-	ProfileID           string              `json:"profile_id,omitempty"`
-	AudiobookshelfURL   string              `json:"audiobookshelf_url,omitempty"`
-	RunID               string              `json:"run_id,omitempty"`
-	QueuedAt            time.Time           `json:"queued_at,omitempty"`
-	ProcessingStartedAt time.Time           `json:"processing_started_at,omitempty"`
-	LastActivityAt      time.Time           `json:"last_activity_at,omitempty"`
-	LastProcessedAt     time.Time           `json:"last_processed_at,omitempty"`
-	FinishedAt          time.Time           `json:"finished_at,omitempty"`
-	DryRun              bool                `json:"dry_run"`
-	RunError            string              `json:"run_error,omitempty"`
-	UnattemptedCount    int32               `json:"unattempted_count"`
-	State               string              `json:"state,omitempty"`
-	BooksTotal          int32               `json:"books_total"`
-	ProcessedSoFar      int32               `json:"processed_so_far"`
-	OutcomeCounts       OutcomeCounts       `json:"outcome_counts"`
-	BookOutcomes        []BookOutcomeRecord `json:"book_outcomes"`
+	ProfileID                 string              `json:"profile_id,omitempty"`
+	AudiobookshelfURL         string              `json:"audiobookshelf_url,omitempty"`
+	RunID                     string              `json:"run_id,omitempty"`
+	QueuedAt                  time.Time           `json:"queued_at,omitempty"`
+	ProcessingStartedAt       time.Time           `json:"processing_started_at,omitempty"`
+	LastActivityAt            time.Time           `json:"last_activity_at,omitempty"`
+	LastProcessedAt           time.Time           `json:"last_processed_at,omitempty"`
+	FinishedAt                time.Time           `json:"finished_at,omitempty"`
+	DryRun                    bool                `json:"dry_run"`
+	RunError                  string              `json:"run_error,omitempty"`
+	UnattemptedCount          int32               `json:"unattempted_count"`
+	State                     string              `json:"state,omitempty"`
+	BooksTotal                int32               `json:"books_total"`
+	ProcessedSoFar            int32               `json:"processed_so_far"`
+	OutcomeCounts             OutcomeCounts       `json:"outcome_counts"`
+	BookOutcomes              []BookOutcomeRecord `json:"book_outcomes"`
+	EditionActionsUnavailable bool                `json:"edition_actions_unavailable,omitempty"`
 }
 
 // processBookOutcomeReporterKey carries a best-effort outcome callback through

@@ -66,6 +66,7 @@ func (d *Database) migrate() error {
 		&SyncProfileConfig{},
 		&ProfileSyncState{},
 		&SyncRunReport{},
+		&EditionActionJournal{},
 		&auth.AuthUser{},
 		&auth.AuthSession{},
 		&auth.AuthProvider{},

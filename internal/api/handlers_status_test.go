@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/multiuser"
 	syncsvc "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
+	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1309,4 +1311,98 @@ func requestJSONRoute(routes http.Handler, method, path string) *httptest.Respon
 	recorder := httptest.NewRecorder()
 	routes.ServeHTTP(recorder, httptest.NewRequest(method, path, nil))
 	return recorder
+}
+
+func TestRunDetailsRestoreSavedEditionAdditionsAcrossClientsAndRestart(t *testing.T) {
+	fixture := newStatusServiceFixture(t, "http://hardcover.invalid")
+	const profileID = "added-profile"
+	const runID = "added-run"
+	require.NoError(t, fixture.multiUser.CreateProfile(profileID, "Added", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{StateFile: "state.json"}))
+	original := syncsvc.SyncSnapshot{
+		ProfileID: profileID, RunID: runID, State: "completed",
+		OutcomeCounts: syncsvc.OutcomeCounts{NeedsReview: 2},
+		BookOutcomes: []syncsvc.BookOutcomeRecord{
+			{BookID: "added", Outcome: syncsvc.OutcomeNeedsReview, Format: "Audiobook", ASIN: " b012345678 ", ISBN: "978-0-306-40615-7", HardcoverBookID: "41"},
+			{BookID: "untouched", Outcome: syncsvc.OutcomeNeedsReview, Format: "Audiobook", ASIN: "B012345679", HardcoverBookID: "42"},
+		},
+	}
+	encoded, err := json.Marshal(original)
+	require.NoError(t, err)
+	report, err := fixture.repo.AcceptSyncRun(&database.SyncRunReport{ProfileID: profileID, RunID: runID, Phase: database.SyncRunPhaseQueued, SnapshotJSON: "{}"})
+	require.NoError(t, err)
+	report.Phase = database.SyncRunPhaseCompleted
+	report.SnapshotJSON = database.SyncSnapshotJSON(encoded)
+	require.NoError(t, fixture.repo.UpsertSyncRunReportContext(context.Background(), report))
+	readDetails := func(service *multiuser.MultiUserService) syncsvc.SyncSnapshot {
+		routes := http.NewServeMux()
+		routes.HandleFunc("GET /api/profiles/{id}/runs/{runID}/details", NewHandler(service, logger.Get()).GetRunDetails)
+		response := requestJSONRoute(routes, http.MethodGet, "/api/profiles/"+profileID+"/runs/"+runID+"/details")
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		var body struct {
+			Data syncsvc.SyncSnapshot `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+		return body.Data
+	}
+	require.False(t, readDetails(fixture.multiUser).BookOutcomes[0].EditionAdded)
+	operation := func(*database.ProfileWithTokens) (statepkg.Association, error) {
+		return statepkg.Association{
+			ABSItemID: "added", SourceASIN: "B012345678", SourceISBN13: "9780306406157",
+			HardcoverBookID: "41", HardcoverEditionID: "82", ReadingFormat: "audiobook", Provenance: "api_regional_recovered",
+		}, nil
+	}
+	require.NoError(t, fixture.multiUser.RecoverEditionAssociation(context.Background(), profileID, "added", operation))
+	cfg := config.DefaultConfig()
+	cfg.Paths.DataDir = fixture.dataDir
+	restarted := multiuser.NewMultiUserService(fixture.repo, cfg, logger.Get())
+	t.Cleanup(func() { require.NoError(t, restarted.Shutdown(context.Background())) })
+	for _, service := range []*multiuser.MultiUserService{fixture.multiUser, restarted} {
+		details := readDetails(service)
+		require.True(t, details.BookOutcomes[0].EditionAdded)
+		require.False(t, details.BookOutcomes[1].EditionAdded)
+		require.Equal(t, original.OutcomeCounts, details.OutcomeCounts)
+		require.Equal(t, syncsvc.OutcomeNeedsReview, details.BookOutcomes[0].Outcome)
+	}
+	stored, err := fixture.repo.GetSyncRunReport(profileID, runID)
+	require.NoError(t, err)
+	require.Equal(t, report.SnapshotJSON, stored.SnapshotJSON, "historical report is unchanged")
+	_, err = fixture.multiUser.ForgetEditionAssociation(profileID, "added")
+	require.NoError(t, err)
+	require.False(t, readDetails(restarted).BookOutcomes[0].EditionAdded)
+}
+
+func TestRunDetailsKeepsHistoricalSnapshotWhenEditionAnnotationFails(t *testing.T) {
+	fixture := newStatusServiceFixture(t, "http://hardcover.invalid")
+	const profileID = "broken-state-profile"
+	const runID = "broken-state-run"
+	require.NoError(t, fixture.multiUser.CreateProfile(profileID, "Broken state", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{StateFile: "state.json"}))
+	snapshot := syncsvc.SyncSnapshot{
+		ProfileID: profileID, RunID: runID, State: "completed",
+		OutcomeCounts: syncsvc.OutcomeCounts{NeedsReview: 1},
+		BookOutcomes: []syncsvc.BookOutcomeRecord{{
+			BookID: "item", Outcome: syncsvc.OutcomeNeedsReview, EditionAdded: true,
+			EditionAction: &syncsvc.EditionActionRecord{Outcome: "unconfirmed", Data: &syncsvc.EditionActionData{RecoveryToken: "must-not-leak"}},
+		}},
+	}
+	encoded, err := json.Marshal(snapshot)
+	require.NoError(t, err)
+	report, err := fixture.repo.AcceptSyncRun(&database.SyncRunReport{ProfileID: profileID, RunID: runID, Phase: database.SyncRunPhaseQueued, SnapshotJSON: "{}"})
+	require.NoError(t, err)
+	report.Phase = database.SyncRunPhaseCompleted
+	report.SnapshotJSON = database.SyncSnapshotJSON(encoded)
+	require.NoError(t, fixture.repo.UpsertSyncRunReportContext(context.Background(), report))
+	require.NoError(t, os.WriteFile(filepath.Join(fixture.dataDir, "state."+profileID), []byte("corrupt state"), 0600))
+
+	routes := http.NewServeMux()
+	routes.HandleFunc("GET /api/profiles/{id}/runs/{runID}/details", NewHandler(fixture.multiUser, logger.Get()).GetRunDetails)
+	response := requestJSONRoute(routes, http.MethodGet, "/api/profiles/"+profileID+"/runs/"+runID+"/details")
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var body struct {
+		Data syncsvc.SyncSnapshot `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+	require.True(t, body.Data.EditionActionsUnavailable)
+	require.False(t, body.Data.BookOutcomes[0].EditionAdded)
+	require.Nil(t, body.Data.BookOutcomes[0].EditionAction)
+	require.Equal(t, snapshot.OutcomeCounts, body.Data.OutcomeCounts)
 }

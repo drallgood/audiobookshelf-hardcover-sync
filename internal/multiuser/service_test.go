@@ -601,6 +601,41 @@ func TestForgetEditionAssociationRemovesAssociationAndItemCheckpoints(t *testing
 	require.False(t, second.PersistentChangeMade)
 }
 
+func TestForgetEditionAssociationWithoutSavedMatchPreservesPendingEditionAction(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	service.globalConfig.Paths.DataDir = t.TempDir()
+	const (
+		profileID = "forget-pending-action-profile"
+		itemID    = "abs-forget-pending-item"
+		runID     = "run-pending-action"
+	)
+	require.NoError(t, service.repository.CreateProfile(
+		profileID, "Forget pending action", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
+	))
+	pending := syncsvc.EditionActionRecord{
+		Outcome: "unconfirmed", HTTPStatus: http.StatusServiceUnavailable,
+		Error: "Hardcover has not confirmed the edition request yet",
+		Data: &syncsvc.EditionActionData{
+			AudibleIdentifier: "B012345678:uk", HardcoverBookID: "book-12", RecoveryToken: "signed-recovery-token",
+		},
+		SubmittedBody: &syncsvc.EditionActionSubmittedBody{RunID: runID, ABSItemID: itemID},
+	}
+	require.NoError(t, service.SaveEditionAction(profileID, runID, itemID, pending))
+
+	result, err := service.ForgetEditionAssociation(profileID, itemID)
+	require.NoError(t, err)
+	require.Nil(t, result.PreviousResolution)
+	require.False(t, result.AssociationRemoved)
+	require.False(t, result.PersistentChangeMade)
+
+	action, found, err := service.GetEditionAction(profileID, runID, itemID)
+	require.NoError(t, err)
+	require.True(t, found, "forgetting an item without a saved match must not clear its unresolved create request")
+	require.Equal(t, pending.Outcome, action.Outcome)
+	require.Equal(t, pending.Error, action.Error)
+	require.Equal(t, pending.Data.RecoveryToken, action.Data.RecoveryToken)
+}
+
 func TestForgetEditionAssociationDryRunLeavesStateFileUnchanged(t *testing.T) {
 	service, _ := newStatusLookupService(t)
 	service.globalConfig.Paths.DataDir = t.TempDir()
