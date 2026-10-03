@@ -468,17 +468,6 @@ class SyncProfileApp {
         });
         const editionModal = document.getElementById('edition-modal');
         if (editionModal) {
-            editionModal.addEventListener('input', (event) => {
-                const input = event.target;
-                if (input?.name !== 'audible_identifier_preview' || !this.isAudibleImportDialog(this.editionDialog)) return;
-                const dialog = this.editionDialog;
-                dialog.audibleIdentifierInput = String(input.value || '');
-                const match = dialog.audibleIdentifierInput.trim().match(/^([a-z0-9]{10}):(us|ca|uk|au|de|fr|es|in|it|jp)$/i);
-                const normalized = match ? `${match[1].toUpperCase()}:${match[2].toLowerCase()}` : '';
-                dialog.audibleIdentifierUnpreviewed = normalized !== this.displayedAudibleIdentifier(dialog.draft);
-                const confirm = editionModal.querySelector('[data-edition-dialog="confirm-create"]');
-                if (confirm) confirm.disabled = dialog.audibleIdentifierUnpreviewed || this.audibleImportBlockers(dialog, dialog.draft || {}).length > 0;
-            });
             editionModal.addEventListener('click', (event) => {
                 if (event.target === editionModal) {
                     this.closeEditionDialog();
@@ -492,7 +481,6 @@ class SyncProfileApp {
                         if (this.editionDialog?.mode === 'create' && !this.isAudibleImportDialog(this.editionDialog)) this.editionDialog.fieldValues = null;
                         this.loadEditionDraft();
                         break;
-                    case 'preview-audible': this.previewAudibleIdentifier(); break;
                     case 'confirm-create': this.submitEditionCreate(); break;
                     case 'check-import': this.checkEditionImport(); break;
                     case 'retry-create': this.submitEditionCreate(); break;
@@ -2222,7 +2210,6 @@ class SyncProfileApp {
                 const identifierMatch = String(submittedIdentifier || '').match(/^([a-z0-9]{10}):(us|ca|uk|au|de|fr|es|in|it|jp)$/i);
                 if (this.isAudibleImportDialog(restoredDialog) && identifierMatch) {
                     restoredDialog.audibleIdentifier = `${identifierMatch[1].toUpperCase()}:${identifierMatch[2].toLowerCase()}`;
-                    restoredDialog.audibleIdentifierInput = restoredDialog.audibleIdentifier;
                 }
                 await this.loadEditionDraft();
                 if (this.editionDialog !== restoredDialog) return;
@@ -2284,14 +2271,6 @@ class SyncProfileApp {
                             ? `Retry in ${Math.ceil(waitMs / 1000)}s`
                             : dialog.draft ? 'Refresh preview' : 'Retry';
                         retryButton.disabled = waitMs > 0 || dialog.busy;
-                    }
-                    const audiblePreviewButton = document.getElementById('edition-modal-content')
-                        ?.querySelector?.('[data-edition-dialog="preview-audible"]');
-                    if (audiblePreviewButton) {
-                        audiblePreviewButton.textContent = waitMs > 0
-                            ? `Retry in ${Math.ceil(waitMs / 1000)}s`
-                            : 'Preview identifier';
-                        audiblePreviewButton.disabled = waitMs > 0 || dialog.busy;
                     }
                     if (waitMs === 0) { clearInterval(dialog.timer); dialog.timer = null; }
                 }, 1000);
@@ -2457,19 +2436,17 @@ class SyncProfileApp {
             </fieldset>`;
         } else {
             const status = draft.region_status || '';
-            const candidate = draft.audible_identifier_candidate || {};
-            const confirmed = status === 'confirmed' && candidate.asin && draft.confirmed_region;
-            const identifierValue = confirmed ? `${candidate.asin}:${draft.confirmed_region}` : '';
+            const confirmed = status === 'confirmed' && draft.confirmed_region;
             if (!/^[a-z0-9]{10}$/i.test(String(ids.asin || '').trim())) {
                 regionHtml = this.sourceISBNIsShapeValid(ids.isbn)
                     ? '<div class="edition-region review">This audiobook will be added using its Audiobookshelf ISBN. Verify the source metadata before adding the edition.</div>'
                     : '<div class="edition-region review">This audiobook has no usable source ASIN or ISBN. Add a valid identifier before creating the edition.</div>';
             } else if (confirmed) {
-                regionHtml = `<div class="edition-region confirmed">Audible identifier: <strong>${this.escapeHtml(identifierValue)}</strong> <span class="edition-note">(confirmed automatically)</span></div>`;
+                regionHtml = '<div class="edition-region confirmed">Audible region confirmed automatically.</div>';
             } else if (status === 'temporarily_unavailable') {
-                regionHtml = '<div class="edition-region review">Region lookup is temporarily unavailable. Refresh the preview to try again, or create the edition and the app will retry Audible region discovery first. The import proceeds only if a region is confirmed.</div>';
+                regionHtml = '<div class="edition-region review">Region lookup is temporarily unavailable. Refresh the preview to try again, or add the edition and the app will retry region discovery first. The import proceeds only if a region is confirmed.</div>';
             } else if (status === 'unknown') {
-                regionHtml = '<div class="edition-region review">The Audible region could not be confirmed from Audiobookshelf. The app will retry region discovery during creation; the import proceeds only if a region is confirmed.</div>';
+                regionHtml = '<div class="edition-region review">The Audible region could not be confirmed yet. The app will retry region discovery during creation; the import proceeds only if a region is confirmed.</div>';
             } else {
                 regionHtml = '<div class="edition-region review">No regional Audible identifier is available yet. The app will retry region discovery during creation; the import proceeds only if a region is confirmed.</div>';
             }
@@ -2522,7 +2499,7 @@ class SyncProfileApp {
     }
 
     audibleImportComparisonRows(draft) {
-        const abs = draft?.metadata_preview || {};
+        const abs = draft?.source_metadata_preview || draft?.metadata_preview || {};
         const audible = draft?.audnexus_record || {};
         const comparison = draft?.audnexus_comparison || {};
         const joined = values => Array.isArray(values) ? values.filter(value => String(value || '').trim()).join(', ') : '';
@@ -2536,12 +2513,10 @@ class SyncProfileApp {
             ['publisher', 'Publisher', abs.publisher, audible.publisher],
             ['release_date', 'Release date', abs.release_date, audible.release_date],
             ['runtime', 'Runtime', Number(abs.audio_seconds) > 0 ? `${Math.round(Number(abs.audio_seconds))} seconds` : '', Number(audible.runtime_seconds) > 0 ? `${Math.round(Number(audible.runtime_seconds))} seconds` : ''],
-            ['language', 'Language', abs.language, audible.language],
-            ['cover_url', 'Cover URL', abs.cover_url, audible.cover_url]
+            ['language', 'Language', abs.language, audible.language]
         ];
         return rows.map(([key, label, absValue, audnexusValue]) => {
-            // Cover URLs come from different systems and are not comparable values.
-            const status = key !== 'cover_url' && ['match', 'differs', 'missing'].includes(comparison[key])
+            const status = ['match', 'differs', 'missing'].includes(comparison[key])
                 ? comparison[key] : '';
             const display = value => String(value ?? '').trim() || '—';
             const statusLabel = status === 'differs' ? 'Different' : status === 'match' ? 'Match' : status === 'missing' ? 'Missing' : '';
@@ -2588,21 +2563,17 @@ class SyncProfileApp {
             return `<div class="edition-warning" role="alert"><strong>${this.escapeHtml(title)}</strong><p>${this.escapeHtml(description)}</p>${this.renderEditionTechnicalDetails(technicalDialog)}</div><div class="form-actions edition-create-actions">${recoveryAction}${openLink}${closeButton}</div>${dialog.checkError ? `<div class="edition-error" role="alert">${this.escapeHtml(dialog.checkError)}</div>` : ''}`;
         }
         if (!draft) {
-            const retryLabel = waiting ? `Retry in ${Math.ceil(waitMs / 1000)}s` : (dialog.audibleIdentifier ? 'Preview identifier' : 'Retry');
+            const retryLabel = waiting ? `Retry in ${Math.ceil(waitMs / 1000)}s` : 'Retry preview';
             return `${errorHtml}<div class="form-actions edition-create-actions"><button type="button" class="btn btn-secondary" data-edition-dialog="retry" ${waiting || dialog.busy ? 'disabled' : ''}>${retryLabel}</button>${closeButton}</div>`;
         }
-        const identifier = this.displayedAudibleIdentifier(draft);
         const blockers = this.audibleImportBlockers(dialog, draft);
         const dryRun = Boolean(draft.dry_run || dialog.capability?.dry_run || dialog.runDryRun);
-        const candidate = draft.audible_identifier_candidate || {};
-        const defaultIdentifier = identifier || (candidate.asin && candidate.region ? `${candidate.asin}:${candidate.region}` : '');
-        const fieldValue = dialog.audibleIdentifierInput ?? defaultIdentifier;
         const regionStatus = draft.region_status || 'unknown';
         const regionMessage = regionStatus === 'confirmed'
-            ? `Audnexus confirmed ${identifier}. Review the comparison, then submit to confirm this record.`
+            ? 'Audible region confirmed. Review the comparison, then submit to confirm this record.'
             : regionStatus === 'temporarily_unavailable'
-                ? 'Audnexus is temporarily unavailable. Wait for any Retry-After countdown, then refresh the preview or enter a corrected regional identifier.'
-                : 'The region is unknown. Enter a regional identifier and preview it before importing.';
+                ? 'Audnexus is temporarily unavailable. Wait for any Retry-After countdown, then refresh the preview to try again.'
+                : 'The region could not be confirmed. Refresh the preview to retry region discovery.';
         const comparisonHtml = draft.audnexus_record
             ? `<section class="audible-import-comparison" aria-label="Audiobookshelf and Audnexus comparison">
                 <div class="audible-comparison-heading"><h4>Audiobookshelf</h4><h4>Audnexus</h4></div>
@@ -2610,43 +2581,16 @@ class SyncProfileApp {
             </section>` : '';
         const regionHtml = `<div class="edition-region ${regionStatus === 'confirmed' ? 'confirmed' : 'review'}" role="status">${this.escapeHtml(regionMessage)}</div>`;
         const blockersHtml = blockers.map(text => `<div class="edition-error" data-blocker>${this.escapeHtml(text)}</div>`).join('');
-        const canConfirm = blockers.length === 0 && !dialog.busy && !waiting && !dialog.loading && !dialog.audibleIdentifierUnpreviewed;
+        const canConfirm = blockers.length === 0 && !dialog.busy && !waiting && !dialog.loading;
         const confirmButton = dialog.retryCreate
             ? `<button type="button" class="btn btn-primary" data-edition-dialog="retry-create" ${canConfirm ? '' : 'disabled'}>Retry add edition</button>`
             : `<button type="button" class="btn btn-primary" data-edition-dialog="confirm-create" ${canConfirm ? '' : 'disabled'}>${dialog.busy ? 'Creating…' : 'Add edition'}</button>`;
         return `${dryRun ? '<div class="edition-dry-run">Dry run</div>' : ''}
-            <section class="edition-source-section audible-import-identifier" aria-label="Regional Audible identifier">
-                <label class="edition-field"><span>Regional Audible identifier (ASIN:region)</span>
-                    <input type="text" name="audible_identifier_preview" value="${this.escapeHtmlAttribute(fieldValue)}" autocomplete="off" autocapitalize="characters" spellcheck="false">
-                </label>
-                <button type="button" class="btn btn-secondary" data-edition-dialog="preview-audible" ${waiting || dialog.busy ? 'disabled' : ''}>${waiting ? `Retry in ${Math.ceil(waitMs / 1000)}s` : 'Preview identifier'}</button>
-            </section>
             ${regionHtml}${comparisonHtml}${this.renderWarnings(draft)}${blockersHtml}${errorHtml}
             <div class="form-actions edition-create-actions">
                 ${confirmButton}
                 ${closeButton}
             </div>`;
-    }
-
-    async previewAudibleIdentifier() {
-        const dialog = this.editionDialog;
-        if (!this.isAudibleImportDialog(dialog) || dialog.busy || dialog.loading) return;
-        const input = document.querySelector('#edition-modal-content [name="audible_identifier_preview"]');
-        const value = String(input?.value || '').trim();
-        const match = value.match(/^([a-z0-9]{10}):(us|ca|uk|au|de|fr|es|in|it|jp)$/i);
-        if (!match) {
-            dialog.error = 'Enter a 10-character ASIN and supported region, such as B00ABC1234:uk.';
-            dialog.audibleIdentifierInput = value;
-            dialog.audibleIdentifierUnpreviewed = true;
-            this.showEditionDialog();
-            return;
-        }
-        dialog.audibleIdentifier = `${match[1].toUpperCase()}:${match[2].toLowerCase()}`;
-        dialog.audibleIdentifierInput = dialog.audibleIdentifier;
-        dialog.audibleIdentifierUnpreviewed = false;
-        dialog.draft = null;
-        dialog.outcome = '';
-        await this.loadEditionDraft();
     }
 
     // Builds the create POST body from the dialog's current form values.
@@ -2673,7 +2617,7 @@ class SyncProfileApp {
             const draft = dialog.draft || {};
             if (this.isAudibleImportDialog(dialog)) {
                 const identifier = this.displayedAudibleIdentifier(draft);
-                if (identifier && !dialog.audibleIdentifierUnpreviewed) {
+                if (identifier) {
                     body.audible_identifier = identifier;
                     body.audnexus_confirmed = true;
                 }
@@ -2706,7 +2650,7 @@ class SyncProfileApp {
         const dialog = this.editionDialog;
         if (!dialog || this.editionActionsUnavailableForDialog(dialog) || dialog.mode !== 'create' || !dialog.draft || dialog.busy
             || ['unconfirmed', 'created', 'transport_unknown', 'failed'].includes(dialog.outcome)) return;
-        if (this.isAudibleImportDialog(dialog) && (this.audibleImportBlockers(dialog, dialog.draft).length || dialog.audibleIdentifierUnpreviewed)) return;
+        if (this.isAudibleImportDialog(dialog) && this.audibleImportBlockers(dialog, dialog.draft).length) return;
         dialog.outcome = '';
         dialog.retryCreate = false;
         dialog.errorCode = '';
