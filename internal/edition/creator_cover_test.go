@@ -21,13 +21,16 @@ import (
 type coverFlowClient struct {
 	edition.HardcoverClient
 
-	failImageRecord bool
-	failAttach      bool
+	failImageRecord  bool
+	failAttach       bool
+	insertedImageURL string
+	updatedEditionID int
+	updatedImageID   int
 }
 
 func (c *coverFlowClient) GetAuthHeader() string { return "Bearer hardcover-token" }
 
-func (c *coverFlowClient) GraphQLMutation(_ context.Context, mutation string, _ map[string]interface{}, result interface{}) error {
+func (c *coverFlowClient) GraphQLMutation(_ context.Context, mutation string, variables map[string]interface{}, result interface{}) error {
 	respond := func(payload string) error { return json.Unmarshal([]byte(payload), result) }
 	switch {
 	case strings.Contains(mutation, "insert_edition"):
@@ -36,10 +39,19 @@ func (c *coverFlowClient) GraphQLMutation(_ context.Context, mutation string, _ 
 		if c.failImageRecord {
 			return errors.New("image record rejected")
 		}
+		if image, ok := variables["image"].(map[string]interface{}); ok {
+			c.insertedImageURL, _ = image["url"].(string)
+		}
 		return respond(`{"insert_image":{"id":55}}`)
 	case strings.Contains(mutation, "update_edition"):
 		if c.failAttach {
 			return errors.New("attach rejected")
+		}
+		c.updatedEditionID, _ = variables["id"].(int)
+		if editionInput, ok := variables["edition"].(map[string]interface{}); ok {
+			if dto, ok := editionInput["dto"].(map[string]interface{}); ok {
+				c.updatedImageID, _ = dto["image_id"].(int)
+			}
 		}
 		return respond(`{"update_edition":{"id":789,"errors":[]}}`)
 	}
@@ -57,6 +69,12 @@ type coverFlowTransport struct {
 	omitImageContentType bool
 	// uploadedFilename is the file name of the multipart upload to the storage host.
 	uploadedFilename string
+	// credentialFile and credentialPath capture the public credentials query.
+	credentialFile string
+	credentialPath string
+	// uploadedFields and uploadedFile capture the storage multipart body.
+	uploadedFields map[string]string
+	uploadedFile   []byte
 	// authByHost records the Authorization header each peer was sent.
 	authByHost map[string]string
 	// requests counts the requests each peer received.
@@ -148,12 +166,19 @@ func (rt *coverFlowTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		}
 		return resp, err
 	case "hardcover.app":
-		return reply(http.StatusOK, strings.NewReader(`{"url":"https://storage.example.test/upload","fields":{"key":"editions/789/cover.jpg"}}`))
+		rt.credentialFile = req.URL.Query().Get("file")
+		rt.credentialPath = req.URL.Query().Get("path")
+		return reply(http.StatusOK, strings.NewReader(`{"url":"https://storage.example.test/upload","fields":{"key":"editions/789/cover.jpg","x-goog-algorithm":"GOOG4-RSA-SHA256","x-goog-credential":"signed-credential","x-goog-date":"20261003T000000Z","x-goog-signature":"signed-value","policy":"signed-policy","file":"must-be-replaced"}}`))
 	case "storage.example.test":
+		rt.uploadedFields = map[string]string{}
 		if reader, err := req.MultipartReader(); err == nil {
 			for part, err := reader.NextPart(); err == nil; part, err = reader.NextPart() {
 				if part.FormName() == "file" {
 					rt.uploadedFilename = part.FileName()
+					rt.uploadedFile, _ = io.ReadAll(part)
+				} else {
+					value, _ := io.ReadAll(part)
+					rt.uploadedFields[part.FormName()] = string(value)
 				}
 			}
 		}
@@ -185,8 +210,9 @@ func TestCreateEditionReportsAFailedCoverWithoutFailingTheEdition(t *testing.T) 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := &coverFlowClient{failImageRecord: tt.failImageRec, failAttach: tt.failAttach}
+			transport := &coverFlowTransport{failHosts: tt.failHosts}
 			creator := edition.NewCreatorWithHTTPClient(client, logger.Get(), false, "",
-				&http.Client{Transport: &coverFlowTransport{failHosts: tt.failHosts}})
+				&http.Client{Transport: transport})
 			creator.EnableCoverUpload()
 
 			result, err := creator.CreateEdition(context.Background(), &edition.EditionInput{
@@ -205,6 +231,24 @@ func TestCreateEditionReportsAFailedCoverWithoutFailingTheEdition(t *testing.T) 
 				}
 			} else {
 				require.Empty(t, result.ImageError)
+			}
+			if tt.name == "cover attached" {
+				require.Equal(t, "editions/789", transport.credentialPath)
+				require.True(t, strings.HasPrefix(transport.credentialFile, "cover-"), transport.credentialFile)
+				require.True(t, strings.HasSuffix(transport.credentialFile, ".jpg"), transport.credentialFile)
+				require.Equal(t, transport.credentialFile, transport.uploadedFilename)
+				require.Equal(t, map[string]string{
+					"key":               "editions/789/cover.jpg",
+					"x-goog-algorithm":  "GOOG4-RSA-SHA256",
+					"x-goog-credential": "signed-credential",
+					"x-goog-date":       "20261003T000000Z",
+					"x-goog-signature":  "signed-value",
+					"policy":            "signed-policy",
+				}, transport.uploadedFields, "all signed multipart fields must be submitted and the credential's file field replaced by the upload")
+				require.Equal(t, jpegBytes, transport.uploadedFile)
+				require.Equal(t, "https://assets.hardcover.app/editions/789/cover.jpg", client.insertedImageURL)
+				require.Equal(t, 789, client.updatedEditionID)
+				require.Equal(t, 55, client.updatedImageID)
 			}
 		})
 	}

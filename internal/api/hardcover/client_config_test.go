@@ -86,12 +86,25 @@ func TestNewClientWithConfigNilUsesDefaultEndpoint(t *testing.T) {
 func TestNewClientWithConfigReusesProvidedRateLimiter(t *testing.T) {
 	logger.Setup(logger.Config{Level: "error", Format: "json"})
 	limiter := util.NewRateLimiter(time.Nanosecond, 2, logger.Get())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":{"books":[]}}`)
+	}))
+	defer server.Close()
+
 	config := DefaultClientConfig()
+	config.BaseURL = server.URL + "/graphql"
+	config.Timeout = time.Second
+	config.RateLimit = time.Nanosecond
+	config.MaxConcurrent = 2
 	config.RateLimiter = limiter
 
 	client := NewClientWithConfig(config, "profile-token", logger.Get())
-
-	require.Same(t, limiter, client.rateLimiter)
+	var result struct {
+		Books []struct{} `json:"books"`
+	}
+	require.NoError(t, client.GraphQLQuery(context.Background(), "query SharedLimiter { books { id } }", nil, &result))
+	assert.Equal(t, uint64(1), limiter.GetMetrics().Requests, "the supplied limiter must admit the client's request")
 }
 
 func TestClient_GetAuthHeader(t *testing.T) {

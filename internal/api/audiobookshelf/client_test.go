@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -201,9 +202,16 @@ func TestGetLibraryItemByIDErrors(t *testing.T) {
 	}
 
 	t.Run("empty item ID", func(t *testing.T) {
-		item, err := newTestClient(t, "http://127.0.0.1", "test-token").GetLibraryItemByID(context.Background(), " \t ")
+		var requests atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			requests.Add(1)
+		}))
+		defer server.Close()
+
+		item, err := newTestClient(t, server.URL, "test-token").GetLibraryItemByID(context.Background(), " \t ")
 		require.Nil(t, item)
-		require.EqualError(t, err, "item ID is required")
+		require.Error(t, err)
+		assert.Zero(t, requests.Load(), "blank item IDs must be rejected before an HTTP request")
 	})
 }
 
