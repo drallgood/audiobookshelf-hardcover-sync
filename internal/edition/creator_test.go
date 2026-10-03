@@ -410,13 +410,13 @@ func TestEditionCreator_PrepopulateFromBook(t *testing.T) {
 	tests := []struct {
 		name        string
 		bookID      int
-		setupMock   func(*MockHardcoverClient)
+		setupMock   func(*testing.T, *MockHardcoverClient)
 		expectError bool
 	}{
 		{
 			name:   "successful prepopulation",
 			bookID: 123,
-			setupMock: func(m *MockHardcoverClient) {
+			setupMock: func(t *testing.T, m *MockHardcoverClient) {
 				// Mock GraphQLQuery call
 				m.On("GraphQLQuery", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 					Return(nil).
@@ -431,7 +431,7 @@ func TestEditionCreator_PrepopulateFromBook(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.setupMock != nil {
-				tt.setupMock(mockClient)
+				tt.setupMock(t, mockClient)
 			}
 
 			result, err := creator.PrepopulateFromBook(context.Background(), tt.bookID)
