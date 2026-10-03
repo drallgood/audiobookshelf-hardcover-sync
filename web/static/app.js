@@ -2520,13 +2520,16 @@ class SyncProfileApp {
             ['cover_url', 'Cover URL', abs.cover_url, audible.cover_url]
         ];
         return rows.map(([key, label, absValue, audnexusValue]) => {
-            const status = ['match', 'differs', 'missing'].includes(comparison[key]) ? comparison[key] : 'missing';
+            // Cover URLs come from different systems and are not comparable values.
+            const status = key !== 'cover_url' && ['match', 'differs', 'missing'].includes(comparison[key])
+                ? comparison[key] : '';
             const display = value => String(value ?? '').trim() || '—';
-            return `<div class="audible-comparison-row status-${status}" data-comparison="${key}">
+            const statusLabel = status === 'differs' ? 'Different' : status === 'match' ? 'Match' : status === 'missing' ? 'Missing' : '';
+            return `<div class="audible-comparison-row${status ? ` status-${status}` : ''}" data-comparison="${key}">
                 <strong class="audible-comparison-label">${this.escapeHtml(label)}</strong>
                 <span class="audible-comparison-abs"><span class="audible-comparison-source">Audiobookshelf</span>${this.escapeHtml(display(absValue))}</span>
                 <span class="audible-comparison-audnexus"><span class="audible-comparison-source">Audnexus</span>${this.escapeHtml(display(audnexusValue))}</span>
-                <span class="audible-comparison-status">${status === 'differs' ? 'Different' : status === 'match' ? 'Match' : 'Missing'}</span>
+                ${statusLabel ? `<span class="audible-comparison-status">${statusLabel}</span>` : ''}
             </div>`;
         }).join('');
     }

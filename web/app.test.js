@@ -992,6 +992,21 @@ test('Audible import modal shows every comparison and escapes ABS and Audnexus v
     assert.match(html, /data-edition-dialog="confirm-create"/);
 });
 
+test('cover URLs remain visible without a comparison status when the API omits cover comparison', () => {
+    const app = editionApp();
+    const draft = confirmedAudibleDraft();
+    delete draft.audnexus_comparison.cover_url;
+    const html = app.renderEditionDialog({
+        mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record: audibleImportRecord,
+        loading: false, busy: false, runDryRun: false, capability: null, draft
+    });
+    const coverRow = html.match(/<div class="audible-comparison-row[^>]*data-comparison="cover_url">[\s\S]*?<\/div>/)?.[0] || '';
+    assert.match(coverRow, /https:\/\/abs\.example\/cover/);
+    assert.match(coverRow, /https:\/\/audnexus\.example\/cover/);
+    assert.doesNotMatch(coverRow, /status-(?:match|differs|missing)|>Match<|>Different<|>Missing</);
+    assert.match(html, /data-comparison="title" class="audible-comparison-row status-differs"|class="audible-comparison-row status-differs" data-comparison="title"/);
+});
+
 test('unknown, unavailable, dry-run, and unpreviewed corrected Audible identifiers cannot submit', () => {
     const app = editionApp();
     const base = {
