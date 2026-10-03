@@ -369,6 +369,7 @@ func (s *MultiUserService) CreateProfileForUser(profileID, name, audiobookshelfU
 	}
 	audiobookshelfURL = normalizedURL
 	syncConfig.AudnexusRegion = s.normalizeProfileAudnexusRegion(profileID, syncConfig.AudnexusRegion)
+	syncConfig.OwnershipRecheckDays = normalizeProfileOwnershipRecheckDays(syncConfig.OwnershipRecheckDays)
 	if err := s.validateProfileStateFile(profileID, syncConfig.StateFile); err != nil {
 		return err
 	}
@@ -419,6 +420,7 @@ func (s *MultiUserService) UpdateProfileConfig(profileID, audiobookshelfURL, aud
 	}
 
 	syncConfig.AudnexusRegion = s.normalizeProfileAudnexusRegion(profileID, syncConfig.AudnexusRegion)
+	syncConfig.OwnershipRecheckDays = normalizeProfileOwnershipRecheckDays(syncConfig.OwnershipRecheckDays)
 	if syncConfig.StateFile != "" {
 		if err := s.validateProfileStateFile(profileID, syncConfig.StateFile); err != nil {
 			return err
@@ -1786,6 +1788,7 @@ func (s *MultiUserService) createProfileSpecificConfig(profileConfig *database.P
 
 	// Apply all sync config values from the profile
 	config.Sync.Incremental = syncConfig.Incremental
+	config.Sync.OwnershipRecheckDays = effectiveProfileOwnershipRecheckDays(syncConfig.OwnershipRecheckDays)
 	// Make state file path profile-specific to avoid conflicts. Keep this
 	// derivation centralized because profile creation/update validation must
 	// inspect the exact path used by runtime setup.
@@ -1812,6 +1815,22 @@ func (s *MultiUserService) createProfileSpecificConfig(profileConfig *database.P
 	})
 
 	return &config
+}
+
+func normalizeProfileOwnershipRecheckDays(days *int) *int {
+	if days == nil || (*days >= 0 && *days <= config.MaxOwnershipRecheckDays) {
+		return days
+	}
+	defaultDays := config.DefaultOwnershipRecheckDays
+	return &defaultDays
+}
+
+func effectiveProfileOwnershipRecheckDays(days *int) int {
+	days = normalizeProfileOwnershipRecheckDays(days)
+	if days == nil {
+		return config.DefaultOwnershipRecheckDays
+	}
+	return *days
 }
 
 func (s *MultiUserService) profileSpecificStatePath(profileID, configuredPath string) string {

@@ -892,6 +892,9 @@ func (r *Repository) UpdateUserConfig(profileID, audiobookshelfURL, audiobookshe
 		if syncConfig.audnexusRegionSet || syncConfig.AudnexusRegion != "" {
 			finalSyncConfig.AudnexusRegion = syncConfig.AudnexusRegion
 		}
+		if syncConfig.OwnershipRecheckDays != nil {
+			finalSyncConfig.OwnershipRecheckDays = syncConfig.OwnershipRecheckDays
+		}
 		if len(syncConfig.Libraries.Include) > 0 {
 			finalSyncConfig.Libraries.Include = syncConfig.Libraries.Include
 		}

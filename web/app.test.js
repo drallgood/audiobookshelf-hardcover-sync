@@ -2443,3 +2443,59 @@ test('a saved edition request from a different run or item cannot change the act
         assert.equal(app.editionRequestState(record, app.openSummary), null);
     }
 });
+
+test('profile edit keeps an explicit zero ownership interval and defaults legacy profiles to 30', () => {
+    const previousDocument = global.document;
+    const fields = new Map();
+    global.document = {
+        getElementById(id) {
+            if (!fields.has(id)) fields.set(id, { style: {} });
+            return fields.get(id);
+        }
+    };
+    try {
+        const app = createApp();
+        for (const [value, expected] of [[undefined, 30], [0, 0], [7, 7]]) {
+            app.currentEditUser = {
+                profile: { id: 'owned', name: 'Owned' },
+                audiobookshelf_url: 'https://abs.example',
+                sync_config: { ownership_recheck_days: value }
+            };
+            app.showEditModal();
+            assert.equal(fields.get('edit-ownership-recheck-days').value, expected);
+        }
+    } finally {
+        global.document = previousDocument;
+    }
+});
+
+test('profile create and update submit the selected ownership interval, including zero', async () => {
+    const previousFormData = global.FormData;
+    const previousFetch = global.fetch;
+    global.FormData = class {
+        constructor(values) { this.values = values; }
+        get(name) { return this.values[name] ?? null; }
+    };
+    try {
+        const app = createApp();
+        app.beginSessionMutation = () => ({});
+        app.isCurrentSessionMutation = () => true;
+        app.finishSessionMutation = () => false;
+        app.showLoading = app.showToast = app.closeEditModal = app.loadProfiles = app.showTab = () => {};
+        for (const method of ['handleAddProfile', 'handleEditProfile']) {
+            for (const days of [0, 7, 30]) {
+                const requests = [];
+                global.fetch = async (url, options) => {
+                    requests.push(JSON.parse(options.body));
+                    return { json: async () => ({ success: true }) };
+                };
+                await app[method]({ target: { id: 'owned', ownership_recheck_days: String(days), reset() {} } });
+                const request = requests.find(body => body.sync_config);
+                assert.equal(request.sync_config.ownership_recheck_days, days);
+            }
+        }
+    } finally {
+        global.FormData = previousFormData;
+        global.fetch = previousFetch;
+    }
+});

@@ -93,12 +93,14 @@ func (m *MigrationManager) MigrateFromSingleUserConfig(configPath string) error 
 			statePath = fmt.Sprintf("%s/sync_state.json", strings.TrimSuffix(cfg.Paths.DataDir, "/"))
 		}
 	}
+	ownershipRecheckDays := cfg.Sync.OwnershipRecheckDays
 
 	syncConfig := SyncConfigData{
-		Incremental:        cfg.Sync.Incremental,
-		StateFile:          statePath,
-		MinChangeThreshold: cfg.Sync.MinChangeThreshold,
-		AudnexusRegion:     cfg.Audiobookshelf.AudnexusRegion,
+		Incremental:          cfg.Sync.Incremental,
+		OwnershipRecheckDays: &ownershipRecheckDays,
+		StateFile:            statePath,
+		MinChangeThreshold:   cfg.Sync.MinChangeThreshold,
+		AudnexusRegion:       cfg.Audiobookshelf.AudnexusRegion,
 		Libraries: struct {
 			Include []string `json:"include"`
 			Exclude []string `json:"exclude"`

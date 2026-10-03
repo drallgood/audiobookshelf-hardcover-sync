@@ -359,13 +359,48 @@ func TestReconcileBookOwnershipReusesRecentConfirmation(t *testing.T) {
 	}
 }
 
+func TestReconcileBookOwnershipUsesConfiguredRecheckDays(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		days       int
+		age        time.Duration
+		wantChecks int
+	}{
+		{name: "default interval still fresh", days: 30, age: 25 * 24 * time.Hour},
+		{name: "longer interval still fresh", days: 60, age: 40 * 24 * time.Hour},
+		{name: "shorter interval expired", days: 1, age: 2 * 24 * time.Hour, wantChecks: 1},
+		{name: "shorter interval still fresh", days: 1, age: 12 * time.Hour},
+		{name: "zero checks every time", days: 0, age: time.Hour, wantChecks: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, hc := createTestService()
+			svc.config.Sync.SyncOwned = true
+			svc.config.Sync.OwnershipRecheckDays = tt.days
+			svc.config.Hardcover.Token = "ownership-token"
+			book := ownershipTestBook("ownership-days-" + tt.name)
+			saveOwnershipAssociation(t, svc, book)
+			svc.state.RecordOwnershipVerified(book.ID, "123", "456", ownershipTokenFingerprint(svc.config.Hardcover.Token), time.Now().Add(-tt.age))
+			if tt.wantChecks > 0 {
+				hc.On("CheckBookOwnership", mock.Anything, 123).Return(true, nil).Times(tt.wantChecks)
+			}
+
+			for range 2 {
+				svc.reconcileBookOwnership(context.Background(), &models.HardcoverBook{ID: "123", EditionID: "456"}, *book)
+			}
+
+			hc.AssertNumberOfCalls(t, "CheckBookOwnership", tt.wantChecks)
+			hc.AssertExpectations(t)
+		})
+	}
+}
+
 func TestReconcileBookOwnershipChecksAgainAfterIntervalOrMatchChange(t *testing.T) {
 	for _, tt := range []struct {
 		name     string
 		verified time.Time
 		hcBook   *models.HardcoverBook
 	}{
-		{name: "interval elapsed", verified: time.Now().Add(-ownershipRecheckInterval - time.Hour), hcBook: &models.HardcoverBook{ID: "123", EditionID: "456"}},
+		{name: "interval elapsed", verified: time.Now().Add(-30*24*time.Hour - time.Hour), hcBook: &models.HardcoverBook{ID: "123", EditionID: "456"}},
 		{name: "matched edition changed", verified: time.Now(), hcBook: &models.HardcoverBook{ID: "123", EditionID: "789"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

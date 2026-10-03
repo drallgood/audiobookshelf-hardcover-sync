@@ -1861,6 +1861,57 @@ func TestProfileConfigAudnexusRegionFallsBackToGlobalConfig(t *testing.T) {
 		"a profile's own region preference should win over the global fallback")
 }
 
+func TestProfileOwnershipRecheckDaysDefaultZeroAndValidation(t *testing.T) {
+	service, _ := newStatusLookupService(t)
+	const legacyID = "ownership-recheck-legacy"
+	require.NoError(t, service.CreateProfile(
+		legacyID, "Legacy", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{},
+	))
+	legacy, err := service.GetProfile(legacyID)
+	require.NoError(t, err)
+	require.NotNil(t, legacy)
+	require.Nil(t, legacy.SyncConfig.OwnershipRecheckDays, "legacy profiles keep the field omitted")
+	require.Equal(t, config.DefaultOwnershipRecheckDays,
+		service.createProfileSpecificConfig(legacy).Sync.OwnershipRecheckDays)
+
+	var explicitZeroRequest struct {
+		SyncConfig database.SyncConfigData `json:"sync_config"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(`{"sync_config":{"ownership_recheck_days":0}}`), &explicitZeroRequest))
+	require.NoError(t, service.UpdateProfileConfig(
+		legacyID, legacy.AudiobookshelfURL, legacy.AudiobookshelfToken, legacy.HardcoverToken,
+		explicitZeroRequest.SyncConfig,
+	))
+	legacy, err = service.GetProfile(legacyID)
+	require.NoError(t, err)
+	require.NotNil(t, legacy.SyncConfig.OwnershipRecheckDays)
+	require.Equal(t, 0, *legacy.SyncConfig.OwnershipRecheckDays)
+	require.Zero(t, service.createProfileSpecificConfig(legacy).Sync.OwnershipRecheckDays)
+
+	// Omitting this option on a later partial update preserves the explicit zero.
+	require.NoError(t, service.UpdateProfileConfig(
+		legacyID, legacy.AudiobookshelfURL, legacy.AudiobookshelfToken, legacy.HardcoverToken,
+		database.SyncConfigData{},
+	))
+	legacy, err = service.GetProfile(legacyID)
+	require.NoError(t, err)
+	require.NotNil(t, legacy.SyncConfig.OwnershipRecheckDays)
+	require.Zero(t, *legacy.SyncConfig.OwnershipRecheckDays)
+
+	invalidDays := config.MaxOwnershipRecheckDays + 1
+	const invalidID = "ownership-recheck-invalid"
+	require.NoError(t, service.CreateProfile(
+		invalidID, "Invalid", "http://audiobookshelf", "abs-token", "hc-token",
+		database.SyncConfigData{OwnershipRecheckDays: &invalidDays},
+	))
+	invalid, err := service.GetProfile(invalidID)
+	require.NoError(t, err)
+	require.NotNil(t, invalid.SyncConfig.OwnershipRecheckDays)
+	require.Equal(t, config.DefaultOwnershipRecheckDays, *invalid.SyncConfig.OwnershipRecheckDays)
+	require.Equal(t, config.DefaultOwnershipRecheckDays,
+		service.createProfileSpecificConfig(invalid).Sync.OwnershipRecheckDays)
+}
+
 func TestStartSyncRejectsStoredStateFileWithOverlongComponent(t *testing.T) {
 	service, _ := newStatusLookupService(t)
 	service.globalConfig.Paths.DataDir = t.TempDir()

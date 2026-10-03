@@ -119,23 +119,24 @@ type SyncConfigData struct {
 		Include []string `json:"include"`
 		Exclude []string `json:"exclude"`
 	} `json:"libraries"`
-	SyncInterval       string  `json:"sync_interval"`
-	MinimumProgress    float64 `json:"minimum_progress"`
-	SyncWantToRead     bool    `json:"sync_want_to_read"`
-	ProcessUnreadBooks bool    `json:"process_unread_books"`
-	SyncOwned          bool    `json:"sync_owned"`
-	IncludeEbooks      bool    `json:"include_ebooks"`
-	DryRun             bool    `json:"dry_run"`
-	TestBookFilter     string  `json:"test_book_filter"`
-	TestBookLimit      int     `json:"test_book_limit"`
-	AudnexusRegion     string  `json:"audnexus_region"`
-	incrementalSet     bool
-	syncWantToReadSet  bool
-	processUnreadSet   bool
-	syncOwnedSet       bool
-	includeEbooksSet   bool
-	dryRunSet          bool
-	audnexusRegionSet  bool
+	SyncInterval         string  `json:"sync_interval"`
+	MinimumProgress      float64 `json:"minimum_progress"`
+	SyncWantToRead       bool    `json:"sync_want_to_read"`
+	ProcessUnreadBooks   bool    `json:"process_unread_books"`
+	SyncOwned            bool    `json:"sync_owned"`
+	OwnershipRecheckDays *int    `json:"ownership_recheck_days,omitempty"`
+	IncludeEbooks        bool    `json:"include_ebooks"`
+	DryRun               bool    `json:"dry_run"`
+	TestBookFilter       string  `json:"test_book_filter"`
+	TestBookLimit        int     `json:"test_book_limit"`
+	AudnexusRegion       string  `json:"audnexus_region"`
+	incrementalSet       bool
+	syncWantToReadSet    bool
+	processUnreadSet     bool
+	syncOwnedSet         bool
+	includeEbooksSet     bool
+	dryRunSet            bool
+	audnexusRegionSet    bool
 }
 
 // UnmarshalJSON records whether boolean and region fields were sent so profile
@@ -192,7 +193,8 @@ func isTrackedSyncConfigField(name string) bool {
 		strings.EqualFold(name, "sync_owned"),
 		strings.EqualFold(name, "include_ebooks"),
 		strings.EqualFold(name, "dry_run"),
-		strings.EqualFold(name, "audnexus_region"):
+		strings.EqualFold(name, "audnexus_region"),
+		strings.EqualFold(name, "ownership_recheck_days"):
 		return true
 	default:
 		return false
@@ -217,6 +219,7 @@ func (s SyncConfigData) IsEmpty() bool {
 		!s.syncWantToReadSet &&
 		!s.processUnreadSet &&
 		!s.syncOwnedSet &&
+		s.OwnershipRecheckDays == nil &&
 		!s.includeEbooksSet &&
 		!s.dryRunSet &&
 		s.TestBookFilter == "" &&

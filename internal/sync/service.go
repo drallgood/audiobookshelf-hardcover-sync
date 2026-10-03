@@ -1238,6 +1238,14 @@ func (s *Service) findOrCreateUserBookIDWithEdition(ctx context.Context, edition
 			// with the user book instead of in a second request.
 			existingUB, existingReads, ubErr = combined.GetUserBookWithReads(ctx, strconv.FormatInt(existingUserBookID, 10))
 			readsFetched = ubErr == nil
+			if ubErr != nil && ctx.Err() == nil {
+				logCtx.Debug("Combined user book and reads lookup failed, falling back to separate queries", map[string]interface{}{
+					"error": ubErr.Error(),
+				})
+				// The combined query is optional. Leave readsFetched false so the
+				// status handler fetches reads after any edition correction.
+				existingUB, ubErr = s.hardcover.GetUserBook(ctx, strconv.FormatInt(existingUserBookID, 10))
+			}
 		} else {
 			existingUB, ubErr = s.hardcover.GetUserBook(ctx, strconv.FormatInt(existingUserBookID, 10))
 		}
@@ -5058,9 +5066,11 @@ func (s *Service) reconcileBookOwnership(ctx context.Context, hcBook *models.Har
 		return
 	}
 	// Ownership rarely changes, so a recent confirmation for this saved match
-	// replaces the per-sync check. The check repeats after ownershipRecheckInterval.
+	// replaces the per-sync check until the configured recheck interval expires.
 	tokenFingerprint := ownershipTokenFingerprint(s.config.Hardcover.Token)
-	if s.state != nil && s.state.OwnershipVerifiedSince(book.ID, hcBook.ID, hcBook.EditionID, tokenFingerprint, time.Now().Add(-ownershipRecheckInterval)) {
+	recheckDays := s.config.Sync.OwnershipRecheckDays
+	recheckInterval := time.Duration(recheckDays) * 24 * time.Hour
+	if recheckDays > 0 && s.state != nil && s.state.OwnershipVerifiedSince(book.ID, hcBook.ID, hcBook.EditionID, tokenFingerprint, time.Now().Add(-recheckInterval)) {
 		log.Debug("Skipping ownership check: recently verified for this saved match", nil)
 		return
 	}
@@ -5108,10 +5118,6 @@ func (s *Service) reconcileBookOwnership(ctx context.Context, hcBook *models.Har
 		"edition_id": editionID,
 	})
 }
-
-// ownershipRecheckInterval is how long a confirmed ownership result is reused
-// before the Owned list is checked again for the same saved match.
-const ownershipRecheckInterval = 30 * 24 * time.Hour
 
 // rememberOwnershipVerified saves that the matched book and edition are on the
 // Owned list. Dry runs persist nothing, and only a saved association can carry it.

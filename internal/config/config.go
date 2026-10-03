@@ -16,6 +16,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	// DefaultOwnershipRecheckDays is the default age after which cached
+	// Hardcover ownership results are checked again.
+	DefaultOwnershipRecheckDays = 30
+	// MaxOwnershipRecheckDays is the largest day count representable as a
+	// time.Duration without overflow.
+	MaxOwnershipRecheckDays = 106751
+)
+
 // Config holds all configuration for the application
 type Config struct {
 	// Server configuration
@@ -44,6 +53,8 @@ type Config struct {
 		ProcessUnreadBooks bool `yaml:"process_unread_books" env:"PROCESS_UNREAD_BOOKS"`
 		// Mark synced books as owned in Hardcover
 		SyncOwned bool `yaml:"sync_owned" env:"SYNC_OWNED"`
+		// OwnershipRecheckDays controls how long cached ownership results remain valid (0 disables the cache).
+		OwnershipRecheckDays int `yaml:"ownership_recheck_days" env:"SYNC_OWNERSHIP_RECHECK_DAYS"`
 		// Dry run mode - log actions without making changes
 		DryRun bool `yaml:"dry_run" env:"DRY_RUN"`
 		// Single-user mode - only sync books for the specified user
@@ -231,6 +242,7 @@ func DefaultConfig() *Config {
 	cfg.Sync.SyncWantToRead = true
 	cfg.Sync.ProcessUnreadBooks = true
 	cfg.Sync.SyncOwned = false
+	cfg.Sync.OwnershipRecheckDays = DefaultOwnershipRecheckDays
 	cfg.Sync.DryRun = false
 	cfg.Sync.SingleUserMode = false
 	cfg.Sync.TestBookFilter = ""
@@ -323,10 +335,10 @@ func Load(configPath string) (*Config, error) {
 	fmt.Printf("Audiobookshelf:\n  url: %s\n  network_trust: %s\n  has_token: %v\n  audnexus_region: %s\n",
 		cfg.Audiobookshelf.URL, cfg.Audiobookshelf.NetworkTrust, cfg.Audiobookshelf.Token != "", cfg.Audiobookshelf.AudnexusRegion)
 	fmt.Printf("Hardcover:\n  has_token: %v\n  base_url: %s\n", cfg.Hardcover.Token != "", cfg.Hardcover.BaseURL)
-	fmt.Printf("Sync:\n  incremental: %v\n  state_file: %s\n  min_change_threshold: %d\n  sync_interval: %s\n  minimum_progress: %f\n  sync_want_to_read: %v\n  process_unread_books: %v\n  sync_owned: %v\n  dry_run: %v\n  single_user_mode: %v\n  single_user_username: %s\n  test_book_filter: %s\n  test_book_limit: %d\n  include_ebooks: %v\n",
+	fmt.Printf("Sync:\n  incremental: %v\n  state_file: %s\n  min_change_threshold: %d\n  sync_interval: %s\n  minimum_progress: %f\n  sync_want_to_read: %v\n  process_unread_books: %v\n  sync_owned: %v\n  ownership_recheck_days: %d\n  dry_run: %v\n  single_user_mode: %v\n  single_user_username: %s\n  test_book_filter: %s\n  test_book_limit: %d\n  include_ebooks: %v\n",
 		cfg.Sync.Incremental, cfg.Sync.StateFile, cfg.Sync.MinChangeThreshold,
 		cfg.Sync.SyncInterval, cfg.Sync.MinimumProgress, cfg.Sync.SyncWantToRead,
-		cfg.Sync.ProcessUnreadBooks, cfg.Sync.SyncOwned, cfg.Sync.DryRun,
+		cfg.Sync.ProcessUnreadBooks, cfg.Sync.SyncOwned, cfg.Sync.OwnershipRecheckDays, cfg.Sync.DryRun,
 		cfg.Sync.SingleUserMode, cfg.Sync.SingleUserUsername, cfg.Sync.TestBookFilter,
 		cfg.Sync.TestBookLimit, cfg.Sync.IncludeEbooks)
 	fmt.Printf("Rate Limiting:\n  rate: %s\n  max_concurrent: %d\n",
@@ -393,10 +405,24 @@ func loadLayers(configPath string, requireFile bool) (*Config, error) {
 				return nil, fmt.Errorf("failed to parse config file: %w", err)
 			}
 			mergeConfigs(cfg, fileCfg)
+			// mergeConfigs intentionally ignores zero-valued integers. Preserve
+			// an explicit zero here because it disables ownership caching.
+			var ownershipOverride struct {
+				Sync struct {
+					OwnershipRecheckDays *int `yaml:"ownership_recheck_days"`
+				} `yaml:"sync"`
+			}
+			if err := yaml.Unmarshal(data, &ownershipOverride); err != nil {
+				return nil, fmt.Errorf("failed to parse config file: %w", err)
+			}
+			if ownershipOverride.Sync.OwnershipRecheckDays != nil {
+				cfg.Sync.OwnershipRecheckDays = *ownershipOverride.Sync.OwnershipRecheckDays
+			}
 		}
 	}
 
 	loadFromEnv(cfg)
+	cfg.normalizeOwnershipRecheckDays()
 	return cfg, nil
 }
 
@@ -435,6 +461,7 @@ func (c *Config) validateAudiobookshelf(warnings io.Writer) error {
 
 // Validate checks that all required configuration is present and valid
 func (c *Config) Validate() error {
+	c.normalizeOwnershipRecheckDays()
 	// Environment overrides have already been applied, so the region and
 	// Audiobookshelf settings are validated against their final values.
 	if err := c.validateAudiobookshelf(os.Stdout); err != nil {
@@ -578,6 +605,14 @@ func (c *Config) Validate() error {
 		fmt.Printf("Warning: Deprecated configuration fields found: %v\n", deprecatedFields)
 	}
 	return nil
+}
+
+func (c *Config) normalizeOwnershipRecheckDays() {
+	if c.Sync.OwnershipRecheckDays < 0 || c.Sync.OwnershipRecheckDays > MaxOwnershipRecheckDays {
+		fmt.Printf("Warning: Invalid ownership recheck days (%d), using default: %d\n",
+			c.Sync.OwnershipRecheckDays, DefaultOwnershipRecheckDays)
+		c.Sync.OwnershipRecheckDays = DefaultOwnershipRecheckDays
+	}
 }
 
 // ConfigError represents a configuration error
@@ -752,6 +787,11 @@ func loadFromEnv(cfg *Config) {
 	if syncMinChangeThreshold := os.Getenv("SYNC_MIN_CHANGE_THRESHOLD"); syncMinChangeThreshold != "" {
 		if i, err := strconv.Atoi(syncMinChangeThreshold); err == nil {
 			cfg.Sync.MinChangeThreshold = i
+		}
+	}
+	if ownershipRecheckDays := os.Getenv("SYNC_OWNERSHIP_RECHECK_DAYS"); ownershipRecheckDays != "" {
+		if days, err := strconv.Atoi(ownershipRecheckDays); err == nil {
+			cfg.Sync.OwnershipRecheckDays = days
 		}
 	}
 	if retention := os.Getenv("DATABASE_SYNC_RUN_REPORT_RETENTION"); retention != "" {
