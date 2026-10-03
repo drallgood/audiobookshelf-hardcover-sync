@@ -1058,7 +1058,7 @@ for (const runState of ['completed', 'canceled']) {
         assert.doesNotMatch(dialogHTML, /Regional Audible identifier|ASIN:region|audible_identifier_preview|preview-audible/);
         const releaseDateRow = dialogHTML.match(/<div class="audible-comparison-row[^>]*data-comparison="release_date">[\s\S]*?<\/div>/)?.[0] || '';
         assert.match(releaseDateRow, /Audiobookshelf<\/span>2014-08-04/);
-        assert.match(releaseDateRow, /Audnexus<\/span>2014-08-05/);
+        assert.match(releaseDateRow, /Audnexus\/Audible<\/span>2014-08-05/);
         assert.match(releaseDateRow, />Different</);
         assert.ok(requests.every(request => request.method === 'GET'));
         assert.equal(requests.some(request => request.url.endsWith('/edition-drafts/create')), false);
@@ -1088,6 +1088,39 @@ test('Audible import modal shows every comparison and escapes ABS and Audnexus v
     assert.doesNotMatch(html, /<img src=x|<script>bad/);
     assert.doesNotMatch(html, /Hardcover candidate|type="checkbox"/);
     assert.match(html, /data-edition-dialog="confirm-create"/);
+    assert.match(html, /<h4>Audnexus\/Audible<\/h4>/);
+    assert.match(html, /audible-comparison-source">Audnexus\/Audible<\/span>/);
+});
+
+test('Audible comparison hides empty subtitle and series groups but keeps populated groups paired', () => {
+    const app = editionApp();
+    const base = confirmedAudibleDraft();
+    const empty = {
+        source_metadata_preview: { ...base.metadata_preview, subtitle: '', series: '', series_position: '' },
+        audnexus_record: { ...base.audnexus_record, subtitle: '', series: [], series_position: '' }
+    };
+    const emptyRows = app.audibleImportComparisonRows({ ...base, ...empty });
+    assert.doesNotMatch(emptyRows, /data-comparison="subtitle"|data-comparison="series"|data-comparison="series_position"/);
+
+    for (const [label, source_metadata_preview, audnexus_record] of [
+        ['ABS subtitle', { ...empty.source_metadata_preview, subtitle: 'Subtitle' }, empty.audnexus_record],
+        ['Audnexus subtitle', empty.source_metadata_preview, { ...empty.audnexus_record, subtitle: 'Subtitle' }]
+    ]) {
+        const rows = app.audibleImportComparisonRows({ ...base, source_metadata_preview, audnexus_record });
+        assert.match(rows, /data-comparison="subtitle"/, label);
+    }
+
+    const populatedSeriesCases = [
+        { source_metadata_preview: { ...empty.source_metadata_preview, series: 'Foundation' } },
+        { source_metadata_preview: { ...empty.source_metadata_preview, series_position: 0 } },
+        { audnexus_record: { ...empty.audnexus_record, series: ['Foundation'] } },
+        { audnexus_record: { ...empty.audnexus_record, series_position: 0 } }
+    ];
+    for (const overrides of populatedSeriesCases) {
+        const rows = app.audibleImportComparisonRows({ ...base, ...empty, ...overrides });
+        assert.match(rows, /data-comparison="series"/);
+        assert.match(rows, /data-comparison="series_position"/);
+    }
 });
 
 test('Audible comparison uses original source dates and reflects the API precision verdict', () => {
@@ -1111,7 +1144,7 @@ test('Audible comparison uses original source dates and reflects the API precisi
         });
         const row = html.match(/<div class="audible-comparison-row[^>]*data-comparison="release_date">[\s\S]*?<\/div>/)?.[0] || '';
         assert.match(row, new RegExp(`Audiobookshelf<\\/span>${scenario.sourceDate}`));
-        assert.match(row, new RegExp(`Audnexus<\\/span>${scenario.audnexusDate}`));
+        assert.match(row, new RegExp(`Audnexus/Audible<\\/span>${scenario.audnexusDate}`));
         assert.match(row, new RegExp(`status-${scenario.verdict}`));
         assert.match(row, new RegExp(`>${scenario.label}<`));
     }

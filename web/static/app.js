@@ -2524,7 +2524,15 @@ class SyncProfileApp {
             ['runtime', 'Runtime', Number(abs.audio_seconds) > 0 ? `${Math.round(Number(abs.audio_seconds))} seconds` : '', Number(audible.runtime_seconds) > 0 ? `${Math.round(Number(audible.runtime_seconds))} seconds` : ''],
             ['language', 'Language', abs.language, audible.language]
         ];
-        return rows.map(([key, label, absValue, audnexusValue]) => {
+        const hasSeriesValues = [abs.series, audible.series, abs.series_position, audible.series_position]
+            .some(value => value !== null && value !== undefined && String(value).trim() !== '');
+        const hasSubtitleValues = [abs.subtitle, audible.subtitle]
+            .some(value => value !== null && value !== undefined && String(value).trim() !== '');
+        return rows.filter(([key]) => {
+            if (key === 'subtitle') return hasSubtitleValues;
+            if (key === 'series' || key === 'series_position') return hasSeriesValues;
+            return true;
+        }).map(([key, label, absValue, audnexusValue]) => {
             const status = ['match', 'differs', 'missing'].includes(comparison[key])
                 ? comparison[key] : '';
             const display = value => String(value ?? '').trim() || '—';
@@ -2532,7 +2540,7 @@ class SyncProfileApp {
             return `<div class="audible-comparison-row${status ? ` status-${status}` : ''}" data-comparison="${key}">
                 <strong class="audible-comparison-label">${this.escapeHtml(label)}</strong>
                 <span class="audible-comparison-abs"><span class="audible-comparison-source">Audiobookshelf</span>${this.escapeHtml(display(absValue))}</span>
-                <span class="audible-comparison-audnexus"><span class="audible-comparison-source">Audnexus</span>${this.escapeHtml(display(audnexusValue))}</span>
+                <span class="audible-comparison-audnexus"><span class="audible-comparison-source">Audnexus/Audible</span>${this.escapeHtml(display(audnexusValue))}</span>
                 ${statusLabel ? `<span class="audible-comparison-status">${statusLabel}</span>` : ''}
             </div>`;
         }).join('');
@@ -2587,8 +2595,8 @@ class SyncProfileApp {
                     ? 'Audnexus could not verify a regional match for this audiobook. Audible import is unavailable.'
                     : 'No matching audiobook was found in Audnexus. Audible import is unavailable.';
         const comparisonHtml = draft.audnexus_record
-            ? `<section class="audible-import-comparison" aria-label="Audiobookshelf and Audnexus comparison">
-                <div class="audible-comparison-heading"><h4>Audiobookshelf</h4><h4>Audnexus</h4></div>
+            ? `<section class="audible-import-comparison" aria-label="Audiobookshelf and Audnexus/Audible comparison">
+                <div class="audible-comparison-heading"><h4>Audiobookshelf</h4><h4>Audnexus/Audible</h4></div>
                 ${this.audibleImportComparisonRows(draft)}
             </section>` : '';
         const regionHtml = `<div class="edition-region ${regionStatus === 'confirmed' ? 'confirmed' : 'review'}" role="status">${this.escapeHtml(regionMessage)}</div>`;
