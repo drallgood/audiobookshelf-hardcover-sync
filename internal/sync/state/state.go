@@ -299,12 +299,18 @@ func (s *State) SetAssociation(association Association) error {
 
 	book := s.Books[association.ABSItemID]
 	if book.Association != nil {
-		// Reconfirming the same match keeps what was already verified about it.
+		// Provenance describes how the match was confirmed, not a different
+		// match or account. Preserve ownership when only this metadata changes.
 		previous := *book.Association
 		previous.OwnershipVerifiedAt = association.OwnershipVerifiedAt
 		previous.OwnershipTokenFingerprint = association.OwnershipTokenFingerprint
+		previous.Provenance = association.Provenance
 		if previous == association {
-			return nil
+			association.OwnershipVerifiedAt = book.Association.OwnershipVerifiedAt
+			association.OwnershipTokenFingerprint = book.Association.OwnershipTokenFingerprint
+			if *book.Association == association {
+				return nil
+			}
 		}
 	}
 	book.Association = &association

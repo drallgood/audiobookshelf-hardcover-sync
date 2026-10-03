@@ -73,6 +73,20 @@ func TestReconfirmingTheSameMatchKeepsOwnershipButANewMatchDropsIt(t *testing.T)
 	require.True(t, ok)
 	assert.Equal(t, "token-fingerprint-1", association.OwnershipTokenFingerprint)
 
+	reconfirmed := ownershipTestAssociation()
+	reconfirmed.Provenance = "recovered"
+	require.NoError(t, s.SetAssociation(reconfirmed))
+	path := filepath.Join(t.TempDir(), "state.json")
+	require.NoError(t, s.Save(path))
+	s, err := LoadState(path)
+	require.NoError(t, err)
+	association, ok = s.GetAssociation("item-1")
+	require.True(t, ok)
+	assert.Equal(t, "recovered", association.Provenance)
+	assert.True(t, s.OwnershipVerifiedSince("item-1", "123", "456", "token-fingerprint-1", time.Now().Add(-time.Hour)),
+		"a provenance-only change must retain the same account's ownership confirmation across restart")
+	assert.False(t, s.OwnershipVerifiedSince("item-1", "123", "456", "different-token", time.Now().Add(-time.Hour)))
+
 	changed := ownershipTestAssociation()
 	changed.HardcoverEditionID = "789"
 	require.NoError(t, s.SetAssociation(changed))

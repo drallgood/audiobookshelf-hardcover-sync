@@ -84,11 +84,14 @@ func TestClient_SearchBooksReadsAuthorsFromContributions(t *testing.T) {
 				"release_date":"2024-03-12",
 				"contributions":[
 					{"author":{"id":11,"name":"Ernest Cline"},"contribution":"Author"},
-					{"author":{"id":"12","name":"Wil Wheaton"},"contribution":"Narrator"},
+					{"author":{"id":"14","name":"Numeric String Author"},"contribution":"Author"},
+					{"author":{"id":"author-a1","name":"String Author"},"contribution":"Author"},
+					{"author":{"id":"narrator-b2","name":"Wil Wheaton"},"contribution":"Narrator"},
 					{"author":{"id":13,"name":"Main Author"},"contribution":null}]}},
 			{"document":{"id":"902","title":"No Contributions","slug":"no-contributions","image":{"url":""}}},
 			{"document":{"id":"903","title":"Unreadable","slug":"unreadable","image":{"url":""},"contributions":"unexpected"}},
-			{"document":{"id":"904","title":"Malformed Date","slug":"malformed-date","image":{"url":""},"release_date":1234}}
+			{"document":{"id":"904","title":"Malformed Date","slug":"malformed-date","image":{"url":""},"release_date":1234}},
+			{"document":{"id":"905","title":"Malformed Author ID","contributions":[{"author":{"id":{"unexpected":11},"name":"Author"},"contribution":"Author"}]}}
 		]}}}}`))
 	}))
 	defer server.Close()
@@ -96,14 +99,19 @@ func TestClient_SearchBooksReadsAuthorsFromContributions(t *testing.T) {
 	books, err := regionalImportTestClient(server.URL).SearchBooks(context.Background(), "Title Author", "")
 
 	require.NoError(t, err)
-	require.Len(t, books, 4)
-	require.Len(t, books[0].Authors, 1)
+	require.Len(t, books, 5)
+	require.Len(t, books[0].Authors, 3)
 	assert.Equal(t, "Ernest Cline", books[0].Authors[0].Name)
 	assert.Equal(t, "11", books[0].Authors[0].ID)
+	assert.Equal(t, "14", books[0].Authors[1].ID)
+	assert.Equal(t, "Numeric String Author", books[0].Authors[1].Name)
+	assert.Equal(t, "author-a1", books[0].Authors[2].ID)
+	assert.Equal(t, "String Author", books[0].Authors[2].Name)
 	assert.Equal(t, "http://example.com/a.jpg", books[0].CoverImageURL)
 	assert.Equal(t, "2024-03-12", books[0].ReleaseDate)
 	assert.Empty(t, books[1].Authors)
 	assert.Empty(t, books[1].ReleaseDate, "search responses without a release date remain valid")
 	assert.Empty(t, books[2].Authors)
 	assert.Empty(t, books[3].ReleaseDate, "unexpected search field types should fall back to full book details")
+	assert.Empty(t, books[4].Authors, "invalid ID types should still fall back to full book details")
 }

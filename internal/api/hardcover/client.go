@@ -2051,8 +2051,8 @@ func searchDocumentAuthors(raw json.RawMessage) []models.Author {
 	var contributions []struct {
 		Contribution *string `json:"contribution"`
 		Author       struct {
-			ID   json.Number `json:"id"`
-			Name string      `json:"name"`
+			ID   json.RawMessage `json:"id"`
+			Name string          `json:"name"`
 		} `json:"author"`
 	}
 	if err := json.Unmarshal(raw, &contributions); err != nil {
@@ -2064,7 +2064,19 @@ func searchDocumentAuthors(raw json.RawMessage) []models.Author {
 			!strings.Contains(strings.ToLower(*contribution.Contribution), "author") {
 			continue
 		}
-		authors = append(authors, models.Author{ID: contribution.Author.ID.String(), Name: contribution.Author.Name})
+		var authorID string
+		if len(contribution.Author.ID) > 0 {
+			// Search IDs may be strings, including nonnumeric identifiers, or
+			// JSON numbers. Preserve either form without float conversion.
+			if err := json.Unmarshal(contribution.Author.ID, &authorID); err != nil {
+				var number json.Number
+				if err := json.Unmarshal(contribution.Author.ID, &number); err != nil {
+					return nil
+				}
+				authorID = number.String()
+			}
+		}
+		authors = append(authors, models.Author{ID: authorID, Name: contribution.Author.Name})
 	}
 	return authors
 }
