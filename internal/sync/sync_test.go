@@ -84,7 +84,7 @@ func TestProcessLibrary(t *testing.T) {
 	mockABS := new(MockAudiobookshelfClient)
 	mockHC := new(MockHardcoverClient)
 
-	// Create a temporary state file
+	// Create in-memory state
 	testState := state.NewState()
 
 	// Create test config with default values and update sync settings
@@ -92,7 +92,6 @@ func TestProcessLibrary(t *testing.T) {
 
 	// Configure sync settings - all sync-related settings are now consolidated under Sync
 	testConfig.Sync.Incremental = false
-	testConfig.Sync.StateFile = "/tmp/sync_state_test.json"
 	testConfig.Sync.MinChangeThreshold = 60
 	testConfig.Sync.SyncInterval = 1 * time.Hour
 	testConfig.Sync.MinimumProgress = 0.05

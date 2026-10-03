@@ -201,12 +201,10 @@ func TestEditionCreator_CreateEdition(t *testing.T) {
 	}
 
 	tests := []struct {
-		name          string
-		input         *edition.EditionInput
-		setupMock     func(*testing.T, *MockHardcoverClient)
-		expectError   bool
-		expectSuccess bool
-		expectedID    int
+		name        string
+		input       *edition.EditionInput
+		setupMock   func(*testing.T, *MockHardcoverClient)
+		expectError bool
 	}{
 		{
 			name: "API error",
@@ -253,8 +251,7 @@ func TestEditionCreator_CreateEdition(t *testing.T) {
 					}).
 					Once()
 			},
-			expectError:   true,
-			expectSuccess: false,
+			expectError: true,
 		},
 		{
 			name: "missing required fields",
@@ -266,8 +263,7 @@ func TestEditionCreator_CreateEdition(t *testing.T) {
 			setupMock: func(t *testing.T, m *MockHardcoverClient) {
 				setupCommonMocks(m)
 			},
-			expectError:   true,
-			expectSuccess: false,
+			expectError: true,
 		},
 		{
 			name: "valid input without image",
@@ -321,9 +317,7 @@ func TestEditionCreator_CreateEdition(t *testing.T) {
 					}).
 					Once()
 			},
-			expectError:   false,
-			expectSuccess: true,
-			expectedID:    123,
+			expectError: false,
 		},
 		{
 			name: "valid input with image",
@@ -368,9 +362,7 @@ func TestEditionCreator_CreateEdition(t *testing.T) {
 				// We'll let this happen but mock the HTTP response
 				// The test will fail with a 404 since we're not setting up an HTTP mock server
 			},
-			expectError:   false,
-			expectSuccess: true,
-			expectedID:    456,
+			expectError: false,
 		},
 	}
 
@@ -702,7 +694,6 @@ func TestEditionCreator_CreateImageRecord(t *testing.T) {
 
 // mockImageTransport is a custom http.RoundTripper that mocks image download responses
 type mockImageTransport struct {
-	expectedURL   string
 	test          string
 	testServerURL string
 }
@@ -1006,7 +997,6 @@ func TestEditionCreator_UploadEditionImage(t *testing.T) {
 
 			// Create a mock RoundTripper to handle image downloads
 			mockTransport := &mockImageTransport{
-				expectedURL:   tt.imageURL,
 				test:          tt.name,
 				testServerURL: testServer.URL,
 			}
