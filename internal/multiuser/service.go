@@ -324,16 +324,13 @@ func (s *MultiUserService) ForgetEditionAssociation(profileID, absItemID string)
 			Provenance:         association.Provenance,
 		}
 	}
-	if result.DryRun {
+	if result.DryRun || result.PreviousResolution == nil {
 		return result, nil
 	}
-	// Remove pending recovery state before changing the local association. If
-	// this write fails, leave the association intact so a later forget can retry.
+	// Clear pending recovery state only when forgetting an existing association.
+	// If this write fails, leave the association intact so a later forget can retry.
 	if err := s.ClearEditionActionsForProfileItem(profileID, absItemID); err != nil {
 		return nil, fmt.Errorf("failed to clear pending edition requests for profile %s item %s: %w", profileID, absItemID, err)
-	}
-	if result.PreviousResolution == nil {
-		return result, nil
 	}
 
 	if _, removed := state.RemoveAssociation(absItemID); !removed {

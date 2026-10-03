@@ -757,9 +757,9 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 		MetadataPreview: preview, recovery: recovery, sourceEdition: result.Edition, action: response.action,
 	}
 	response.action.Outcome = editionOutcomeCreated
-	response.action.HTTPStatus = http.StatusOK
-	response.action.Error = ""
-	response.action.ErrorCode = ""
+	response.action.HTTPStatus = http.StatusBadGateway
+	response.action.Error = editionAssociationSaveFailureGuidance
+	response.action.ErrorCode = "edition_association_save_failed"
 	response.action.Data = editionActionDataFromRecovery(recovery)
 	response.action.Data.HardcoverBookID = strconv.Itoa(result.BookID)
 	response.action.Data.HardcoverEditionID = strconv.Itoa(result.EditionID)
@@ -1006,9 +1006,9 @@ func (h *Handler) createInsertedEdition(ctx context.Context, profile *database.P
 		sourceEdition: createdEdition, action: response.action,
 	}
 	response.action.Outcome = editionOutcomeCreated
-	response.action.HTTPStatus = http.StatusOK
-	response.action.Error = ""
-	response.action.ErrorCode = ""
+	response.action.HTTPStatus = http.StatusBadGateway
+	response.action.Error = editionAssociationSaveFailureGuidance
+	response.action.ErrorCode = "edition_association_save_failed"
 	response.action.Data = &sync.EditionActionData{
 		HardcoverBookID: record.HardcoverBookID, HardcoverEditionID: strconv.Itoa(result.EditionID),
 	}

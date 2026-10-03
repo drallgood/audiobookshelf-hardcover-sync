@@ -1468,14 +1468,58 @@ func TestCreateEditionFromDraftSaveFailureExplainsRecovery(t *testing.T) {
 	require.Contains(t, response.Body.String(), "Verify the Hardcover result before retrying; retrying may create another edition")
 	require.EqualValues(t, 1, importCalls.Load())
 	var failedSaveEnvelope struct {
-		Data struct {
+		Error     string `json:"error"`
+		ErrorCode string `json:"error_code"`
+		Outcome   string `json:"outcome"`
+		Data      struct {
 			AudibleIdentifier string `json:"audible_identifier"`
+			HardcoverBookID   string `json:"hardcover_book_id"`
 			RecoveryToken     string `json:"recovery_token"`
 		} `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &failedSaveEnvelope))
+	require.Equal(t, editionAssociationSaveFailureGuidance, failedSaveEnvelope.Error)
+	require.Equal(t, "edition_association_save_failed", failedSaveEnvelope.ErrorCode)
+	require.Equal(t, editionOutcomeCreated, failedSaveEnvelope.Outcome)
 	require.NotEmpty(t, failedSaveEnvelope.Data.RecoveryToken)
+	require.Equal(t, "42", failedSaveEnvelope.Data.HardcoverBookID)
 	require.NoError(t, os.Remove(editionCreateProfileStatePath(fixture)))
+
+	storedAction, foundAction, err := fixture.multiUserService.GetEditionAction("draft-profile", "run-create-save-fail", "abs-item-1")
+	require.NoError(t, err)
+	require.True(t, foundAction)
+	require.Equal(t, editionOutcomeCreated, storedAction.Outcome)
+	require.Equal(t, http.StatusBadGateway, storedAction.HTTPStatus)
+	require.Equal(t, editionAssociationSaveFailureGuidance, storedAction.Error)
+	require.Equal(t, "edition_association_save_failed", storedAction.ErrorCode)
+	require.Equal(t, "42", storedAction.Data.HardcoverBookID)
+	require.Equal(t, "84", storedAction.Data.HardcoverEditionID)
+	require.Equal(t, failedSaveEnvelope.Data.AudibleIdentifier, storedAction.Data.AudibleIdentifier)
+	require.Equal(t, failedSaveEnvelope.Data.RecoveryToken, storedAction.Data.RecoveryToken)
+
+	detailsRequest := httptest.NewRequest(http.MethodGet, "/api/profiles/draft-profile/runs/run-create-save-fail/details", nil)
+	detailsRequest.AddCookie(fixture.sessionCookie(t, fixture.owner))
+	detailsResponse := httptest.NewRecorder()
+	fixture.routes.ServeHTTP(detailsResponse, detailsRequest)
+	require.Equal(t, http.StatusOK, detailsResponse.Code, detailsResponse.Body.String())
+	var details struct {
+		Data struct {
+			BookOutcomes []struct {
+				EditionAction *sync.EditionActionRecord `json:"edition_action"`
+			} `json:"book_outcomes"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(detailsResponse.Body.Bytes(), &details))
+	require.Len(t, details.Data.BookOutcomes, 1)
+	require.NotNil(t, details.Data.BookOutcomes[0].EditionAction)
+	detailsAction := details.Data.BookOutcomes[0].EditionAction
+	require.Equal(t, editionAssociationSaveFailureGuidance, detailsAction.Error)
+	require.Equal(t, "edition_association_save_failed", detailsAction.ErrorCode)
+	require.Equal(t, http.StatusBadGateway, detailsAction.HTTPStatus)
+	require.Equal(t, "42", detailsAction.Data.HardcoverBookID)
+	require.Equal(t, "84", detailsAction.Data.HardcoverEditionID)
+	require.Equal(t, failedSaveEnvelope.Data.AudibleIdentifier, detailsAction.Data.AudibleIdentifier)
+	require.Equal(t, failedSaveEnvelope.Data.RecoveryToken, detailsAction.Data.RecoveryToken)
 
 	retry := postEditionCreate(t, fixture, fixture.owner, body)
 	require.Equal(t, http.StatusConflict, retry.Code, retry.Body.String())
@@ -1491,6 +1535,56 @@ func TestCreateEditionFromDraftSaveFailureExplainsRecovery(t *testing.T) {
 	require.True(t, exists)
 	require.Equal(t, "42", association.HardcoverBookID)
 	require.Equal(t, "84", association.HardcoverEditionID)
+}
+
+func TestCreateInsertedEditionSaveFailurePersistsPublicGuidance(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{
+		"id":"abs-item-1","mediaType":"ebook","media":{
+			"metadata":{"title":"Reviewed ebook","authorName":"Author","isbn":"9780306406157"},
+			"ebookFile":{},"ebookFormat":"epub"
+		}}`, "us")
+	configureEditionCreateRoute(t, fixture)
+	addCompletedNeedsReviewRun(t, fixture, "run-create-insert-save-fail", sync.BookOutcomeRecord{
+		BookID: "abs-item-1", Outcome: sync.OutcomeNeedsReview, Title: "Reviewed ebook", Author: "Author",
+		ISBN: "9780306406157", Format: "Ebook", HardcoverBookID: "42",
+	})
+	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+		return editionCreateHardcoverStub{
+			bookFn: func(context.Context, string) (*models.HardcoverBook, error) {
+				return &models.HardcoverBook{ID: "42", Authors: []models.Author{{ID: "7", Name: "Author"}}}, nil
+			},
+			insertEditionFn: func(_ context.Context, _ *edition.EditionInput) (*edition.EditionResult, error) {
+				require.NoError(t, os.Mkdir(editionCreateProfileStatePath(fixture), 0700))
+				return &edition.EditionResult{Success: true, EditionID: 84}, nil
+			},
+			editionFn: func(context.Context, string) (*models.Edition, error) {
+				return &models.Edition{ID: "84", BookID: "42", ReadingFormatID: "4"}, nil
+			},
+		}
+	}
+
+	response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-create-insert-save-fail","abs_item_id":"abs-item-1"}`)
+	require.Equal(t, http.StatusBadGateway, response.Code, response.Body.String())
+	var envelope struct {
+		Error     string `json:"error"`
+		ErrorCode string `json:"error_code"`
+		Outcome   string `json:"outcome"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	require.Equal(t, editionAssociationSaveFailureGuidance, envelope.Error)
+	require.Equal(t, "edition_association_save_failed", envelope.ErrorCode)
+	require.Equal(t, editionOutcomeCreated, envelope.Outcome)
+	require.NoError(t, os.Remove(editionCreateProfileStatePath(fixture)))
+
+	action, found, err := fixture.multiUserService.GetEditionAction("draft-profile", "run-create-insert-save-fail", "abs-item-1")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, editionOutcomeCreated, action.Outcome)
+	require.Equal(t, http.StatusBadGateway, action.HTTPStatus)
+	require.Equal(t, editionAssociationSaveFailureGuidance, action.Error)
+	require.Equal(t, "edition_association_save_failed", action.ErrorCode)
+	require.Equal(t, "42", action.Data.HardcoverBookID)
+	require.Equal(t, "84", action.Data.HardcoverEditionID)
 }
 
 func TestCreateEditionFromDraftConstructorUsesGlobalNetworkTrust(t *testing.T) {
