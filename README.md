@@ -100,12 +100,17 @@ scopes; changing the token also clears the result. Pending Audible imports
 are checked with increasing waits of up to five seconds to conserve API
 requests, and the immediate resync reuses freshly verified data.
 
-Review the preview, then confirm to add or reuse a Hardcover edition. Audiobooks
-need an Audible ASIN in Audiobookshelf; their metadata is read-only, and the app
-finds the Audible region automatically. Ebooks need an ASIN or ISBN, and you can
-correct their details before confirming. After success, **Hardcover Edition
-Added** appears and the app resyncs that book's reading progress. If resync
-fails, the edition remains added; run another sync to retry progress updates.
+Review the preview, then confirm to add or reuse a Hardcover edition. An
+audiobook with a valid 10-character ASCII-letter-or-digit ASIN in Audiobookshelf
+uses regional Audible import, with the region discovered automatically. That
+regional path remains selected if discovery or import fails; ISBN is not used
+as a fallback. When the source ASIN is missing or malformed, an audiobook with
+an ISBN can instead be added as an audiobook edition from the read-only
+Audiobookshelf preview. Ebooks need an ASIN or ISBN, and you can correct their
+details before confirming. After success,
+**Hardcover Edition Added** appears and the app resyncs that book's reading
+progress. If resync fails, the edition remains added; run another sync to retry
+progress updates.
 
 You can preview in dry run, but cannot add editions or forget matches. Wait for
 an active sync to finish before making changes. If the book's Audiobookshelf
@@ -113,21 +118,22 @@ metadata has changed since the displayed run, run a new sync first.
 
 If an import cannot be confirmed, follow the dialog's recovery guidance:
 
-- Use **Check import status** when available to confirm an audiobook import and
+- Use **Check import status** when available to confirm a regional Audible import and
   save its match without submitting it again. The recovery link is valid for 48
   hours; after it expires, inspect Hardcover before running a new sync. Retry a
   check if it temporarily fails; run a sync afterward to update reading progress.
-- If no status check is available, including for an uncertain ebook import,
-  open Hardcover to inspect the book, then run a new sync. Avoid submitting
-  another import while its outcome is unknown, including after a page reload.
+- If no status check is available, including for an uncertain ebook or
+  ISBN-based audiobook insertion, open Hardcover to inspect the book, then run a
+  new sync. Avoid submitting another create while its outcome is unknown,
+  including after a page reload.
 - Use **Retry add edition** when the dialog confirms nothing was submitted.
   Restore access or wait for the displayed service/quota limit before retrying.
 
-Some Audible ASINs are also ISBN-10s. Hardcover may attach such an import to an
-existing edition with that ISBN that is not an audiobook. The app does not save
-that edition as the match, and trying again returns the same edition. Use
-**Report a problem on Hardcover** to open that edition, sign in, and report it so its
-format can be corrected, then run a new sync.
+Hardcover can return an existing non-audiobook edition for an Audible identifier
+that is also an ISBN-10, or for an ISBN-only audiobook insertion. The app does
+not save that edition as the match and reports a format conflict with a link to
+the edition. Report the format problem on Hardcover, then run a new sync after
+the catalogue is corrected.
 
 Matched books offer **Forget match** to clear this app's saved match. Nothing is
 deleted from Hardcover. The next sync searches again and may find the same
@@ -164,8 +170,9 @@ successful non-dry-run completion.
 
 `GET /api/profiles/{id}/edition-drafts/source/{itemID}` previews Audiobookshelf
 metadata without changing Hardcover. Audiobook previews may also show confirmed
-Audnexus details. Audiobooks need an Audible ASIN for the Sync Status creation
-flow; ebooks may use an ASIN or ISBN.
+Audnexus details. A valid audiobook ASIN is eligible for regional Audible
+creation; when its ASIN is missing or malformed, an ISBN can make the audiobook
+eligible for edition insertion. Ebooks may use an ASIN or ISBN.
 
 Use a trusted Audiobookshelf URL and enable authentication when exposing the
 API beyond localhost. See [OpenAPI](docs/openapi.yaml) for fields, warnings,
@@ -180,9 +187,11 @@ Hardcover token with `write:catalog:append` access.
 Send the `run_id` and `abs_item_id` of a needs-review item from a completed or
 canceled run. The app uses the Hardcover book identified by that run.
 
-- **Audiobooks** use their Audible ASIN and region. Omit `audible_identifier`
-  for automatic region discovery, or provide `ASIN:region`. Audiobook metadata
-  cannot be edited.
+- **Audiobooks** with a valid source ASIN use regional Audible import. Omit
+  `audible_identifier` for automatic region discovery, or provide `ASIN:region`;
+  a valid source ASIN prevents ISBN fallback if discovery or import fails. When
+  the source ASIN is absent or malformed, an ISBN can be inserted as an
+  audiobook edition. Audiobook metadata cannot be edited.
 - **Ebooks** need an ASIN or ISBN and allow corrections to their edition details.
 
 Creation is unavailable during a sync or in dry run. If the source metadata
@@ -191,7 +200,7 @@ for future syncs. Set `"resync": true` to update that book's reading progress
 immediately; otherwise, progress updates on the next sync. Resync failures are
 reported separately and do not undo edition creation.
 
-For an unconfirmed audiobook import, use
+For an unconfirmed regional Audible import, use
 `POST /api/profiles/{id}/edition-drafts/check-import` with the original run/item
 IDs and returned recovery details. This checks the existing import and saves
 its confirmed match without creating another edition. When recovery details
@@ -202,8 +211,12 @@ and retry guidance.
 ### Edition capability
 
 `GET /api/profiles/{id}/edition-capability` checks whether the profile's Hardcover
-token permits adding audiobook or ebook editions. It requires profile write
-access and does not change the Hardcover catalogue.
+token permits adding ebook editions, ISBN-based audiobook editions, or
+regional Audible audiobook imports. It requires profile write access and does
+not change the Hardcover catalogue. API clients receive
+`audiobook_isbn` for ISBN-based audiobook insertion; it uses the same
+permission check as `ebook`. The `audiobook` result covers regional Audible
+imports.
 
 Results are cached per profile and token without automatic expiry while the
 app is running. View Details checks them on demand; sync startup does not
@@ -228,26 +241,25 @@ for implementation details.
 
 ### Remembered edition matches
 
-Sync checks a saved local match before searching Hardcover. It stores an
-audiobook match only when an exact, region-qualified Audible mapping confirms
-the edition; audiobook title/author results continue to be checked through
-read-only lookups but are not saved. For ebooks, it stores a match whenever an
-exact `editions.asin` match or an exact ISBN match confirms the edition. These
-associations live with the CLI sync state or the individual web profile's
-state and survive restarts when that file is kept. Audiobook ASIN lookup uses
-regional Audible mappings only; an edition's own `asin` field is no longer used
-to match an audiobook, and neither is ISBN, whether an edition's own field or a
-bare ISBN search. An audiobook whose only Hardcover link was one of those
-becomes `needs_review` when title/author search finds the book (resolve it
-with the add-edition action) or `not_found` when it does not (fix it in
-Hardcover or with the `edition` CLI and a book ID). Because every audiobook
-match method that remains valid is saved as an association, an audiobook whose
-checkpoint has no saved association is reclassified the very next time it is
-evaluated, in the same sync run, rather than waiting for its progress or
-status to change or for a second sync to notice; see
-[MIGRATION.md](MIGRATION.md) for what this means for an existing deployment.
+Sync checks a saved local match before searching Hardcover. A valid
+Audiobookshelf ASIN (exactly 10 ASCII letters or digits) is authoritative for
+an audiobook: sync searches regional Audible mappings and does not fall back to
+ISBN if that lookup misses or fails. When the source ASIN is absent or
+malformed, sync may search by ISBN. A Hardcover edition's own `asin` field is
+not used to match audiobooks. Audiobook title/author results continue to be
+checked through read-only lookups but are not saved. For ebooks, sync stores a
+match whenever an exact `editions.asin` match or an exact ISBN match confirms
+the edition. Saved associations live with the CLI sync state or the individual
+web profile's state and survive restarts when that file is kept. An audiobook
+whose only link is a direct `editions.asin` match becomes `needs_review` when
+title/author search finds the book or `not_found` when it does not, unless its
+source ISBN independently matches while there is no valid ASIN. Audiobook ISBN
+matches are not saved as associations and are looked up again whenever the
+item is processed. Incremental sync keeps their progress checkpoints and skips
+writes when the freshly resolved edition, progress, status, and activity are unchanged. See
+[MIGRATION.md](MIGRATION.md) for how existing checkpoints are re-evaluated.
 Ebook ASIN lookup continues to use Kindle editions, ahead of ISBN, both
-unchanged. An unchanged, already-synced book keeps its Hardcover edition until
+unchanged. An unchanged book with a saved match keeps its Hardcover edition until
 its progress or status changes; use forget match to rematch one now. Sync
 matching only reads the Hardcover catalogue; it does not add or change books
 or editions there. Dry run can reuse an existing association but does not save
@@ -1092,9 +1104,11 @@ it means the app could not confidently match your AudiobookShelf item to a speci
 
 For ebooks, sync checks the ISBN recorded in Audiobookshelf and, when its
 checksum permits conversion, the corresponding ISBN-10 or ISBN-13 form. It
-matches only ebook editions. Audiobooks require a saved match or an exact
-regional Audible mapping; ISBN does not match them. If title/author search
-finds the book, use **Add edition** in View Details to resolve it.
+matches only ebook editions. For audiobooks, a valid 10-character source ASIN
+is authoritative and ISBN is not tried if the ASIN lookup fails. If the source
+ASIN is missing or malformed, sync can search by ISBN. When title/author search
+finds the book, use **Add edition** in View Details to resolve it; with no valid
+source ASIN, an available ISBN can create an audiobook edition.
 
 The web UI does not include a one-click "link edition" action. API clients can
 request a read-only draft for an Audiobookshelf item using the profile-scoped
@@ -1142,9 +1156,9 @@ in `sync.state_file`. For a web-service profile, pass that profile's state file
 with `--state-file`. Without an item ID, no match is saved, and an audiobook
 import that reused an existing edition may still need review after the next
 sync.
-If a submitted ASIN or ebook ISBN differs from the ABS item, the command
-requires `--confirm-identifier-correction` before creating and saving the
-match. Check the ABS item and Hardcover book before confirming.
+If a submitted ASIN or ISBN differs from the ABS item, the
+command requires `--confirm-identifier-correction` before creating and saving
+the match. Check the ABS item and Hardcover book before confirming.
 
 Tip: Always review JSON data before creating editions to avoid linking to the wrong book/edition.
 

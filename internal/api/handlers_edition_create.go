@@ -49,8 +49,9 @@ type editionCreateHardcoverClient interface {
 	GetBookByID(context.Context, string) (*models.HardcoverBook, error)
 	GetEditionUncached(context.Context, string) (*models.Edition, error)
 	SearchAuthors(context.Context, string, int) ([]models.Author, error)
+	SearchNarrators(context.Context, string, int) ([]models.Author, error)
 	SearchPublishers(context.Context, string, int) ([]models.Publisher, error)
-	CreateEbook(context.Context, *edition.EditionInput) (*edition.EditionResult, error)
+	InsertEdition(context.Context, *edition.EditionInput) (*edition.EditionResult, error)
 }
 
 type editionCreateAudnexDiscoverer interface {
@@ -115,7 +116,7 @@ type editionCreateHardcoverAdapter struct {
 	log *logger.Logger
 }
 
-func (c editionCreateHardcoverAdapter) CreateEbook(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
+func (c editionCreateHardcoverAdapter) InsertEdition(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
 	creator := edition.NewCreator(c.Client, c.log, false, "")
 	return creator.CreateEditionWithMutationReserve(ctx, input, editionCreateMutationReserve)
 }
@@ -462,10 +463,11 @@ func (h *Handler) createVerifiedEdition(ctx context.Context, profile *database.P
 
 	client := h.editionCreateHardcoverClient(profile.Profile.ID, profile.HardcoverToken)
 	var association statepkg.Association
-	if item.ReadingFormat() == models.ReadingFormatAudiobook {
+	_, validSourceASIN := audnex.CanonicalASIN(item.Media.Metadata.ASIN)
+	if item.ReadingFormat() == models.ReadingFormatAudiobook && (validSourceASIN || request.AudibleIdentifier != "") {
 		association, err = h.createRegionalAudiobook(ctx, profile, item, record, request, client, response)
 	} else {
-		association, err = h.createEbook(ctx, item, record, request, client, response)
+		association, err = h.createInsertedEdition(ctx, item, record, request, client, response)
 	}
 	if err == nil {
 		response.sourceItem = item
@@ -663,38 +665,40 @@ func markEditionCreateRemoteOutcomeAmbiguous(err error) error {
 	return fmt.Errorf("%w: %w", errEditionCreateRemoteOutcomeAmbiguous, err)
 }
 
-func (h *Handler) createEbook(ctx context.Context, item *models.AudiobookshelfBook, record sync.BookOutcomeRecord, request editionCreateRequest, client editionCreateHardcoverClient, response *editionCreateResponse) (statepkg.Association, error) {
+func (h *Handler) createInsertedEdition(ctx context.Context, item *models.AudiobookshelfBook, record sync.BookOutcomeRecord, request editionCreateRequest, client editionCreateHardcoverClient, response *editionCreateResponse) (statepkg.Association, error) {
 	bookID, err := strconv.Atoi(record.HardcoverBookID)
 	if err != nil || bookID <= 0 {
 		return statepkg.Association{}, errStaleEditionCreateRun
 	}
-	queryCtx := models.WithReadingFormat(ctx, models.ReadingFormatEbook)
+	format := item.ReadingFormat()
+	queryCtx := models.WithReadingFormat(ctx, format)
 	book, err := client.GetBookByID(queryCtx, record.HardcoverBookID)
 	if err != nil {
-		return statepkg.Association{}, fmt.Errorf("failed to verify Hardcover book for ebook insertion: %w", err)
+		return statepkg.Association{}, fmt.Errorf("failed to verify Hardcover book for edition insertion: %w", err)
 	}
 	if book == nil || book.ID != record.HardcoverBookID {
 		return statepkg.Association{}, errHardcoverEditionIdentityConflict
 	}
 
 	draft := buildEditionSourceDraft(item, false)
-	if draft.EbookCandidate == nil {
-		return statepkg.Association{}, fmt.Errorf("%w: Audiobookshelf item has no ebook edition candidate", errEditionCreateInvalidInput)
-	}
-	input := &edition.EditionInput{
-		BookID: bookID, Title: draft.EbookCandidate.Title, Subtitle: draft.EbookCandidate.Subtitle,
-		ReleaseDate:   draft.EbookCandidate.ReleaseDate,
-		EditionFormat: "Ebook", ReadingFormat: models.ReadingFormatEbook,
-		LanguageID: 1, CountryID: 1,
-	}
-	if sourceASIN, valid := audnex.CanonicalASIN(item.Media.Metadata.ASIN); valid {
-		input.ASIN = sourceASIN
-	}
-	if draft.EbookCandidate.ISBN10 != "" {
-		input.ISBN10 = draft.EbookCandidate.ISBN10
-	}
-	if draft.EbookCandidate.ISBN13 != "" {
-		input.ISBN13 = draft.EbookCandidate.ISBN13
+	input := &edition.EditionInput{BookID: bookID, ReadingFormat: format, LanguageID: 1, CountryID: 1}
+	if item.IsEbook() {
+		candidate := draft.EbookCandidate
+		input.Title, input.Subtitle, input.ReleaseDate = candidate.Title, candidate.Subtitle, candidate.ReleaseDate
+		input.EditionFormat = "Ebook"
+		input.ISBN10, input.ISBN13 = candidate.ISBN10, candidate.ISBN13
+		if sourceASIN, valid := audnex.CanonicalASIN(item.Media.Metadata.ASIN); valid {
+			input.ASIN = sourceASIN
+		}
+	} else {
+		candidate := draft.MetadataPreview
+		input.Title, input.Subtitle, input.ReleaseDate = candidate.Title, candidate.Subtitle, candidate.ReleaseDate
+		input.EditionFormat = candidate.EditionFormat
+		if input.EditionFormat == "" {
+			input.EditionFormat = "Audiobook"
+		}
+		input.ISBN10, input.ISBN13 = candidate.ISBN10, candidate.ISBN13
+		input.AudioLength, input.EditionInfo = candidate.AudioSeconds, candidate.EditionInformation
 	}
 	if request.Title != nil {
 		input.Title = strings.TrimSpace(*request.Title)
@@ -740,9 +744,35 @@ func (h *Handler) createEbook(ctx context.Context, item *models.AudiobookshelfBo
 			return statepkg.Association{}, fmt.Errorf("%w: ISBN-13 must contain thirteen digits", errEditionCreateInvalidInput)
 		}
 	}
-	input.AuthorIDs, err = ebookAuthorIDs(ctx, client, book, item.Media.Metadata.AuthorName)
+	input.AuthorIDs, err = editionAuthorIDs(ctx, client, book, item.Media.Metadata.AuthorName)
 	if err != nil {
 		return statepkg.Association{}, err
+	}
+	if !item.IsEbook() {
+		for _, rawName := range strings.Split(item.Media.Metadata.NarratorName, ",") {
+			name := strings.TrimSpace(rawName)
+			if name == "" {
+				continue
+			}
+			narrators, lookupErr := client.SearchNarrators(ctx, name, 10)
+			if lookupErr != nil {
+				if ctx.Err() != nil {
+					return statepkg.Association{}, fmt.Errorf("narrator lookup canceled: %w", ctx.Err())
+				}
+				return statepkg.Association{}, fmt.Errorf("narrator lookup failed before insertion: %w: %w", edition.ErrCreateEditionPreMutation, lookupErr)
+			}
+			var ids []int
+			for _, narrator := range narrators {
+				if strings.EqualFold(strings.TrimSpace(narrator.Name), name) {
+					if id, parseErr := strconv.Atoi(narrator.ID); parseErr == nil && id > 0 {
+						ids = append(ids, id)
+					}
+				}
+			}
+			if len(ids) == 1 {
+				input.NarratorIDs = append(input.NarratorIDs, ids[0])
+			}
+		}
 	}
 	if publisher := strings.TrimSpace(item.Media.Metadata.Publisher); publisher != "" {
 		publishers, searchErr := client.SearchPublishers(ctx, publisher, 10)
@@ -751,7 +781,7 @@ func (h *Handler) createEbook(ctx context.Context, item *models.AudiobookshelfBo
 			// request remains active; the mutation budget check below prevents a
 			// canceled or expired request from proceeding to Hardcover.
 			if ctx.Err() != nil {
-				return statepkg.Association{}, fmt.Errorf("ebook publisher lookup canceled: %w", ctx.Err())
+				return statepkg.Association{}, fmt.Errorf("edition publisher lookup canceled: %w", ctx.Err())
 			}
 			publishers = nil
 		}
@@ -771,7 +801,7 @@ func (h *Handler) createEbook(ctx context.Context, item *models.AudiobookshelfBo
 		return statepkg.Association{}, err
 	}
 	mutationCtx := hardcover.WithMinimumMutationBudget(ctx, editionCreateMutationReserve)
-	result, err := client.CreateEbook(mutationCtx, input)
+	result, err := client.InsertEdition(mutationCtx, input)
 	if err != nil {
 		if errors.Is(err, hardcover.ErrMutationInsufficientBudget) {
 			return statepkg.Association{}, errors.Join(edition.ErrCreateEditionPreMutation, edition.ErrCreateEditionInsufficientMutationBudget, err)
@@ -780,31 +810,37 @@ func (h *Handler) createEbook(ctx context.Context, item *models.AudiobookshelfBo
 			return statepkg.Association{}, fmt.Errorf("Hardcover catalogue write permission is required: %w", err)
 		}
 		if errors.Is(err, edition.ErrCreateEditionPreMutation) {
-			return statepkg.Association{}, fmt.Errorf("Hardcover ebook pre-insertion checks failed: %w", err)
+			return statepkg.Association{}, fmt.Errorf("Hardcover edition pre-insertion checks failed: %w", err)
 		}
-		return statepkg.Association{}, fmt.Errorf("Hardcover ebook insertion failed: %w", markEditionCreateRemoteOutcomeAmbiguous(err))
+		return statepkg.Association{}, fmt.Errorf("Hardcover edition insertion failed: %w", markEditionCreateRemoteOutcomeAmbiguous(err))
 	}
 	if result == nil || !result.Success || result.EditionID <= 0 {
 		return statepkg.Association{}, markEditionCreateRemoteOutcomeAmbiguous(errHardcoverEditionIdentityConflict)
 	}
 	createdEdition, err := client.GetEditionUncached(ctx, strconv.Itoa(result.EditionID))
 	if err != nil {
-		return statepkg.Association{}, fmt.Errorf("failed to verify Hardcover ebook edition: %w", markEditionCreateRemoteOutcomeAmbiguous(err))
+		return statepkg.Association{}, fmt.Errorf("failed to verify Hardcover edition: %w", markEditionCreateRemoteOutcomeAmbiguous(err))
 	}
 	if createdEdition == nil {
 		return statepkg.Association{}, markEditionCreateRemoteOutcomeAmbiguous(errHardcoverEditionIdentityConflict)
 	}
 	formatID, formatErr := strconv.Atoi(createdEdition.ReadingFormatID)
-	if createdEdition.ID != strconv.Itoa(result.EditionID) || createdEdition.BookID != record.HardcoverBookID || formatErr != nil || formatID != models.ReadingFormatID(models.ReadingFormatEbook) {
+	if createdEdition.ID != strconv.Itoa(result.EditionID) || createdEdition.BookID != record.HardcoverBookID {
+		return statepkg.Association{}, markEditionCreateRemoteOutcomeAmbiguous(errHardcoverEditionIdentityConflict)
+	}
+	if formatErr != nil || formatID != models.ReadingFormatID(format) {
+		if format == models.ReadingFormatAudiobook {
+			return statepkg.Association{}, &hardcover.RegionalAudiobookWrongFormatError{BookID: bookID, EditionID: result.EditionID, ReadingFormatID: createdEdition.ReadingFormatID}
+		}
 		return statepkg.Association{}, markEditionCreateRemoteOutcomeAmbiguous(errHardcoverEditionIdentityConflict)
 	}
 	status := "created"
 	if result.Existing {
 		status = "existing"
 	}
-	association := createEditionAssociation(item, record.HardcoverBookID, strconv.Itoa(result.EditionID), "", "", models.ReadingFormatEbook, "api_ebook_"+status)
+	association := createEditionAssociation(item, record.HardcoverBookID, strconv.Itoa(result.EditionID), "", "", format, "api_"+format+"_"+status)
 	*response = editionCreateResponse{
-		ABSItemID: item.ID, ReadingFormat: models.ReadingFormatEbook, Status: status,
+		ABSItemID: item.ID, ReadingFormat: format, Status: status,
 		HardcoverBookID: record.HardcoverBookID, HardcoverEditionID: strconv.Itoa(result.EditionID),
 		sourceEdition: createdEdition,
 	}
@@ -846,7 +882,7 @@ func correctedEditionISBNs(request editionCreateRequest) (string, string, error)
 	return parsed.ISBN10(), parsed.ISBN13(), nil
 }
 
-func ebookAuthorIDs(ctx context.Context, client editionCreateHardcoverClient, book *models.HardcoverBook, sourceAuthor string) ([]int, error) {
+func editionAuthorIDs(ctx context.Context, client editionCreateHardcoverClient, book *models.HardcoverBook, sourceAuthor string) ([]int, error) {
 	ids := make([]int, 0, len(book.Authors))
 	seen := make(map[int]struct{})
 	for _, author := range book.Authors {
@@ -869,7 +905,7 @@ func ebookAuthorIDs(ctx context.Context, client editionCreateHardcoverClient, bo
 	}
 	authors, err := client.SearchAuthors(ctx, name, 10)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve required ebook author: %w", err)
+		return nil, fmt.Errorf("failed to resolve required edition author: %w", err)
 	}
 	for _, author := range authors {
 		if !strings.EqualFold(strings.TrimSpace(author.Name), name) {
@@ -889,7 +925,7 @@ func ebookAuthorIDs(ctx context.Context, client editionCreateHardcoverClient, bo
 		return nil, fmt.Errorf("%w: no matching Hardcover author was found for %q", errEditionCreateInvalidInput, name)
 	}
 	if len(ids) > 1 {
-		return nil, fmt.Errorf("%w: multiple Hardcover authors named %q match; resolve the duplicate author records before creating an ebook edition", errEditionCreateInvalidInput, name)
+		return nil, fmt.Errorf("%w: multiple Hardcover authors named %q match; resolve the duplicate author records before creating an edition", errEditionCreateInvalidInput, name)
 	}
 	return ids, nil
 }
@@ -986,8 +1022,8 @@ func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID strin
 			respond(http.StatusConflict, err.Error())
 			return
 		}
-		h.log.Error(fmt.Sprintf("Hardcover edition lookup failed before insertion for profile %s: %v", profileID, err))
-		respond(http.StatusServiceUnavailable, "Hardcover could not check for an existing edition before insertion; retry the edition create")
+		h.log.Error(fmt.Sprintf("Hardcover edition preparation failed before insertion for profile %s: %v", profileID, err))
+		respond(http.StatusServiceUnavailable, "Hardcover could not finish an edition preparation lookup or check for an existing edition; retry the edition create")
 	case errors.Is(err, multiuser.ErrEditionAssociationSaveAfterRemoteSuccess):
 		h.log.Error(fmt.Sprintf("Hardcover returned a verified edition but association save failed for profile %s: %v", profileID, err))
 		respond(http.StatusBadGateway, "Hardcover returned a verified edition, but the local match could not be saved. Verify the Hardcover result before retrying; retrying may create another edition.")
@@ -1029,7 +1065,8 @@ func (h *Handler) writeEditionCreateError(w http.ResponseWriter, profileID strin
 }
 
 // editionWrongFormatData identifies the existing Hardcover edition that a
-// regional import resolved to, so the user can ask Hardcover to correct it.
+// insertion or regional import resolved to, so the user can ask Hardcover to
+// correct it.
 type editionWrongFormatData struct {
 	HardcoverBookID     string `json:"hardcover_book_id"`
 	HardcoverEditionID  string `json:"hardcover_edition_id"`
@@ -1037,13 +1074,12 @@ type editionWrongFormatData struct {
 	HardcoverEditionURL string `json:"hardcover_edition_url"`
 }
 
-// writeEditionWrongFormatError reports a definitive regional import result on
-// the reviewed book whose verified edition is not an audiobook. Hardcover
-// returns the same edition on every resubmission or status check, so no
-// recovery data is offered.
+// writeEditionWrongFormatError reports a definitive edition result on
+// the reviewed book whose verified edition is not an audiobook. No recovery
+// data is offered; the existing correction dialog links to that edition.
 func (h *Handler) writeEditionWrongFormatError(w http.ResponseWriter, errorCode, outcome string, wrongFormat *hardcover.RegionalAudiobookWrongFormatError) {
 	editionID := strconv.Itoa(wrongFormat.EditionID)
-	message := fmt.Sprintf("Hardcover linked this Audible identifier to existing edition %s, which Hardcover lists as %s, not an audiobook. The match was not saved, and trying again returns the same edition. Report the problem on Hardcover so the edition's format can be corrected, then run a new sync.",
+	message := fmt.Sprintf("Hardcover returned existing edition %s, which Hardcover lists as %s, not an audiobook. The match was not saved, and trying again returns the same edition. Report the problem on Hardcover so the edition's format can be corrected, then run a new sync.",
 		editionID, hardcoverReadingFormatName(wrongFormat.ReadingFormatID))
 	h.writeJSONResponse(w, http.StatusConflict, APIResponse{
 		Success: false, Error: message, ErrorCode: errorCode, Outcome: outcome,

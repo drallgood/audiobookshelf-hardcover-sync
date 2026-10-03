@@ -487,6 +487,128 @@ func TestCreateCommandPrepopulatedTemplateImportsAudiobook(t *testing.T) {
 	}
 }
 
+func TestCreateCommandISBNOnlyAudiobookInsertsAudiobookEdition(t *testing.T) {
+	hc := newFakeHardcover(t)
+	hc.emptyLookups = true
+	hc.insertResponse = `{"data":{"insert_edition":{"id":901,"errors":[]}}}`
+	hc.readbackEdition = 901
+	hc.readbackFormat = models.ReadingFormatID(models.ReadingFormatAudiobook)
+	itemJSON := `{"id":"li_boundary","mediaType":"book","media":{"metadata":{"asin":"bad asin","isbn":"9780306406157"},"duration":100}}`
+	env := newCommandEnv(t, hc, itemJSON)
+	inputPath := writeCreateInput(t, fmt.Sprintf(`{"book_id":%d,"title":"Audio Book","isbn_13":"9780306406157","author_ids":[3],"reading_format":"audiobook","abs_item_id":%q}`, boundaryBookID, boundaryABSItem))
+
+	result, err := env.run(t, "create", "--input", inputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["status"] != "created" || result["reading_format"] != models.ReadingFormatAudiobook || result["association_saved"] != true {
+		t.Fatalf("unexpected ISBN-only audiobook result: %#v", result)
+	}
+	if upserts, inserts, _ := hc.counts(); upserts != 0 || inserts != 1 {
+		t.Fatalf("ISBN-only audiobook did not use insert_edition: upserts=%d inserts=%d", upserts, inserts)
+	}
+	association, exists := env.association(t)
+	if !exists || association.HardcoverEditionID != "901" || association.ReadingFormat != models.ReadingFormatAudiobook || association.Provenance != "cli_audiobook_created" {
+		t.Fatalf("unexpected ISBN-only audiobook association: %#v exists=%t", association, exists)
+	}
+}
+
+func TestCreateCommandRequiresConfirmationForISBNCorrection(t *testing.T) {
+	hc := newFakeHardcover(t)
+	hc.emptyLookups = true
+	hc.insertResponse = `{"data":{"insert_edition":{"id":901,"errors":[]}}}`
+	hc.readbackEdition = 901
+	hc.readbackFormat = models.ReadingFormatID(models.ReadingFormatAudiobook)
+	itemJSON := `{"id":"li_boundary","mediaType":"book","media":{"metadata":{"asin":"invalid","isbn":"9780804429573"},"duration":100}}`
+	env := newCommandEnv(t, hc, itemJSON)
+	inputPath := writeCreateInput(t, fmt.Sprintf(`{"book_id":%d,"title":"Audio Book","isbn_13":"9780306406157","author_ids":[3],"reading_format":"audiobook","abs_item_id":%q}`, boundaryBookID, boundaryABSItem))
+
+	if _, err := env.run(t, "create", "--input", inputPath); err == nil || !strings.Contains(err.Error(), "submitted ISBN does not match Audiobookshelf item") {
+		t.Fatalf("expected ISBN correction confirmation error, got %v", err)
+	}
+	if upserts, inserts, _ := hc.counts(); upserts != 0 || inserts != 0 {
+		t.Fatalf("unconfirmed ISBN correction reached Hardcover: upserts=%d inserts=%d", upserts, inserts)
+	}
+
+	result, err := env.run(t, "create", "--input", inputPath, "--confirm-identifier-correction")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["association_saved"] != true || !strings.Contains(result["warning"].(string), "WARNING:") {
+		t.Fatalf("confirmed ISBN correction was not reported and associated: %#v", result)
+	}
+	if upserts, inserts, _ := hc.counts(); upserts != 0 || inserts != 1 {
+		t.Fatalf("confirmed ISBN correction did not use insert_edition: upserts=%d inserts=%d", upserts, inserts)
+	}
+}
+
+func TestCreateCommandRequiresConfirmationForASINCorrectionFromInvalidSource(t *testing.T) {
+	hc := newFakeHardcover(t)
+	itemJSON := `{"id":"li_boundary","mediaType":"book","media":{"metadata":{"asin":"invalid","isbn":"9780306406157"},"duration":100}}`
+	env := newCommandEnv(t, hc, itemJSON)
+	inputPath := writeCreateInput(t, fmt.Sprintf(`{"book_id":%d,"asin":%q,"title":"Audio Book","isbn_13":"9780306406157","author_ids":[3],"reading_format":"audiobook","asin_region":"uk","abs_item_id":%q}`, boundaryBookID, boundaryASIN, boundaryABSItem))
+
+	if _, err := env.run(t, "create", "--input", inputPath); err == nil || !strings.Contains(err.Error(), "submitted ASIN does not match Audiobookshelf item") {
+		t.Fatalf("expected ASIN correction confirmation error, got %v", err)
+	}
+	if upserts, inserts, _ := hc.counts(); upserts != 0 || inserts != 0 {
+		t.Fatalf("unconfirmed ASIN correction reached Hardcover: upserts=%d inserts=%d", upserts, inserts)
+	}
+
+	result, err := env.run(t, "create", "--input", inputPath, "--confirm-identifier-correction")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["status"] != "created" || result["association_saved"] != true || !strings.Contains(result["warning"].(string), "WARNING:") {
+		t.Fatalf("confirmed ASIN correction was not reported and associated: %#v", result)
+	}
+	if upserts, inserts, externalID := hc.counts(); upserts != 1 || inserts != 0 || externalID != boundaryRegional {
+		t.Fatalf("confirmed ASIN correction did not use regional import: upserts=%d inserts=%d external_id=%q", upserts, inserts, externalID)
+	}
+	association, exists := env.association(t)
+	if !exists || association.Correction != boundaryASIN || association.RegionalExternalID != boundaryRegional {
+		t.Fatalf("corrected ASIN was not preserved in the association: %#v exists=%t", association, exists)
+	}
+}
+
+func TestCreateCommandCannotBypassValidABSASIN(t *testing.T) {
+	hc := newFakeHardcover(t)
+	env := newCommandEnv(t, hc, boundaryABSItemJS)
+	inputPath := writeCreateInput(t, fmt.Sprintf(`{"book_id":%d,"title":"Audio Book","isbn_13":"9780306406157","author_ids":[3],"reading_format":"audiobook","asin_region":"uk","abs_item_id":%q}`, boundaryBookID, boundaryABSItem))
+
+	result, err := env.run(t, "create", "--input", inputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["status"] != "created" {
+		t.Fatalf("unexpected regional audiobook result: %#v", result)
+	}
+	if upserts, inserts, externalID := hc.counts(); upserts != 1 || inserts != 0 || externalID != boundaryRegional {
+		t.Fatalf("valid ABS ASIN was bypassed: upserts=%d inserts=%d external_id=%q", upserts, inserts, externalID)
+	}
+}
+
+func TestCreateCommandTreatsMalformedSubmittedASINAsMissing(t *testing.T) {
+	hc := newFakeHardcover(t)
+	hc.emptyLookups = true
+	hc.insertResponse = `{"data":{"insert_edition":{"id":901,"errors":[]}}}`
+	hc.readbackEdition = 901
+	hc.readbackFormat = models.ReadingFormatID(models.ReadingFormatAudiobook)
+	env := newCommandEnv(t, hc, "")
+	inputPath := writeCreateInput(t, fmt.Sprintf(`{"book_id":%d,"title":"Audio Book","asin":"not-an-asin","isbn_13":"9780306406157","author_ids":[3],"reading_format":"audiobook"}`, boundaryBookID))
+
+	result, err := env.run(t, "create", "--input", inputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["status"] != "created" || result["reading_format"] != models.ReadingFormatAudiobook {
+		t.Fatalf("unexpected malformed-ASIN fallback result: %#v", result)
+	}
+	if upserts, inserts, _ := hc.counts(); upserts != 0 || inserts != 1 {
+		t.Fatalf("malformed submitted ASIN did not fall back to insert_edition: upserts=%d inserts=%d", upserts, inserts)
+	}
+}
+
 func TestPrepopulateISBNOnlyBookCreatesEbookTemplate(t *testing.T) {
 	hc := newFakeHardcover(t)
 	hc.bookResponse = fmt.Sprintf(`{"data":{"book":{"id":%d,"title":"ISBN Book","isbn13":"9780306406157","authors":[{"id":3,"name":"Author"}]}}}`, boundaryBookID)

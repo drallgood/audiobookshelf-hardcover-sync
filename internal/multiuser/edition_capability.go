@@ -11,7 +11,7 @@ import (
 )
 
 // EditionCapabilityOperation identifies a Hardcover catalogue-write
-// operation. Ebook insertion and regional Audible resolution have separate
+// operation. Edition insertion and regional Audible resolution have separate
 // permissions and are reported independently.
 type EditionCapabilityOperation string
 
@@ -41,11 +41,12 @@ type EditionCapabilityStatus struct {
 	Warning    string                     `json:"warning,omitempty"`
 }
 
-// EditionCapability keeps ebook insertion separate from audiobook import.
+// EditionCapability reports insertion and regional import permissions separately.
 type EditionCapability struct {
-	Ebook     EditionCapabilityStatus `json:"ebook"`
-	Audiobook EditionCapabilityStatus `json:"audiobook"`
-	DryRun    bool                    `json:"dry_run"`
+	Ebook         EditionCapabilityStatus `json:"ebook"`
+	AudiobookISBN EditionCapabilityStatus `json:"audiobook_isbn"`
+	Audiobook     EditionCapabilityStatus `json:"audiobook"`
+	DryRun        bool                    `json:"dry_run"`
 }
 
 type editionCapabilityCacheKey struct {
@@ -94,9 +95,9 @@ type profileHardcoverRateLimiterKey struct {
 }
 
 // EditionCapabilityForProfile returns operation-specific evidence for the
-// profile's Hardcover token. Ebook insert_edition and audiobook upsert_book
-// use separate validation-only probes. Results are cached by profile,
-// operation, and current token.
+// profile's Hardcover token. Ebook and ISBN-only audiobook insertion share
+// insert_edition evidence; regional Audible import uses a separate upsert_book
+// probe. Results are cached by profile, operation, and current token.
 func (s *MultiUserService) EditionCapabilityForProfile(ctx context.Context, profileID string) (EditionCapability, error) {
 	return s.editionCapabilityForProfile(ctx, profileID, false)
 }
@@ -120,16 +121,18 @@ func (s *MultiUserService) editionCapabilityForProfile(ctx context.Context, prof
 
 	if strings.TrimSpace(profile.HardcoverToken) == "" {
 		return EditionCapability{
-			Ebook:     missingHardcoverTokenEditionCapability(EditionCapabilityInsertEdition),
-			Audiobook: missingHardcoverTokenEditionCapability(EditionCapabilityUpsertBook),
-			DryRun:    profile.SyncConfig.DryRun,
+			Ebook:         missingHardcoverTokenEditionCapability(EditionCapabilityInsertEdition),
+			AudiobookISBN: missingHardcoverTokenEditionCapability(EditionCapabilityInsertEdition),
+			Audiobook:     missingHardcoverTokenEditionCapability(EditionCapabilityUpsertBook),
+			DryRun:        profile.SyncConfig.DryRun,
 		}, nil
 	}
 	if profile.SyncConfig.DryRun {
 		return EditionCapability{
-			Ebook:     allowedEditionCapability(EditionCapabilityInsertEdition),
-			Audiobook: allowedEditionCapability(EditionCapabilityUpsertBook),
-			DryRun:    true,
+			Ebook:         allowedEditionCapability(EditionCapabilityInsertEdition),
+			AudiobookISBN: allowedEditionCapability(EditionCapabilityInsertEdition),
+			Audiobook:     allowedEditionCapability(EditionCapabilityUpsertBook),
+			DryRun:        true,
 		}, nil
 	}
 	if refresh {
@@ -142,9 +145,10 @@ func (s *MultiUserService) probeEditionCapabilityForProfile(ctx context.Context,
 	ebookState := s.cachedEditionCapabilityProbe(ctx, profileID, EditionCapabilityInsertEdition, token)
 	audiobookState := s.cachedEditionCapabilityProbe(ctx, profileID, EditionCapabilityUpsertBook, token)
 	return EditionCapability{
-		Ebook:     editionCapabilityStatus(EditionCapabilityInsertEdition, ebookState),
-		Audiobook: editionCapabilityStatus(EditionCapabilityUpsertBook, audiobookState),
-		DryRun:    false,
+		Ebook:         editionCapabilityStatus(EditionCapabilityInsertEdition, ebookState),
+		AudiobookISBN: editionCapabilityStatus(EditionCapabilityInsertEdition, ebookState),
+		Audiobook:     editionCapabilityStatus(EditionCapabilityUpsertBook, audiobookState),
+		DryRun:        false,
 	}, nil
 }
 
@@ -185,8 +189,9 @@ func waitForEditionCapabilityRefresh(ctx context.Context, flight *editionCapabil
 	select {
 	case <-ctx.Done():
 		return EditionCapability{
-			Ebook:     unverifiedEditionCapability(EditionCapabilityInsertEdition),
-			Audiobook: unverifiedEditionCapability(EditionCapabilityUpsertBook),
+			Ebook:         unverifiedEditionCapability(EditionCapabilityInsertEdition),
+			AudiobookISBN: unverifiedEditionCapability(EditionCapabilityInsertEdition),
+			Audiobook:     unverifiedEditionCapability(EditionCapabilityUpsertBook),
 		}, nil
 	case <-flight.done:
 		return flight.capability, flight.err

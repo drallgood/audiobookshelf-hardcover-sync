@@ -488,7 +488,7 @@ func TestGetEditionSourceDraftKeepsMalformedASINVisibleIneligibleAndSkipsAudnex(
 			require.Contains(t, draft.IneligibleReason, "valid ASIN or ISBN")
 			require.Equal(t, asin, draft.SourceIdentifiers.ASIN)
 			require.Equal(t, asin, draft.AudibleIdentifierCandidate.ASIN)
-			require.Equal(t, "unknown", draft.RegionStatus)
+			require.Equal(t, "not_applicable", draft.RegionStatus)
 			require.Equal(t, 1, countEditionDraftWarnings(draft, "invalid_source_asin"), "invalid_source_asin warning should appear exactly once")
 			require.Zero(t, discoveryCalls.Load())
 			require.Zero(t, fixture.hardcoverRequests.Load())

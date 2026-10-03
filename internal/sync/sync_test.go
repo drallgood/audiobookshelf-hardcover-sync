@@ -385,7 +385,7 @@ func TestProcessLibrary(t *testing.T) {
 			},
 			ASIN: "B123456789",
 		}
-		mockHC.On("SearchBookByASIN", mock.Anything, "B123456789").Return(testBook, nil).Once()
+		mockHC.On("SearchBookByASIN", mock.Anything, "B123456789").Return(testBook, nil)
 		// Some code paths attempt an ISBN13 lookup during enrichment; stub it to return no result
 		mockHC.On("SearchBookByISBN13", mock.Anything, "9781234567890").Return((*models.HardcoverBook)(nil), nil).Maybe()
 		// Enrichment may fall back to a title/author search; stub it as returning no results
@@ -573,7 +573,7 @@ func TestProcessLibraryCheckpointsOnceThenReturnsCancellation(t *testing.T) {
 		if i == 0 {
 			// Give the first book enough progress to reach the deterministic
 			// lookup failure path, which records its state before cancellation.
-			// ISBN matching applies only to ebooks (Step 11).
+			// Exercise the ebook ISBN lookup failure path.
 			book.MediaType = "ebook"
 			book.Media.Metadata.ISBN = "ISBN"
 			book.Progress.CurrentTime = book.Media.Duration / 2

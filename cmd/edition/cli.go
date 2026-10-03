@@ -68,7 +68,7 @@ type createServices struct {
 	fetchABSItem       func(context.Context, string) (*models.AudiobookshelfBook, error)
 	discoverAudible    func(context.Context, string, string) (string, error)
 	importAudiobook    func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error)
-	createEbook        func(context.Context, *edition.EditionInput) (*edition.EditionResult, error)
+	createEdition      func(context.Context, *edition.EditionInput) (*edition.EditionResult, error)
 	getEditionUncached func(context.Context, string) (*models.Edition, error)
 }
 
@@ -111,7 +111,7 @@ func newCreateServices(cfg *config.Config, log *logger.Logger, dryRun bool) (cre
 		importAudiobook: func(ctx context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
 			return hc.ImportRegionalAudiobook(ctx, input)
 		},
-		createEbook: func(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
+		createEdition: func(ctx context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
 			return creator.CreateEditionWithMutationReserve(ctx, input, createMutationReserve)
 		},
 		getEditionUncached: hc.GetEditionUncached,
@@ -136,13 +136,7 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 	default:
 		return nil, fmt.Errorf("invalid reading_format %q, expected audiobook or ebook", input.ReadingFormat)
 	}
-	if input.ReadingFormat == models.ReadingFormatAudiobook {
-		input.ASINRegion, err = input.selectedRegion()
-		if err != nil {
-			return nil, err
-		}
-	}
-	if err := validateCreateInput(&input.EditionInput); err != nil {
+	if err := validateCreateInput(&input.EditionInput, input.ABSItemID != ""); err != nil {
 		return nil, err
 	}
 
@@ -192,13 +186,27 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 		if absItem.ReadingFormat() != input.ReadingFormat {
 			return nil, fmt.Errorf("Audiobookshelf item %q is %s, but input reading_format is %s", input.ABSItemID, absItem.ReadingFormat(), input.ReadingFormat)
 		}
+	}
+
+	if input.ReadingFormat == models.ReadingFormatAudiobook {
+		input.ASIN = audiobookASIN(input.ASIN, absItem)
+		if input.ASIN != "" {
+			input.ASINRegion, err = input.selectedRegion()
+			if err != nil {
+				return nil, err
+			}
+		} else if input.ISBN10 == "" && input.ISBN13 == "" {
+			return nil, errors.New("an ASIN or ISBN is required")
+		}
+	}
+	if absItem != nil {
 		identifierWarning = sourceIdentifierWarning(absItem, input)
 		if identifierWarning != "" && !options.ConfirmIdentifierCorrection {
 			return nil, fmt.Errorf("%s; review the item and input, then pass --confirm-identifier-correction to proceed", identifierWarning)
 		}
 	}
 
-	if input.ReadingFormat == models.ReadingFormatAudiobook {
+	if input.ReadingFormat == models.ReadingFormatAudiobook && input.ASIN != "" {
 		region, regionErr := resolveAudibleRegion(ctx, input.ASIN, input.ASINRegion, options.PreferredRegion, services)
 		if regionErr != nil {
 			return nil, regionErr
@@ -258,51 +266,51 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 	}
 
 	if err := input.EditionInput.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid ebook input: %w", err)
+		return nil, fmt.Errorf("invalid %s input: %w", input.ReadingFormat, err)
 	}
 	if options.DryRun {
 		// The Creator returns a zero edition ID in dry-run mode without writing.
-		if services.createEbook == nil {
-			return nil, errors.New("ebook edition creation is unavailable")
+		if services.createEdition == nil {
+			return nil, fmt.Errorf("%s edition creation is unavailable", input.ReadingFormat)
 		}
-		created, createErr := services.createEbook(ctx, &input.EditionInput)
+		created, createErr := services.createEdition(ctx, &input.EditionInput)
 		if createErr != nil {
-			return nil, fmt.Errorf("failed to create ebook edition: %w", createErr)
+			return nil, fmt.Errorf("failed to create %s edition: %w", input.ReadingFormat, createErr)
 		}
 		if created == nil || !created.Success {
-			return nil, errors.New("ebook dry run did not return a successful result")
+			return nil, fmt.Errorf("%s dry run did not return a successful result", input.ReadingFormat)
 		}
-		output := ebookOutput(created, input, "dry_run")
+		output := editionOutput(created, input, "dry_run")
 		output.Warning = identifierWarning
 		return output, nil
 	}
-	if services.createEbook == nil {
-		return nil, errors.New("ebook edition creation is unavailable")
+	if services.createEdition == nil {
+		return nil, fmt.Errorf("%s edition creation is unavailable", input.ReadingFormat)
 	}
 	mutationCtx, cancel := withMutationBudget(ctx)
 	defer cancel()
-	created, createErr := services.createEbook(mutationCtx, &input.EditionInput)
+	created, createErr := services.createEdition(mutationCtx, &input.EditionInput)
 	if createErr != nil {
-		return nil, ebookCreateError(createErr)
+		return nil, editionCreateError(input.ReadingFormat, createErr)
 	}
 	if created == nil || !created.Success || created.EditionID <= 0 {
-		return nil, errors.New("ebook edition creation returned no confirmed edition")
+		return nil, fmt.Errorf("%s edition creation returned no confirmed edition", input.ReadingFormat)
 	}
-	output := ebookOutput(created, input, "created")
+	output := editionOutput(created, input, "created")
 	output.Warning = identifierWarning
 	if created.Existing {
 		output.Status = "existing"
 	}
 	if services.getEditionUncached == nil {
-		return nil, fmt.Errorf("Hardcover returned ebook edition %d, but verification is unavailable. Check Hardcover before retrying; retrying may create another edition", created.EditionID)
+		return nil, fmt.Errorf("Hardcover returned %s edition %d, but verification is unavailable. Check Hardcover before retrying; retrying may create another edition", input.ReadingFormat, created.EditionID)
 	}
-	if err := verifyCreatedEbookEdition(mutationCtx, created.EditionID, input.BookID, services.getEditionUncached); err != nil {
-		return nil, fmt.Errorf("Hardcover returned ebook edition %d, but it could not be verified. Check Hardcover before retrying; retrying may create another edition: %w", created.EditionID, err)
+	if err := verifyCreatedEdition(mutationCtx, created.EditionID, input.BookID, input.ReadingFormat, services.getEditionUncached); err != nil {
+		return nil, fmt.Errorf("Hardcover returned %s edition %d, but it could not be verified. Check Hardcover before retrying; retrying may create another edition: %w", input.ReadingFormat, created.EditionID, err)
 	}
 	if absItem != nil {
-		association := ebookAssociation(absItem, input.ASIN, output.Status, input.BookID, created.EditionID)
+		association := editionAssociation(absItem, input.ASIN, output.Status, input.BookID, created.EditionID, input.ReadingFormat)
 		if err := saveAssociation(loadedState, associationStatePath, association); err != nil {
-			return nil, fmt.Errorf("Hardcover returned ebook edition %d, but the local association could not be saved. Verify the Hardcover result before retrying; retrying may create another edition: %w", created.EditionID, err)
+			return nil, fmt.Errorf("Hardcover returned %s edition %d, but the local association could not be saved. Verify the Hardcover result before retrying; retrying may create another edition: %w", input.ReadingFormat, created.EditionID, err)
 		}
 		output.AssociationSaved = true
 	}
@@ -334,19 +342,19 @@ func audiobookImportError(err error) error {
 	}
 }
 
-// ebookCreateError says whether a failed ebook insertion could have changed
+// editionCreateError says whether a failed edition insertion could have changed
 // Hardcover, so the operator knows whether a retry is safe.
-func ebookCreateError(err error) error {
+func editionCreateError(readingFormat string, err error) error {
 	switch {
 	case errors.Is(err, hardcover.ErrMutationInsufficientBudget),
 		errors.Is(err, edition.ErrCreateEditionInsufficientMutationBudget):
-		return fmt.Errorf("failed to create ebook edition: too little time remained to send the insertion, and no Hardcover change was made; retry: %w", err)
+		return fmt.Errorf("failed to create %s edition: too little time remained to send the insertion, and no Hardcover change was made; retry: %w", readingFormat, err)
 	case errors.Is(err, hardcover.ErrMutationScopeDenied):
-		return fmt.Errorf("failed to create ebook edition: Hardcover catalogue write permission is required, and no edition was created: %w", err)
+		return fmt.Errorf("failed to create %s edition: Hardcover catalogue write permission is required, and no edition was created: %w", readingFormat, err)
 	case errors.Is(err, edition.ErrCreateEditionPreMutation):
-		return fmt.Errorf("failed to create ebook edition: %w", err)
+		return fmt.Errorf("failed to create %s edition: %w", readingFormat, err)
 	default:
-		return fmt.Errorf("failed to create ebook edition: Hardcover may have processed the insertion; verify the book in Hardcover before retrying: %w", err)
+		return fmt.Errorf("failed to create %s edition: Hardcover may have processed the insertion; verify the book in Hardcover before retrying: %w", readingFormat, err)
 	}
 }
 
@@ -385,7 +393,7 @@ func (input editionCreateInput) selectedRegion() (string, error) {
 	return asinRegion, nil
 }
 
-func validateCreateInput(input *edition.EditionInput) error {
+func validateCreateInput(input *edition.EditionInput, hasABSItem bool) error {
 	if input.BookID <= 0 {
 		return errors.New("book_id must be a positive Hardcover book ID")
 	}
@@ -401,20 +409,36 @@ func validateCreateInput(input *edition.EditionInput) error {
 	input.ASIN = strings.TrimSpace(input.ASIN)
 	input.ISBN10 = strings.TrimSpace(input.ISBN10)
 	input.ISBN13 = strings.TrimSpace(input.ISBN13)
-	if input.ASIN == "" && input.ISBN10 == "" && input.ISBN13 == "" {
+	if input.ReadingFormat == models.ReadingFormatAudiobook {
+		canonicalASIN, valid := audnex.CanonicalASIN(input.ASIN)
+		if valid {
+			input.ASIN = canonicalASIN
+		} else {
+			input.ASIN = ""
+		}
+		if input.ASIN == "" && input.ISBN10 == "" && input.ISBN13 == "" && !hasABSItem {
+			return errors.New("an ASIN or ISBN is required")
+		}
+	} else if input.ASIN == "" && input.ISBN10 == "" && input.ISBN13 == "" {
 		return errors.New("an ASIN or ISBN is required")
 	}
-	if input.ReadingFormat == models.ReadingFormatAudiobook {
-		if input.ASIN == "" {
-			return errors.New("an audiobook import requires a regional Audible ASIN")
-		}
-		canonicalASIN, valid := audnex.CanonicalASIN(input.ASIN)
-		if !valid {
-			return fmt.Errorf("audiobook ASIN %q must contain exactly ten letters or digits", input.ASIN)
-		}
-		input.ASIN = canonicalASIN
-	}
 	return nil
+}
+
+// audiobookASIN applies the identifier precedence for the regional import.
+// A valid ABS ASIN is the default, while a valid submitted ASIN can explicitly
+// correct it or fill a missing ABS ASIN after correction confirmation.
+func audiobookASIN(submitted string, item *models.AudiobookshelfBook) string {
+	submittedASIN, submittedValid := audnex.CanonicalASIN(submitted)
+	if submittedValid {
+		return submittedASIN
+	}
+	if item != nil {
+		if asin, valid := audnex.CanonicalASIN(item.Media.Metadata.ASIN); valid {
+			return asin
+		}
+	}
+	return ""
 }
 
 // sourceIdentifierWarning identifies submitted values that do not identify the
@@ -422,10 +446,22 @@ func validateCreateInput(input *edition.EditionInput) error {
 func sourceIdentifierWarning(item *models.AudiobookshelfBook, input editionCreateInput) string {
 	source := item.Media.Metadata
 	var conflicts []string
-	if input.ASIN != "" && !strings.EqualFold(strings.TrimSpace(source.ASIN), input.ASIN) {
-		conflicts = append(conflicts, "ASIN")
+	isAudiobook := input.ReadingFormat == models.ReadingFormatAudiobook
+	var sourceASINValid, submittedASINValid bool
+	if isAudiobook {
+		sourceASIN, valid := audnex.CanonicalASIN(source.ASIN)
+		sourceASINValid = valid
+		submittedASIN, valid := audnex.CanonicalASIN(input.ASIN)
+		submittedASINValid = valid
+		if submittedASINValid && (!sourceASINValid || submittedASIN != sourceASIN) {
+			conflicts = append(conflicts, "ASIN")
+		}
+	} else {
+		if input.ASIN != "" && !strings.EqualFold(strings.TrimSpace(source.ASIN), input.ASIN) {
+			conflicts = append(conflicts, "ASIN")
+		}
 	}
-	if input.ReadingFormat == models.ReadingFormatEbook {
+	if !isAudiobook || (!sourceASINValid && !submittedASINValid) {
 		for _, submitted := range []string{input.ISBN10, input.ISBN13} {
 			if submitted != "" && !sameISBN(source.ISBN, submitted) {
 				conflicts = append(conflicts, "ISBN")
@@ -495,28 +531,34 @@ func audiobookAssociation(item *models.AudiobookshelfBook, requestedASIN string,
 	}
 }
 
-func verifyCreatedEbookEdition(ctx context.Context, expectedEditionID, expectedBookID int, getEdition func(context.Context, string) (*models.Edition, error)) error {
+func verifyCreatedEdition(ctx context.Context, expectedEditionID, expectedBookID int, readingFormat string, getEdition func(context.Context, string) (*models.Edition, error)) error {
 	verified, err := getEdition(ctx, strconv.Itoa(expectedEditionID))
 	if err != nil {
-		return fmt.Errorf("failed to read back Hardcover ebook edition %d: %w", expectedEditionID, err)
+		return fmt.Errorf("failed to read back Hardcover %s edition %d: %w", readingFormat, expectedEditionID, err)
 	}
 	if verified == nil {
-		return fmt.Errorf("Hardcover ebook edition %d could not be read back", expectedEditionID)
+		return fmt.Errorf("Hardcover %s edition %d could not be read back", readingFormat, expectedEditionID)
 	}
 
 	verifiedEditionID, editionErr := strconv.Atoi(strings.TrimSpace(verified.ID))
 	verifiedBookID, bookErr := strconv.Atoi(strings.TrimSpace(verified.BookID))
 	verifiedFormatID, formatErr := strconv.Atoi(strings.TrimSpace(verified.ReadingFormatID))
-	expectedFormatID := models.ReadingFormatID(models.ReadingFormatEbook)
+	expectedFormatID := models.ReadingFormatID(readingFormat)
+	if readingFormat == models.ReadingFormatAudiobook && editionErr == nil && bookErr == nil && formatErr == nil &&
+		verifiedEditionID == expectedEditionID && verifiedBookID == expectedBookID && verifiedFormatID != expectedFormatID {
+		return &hardcover.RegionalAudiobookWrongFormatError{
+			BookID: expectedBookID, EditionID: expectedEditionID, ReadingFormatID: verified.ReadingFormatID,
+		}
+	}
 	if editionErr != nil || bookErr != nil || formatErr != nil ||
 		verifiedEditionID != expectedEditionID || verifiedBookID != expectedBookID || verifiedFormatID != expectedFormatID {
-		return fmt.Errorf("Hardcover ebook edition identity did not match: expected edition %d on book %d with reading format %d, got edition %q book %q format %q",
-			expectedEditionID, expectedBookID, expectedFormatID, verified.ID, verified.BookID, verified.ReadingFormatID)
+		return fmt.Errorf("Hardcover %s edition identity did not match: expected edition %d on book %d with reading format %d, got edition %q book %q format %q",
+			readingFormat, expectedEditionID, expectedBookID, expectedFormatID, verified.ID, verified.BookID, verified.ReadingFormatID)
 	}
 	return nil
 }
 
-func ebookAssociation(item *models.AudiobookshelfBook, submittedASIN, status string, bookID, editionID int) state.Association {
+func editionAssociation(item *models.AudiobookshelfBook, submittedASIN, status string, bookID, editionID int, readingFormat string) state.Association {
 	asin, isbn10, isbn13 := state.SourceIdentifiers(item.Media.Metadata.ASIN, item.Media.Metadata.ISBN)
 	return state.Association{
 		ABSItemID:          item.ID,
@@ -526,8 +568,8 @@ func ebookAssociation(item *models.AudiobookshelfBook, submittedASIN, status str
 		Correction:         asinCorrection(asin, submittedASIN),
 		HardcoverBookID:    strconv.Itoa(bookID),
 		HardcoverEditionID: strconv.Itoa(editionID),
-		ReadingFormat:      models.ReadingFormatEbook,
-		Provenance:         "cli_ebook_" + status,
+		ReadingFormat:      readingFormat,
+		Provenance:         "cli_" + readingFormat + "_" + status,
 	}
 }
 
@@ -555,7 +597,7 @@ func saveAssociation(loadedState *state.State, path string, association state.As
 	return nil
 }
 
-func ebookOutput(result *edition.EditionResult, input editionCreateInput, status string) *createOutput {
+func editionOutput(result *edition.EditionResult, input editionCreateInput, status string) *createOutput {
 	return &createOutput{
 		Success:       result.Success,
 		Status:        status,
@@ -564,7 +606,7 @@ func ebookOutput(result *edition.EditionResult, input editionCreateInput, status
 		ImageID:       result.ImageID,
 		ImageError:    result.ImageError,
 		Existing:      result.Existing,
-		ReadingFormat: models.ReadingFormatEbook,
+		ReadingFormat: input.ReadingFormat,
 		ABSItemID:     input.ABSItemID,
 	}
 }

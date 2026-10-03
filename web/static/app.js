@@ -1965,16 +1965,21 @@ class SyncProfileApp {
         if (!runContext || !['completed', 'canceled'].includes(runContext.state)) return 'Wait for the run to complete.';
         if (!/^\d+$/.test(String(record.hardcover_book_id || '').trim())) return 'No Hardcover book was matched for this item.';
         if (!['audiobook', 'ebook'].includes(String(record.format || '').trim().toLowerCase())) return 'The reading format is unknown.';
-        const audioASINReason = this.audiobookSourceASINIneligibleReason(record.format, record.asin);
+        const audioASINReason = this.audiobookSourceASINIneligibleReason(record.format, record.asin, record.isbn);
         if (audioASINReason) return audioASINReason;
         if (!String(record.asin || '').trim() && !String(record.isbn || '').trim()) return 'The item needs an ASIN or ISBN.';
         return null;
     }
 
-    audiobookSourceASINIneligibleReason(format, asin) {
+    audiobookSourceASINIneligibleReason(format, asin, isbn) {
         if (String(format || '').trim().toLowerCase() !== 'audiobook') return '';
         if (/^[a-z0-9]{10}$/i.test(String(asin || '').trim())) return '';
-        return 'Audiobook edition creation requires a valid 10-character ASIN from Audiobookshelf.';
+        if (this.sourceISBNIsShapeValid(isbn)) return '';
+        return 'Audiobook edition creation requires a valid ASIN or ISBN from Audiobookshelf.';
+    }
+
+    sourceISBNIsShapeValid(isbn) {
+        return /^(?:[0-9]{9}[0-9Xx]|[0-9]{13})$/.test(String(isbn || '').replace(/[\s\-_.\u2010-\u2015]/g, ''));
     }
 
     renderEditionActions(record) {
@@ -2011,7 +2016,7 @@ class SyncProfileApp {
         if (ineligible) return ineligible;
         if (open.editionCapabilityRefreshing) return 'Checking whether this profile can add this edition.';
         if (!open.editionCapabilityLoaded) return 'Checking whether this profile can add this edition.';
-        const gate = this.editionCapabilityGate(open.editionCapability, record.format);
+        const gate = this.editionCapabilityGate(open.editionCapability, record.format, record.asin);
         return gate.blocked ? gate.reason : '';
     }
 
@@ -2046,9 +2051,11 @@ class SyncProfileApp {
     }
 
     // Applies capability evidence for the record's format.
-    editionCapabilityGate(capability, format) {
+    editionCapabilityGate(capability, format, asin) {
         if (!capability) return { blocked: false };
-        const status = String(format).toLowerCase() === 'ebook' ? capability.ebook : capability.audiobook;
+        const status = String(format).toLowerCase() === 'ebook' ? capability.ebook
+            : /^[a-z0-9]{10}$/i.test(String(asin || '').trim()) ? capability.audiobook
+            : (capability.audiobook_isbn || capability.ebook);
         if (!status) return { blocked: false };
         if (status.status === 'denied' || status.can_attempt === false) {
             return { blocked: true, reason: status.reason ? this.capabilityReasonText(status.reason) : 'The Hardcover token is not permitted to add this edition.' };
@@ -2132,7 +2139,7 @@ class SyncProfileApp {
             if (this.editionCreateIneligibleReason(record, open.runContext)) return;
             if (this.profileIsSyncing(open.profileId)) return;
             if (!open.editionCapabilityLoaded) return;
-            if (this.editionCapabilityGate(open.editionCapability, record.format).blocked) return;
+            if (this.editionCapabilityGate(open.editionCapability, record.format, record.asin).blocked) return;
         }
         this.closeEditionDialog();
         this.editionDialog = {
@@ -2262,6 +2269,32 @@ class SyncProfileApp {
             `<div class="edition-warning" data-warning="${this.escapeHtmlAttribute(warning.code)}">${this.escapeHtml(warning.message)}</div>`).join('');
     }
 
+    renderAudiobookMetadataPreview(preview) {
+        if (!preview) return '';
+        const fields = [
+            ['Title', preview.title], ['Subtitle', preview.subtitle], ['Author', preview.author],
+            ['Narrator', preview.narrator], ['Publisher', preview.publisher], ['Language', preview.language],
+            ['Release date', preview.release_date], ['Edition format', preview.edition_format],
+            ['Edition information', preview.edition_information], ['ISBN-10', preview.isbn_10],
+            ['ISBN-13', preview.isbn_13]
+        ].filter(([, value]) => String(value || '').trim());
+        const audioSeconds = Number(preview.audio_seconds);
+        if (Number.isFinite(audioSeconds) && audioSeconds > 0) {
+            const hours = Math.floor(audioSeconds / 3600);
+            const minutes = Math.floor((audioSeconds % 3600) / 60);
+            const seconds = Math.floor(audioSeconds % 60);
+            const duration = [hours && `${hours} hr`, minutes && `${minutes} min`, !hours && !minutes && `${seconds} sec`]
+                .filter(Boolean).join(' ');
+            fields.push(['Audio length', duration]);
+        }
+        if (!fields.length) return '';
+        return `<details class="edition-source-section edition-audiobook-preview">
+            <summary>Audiobookshelf audiobook details <span class="edition-note">(read-only source metadata)</span></summary>
+            <div class="book-meta edition-preview">${fields.map(([label, value]) =>
+                `<span><strong>${this.escapeHtml(label)}:</strong> ${this.escapeHtml(value)}</span>`).join('')}</div>
+        </details>`;
+    }
+
     renderCreateBody(dialog) {
         const record = dialog.record;
         const errorHtml = dialog.error ? `<div class="edition-error" role="alert">${this.escapeHtml(dialog.error)}${this.renderEditionTechnicalDetails(dialog)}</div>` : '';
@@ -2285,11 +2318,11 @@ class SyncProfileApp {
         }
         const draft = dialog.draft;
         const isEbook = draft.reading_format === 'ebook';
-        const gate = this.editionCapabilityGate(dialog.capability, draft.reading_format || record.format);
+        const gate = this.editionCapabilityGate(dialog.capability, draft.reading_format || record.format, draft.source_identifiers?.asin);
         const dryRun = Boolean(draft.dry_run || dialog.capability?.dry_run || dialog.runDryRun);
         const syncing = this.profileIsSyncing(dialog.profileId);
         const ids = draft.source_identifiers || {};
-        const audioASINReason = this.audiobookSourceASINIneligibleReason(draft.reading_format, ids.asin);
+        const audioASINReason = this.audiobookSourceASINIneligibleReason(draft.reading_format, ids.asin, ids.isbn);
         const isbn = String(ids.isbn || '').trim();
         const series = this.formatSeries(record.series, record.series_number);
         const sourceHtml = `<section class="hardcover-candidate" aria-label="From Audiobookshelf">
@@ -2328,7 +2361,11 @@ class SyncProfileApp {
             const candidate = draft.audible_identifier_candidate || {};
             const confirmed = status === 'confirmed' && candidate.asin && draft.confirmed_region;
             const identifierValue = confirmed ? `${candidate.asin}:${draft.confirmed_region}` : '';
-            if (confirmed) {
+            if (!/^[a-z0-9]{10}$/i.test(String(ids.asin || '').trim())) {
+                regionHtml = this.sourceISBNIsShapeValid(ids.isbn)
+                    ? '<div class="edition-region review">This audiobook will be added using its Audiobookshelf ISBN. Verify the source metadata before adding the edition.</div>'
+                    : '<div class="edition-region review">This audiobook has no usable source ASIN or ISBN. Add a valid identifier before creating the edition.</div>';
+            } else if (confirmed) {
                 regionHtml = `<div class="edition-region confirmed">Audible identifier: <strong>${this.escapeHtml(identifierValue)}</strong> <span class="edition-note">(confirmed automatically)</span></div>`;
             } else if (status === 'temporarily_unavailable') {
                 regionHtml = '<div class="edition-region review">Region lookup is temporarily unavailable. Refresh the preview to try again, or create the edition and the app will retry Audible region discovery first. The import proceeds only if a region is confirmed.</div>';
@@ -2359,8 +2396,10 @@ class SyncProfileApp {
         if (syncing) blockers.push('A sync is running for this profile; try again when it finishes.');
         if (dialog.outcome === 'failed') blockers.push('Hardcover returned a failed result after receiving the import. Another create is disabled to avoid submitting it again.');
         const canConfirm = blockers.length === 0;
+        const audiobookMetadataHtml = !isEbook && !/^[a-z0-9]{10}$/i.test(String(ids.asin || '').trim())
+            ? this.renderAudiobookMetadataPreview(draft.metadata_preview) : '';
         return `${dryRun ? '<div class="edition-dry-run">Dry run</div>' : ''}
-            ${sourceHtml}${hardcoverTargetHtml}${audnexHtml}${regionHtml}
+            ${sourceHtml}${audiobookMetadataHtml}${hardcoverTargetHtml}${audnexHtml}${regionHtml}
             ${this.renderWarnings(draft)}
             <form class="edition-form" onsubmit="return false">${editHtml}</form>
             ${blockers.map(text => `<div class="edition-error" data-blocker>${this.escapeHtml(text)}</div>`).join('')}
@@ -2395,7 +2434,9 @@ class SyncProfileApp {
         } else {
             const draft = dialog.draft || {};
             const candidate = draft.audible_identifier_candidate || {};
-            if (draft.region_status === 'confirmed' && candidate.asin && draft.confirmed_region) {
+            const sourceASIN = draft.source_identifiers?.asin;
+            if (/^[a-z0-9]{10}$/i.test(String(sourceASIN || '').trim())
+                && draft.region_status === 'confirmed' && candidate.asin && draft.confirmed_region) {
                 body.audible_identifier = `${candidate.asin}:${draft.confirmed_region}`;
             }
         }
@@ -2602,9 +2643,8 @@ class SyncProfileApp {
         return `<details class="edition-technical-details"><summary>Technical details</summary><div>${status ? `HTTP ${status}` : ''}${code ? `${status ? ' · ' : ''}Error code: ${this.escapeHtml(code)}` : ''}</div></details>`;
     }
 
-    // Hardcover resolved the import to an existing edition of the reviewed book
-    // that is not an audiobook. Only a positive numeric edition ID is used, and
-    // the link is built here rather than trusting a server-supplied URL.
+    // Hardcover returned an existing non-audiobook edition for this audiobook
+    // request. Use only a positive numeric edition ID and build the link here.
     editionWrongFormatDetails(outcome, data) {
         if (outcome !== 'failed' || String(data?.error_code || '') !== 'hardcover_edition_wrong_format') return null;
         const editionId = String(data?.data?.hardcover_edition_id ?? '');
@@ -2614,8 +2654,8 @@ class SyncProfileApp {
 
     renderEditionWrongFormat(dialog) {
         const details = dialog.wrongFormat;
-        const message = dialog.error || `Hardcover linked this Audible identifier to existing edition ${details.editionId}, which is not an audiobook. The match was not saved.`;
-        return `<div class="edition-error" role="alert" data-wrong-format><strong>Hardcover added this Audible identifier to a non-audiobook edition</strong>
+        const message = dialog.error || `Hardcover returned existing edition ${details.editionId}, which is not an audiobook. The match was not saved.`;
+        return `<div class="edition-error" role="alert" data-wrong-format><strong>Hardcover returned a non-audiobook edition</strong>
             <p>${this.escapeHtml(message)}</p>
             <p>On the Hardcover edition page, sign in and use <strong>Report</strong> to ask for its format to be changed to Audiobook.</p>
             ${this.renderEditionTechnicalDetails(dialog)}</div>

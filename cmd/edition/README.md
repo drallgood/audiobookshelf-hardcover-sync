@@ -1,8 +1,9 @@
 # Edition Creation Tool
 
 The standalone `edition` command provides `prepopulate` templates and explicit
-edition creation. Audiobooks use a region-qualified Audible import; ebooks use
-Hardcover's format-aware edition insertion. Normal sync does not create
+edition creation. Audiobooks with a valid ASIN use a region-qualified Audible
+import. ISBN-backed audiobooks without a valid Audiobookshelf ASIN and ebooks
+use Hardcover's format-aware edition insertion. Normal sync does not create
 catalogue editions.
 
 ## Requirements
@@ -26,9 +27,9 @@ sync service's Audiobookshelf settings and prints no configuration summary.
 
 The Hardcover token needs `read:catalog` for book/edition reads and duplicate
 checks, plus `write:catalog:append` or a broader catalogue-write scope for
-creation. Audiobook imports use `upsert_book`; ebook creation uses
-`insert_edition`. A missing catalogue-write scope leaves sync available but
-makes the explicit create operation fail.
+creation. ASIN audiobook imports use `upsert_book`; ISBN-backed audiobooks and
+ebooks use `insert_edition`. A missing catalogue-write scope leaves sync
+available but makes the explicit create operation fail.
 
 ## Commands
 
@@ -60,7 +61,7 @@ The `--abs-item-id` and `--state-file` flags apply to `create`. An
 item ID is present in either place, the command saves the match in
 `--state-file`, or in the configured `sync.state_file` when the flag is
 omitted. That default suits the single-user sync.
-If a submitted ASIN or ebook ISBN differs from the fetched item's identifier,
+If a submitted ASIN or ISBN differs from the fetched item's identifier,
 the command stops before writing to Hardcover. Check the item and target book;
 pass `--confirm-identifier-correction` to make a deliberate correction. The
 JSON result includes a warning when a correction is confirmed.
@@ -77,9 +78,9 @@ profile-specific filename.
 
 ## Audiobook input
 
-The audiobook input needs a positive Hardcover `book_id` and a bare ASIN of
-ten letters or digits. `reading_format` defaults to `audiobook`. Input JSON is
-limited to 1 MiB.
+The audiobook input needs a positive Hardcover `book_id` and either a valid
+ASIN or ISBN metadata. A valid ASIN is ten ASCII letters or digits.
+`reading_format` defaults to `audiobook`. Input JSON is limited to 1 MiB.
 
 ```json
 {
@@ -91,17 +92,49 @@ limited to 1 MiB.
 }
 ```
 
-`asin_region` is optional; `region` is an alias. If both are supplied they
-must agree. A supplied region is sent to Hardcover as given, without an Audnex
-lookup. Without one, the command discovers a region by finding the requested
-ASIN in Audnex; it prefers `audiobookshelf.audnexus_region` (default `us`) and
-does not assume a region from the ASIN. If discovery finds no region or Audnex
-is temporarily unavailable, the command stops before the Hardcover import;
-retry later or supply `asin_region`.
+An ISBN-only audiobook uses the insertion fields while keeping
+`reading_format` set to `audiobook`:
 
-For audiobook imports, the command uses only `book_id`, `asin`, region,
-`reading_format`, and the optional ABS item ID. Other JSON fields are ignored,
-so existing mismatch export fields remain acceptable.
+```json
+{
+  "book_id": 12345,
+  "title": "Audio Book Title",
+  "isbn_13": "9781234567890",
+  "author_ids": [1],
+  "edition_format": "Audiobook",
+  "reading_format": "audiobook",
+  "abs_item_id": "li_123"
+}
+```
+
+With no `abs_item_id`, a valid submitted ASIN selects the regional Audible
+import, even when ISBNs are also supplied. If the ASIN is missing or malformed,
+an ISBN selects `insert_edition`; the malformed ASIN is treated as missing.
+When `abs_item_id` is supplied, the fetched Audiobookshelf item decides which
+path applies: a valid canonical item ASIN uses the regional import, including
+when the input omits ASIN. If the item has no valid canonical ASIN, a valid
+submitted ASIN can correct it and uses the regional import after
+`--confirm-identifier-correction`; otherwise the input uses ISBN-backed
+insertion. Thus omitting the input ASIN cannot bypass an ASIN that
+Audiobookshelf reports.
+
+`asin_region` is optional for the regional import; `region` is an alias. If
+both are supplied they must agree. A supplied region is sent to Hardcover as
+given, without an Audnex lookup. Without one, the command discovers a region by
+finding the selected ASIN in Audnex; it prefers
+`audiobookshelf.audnexus_region` (default `us`) and does not assume a region
+from the ASIN. If discovery finds no region or Audnex is temporarily
+unavailable, the command stops before the Hardcover import; retry later or
+supply `asin_region`.
+
+For ISBN-backed audiobook insertion, include the edition metadata required by
+Hardcover (`title` and at least one `author_ids` entry), plus `isbn_10` or
+`isbn_13`. If an ABS item is supplied and the input ISBN differs from that
+item's ISBN, creation stops until `--confirm-identifier-correction` is passed.
+
+For regional audiobook imports, the command uses only `book_id`, `asin`,
+region, `reading_format`, and the optional ABS item ID. Other JSON fields are
+ignored, so existing mismatch export fields remain acceptable.
 
 ## Ebook input
 
@@ -125,10 +158,10 @@ least one `author_ids` entry, and at least one ASIN or ISBN. If supplied,
 }
 ```
 
-The ebook path retains duplicate checks within ebook editions. An edition
-already present for the requested book is returned as `existing`; the command
-does not resend its metadata. An existing edition associated with another
-book is refused.
+The insertion path retains duplicate checks within the selected reading
+format. An edition already present for the requested book is returned as
+`existing`; the command does not resend its metadata. An existing edition
+associated with another book is refused.
 
 ## Results and saved matches
 
@@ -143,14 +176,15 @@ token.
 
 The command prints a JSON result with `success`, `status`, `book_id`,
 `edition_id`, `image_id`, and `reading_format`; it may also include
-`image_error`, `existing`, `abs_item_id`, and `association_saved`. Audiobook
-statuses are `loaded`, `created`, or `dry_run`. Ebook statuses are `existing`,
-`created`, or `dry_run`.
+`image_error`, `existing`, `abs_item_id`, and `association_saved`. Regional
+audiobook statuses are `loaded`, `created`, or `dry_run`. Inserted editions,
+including ISBN-backed audiobooks, use `existing`, `created`, or `dry_run`.
 
 When an ABS item ID is supplied, the command fetches the item before making a
 Hardcover change and requires its format to match the input. The saved match
 keeps the item's own ASIN and ISBN; a different submitted ASIN is recorded as
-your correction. After verifying
+your correction. ISBN corrections on ISBN-backed audiobooks also require
+explicit confirmation. After verifying
 the Hardcover result, it saves a local match in the configured state file
 while holding the state-file lock. If another sync holds the lock, the command
 returns an error before contacting Hardcover. A local save failure after a
@@ -176,5 +210,5 @@ requires HTTPS and public addresses. Both modes require an absolute
 command. See the [main configuration reference](../../README.md#configuration-reference)
 for the deployment-wide setting.
 
-For ebook creation, an `image_url` is not fetched or uploaded; the result may
-include `image_error` for the unsupported cover upload.
+For edition insertion, an `image_url` is not fetched or uploaded; the result
+may include `image_error` for the unsupported cover upload.

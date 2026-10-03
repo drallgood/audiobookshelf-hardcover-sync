@@ -383,6 +383,15 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 		ctx, cancel := context.WithTimeout(hardcover.WithReadingFormat(hardcover.WithAudnexRegion(context.Background(), audnexusRegion), metadata.ReadingFormat), 10*time.Second)
 		defer cancel()
 
+		// Enrichment feeds the Add Edition target, so it must follow the same
+		// identifier precedence as sync matching.
+		sourceASIN, validSourceASIN := audnex.CanonicalASIN(metadata.ASIN)
+		isAudiobook := !strings.EqualFold(strings.TrimSpace(metadata.ReadingFormat), models.ReadingFormatEbook)
+		allowISBN := !isAudiobook || !validSourceASIN
+		if !isAudiobook {
+			sourceASIN = strings.TrimSpace(metadata.ASIN)
+		}
+
 		// Helper to apply Hardcover book details to mismatch
 		applyHC := func(hcBook *models.HardcoverBook) {
 			if hcBook == nil {
@@ -502,11 +511,11 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 					}
 				}
 				// If edition provides identifiers, try to resolve full book to get authors
-				if ed.ISBN13 != "" {
+				if allowISBN && ed.ISBN13 != "" {
 					if b, err := hc.SearchBookByISBN13(ctx, ed.ISBN13); err == nil && b != nil {
 						applyHC(b)
 					}
-				} else if ed.ISBN10 != "" {
+				} else if allowISBN && ed.ISBN10 != "" {
 					if b, err := hc.SearchBookByISBN10(ctx, ed.ISBN10); err == nil && b != nil {
 						applyHC(b)
 					}
@@ -532,16 +541,16 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 
 		// Fall back to provided identifiers
 		if mismatch.HardcoverAuthor == "" {
-			if isbn13 != "" {
+			if allowISBN && isbn13 != "" {
 				if b, err := hc.SearchBookByISBN13(ctx, isbn13); err == nil && b != nil {
 					applyHC(b)
 				}
-			} else if isbn10 != "" {
+			} else if allowISBN && isbn10 != "" {
 				if b, err := hc.SearchBookByISBN10(ctx, isbn10); err == nil && b != nil {
 					applyHC(b)
 				}
-			} else if metadata.ASIN != "" {
-				if b, err := hc.SearchBookByASIN(ctx, metadata.ASIN); err == nil && b != nil {
+			} else if sourceASIN != "" {
+				if b, err := hc.SearchBookByASIN(ctx, sourceASIN); err == nil && b != nil {
 					applyHC(b)
 				}
 			}
