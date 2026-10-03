@@ -86,7 +86,7 @@ func New(addr string, multiUserService *multiuser.MultiUserService, authService 
 	// prefix in the mux patterns: StripPrefix would operate on URL.Path after
 	// decoding escaped delimiters and could make legacy IDs containing an
 	// encoded slash unrouteable.
-	handler.Handle("/api/", s.authMiddleware.RequireAuth(apiMux))
+	handler.Handle("/api/", s.authMiddleware.CSRFProtection(s.authMiddleware.RequireAuth(apiMux)))
 
 	// Static web UI files (no auth required)
 	handler.Handle("/", http.HandlerFunc(s.handleStaticFiles))

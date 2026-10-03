@@ -638,6 +638,17 @@ func (h *Handler) projectEditionRecoveryCapabilities(r *http.Request, profileID 
 				(profile != nil && profile.OwnerUserID != nil && *profile.OwnerUserID == user.ID && role.HasPermission(auth.PermissionWriteOwn))
 		}
 	}
+	if !canMutate {
+		for i := range snapshot.BookOutcomes {
+			if action := snapshot.BookOutcomes[i].EditionAction; action != nil {
+				action.SubmittedBody = nil
+				if action.Data != nil {
+					action.Data.RecoveryToken = ""
+				}
+			}
+		}
+		return
+	}
 	hasRecoveryToken := false
 	for i := range snapshot.BookOutcomes {
 		action := snapshot.BookOutcomes[i].EditionAction
@@ -647,14 +658,6 @@ func (h *Handler) projectEditionRecoveryCapabilities(r *http.Request, profileID 
 		}
 	}
 	if !hasRecoveryToken {
-		return
-	}
-	if !canMutate {
-		for i := range snapshot.BookOutcomes {
-			if action := snapshot.BookOutcomes[i].EditionAction; action != nil && action.Data != nil {
-				action.Data.RecoveryToken = ""
-			}
-		}
 		return
 	}
 	settings, settingsErr := h.multiUserService.GetProfileHardcoverSettings(profileID)

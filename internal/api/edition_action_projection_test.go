@@ -14,20 +14,22 @@ import (
 
 func TestRunDetailsEditionRecoveryCapabilities(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		role       auth.UserRole
-		issuedAt   time.Time
-		signingKey string
-		wantToken  bool
-		wantManual bool
-		clearToken bool
+		name         string
+		role         auth.UserRole
+		issuedAt     time.Time
+		signingKey   string
+		wantToken    bool
+		wantManual   bool
+		clearToken   bool
+		omitRecovery bool
 	}{
-		{"owner", auth.RoleUser, time.Now(), "hardcover-token", true, false, false},
-		{"admin", auth.RoleAdmin, time.Now(), "hardcover-token", true, false, false},
-		{"viewer", auth.RoleViewer, time.Now(), "hardcover-token", false, false, false},
-		{"expired", auth.RoleUser, time.Now().Add(-49 * time.Hour), "hardcover-token", false, true, false},
-		{"rotated", auth.RoleUser, time.Now(), "old-hardcover-token", false, true, false},
-		{"missing Hardcover token", auth.RoleUser, time.Now(), "hardcover-token", false, true, true},
+		{"owner", auth.RoleUser, time.Now(), "hardcover-token", true, false, false, false},
+		{"admin", auth.RoleAdmin, time.Now(), "hardcover-token", true, false, false, false},
+		{"viewer", auth.RoleViewer, time.Now(), "hardcover-token", false, false, false, false},
+		{"viewer without recovery", auth.RoleViewer, time.Now(), "hardcover-token", false, false, false, true},
+		{"expired", auth.RoleUser, time.Now().Add(-49 * time.Hour), "hardcover-token", false, true, false, false},
+		{"rotated", auth.RoleUser, time.Now(), "old-hardcover-token", false, true, false, false},
+		{"missing Hardcover token", auth.RoleUser, time.Now(), "hardcover-token", false, true, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := newEditionDraftTestFixture(t, `{}`, "us")
@@ -41,9 +43,13 @@ func TestRunDetailsEditionRecoveryCapabilities(t *testing.T) {
 			addCompletedNeedsReviewRun(t, fixture, runID, editionCreateRecord())
 			claims := editionRecoveryClaims{ProfileID: "draft-profile", RunID: runID, ABSItemID: "abs-item-1", HardcoverBookID: "42", AudibleIdentifier: "B0SOURCE12:us"}
 			token := signEditionRecoveryTokenAt(tc.signingKey, claims, tc.issuedAt)
+			if tc.omitRecovery {
+				token = ""
+			}
+			editedTitle := "User edited title"
 			action := sync.EditionActionRecord{
 				Outcome:       editionOutcomeUnconfirmed,
-				SubmittedBody: &sync.EditionActionSubmittedBody{RunID: runID, ABSItemID: "abs-item-1"},
+				SubmittedBody: &sync.EditionActionSubmittedBody{RunID: runID, ABSItemID: "abs-item-1", Title: &editedTitle},
 				Data:          &sync.EditionActionData{HardcoverBookID: "42", AudibleIdentifier: claims.AudibleIdentifier, RecoveryToken: token},
 			}
 			require.NoError(t, fixture.multiUserService.SaveEditionAction("draft-profile", runID, "abs-item-1", action))
@@ -61,6 +67,12 @@ func TestRunDetailsEditionRecoveryCapabilities(t *testing.T) {
 			require.Len(t, body.Data.BookOutcomes, 1)
 			projected := body.Data.BookOutcomes[0].EditionAction
 			require.NotNil(t, projected)
+			if tc.role == auth.RoleViewer {
+				require.Nil(t, projected.SubmittedBody)
+				require.NotContains(t, response.Body.String(), "submitted_body")
+			} else {
+				require.Equal(t, action.SubmittedBody, projected.SubmittedBody)
+			}
 			require.Equal(t, tc.wantToken, projected.Data.RecoveryToken != "")
 			if tc.wantManual {
 				require.Equal(t, editionOutcomeTransportUnknown, projected.Outcome)
@@ -73,6 +85,7 @@ func TestRunDetailsEditionRecoveryCapabilities(t *testing.T) {
 			require.True(t, found)
 			require.Equal(t, token, stored.Data.RecoveryToken, "read projection must not modify the saved capability")
 			require.Equal(t, editionOutcomeUnconfirmed, stored.Outcome)
+			require.Equal(t, action.SubmittedBody, stored.SubmittedBody, "read projection must not modify the saved retry fields")
 		})
 	}
 }

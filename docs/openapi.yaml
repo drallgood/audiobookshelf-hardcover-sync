@@ -23,6 +23,15 @@ info:
     requests return a non-enumerating `404`. The public
     `/api/status` endpoint remains scalar and redacted. Authentication disabled
     preserves unrestricted profile access.
+
+    Unsafe browser requests to profile API routes under `/api/profiles` must
+    originate from the same origin, including when authentication is disabled.
+    Cross-origin POST, PUT, PATCH,
+    and DELETE requests are rejected using Fetch Metadata or Origin checks.
+    Nonbrowser clients without those browser headers remain supported. Reverse
+    proxies should preserve the public Host and Fetch Metadata headers; clients
+    falling back to Origin checks require Origin to match Host. CORS supports
+    wildcard origins without browser credentials.
     
     ## Rate Limiting
     
@@ -784,7 +793,7 @@ components:
         changing historical outcomes or counts. Recovery tokens are returned
         only to callers with profile write access and remain subject to their
         original expiry and Hardcover token binding.
-      required: [outcome, submitted_body]
+      required: [outcome]
       properties:
         outcome:
           type: string
@@ -797,7 +806,7 @@ components:
           type: string
         submitted_body:
           type: object
-          description: Original request fields needed to restore the recovery or retry dialog.
+          description: Original request fields needed to restore the recovery or retry dialog; returned only to callers with profile write access.
           required: [run_id, abs_item_id]
           properties:
             run_id: {type: string}
