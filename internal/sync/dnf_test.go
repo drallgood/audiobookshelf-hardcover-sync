@@ -65,11 +65,14 @@ func TestHandleFinishedBook_DNFStatus(t *testing.T) {
 		BookStatusID: 5, // DNF status
 	}, nil).Once()
 
+	svc.state.SetFinishedDateRestoration("123", audiobook.ID, map[int64]string{1: "2025-06-01"})
+
 	// Call the function
 	err := svc.HandleFinishedBook(context.Background(), *audiobook, "456", userBookID)
 
 	// Verify results
 	assert.NoError(t, err, "Should not return an error when book is DNF")
+	assert.True(t, svc.state.HasFinishedDateRestoration(audiobook.ID), "DNF preservation must leave pending restoration untouched")
 	mockClient.AssertExpectations(t)
 }
 

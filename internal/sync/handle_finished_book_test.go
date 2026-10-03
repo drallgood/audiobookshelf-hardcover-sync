@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -180,6 +181,7 @@ func TestHandleFinishedBook(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// Create a test service with mock client
 			svc, mockClient := createTestService()
+			svc.statePath = filepath.Join(t.TempDir(), "state.json")
 
 			// Create a test configuration
 			cfg := createTestConfigForTests(true)
@@ -195,14 +197,20 @@ func TestHandleFinishedBook(t *testing.T) {
 			// Mock GetUserBookReads
 			mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 				UserBookID: int64(tc.userBookID),
-			}).Return(tc.readStatuses, tc.mockGetReadsError)
+			}).Return(tc.readStatuses, tc.mockGetReadsError).Once()
+			if tc.expectInsertCall && tc.mockInsertError == nil {
+				finished := time.Unix(tc.book.Progress.FinishedAt/1000, 0).Format("2006-01-02")
+				mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: int64(tc.userBookID)}).Return([]hardcover.UserBookRead{{ID: 100, FinishedAt: &finished}}, nil)
+			} else if tc.expectStatusUpdateCall && tc.mockGetReadsError == nil {
+				mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: int64(tc.userBookID)}).Return(tc.readStatuses, nil)
+			}
 
 			// Set up insert expectation if needed
 			if tc.expectInsertCall {
 				mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
 					// Verify the user book ID matches - convert int to int64 for comparison
 					return input.UserBookID == int64(tc.userBookID)
-				})).Return(0, tc.mockInsertError)
+				})).Return(100, tc.mockInsertError)
 			}
 
 			// Set up update expectation if needed
@@ -210,7 +218,12 @@ func TestHandleFinishedBook(t *testing.T) {
 				mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
 					// Verify the ID matches the read status we expect to update
 					return input.ID == tc.readStatuses[0].ID
-				})).Return(false, tc.mockUpdateError)
+				})).Run(func(args mock.Arguments) {
+					if tc.mockUpdateError == nil {
+						date := args[1].(hardcover.UpdateUserBookReadInput).Object["finished_at"].(string)
+						tc.readStatuses[0].FinishedAt = &date
+					}
+				}).Return(true, tc.mockUpdateError)
 			}
 
 			// Set up status update expectation if needed
@@ -243,6 +256,7 @@ func TestHandleFinishedBook(t *testing.T) {
 
 func TestHandleFinishedBookCreatesReadWithAudiobookshelfFinishedDate(t *testing.T) {
 	svc, mockClient := createTestService()
+	svc.statePath = filepath.Join(t.TempDir(), "state.json")
 	const (
 		editionID      = "456"
 		userBookID     = int64(789)
@@ -259,11 +273,12 @@ func TestHandleFinishedBookCreatesReadWithAudiobookshelfFinishedDate(t *testing.
 	}, nil).Once()
 	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
-	}).Return([]hardcover.UserBookRead{}, nil).Twice()
+	}).Return([]hardcover.UserBookRead{}, nil).Once()
+	mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return([]hardcover.UserBookRead{{ID: 100, FinishedAt: stringPointer(finishedAtDate)}}, nil)
 	mockClient.On("InsertUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.InsertUserBookReadInput) bool {
 		return input.UserBookID == userBookID &&
 			input.DatesRead.FinishedAt != nil && *input.DatesRead.FinishedAt == finishedAtDate
-	})).Return(0, nil).Once()
+	})).Return(100, nil).Once()
 	mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
 		ID:     userBookID,
 		Status: "FINISHED",
@@ -275,10 +290,56 @@ func TestHandleFinishedBookCreatesReadWithAudiobookshelfFinishedDate(t *testing.
 	mockClient.AssertExpectations(t)
 }
 
+func TestHandleFinishedBookClosingReadPreservesExistingHistory(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		audiobookshelfDate string
+		existingReadDate   string
+	}{
+		{
+			name:               "existing completion is later",
+			audiobookshelfDate: "2025-06-11",
+			existingReadDate:   "2025-08-12",
+		},
+		{
+			name:               "Audiobookshelf completion is later",
+			audiobookshelfDate: "2025-09-12",
+			existingReadDate:   "2025-08-12",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, mockClient := createTestService()
+			svc.statePath = filepath.Join(t.TempDir(), "state.json")
+			const userBookID = int64(790)
+			book := convertTestBookToModel(createTestFinishedBook("closing-read", "Test Book", "Test Author", "B123456789", ""))
+			finishedAt, err := time.Parse("2006-01-02", tc.audiobookshelfDate)
+			assert.NoError(t, err)
+			book.Progress.FinishedAt = time.Date(finishedAt.Year(), finishedAt.Month(), finishedAt.Day(), 12, 0, 0, 0, time.Local).UnixMilli()
+
+			reads := []hardcover.UserBookRead{
+				{ID: 50, UserBookID: userBookID, FinishedAt: stringPointer(tc.existingReadDate), Progress: 100, ProgressSeconds: intPointer(100)},
+				{ID: 10, UserBookID: userBookID, StartedAt: stringPointer("2025-06-01"), Progress: 50, ProgressSeconds: intPointer(50)},
+			}
+			mockClient.On("GetUserBook", mock.Anything, "790").Return(&models.HardcoverBook{BookStatusID: 2}, nil).Once()
+			mockClient.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: userBookID}).Return(reads, nil)
+			mockClient.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+				return input.ID == 10 && input.Object["finished_at"] == tc.audiobookshelfDate
+			})).Run(func(mock.Arguments) { reads[1].FinishedAt = stringPointer(tc.audiobookshelfDate) }).Return(true, nil).Once()
+			mockClient.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{
+				ID: userBookID, Status: "FINISHED",
+			}).Return(nil).Once()
+
+			assert.NoError(t, svc.HandleFinishedBook(context.Background(), book, "", userBookID))
+			mockClient.AssertExpectations(t)
+		})
+	}
+}
+
 func TestHandleFinishedBook_MissingFinishedAtSkipsReadMutation(t *testing.T) {
 	logger.Setup(logger.Config{Level: "debug", Format: "json"})
 
 	svc, mockClient := createTestService()
+	svc.statePath = filepath.Join(t.TempDir(), "state.json")
 	svc.config = createTestConfigForTests(true)
 
 	book := createTestFinishedBook("abs-book-missing-finished-at", "The Moscow Rules", "Test Author", "B123", "978123")
@@ -330,6 +391,7 @@ func TestHandleFinishedBook_StatusFailureDoesNotAdvanceState(t *testing.T) {
 	logger.Setup(logger.Config{Level: "debug", Format: "json"})
 
 	svc, mockClient := createTestService()
+	svc.statePath = filepath.Join(t.TempDir(), "state.json")
 	svc.config = createTestConfigForTests(true)
 
 	book := createTestFinishedBook("abs-book-status-failure", "Status Failure", "Test Author", "B123", "978123")
@@ -373,6 +435,7 @@ func TestHandleFinishedBook_ExistingFinishedReadStatusFailureDoesNotAdvanceState
 	logger.Setup(logger.Config{Level: "debug", Format: "json"})
 
 	svc, mockClient := createTestService()
+	svc.statePath = filepath.Join(t.TempDir(), "state.json")
 	svc.state = state.NewState()
 	svc.config = createTestConfigForTests(true)
 
@@ -476,4 +539,21 @@ func createTestConfigForTests(syncOwned bool) *config.Config {
 	cfg.Server.ShutdownTimeout = 30 * time.Second
 
 	return cfg
+}
+
+func TestHandleFinishedBookPreservesExistingCompletionDateWhenReconcilingStatus(t *testing.T) {
+	svc, hc := createTestService()
+	svc.statePath = filepath.Join(t.TempDir(), "state.json")
+	book := convertTestBookToModel(createTestFinishedBook("existing-finished-history", "History", "Author", "B123", ""))
+	book.Progress.FinishedAt = 1748790312628
+	hc.On("GetUserBook", mock.Anything, "789").Return(&models.HardcoverBook{BookStatusID: 2}, nil).Once()
+	hc.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: 789}).Return([]hardcover.UserBookRead{
+		{ID: 99, FinishedAt: stringPointer("2024-01-01")},
+		{ID: 1, FinishedAt: stringPointer("2025-05-12")},
+	}, nil)
+	hc.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{ID: 789, Status: "FINISHED"}).Return(nil).Once()
+	assert.NoError(t, svc.HandleFinishedBook(context.Background(), book, "456", 789))
+	hc.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
+	hc.AssertExpectations(t)
 }

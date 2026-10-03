@@ -1405,7 +1405,7 @@ func (c *Client) GetUserBook(ctx context.Context, userBookID string) (*models.Ha
 	// Check if we got results
 	if len(result.UserBooks) == 0 {
 		log.Warn("User book not found", nil)
-		return nil, fmt.Errorf("user book not found with ID: %s", userBookID)
+		return nil, fmt.Errorf("%w with ID: %s", ErrUserBookNotFound, userBookID)
 	}
 
 	// Get the first (and only) user book
@@ -2506,7 +2506,8 @@ func (c *Client) UpdateUserBookRead(ctx context.Context, input UpdateUserBookRea
 	if datesReadInput.EditionID != nil {
 		updateObjMap["edition_id"] = datesReadInput.EditionID
 	}
-	if datesReadInput.FinishedAt != nil {
+	if _, provided := input.Object["finished_at"]; provided {
+		// Explicit null reopens a read; an omitted field must leave it unchanged.
 		updateObjMap["finished_at"] = datesReadInput.FinishedAt
 	}
 	if datesReadInput.ID != nil {
