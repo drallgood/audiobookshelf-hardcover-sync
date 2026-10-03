@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,9 +16,19 @@ func TestLoadConfigFromFile(t *testing.T) {
 	t.Setenv("AUDIOBOOKSHELF_URL", "")
 	t.Setenv("AUDIOBOOKSHELF_TOKEN", "")
 	t.Setenv("HARDCOVER_TOKEN", "")
+	t.Setenv("PORT", "")
+	t.Setenv("SYNC_INTERVAL", "")
+	t.Setenv("CACHE_DIR", "")
+	require.NoError(t, os.Unsetenv("CACHE_DIR"))
 
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(`audiobookshelf:
+	require.NoError(t, os.WriteFile(path, []byte(`server:
+  port: "8081"
+sync:
+  sync_interval: "2h"
+paths:
+  cache_dir: "./test-cache"
+audiobookshelf:
   url: https://example.com/audiobookshelf
   token: file-audiobookshelf-token
 hardcover:
@@ -26,6 +37,9 @@ hardcover:
 
 	cfg, err := Load(path)
 	require.NoError(t, err)
+	assert.Equal(t, "8081", cfg.Server.Port)
+	assert.Equal(t, 2*time.Hour, cfg.Sync.SyncInterval)
+	assert.Equal(t, "./test-cache", cfg.Paths.CacheDir)
 	assert.Equal(t, "https://example.com/audiobookshelf", cfg.Audiobookshelf.URL)
 	assert.Equal(t, "file-audiobookshelf-token", cfg.Audiobookshelf.Token)
 	assert.Equal(t, "file-hardcover-token", cfg.Hardcover.Token)

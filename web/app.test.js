@@ -42,6 +42,7 @@ function createApp() {
     return app;
 }
 
+// Normalize rendered text for assertions, not raw-HTML matching: strip tags, decode common entities once, and normalize whitespace.
 function visibleText(html) {
     return html
         .replace(/<[^>]*>/g, ' ')
