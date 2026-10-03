@@ -458,7 +458,6 @@ test('unavailable edition state fails closed until a healthy details fetch resto
         outcome_counts: { needs_review: 1 }, book_outcomes: [record]
     });
     assert.equal(app.openSummary.runContext.editionActionsUnavailable, true);
-    assert.equal(app.openSummary.records.get(record.book_id).edition_actions_unavailable, true);
     assert.match(content.innerHTML, /saved sync state could not be read.*inspect Hardcover manually/);
     assert.doesNotMatch(app.renderEditionActions(record), /data-edition-action|Hardcover Edition Added/);
     await app.openEditionDialog(record.book_id);

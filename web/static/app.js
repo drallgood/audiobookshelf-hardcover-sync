@@ -1727,7 +1727,7 @@ class SyncProfileApp {
             if (editionActionsUnavailable && !dialog.busy) this.closeEditionDialog();
             else if (editionActionsUnavailable) this.showEditionDialog();
         }
-        open.records = new Map((snapshot.book_outcomes || []).map(record => [String(record.book_id), { ...record, edition_actions_unavailable: editionActionsUnavailable }]));
+        open.records = new Map((snapshot.book_outcomes || []).map(record => [String(record.book_id), record]));
         // Fresh details are authoritative, including when a saved match was forgotten.
         open.addedEditionBookIds = new Set((snapshot.book_outcomes || [])
             .filter(record => record.edition_added === true).map(record => String(record.book_id)));
@@ -2006,7 +2006,7 @@ class SyncProfileApp {
     renderEditionActions(record) {
         const open = this.openSummary;
         if (!open || this.isViewer()) return '';
-        if (open.runContext?.editionActionsUnavailable || record.edition_actions_unavailable === true) return '';
+        if (open.runContext?.editionActionsUnavailable) return '';
         const profileId = open.profileId;
         const syncing = this.profileIsSyncing(profileId);
         if (record.outcome === 'needs_review') {
@@ -2155,7 +2155,7 @@ class SyncProfileApp {
         if (this.editionDialog?.mode === 'create' && this.editionDialog.busy) return;
         const open = this.openSummary;
         const record = open?.records?.get(String(bookId));
-        if (!open || !record || this.isViewer() || open.runContext?.editionActionsUnavailable || record.edition_actions_unavailable === true) return;
+        if (!open || !record || this.isViewer() || open.runContext?.editionActionsUnavailable) return;
         if (record.edition_added === true) return;
         const recovery = this.editionRequestState(record, open);
         if (!recovery) {
@@ -2971,7 +2971,7 @@ class SyncProfileApp {
         if (this.editionDialog?.mode === 'create' && this.editionDialog.busy) return;
         const open = this.openSummary;
         const record = open?.records?.get(String(bookId));
-        if (!open || !record || this.isViewer() || open.runContext?.editionActionsUnavailable || record.edition_actions_unavailable === true || !this.isMatchedRecord(record)) return;
+        if (!open || !record || this.isViewer() || open.runContext?.editionActionsUnavailable || !this.isMatchedRecord(record)) return;
         if (this.profileIsSyncing(open.profileId)) return;
         this.closeEditionDialog();
         const dialog = {
