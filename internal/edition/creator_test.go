@@ -767,8 +767,7 @@ func (m *mockImageTransport) RoundTrip(req *http.Request) (*http.Response, error
 		}, nil
 	}
 
-	// For any other requests, just pass through to default transport
-	return http.DefaultTransport.RoundTrip(req)
+	return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL)
 }
 
 func TestEditionCreator_UploadEditionImage(t *testing.T) {

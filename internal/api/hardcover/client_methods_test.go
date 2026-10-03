@@ -106,6 +106,10 @@ func newTestClient(t *testing.T) (*Client, *httptest.Server) {
 				// Update the response with the book data
 				response["data"].(map[string]interface{})["books"] = []map[string]interface{}{book}
 			}
+		} else {
+			t.Errorf("Unexpected query: %s", reqBody.Query)
+			http.Error(w, "unexpected query", http.StatusInternalServerError)
+			return
 		}
 
 		// Write the response
@@ -303,23 +307,7 @@ func TestClient_SearchBookByISBN13(t *testing.T) {
 				return
 			}
 
-			// Assert the results
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Client.SearchBookByISBN13() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-
-			// Skip further checks if we expected an error
-			if tt.wantErr {
-				return
-			}
-
 			// Check individual fields instead of using DeepEqual
-			if got == nil && tt.expected != nil {
-				t.Error("Expected non-nil result, got nil")
-				return
-			}
-
 			if got.ID != tt.expected.ID {
 				t.Errorf("ID = %v, want %v", got.ID, tt.expected.ID)
 			}

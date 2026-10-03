@@ -22,7 +22,7 @@ func TestNewServiceWithRunIdentity_Success(t *testing.T) {
 
 	// Create a test config
 	cfg := createTestConfig(true)
-	cfg.Sync.StateFile = "/tmp/test_state_success.json"
+	cfg.Sync.StateFile = filepath.Join(t.TempDir(), "state.json")
 
 	// Create mock clients
 	absClient := &audiobookshelf.Client{}
@@ -40,9 +40,6 @@ func TestNewServiceWithRunIdentity_Success(t *testing.T) {
 	assert.Equal(t, cfg.Sync.StateFile, svc.statePath, "Should set the state path")
 	assert.NotNil(t, svc.state, "Should initialize the state")
 	assert.NotNil(t, svc.lastProgressUpdates, "Should initialize the lastProgressUpdates map")
-
-	// Clean up
-	_ = os.Remove(cfg.Sync.StateFile)
 }
 
 func TestNewServiceWithRunIdentityConfiguresHardcoverDryRun(t *testing.T) {
@@ -71,7 +68,7 @@ func TestNewServiceWithRunIdentity_WithDifferentLogFormat(t *testing.T) {
 		// Create a test config
 		cfg := createTestConfig(true)
 		cfg.Logging.Format = "json"
-		cfg.Sync.StateFile = "/tmp/test_state_json.json"
+		cfg.Sync.StateFile = filepath.Join(t.TempDir(), "state.json")
 
 		// Create mock clients
 		absClient := &audiobookshelf.Client{}
@@ -83,9 +80,6 @@ func TestNewServiceWithRunIdentity_WithDifferentLogFormat(t *testing.T) {
 		// Verify results
 		assert.NoError(t, err, "Should not return an error when creating a new service with JSON format")
 		assert.NotNil(t, svc, "Should return a non-nil service")
-
-		// Clean up
-		_ = os.Remove(cfg.Sync.StateFile)
 	})
 
 	// Test with console format
@@ -96,7 +90,7 @@ func TestNewServiceWithRunIdentity_WithDifferentLogFormat(t *testing.T) {
 		// Create a test config
 		cfg := createTestConfig(true)
 		cfg.Logging.Format = "console"
-		cfg.Sync.StateFile = "/tmp/test_state_console.json"
+		cfg.Sync.StateFile = filepath.Join(t.TempDir(), "state.json")
 
 		// Create mock clients
 		absClient := &audiobookshelf.Client{}
@@ -108,9 +102,6 @@ func TestNewServiceWithRunIdentity_WithDifferentLogFormat(t *testing.T) {
 		// Verify results
 		assert.NoError(t, err, "Should not return an error when creating a new service with console format")
 		assert.NotNil(t, svc, "Should return a non-nil service")
-
-		// Clean up
-		_ = os.Remove(cfg.Sync.StateFile)
 	})
 }
 
