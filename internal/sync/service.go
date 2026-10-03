@@ -186,22 +186,23 @@ type EditionActionSubmittedBody struct {
 // GetSnapshot returns deep-copied slices so callers can safely retain or
 // modify a response while the sync continues.
 type SyncSnapshot struct {
-	ProfileID           string              `json:"profile_id,omitempty"`
-	AudiobookshelfURL   string              `json:"audiobookshelf_url,omitempty"`
-	RunID               string              `json:"run_id,omitempty"`
-	QueuedAt            time.Time           `json:"queued_at,omitempty"`
-	ProcessingStartedAt time.Time           `json:"processing_started_at,omitempty"`
-	LastActivityAt      time.Time           `json:"last_activity_at,omitempty"`
-	LastProcessedAt     time.Time           `json:"last_processed_at,omitempty"`
-	FinishedAt          time.Time           `json:"finished_at,omitempty"`
-	DryRun              bool                `json:"dry_run"`
-	RunError            string              `json:"run_error,omitempty"`
-	UnattemptedCount    int32               `json:"unattempted_count"`
-	State               string              `json:"state,omitempty"`
-	BooksTotal          int32               `json:"books_total"`
-	ProcessedSoFar      int32               `json:"processed_so_far"`
-	OutcomeCounts       OutcomeCounts       `json:"outcome_counts"`
-	BookOutcomes        []BookOutcomeRecord `json:"book_outcomes"`
+	ProfileID                 string              `json:"profile_id,omitempty"`
+	AudiobookshelfURL         string              `json:"audiobookshelf_url,omitempty"`
+	RunID                     string              `json:"run_id,omitempty"`
+	QueuedAt                  time.Time           `json:"queued_at,omitempty"`
+	ProcessingStartedAt       time.Time           `json:"processing_started_at,omitempty"`
+	LastActivityAt            time.Time           `json:"last_activity_at,omitempty"`
+	LastProcessedAt           time.Time           `json:"last_processed_at,omitempty"`
+	FinishedAt                time.Time           `json:"finished_at,omitempty"`
+	DryRun                    bool                `json:"dry_run"`
+	RunError                  string              `json:"run_error,omitempty"`
+	UnattemptedCount          int32               `json:"unattempted_count"`
+	State                     string              `json:"state,omitempty"`
+	BooksTotal                int32               `json:"books_total"`
+	ProcessedSoFar            int32               `json:"processed_so_far"`
+	OutcomeCounts             OutcomeCounts       `json:"outcome_counts"`
+	BookOutcomes              []BookOutcomeRecord `json:"book_outcomes"`
+	EditionActionsUnavailable bool                `json:"edition_actions_unavailable,omitempty"`
 }
 
 // processBookOutcomeReporterKey carries a best-effort outcome callback through

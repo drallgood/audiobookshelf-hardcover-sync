@@ -1484,6 +1484,10 @@ class SyncProfileApp {
         if (this.openSummary !== open) return;
         const content = document.getElementById('sync-summary-content');
         const capabilityRefresh = content?.querySelector?.('[data-edition-capability-refresh]');
+        if (open.runContext?.editionActionsUnavailable) {
+            if (capabilityRefresh) capabilityRefresh.disabled = true;
+            return;
+        }
         if (capabilityRefresh) {
             const dryRun = open.editionCapability?.dry_run ?? open.runContext?.dryRun;
             capabilityRefresh.hidden = Boolean(dryRun);
@@ -1715,8 +1719,15 @@ class SyncProfileApp {
         if (!open || !content || !tabs) return;
         if (!(open.expandedOutcomes instanceof Set)) open.expandedOutcomes = new Set();
         open.renderedRunId = snapshot.run_id;
-        open.runContext = { runId: snapshot.run_id, state: String(snapshot.state || '').toLowerCase(), dryRun: this.toBool(snapshot.dry_run, false) };
-        open.records = new Map((snapshot.book_outcomes || []).map(record => [String(record.book_id), record]));
+        const editionActionsUnavailable = snapshot.edition_actions_unavailable === true;
+        open.runContext = { runId: snapshot.run_id, state: String(snapshot.state || '').toLowerCase(), dryRun: this.toBool(snapshot.dry_run, false), editionActionsUnavailable };
+        const dialog = this.editionDialog;
+        if (dialog && dialog.profileId === open.profileId && String(dialog.runId) === String(snapshot.run_id)) {
+            dialog.editionActionsUnavailable = editionActionsUnavailable;
+            if (editionActionsUnavailable && !dialog.busy) this.closeEditionDialog();
+            else if (editionActionsUnavailable) this.showEditionDialog();
+        }
+        open.records = new Map((snapshot.book_outcomes || []).map(record => [String(record.book_id), { ...record, edition_actions_unavailable: editionActionsUnavailable }]));
         // Fresh details are authoritative, including when a saved match was forgotten.
         open.addedEditionBookIds = new Set((snapshot.book_outcomes || [])
             .filter(record => record.edition_added === true).map(record => String(record.book_id)));
@@ -1764,11 +1775,12 @@ class SyncProfileApp {
         }
         const runError = snapshot.run_error || this.statuses[open.profileId]?.terminal_error || '';
         const capabilityRefreshDryRun = open.editionCapability?.dry_run ?? open.runContext.dryRun;
-        const capabilityRefreshAction = this.isViewer() ? '' : `<button type="button" class="btn btn-secondary" data-edition-capability-refresh ${!open.editionCapabilityLoaded || capabilityRefreshDryRun ? 'disabled' : ''} ${open.editionCapabilityRefreshing ? 'disabled' : ''}>${open.editionCapabilityRefreshing ? 'Checking…' : 'Refresh permissions'}</button>`;
+        const capabilityRefreshAction = this.isViewer() || editionActionsUnavailable ? '' : `<button type="button" class="btn btn-secondary" data-edition-capability-refresh ${!open.editionCapabilityLoaded || capabilityRefreshDryRun ? 'disabled' : ''} ${open.editionCapabilityRefreshing ? 'disabled' : ''}>${open.editionCapabilityRefreshing ? 'Checking…' : 'Refresh permissions'}</button>`;
         content.innerHTML = `
             <div class="sync-summary" data-run-id="${this.escapeHtmlAttribute(snapshot.run_id)}">
                 <div class="summary-header"><h3>Run details</h3><div class="last-sync">${this.escapeHtml(statusTimestamp.label)}${statusTimestamp.timestamp ? `: ${new Date(statusTimestamp.timestamp).toLocaleString()}` : ''}</div>${capabilityRefreshAction}</div>
                 <p class="status-message">${statusMessage}</p>
+                ${editionActionsUnavailable ? '<p class="status-message status-error" role="status">Edition actions are unavailable because saved sync state could not be read. Edition actions are disabled for this run; inspect Hardcover manually.</p>' : ''}
                 ${runError ? `<div class="status-message status-error" data-run-error><strong>Run error:</strong> ${this.escapeHtml(runError)}</div>` : ''}
                 <div class="summary-stats">${groups.map(group => `<div class="stat-item ${group.tone}"><span class="stat-value">${group.count}</span><span class="stat-label">${group.label}</span></div>`).join('')}</div>
                 ${groupsHtml}
@@ -1994,6 +2006,7 @@ class SyncProfileApp {
     renderEditionActions(record) {
         const open = this.openSummary;
         if (!open || this.isViewer()) return '';
+        if (open.runContext?.editionActionsUnavailable || record.edition_actions_unavailable === true) return '';
         const profileId = open.profileId;
         const syncing = this.profileIsSyncing(profileId);
         if (record.outcome === 'needs_review') {
@@ -2142,7 +2155,7 @@ class SyncProfileApp {
         if (this.editionDialog?.mode === 'create' && this.editionDialog.busy) return;
         const open = this.openSummary;
         const record = open?.records?.get(String(bookId));
-        if (!open || !record || this.isViewer()) return;
+        if (!open || !record || this.isViewer() || open.runContext?.editionActionsUnavailable || record.edition_actions_unavailable === true) return;
         if (record.edition_added === true) return;
         const recovery = this.editionRequestState(record, open);
         if (!recovery) {
@@ -2255,6 +2268,14 @@ class SyncProfileApp {
     renderEditionDialog(dialog) {
         const record = dialog.record;
         const title = dialog.mode === 'forget' ? 'Forget saved match' : 'Add edition to Hardcover';
+        if (this.editionActionsUnavailableForDialog(dialog)) {
+            const closeDisabled = dialog.busy ? ' disabled' : '';
+            return `<div class="modal-header"><h3>${title}</h3><button type="button" class="modal-close" data-edition-dialog="close" aria-label="Close"${closeDisabled}>&times;</button></div>
+                <div class="edition-dialog-body" role="dialog" aria-modal="true" tabindex="-1" aria-label="${this.escapeHtmlAttribute(title)}">
+                    <p class="edition-warning" role="alert">Edition actions are unavailable because saved sync state could not be read. Edition actions are disabled for this run; inspect Hardcover manually.</p>
+                    ${dialog.busy ? '<p role="status">The request already in progress will finish safely.</p>' : '<button type="button" class="btn btn-secondary" data-edition-dialog="close">Close</button>'}
+                </div>`;
+        }
         let body;
         let showSubject = true;
         if (dialog.mode === 'forget') {
@@ -2282,6 +2303,14 @@ class SyncProfileApp {
                 ${subjectHtml}
                 ${body}
             </div>`;
+    }
+
+    editionActionsUnavailableForDialog(dialog) {
+        if (dialog?.editionActionsUnavailable) return true;
+        const open = this.openSummary;
+        return open?.profileId === dialog?.profileId
+            && String(open.runContext?.runId) === String(dialog?.runId)
+            && open.runContext?.editionActionsUnavailable === true;
     }
 
     renderWarnings(draft) {
@@ -2478,7 +2507,7 @@ class SyncProfileApp {
 
     async submitEditionCreate() {
         const dialog = this.editionDialog;
-        if (!dialog || dialog.mode !== 'create' || !dialog.draft || dialog.busy
+        if (!dialog || this.editionActionsUnavailableForDialog(dialog) || dialog.mode !== 'create' || !dialog.draft || dialog.busy
             || ['unconfirmed', 'created', 'transport_unknown', 'failed'].includes(dialog.outcome)) return;
         dialog.outcome = '';
         dialog.retryCreate = false;
@@ -2704,7 +2733,7 @@ class SyncProfileApp {
     async checkEditionImport() {
         const dialog = this.editionDialog;
         const recovery = dialog?.recovery;
-        if (!dialog || dialog.mode !== 'create' || !['unconfirmed', 'created'].includes(dialog.outcome) || !recovery?.recoveryToken || dialog.busy) return;
+        if (!dialog || this.editionActionsUnavailableForDialog(dialog) || dialog.mode !== 'create' || !['unconfirmed', 'created'].includes(dialog.outcome) || !recovery?.recoveryToken || dialog.busy) return;
         dialog.busy = true;
         dialog.checkError = '';
         this.showEditionDialog();
@@ -2942,11 +2971,11 @@ class SyncProfileApp {
         if (this.editionDialog?.mode === 'create' && this.editionDialog.busy) return;
         const open = this.openSummary;
         const record = open?.records?.get(String(bookId));
-        if (!open || !record || this.isViewer() || !this.isMatchedRecord(record)) return;
+        if (!open || !record || this.isViewer() || open.runContext?.editionActionsUnavailable || record.edition_actions_unavailable === true || !this.isMatchedRecord(record)) return;
         if (this.profileIsSyncing(open.profileId)) return;
         this.closeEditionDialog();
         const dialog = {
-            mode: 'forget', profileId: open.profileId, record, capability: null,
+            mode: 'forget', profileId: open.profileId, runId: open.runContext?.runId, record, capability: null,
             loading: true, busy: false, error: '', result: null
         };
         this.editionDialog = dialog;
@@ -2991,7 +3020,7 @@ class SyncProfileApp {
 
     async submitForget() {
         const dialog = this.editionDialog;
-        if (!dialog || dialog.mode !== 'forget' || dialog.loading || dialog.busy) return;
+        if (!dialog || this.editionActionsUnavailableForDialog(dialog) || dialog.mode !== 'forget' || dialog.loading || dialog.busy) return;
         dialog.busy = true;
         dialog.error = '';
         this.showEditionDialog();

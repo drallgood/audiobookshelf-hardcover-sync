@@ -852,6 +852,9 @@ components:
         dry_run:
           type: boolean
           description: True when no Hardcover mutations are performed and would_sync records indicate planned changes.
+        edition_actions_unavailable:
+          type: boolean
+          description: True when saved edition state could not be read; edition action projections are omitted and clients must disable edition actions for this run.
         run_error:
           type: string
           nullable: true

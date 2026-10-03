@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1368,4 +1369,40 @@ func TestRunDetailsRestoreSavedEditionAdditionsAcrossClientsAndRestart(t *testin
 	_, err = fixture.multiUser.ForgetEditionAssociation(profileID, "added")
 	require.NoError(t, err)
 	require.False(t, readDetails(restarted).BookOutcomes[0].EditionAdded)
+}
+
+func TestRunDetailsKeepsHistoricalSnapshotWhenEditionAnnotationFails(t *testing.T) {
+	fixture := newStatusServiceFixture(t, "http://hardcover.invalid")
+	const profileID = "broken-state-profile"
+	const runID = "broken-state-run"
+	require.NoError(t, fixture.multiUser.CreateProfile(profileID, "Broken state", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{StateFile: "state.json"}))
+	snapshot := syncsvc.SyncSnapshot{
+		ProfileID: profileID, RunID: runID, State: "completed",
+		OutcomeCounts: syncsvc.OutcomeCounts{NeedsReview: 1},
+		BookOutcomes: []syncsvc.BookOutcomeRecord{{
+			BookID: "item", Outcome: syncsvc.OutcomeNeedsReview, EditionAdded: true,
+			EditionAction: &syncsvc.EditionActionRecord{Outcome: "unconfirmed", Data: &syncsvc.EditionActionData{RecoveryToken: "must-not-leak"}},
+		}},
+	}
+	encoded, err := json.Marshal(snapshot)
+	require.NoError(t, err)
+	report, err := fixture.repo.AcceptSyncRun(&database.SyncRunReport{ProfileID: profileID, RunID: runID, Phase: database.SyncRunPhaseQueued, SnapshotJSON: "{}"})
+	require.NoError(t, err)
+	report.Phase = database.SyncRunPhaseCompleted
+	report.SnapshotJSON = database.SyncSnapshotJSON(encoded)
+	require.NoError(t, fixture.repo.UpsertSyncRunReportContext(context.Background(), report))
+	require.NoError(t, os.WriteFile(filepath.Join(fixture.dataDir, "state."+profileID), []byte("corrupt state"), 0600))
+
+	routes := http.NewServeMux()
+	routes.HandleFunc("GET /api/profiles/{id}/runs/{runID}/details", NewHandler(fixture.multiUser, logger.Get()).GetRunDetails)
+	response := requestJSONRoute(routes, http.MethodGet, "/api/profiles/"+profileID+"/runs/"+runID+"/details")
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var body struct {
+		Data syncsvc.SyncSnapshot `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+	require.True(t, body.Data.EditionActionsUnavailable)
+	require.False(t, body.Data.BookOutcomes[0].EditionAdded)
+	require.Nil(t, body.Data.BookOutcomes[0].EditionAction)
+	require.Equal(t, snapshot.OutcomeCounts, body.Data.OutcomeCounts)
 }

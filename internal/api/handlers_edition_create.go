@@ -327,12 +327,10 @@ func (h *Handler) CheckEditionImport(w http.ResponseWriter, r *http.Request) {
 		}
 		mediaType := strings.ToLower(strings.TrimSpace(item.MediaType))
 		if (mediaType != "book" && mediaType != "ebook") || item.ReadingFormat() != models.ReadingFormatAudiobook {
-			h.markEditionRecoveryUnavailable(profileID, action)
-			return statepkg.Association{}, errEditionRecoveryUnavailable
+			return statepkg.Association{}, fmt.Errorf("%w: %w", errEditionImportUnconfirmed, errEditionCreateSourceChanged)
 		}
 		if !editionCreateSourceMatches(record, item) {
-			h.markEditionRecoveryUnavailable(profileID, action)
-			return statepkg.Association{}, errEditionRecoveryUnavailable
+			return statepkg.Association{}, fmt.Errorf("%w: %w", errEditionImportUnconfirmed, errEditionCreateSourceChanged)
 		}
 		client := h.editionCreateHardcoverClient(profile.Profile.ID, profile.HardcoverToken)
 		result, confirmed, checkErr := client.CheckRegionalAudiobookImport(ctx, hardcover.RegionalAudiobookInput{
@@ -1406,6 +1404,9 @@ func editionCreatePublicErrorMessage(err error) string {
 	var wrongFormat *hardcover.RegionalAudiobookWrongFormatError
 	if errors.As(err, &wrongFormat) {
 		return editionWrongFormatMessage(wrongFormat)
+	}
+	if errors.Is(err, errEditionImportUnconfirmed) && errors.Is(err, errEditionCreateSourceChanged) {
+		return errEditionCreateSourceChanged.Error()
 	}
 	switch {
 	case errors.Is(err, multiuser.ErrProfileNotFound):

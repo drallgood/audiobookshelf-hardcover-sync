@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Preserve edition-added labels, pending requests, unsaved-match recovery, unknown results, final failure guidance, and safe retries across browsers and server restarts. Track requests before catalogue writes and prevent repeated creates for unresolved requests while preserving original sync outcomes and counts. By @Snuffy2. (#218)
+- Preserve edition-added labels, pending requests, unsaved-match recovery, unknown results, final failure guidance, and safe retries across browsers and server restarts. Track requests before catalogue writes and prevent repeated creates for unresolved requests while preserving original sync outcomes and counts. Reversible Audiobookshelf metadata changes block import checks without discarding a valid signed recovery token before its expiry. Historical run details remain readable when saved edition state is corrupt, with edition actions disabled until a healthy fetch. By @Snuffy2. (#218)
 
 ### Added
 

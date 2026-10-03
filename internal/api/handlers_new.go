@@ -611,8 +611,11 @@ func (h *Handler) GetRunDetails(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.multiUserService.AnnotateEditionAdditions(profileID, snapshot); err != nil {
 		h.log.Error("Failed to load saved edition additions: " + err.Error())
-		h.writeErrorResponse(w, http.StatusInternalServerError, "Failed to retrieve saved edition additions")
-		return
+		snapshot.EditionActionsUnavailable = true
+		for i := range snapshot.BookOutcomes {
+			snapshot.BookOutcomes[i].EditionAdded = false
+			snapshot.BookOutcomes[i].EditionAction = nil
+		}
 	}
 	projectEditionCreateActionErrors(snapshot)
 	h.projectEditionRecoveryCapabilities(r, profileID, profileMetadata, snapshot)
