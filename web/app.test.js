@@ -968,6 +968,95 @@ test('an Audible import row reuses the Add edition pill without a Hardcover cand
     assert.doesNotMatch(html, /<strong>Hardcover:<\/strong>/);
 });
 
+for (const runState of ['completed', 'canceled']) {
+    test(`an unmatched Audible ASIN audiobook can be previewed from a ${runState} run`, async t => {
+        const record = {
+            book_id: '23aefd9f-3f65-4fb1-9c19-8918919fcc09',
+            outcome: 'needs_review',
+            reason: 'audible_import_available',
+            match_method: 'audible_asin',
+            title: "The Magician's Land",
+            author: 'Lev Grossman',
+            asin: 'B00K8F87C0',
+            format: 'audiobook'
+        };
+        const app = editionApp();
+        app.openSummary.runContext.state = runState;
+        app.statuses.p1.snapshot.state = runState;
+        app.openSummary.records.set(record.book_id, record);
+
+        const row = app.renderOutcomeRecord(record);
+        assert.equal(app.editionCreateIneligibleReason(record, app.openSummary.runContext), null);
+        assert.match(row, /data-edition-action="add"(?![^>]*disabled)/);
+        assert.match(row, /<strong>Reason:<\/strong> No Hardcover match found\. Import by Audible ASIN is available\./);
+        assert.match(row, /<strong>Match method:<\/strong> Audible ASIN/);
+        assert.doesNotMatch(row, /audible_import_available|audible_asin/);
+
+        const previousDocument = global.document;
+        t.after(() => { global.document = previousDocument; });
+        const summaryClickHandlers = [];
+        const summaryContent = {
+            addEventListener(type, listener) {
+                if (type === 'click') summaryClickHandlers.push(listener);
+            }
+        };
+        const element = { style: {}, addEventListener() {}, replaceChildren() {} };
+        global.document = {
+            ...previousDocument,
+            getElementById: id => id === 'sync-summary-content' ? summaryContent : element,
+            querySelectorAll: () => []
+        };
+
+        const requests = [];
+        app.fetchJsonWithTimeout = async (url, options = {}) => {
+            requests.push({ url, method: options.method || 'GET' });
+            if (url.endsWith('/edition-capability')) {
+                return { response: { ok: true, status: 200 }, data: { success: true, data: {} } };
+            }
+            const baseDraft = confirmedAudibleDraft();
+            return {
+                response: { ok: true, status: 200 },
+                data: { success: true, data: confirmedAudibleDraft({
+                    abs_item_id: record.book_id,
+                    source_identifiers: { asin: record.asin },
+                    audible_identifier_candidate: { asin: record.asin, region: 'us', correction_allowed: true },
+                    confirmed_region: 'us',
+                    audnexus_record: { ...baseDraft.audnexus_record, asin: record.asin }
+                }) }
+            };
+        };
+
+        app.setupEventListeners();
+        const article = { dataset: { bookId: record.book_id } };
+        const button = {
+            dataset: { editionAction: 'add' },
+            disabled: /data-edition-action="add"[^>]*disabled/.test(row),
+            closest(selector) {
+                if (selector === 'button[data-edition-action]') return this;
+                if (selector === '[data-book-id]') return article;
+                return null;
+            }
+        };
+        const openPromises = [];
+        const openEditionDialog = app.openEditionDialog.bind(app);
+        app.openEditionDialog = bookId => {
+            const opening = openEditionDialog(bookId);
+            openPromises.push(opening);
+            return opening;
+        };
+        summaryClickHandlers[1]({ target: button });
+        assert.equal(openPromises.length, 1, 'the enabled row action should reach the delegated Add edition handler');
+        await openPromises[0];
+
+        assert.equal(app.editionDialog.audibleImport, true);
+        assert.equal(requests.find(request => request.url.includes('/edition-drafts/source/'))?.url,
+            `/api/profiles/p1/edition-drafts/source/${record.book_id}`);
+        assert.match(app.renderEditionDialog(app.editionDialog), /data-edition-dialog="confirm-create"/);
+        assert.ok(requests.every(request => request.method === 'GET'));
+        assert.equal(requests.some(request => request.url.endsWith('/edition-drafts/create')), false);
+    });
+}
+
 test('Audible import modal shows every comparison and escapes ABS and Audnexus values', () => {
     const app = editionApp();
     const draft = confirmedAudibleDraft({

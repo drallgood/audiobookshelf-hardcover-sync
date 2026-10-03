@@ -1930,6 +1930,20 @@ class SyncProfileApp {
         </div>`;
     }
 
+    syncReasonText(reason) {
+        const known = {
+            audible_import_available: 'No Hardcover match found. Import by Audible ASIN is available.'
+        };
+        return known[reason] || reason;
+    }
+
+    syncMatchMethodText(matchMethod) {
+        const known = {
+            audible_asin: 'Audible ASIN'
+        };
+        return known[matchMethod] || matchMethod;
+    }
+
     renderOutcomeRecord(record, audiobookshelfBaseURL = '') {
         const bookId = String(record.book_id || '');
         const title = this.escapeHtml(record.title || 'Unknown title');
@@ -1972,9 +1986,9 @@ class SyncProfileApp {
                     </div>
                     ${record.author ? `<div><strong>Author:</strong> ${this.escapeHtml(record.author)}</div>` : ''}
                     <div class="book-meta">${asinHTML}${isbnHTML}${format ? `<span><strong>Format:</strong> ${this.escapeHtml(format)}</span>` : ''}${series ? `<span><strong>Series:</strong> ${this.escapeHtml(series)}</span>` : ''}</div>
-                    ${record.match_method ? `<div><strong>Match method:</strong> ${this.escapeHtml(record.match_method)}</div>` : ''}
+                    ${record.match_method ? `<div><strong>Match method:</strong> ${this.escapeHtml(this.syncMatchMethodText(record.match_method))}</div>` : ''}
                     ${record.outcome === 'needs_review' && !this.isAudibleImportRecord(record) ? this.renderHardcoverCandidate(record, editionActionsHTML) : editionActionsHTML}
-                    ${record.reason ? `<div class="book-reason"><strong>Reason:</strong> ${this.escapeHtml(record.reason)}</div>` : ''}
+                    ${record.reason ? `<div class="book-reason"><strong>Reason:</strong> ${this.escapeHtml(this.syncReasonText(record.reason))}</div>` : ''}
                     ${record.error ? `<div class="book-error"><strong>Error:</strong> ${this.escapeHtml(record.error)}</div>` : ''}
                 </div>
             </div>
