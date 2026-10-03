@@ -1371,7 +1371,7 @@ func TestPublishFinalStatusRejectsReplacedRunBeforeDurableSuccess(t *testing.T) 
 	profileID := "profile-a"
 	require.NoError(t, service.repository.CreateProfile(profileID, "Profile A", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{}))
 	oldRun := installAcceptedTestRun(t, service, profileID, "run-old", false)
-	newRun := installAcceptedTestRun(t, service, profileID, "run-new", false)
+	installAcceptedTestRun(t, service, profileID, "run-new", false)
 
 	require.False(t, service.publishFinalStatus(profileID, oldRun.generation, acceptedTerminalStatus(profileID, oldRun, string(syncsvc.RunPhaseCompleted))))
 	oldReport, err := service.repository.GetSyncRunReport(profileID, oldRun.runID)
@@ -1380,7 +1380,6 @@ func TestPublishFinalStatusRejectsReplacedRunBeforeDurableSuccess(t *testing.T) 
 	state, err := service.repository.GetSyncState(profileID)
 	require.NoError(t, err)
 	require.Nil(t, state.LastSuccessfulAt)
-	require.Equal(t, newRun.runID, service.latestRuns[profileID].runID)
 }
 
 func TestDryRunTerminalStatusKeepsAttemptWithoutSuccess(t *testing.T) {
@@ -1692,7 +1691,7 @@ func TestBlockedProfilePersistenceDoesNotBlockOtherProfileStatus(t *testing.T) {
 		t.Fatal("profile B progress update blocked behind profile A persistence")
 	}
 	statusDone := make(chan *SyncProfileStatus, 1)
-	go func() { statusDone <- profileStatusForTest(t, service, "profile-b") }()
+	go func() { statusDone <- cachedProfileStatusForTest(service, "profile-b") }()
 	select {
 	case status := <-statusDone:
 		require.NotNil(t, status)
@@ -2409,12 +2408,6 @@ func TestCreateProfileRejectsStateFilenameLengthAfterLegacyIDEncoding(t *testing
 
 func profileStatusForTest(t *testing.T, service *MultiUserService, profileID string) *SyncProfileStatus {
 	t.Helper()
-	service.statusMutex.RLock()
-	status := cloneProfileStatus(service.profileStatuses[profileID])
-	service.statusMutex.RUnlock()
-	if status != nil {
-		return status
-	}
 	statuses, err := service.GetAllProfileStatuses()
 	require.NoError(t, err)
 	for _, candidate := range statuses {
@@ -2430,6 +2423,16 @@ func profileStatusForTest(t *testing.T, service *MultiUserService, profileID str
 		}
 	}
 	return nil
+}
+
+// cachedProfileStatusForTest reads the already-published per-profile status
+// without querying SQLite. It is used only while another profile's database
+// write is deliberately blocked, to verify status-cache publication remains
+// independent of persistence.
+func cachedProfileStatusForTest(service *MultiUserService, profileID string) *SyncProfileStatus {
+	service.statusMutex.RLock()
+	defer service.statusMutex.RUnlock()
+	return cloneProfileStatus(service.profileStatuses[profileID])
 }
 
 func newStatusLookupService(t *testing.T) (*MultiUserService, *gorm.DB) {

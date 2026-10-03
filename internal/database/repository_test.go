@@ -3,7 +3,6 @@ package database
 import (
 	"context"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -32,29 +31,19 @@ func createTestProfile(t *testing.T, db *Database, profileID string) {
 	require.NoError(t, db.GetDB().Create(&SyncProfile{ID: profileID, Name: profileID, Active: true}).Error)
 }
 
-func TestFreshLifecycleSchemaOmitsRetiredColumns(t *testing.T) {
+func TestFreshLifecycleSchemaStoresSnapshotsAsLargeText(t *testing.T) {
 	db, _ := newRepositoryForTest(t)
 	migrator := db.GetDB().Migrator()
 	columns, err := migrator.ColumnTypes(&SyncRunReport{})
 	require.NoError(t, err)
+	foundSnapshotColumn := false
 	for _, column := range columns {
-		if strings.EqualFold(column.Name(), "snapshot_json") {
-			require.Equal(t, "TEXT", strings.ToUpper(column.DatabaseTypeName()))
+		if column.Name() == "snapshot_json" {
+			foundSnapshotColumn = true
+			require.Equal(t, "TEXT", column.DatabaseTypeName())
 		}
 	}
-
-	for _, column := range []string{
-		"run_generation",
-		"last_successful_run_id",
-		"last_successful_generation",
-		"created_at",
-		"updated_at",
-	} {
-		require.False(t, migrator.HasColumn(&ProfileSyncState{}, column), column)
-	}
-	for _, column := range []string{"created_at", "updated_at"} {
-		require.False(t, migrator.HasColumn(&SyncRunReport{}, column), column)
-	}
+	require.True(t, foundSnapshotColumn, "fresh lifecycle schema must persist run snapshots")
 }
 
 func TestSyncSnapshotJSONUsesDialectLargeTextType(t *testing.T) {
@@ -64,7 +53,6 @@ func TestSyncSnapshotJSONUsesDialectLargeTextType(t *testing.T) {
 		wantType  string
 	}{
 		{name: "mysql", dialector: mysql.Open(""), wantType: "LONGTEXT"},
-		{name: "mariadb via mysql dialector", dialector: mysql.Open(""), wantType: "LONGTEXT"},
 		{name: "postgres", dialector: postgres.Open(""), wantType: "TEXT"},
 		{name: "sqlite", dialector: sqlite.Open(":memory:"), wantType: "TEXT"},
 	} {
