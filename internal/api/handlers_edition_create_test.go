@@ -2901,6 +2901,7 @@ func TestCreateEditionFromDraftInsertsISBNOnlyAudiobook(t *testing.T) {
 				t.Fatal("ISBN-only audiobook must not use Audnexus")
 				return nil
 			}
+			var insertionCalls atomic.Int32
 			fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
 				return editionCreateHardcoverStub{
 					importFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
@@ -2915,6 +2916,7 @@ func TestCreateEditionFromDraftInsertsISBNOnlyAudiobook(t *testing.T) {
 						return []models.Author{{ID: "9", Name: "Narrator"}, {ID: "10", Name: "Other"}}, nil
 					},
 					insertEditionFn: func(_ context.Context, input *edition.EditionInput) (*edition.EditionResult, error) {
+						insertionCalls.Add(1)
 						require.Equal(t, models.ReadingFormatAudiobook, input.ReadingFormat)
 						require.Empty(t, input.ASIN)
 						require.Equal(t, "9780306406157", input.ISBN13)
@@ -2948,6 +2950,16 @@ func TestCreateEditionFromDraftInsertsISBNOnlyAudiobook(t *testing.T) {
 				require.Equal(t, "hardcover_edition_wrong_format", envelope.ErrorCode)
 				require.Equal(t, editionOutcomeFailed, envelope.Outcome)
 				require.Equal(t, "https://hardcover.app/editions/84", envelope.Data.HardcoverEditionURL)
+				action, found, actionErr := fixture.multiUserService.GetEditionAction("draft-profile", "run-isbn-audio", "abs-item-1")
+				require.NoError(t, actionErr)
+				require.True(t, found)
+				require.Equal(t, editionOutcomeFailed, action.Outcome)
+				require.Equal(t, envelope.ErrorCode, action.ErrorCode)
+				require.Equal(t, envelope.Data.HardcoverEditionURL, action.Data.HardcoverEditionURL)
+				duplicate := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-isbn-audio","abs_item_id":"abs-item-1"}`)
+				require.Equal(t, http.StatusConflict, duplicate.Code, duplicate.Body.String())
+				require.Contains(t, duplicate.Body.String(), "hardcover_edition_wrong_format")
+				require.EqualValues(t, 1, insertionCalls.Load(), "a persisted wrong-format result must not create another edition")
 			} else {
 				require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 				var envelope struct {
