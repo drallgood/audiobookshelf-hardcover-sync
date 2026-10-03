@@ -1057,21 +1057,23 @@ func TestWithRateLimitHeaders(t *testing.T) {
 }
 
 func TestRateLimiterDailyPauseLastsAsLongAsRequestsAreHeld(t *testing.T) {
-	rl := NewRateLimiter(time.Millisecond, 1, &logger.Logger{Logger: zerolog.Nop()})
+	synctest.Test(t, func(t *testing.T) {
+		rl := NewRateLimiter(time.Millisecond, 1, &logger.Logger{Logger: zerolog.Nop()})
 
-	rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
-		"Ratelimit":        {`"daily";r=0;t=1`},
-		"Ratelimit-Policy": {`"daily";q=5000;w=86400`},
-	}})
-	require.True(t, rl.DailyQuotaPaused())
+		rl.WithRateLimitHeaders(&http.Response{Header: http.Header{
+			"Ratelimit":        {`"daily";r=0;t=1`},
+			"Ratelimit-Policy": {`"daily";q=5000;w=86400`},
+		}})
+		require.True(t, rl.DailyQuotaPaused())
 
-	// A longer Retry-After keeps admission held after the daily reset time.
-	rl.OnRateLimit(3 * time.Second)
-	time.Sleep(1100 * time.Millisecond)
-	assert.True(t, rl.DailyQuotaPaused(), "requests are still held by the longer backoff")
+		// A longer Retry-After keeps admission held after the daily reset time.
+		rl.OnRateLimit(3 * time.Second)
+		time.Sleep(1100 * time.Millisecond)
+		assert.True(t, rl.DailyQuotaPaused(), "requests are still held by the longer backoff")
 
-	rl.ResetRate()
-	assert.False(t, rl.DailyQuotaPaused())
+		rl.ResetRate()
+		assert.False(t, rl.DailyQuotaPaused())
+	})
 }
 
 func TestRateLimiterAcquisitionRetainsDailyQuotaWaitCauseAcrossScheduleChanges(t *testing.T) {

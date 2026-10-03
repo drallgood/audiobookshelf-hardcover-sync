@@ -783,188 +783,72 @@ func TestSaveMismatchesJSONFileIndividual(t *testing.T) {
 	}
 }
 
-func TestAddWithMetadata_RegionFallback(t *testing.T) {
-	callCount := make(map[string]int)
-	var mu sync.Mutex
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		region := r.URL.Query().Get("region")
-		callCount[region]++
-		mu.Unlock()
-
-		if region == "ca" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		// region "us" or "" returns success
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, err := w.Write([]byte(`{
-			"asin": "TESTASIN12",
-			"title": "Region Test Book",
-			"releaseDate": "2024-01-15",
-			"authors": ["Author One"],
-			"narrators": ["Narrator One"]
-		}`))
-		if err != nil {
-			t.Errorf("Failed to write response: %v", err)
-		}
-	}))
-	defer server.Close()
-
-	// Override the client factory to point to our mock server
-	originalFactory := newAudnexClient
-	newAudnexClient = func(log *logger.Logger) *audnex.Client {
-		return audnex.NewClientForTesting(server.URL, log)
-	}
-	defer func() { newAudnexClient = originalFactory }()
-
-	collector := NewCollector()
-
-	metadata := MediaMetadata{
-		Title:         "Region Test Book",
-		AuthorName:    "Author One",
-		ASIN:          "TESTASIN12",
-		PublishedDate: "2024-01-01",
-		CoverURL:      "https://example.com/cover.jpg",
+func TestAddWithMetadata_RegionBehavior(t *testing.T) {
+	tests := []struct {
+		name            string
+		requestedRegion string
+		notFoundRegion  string
+		releaseDate     string
+		wantRegions     []string
+	}{
+		{
+			name:            "falls back to US after configured region misses",
+			requestedRegion: "ca", notFoundRegion: "ca",
+			releaseDate: "2024-01-15", wantRegions: []string{"ca", "us"},
+		},
+		{
+			name:            "configured region hit avoids fallback",
+			requestedRegion: "uk", releaseDate: "2024-06-01", wantRegions: []string{"uk"},
+		},
+		{
+			name:            "empty region keeps legacy request",
+			requestedRegion: "", releaseDate: "2024-03-15", wantRegions: []string{""},
+		},
 	}
 
-	// Test with "ca" region - should fail on "ca" and fall back to "us"
-	collector.AddWithMetadata(metadata, "123", "edition123", "test reason", 3600, "abs123", nil, "ca")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var regions []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				region := r.URL.Query().Get("region")
+				mu.Lock()
+				regions = append(regions, region)
+				mu.Unlock()
 
-	mismatches := collector.GetAll()
-	require.NotEmpty(t, mismatches, "Expected at least one mismatch")
-	m := mismatches[len(mismatches)-1]
+				if region == tt.notFoundRegion && tt.notFoundRegion != "" {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, err := w.Write([]byte("{\"asin\":\"TESTASIN12\",\"title\":\"Region Test Book\",\"releaseDate\":\"" + tt.releaseDate + "\",\"authors\":[\"Author One\"],\"narrators\":[\"Narrator One\"]}"))
+				if err != nil {
+					t.Errorf("write Audnex response: %v", err)
+				}
+			}))
+			defer server.Close()
 
-	assert.Equal(t, "2024-01-15", m.ReleaseDate, "Should use release date from Audnex (via fallback to us)")
+			originalFactory := newAudnexClient
+			newAudnexClient = func(log *logger.Logger) *audnex.Client {
+				return audnex.NewClientForTesting(server.URL, log)
+			}
+			t.Cleanup(func() { newAudnexClient = originalFactory })
 
-	mu.Lock()
-	caCalls := callCount["ca"]
-	usCalls := callCount["us"]
-	otherCalls := len(callCount)
-	mu.Unlock()
+			collector := NewCollector()
+			collector.AddWithMetadata(MediaMetadata{
+				Title: "Region Test Book", AuthorName: "Author One", ASIN: "TESTASIN12",
+				PublishedDate: "2024-01-01", CoverURL: "https://example.com/cover.jpg",
+			}, "123", "edition123", "test reason", 3600, "abs123", nil, tt.requestedRegion)
 
-	assert.Equal(t, 1, caCalls, "Should have called Audnex with region=ca once")
-	assert.Equal(t, 1, usCalls, "Should have called Audnex with region=us as fallback")
-	assert.Equal(t, 2, otherCalls, "Should have called only ca and us regions, no ten-region sweep")
-}
-
-func TestAddWithMetadata_RegionSucceedsOnFirstTry(t *testing.T) {
-	callCount := make(map[string]int)
-	var mu sync.Mutex
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		region := r.URL.Query().Get("region")
-		callCount[region]++
-		mu.Unlock()
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, err := w.Write([]byte(`{
-			"asin": "TESTASIN12",
-			"title": "Direct Hit",
-			"releaseDate": "2024-06-01",
-			"authors": ["Author One"],
-			"narrators": ["Narrator One"]
-		}`))
-		if err != nil {
-			t.Errorf("Failed to write response: %v", err)
-		}
-	}))
-	defer server.Close()
-
-	originalFactory := newAudnexClient
-	newAudnexClient = func(log *logger.Logger) *audnex.Client {
-		return audnex.NewClientForTesting(server.URL, log)
+			mismatches := collector.GetAll()
+			require.Len(t, mismatches, 1)
+			assert.Equal(t, tt.releaseDate, mismatches[0].ReleaseDate)
+			mu.Lock()
+			gotRegions := append([]string(nil), regions...)
+			mu.Unlock()
+			assert.Equal(t, tt.wantRegions, gotRegions)
+		})
 	}
-	defer func() { newAudnexClient = originalFactory }()
-
-	collector := NewCollector()
-
-	metadata := MediaMetadata{
-		Title:         "Direct Hit",
-		AuthorName:    "Author One",
-		ASIN:          "TESTASIN12",
-		PublishedDate: "2024-01-01",
-	}
-
-	// Test with "uk" region - should succeed on first try, no fallback needed
-	collector.AddWithMetadata(metadata, "456", "edition456", "test reason", 3600, "abs456", nil, "uk")
-
-	mismatches := collector.GetAll()
-	require.NotEmpty(t, mismatches)
-	m := mismatches[len(mismatches)-1]
-
-	assert.Equal(t, "2024-06-01", m.ReleaseDate, "Should use release date from Audnex (first try with uk)")
-
-	mu.Lock()
-	ukCalls := callCount["uk"]
-	usCalls := callCount["us"]
-	totalCalls := len(callCount)
-	mu.Unlock()
-
-	assert.Equal(t, 1, ukCalls, "Should have called Audnex with region=uk once")
-	assert.Equal(t, 0, usCalls, "Should NOT have fallen back to us when uk succeeded")
-	assert.Equal(t, 1, totalCalls, "Should have made exactly one request to the configured region")
-}
-
-func TestAddWithMetadata_NoRegionSet(t *testing.T) {
-	callCount := make(map[string]int)
-	var mu sync.Mutex
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		region := r.URL.Query().Get("region")
-		callCount[region]++
-		mu.Unlock()
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, err := w.Write([]byte(`{
-			"asin": "TESTASIN12",
-			"title": "No Region",
-			"releaseDate": "2024-03-15",
-			"authors": ["Author One"],
-			"narrators": ["Narrator One"]
-		}`))
-		if err != nil {
-			t.Errorf("Failed to write response: %v", err)
-		}
-	}))
-	defer server.Close()
-
-	originalFactory := newAudnexClient
-	newAudnexClient = func(log *logger.Logger) *audnex.Client {
-		return audnex.NewClientForTesting(server.URL, log)
-	}
-	defer func() { newAudnexClient = originalFactory }()
-
-	collector := NewCollector()
-
-	metadata := MediaMetadata{
-		Title:         "No Region",
-		AuthorName:    "Author One",
-		ASIN:          "TESTASIN12",
-		PublishedDate: "2024-01-01",
-	}
-
-	collector.AddWithMetadata(metadata, "789", "edition789", "test reason", 3600, "abs789", nil, "")
-
-	mismatches := collector.GetAll()
-	require.NotEmpty(t, mismatches)
-	m := mismatches[len(mismatches)-1]
-
-	assert.Equal(t, "2024-03-15", m.ReleaseDate)
-
-	mu.Lock()
-	emptyCalls := callCount[""]
-	totalCalls := len(callCount)
-	mu.Unlock()
-
-	assert.Equal(t, 1, emptyCalls, "Should have called Audnex with empty region (backward-compatible behavior)")
-	assert.Equal(t, 1, totalCalls, "Should have made exactly one request with no region configured")
 }
 
 // publisherLookupMock resolves a fixed publisher name so AddWithMetadata's

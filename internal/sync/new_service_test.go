@@ -11,6 +11,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -113,27 +114,23 @@ func TestNewServiceWithRunIdentity_WithDifferentLogFormat(t *testing.T) {
 	})
 }
 
-// TestNewServiceWithRunIdentity_InvalidStatePath tests an invalid state path.
-func TestNewServiceWithRunIdentity_InvalidStatePath(t *testing.T) {
-	// Initialize logger for testing
-	logger.Setup(logger.Config{Level: "debug", Format: "json"})
+func TestSyncStopsWhenStateCannotBeLoaded(t *testing.T) {
+	svc, mockHC := createTestService()
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	require.NoError(t, os.WriteFile(statePath, []byte("not json"), 0600))
+	svc.statePath = statePath
 
-	// Create a test config with an invalid state path
-	cfg := createTestConfig(true)
-	cfg.Sync.StateFile = "/invalid/path/that/does/not/exist/state.json"
+	mockABS := new(MockAudiobookshelfClient)
+	svc.audiobookshelf = mockABS
 
-	// Create mock clients
-	absClient := &audiobookshelf.Client{}
-	hcClient := new(MockHardcoverClient)
+	err := svc.Sync(context.Background())
 
-	// Create a new service
-	svc, err := NewServiceWithRunIdentity(absClient, hcClient, cfg, "", time.Time{})
-
-	// Verify results
-	// Note: This might not fail if the directory is created automatically
-	// or if the path is actually valid in the test environment
-	if err != nil {
-		assert.Contains(t, err.Error(), "failed to load state", "Error message should indicate state loading failure")
-		assert.Nil(t, svc, "Should return nil when state path is invalid")
-	}
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "failed to load state")
+	assert.Equal(t, string(RunPhaseFailed), svc.GetSnapshotStatus().State)
+	mockABS.AssertNotCalled(t, "GetUserProgress", mock.Anything)
+	mockABS.AssertNotCalled(t, "GetLibraries", mock.Anything)
+	mockHC.AssertNotCalled(t, "ClearUserBookCache")
+	mockABS.AssertExpectations(t)
+	mockHC.AssertExpectations(t)
 }
