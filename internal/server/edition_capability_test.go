@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -147,4 +148,134 @@ func TestEditionCapabilityRouteDistinguishesMissingProfileFromStorageFailure(t *
 	failed := fixture.request(http.MethodGet, path, nil)
 	require.Equal(t, http.StatusInternalServerError, failed.Code, failed.Body.String())
 	require.Contains(t, failed.Body.String(), "Failed to check edition capability")
+}
+
+func TestEditionCapabilityRefreshRejectsCrossOriginFormAndPreservesCache(t *testing.T) {
+	var hardcoverRequests atomic.Int32
+	hardcoverServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hardcoverRequests.Add(1)
+		var payload struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, "invalid GraphQL request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(payload.Query, "upsert_book") {
+			_, _ = w.Write([]byte(`{"errors":[{"message":"missing required field 'book'","extensions":{"path":"$.selectionSet.upsert_book.args.book","code":"validation-failed"}}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"errors":[{"message":"missing required field 'book_id'","extensions":{"path":"$.selectionSet.insert_edition.args.book_id","code":"validation-failed"}}]}`))
+	}))
+	t.Cleanup(hardcoverServer.Close)
+	fixture := newRouteTestFixtureWithHardcoverURL(t, hardcoverServer.URL)
+	owner := newRouteSession(t, fixture, "csrf-capability-owner", auth.RoleUser)
+	const profileID = "csrf-capability-profile"
+	require.NoError(t, fixture.repo.CreateProfileForUser(
+		profileID, "Capability profile", "http://abs.home", "abs-token", "hardcover-token",
+		database.SyncConfigData{}, owner.user.ID,
+	))
+	capabilityPath := "/api/profiles/" + profileID + "/edition-capability"
+	refreshPath := capabilityPath + "/refresh"
+
+	primed := fixture.requestWithCookies(http.MethodGet, capabilityPath, nil, []*http.Cookie{owner.cookie})
+	require.Equal(t, http.StatusOK, primed.Code, primed.Body.String())
+	require.Equal(t, int32(2), hardcoverRequests.Load())
+
+	rejected := serveRouteTestRequest(t, fixture, http.MethodPost, "http://app.example.test"+refreshPath,
+		"csrf_token=forged", map[string]string{
+			"Content-Type":   "application/x-www-form-urlencoded",
+			"Origin":         "https://attacker.example.test",
+			"Sec-Fetch-Site": "cross-site",
+			"Authorization":  "Bearer " + owner.cookie.Value,
+		}, []*http.Cookie{owner.cookie})
+	requireCSRFRequestRejected(t, rejected)
+	require.Equal(t, int32(2), hardcoverRequests.Load(), "a rejected refresh must not probe Hardcover")
+
+	cached := fixture.requestWithCookies(http.MethodGet, capabilityPath, nil, []*http.Cookie{owner.cookie})
+	require.Equal(t, http.StatusOK, cached.Code, cached.Body.String())
+	require.Equal(t, int32(2), hardcoverRequests.Load(), "a rejected refresh must preserve cached capability evidence")
+
+	foreignSafeGet := serveRouteTestRequest(t, fixture, http.MethodGet, "http://app.example.test"+capabilityPath,
+		"", map[string]string{
+			"Origin":         "https://attacker.example.test",
+			"Sec-Fetch-Site": "cross-site",
+		}, []*http.Cookie{owner.cookie})
+	require.Equal(t, http.StatusOK, foreignSafeGet.Code, foreignSafeGet.Body.String())
+	require.Equal(t, "*", foreignSafeGet.Header().Get("Access-Control-Allow-Origin"))
+	require.Empty(t, foreignSafeGet.Header().Get("Access-Control-Allow-Credentials"))
+	require.Equal(t, int32(2), hardcoverRequests.Load())
+
+	preflight := serveRouteTestRequest(t, fixture, http.MethodOptions, "http://app.example.test"+refreshPath, "", map[string]string{
+		"Origin":                        "https://attacker.example.test",
+		"Sec-Fetch-Site":                "cross-site",
+		"Access-Control-Request-Method": "POST",
+	}, nil)
+	require.Equal(t, http.StatusOK, preflight.Code, preflight.Body.String())
+	require.Equal(t, "*", preflight.Header().Get("Access-Control-Allow-Origin"))
+	require.Empty(t, preflight.Header().Get("Access-Control-Allow-Credentials"))
+
+	sameOriginRefresh := serveRouteTestRequest(t, fixture, http.MethodPost, "http://app.example.test"+refreshPath,
+		"", map[string]string{
+			"Origin":         "http://app.example.test",
+			"Sec-Fetch-Site": "same-origin",
+		}, []*http.Cookie{owner.cookie})
+	require.Equal(t, http.StatusOK, sameOriginRefresh.Code, sameOriginRefresh.Body.String())
+	require.Equal(t, int32(4), hardcoverRequests.Load())
+
+	cliRefresh := serveRouteTestRequest(t, fixture, http.MethodPost, "http://app.example.test"+refreshPath,
+		"", map[string]string{"Authorization": "Bearer " + owner.cookie.Value}, nil)
+	require.Equal(t, http.StatusOK, cliRefresh.Code, cliRefresh.Body.String())
+	require.Equal(t, int32(6), hardcoverRequests.Load())
+}
+
+func TestCrossOriginProtectionRejectsSameSiteSiblingWithAuthDisabled(t *testing.T) {
+	for _, authEnabled := range []bool{true, false} {
+		t.Run(map[bool]string{true: "authentication-enabled", false: "authentication-disabled"}[authEnabled], func(t *testing.T) {
+			fixture := newRouteTestFixture(t, authEnabled)
+			var cookies []*http.Cookie
+			var authorization string
+			if authEnabled {
+				session := newRouteSession(t, fixture, "csrf-sibling-owner", auth.RoleUser)
+				cookies = []*http.Cookie{session.cookie}
+				authorization = "Bearer " + session.cookie.Value
+			}
+			response := serveRouteTestRequest(t, fixture, http.MethodPost,
+				"http://app.example.test/api/profiles/missing/edition-capability/refresh", "", map[string]string{
+					"Origin":         "https://books.example.test",
+					"Sec-Fetch-Site": "same-site",
+					"Authorization":  authorization,
+				}, cookies)
+			requireCSRFRequestRejected(t, response)
+		})
+	}
+}
+
+func serveRouteTestRequest(t *testing.T, fixture *routeTestFixture, method, target, body string, headers map[string]string, cookies []*http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(method, target, strings.NewReader(body))
+	for name, value := range headers {
+		if value != "" {
+			request.Header.Set(name, value)
+		}
+	}
+	for _, cookie := range cookies {
+		request.AddCookie(cookie)
+	}
+	fixture.server.server.Handler.ServeHTTP(recorder, request)
+	return recorder
+}
+
+func requireCSRFRequestRejected(t *testing.T, response *httptest.ResponseRecorder) {
+	t.Helper()
+	require.Equal(t, http.StatusForbidden, response.Code, response.Body.String())
+	var payload struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &payload))
+	require.Equal(t, "csrf_request_rejected", payload.Error.Code)
 }

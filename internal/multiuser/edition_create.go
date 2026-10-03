@@ -2,13 +2,16 @@ package multiuser
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
@@ -31,6 +34,70 @@ var ErrEditionCreateDryRun = errors.New("edition creation is disabled while the 
 // ErrEditionAssociationAlreadyExists prevents an old create request from
 // replacing a confirmed mapping saved by a later sync or create operation.
 var ErrEditionAssociationAlreadyExists = errors.New("Audiobookshelf item already has a confirmed Hardcover association")
+
+// ErrEditionActionRequiresResolution prevents a second catalogue write while
+// the prior run/item request is unresolved or terminal.
+var ErrEditionActionRequiresResolution = errors.New("the previous edition request must be resolved before another create")
+
+// SaveEditionAction persists one run/item action in the profile journal. It
+// must be called while the profile operation gate is held when used by a
+// mutating handler.
+func (s *MultiUserService) SaveEditionAction(profileID, runID, absItemID string, action sync.EditionActionRecord) error {
+	if s.repository == nil {
+		return errors.New("edition action persistence requires a database repository")
+	}
+	payload, err := json.Marshal(action)
+	if err != nil {
+		return fmt.Errorf("failed to encode edition action: %w", err)
+	}
+	return s.repository.SaveEditionAction(profileID, runID, absItemID, payload)
+}
+
+// GetEditionAction returns one exact profile/run/item journal entry.
+func (s *MultiUserService) GetEditionAction(profileID, runID, absItemID string) (*sync.EditionActionRecord, bool, error) {
+	if s.repository == nil {
+		return nil, false, errors.New("edition action persistence requires a database repository")
+	}
+	payload, found, err := s.repository.GetEditionAction(profileID, runID, absItemID)
+	if err != nil || !found {
+		return nil, found, err
+	}
+	var action sync.EditionActionRecord
+	if err := json.Unmarshal(payload, &action); err != nil {
+		return nil, false, fmt.Errorf("failed to decode edition action: %w", err)
+	}
+	return &action, true, nil
+}
+
+// ListEditionActionsForRun returns the profile-scoped journal payloads for one
+// run. Decrypted data is held only in memory for response projection.
+func (s *MultiUserService) ListEditionActionsForRun(profileID, runID string) (map[string]sync.EditionActionRecord, error) {
+	if s.repository == nil {
+		return nil, errors.New("edition action persistence requires a database repository")
+	}
+	payloads, err := s.repository.ListEditionActionsForRun(profileID, runID)
+	if err != nil {
+		return nil, err
+	}
+	actions := make(map[string]sync.EditionActionRecord, len(payloads))
+	for itemID, payload := range payloads {
+		var action sync.EditionActionRecord
+		if err := json.Unmarshal(payload, &action); err != nil {
+			return nil, fmt.Errorf("failed to decode edition action for item %s: %w", itemID, err)
+		}
+		actions[itemID] = action
+	}
+	return actions, nil
+}
+
+// ClearEditionActionsForProfileItem removes all run-scoped attempts for an
+// item after association success or an explicit forget operation.
+func (s *MultiUserService) ClearEditionActionsForProfileItem(profileID, absItemID string) error {
+	if s.repository == nil {
+		return errors.New("edition action persistence requires a database repository")
+	}
+	return s.repository.DeleteEditionActionsForProfileItem(profileID, absItemID)
+}
 
 // GetLaterUsableSyncRunOutcome returns the newest retained completed or canceled,
 // non-dry-run outcome for an item from a run newer than afterRunID.
@@ -208,6 +275,13 @@ func (s *MultiUserService) createEditionWithAssociationAndResync(ctx context.Con
 		if !sameRecoveredEditionAssociation(existing, association) {
 			return fmt.Errorf("%w: a different confirmed association is already saved for %s", ErrEditionAssociationAlreadyExists, absItemID)
 		}
+		if allowMatchingExisting {
+			if clearErr := s.ClearEditionActionsForProfileItem(profileID, absItemID); clearErr != nil && s.logger != nil {
+				s.logger.Warn("Verified edition recovery succeeded but its journal could not be cleared", map[string]interface{}{
+					"profile_id": profileID, "abs_item_id": absItemID, "error": clearErr.Error(),
+				})
+			}
+		}
 		return nil
 	}
 	if err := state.SetAssociation(association); err != nil {
@@ -216,6 +290,11 @@ func (s *MultiUserService) createEditionWithAssociationAndResync(ctx context.Con
 	state.InvalidateItemCheckpoints(absItemID)
 	if err := state.Save(fileLock.StatePath()); err != nil {
 		return fmt.Errorf("%w: %w", ErrEditionAssociationSaveAfterRemoteSuccess, err)
+	}
+	if clearErr := s.ClearEditionActionsForProfileItem(profileID, absItemID); clearErr != nil && s.logger != nil {
+		s.logger.Warn("Edition association was saved but its action journal could not be cleared", map[string]interface{}{
+			"profile_id": profileID, "abs_item_id": absItemID, "error": clearErr.Error(),
+		})
 	}
 	if isLegacy {
 		s.backupMigratedLegacyProfileState(profileID, loadPath)
@@ -322,4 +401,70 @@ func (s *MultiUserService) hardcoverClientConfig() *hardcover.ClientConfig {
 		}
 	}
 	return clientConfig
+}
+
+// AnnotateEditionAdditions overlays current saved additions and durable
+// user-confirmed edition actions on a detached run-details snapshot. Historical
+// outcomes and counts remain unchanged.
+func (s *MultiUserService) AnnotateEditionAdditions(profileID string, snapshot *sync.SyncSnapshot) error {
+	if snapshot == nil || snapshot.DryRun || (snapshot.State != "completed" && snapshot.State != "canceled") {
+		return nil
+	}
+	actions, err := s.ListEditionActionsForRun(profileID, snapshot.RunID)
+	if err != nil {
+		return fmt.Errorf("load persisted edition actions: %w", err)
+	}
+	needsReview := false
+	for i := range snapshot.BookOutcomes {
+		record := &snapshot.BookOutcomes[i]
+		if action, exists := actions[record.BookID]; exists && record.Outcome == sync.OutcomeNeedsReview {
+			copyOf := action
+			record.EditionAction = &copyOf
+		}
+		if record.Outcome == sync.OutcomeNeedsReview {
+			needsReview = true
+		}
+	}
+	if !needsReview {
+		return nil
+	}
+	config, err := s.repository.GetProfileSyncConfig(profileID)
+	if err != nil {
+		return err
+	}
+	if err := s.validatePersistedProfileStateFile(profileID, config.StateFile); err != nil {
+		return err
+	}
+	_, path, _, err := s.profileStateSourcePath(profileID, config.StateFile)
+	if err != nil {
+		return err
+	}
+	state, err := statepkg.LoadState(path)
+	if err != nil {
+		return fmt.Errorf("load saved edition additions: %w", err)
+	}
+	for i := range snapshot.BookOutcomes {
+		record := &snapshot.BookOutcomes[i]
+		association, exists := state.GetAssociation(record.BookID)
+		associationMatchesSource := record.Outcome == sync.OutcomeNeedsReview && exists &&
+			association.HardcoverBookID == record.HardcoverBookID &&
+			strings.EqualFold(strings.TrimSpace(association.ReadingFormat), strings.TrimSpace(record.Format)) &&
+			strings.EqualFold(strings.TrimSpace(association.SourceASIN), strings.TrimSpace(record.ASIN)) &&
+			(record.ISBN == "" || isbn.Normalize(record.ISBN) == isbn.Normalize(association.SourceISBN10) || isbn.Normalize(record.ISBN) == isbn.Normalize(association.SourceISBN13))
+		apiAssociation := associationMatchesSource && strings.HasPrefix(association.Provenance, "api_")
+		submittedAction := record.EditionAction != nil && record.EditionAction.SubmittedBody != nil && record.EditionAction.Outcome != "not_submitted"
+		regionalIdentifierMatches := true
+		if submittedAction && record.EditionAction.Data != nil && record.EditionAction.Data.AudibleIdentifier != "" {
+			regionalIdentifierMatches = strings.EqualFold(strings.TrimSpace(association.RegionalExternalID), strings.TrimSpace(record.EditionAction.Data.AudibleIdentifier))
+		}
+		associationConfirmsAction := associationMatchesSource && submittedAction && regionalIdentifierMatches
+		record.EditionAdded = apiAssociation || associationConfirmsAction
+		if record.EditionAdded {
+			// The saved association is authoritative. It suppresses any stale
+			// journal marker left behind by an interrupted cleanup or a later
+			// ordinary sync that independently confirmed the same target.
+			record.EditionAction = nil
+		}
+	}
+	return nil
 }

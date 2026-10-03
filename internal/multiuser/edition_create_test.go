@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
+	syncsvc "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 	"github.com/stretchr/testify/require"
 )
@@ -457,4 +458,55 @@ func TestCreateEditionWithAssociationAndResyncSkipsResyncWhenNothingWasCreated(t
 		}, noResync(t))
 		require.ErrorIs(t, err, ErrEditionAssociationSaveAfterRemoteSuccess)
 	})
+}
+
+func TestAnnotateEditionAdditionsRequiresMatchingSavedAPIAssociation(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		recordFormat string
+		recordASIN   string
+		recordISBN   string
+		change       func(*statepkg.Association)
+		want         bool
+	}{
+		{name: "confirmed ebook create", recordFormat: "Ebook", change: func(*statepkg.Association) {}, want: true},
+		{name: "confirmed audiobook create", recordFormat: "Audiobook", change: func(a *statepkg.Association) { a.ReadingFormat = "audiobook" }, want: true},
+		{name: "normalized source identifiers", recordFormat: "Ebook", recordASIN: " b012345678 ", recordISBN: "978-0-306-40615-7", change: func(*statepkg.Association) {}, want: true},
+		{name: "other book", recordFormat: "Ebook", change: func(a *statepkg.Association) { a.HardcoverBookID = "99" }, want: false},
+		{name: "other source", recordFormat: "Ebook", change: func(a *statepkg.Association) { a.SourceASIN = "B099999999" }, want: false},
+		{name: "changed source identifier", recordFormat: "Ebook", recordASIN: "B099999999", change: func(*statepkg.Association) {}, want: false},
+		{name: "other format", recordFormat: "Ebook", change: func(a *statepkg.Association) { a.ReadingFormat = "audiobook" }, want: false},
+		{name: "ordinary sync", recordFormat: "Ebook", change: func(a *statepkg.Association) { a.Provenance = "regional_mapping" }, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service, profileID := newEditionCreateService(t)
+			a := testCreateAssociation("item")
+			tc.change(&a)
+			require.NoError(t, service.CreateEditionWithAssociation(context.Background(), profileID, "item", func(*database.ProfileWithTokens) (statepkg.Association, error) { return a, nil }))
+			recordASIN, recordISBN := tc.recordASIN, tc.recordISBN
+			if recordASIN == "" {
+				recordASIN = "B012345678"
+			}
+			if recordISBN == "" {
+				recordISBN = "9780306406157"
+			}
+			snapshot := syncsvc.SyncSnapshot{State: "canceled", BookOutcomes: []syncsvc.BookOutcomeRecord{{BookID: "item", Outcome: syncsvc.OutcomeNeedsReview, Format: tc.recordFormat, ASIN: recordASIN, ISBN: recordISBN, HardcoverBookID: "41"}}}
+			require.NoError(t, service.AnnotateEditionAdditions(profileID, &snapshot))
+			require.Equal(t, tc.want, snapshot.BookOutcomes[0].EditionAdded)
+		})
+	}
+}
+
+func TestAnnotateEditionAdditionsStateFailureAndDryRun(t *testing.T) {
+	service, profileID := newEditionCreateService(t)
+	path := service.profileSpecificStatePath(profileID, "sync.json")
+	require.NoError(t, os.WriteFile(path, []byte("invalid state"), 0600))
+	snapshot := syncsvc.SyncSnapshot{State: "completed", BookOutcomes: []syncsvc.BookOutcomeRecord{{BookID: "item", Outcome: syncsvc.OutcomeNeedsReview}}}
+	require.Error(t, service.AnnotateEditionAdditions(profileID, &snapshot))
+	require.False(t, snapshot.BookOutcomes[0].EditionAdded)
+	snapshot.DryRun = true
+	require.NoError(t, service.AnnotateEditionAdditions(profileID, &snapshot))
+	contents, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, "invalid state", string(contents))
 }

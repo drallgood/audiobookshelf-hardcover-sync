@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve edition-added labels, pending requests, unsaved-match recovery, unknown results, final failure guidance, and safe retries across browsers and server restarts. Track requests before catalogue writes and prevent repeated creates for unresolved requests within the same profile, run, and Audiobookshelf item while preserving original sync outcomes and counts. A new sync has a separate request scope; inspect Hardcover before retrying an unresolved request in a new run. Reversible Audiobookshelf metadata changes block import checks without discarding a valid signed recovery token before its expiry. Historical run details remain readable when saved edition state is corrupt, with edition actions disabled until a healthy fetch. Submitted edit fields and recovery tokens are returned only to callers with profile write access. Capability evidence has no automatic expiry: it remains cached per profile/token until explicit refresh, token change, or restart, so Hardcover-side scope changes or revocation can leave the displayed result stale; actual writes still enforce Hardcover authorization. Reject unsafe cross-origin browser requests to the profile API, including bodyless permission refreshes, while preserving same-origin UI requests and ordinary nonbrowser API clients, and remove the contradictory credentialed wildcard CORS response header. By @Snuffy2. (#218)
+
 ### Added
 
 - **Audiobook ISBN fallback and insertion**: Sync may search an Audiobookshelf ISBN only when the source ASIN is absent or malformed; a valid canonical ASIN remains authoritative if regional lookup fails. Incremental sync rechecks ISBN matches while preserving checkpoints to avoid repeated writes for unchanged books. Add Edition can create an audiobook-format edition from the read-only Audiobookshelf ISBN preview in that case. Normal sync still makes no Hardcover catalogue writes. By @Snuffy2 (#217)

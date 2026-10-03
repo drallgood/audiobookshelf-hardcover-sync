@@ -1484,6 +1484,10 @@ class SyncProfileApp {
         if (this.openSummary !== open) return;
         const content = document.getElementById('sync-summary-content');
         const capabilityRefresh = content?.querySelector?.('[data-edition-capability-refresh]');
+        if (open.runContext?.editionActionsUnavailable) {
+            if (capabilityRefresh) capabilityRefresh.disabled = true;
+            return;
+        }
         if (capabilityRefresh) {
             const dryRun = open.editionCapability?.dry_run ?? open.runContext?.dryRun;
             capabilityRefresh.hidden = Boolean(dryRun);
@@ -1494,14 +1498,15 @@ class SyncProfileApp {
             const bookId = button.closest('[data-book-id]')?.dataset.bookId;
             const record = open.records?.get(String(bookId));
             if (!record) return;
-            const pendingRecovery = this.loadPendingEditionRecovery(open.profileId, open.runContext?.runId, record.book_id);
-            if (pendingRecovery) {
-                button.disabled = false;
-                button.removeAttribute('title');
+            if (record.edition_added === true || open.addedEditionBookIds?.has(String(bookId))) {
+                button.outerHTML = '<span class="edition-added" role="status">Hardcover Edition Added</span>';
                 return;
             }
-            if (open.addedEditionBookIds?.has(String(bookId))) {
-                button.outerHTML = '<span class="edition-added" role="status">Hardcover Edition Added</span>';
+            const pendingRecovery = this.editionRequestState(record, open);
+            if (pendingRecovery) {
+                button.textContent = this.editionRequestLabel(pendingRecovery);
+                button.disabled = false;
+                button.removeAttribute('title');
                 return;
             }
             const reason = this.editionActionDisabledReason(record, open);
@@ -1639,6 +1644,7 @@ class SyncProfileApp {
         const authGeneration = this.authSessionGeneration;
         const requestGeneration = open.generation;
         const requestRunId = open.runId;
+        const editionActionRevision = open.editionActionRevision || 0;
         const requestController = typeof AbortController === 'undefined' ? null : new AbortController();
         open.detailsController = requestController;
         open.loading = true;
@@ -1662,6 +1668,7 @@ class SyncProfileApp {
             const currentRequest = this.openSummary === open && open.generation === requestGeneration && open.runId === requestRunId;
             const replacingRun = !open.renderedRunId || open.renderedRunId !== requestRunId;
             if (!currentRequest) return;
+            if ((open.editionActionRevision || 0) !== editionActionRevision) return;
             if (!response.ok || !snapshot || snapshot.run_id !== requestRunId || currentRunId !== requestRunId) {
                 if (replacingRun) this.renderDetailsState('error', open);
                 else this.renderDetailsStale(open, `refresh failed (${response.status})`);
@@ -1712,8 +1719,21 @@ class SyncProfileApp {
         if (!open || !content || !tabs) return;
         if (!(open.expandedOutcomes instanceof Set)) open.expandedOutcomes = new Set();
         open.renderedRunId = snapshot.run_id;
-        open.runContext = { runId: snapshot.run_id, state: String(snapshot.state || '').toLowerCase(), dryRun: this.toBool(snapshot.dry_run, false) };
+        const editionActionsUnavailable = snapshot.edition_actions_unavailable === true;
+        open.runContext = { runId: snapshot.run_id, state: String(snapshot.state || '').toLowerCase(), dryRun: this.toBool(snapshot.dry_run, false), editionActionsUnavailable };
+        const dialog = this.editionDialog;
+        if (dialog && dialog.profileId === open.profileId && String(dialog.runId) === String(snapshot.run_id)) {
+            dialog.editionActionsUnavailable = editionActionsUnavailable;
+            if (editionActionsUnavailable && !dialog.busy) this.closeEditionDialog();
+            else if (editionActionsUnavailable) this.showEditionDialog();
+        }
         open.records = new Map((snapshot.book_outcomes || []).map(record => [String(record.book_id), record]));
+        // Fresh details are authoritative, including when a saved match was forgotten.
+        open.addedEditionBookIds = new Set((snapshot.book_outcomes || [])
+            .filter(record => record.edition_added === true).map(record => String(record.book_id)));
+        for (const record of snapshot.book_outcomes || []) {
+            if (record.edition_added === true) this.clearPendingEditionRecovery(open.profileId, snapshot.run_id, record.book_id);
+        }
         const categories = this.outcomeCategories(snapshot.outcome_counts || {});
         const records = new Map((snapshot.book_outcomes || []).map(record => [record.book_id, record]));
         tabs.innerHTML = `<button class="tab-button active" type="button">${this.escapeHtml(this.statuses[open.profileId]?.profile_name || `Profile ${open.profileId}`)}</button>`;
@@ -1755,11 +1775,12 @@ class SyncProfileApp {
         }
         const runError = snapshot.run_error || this.statuses[open.profileId]?.terminal_error || '';
         const capabilityRefreshDryRun = open.editionCapability?.dry_run ?? open.runContext.dryRun;
-        const capabilityRefreshAction = this.isViewer() ? '' : `<button type="button" class="btn btn-secondary" data-edition-capability-refresh ${!open.editionCapabilityLoaded || capabilityRefreshDryRun ? 'disabled' : ''} ${open.editionCapabilityRefreshing ? 'disabled' : ''}>${open.editionCapabilityRefreshing ? 'Checking…' : 'Refresh permissions'}</button>`;
+        const capabilityRefreshAction = this.isViewer() || editionActionsUnavailable ? '' : `<button type="button" class="btn btn-secondary" data-edition-capability-refresh ${!open.editionCapabilityLoaded || capabilityRefreshDryRun ? 'disabled' : ''} ${open.editionCapabilityRefreshing ? 'disabled' : ''}>${open.editionCapabilityRefreshing ? 'Checking…' : 'Refresh permissions'}</button>`;
         content.innerHTML = `
             <div class="sync-summary" data-run-id="${this.escapeHtmlAttribute(snapshot.run_id)}">
                 <div class="summary-header"><h3>Run details</h3><div class="last-sync">${this.escapeHtml(statusTimestamp.label)}${statusTimestamp.timestamp ? `: ${new Date(statusTimestamp.timestamp).toLocaleString()}` : ''}</div>${capabilityRefreshAction}</div>
                 <p class="status-message">${statusMessage}</p>
+                ${editionActionsUnavailable ? '<p class="status-message status-error" role="status">Edition actions are unavailable because saved sync state could not be read. Edition actions are disabled for this run; inspect Hardcover manually.</p>' : ''}
                 ${runError ? `<div class="status-message status-error" data-run-error><strong>Run error:</strong> ${this.escapeHtml(runError)}</div>` : ''}
                 <div class="summary-stats">${groups.map(group => `<div class="stat-item ${group.tone}"><span class="stat-value">${group.count}</span><span class="stat-label">${group.label}</span></div>`).join('')}</div>
                 ${groupsHtml}
@@ -1985,15 +2006,17 @@ class SyncProfileApp {
     renderEditionActions(record) {
         const open = this.openSummary;
         if (!open || this.isViewer()) return '';
+        if (open.runContext?.editionActionsUnavailable) return '';
         const profileId = open.profileId;
         const syncing = this.profileIsSyncing(profileId);
         if (record.outcome === 'needs_review') {
-            const pendingRecovery = this.loadPendingEditionRecovery(profileId, open.runContext?.runId, record.book_id);
-            if (pendingRecovery) {
-                return `<div class="edition-actions"><button type="button" class="book-service-link edition-action-pill" data-edition-action="add">Resolve pending edition request</button></div>`;
-            }
-            if (open.addedEditionBookIds?.has(String(record.book_id))) {
+            if (record.edition_added === true || open.addedEditionBookIds?.has(String(record.book_id))) {
                 return '<div class="edition-actions"><span class="edition-added" role="status">Hardcover Edition Added</span></div>';
+            }
+
+            const pendingRecovery = this.editionRequestState(record, open);
+            if (pendingRecovery) {
+                return `<div class="edition-actions"><button type="button" class="book-service-link edition-action-pill" data-edition-action="add">${this.editionRequestLabel(pendingRecovery)}</button></div>`;
             }
             const disabledReason = this.editionActionDisabledReason(record, open);
             return `<div class="edition-actions">
@@ -2132,8 +2155,9 @@ class SyncProfileApp {
         if (this.editionDialog?.mode === 'create' && this.editionDialog.busy) return;
         const open = this.openSummary;
         const record = open?.records?.get(String(bookId));
-        if (!open || !record || this.isViewer()) return;
-        const recovery = this.loadPendingEditionRecovery(open.profileId, open.runContext?.runId, record.book_id);
+        if (!open || !record || this.isViewer() || open.runContext?.editionActionsUnavailable) return;
+        if (record.edition_added === true) return;
+        const recovery = this.editionRequestState(record, open);
         if (!recovery) {
             if (open.addedEditionBookIds?.has(String(bookId))) return;
             if (this.editionCreateIneligibleReason(record, open.runContext)) return;
@@ -2155,8 +2179,16 @@ class SyncProfileApp {
                 recoveryBookId: recovery.recoveryBookId || recovery.recovery?.hardcoverBookId,
                 error: recovery.error || '', transportError: recovery.transportError || '',
                 errorHttpStatus: recovery.errorHttpStatus || 0, errorCode: recovery.errorCode || '',
-                recoveryHttpStatus: recovery.recoveryHttpStatus || 0, recoveryErrorCode: recovery.recoveryErrorCode || ''
+                recoveryHttpStatus: recovery.recoveryHttpStatus || 0, recoveryErrorCode: recovery.recoveryErrorCode || '',
+                wrongFormat: recovery.wrongFormat || null, retryCreate: recovery.outcome === 'not_submitted',
+                fieldValues: recovery.fieldValues || {}
             });
+            if (recovery.outcome === 'not_submitted' && !recovery.draft) {
+                const restoredDialog = this.editionDialog;
+                await this.loadEditionDraft();
+                if (this.editionDialog !== restoredDialog) return;
+                restoredDialog.error = recovery.error || '';
+            }
             this.showEditionDialog();
             return;
         }
@@ -2236,14 +2268,23 @@ class SyncProfileApp {
     renderEditionDialog(dialog) {
         const record = dialog.record;
         const title = dialog.mode === 'forget' ? 'Forget saved match' : 'Add edition to Hardcover';
+        if (this.editionActionsUnavailableForDialog(dialog)) {
+            const closeDisabled = dialog.busy ? ' disabled' : '';
+            return `<div class="modal-header"><h3>${title}</h3><button type="button" class="modal-close" data-edition-dialog="close" aria-label="Close"${closeDisabled}>&times;</button></div>
+                <div class="edition-dialog-body" role="dialog" aria-modal="true" tabindex="-1" aria-label="${this.escapeHtmlAttribute(title)}">
+                    <p class="edition-warning" role="alert">Edition actions are unavailable because saved sync state could not be read. Edition actions are disabled for this run; inspect Hardcover manually.</p>
+                    ${dialog.busy ? '<p role="status">The request already in progress will finish safely.</p>' : '<button type="button" class="btn btn-secondary" data-edition-dialog="close">Close</button>'}
+                </div>`;
+        }
         let body;
         let showSubject = true;
         if (dialog.mode === 'forget') {
             body = this.renderForgetBody(dialog);
         } else if (dialog.result) {
             body = this.renderCreateResult(dialog.result);
-        } else if (dialog.outcome === 'failed' && dialog.wrongFormat) {
-            body = this.renderEditionWrongFormat(dialog);
+        } else if (dialog.outcome === 'failed') {
+            body = dialog.wrongFormat ? this.renderEditionWrongFormat(dialog)
+                : `<div class="edition-error" role="alert"><strong>Hardcover edition request failed</strong><p>${this.escapeHtml(dialog.error || 'Hardcover confirmed that this request failed. Inspect Hardcover and run a new sync before taking further action.')}</p>${this.renderEditionTechnicalDetails(dialog)}</div><div class="form-actions edition-create-actions">${this.renderOpenHardcoverLink(dialog)}<button type="button" class="btn btn-warning" data-edition-dialog="close">Close</button></div>`;
         } else if (dialog.outcome === 'unconfirmed') {
             body = this.renderEditionImportUnconfirmed(dialog);
         } else {
@@ -2262,6 +2303,14 @@ class SyncProfileApp {
                 ${subjectHtml}
                 ${body}
             </div>`;
+    }
+
+    editionActionsUnavailableForDialog(dialog) {
+        if (dialog?.editionActionsUnavailable) return true;
+        const open = this.openSummary;
+        return open?.profileId === dialog?.profileId
+            && String(open.runContext?.runId) === String(dialog?.runId)
+            && open.runContext?.editionActionsUnavailable === true;
     }
 
     renderWarnings(draft) {
@@ -2458,7 +2507,7 @@ class SyncProfileApp {
 
     async submitEditionCreate() {
         const dialog = this.editionDialog;
-        if (!dialog || dialog.mode !== 'create' || !dialog.draft || dialog.busy
+        if (!dialog || this.editionActionsUnavailableForDialog(dialog) || dialog.mode !== 'create' || !dialog.draft || dialog.busy
             || ['unconfirmed', 'created', 'transport_unknown', 'failed'].includes(dialog.outcome)) return;
         dialog.outcome = '';
         dialog.retryCreate = false;
@@ -2468,22 +2517,17 @@ class SyncProfileApp {
         const resync = !dialog.draft.dry_run;
         const body = this.buildEditionCreateBody(dialog, fields, resync);
         dialog.submittedBody = { ...body };
-        // Persist before sending: a reload can discard the response even when
-        // Hardcover received the import. Only a definite response clears this.
+        // Keep an immediate browser marker while the request is in flight.
+        // The server persists the attempt before any catalogue write, so
+        // browser storage availability is no longer a prerequisite for sending.
         const pending = {
             ...dialog, outcome: 'transport_unknown', recovery: null,
             transportError: 'The create request started, but no result was received before the page reloaded. Check Hardcover, then run a new sync before trying again.'
         };
-        if (!this.savePendingEditionRecovery(pending, { requireDurable: true })) {
-            this.clearPendingEditionRecovery(dialog.profileId, dialog.runId, dialog.record.book_id);
-            dialog.outcome = 'not_submitted';
-            dialog.retryCreate = true;
-            dialog.error = 'The pending request could not be saved in browser session storage, so nothing was sent. Keep this dialog open and retry after storage is available.';
-            this.showEditionDialog();
-            return;
-        }
+        this.savePendingEditionRecovery(pending);
         dialog.busy = true;
         dialog.error = '';
+        this.rememberEditionAction(dialog, { outcome: 'transport_unknown', error: pending.transportError });
         this.showEditionDialog();
         try {
             // The server allows up to 65s for this request (editionCreateRequestTimeout),
@@ -2503,12 +2547,16 @@ class SyncProfileApp {
             const validSuccessEnvelope = response.ok && data?.success === true && this.isValidEditionCreateResult(
                 data.data, dialog.record.book_id, dialog.draft.reading_format, dialog.record.hardcover_book_id
             );
+            if (!validSuccessEnvelope && ['unconfirmed', 'created', 'failed', 'not_submitted'].includes(data?.outcome)) {
+                this.rememberEditionAction(dialog, { ...data, http_status: response.status });
+            }
             if (validSuccessEnvelope) {
                 dialog.result = data.data;
                 this.saveAddedEditionBookId(dialog.profileId, dialog.runId, dialog.record.book_id);
                 this.clearPendingEditionRecovery(dialog.profileId, dialog.runId, dialog.record.book_id);
                 const open = this.openSummary;
                 if (open?.profileId === dialog.profileId && open.runContext?.runId === dialog.runId) {
+                    open.editionActionRevision = (open.editionActionRevision || 0) + 1;
                     if (!open.addedEditionBookIds) open.addedEditionBookIds = new Set();
                     open.addedEditionBookIds.add(String(dialog.record.book_id));
                     this.refreshEditionActionStates(open);
@@ -2561,6 +2609,8 @@ class SyncProfileApp {
                         dialog.errorCode = data?.error?.code || data?.error_code || '';
                         dialog.error = this.editionCreateErrorMessage(response.status, message || preWriteDenial.message);
                         dialog.retryCreate = true;
+                        this.rememberEditionAction(dialog, { outcome: 'not_submitted', error: dialog.error,
+                            error_code: dialog.errorCode, http_status: response.status });
                         this.clearPendingEditionRecovery(dialog.profileId, dialog.runId, dialog.record.book_id);
                     } else if (!outcome) {
                         dialog.outcome = 'transport_unknown';
@@ -2626,7 +2676,7 @@ class SyncProfileApp {
 
     editionFailureMessage(outcome, status) {
         if (outcome === 'not_submitted') return 'The import was not submitted to Hardcover. You can safely try again.';
-        if (outcome === 'failed') return 'Hardcover rejected the import. Review the details and correct any edition information before trying again.';
+        if (outcome === 'failed') return 'Hardcover rejected the import. Review the details on Hardcover, then run a new sync before trying again.';
         if (status === 503) return 'The service returned an unexpected 503 response. The import result is unknown; check Hardcover before trying again.';
         return `Edition creation failed (${status}). The import result may be unknown; check Hardcover before trying again.`;
     }
@@ -2683,7 +2733,7 @@ class SyncProfileApp {
     async checkEditionImport() {
         const dialog = this.editionDialog;
         const recovery = dialog?.recovery;
-        if (!dialog || dialog.mode !== 'create' || !['unconfirmed', 'created'].includes(dialog.outcome) || !recovery?.recoveryToken || dialog.busy) return;
+        if (!dialog || this.editionActionsUnavailableForDialog(dialog) || dialog.mode !== 'create' || !['unconfirmed', 'created'].includes(dialog.outcome) || !recovery?.recoveryToken || dialog.busy) return;
         dialog.busy = true;
         dialog.checkError = '';
         this.showEditionDialog();
@@ -2701,6 +2751,9 @@ class SyncProfileApp {
             if (this.editionDialog !== dialog) return;
             dialog.busy = false;
             if (response.status === 401) { this.closeEditionDialog(); this.handleAuthExpiry(); return; }
+            if (['unconfirmed', 'created', 'failed'].includes(data?.outcome)) {
+                this.rememberEditionAction(dialog, { ...data, http_status: response.status });
+            }
             if (response.ok && data?.success === true && this.isValidEditionCreateResult(
                 data.data, recovery.absItemId, dialog.draft?.reading_format || dialog.record.format,
                 recovery.hardcoverBookId || dialog.record.hardcover_book_id
@@ -2710,6 +2763,7 @@ class SyncProfileApp {
                 this.saveAddedEditionBookId(dialog.profileId, recovery.runId, recovery.absItemId);
                 const open = this.openSummary;
                 if (open?.profileId === dialog.profileId && open.runContext?.runId === recovery.runId) {
+                    open.editionActionRevision = (open.editionActionRevision || 0) + 1;
                     if (!open.addedEditionBookIds) open.addedEditionBookIds = new Set();
                     open.addedEditionBookIds.add(String(recovery.absItemId));
                     this.refreshEditionActionStates(open);
@@ -2747,6 +2801,8 @@ class SyncProfileApp {
                 dialog.errorCode = data.error_code;
                 dialog.errorHttpStatus = response.status;
                 dialog.transportError = `${serverMessage} Open Hardcover to inspect the result, then close this dialog and run a new sync to refresh the match. This status check submitted no new import.`;
+                this.rememberEditionAction(dialog, { outcome: 'transport_unknown', error: dialog.transportError,
+                    error_code: dialog.errorCode, http_status: response.status });
                 this.savePendingEditionRecovery(dialog);
             } else {
                 dialog.checkError = this.apiErrorMessage(data, `Could not check the import status (HTTP ${response.status}).`);
@@ -2763,6 +2819,55 @@ class SyncProfileApp {
     pendingEditionRecoveryKey(profileId, runId, bookId) {
         const userId = this.currentUser?.id ? String(this.currentUser.id) : (this.authEnabled ? 'authenticated' : 'anonymous');
         return `abs-hardcover-pending-edition:${encodeURIComponent(userId)}:${encodeURIComponent(String(profileId))}:${encodeURIComponent(String(runId))}:${encodeURIComponent(String(bookId))}`;
+    }
+
+    editionRequestLabel(saved) {
+        if (saved.outcome === 'failed') return 'Review edition request';
+        if (saved.outcome === 'not_submitted') return 'Retry add edition';
+        return 'Resolve pending edition request';
+    }
+
+    rememberEditionAction(dialog, action) {
+        const open = this.openSummary;
+        if (!dialog.submittedBody || open?.profileId !== dialog.profileId || open.runContext?.runId !== dialog.runId) return;
+        const record = open.records?.get(String(dialog.record.book_id));
+        if (record) {
+            open.editionActionRevision = (open.editionActionRevision || 0) + 1;
+            open.records.set(String(record.book_id), { ...record,
+                edition_action: { ...action, submitted_body: { ...dialog.submittedBody } } });
+            this.refreshEditionActionStates(open);
+        }
+    }
+
+    // Run details carry the durable server result. Session storage only covers
+    // a request whose response has not reached this browser yet.
+    editionRequestState(record, open) {
+        const action = record?.edition_action;
+        const body = action?.submitted_body;
+        if (action && ['unconfirmed', 'created', 'transport_unknown', 'failed', 'not_submitted'].includes(action.outcome)
+            && body && String(body.run_id) === String(open.runContext?.runId)
+            && String(body.abs_item_id) === String(record.book_id)) {
+            const data = action.data || {};
+            const recoverable = ['unconfirmed', 'created'].includes(action.outcome);
+            return {
+                outcome: action.outcome, submittedBody: body, error: action.error || '',
+                errorCode: action.error_code || '', errorHttpStatus: action.http_status || 0,
+                recoveryHttpStatus: recoverable ? action.http_status || 0 : 0,
+                recoveryErrorCode: recoverable ? action.error_code || '' : '',
+                recoveryBookId: data.hardcover_book_id || record.hardcover_book_id,
+                recovery: recoverable ? {
+                    runId: body.run_id, absItemId: body.abs_item_id,
+                    audibleIdentifier: data.audible_identifier || body.audible_identifier || '',
+                    recoveryToken: data.recovery_token || '',
+                    hardcoverBookId: data.hardcover_book_id || record.hardcover_book_id
+                } : null,
+                wrongFormat: this.editionWrongFormatDetails(action.outcome, action),
+                transportError: action.outcome === 'transport_unknown' ? action.error || 'The import result is unknown. Inspect Hardcover, then run a new sync before trying again.' : '',
+                fieldValues: Object.fromEntries(['title', 'subtitle', 'asin', 'isbn_10', 'isbn_13', 'release_date', 'edition_format']
+                    .filter(key => typeof body[key] === 'string').map(key => [key, body[key]]))
+            };
+        }
+        return this.loadPendingEditionRecovery(open.profileId, open.runContext?.runId, record.book_id);
     }
 
     isValidEditionCreateResult(data, absItemId, readingFormat, hardcoverBookId) {
@@ -2811,8 +2916,8 @@ class SyncProfileApp {
         }
     }
 
-    savePendingEditionRecovery(dialog, { requireDurable = false } = {}) {
-        if (!dialog?.submittedBody || (!dialog.recovery && dialog.outcome !== 'transport_unknown')) return false;
+    savePendingEditionRecovery(dialog) {
+        if (!dialog?.submittedBody || (!dialog.recovery && dialog.outcome !== 'transport_unknown')) return;
         this.pendingEditionRecoveries ||= new Map();
         const key = this.pendingEditionRecoveryKey(dialog.profileId, dialog.runId, dialog.record.book_id);
         const saved = {
@@ -2826,13 +2931,10 @@ class SyncProfileApp {
         };
         this.pendingEditionRecoveries.set(key, saved);
         try {
-            if (!window.sessionStorage) return false;
+            if (!window.sessionStorage) return;
             const serialized = JSON.stringify(saved);
             window.sessionStorage.setItem(key, serialized);
-            if (requireDurable && window.sessionStorage.getItem(key) !== serialized) return false;
-            return true;
         } catch (_) { /* Recovery remains available for the life of this dialog. */ }
-        return !requireDurable;
     }
 
     clearPendingEditionRecovery(profileId, runId, bookId) {
@@ -2869,11 +2971,11 @@ class SyncProfileApp {
         if (this.editionDialog?.mode === 'create' && this.editionDialog.busy) return;
         const open = this.openSummary;
         const record = open?.records?.get(String(bookId));
-        if (!open || !record || this.isViewer() || !this.isMatchedRecord(record)) return;
+        if (!open || !record || this.isViewer() || open.runContext?.editionActionsUnavailable || !this.isMatchedRecord(record)) return;
         if (this.profileIsSyncing(open.profileId)) return;
         this.closeEditionDialog();
         const dialog = {
-            mode: 'forget', profileId: open.profileId, record, capability: null,
+            mode: 'forget', profileId: open.profileId, runId: open.runContext?.runId, record, capability: null,
             loading: true, busy: false, error: '', result: null
         };
         this.editionDialog = dialog;
@@ -2918,7 +3020,7 @@ class SyncProfileApp {
 
     async submitForget() {
         const dialog = this.editionDialog;
-        if (!dialog || dialog.mode !== 'forget' || dialog.loading || dialog.busy) return;
+        if (!dialog || this.editionActionsUnavailableForDialog(dialog) || dialog.mode !== 'forget' || dialog.loading || dialog.busy) return;
         dialog.busy = true;
         dialog.error = '';
         this.showEditionDialog();
