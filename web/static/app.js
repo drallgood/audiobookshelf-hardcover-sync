@@ -3074,6 +3074,7 @@ class SyncProfileApp {
                 sync_want_to_read: formData.get('sync_want_to_read') === 'on',
                 process_unread_books: formData.get('process_unread_books') === 'on',
                 sync_owned: formData.get('sync_owned') === 'on',
+                ownership_recheck_days: Number(formData.get('ownership_recheck_days') ?? 30),
                 include_ebooks: formData.get('include_ebooks') === 'on',
                 dry_run: formData.get('dry_run') === 'on',
                 test_book_filter: '',
@@ -3201,6 +3202,7 @@ class SyncProfileApp {
         document.getElementById('edit-sync-want-to-read').checked = this.toBool(config.sync_want_to_read, true);
         document.getElementById('edit-process-unread-books').checked = this.toBool(config.process_unread_books, true);
         document.getElementById('edit-sync-owned').checked = this.toBool(config.sync_owned, true);
+        document.getElementById('edit-ownership-recheck-days').value = config.ownership_recheck_days ?? 30;
         const includeEbooksEl = document.getElementById('edit-include-ebooks');
         if (includeEbooksEl) {
             includeEbooksEl.checked = this.toBool(config.include_ebooks, false);
@@ -3255,6 +3257,7 @@ class SyncProfileApp {
                 sync_want_to_read: formData.get('sync_want_to_read') === 'on',
                 process_unread_books: formData.get('process_unread_books') === 'on',
                 sync_owned: formData.get('sync_owned') === 'on',
+                ownership_recheck_days: Number(formData.get('ownership_recheck_days') ?? 30),
                 include_ebooks: formData.get('include_ebooks') === 'on',
                 dry_run: formData.get('dry_run') === 'on',
                 test_book_filter: '',

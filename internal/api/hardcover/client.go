@@ -1043,7 +1043,9 @@ func (c *Client) SearchBooks(ctx context.Context, title, author string) ([]model
 			ID:            r.ID,
 			Title:         r.Title,
 			Slug:          r.Slug,
+			ReleaseDate:   r.ReleaseDate,
 			CoverImageURL: r.Image, // Populate cover from search response (document.image.url)
+			Authors:       r.Authors,
 		}
 		if r.Slug != "" {
 			log.Debug("Mapped slug from search result to book", map[string]interface{}{"book_id": r.ID, "slug": r.Slug})
@@ -1317,30 +1319,18 @@ func (c *Client) GetBookByID(ctx context.Context, bookID string) (*models.Hardco
 // GetUserBook gets user book information by ID
 // Implements the HardcoverClientInterface
 func (c *Client) GetUserBook(ctx context.Context, userBookID string) (*models.HardcoverBook, error) {
-	// Create logger with context
-	log := c.logger.With(map[string]interface{}{
-		"user_book_id": userBookID,
-		"method":       "GetUserBook",
-	})
+	book, _, err := c.getUserBook(ctx, userBookID, false)
+	return book, err
+}
 
-	// Convert userBookID to int for GraphQL variable
-	userBookIDInt, err := strconv.Atoi(userBookID)
-	if err != nil {
-		log.Error("Invalid user book ID", map[string]interface{}{
-			"error": err.Error(),
-		})
-		return nil, fmt.Errorf("invalid user book ID: %s", userBookID)
-	}
+// GetUserBookWithReads retrieves a user book and all of its reads, newest first,
+// in one request. The reads are identical to GetUserBookReads without a status
+// filter, so callers that need both avoid a second request.
+func (c *Client) GetUserBookWithReads(ctx context.Context, userBookID string) (*models.HardcoverBook, []UserBookRead, error) {
+	return c.getUserBook(ctx, userBookID, true)
+}
 
-	// Define the GraphQL query
-	// This handles both possible API structures - direct query by PK or filtered query
-	// For tests, we'll support the user_books_by_pk structure
-	const query = `
-	query GetUserBook($id: Int!) {
-		user_books(
-			where: {id: {_eq: $id}},
-			limit: 1
-		) {
+const userBookFields = `
 			id
 			book_id
 			status_id
@@ -1358,9 +1348,55 @@ func (c *Client) GetUserBook(ctx context.Context, userBookID string) (*models.Ha
 					external_id
 					platform { name }
 				}
+			}`
+
+const getUserBookQuery = `
+	query GetUserBook($id: Int!) {
+		user_books(
+			where: {id: {_eq: $id}},
+			limit: 1
+		) {` + userBookFields + `
+		}
+	}`
+
+const getUserBookWithReadsQuery = `
+	query GetUserBookWithReads($id: Int!) {
+		user_books(
+			where: {id: {_eq: $id}},
+			limit: 1
+		) {` + userBookFields + `
+			user_book_reads(order_by: { id: desc }) {
+				id
+				user_book_id
+				progress
+				progress_seconds
+				started_at
+				finished_at
+				edition_id
 			}
 		}
 	}`
+
+func (c *Client) getUserBook(ctx context.Context, userBookID string, withReads bool) (*models.HardcoverBook, []UserBookRead, error) {
+	// Create logger with context
+	log := c.logger.With(map[string]interface{}{
+		"user_book_id": userBookID,
+		"method":       "GetUserBook",
+	})
+
+	// Convert userBookID to int for GraphQL variable
+	userBookIDInt, err := strconv.Atoi(userBookID)
+	if err != nil {
+		log.Error("Invalid user book ID", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return nil, nil, fmt.Errorf("invalid user book ID: %s", userBookID)
+	}
+
+	query := getUserBookQuery
+	if withReads {
+		query = getUserBookWithReadsQuery
+	}
 
 	// Prepare variables
 	variables := map[string]interface{}{
@@ -1390,6 +1426,7 @@ func (c *Client) GetUserBook(ctx context.Context, userBookID string) (*models.Ha
 					} `json:"platform"`
 				} `json:"book_mappings"`
 			} `json:"edition"`
+			UserBookReads []UserBookRead `json:"user_book_reads"`
 		} `json:"user_books"`
 	}
 
@@ -1399,13 +1436,13 @@ func (c *Client) GetUserBook(ctx context.Context, userBookID string) (*models.Ha
 		log.Error("Failed to execute GraphQL query", map[string]interface{}{
 			"error": err.Error(),
 		})
-		return nil, fmt.Errorf("failed to get user book: %w", err)
+		return nil, nil, fmt.Errorf("failed to get user book: %w", err)
 	}
 
 	// Check if we got results
 	if len(result.UserBooks) == 0 {
 		log.Warn("User book not found", nil)
-		return nil, fmt.Errorf("%w with ID: %s", ErrUserBookNotFound, userBookID)
+		return nil, nil, fmt.Errorf("%w with ID: %s", ErrUserBookNotFound, userBookID)
 	}
 
 	// Get the first (and only) user book
@@ -1451,7 +1488,7 @@ func (c *Client) GetUserBook(ctx context.Context, userBookID string) (*models.Ha
 		"edition_id": book.EditionID,
 	})
 
-	return book, nil
+	return book, userBook.UserBookReads, nil
 }
 
 // SaveToFile saves client state to a file (for mismatch package)
@@ -1942,12 +1979,14 @@ func (c *Client) searchBooksWithLimit(ctx context.Context, query string, limit i
 		var apiResponse struct {
 			Hits []struct {
 				Document struct {
-					ID    string `json:"id"`
-					Title string `json:"title"`
-					Slug  string `json:"slug"`
-					Image struct {
+					ID          string          `json:"id"`
+					Title       string          `json:"title"`
+					Slug        string          `json:"slug"`
+					ReleaseDate json.RawMessage `json:"release_date"`
+					Image       struct {
 						URL string `json:"url"`
 					} `json:"image"`
+					Contributions json.RawMessage `json:"contributions"`
 				} `json:"document"`
 			} `json:"hits"`
 		}
@@ -1963,12 +2002,14 @@ func (c *Client) searchBooksWithLimit(ctx context.Context, query string, limit i
 		// Process the search results
 		for _, hit := range apiResponse.Hits {
 			res := models.SearchResult{
-				ID:    hit.Document.ID,
-				Title: hit.Document.Title,
-				Type:  "book",
-				Image: hit.Document.Image.URL,
-				Slug:  hit.Document.Slug,
+				ID:          hit.Document.ID,
+				Title:       hit.Document.Title,
+				Type:        "book",
+				Image:       hit.Document.Image.URL,
+				Slug:        hit.Document.Slug,
+				ReleaseDate: searchDocumentReleaseDate(hit.Document.ReleaseDate),
 			}
+			res.Authors = searchDocumentAuthors(hit.Document.Contributions)
 			if res.Slug != "" {
 				log.Debug("Parsed slug from search result", map[string]interface{}{"book_id": res.ID, "slug": res.Slug})
 			}
@@ -1997,6 +2038,55 @@ func (c *Client) searchBooksWithLimit(ctx context.Context, query string, limit i
 	}
 
 	return searchResults, nil
+}
+
+// searchDocumentAuthors extracts authors from a search document's contributions
+// using the same role rule as GetBookByID: only contributions whose role
+// contains "author" count. It returns nil when the document has no usable
+// contributions, so callers fall back to a full book lookup.
+func searchDocumentAuthors(raw json.RawMessage) []models.Author {
+	if len(raw) == 0 {
+		return nil
+	}
+	var contributions []struct {
+		Contribution *string `json:"contribution"`
+		Author       struct {
+			ID   json.RawMessage `json:"id"`
+			Name string          `json:"name"`
+		} `json:"author"`
+	}
+	if err := json.Unmarshal(raw, &contributions); err != nil {
+		return nil
+	}
+	var authors []models.Author
+	for _, contribution := range contributions {
+		if contribution.Contribution == nil || contribution.Author.Name == "" ||
+			!strings.Contains(strings.ToLower(*contribution.Contribution), "author") {
+			continue
+		}
+		var authorID string
+		if len(contribution.Author.ID) > 0 {
+			// Search IDs may be strings, including nonnumeric identifiers, or
+			// JSON numbers. Preserve either form without float conversion.
+			if err := json.Unmarshal(contribution.Author.ID, &authorID); err != nil {
+				var number json.Number
+				if err := json.Unmarshal(contribution.Author.ID, &number); err != nil {
+					return nil
+				}
+				authorID = number.String()
+			}
+		}
+		authors = append(authors, models.Author{ID: authorID, Name: contribution.Author.Name})
+	}
+	return authors
+}
+
+func searchDocumentReleaseDate(raw json.RawMessage) string {
+	var releaseDate string
+	if err := json.Unmarshal(raw, &releaseDate); err != nil {
+		return ""
+	}
+	return releaseDate
 }
 
 // DatesReadInput represents the input for date-related fields when creating or updating a user book read entry

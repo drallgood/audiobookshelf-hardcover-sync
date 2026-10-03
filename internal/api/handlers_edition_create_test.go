@@ -2691,7 +2691,7 @@ func TestCreateEditionFromDraftResyncUsesConcreteClients(t *testing.T) {
 		Variables map[string]interface{} `json:"variables"`
 	}
 	operationCounts := make(map[string]int)
-	var editionRequest, userBookLookupRequest, userBookRequest, readsRequest, updateRequest graphqlRequest
+	var editionRequest, userBookLookupRequest, userBookRequest, updateRequest graphqlRequest
 	var captureMutex stdsync.Mutex
 	hardcoverServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer hardcover-token" {
@@ -2732,16 +2732,11 @@ func TestCreateEditionFromDraftResyncUsesConcreteClients(t *testing.T) {
 			userBookLookupRequest = request
 			captureMutex.Unlock()
 			response = `{"data":{"user_books":[{"id":300,"book_id":42,"edition_id":84}]}}`
-		case "GetUserBook":
+		case "GetUserBookWithReads":
 			captureMutex.Lock()
 			userBookRequest = request
 			captureMutex.Unlock()
-			response = `{"data":{"user_books":[{"id":300,"book_id":42,"status_id":2,"book":{"id":42,"title":"Reviewed title"},"edition_id":84,"edition":{"id":84,"asin":"B0SOURCE12","book_mappings":[]}}]}}`
-		case "GetUserBookReadsAll":
-			captureMutex.Lock()
-			readsRequest = request
-			captureMutex.Unlock()
-			response = `{"data":{"user_book_reads":[{"id":400,"user_book_id":300,"progress":10,"progress_seconds":100,"started_at":"2025-09-01","finished_at":null,"edition_id":84}]}}`
+			response = `{"data":{"user_books":[{"id":300,"book_id":42,"status_id":2,"book":{"id":42,"title":"Reviewed title"},"edition_id":84,"edition":{"id":84,"asin":"B0SOURCE12","book_mappings":[]},"user_book_reads":[{"id":400,"user_book_id":300,"progress":10,"progress_seconds":100,"started_at":"2025-09-01","finished_at":null,"edition_id":84}]}]}}`
 		case "UpdateUserBookRead":
 			captureMutex.Lock()
 			updateRequest = request
@@ -2776,21 +2771,23 @@ func TestCreateEditionFromDraftResyncUsesConcreteClients(t *testing.T) {
 	upsertCalls := operationCounts["UpsertRegionalAudibleBook"]
 	progressWriteCalls := operationCounts["UpdateUserBookRead"]
 	verifiedEditionReadCalls := operationCounts["GetEdition"]
-	userBookSnapshotReadCalls := operationCounts["GetUserBook"]
+	userBookWithReadsCalls := operationCounts["GetUserBookWithReads"]
+	separateUserBookCalls := operationCounts["GetUserBook"]
+	separateReadsCalls := operationCounts["GetUserBookReadsAll"]
 	queriedEdition := editionRequest
 	lookedUpUserBook := userBookLookupRequest
 	loadedUserBook := userBookRequest
-	loadedReads := readsRequest
 	updatedRead := updateRequest
 	captureMutex.Unlock()
 	require.EqualValues(t, 1, upsertCalls)
 	require.EqualValues(t, 1, progressWriteCalls)
 	require.EqualValues(t, 1, verifiedEditionReadCalls, "resync should reuse the edition freshly verified during creation")
-	require.EqualValues(t, 1, userBookSnapshotReadCalls, "resync should reuse the fetched user-book snapshot")
+	require.EqualValues(t, 1, userBookWithReadsCalls, "resync should read the user book and its reads in one request")
+	require.Zero(t, separateUserBookCalls)
+	require.Zero(t, separateReadsCalls)
 	require.EqualValues(t, 84, queriedEdition.Variables["editionId"], "creation should verify the returned edition")
 	require.EqualValues(t, 42, lookedUpUserBook.Variables["bookId"])
 	require.EqualValues(t, 300, loadedUserBook.Variables["id"])
-	require.EqualValues(t, 300, loadedReads.Variables["user_book_id"])
 	require.NotEmpty(t, updatedRead.Query)
 	require.EqualValues(t, 400, updatedRead.Variables["id"], "resync should update the existing read")
 	updateObject, ok := updatedRead.Variables["object"].(map[string]interface{})

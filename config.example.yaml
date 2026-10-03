@@ -68,6 +68,9 @@ sync:
   
   # Mark synced books as owned in Hardcover
   sync_owned: true
+  # Days to reuse ownership confirmations (default: 30). Set 0 to check every
+  # time ownership is processed. Environment: SYNC_OWNERSHIP_RECHECK_DAYS.
+  ownership_recheck_days: 30
   
   # Enable dry run mode (no changes will be made)
   dry_run: false

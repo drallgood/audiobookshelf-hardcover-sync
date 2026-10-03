@@ -434,3 +434,32 @@ hardcover:
 	assert.Equal(t, "", cfg.Audiobookshelf.AudnexusRegion,
 		"AudnexusRegion should default to empty string")
 }
+
+func TestOwnershipRecheckDaysDefaultsAndLoadsOverrides(t *testing.T) {
+	t.Setenv("SYNC_OWNERSHIP_RECHECK_DAYS", "")
+	cfg, err := LoadForTool("")
+	require.NoError(t, err)
+	assert.Equal(t, DefaultOwnershipRecheckDays, cfg.Sync.OwnershipRecheckDays)
+
+	for _, test := range []struct {
+		name string
+		yaml string
+		env  string
+		want int
+	}{
+		{name: "yaml value", yaml: "sync:\n  ownership_recheck_days: 12\n", want: 12},
+		{name: "yaml explicit zero", yaml: "sync:\n  ownership_recheck_days: 0\n", want: 0},
+		{name: "environment overrides yaml", yaml: "sync:\n  ownership_recheck_days: 12\n", env: "0", want: 0},
+		{name: "negative falls back", yaml: "sync:\n  ownership_recheck_days: -1\n", want: DefaultOwnershipRecheckDays},
+		{name: "duration overflow falls back", yaml: "sync:\n  ownership_recheck_days: 106752\n", want: DefaultOwnershipRecheckDays},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("SYNC_OWNERSHIP_RECHECK_DAYS", test.env)
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, os.WriteFile(path, []byte(test.yaml), 0o600))
+			cfg, err := LoadForTool(path)
+			require.NoError(t, err)
+			assert.Equal(t, test.want, cfg.Sync.OwnershipRecheckDays)
+		})
+	}
+}

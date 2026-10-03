@@ -25,6 +25,7 @@ func newRepositoryWithEncryptionForTest(t *testing.T) *Repository {
 }
 
 func TestMigrateFromSingleUserConfigCarriesAudnexusRegion(t *testing.T) {
+	t.Setenv("SYNC_OWNERSHIP_RECHECK_DAYS", "")
 	repo := newRepositoryWithEncryptionForTest(t)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(configPath, []byte(`
@@ -36,6 +37,8 @@ audiobookshelf:
   audnexus_region: "fr"
 hardcover:
   token: "hc-token"
+sync:
+  ownership_recheck_days: 0
 `), 0o600))
 
 	require.NoError(t, NewMigrationManager(repo, logger.Get()).MigrateFromSingleUserConfig(configPath))
@@ -45,4 +48,7 @@ hardcover:
 	require.NotNil(t, profile)
 	require.Equal(t, "fr", profile.SyncConfig.AudnexusRegion,
 		"the legacy audnexus_region must be carried into the default profile")
+	require.NotNil(t, profile.SyncConfig.OwnershipRecheckDays)
+	require.Equal(t, 0, *profile.SyncConfig.OwnershipRecheckDays,
+		"an explicit zero must survive single-user profile migration")
 }

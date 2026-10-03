@@ -150,6 +150,12 @@
                     </div>
 
                     <div class="form-group">
+                        <label for="ownership-recheck-days">Ownership recheck interval (days)</label>
+                        <input type="number" id="ownership-recheck-days" name="ownership_recheck_days" min="0" max="106751" step="1" value="30" required>
+                        <small>Reuse ownership confirmations for this many days. Use 0 to check every time ownership is processed. Default: 30.</small>
+                    </div>
+
+                    <div class="form-group">
                         <label>
                             <input type="checkbox" id="include-ebooks" name="include_ebooks">
                             Include Ebooks
@@ -272,6 +278,12 @@
                             <input type="checkbox" id="edit-sync-owned" name="sync_owned">
                             Mark synced books as owned in Hardcover
                         </label>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="edit-ownership-recheck-days">Ownership recheck interval (days)</label>
+                        <input type="number" id="edit-ownership-recheck-days" name="ownership_recheck_days" min="0" max="106751" step="1" value="30" required>
+                        <small>Reuse ownership confirmations for this many days. Use 0 to check every time ownership is processed. Default: 30.</small>
                     </div>
 
                     <div class="form-group">

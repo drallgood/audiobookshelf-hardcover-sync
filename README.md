@@ -84,9 +84,10 @@ category. Each result includes its Audiobookshelf cover, format, and series
 position when available, and its title links to the Audiobookshelf library
 item. Known Hardcover books link to Hardcover; a needs-review result instead
 shows the Hardcover candidate's series when available and links the candidate
-title. The Audiobookshelf ASIN links to Audible, and its ISBN links to a Goodreads
-search. Hardcover candidate identifiers are omitted because no matching edition
-has been confirmed.
+title. A candidate's published year is retained when Hardcover provides a usable
+release date, including when the title search omits it. The Audiobookshelf ASIN
+links to Audible, and its ISBN links to a Goodreads search. Hardcover candidate
+identifiers are omitted because no matching edition has been confirmed.
 
 #### Add an edition or forget a match from View Details
 
@@ -379,7 +380,7 @@ The project follows standard Go project layout:
 ### 📚 Core Sync Features
 - **Full Library Sync**: Syncs your entire Audiobookshelf library with Hardcover
 - **Smart Status Management**: Automatically sets "Want to Read", "Currently Reading", and "Read" status based on progress
-- **Ownership Tracking**: Marks synced books as "owned" to distinguish from wishlist items
+- **Ownership Tracking**: Marks synced books as "owned" to distinguish from wishlist items. A confirmed result is remembered with the saved match for `sync.ownership_recheck_days` (default: 30 days; `0` checks whenever ownership is reconciled); changing the Hardcover token or loading older state requires a fresh check when ownership is next reconciled
 - **Incremental Sync**: Efficient state-based syncing to only process changed books
   - Tracks sync state between runs
   - Configurable minimum change threshold
@@ -744,9 +745,10 @@ hardcover:
 # Sync settings
 sync:
   sync_interval: "1h"
-  minimum_progress: 0.01  # Minimum progress threshold (0.0 to 1.0)
+  minimum_progress: 0.01  # Minimum progress threshold (0.0 to 1.0). Audiobooks with positive progress below it skip Hardcover requests; zero-progress books may still match when process_unread_books is enabled for attention or want-to-read handling
   sync_want_to_read: true  # Sync books with 0% progress as "Want to Read"
   sync_owned: true        # Mark synced books as owned in Hardcover
+  ownership_recheck_days: 30  # Reuse ownership confirmations for this many days; 0 checks every time ownership is processed
   include_ebooks: false    # Include ebook-only Audiobookshelf items in sync
   process_unread_books: false  # Process books with 0% progress for mismatches and want-to-read status
   preserve_dnf: true      # Preserve books marked as "Did Not Finish" in Hardcover
@@ -907,6 +909,7 @@ hardcover:
 | `RATE_LIMIT_RATE` | Min time between requests | `rate_limit.rate` | e.g. `2s` (30 rpm) |
 | `RATE_LIMIT_MAX_CONCURRENT` | Max concurrent requests | `rate_limit.max_concurrent` | e.g. `1` |
 | `SYNC_INTERVAL` | Time between automatic syncs | `sync.sync_interval` | Legacy mode only |
+| `SYNC_OWNERSHIP_RECHECK_DAYS` | Days to reuse ownership confirmations (default: 30; 0 disables reuse) | `sync.ownership_recheck_days` | Legacy mode only; set per profile in service mode |
 | `SYNC_INCLUDE_EBOOKS` | Include ebook-only Audiobookshelf items | `sync.include_ebooks` | Legacy mode only |
 | `SYNC_LIBRARIES_INCLUDE` | Comma-separated list of libraries to include | `sync.libraries.include` | Legacy mode only |
 | `SYNC_LIBRARIES_EXCLUDE` | Comma-separated list of libraries to exclude | `sync.libraries.exclude` | Legacy mode only |

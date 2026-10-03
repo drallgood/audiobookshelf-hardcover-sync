@@ -308,8 +308,14 @@ func (s *MultiUserService) createEditionWithAssociationAndResync(ctx context.Con
 func sameRecoveredEditionAssociation(existing, verified statepkg.Association) bool {
 	// Provenance records how the local match was first established. Recovery
 	// verifies the same identifiers again but must preserve the original value.
+	// Ownership verification is cached state about the association, not part of
+	// its identity, so a fresh recovery result may omit it.
 	existing.Provenance = ""
 	verified.Provenance = ""
+	existing.OwnershipVerifiedAt = 0
+	verified.OwnershipVerifiedAt = 0
+	existing.OwnershipTokenFingerprint = ""
+	verified.OwnershipTokenFingerprint = ""
 	return existing == verified
 }
 

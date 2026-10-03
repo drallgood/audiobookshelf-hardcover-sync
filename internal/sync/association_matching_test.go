@@ -46,10 +46,12 @@ func expectASINEditionRead(t *testing.T, client *MockHardcoverClient, bookID, ed
 	t.Helper()
 	editionInt, err := strconv.Atoi(editionID)
 	require.NoError(t, err)
+	// Only the final sync path reads the edition and user book, so a test that
+	// stops earlier never reaches these. They are not the subject of these tests.
 	client.On("GetEdition", mock.Anything, editionID).Return(&models.Edition{
 		ID: editionID, BookID: bookID,
-	}, nil).Once()
-	client.On("GetUserBookID", mock.Anything, editionInt).Return(9021, nil).Once()
+	}, nil).Maybe()
+	client.On("GetUserBookID", mock.Anything, editionInt).Return(9021, nil).Maybe()
 }
 
 func TestFindBookInHardcoverReusesMatchingAssociationFirst(t *testing.T) {
@@ -333,8 +335,8 @@ func TestProcessBookDoesNotRepeatTemporaryASINFallbackLookup(t *testing.T) {
 	svc.hardcover = client
 	editionInt, err := strconv.Atoi("902")
 	require.NoError(t, err)
-	mockClient.On("GetEdition", mock.Anything, "902").Return(&models.Edition{ID: "902", BookID: "901"}, nil).Once()
-	mockClient.On("GetUserBookID", mock.Anything, editionInt).Return(9021, nil).Once()
+	mockClient.On("GetEdition", mock.Anything, "902").Return(&models.Edition{ID: "902", BookID: "901"}, nil).Maybe()
+	mockClient.On("GetUserBookID", mock.Anything, editionInt).Return(9021, nil).Maybe()
 
 	err = svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
 
@@ -723,14 +725,15 @@ func TestProcessBookConfirmsEbookISBNBeforePostMatchSkips(t *testing.T) {
 	}
 }
 
-func TestProcessBookDoesNotReconcileAudiobookISBNOnPostMatchSkip(t *testing.T) {
+func TestProcessBookDoesNotReconcileAudiobookISBNOnSkippedBooks(t *testing.T) {
 	tests := []struct {
 		name            string
 		progress        float64
 		minimumProgress float64
 		syncWantToRead  bool
+		wantLookups     int
 	}{
-		{name: "unread when want-to-read sync is disabled"},
+		{name: "unread when want-to-read sync is disabled", wantLookups: 1},
 		{name: "below minimum progress", progress: 0.25, minimumProgress: 0.5, syncWantToRead: true},
 	}
 	for _, tt := range tests {
@@ -745,15 +748,17 @@ func TestProcessBookDoesNotReconcileAudiobookISBNOnPostMatchSkip(t *testing.T) {
 			book.ID = "association-audiobook-post-match-skip-" + tt.name
 			book.Progress.CurrentTime = tt.progress * book.Media.Duration
 			book.Progress.StartedAt = 0
-			client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
-				Return(hardcoverHit(), nil).Once()
+			if tt.wantLookups > 0 {
+				client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+					Return(hardcoverHit(), nil).Once()
+			}
 
 			err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
 
 			require.NoError(t, err)
 			_, saved := svc.state.GetAssociation(book.ID)
 			assert.False(t, saved, "audiobook ISBNs must not create saved matches")
-			client.AssertNumberOfCalls(t, "SearchBookByISBN13", 1)
+			client.AssertNumberOfCalls(t, "SearchBookByISBN13", tt.wantLookups)
 			client.AssertNotCalled(t, "CheckBookOwnership", mock.Anything, mock.Anything)
 			client.AssertNotCalled(t, "MarkEditionAsOwned", mock.Anything, mock.Anything)
 			client.AssertNotCalled(t, "GetUserBookID", mock.Anything, mock.Anything)
