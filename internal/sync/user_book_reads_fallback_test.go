@@ -66,6 +66,15 @@ func TestProcessBookFallsBackWhenCombinedReadsQueryIsRejected(t *testing.T) {
 					combinedQueries.Add(1)
 					if tc.cancelCombined {
 						cancel()
+						// Avoid racing cancellation with a GraphQL validation response.
+						select {
+						case <-r.Context().Done():
+							return
+						case <-time.After(time.Second):
+							t.Errorf("request context did not cancel after caller cancellation")
+							http.Error(w, "request context was not canceled", http.StatusInternalServerError)
+							return
+						}
 					}
 					_, _ = w.Write([]byte(`{"errors":[{"message":"field user_book_reads not found in type user_books","extensions":{"code":"validation-failed"}}]}`))
 					return
