@@ -1980,6 +1980,51 @@ test('details requests started before an accepted edition action cannot erase it
     });
 });
 
+test('earlier details cannot replace a pending, failed, or retryable create result', async t => {
+    const previousDocument = global.document;
+    global.document = {
+        ...previousDocument, activeElement: null,
+        getElementById(id) { return id === 'sync-summary-container' ? { style: {} } : null; }
+    };
+    t.after(() => { global.document = previousDocument; });
+
+    for (const outcome of ['unconfirmed', 'created', 'failed', 'not_submitted']) {
+        const app = editionApp();
+        const open = app.openSummary;
+        Object.assign(open, { runId: 'run-1', generation: 1, renderedRunId: 'run-1', loading: false });
+        open.records.set(String(needsReview.book_id), { ...needsReview });
+        app.statuses.p1 = { snapshot: { run_id: 'run-1' } };
+        app.restoreDetailViewport = () => {};
+        app.renderDetailsSnapshot = snapshot => {
+            open.records = new Map(snapshot.book_outcomes.map(record => [String(record.book_id), record]));
+        };
+        const snapshot = { run_id: 'run-1', book_outcomes: [{ ...needsReview, edition_action: {
+            outcome: 'not_submitted', error: 'Earlier response',
+            submitted_body: { run_id: 'run-1', abs_item_id: needsReview.book_id }
+        } }] };
+        const oldDetails = deferred();
+        app.fetchJsonWithTimeout = () => oldDetails.promise;
+        const loading = app.fetchAndRenderDetails();
+        const payload = {
+            success: false, outcome, error: 'Current response',
+            data: { recovery_token: 'current-token', audible_identifier: 'B00ABC1234:us', hardcover_book_id: '42' }
+        };
+        stubDialog(app, 503, payload);
+        await app.submitEditionCreate();
+        const accepted = app.editionRequestState(open.records.get(String(needsReview.book_id)), open);
+        assert.equal(accepted.outcome, outcome);
+        oldDetails.resolve({ response: { ok: true, status: 200 }, data: snapshot });
+        await loading;
+        assert.deepEqual(app.editionRequestState(open.records.get(String(needsReview.book_id)), open), accepted,
+            `earlier details must preserve the ${outcome} result and its recovery data`);
+
+        app.fetchJsonWithTimeout = async () => ({ response: { ok: true, status: 200 }, data: snapshot });
+        await app.fetchAndRenderDetails();
+        assert.equal(open.records.get(String(needsReview.book_id)).edition_action.error, 'Earlier response',
+            'a details request started after the action remains authoritative');
+    }
+});
+
 test('terminal failed status check clears recovery and prevents another create', async () => {
     const app = editionApp();
     const dialog = stubDialog(app, 503, { success: false, outcome: 'unconfirmed', data: {

@@ -2803,6 +2803,7 @@ class SyncProfileApp {
         if (!dialog.submittedBody || open?.profileId !== dialog.profileId || open.runContext?.runId !== dialog.runId) return;
         const record = open.records?.get(String(dialog.record.book_id));
         if (record) {
+            open.editionActionRevision = (open.editionActionRevision || 0) + 1;
             open.records.set(String(record.book_id), { ...record,
                 edition_action: { ...action, submitted_body: { ...dialog.submittedBody } } });
             this.refreshEditionActionStates(open);
