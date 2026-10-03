@@ -2346,6 +2346,15 @@ class SyncProfileApp {
             `<div class="edition-warning" data-warning="${this.escapeHtmlAttribute(warning.code)}">${this.escapeHtml(warning.message)}</div>`).join('');
     }
 
+    renderAudibleImportWarnings(draft) {
+        return (draft.warnings || [])
+            .filter(warning => draft.audnexus_record || ![
+                'language_defaults_to_english', 'audnex_lookup_failed', 'audnex_temporarily_unavailable'
+            ].includes(warning.code))
+            .map(warning => `<div class="edition-warning" data-warning="${this.escapeHtmlAttribute(warning.code)}">${this.escapeHtml(warning.message)}</div>`)
+            .join('');
+    }
+
     renderAudiobookMetadataPreview(preview) {
         if (!preview) return '';
         const fields = [
@@ -2569,24 +2578,29 @@ class SyncProfileApp {
         const blockers = this.audibleImportBlockers(dialog, draft);
         const dryRun = Boolean(draft.dry_run || dialog.capability?.dry_run || dialog.runDryRun);
         const regionStatus = draft.region_status || 'unknown';
+        const lookupFailed = (draft.warnings || []).some(warning => warning.code === 'audnex_lookup_failed');
         const regionMessage = regionStatus === 'confirmed'
             ? 'Audible region confirmed. Review the comparison, then submit to confirm this record.'
             : regionStatus === 'temporarily_unavailable'
-                ? 'Audnexus is temporarily unavailable. Wait for any Retry-After countdown, then refresh the preview to try again.'
-                : 'The region could not be confirmed. Refresh the preview to retry region discovery.';
+                ? 'Audnexus lookup is temporarily unavailable. Audible import is unavailable until a regional match can be confirmed.'
+                : lookupFailed
+                    ? 'Audnexus could not verify a regional match for this audiobook. Audible import is unavailable.'
+                    : 'No matching audiobook was found in Audnexus. Audible import is unavailable.';
         const comparisonHtml = draft.audnexus_record
             ? `<section class="audible-import-comparison" aria-label="Audiobookshelf and Audnexus comparison">
                 <div class="audible-comparison-heading"><h4>Audiobookshelf</h4><h4>Audnexus</h4></div>
                 ${this.audibleImportComparisonRows(draft)}
             </section>` : '';
         const regionHtml = `<div class="edition-region ${regionStatus === 'confirmed' ? 'confirmed' : 'review'}" role="status">${this.escapeHtml(regionMessage)}</div>`;
-        const blockersHtml = blockers.map(text => `<div class="edition-error" data-blocker>${this.escapeHtml(text)}</div>`).join('');
+        const blockersHtml = blockers
+            .filter(text => text !== 'The regional Audnexus record must be confirmed by preview before importing.')
+            .map(text => `<div class="edition-error" data-blocker>${this.escapeHtml(text)}</div>`).join('');
         const canConfirm = blockers.length === 0 && !dialog.busy && !waiting && !dialog.loading;
         const confirmButton = dialog.retryCreate
             ? `<button type="button" class="btn btn-primary" data-edition-dialog="retry-create" ${canConfirm ? '' : 'disabled'}>Retry add edition</button>`
             : `<button type="button" class="btn btn-primary" data-edition-dialog="confirm-create" ${canConfirm ? '' : 'disabled'}>${dialog.busy ? 'Creating…' : 'Add edition'}</button>`;
         return `${dryRun ? '<div class="edition-dry-run">Dry run</div>' : ''}
-            ${regionHtml}${comparisonHtml}${this.renderWarnings(draft)}${blockersHtml}${errorHtml}
+            ${regionHtml}${comparisonHtml}${this.renderAudibleImportWarnings(draft)}${blockersHtml}${errorHtml}
             <div class="form-actions edition-create-actions">
                 ${confirmButton}
                 ${closeButton}

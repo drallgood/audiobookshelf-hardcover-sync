@@ -1138,9 +1138,33 @@ test('unknown, unavailable, and dry-run Audible previews cannot submit', () => {
         loading: false, busy: false, runDryRun: false, capability: null
     };
     for (const region_status of ['unknown', 'temporarily_unavailable']) {
-        const html = app.renderEditionDialog({ ...base, draft: confirmedAudibleDraft({ region_status, confirmed_region: '', audnexus_record: undefined }) });
+        const warning = region_status === 'temporarily_unavailable'
+            ? [{ code: 'audnex_temporarily_unavailable', message: 'Audnexus lookup is temporarily unavailable. Retry to check the regional Audible identifier.' }]
+            : [];
+        const html = app.renderEditionDialog({ ...base, draft: confirmedAudibleDraft({ region_status, confirmed_region: '', audnexus_record: undefined, warnings: warning }) });
         assert.match(html, /confirm-create" disabled/);
+        assert.doesNotMatch(html, /Refresh the preview|Retry to check/);
     }
+    const unmatched = app.renderEditionDialog({
+        ...base,
+        draft: confirmedAudibleDraft({
+            region_status: 'unknown', confirmed_region: '', audnexus_record: undefined,
+            warnings: [{ code: 'language_defaults_to_english', message: 'Audiobookshelf language is shown for reference; the edition draft uses English.' }]
+        })
+    });
+    assert.match(unmatched, /No matching audiobook was found in Audnexus\. Audible import is unavailable\./);
+    assert.doesNotMatch(unmatched, /regional Audnexus record must be confirmed|Refresh the preview|edition draft uses English/);
+    assert.equal((unmatched.match(/role="status"/g) || []).length, 1);
+    assert.match(unmatched, /confirm-create" disabled/);
+    const failedLookup = app.renderEditionDialog({
+        ...base,
+        draft: confirmedAudibleDraft({
+            region_status: 'unknown', confirmed_region: '', audnexus_record: undefined,
+            warnings: [{ code: 'audnex_lookup_failed', message: 'Audnexus did not confirm this regional Audible identifier.' }]
+        })
+    });
+    assert.match(failedLookup, /Audnexus could not verify a regional match for this audiobook\. Audible import is unavailable\./);
+    assert.doesNotMatch(failedLookup, /No matching audiobook was found|did not confirm this regional Audible identifier/);
     assert.match(app.renderEditionDialog({ ...base, runDryRun: true, draft: confirmedAudibleDraft() }), /confirm-create" disabled/);
 });
 
