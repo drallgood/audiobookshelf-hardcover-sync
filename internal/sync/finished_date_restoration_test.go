@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -229,6 +230,47 @@ func TestPendingFinishedDatesRecoverBeforeCurrentTargetGuards(t *testing.T) {
 			assertNoHardcoverBookSearches(t, hc)
 			hc.AssertExpectations(t)
 		})
+	}
+}
+
+func TestDryRunPendingFinishedDatesPreviewBeforeCurrentTargetGuards(t *testing.T) {
+	for _, target := range []string{"missing completion date", "unread progress reset"} {
+		for _, pending := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/pending=%t", target, pending), func(t *testing.T) {
+				svc, hc := createTestService()
+				svc.config.Sync.DryRun = true
+				svc.config.Sync.ProcessUnreadBooks = false
+				book := convertTestBookToModel(createTestFinishedBook("dry-pending-guard", "Title", "Author", "ASIN", ""))
+				book.Progress.FinishedAt = 0
+				if target == "unread progress reset" {
+					book.Progress.IsFinished = false
+					book.Progress.CurrentTime = 0
+				}
+				if pending {
+					svc.state.SetFinishedDateRestoration("789", book.ID, map[int64]string{100: "2025-06-01"})
+				}
+				svc.statePath = filepath.Join(t.TempDir(), "state.json")
+				require.NoError(t, svc.state.Save(svc.statePath))
+				before, err := os.ReadFile(svc.statePath)
+				require.NoError(t, err)
+				beforeState, err := json.Marshal(svc.state)
+				require.NoError(t, err)
+
+				require.NoError(t, svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{}))
+				expectedOutcome := OutcomeSkipped
+				if pending {
+					expectedOutcome = OutcomeWouldSync
+				}
+				assert.Equal(t, expectedOutcome, recordedOutcome(svc, book.ID).Outcome)
+				after, err := os.ReadFile(svc.statePath)
+				require.NoError(t, err)
+				assert.Equal(t, before, after, "dry run must preserve persisted recovery intent and checkpoints")
+				afterState, err := json.Marshal(svc.state)
+				require.NoError(t, err)
+				assert.Equal(t, beforeState, afterState, "dry run must preserve in-memory recovery intent and checkpoints")
+				assert.Empty(t, hc.Calls, "current-target guards must still prevent Hardcover calls")
+			})
+		}
 	}
 }
 

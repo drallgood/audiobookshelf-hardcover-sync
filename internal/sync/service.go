@@ -2139,6 +2139,9 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 	// Saved history belongs to a previous mutation, independent of today's ABS
 	// target. Repair it before missing-date, unread, and incremental guards.
 	hadPendingDateRestoration := s.state.HasFinishedDateRestoration(book.ID)
+	if s.config.Sync.DryRun && hadPendingDateRestoration {
+		setOutcome(OutcomeWouldSync, "would restore Hardcover finished read dates")
+	}
 	if !s.config.Sync.DryRun {
 		preservedDNF := false
 		for userBookID, dates := range s.state.GetItemFinishedDateRestorations(book.ID) {
