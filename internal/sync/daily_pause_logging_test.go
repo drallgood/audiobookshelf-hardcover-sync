@@ -83,7 +83,7 @@ func TestBookSearchIntentsObserveDailyQuotaPauseAtLookupBoundary(t *testing.T) {
 	tests := []bookSearchIntentCase{
 		{
 			name:                  "ASIN lookup",
-			asin:                  "daily-pause-asin",
+			asin:                  "B000TEST01",
 			wantSuppressedIntents: 1,
 		},
 		{
