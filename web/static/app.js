@@ -2204,6 +2204,12 @@ class SyncProfileApp {
             });
             if (recovery.outcome === 'not_submitted' && !recovery.draft) {
                 const restoredDialog = this.editionDialog;
+                const submittedIdentifier = recovery.submittedBody?.audible_identifier;
+                const identifierMatch = String(submittedIdentifier || '').match(/^([a-z0-9]{10}):(us|ca|uk|au|de|fr|es|in|it|jp)$/i);
+                if (this.isAudibleImportDialog(restoredDialog) && identifierMatch) {
+                    restoredDialog.audibleIdentifier = `${identifierMatch[1].toUpperCase()}:${identifierMatch[2].toLowerCase()}`;
+                    restoredDialog.audibleIdentifierInput = restoredDialog.audibleIdentifier;
+                }
                 await this.loadEditionDraft();
                 if (this.editionDialog !== restoredDialog) return;
                 restoredDialog.error = recovery.error || '';
