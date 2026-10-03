@@ -91,7 +91,7 @@ candidate. The Audiobookshelf ASIN links to Audible, and its ISBN links to a
 Goodreads search. Hardcover candidate identifiers are omitted because no
 matching edition has been confirmed.
 
-#### Add an edition or forget a match from View Details
+#### Add an edition, import by Audible ASIN, or forget a match from View Details
 
 After a sync finishes or is canceled, open **View Details** and select **Add
 edition** on an eligible needs-review book. When the run has a Hardcover
