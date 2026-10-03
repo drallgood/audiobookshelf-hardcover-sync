@@ -31,6 +31,24 @@ func createTestProfile(t *testing.T, db *Database, profileID string) {
 	require.NoError(t, db.GetDB().Create(&SyncProfile{ID: profileID, Name: profileID, Active: true}).Error)
 }
 
+func TestFreshLifecycleSchemaOmitsRetiredColumns(t *testing.T) {
+	db, _ := newRepositoryForTest(t)
+	migrator := db.GetDB().Migrator()
+	// Guard fresh schema creation; upgrades may retain legacy columns.
+	for _, column := range []string{
+		"run_generation",
+		"last_successful_run_id",
+		"last_successful_generation",
+		"created_at",
+		"updated_at",
+	} {
+		require.False(t, migrator.HasColumn(&ProfileSyncState{}, column), "retired profile state column %s", column)
+	}
+	for _, column := range []string{"created_at", "updated_at"} {
+		require.False(t, migrator.HasColumn(&SyncRunReport{}, column), "retired run report column %s", column)
+	}
+}
+
 func TestFreshLifecycleSchemaStoresSnapshotsAsLargeText(t *testing.T) {
 	db, _ := newRepositoryForTest(t)
 	migrator := db.GetDB().Migrator()
