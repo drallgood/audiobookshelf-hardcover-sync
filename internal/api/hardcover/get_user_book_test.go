@@ -3,6 +3,7 @@ package hardcover
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -26,6 +27,7 @@ func TestClient_GetUserBook(t *testing.T) {
 		mockStatusCode int
 		expected       *models.HardcoverBook
 		expectError    bool
+		expectNotFound bool
 	}{
 		{
 			name:       "successful retrieval - READING status",
@@ -104,8 +106,9 @@ func TestClient_GetUserBook(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:       "user book not found",
-			userBookID: "999",
+			name:           "user book not found",
+			expectNotFound: true,
+			userBookID:     "999",
 			mockResponse: map[string]interface{}{
 				"data": map[string]interface{}{
 					"user_books": []map[string]interface{}{},
@@ -186,6 +189,7 @@ func TestClient_GetUserBook(t *testing.T) {
 			// Check for expected errors
 			if tt.expectError {
 				assert.Error(t, err)
+				assert.Equal(t, tt.expectNotFound, errors.Is(err, ErrUserBookNotFound))
 				assert.Nil(t, got)
 				return
 			}

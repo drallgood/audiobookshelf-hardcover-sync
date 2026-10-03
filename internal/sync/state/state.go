@@ -31,6 +31,7 @@ type State struct {
 
 // FinishedDateRestoration preserves completion dates across Hardcover's status
 // mutation, which can replace an existing read's finished_at with today's date.
+// Dates includes every existing read; an empty string represents null finished_at.
 type FinishedDateRestoration struct {
 	ABSItemID string           `json:"absItemId"`
 	Dates     map[int64]string `json:"dates"`

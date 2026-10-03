@@ -3258,6 +3258,9 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 		}
 	}
 	if getUserBookErr != nil {
+		if hasPendingDates && !s.config.Sync.DryRun && errors.Is(getUserBookErr, hardcover.ErrUserBookNotFound) {
+			s.discardDeletedUserBookRestoration(ctx, userBookID)
+		}
 		log.Error("Failed to get current book status", map[string]interface{}{
 			"error": getUserBookErr,
 		})
@@ -3352,9 +3355,11 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 
 	intendedDates := make(map[int64]string)
 	for _, read := range readStatuses {
-		if read.FinishedAt != nil && *read.FinishedAt != "" {
-			intendedDates[read.ID] = *read.FinishedAt
+		date, err := canonicalFinishedReadDate(read.FinishedAt)
+		if err != nil {
+			return fmt.Errorf("snapshot finished date for read %d: %w", read.ID, err)
 		}
+		intendedDates[read.ID] = date
 	}
 	needsStatusUpdate := true
 	// A FINISHED transition can overwrite the latest read's completion date.
@@ -3530,7 +3535,7 @@ func (s *Service) HandleFinishedBook(ctx context.Context, book models.Audiobooks
 				return err
 			}
 			s.state.ClearFinishedDateRestoration(userBookIDStr)
-			s.deleteBlankReads(ctx, userBookID, log)
+			s.deleteBlankReads(ctx, userBookID, log, intendedDates)
 		}
 	}
 	success = true
@@ -3548,6 +3553,10 @@ func (s *Service) recoverFinishedReadDates(ctx context.Context, userBookID int64
 	userBookIDStr := strconv.FormatInt(userBookID, 10)
 	userBook, err := s.hardcover.GetUserBook(ctx, userBookIDStr)
 	if err != nil {
+		if errors.Is(err, hardcover.ErrUserBookNotFound) {
+			s.discardDeletedUserBookRestoration(ctx, userBookID)
+			return false, nil
+		}
 		return false, fmt.Errorf("get user book for finished-date recovery: %w", err)
 	}
 	if userBook == nil {
@@ -3566,10 +3575,46 @@ func (s *Service) recoverFinishedReadDates(ctx context.Context, userBookID int64
 	return false, nil
 }
 
+// canonicalFinishedReadDate keeps the calendar date in the supplied timezone.
+// Empty values represent an unfinished read, including legacy persisted intents.
+func canonicalFinishedReadDate(value *string) (string, error) {
+	if value == nil || *value == "" {
+		return "", nil
+	}
+	if parsed, err := time.Parse("2006-01-02", *value); err == nil {
+		return parsed.Format("2006-01-02"), nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, *value)
+	if err != nil {
+		return "", fmt.Errorf("invalid finished_at %q: %w", *value, err)
+	}
+	return parsed.Format("2006-01-02"), nil
+}
+
+func (s *Service) discardDeletedUserBookRestoration(ctx context.Context, userBookID int64) {
+	s.hardcover.ClearUserBookCache()
+	s.state.ClearFinishedDateRestoration(strconv.FormatInt(userBookID, 10))
+	s.userBookCache.InvalidateByUserBook(int(userBookID))
+	if snapshots := operationUserBookSnapshotsFromContext(ctx); snapshots != nil {
+		snapshots.mu.Lock()
+		delete(snapshots.userBooks, int(userBookID))
+		snapshots.mu.Unlock()
+	}
+	s.log.Warn("Discarding finished-date restoration for deleted user book", map[string]interface{}{"user_book_id": userBookID})
+}
+
 // restoreFinishedReadDates repairs only the snapshotted read IDs. Hardcover's
 // aggregate last_read_date may update asynchronously; individual reads are the
 // immediate correctness boundary for checkpointing a finished synchronization.
 func (s *Service) restoreFinishedReadDates(ctx context.Context, userBookID int64, intended map[int64]string) error {
+	effective := make(map[int64]string, len(intended))
+	for id, date := range intended {
+		canonical, err := canonicalFinishedReadDate(&date)
+		if err != nil {
+			return fmt.Errorf("restore finished date for read %d: %w", id, err)
+		}
+		effective[id] = canonical
+	}
 	reads, err := s.hardcover.GetUserBookReads(ctx, hardcover.GetUserBookReadsInput{UserBookID: userBookID})
 	if err != nil {
 		return fmt.Errorf("load finished reads for restoration: %w", err)
@@ -3578,32 +3623,72 @@ func (s *Service) restoreFinishedReadDates(ctx context.Context, userBookID int64
 	for _, read := range reads {
 		byID[read.ID] = read
 	}
-	for id, date := range intended {
-		read, ok := byID[id]
-		if !ok {
-			return fmt.Errorf("finished read %d missing during date restoration", id)
+	missing := false
+	for id := range effective {
+		if _, ok := byID[id]; !ok {
+			missing = true
 		}
-		if read.FinishedAt != nil && *read.FinishedAt == date {
+	}
+	if missing {
+		// Confirm absence in two successful unfiltered queries before discarding
+		// intent. Do not recreate history a user removed.
+		confirmed, err := s.hardcover.GetUserBookReads(ctx, hardcover.GetUserBookReadsInput{UserBookID: userBookID})
+		if err != nil {
+			return fmt.Errorf("confirm missing finished reads: %w", err)
+		}
+		initialByID := byID
+		byID = make(map[int64]hardcover.UserBookRead, len(confirmed))
+		for _, read := range confirmed {
+			byID[read.ID] = read
+		}
+		for id := range effective {
+			if _, ok := byID[id]; !ok {
+				if _, wasPresent := initialByID[id]; wasPresent {
+					return fmt.Errorf("finished read %d disappeared during deletion confirmation", id)
+				}
+				delete(effective, id)
+				s.log.Warn("Skipping deleted read during finished-date restoration", map[string]interface{}{"read_id": id, "user_book_id": userBookID})
+			}
+		}
+	}
+	wrote := false
+	for id, date := range effective {
+		read := byID[id]
+		actual, err := canonicalFinishedReadDate(read.FinishedAt)
+		if err != nil {
+			return fmt.Errorf("read finished date for read %d: %w", id, err)
+		}
+		if actual == date {
 			continue
 		}
-		if _, err := s.hardcover.UpdateUserBookRead(ctx, hardcover.UpdateUserBookReadInput{ID: id, Object: map[string]interface{}{"finished_at": date}}); err != nil {
+		var finishedAt interface{}
+		if date != "" {
+			finishedAt = date
+		}
+		if _, err := s.hardcover.UpdateUserBookRead(ctx, hardcover.UpdateUserBookReadInput{ID: id, Object: map[string]interface{}{"finished_at": finishedAt}}); err != nil {
 			return fmt.Errorf("restore finished date for read %d: %w", id, err)
 		}
+		wrote = true
+	}
+	if !wrote {
+		return nil // The successful readback already verified every surviving intent.
 	}
 	verified, err := s.hardcover.GetUserBookReads(ctx, hardcover.GetUserBookReadsInput{UserBookID: userBookID})
 	if err != nil {
 		return fmt.Errorf("verify restored finished reads: %w", err)
 	}
-	remaining := make(map[int64]string, len(intended))
-	for id, date := range intended {
-		remaining[id] = date
-	}
 	for _, read := range verified {
-		if date, ok := remaining[read.ID]; ok && read.FinishedAt != nil && *read.FinishedAt == date {
-			delete(remaining, read.ID)
+		if date, ok := effective[read.ID]; ok {
+			actual, err := canonicalFinishedReadDate(read.FinishedAt)
+			if err != nil {
+				return fmt.Errorf("verify finished date for read %d: %w", read.ID, err)
+			}
+			if actual == date {
+				delete(effective, read.ID)
+			}
 		}
 	}
-	if len(remaining) > 0 {
+	if len(effective) > 0 {
 		return fmt.Errorf("finished read dates failed verification for user book %d", userBookID)
 	}
 	return nil
@@ -4721,8 +4806,9 @@ func (s *Service) handleInProgressBook(ctx context.Context, userBookID int64, bo
 
 // deleteBlankReads detects and deletes auto-created blank read rows that Hardcover
 // can create as a side effect of status transitions. Blank reads have no progress,
-// no progress_seconds, and no finished_at timestamp.
-func (s *Service) deleteBlankReads(ctx context.Context, userBookID int64, log *logger.Logger) {
+// no progress_seconds, and no finished_at timestamp. Optional protected IDs
+// preserve pre-existing blank history snapshotted before a FINISHED transition.
+func (s *Service) deleteBlankReads(ctx context.Context, userBookID int64, log *logger.Logger, protected ...map[int64]string) {
 	allReads, refetchErr := s.hardcover.GetUserBookReads(ctx, hardcover.GetUserBookReadsInput{
 		UserBookID: userBookID,
 	})
@@ -4732,6 +4818,11 @@ func (s *Service) deleteBlankReads(ctx context.Context, userBookID int64, log *l
 	}
 	for i := range allReads {
 		read := &allReads[i]
+		if len(protected) > 0 {
+			if _, exists := protected[0][read.ID]; exists {
+				continue
+			}
+		}
 		if read.ProgressSeconds != nil {
 			continue
 		}

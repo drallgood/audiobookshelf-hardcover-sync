@@ -29,17 +29,19 @@ func TestFinishedDateRestorationAcrossStatusAndRestart(t *testing.T) {
 		existing      bool
 		closing       bool
 		nextFinished  bool
+		unfinished    bool
 	}{
 		{name: "new read"},
 		{name: "existing history out of date order", existing: true},
 		{name: "closing older unfinished read", existing: true, closing: true},
+		{name: "preserve other unfinished history", existing: true, closing: true, unfinished: true},
 		{name: "status failure survives restart", failure: "status"},
 		{name: "repair failure survives restart", failure: "repair"},
 		{name: "pending recovery closes current finished reread", failure: "repair", nextFinished: true},
 		{name: "readback failure survives restart", failure: "fetch"},
 		{name: "verification fetch failure survives restart", failure: "verify"},
 		{name: "verification mismatch survives restart", failure: "mismatch"},
-		{name: "missing read remains pending", failure: "missing"},
+		{name: "transient missing read recovered", failure: "transient"},
 		{name: "state save failure prevents status", failure: "save"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -59,6 +61,9 @@ func TestFinishedDateRestorationAcrossStatusAndRestart(t *testing.T) {
 			}
 			if tc.closing {
 				dates[10] = ""
+			}
+			if tc.unfinished {
+				dates[11] = ""
 			}
 			status, inserts, transitions, repairs, postStatusFetches := 1, 0, 0, 0, 0
 			fail := tc.failure
@@ -82,10 +87,28 @@ func TestFinishedDateRestorationAcrossStatusAndRestart(t *testing.T) {
 					}
 					rows := []interface{}{}
 					for id, date := range dates {
-						if fail == "missing" && transitions > 0 && id == 100 {
+						if fail == "transient" && postStatusFetches == 1 && id == 100 {
 							continue
 						}
-						rows = append(rows, map[string]interface{}{"id": id, "finished_at": date, "progress_seconds": 3600})
+						var finishedAt interface{}
+						if date != "" {
+							finishedAt = date
+						}
+						row := map[string]interface{}{"id": id, "finished_at": finishedAt, "progress_seconds": 3600}
+						if id == 11 {
+							row["progress_seconds"] = nil
+							row["started_at"] = "2023-01-01"
+						}
+						rows = append(rows, row)
+					}
+					// Hardcover returns newest reads first; close 10, preserving 11.
+					if tc.unfinished {
+						for i, row := range rows {
+							if row.(map[string]interface{})["id"] == int64(10) {
+								rows[0], rows[i] = rows[i], rows[0]
+								break
+							}
+						}
 					}
 					data["user_book_reads"] = rows
 				case strings.Contains(req.Query, "InsertUserBookRead"):
@@ -115,8 +138,12 @@ func TestFinishedDateRestorationAcrossStatusAndRestart(t *testing.T) {
 						_, _ = w.Write([]byte(`{"errors":[{"message":"repair unavailable"}]}`))
 						return
 					}
+					if tc.unfinished && int64(req.Variables["id"].(float64)) == 11 {
+						require.Equal(t, map[string]interface{}{"finished_at": nil}, req.Variables["object"], "restoration must preserve the unfinished read's start and progress")
+					}
 					if fail != "mismatch" {
-						dates[int64(req.Variables["id"].(float64))] = req.Variables["object"].(map[string]interface{})["finished_at"].(string)
+						date, _ := req.Variables["object"].(map[string]interface{})["finished_at"].(string)
+						dates[int64(req.Variables["id"].(float64))] = date
 					}
 					data["update_user_book_read"] = map[string]interface{}{"id": int(req.Variables["id"].(float64))}
 				default:
@@ -138,7 +165,7 @@ func TestFinishedDateRestorationAcrossStatusAndRestart(t *testing.T) {
 				assert.False(t, ok)
 				return
 			}
-			if tc.failure != "" {
+			if tc.failure != "" && tc.failure != "transient" {
 				require.Error(t, err)
 				_, ok := svc.state.GetBookState("restoration:456")
 				assert.False(t, ok)
@@ -187,6 +214,9 @@ func TestFinishedDateRestorationAcrossStatusAndRestart(t *testing.T) {
 			} else {
 				assert.Equal(t, "2025-06-01", dates[100])
 				assert.Equal(t, 1, inserts)
+			}
+			if tc.unfinished {
+				assert.Equal(t, "", dates[11], "unselected blank history must stay unfinished and survive cleanup")
 			}
 			if tc.nextFinished {
 				assert.Equal(t, 2, transitions)
@@ -391,5 +421,138 @@ func TestHandleFinishedBookStopsWhenRecoveryFindsPreservedDNF(t *testing.T) {
 	hc.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
 	hc.AssertNotCalled(t, "UpdateUserBookRead", mock.Anything, mock.Anything)
 	hc.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+	hc.AssertExpectations(t)
+}
+
+func TestFinishedDateRestorationCanonicalReadback(t *testing.T) {
+	for _, tc := range []struct {
+		name, intent, actual, want string
+		invalid                    bool
+	}{
+		{name: "equivalent date timestamp", intent: "2025-06-01", actual: "2025-06-01T23:59:59.123456789-04:00", want: "2025-06-01"},
+		{name: "legacy timestamp", intent: "2025-06-01T23:59:59-04:00", actual: "2026-10-02", want: "2025-06-01"},
+		{name: "unfinished", intent: "", actual: "2026-10-02"},
+		{name: "invalid persisted", intent: "2025-99-01", invalid: true},
+		{name: "invalid remote", intent: "2025-06-01", actual: "not a date", invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, hc := createTestService()
+			svc.state.SetFinishedDateRestoration("789", "item", map[int64]string{100: tc.intent})
+			hc.On("GetUserBook", mock.Anything, "789").Return(&models.HardcoverBook{BookStatusID: 3}, nil).Once()
+			reads := []hardcover.UserBookRead{{ID: 100, FinishedAt: stringPointer(tc.actual)}}
+			fetches := 1
+			if !tc.invalid && tc.actual == "2026-10-02" {
+				fetches = 2
+			}
+			if tc.name != "invalid persisted" {
+				hc.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: 789}).Return(reads, nil).Times(fetches)
+			}
+			if fetches == 2 {
+				hc.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool {
+					if tc.want == "" {
+						value, present := input.Object["finished_at"]
+						return present && value == nil
+					}
+					return input.Object["finished_at"] == tc.want
+				})).Run(func(mock.Arguments) {
+					if tc.want == "" {
+						reads[0].FinishedAt = nil
+					} else {
+						reads[0].FinishedAt = stringPointer(tc.want)
+					}
+				}).Return(true, nil).Once()
+			}
+			_, err := svc.recoverFinishedReadDates(context.Background(), 789, map[int64]string{100: tc.intent})
+			if tc.invalid {
+				require.Error(t, err)
+				assert.True(t, svc.state.HasFinishedDateRestoration("item"))
+			} else {
+				require.NoError(t, err)
+				assert.False(t, svc.state.HasFinishedDateRestoration("item"))
+			}
+			hc.AssertExpectations(t)
+		})
+	}
+}
+
+func TestFinishedDateRestorationDeletedReads(t *testing.T) {
+	for _, confirmationFails := range []bool{false, true} {
+		t.Run(fmt.Sprint(confirmationFails), func(t *testing.T) {
+			svc, hc := createTestService()
+			dates := map[int64]string{100: "2025-06-01", 101: "2024-01-01"}
+			svc.state.SetFinishedDateRestoration("789", "item", dates)
+			hc.On("GetUserBook", mock.Anything, "789").Return(&models.HardcoverBook{BookStatusID: 3}, nil).Once()
+			reads := []hardcover.UserBookRead{{ID: 100, FinishedAt: stringPointer("2026-10-02")}}
+			hc.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: 789}).Return(reads, nil).Once()
+			if confirmationFails {
+				hc.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: 789}).Return(nil, fmt.Errorf("unavailable")).Once()
+			} else {
+				hc.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: 789}).Return(reads, nil).Twice()
+				hc.On("UpdateUserBookRead", mock.Anything, mock.MatchedBy(func(input hardcover.UpdateUserBookReadInput) bool { return input.ID == 100 })).Run(func(mock.Arguments) { reads[0].FinishedAt = stringPointer("2025-06-01") }).Return(true, nil).Once()
+			}
+			_, err := svc.recoverFinishedReadDates(context.Background(), 789, dates)
+			if confirmationFails {
+				require.Error(t, err)
+				assert.True(t, svc.state.HasFinishedDateRestoration("item"))
+			} else {
+				require.NoError(t, err)
+				assert.False(t, svc.state.HasFinishedDateRestoration("item"))
+			}
+			hc.AssertNotCalled(t, "InsertUserBookRead", mock.Anything, mock.Anything)
+			hc.AssertExpectations(t)
+		})
+	}
+}
+
+func TestFinishedDateRestorationDeletedUserBook(t *testing.T) {
+	for _, direct := range []bool{false, true} {
+		t.Run(fmt.Sprint(direct), func(t *testing.T) {
+			svc, hc := createTestService()
+			ctx := withOperationUserBookSnapshots(context.Background())
+			book := convertTestBookToModel(createTestFinishedBook("deleted", "Title", "Author", "ASIN", ""))
+			svc.state.SetFinishedDateRestoration("789", book.ID, map[int64]string{100: "2025-06-01"})
+			svc.state.SetFinishedDateRestoration("790", "other", map[int64]string{101: "2025-06-01"})
+			cached := &models.HardcoverBook{ID: "123", BookStatusID: 3}
+			setOperationUserBookSnapshot(ctx, 789, cached)
+			svc.userBookCache.SetByUserBook(789, cached)
+			hc.On("GetUserBook", mock.Anything, "789").Return(nil, fmt.Errorf("lookup: %w", hardcover.ErrUserBookNotFound)).Once()
+			hc.On("ClearUserBookCache").Return().Once()
+			if direct {
+				require.ErrorIs(t, svc.HandleFinishedBook(ctx, book, "456", 789), hardcover.ErrUserBookNotFound)
+			} else {
+				_, err := svc.recoverFinishedReadDates(ctx, 789, map[int64]string{100: "2025-06-01"})
+				require.NoError(t, err)
+			}
+			assert.False(t, svc.state.HasFinishedDateRestoration(book.ID))
+			assert.True(t, svc.state.HasFinishedDateRestoration("other"))
+			_, found := svc.getUserBookSnapshot(ctx, 789)
+			assert.False(t, found)
+			hc.AssertExpectations(t)
+		})
+	}
+}
+
+func TestDeletedPendingUserBookAllowsReplacementMatching(t *testing.T) {
+	svc, hc := createTestService()
+	svc.config.Sync.SyncOwned = false
+	svc.config.Sync.Incremental = true
+	book := *inProgressBook("replacement")
+	book.Progress.IsFinished = true
+	book.Progress.CurrentTime = 1000
+	book.Progress.FinishedAt = time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
+	svc.statePath = filepath.Join(t.TempDir(), "state.json")
+	svc.state.SetFinishedDateRestoration("789", book.ID, map[int64]string{100: "2025-06-01"})
+	ctx := withOperationUserBookSnapshots(context.Background())
+	setOperationUserBookSnapshot(ctx, 789, &models.HardcoverBook{ID: "100", EditionID: "200", BookStatusID: 3})
+	hc.On("GetUserBook", mock.Anything, "789").Return(nil, hardcover.ErrUserBookNotFound).Once()
+	hc.On("ClearUserBookCache").Return().Once()
+	expectASINMatch(hc, book.Media.Metadata.ASIN, "100", "200", 300)
+	hc.On("GetUserBook", mock.Anything, "300").Return(&models.HardcoverBook{ID: "100", EditionID: "200", BookStatusID: 3}, nil).Once()
+	hc.On("GetUserBookReads", mock.Anything, hardcover.GetUserBookReadsInput{UserBookID: 300}).Return([]hardcover.UserBookRead{{ID: 400, FinishedAt: stringPointer("2025-06-01")}}, nil).Once()
+	require.NoError(t, svc.processBook(ctx, book, &models.AudiobookshelfUserProgress{}))
+	assert.False(t, svc.state.HasFinishedDateRestoration(book.ID))
+	checkpoint, found := svc.state.GetBookState(book.ID + ":200")
+	require.True(t, found)
+	assert.Equal(t, "300", checkpoint.UserBookID)
 	hc.AssertExpectations(t)
 }

@@ -487,6 +487,42 @@ func TestClient_UpdateUserBookRead(t *testing.T) {
 	}
 }
 
+func TestClient_UpdateUserBookReadCompletionDatePresence(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		object  map[string]interface{}
+		present bool
+		value   interface{}
+	}{
+		{name: "omitted date", object: map[string]interface{}{"progress_seconds": 120}},
+		{name: "clear completion", object: map[string]interface{}{"finished_at": nil}, present: true},
+		{name: "set completion", object: map[string]interface{}{"finished_at": "2025-06-01"}, present: true, value: "2025-06-01"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					Variables struct {
+						Object map[string]interface{} `json:"object"`
+					} `json:"variables"`
+				}
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+				value, present := request.Variables.Object["finished_at"]
+				assert.Equal(t, tc.present, present)
+				assert.Equal(t, tc.value, value)
+				_, err := w.Write([]byte(`{"data":{"update_user_book_read":{"id":123,"error":null}}}`))
+				require.NoError(t, err)
+			}))
+			defer server.Close()
+			cfg := DefaultClientConfig()
+			cfg.BaseURL, cfg.RateLimit, cfg.MaxRetries = server.URL, time.Nanosecond, 0
+			client := NewClientWithConfig(cfg, "test-token", logger.Get())
+			updated, err := client.UpdateUserBookRead(context.Background(), UpdateUserBookReadInput{ID: 123, Object: tc.object})
+			require.NoError(t, err)
+			assert.True(t, updated)
+		})
+	}
+}
+
 func TestClient_GetUserBookReads(t *testing.T) {
 	// Set up the logger
 	logger.Setup(logger.Config{

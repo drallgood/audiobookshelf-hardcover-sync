@@ -386,7 +386,7 @@ The project follows standard Go project layout:
   - Checkpoints changed state after each processed book (except dry runs); each run still scans the library from the beginning
   - For books that would be newly matched, an item explicitly marked finished or computed at 100% progress without `finished_at` is excluded from Hardcover matching until a finished date is available. This fix applies to new matches and does not repair existing reads created with the old sync-time synthetic date.
   - Full sync and edition resync preserve historical finish dates and reread history. Failed date repairs retry after a restart; dry runs preview pending repairs without making changes. Hardcover's summary date may take time to refresh. Previously incorrect dates are not automatically fixed.
-  - Pending repairs may overwrite manual date changes. Deleting a Hardcover book or reading-history entry while a repair is pending blocks that book's sync until manually resolved.
+  - Pending repairs may overwrite manual date changes. Deleted books or reading-history entries are skipped during recovery so they do not block future syncs.
 
 - **Smart Caching**: Intelligent caching of author/narrator lookups with cross-role discovery
 - **Enhanced Progress Detection**: Uses `/api/me` endpoint for accurate finished book detection, preventing false re-read scenarios
