@@ -185,10 +185,10 @@ func TestFindBookInHardcoverByTitleAuthorSkipsBookLookupWhenSearchHasRequiredMet
 func TestProcessBookKeepsCandidateYearAfterIdentifierFailure(t *testing.T) {
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
-	book := toAudiobookshelfBook(createTestBook("candidate-year", "Possible Match", "Author", "failed-asin", ""))
+	book := toAudiobookshelfBook(createTestBook("candidate-year", "Possible Match", "Author", "B0FAIL0001", ""))
 	book.Progress.CurrentTime = 300
 	lookupErr := assert.AnError
-	hc.On("SearchBookByASIN", mock.Anything, "failed-asin").Return((*models.HardcoverBook)(nil), lookupErr).Once()
+	hc.On("SearchBookByASIN", mock.Anything, "B0FAIL0001").Return((*models.HardcoverBook)(nil), lookupErr).Once()
 	hc.On("SearchBooks", mock.Anything, "Possible Match Author", "").Return([]models.HardcoverBook{{
 		ID: "901", Title: "Possible Match", Slug: "possible-match", CoverImageURL: "candidate-cover",
 		Authors: []models.Author{{Name: "Candidate Author"}},
