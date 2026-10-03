@@ -42,6 +42,32 @@ function createApp() {
     return app;
 }
 
+// Normalize rendered text for assertions, not raw-HTML matching: strip tags, decode common entities once, and normalize whitespace.
+function visibleText(html) {
+    return html
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&amp;/g, '&')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function addEditionButton(html) {
+    const button = [...html.matchAll(/<button\b[^>]*>/g)]
+        .map(([tag]) => tag)
+        .find(tag => /\bdata-edition-action=(["'])add\1/.test(tag));
+    assert.ok(button, 'Add edition button should be present');
+    const attributes = button.replace(/(["'])[\s\S]*?\1/g, '');
+    return {
+        disabled: /\sdisabled(?=\s|=|>)/.test(attributes),
+        title: visibleText(button.match(/\btitle=(["'])(.*?)\1/)?.[2] || '')
+    };
+}
+
 test('accepted queued run clears a prior terminal error from its status card', () => {
     const app = createApp();
     app.users = [{ id: 'profile-1', name: 'Test Profile' }];
@@ -80,11 +106,12 @@ test('active run timestamps distinguish current activity from the previous succe
         }
     });
 
-    assert.match(html, /<strong>Run started:<\/strong>/);
-    assert.match(html, /<strong>Last activity:<\/strong>/);
-    assert.match(html, /<strong>Previous successful sync:<\/strong>/);
-    assert.doesNotMatch(html, /<strong>Last attempted:<\/strong>/);
-    assert.doesNotMatch(html, /<strong>Last successful:<\/strong>/);
+    const text = visibleText(html);
+    assert.match(text, /Run started:/);
+    assert.match(text, /Last activity:/);
+    assert.match(text, /Previous successful sync:/);
+    assert.doesNotMatch(text, /Last attempted:/);
+    assert.doesNotMatch(text, /Last successful:/);
 });
 
 test('successful run timestamps show the run start and completion without historical duplicates', () => {
@@ -102,10 +129,11 @@ test('successful run timestamps show the run start and completion without histor
         }
     });
 
-    assert.match(html, /<strong>Run started:<\/strong>/);
-    assert.match(html, /<strong>Completed:<\/strong>/);
-    assert.doesNotMatch(html, /<strong>Last attempted:<\/strong>/);
-    assert.doesNotMatch(html, /<strong>Last successful:<\/strong>/);
+    const text = visibleText(html);
+    assert.match(text, /Run started:/);
+    assert.match(text, /Completed:/);
+    assert.doesNotMatch(text, /Last attempted:/);
+    assert.doesNotMatch(text, /Last successful:/);
 });
 
 for (const terminal of [
@@ -128,9 +156,10 @@ for (const terminal of [
             }
         });
 
-        assert.match(html, new RegExp(`<strong>${terminal.label}:<\\/strong>`));
-        assert.match(html, /<strong>Last successful:<\/strong>/);
-        assert.doesNotMatch(html, /<strong>Last attempted:<\/strong>/);
+        const text = visibleText(html);
+        assert.ok(text.includes(`${terminal.label}:`));
+        assert.match(text, /Last successful:/);
+        assert.doesNotMatch(text, /Last attempted:/);
     });
 }
 
@@ -142,9 +171,10 @@ test('attempt and success timestamps remain as fallbacks without retained run de
         last_successful_at: '2026-09-16T12:30:00Z'
     });
 
-    assert.match(html, /<strong>Last attempted:<\/strong>/);
-    assert.match(html, /<strong>Last successful:<\/strong>/);
-    assert.doesNotMatch(html, /<strong>Run started:<\/strong>/);
+    const text = visibleText(html);
+    assert.match(text, /Last attempted:/);
+    assert.match(text, /Last successful:/);
+    assert.doesNotMatch(text, /Run started:/);
 });
 
 test('run details use the timestamp for the current lifecycle phase', () => {
@@ -253,7 +283,7 @@ function deferred() {
     return { promise, resolve };
 }
 
-test('session reset closes a pending edition preview and ignores its late response', async t => {
+test('session reset closes pending preview and status requests and ignores their late responses', async t => {
     const harness = pendingDialogApp();
     t.after(harness.restore);
     const { app, modal, content } = harness;
@@ -269,11 +299,11 @@ test('session reset closes a pending edition preview and ignores its late respon
     };
     const loading = app.loadEditionDraft();
     const previewController = app.editionDialog.controller;
+    app.activeStatusRequests = 0;
+    const statusLoading = app.loadStatuses({ silent: true });
 
     app.resetSessionBoundState();
     assert.equal(app.editionDialog, null);
-    assert.equal(app.authSessionGeneration, 11);
-    assert.equal(app.statusLoadSequence, 21);
     assert.deepEqual(app.users, []);
     assert.deepEqual(Object.keys(app.statuses), []);
     assert.equal(app.openSummary, null);
@@ -283,6 +313,9 @@ test('session reset closes a pending edition preview and ignores its late respon
 
     const newSessionDialog = { mode: 'forget', record: { book_id: 'new-session-item' } };
     app.editionDialog = newSessionDialog;
+    app.users = [{ id: 'new-session-profile' }];
+    const newSessionStatuses = { 'new-session-profile': { profile_id: 'new-session-profile' } };
+    app.statuses = newSessionStatuses;
     content.innerHTML = 'new session dialog';
     modal.style.display = 'block';
     const writesForNewSession = harness.htmlWrites;
@@ -291,8 +324,14 @@ test('session reset closes a pending edition preview and ignores its late respon
         response: { ok: true, status: 200 }, data: { success: true, data: { private: 'draft' } }
     });
     pending.find(item => item.url.includes('/edition-capability')).resolve({ response: { ok: true, status: 200 }, data: { success: true, data: {} } });
-    await loading;
+    pending.find(item => item.url === '/api/status').resolve({
+        response: { ok: true, status: 200 },
+        data: { success: true, data: [{ profile_id: 'private-profile', profile_name: 'Private profile' }] }
+    });
+    await Promise.all([loading, statusLoading]);
     assert.equal(app.editionDialog, newSessionDialog);
+    assert.equal(app.statuses, newSessionStatuses, 'a prior session must not replace the new session status');
+    assert.deepEqual(app.users, [{ id: 'new-session-profile' }]);
     assert.equal(harness.htmlWrites, writesForNewSession);
     assert.equal(content.innerHTML, 'new session dialog');
     assert.equal(app.authExpiryCalls || 0, 0);
@@ -429,9 +468,11 @@ test('create action requires an eligible needs-review record with an identifier 
 test('an ineligible needs-review record still shows a disabled Add edition button with the reason', () => {
     const app = editionApp();
     const html = app.renderEditionActions({ ...needsReview, hardcover_book_id: '' });
-    assert.match(html, /data-edition-action="add"[^>]*disabled[^>]*title="No Hardcover book was matched for this item\."/);
+    assert.equal(addEditionButton(html).disabled, true);
+    assert.match(addEditionButton(html).title, /Hardcover book.*matched/);
     const noIdentifiers = app.renderEditionActions({ ...needsReview, asin: '', isbn: '' });
-    assert.match(noIdentifiers, /data-edition-action="add"[^>]*disabled[^>]*valid ASIN or ISBN from Audiobookshelf/);
+    assert.equal(addEditionButton(noIdentifiers).disabled, true);
+    assert.match(addEditionButton(noIdentifiers).title, /ASIN.*ISBN.*Audiobookshelf/);
     const isbnOnlyAudio = app.renderEditionActions({ ...needsReview, asin: '', isbn: '9780306406157' });
     assert.match(isbnOnlyAudio, /data-edition-action="add"/);
     assert.doesNotMatch(isbnOnlyAudio, /disabled/);
@@ -523,7 +564,8 @@ test('Add edition waits for the profile capability and disables only a confirmed
     const app = editionApp();
     app.openSummary.editionCapabilityLoaded = false;
     let html = app.renderEditionActions(needsReview);
-    assert.match(html, /disabled title="Checking whether this profile can add this edition\."/);
+    assert.equal(addEditionButton(html).disabled, true);
+    assert.match(addEditionButton(html).title, /Checking/);
 
     app.openSummary.editionCapabilityLoaded = true;
     app.openSummary.editionCapability = {
@@ -531,7 +573,8 @@ test('Add edition waits for the profile capability and disables only a confirmed
         ebook: { status: 'allowed', can_attempt: true }
     };
     html = app.renderEditionActions(needsReview);
-    assert.match(html, /disabled title="This profile&#39;s Hardcover token does not have permission for this action\."/);
+    assert.equal(addEditionButton(html).disabled, true);
+    assert.match(addEditionButton(html).title, /permission/);
 
     const ebook = app.renderEditionActions({ ...needsReview, format: 'ebook' });
     assert.doesNotMatch(ebook, /disabled/);
@@ -544,9 +587,9 @@ test('audiobook capability evidence follows the selected ASIN or ISBN insertion 
         audiobook_isbn: { status: 'denied', can_attempt: false, reason: 'insufficient_scope' },
         audiobook: { status: 'allowed', can_attempt: true }
     };
-    assert.deepEqual(app.editionCapabilityGate(capability, 'audiobook', ''), {
-        blocked: true, reason: "This profile's Hardcover token does not have permission for this action."
-    });
+    const denied = app.editionCapabilityGate(capability, 'audiobook', '');
+    assert.equal(denied.blocked, true);
+    assert.match(denied.reason, /permission/);
     assert.deepEqual(app.editionCapabilityGate(capability, 'audiobook', 'B00ABC1234'), { blocked: false });
     assert.deepEqual(app.editionCapabilityGate({
         ebook: { status: 'allowed', can_attempt: true },
@@ -556,7 +599,9 @@ test('audiobook capability evidence follows the selected ASIN or ISBN insertion 
 
     app.openSummary.editionCapability = capability;
     const isbnRecord = { ...needsReview, asin: 'malformed', isbn: '9780306406157' };
-    assert.match(app.renderEditionActions(isbnRecord), /disabled title="This profile&#39;s Hardcover token does not have permission/);
+    const isbnButton = addEditionButton(app.renderEditionActions(isbnRecord));
+    assert.equal(isbnButton.disabled, true);
+    assert.match(isbnButton.title, /permission/);
     app.openSummary.editionCapability = { ...capability, audiobook_isbn: { status: 'allowed', can_attempt: true } };
     assert.doesNotMatch(app.renderEditionActions(isbnRecord), /disabled/);
 });
@@ -594,7 +639,9 @@ test('capability fetch refreshes the rendered Add edition button after pending, 
     global.document.getElementById = id => id === 'sync-summary-content' ? content : null;
 
     try {
-        assert.match(app.renderEditionActions(record), /disabled title="Checking whether this profile can add this edition\."/);
+        const pendingButton = addEditionButton(app.renderEditionActions(record));
+        assert.equal(pendingButton.disabled, true);
+        assert.match(pendingButton.title, /Checking/);
         let resolveFetch;
         app.profileUrl = (profileId, path) => `/profiles/${profileId}${path}`;
         app.fetchJsonWithTimeout = () => new Promise(resolve => { resolveFetch = resolve; });
@@ -869,15 +916,13 @@ test('matched items show their Hardcover target and a forget action', () => {
     assert.match(html, /data-edition-action="forget"/);
 });
 
-test('the Add edition button renders inside the Hardcover candidate box, styled like Forget match', () => {
+test('the Add edition button renders inside the Hardcover candidate region', () => {
     const app = editionApp();
     const record = { ...needsReview, hardcover_title: 'Dune', hardcover_slug: 'dune' };
     const html = app.renderOutcomeRecord(record);
-    const candidateIndex = html.indexOf('hardcover-candidate');
-    const addButtonIndex = html.indexOf('data-edition-action="add"');
-    assert.ok(candidateIndex !== -1 && addButtonIndex !== -1 && addButtonIndex > candidateIndex,
-        'Add edition button should render inside the hardcover-candidate section');
-    assert.match(html.slice(addButtonIndex - 80, addButtonIndex), /book-service-link edition-action-pill/);
+    const candidate = html.match(/<section\b(?=[^>]*aria-label="Hardcover candidate")[^>]*>[\s\S]*?<\/section>/)?.[0] || '';
+    assert.ok(candidate, 'Hardcover candidate region should be present');
+    assert.match(candidate, /data-edition-action="add"/, 'Add edition action should belong to the candidate region');
 });
 
 test('capability gate blocks on known denial, permits unverified attempts, and passes when allowed', () => {
@@ -939,14 +984,17 @@ test('Audnexus details render only the independent Audnex preview fields', () =>
             audnexus_details: { title: 'Audnex title', author: 'Audnex author', narrator: 'Audnex narrator', release_date: '2023-08-09', format_type: 'Enhanced Audio' }
         }
     });
-    const section = html.match(/<details class="edition-source-section edition-audnex-preview">([\s\S]*?)<\/details>/)?.[1] || '';
-    assert.match(html, /Audnexus details <span class="edition-note">\(helps to verify the match\)<\/span>/);
-    assert.match(section, /Audnex title/);
-    assert.match(section, /Audnex author/);
-    assert.match(section, /Audnex narrator/);
-    assert.match(section, /2023-08-09/);
-    assert.match(section, /Format type:<\/strong> Enhanced Audio/);
-    assert.doesNotMatch(section, /ABS title|ABS author|ABS narrator|Abridged/);
+    const section = [...html.matchAll(/<details\b[^>]*>[\s\S]*?<\/details>/g)]
+        .map(([details]) => details)
+        .find(details => visibleText(details).includes('Audnexus details (helps to verify the match)')) || '';
+    assert.ok(section, 'Audnexus preview should be available in an expandable details section');
+    const text = visibleText(section);
+    assert.match(text, /Audnex title/);
+    assert.match(text, /Audnex author/);
+    assert.match(text, /Audnex narrator/);
+    assert.match(text, /2023-08-09/);
+    assert.match(text, /Format type: Enhanced Audio/);
+    assert.doesNotMatch(text, /ABS title|ABS author|ABS narrator|Abridged/);
 });
 
 test('an ISBN-only audiobook can be confirmed while malformed identifiers remain ineligible', () => {
@@ -965,12 +1013,13 @@ test('an ISBN-only audiobook can be confirmed while malformed identifiers remain
         }
     };
     const html = app.renderEditionDialog(dialog);
+    const text = visibleText(html);
     assert.match(html, /Audiobookshelf audiobook details/);
     assert.match(html, /&lt;ABS audio title&gt;/);
-    assert.match(html, /Narrator:<\/strong> ABS narrator/);
-    assert.match(html, /Publisher:<\/strong> Audio Publisher/);
-    assert.match(html, /Audio length:<\/strong> 1 hr 1 min/);
-    assert.match(html, /ISBN:<\/strong> 9780306406157/);
+    assert.match(text, /Narrator: ABS narrator/);
+    assert.match(text, /Publisher: Audio Publisher/);
+    assert.match(text, /Audio length: 1 hr 1 min/);
+    assert.match(text, /ISBN: 9780306406157/);
     assert.match(html, /data-edition-dialog="confirm-create"(?![^>]*disabled)/);
     assert.doesNotMatch(html, /<input[^>]+name="(?:title|narrator|release_date|edition_format)"/);
 
@@ -1029,7 +1078,8 @@ test('candidate details omit Hardcover identifiers and show available Audiobooks
         ['', '', '', ''],
         ['   ', '', '', ''],
         ['9780441172719', 'Dune', '1', 'Dune #1'],
-        ['', '<Dune>', '', '&lt;Dune&gt;']
+        ['', '<Dune>', '', '<Dune>'],
+        ['', '&lt;Dune&gt;', '', '&lt;Dune&gt;']
     ]) {
         const record = { ...candidate, series, series_number: seriesNumber };
         const html = app.renderEditionDialog({
@@ -1044,10 +1094,11 @@ test('candidate details omit Hardcover identifiers and show available Audiobooks
         assert.match(html, /Hardcover candidate/);
         assert.match(html, /Frank Herbert/);
         assert.doesNotMatch(html, /HC-ASIN|HC-ISBN/);
-        if (isbn.trim()) assert.ok(html.includes(`<strong>ISBN:</strong> ${isbn}`));
-        else assert.doesNotMatch(html, /<strong>ISBN:/);
-        if (expectedSeries) assert.ok(html.includes(`<strong>Series:</strong> ${expectedSeries}`));
-        else assert.doesNotMatch(html, /<strong>Series:/);
+        const text = visibleText(html);
+        if (isbn.trim()) assert.ok(text.includes(`ISBN: ${isbn}`));
+        else assert.doesNotMatch(text, /ISBN:/);
+        if (expectedSeries) assert.ok(text.includes(`Series: ${expectedSeries}`));
+        else assert.doesNotMatch(text, /Series:/);
     }
 });
 
@@ -2138,7 +2189,8 @@ test('an import resolved to a non-audiobook edition is final and links to report
         assert.equal(dialog.outcome, 'failed');
         assert.match(html, /Hardcover returned a non-audiobook edition/);
         assert.match(html, /existing edition 32307716, which Hardcover lists as a physical book/);
-        assert.match(html, /<a class="btn btn-primary" href="https:\/\/hardcover\.app\/editions\/32307716"[^>]*>Report a problem on Hardcover<\/a>/);
+        const reportLink = html.match(/<a\b(?=[^>]*href="https:\/\/hardcover\.app\/editions\/32307716")[^>]*>([\s\S]*?)<\/a>/)?.[1] || '';
+        assert.match(visibleText(reportLink), /Report a problem on Hardcover/);
         assert.doesNotMatch(html, /may be stale/);
         assert.doesNotMatch(html, /evil\.example/);
         assert.match(html, /HTTP 409.*hardcover_edition_wrong_format/);

@@ -1,8 +1,6 @@
 package sync
 
 import (
-	"encoding/json"
-	"reflect"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
@@ -54,41 +52,20 @@ func toAudiobookshelfBook(testBook *TestAudiobookshelfBook) *models.Audiobookshe
 		Series:     append([]models.AudiobookshelfSeries(nil), testBook.Media.Metadata.Series...),
 	}
 
-	// Create media with embedded metadata
-	var media struct {
-		ID          string                              `json:"id"`
-		Metadata    models.AudiobookshelfMetadataStruct `json:"metadata"`
-		CoverPath   string                              `json:"coverPath"`
-		Duration    float64                             `json:"duration"`
-		NumTracks   int                                 `json:"numTracks"`
-		AudioFiles  []models.AudiobookshelfAudioFile    `json:"audioFiles,omitempty"`
-		EbookFile   *json.RawMessage                    `json:"ebookFile"`
-		EbookFormat string                              `json:"ebookFormat"`
-	}
-	media.ID = testBook.Media.ID
-	media.Metadata = metadata
-	media.CoverPath = testBook.Media.CoverPath
-	media.Duration = testBook.Media.Duration
-
-	// Create progress
-	progress := models.AudiobookshelfProgress{
-		CurrentTime: testBook.Progress.CurrentTime,
-		IsFinished:  testBook.Progress.IsFinished,
-		StartedAt:   testBook.Progress.StartedAt,
-		FinishedAt:  testBook.Progress.FinishedAt,
-	}
-
-	// Create the book with embedded media
 	book := &models.AudiobookshelfBook{
 		ID:        testBook.ID,
 		LibraryID: testBook.LibraryID,
 		Path:      testBook.Path,
 		MediaType: testBook.MediaType,
 	}
-
-	// Use reflection to set the unexported media field
-	reflect.ValueOf(book).Elem().FieldByName("Media").Set(reflect.ValueOf(media))
-	reflect.ValueOf(book).Elem().FieldByName("Progress").Set(reflect.ValueOf(progress))
+	book.Media.ID = testBook.Media.ID
+	book.Media.Metadata = metadata
+	book.Media.CoverPath = testBook.Media.CoverPath
+	book.Media.Duration = testBook.Media.Duration
+	book.Progress.CurrentTime = testBook.Progress.CurrentTime
+	book.Progress.IsFinished = testBook.Progress.IsFinished
+	book.Progress.StartedAt = testBook.Progress.StartedAt
+	book.Progress.FinishedAt = testBook.Progress.FinishedAt
 
 	return book
 }

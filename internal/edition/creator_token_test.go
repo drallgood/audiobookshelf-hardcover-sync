@@ -2,10 +2,12 @@ package edition
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
@@ -47,7 +49,6 @@ func TestCreatorAudiobookshelfTokenScoping(t *testing.T) {
 		{"path outside base withheld", "https://example.com/abs", "https://example.com/other/cover.jpg", false},
 		{"scheme mismatch withheld", "https://abs.home", "http://abs.home/api/items/li_1/cover", false},
 		{"port mismatch withheld", "https://abs.home:13378", "https://abs.home/api/items/li_1/cover", false},
-		{"unset base withholds token", "", "https://audiobookshelf.example.com/api/items/li_1/cover", false},
 		{"unset base withholds token for any host", "", "https://abs.home/api/items/li_1/cover", false},
 	}
 
@@ -79,21 +80,17 @@ func TestCreatorAudiobookshelfTokenScoping(t *testing.T) {
 	}
 }
 
-// An empty or whitespace-only base URL, as the commands pass when no
-// Audiobookshelf URL is configured, must withhold the token.
-func TestCreatorEmptyBaseURLWithholdsToken(t *testing.T) {
+// A whitespace-only base URL must not accidentally scope the token to a host.
+func TestCreatorWhitespaceBaseURLWithholdsToken(t *testing.T) {
 	const token = "abs-secret"
 
 	tests := []struct {
-		name      string
-		baseURL   string
-		imageURL  string
-		wantToken bool
+		name     string
+		baseURL  string
+		imageURL string
 	}{
-		{"empty base withholds token", "", "https://audiobookshelf.example.com/api/items/li_1/cover", false},
-		{"empty base, non-matching host withheld", "", "https://abs.home/api/items/li_1/cover", false},
-		{"whitespace base withholds token", "  \t", "https://audiobookshelf.example.com/api/items/li_1/cover", false},
-		{"whitespace base, non-matching host withheld", "  \t", "https://abs.home/api/items/li_1/cover", false},
+		{"whitespace base withholds token", "  \t", "https://audiobookshelf.example.com/api/items/li_1/cover"},
+		{"whitespace base, non-matching host withheld", "  \t", "https://abs.home/api/items/li_1/cover"},
 	}
 
 	for _, tt := range tests {
@@ -110,8 +107,8 @@ func TestCreatorEmptyBaseURLWithholdsToken(t *testing.T) {
 			if !rt.called {
 				t.Fatal("image download was never attempted")
 			}
-			if got := rt.auth == "Bearer "+token; got != tt.wantToken {
-				t.Errorf("token sent = %v, want %v (Authorization=%q)", got, tt.wantToken, rt.auth)
+			if rt.auth != "" {
+				t.Errorf("unexpected Authorization header %q", rt.auth)
 			}
 		})
 	}
@@ -202,27 +199,31 @@ func TestCreatorCoverFetchChecksOffOriginRedirect(t *testing.T) {
 	}
 }
 
-// TestNewCreatorTLSVerificationRequiresExplicitOptIn is in package edition
-// (not edition_test) so it can read creator.httpClient directly, without the
-// reflect/unsafe access other tests in this package's external test file use.
 func TestNewCreatorTLSVerificationRequiresExplicitOptIn(t *testing.T) {
-	creator := NewCreator(nil, logger.Get(), false, "")
+	var requests atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("not a valid JPEG"))
+	}))
+	defer server.Close()
 
-	transport, ok := creator.httpClient.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("httpClient.Transport = %T, want *http.Transport", creator.httpClient.Transport)
+	creator := NewCreator(nil, logger.Get(), false, "")
+	_, err := creator.uploadImageToGCS(context.Background(), 1, server.URL)
+	var verificationErr *tls.CertificateVerificationError
+	if !errors.As(err, &verificationErr) {
+		t.Fatalf("uploadImageToGCS() error = %v, want certificate verification failure", err)
 	}
-	if transport.TLSClientConfig != nil {
-		t.Errorf("TLSClientConfig = %+v, want nil (Go's verified TLS settings) before EnableInsecureTLS", transport.TLSClientConfig)
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("TLS handler requests before opt-in = %d, want 0", got)
 	}
 
 	creator.EnableInsecureTLS()
-
-	transport, ok = creator.httpClient.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("httpClient.Transport = %T, want *http.Transport", creator.httpClient.Transport)
+	_, err = creator.uploadImageToGCS(context.Background(), 1, server.URL)
+	if !errors.Is(err, errCoverFormat) {
+		t.Fatalf("uploadImageToGCS() after opt-in error = %v, want response body format validation", err)
 	}
-	if transport.TLSClientConfig == nil || !transport.TLSClientConfig.InsecureSkipVerify {
-		t.Errorf("TLSClientConfig = %+v, want InsecureSkipVerify=true after EnableInsecureTLS", transport.TLSClientConfig)
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("TLS handler requests after opt-in = %d, want 1", got)
 	}
 }

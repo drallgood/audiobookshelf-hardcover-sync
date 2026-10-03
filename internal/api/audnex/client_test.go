@@ -213,53 +213,38 @@ func TestGetBookByASIN_TypedNotFoundAndRateLimit(t *testing.T) {
 	}
 }
 
-func TestGetBookByASIN_RetriesServerErrorsAsTransient(t *testing.T) {
-	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		calls.Add(1)
-		w.WriteHeader(http.StatusBadGateway)
-	}))
-	defer server.Close()
+func TestGetBookByASIN_RetriesTransientStatuses(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		statusCode int
+	}{
+		{name: "server error", statusCode: http.StatusBadGateway},
+		{name: "request timeout response", statusCode: http.StatusRequestTimeout},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.WriteHeader(tt.statusCode)
+			}))
+			defer server.Close()
 
-	client := &Client{httpClient: server.Client(), baseURL: server.URL, logger: logger.Get()}
-	book, err := client.GetBookByASIN(context.Background(), "B0BXJF2LW5", "us")
-	if book != nil {
-		t.Fatalf("expected nil book, got %#v", book)
-	}
-	if !errors.Is(err, ErrTransient) {
-		t.Fatalf("expected transient error, got %v", err)
-	}
-	var apiErr *APIError
-	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadGateway {
-		t.Fatalf("expected typed HTTP 502 error, got %#v", err)
-	}
-	if got := calls.Load(); got != 3 {
-		t.Fatalf("expected three attempts, got %d", got)
-	}
-}
-
-func TestGetBookByASIN_RetriesRequestTimeoutAsTransient(t *testing.T) {
-	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		calls.Add(1)
-		w.WriteHeader(http.StatusRequestTimeout)
-	}))
-	defer server.Close()
-
-	client := &Client{httpClient: server.Client(), baseURL: server.URL, logger: logger.Get()}
-	book, err := client.GetBookByASIN(context.Background(), "B0BXJF2LW5", "us")
-	if book != nil {
-		t.Fatalf("expected nil book, got %#v", book)
-	}
-	if !errors.Is(err, ErrTransient) {
-		t.Fatalf("expected transient error after HTTP 408 retries, got %v", err)
-	}
-	var apiErr *APIError
-	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusRequestTimeout {
-		t.Fatalf("expected typed HTTP 408 error, got %#v", err)
-	}
-	if got := calls.Load(); got != 3 {
-		t.Fatalf("expected three attempts, got %d", got)
+			client := &Client{httpClient: server.Client(), baseURL: server.URL, logger: logger.Get()}
+			book, err := client.GetBookByASIN(context.Background(), "B0BXJF2LW5", "us")
+			if book != nil {
+				t.Fatalf("expected nil book, got %#v", book)
+			}
+			if !errors.Is(err, ErrTransient) {
+				t.Fatalf("expected transient error, got %v", err)
+			}
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) || apiErr.StatusCode != tt.statusCode {
+				t.Fatalf("expected typed HTTP %d error, got %#v", tt.statusCode, err)
+			}
+			if got := calls.Load(); got != 3 {
+				t.Fatalf("expected three attempts, got %d", got)
+			}
+		})
 	}
 }
 

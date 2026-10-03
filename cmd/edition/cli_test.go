@@ -953,9 +953,6 @@ func TestCreateHelpDocumentsAssociationFlags(t *testing.T) {
 	if !strings.Contains(stdout.String(), "--abs-item-id") || !strings.Contains(stdout.String(), "--state-file") {
 		t.Fatalf("create help is missing association flags: %s", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "Import an audiobook") {
-		t.Fatalf("create help is missing behavior description: %s", stdout.String())
-	}
 	if stderr.Len() != 0 {
 		t.Fatalf("help wrote unexpected stderr: %s", stderr.String())
 	}

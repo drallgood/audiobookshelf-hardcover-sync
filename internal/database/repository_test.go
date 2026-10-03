@@ -3,7 +3,6 @@ package database
 import (
 	"context"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -35,14 +34,7 @@ func createTestProfile(t *testing.T, db *Database, profileID string) {
 func TestFreshLifecycleSchemaOmitsRetiredColumns(t *testing.T) {
 	db, _ := newRepositoryForTest(t)
 	migrator := db.GetDB().Migrator()
-	columns, err := migrator.ColumnTypes(&SyncRunReport{})
-	require.NoError(t, err)
-	for _, column := range columns {
-		if strings.EqualFold(column.Name(), "snapshot_json") {
-			require.Equal(t, "TEXT", strings.ToUpper(column.DatabaseTypeName()))
-		}
-	}
-
+	// Guard fresh schema creation; upgrades may retain legacy columns.
 	for _, column := range []string{
 		"run_generation",
 		"last_successful_run_id",
@@ -50,11 +42,26 @@ func TestFreshLifecycleSchemaOmitsRetiredColumns(t *testing.T) {
 		"created_at",
 		"updated_at",
 	} {
-		require.False(t, migrator.HasColumn(&ProfileSyncState{}, column), column)
+		require.False(t, migrator.HasColumn(&ProfileSyncState{}, column), "retired profile state column %s", column)
 	}
 	for _, column := range []string{"created_at", "updated_at"} {
-		require.False(t, migrator.HasColumn(&SyncRunReport{}, column), column)
+		require.False(t, migrator.HasColumn(&SyncRunReport{}, column), "retired run report column %s", column)
 	}
+}
+
+func TestFreshLifecycleSchemaStoresSnapshotsAsLargeText(t *testing.T) {
+	db, _ := newRepositoryForTest(t)
+	migrator := db.GetDB().Migrator()
+	columns, err := migrator.ColumnTypes(&SyncRunReport{})
+	require.NoError(t, err)
+	foundSnapshotColumn := false
+	for _, column := range columns {
+		if column.Name() == "snapshot_json" {
+			foundSnapshotColumn = true
+			require.Equal(t, "TEXT", column.DatabaseTypeName())
+		}
+	}
+	require.True(t, foundSnapshotColumn, "fresh lifecycle schema must persist run snapshots")
 }
 
 func TestSyncSnapshotJSONUsesDialectLargeTextType(t *testing.T) {
@@ -64,7 +71,6 @@ func TestSyncSnapshotJSONUsesDialectLargeTextType(t *testing.T) {
 		wantType  string
 	}{
 		{name: "mysql", dialector: mysql.Open(""), wantType: "LONGTEXT"},
-		{name: "mariadb via mysql dialector", dialector: mysql.Open(""), wantType: "LONGTEXT"},
 		{name: "postgres", dialector: postgres.Open(""), wantType: "TEXT"},
 		{name: "sqlite", dialector: sqlite.Open(":memory:"), wantType: "TEXT"},
 	} {

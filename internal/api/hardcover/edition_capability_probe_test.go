@@ -3,12 +3,15 @@ package hardcover
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/stretchr/testify/require"
 )
 
@@ -135,22 +138,61 @@ func TestProbeInsertEditionCapabilityClassifiesMutationResponses(t *testing.T) {
 	}
 }
 
-func TestProbeInsertEditionCapabilityTimeoutIsUnverified(t *testing.T) {
-	var requests atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		requests.Add(1)
-		time.Sleep(250 * time.Millisecond)
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer server.Close()
+type capabilityProbeTimeoutTransport struct {
+	requests      atomic.Int32
+	contextErrors chan error
+}
 
-	client := CreateTestClient(server)
-	client.httpClient.Timeout = 100 * time.Millisecond
+func (rt *capabilityProbeTimeoutTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.requests.Add(1)
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-req.Context().Done():
+		rt.contextErrors <- req.Context().Err()
+		return nil, req.Context().Err()
+	case <-timer.C:
+		rt.contextErrors <- nil
+		return nil, errors.New("request context was not canceled before the bounded fallback")
+	}
+}
 
-	got := client.ProbeInsertEditionCapability(context.Background())
+func TestCapabilityProbeTimeoutIsUnverified(t *testing.T) {
+	logger.Setup(logger.Config{Level: "error", Format: "json"})
+	tests := []struct {
+		name  string
+		probe func(*Client) EditionCapabilityProbeState
+	}{
+		{name: "insert edition", probe: func(client *Client) EditionCapabilityProbeState {
+			return client.ProbeInsertEditionCapability(context.Background())
+		}},
+		{name: "upsert book", probe: func(client *Client) EditionCapabilityProbeState {
+			return client.ProbeUpsertBookCapability(context.Background())
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				config := DefaultClientConfig()
+				config.BaseURL = "https://hardcover.example.test/graphql"
+				config.Timeout = 100 * time.Millisecond
+				config.MaxRetries = 0
+				config.RateLimit = time.Nanosecond
+				config.MaxConcurrent = 1
+				client := NewClientWithConfig(config, "test-token", logger.Get())
+				transport := &capabilityProbeTimeoutTransport{contextErrors: make(chan error, 1)}
+				client.httpClient.Transport = transport
 
-	require.Equal(t, EditionCapabilityProbeUnverified, got)
-	require.Equal(t, int32(1), requests.Load())
+				got := test.probe(client)
+
+				require.Equal(t, EditionCapabilityProbeUnverified, got)
+				require.Equal(t, int32(1), transport.requests.Load(), "a timed-out probe must not be retried")
+				require.Equal(t, uint64(1), client.rateLimiter.GetMetrics().Requests)
+				require.ErrorIs(t, <-transport.contextErrors, context.DeadlineExceeded,
+					"the configured timeout must cancel the in-flight HTTP request")
+			})
+		})
+	}
 }
 
 func TestProbeInsertEditionCapabilityDryRunSkipsMutation(t *testing.T) {
@@ -283,24 +325,6 @@ func TestProbeUpsertBookCapabilityClassifiesValidationAndScopeResponses(t *testi
 			require.Equal(t, uint64(1), client.rateLimiter.GetMetrics().Requests, "probe uses the configured Hardcover rate limiter")
 		})
 	}
-}
-
-func TestProbeUpsertBookCapabilityTimeoutIsUnverified(t *testing.T) {
-	var requests atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		requests.Add(1)
-		time.Sleep(250 * time.Millisecond)
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer server.Close()
-
-	client := CreateTestClient(server)
-	client.httpClient.Timeout = 100 * time.Millisecond
-
-	got := client.ProbeUpsertBookCapability(context.Background())
-
-	require.Equal(t, EditionCapabilityProbeUnverified, got)
-	require.Equal(t, int32(1), requests.Load())
 }
 
 func TestProbeUpsertBookCapabilityDryRunSkipsMutation(t *testing.T) {

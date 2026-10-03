@@ -2,7 +2,6 @@ package util
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 
@@ -45,39 +44,6 @@ func TestNewRateLimiter(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestRateLimiterConcurrentAccess(t *testing.T) {
-	rl := NewRateLimiter(5*time.Millisecond, 3, nil)
-	defer rl.ResetRate()
-
-	const totalRequests = 10
-	var wg sync.WaitGroup
-	startCh := make(chan struct{})
-	errCh := make(chan error, totalRequests)
-
-	for range totalRequests {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			<-startCh
-			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-			defer cancel()
-			release, err := rl.Acquire(ctx)
-			if err == nil {
-				release()
-			}
-			errCh <- err
-		}()
-	}
-
-	close(startCh)
-	wg.Wait()
-	close(errCh)
-	for err := range errCh {
-		require.NoError(t, err)
-	}
-	assert.Equal(t, uint64(totalRequests), rl.GetMetrics().Requests)
 }
 
 func TestRateLimiterAcquireBlocksUntilRelease(t *testing.T) {

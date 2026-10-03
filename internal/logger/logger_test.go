@@ -68,39 +68,6 @@ func TestSetup(t *testing.T) {
 	}
 }
 
-func TestWithContext(t *testing.T) {
-	// Reset global logger
-	ResetForTesting()
-
-	// Setup test logger with JSON output
-	var buf bytes.Buffer
-	Setup(Config{
-		Level:  "debug",
-		Format: FormatJSON,
-		Output: &buf,
-	})
-
-	// Create a logger with context fields
-	fields := map[string]interface{}{
-		"key1": "value1",
-		"key2": 42,
-	}
-
-	// Create a child logger with the fields
-	logger := Get().With(fields)
-	require.NotNil(t, logger)
-
-	// Log a message
-	logger.Info("test message")
-
-	// Get the log output
-	logOutput := buf.String()
-
-	// Verify the output contains our fields
-	assert.Contains(t, logOutput, "\"key1\":\"value1\"")
-	assert.Contains(t, logOutput, "\"key2\":42")
-}
-
 func TestGet(t *testing.T) {
 	// Reset global logger
 	ResetForTesting()

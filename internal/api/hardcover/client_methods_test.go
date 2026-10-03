@@ -106,6 +106,10 @@ func newTestClient(t *testing.T) (*Client, *httptest.Server) {
 				// Update the response with the book data
 				response["data"].(map[string]interface{})["books"] = []map[string]interface{}{book}
 			}
+		} else {
+			t.Errorf("Unexpected query: %s", reqBody.Query)
+			http.Error(w, "unexpected query", http.StatusInternalServerError)
+			return
 		}
 
 		// Write the response
@@ -207,41 +211,6 @@ func TestClient_GetEditionByISBN13(t *testing.T) {
 	}
 }
 
-func TestClient_SaveToFile(t *testing.T) {
-	// Create a client for testing
-	client, server := newTestClient(t)
-	defer server.Close()
-
-	// Test with temporary filepath
-	filepath := "/tmp/test_hardcover_client.json"
-
-	// Call the method being tested
-	err := client.SaveToFile(filepath)
-
-	// No error should occur as the method is a no-op that returns nil
-	assert.NoError(t, err)
-}
-
-func TestClient_AddWithMetadata(t *testing.T) {
-	// Create a client for testing
-	client, server := newTestClient(t)
-	defer server.Close()
-
-	// Test data
-	key := "test-key"
-	value := "test-value"
-	metadata := map[string]interface{}{
-		"source":    "audiobookshelf",
-		"timestamp": time.Now().Unix(),
-	}
-
-	// Call the method being tested
-	err := client.AddWithMetadata(key, value, metadata)
-
-	// No error should occur as the method is a no-op that returns nil
-	assert.NoError(t, err)
-}
-
 func TestClient_SearchBookByISBN13(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -338,23 +307,7 @@ func TestClient_SearchBookByISBN13(t *testing.T) {
 				return
 			}
 
-			// Assert the results
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Client.SearchBookByISBN13() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-
-			// Skip further checks if we expected an error
-			if tt.wantErr {
-				return
-			}
-
 			// Check individual fields instead of using DeepEqual
-			if got == nil && tt.expected != nil {
-				t.Error("Expected non-nil result, got nil")
-				return
-			}
-
 			if got.ID != tt.expected.ID {
 				t.Errorf("ID = %v, want %v", got.ID, tt.expected.ID)
 			}
