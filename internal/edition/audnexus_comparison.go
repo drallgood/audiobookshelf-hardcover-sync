@@ -70,6 +70,12 @@ func BuildAudnexusRecord(book *audnex.Book) AudnexusRecord {
 		return AudnexusRecord{}
 	}
 	releaseDate, releaseDatePrecision, _ := normalizeComparisonDate(book.ReleaseDate)
+	switch releaseDatePrecision {
+	case datePrecisionYear:
+		releaseDate = releaseDate[:4]
+	case datePrecisionMonth:
+		releaseDate = releaseDate[:7]
+	}
 	record := AudnexusRecord{
 		ASIN: strings.TrimSpace(book.ASIN), Title: strings.TrimSpace(book.Title),
 		Subtitle: strings.TrimSpace(book.Subtitle), Authors: cleanNames(book.GetAuthorsAsStrings()),

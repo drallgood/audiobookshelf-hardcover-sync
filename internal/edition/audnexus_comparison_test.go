@@ -170,6 +170,20 @@ func TestCompareAudnexusUsesAvailableDatePrecision(t *testing.T) {
 		wantNormalizedRelease string
 	}{
 		{
+			name:                  "year-only Audnexus date does not invent a month or day",
+			absPublishedDate:      "2014-08-05",
+			audnexusReleaseDate:   "2014",
+			want:                  AudnexusMatch,
+			wantNormalizedRelease: "2014",
+		},
+		{
+			name:                  "month-only Audnexus date does not invent a day",
+			absPublishedDate:      "2014-08-05",
+			audnexusReleaseDate:   "August 2014",
+			want:                  AudnexusMatch,
+			wantNormalizedRelease: "2014-08",
+		},
+		{
 			name:                  "year-only Audiobookshelf date matches a full Audnexus date in that year",
 			absPublishedYear:      "2014",
 			audnexusReleaseDate:   "2014-08-05T00:00:00.000Z",

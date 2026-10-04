@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -353,7 +354,7 @@ func TestRunCreateImportsASINOnlyAudiobookAfterAudnexusConfirmation(t *testing.T
 		ASIN: boundaryASIN, Title: "Boundary Book", Subtitle: "Audible subtitle",
 		Authors: []interface{}{"Test Author"}, Narrators: []interface{}{"Reader One"},
 		SeriesPrimary: &audnex.Series{Name: "The Saga", Position: "1"},
-		PublisherName: "Test Press", ReleaseDate: "2024-01-02", RuntimeLengthMin: 100.0 / 60,
+		PublisherName: "Test Press", ReleaseDate: "2024", RuntimeLengthMin: 100.0 / 60,
 		Language: "en", Image: "https://images.example/book.jpg",
 	}
 	services := env.createServices(t, false, audible, "uk")
@@ -374,10 +375,15 @@ func TestRunCreateImportsASINOnlyAudiobookAfterAudnexusConfirmation(t *testing.T
 	if result.AudnexusRecord.CoverURL != "https://images.example/book.jpg" || result.AudnexusComparison.CoverURL != "" {
 		t.Fatalf("Audnexus cover source should be retained without a comparison status: record=%#v comparison=%#v", result.AudnexusRecord, result.AudnexusComparison)
 	}
+	if result.AudnexusRecord.ReleaseDate != "2024" {
+		t.Fatalf("year-only Audnexus release date lost its precision: %#v", result.AudnexusRecord)
+	}
 	if !strings.Contains(preview.String(), "Audnexus regional record") ||
 		!strings.Contains(preview.String(), "Audiobookshelf item") ||
 		!strings.Contains(preview.String(), "Title: match") ||
 		!strings.Contains(preview.String(), "Subtitle: differs") ||
+		!strings.Contains(preview.String(), `Release date: "2024"`) ||
+		strings.Contains(preview.String(), `Release date: "2024-01-01"`) ||
 		!strings.Contains(preview.String(), `Cover URL: "https://images.example/book.jpg"`) ||
 		!strings.Contains(preview.String(), `Cover path: "/api/items/li_boundary/cover"`) ||
 		strings.Contains(preview.String(), "Cover:") {
@@ -1277,45 +1283,120 @@ func TestRunCreateReportsLocalSaveFailureAfterRemoteSuccess(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("directory permissions do not stop root from writing the state file")
 	}
-	stateDir := t.TempDir()
-	statePath := filepath.Join(stateDir, "sync-state.json")
-	t.Cleanup(func() { _ = os.Chmod(stateDir, 0700) })
-	inputPath := writeCreateInput(t, fmt.Sprintf(`{"book_id":%d,"abs_item_id":%q,"asin":%q,"asin_region":"uk"}`, boundaryBookID, boundaryABSItem, boundaryASIN))
-	item := testAudiobook(boundaryABSItem, boundaryASIN)
-	services := createServices{
-		fetchABSItem: func(context.Context, string) (*models.AudiobookshelfBook, error) { return item, nil },
-		importAudiobook: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
-			// Hardcover succeeds, then the state directory stops accepting writes.
-			if err := os.Chmod(stateDir, 0500); err != nil {
-				t.Fatal(err)
-			}
-			return &hardcover.RegionalAudiobookResult{
-				Status: hardcover.RegionalAudiobookCreated, BookID: boundaryBookID, EditionID: boundaryEditionID,
-				ReadingFormatID:    models.ReadingFormatID(models.ReadingFormatAudiobook),
-				RegionalExternalID: boundaryRegional,
-			}, nil
+	tests := []struct {
+		name       string
+		input      string
+		bookID     int
+		unanchored bool
+	}{
+		{
+			name:   "anchored",
+			input:  fmt.Sprintf(`{"book_id":%d,"abs_item_id":%q,"asin":%q,"asin_region":"uk"}`, boundaryBookID, boundaryABSItem, boundaryASIN),
+			bookID: boundaryBookID,
+		},
+		{
+			name:       "unanchored",
+			input:      fmt.Sprintf(`{"abs_item_id":%q,"asin":%q,"asin_region":"uk"}`, boundaryABSItem, boundaryASIN),
+			unanchored: true,
 		},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newCommandEnv(t, newFakeHardcover(t), boundaryABSItemJS)
+			stateDir := t.TempDir()
+			statePath := filepath.Join(stateDir, "sync-state.json")
+			t.Cleanup(func() { _ = os.Chmod(stateDir, 0700) })
+			inputPath := writeCreateInput(t, tt.input)
+			audible := &audnex.Book{ASIN: boundaryASIN, Title: "Boundary Book"}
+			services := env.createServices(t, false, audible, "uk")
+			var importInput hardcover.RegionalAudiobookInput
+			importCalls := 0
+			services.importAudiobook = func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+				importCalls++
+				importInput = input
+				// Hardcover succeeds, then the state directory stops accepting writes.
+				if err := os.Chmod(stateDir, 0500); err != nil {
+					t.Fatal(err)
+				}
+				return &hardcover.RegionalAudiobookResult{
+					Status: hardcover.RegionalAudiobookCreated, BookID: boundaryBookID, EditionID: boundaryEditionID,
+					ReadingFormatID:    models.ReadingFormatID(models.ReadingFormatAudiobook),
+					RegionalExternalID: boundaryRegional,
+				}, nil
+			}
 
-	result, err := runCreate(context.Background(), createOptions{InputPath: inputPath, StateFile: statePath}, services)
+			options := createOptions{InputPath: inputPath, StateFile: statePath}
+			if tt.unanchored {
+				options.ConfirmAudnexus = true
+			}
+			result, err := runCreate(context.Background(), options, services)
+			if err == nil || result != nil {
+				t.Fatalf("expected a local save failure, got result=%#v err=%v", result, err)
+			}
+			for _, want := range []string{"Hardcover reported audiobook created", "local association could not be saved", "Verify the Hardcover result before retrying"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("save failure message %q is missing %q", err.Error(), want)
+				}
+			}
+			if importCalls != 1 || importInput.BookID != tt.bookID || importInput.Unanchored != tt.unanchored {
+				t.Fatalf("unexpected import request after mode %q: calls=%d input=%#v", tt.name, importCalls, importInput)
+			}
+			if err := os.Chmod(stateDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if _, statErr := os.Stat(statePath); statErr == nil {
+				loaded, loadErr := state.LoadState(statePath)
+				if loadErr != nil {
+					t.Fatal(loadErr)
+				}
+				if _, ok := loaded.GetAssociation(boundaryABSItem); ok {
+					t.Fatal("association was reported unsaved but exists in state")
+				}
+			}
+		})
+	}
+}
+
+func TestRunCreateUnanchoredImportTimeoutWarnsAndDoesNotSaveAssociation(t *testing.T) {
+	env := newCommandEnv(t, newFakeHardcover(t), boundaryABSItemJS)
+	inputPath := writeCreateInput(t, fmt.Sprintf(`{"asin":"%s","asin_region":"uk","abs_item_id":%q}`, strings.ToLower(boundaryASIN), boundaryABSItem))
+	var importInput hardcover.RegionalAudiobookInput
+	importCalls := 0
+	services := unanchoredPromptServices(testAudiobook(boundaryABSItem, boundaryASIN), &importCalls)
+	services.importAudiobook = func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+		importCalls++
+		importInput = input
+		return nil, fmt.Errorf("status polling stopped: %w", hardcover.ErrRegionalAudiobookImportTimeout)
+	}
+
+	result, err := runCreate(context.Background(), createOptions{
+		InputPath: inputPath, StateFile: env.statePath, ConfirmAudnexus: true,
+	}, services)
 	if err == nil || result != nil {
-		t.Fatalf("expected a local save failure, got result=%#v err=%v", result, err)
+		t.Fatalf("expected an uncertain import timeout, got result=%#v err=%v", result, err)
 	}
-	for _, want := range []string{"Hardcover reported audiobook created", "local association could not be saved", "Verify the Hardcover result before retrying"} {
+	if !errors.Is(err, hardcover.ErrRegionalAudiobookImportTimeout) {
+		t.Fatalf("timeout error lost its Hardcover identity: %v", err)
+	}
+	for _, want := range []string{"Hardcover may have processed the import", "verify the book in Hardcover before retrying"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("save failure message %q is missing %q", err.Error(), want)
+			t.Fatalf("timeout error %q is missing operator guidance %q", err.Error(), want)
 		}
 	}
-	if err := os.Chmod(stateDir, 0700); err != nil {
-		t.Fatal(err)
+	if importCalls != 1 {
+		t.Fatalf("timed-out import was automatically resubmitted %d times", importCalls-1)
 	}
-	if _, statErr := os.Stat(statePath); statErr == nil {
-		loaded, loadErr := state.LoadState(statePath)
-		if loadErr != nil {
-			t.Fatal(loadErr)
-		}
-		if _, ok := loaded.GetAssociation(boundaryABSItem); ok {
-			t.Fatal("association was reported unsaved but exists in state")
-		}
+	if importInput.BookID != 0 || importInput.ASIN != boundaryASIN || importInput.Region != "uk" || !importInput.Unanchored {
+		t.Fatalf("unanchored import did not receive the canonical regional request: %#v", importInput)
+	}
+	if _, ok := env.association(t); ok {
+		t.Fatal("timed-out import saved an Audiobookshelf association")
+	}
+	lock, lockErr := state.AcquireFileLock(env.statePath)
+	if lockErr != nil {
+		t.Fatalf("state-file lock was not released after import timeout: %v", lockErr)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatalf("release reacquired state-file lock: %v", err)
 	}
 }

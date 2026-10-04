@@ -83,8 +83,9 @@ profile-specific filename.
 Audiobook input accepts a bare ASIN of ten ASCII letters or digits.
 `reading_format` defaults to `audiobook`. Input JSON is limited to 1 MiB.
 Provide a positive Hardcover `book_id` to add an edition to that selected
-Hardcover book. You may omit it only for an audiobook with a usable ASIN; this
-starts **Import by Audible ASIN**, which does not require selecting a
+Hardcover book. You may omit it only when the input JSON supplies a usable
+audiobook ASIN, even if `abs_item_id` is provided. This starts
+**Import by Audible ASIN**, which does not require selecting a
 Hardcover book first. Review the Audnexus record and confirm it by typing `y`
 or `yes`, or by passing `--confirm-audnexus`.
 
@@ -103,17 +104,19 @@ the selected book.
 
 `asin_region` is optional; `region` is an alias. If both are supplied they
 must agree. A supplied region identifies the regional ASIN sent to Hardcover.
-For **Import by Audible ASIN**, `create` prints the Audnexus record for that
-exact ASIN and region before asking for confirmation. Without a region, the
-command discovers one by finding the requested ASIN in Audnexus; it prefers
-`audiobookshelf.audnexus_region` (default `us`) and does not infer a region
-from the ASIN. If discovery finds no region or Audnexus is temporarily
-unavailable, the command stops before the Hardcover import; retry later or
-supply `asin_region`.
+For **Import by Audible ASIN** (no `book_id`), `create` looks up that exact
+ASIN and region in Audnexus, prints the record, and requires confirmation. For
+a selected-book import, an explicit region is sent to Hardcover without an
+Audnexus lookup. Without a region, the command discovers one by finding the
+requested ASIN in Audnexus; it prefers `audiobookshelf.audnexus_region`
+(default `us`) and does not infer a region from the ASIN. If discovery finds
+no region or Audnexus is temporarily unavailable, the command stops before the
+Hardcover import; retry later or supply `asin_region`.
 
-When an ABS item ID is present, the command also prints its metadata beside
-the Audnexus values and a per-field comparison. Differences are informational;
+For **Import by Audible ASIN** with an ABS item ID, the command also prints
+its metadata beside the Audnexus values and a per-field comparison. Differences are informational;
 review that the Audnexus record identifies the ABS item before confirming.
+Release dates retain the precision supplied by Audnexus.
 Unknown or unavailable Audnexus data cannot be confirmed. A corrected ASIN and
 region can be supplied in the input for preview before creation. If an ABS
 item is supplied and its identifiers conflict with the input, pass
@@ -134,25 +137,17 @@ selected Hardcover book while keeping `reading_format` set to `audiobook`:
 }
 ```
 
-With no `abs_item_id`, a valid submitted ASIN selects the regional Audible
-import, even when ISBNs are also supplied. If the ASIN is missing or malformed,
-an ISBN selects `insert_edition`; the malformed ASIN is treated as missing.
-When `abs_item_id` is supplied, the fetched Audiobookshelf item decides which
-path applies: a valid canonical item ASIN uses the regional import, including
-when the input omits ASIN. If the item has no valid canonical ASIN, a valid
+For selected-book input (`book_id` supplied), with no `abs_item_id`, a valid
+submitted ASIN selects the regional Audible import, even when ISBNs are also
+supplied. If the ASIN is missing or malformed, an ISBN selects
+`insert_edition`; the malformed ASIN is treated as missing. For selected-book
+input with `abs_item_id`, the fetched Audiobookshelf item decides which path
+applies: a valid canonical item ASIN uses the regional import, including when
+the input omits ASIN. If the item has no valid canonical ASIN, a valid
 submitted ASIN can correct it and uses the regional import after
 `--confirm-identifier-correction`; otherwise the input uses ISBN-backed
 insertion. Thus omitting the input ASIN cannot bypass an ASIN that
 Audiobookshelf reports.
-
-`asin_region` is optional for the regional import; `region` is an alias. If
-both are supplied they must agree. A supplied region is sent to Hardcover as
-given, without an Audnex lookup. Without one, the command discovers a region by
-finding the selected ASIN in Audnex; it prefers
-`audiobookshelf.audnexus_region` (default `us`) and does not assume a region
-from the ASIN. If discovery finds no region or Audnex is temporarily
-unavailable, the command stops before the Hardcover import; retry later or
-supply `asin_region`.
 
 For ISBN-backed audiobook insertion, include the edition metadata required by
 Hardcover (`title` and at least one `author_ids` entry), plus `isbn_10` or
