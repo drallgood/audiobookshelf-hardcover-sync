@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -45,5 +47,18 @@ func TestLoadEditionConfigEnvironmentOverridesFile(t *testing.T) {
 	}
 	if cfg.Audiobookshelf.NetworkTrust != "public_only" || cfg.Audiobookshelf.URL != "https://abs.example" || cfg.Hardcover.Token != "file-token" {
 		t.Fatalf("unexpected configuration: %+v", cfg.Audiobookshelf)
+	}
+}
+
+func TestCreateHelpDocumentsAudnexusConfirmationFlag(t *testing.T) {
+	var output bytes.Buffer
+	app := newApp()
+	app.Writer = &output
+	app.ErrWriter = &bytes.Buffer{}
+	if err := app.Run([]string{"edition", "create", "--help"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "--confirm-audnexus") || !strings.Contains(output.String(), "Confirm the displayed Audnexus record") {
+		t.Fatalf("create help omitted the Audnexus confirmation contract: %s", output.String())
 	}
 }

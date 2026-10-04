@@ -13,6 +13,10 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 )
 
+// ReasonAudibleImportAvailable marks an unmatched usable-ASIN audiobook whose
+// regional Audible record can be confirmed and imported without a Hardcover ID.
+const ReasonAudibleImportAvailable = "audible_import_available"
+
 // ToEditionExport converts a BookMismatch to an EditionExport for the edition import tool
 // Note: This function should be called with a context that has a Hardcover client available
 func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.HardcoverClientInterface) *EditionExport {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -15,10 +16,16 @@ import (
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audnex"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/crypto"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/edition"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/multiuser"
 	absync "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 )
@@ -53,10 +60,11 @@ type fakeHardcover struct {
 	// onPoll runs when the regional import status is polled.
 	onPoll func()
 
-	mu               sync.Mutex
-	upsertCalls      int
-	insertEditions   int
-	upsertExternalID string
+	mu                  sync.Mutex
+	upsertCalls         int
+	insertEditions      int
+	upsertExternalID    string
+	upsertBookIDPresent bool
 }
 
 func newFakeHardcover(t *testing.T) *fakeHardcover {
@@ -95,6 +103,7 @@ func (f *fakeHardcover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.upsertCalls++
 		if book, ok := request.Variables["book"].(map[string]interface{}); ok {
 			f.upsertExternalID, _ = book["external_id"].(string)
+			_, f.upsertBookIDPresent = book["book_id"]
 		}
 		writeFakeResponse(w, f.upsertHTTPStatus, f.upsertResponse)
 	case strings.Contains(request.Query, "RegionalAudibleImport"):
@@ -148,12 +157,58 @@ func (f *fakeHardcover) counts() (upserts, inserts int, externalID string) {
 	return f.upsertCalls, f.insertEditions, f.upsertExternalID
 }
 
+func (f *fakeHardcover) upsertIncludesBookID() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.upsertBookIDPresent
+}
+
 // commandEnv is a config file pointing the command at fake Hardcover and
 // Audiobookshelf servers, with an isolated state file.
 type commandEnv struct {
 	configPath string
 	statePath  string
 	hardcover  *fakeHardcover
+}
+
+type gatedConfirmationReader struct {
+	started     chan struct{}
+	release     chan struct{}
+	response    string
+	startOnce   sync.Once
+	releaseOnce sync.Once
+}
+
+func (r *gatedConfirmationReader) Read(p []byte) (int, error) {
+	r.startOnce.Do(func() { close(r.started) })
+	<-r.release
+	return copy(p, r.response), nil
+}
+
+func (r *gatedConfirmationReader) continuePrompt() {
+	r.releaseOnce.Do(func() { close(r.release) })
+}
+
+func newGatedConfirmationReader(response string) *gatedConfirmationReader {
+	return &gatedConfirmationReader{
+		started: make(chan struct{}), release: make(chan struct{}), response: response,
+	}
+}
+
+func unanchoredPromptServices(item *models.AudiobookshelfBook, importCalls *int) createServices {
+	return createServices{
+		fetchABSItem: func(context.Context, string) (*models.AudiobookshelfBook, error) { return item, nil },
+		getAudibleBook: func(context.Context, string, string) (*audnex.Book, error) {
+			return &audnex.Book{ASIN: boundaryASIN, Title: "Boundary Book"}, nil
+		},
+		importAudiobook: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+			(*importCalls)++
+			return &hardcover.RegionalAudiobookResult{
+				Status: hardcover.RegionalAudiobookCreated, BookID: boundaryBookID, EditionID: boundaryEditionID,
+				ReadingFormatID: models.ReadingFormatID(models.ReadingFormatAudiobook), RegionalExternalID: boundaryRegional,
+			}, nil
+		},
+	}
 }
 
 func newCommandEnv(t *testing.T, hc *fakeHardcover, absItemJSON string) commandEnv {
@@ -224,6 +279,40 @@ func (env commandEnv) association(t *testing.T) (state.Association, bool) {
 	return loaded.GetAssociation(boundaryABSItem)
 }
 
+func (env commandEnv) createServices(t *testing.T, dryRun bool, audible *audnex.Book, region string) createServices {
+	t.Helper()
+	cfg, err := loadEditionConfig(env.configPath, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	services, err := newCreateServices(cfg, logger.Get(), dryRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	services.getAudibleBook = func(_ context.Context, asin, requestedRegion string) (*audnex.Book, error) {
+		if audible == nil {
+			return nil, audnex.ErrNotFound
+		}
+		if asin != audible.ASIN || requestedRegion != region {
+			t.Fatalf("unexpected exact-region Audnexus lookup: %q:%q", asin, requestedRegion)
+		}
+		return audible, nil
+	}
+	services.discoverAudibleBook = func(_ context.Context, asin, preferred string) (*audnex.Book, string, error) {
+		if audible == nil {
+			return nil, "", nil
+		}
+		if asin != audible.ASIN {
+			t.Fatalf("unexpected Audnexus discovery ASIN %q", asin)
+		}
+		if preferred != "" && preferred != region {
+			t.Fatalf("preferred Audnexus region %q, expected %q", preferred, region)
+		}
+		return audible, region, nil
+	}
+	return services
+}
+
 func TestCreateCommandImportsAudiobookAndSavesAssociation(t *testing.T) {
 	for _, status := range []string{"created", "loaded"} {
 		t.Run(status, func(t *testing.T) {
@@ -253,6 +342,372 @@ func TestCreateCommandImportsAudiobookAndSavesAssociation(t *testing.T) {
 				t.Fatalf("unexpected saved association: %#v", association)
 			}
 		})
+	}
+}
+
+func TestRunCreateImportsASINOnlyAudiobookAfterAudnexusConfirmation(t *testing.T) {
+	hc := newFakeHardcover(t)
+	absItem := `{"id":"li_boundary","mediaType":"book","media":{"metadata":{"title":"Boundary Book","subtitle":"ABS subtitle","authorName":"Test Author","narratorName":"Reader One","series":[{"name":"The Saga","sequence":"1"}],"publishedDate":"2024-01-02","publisher":"Test Press","asin":"B0ABCDE123","isbn":"9780306406157","language":"en"},"duration":100,"coverPath":"/api/items/li_boundary/cover"}}`
+	env := newCommandEnv(t, hc, absItem)
+	inputPath := writeCreateInput(t, fmt.Sprintf(`{"asin":%q,"abs_item_id":%q,"reading_format":"audiobook"}`, boundaryASIN, boundaryABSItem))
+	audible := &audnex.Book{
+		ASIN: boundaryASIN, Title: "Boundary Book", Subtitle: "Audible subtitle",
+		Authors: []interface{}{"Test Author"}, Narrators: []interface{}{"Reader One"},
+		SeriesPrimary: &audnex.Series{Name: "The Saga", Position: "1"},
+		PublisherName: "Test Press", ReleaseDate: "2024", RuntimeLengthMin: 100.0 / 60,
+		Language: "en", Image: "https://images.example/book.jpg",
+	}
+	services := env.createServices(t, false, audible, "uk")
+	var preview bytes.Buffer
+	result, err := runCreate(context.Background(), createOptions{
+		InputPath: inputPath, StateFile: env.statePath, PreferredRegion: "uk",
+		ConfirmAudnexus: true, PreviewWriter: &preview,
+	}, services)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "created" || result.BookID != boundaryBookID || result.EditionID != boundaryEditionID || result.AudnexusRegion != "uk" {
+		t.Fatalf("unexpected ASIN-only import result: %#v", result)
+	}
+	if result.AudnexusRecord == nil || result.AudnexusComparison == nil || result.AudnexusComparison.Title != edition.AudnexusMatch || result.AudnexusComparison.Subtitle != edition.AudnexusDiffers {
+		t.Fatalf("Audnexus preview or comparison is incomplete: %#v", result)
+	}
+	if result.AudnexusRecord.CoverURL != "https://images.example/book.jpg" || result.AudnexusComparison.CoverURL != "" {
+		t.Fatalf("Audnexus cover source should be retained without a comparison status: record=%#v comparison=%#v", result.AudnexusRecord, result.AudnexusComparison)
+	}
+	if result.AudnexusRecord.ReleaseDate != "2024" {
+		t.Fatalf("year-only Audnexus release date lost its precision: %#v", result.AudnexusRecord)
+	}
+	if !strings.Contains(preview.String(), "Audnexus regional record") ||
+		!strings.Contains(preview.String(), "Audiobookshelf item") ||
+		!strings.Contains(preview.String(), "Title: match") ||
+		!strings.Contains(preview.String(), "Subtitle: differs") ||
+		!strings.Contains(preview.String(), `Release date: "2024"`) ||
+		strings.Contains(preview.String(), `Release date: "2024-01-01"`) ||
+		!strings.Contains(preview.String(), `Cover URL: "https://images.example/book.jpg"`) ||
+		!strings.Contains(preview.String(), `Cover path: "/api/items/li_boundary/cover"`) ||
+		strings.Contains(preview.String(), "Cover:") {
+		t.Fatalf("CLI preview omitted the record or field comparison: %s", preview.String())
+	}
+	if upserts, inserts, externalID := hc.counts(); upserts != 1 || inserts != 0 || externalID != boundaryRegional {
+		t.Fatalf("expected one regional upsert and no ebook insert, got upserts=%d inserts=%d external_id=%q", upserts, inserts, externalID)
+	}
+	if hc.upsertIncludesBookID() {
+		t.Fatal("unanchored upsert request included book_id")
+	}
+	association, ok := env.association(t)
+	if !ok || association.Provenance != "audible_import_unanchored" || association.RegionalExternalID != boundaryRegional || association.AudnexusConfirmedRegion != "uk" || association.AudnexusConfirmedAt.IsZero() || association.SourceASIN != boundaryASIN || association.SourceISBN13 != "9780306406157" {
+		t.Fatalf("unanchored import association lacks confirmed provenance: %#v, exists=%t", association, ok)
+	}
+}
+
+func TestRunCreateUnanchoredAssociationIsVisibleAsMultiuserEditionAddition(t *testing.T) {
+	for _, sourceASIN := range []string{boundaryASIN, "B099999999"} {
+		name := "source ASIN"
+		if sourceASIN != boundaryASIN {
+			name = "corrected source ASIN"
+		}
+		t.Run(name, func(t *testing.T) {
+			hc := newFakeHardcover(t)
+			itemJSON := strings.Replace(boundaryABSItemJS, `"B0ABCDE123"`, fmt.Sprintf("%q", sourceASIN), 1)
+			env := newCommandEnv(t, hc, itemJSON)
+			annotator, profileID, profileStatePath := newCLIAnnotationService(t, filepath.Dir(env.statePath))
+			configData, err := os.ReadFile(env.configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			configText := strings.Replace(string(configData), env.statePath, profileStatePath, 1)
+			if err := os.WriteFile(env.configPath, []byte(configText), 0600); err != nil {
+				t.Fatal(err)
+			}
+			env.statePath = profileStatePath
+
+			inputPath := writeCreateInput(t, fmt.Sprintf(`{"asin":%q,"abs_item_id":%q,"reading_format":"audiobook"}`, boundaryASIN, boundaryABSItem))
+			audible := &audnex.Book{ASIN: boundaryASIN, Title: "Boundary Book"}
+			result, err := runCreate(context.Background(), createOptions{
+				InputPath: inputPath, StateFile: env.statePath, PreferredRegion: "uk", ConfirmAudnexus: true,
+				ConfirmIdentifierCorrection: true,
+			}, env.createServices(t, false, audible, "uk"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result == nil || !result.AssociationSaved {
+				t.Fatalf("expected the confirmed import association to be saved: %#v", result)
+			}
+			association, ok := env.association(t)
+			if !ok {
+				t.Fatal("confirmed import association was not persisted")
+			}
+
+			snapshot := absync.SyncSnapshot{
+				State: "completed",
+				BookOutcomes: []absync.BookOutcomeRecord{{
+					BookID: boundaryABSItem, Outcome: absync.OutcomeNeedsReview,
+					Reason: mismatch.ReasonAudibleImportAvailable, ASIN: sourceASIN, SourceASIN: sourceASIN,
+					ISBN: "9780306406157", SourceISBN13: "9780306406157", Format: models.ReadingFormatAudiobook,
+				}},
+			}
+			if err := annotator.AnnotateEditionAdditions(profileID, &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			if !snapshot.BookOutcomes[0].EditionAdded {
+				t.Fatalf("multiuser annotation did not recognize the saved association: %#v", association)
+			}
+		})
+	}
+}
+
+func newCLIAnnotationService(t *testing.T, dataDir string) (*multiuser.MultiUserService, string, string) {
+	t.Helper()
+	db, err := database.NewDatabase(&database.DatabaseConfig{
+		Type: database.DatabaseTypeSQLite,
+		Path: filepath.Join(dataDir, "annotation-test.db"),
+	}, logger.Get())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close annotation test database: %v", err)
+		}
+	})
+	encryptor, err := crypto.NewEncryptionManagerWithDataDir(dataDir, logger.Get())
+	if err != nil {
+		t.Fatal(err)
+	}
+	globalConfig := config.DefaultConfig()
+	globalConfig.Paths.DataDir = dataDir
+	service := multiuser.NewMultiUserService(database.NewRepository(db, encryptor, logger.Get()), globalConfig, logger.Get())
+	profileID := "cli-create"
+	if err := service.CreateProfile(profileID, "CLI create", "http://audiobookshelf", "abs-token", "hc-token", database.SyncConfigData{StateFile: "sync_state.json"}); err != nil {
+		t.Fatal(err)
+	}
+	return service, profileID, filepath.Join(dataDir, "sync_state."+profileID)
+}
+
+func TestRunCreateUnanchoredInteractiveDeclineDoesNotMutate(t *testing.T) {
+	hc := newFakeHardcover(t)
+	env := newCommandEnv(t, hc, "")
+	inputPath := writeCreateInput(t, fmt.Sprintf(`{"asin":%q,"region":"uk"}`, boundaryASIN))
+	services := env.createServices(t, false, &audnex.Book{ASIN: boundaryASIN, Title: "Boundary Book"}, "uk")
+	var preview bytes.Buffer
+	_, err := runCreate(context.Background(), createOptions{
+		InputPath: inputPath, ConfirmationReader: strings.NewReader("n\n"), PreviewWriter: &preview,
+	}, services)
+	if err == nil || !strings.Contains(err.Error(), "was not confirmed") {
+		t.Fatalf("expected confirmation-decline error, got %v", err)
+	}
+	if upserts, inserts, _ := hc.counts(); upserts != 0 || inserts != 0 {
+		t.Fatalf("declined confirmation reached Hardcover: upserts=%d inserts=%d", upserts, inserts)
+	}
+	if !strings.Contains(preview.String(), "Audnexus regional record") || !strings.Contains(preview.String(), "Type yes to confirm") {
+		t.Fatalf("interactive command did not display its preview and confirmation prompt: %s", preview.String())
+	}
+}
+
+func TestRunCreateUnanchoredInteractiveConfirmationImportsDisplayedRegion(t *testing.T) {
+	hc := newFakeHardcover(t)
+	env := newCommandEnv(t, hc, "")
+	inputPath := writeCreateInput(t, fmt.Sprintf(`{"asin":%q}`, boundaryASIN))
+	services := env.createServices(t, false, &audnex.Book{ASIN: boundaryASIN, Title: "Boundary Book"}, "uk")
+	var preview bytes.Buffer
+	result, err := runCreate(context.Background(), createOptions{
+		InputPath: inputPath, PreferredRegion: "uk", ConfirmationReader: strings.NewReader("yes\n"),
+		PreviewWriter: &preview,
+	}, services)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "created" || result.AudnexusRegion != "uk" {
+		t.Fatalf("interactive confirmation did not import the displayed region: %#v", result)
+	}
+	if upserts, inserts, externalID := hc.counts(); upserts != 1 || inserts != 0 || externalID != boundaryRegional {
+		t.Fatalf("confirmed input did not reach the regional import once: upserts=%d inserts=%d external_id=%q", upserts, inserts, externalID)
+	}
+	if !strings.Contains(preview.String(), "Audnexus regional record") || !strings.Contains(preview.String(), "Type yes to confirm") {
+		t.Fatalf("interactive confirmation did not show what it would import: %s", preview.String())
+	}
+}
+
+func TestRunCreateUnanchoredAudnexusMissAndRateLimitDoNotMutate(t *testing.T) {
+	tests := []struct {
+		name      string
+		lookupErr error
+		wantError string
+	}{
+		{name: "regional miss", lookupErr: audnex.ErrNotFound, wantError: "did not find ASIN"},
+		{name: "rate limited", lookupErr: audnex.ErrRateLimited, wantError: "rate limited"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hc := newFakeHardcover(t)
+			inputPath := writeCreateInput(t, fmt.Sprintf(`{"asin":%q,"asin_region":"uk"}`, boundaryASIN))
+			services := createServices{
+				getAudibleBook: func(context.Context, string, string) (*audnex.Book, error) {
+					return nil, tt.lookupErr
+				},
+				importAudiobook: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+					t.Fatal("Audnexus lookup failure reached the import service")
+					return nil, nil
+				},
+			}
+			_, err := runCreate(context.Background(), createOptions{InputPath: inputPath, ConfirmAudnexus: true}, services)
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("expected %q error, got %v", tt.wantError, err)
+			}
+			if upserts, inserts, _ := hc.counts(); upserts != 0 || inserts != 0 {
+				t.Fatalf("failed preview reached Hardcover: upserts=%d inserts=%d", upserts, inserts)
+			}
+		})
+	}
+}
+
+func TestRunCreateUnanchoredDryRunPreviewsWithoutSavingOrMutating(t *testing.T) {
+	hc := newFakeHardcover(t)
+	env := newCommandEnv(t, hc, boundaryABSItemJS)
+	inputPath := writeCreateInput(t, fmt.Sprintf(`{"asin":%q,"asin_region":"uk","abs_item_id":%q}`, boundaryASIN, boundaryABSItem))
+	services := env.createServices(t, true, &audnex.Book{ASIN: boundaryASIN, Title: "Boundary Book"}, "uk")
+	var preview bytes.Buffer
+	result, err := runCreate(context.Background(), createOptions{
+		InputPath: inputPath, StateFile: env.statePath, DryRun: true, PreviewWriter: &preview,
+	}, services)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "dry_run" || result.AssociationSaved || result.AudnexusRegion != "uk" {
+		t.Fatalf("unexpected dry-run result: %#v", result)
+	}
+	if !strings.Contains(preview.String(), "Audnexus regional record") || !strings.Contains(preview.String(), "Per-field comparison") {
+		t.Fatalf("dry run did not show the comparison preview: %s", preview.String())
+	}
+	if upserts, inserts, _ := hc.counts(); upserts != 0 || inserts != 0 {
+		t.Fatalf("dry run reached Hardcover: upserts=%d inserts=%d", upserts, inserts)
+	}
+	if _, ok := env.association(t); ok {
+		t.Fatal("dry run saved an Audiobookshelf association")
+	}
+}
+
+func TestRunCreateLeavesStateLockAvailableDuringAudnexusPrompt(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "sync-state.json")
+	inputPath := writeCreateInput(t, fmt.Sprintf(`{"asin":%q,"asin_region":"uk","abs_item_id":"item-1"}`, boundaryASIN))
+	reader := newGatedConfirmationReader("n\n")
+	var importCalls int
+	services := unanchoredPromptServices(testAudiobook("item-1", boundaryASIN), &importCalls)
+	done := make(chan error, 1)
+	go func() {
+		_, err := runCreate(context.Background(), createOptions{
+			InputPath: inputPath, StateFile: statePath, ConfirmationReader: reader,
+		}, services)
+		done <- err
+	}()
+	waitForConfirmationPrompt(t, reader)
+	lock, lockErr := state.AcquireFileLock(statePath)
+	if lock != nil {
+		_ = lock.Close()
+	}
+	reader.continuePrompt()
+	runErr := <-done
+	if lockErr != nil {
+		t.Fatalf("state-file lock was held while waiting for user confirmation: %v", lockErr)
+	}
+	if runErr == nil || !strings.Contains(runErr.Error(), "was not confirmed") {
+		t.Fatalf("expected decline after the prompt, got %v", runErr)
+	}
+	if importCalls != 0 {
+		t.Fatalf("declined prompt reached the import service %d times", importCalls)
+	}
+}
+
+func TestRunCreateRejectsAssociationSavedDuringAudnexusPrompt(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "sync-state.json")
+	inputPath := writeCreateInput(t, fmt.Sprintf(`{"asin":%q,"asin_region":"uk","abs_item_id":"item-1"}`, boundaryASIN))
+	reader := newGatedConfirmationReader("yes\n")
+	var importCalls int
+	services := unanchoredPromptServices(testAudiobook("item-1", boundaryASIN), &importCalls)
+	done := make(chan error, 1)
+	go func() {
+		_, err := runCreate(context.Background(), createOptions{
+			InputPath: inputPath, StateFile: statePath, ConfirmationReader: reader,
+		}, services)
+		done <- err
+	}()
+	waitForConfirmationPrompt(t, reader)
+	lock, lockErr := state.AcquireFileLock(statePath)
+	if lockErr == nil {
+		loaded, loadErr := state.LoadState(lock.StatePath())
+		if loadErr == nil {
+			loadErr = loaded.SetAssociation(state.Association{
+				ABSItemID: "item-1", HardcoverBookID: "51", HardcoverEditionID: "52",
+				ReadingFormat: models.ReadingFormatAudiobook, Provenance: "another-import",
+			})
+		}
+		if loadErr == nil {
+			loadErr = loaded.Save(lock.StatePath())
+		}
+		if closeErr := lock.Close(); loadErr == nil {
+			loadErr = closeErr
+		}
+		if loadErr != nil {
+			reader.continuePrompt()
+			<-done
+			t.Fatalf("save competing association during prompt: %v", loadErr)
+		}
+	}
+	reader.continuePrompt()
+	runErr := <-done
+	if lockErr != nil {
+		t.Fatalf("state-file lock was held while waiting to save a competing association: %v", lockErr)
+	}
+	if runErr == nil || !strings.Contains(runErr.Error(), "already has a confirmed Hardcover association") {
+		t.Fatalf("expected post-prompt association recheck, got %v", runErr)
+	}
+	if importCalls != 0 {
+		t.Fatalf("competing association was overwritten after %d import calls", importCalls)
+	}
+}
+
+func TestRunCreateRejectsChangedABSSnapshotDuringAudnexusPrompt(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "sync-state.json")
+	inputPath := writeCreateInput(t, fmt.Sprintf(`{"asin":%q,"asin_region":"uk","abs_item_id":"item-1"}`, boundaryASIN))
+	reader := newGatedConfirmationReader("yes\n")
+	original := testAudiobook("item-1", boundaryASIN)
+	changed := testAudiobook("item-1", "B099999999")
+	fetchCalls := 0
+	var importCalls int
+	services := unanchoredPromptServices(original, &importCalls)
+	services.fetchABSItem = func(context.Context, string) (*models.AudiobookshelfBook, error) {
+		fetchCalls++
+		if fetchCalls == 1 {
+			return original, nil
+		}
+		return changed, nil
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := runCreate(context.Background(), createOptions{
+			InputPath: inputPath, StateFile: statePath, ConfirmationReader: reader,
+		}, services)
+		done <- err
+	}()
+	waitForConfirmationPrompt(t, reader)
+	reader.continuePrompt()
+	runErr := <-done
+	if runErr == nil || !strings.Contains(runErr.Error(), "changed while awaiting Audnexus confirmation") {
+		t.Fatalf("expected stale ABS source rejection, got %v", runErr)
+	}
+	if importCalls != 0 {
+		t.Fatalf("changed ABS source reached the import service %d times", importCalls)
+	}
+}
+
+func waitForConfirmationPrompt(t *testing.T, reader *gatedConfirmationReader) {
+	t.Helper()
+	select {
+	case <-reader.started:
+	case <-time.After(5 * time.Second):
+		reader.continuePrompt()
+		t.Fatal("create did not reach the interactive Audnexus confirmation")
 	}
 }
 
@@ -828,45 +1283,120 @@ func TestRunCreateReportsLocalSaveFailureAfterRemoteSuccess(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("directory permissions do not stop root from writing the state file")
 	}
-	stateDir := t.TempDir()
-	statePath := filepath.Join(stateDir, "sync-state.json")
-	t.Cleanup(func() { _ = os.Chmod(stateDir, 0700) })
-	inputPath := writeCreateInput(t, fmt.Sprintf(`{"book_id":%d,"abs_item_id":%q,"asin":%q,"asin_region":"uk"}`, boundaryBookID, boundaryABSItem, boundaryASIN))
-	item := testAudiobook(boundaryABSItem, boundaryASIN)
-	services := createServices{
-		fetchABSItem: func(context.Context, string) (*models.AudiobookshelfBook, error) { return item, nil },
-		importAudiobook: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
-			// Hardcover succeeds, then the state directory stops accepting writes.
-			if err := os.Chmod(stateDir, 0500); err != nil {
-				t.Fatal(err)
-			}
-			return &hardcover.RegionalAudiobookResult{
-				Status: hardcover.RegionalAudiobookCreated, BookID: boundaryBookID, EditionID: boundaryEditionID,
-				ReadingFormatID:    models.ReadingFormatID(models.ReadingFormatAudiobook),
-				RegionalExternalID: boundaryRegional,
-			}, nil
+	tests := []struct {
+		name       string
+		input      string
+		bookID     int
+		unanchored bool
+	}{
+		{
+			name:   "anchored",
+			input:  fmt.Sprintf(`{"book_id":%d,"abs_item_id":%q,"asin":%q,"asin_region":"uk"}`, boundaryBookID, boundaryABSItem, boundaryASIN),
+			bookID: boundaryBookID,
+		},
+		{
+			name:       "unanchored",
+			input:      fmt.Sprintf(`{"abs_item_id":%q,"asin":%q,"asin_region":"uk"}`, boundaryABSItem, boundaryASIN),
+			unanchored: true,
 		},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newCommandEnv(t, newFakeHardcover(t), boundaryABSItemJS)
+			stateDir := t.TempDir()
+			statePath := filepath.Join(stateDir, "sync-state.json")
+			t.Cleanup(func() { _ = os.Chmod(stateDir, 0700) })
+			inputPath := writeCreateInput(t, tt.input)
+			audible := &audnex.Book{ASIN: boundaryASIN, Title: "Boundary Book"}
+			services := env.createServices(t, false, audible, "uk")
+			var importInput hardcover.RegionalAudiobookInput
+			importCalls := 0
+			services.importAudiobook = func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+				importCalls++
+				importInput = input
+				// Hardcover succeeds, then the state directory stops accepting writes.
+				if err := os.Chmod(stateDir, 0500); err != nil {
+					t.Fatal(err)
+				}
+				return &hardcover.RegionalAudiobookResult{
+					Status: hardcover.RegionalAudiobookCreated, BookID: boundaryBookID, EditionID: boundaryEditionID,
+					ReadingFormatID:    models.ReadingFormatID(models.ReadingFormatAudiobook),
+					RegionalExternalID: boundaryRegional,
+				}, nil
+			}
 
-	result, err := runCreate(context.Background(), createOptions{InputPath: inputPath, StateFile: statePath}, services)
+			options := createOptions{InputPath: inputPath, StateFile: statePath}
+			if tt.unanchored {
+				options.ConfirmAudnexus = true
+			}
+			result, err := runCreate(context.Background(), options, services)
+			if err == nil || result != nil {
+				t.Fatalf("expected a local save failure, got result=%#v err=%v", result, err)
+			}
+			for _, want := range []string{"Hardcover reported audiobook created", "local association could not be saved", "Verify the Hardcover result before retrying"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("save failure message %q is missing %q", err.Error(), want)
+				}
+			}
+			if importCalls != 1 || importInput.BookID != tt.bookID || importInput.Unanchored != tt.unanchored {
+				t.Fatalf("unexpected import request after mode %q: calls=%d input=%#v", tt.name, importCalls, importInput)
+			}
+			if err := os.Chmod(stateDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if _, statErr := os.Stat(statePath); statErr == nil {
+				loaded, loadErr := state.LoadState(statePath)
+				if loadErr != nil {
+					t.Fatal(loadErr)
+				}
+				if _, ok := loaded.GetAssociation(boundaryABSItem); ok {
+					t.Fatal("association was reported unsaved but exists in state")
+				}
+			}
+		})
+	}
+}
+
+func TestRunCreateUnanchoredImportTimeoutWarnsAndDoesNotSaveAssociation(t *testing.T) {
+	env := newCommandEnv(t, newFakeHardcover(t), boundaryABSItemJS)
+	inputPath := writeCreateInput(t, fmt.Sprintf(`{"asin":"%s","asin_region":"uk","abs_item_id":%q}`, strings.ToLower(boundaryASIN), boundaryABSItem))
+	var importInput hardcover.RegionalAudiobookInput
+	importCalls := 0
+	services := unanchoredPromptServices(testAudiobook(boundaryABSItem, boundaryASIN), &importCalls)
+	services.importAudiobook = func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+		importCalls++
+		importInput = input
+		return nil, fmt.Errorf("status polling stopped: %w", hardcover.ErrRegionalAudiobookImportTimeout)
+	}
+
+	result, err := runCreate(context.Background(), createOptions{
+		InputPath: inputPath, StateFile: env.statePath, ConfirmAudnexus: true,
+	}, services)
 	if err == nil || result != nil {
-		t.Fatalf("expected a local save failure, got result=%#v err=%v", result, err)
+		t.Fatalf("expected an uncertain import timeout, got result=%#v err=%v", result, err)
 	}
-	for _, want := range []string{"Hardcover reported audiobook created", "local association could not be saved", "Verify the Hardcover result before retrying"} {
+	if !errors.Is(err, hardcover.ErrRegionalAudiobookImportTimeout) {
+		t.Fatalf("timeout error lost its Hardcover identity: %v", err)
+	}
+	for _, want := range []string{"Hardcover may have processed the import", "verify the book in Hardcover before retrying"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("save failure message %q is missing %q", err.Error(), want)
+			t.Fatalf("timeout error %q is missing operator guidance %q", err.Error(), want)
 		}
 	}
-	if err := os.Chmod(stateDir, 0700); err != nil {
-		t.Fatal(err)
+	if importCalls != 1 {
+		t.Fatalf("timed-out import was automatically resubmitted %d times", importCalls-1)
 	}
-	if _, statErr := os.Stat(statePath); statErr == nil {
-		loaded, loadErr := state.LoadState(statePath)
-		if loadErr != nil {
-			t.Fatal(loadErr)
-		}
-		if _, ok := loaded.GetAssociation(boundaryABSItem); ok {
-			t.Fatal("association was reported unsaved but exists in state")
-		}
+	if importInput.BookID != 0 || importInput.ASIN != boundaryASIN || importInput.Region != "uk" || !importInput.Unanchored {
+		t.Fatalf("unanchored import did not receive the canonical regional request: %#v", importInput)
+	}
+	if _, ok := env.association(t); ok {
+		t.Fatal("timed-out import saved an Audiobookshelf association")
+	}
+	lock, lockErr := state.AcquireFileLock(env.statePath)
+	if lockErr != nil {
+		t.Fatalf("state-file lock was not released after import timeout: %v", lockErr)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatalf("release reacquired state-file lock: %v", err)
 	}
 }

@@ -801,11 +801,6 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 		// Check for GraphQL errors
 		if !directUnmarshal && len(gqlResp.Errors) > 0 {
 			lastErr = fmt.Errorf("GraphQL error: %v", gqlResp.Errors[0].Message)
-			c.logger.Error("GraphQL operation failed", map[string]interface{}{
-				"error":   lastErr.Error(),
-				"attempt": attempt + 1,
-				"errors":  gqlResp.Errors,
-			})
 			if budgetedMutation {
 				if knownInsertEditionMissingRequiredArgument(op, query, resp.StatusCode, gqlResp.Data, gqlResp.Errors) {
 					return fmt.Errorf("%w: %w", errInsertEditionMissingRequiredArgument, lastErr)
@@ -813,6 +808,13 @@ func (c *Client) executeGraphQLOperation(ctx context.Context, op graphqlOperatio
 				if knownUpsertBookMissingRequiredArgument(op, query, resp.StatusCode, gqlResp.Data, gqlResp.Errors) {
 					return fmt.Errorf("%w: %w", errUpsertBookMissingRequiredArgument, lastErr)
 				}
+			}
+			c.logger.Error("GraphQL operation failed", map[string]interface{}{
+				"error":   lastErr.Error(),
+				"attempt": attempt + 1,
+				"errors":  gqlResp.Errors,
+			})
+			if budgetedMutation {
 				return ambiguousMutationError(lastErr)
 			}
 			continue

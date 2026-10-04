@@ -75,14 +75,22 @@ type Book struct {
 	Subtitle         string      `json:"subtitle,omitempty"`
 	Authors          interface{} `json:"authors,omitempty"`   // Accept any type to handle both array and object
 	Narrators        interface{} `json:"narrators,omitempty"` // Accept any type to handle both array and object
+	SeriesPrimary    *Series     `json:"seriesPrimary,omitempty"`
+	SeriesSecondary  *Series     `json:"seriesSecondary,omitempty"`
 	PublisherName    string      `json:"publisherName,omitempty"`
 	Summary          string      `json:"summary,omitempty"`
 	ReleaseDate      string      `json:"releaseDate,omitempty"`
 	Image            string      `json:"image,omitempty"`
 	ISBN             string      `json:"isbn,omitempty"`
 	Language         string      `json:"language,omitempty"`
-	RuntimeLengthMin int         `json:"runtimeLengthMin,omitempty"`
+	RuntimeLengthMin float64     `json:"runtimeLengthMin,omitempty"`
 	FormatType       string      `json:"formatType,omitempty"`
+}
+
+// Series represents one of Audnexus's primary or secondary series values.
+type Series struct {
+	Name     string `json:"name,omitempty"`
+	Position string `json:"position,omitempty"`
 }
 
 // GetAuthorsAsStrings returns a slice of author names regardless of the format they were provided in

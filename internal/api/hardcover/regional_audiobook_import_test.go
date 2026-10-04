@@ -40,6 +40,7 @@ func TestClient_ImportRegionalAudiobook(t *testing.T) {
 		{name: "created import with mapping", status: "created", includeMapping: true, mappingState: "created", mappingBook: 42, formatID: 2, wantStatus: RegionalAudiobookCreated},
 		{name: "loaded import without mapping", status: "loaded", formatID: 2, wantStatus: RegionalAudiobookLoaded},
 		{name: "failed import", status: "failed", includeMapping: true, mappingState: "failed", wantErr: ErrRegionalAudiobookImportFailed},
+		{name: "failed import takes precedence over unrelated book ID", status: "failed", statusBook: 43, includeMapping: true, mappingState: "failed", wantErr: ErrRegionalAudiobookImportFailed},
 		{name: "pending import with failed mapping", status: "fetching", includeMapping: true, mappingState: "failed", wantErr: ErrRegionalAudiobookIdentityConflict, wantNotErr: ErrRegionalAudiobookImportFailed},
 		{name: "missing import status with failed mapping", includeMapping: true, mappingState: "failed", wantErr: ErrRegionalAudiobookIdentityConflict, wantNotErr: ErrRegionalAudiobookImportFailed},
 		{name: "not found import", status: "not_found", wantErr: ErrRegionalAudiobookImportFailed},

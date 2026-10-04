@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -214,6 +215,47 @@ func TestAssociationPersistsWithCheckpointAndSurvivesCheckpointUpdates(t *testin
 	assert.Equal(t, association, got)
 	assert.Equal(t, 0.5, reloaded.Books["item"].LastProgress)
 	assert.True(t, reloaded.Books["item"].HasProgressSeconds)
+}
+
+func TestAssociationAudnexusConfirmedAtOmitsZeroAndPersistsConfirmation(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "state.json")
+	confirmedAt := time.Date(2026, time.June, 5, 14, 30, 0, 0, time.UTC)
+	state := NewState()
+	for _, association := range []Association{
+		{ABSItemID: "item-zero", HardcoverBookID: "1", HardcoverEditionID: "2"},
+		{ABSItemID: "item-confirmed", HardcoverBookID: "3", HardcoverEditionID: "4", AudnexusConfirmedAt: confirmedAt},
+	} {
+		require.NoError(t, state.SetAssociation(association))
+	}
+	require.NoError(t, state.Save(path))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var saved struct {
+		Books map[string]json.RawMessage `json:"books"`
+	}
+	require.NoError(t, json.Unmarshal(data, &saved))
+	associationJSON := func(itemID string) map[string]json.RawMessage {
+		t.Helper()
+		var book struct {
+			Association map[string]json.RawMessage `json:"association"`
+		}
+		require.NoError(t, json.Unmarshal(saved.Books[itemID], &book))
+		return book.Association
+	}
+	assert.NotContains(t, associationJSON("item-zero"), "audnexusConfirmedAt")
+	assert.Contains(t, associationJSON("item-confirmed"), "audnexusConfirmedAt")
+
+	reloaded, err := LoadState(path)
+	require.NoError(t, err)
+	zero, ok := reloaded.GetAssociation("item-zero")
+	require.True(t, ok)
+	assert.True(t, zero.AudnexusConfirmedAt.IsZero())
+	confirmed, ok := reloaded.GetAssociation("item-confirmed")
+	require.True(t, ok)
+	assert.Equal(t, confirmedAt, confirmed.AudnexusConfirmedAt)
 }
 
 func mustGetAssociation(t *testing.T, state *State, itemID string) Association {
