@@ -1192,6 +1192,8 @@ test('unknown, unavailable, and dry-run Audible previews cannot submit', () => {
             : [];
         const html = app.renderEditionDialog({ ...base, draft: confirmedAudibleDraft({ region_status, confirmed_region: '', audnexus_record: undefined, warnings: warning }) });
         assert.match(html, /confirm-create" disabled/);
+        assert.match(html, /data-edition-dialog="retry"[^>]*>Retry preview/);
+        assert.match(html, /class="edition-error" role="alert"/);
         assert.doesNotMatch(html, /Refresh the preview|Retry to check/);
     }
     const unmatched = app.renderEditionDialog({
@@ -1203,7 +1205,7 @@ test('unknown, unavailable, and dry-run Audible previews cannot submit', () => {
     });
     assert.match(unmatched, /No matching audiobook was found in Audnexus\. Audible import is unavailable\./);
     assert.doesNotMatch(unmatched, /regional Audnexus record must be confirmed|Refresh the preview|edition draft uses English/);
-    assert.equal((unmatched.match(/role="status"/g) || []).length, 1);
+    assert.match(unmatched, /class="edition-error" role="alert"/);
     assert.match(unmatched, /confirm-create" disabled/);
     const failedLookup = app.renderEditionDialog({
         ...base,
@@ -1215,6 +1217,35 @@ test('unknown, unavailable, and dry-run Audible previews cannot submit', () => {
     assert.match(failedLookup, /Audnexus could not verify a regional match for this audiobook\. Audible import is unavailable\./);
     assert.doesNotMatch(failedLookup, /No matching audiobook was found|did not confirm this regional Audible identifier/);
     assert.match(app.renderEditionDialog({ ...base, runDryRun: true, draft: confirmedAudibleDraft() }), /confirm-create" disabled/);
+});
+
+test('retrying a failed Audnexus preview hides retry and enables Add edition after success', async () => {
+    const app = editionApp();
+    const dialog = app.editionDialog = {
+        mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record: audibleImportRecord,
+        loading: false, busy: false, runDryRun: false, capability: null,
+        audibleIdentifier: 'B00ABC1234:uk',
+        draft: confirmedAudibleDraft({ region_status: 'temporarily_unavailable', confirmed_region: '', audnexus_record: undefined })
+    };
+    assert.match(app.renderEditionDialog(dialog), /data-edition-dialog="retry"[^>]*>Retry preview/);
+    app.showEditionDialog = () => {};
+    let creates = 0;
+    app.fetchJsonWithTimeout = async () => { creates++; return {}; };
+    await app.submitEditionCreate();
+    assert.equal(creates, 0);
+    const requests = [];
+    app.fetchJsonWithTimeout = async (url, options) => {
+        requests.push({ url, options });
+        return { response: { ok: true, status: 200 }, data: { success: true, data:
+            url.endsWith('/edition-capability') ? {} : confirmedAudibleDraft() } };
+    };
+    await app.loadEditionDraft();
+    const html = app.renderEditionDialog(dialog);
+    assert.doesNotMatch(html, /data-edition-dialog="retry"/);
+    assert.doesNotMatch(html, /data-edition-dialog="confirm-create" disabled/);
+    assert.match(html, /Audible identifier:<\/strong> B00ABC1234:uk/);
+    assert.ok(requests.some(({ url }) => url.includes('audible_identifier=B00ABC1234%3Auk')));
+    assert.ok(requests.every(({ options }) => !options.method || options.method === 'GET'));
 });
 
 test('capability gate blocks on known denial, permits unverified attempts, and passes when allowed', () => {

@@ -2592,7 +2592,7 @@ class SyncProfileApp {
         }
         if (!draft) {
             const retryLabel = waiting ? `Retry in ${Math.ceil(waitMs / 1000)}s` : 'Retry preview';
-            return `${errorHtml}<div class="form-actions edition-create-actions"><button type="button" class="btn btn-secondary" data-edition-dialog="retry" ${waiting || dialog.busy ? 'disabled' : ''}>${retryLabel}</button>${closeButton}</div>`;
+            return `${errorHtml}<div class="form-actions edition-create-actions"><button type="button" class="btn btn-primary" data-edition-dialog="confirm-create" disabled>Add edition</button><button type="button" class="btn btn-secondary" data-edition-dialog="retry" ${waiting || dialog.busy ? 'disabled' : ''}>${retryLabel}</button>${closeButton}</div>`;
         }
         const blockers = this.audibleImportBlockers(dialog, draft);
         const dryRun = Boolean(draft.dry_run || dialog.capability?.dry_run || dialog.runDryRun);
@@ -2611,9 +2611,12 @@ class SyncProfileApp {
                 ${this.audibleImportComparisonRows(draft)}
             </section>` : '';
         const identifier = this.displayedAudibleIdentifier(draft);
-        const regionHtml = `<div class="edition-region ${regionStatus === 'confirmed' ? 'confirmed' : 'review'}" role="status">${this.escapeHtml(regionMessage)}${identifier ? `<div><strong>Audible identifier:</strong> ${this.escapeHtml(identifier)}</div>` : ''}</div>`;
+        const lookupSucceeded = regionStatus === 'confirmed' && Boolean(identifier && draft.audnexus_record);
+        const regionHtml = `<div class="${lookupSucceeded ? 'edition-region confirmed' : 'edition-error'}" role="${lookupSucceeded ? 'status' : 'alert'}">${this.escapeHtml(regionMessage)}${identifier ? `<div><strong>Audible identifier:</strong> ${this.escapeHtml(identifier)}</div>` : ''}</div>`;
+        const retryLabel = waiting ? `Retry in ${Math.ceil(waitMs / 1000)}s` : 'Retry preview';
+        const retryButton = lookupSucceeded ? '' : `<button type="button" class="btn btn-secondary" data-edition-dialog="retry" ${waiting || dialog.busy ? 'disabled' : ''}>${retryLabel}</button>`;
         const blockersHtml = blockers
-            .filter(text => text !== 'The regional Audnexus record must be confirmed by preview before importing.')
+            .filter(text => !['The regional Audnexus record must be confirmed by preview before importing.', 'Audnexus is temporarily unavailable. Retry the preview before confirming this import.'].includes(text))
             .map(text => `<div class="edition-error" data-blocker>${this.escapeHtml(text)}</div>`).join('');
         const canConfirm = blockers.length === 0 && !dialog.busy && !waiting && !dialog.loading;
         const confirmButton = dialog.retryCreate
@@ -2623,6 +2626,7 @@ class SyncProfileApp {
             ${regionHtml}${comparisonHtml}${this.renderAudibleImportWarnings(draft)}${blockersHtml}${errorHtml}
             <div class="form-actions edition-create-actions">
                 ${confirmButton}
+                ${retryButton}
                 ${closeButton}
             </div>`;
     }

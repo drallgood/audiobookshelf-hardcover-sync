@@ -103,8 +103,9 @@ statuses for comparable fields. It imports using the reviewed regional ASIN
 without selecting a Hardcover book first. Review that the record identifies
 the item. The app discovers the region from Audiobookshelf and Audnexus and
 shows the `ASIN:region` as read-only text. The identifier cannot be changed in
-the modal. If discovery is temporarily unavailable, close and reopen the dialog
-to try again.
+the modal. If the Audnexus lookup fails, the modal shows an error and a
+**Retry preview** button while **Add edition** stays disabled. A successful
+lookup hides the retry button.
 Selecting **Add edition** confirms the displayed record and starts the import;
 there is no separate confirmation checkbox. The action stays unavailable until
 Audnexus confirms the region, and waits out any requested retry delay. Creating
