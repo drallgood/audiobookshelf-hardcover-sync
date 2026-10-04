@@ -256,17 +256,19 @@ func (f regionalImportPollingTransport) RoundTrip(r *http.Request) (*http.Respon
 // delaying an immediately completed import or retrying the catalogue write.
 func TestRegionalImportPollingRequestBudget(t *testing.T) {
 	for _, tc := range []struct {
-		name                  string
-		timeout               time.Duration
-		completeAfter         int
-		terminalBeforeMapping bool
-		wantPolls             int
-		wantErr               error
+		name                      string
+		timeout                   time.Duration
+		completeAfter             int
+		terminalBeforeMapping     bool
+		mappingWithoutEditionLink bool
+		wantPolls                 int
+		wantErr                   error
 	}{
 		{name: "pending import backs off until cancellation", timeout: 2500 * time.Millisecond, wantPolls: 2, wantErr: context.DeadlineExceeded},
 		{name: "pending import respects full deadline and quota budget", timeout: 35 * time.Second, wantPolls: 8, wantErr: ErrRegionalAudiobookImportTimeout},
 		{name: "pending import eventually verifies edition", timeout: 10 * time.Second, completeAfter: 3, wantPolls: 3},
 		{name: "loaded import without mapping times out", timeout: 35 * time.Second, terminalBeforeMapping: true, wantPolls: 8, wantErr: ErrRegionalAudiobookImportTimeout},
+		{name: "loaded import mapping without edition linkage times out", timeout: 35 * time.Second, terminalBeforeMapping: true, mappingWithoutEditionLink: true, wantPolls: 8, wantErr: ErrRegionalAudiobookImportTimeout},
 		{name: "loaded import waits for its mapping", timeout: 10 * time.Second, terminalBeforeMapping: true, completeAfter: 3, wantPolls: 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -296,6 +298,9 @@ func TestRegionalImportPollingRequestBudget(t *testing.T) {
 								status = "created"
 							}
 							mappings = `[{"id":77,"state":"normalized","book_id":42,"platform_id":32,"external_id":"B0ABCDE123:uk","edition_id":900}]`
+						}
+						if tc.mappingWithoutEditionLink {
+							mappings = `[{"id":77,"state":"normalized","book_id":42,"platform_id":32,"external_id":"B0ABCDE123:uk"}]`
 						}
 						_, _ = w.Write([]byte(`{"data":{"book_import_statuses":[{"status":"` + status + `","book_id":42,"edition_id":900,"external_id":"B0ABCDE123:uk","platform_id":32}],"book_mappings":` + mappings + `}}`))
 					case strings.Contains(request.Query, "GetEdition"):
