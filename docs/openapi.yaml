@@ -1664,7 +1664,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
-          description: The correction fields or identifiers are invalid.
+          description: >-
+            The correction fields or identifiers are invalid, or region
+            discovery did not confirm an Audible region for the selected-book
+            audiobook. Supply an explicit `audible_identifier` in `ASIN:region`
+            form to choose a supported region without discovery.
           content:
             application/json:
               schema:

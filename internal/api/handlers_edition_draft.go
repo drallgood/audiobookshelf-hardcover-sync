@@ -275,8 +275,8 @@ func (draft *editionDraftResponse) lookupAudnexusRecord(ctx, parentCtx context.C
 		draft.AudnexusDetails = buildAudnexusDetails(found)
 		record := edition.BuildAudnexusRecord(found)
 		if strings.TrimSpace(found.ReleaseDate) != "" {
-			if record.ReleaseDate != "" {
-				draft.MetadataPreview.ReleaseDate = record.ReleaseDate
+			if draft.AudnexusDetails.ReleaseDate != "" {
+				draft.MetadataPreview.ReleaseDate = draft.AudnexusDetails.ReleaseDate
 			} else {
 				draft.addWarning("audnex_date_unrecognized", "Audnexus returned a release date that could not be normalized; the Audiobookshelf date is shown instead.", false)
 			}

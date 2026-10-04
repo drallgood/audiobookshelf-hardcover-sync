@@ -352,6 +352,44 @@ func TestGetEditionSourceDraftPreservesABSPublicationDateForComparison(t *testin
 	}
 }
 
+func TestGetEditionSourceDraftNormalizesAudnexusPreviewWithoutLosingComparisonPrecision(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		audnexusDate    string
+		wantPreviewDate string
+		wantRecordDate  string
+	}{
+		{name: "year precision", audnexusDate: "2020", wantPreviewDate: "2020-01-01", wantRecordDate: "2020"},
+		{name: "month precision", audnexusDate: "2020-02", wantPreviewDate: "2020-02-01", wantRecordDate: "2020-02"},
+		{name: "day precision", audnexusDate: "2020-02-03", wantPreviewDate: "2020-02-03", wantRecordDate: "2020-02-03"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newEditionDraftTestFixture(t, `{
+				"id":"abs-item-1","mediaType":"book","media":{
+					"metadata":{"title":"ABS title","asin":"B0SOURCE12","publishedDate":"2020-02-03"},
+					"duration":100,"numTracks":1
+				}}`, "us")
+			fixture.setDiscovery(func(context.Context, string, string) (*audnex.Book, string, error) {
+				return &audnex.Book{ASIN: "B0SOURCE12", Title: "Audnex title", ReleaseDate: test.audnexusDate}, "us", nil
+			})
+
+			response := fixture.request(editionDraftItemPath, fixture.sessionCookie(t, fixture.owner))
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			var envelope struct {
+				Data editionDraftResponse `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+			draft := envelope.Data
+			require.NotNil(t, draft.MetadataPreview)
+			require.NotNil(t, draft.AudnexusRecord)
+			require.NotNil(t, draft.AudnexusComparison)
+			require.Equal(t, test.wantPreviewDate, draft.MetadataPreview.ReleaseDate)
+			require.Equal(t, test.wantRecordDate, draft.AudnexusRecord.ReleaseDate)
+			require.Equal(t, edition.AudnexusMatch, draft.AudnexusComparison.ReleaseDate)
+		})
+	}
+}
+
 func TestGetEditionSourceDraftOmitsUnrecognizedAudnexPreviewDate(t *testing.T) {
 	fixture := newEditionDraftTestFixture(t, `{
 		"id":"abs-item-1","mediaType":"book","media":{

@@ -253,7 +253,7 @@ func (h *Handler) CheckEditionImport(w http.ResponseWriter, r *http.Request) {
 	var recovery *editionRecoveryData
 	var action *sync.EditionActionRecord
 	err = h.multiUserService.RecoverEditionAssociation(ctx, profileID, request.ABSItemID, func(profile *database.ProfileWithTokens) (statepkg.Association, error) {
-		_, record, snapshotErr := h.verifiedEditionCreateRecord(profileID, request.RunID, request.ABSItemID)
+		_, record, sourceRecoveryTransition, snapshotErr := h.verifiedEditionRecoveryRecord(profileID, request.RunID, request.ABSItemID)
 		if snapshotErr != nil {
 			return statepkg.Association{}, snapshotErr
 		}
@@ -279,6 +279,9 @@ func (h *Handler) CheckEditionImport(w http.ResponseWriter, r *http.Request) {
 			HardcoverBookID: record.HardcoverBookID, AudibleIdentifier: externalID,
 		}
 		verifiedClaims, validToken := verifyEditionRecoveryToken(profile.HardcoverToken, request.RecoveryToken, claims)
+		if sourceRecoveryTransition && !validToken {
+			return statepkg.Association{}, errEditionRecoveryInvalid
+		}
 		if !validToken {
 			if foundAction && storedAction != nil && (storedAction.Outcome == editionOutcomeUnconfirmed || storedAction.Outcome == editionOutcomeTransportUnknown || storedAction.Outcome == editionOutcomeCreated) {
 				storedTokenValid := false
@@ -300,6 +303,9 @@ func (h *Handler) CheckEditionImport(w http.ResponseWriter, r *http.Request) {
 				h.markEditionRecoveryUnavailable(profileID, storedAction)
 				return statepkg.Association{}, errEditionRecoveryUnavailable
 			}
+			return statepkg.Association{}, errEditionRecoveryInvalid
+		}
+		if sourceRecoveryTransition && (!foundAction || storedAction == nil) {
 			return statepkg.Association{}, errEditionRecoveryInvalid
 		}
 		if foundAction {
@@ -475,52 +481,105 @@ func decodeEditionCreateRequest(w http.ResponseWriter, r *http.Request) (edition
 }
 
 func (h *Handler) verifiedEditionCreateRecord(profileID, runID, itemID string) (*sync.SyncSnapshot, sync.BookOutcomeRecord, error) {
+	snapshot, record, _, err := h.verifiedEditionCreateRecordWithRecoveryTransition(profileID, runID, itemID, false)
+	return snapshot, record, err
+}
+
+// verifiedEditionRecoveryRecord permits the narrow transition where a newer
+// sync can no longer anchor a pending selected-book Audible import, but still
+// reports the same Audiobookshelf source as an unanchored import candidate.
+// The recovery handler separately requires the original signed token and its
+// pending action journal before using this exception.
+func (h *Handler) verifiedEditionRecoveryRecord(profileID, runID, itemID string) (*sync.SyncSnapshot, sync.BookOutcomeRecord, bool, error) {
+	return h.verifiedEditionCreateRecordWithRecoveryTransition(profileID, runID, itemID, true)
+}
+
+func (h *Handler) verifiedEditionCreateRecordWithRecoveryTransition(profileID, runID, itemID string, allowRecoveryTransition bool) (*sync.SyncSnapshot, sync.BookOutcomeRecord, bool, error) {
 	snapshot, err := h.multiUserService.GetSyncRunSnapshot(profileID, runID)
 	if err != nil {
-		return nil, sync.BookOutcomeRecord{}, fmt.Errorf("failed to retrieve requested sync run: %w: %w", multiuser.ErrEditionCreateLocalFailure, err)
+		return nil, sync.BookOutcomeRecord{}, false, fmt.Errorf("failed to retrieve requested sync run: %w: %w", multiuser.ErrEditionCreateLocalFailure, err)
 	}
 	if snapshot == nil || snapshot.RunID != runID ||
 		(snapshot.ProfileID != "" && snapshot.ProfileID != profileID) ||
 		(snapshot.State != string(sync.RunPhaseCompleted) && snapshot.State != string(sync.RunPhaseCanceled)) ||
 		snapshot.DryRun {
-		return nil, sync.BookOutcomeRecord{}, errStaleEditionCreateRun
+		return nil, sync.BookOutcomeRecord{}, false, errStaleEditionCreateRun
 	}
 	for _, record := range snapshot.BookOutcomes {
 		if record.BookID != itemID {
 			continue
 		}
 		if record.Outcome != sync.OutcomeNeedsReview || strings.TrimSpace(record.Format) == "" {
-			return nil, sync.BookOutcomeRecord{}, errStaleEditionCreateRun
+			return nil, sync.BookOutcomeRecord{}, false, errStaleEditionCreateRun
 		}
 		if record.Reason == mismatch.ReasonAudibleImportAvailable {
 			if normalizedEditionCreateFormat(record.Format) != models.ReadingFormatAudiobook || strings.TrimSpace(record.HardcoverBookID) != "" || strings.TrimSpace(record.EditionID) != "" {
-				return nil, sync.BookOutcomeRecord{}, errStaleEditionCreateRun
+				return nil, sync.BookOutcomeRecord{}, false, errStaleEditionCreateRun
 			}
 			sourceASIN := record.SourceASIN
 			if sourceASIN == "" {
 				sourceASIN = record.ASIN
 			}
 			if _, valid := audnex.CanonicalASIN(sourceASIN); !valid {
-				return nil, sync.BookOutcomeRecord{}, errStaleEditionCreateRun
+				return nil, sync.BookOutcomeRecord{}, false, errStaleEditionCreateRun
 			}
 		} else {
 			if strings.TrimSpace(record.HardcoverBookID) == "" {
-				return nil, sync.BookOutcomeRecord{}, errStaleEditionCreateRun
+				return nil, sync.BookOutcomeRecord{}, false, errStaleEditionCreateRun
 			}
 			if _, err := strconv.Atoi(record.HardcoverBookID); err != nil {
-				return nil, sync.BookOutcomeRecord{}, errStaleEditionCreateRun
+				return nil, sync.BookOutcomeRecord{}, false, errStaleEditionCreateRun
 			}
 		}
 		laterRecord, found, laterErr := h.multiUserService.GetLaterUsableSyncRunOutcome(profileID, runID, itemID)
 		if laterErr != nil {
-			return nil, sync.BookOutcomeRecord{}, fmt.Errorf("failed to inspect newer sync outcomes: %w: %w", multiuser.ErrEditionCreateLocalFailure, laterErr)
+			return nil, sync.BookOutcomeRecord{}, false, fmt.Errorf("failed to inspect newer sync outcomes: %w: %w", multiuser.ErrEditionCreateLocalFailure, laterErr)
 		}
 		if found && !sameEditionCreateCandidate(record, laterRecord) {
-			return nil, sync.BookOutcomeRecord{}, errStaleEditionCreateRun
+			if allowRecoveryTransition && sameSelectedBookToAudibleImportSource(record, laterRecord) {
+				return snapshot, record, true, nil
+			}
+			return nil, sync.BookOutcomeRecord{}, false, errStaleEditionCreateRun
 		}
-		return snapshot, record, nil
+		return snapshot, record, false, nil
 	}
-	return nil, sync.BookOutcomeRecord{}, errStaleEditionCreateRun
+	return nil, sync.BookOutcomeRecord{}, false, errStaleEditionCreateRun
+}
+
+func sameSelectedBookToAudibleImportSource(selected, source sync.BookOutcomeRecord) bool {
+	if selected.BookID != source.BookID || selected.Reason == mismatch.ReasonAudibleImportAvailable || source.Reason != mismatch.ReasonAudibleImportAvailable ||
+		selected.Outcome != sync.OutcomeNeedsReview || source.Outcome != sync.OutcomeNeedsReview ||
+		normalizedEditionCreateFormat(selected.Format) != models.ReadingFormatAudiobook ||
+		normalizedEditionCreateFormat(source.Format) != models.ReadingFormatAudiobook ||
+		strings.TrimSpace(source.HardcoverBookID) != "" || strings.TrimSpace(source.EditionID) != "" ||
+		edition.NormalizeNameOrTitle(selected.Title) != edition.NormalizeNameOrTitle(source.Title) ||
+		edition.NormalizeNameOrTitle(selected.Author) != edition.NormalizeNameOrTitle(source.Author) {
+		return false
+	}
+	selectedBookID, err := strconv.Atoi(strings.TrimSpace(selected.HardcoverBookID))
+	if err != nil || selectedBookID <= 0 {
+		return false
+	}
+	selectedASIN, selectedASINValid := audnex.CanonicalASIN(firstNonEmptyString(selected.SourceASIN, selected.ASIN))
+	sourceASIN, sourceASINValid := audnex.CanonicalASIN(firstNonEmptyString(source.SourceASIN, source.ASIN))
+	if !selectedASINValid || !sourceASINValid || selectedASIN != sourceASIN {
+		return false
+	}
+	selectedISBN10, selectedISBN13 := editionCreateSourceISBNs(selected)
+	sourceISBN10, sourceISBN13 := editionCreateSourceISBNs(source)
+	return isbn.Normalize(selectedISBN10) == isbn.Normalize(sourceISBN10) &&
+		isbn.Normalize(selectedISBN13) == isbn.Normalize(sourceISBN13)
+}
+
+func editionCreateSourceISBNs(record sync.BookOutcomeRecord) (string, string) {
+	_, isbn10, isbn13 := statepkg.SourceIdentifiers("", record.ISBN)
+	if record.SourceISBN10 != "" {
+		isbn10 = record.SourceISBN10
+	}
+	if record.SourceISBN13 != "" {
+		isbn13 = record.SourceISBN13
+	}
+	return isbn10, isbn13
 }
 
 func sameEditionCreateCandidate(requested, latest sync.BookOutcomeRecord) bool {
