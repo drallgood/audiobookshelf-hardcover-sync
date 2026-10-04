@@ -105,7 +105,7 @@ func TestClient_ImportRegionalAudiobook(t *testing.T) {
 				case strings.Contains(request.Query, "UpsertRegionalAudibleBook"):
 					mutationQuery = request.Query
 					mutationVariables = request.Variables
-					_, _ = w.Write([]byte(`{"data":{"upsert_book":{"id":77,"status":"` + mutationStatus + `","book":{"id":42},"edition":{"id":900,"book_id":42,"reading_format_id":` + intString(reportedFormat) + `},"edition_id":900,"errors":[]}}}`))
+					_, _ = w.Write([]byte(`{"data":{"upsert_book":{"id":77,"status":"` + mutationStatus + `","book":{"id":42},"edition":{"id":900,"book_id":42,"reading_format_id":` + strconv.Itoa(reportedFormat) + `},"edition_id":900,"errors":[]}}}`))
 				case strings.Contains(request.Query, "RegionalAudibleImport"):
 					require.Contains(t, request.Query, "book_mappings(where:")
 					require.Contains(t, request.Query, "platform_id: {_eq: $platformId}")
@@ -135,7 +135,7 @@ func TestClient_ImportRegionalAudiobook(t *testing.T) {
 					require.NoError(t, marshalErr)
 					_, _ = w.Write(response)
 				case strings.Contains(request.Query, "GetEdition"):
-					_, _ = w.Write([]byte(`{"data":{"editions":[{"id":` + intString(readbackEdition) + `,"book_id":42,"reading_format_id":` + intString(tt.formatID) + `}]}}`))
+					_, _ = w.Write([]byte(`{"data":{"editions":[{"id":` + strconv.Itoa(readbackEdition) + `,"book_id":42,"reading_format_id":` + strconv.Itoa(tt.formatID) + `}]}}`))
 				default:
 					t.Errorf("unexpected query: %s", request.Query)
 					http.Error(w, "unexpected query", http.StatusBadRequest)
@@ -456,8 +456,4 @@ func regionalImportTestClient(baseURL string) *Client {
 		maxRetries:  0,
 		retryDelay:  time.Millisecond,
 	}
-}
-
-func intString(value int) string {
-	return strconv.Itoa(value)
 }
