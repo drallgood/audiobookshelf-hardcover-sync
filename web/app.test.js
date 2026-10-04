@@ -989,7 +989,7 @@ for (const runState of ['completed', 'canceled']) {
         assert.equal(app.editionCreateIneligibleReason(record, app.openSummary.runContext), null);
         assert.match(row, /data-edition-action="add"(?![^>]*disabled)/);
         assert.match(row, /<strong>Reason:<\/strong> No Hardcover match found\. Import by Audible ASIN is available\./);
-        assert.match(row, /Match method:<\/span> Audible ASIN/);
+        assert.match(row, /Match method:<\/strong> Audible ASIN/);
         assert.doesNotMatch(row, /audible_import_available|audible_asin/);
 
         const previousDocument = global.document;
@@ -1082,17 +1082,17 @@ test('outcome match methods render simplified labels', () => {
     ];
     for (const [match_method, label] of cases) {
         const html = app.renderOutcomeRecord({ ...needsReview, match_method });
-        assert.ok(html.includes(`Match method:</span> ${label}`), `${match_method} should render as ${label}`);
+        assert.ok(html.includes(`Match method:</strong> ${label}`), `${match_method} should render as ${label}`);
     }
 });
 
-test('synced and already-current books always show a plain match-method label', () => {
+test('synced and already-current books always show a metadata match-method label', () => {
     const app = editionApp();
     for (const outcome of ['synced', 'already_current']) {
         for (const [match_method, label] of [['audible_mapping', 'Audible ASIN'], ['isbn', 'ISBN (temporary)'], ['saved_match', 'Unknown'], [undefined, 'Unknown']]) {
             const html = app.renderOutcomeRecord({ ...needsReview, outcome, match_method });
-            assert.ok(html.includes(`Match method:</span> ${label}`));
-            assert.doesNotMatch(html, /<strong>Match method:/);
+            assert.ok(html.includes(`Match method:</strong> ${label}`));
+            assert.match(html, /<strong>Match method:/);
         }
     }
 });
@@ -1113,7 +1113,7 @@ test('only temporary audiobook identifier matches receive the temporary label', 
         ['audible_mapping', 'Audiobook', 'B00SOURCE1', 'Audible ASIN']
     ]) {
         const html = app.renderOutcomeRecord({ ...needsReview, outcome: 'synced', match_method, format, source_asin });
-        assert.ok(html.includes(`Match method:</span> ${label}</div>`), `${match_method}/${format}/${source_asin}`);
+        assert.ok(html.includes(`Match method:</strong> ${label}</span></div>`), `${match_method}/${format}/${source_asin}`);
     }
 });
 
@@ -1169,8 +1169,8 @@ test('audiobook identifier fallback is limited to completed audiobook outcomes w
         }
         assert.equal(app.editionCreateIneligibleReason({ ...fallback, source_asin: null, asin: 'B00FALLBK1' }, app.openSummary.runContext), null);
         const row = app.renderOutcomeRecord(fallback);
-        if (match_method === 'edition_asin') assert.match(row, /Match method:<\/span> Edition ASIN/);
-        assert.match(row, /Hardcover target:<\/span> book 42/);
+        if (match_method === 'edition_asin') assert.match(row, /Match method:<\/strong> Edition ASIN/);
+        assert.match(row, /Hardcover target:<\/strong> book 42/);
         assert.match(row, /data-edition-action="add"/);
         assert.match(row, /data-edition-action="forget"/);
     }
