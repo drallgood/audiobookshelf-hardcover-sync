@@ -120,7 +120,13 @@ metadata has changed since the displayed run, run a new sync first.
 Audible imports are confirmed only when Hardcover returns a regional Audible
 mapping to the same audiobook edition. A `loaded` or `created` status alone is
 not enough: Hardcover may reuse an existing edition without adding its mapping.
-In that case, the app leaves the import unconfirmed and does not save a match.
+The app allows three consecutive checks of the same completed status and edition
+for the mapping to appear. If it is still missing, the app verifies the returned
+edition and reports a final mapping problem without saving a match. Use **Report a problem on
+Hardcover** to open that edition and submit a **Report** asking Hardcover to link
+the regional Audible identifier, then run a new sync after the catalogue is
+corrected. A read-only recovery check reports the same problem when it finds a
+completed import without a confirmed mapping.
 
 If an import cannot be confirmed, follow the dialog's recovery guidance:
 

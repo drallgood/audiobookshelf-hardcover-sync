@@ -337,9 +337,11 @@ func (h *Handler) CheckEditionImport(w http.ResponseWriter, r *http.Request) {
 			BookID: bookID, ASIN: asin, Region: region,
 		})
 		if checkErr != nil {
-			if errors.Is(checkErr, hardcover.ErrRegionalAudiobookImportFailed) || errors.Is(checkErr, hardcover.ErrRegionalAudiobookWrongFormat) {
+			if errors.Is(checkErr, hardcover.ErrRegionalAudiobookImportFailed) || errors.Is(checkErr, hardcover.ErrRegionalAudiobookWrongFormat) ||
+				errors.Is(checkErr, hardcover.ErrRegionalAudiobookMappingMissing) {
 				response.action = action
 				response.recovery = nil
+				recovery = nil
 				h.finalizeEditionCreateAction(profileID, &response, checkErr)
 				return statepkg.Association{}, checkErr
 			}
@@ -716,6 +718,7 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 			return statepkg.Association{}, writeErr
 		}
 		if errors.Is(err, hardcover.ErrRegionalAudiobookInvalidInput) || errors.Is(err, hardcover.ErrRegionalAudiobookDryRun) || errors.Is(err, hardcover.ErrRegionalAudiobookImportFailed) ||
+			errors.Is(err, hardcover.ErrRegionalAudiobookMappingMissing) ||
 			errors.Is(err, hardcover.ErrRegionalAudiobookWrongFormat) {
 			writeErr := fmt.Errorf("Hardcover regional audiobook import failed: %w", err)
 			h.finalizeEditionCreateAction(profile.Profile.ID, response, writeErr)
@@ -1222,7 +1225,7 @@ func editionActionHTTPStatus(err error) int {
 			return http.StatusServiceUnavailable
 		}
 		return http.StatusBadGateway
-	case errors.Is(err, hardcover.ErrRegionalAudiobookWrongFormat), errors.Is(err, errEditionRecoveryIdentityUnconfirmed),
+	case errors.Is(err, hardcover.ErrRegionalAudiobookMappingMissing), errors.Is(err, hardcover.ErrRegionalAudiobookWrongFormat), errors.Is(err, errEditionRecoveryIdentityUnconfirmed),
 		errors.Is(err, errStaleEditionCreateRun), errors.Is(err, errEditionCreateSourceChanged),
 		errors.Is(err, multiuser.ErrEditionAssociationAlreadyExists), errors.Is(err, multiuser.ErrEditionActionRequiresResolution),
 		errors.Is(err, hardcover.ErrRegionalAudiobookIdentityConflict):
@@ -1254,19 +1257,32 @@ func (h *Handler) finalizeEditionCreateAction(profileID string, response *editio
 	action.Error = editionCreatePublicErrorMessage(err)
 	action.ErrorCode, _ = editionCreateErrorMetadata(err)
 	if action.Outcome == editionOutcomeFailed {
-		var wrongFormat *hardcover.RegionalAudiobookWrongFormatError
-		if errors.As(err, &wrongFormat) {
-			guidance := editionWrongFormatMessage(wrongFormat)
-			editionID := strconv.Itoa(wrongFormat.EditionID)
+		var mappingMissing *hardcover.RegionalAudiobookMappingMissingError
+		if errors.As(err, &mappingMissing) {
+			guidance := editionMappingMissingMessage(mappingMissing)
+			editionID := strconv.Itoa(mappingMissing.EditionID)
 			action.Error = guidance
 			action.Data = &sync.EditionActionData{
-				HardcoverBookID: strconv.Itoa(wrongFormat.BookID), HardcoverEditionID: editionID,
-				ReadingFormatID:     wrongFormat.ReadingFormatID,
+				AudibleIdentifier: mappingMissing.RegionalExternalID,
+				HardcoverBookID:   strconv.Itoa(mappingMissing.BookID), HardcoverEditionID: editionID,
 				HardcoverEditionURL: "https://hardcover.app/editions/" + editionID,
 				Guidance:            guidance,
 			}
 		} else {
-			action.Data = nil
+			var wrongFormat *hardcover.RegionalAudiobookWrongFormatError
+			if errors.As(err, &wrongFormat) {
+				guidance := editionWrongFormatMessage(wrongFormat)
+				editionID := strconv.Itoa(wrongFormat.EditionID)
+				action.Error = guidance
+				action.Data = &sync.EditionActionData{
+					HardcoverBookID: strconv.Itoa(wrongFormat.BookID), HardcoverEditionID: editionID,
+					ReadingFormatID:     wrongFormat.ReadingFormatID,
+					HardcoverEditionURL: "https://hardcover.app/editions/" + editionID,
+					Guidance:            guidance,
+				}
+			} else {
+				action.Data = nil
+			}
 		}
 	} else if action.Outcome == editionOutcomeNotSubmitted {
 		action.Data = nil
@@ -1316,6 +1332,11 @@ func (h *Handler) writeEditionCreateErrorWithAction(w http.ResponseWriter, profi
 	errorCode, outcome := editionCreateErrorMetadata(err)
 	respond := func(status int) {
 		h.writeEditionCreateStructuredError(w, status, editionCreatePublicErrorMessage(err), errorCode, outcome, recovery)
+	}
+	var mappingMissing *hardcover.RegionalAudiobookMappingMissingError
+	if errors.As(err, &mappingMissing) {
+		h.writeEditionMappingMissingError(w, errorCode, outcome, mappingMissing)
+		return
 	}
 	var wrongFormat *hardcover.RegionalAudiobookWrongFormatError
 	if errors.As(err, &wrongFormat) {
@@ -1401,6 +1422,10 @@ func (h *Handler) writeEditionCreateErrorWithAction(w http.ResponseWriter, profi
 // create failure to the message returned to the caller and saved in the
 // edition-action journal. Detailed wrapped errors remain available to logs.
 func editionCreatePublicErrorMessage(err error) string {
+	var mappingMissing *hardcover.RegionalAudiobookMappingMissingError
+	if errors.As(err, &mappingMissing) {
+		return editionMappingMissingMessage(mappingMissing)
+	}
 	var wrongFormat *hardcover.RegionalAudiobookWrongFormatError
 	if errors.As(err, &wrongFormat) {
 		return editionWrongFormatMessage(wrongFormat)
@@ -1491,6 +1516,11 @@ func editionActionPublicErrorMessage(action *sync.EditionActionRecord) string {
 		return editionAssociationSaveFailureGuidance
 	case "hardcover_import_failed":
 		return editionImportFailureGuidance
+	case "hardcover_audible_mapping_missing":
+		if knownPublicEditionActionError(action.ErrorCode, action.Error) {
+			return action.Error
+		}
+		return editionCreateFailedGuidance
 	case "edition_create_failed":
 		return editionCreateFailedGuidance
 	default:
@@ -1520,6 +1550,9 @@ func knownPublicEditionActionError(errorCode, message string) bool {
 		return message == editionAssociationSaveFailureGuidance
 	case "hardcover_import_failed":
 		return message == editionImportFailureGuidance
+	case "hardcover_audible_mapping_missing":
+		return strings.HasPrefix(message, "Hardcover returned edition ") &&
+			strings.Contains(message, "regional Audible mapping") && strings.Contains(message, "Report the missing mapping on Hardcover")
 	case "edition_create_failed":
 		return message == editionCreateFailedGuidance
 	default:
@@ -1570,6 +1603,22 @@ func editionWrongFormatMessage(wrongFormat *hardcover.RegionalAudiobookWrongForm
 		editionID, hardcoverReadingFormatName(wrongFormat.ReadingFormatID))
 }
 
+func editionMappingMissingMessage(missing *hardcover.RegionalAudiobookMappingMissingError) string {
+	return fmt.Sprintf("Hardcover returned edition %d, but the regional Audible mapping for %s is missing. The match was not saved. Report the missing mapping on Hardcover, then sync again after it is corrected.",
+		missing.EditionID, missing.RegionalExternalID)
+}
+
+func (h *Handler) writeEditionMappingMissingError(w http.ResponseWriter, errorCode, outcome string, missing *hardcover.RegionalAudiobookMappingMissingError) {
+	editionID := strconv.Itoa(missing.EditionID)
+	h.writeJSONResponse(w, http.StatusConflict, APIResponse{
+		Success: false, Error: editionMappingMissingMessage(missing), ErrorCode: errorCode, Outcome: outcome,
+		Data: editionWrongFormatData{
+			HardcoverBookID: strconv.Itoa(missing.BookID), HardcoverEditionID: editionID,
+			HardcoverEditionURL: "https://hardcover.app/editions/" + editionID,
+		},
+	})
+}
+
 // hardcoverReadingFormatName names a Hardcover reading_format_id for users.
 func hardcoverReadingFormatName(formatID string) string {
 	switch formatID {
@@ -1586,6 +1635,8 @@ func hardcoverReadingFormatName(formatID string) string {
 
 func editionCreateErrorMetadata(err error) (errorCode, outcome string) {
 	switch {
+	case errors.Is(err, hardcover.ErrRegionalAudiobookMappingMissing):
+		return "hardcover_audible_mapping_missing", editionOutcomeFailed
 	case errors.Is(err, hardcover.ErrRegionalAudiobookWrongFormat):
 		return "hardcover_edition_wrong_format", editionOutcomeFailed
 	case errors.Is(err, errEditionCreateRemoteOutcomeAmbiguous), errors.Is(err, errEditionImportUnconfirmed), errors.Is(err, errEditionRecoveryIdentityUnconfirmed):

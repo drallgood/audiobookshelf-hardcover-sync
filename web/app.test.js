@@ -2229,6 +2229,41 @@ test('an import resolved to a non-audiobook edition is final and links to report
     requireFinal(checkApp, checkDialog);
 });
 
+test('missing Audible mappings produce final report guidance for create and recovery', async t => {
+    const missingMapping = {
+        success: false, outcome: 'failed', error_code: 'hardcover_audible_mapping_missing',
+        error: 'Hardcover returned edition 123 without a confirmed regional Audible mapping. The match was not saved.',
+        data: { hardcover_book_id: '42', hardcover_edition_id: '123', hardcover_edition_url: 'https://evil.example/phish' }
+    };
+    for (const recovering of [false, true]) {
+        await t.test(recovering ? 'recovery check' : 'create', async () => {
+            const app = editionApp();
+            const dialog = stubDialog(app, recovering ? 503 : 409, recovering
+                ? { success: false, outcome: 'unconfirmed', data: {
+                    audible_identifier: 'B00ABC1234:us', hardcover_book_id: '42', recovery_token: 'opaque-token'
+                } }
+                : missingMapping);
+            await app.submitEditionCreate();
+            if (recovering) {
+                app.fetchJsonWithTimeout = async () => ({ response: { ok: false, status: 409 }, data: missingMapping });
+                await app.checkEditionImport();
+            }
+            const html = app.renderEditionDialog(dialog);
+            const text = visibleText(html);
+            assert.equal(dialog.outcome, 'failed');
+            assert.match(text, /missing its Audible mapping/);
+            assert.match(text, /edition 123.*match was not saved/);
+            assert.match(text, /use Report to ask for the regional Audible identifier to be linked/);
+            assert.match(text, /Run a new sync after Hardcover corrects the catalogue/);
+            assert.match(html, /href="https:\/\/hardcover\.app\/editions\/123"/);
+            assert.doesNotMatch(html, /evil\.example/);
+            assert.doesNotMatch(text, /check again later|may be stale|may still be processing/i);
+            assert.doesNotMatch(html, /data-edition-dialog="(?:check-import|confirm-create|retry-create)"/);
+            assert.equal(app.loadPendingEditionRecovery('p1', 'run-1', 'li_1'), null);
+        });
+    }
+});
+
 test('invalid recovery token and stale create conflict persist as unknown and direct a fresh sync', async () => {
     const terminalErrors = [
         { error_code: 'edition_recovery_invalid', error: 'The recovery token is no longer valid.' },
@@ -2423,7 +2458,9 @@ test('server edition request states restore in a browser without session recover
         { outcome: 'unconfirmed', label: 'Resolve pending edition request', dialog: /cannot check this import safely/ },
         { outcome: 'failed', label: 'Review edition request', dialog: /edition request failed/ },
         { outcome: 'failed', label: 'Review edition request', dialog: /Report a problem on Hardcover/,
-            error_code: 'hardcover_edition_wrong_format', edition: '123' }
+            error_code: 'hardcover_edition_wrong_format', edition: '123' },
+        { outcome: 'failed', label: 'Review edition request', dialog: /missing its Audible mapping/,
+            error_code: 'hardcover_audible_mapping_missing', edition: '456' }
     ];
     for (const scenario of cases) {
         const app = editionApp();
