@@ -2281,7 +2281,7 @@ class SyncProfileApp {
                     if (retryButton) {
                         retryButton.textContent = waitMs > 0
                             ? `Retry in ${Math.ceil(waitMs / 1000)}s`
-                            : dialog.draft ? 'Refresh preview' : 'Retry';
+                            : this.isAudibleImportDialog(dialog) ? 'Retry preview' : dialog.draft ? 'Refresh preview' : 'Retry';
                         retryButton.disabled = waitMs > 0 || dialog.busy;
                     }
                     if (waitMs === 0) { clearInterval(dialog.timer); dialog.timer = null; }
@@ -2604,7 +2604,7 @@ class SyncProfileApp {
                 ? 'Audnexus lookup is temporarily unavailable. Audible import is unavailable until a regional match can be confirmed.'
                 : lookupFailed
                     ? 'Audnexus could not verify a regional match for this audiobook. Audible import is unavailable.'
-                    : 'No matching audiobook was found in Audnexus. Audible import is unavailable.';
+                    : 'Audnexus could not confirm a matching audiobook. Audible import is unavailable.';
         const comparisonHtml = draft.audnexus_record
             ? `<section class="audible-import-comparison" aria-label="Audiobookshelf and Audnexus/Audible comparison">
                 <div class="audible-comparison-heading"><h4>Audiobookshelf</h4><h4>Audnexus/Audible</h4></div>

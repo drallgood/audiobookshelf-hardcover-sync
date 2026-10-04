@@ -1186,7 +1186,7 @@ test('unknown, unavailable, and dry-run Audible previews cannot submit', () => {
             warnings: [{ code: 'language_defaults_to_english', message: 'Audiobookshelf language is shown for reference; the edition draft uses English.' }]
         })
     });
-    assert.match(unmatched, /No matching audiobook was found in Audnexus\. Audible import is unavailable\./);
+    assert.match(unmatched, /Audnexus could not confirm a matching audiobook\. Audible import is unavailable\./);
     assert.doesNotMatch(unmatched, /regional Audnexus record must be confirmed|Refresh the preview|edition draft uses English/);
     assert.match(unmatched, /class="edition-error" role="alert"/);
     assert.match(unmatched, /confirm-create" disabled/);
@@ -1610,8 +1610,28 @@ test('ambiguous unanchored create errors offer recovery without another import b
     assert.doesNotMatch(html, /data-edition-dialog="(confirm-create|retry-create)"/);
 });
 
-test('server draft 429 honors Retry-After and holds the preview action', async () => {
+test('server draft 429 holds the Audible preview action and restores its label after the wait', async t => {
     const app = editionApp();
+    let now = 100000;
+    let tick;
+    const retryButton = { textContent: '', disabled: false };
+    const originalNow = Date.now;
+    const originalSetInterval = global.setInterval;
+    const originalClearInterval = global.clearInterval;
+    const previousDocument = global.document;
+    Date.now = () => now;
+    global.setInterval = callback => { tick = callback; return 1; };
+    global.clearInterval = () => {};
+    global.document = {
+        ...previousDocument,
+        getElementById: () => ({ querySelector: () => retryButton })
+    };
+    t.after(() => {
+        Date.now = originalNow;
+        global.setInterval = originalSetInterval;
+        global.clearInterval = originalClearInterval;
+        global.document = previousDocument;
+    });
     app.profileUrl = () => '/profile';
     app.showEditionDialog = () => {};
     app.fetchJsonWithTimeout = async url => url.includes('edition-capability')
@@ -1622,12 +1642,20 @@ test('server draft 429 honors Retry-After and holds the preview action', async (
         audibleIdentifier: 'B00ABC1234:uk', loading: false, busy: false, error: '', retryAt: 0, draft: confirmedAudibleDraft()
     };
     await app.loadEditionDraft();
-    clearInterval(dialog.timer);
     assert.equal(dialog.draft, null);
     assert.ok(dialog.retryAt - Date.now() > 15000);
     const html = app.renderEditionDialog(dialog);
     assert.match(html, /Retry in \d+s/);
     assert.match(html, /data-edition-dialog="retry"[^>]*disabled/);
+    now += 19000;
+    tick();
+    assert.equal(retryButton.textContent, 'Retry in 1s');
+    assert.equal(retryButton.disabled, true);
+    now += 1000;
+    tick();
+    assert.equal(retryButton.textContent, 'Retry preview');
+    assert.equal(retryButton.disabled, false);
+    assert.equal(dialog.timer, null);
 });
 
 test('unanchored pending import recovery accepts resolved IDs without changing its ABS and run identity', async () => {
