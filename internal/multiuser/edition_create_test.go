@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	syncsvc "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 	"github.com/stretchr/testify/require"
@@ -182,6 +184,33 @@ func TestRecoverEditionAssociationIsIdempotentOnlyForSameVerifiedIdentity(t *tes
 			require.Equal(t, original, association, "a conflict cannot replace a previously confirmed association")
 		})
 	}
+}
+
+func TestRecoverUnanchoredAudibleAssociationIsIdempotentAcrossConfirmationTimes(t *testing.T) {
+	service, profileID := newEditionCreateService(t)
+	confirmedAt := time.Date(2026, time.June, 5, 14, 30, 0, 0, time.UTC)
+	original := statepkg.Association{
+		ABSItemID: "item-1", SourceASIN: "B012345678", SourceISBN13: "9780306406157",
+		RegionalExternalID: "B0OTHER123:uk", AudnexusConfirmedRegion: "uk", AudnexusConfirmedAt: confirmedAt,
+		HardcoverBookID: "73", HardcoverEditionID: "84", ReadingFormat: "audiobook",
+		Provenance: "audible_import_unanchored",
+	}
+	require.NoError(t, service.CreateEditionWithAssociation(context.Background(), profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+		return original, nil
+	}))
+
+	verifiedAgain := original
+	verifiedAgain.AudnexusConfirmedAt = confirmedAt.Add(time.Hour)
+	err := service.RecoverEditionAssociation(context.Background(), profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+		return verifiedAgain, nil
+	})
+	require.NoError(t, err, "a repeated status verification must not conflict only because it ran later")
+
+	stored, err := statepkg.LoadState(service.profileSpecificStatePath(profileID, "sync.json"))
+	require.NoError(t, err)
+	association, exists := stored.GetAssociation("item-1")
+	require.True(t, exists)
+	require.Equal(t, original, association, "idempotent recovery preserves the first confirmed timestamp and provenance")
 }
 
 func TestCreateEditionWithAssociationDistinguishesLocalSaveFailureAfterRemoteSuccess(t *testing.T) {
@@ -511,6 +540,60 @@ func TestAnnotateEditionAdditionsRequiresMatchingSavedAPIAssociation(t *testing.
 			snapshot := syncsvc.SyncSnapshot{State: "canceled", BookOutcomes: []syncsvc.BookOutcomeRecord{{BookID: "item", Outcome: syncsvc.OutcomeNeedsReview, Format: tc.recordFormat, ASIN: recordASIN, ISBN: recordISBN, HardcoverBookID: "41"}}}
 			require.NoError(t, service.AnnotateEditionAdditions(profileID, &snapshot))
 			require.Equal(t, tc.want, snapshot.BookOutcomes[0].EditionAdded)
+		})
+	}
+}
+
+func TestAnnotateUnanchoredAudibleImportAfterJournalCleanup(t *testing.T) {
+	confirmedAt := time.Date(2026, time.June, 5, 14, 30, 0, 0, time.UTC)
+	baseRecord := syncsvc.BookOutcomeRecord{
+		BookID: "item", Outcome: syncsvc.OutcomeNeedsReview, Reason: mismatch.ReasonAudibleImportAvailable,
+		ASIN: "B012345678", SourceASIN: "B012345678", ISBN: "978-0-306-40615-7",
+		SourceISBN13: "9780306406157", Format: models.ReadingFormatAudiobook,
+	}
+	baseAssociation := statepkg.Association{
+		ABSItemID: "item", SourceASIN: "B012345678", SourceISBN13: "978-0-306-40615-7",
+		Correction: "B0OTHER123:uk", RegionalExternalID: "B0OTHER123:uk", AudnexusConfirmedRegion: "uk",
+		AudnexusConfirmedAt: confirmedAt, HardcoverBookID: "73", HardcoverEditionID: "84",
+		ReadingFormat: "audiobook", Provenance: "audible_import_unanchored",
+	}
+	tests := []struct {
+		name         string
+		mutateRecord func(*syncsvc.BookOutcomeRecord)
+		mutateAssoc  func(*statepkg.Association)
+		wantAdded    bool
+	}{
+		{name: "confirmed unanchored import remains visible after journal cleanup", wantAdded: true},
+		{name: "ordinary needs review item", mutateRecord: func(r *syncsvc.BookOutcomeRecord) { r.Reason = "identifier mismatch" }},
+		{name: "changed source ASIN", mutateRecord: func(r *syncsvc.BookOutcomeRecord) { r.ASIN, r.SourceASIN = "B099999999", "B099999999" }},
+		{name: "run is no longer unanchored", mutateRecord: func(r *syncsvc.BookOutcomeRecord) { r.HardcoverBookID = "73" }},
+		{name: "run already has an edition candidate", mutateRecord: func(r *syncsvc.BookOutcomeRecord) { r.EditionID = "84" }},
+		{name: "non-audiobook source", mutateRecord: func(r *syncsvc.BookOutcomeRecord) { r.Format = "Ebook" }},
+		{name: "changed source ISBN", mutateAssoc: func(a *statepkg.Association) { a.SourceISBN13 = "9781861972712" }},
+		{name: "unrelated ordinary sync association", mutateAssoc: func(a *statepkg.Association) { a.Provenance = "regional_mapping" }},
+		{name: "confirmed region differs from imported identifier", mutateAssoc: func(a *statepkg.Association) { a.AudnexusConfirmedRegion = "us" }},
+		{name: "correction differs from imported region", mutateAssoc: func(a *statepkg.Association) { a.Correction = "B0OTHER123:ca" }},
+		{name: "missing confirmation time", mutateAssoc: func(a *statepkg.Association) { a.AudnexusConfirmedAt = time.Time{} }},
+		{name: "nonpositive Hardcover book ID", mutateAssoc: func(a *statepkg.Association) { a.HardcoverBookID = "0" }},
+		{name: "invalid Hardcover edition ID", mutateAssoc: func(a *statepkg.Association) { a.HardcoverEditionID = "invalid" }},
+		{name: "wrong associated format", mutateAssoc: func(a *statepkg.Association) { a.ReadingFormat = "ebook" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			record, association := baseRecord, baseAssociation
+			if tt.mutateRecord != nil {
+				tt.mutateRecord(&record)
+			}
+			if tt.mutateAssoc != nil {
+				tt.mutateAssoc(&association)
+			}
+			service, profileID := newEditionCreateService(t)
+			require.NoError(t, service.CreateEditionWithAssociation(context.Background(), profileID, "item", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+				return association, nil
+			}))
+			snapshot := syncsvc.SyncSnapshot{State: "completed", BookOutcomes: []syncsvc.BookOutcomeRecord{record}}
+			require.NoError(t, service.AnnotateEditionAdditions(profileID, &snapshot))
+			require.Equal(t, tt.wantAdded, snapshot.BookOutcomes[0].EditionAdded)
 		})
 	}
 }

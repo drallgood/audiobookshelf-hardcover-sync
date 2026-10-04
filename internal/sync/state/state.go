@@ -7,11 +7,16 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audnex"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/audnexregion"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 )
 
 const DefaultStateFile = "./data/sync_state.json"
@@ -117,16 +122,18 @@ type Book struct {
 // Hardcover book and edition. It is stored with that item's checkpoint so a
 // checkpoint cannot persist independently from its association.
 type Association struct {
-	ABSItemID          string `json:"absItemId"`
-	SourceASIN         string `json:"sourceAsin,omitempty"`
-	SourceISBN10       string `json:"sourceIsbn10,omitempty"`
-	SourceISBN13       string `json:"sourceIsbn13,omitempty"`
-	Correction         string `json:"correction,omitempty"`
-	RegionalExternalID string `json:"regionalExternalId,omitempty"`
-	HardcoverBookID    string `json:"hardcoverBookId"`
-	HardcoverEditionID string `json:"hardcoverEditionId"`
-	ReadingFormat      string `json:"readingFormat"`
-	Provenance         string `json:"provenance"`
+	ABSItemID               string    `json:"absItemId"`
+	SourceASIN              string    `json:"sourceAsin,omitempty"`
+	SourceISBN10            string    `json:"sourceIsbn10,omitempty"`
+	SourceISBN13            string    `json:"sourceIsbn13,omitempty"`
+	Correction              string    `json:"correction,omitempty"`
+	RegionalExternalID      string    `json:"regionalExternalId,omitempty"`
+	AudnexusConfirmedRegion string    `json:"audnexusConfirmedRegion,omitempty"`
+	AudnexusConfirmedAt     time.Time `json:"audnexusConfirmedAt,omitzero"`
+	HardcoverBookID         string    `json:"hardcoverBookId"`
+	HardcoverEditionID      string    `json:"hardcoverEditionId"`
+	ReadingFormat           string    `json:"readingFormat"`
+	Provenance              string    `json:"provenance"`
 	// OwnershipVerifiedAt is the Unix time Hardcover's Owned list was last
 	// confirmed to include this book and edition. It lets the next syncs skip the
 	// ownership request, and is dropped with the association when it is replaced
@@ -135,6 +142,44 @@ type Association struct {
 	// OwnershipTokenFingerprint scopes a confirmation to the Hardcover account
 	// that produced it. It stores a SHA-256 fingerprint, never the raw token.
 	OwnershipTokenFingerprint string `json:"ownershipTokenFingerprint,omitempty"`
+}
+
+// NewAudibleImportAssociation creates the durable match recorded after a
+// confirmed unanchored Audible import has been read back from Hardcover.
+func NewAudibleImportAssociation(item *models.AudiobookshelfBook, result *hardcover.RegionalAudiobookResult, correction string, confirmedAt time.Time) (Association, error) {
+	if item == nil || item.ID == "" || item.ReadingFormat() != models.ReadingFormatAudiobook {
+		return Association{}, fmt.Errorf("an Audiobookshelf audiobook item is required")
+	}
+	if result == nil || result.BookID <= 0 || result.EditionID <= 0 ||
+		(result.Status != hardcover.RegionalAudiobookLoaded && result.Status != hardcover.RegionalAudiobookCreated) ||
+		result.ReadingFormatID != models.ReadingFormatID(models.ReadingFormatAudiobook) {
+		return Association{}, fmt.Errorf("a verified regional Hardcover audiobook result is required")
+	}
+	externalID := strings.ToUpper(strings.TrimSpace(result.RegionalExternalID))
+	parts := strings.Split(externalID, ":")
+	if len(parts) != 2 {
+		return Association{}, fmt.Errorf("a confirmed regional Audible identifier is required")
+	}
+	asin, validASIN := audnex.CanonicalASIN(parts[0])
+	region := strings.ToLower(strings.TrimSpace(parts[1]))
+	if !validASIN || !audnexregion.IsRegion(region) {
+		return Association{}, fmt.Errorf("a confirmed regional Audible identifier is required")
+	}
+	canonicalExternalID := asin + ":" + region
+	if !strings.EqualFold(strings.TrimSpace(result.RegionalExternalID), canonicalExternalID) {
+		return Association{}, fmt.Errorf("the verified regional Audible identifier did not match the requested identifier")
+	}
+	if confirmedAt.IsZero() {
+		return Association{}, fmt.Errorf("the Audnexus confirmation time is required")
+	}
+	sourceASIN, sourceISBN10, sourceISBN13 := SourceIdentifiers(item.Media.Metadata.ASIN, item.Media.Metadata.ISBN)
+	return Association{
+		ABSItemID: item.ID, SourceASIN: sourceASIN, SourceISBN10: sourceISBN10, SourceISBN13: sourceISBN13,
+		Correction: strings.TrimSpace(correction), RegionalExternalID: canonicalExternalID,
+		AudnexusConfirmedRegion: region, AudnexusConfirmedAt: confirmedAt.UTC(),
+		HardcoverBookID: strconv.Itoa(result.BookID), HardcoverEditionID: strconv.Itoa(result.EditionID),
+		ReadingFormat: models.ReadingFormatAudiobook, Provenance: "audible_import_unanchored",
+	}, nil
 }
 
 func NewState() *State {
