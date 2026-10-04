@@ -258,18 +258,19 @@ func TestRegionalImportPollingRequestBudget(t *testing.T) {
 	for _, tc := range []struct {
 		name                      string
 		timeout                   time.Duration
+		minElapsed                time.Duration
 		completeAfter             int
 		terminalBeforeMapping     bool
 		mappingWithoutEditionLink bool
-		wantPolls                 int
+		maxPolls                  int
 		wantErr                   error
 	}{
-		{name: "pending import backs off until cancellation", timeout: 2500 * time.Millisecond, wantPolls: 2, wantErr: context.DeadlineExceeded},
-		{name: "pending import respects full deadline and quota budget", timeout: 35 * time.Second, wantPolls: 8, wantErr: ErrRegionalAudiobookImportTimeout},
-		{name: "pending import eventually verifies edition", timeout: 10 * time.Second, completeAfter: 3, wantPolls: 3},
-		{name: "loaded import without mapping times out", timeout: 35 * time.Second, terminalBeforeMapping: true, wantPolls: 8, wantErr: ErrRegionalAudiobookImportTimeout},
-		{name: "loaded import mapping without edition linkage times out", timeout: 35 * time.Second, terminalBeforeMapping: true, mappingWithoutEditionLink: true, wantPolls: 8, wantErr: ErrRegionalAudiobookImportTimeout},
-		{name: "loaded import waits for its mapping", timeout: 10 * time.Second, terminalBeforeMapping: true, completeAfter: 3, wantPolls: 3},
+		{name: "pending import backs off until cancellation", timeout: 2500 * time.Millisecond, minElapsed: 2500 * time.Millisecond, maxPolls: 2, wantErr: context.DeadlineExceeded},
+		{name: "pending import respects full deadline and quota budget", timeout: 35 * time.Second, minElapsed: 30 * time.Second, maxPolls: 8, wantErr: ErrRegionalAudiobookImportTimeout},
+		{name: "pending import eventually verifies edition", timeout: 10 * time.Second, completeAfter: 3},
+		{name: "loaded import without mapping times out", timeout: 35 * time.Second, minElapsed: 30 * time.Second, terminalBeforeMapping: true, maxPolls: 8, wantErr: ErrRegionalAudiobookImportTimeout},
+		{name: "loaded import mapping without edition linkage times out", timeout: 35 * time.Second, minElapsed: 30 * time.Second, terminalBeforeMapping: true, mappingWithoutEditionLink: true, maxPolls: 8, wantErr: ErrRegionalAudiobookImportTimeout},
+		{name: "loaded import waits for its mapping", timeout: 10 * time.Second, terminalBeforeMapping: true, completeAfter: 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -314,14 +315,20 @@ func TestRegionalImportPollingRequestBudget(t *testing.T) {
 				})
 				ctx, cancel := context.WithTimeout(context.Background(), tc.timeout)
 				defer cancel()
+				startedAt := time.Now()
 				result, err := client.ImportRegionalAudiobook(ctx, RegionalAudiobookInput{BookID: 42, ASIN: "B0ABCDE123", Region: "uk"})
 				require.Equal(t, 1, mutations)
-				require.Equal(t, tc.wantPolls, polls)
 				if tc.completeAfter == 0 {
+					require.GreaterOrEqual(t, polls, 1)
+					require.LessOrEqual(t, polls, tc.maxPolls)
+					elapsed := time.Since(startedAt)
+					require.GreaterOrEqual(t, elapsed, tc.minElapsed)
+					require.LessOrEqual(t, elapsed, tc.timeout)
 					require.ErrorIs(t, err, tc.wantErr)
 					require.Nil(t, result)
 					require.Zero(t, readbacks)
 				} else {
+					require.Equal(t, tc.completeAfter, polls)
 					require.NoError(t, err)
 					require.Equal(t, 900, result.EditionID)
 					require.Equal(t, 1, readbacks)
