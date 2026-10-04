@@ -2083,7 +2083,8 @@ class SyncProfileApp {
             return `<button type="button" class="book-service-link edition-action-pill" data-edition-action="add">${this.escapeHtml(this.editionRequestLabel(recovery))}</button>`;
         }
         const disabledReason = this.editionActionDisabledReason(record, open);
-        return `<button type="button" class="book-service-link edition-action-pill" data-edition-action="add" ${disabledReason ? `disabled title="${this.escapeHtmlAttribute(disabledReason)}"` : ''}>Add edition</button>`;
+        const label = this.audiobookIdentifierFallbackActionEligible(record) ? 'Import Audible edition' : 'Add edition';
+        return `<button type="button" class="book-service-link edition-action-pill" data-edition-action="add" ${disabledReason ? `disabled title="${this.escapeHtmlAttribute(disabledReason)}"` : ''}>${label}</button>`;
     }
 
     editionActionDisabledReason(record, open) {

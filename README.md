@@ -94,10 +94,10 @@ matching edition has been confirmed.
 #### Add an edition, import by Audible ASIN, or forget a match from View Details
 
 After a sync finishes or is canceled, open **View Details** and select **Add
-edition** on an eligible needs-review book or an audiobook ISBN or edition-ASIN
-fallback match with a valid Audiobookshelf ASIN and status `synced` or
-`already_current`. Fallback
-matches open **Import by Audible ASIN**. For other records, when the run has a Hardcover
+edition** on an eligible needs-review book. Audiobook ISBN or edition-ASIN
+fallback matches with a valid Audiobookshelf ASIN and status `synced` or
+`already_current` offer **Import Audible edition**, opening **Import by Audible
+ASIN**. For other records, when the run has a Hardcover
 candidate, this adds or reuses an edition on that selected Hardcover book. An
 `audible_import_available` audiobook has no candidate to select, so the same
 button opens the **Import by Audible ASIN** review. It compares the
@@ -304,9 +304,9 @@ and skips title/author discovery. Audiobooks without a valid ASIN may still use
 title/author review candidates.
 
 Audiobook ISBN and edition-ASIN fallback records with a valid Audiobookshelf
-ASIN and `synced` or `already_current` outcomes also offer **Add edition** in
-Sync Status. Synced and already-current books display their match method.
-**Add edition** opens the existing **Import by Audible ASIN** workflow:
+ASIN and `synced` or `already_current` outcomes offer **Import Audible edition**
+in Sync Status. Synced and already-current books display their match method.
+**Import Audible edition** opens the existing **Import by Audible ASIN** workflow:
 review and confirm the regional
 Audnexus record, then import without selecting a Hardcover book first. After a
 successful import, the verified returned book and edition replace the local

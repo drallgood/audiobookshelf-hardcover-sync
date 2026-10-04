@@ -947,7 +947,7 @@ components:
             `edition_asin` identifies an audiobook matched by the final exact
             edition-ASIN fallback, and `isbn` identifies an ISBN match. For
             audiobook matches by either method with `synced` or `already_current`
-            outcomes and a valid source ASIN, Add edition uses the existing
+            outcomes and a valid source ASIN, Import Audible edition uses the existing
             user-confirmed Import by Audible ASIN workflow.
         hardcover_book_id:
           type: string

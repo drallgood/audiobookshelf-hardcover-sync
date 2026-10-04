@@ -1128,6 +1128,7 @@ test('audiobook identifier fallback is limited to completed audiobook outcomes w
         };
         for (const outcome of ['synced', 'already_current']) {
             assert.equal(app.editionCreateIneligibleReason({ ...fallback, outcome }, app.openSummary.runContext), null);
+            assert.match(app.renderEditionActions({ ...fallback, outcome }), />Import Audible edition<\/button>/);
         }
         for (const record of [
             { ...fallback, outcome: 'skipped' },

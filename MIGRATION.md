@@ -61,7 +61,7 @@ automatically to an ISBN-matched or edition-ASIN-matched audiobook edition on
 their next run, including normal reading-progress and enabled ownership writes.
 
 ISBN and edition-ASIN fallback matches with a valid Audiobookshelf ASIN and
-`synced` or `already_current` outcomes offer **Add edition** using
+`synced` or `already_current` outcomes offer **Import Audible edition** using
 **Import by Audible ASIN**. A successful, verified import
 saves the returned book, edition, and regional Audible identifier as the local
 match and invalidates old progress checkpoints. It may resolve to a different
