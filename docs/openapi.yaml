@@ -947,8 +947,9 @@ components:
             `edition_asin` identifies an audiobook matched by the final exact
             edition-ASIN fallback, and `isbn` identifies an ISBN match. Reused
             associations retain their recorded origin with `saved_isbn`,
-            `saved_edition_asin`, `saved_audible_mapping` (including Audible imports),
-            or `saved_edition` (including created and reused editions); an unknown origin
+            `saved_edition_asin` (including ebook editions added by ASIN), or
+            `saved_audible_mapping` (including Audible imports). ISBN-based edition
+            additions use `saved_isbn`; an unknown origin
             uses `saved_match`. For
             audiobook matches by `isbn` or `edition_asin` with `synced` or `already_current`
             outcomes and a valid source ASIN, Import Audible edition uses the existing

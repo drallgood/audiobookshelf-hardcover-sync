@@ -1077,7 +1077,7 @@ test('outcome match methods render simplified labels', () => {
         ['saved_isbn', 'ISBN'],
         ['saved_edition_asin', 'Edition ASIN'],
         ['saved_audible_mapping', 'Audible ASIN'],
-        ['saved_edition', 'Selected edition'],
+        ['saved_edition', 'ISBN'],
         ['unfamiliar_method_value', 'Unknown']
     ];
     for (const [match_method, label] of cases) {
@@ -1108,6 +1108,8 @@ test('only temporary audiobook identifier matches receive the temporary label', 
         ['edition_asin', 'Audiobook', 'B00SOURCE1', 'Edition ASIN (temporary)'],
         ['edition_asin', 'Ebook', 'B00SOURCE1', 'Edition ASIN'],
         ['saved_edition_asin', 'Ebook', 'B00SOURCE1', 'Edition ASIN'],
+        ['saved_edition', 'Ebook', 'B00SOURCE1', 'Edition ASIN'],
+        ['saved_edition', 'Audiobook', 'B00SOURCE1', 'ISBN'],
         ['audible_mapping', 'Audiobook', 'B00SOURCE1', 'Audible ASIN']
     ]) {
         const html = app.renderOutcomeRecord({ ...needsReview, outcome: 'synced', match_method, format, source_asin });

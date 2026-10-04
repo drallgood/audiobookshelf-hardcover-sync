@@ -349,6 +349,18 @@ func SourceIdentifiers(rawASIN, rawISBN string) (asin, isbn10, isbn13 string) {
 	return asin, "", rawISBN
 }
 
+// EditionIdentifierProvenance records the primary identifier submitted to the
+// non-regional edition workflow. Ebook ASINs take precedence over ISBNs;
+// audiobook edition insertion uses ISBNs rather than Audible ASINs.
+func EditionIdentifierProvenance(readingFormat, submittedASIN string) string {
+	if strings.EqualFold(strings.TrimSpace(readingFormat), models.ReadingFormatEbook) {
+		if _, valid := audnex.CanonicalASIN(submittedASIN); valid {
+			return string(hardcover.ASINMatchEditionASIN)
+		}
+	}
+	return "isbn"
+}
+
 // SetAssociation stores a confirmed Hardcover resolution with the ABS item's
 // base checkpoint. Checkpoint updates preserve this field, and atomic Save
 // persists both together.

@@ -1677,6 +1677,7 @@ func TestCreateEditionFromDraftCreatesEbookWhenOptionalPublisherSearchFails(t *t
 	require.Equal(t, "42", association.HardcoverBookID)
 	require.Equal(t, "84", association.HardcoverEditionID)
 	require.Equal(t, models.ReadingFormatEbook, association.ReadingFormat)
+	require.Equal(t, "isbn", association.Provenance)
 }
 
 func TestCreateEditionFromDraftRejectsMismatchedReadBackEbookEditionID(t *testing.T) {

@@ -425,17 +425,20 @@ func TestRunCreateRecordsEbookIdentifierDifferences(t *testing.T) {
 		inputJSON      string
 		item           *models.AudiobookshelfBook
 		wantCorrection string
+		wantProvenance string
 	}{
 		{
 			name:           "different ASIN is recorded as a correction",
 			inputJSON:      `{"book_id":21,"title":"Ebook","asin":"B012345678","author_ids":[3],"reading_format":"ebook","abs_item_id":"item-1"}`,
 			item:           testEbook("item-1", "B099999999", "9780306406157"),
 			wantCorrection: "B012345678",
+			wantProvenance: "edition_asin",
 		},
 		{
-			name:      "different ISBN uses the supplied metadata",
-			inputJSON: `{"book_id":21,"title":"Ebook","isbn_13":"9780306406157","author_ids":[3],"reading_format":"ebook","abs_item_id":"item-1"}`,
-			item:      testEbook("item-1", "B012345678", "9780804429573"),
+			name:           "different ISBN uses the supplied metadata",
+			wantProvenance: "isbn",
+			inputJSON:      `{"book_id":21,"title":"Ebook","isbn_13":"9780306406157","author_ids":[3],"reading_format":"ebook","abs_item_id":"item-1"}`,
+			item:           testEbook("item-1", "B012345678", "9780804429573"),
 		},
 	}
 	for _, test := range tests {
@@ -478,7 +481,8 @@ func TestRunCreateRecordsEbookIdentifierDifferences(t *testing.T) {
 			}
 			association, ok := loaded.GetAssociation("item-1")
 			if !ok || association.SourceASIN != test.item.Media.Metadata.ASIN ||
-				association.SourceISBN13 != test.item.Media.Metadata.ISBN || association.Correction != test.wantCorrection {
+				association.SourceISBN13 != test.item.Media.Metadata.ISBN || association.Correction != test.wantCorrection ||
+				association.Provenance != test.wantProvenance {
 				t.Fatalf("association did not keep the item's source identifiers and correction: %#v", association)
 			}
 		})
@@ -754,7 +758,7 @@ func TestRunCreateReadsBackEbookBeforeSavingAssociation(t *testing.T) {
 				}
 				return
 			}
-			if !exists || association.HardcoverBookID != "21" || association.HardcoverEditionID != "34" || association.ReadingFormat != models.ReadingFormatEbook || association.Provenance != "cli_ebook_created" {
+			if !exists || association.HardcoverBookID != "21" || association.HardcoverEditionID != "34" || association.ReadingFormat != models.ReadingFormatEbook || association.Provenance != "isbn" {
 				t.Fatalf("unexpected saved association: %#v exists=%t", association, exists)
 			}
 		})

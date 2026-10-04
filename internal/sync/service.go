@@ -5657,7 +5657,11 @@ func savedAssociationMatchMethod(association state.Association) string {
 		if strings.HasPrefix(provenance, prefix) {
 			switch strings.TrimPrefix(provenance, prefix) {
 			case "existing", "reused", "created", "inserted":
-				return "saved_edition"
+				submittedASIN := association.SourceASIN
+				if association.Correction != "" {
+					submittedASIN = association.Correction
+				}
+				return "saved_" + state.EditionIdentifierProvenance(association.ReadingFormat, submittedASIN)
 			}
 		}
 	}

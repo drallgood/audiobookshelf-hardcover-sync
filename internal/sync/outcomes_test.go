@@ -212,14 +212,20 @@ func TestProcessBookIncrementalAlreadyCurrentEnrichesOnlyMatchingAssociation(t *
 		{"audible_import_unanchored", "saved_audible_mapping"},
 		{"api_regional_recovered", "saved_audible_mapping"},
 		{"cli_regional_created", "saved_audible_mapping"},
-		{"api_ebook_inserted", "saved_edition"},
-		{"cli_ebook_existing", "saved_edition"},
+		{"api_ebook_inserted", "saved_isbn"},
+		{"cli_ebook_existing", "saved_isbn"},
 		{"unrecognized_legacy_origin", "saved_match"},
 	} {
 		base := savedOriginCase
 		base.name, base.provenance, base.wantMatchMethod = origin.provenance, origin.provenance, origin.method
 		tests = append(tests, base)
 	}
+
+	legacyASINCase := savedOriginCase
+	legacyASINCase.name = "legacy ebook edition added by ASIN"
+	legacyASINCase.asin, legacyASINCase.associationASIN = "B012345678", "B012345678"
+	legacyASINCase.provenance, legacyASINCase.wantMatchMethod = "api_ebook_created", "saved_edition_asin"
+	tests = append(tests, legacyASINCase)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

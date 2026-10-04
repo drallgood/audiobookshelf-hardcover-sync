@@ -1035,7 +1035,7 @@ func TestCreateCommandISBNOnlyAudiobookInsertsAudiobookEdition(t *testing.T) {
 		t.Fatalf("ISBN-only audiobook did not use insert_edition: upserts=%d inserts=%d", upserts, inserts)
 	}
 	association, exists := env.association(t)
-	if !exists || association.HardcoverEditionID != "901" || association.ReadingFormat != models.ReadingFormatAudiobook || association.Provenance != "cli_audiobook_created" {
+	if !exists || association.HardcoverEditionID != "901" || association.ReadingFormat != models.ReadingFormatAudiobook || association.Provenance != "isbn" {
 		t.Fatalf("unexpected ISBN-only audiobook association: %#v exists=%t", association, exists)
 	}
 }

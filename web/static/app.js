@@ -1928,9 +1928,12 @@ class SyncProfileApp {
     syncMatchMethodText(matchMethod, record = {}) {
         const value = String(matchMethod || '').trim().toLowerCase();
         const saved = value.startsWith('saved_');
-        const method = saved ? value.slice(6) : value;
+        let method = saved ? value.slice(6) : value;
         const audiobook = String(record.format || '').trim().toLowerCase() === 'audiobook';
         const sourceASIN = String(record.source_asin ?? record.asin ?? '').trim();
+        if (method === 'edition') {
+            method = !audiobook && /^[a-z0-9]{10}$/i.test(sourceASIN) ? 'edition_asin' : 'isbn';
+        }
         const known = {
             title_author: 'Title and author',
             audible_mapping: 'Audible ASIN',
@@ -1939,8 +1942,7 @@ class SyncProfileApp {
             isbn: 'ISBN',
             isbn_10: 'ISBN',
             isbn_13: 'ISBN',
-            edition_asin: 'Edition ASIN',
-            edition: 'Selected edition'
+            edition_asin: 'Edition ASIN'
         };
         const label = Object.prototype.hasOwnProperty.call(known, method) ? known[method] : 'Unknown';
         const temporary = !saved && audiobook && (method === 'edition_asin' ||
