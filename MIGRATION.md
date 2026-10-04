@@ -57,14 +57,18 @@ checkpoints to avoid repeating writes for an unchanged target.
 Previously, a valid Audiobookshelf ASIN with no regional mapping blocked ISBN
 matching and offered Audible import through `needs_review`. A completed mapping
 miss now permits ISBN matching even with a valid ASIN, so those items may sync
-automatically to an ISBN-matched edition on their next run.
+automatically to an ISBN-matched or edition-ASIN-matched audiobook edition on
+their next run, including normal reading-progress and enabled ownership writes.
 
 ISBN and edition-ASIN fallback matches with a valid Audiobookshelf ASIN and
 `synced`, `already_current`, or `skipped` outcomes offer **Add edition** using
 **Import by Audible ASIN**. A successful, verified import
 saves the returned book, edition, and regional Audible identifier as the local
 match and invalidates old progress checkpoints. It may resolve to a different
-Hardcover book than the fallback. No manual state migration is required.
+Hardcover book than the fallback. Future syncs use the imported match; reading
+progress and history already saved on the previous Hardcover book remain there
+and are not moved or removed. The import preview explains this before submission.
+No manual state migration is required.
 
 A valid source ASIN still selects regional Audible import during edition
 creation; failed imports do not fall back to inserting that ASIN into an

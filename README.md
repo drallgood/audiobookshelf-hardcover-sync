@@ -132,6 +132,10 @@ workflow can insert an audiobook edition from the read-only Audiobookshelf
 ISBN preview. A valid source ASIN remains authoritative if discovery or import
 fails. Ebooks need an ASIN or ISBN and allow detail corrections. After an
 Audible import, the dialog shows the returned Hardcover book and edition.
+For ISBN and edition-ASIN fallback matches, the import preview explains that
+Audible import may select a different Hardcover book. Future syncs use the
+imported match; reading progress and history on the previous Hardcover book
+remain there and are not moved or removed.
 After success, **Hardcover Edition Added** appears and the app resyncs that
 book's reading progress. If resync fails, the edition remains added; run another sync to retry
 progress updates.

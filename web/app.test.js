@@ -1173,6 +1173,8 @@ for (const match_method of ['edition_asin', 'isbn']) {
         assert.equal(app.editionDialog.record.hardcover_book_id, '42');
         assert.ok(requests.includes(`/api/profiles/p1/edition-drafts/source/${record.book_id}`));
         assert.match(app.renderEditionDialog(app.editionDialog), /Audiobookshelf and Audnexus\/Audible comparison/);
+        assert.match(app.renderEditionDialog(app.editionDialog), /Audible import may select a different Hardcover book/);
+        assert.match(app.renderEditionDialog(app.editionDialog), /Reading progress and history already saved on the previous Hardcover book will remain there/);
         assert.equal(app.isValidEditionCreateResult(validCreateResult({ abs_item_id: record.book_id, hardcover_book_id: '99' }), record.book_id, 'audiobook', '42', app.isAudibleImportRecord(record)), true,
             'the Audible resolver may return a different Hardcover book from the original target');
     });

@@ -2671,8 +2671,10 @@ class SyncProfileApp {
         const confirmButton = dialog.retryCreate
             ? `<button type="button" class="btn btn-primary" data-edition-dialog="retry-create" ${canConfirm ? '' : 'disabled'}>${waiting ? `Retry in ${Math.ceil(waitMs / 1000)}s` : 'Retry add edition'}</button>`
             : `<button type="button" class="btn btn-primary" data-edition-dialog="confirm-create" ${canConfirm ? '' : 'disabled'}>${dialog.busy ? 'Creating…' : 'Add edition'}</button>`;
+        const fallbackNotice = this.audiobookIdentifierFallbackActionEligible(dialog.record)
+            ? '<div class="edition-warning" role="note">Audible import may select a different Hardcover book. Future syncs will use the imported match. Reading progress and history already saved on the previous Hardcover book will remain there; they are not moved or removed.</div>' : '';
         return `${dryRun ? '<div class="edition-dry-run">Dry run</div>' : ''}
-            ${regionHtml}${comparisonHtml}${this.renderAudibleImportWarnings(draft)}${blockersHtml}${errorHtml}
+            ${regionHtml}${comparisonHtml}${fallbackNotice}${this.renderAudibleImportWarnings(draft)}${blockersHtml}${errorHtml}
             <div class="form-actions edition-create-actions">
                 ${confirmButton}
                 ${retryButton}
