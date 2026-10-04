@@ -382,8 +382,8 @@ components:
         the import may resolve to a different book. Successful imports save the
         returned edition and regional identifier and invalidate old checkpoints.
         Other audiobooks with a selected Hardcover book and a valid source ASIN
-        use regional Audible import. A valid source ASIN blocks ISBN fallback
-        if discovery or import fails. When the source ASIN
+        use regional Audible import on that book. Failed discovery or import
+        does not fall back to ISBN edition insertion. When the source ASIN
         is absent or malformed and no identifier is supplied, a parseable
         Audiobookshelf ISBN can be inserted as an audiobook edition. For an
         audiobook, only `audible_identifier` may be corrected; the remaining
@@ -944,16 +944,17 @@ components:
         match_method:
           type: string
           description: >-
-            `edition_asin` identifies an audiobook matched by the final exact
-            edition-ASIN fallback, and `isbn` identifies an ISBN match. Reused
-            associations retain their recorded origin with `saved_isbn`,
-            `saved_edition_asin` (including ebook editions added by ASIN), or
-            `saved_audible_mapping` (including Audible imports). ISBN-based edition
-            additions use `saved_isbn`; an unknown origin
-            uses `saved_match`. For
-            audiobook matches by `isbn` or `edition_asin` with `synced` or `already_current`
-            outcomes and a valid source ASIN, Import Audible edition uses the existing
-            user-confirmed Import by Audible ASIN workflow.
+            Matching origin: `audible_mapping` for a regional Audible mapping,
+            `edition_asin` for an exact edition-ASIN match, `isbn` for an ISBN
+            match, or `title_author` for a review candidate. Reused associations
+            use `saved_audible_mapping`, `saved_edition_asin`, or `saved_isbn`;
+            edition additions record their submitted identifier category.
+            `saved_match` means the saved origin is unknown. The UI omits the
+            saved prefix and marks fresh audiobook edition-ASIN matches and
+            audiobook ISBN matches with a source ASIN as temporary. Fresh
+            audiobook `isbn` or `edition_asin` matches with `synced` or
+            `already_current` outcomes and a valid source ASIN are eligible
+            for user-confirmed Import by Audible ASIN.
         hardcover_book_id:
           type: string
           description: Omitted when reason is `audible_import_available`.
@@ -962,7 +963,7 @@ components:
           description: Omitted when reason is `audible_import_available`.
         edition_added:
           type: boolean
-          description: A matching confirmed edition addition is currently saved for this eligible item, including an audiobook ISBN or edition-ASIN fallback with a valid source ASIN. Historical outcomes and counts are unchanged.
+          description: A confirmed edition addition is saved for this eligible item. Historical outcomes and counts are unchanged.
         edition_action:
           $ref: '#/components/schemas/EditionActionState'
         hardcover_title: {type: string}
@@ -1615,8 +1616,7 @@ paths:
         `already_current` are also eligible and use the same
         confirmed unanchored import workflow as `audible_import_available`.
         Their fallback Hardcover target does not constrain the import result.
-        For `audible_import_available`,
-        the request must set `audnexus_confirmed: true` and provide the exact
+        These unanchored imports require `audnexus_confirmed: true` and the exact
         confirmed regional `audible_identifier`; the API rereads that identifier
         in the same region and performs a regional `upsert_book` without
         `book_id`. It does not use a title/author candidate or a caller-supplied
@@ -1628,8 +1628,8 @@ paths:
         association. A mismatch between its title and the current
         Audiobookshelf title is reported in `warnings` but does not block import.
         A valid source ASIN or supplied `audible_identifier` selects regional
-        `upsert_book`, and a valid source ASIN blocks ISBN fallback if discovery
-        or import fails. When the source ASIN is absent or malformed and no
+        `upsert_book`; failed discovery or import does not fall back to ISBN
+        edition insertion. When the source ASIN is absent or malformed and no
         identifier is supplied, a parseable source ISBN may use format-aware
         audiobook edition creation on the recorded book: a matching audiobook
         edition is reused, otherwise `insert_edition` is used. Ebooks use
