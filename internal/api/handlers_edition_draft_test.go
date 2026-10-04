@@ -18,6 +18,7 @@ import (
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/crypto"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/edition"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/multiuser"
 	"github.com/stretchr/testify/require"
@@ -154,6 +155,17 @@ type editionDraftDiscoveryStub struct {
 	discover editionDraftDiscoveryFunc
 }
 
+func (s editionDraftDiscoveryStub) GetBookByASIN(ctx context.Context, asin, region string) (*audnex.Book, error) {
+	book, discoveredRegion, err := s.discover(ctx, asin, region)
+	if err != nil {
+		return nil, err
+	}
+	if book == nil || !strings.EqualFold(discoveredRegion, region) {
+		return nil, audnex.ErrNotFound
+	}
+	return book, nil
+}
+
 func (s editionDraftDiscoveryStub) DiscoverBookByASIN(ctx context.Context, asin, region string) (*audnex.Book, string, error) {
 	return s.discover(ctx, asin, region)
 }
@@ -231,11 +243,13 @@ func TestGetEditionSourceDraftKeepsBareASINAndUsesDiscoveredRegionDate(t *testin
 	require.Equal(t, "ca", draft.AudibleIdentifierCandidate.Region)
 	require.True(t, draft.AudibleIdentifierCandidate.CorrectionAllowed)
 	require.NotNil(t, draft.MetadataPreview)
+	require.NotNil(t, draft.SourceMetadataPreview)
 	require.Nil(t, draft.EbookCandidate)
 	require.Equal(t, "ABS Title", draft.MetadataPreview.Title)
 	require.Equal(t, "ABS Author", draft.MetadataPreview.Author)
 	require.Equal(t, "ABS Narrator", draft.MetadataPreview.Narrator)
 	require.Equal(t, "2023-08-09", draft.MetadataPreview.ReleaseDate)
+	require.Equal(t, "2020-02-03", draft.SourceMetadataPreview.ReleaseDate)
 	require.Equal(t, "Audible Audio", draft.MetadataPreview.EditionFormat)
 	require.Equal(t, "Abridged", draft.MetadataPreview.EditionInformation)
 	require.Equal(t, 3661, draft.MetadataPreview.AudioSeconds)
@@ -260,6 +274,59 @@ func TestGetEditionSourceDraftKeepsBareASINAndUsesDiscoveredRegionDate(t *testin
 	require.Contains(t, audnexPreview, "release_date")
 	require.Contains(t, audnexPreview, "format_type")
 	require.Zero(t, fixture.hardcoverRequests.Load())
+}
+
+func TestGetEditionSourceDraftPreservesABSPublicationDateForComparison(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		publishedDate  string
+		publishedYear  string
+		wantSourceDate string
+		wantComparison edition.AudnexusFieldStatus
+	}{
+		{
+			name:           "year-only ABS date matches full Audnexus date in that year",
+			publishedYear:  "2014",
+			wantSourceDate: "2014",
+			wantComparison: edition.AudnexusMatch,
+		},
+		{
+			name:           "different full ABS date remains different",
+			publishedDate:  "2014-08-04",
+			publishedYear:  "2014",
+			wantSourceDate: "2014-08-04",
+			wantComparison: edition.AudnexusDiffers,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			item := strings.NewReplacer(
+				"__DATE__", test.publishedDate,
+				"__YEAR__", test.publishedYear,
+			).Replace(`{
+				"id":"abs-item-1","mediaType":"book","media":{
+					"metadata":{"title":"ABS title","asin":"B0SOURCE12","publishedDate":"__DATE__","publishedYear":"__YEAR__"},
+					"duration":100,"numTracks":1
+				}}`)
+			fixture := newEditionDraftTestFixture(t, item, "us")
+			fixture.setDiscovery(func(context.Context, string, string) (*audnex.Book, string, error) {
+				return &audnex.Book{ASIN: "B0SOURCE12", Title: "Audnex title", ReleaseDate: "2014-08-05"}, "us", nil
+			})
+
+			response := fixture.request(editionDraftItemPath, fixture.sessionCookie(t, fixture.owner))
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			var envelope struct {
+				Data editionDraftResponse `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+			draft := envelope.Data
+			require.NotNil(t, draft.SourceMetadataPreview)
+			require.NotNil(t, draft.AudnexusComparison)
+			require.Equal(t, test.wantSourceDate, draft.SourceMetadataPreview.ReleaseDate)
+			require.Equal(t, "2014-08-05", draft.MetadataPreview.ReleaseDate)
+			require.Equal(t, test.wantComparison, draft.AudnexusComparison.ReleaseDate)
+			require.Zero(t, fixture.hardcoverRequests.Load())
+		})
+	}
 }
 
 func TestGetEditionSourceDraftOmitsUnrecognizedAudnexPreviewDate(t *testing.T) {

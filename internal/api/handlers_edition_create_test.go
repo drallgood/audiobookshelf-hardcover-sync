@@ -249,6 +249,61 @@ func TestCreateEditionFromDraftUsesExactRunAndPersistsVerifiedAssociation(t *tes
 	require.Equal(t, "audiobook", association.ReadingFormat)
 }
 
+func TestCreateEditionFromDraftRejectsAudnexusConfirmationForSelectedBook(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		itemJSON string
+		record   sync.BookOutcomeRecord
+	}{
+		{
+			name:     "selected-book audiobook",
+			itemJSON: `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0SOURCE12","isbn":"978-0-306-40615-7"},"duration":600}}`,
+			record:   editionCreateRecord(),
+		},
+		{
+			name:     "ebook",
+			itemJSON: `{"id":"abs-item-1","mediaType":"ebook","media":{"metadata":{"title":"Reviewed ebook","authorName":"Author","isbn":"9780306406157"},"ebookFile":{},"ebookFormat":"epub"}}`,
+			record: sync.BookOutcomeRecord{
+				BookID: "abs-item-1", Outcome: sync.OutcomeNeedsReview, Title: "Reviewed ebook",
+				Author: "Author", ISBN: "9780306406157", Format: "Ebook", HardcoverBookID: "42",
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newEditionDraftTestFixture(t, test.itemJSON, "us")
+			configureEditionCreateRoute(t, fixture)
+			runID := "run-selected-book-confirmation"
+			addCompletedNeedsReviewRun(t, fixture, runID, test.record)
+
+			var absClientFactories, audnexClientFactories, hardcoverClientFactories atomic.Int32
+			fixture.handler.editionCreateABSClientFactory = func(string, string, string) (editionCreateABSClient, error) {
+				absClientFactories.Add(1)
+				return editionCreateABSClientFunc(func(context.Context, string) (*models.AudiobookshelfBook, error) {
+					return nil, nil
+				}), nil
+			}
+			fixture.handler.editionCreateAudnexClientFactory = func() editionCreateAudnexDiscoverer {
+				audnexClientFactories.Add(1)
+				return editionCreateAudnexStub{}
+			}
+			fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+				hardcoverClientFactories.Add(1)
+				return editionCreateHardcoverStub{}
+			}
+
+			response := postEditionCreate(t, fixture, fixture.owner,
+				`{"run_id":"`+runID+`","abs_item_id":"abs-item-1","audnexus_confirmed":true,"audible_identifier":"B0SOURCE12:us"}`)
+
+			require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+			require.Zero(t, absClientFactories.Load())
+			require.Zero(t, audnexClientFactories.Load())
+			require.Zero(t, hardcoverClientFactories.Load())
+			require.Zero(t, fixture.hardcoverRequests.Load())
+			requireNoEditionCreateEffects(t, fixture, &editionCreateCallCounts{})
+		})
+	}
+}
+
 func TestCreateEditionFromDraftReturnsStructuredRecoveryForSubmittedTimeout(t *testing.T) {
 	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`, "us")
 	configureEditionCreateRoute(t, fixture)
@@ -935,33 +990,47 @@ func TestCreateEditionFromDraftChecksNewerCanceledItemOutcomes(t *testing.T) {
 }
 
 func TestCreateEditionFromDraftAllowsCandidateAfterUnrelatedLaterRun(t *testing.T) {
-	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`, "us")
-	configureEditionCreateRoute(t, fixture)
-	addCompletedNeedsReviewRun(t, fixture, "run-create-candidate", editionCreateRecord())
-	unrelatedRecord := editionCreateRecord()
-	unrelatedRecord.BookID = "unrelated-item"
-	unrelatedRecord.HardcoverBookID = "43"
-	addCompletedNeedsReviewRun(t, fixture, "run-create-unrelated", unrelatedRecord)
-	var mutationCalls atomic.Int32
-	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
-		return editionCreateHardcoverStub{importFn: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
-			mutationCalls.Add(1)
-			return &hardcover.RegionalAudiobookResult{
-				Status: hardcover.RegionalAudiobookLoaded, BookID: input.BookID, EditionID: 84,
-				ReadingFormatID:    models.ReadingFormatID(models.ReadingFormatAudiobook),
-				RegionalExternalID: input.ASIN + ":" + strings.ToLower(input.Region),
-			}, nil
-		}}
-	}
+	for _, test := range []struct {
+		name        string
+		mutateLater func(*sync.BookOutcomeRecord)
+	}{
+		{name: "unrelated item", mutateLater: func(r *sync.BookOutcomeRecord) {
+			r.BookID, r.HardcoverBookID = "unrelated-item", "43"
+		}},
+		{name: "same candidate with richer source snapshot", mutateLater: func(r *sync.BookOutcomeRecord) {
+			r.Reason = "updated review guidance"
+			r.SourceASIN, r.SourceISBN10, r.SourceISBN13 = "B0SOURCE12", "0306406152", "9780306406157"
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`, "us")
+			configureEditionCreateRoute(t, fixture)
+			addCompletedNeedsReviewRun(t, fixture, "run-create-candidate", editionCreateRecord())
+			laterRecord := editionCreateRecord()
+			test.mutateLater(&laterRecord)
+			addCompletedNeedsReviewRun(t, fixture, "run-create-later", laterRecord)
+			var mutationCalls atomic.Int32
+			fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+				return editionCreateHardcoverStub{importFn: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+					mutationCalls.Add(1)
+					return &hardcover.RegionalAudiobookResult{
+						Status: hardcover.RegionalAudiobookLoaded, BookID: input.BookID, EditionID: 84,
+						ReadingFormatID:    models.ReadingFormatID(models.ReadingFormatAudiobook),
+						RegionalExternalID: input.ASIN + ":" + strings.ToLower(input.Region),
+					}, nil
+				}}
+			}
 
-	request := httptest.NewRequest(http.MethodPost, "/api/profiles/draft-profile/edition-drafts/create", strings.NewReader(
-		`{"run_id":"run-create-candidate","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`,
-	))
-	request.AddCookie(fixture.sessionCookie(t, fixture.owner))
-	response := httptest.NewRecorder()
-	fixture.routes.ServeHTTP(response, request)
-	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
-	require.EqualValues(t, 1, mutationCalls.Load())
+			request := httptest.NewRequest(http.MethodPost, "/api/profiles/draft-profile/edition-drafts/create", strings.NewReader(
+				`{"run_id":"run-create-candidate","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`,
+			))
+			request.AddCookie(fixture.sessionCookie(t, fixture.owner))
+			response := httptest.NewRecorder()
+			fixture.routes.ServeHTTP(response, request)
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			require.EqualValues(t, 1, mutationCalls.Load())
+		})
+	}
 }
 
 func TestCreateEditionFromDraftDoesNotReplaceSavedAssociation(t *testing.T) {
@@ -3097,10 +3166,12 @@ func TestCreateEditionFromDraftInsertsISBNOnlyAudiobook(t *testing.T) {
 	for _, tc := range []struct {
 		name, asin, formatID string
 		existing             bool
+		delayedReadback      bool
 	}{
 		{name: "missing ASIN", formatID: "2"},
 		{name: "malformed ASIN", asin: "not-an-asin", formatID: "2"},
 		{name: "existing audiobook", formatID: "2", existing: true},
+		{name: "missing immediate ISBN readback remains unconfirmed", formatID: "2", delayedReadback: true},
 		{name: "wrong format", formatID: "4", existing: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3117,7 +3188,7 @@ func TestCreateEditionFromDraftInsertsISBNOnlyAudiobook(t *testing.T) {
 				t.Fatal("ISBN-only audiobook must not use Audnexus")
 				return nil
 			}
-			var insertionCalls atomic.Int32
+			var insertionCalls, editionReads atomic.Int32
 			fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
 				return editionCreateHardcoverStub{
 					importFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
@@ -3147,6 +3218,10 @@ func TestCreateEditionFromDraftInsertsISBNOnlyAudiobook(t *testing.T) {
 						return &edition.EditionResult{Success: true, EditionID: 84, Existing: tc.existing}, nil
 					},
 					editionFn: func(context.Context, string) (*models.Edition, error) {
+						read := editionReads.Add(1)
+						if tc.delayedReadback && read == 1 {
+							return nil, models.ErrEditionNotFound
+						}
 						return &models.Edition{ID: "84", BookID: "42", ReadingFormatID: tc.formatID}, nil
 					},
 				}
@@ -3176,8 +3251,22 @@ func TestCreateEditionFromDraftInsertsISBNOnlyAudiobook(t *testing.T) {
 				require.Equal(t, http.StatusConflict, duplicate.Code, duplicate.Body.String())
 				require.Contains(t, duplicate.Body.String(), "hardcover_edition_wrong_format")
 				require.EqualValues(t, 1, insertionCalls.Load(), "a persisted wrong-format result must not create another edition")
+			} else if tc.delayedReadback {
+				require.Equal(t, http.StatusBadGateway, response.Code, response.Body.String())
+				var envelope struct {
+					ErrorCode string `json:"error_code"`
+					Outcome   string `json:"outcome"`
+				}
+				require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+				require.Equal(t, "hardcover_import_unconfirmed", envelope.ErrorCode)
+				require.Equal(t, editionOutcomeUnconfirmed, envelope.Outcome)
+				require.EqualValues(t, 1, editionReads.Load(), "a missing immediate readback is not retried")
+				duplicate := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-isbn-audio","abs_item_id":"abs-item-1"}`)
+				require.Equal(t, http.StatusConflict, duplicate.Code, duplicate.Body.String())
+				require.EqualValues(t, 1, insertionCalls.Load(), "an ambiguous journal outcome prevents a duplicate edition mutation")
 			} else {
 				require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+				require.EqualValues(t, 1, insertionCalls.Load(), "the edition mutation is sent once")
 				var envelope struct {
 					Data editionCreateResponse `json:"data"`
 				}
@@ -3192,7 +3281,7 @@ func TestCreateEditionFromDraftInsertsISBNOnlyAudiobook(t *testing.T) {
 			stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
 			require.NoError(t, err)
 			association, exists := stored.GetAssociation("abs-item-1")
-			require.Equal(t, tc.formatID == "2", exists)
+			require.Equal(t, tc.formatID == "2" && !tc.delayedReadback, exists)
 			if exists {
 				require.Equal(t, models.ReadingFormatAudiobook, association.ReadingFormat)
 				require.Equal(t, "84", association.HardcoverEditionID)
@@ -3200,6 +3289,79 @@ func TestCreateEditionFromDraftInsertsISBNOnlyAudiobook(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCreateEditionFromDraftCanceledISBNReadbackRemainsUnconfirmedWithoutResubmit(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{
+		"id":"abs-item-1","mediaType":"book","media":{
+			"metadata":{"title":"ISBN audiobook","authorName":"Author","isbn":"9780306406157"},
+			"duration":100,"numTracks":1}}`, "us")
+	configureEditionCreateRoute(t, fixture)
+	addCompletedNeedsReviewRun(t, fixture, "run-isbn-readback-canceled", sync.BookOutcomeRecord{
+		BookID: "abs-item-1", Outcome: sync.OutcomeNeedsReview, Title: "ISBN audiobook", Author: "Author",
+		ISBN: "9780306406157", Format: "Audiobook", HardcoverBookID: "42",
+	})
+	var insertCalls, readCalls atomic.Int32
+	readStarted := make(chan struct{}, 1)
+	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+		return editionCreateHardcoverStub{
+			bookFn: func(context.Context, string) (*models.HardcoverBook, error) {
+				return &models.HardcoverBook{ID: "42", Authors: []models.Author{{ID: "7", Name: "Author"}}}, nil
+			},
+			insertEditionFn: func(context.Context, *edition.EditionInput) (*edition.EditionResult, error) {
+				insertCalls.Add(1)
+				return &edition.EditionResult{Success: true, EditionID: 84}, nil
+			},
+			editionFn: func(ctx context.Context, _ string) (*models.Edition, error) {
+				readCalls.Add(1)
+				readStarted <- struct{}{}
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+		}
+	}
+
+	requestCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	request := httptest.NewRequest(http.MethodPost, "/api/profiles/draft-profile/edition-drafts/create", strings.NewReader(
+		`{"run_id":"run-isbn-readback-canceled","abs_item_id":"abs-item-1"}`,
+	)).WithContext(requestCtx)
+	request.AddCookie(fixture.sessionCookie(t, fixture.owner))
+	response := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		fixture.routes.ServeHTTP(response, request)
+		close(done)
+	}()
+	select {
+	case <-readStarted:
+		cancel()
+	case <-time.After(5 * time.Second):
+		cancel()
+		t.Fatal("edition readback did not start")
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled edition readback did not return")
+	}
+
+	require.Equal(t, http.StatusBadGateway, response.Code, response.Body.String())
+	var envelope struct {
+		ErrorCode string `json:"error_code"`
+		Outcome   string `json:"outcome"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	require.Equal(t, "hardcover_import_unconfirmed", envelope.ErrorCode)
+	require.Equal(t, editionOutcomeUnconfirmed, envelope.Outcome)
+	duplicate := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-isbn-readback-canceled","abs_item_id":"abs-item-1"}`)
+	require.Equal(t, http.StatusConflict, duplicate.Code, duplicate.Body.String())
+	require.EqualValues(t, 1, insertCalls.Load(), "a canceled readback never resubmits insert_edition")
+	require.EqualValues(t, 1, readCalls.Load())
+	stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+	require.NoError(t, err)
+	_, exists := stored.GetAssociation("abs-item-1")
+	require.False(t, exists, "an unconfirmed insert cannot save a local association")
 }
 
 func TestCreateEditionFromDraftStopsWhenNarratorLookupFails(t *testing.T) {

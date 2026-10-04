@@ -34,9 +34,10 @@ var (
 	// These errors preserve the distinction between a completed search with no
 	// result and a lookup that could not be completed. Callers should use
 	// errors.Is rather than inspect rendered error text.
-	errHardcoverBookNotFound = errors.New("hardcover book not found")
-	errHardcoverLookupFailed = errors.New("hardcover lookup failed")
-	errHardcoverTitleOnly    = errors.New("found by title/author only")
+	errHardcoverBookNotFound  = errors.New("hardcover book not found")
+	errHardcoverLookupFailed  = errors.New("hardcover lookup failed")
+	errHardcoverTitleOnly     = errors.New("found by title/author only")
+	errAudibleImportAvailable = errors.New("audible import available")
 )
 
 type editionBoundMutationError struct {
@@ -661,7 +662,7 @@ func (s *Service) upsertAttentionCandidateLocked(book models.AudiobookshelfBook,
 	if mismatchRecord.Reason == "" {
 		mismatchRecord.Reason = record.Error
 	}
-	if previous, exists := s.attentionCandidates[book.ID]; exists {
+	if previous, exists := s.attentionCandidates[book.ID]; exists && mismatchRecord.Reason != mismatch.ReasonAudibleImportAvailable {
 		// The deferred outcome write contains only the current Audiobookshelf
 		// fields. Start with the complete enriched record so identifiers,
 		// relationship IDs, and other metadata survive that refresh.
@@ -718,7 +719,7 @@ func (s *Service) enrichAttentionCandidate(record mismatch.BookMismatch) {
 	s.runStateMutex.Lock()
 	defer s.runStateMutex.Unlock()
 	s.ensureOutcomeStateLocked()
-	if previous, exists := s.attentionCandidates[record.BookID]; exists {
+	if previous, exists := s.attentionCandidates[record.BookID]; exists && record.Reason != mismatch.ReasonAudibleImportAvailable {
 		record = mergeMissingCandidateDetails(record, previous)
 		if record.CreatedAt.IsZero() {
 			record.CreatedAt = previous.CreatedAt
@@ -906,16 +907,18 @@ func (s *Service) recordBookOutcomeWithMatchMethod(book models.AudiobookshelfBoo
 		if record.Reason == "" {
 			record.Reason = previous.Reason
 		}
-		if record.HardcoverBookID == "" {
-			record.HardcoverBookID = previous.HardcoverBookID
-		}
-		if record.EditionID == "" {
-			record.EditionID = previous.EditionID
-		}
 		if record.MatchMethod == "" {
 			record.MatchMethod = previous.MatchMethod
 		}
-		mergeHardcoverCandidate(&record, &previous)
+		if record.Reason != mismatch.ReasonAudibleImportAvailable {
+			if record.HardcoverBookID == "" {
+				record.HardcoverBookID = previous.HardcoverBookID
+			}
+			if record.EditionID == "" {
+				record.EditionID = previous.EditionID
+			}
+			mergeHardcoverCandidate(&record, &previous)
+		}
 		if count := outcomeCountPointer(&s.outcomeCounts, previous.Outcome); count != nil && *count > 0 {
 			(*count)--
 		}
@@ -2401,6 +2404,31 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 	// ISBN out of local state until that second lookup has confirmed it.
 	hcBook, findErr, foundByASIN, _ = s.findBookInHardcoverWithASINMatch(ctx, book, associationWriteASINOnly)
 	if findErr != nil {
+		if errors.Is(findErr, errAudibleImportAvailable) {
+			matchMethod = "audible_asin"
+			setOutcome(OutcomeNeedsReview, mismatch.ReasonAudibleImportAvailable)
+			s.recordBookOutcomeWithMatchMethod(book, OutcomeNeedsReview, mismatch.ReasonAudibleImportAvailable, nil, nil, matchMethod)
+			isbn10, isbn13 := isbn.Split(book.Media.Metadata.ISBN)
+			coverURL := ""
+			if book.Media.CoverPath != "" {
+				coverURL = audiobookshelfCoverURL(s.config.Audiobookshelf.URL, book.ID)
+			}
+			record := mismatch.BookMismatch{
+				BookID: book.ID, ABSItemID: book.ID, Title: book.Media.Metadata.Title,
+				Subtitle: book.Media.Metadata.Subtitle, Author: book.Media.Metadata.AuthorName,
+				Narrator: book.Media.Metadata.NarratorName, ASIN: book.Media.Metadata.ASIN,
+				ISBN: book.Media.Metadata.ISBN, ISBN10: isbn10, ISBN13: isbn13,
+				LibraryID: book.LibraryID, PublishedYear: book.Media.Metadata.PublishedYear,
+				DurationSeconds: int(book.Media.Duration + 0.5), CoverURL: coverURL, ImageURL: coverURL,
+				Publisher: book.Media.Metadata.Publisher, Abridged: book.Media.Metadata.Abridged,
+				EditionFormat: "Audible Audio", Reason: mismatch.ReasonAudibleImportAvailable,
+				Timestamp: time.Now().Unix(), CreatedAt: time.Now().UTC(),
+			}
+			s.enrichAttentionCandidate(record)
+			s.addMismatch(record)
+			bookProcessed = true
+			return nil
+		}
 		// Handle mismatch case (found by title/author)
 		if errors.Is(findErr, errHardcoverTitleOnly) ||
 			(hcBook != nil && errors.Is(findErr, errHardcoverLookupFailed)) {
@@ -5716,7 +5744,7 @@ func (s *Service) findBookInHardcoverWithASINMatch(ctx context.Context, book mod
 				}, nil, false, nil
 			}
 			lookupErr = fmt.Errorf("%w: ASIN lookup: %w", errHardcoverLookupFailed, err)
-			log.Warn(fmt.Sprintf("Search by ASIN failed, will try other methods: %v", err), nil)
+			log.Warn(fmt.Sprintf("Search by ASIN failed: %v", err), nil)
 		} else if hcBook != nil {
 			if writeMode != associationWriteNone {
 				s.recordVerifiedASINAssociation(book, asinResult)
@@ -5730,6 +5758,16 @@ func (s *Service) findBookInHardcoverWithASINMatch(ctx context.Context, book mod
 
 			return hcBook, nil, true, asinResult
 		}
+	}
+
+	// A completed miss for a usable audiobook ASIN is actionable in the
+	// needs-review flow. Lookup errors remain failures, and a possible title-only
+	// match must not hide the unresolved ASIN.
+	if format == models.ReadingFormatAudiobook && validASIN {
+		if lookupErr != nil {
+			return nil, lookupErr, false, nil
+		}
+		return nil, errAudibleImportAvailable, false, nil
 	}
 
 	// 2. Try to find by ISBN when the reading format allows it. An audiobook's

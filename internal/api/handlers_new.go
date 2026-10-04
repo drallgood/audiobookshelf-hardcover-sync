@@ -670,7 +670,10 @@ func (h *Handler) projectEditionRecoveryCapabilities(r *http.Request, profileID 
 		if canVerifyRecoveryTokens {
 			claims := editionRecoveryClaims{
 				ProfileID: profileID, RunID: snapshot.RunID, ABSItemID: snapshot.BookOutcomes[i].BookID,
-				HardcoverBookID: action.Data.HardcoverBookID, AudibleIdentifier: action.Data.AudibleIdentifier,
+				// A recovered unanchored import adds the resolved book ID to the
+				// journal, but its signed capability remains bound to the original
+				// source run's empty HardcoverBookID.
+				HardcoverBookID: snapshot.BookOutcomes[i].HardcoverBookID, AudibleIdentifier: action.Data.AudibleIdentifier,
 			}
 			if _, valid := verifyEditionRecoveryToken(settings.HardcoverToken, action.Data.RecoveryToken, claims); valid {
 				continue

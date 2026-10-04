@@ -276,7 +276,7 @@ components:
 
     EditionSourceDraft:
       type: object
-      description: Read-only edition candidate built from one expanded Audiobookshelf item. The handler reads Audiobookshelf and may read Audnexus; it makes no Hardcover requests and performs no catalogue mutation. `metadata_preview` is present only for audiobooks and remains Audiobookshelf metadata apart from its established release-date override from a confirmed Audnexus result. `audnexus_details` is present only after Audnexus returns the exact source ASIN in a confirmed region. `ebook_candidate` is present only for ebooks.
+      description: Read-only edition candidate built from one expanded Audiobookshelf item. The handler reads Audiobookshelf and may read Audnexus; it makes no Hardcover requests and performs no catalogue mutation. For audiobooks, `source_metadata_preview` preserves the Audiobookshelf source values, including the original `publishedDate` or `publishedYear` precision, before enrichment. `metadata_preview` uses Audiobookshelf metadata, including series, position, and cover, with a confirmed Audnexus release-date value when available. `audnexus_details` is present only after Audnexus returns the exact ASIN being previewed in a confirmed region. For an Audible import preview, `audnexus_record` and `audnexus_comparison` are present only after an exact ASIN match in a confirmed region. `ebook_candidate` is present only for ebooks.
       required: [abs_item_id, reading_format, dry_run, eligible, source_identifiers]
       properties:
         abs_item_id:
@@ -312,23 +312,43 @@ components:
           type: string
           enum: [confirmed, unknown, temporarily_unavailable, not_applicable]
           description: >-
-            Audiobook source-ASIN lookup state. `confirmed` means Audnexus
-            returned the same ASIN in the reported region; `unknown` means the
-            supported-region sweep completed without a matching ASIN;
-            `temporarily_unavailable` means a rate-limit, transient, or 400/403
-            Audnexus response stopped the sweep; `not_applicable` means the
-            source ASIN is absent or malformed and Audnexus lookup was skipped.
+            Lookup state for the source ASIN, or for the corrected ASIN when
+            `audible_identifier` is supplied. `confirmed` means Audnexus returned
+            that ASIN in the reported region; `unknown` means lookup completed
+            without an exact match or a non-retryable lookup failure occurred;
+            `temporarily_unavailable` means a rate-limit, transient, or deadline
+            failure stopped lookup; `not_applicable` means the source ASIN is
+            absent or malformed and no corrected identifier was supplied.
             Omitted for ebooks.
         confirmed_region:
           type: string
           enum: [us, ca, uk, au, de, fr, es, in, it, jp]
-          description: Audnexus region that returned the exact source ASIN. Omitted unless the region is confirmed; it is not inferred from the configured preference.
+          description: Audnexus region that returned the exact ASIN being previewed. Omitted unless the region is confirmed; it is not inferred from the configured preference.
         audible_identifier_candidate:
           $ref: '#/components/schemas/AudibleIdentifierCandidate'
         metadata_preview:
-          $ref: '#/components/schemas/AudiobookMetadataPreview'
+          allOf:
+            - $ref: '#/components/schemas/AudiobookMetadataPreview'
+          description: >-
+            Enriched audiobook metadata candidate. When a confirmed Audnexus
+            record has a recognized release date, `release_date` uses its
+            normalized value; otherwise it uses the normalized ABS
+            `publishedDate`, then `publishedYear` fallback. The original ABS
+            value is available in `source_metadata_preview`.
+        source_metadata_preview:
+          allOf:
+            - $ref: '#/components/schemas/AudiobookMetadataPreview'
+          description: >-
+            Audiobookshelf source metadata before Audnexus enrichment.
+            `release_date` preserves the source `publishedDate` string, or the
+            `publishedYear` string when `publishedDate` is empty, including
+            year-only precision.
         audnexus_details:
           $ref: '#/components/schemas/AudnexusDetails'
+        audnexus_record:
+          $ref: '#/components/schemas/AudnexusImportRecord'
+        audnexus_comparison:
+          $ref: '#/components/schemas/AudnexusFieldComparison'
         ebook_candidate:
           $ref: '#/components/schemas/EbookEditionCandidate'
         warnings:
@@ -347,13 +367,22 @@ components:
       required: [run_id, abs_item_id]
       description: >-
         Identifies one item in one completed or canceled, non-dry-run sync run.
-        The API uses the Hardcover book ID in that needs-review record; clients
-        cannot choose a Hardcover book or author ID. Audiobooks with a valid
-        source ASIN use regional Audible import. If the source ASIN is absent or
-        malformed, the read-only Audiobookshelf ISBN can be inserted as an
-        audiobook edition. A valid source ASIN blocks ISBN fallback if its
-        discovery or import fails. For an audiobook, only `audible_identifier`
-        may be corrected; the remaining correction fields apply to ebooks.
+        For a needs-review item with a Hardcover candidate, the API uses the
+        recorded Hardcover book ID; clients cannot choose a different book or
+        author ID. This adds the edition to the book selected by the sync result.
+        An audiobook with reason `audible_import_available` has no Hardcover
+        candidate: **Import by Audible ASIN** requires the exact regional
+        `audible_identifier` shown in the Audnexus preview and
+        `audnexus_confirmed: true`. It does not require selecting a Hardcover
+        book first; the request omits `book_id`, and the returned book and
+        edition are verified. The source metadata is rechecked before import.
+        Other audiobooks with a selected Hardcover book and a valid source ASIN
+        use regional Audible import. A valid source ASIN blocks ISBN fallback
+        if discovery or import fails. When the source ASIN
+        is absent or malformed and no identifier is supplied, a parseable
+        Audiobookshelf ISBN can be inserted as an audiobook edition. For an
+        audiobook, only `audible_identifier` may be corrected; the remaining
+        correction fields apply to ebooks.
       properties:
         run_id:
           type: string
@@ -365,15 +394,21 @@ components:
         audible_identifier:
           type: string
           description: >-
-            Optional audiobook correction in `ASIN:region` form, for example
-            `B00XXXYYZZ:uk`. The ASIN and supported region are validated, and the
-            supplied region is authoritative. The corrected ASIN may differ from
-            the Audiobookshelf source ASIN; the import uses this corrected
-            identifier. Audnexus lookup for this explicit identifier is optional
-            release-date enrichment; a rate-limit or transient
-            error does not block import, and the preview retains the Audiobookshelf
-            date. Omit this field to discover the source ASIN's region with Audnexus.
-            Audiobook metadata fields are rejected as corrections.
+            Optional audiobook identifier correction in `ASIN:region` form, for
+            example `B00XXXYYZZ:uk`. For `audible_import_available`, it is
+            required and must exactly match the identifier the user reviewed and
+            confirmed; the create request rereads that region. For an audiobook
+            tied to a selected Hardcover book, a supplied value is authoritative;
+            otherwise the source ASIN region is discovered. Audiobook metadata
+            fields are rejected as corrections.
+        audnexus_confirmed:
+          type: boolean
+          description: >-
+            Required as `true` for `audible_import_available` imports. It records
+            the caller's confirmation that the Audnexus record for the exact
+            `audible_identifier` matches the Audiobookshelf item. Omit for the
+            selected-book audiobook and ebook paths; setting it to `true` on
+            either path returns HTTP 400.
         title:
           type: string
           description: Optional ebook title correction.
@@ -441,10 +476,13 @@ components:
           description: '`loaded` is an audiobook resolver result; `existing` is an ebook duplicate found on the requested book.'
         hardcover_book_id:
           type: string
-          description: Verified Hardcover book ID from the sync record.
+          description: Verified Hardcover book ID; for `audible_import_available` it is resolved from the regional Audible import.
         hardcover_edition_id:
           type: string
           description: Verified Hardcover edition ID.
+        hardcover_title:
+          type: string
+          description: Resolved Hardcover book title. Informational display value; it is not a review or identity gate.
         regional_external_id:
           type: string
           description: >-
@@ -463,16 +501,23 @@ components:
         Recovery identity included only when an audiobook import was submitted
         but not confirmed, or when Hardcover confirmed it but local saving failed.
         The signed token is tied to this profile, sync run, Audiobookshelf item,
-        Hardcover book, and Audible identifier. Rotating the profile's Hardcover
-        token invalidates it.
-      required: [audible_identifier, hardcover_book_id, recovery_token]
+        and Audible identifier; imports tied to a selected Hardcover book also
+        bind it to the book from the sync record. **Import by Audible ASIN**
+        omits `hardcover_book_id`, and `check-import` resolves the book ID from
+        the terminal import status or exact regional mapping. Rotating the
+        profile's Hardcover token invalidates the token.
+      required: [audible_identifier, recovery_token]
       properties:
         audible_identifier:
           type: string
           description: Exact canonical ASIN:region sent to Hardcover for this attempt.
         hardcover_book_id:
           type: string
-          description: Hardcover book ID taken from the verified needs-review sync record.
+          description: >-
+            Present for imports tied to a selected Hardcover book and taken from
+            the verified sync record.
+            Omitted for `audible_import_available`; recovery derives the resolved
+            ID from Hardcover's terminal import status or exact regional mapping.
         recovery_token:
           type: string
           description: Opaque signed proof that the client received this exact submitted attempt.
@@ -559,22 +604,22 @@ components:
 
     AudibleIdentifierCandidate:
       type: object
-      description: Audiobook identifier candidate. Present for audiobooks, including when no source ASIN is available. The ASIN remains the bare source value; region is empty when Audnexus has not confirmed a marketplace, so clients must not assume US. This candidate does not write `edition.asin` or create a Hardcover mapping.
+      description: Audiobook identifier candidate. Present for audiobooks, including when no source ASIN is available. It contains the bare source ASIN by default, or the corrected ASIN and region supplied in the `audible_identifier` draft query. Without a confirmed Audnexus result, do not treat an unspecified region as US. This candidate does not write `edition.asin` or create a Hardcover mapping.
       required: [asin, region, correction_allowed]
       properties:
         asin:
           type: string
-          description: Bare source ASIN when present, retained with its source casing even when malformed. Empty when the ABS item has no ASIN.
+          description: Bare source ASIN by default, retained with its source casing even when malformed; replaced by the valid ASIN from the query correction when supplied. Empty when neither is available.
         region:
           type: string
-          description: Confirmed Audnexus region, or an empty string when unknown, temporarily unavailable, or not applicable. A later user correction may supply a regional Audible identifier.
+          description: Confirmed discovery region, or the explicitly supplied region from `audible_identifier`; consult `region_status` to determine whether Audnexus confirmed it.
         correction_allowed:
           type: boolean
           description: Whether the regional Audible identifier can be corrected in a later add-edition workflow.
 
     AudnexusDetails:
       type: object
-      description: Read-only details from the Audnexus book returned for the exact source ASIN in a confirmed region. Omitted when discovery is unavailable, misses, or returns a different ASIN.
+      description: Read-only details from the Audnexus book returned for the exact ASIN being previewed (the source ASIN unless corrected through the draft query) in a confirmed region. Omitted when lookup is unavailable, misses, or returns a different ASIN.
       required: [title]
       properties:
         title: {type: string}
@@ -591,6 +636,68 @@ components:
         format_type:
           type: string
           description: Audnexus formatType value as returned, without translating it into an abridgment label.
+
+    AudnexusImportRecord:
+      type: object
+      required: [asin, title]
+      description: >-
+        Audnexus values from the exact ASIN and region being previewed for an
+        Audible import. Omitted when the region is unknown or temporarily
+        unavailable. A corrected regional identifier can be previewed through
+        the `audible_identifier` query parameter.
+      properties:
+        asin: {type: string}
+        title: {type: string}
+        subtitle: {type: string}
+        authors:
+          type: array
+          items: {type: string}
+        narrators:
+          type: array
+          items: {type: string}
+        series:
+          type: array
+          items: {type: string}
+        series_position: {type: string}
+        publisher: {type: string}
+        release_date:
+          type: string
+          format: date
+        runtime_seconds: {type: integer}
+        language: {type: string}
+        cover_url:
+          type: string
+          description: Audnexus cover URL as returned.
+
+    AudnexusFieldComparison:
+      type: object
+      required: [title, subtitle, authors, narrators, series, series_position, publisher, release_date, runtime, language]
+      description: >-
+        Informational per-field comparison between Audiobookshelf and the
+        Audnexus record. Differences do not block creation. Omitted with the
+        Audnexus record when no exact regional record is available. The cover
+        comparison is omitted because ABS coverPath is a server-local path
+        while the Audnexus cover is a URL.
+      properties:
+        title: {$ref: '#/components/schemas/AudnexusComparisonStatus'}
+        subtitle: {$ref: '#/components/schemas/AudnexusComparisonStatus'}
+        authors: {$ref: '#/components/schemas/AudnexusComparisonStatus'}
+        narrators: {$ref: '#/components/schemas/AudnexusComparisonStatus'}
+        series: {$ref: '#/components/schemas/AudnexusComparisonStatus'}
+        series_position: {$ref: '#/components/schemas/AudnexusComparisonStatus'}
+        publisher: {$ref: '#/components/schemas/AudnexusComparisonStatus'}
+        release_date: {$ref: '#/components/schemas/AudnexusComparisonStatus'}
+        runtime: {$ref: '#/components/schemas/AudnexusComparisonStatus'}
+        language: {$ref: '#/components/schemas/AudnexusComparisonStatus'}
+
+    AudnexusComparisonStatus:
+      type: string
+      enum: [match, differs, missing]
+      description: >-
+        `match` and `differs` use trim-and-case-insensitive comparison for
+        strings, normalized dates for recognized release-date formats, and
+        rounded seconds for runtime; runtime differences up to 60 seconds are
+        treated as a match. `missing` means one side has no value.
 
     EditionDraftISBNFields:
       type: object
@@ -624,13 +731,18 @@ components:
             language: {type: string}
             release_date:
               type: string
-              format: date
-              description: Audnexus release date for the matching ASIN and region used by the draft or create request when available; otherwise the normalized Audiobookshelf `publishedDate`, then `publishedYear`. If the Audiobookshelf date is an ambiguous slash-formatted value, it is ignored in favor of `publishedYear` when available.
+              description: Publication date value associated with this audiobook metadata preview; source and precision depend on the preview variant.
             edition_format: {type: string}
             edition_information:
               type: string
               enum: [Abridged, Unabridged]
             audio_seconds: {type: integer}
+            series: {type: string}
+            series_position: {type: string}
+            cover_url:
+              type: string
+              format: uri
+              description: Audiobookshelf cover URL served through its configured base URL.
 
     EbookEditionCandidate:
       allOf:
@@ -664,7 +776,7 @@ components:
         code:
           type: string
           enum: [missing_identifier, invalid_isbn, invalid_source_asin, date_unavailable, missing_author, language_defaults_to_english, published_date_unrecognized, published_date_ambiguous, unsupported_audnex_region, audnex_temporarily_unavailable, audnex_date_unrecognized]
-          description: Current warning code identifying the source or draft issue. `invalid_source_asin` means a non-empty ASIN is not exactly 10 ASCII alphanumeric characters; it does not count toward eligibility, and audiobook region status is `unknown`. `invalid_isbn` covers unsupported ISBN shape and a bad checksum; a bad-checksum ISBN that has a supported shape remains eligible, with its validity flag false. Date warnings describe Audiobookshelf source metadata; a confirmed Audnexus release date can still replace the preview date. `published_date_ambiguous` means both month-first and day-first slash parsing succeed, so `publishedYear` is the Audiobookshelf fallback when available.
+          description: Current warning code identifying the source or draft issue. `invalid_source_asin` means a non-empty ASIN is not exactly 10 ASCII alphanumeric characters; it does not count toward eligibility, and audiobook region status is `not_applicable` when no corrected identifier is supplied. `invalid_isbn` covers unsupported ISBN shape and a bad checksum; a bad-checksum ISBN that has a supported shape remains eligible, with its validity flag false. Date warnings describe Audiobookshelf source metadata; a confirmed Audnexus release date can still replace the preview date. `published_date_ambiguous` means both month-first and day-first slash parsing succeed, so `publishedYear` is the Audiobookshelf fallback when available.
         message:
           type: string
           description: Human-readable detail for this warning.
@@ -759,15 +871,36 @@ components:
         author: {type: string}
         asin: {type: string}
         isbn: {type: string}
+        source_asin:
+          type: string
+          description: Source ASIN normalized to uppercase when it has usable ten-character shape; otherwise trimmed and retained as supplied.
+        source_isbn_10:
+          type: string
+          description: Normalized ISBN-10 form carried by the ABS source ISBN, when it has supported shape.
+        source_isbn_13:
+          type: string
+          description: Normalized ISBN-13 form carried by the ABS source ISBN, when it has supported shape.
         cover_url: {type: string, format: uri}
         format: {type: string}
         series: {type: string}
         series_number: {type: string}
-        reason: {type: string}
+        reason:
+          type: string
+          description: >-
+            For an unmatched audiobook with a usable Audible ASIN (exactly ten
+            ASCII letters or digits), the value is `audible_import_available`;
+            the outcome remains `needs_review`, the source identifier and format
+            snapshot (`source_asin`, `source_isbn_10`, `source_isbn_13`, and
+            `format`) is retained, and no Hardcover book or edition ID is set.
+            Such items skip title/author discovery.
         error: {type: string}
         match_method: {type: string}
-        hardcover_book_id: {type: string}
-        edition_id: {type: string}
+        hardcover_book_id:
+          type: string
+          description: Omitted when reason is `audible_import_available`.
+        edition_id:
+          type: string
+          description: Omitted when reason is `audible_import_available`.
         edition_added:
           type: boolean
           description: A matching confirmed edition addition is currently saved for this needs-review item. Historical outcomes and counts are unchanged.
@@ -1304,8 +1437,12 @@ paths:
       summary: Prepare a read-only edition draft from an Audiobookshelf item
       description: >-
         Fetches the expanded Audiobookshelf item and, for an audiobook with a
-        source ASIN, may check Audnexus across its supported regions. A complete
-        region miss is returned as `unknown`; a rate limit, transient
+        source ASIN, may check Audnexus across its supported regions. If the
+        `audible_identifier` query parameter is supplied, it checks only that
+        exact ASIN and region instead. A complete
+        region miss or non-retryable Audnexus lookup failure returns HTTP 200
+        with `region_status: unknown`. A lookup failure also includes a
+        non-retryable `audnex_lookup_failed` warning. A rate limit, transient
         failure, or 400/403 Audnexus response is returned as `temporarily_unavailable` with a
         retryable warning. A legacy unsupported region preference warns and
         uses US. The endpoint makes no Hardcover requests and performs no
@@ -1323,6 +1460,17 @@ paths:
           schema: {type: string}
           description: Audiobookshelf library item ID.
           example: li_8gch9ve09orgn4fdz8
+        - name: audible_identifier
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >-
+            Optional corrected audiobook identifier in `ASIN:region` form, for
+            example `B00XXXYYZZ:uk`. Its ASIN and supported region are validated
+            and used for this preview. The region is queried exactly; it is not
+            inferred or swept. An unknown or temporarily unavailable result has
+            no `audnexus_record` or `audnexus_comparison`.
       responses:
         '200':
           description: Source edition draft, including eligibility and any non-fatal warnings.
@@ -1336,7 +1484,7 @@ paths:
                   data:
                     $ref: '#/components/schemas/EditionSourceDraft'
         '400':
-          description: Required profile or Audiobookshelf item ID is missing, or the fetched item is not book media.
+          description: Required profile or Audiobookshelf item ID is missing, the fetched item is not book media, or the corrected `audible_identifier` is invalid.
           content:
             application/json:
               schema:
@@ -1378,7 +1526,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '502':
-          description: The Audiobookshelf item lookup failed, including when the item was not found upstream, or Audnexus returned a non-retryable error. Audnexus rate-limit and transient region-discovery failures instead return a successful draft with a retryable warning.
+          description: The Audiobookshelf item lookup failed, including when the item was not found upstream. Audnexus lookup failures return HTTP 200 drafts instead, with region status and warnings describing the failure.
           content:
             application/json:
               schema:
@@ -1399,25 +1547,30 @@ paths:
         must identify a completed or canceled, non-dry-run sync run and its
         needs-review Audiobookshelf item. The API refetches the item and compares
         its ID, title, author, ASIN, ISBN, and reading format with the verified
-        sync record before any Hardcover mutation. For ebooks, subtitle and
-        release date come from the freshly fetched Audiobookshelf item unless
-        corrected in the request;
-        publisher always comes from the fresh item. It uses the Hardcover book ID
-        recorded by that sync run; no book or author ID is accepted from the caller.
-        Audiobooks with a valid source ASIN or a supplied `audible_identifier`
-        use a regional `upsert_book` import; discovery or import failure does
-        not fall back to `insert_edition`. When the source ASIN is absent or
-        malformed and no `audible_identifier` is supplied, a parseable source
-        ISBN may be used for format-aware audiobook edition creation. A matching
-        audiobook edition of the recorded book is reused; otherwise
-        `insert_edition` is used. Ebooks use format-aware `insert_edition`.
-        The server durably records the attempt before a catalogue write and
-        exposes its state as `edition_action` in run details. Unresolved and
-        final failed attempts block another create for the same run and item;
-        a definitive `not_submitted` result allows retry. A successful result is verified and saved as a profile-local match before
-        the response is returned. With `resync: true`, the book's read status is
-        then synced under the same profile guard and state lock, and the result
-        is returned in `resync`; a resync failure is
+        sync record before any Hardcover mutation. For `audible_import_available`,
+        the request must set `audnexus_confirmed: true` and provide the exact
+        confirmed regional `audible_identifier`; the API rereads that identifier
+        in the same region and performs a regional `upsert_book` without
+        `book_id`. It does not use a title/author candidate or a caller-supplied
+        Hardcover ID. For an audiobook with a selected Hardcover book, it uses
+        the Hardcover book ID recorded by the run; no book or author ID is
+        accepted from the caller.
+        A valid source ASIN or supplied `audible_identifier` selects regional
+        `upsert_book`, and a valid source ASIN blocks ISBN fallback if discovery
+        or import fails. When the source ASIN is absent or malformed and no
+        identifier is supplied, a parseable source ISBN may use format-aware
+        audiobook edition creation on the recorded book: a matching audiobook
+        edition is reused, otherwise `insert_edition` is used. Ebooks use
+        format-aware `insert_edition`; their subtitle and release date come from
+        the freshly fetched Audiobookshelf item unless corrected in the request,
+        and publisher always comes from the fresh item. The server durably records
+        the attempt before a catalogue write and exposes its state as
+        `edition_action` in run details. Unresolved or final failed attempts block
+        another create for the same run and item; a definitive `not_submitted`
+        result allows retry. A successful result is verified and saved as a
+        profile-local match before the response is returned. With `resync: true`,
+        the book's read status is then synced under the same profile guard and
+        state lock, and the result is returned in `resync`; a resync failure is
         reported there and never fails the request. A full sync active for the
         profile refuses the request (409) before any edition is created, with or
         without `resync`.
@@ -1446,7 +1599,12 @@ paths:
                   data:
                     $ref: '#/components/schemas/EditionCreateResult'
         '400':
-          description: Profile ID, run ID, or ABS item ID is missing, or the JSON request is invalid.
+          description: >-
+            Profile ID, run ID, or ABS item ID is missing, the JSON request is
+            invalid, or an `audible_import_available` request omitted
+            `audnexus_confirmed: true` or its confirmed regional identifier.
+            Setting `audnexus_confirmed: true` on a selected-book audiobook or
+            ebook request is also rejected.
           content:
             application/json:
               schema:
@@ -1490,16 +1648,18 @@ paths:
             another edition may have been created. An import resolved to an
             existing non-audiobook edition of the reviewed book returns
             `outcome: failed` with `error_code: hardcover_edition_wrong_format`
-            and that edition in `data`.
+            and that edition in `data`. For `audible_import_available`, a reread
+            that misses the confirmed ASIN in its exact region or returns a
+            different ASIN means the reviewed Audnexus identity changed; refresh
+            the draft and confirm the record again. If Hardcover identity
+            verification conflicts after submitting an import, verify the result
+            before retrying because Hardcover may already have changed.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
-          description: >-
-            The correction fields or identifiers are invalid, or Audnexus did
-            not find the source ASIN in a supported region. Supply a valid
-            regional `audible_identifier` to proceed without region discovery.
+          description: The correction fields or identifiers are invalid.
           content:
             application/json:
               schema:
@@ -1537,7 +1697,11 @@ paths:
             time for a Hardcover write (with Retry-After: 1), low or exhausted daily
             Hardcover quota prevents admission before the write deadline, a dependency request timed out,
             source-ASIN Audnexus region discovery was rate limited or transiently
-            unavailable, or the Hardcover regional import timed out. Region
+            unavailable, or the Hardcover regional import timed out. For an
+            confirmed identifier in **Import by Audible ASIN**, a rate limit or
+            transient failure while rereading Audnexus is retryable and no
+            Hardcover import is sent.
+            Region
             discovery stops before the reserved Hardcover write time; when it
             cannot finish in that time, supply `audible_identifier` to skip it.
             A rate-limit or transient error from Audnexus `GetBookByASIN` for an explicit
@@ -1558,14 +1722,18 @@ paths:
       description: >-
         Requires profile write access and a recovery token returned by an
         ambiguous edition-create response. The API verifies the token against
-        the exact profile, run, item, Hardcover book, and `ASIN:region`, then
+        the exact profile, run, item, and `ASIN:region`; imports tied to a
+        selected Hardcover book also bind the token to the Hardcover book from
+        the run. For
+        `audible_import_available`, it resolves the Hardcover book ID from the
+        terminal regional import status or exact regional mapping, then
         revalidates the retained needs-review snapshot and freshly fetched
         Audiobookshelf source item while holding the profile and state-file
         guards. It performs one read-only Hardcover import-status/mapping query
         and, only for a terminal result, an uncached edition readback that must
-        match the reviewed Hardcover book and audiobook format. A pending result
-        returns HTTP 503 with `outcome: unconfirmed` and the same recovery data;
-        retry this check rather than submitting edition creation again. A
+        match the resolved Hardcover book and audiobook format. A pending
+        result returns HTTP 503 with `outcome: unconfirmed` and the same recovery
+        data; retry this check rather than submitting edition creation again. A
         confirmed result saves the local association and returns the ordinary
         edition-create success shape. Repeating a check for the same saved
         association is idempotent. This endpoint never submits a Hardcover
