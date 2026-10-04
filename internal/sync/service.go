@@ -2501,7 +2501,7 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 			matchMethod = string(asinResult.MatchKind)
 		case associationReused:
 			matchMethod = "saved_match"
-		case !foundByASIN:
+		case !foundByASIN && hcBook.EditionID != "":
 			matchMethod = "isbn"
 		}
 	}
@@ -2742,7 +2742,7 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 		if hcBook.EditionID != "" {
 			editionID = hcBook.EditionID
 		}
-		if book.ReadingFormat() == models.ReadingFormatAudiobook && !foundByASIN &&
+		if book.ReadingFormat() == models.ReadingFormatAudiobook && matchMethod == "isbn" &&
 			!associationReused && len(isbnSearchCandidates(book.Media.Metadata.ISBN)) > 0 {
 			// Audiobook ISBN matches are ephemeral, so resolve them again before
 			// mutation. Keep a value snapshot to ensure the second lookup still

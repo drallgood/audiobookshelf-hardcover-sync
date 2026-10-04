@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
@@ -181,53 +182,111 @@ func TestAudibleImportAttentionRetainsSourceDetailsAfterOutcomeRefresh(t *testin
 }
 
 func TestSecondASINMissAfterBookErrorPublishesAudibleImportAvailable(t *testing.T) {
-	svc, hardcoverMock := createTestService()
-	svc.config.Sync.ProcessUnreadBooks = true
-	svc.config.Sync.SyncOwned = false
-	book := *toAudiobookshelfBook(createTestBook("audible-import-second-miss", "Source Title", "Source Author", "B0SOURCE12", "978-0-306-40615-7"))
-	book.Media.Duration = 1234.75
-	book.Media.Metadata.Abridged = true
-	lookup := &sequencedASINLookupClient{
-		MockHardcoverClient: hardcoverMock,
-		results:             []*hardcover.ASINLookupResult{nil, nil},
-		errors: []error{
-			hardcover.WithBookID(errors.New("incomplete ASIN lookup"), "hc-incomplete-book"),
-			nil,
+	for _, tc := range []struct {
+		name             string
+		secondLookupErr  error
+		wantOutcome      SyncOutcome
+		wantImportReview bool
+	}{
+		{
+			name:             "conclusive miss",
+			wantOutcome:      OutcomeNeedsReview,
+			wantImportReview: true,
 		},
+		{
+			name:            "technical lookup failure",
+			secondLookupErr: errors.New("temporary ASIN outage"),
+			wantOutcome:     OutcomeFailed,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, hardcoverMock := createTestService()
+			svc.config.Sync.ProcessUnreadBooks = true
+			svc.config.Sync.SyncOwned = false
+			if tc.secondLookupErr != nil {
+				originalTransport := http.DefaultTransport
+				http.DefaultTransport = audnexNotFoundRoundTripper{}
+				t.Cleanup(func() { http.DefaultTransport = originalTransport })
+				hardcoverMock.On("SearchBookByASIN", mock.Anything, "B0SOURCE12").Return((*models.HardcoverBook)(nil), nil).Once()
+				hardcoverMock.On("SearchBooks", mock.Anything, "Source Title", "Source Author").Return([]models.HardcoverBook(nil), nil).Once()
+			}
+			book := *toAudiobookshelfBook(createTestBook("audible-import-second-miss", "Source Title", "Source Author", "B0SOURCE12", "978-0-306-40615-7"))
+			book.Media.Duration = 1234.75
+			book.Media.Metadata.Abridged = true
+			lookup := &sequencedASINLookupClient{
+				MockHardcoverClient: hardcoverMock,
+				results:             []*hardcover.ASINLookupResult{nil, nil},
+				errors: []error{
+					hardcover.WithBookID(errors.New("incomplete ASIN lookup"), "hc-incomplete-book"),
+					tc.secondLookupErr,
+				},
+			}
+			svc.hardcover = lookup
+			if tc.wantImportReview {
+				hardcoverMock.On("SearchBookByISBN13", mock.Anything, "9780306406157").Return((*models.HardcoverBook)(nil), nil).Once()
+				hardcoverMock.On("SearchBookByISBN10", mock.Anything, "0306406152").Return((*models.HardcoverBook)(nil), nil).Once()
+			}
+
+			processErr := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+			if tc.wantImportReview {
+				require.NoError(t, processErr)
+			} else {
+				require.ErrorIs(t, processErr, ErrSkippedBook)
+			}
+
+			record := recordedOutcome(svc, book.ID)
+			require.Equal(t, tc.wantOutcome, record.Outcome)
+			require.Empty(t, record.MatchMethod, "an incomplete ASIN BookError is not an ISBN match")
+			require.Equal(t, 2, lookup.calls, "the partial ASIN response must receive a second lookup")
+			_, associated := svc.state.GetAssociation(book.ID)
+			require.False(t, associated)
+			if tc.wantImportReview {
+				require.Equal(t, mismatch.ReasonAudibleImportAvailable, record.Reason)
+				require.Empty(t, record.HardcoverBookID)
+				require.Empty(t, record.EditionID)
+				require.Empty(t, record.HardcoverTitle)
+				attention, exists := svc.attentionCandidates[book.ID]
+				require.True(t, exists)
+				require.Equal(t, mismatch.ReasonAudibleImportAvailable, attention.Reason)
+				require.Empty(t, attention.HardcoverBookID)
+				require.Equal(t, "9780306406157", attention.ISBN13)
+				require.Equal(t, "Audible Audio", attention.EditionFormat)
+				require.True(t, attention.Abridged)
+				require.Equal(t, 1235, attention.DurationSeconds)
+				require.Empty(t, attention.ReleaseDate, "this source-only review path must not run Audnex enrichment")
+				_, checkpointed := svc.state.GetBookState(book.ID)
+				require.False(t, checkpointed)
+				require.Len(t, svc.mismatchCollector.GetAll(), 1)
+			} else {
+				require.Contains(t, record.Reason, "temporary ASIN outage")
+				checkpoint, checkpointed := svc.state.GetBookState(book.ID)
+				require.True(t, checkpointed, "the existing technical failure checkpoint must retain retry behavior")
+				require.Equal(t, "SKIPPED", checkpoint.Status)
+				require.True(t, svc.state.NeedsSync(book.ID, 0, "WANT_TO_READ", 0), "a later sync must retry the failed lookup")
+			}
+			if tc.wantImportReview {
+				hardcoverMock.AssertNotCalled(t, "SearchBooks", mock.Anything, mock.Anything, mock.Anything)
+			}
+			hardcoverMock.AssertNotCalled(t, "GetBookByID", mock.Anything, mock.Anything)
+			hardcoverMock.AssertNotCalled(t, "GetUserBookID", mock.Anything, mock.Anything)
+			hardcoverMock.AssertNotCalled(t, "CreateUserBook", mock.Anything, mock.Anything, mock.Anything)
+			hardcoverMock.AssertNotCalled(t, "MarkEditionAsOwned", mock.Anything, mock.Anything)
+			hardcoverMock.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+			hardcoverMock.AssertNotCalled(t, "UpdateReadingProgress", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+			hardcoverMock.AssertExpectations(t)
+		})
 	}
-	svc.hardcover = lookup
-	hardcoverMock.On("SearchBookByISBN13", mock.Anything, "9780306406157").Return((*models.HardcoverBook)(nil), nil).Once()
-	hardcoverMock.On("SearchBookByISBN10", mock.Anything, "0306406152").Return((*models.HardcoverBook)(nil), nil).Once()
+}
 
-	require.NoError(t, svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{}))
+type audnexNotFoundRoundTripper struct{}
 
-	record := recordedOutcome(svc, book.ID)
-	require.Equal(t, OutcomeNeedsReview, record.Outcome)
-	require.Equal(t, mismatch.ReasonAudibleImportAvailable, record.Reason)
-	require.Empty(t, record.MatchMethod)
-	require.Empty(t, record.HardcoverBookID)
-	require.Empty(t, record.EditionID)
-	require.Empty(t, record.HardcoverTitle)
-	require.Equal(t, 2, lookup.calls)
-	attention, exists := svc.attentionCandidates[book.ID]
-	require.True(t, exists)
-	require.Equal(t, mismatch.ReasonAudibleImportAvailable, attention.Reason)
-	require.Empty(t, attention.HardcoverBookID)
-	require.Equal(t, "9780306406157", attention.ISBN13)
-	require.Equal(t, "Audible Audio", attention.EditionFormat)
-	require.True(t, attention.Abridged)
-	require.Equal(t, 1235, attention.DurationSeconds)
-	require.Empty(t, attention.ReleaseDate, "this source-only review path must not run Audnex enrichment")
-	_, associated := svc.state.GetAssociation(book.ID)
-	require.False(t, associated)
-	_, checkpointed := svc.state.GetBookState(book.ID)
-	require.False(t, checkpointed)
-	require.Len(t, svc.mismatchCollector.GetAll(), 1)
-	hardcoverMock.AssertNotCalled(t, "SearchBooks", mock.Anything, mock.Anything, mock.Anything)
-	hardcoverMock.AssertNotCalled(t, "GetBookByID", mock.Anything, mock.Anything)
-	hardcoverMock.AssertExpectations(t)
-	hardcoverMock.AssertNotCalled(t, "GetUserBookID", mock.Anything, mock.Anything)
-	hardcoverMock.AssertNotCalled(t, "CreateUserBook", mock.Anything, mock.Anything, mock.Anything)
+func (audnexNotFoundRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusNotFound,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    req,
+	}, nil
 }
 
 func TestAudibleImportAvailabilityDryRunDoesNotSuppressRealIncrementalRun(t *testing.T) {

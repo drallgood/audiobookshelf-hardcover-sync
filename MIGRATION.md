@@ -54,6 +54,13 @@ order. Automatic audiobook ISBN and edition-ASIN fallback matches remain
 transient: incremental sync resolves them again, then uses existing progress
 checkpoints to avoid repeating writes for an unchanged target.
 
+Previously, a valid Audiobookshelf ASIN with no regional mapping blocked ISBN
+matching and offered Audible import through `needs_review`. A completed mapping
+miss now permits ISBN matching even with a valid ASIN, so those items may sync
+automatically to an ISBN-matched edition on their next run. Successful ISBN
+matches do not offer **Add edition** in Sync Status; the additional action below
+applies to edition-ASIN fallback matches.
+
 Fallback matches with `synced`, `already_current`, or `skipped` outcomes offer
 **Add edition** using **Import by Audible ASIN**. A successful, verified import
 saves the returned book, edition, and regional Audible identifier as the local
