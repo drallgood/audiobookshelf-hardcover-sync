@@ -1931,9 +1931,12 @@ class SyncProfileApp {
             title_author: 'Title and author',
             asin: 'ASIN',
             isbn: 'ISBN',
-            edition_asin: 'Edition ASIN'
+            edition_asin: 'Edition ASIN',
+            saved_match: 'Saved match',
+            edition: 'Edition'
         };
         if (Object.prototype.hasOwnProperty.call(known, value)) return known[value];
+        if (value.startsWith('saved_')) return `${this.syncMatchMethodText(value.slice(6))} (saved)`;
 
         const words = value.split(/[\s_-]+/).filter(Boolean);
         if (words[0] === 'isbn' && ['10', '13'].includes(words[1])) {

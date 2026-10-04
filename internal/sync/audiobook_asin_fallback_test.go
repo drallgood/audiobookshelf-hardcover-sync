@@ -37,6 +37,7 @@ func TestAudiobookIdentifierFallbackRecordEligibility(t *testing.T) {
 
 	for _, record := range []BookOutcomeRecord{
 		{Format: "Audiobook", MatchMethod: "saved_match", Outcome: OutcomeSynced, SourceASIN: "B00SOURCE1"},
+		{Format: "Audiobook", MatchMethod: "saved_isbn", Outcome: OutcomeSynced, SourceASIN: "B00SOURCE1"},
 		{Format: "Audiobook", MatchMethod: string(hardcover.ASINMatchAudibleMapping), Outcome: OutcomeSynced, SourceASIN: "B00SOURCE1"},
 		{Format: "Audiobook", MatchMethod: "isbn", Outcome: OutcomeSkipped, SourceASIN: "B00SOURCE1"},
 		{Format: "Audiobook", MatchMethod: string(hardcover.ASINMatchEditionASIN), Outcome: OutcomeSkipped, SourceASIN: "B00SOURCE1"},

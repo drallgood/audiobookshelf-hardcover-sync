@@ -2239,6 +2239,7 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 		postMatchVerificationFailed  bool
 		ownershipReconciled          bool
 		associationReused            bool
+		savedMatchMethod             string
 	)
 	setOutcome := func(outcome SyncOutcome, reason string) {
 		// A completed mutation is authoritative. Later no-op guards can run
@@ -2467,7 +2468,8 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 			if hcBook == nil {
 				hcBook = s.savedAssociationHardcoverBook(book)
 				if hcBook != nil {
-					matchMethod = "saved_match"
+					association, _ := s.state.GetAssociation(book.ID)
+					matchMethod = savedAssociationMatchMethod(association)
 				}
 			}
 			setOutcome(OutcomeAlreadyCurrent, "incremental state is current")
@@ -2503,6 +2505,7 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 	if s.state != nil {
 		if association, exists := s.state.GetAssociation(book.ID); exists {
 			associationReused = associationMatchesBook(association, book)
+			savedMatchMethod = savedAssociationMatchMethod(association)
 		}
 	}
 	// ISBN/title matches are checked again before mutation. Keep a newly found
@@ -2514,7 +2517,7 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 		case asinResult != nil:
 			matchMethod = string(asinResult.MatchKind)
 		case associationReused:
-			matchMethod = "saved_match"
+			matchMethod = savedMatchMethod
 		case !foundByASIN && hcBook.EditionID != "":
 			matchMethod = "isbn"
 		}
@@ -5629,6 +5632,30 @@ func associationMatchesBook(association state.Association, book models.Audiobook
 	return strings.EqualFold(strings.TrimSpace(association.SourceASIN), strings.TrimSpace(asin)) &&
 		isbn.Normalize(association.SourceISBN10) == isbn.Normalize(isbn10) &&
 		isbn.Normalize(association.SourceISBN13) == isbn.Normalize(isbn13)
+}
+
+// savedAssociationMatchMethod describes the recorded origin without treating a
+// saved association as a fresh identifier fallback eligible for Audible import.
+func savedAssociationMatchMethod(association state.Association) string {
+	provenance := strings.ToLower(strings.TrimSpace(association.Provenance))
+	switch provenance {
+	case "isbn", string(hardcover.ASINMatchEditionASIN), string(hardcover.ASINMatchAudibleMapping):
+		return "saved_" + provenance
+	case "audible_import_unanchored":
+		return "saved_audible_mapping"
+	}
+	if strings.HasPrefix(provenance, "api_regional_") || strings.HasPrefix(provenance, "cli_regional_") {
+		return "saved_audible_mapping"
+	}
+	for _, prefix := range []string{"api_ebook_", "api_audiobook_", "cli_ebook_", "cli_audiobook_"} {
+		if strings.HasPrefix(provenance, prefix) {
+			switch strings.TrimPrefix(provenance, prefix) {
+			case "existing", "reused", "created", "inserted":
+				return "saved_edition"
+			}
+		}
+	}
+	return "saved_match"
 }
 
 func (s *Service) forgetConfirmedMissingEdition(ctx context.Context, itemID, editionID string) bool {

@@ -306,6 +306,11 @@ title/author review candidates.
 Audiobook ISBN and edition-ASIN fallback records with a valid Audiobookshelf
 ASIN and `synced` or `already_current` outcomes offer **Import Audible edition**
 in Sync Status. Synced and already-current books display their match method.
+Saved matches show their recorded origin, such as **ISBN (saved)** or
+**Audible mapping (saved)**. Audible imports also display **Audible mapping
+(saved)**, and editions created or reused through the edition workflow display
+**Edition (saved)**. Older matches without a recognized origin display **Saved
+match**.
 **Import Audible edition** opens the existing **Import by Audible ASIN** workflow:
 review and confirm the regional
 Audnexus record, then import without selecting a Hardcover book first. After a

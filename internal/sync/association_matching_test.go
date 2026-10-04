@@ -668,7 +668,7 @@ func TestProcessBookConfirmsEbookISBNBeforePostMatchSkips(t *testing.T) {
 			require.NoError(t, err)
 			record := recordedOutcome(svc, book.ID)
 			if tt.reuseAssociation {
-				assert.Equal(t, "saved_match", record.MatchMethod)
+				assert.Equal(t, "saved_isbn", record.MatchMethod)
 			} else {
 				assert.Equal(t, "isbn", record.MatchMethod, "the confirmed ebook ISBN match should be exposed to the outcome")
 			}

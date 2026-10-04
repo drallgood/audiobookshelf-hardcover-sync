@@ -158,6 +158,7 @@ func TestProcessBookIncrementalAlreadyCurrentEnrichesOnlyMatchingAssociation(t *
 		associationFormat string
 		wantEnriched      bool
 		wantMatchMethod   string
+		provenance        string
 	}{
 		{
 			name:              "stale ASIN",
@@ -203,6 +204,23 @@ func TestProcessBookIncrementalAlreadyCurrentEnrichesOnlyMatchingAssociation(t *
 		},
 	}
 
+	savedOriginCase := tests[len(tests)-1]
+	for _, origin := range []struct{ provenance, method string }{
+		{"isbn", "saved_isbn"},
+		{"edition_asin", "saved_edition_asin"},
+		{"audible_mapping", "saved_audible_mapping"},
+		{"audible_import_unanchored", "saved_audible_mapping"},
+		{"api_regional_recovered", "saved_audible_mapping"},
+		{"cli_regional_created", "saved_audible_mapping"},
+		{"api_ebook_inserted", "saved_edition"},
+		{"cli_ebook_existing", "saved_edition"},
+		{"unrecognized_legacy_origin", "saved_match"},
+	} {
+		base := savedOriginCase
+		base.name, base.provenance, base.wantMatchMethod = origin.provenance, origin.provenance, origin.method
+		tests = append(tests, base)
+	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			svc, hc := createTestService()
@@ -223,6 +241,7 @@ func TestProcessBookIncrementalAlreadyCurrentEnrichesOnlyMatchingAssociation(t *
 				HardcoverBookID:    "hc-book-1",
 				HardcoverEditionID: "hc-edition-1",
 				ReadingFormat:      tt.associationFormat,
+				Provenance:         tt.provenance,
 			}
 			require.NoError(t, svc.state.SetAssociation(association))
 

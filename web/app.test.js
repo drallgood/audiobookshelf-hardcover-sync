@@ -1074,6 +1074,10 @@ test('outcome match methods render as readable labels and humanize unknown metho
         ['isbn_13', 'ISBN-13'],
         ['asin', 'ASIN'],
         ['isbn', 'ISBN'],
+        ['saved_isbn', 'ISBN (saved)'],
+        ['saved_edition_asin', 'Edition ASIN (saved)'],
+        ['saved_audible_mapping', 'Audible mapping (saved)'],
+        ['saved_edition', 'Edition (saved)'],
         ['unfamiliar_method_value', 'Unfamiliar method value']
     ];
     for (const [match_method, label] of cases) {
@@ -1137,7 +1141,8 @@ test('audiobook identifier fallback is limited to completed audiobook outcomes w
             { ...fallback, format: 'ebook' },
             { ...fallback, source_asin: 'bad' },
             { ...fallback, source_asin: '' },
-            { ...fallback, match_method: 'saved_match' }
+            { ...fallback, match_method: 'saved_match' },
+            { ...fallback, match_method: 'saved_isbn' }
         ]) {
             assert.ok(app.editionCreateIneligibleReason(record, app.openSummary.runContext), JSON.stringify(record));
             assert.doesNotMatch(app.renderOutcomeRecord(record), /data-edition-action="add"/, JSON.stringify(record));
