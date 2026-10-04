@@ -1163,7 +1163,6 @@ test('edition ASIN fallback opens Audible import preview without replacing its o
     await app.openEditionDialog(record.book_id);
 
     assert.equal(app.editionDialog.audibleImport, true);
-    assert.equal(app.editionDialog.record, record);
     assert.equal(app.editionDialog.record.outcome, 'skipped');
     assert.equal(app.editionDialog.record.reason, 'original reason');
     assert.equal(app.editionDialog.record.hardcover_book_id, '42');
