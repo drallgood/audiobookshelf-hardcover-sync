@@ -1925,27 +1925,27 @@ class SyncProfileApp {
         return known[reason] || reason;
     }
 
-    syncMatchMethodText(matchMethod) {
+    syncMatchMethodText(matchMethod, record = {}) {
         const value = String(matchMethod || '').trim().toLowerCase();
+        const saved = value.startsWith('saved_');
+        const method = saved ? value.slice(6) : value;
+        const audiobook = String(record.format || '').trim().toLowerCase() === 'audiobook';
+        const sourceASIN = String(record.source_asin ?? record.asin ?? '').trim();
         const known = {
             title_author: 'Title and author',
-            asin: 'ASIN',
+            audible_mapping: 'Audible ASIN',
+            audible_asin: 'Audible ASIN',
+            asin: audiobook ? 'Audible ASIN' : 'Edition ASIN',
             isbn: 'ISBN',
+            isbn_10: 'ISBN',
+            isbn_13: 'ISBN',
             edition_asin: 'Edition ASIN',
-            saved_match: 'Saved match',
-            edition: 'Edition'
+            edition: 'Selected edition'
         };
-        if (Object.prototype.hasOwnProperty.call(known, value)) return known[value];
-        if (value.startsWith('saved_')) return `${this.syncMatchMethodText(value.slice(6))} (saved)`;
-
-        const words = value.split(/[\s_-]+/).filter(Boolean);
-        if (words[0] === 'isbn' && ['10', '13'].includes(words[1])) {
-            words.splice(0, 2, `ISBN-${words[1]}`);
-        }
-        const labels = { asin: 'ASIN', isbn: 'ISBN', audible: 'Audible', hardcover: 'Hardcover', and: 'and' };
-        return words.map((word, index) => Object.prototype.hasOwnProperty.call(labels, word) ? labels[word] : (index === 0
-            ? word.charAt(0).toUpperCase() + word.slice(1)
-            : word)).join(' ');
+        const label = Object.prototype.hasOwnProperty.call(known, method) ? known[method] : 'Unknown';
+        const temporary = !saved && audiobook && (method === 'edition_asin' ||
+            (['isbn', 'isbn_10', 'isbn_13'].includes(method) && sourceASIN !== ''));
+        return temporary ? `${label} (temporary)` : label;
     }
 
     renderOutcomeRecord(record, audiobookshelfBaseURL = '') {
@@ -1991,7 +1991,7 @@ class SyncProfileApp {
                     </div>
                     ${record.author ? `<div><strong>Author:</strong> ${this.escapeHtml(record.author)}</div>` : ''}
                     <div class="book-meta">${asinHTML}${isbnHTML}${format ? `<span><strong>Format:</strong> ${this.escapeHtml(format)}</span>` : ''}${series ? `<span><strong>Series:</strong> ${this.escapeHtml(series)}</span>` : ''}</div>
-                    ${matchMethod ? `<div>Match method: ${this.escapeHtml(this.syncMatchMethodText(matchMethod))}</div>` : ''}
+                    ${matchMethod ? `<div>Match method: ${this.escapeHtml(this.syncMatchMethodText(matchMethod, record))}</div>` : ''}
                     ${record.outcome === 'needs_review' && !this.isAudibleImportRecord(record) ? this.renderHardcoverCandidate(record, editionActionsHTML) : editionActionsHTML}
                     ${record.reason ? `<div class="book-reason"><strong>Reason:</strong> ${this.escapeHtml(this.syncReasonText(record.reason))}</div>` : ''}
                     ${record.error ? `<div class="book-error"><strong>Error:</strong> ${this.escapeHtml(record.error)}</div>` : ''}

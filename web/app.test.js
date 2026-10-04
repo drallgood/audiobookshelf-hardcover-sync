@@ -1065,20 +1065,20 @@ for (const runState of ['completed', 'canceled']) {
     });
 }
 
-test('outcome match methods render as readable labels and humanize unknown methods', () => {
+test('outcome match methods render simplified labels', () => {
     const app = editionApp();
     const cases = [
         ['title_author', 'Title and author'],
         ['audible_asin', 'Audible ASIN'],
-        ['edition_asin', 'Edition ASIN'],
-        ['isbn_13', 'ISBN-13'],
-        ['asin', 'ASIN'],
-        ['isbn', 'ISBN'],
-        ['saved_isbn', 'ISBN (saved)'],
-        ['saved_edition_asin', 'Edition ASIN (saved)'],
-        ['saved_audible_mapping', 'Audible mapping (saved)'],
-        ['saved_edition', 'Edition (saved)'],
-        ['unfamiliar_method_value', 'Unfamiliar method value']
+        ['edition_asin', 'Edition ASIN (temporary)'],
+        ['isbn_13', 'ISBN (temporary)'],
+        ['asin', 'Audible ASIN'],
+        ['isbn', 'ISBN (temporary)'],
+        ['saved_isbn', 'ISBN'],
+        ['saved_edition_asin', 'Edition ASIN'],
+        ['saved_audible_mapping', 'Audible ASIN'],
+        ['saved_edition', 'Selected edition'],
+        ['unfamiliar_method_value', 'Unknown']
     ];
     for (const [match_method, label] of cases) {
         const html = app.renderOutcomeRecord({ ...needsReview, match_method });
@@ -1089,11 +1089,29 @@ test('outcome match methods render as readable labels and humanize unknown metho
 test('synced and already-current books always show a plain match-method label', () => {
     const app = editionApp();
     for (const outcome of ['synced', 'already_current']) {
-        for (const [match_method, label] of [['audible_mapping', 'Audible mapping'], ['isbn', 'ISBN'], ['saved_match', 'Saved match'], [undefined, 'Unknown']]) {
+        for (const [match_method, label] of [['audible_mapping', 'Audible ASIN'], ['isbn', 'ISBN (temporary)'], ['saved_match', 'Unknown'], [undefined, 'Unknown']]) {
             const html = app.renderOutcomeRecord({ ...needsReview, outcome, match_method });
             assert.ok(html.includes(`Match method: ${label}`));
             assert.doesNotMatch(html, /<strong>Match method:/);
         }
+    }
+});
+
+test('only temporary audiobook identifier matches receive the temporary label', () => {
+    const app = editionApp();
+    for (const [match_method, format, source_asin, label] of [
+        ['isbn', 'Audiobook', '', 'ISBN'],
+        ['isbn', 'Audiobook', 'malformed-ASIN', 'ISBN (temporary)'],
+        ['isbn', 'Audiobook', 'B00SOURCE1', 'ISBN (temporary)'],
+        ['saved_isbn', 'Audiobook', 'B00SOURCE1', 'ISBN'],
+        ['isbn', 'Ebook', 'B00SOURCE1', 'ISBN'],
+        ['edition_asin', 'Audiobook', 'B00SOURCE1', 'Edition ASIN (temporary)'],
+        ['edition_asin', 'Ebook', 'B00SOURCE1', 'Edition ASIN'],
+        ['saved_edition_asin', 'Ebook', 'B00SOURCE1', 'Edition ASIN'],
+        ['audible_mapping', 'Audiobook', 'B00SOURCE1', 'Audible ASIN']
+    ]) {
+        const html = app.renderOutcomeRecord({ ...needsReview, outcome: 'synced', match_method, format, source_asin });
+        assert.ok(html.includes(`Match method: ${label}</div>`), `${match_method}/${format}/${source_asin}`);
     }
 });
 
