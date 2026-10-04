@@ -30,6 +30,9 @@ const (
 	editionCreateRequestTimeout  = 65 * time.Second
 	editionCreateMutationReserve = 35 * time.Second
 	editionImportCheckTimeout    = 25 * time.Second
+	// The display-title lookup after a verified unanchored import runs while the
+	// profile and state-file guards are held, so it has its own short budget.
+	defaultEditionTitleLookupTimeout = 5 * time.Second
 
 	editionCreateExistingBookConflictGuidance = "An existing Hardcover edition belongs to a different book. No edition was added."
 	editionCreateAmbiguousIdentityGuidance    = "Hardcover may have processed the edition request, but its result could not be confirmed. The returned edition identity conflicted with the reviewed book. Verify the Hardcover result before retrying; retrying may create another edition."
@@ -391,9 +394,7 @@ func (h *Handler) CheckEditionImport(w http.ResponseWriter, r *http.Request) {
 		}
 		hardcoverTitle := strings.TrimSpace(result.BookTitle)
 		if unanchored && hardcoverTitle == "" {
-			if resolvedBook, titleErr := client.GetBookByID(ctx, strconv.Itoa(result.BookID)); titleErr == nil && resolvedBook != nil && resolvedBook.ID == strconv.Itoa(result.BookID) {
-				hardcoverTitle = strings.TrimSpace(resolvedBook.Title)
-			}
+			hardcoverTitle = h.lookupImportedHardcoverTitle(ctx, client, result.BookID)
 		}
 		response = editionCreateResponse{
 			ABSItemID: item.ID, ReadingFormat: models.ReadingFormatAudiobook, Status: string(result.Status),
@@ -891,12 +892,7 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 	}
 	hardcoverTitle := strings.TrimSpace(result.BookTitle)
 	if unanchored && hardcoverTitle == "" {
-		// The verified import identity is sufficient to save the association;
-		// this lookup only fills its display title and may fail after the write.
-		bookID := strconv.Itoa(result.BookID)
-		if resolvedBook, titleErr := client.GetBookByID(ctx, bookID); titleErr == nil && resolvedBook != nil && resolvedBook.ID == bookID {
-			hardcoverTitle = strings.TrimSpace(resolvedBook.Title)
-		}
+		hardcoverTitle = h.lookupImportedHardcoverTitle(ctx, client, result.BookID)
 	}
 	recovery := response.recovery
 	*response = editionCreateResponse{
@@ -920,6 +916,24 @@ func foundASINValue(book *audnex.Book) string {
 		return ""
 	}
 	return book.ASIN
+}
+
+// lookupImportedHardcoverTitle fills the informational title for a verified
+// unanchored import. The verified identity is sufficient to save the
+// association, so a slow, failed, or mismatched lookup returns an empty title.
+func (h *Handler) lookupImportedHardcoverTitle(ctx context.Context, client editionCreateHardcoverClient, bookID int) string {
+	timeout := h.editionTitleLookupTimeout
+	if timeout <= 0 {
+		timeout = defaultEditionTitleLookupTimeout
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	id := strconv.Itoa(bookID)
+	resolvedBook, err := client.GetBookByID(lookupCtx, id)
+	if err != nil || resolvedBook == nil || resolvedBook.ID != id {
+		return ""
+	}
+	return strings.TrimSpace(resolvedBook.Title)
 }
 
 func parseSubmittedAudibleIdentifier(raw string) (string, string, error) {

@@ -666,6 +666,58 @@ func TestCreateUnanchoredAudibleImportKeepsAssociationWhenTitleLookupIsCanceled(
 	require.Equal(t, "84", association.HardcoverEditionID)
 }
 
+func TestCreateUnanchoredAudibleImportBoundsSlowTitleLookup(t *testing.T) {
+	fixture := newAudibleImportCreateFixture(t)
+	fixture.handler.editionTitleLookupTimeout = 20 * time.Millisecond
+	fixture.handler.editionCreateAudnexClientFactory = func() editionCreateAudnexDiscoverer {
+		return editionCreateAudnexStub{
+			getFn: func(_ context.Context, asin, _ string) (*audnex.Book, error) {
+				return &audnex.Book{ASIN: asin}, nil
+			},
+		}
+	}
+	var titleErr error
+	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+		return editionCreateHardcoverStub{
+			bookFn: func(lookupCtx context.Context, _ string) (*models.HardcoverBook, error) {
+				// Simulate a Hardcover read that never answers on its own.
+				<-lookupCtx.Done()
+				titleErr = lookupCtx.Err()
+				return nil, titleErr
+			},
+			importFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+				return &hardcover.RegionalAudiobookResult{
+					Status: hardcover.RegionalAudiobookCreated, BookID: 73, EditionID: 84,
+					ReadingFormatID:    models.ReadingFormatID(models.ReadingFormatAudiobook),
+					RegionalExternalID: "B0OTHER123:ca",
+				}, nil
+			},
+		}
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/profiles/draft-profile/edition-drafts/create", strings.NewReader(
+		`{"run_id":"run-audible-import","abs_item_id":"abs-item-1","audnexus_confirmed":true,"audible_identifier":"B0OTHER123:ca"}`,
+	))
+	request.AddCookie(fixture.sessionCookie(t, fixture.owner))
+	response := httptest.NewRecorder()
+	fixture.routes.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.ErrorIs(t, titleErr, context.DeadlineExceeded)
+	var envelope struct {
+		Data struct {
+			HardcoverTitle string `json:"hardcover_title"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	require.Empty(t, envelope.Data.HardcoverTitle)
+	stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+	require.NoError(t, err)
+	association, associated := stored.GetAssociation("abs-item-1")
+	require.True(t, associated, "a slow optional title lookup must not discard the verified import")
+	require.Equal(t, "84", association.HardcoverEditionID)
+}
+
 func TestCreateUnanchoredAudibleImportDoesNotMutateWithInsufficientBudget(t *testing.T) {
 	fixture := newAudibleImportCreateFixture(t)
 	var audnexReads, mutations int

@@ -39,6 +39,8 @@ type Handler struct {
 	editionCreateABSClientFactory    func(string, string, string) (editionCreateABSClient, error)
 	editionCreateHardcoverFactory    func(string) editionCreateHardcoverClient
 	editionCreateAudnexClientFactory func() editionCreateAudnexDiscoverer
+	// A nonzero timeout overrides the optional post-import title lookup budget.
+	editionTitleLookupTimeout time.Duration
 	// editionResyncRunner replaces the profile-scoped one-book resync in tests.
 	editionResyncRunner func(context.Context, *database.ProfileWithTokens, models.AudiobookshelfBook, *statepkg.State, string) (sync.BookResyncResult, error)
 }

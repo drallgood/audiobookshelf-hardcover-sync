@@ -484,7 +484,7 @@ components:
           type: string
           description: >-
             Resolved Hardcover book title. Unanchored create and check-import
-            may make one additional book lookup when the import result omits
+            may make one additional, time-limited book lookup when the result omits
             its title. This is an informational display value; a failed title
             lookup does not block saving the verified association.
         regional_external_id:
