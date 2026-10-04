@@ -2851,8 +2851,8 @@ func TestCheckEditionImportRecoveryWithConcreteClients(t *testing.T) {
 			statusReads.Add(1)
 			if status == "ambiguous" {
 				response = `{"errors":[{"message":"temporary status lookup failure"}]}`
-			} else if status == "fetching" {
-				response = `{"data":{"book_import_statuses":[{"status":"fetching","external_id":"B0SOURCE12:uk","platform_id":32}],"book_mappings":[]}}`
+			} else if status == "loaded" {
+				response = `{"data":{"book_import_statuses":[{"status":"loaded","book_id":42,"edition_id":84,"external_id":"B0SOURCE12:uk","platform_id":32}],"book_mappings":[]}}`
 			} else {
 				response = `{"data":{"book_import_statuses":[{"status":"created","book_id":42,"edition_id":84,"external_id":"B0SOURCE12:uk","platform_id":32}],"book_mappings":[{"id":77,"state":"normalized","book_id":42,"platform_id":32,"external_id":"B0SOURCE12:uk","edition_id":84,"edition":{"id":84,"book_id":42,"reading_format_id":2}}]}}`
 			}
@@ -2895,7 +2895,7 @@ func TestCheckEditionImportRecoveryWithConcreteClients(t *testing.T) {
 	body := fmt.Sprintf(`{"run_id":"run-concrete-recovery","abs_item_id":"abs-item-1","audible_identifier":%q,"recovery_token":%q}`,
 		createEnvelope.Data.AudibleIdentifier, createEnvelope.Data.RecoveryToken)
 	statusReadsBeforeChecks := statusReads.Load()
-	status = "fetching"
+	status = "loaded"
 	pending := postEditionImportCheck(t, fixture, fixture.owner, body)
 	require.Equal(t, http.StatusServiceUnavailable, pending.Code, pending.Body.String())
 	var pendingEnvelope struct {
@@ -2912,7 +2912,7 @@ func TestCheckEditionImportRecoveryWithConcreteClients(t *testing.T) {
 	stored, err = statepkg.LoadState(editionCreateProfileStatePath(fixture))
 	require.NoError(t, err)
 	_, exists = stored.GetAssociation("abs-item-1")
-	require.False(t, exists, "pending status must not save a guessed local association")
+	require.False(t, exists, "loaded status without an Audible mapping must not save a local association")
 
 	status = "created"
 	first := postEditionImportCheck(t, fixture, fixture.owner, body)

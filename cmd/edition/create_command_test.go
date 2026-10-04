@@ -107,7 +107,10 @@ func (f *fakeHardcover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": map[string]interface{}{
 			"book_import_statuses": statuses,
-			"book_mappings":        []interface{}{},
+			"book_mappings": []map[string]interface{}{{
+				"id": 77, "state": f.importStatus, "book_id": boundaryBookID,
+				"platform_id": 32, "external_id": boundaryRegional, "edition_id": boundaryEditionID,
+			}},
 		}})
 	case strings.Contains(request.Query, "GetEdition"):
 		if editionID, ok := request.Variables["editionId"].(float64); ok && int(editionID) == f.missingEditionID {

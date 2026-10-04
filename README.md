@@ -117,6 +117,11 @@ You can preview in dry run, but cannot add editions or forget matches. Wait for
 an active sync to finish before making changes. If the book's Audiobookshelf
 metadata has changed since the displayed run, run a new sync first.
 
+Audible imports are confirmed only when Hardcover returns a regional Audible
+mapping to the same audiobook edition. A `loaded` or `created` status alone is
+not enough: Hardcover may reuse an existing edition without adding its mapping.
+In that case, the app leaves the import unconfirmed and does not save a match.
+
 If an import cannot be confirmed, follow the dialog's recovery guidance:
 
 - Use **Check import status** when available to confirm a regional Audible import and

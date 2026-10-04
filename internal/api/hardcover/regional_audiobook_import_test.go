@@ -38,7 +38,7 @@ func TestClient_ImportRegionalAudiobook(t *testing.T) {
 		wantMessage    string
 	}{
 		{name: "created import with mapping", status: "created", includeMapping: true, mappingState: "created", mappingBook: 42, formatID: 2, wantStatus: RegionalAudiobookCreated},
-		{name: "loaded import without mapping", status: "loaded", formatID: 2, wantStatus: RegionalAudiobookLoaded},
+		{name: "loaded import with mapping", status: "loaded", includeMapping: true, formatID: 2, wantStatus: RegionalAudiobookLoaded},
 		{name: "failed import", status: "failed", includeMapping: true, mappingState: "failed", wantErr: ErrRegionalAudiobookImportFailed},
 		{name: "pending import with failed mapping", status: "fetching", includeMapping: true, mappingState: "failed", wantErr: ErrRegionalAudiobookIdentityConflict, wantNotErr: ErrRegionalAudiobookImportFailed},
 		{name: "missing import status with failed mapping", includeMapping: true, mappingState: "failed", wantErr: ErrRegionalAudiobookIdentityConflict, wantNotErr: ErrRegionalAudiobookImportFailed},
@@ -49,10 +49,10 @@ func TestClient_ImportRegionalAudiobook(t *testing.T) {
 		{name: "mapping and status edition disagree", status: "created", includeMapping: true, mappingState: "created", mappingBook: 42, mappingEdition: 901, wantErr: ErrRegionalAudiobookIdentityConflict},
 		{name: "mutation and status edition disagree", status: "created", statusEdition: 901, wantErr: ErrRegionalAudiobookIdentityConflict},
 		{name: "mutation and polled status disagree", status: "created", mutationStatus: "loaded", wantErr: ErrRegionalAudiobookIdentityConflict},
-		{name: "wrong readback edition", status: "created", readbackEdition: 901, formatID: 2, wantErr: ErrRegionalAudiobookIdentityConflict, wantMessage: "expected edition 900 on book 42, got edition 901 on book 42"},
-		{name: "physical format readback", status: "created", formatID: 1, wantErr: ErrRegionalAudiobookWrongFormat, wantMessage: "edition 900 on book 42 has reading format physical book (ID 1); expected audiobook (ID 2)"},
-		{name: "ebook format readback", status: "created", formatID: 4, wantErr: ErrRegionalAudiobookWrongFormat, wantMessage: "edition 900 on book 42 has reading format ebook (ID 4); expected audiobook (ID 2)"},
-		{name: "unknown format readback", status: "created", formatID: 99, wantErr: ErrRegionalAudiobookWrongFormat, wantMessage: "edition 900 on book 42 has reading format unknown (ID 99); expected audiobook (ID 2)"},
+		{name: "wrong readback edition", status: "created", includeMapping: true, readbackEdition: 901, formatID: 2, wantErr: ErrRegionalAudiobookIdentityConflict, wantMessage: "expected edition 900 on book 42, got edition 901 on book 42"},
+		{name: "physical format readback", status: "created", includeMapping: true, formatID: 1, wantErr: ErrRegionalAudiobookWrongFormat, wantMessage: "edition 900 on book 42 has reading format physical book (ID 1); expected audiobook (ID 2)"},
+		{name: "ebook format readback", status: "created", includeMapping: true, formatID: 4, wantErr: ErrRegionalAudiobookWrongFormat, wantMessage: "edition 900 on book 42 has reading format ebook (ID 4); expected audiobook (ID 2)"},
+		{name: "unknown format readback", status: "created", includeMapping: true, formatID: 99, wantErr: ErrRegionalAudiobookWrongFormat, wantMessage: "edition 900 on book 42 has reading format unknown (ID 99); expected audiobook (ID 2)"},
 		{name: "existing physical edition loaded by ISBN-shaped ASIN", status: "loaded", includeMapping: true, mappingState: "loaded", reportedFormat: 1, formatID: 1, wantErr: ErrRegionalAudiobookWrongFormat, wantMessage: "physical book (ID 1)"},
 		{name: "reported physical format corrected by readback", status: "loaded", includeMapping: true, mappingState: "loaded", reportedFormat: 1, formatID: 2, wantStatus: RegionalAudiobookLoaded},
 	}
@@ -256,15 +256,18 @@ func (f regionalImportPollingTransport) RoundTrip(r *http.Request) (*http.Respon
 // delaying an immediately completed import or retrying the catalogue write.
 func TestRegionalImportPollingRequestBudget(t *testing.T) {
 	for _, tc := range []struct {
-		name          string
-		timeout       time.Duration
-		completeAfter int
-		wantPolls     int
-		wantErr       error
+		name                  string
+		timeout               time.Duration
+		completeAfter         int
+		terminalBeforeMapping bool
+		wantPolls             int
+		wantErr               error
 	}{
 		{name: "pending import backs off until cancellation", timeout: 2500 * time.Millisecond, wantPolls: 2, wantErr: context.DeadlineExceeded},
 		{name: "pending import respects full deadline and quota budget", timeout: 35 * time.Second, wantPolls: 8, wantErr: ErrRegionalAudiobookImportTimeout},
 		{name: "pending import eventually verifies edition", timeout: 10 * time.Second, completeAfter: 3, wantPolls: 3},
+		{name: "loaded import without mapping times out", timeout: 35 * time.Second, terminalBeforeMapping: true, wantPolls: 8, wantErr: ErrRegionalAudiobookImportTimeout},
+		{name: "loaded import waits for its mapping", timeout: 10 * time.Second, terminalBeforeMapping: true, completeAfter: 3, wantPolls: 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -284,10 +287,17 @@ func TestRegionalImportPollingRequestBudget(t *testing.T) {
 					case strings.Contains(request.Query, "RegionalAudibleImport"):
 						polls++
 						status := "fetching"
-						if tc.completeAfter > 0 && polls >= tc.completeAfter {
-							status = "created"
+						mappings := `[]`
+						if tc.terminalBeforeMapping {
+							status = "loaded"
 						}
-						_, _ = w.Write([]byte(`{"data":{"book_import_statuses":[{"status":"` + status + `","book_id":42,"edition_id":900,"external_id":"B0ABCDE123:uk","platform_id":32}],"book_mappings":[]}}`))
+						if tc.completeAfter > 0 && polls >= tc.completeAfter {
+							if !tc.terminalBeforeMapping {
+								status = "created"
+							}
+							mappings = `[{"id":77,"state":"normalized","book_id":42,"platform_id":32,"external_id":"B0ABCDE123:uk","edition_id":900}]`
+						}
+						_, _ = w.Write([]byte(`{"data":{"book_import_statuses":[{"status":"` + status + `","book_id":42,"edition_id":900,"external_id":"B0ABCDE123:uk","platform_id":32}],"book_mappings":` + mappings + `}}`))
 					case strings.Contains(request.Query, "GetEdition"):
 						readbacks++
 						_, _ = w.Write([]byte(`{"data":{"editions":[{"id":900,"book_id":42,"reading_format_id":2}]}}`))
@@ -325,6 +335,18 @@ func TestClient_CheckRegionalAudiobookImportIsReadOnlyAndVerifiesCompletedMappin
 		confirmed  bool
 		wantErr    error
 	}{
+		{
+			name: "loaded import without mapping", statuses: []map[string]interface{}{{
+				"status": "loaded", "book_id": 42, "edition_id": 900, "external_id": "B0ABCDE123:uk", "platform_id": 32,
+			}},
+		},
+		{
+			name: "loaded import without edition link", statuses: []map[string]interface{}{{
+				"status": "loaded", "book_id": 42, "edition_id": 900, "external_id": "B0ABCDE123:uk", "platform_id": 32,
+			}}, mappings: []map[string]interface{}{{
+				"id": 77, "state": "normalized", "book_id": 42, "platform_id": 32, "external_id": "B0ABCDE123:uk",
+			}},
+		},
 		{
 			name: "pending import", statuses: []map[string]interface{}{{
 				"status": "fetching", "external_id": "B0ABCDE123:uk", "platform_id": 32,
