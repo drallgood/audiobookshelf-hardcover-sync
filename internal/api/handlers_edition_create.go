@@ -512,10 +512,10 @@ func (h *Handler) verifiedEditionCreateRecord(profileID, runID, itemID string) (
 }
 
 // verifiedEditionRecoveryRecord permits the narrow transition where a newer
-// sync can no longer anchor a pending selected-book Audible import, but still
-// reports the same Audiobookshelf source as an unanchored import candidate.
-// The recovery handler separately requires the original signed token and its
-// pending action journal before using this exception.
+// sync can no longer use the original Audible import candidate, but still
+// reports the same Audiobookshelf source as an import candidate. The recovery
+// handler separately requires the original signed token and pending action
+// journal before using this exception.
 func (h *Handler) verifiedEditionRecoveryRecord(profileID, runID, itemID string) (*sync.SyncSnapshot, sync.BookOutcomeRecord, bool, error) {
 	return h.verifiedEditionCreateRecordWithRecoveryTransition(profileID, runID, itemID, true)
 }
@@ -563,7 +563,7 @@ func (h *Handler) verifiedEditionCreateRecordWithRecoveryTransition(profileID, r
 			return nil, sync.BookOutcomeRecord{}, false, fmt.Errorf("failed to inspect newer sync outcomes: %w: %w", multiuser.ErrEditionCreateLocalFailure, laterErr)
 		}
 		if found && !sameEditionCreateCandidate(record, laterRecord) {
-			if allowRecoveryTransition && sameSelectedBookToAudibleImportSource(record, laterRecord) {
+			if allowRecoveryTransition && sameAudibleImportRecoverySource(record, laterRecord) {
 				return snapshot, record, true, nil
 			}
 			return nil, sync.BookOutcomeRecord{}, false, errStaleEditionCreateRun
@@ -573,21 +573,24 @@ func (h *Handler) verifiedEditionCreateRecordWithRecoveryTransition(profileID, r
 	return nil, sync.BookOutcomeRecord{}, false, errStaleEditionCreateRun
 }
 
-func sameSelectedBookToAudibleImportSource(selected, source sync.BookOutcomeRecord) bool {
+func sameAudibleImportRecoverySource(selected, source sync.BookOutcomeRecord) bool {
+	selectedFallback := sync.IsAudiobookASINFallbackRecord(selected)
+	selectedSourceOnly := isUnanchoredAudibleImportSource(selected)
+	selectedAnchored := selected.Outcome == sync.OutcomeNeedsReview && !selectedSourceOnly && !selectedFallback
 	sourceIsFallback := sync.IsAudiobookASINFallbackRecord(source)
-	if selected.BookID != source.BookID || selected.Reason == mismatch.ReasonAudibleImportAvailable ||
-		(!sourceIsFallback && source.Reason != mismatch.ReasonAudibleImportAvailable) ||
-		selected.Outcome != sync.OutcomeNeedsReview || (!sourceIsFallback && source.Outcome != sync.OutcomeNeedsReview) ||
+	if selected.BookID != source.BookID || (!selectedFallback && !selectedSourceOnly && !selectedAnchored) ||
+		(!sourceIsFallback && !isUnanchoredAudibleImportSource(source)) ||
 		normalizedEditionCreateFormat(selected.Format) != models.ReadingFormatAudiobook ||
 		normalizedEditionCreateFormat(source.Format) != models.ReadingFormatAudiobook ||
-		(!sourceIsFallback && (strings.TrimSpace(source.HardcoverBookID) != "" || strings.TrimSpace(source.EditionID) != "")) ||
 		edition.NormalizeNameOrTitle(selected.Title) != edition.NormalizeNameOrTitle(source.Title) ||
 		edition.NormalizeNameOrTitle(selected.Author) != edition.NormalizeNameOrTitle(source.Author) {
 		return false
 	}
-	selectedBookID, err := strconv.Atoi(strings.TrimSpace(selected.HardcoverBookID))
-	if err != nil || selectedBookID <= 0 {
-		return false
+	if selectedAnchored {
+		selectedBookID, err := strconv.Atoi(strings.TrimSpace(selected.HardcoverBookID))
+		if err != nil || selectedBookID <= 0 {
+			return false
+		}
 	}
 	selectedASIN, selectedASINValid := audnex.CanonicalASIN(firstNonEmptyString(selected.SourceASIN, selected.ASIN))
 	sourceASIN, sourceASINValid := audnex.CanonicalASIN(firstNonEmptyString(source.SourceASIN, source.ASIN))
@@ -598,6 +601,16 @@ func sameSelectedBookToAudibleImportSource(selected, source sync.BookOutcomeReco
 	sourceISBN10, sourceISBN13 := editionCreateSourceISBNs(source)
 	return isbn.Normalize(selectedISBN10) == isbn.Normalize(sourceISBN10) &&
 		isbn.Normalize(selectedISBN13) == isbn.Normalize(sourceISBN13)
+}
+
+func isUnanchoredAudibleImportSource(record sync.BookOutcomeRecord) bool {
+	if record.Outcome != sync.OutcomeNeedsReview || record.Reason != mismatch.ReasonAudibleImportAvailable ||
+		normalizedEditionCreateFormat(record.Format) != models.ReadingFormatAudiobook ||
+		strings.TrimSpace(record.HardcoverBookID) != "" || strings.TrimSpace(record.EditionID) != "" {
+		return false
+	}
+	_, valid := audnex.CanonicalASIN(firstNonEmptyString(record.SourceASIN, record.ASIN))
+	return valid
 }
 
 func editionCreateSourceISBNs(record sync.BookOutcomeRecord) (string, string) {
