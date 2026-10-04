@@ -662,7 +662,7 @@ components:
         publisher: {type: string}
         release_date:
           type: string
-          format: date
+          description: Audnexus release date retaining source precision (YYYY, YYYY-MM, or YYYY-MM-DD); recognized timestamps and text dates are normalized.
         runtime_seconds: {type: integer}
         language: {type: string}
         cover_url:
