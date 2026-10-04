@@ -358,6 +358,15 @@ func (r *RateLimiter) GetRate() time.Duration {
 	return r.rate
 }
 
+// RetryDelay uses the limiter's exponential fallback, jitter, and bounds for
+// a caller's retry interval without recording a rate-limit response or changing
+// shared request admission. Pass GetRate() for the initial interval.
+func (r *RateLimiter) RetryDelay(previous time.Duration) time.Duration {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.exponentialBackoff(previous)
+}
+
 // GetMetrics returns the current rate limiter metrics
 func (r *RateLimiter) GetMetrics() Metrics {
 	r.mu.RLock()

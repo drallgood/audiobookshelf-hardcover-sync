@@ -30,6 +30,8 @@ const (
 	editionCreateMutationReserve = 35 * time.Second
 	editionImportCheckTimeout    = 25 * time.Second
 
+	editionMappingMissingGuidance = "Hardcover returned an edition, but its regional Audible mapping is missing. The match was not saved. Report the missing mapping on Hardcover, then sync again after it is corrected."
+
 	editionCreateExistingBookConflictGuidance = "An existing Hardcover edition belongs to a different book. No edition was added."
 	editionCreateAmbiguousIdentityGuidance    = "Hardcover may have processed the edition request, but its result could not be confirmed. The returned edition identity conflicted with the reviewed book. Verify the Hardcover result before retrying; retrying may create another edition."
 	editionCreateLocalFailureGuidance         = "Local profile or state data could not be prepared for edition creation"
@@ -335,6 +337,7 @@ func (h *Handler) CheckEditionImport(w http.ResponseWriter, r *http.Request) {
 		client := h.editionCreateHardcoverClient(profile.Profile.ID, profile.HardcoverToken)
 		result, confirmed, checkErr := client.CheckRegionalAudiobookImport(ctx, hardcover.RegionalAudiobookInput{
 			BookID: bookID, ASIN: asin, Region: region,
+			SubmittedAt: time.Unix(verifiedClaims.IssuedAt, 0),
 		})
 		if checkErr != nil {
 			if errors.Is(checkErr, hardcover.ErrRegionalAudiobookImportFailed) || errors.Is(checkErr, hardcover.ErrRegionalAudiobookWrongFormat) ||
@@ -1259,7 +1262,7 @@ func (h *Handler) finalizeEditionCreateAction(profileID string, response *editio
 	if action.Outcome == editionOutcomeFailed {
 		var mappingMissing *hardcover.RegionalAudiobookMappingMissingError
 		if errors.As(err, &mappingMissing) {
-			guidance := editionMappingMissingMessage(mappingMissing)
+			guidance := editionMappingMissingGuidance
 			editionID := strconv.Itoa(mappingMissing.EditionID)
 			action.Error = guidance
 			action.Data = &sync.EditionActionData{
@@ -1424,7 +1427,7 @@ func (h *Handler) writeEditionCreateErrorWithAction(w http.ResponseWriter, profi
 func editionCreatePublicErrorMessage(err error) string {
 	var mappingMissing *hardcover.RegionalAudiobookMappingMissingError
 	if errors.As(err, &mappingMissing) {
-		return editionMappingMissingMessage(mappingMissing)
+		return editionMappingMissingGuidance
 	}
 	var wrongFormat *hardcover.RegionalAudiobookWrongFormatError
 	if errors.As(err, &wrongFormat) {
@@ -1517,10 +1520,7 @@ func editionActionPublicErrorMessage(action *sync.EditionActionRecord) string {
 	case "hardcover_import_failed":
 		return editionImportFailureGuidance
 	case "hardcover_audible_mapping_missing":
-		if knownPublicEditionActionError(action.ErrorCode, action.Error) {
-			return action.Error
-		}
-		return editionCreateFailedGuidance
+		return editionMappingMissingGuidance
 	case "edition_create_failed":
 		return editionCreateFailedGuidance
 	default:
@@ -1551,8 +1551,7 @@ func knownPublicEditionActionError(errorCode, message string) bool {
 	case "hardcover_import_failed":
 		return message == editionImportFailureGuidance
 	case "hardcover_audible_mapping_missing":
-		return strings.HasPrefix(message, "Hardcover returned edition ") &&
-			strings.Contains(message, "regional Audible mapping") && strings.Contains(message, "Report the missing mapping on Hardcover")
+		return message == editionMappingMissingGuidance
 	case "edition_create_failed":
 		return message == editionCreateFailedGuidance
 	default:
@@ -1603,15 +1602,10 @@ func editionWrongFormatMessage(wrongFormat *hardcover.RegionalAudiobookWrongForm
 		editionID, hardcoverReadingFormatName(wrongFormat.ReadingFormatID))
 }
 
-func editionMappingMissingMessage(missing *hardcover.RegionalAudiobookMappingMissingError) string {
-	return fmt.Sprintf("Hardcover returned edition %d, but the regional Audible mapping for %s is missing. The match was not saved. Report the missing mapping on Hardcover, then sync again after it is corrected.",
-		missing.EditionID, missing.RegionalExternalID)
-}
-
 func (h *Handler) writeEditionMappingMissingError(w http.ResponseWriter, errorCode, outcome string, missing *hardcover.RegionalAudiobookMappingMissingError) {
 	editionID := strconv.Itoa(missing.EditionID)
 	h.writeJSONResponse(w, http.StatusConflict, APIResponse{
-		Success: false, Error: editionMappingMissingMessage(missing), ErrorCode: errorCode, Outcome: outcome,
+		Success: false, Error: editionMappingMissingGuidance, ErrorCode: errorCode, Outcome: outcome,
 		Data: editionWrongFormatData{
 			HardcoverBookID: strconv.Itoa(missing.BookID), HardcoverEditionID: editionID,
 			HardcoverEditionURL: "https://hardcover.app/editions/" + editionID,

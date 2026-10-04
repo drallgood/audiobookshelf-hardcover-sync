@@ -293,6 +293,21 @@ func TestRateLimiter_GetMetrics(t *testing.T) {
 	assert.Equal(t, uint64(1), metrics.Requests)
 }
 
+func TestRateLimiter_RetryDelayPreservesAdmission(t *testing.T) {
+	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
+	rl.SetBackoffFactor(2)
+	rl.SetJitterFactor(0)
+	before := rl.GetMetrics()
+
+	delay := rl.RetryDelay(rl.GetRate())
+	require.Equal(t, 200*time.Millisecond, delay)
+	require.Equal(t, 400*time.Millisecond, rl.RetryDelay(delay))
+	require.Equal(t, DefaultMaxBackoff, rl.RetryDelay(DefaultMaxBackoff))
+	require.Equal(t, before, rl.GetMetrics())
+	require.Equal(t, 100*time.Millisecond, rl.GetRate())
+	require.NoError(t, acquireAndRelease(context.Background(), rl))
+}
+
 func TestRateLimiter_SetBackoffFactor(t *testing.T) {
 	rl := NewRateLimiter(100*time.Millisecond, 1, nil)
 	defer rl.ResetRate()

@@ -2932,23 +2932,22 @@ func TestCheckEditionImportRecoveryWithConcreteClients(t *testing.T) {
 	require.Equal(t, "B0SOURCE12:uk", association.RegionalExternalID)
 }
 
-func TestRegionalAudiobookMissingMappingIsFinalForCreateAndRecovery(t *testing.T) {
+func TestRegionalAudiobookMissingMappingRecoveryGrace(t *testing.T) {
 	const itemJSON = `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100,"numTracks":1}}`
 	fixture := newEditionDraftTestFixture(t, itemJSON, "us")
 	configureEditionCreateRoute(t, fixture)
 	record := editionCreateRecord()
 	record.Title = "Reviewed title"
 	record.Author = "Author"
-	addCompletedNeedsReviewRun(t, fixture, "run-mapping-missing-create", record)
-	addCompletedNeedsReviewRun(t, fixture, "run-mapping-missing-check", record)
+	addCompletedNeedsReviewRun(t, fixture, "run-mapping-fresh", record)
+	addCompletedNeedsReviewRun(t, fixture, "run-mapping-expired", record)
 
-	type graphqlRequest struct {
-		Query string `json:"query"`
-	}
 	var upserts, statusReads, editionReads atomic.Int32
 	var status atomic.Value
 	hardcoverServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request graphqlRequest
+		var request struct {
+			Query string `json:"query"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Errorf("decode Hardcover request: %v", err)
 			http.Error(w, "invalid request", http.StatusBadRequest)
@@ -2966,6 +2965,8 @@ func TestRegionalAudiobookMissingMappingIsFinalForCreateAndRecovery(t *testing.T
 				_, _ = w.Write([]byte(`{"errors":[{"message":"temporary status lookup failure"}]}`))
 			case "missing":
 				_, _ = w.Write([]byte(`{"data":{"book_import_statuses":[{"status":"loaded","book_id":42,"edition_id":84,"external_id":"B0SOURCE12:uk","platform_id":32}],"book_mappings":[]}}`))
+			case "mapped":
+				_, _ = w.Write([]byte(`{"data":{"book_import_statuses":[{"status":"loaded","book_id":42,"edition_id":84,"external_id":"B0SOURCE12:uk","platform_id":32}],"book_mappings":[{"id":77,"state":"loaded","book_id":42,"platform_id":32,"external_id":"B0SOURCE12:uk","edition_id":84,"edition":{"id":84,"book_id":42,"reading_format_id":2}}]}}`))
 			default:
 				t.Errorf("unexpected test status %v", status.Load())
 				http.Error(w, "unexpected status", http.StatusBadRequest)
@@ -2981,116 +2982,122 @@ func TestRegionalAudiobookMissingMappingIsFinalForCreateAndRecovery(t *testing.T
 	t.Cleanup(hardcoverServer.Close)
 	fixture.config.Hardcover.BaseURL = hardcoverServer.URL
 
-	type responseEnvelope struct {
+	type envelope struct {
+		Success   bool   `json:"success"`
 		Error     string `json:"error"`
 		ErrorCode string `json:"error_code"`
 		Outcome   string `json:"outcome"`
 		Data      struct {
+			AudibleIdentifier   string `json:"audible_identifier"`
 			HardcoverBookID     string `json:"hardcover_book_id"`
 			HardcoverEditionID  string `json:"hardcover_edition_id"`
 			HardcoverEditionURL string `json:"hardcover_edition_url"`
 			RecoveryToken       string `json:"recovery_token"`
 		} `json:"data"`
 	}
-	requireFinal := func(t *testing.T, response *httptest.ResponseRecorder) responseEnvelope {
-		t.Helper()
-		require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
-		var envelope responseEnvelope
-		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
-		require.Equal(t, "hardcover_audible_mapping_missing", envelope.ErrorCode)
-		require.Equal(t, editionOutcomeFailed, envelope.Outcome)
-		require.Contains(t, envelope.Error, "edition 84")
-		require.Contains(t, envelope.Error, "regional Audible mapping")
-		require.Contains(t, envelope.Error, "Report the missing mapping on Hardcover")
-		require.NotContains(t, envelope.Error, "check again")
-		require.NotContains(t, envelope.Error, "retry")
-		require.Equal(t, "42", envelope.Data.HardcoverBookID)
-		require.Equal(t, "84", envelope.Data.HardcoverEditionID)
-		require.Equal(t, "https://hardcover.app/editions/84", envelope.Data.HardcoverEditionURL)
-		require.Empty(t, envelope.Data.RecoveryToken)
-		return envelope
-	}
 
-	status.Store("missing")
-	createBody := `{"run_id":"run-mapping-missing-create","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`
-	created := requireFinal(t, postEditionCreate(t, fixture, fixture.owner, createBody))
+	status.Store("ambiguous")
+	createBody := `{"run_id":"run-mapping-fresh","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`
+	created := postEditionCreate(t, fixture, fixture.owner, createBody)
+	require.Equal(t, http.StatusBadGateway, created.Code, created.Body.String())
+	var createEnvelope envelope
+	require.NoError(t, json.Unmarshal(created.Body.Bytes(), &createEnvelope))
+	require.Equal(t, editionOutcomeUnconfirmed, createEnvelope.Outcome)
+	require.NotEmpty(t, createEnvelope.Data.RecoveryToken)
 	require.EqualValues(t, 1, upserts.Load())
-	require.EqualValues(t, 3, statusReads.Load(), "create should allow its short missing-mapping grace window")
-	require.EqualValues(t, 1, editionReads.Load(), "the terminal edition is freshly verified")
-	storedState, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
-	require.NoError(t, err)
-	_, exists := storedState.GetAssociation("abs-item-1")
-	require.False(t, exists, "a missing regional mapping must not save a local association")
 
-	storedAction, found, err := fixture.multiUserService.GetEditionAction("draft-profile", "run-mapping-missing-create", "abs-item-1")
+	// A fresh signed submission remains recoverable while the mapping is absent.
+	status.Store("missing")
+	checkBody := fmt.Sprintf(`{"run_id":"run-mapping-fresh","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk","recovery_token":%q}`, createEnvelope.Data.RecoveryToken)
+	beforeFreshCheck := statusReads.Load()
+	pending := postEditionImportCheck(t, fixture, fixture.owner, checkBody)
+	require.EqualValues(t, beforeFreshCheck+1, statusReads.Load())
+	require.Equal(t, http.StatusServiceUnavailable, pending.Code, pending.Body.String())
+	var pendingEnvelope envelope
+	require.NoError(t, json.Unmarshal(pending.Body.Bytes(), &pendingEnvelope))
+	require.Equal(t, editionOutcomeUnconfirmed, pendingEnvelope.Outcome)
+	require.Equal(t, createEnvelope.Data.RecoveryToken, pendingEnvelope.Data.RecoveryToken)
+	storedFresh, found, err := fixture.multiUserService.GetEditionAction("draft-profile", "run-mapping-fresh", "abs-item-1")
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Equal(t, http.StatusConflict, storedAction.HTTPStatus)
-	require.Equal(t, editionOutcomeFailed, storedAction.Outcome)
-	require.Equal(t, created.Error, storedAction.Error)
-	require.Equal(t, created.Data.HardcoverBookID, storedAction.Data.HardcoverBookID)
-	require.Equal(t, created.Data.HardcoverEditionID, storedAction.Data.HardcoverEditionID)
-	require.Equal(t, created.Data.HardcoverEditionURL, storedAction.Data.HardcoverEditionURL)
-	require.Equal(t, "B0SOURCE12:uk", storedAction.Data.AudibleIdentifier)
-	require.Equal(t, created.Error, storedAction.Data.Guidance)
+	require.Equal(t, editionOutcomeUnconfirmed, storedFresh.Outcome)
+	stateBefore, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+	require.NoError(t, err)
+	_, existsBefore := stateBefore.GetAssociation("abs-item-1")
+	require.False(t, existsBefore)
+	beforeDuplicate := upserts.Load()
+	duplicateCheck := postEditionImportCheck(t, fixture, fixture.owner, checkBody)
+	require.EqualValues(t, beforeFreshCheck+2, statusReads.Load())
+	require.Equal(t, http.StatusServiceUnavailable, duplicateCheck.Code, duplicateCheck.Body.String())
+	require.EqualValues(t, beforeDuplicate, upserts.Load(), "re-polling the same recovery token must not resubmit the import")
 
-	duplicate := postEditionCreate(t, fixture, fixture.owner, createBody)
-	require.Equal(t, http.StatusConflict, duplicate.Code, duplicate.Body.String())
-	var duplicateEnvelope struct {
-		Error         string                   `json:"error"`
-		ErrorCode     string                   `json:"error_code"`
-		Outcome       string                   `json:"outcome"`
-		EditionAction sync.EditionActionRecord `json:"edition_action"`
+	// An old signed attempt is finalized when its five-minute recovery grace has elapsed.
+	issuedAt := time.Now().Add(-6 * time.Minute)
+	claims := editionRecoveryClaims{ProfileID: "draft-profile", RunID: "run-mapping-expired", ABSItemID: "abs-item-1", HardcoverBookID: "42", AudibleIdentifier: "B0SOURCE12:uk"}
+	token := signEditionRecoveryTokenAt("hardcover-token", claims, issuedAt)
+	recovery := &editionRecoveryData{
+		AudibleIdentifier: claims.AudibleIdentifier, HardcoverBookID: claims.HardcoverBookID,
+		RecoveryToken: token, RecoveryExpiresAt: issuedAt.Add(editionRecoveryLifetime).Unix(),
 	}
-	require.NoError(t, json.Unmarshal(duplicate.Body.Bytes(), &duplicateEnvelope))
-	require.Equal(t, created.Error, duplicateEnvelope.Error)
-	require.Equal(t, "hardcover_audible_mapping_missing", duplicateEnvelope.ErrorCode)
-	require.Equal(t, editionOutcomeFailed, duplicateEnvelope.Outcome)
-	require.Equal(t, created.Error, duplicateEnvelope.EditionAction.Data.Guidance)
-	require.EqualValues(t, 1, upserts.Load(), "a duplicate terminal create must not submit another upsert")
+	action := sync.EditionActionRecord{
+		Outcome: editionOutcomeUnconfirmed, Error: editionImportUnconfirmedGuidance, ErrorCode: "hardcover_import_unconfirmed",
+		Data:          editionActionDataFromRecovery(recovery),
+		SubmittedBody: &sync.EditionActionSubmittedBody{RunID: claims.RunID, ABSItemID: claims.ABSItemID, AudibleIdentifier: claims.AudibleIdentifier},
+	}
+	require.NoError(t, fixture.multiUserService.SaveEditionAction("draft-profile", claims.RunID, claims.ABSItemID, action))
+	status.Store("missing")
+	expiredBody := fmt.Sprintf(`{"run_id":%q,"abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk","recovery_token":%q}`, claims.RunID, token)
+	expired := postEditionImportCheck(t, fixture, fixture.owner, expiredBody)
+	require.Equal(t, http.StatusConflict, expired.Code, expired.Body.String())
+	var expiredEnvelope envelope
+	require.NoError(t, json.Unmarshal(expired.Body.Bytes(), &expiredEnvelope))
+	require.Equal(t, editionOutcomeFailed, expiredEnvelope.Outcome)
+	require.Equal(t, "hardcover_audible_mapping_missing", expiredEnvelope.ErrorCode)
+	require.Equal(t, editionMappingMissingGuidance, expiredEnvelope.Error)
+	require.Equal(t, "42", expiredEnvelope.Data.HardcoverBookID)
+	require.Equal(t, "84", expiredEnvelope.Data.HardcoverEditionID)
+	require.Equal(t, "https://hardcover.app/editions/84", expiredEnvelope.Data.HardcoverEditionURL)
+	require.Empty(t, expiredEnvelope.Data.RecoveryToken)
+	storedExpired, found, err := fixture.multiUserService.GetEditionAction("draft-profile", claims.RunID, claims.ABSItemID)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, editionOutcomeFailed, storedExpired.Outcome)
+	require.Equal(t, http.StatusConflict, storedExpired.HTTPStatus)
+	require.Equal(t, editionMappingMissingGuidance, storedExpired.Error)
+	require.Equal(t, editionMappingMissingGuidance, storedExpired.Data.Guidance)
+	require.Equal(t, "B0SOURCE12:uk", storedExpired.Data.AudibleIdentifier)
+	require.Empty(t, storedExpired.Data.RecoveryToken)
 
-	detailsRequest := httptest.NewRequest(http.MethodGet, "/api/profiles/draft-profile/runs/run-mapping-missing-create/details", nil)
+	// Older journal prose is projected through the stable public error code.
+	storedExpired.Error = "legacy internal mapping diagnostic"
+	require.NoError(t, fixture.multiUserService.SaveEditionAction("draft-profile", claims.RunID, claims.ABSItemID, *storedExpired))
+	detailsRequest := httptest.NewRequest(http.MethodGet, "/api/profiles/draft-profile/runs/"+claims.RunID+"/details", nil)
 	detailsRequest.AddCookie(fixture.sessionCookie(t, fixture.owner))
 	detailsResponse := httptest.NewRecorder()
 	fixture.routes.ServeHTTP(detailsResponse, detailsRequest)
 	require.Equal(t, http.StatusOK, detailsResponse.Code, detailsResponse.Body.String())
 	var details struct {
-		Data struct {
-			BookOutcomes []struct {
-				EditionAction *sync.EditionActionRecord `json:"edition_action"`
-			} `json:"book_outcomes"`
-		} `json:"data"`
+		Data sync.SyncSnapshot `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(detailsResponse.Body.Bytes(), &details))
 	require.Len(t, details.Data.BookOutcomes, 1)
-	require.Equal(t, created.Error, details.Data.BookOutcomes[0].EditionAction.Error)
-	require.Equal(t, created.Error, details.Data.BookOutcomes[0].EditionAction.Data.Guidance)
+	require.Equal(t, editionMappingMissingGuidance, details.Data.BookOutcomes[0].EditionAction.Error)
 
-	status.Store("ambiguous")
-	ambiguous := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-mapping-missing-check","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`)
-	require.Equal(t, http.StatusBadGateway, ambiguous.Code, ambiguous.Body.String())
-	var ambiguousEnvelope struct {
-		Data struct {
-			AudibleIdentifier string `json:"audible_identifier"`
-			RecoveryToken     string `json:"recovery_token"`
-		} `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(ambiguous.Body.Bytes(), &ambiguousEnvelope))
-	require.NotEmpty(t, ambiguousEnvelope.Data.RecoveryToken)
-	require.Equal(t, "B0SOURCE12:uk", ambiguousEnvelope.Data.AudibleIdentifier)
-	checksBeforeRecovery := statusReads.Load()
-	upsertsBeforeRecovery := upserts.Load()
-	status.Store("missing")
-	requireFinal(t, postEditionImportCheck(t, fixture, fixture.owner, fmt.Sprintf(
-		`{"run_id":"run-mapping-missing-check","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk","recovery_token":%q}`,
-		ambiguousEnvelope.Data.RecoveryToken)))
-	require.EqualValues(t, upsertsBeforeRecovery, upserts.Load(), "recovery must stay read-only")
-	require.EqualValues(t, checksBeforeRecovery+1, statusReads.Load(), "recovery makes one status read")
-	require.EqualValues(t, 2, editionReads.Load(), "recovery freshly verifies its terminal edition")
-	storedState, err = statepkg.LoadState(editionCreateProfileStatePath(fixture))
+	// A later read can save the association without sending another mutation.
+	status.Store("mapped")
+	beforeRecovery := upserts.Load()
+	recovered := postEditionImportCheck(t, fixture, fixture.owner, checkBody)
+	require.Equal(t, http.StatusOK, recovered.Code, recovered.Body.String())
+	require.EqualValues(t, beforeRecovery, upserts.Load())
+	storedState, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
 	require.NoError(t, err)
-	_, exists = storedState.GetAssociation("abs-item-1")
-	require.False(t, exists, "recovery of a missing mapping must not save an association")
+	association, exists := storedState.GetAssociation("abs-item-1")
+	require.True(t, exists)
+	require.Equal(t, "42", association.HardcoverBookID)
+	require.Equal(t, "84", association.HardcoverEditionID)
+	require.Equal(t, "B0SOURCE12:uk", association.RegionalExternalID)
+	require.Positive(t, statusReads.Load())
+	require.Positive(t, editionReads.Load())
 }
 
 // Hardcover can resolve an ISBN-shaped Audible ASIN to an existing edition

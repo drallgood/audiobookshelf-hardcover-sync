@@ -529,12 +529,13 @@ components:
         Returned with HTTP 409, `outcome: failed`, and `error_code:
         hardcover_audible_mapping_missing` when a loaded/created regional import
         has no confirmed mapping to its freshly verified audiobook edition.
-        Initial imports allow three consecutive checks of the same completed
-        status and edition for the mapping to appear; recovery checks report
-        the same error immediately.
+        Initial imports poll for up to 30 seconds, then retain read-only recovery.
+        Missing mappings remain unconfirmed for five minutes from the signed submission timestamp; only a recovery check
+        after that grace period reports this final error.
         No local match or recovery token is saved. Open the edition and submit
         a Report asking Hardcover to link the regional Audible identifier,
-        then run a new sync after the catalogue is corrected.
+        then run a new sync after the catalogue is corrected. A fresh sync is
+        also the retry mechanism if the mapping appears after this final error.
       required: [hardcover_book_id, hardcover_edition_id, hardcover_edition_url]
       properties:
         hardcover_book_id:
@@ -1515,11 +1516,9 @@ paths:
             another edition may have been created. An import resolved to an
             existing non-audiobook edition of the reviewed book returns
             `outcome: failed` with `error_code: hardcover_edition_wrong_format`
-            and that edition in `data`. A terminal import whose verified audiobook
-            edition lacks its regional Audible mapping after the grace period
-            returns `outcome: failed` with
-            `error_code: hardcover_audible_mapping_missing`, edition details, and
-            Hardcover report guidance without a recovery token.
+            and that edition in `data`. A missing regional Audible mapping remains
+            unconfirmed after the polling deadline and retains read-only recovery;
+            it is not a final create conflict.
           content:
             application/json:
               schema:
@@ -1657,9 +1656,12 @@ paths:
             existing non-audiobook edition returns `outcome: failed` with
             `error_code: hardcover_edition_wrong_format` and that edition in
             `data`. A loaded/created import without a confirmed mapping to its
-            verified audiobook edition returns `outcome: failed` with
+            verified audiobook edition remains pending (503) during the first
+            five minutes from the signed submission timestamp. After that grace
+            period it returns `outcome: failed` with
             `error_code: hardcover_audible_mapping_missing` and edition report
-            details, instead of a pending 503 response.
+            details. Run a fresh sync to retry matching after the mapping appears;
+            repeating this finalized request replays its stored result.
           content:
             application/json:
               schema:
