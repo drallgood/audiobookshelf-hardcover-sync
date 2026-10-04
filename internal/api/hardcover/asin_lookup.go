@@ -59,6 +59,17 @@ type asinLookupBookEdition struct {
 // An audiobook matches only through a regional Audible mapping; editions.asin
 // matches ebooks alone.
 func (c *Client) SearchBookByASINResult(ctx context.Context, asin string) (*ASINLookupResult, error) {
+	return c.searchBookByASINResult(ctx, asin, false)
+}
+
+// SearchBookByEditionASINResult finds an edition by its exact editions.asin
+// value, including for audiobooks. The requested reading format is scoped from
+// ctx in the same way as SearchBookByASINResult.
+func (c *Client) SearchBookByEditionASINResult(ctx context.Context, asin string) (*ASINLookupResult, error) {
+	return c.searchBookByASINResult(ctx, asin, true)
+}
+
+func (c *Client) searchBookByASINResult(ctx context.Context, asin string, editionASINOnly bool) (*ASINLookupResult, error) {
 	if asin == "" {
 		return nil, fmt.Errorf("ASIN cannot be empty")
 	}
@@ -67,11 +78,14 @@ func (c *Client) SearchBookByASINResult(ctx context.Context, asin string) (*ASIN
 	}
 
 	formatID := readingFormatIDFromCtx(ctx)
-	query, variables := asinLookupQuery(asin, formatID)
+	query, variables := asinLookupQuery(asin, formatID, editionASINOnly)
 	var response struct {
 		Books json.RawMessage `json:"books"`
 	}
 	if err := c.GraphQLQuery(ctx, query, variables, &response); err != nil {
+		if editionASINOnly {
+			return nil, fmt.Errorf("failed to search book by edition ASIN: %w", err)
+		}
 		return nil, fmt.Errorf("failed to search book by ASIN: %w", err)
 	}
 	if len(response.Books) == 0 || string(response.Books) == "null" {
@@ -82,7 +96,7 @@ func (c *Client) SearchBookByASINResult(ctx context.Context, asin string) (*ASIN
 		return nil, fmt.Errorf("invalid ASIN response: books field: %w", err)
 	}
 
-	var mappingCandidates, fallbackCandidates []asinLookupCandidate
+	var mappingCandidates, editionASINCandidates []asinLookupCandidate
 	for bookIndex, book := range books {
 		bookID := asinScalarID(book.ID)
 		if bookID == "" || book.Title == "" {
@@ -112,21 +126,22 @@ func (c *Client) SearchBookByASINResult(ctx context.Context, asin string) (*ASIN
 				bookID: bookID, book: book, edition: edition,
 				identity: bookID + "/" + editionID,
 			}
+			if edition.asin == asin {
+				editionASINCandidates = append(editionASINCandidates, candidate)
+			}
 			if formatID == models.ReadingFormatID("audiobook") && exactAudibleMappingID(asin, edition.bookMappings) != "" {
 				mappingCandidates = append(mappingCandidates, candidate)
-			}
-			// editions.asin identifies only ebooks; audiobooks match by mapping.
-			if formatID != models.ReadingFormatID("audiobook") && edition.asin == asin {
-				fallbackCandidates = append(fallbackCandidates, candidate)
 			}
 		}
 	}
 
-	selected := fallbackCandidates
+	selected := editionASINCandidates
 	matchKind := ASINMatchEditionASIN
-	if formatID == models.ReadingFormatID("audiobook") && len(mappingCandidates) > 0 {
+	if !editionASINOnly && formatID == models.ReadingFormatID("audiobook") {
 		selected = mappingCandidates
-		matchKind = ASINMatchAudibleMapping
+		if len(mappingCandidates) > 0 {
+			matchKind = ASINMatchAudibleMapping
+		}
 	}
 	candidate, err := uniqueASINLookupCandidate(asin, selected)
 	if err != nil || candidate == nil {
@@ -143,13 +158,13 @@ func (c *Client) SearchBookByASINResult(ctx context.Context, asin string) (*ASIN
 	}, nil
 }
 
-func asinLookupQuery(asin string, formatID int) (string, map[string]interface{}) {
+func asinLookupQuery(asin string, formatID int, editionASINOnly bool) (string, map[string]interface{}) {
 	variables := map[string]interface{}{"format_id": formatID}
-	if formatID != models.ReadingFormatID("audiobook") {
+	if editionASINOnly || formatID != models.ReadingFormatID("audiobook") {
 		variables["asin"] = asin
 	}
 	editionOR := "{asin: {_eq: $asin}}"
-	if formatID == models.ReadingFormatID("audiobook") {
+	if formatID == models.ReadingFormatID("audiobook") && !editionASINOnly {
 		regions := audnexregion.Regions()
 		for _, region := range regions {
 			variable := "asin_" + region
@@ -158,8 +173,20 @@ func asinLookupQuery(asin string, formatID int) (string, map[string]interface{})
 		mappingPredicates := strings.Join(asinLookupMappingPredicates(), ", ")
 		editionOR = fmt.Sprintf(`{book_mappings: {_or: [%s]}}`, mappingPredicates)
 	}
+	operationName := "BookByASIN"
+	if editionASINOnly {
+		operationName = "BookByEditionASIN"
+	}
+	variableDeclarations := asinLookupVariableDeclarations(formatID)
+	if editionASINOnly {
+		variableDeclarations = ", $asin: String!"
+	}
+	mappingSelection := asinLookupMappingSelection(formatID)
+	if editionASINOnly {
+		mappingSelection = ""
+	}
 	query := fmt.Sprintf(`
-query BookByASIN($format_id: Int!%s) {
+query %s($format_id: Int!%s) {
   books(where: {editions: {_and: [{reading_format_id: {_eq: $format_id}}, %s]}}) {
     id
     title
@@ -174,7 +201,7 @@ query BookByASIN($format_id: Int!%s) {
       %s
     }
   }
-}`, asinLookupVariableDeclarations(formatID), editionOR, editionOR, asinLookupMappingSelection(formatID))
+	}`, operationName, variableDeclarations, editionOR, editionOR, mappingSelection)
 	return query, variables
 }
 

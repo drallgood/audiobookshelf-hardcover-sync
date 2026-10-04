@@ -94,7 +94,9 @@ matching edition has been confirmed.
 #### Add an edition, import by Audible ASIN, or forget a match from View Details
 
 After a sync finishes or is canceled, open **View Details** and select **Add
-edition** on an eligible needs-review book. When the run has a Hardcover
+edition** on an eligible needs-review book or an audiobook edition-ASIN
+fallback match with status `synced`, `already_current`, or `skipped`. Fallback
+matches open **Import by Audible ASIN**. For other records, when the run has a Hardcover
 candidate, this adds or reuses an edition on that selected Hardcover book. An
 `audible_import_available` audiobook has no candidate to select, so the same
 button opens the **Import by Audible ASIN** review. It compares the
@@ -281,25 +283,36 @@ for implementation details.
 
 ### Remembered edition matches
 
-Sync checks a saved local match before searching Hardcover. It stores an
-audiobook match only when an exact, region-qualified Audible mapping confirms
-the edition; a Hardcover edition's own `asin` field is not used to match
-audiobooks. A valid Audiobookshelf ASIN (exactly 10 ASCII letters or digits) is
-authoritative: if a completed lookup does not find a regional Audible mapping,
-sync marks the item `needs_review` with reason `audible_import_available` and
-skips ISBN and title/author lookup. Use **Import by Audible ASIN** through the
-create API or `edition create` to review its Audnexus record and import without
-selecting a Hardcover book first. The returned book and edition are verified
-before the match is saved. When the source ASIN is
-absent or malformed, sync may search by ISBN and then title/author. Audiobook
-ISBN matches are not saved as associations and are looked up again whenever
-the item is processed; title/author results are review candidates, not saved
-matches. For ebooks, sync stores a match whenever an exact `editions.asin`
-match or exact ISBN match confirms the edition. Saved associations live with
-the CLI sync state or the individual web profile's state and survive restarts
-when that file is kept. Incremental sync re-resolves association-free ISBN-only
-audiobooks while retaining their progress checkpoints; see
-[MIGRATION.md](MIGRATION.md) for how existing checkpoints are re-evaluated.
+Sync checks a saved local match before searching Hardcover. Audiobooks match
+first by an exact regional Audible `book_mappings` entry, then by ISBN (including
+its valid ISBN-10/ISBN-13 counterpart), and finally by an exact audiobook
+`editions.asin` match. The edition-ASIN fallback supports legacy Hardcover data;
+it is not used when a higher-priority lookup fails or reports conflicting
+matches. Ebook matching remains unchanged.
+
+Only regional Audible audiobook matches are saved automatically. Audiobook ISBN
+and edition-ASIN fallback matches are resolved again during each processed sync,
+while progress checkpoints let unchanged targets skip repeat writes. If all
+identifier searches miss for a valid Audiobookshelf ASIN (10 ASCII letters or
+digits), the item becomes `needs_review` with reason `audible_import_available`
+and skips title/author discovery. Audiobooks without a valid ASIN may still use
+title/author review candidates.
+
+Audiobook edition-ASIN fallback records with `synced`, `already_current`, or
+`skipped` outcomes also offer **Add edition** in Sync Status. This opens the
+existing **Import by Audible ASIN** workflow: review and confirm the regional
+Audnexus record, then import without selecting a Hardcover book first. After a
+successful import, the verified returned book and edition replace the local
+target, the regional Audible identifier is saved, and old progress checkpoints
+are invalidated. The returned book may differ from the fallback match. Historical
+sync outcomes and counts remain unchanged. Sync itself never writes to the
+Hardcover catalogue, and audiobook creation never sends the ABS Audible ASIN to
+`editions.asin`.
+
+For ebooks, sync saves exact edition-ASIN matches and ISBN matches confirmed by
+a second lookup. Saved matches live in the CLI or profile sync state and survive
+restarts when that file is kept. See [MIGRATION.md](MIGRATION.md) for existing
+checkpoint handling.
 
 Ebook ASIN lookup continues to use Kindle editions, ahead of ISBN, both
 unchanged. An unchanged book with a saved match keeps its Hardcover edition until

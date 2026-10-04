@@ -173,6 +173,192 @@ func editionCreateRecord() sync.BookOutcomeRecord {
 	}
 }
 
+func editionASINFallbackRecord(outcome sync.SyncOutcome) sync.BookOutcomeRecord {
+	return sync.BookOutcomeRecord{
+		BookID: "abs-item-1", Outcome: outcome, MatchMethod: "edition_asin",
+		Title: "Reviewed title", Author: "Author", ASIN: "B0HCASEDIT",
+		SourceASIN: "B0SOURCE12", ISBN: "978-0-306-40615-7", SourceISBN13: "9780306406157",
+		Format: "AuDiObOoK", HardcoverBookID: "42", EditionID: "84",
+	}
+}
+
+func TestCreateEditionFromAudiobookASINFallbackImportsUnanchoredAndOverlaysSavedAssociation(t *testing.T) {
+	for _, outcome := range []sync.SyncOutcome{sync.OutcomeSynced, sync.OutcomeAlreadyCurrent, sync.OutcomeSkipped} {
+		t.Run(string(outcome), func(t *testing.T) {
+			fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0SOURCE12","isbn":"978-0-306-40615-7"},"duration":100}}`, "us")
+			configureEditionCreateRoute(t, fixture)
+			record := editionASINFallbackRecord(outcome)
+			addCompletedNeedsReviewRun(t, fixture, "run-fallback-create", record)
+			previousState := statepkg.NewState()
+			previousState.UpdateBook("abs-item-1", 0.6, "IN_PROGRESS")
+			previousState.UpdateBook("abs-item-1:84", 0.6, "IN_PROGRESS")
+			require.NoError(t, previousState.Save(editionCreateProfileStatePath(fixture)))
+			var imports atomic.Int32
+			fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+				return editionCreateHardcoverStub{importFn: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+					imports.Add(1)
+					require.Zero(t, input.BookID, "fallback import must not be anchored to the selected Hardcover book")
+					require.True(t, input.Unanchored)
+					require.Equal(t, "B0SOURCE12", input.ASIN)
+					require.Equal(t, "uk", input.Region)
+					return &hardcover.RegionalAudiobookResult{
+						Status: hardcover.RegionalAudiobookCreated, BookID: 73, EditionID: 95,
+						ReadingFormatID: models.ReadingFormatID(models.ReadingFormatAudiobook), RegionalExternalID: "B0SOURCE12:uk",
+					}, nil
+				}}
+			}
+
+			response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-fallback-create","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk","audnexus_confirmed":true}`)
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			require.EqualValues(t, 1, imports.Load())
+			var envelope struct {
+				Data struct {
+					HardcoverBookID    string `json:"hardcover_book_id"`
+					HardcoverEditionID string `json:"hardcover_edition_id"`
+					RegionalExternalID string `json:"regional_external_id"`
+				} `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+			require.Equal(t, "73", envelope.Data.HardcoverBookID)
+			require.Equal(t, "95", envelope.Data.HardcoverEditionID)
+			require.Equal(t, "B0SOURCE12:uk", envelope.Data.RegionalExternalID)
+
+			stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+			require.NoError(t, err)
+			association, exists := stored.GetAssociation("abs-item-1")
+			require.True(t, exists)
+			require.Equal(t, "73", association.HardcoverBookID)
+			require.Equal(t, "95", association.HardcoverEditionID)
+			require.Equal(t, "B0SOURCE12:uk", association.RegionalExternalID)
+			require.Equal(t, "audible_import_unanchored", association.Provenance)
+			require.NotContains(t, stored.Books, "abs-item-1:84")
+			require.True(t, stored.NeedsSync("abs-item-1", 0.6, "IN_PROGRESS", 0.001))
+
+			overlay := &sync.SyncSnapshot{ProfileID: "draft-profile", RunID: "run-fallback-create", State: string(sync.RunPhaseCompleted), BookOutcomes: []sync.BookOutcomeRecord{record}}
+			require.NoError(t, fixture.multiUserService.AnnotateEditionAdditions("draft-profile", overlay))
+			require.True(t, overlay.BookOutcomes[0].EditionAdded, "the saved import result must overlay even though it resolved to a different Hardcover book")
+		})
+	}
+}
+
+func TestCreateEditionFromAudiobookASINFallbackRejectsIneligibleAndStaleRecords(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		mutate      func(*sync.BookOutcomeRecord)
+		later       bool
+		itemJSON    string
+		wantABSRead bool
+	}{
+		{name: "other match method", mutate: func(r *sync.BookOutcomeRecord) { r.MatchMethod = "title" }},
+		{name: "failed outcome", mutate: func(r *sync.BookOutcomeRecord) { r.Outcome = sync.OutcomeFailed }},
+		{name: "invalid source ASIN", mutate: func(r *sync.BookOutcomeRecord) { r.SourceASIN = "invalid" }},
+		{name: "newer fallback has different source", later: true},
+		{name: "Audiobookshelf source changed", itemJSON: `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0CHANGED12","isbn":"978-0-306-40615-7"},"duration":100}}`, wantABSRead: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			itemJSON := test.itemJSON
+			if itemJSON == "" {
+				itemJSON = `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0SOURCE12","isbn":"978-0-306-40615-7"},"duration":100}}`
+			}
+			fixture := newEditionDraftTestFixture(t, itemJSON, "us")
+			configureEditionCreateRoute(t, fixture)
+			record := editionASINFallbackRecord(sync.OutcomeSynced)
+			if test.mutate != nil {
+				test.mutate(&record)
+			}
+			addCompletedNeedsReviewRun(t, fixture, "run-fallback-stale", record)
+			if test.later {
+				later := editionASINFallbackRecord(sync.OutcomeAlreadyCurrent)
+				later.SourceASIN = "B0CHANGED12"
+				addCompletedNeedsReviewRun(t, fixture, "run-fallback-later", later)
+			}
+			var imports atomic.Int32
+			fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+				return editionCreateHardcoverStub{importFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+					imports.Add(1)
+					return nil, errors.New("fallback import must not proceed")
+				}}
+			}
+			response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-fallback-stale","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk","audnexus_confirmed":true}`)
+			require.NotEqual(t, http.StatusOK, response.Code, response.Body.String())
+			require.Zero(t, imports.Load())
+			if !test.wantABSRead {
+				require.Zero(t, fixture.absRequests.Load(), "stale run candidates must fail before reading the current source")
+			}
+		})
+	}
+}
+
+func TestCheckEditionImportForAudiobookASINFallbackPersistsResolvedIdentity(t *testing.T) {
+	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0SOURCE12","isbn":"978-0-306-40615-7"},"duration":100}}`, "us")
+	configureEditionCreateRoute(t, fixture)
+	record := editionASINFallbackRecord(sync.OutcomeAlreadyCurrent)
+	addCompletedNeedsReviewRun(t, fixture, "run-fallback-recovery", record)
+	state := statepkg.NewState()
+	state.UpdateBook("abs-item-1", 0.6, "IN_PROGRESS")
+	state.UpdateBook("abs-item-1:84", 0.6, "IN_PROGRESS")
+	require.NoError(t, state.Save(editionCreateProfileStatePath(fixture)))
+
+	var imports, checks atomic.Int32
+	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+		return editionCreateHardcoverStub{
+			importFn: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+				imports.Add(1)
+				require.True(t, input.Unanchored)
+				require.Zero(t, input.BookID)
+				return nil, hardcover.ErrRegionalAudiobookImportTimeout
+			},
+		}
+	}
+	created := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-fallback-recovery","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk","audnexus_confirmed":true}`)
+	require.Equal(t, http.StatusServiceUnavailable, created.Code, created.Body.String())
+	var createEnvelope struct {
+		Data struct {
+			RecoveryToken string `json:"recovery_token"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(created.Body.Bytes(), &createEnvelope))
+	require.NotEmpty(t, createEnvelope.Data.RecoveryToken)
+	claims := editionRecoveryClaims{
+		ProfileID: "draft-profile", RunID: "run-fallback-recovery", ABSItemID: "abs-item-1",
+		AudibleIdentifier: "B0SOURCE12:uk", Correction: "B0SOURCE12:uk",
+	}
+	_, validToken := verifyEditionRecoveryToken("hardcover-token", createEnvelope.Data.RecoveryToken, claims)
+	require.True(t, validToken, "the unanchored token must not be tied to the fallback-selected Hardcover book")
+
+	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+		return editionCreateHardcoverStub{checkFn: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, bool, error) {
+			checks.Add(1)
+			require.True(t, input.Unanchored)
+			require.Zero(t, input.BookID)
+			return &hardcover.RegionalAudiobookResult{
+				Status: hardcover.RegionalAudiobookCreated, BookID: 73, EditionID: 95, BookTitle: "Resolved book",
+				ReadingFormatID: models.ReadingFormatID(models.ReadingFormatAudiobook), RegionalExternalID: "B0SOURCE12:uk",
+			}, true, nil
+		}}
+	}
+	body := fmt.Sprintf(`{"run_id":"run-fallback-recovery","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk","recovery_token":%q}`, createEnvelope.Data.RecoveryToken)
+	checked := postEditionImportCheck(t, fixture, fixture.owner, body)
+	require.Equal(t, http.StatusOK, checked.Code, checked.Body.String())
+	require.EqualValues(t, 1, imports.Load(), "recovery must not repeat the regional import")
+	require.EqualValues(t, 1, checks.Load())
+
+	stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+	require.NoError(t, err)
+	association, exists := stored.GetAssociation("abs-item-1")
+	require.True(t, exists)
+	require.Equal(t, "73", association.HardcoverBookID)
+	require.Equal(t, "95", association.HardcoverEditionID)
+	require.Equal(t, "B0SOURCE12:uk", association.RegionalExternalID)
+	require.Equal(t, "audible_import_unanchored", association.Provenance)
+	require.True(t, stored.NeedsSync("abs-item-1", 0.6, "IN_PROGRESS", 0.001))
+	require.NotContains(t, stored.Books, "abs-item-1:84")
+
+	overlay := &sync.SyncSnapshot{ProfileID: "draft-profile", RunID: "run-fallback-recovery", State: string(sync.RunPhaseCompleted), BookOutcomes: []sync.BookOutcomeRecord{record}}
+	require.NoError(t, fixture.multiUserService.AnnotateEditionAdditions("draft-profile", overlay))
+	require.True(t, overlay.BookOutcomes[0].EditionAdded, "the recovered result must overlay after its journal is cleared")
+}
+
 func TestCreateEditionFromDraftUsesExactRunAndPersistsVerifiedAssociation(t *testing.T) {
 	fixture := newEditionDraftTestFixture(t, `{
 		"id":"abs-item-1","mediaType":"book","media":{
@@ -1142,10 +1328,10 @@ func TestCreateEditionFromDraftAllowsCandidateAfterUnrelatedLaterRun(t *testing.
 	}
 }
 
-func TestCreateEditionFromDraftDoesNotReplaceSavedAssociation(t *testing.T) {
+func TestCreateEditionFromDraftASINFallbackDoesNotReplaceSavedAssociation(t *testing.T) {
 	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`, "us")
 	configureEditionCreateRoute(t, fixture)
-	addCompletedNeedsReviewRun(t, fixture, "run-create-associated", editionCreateRecord())
+	addCompletedNeedsReviewRun(t, fixture, "run-create-associated", editionASINFallbackRecord(sync.OutcomeSynced))
 	stored := statepkg.NewState()
 	require.NoError(t, stored.SetAssociation(statepkg.Association{
 		ABSItemID: "abs-item-1", HardcoverBookID: "43", HardcoverEditionID: "84",
@@ -1161,7 +1347,7 @@ func TestCreateEditionFromDraftDoesNotReplaceSavedAssociation(t *testing.T) {
 	}
 
 	request := httptest.NewRequest(http.MethodPost, "/api/profiles/draft-profile/edition-drafts/create", strings.NewReader(
-		`{"run_id":"run-create-associated","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`,
+		`{"run_id":"run-create-associated","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk","audnexus_confirmed":true}`,
 	))
 	request.AddCookie(fixture.sessionCookie(t, fixture.owner))
 	response := httptest.NewRecorder()

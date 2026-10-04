@@ -48,6 +48,10 @@ func TestProcessBookClassifiesOnlyUnmatchedUsableASINAsAudibleImportAvailable(t 
 				searchErr:           tt.lookupErr,
 			}
 			svc.hardcover = lookup
+			if tt.lookupErr == nil {
+				hardcoverMock.On("SearchBookByISBN13", mock.Anything, "9780306406157").Return((*models.HardcoverBook)(nil), nil).Once()
+				hardcoverMock.On("SearchBookByISBN10", mock.Anything, "0306406152").Return((*models.HardcoverBook)(nil), nil).Once()
+			}
 
 			err := svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{})
 
@@ -68,7 +72,7 @@ func TestProcessBookClassifiesOnlyUnmatchedUsableASINAsAudibleImportAvailable(t 
 				require.NotContains(t, record.Reason, mismatch.ReasonAudibleImportAvailable)
 			}
 			require.Equal(t, 1, lookup.searchCount, "the identifier lookup is attempted once")
-			assertNoHardcoverBookSearches(t, hardcoverMock)
+			hardcoverMock.AssertNotCalled(t, "SearchBooks", mock.Anything, mock.Anything, mock.Anything)
 			_, associated := svc.state.GetAssociation(book.ID)
 			require.False(t, associated)
 
@@ -158,6 +162,8 @@ func TestAudibleImportAttentionRetainsSourceDetailsAfterOutcomeRefresh(t *testin
 	book.Media.Metadata.Abridged = true
 
 	svc.hardcover = &associationLookupClient{MockHardcoverClient: hardcoverMock}
+	hardcoverMock.On("SearchBookByISBN10", mock.Anything, "0306406152").Return((*models.HardcoverBook)(nil), nil).Once()
+	hardcoverMock.On("SearchBookByISBN13", mock.Anything, "9780306406157").Return((*models.HardcoverBook)(nil), nil).Once()
 	require.NoError(t, svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{}))
 
 	attention, exists := svc.attentionCandidates[book.ID]
@@ -190,6 +196,8 @@ func TestSecondASINMissAfterBookErrorPublishesAudibleImportAvailable(t *testing.
 		},
 	}
 	svc.hardcover = lookup
+	hardcoverMock.On("SearchBookByISBN13", mock.Anything, "9780306406157").Return((*models.HardcoverBook)(nil), nil).Once()
+	hardcoverMock.On("SearchBookByISBN10", mock.Anything, "0306406152").Return((*models.HardcoverBook)(nil), nil).Once()
 
 	require.NoError(t, svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{}))
 
@@ -217,8 +225,7 @@ func TestSecondASINMissAfterBookErrorPublishesAudibleImportAvailable(t *testing.
 	require.Len(t, svc.mismatchCollector.GetAll(), 1)
 	hardcoverMock.AssertNotCalled(t, "SearchBooks", mock.Anything, mock.Anything, mock.Anything)
 	hardcoverMock.AssertNotCalled(t, "GetBookByID", mock.Anything, mock.Anything)
-	hardcoverMock.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
-	hardcoverMock.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
+	hardcoverMock.AssertExpectations(t)
 	hardcoverMock.AssertNotCalled(t, "GetUserBookID", mock.Anything, mock.Anything)
 	hardcoverMock.AssertNotCalled(t, "CreateUserBook", mock.Anything, mock.Anything, mock.Anything)
 }

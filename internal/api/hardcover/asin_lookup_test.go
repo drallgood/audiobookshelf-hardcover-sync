@@ -138,6 +138,85 @@ func TestSearchBookByASINResultRejectsUnexpectedReadingFormat(t *testing.T) {
 	require.Nil(t, result)
 }
 
+func TestSearchBookByEditionASINResultFindsAudiobookEditionByExactASIN(t *testing.T) {
+	const asin = "B0EDITION01"
+	var request asinRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"books":[{"id":51,"title":"Exact edition match","book_status_id":1,"canonical_id":9,"editions":[{"id":510,"asin":"B0EDITION01","isbn_13":"9780000000001","isbn_10":"0000000001","reading_format_id":2}]}]}}`))
+	}))
+	defer server.Close()
+
+	result, err := CreateTestClient(server).SearchBookByEditionASINResult(context.Background(), asin)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "51", result.Book.ID)
+	require.Equal(t, "510", result.Book.EditionID)
+	require.Equal(t, asin, result.Book.EditionASIN)
+	require.Equal(t, ASINMatchEditionASIN, result.MatchKind)
+	require.Empty(t, result.RegionalExternalID)
+	require.Equal(t, float64(2), request.Variables["format_id"])
+	require.Equal(t, asin, request.Variables["asin"])
+	require.Contains(t, request.Query, "query BookByEditionASIN")
+	require.Contains(t, request.Query, "asin: {_eq: $asin}")
+	require.Contains(t, request.Query, "reading_format_id: {_eq: $format_id}")
+	require.NotContains(t, request.Query, "book_mappings")
+}
+
+func TestSearchBookByEditionASINResultFiltersUnexpectedReadingFormat(t *testing.T) {
+	var request asinRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"books":[{"id":52,"title":"Ebook with same ASIN","editions":[{"id":520,"asin":"B0EDITION02","reading_format_id":4}]}]}}`))
+	}))
+	defer server.Close()
+
+	result, err := CreateTestClient(server).SearchBookByEditionASINResult(context.Background(), "B0EDITION02")
+	require.NoError(t, err)
+	require.Nil(t, result)
+	require.Equal(t, float64(2), request.Variables["format_id"])
+}
+
+func TestSearchBookByEditionASINResultReportsConflictingEditions(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"books":[
+			{"id":1,"title":"First","editions":[{"id":11,"asin":"B0EDITION03","reading_format_id":2}]},
+			{"id":2,"title":"Second","editions":[{"id":22,"asin":"B0EDITION03","reading_format_id":2}]}
+		]}}`))
+	}))
+	defer server.Close()
+
+	result, err := CreateTestClient(server).SearchBookByEditionASINResult(context.Background(), "B0EDITION03")
+	require.Nil(t, result)
+	require.ErrorIs(t, err, ErrASINLookupConflict)
+}
+
+func TestSearchBookByEditionASINResultReturnsNilOnMiss(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"books":[]}}`))
+	}))
+	defer server.Close()
+
+	result, err := CreateTestClient(server).SearchBookByEditionASINResult(context.Background(), "B0EDITION04")
+	require.NoError(t, err)
+	require.Nil(t, result)
+}
+
+func TestSearchBookByEditionASINResultReturnsTransportError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "upstream unavailable", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	result, err := CreateTestClient(server).SearchBookByEditionASINResult(context.Background(), "B0EDITION05")
+	require.Nil(t, result)
+	require.ErrorContains(t, err, "failed to search book by edition ASIN")
+}
+
 func TestGetEditionUncachedBypassesEditionCache(t *testing.T) {
 	var requestCount int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

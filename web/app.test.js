@@ -1070,6 +1070,7 @@ test('outcome match methods render as readable labels and humanize unknown metho
     const cases = [
         ['title_author', 'Title and author'],
         ['audible_asin', 'Audible ASIN'],
+        ['edition_asin', 'Edition ASIN fallback'],
         ['isbn_13', 'ISBN-13'],
         ['asin', 'ASIN'],
         ['isbn', 'ISBN'],
@@ -1104,6 +1105,95 @@ test('Audible import modal shows every comparison and escapes ABS and Audnexus v
     assert.match(html, /data-edition-dialog="confirm-create"/);
     assert.match(html, /<h4>Audnexus\/Audible<\/h4>/);
     assert.match(html, /audible-comparison-source">Audnexus\/Audible<\/span>/);
+});
+
+test('edition ASIN fallback is limited to completed audiobook outcomes with a valid preferred source ASIN', () => {
+    const app = editionApp();
+    const fallback = {
+        book_id: 'li_fallback', outcome: 'synced', reason: 'original reason', match_method: 'edition_asin',
+        title: 'Fallback audiobook', format: 'audiobook', source_asin: 'B00SOURCE1', asin: 'invalid',
+        hardcover_book_id: '42'
+    };
+    for (const outcome of ['synced', 'already_current', 'skipped']) {
+        assert.equal(app.editionCreateIneligibleReason({ ...fallback, outcome }, app.openSummary.runContext), null);
+    }
+    for (const record of [
+        { ...fallback, outcome: 'would_sync' },
+        { ...fallback, outcome: 'failed' },
+        { ...fallback, format: 'ebook' },
+        { ...fallback, source_asin: 'bad' },
+        { ...fallback, source_asin: '' }
+    ]) {
+        assert.ok(app.editionCreateIneligibleReason(record, app.openSummary.runContext), JSON.stringify(record));
+        assert.doesNotMatch(app.renderOutcomeRecord(record), /data-edition-action="add"/, JSON.stringify(record));
+    }
+    assert.equal(app.editionCreateIneligibleReason({ ...fallback, source_asin: null, asin: 'B00FALLBK1' }, app.openSummary.runContext), null);
+    const row = app.renderOutcomeRecord(fallback);
+    assert.match(row, /<strong>Match method:<\/strong> Edition ASIN fallback/);
+    assert.match(row, /Hardcover target: book 42/);
+    assert.match(row, /data-edition-action="add"/);
+    assert.match(row, /data-edition-action="forget"/);
+
+    const dryRunApp = editionApp();
+    dryRunApp.openSummary.runContext.dryRun = true;
+    assert.match(dryRunApp.renderEditionActions(fallback), /data-edition-action="add" disabled/);
+    assert.equal(editionApp({ isViewer: () => true }).renderEditionActions(fallback), '');
+});
+
+test('edition ASIN fallback opens Audible import preview without replacing its original sync record', async () => {
+    const app = editionApp();
+    const record = {
+        book_id: 'li_fallback', outcome: 'skipped', reason: 'original reason', match_method: 'edition_asin',
+        title: 'Fallback audiobook', format: 'audiobook', source_asin: 'B00SOURCE1', asin: 'B00OTHER01',
+        hardcover_book_id: '42'
+    };
+    app.openSummary.records.set(record.book_id, record);
+    const requests = [];
+    app.fetchJsonWithTimeout = async url => {
+        requests.push(url);
+        if (url.endsWith('/edition-capability')) return { response: { ok: true, status: 200 }, data: { success: true, data: {} } };
+        return { response: { ok: true, status: 200 }, data: { success: true, data: confirmedAudibleDraft({
+            abs_item_id: record.book_id,
+            source_identifiers: { asin: record.source_asin },
+            audible_identifier_candidate: { asin: record.source_asin, region: 'us', correction_allowed: true },
+            confirmed_region: 'us'
+        }) } };
+    };
+
+    await app.openEditionDialog(record.book_id);
+
+    assert.equal(app.editionDialog.audibleImport, true);
+    assert.equal(app.editionDialog.record, record);
+    assert.equal(app.editionDialog.record.outcome, 'skipped');
+    assert.equal(app.editionDialog.record.reason, 'original reason');
+    assert.equal(app.editionDialog.record.hardcover_book_id, '42');
+    assert.ok(requests.includes(`/api/profiles/p1/edition-drafts/source/${record.book_id}`));
+    assert.match(app.renderEditionDialog(app.editionDialog), /Audiobookshelf and Audnexus\/Audible comparison/);
+    assert.equal(app.isValidEditionCreateResult(validCreateResult({ abs_item_id: record.book_id, hardcover_book_id: '99' }), record.book_id, 'audiobook', '42', app.isAudibleImportRecord(record)), true,
+        'the Audible resolver may return a different Hardcover book from the original target');
+});
+
+test('edition ASIN fallback reopens its saved Audible import recovery against the original target', async () => {
+    const app = editionApp();
+    const record = {
+        book_id: 'li_fallback', outcome: 'synced', reason: 'original reason', match_method: 'edition_asin',
+        title: 'Fallback audiobook', format: 'audiobook', source_asin: 'B00SOURCE1', hardcover_book_id: '42',
+        edition_action: {
+            outcome: 'unconfirmed',
+            submitted_body: { run_id: 'run-1', abs_item_id: 'li_fallback', audible_identifier: 'B00SOURCE1:us' },
+            data: { recovery_token: 'opaque-token', hardcover_book_id: '99', audible_identifier: 'B00SOURCE1:us' }
+        }
+    };
+    app.openSummary.records.set(record.book_id, record);
+
+    assert.match(app.renderEditionActions(record), /Resolve pending edition request/);
+    await app.openEditionDialog(record.book_id);
+
+    assert.equal(app.editionDialog.outcome, 'unconfirmed');
+    assert.equal(app.editionDialog.audibleImport, true);
+    assert.equal(app.editionDialog.recovery.recoveryToken, 'opaque-token');
+    assert.equal(app.editionDialog.record.outcome, 'synced');
+    assert.equal(app.editionDialog.record.hardcover_book_id, '42');
 });
 
 test('Audible comparison hides empty subtitle and series groups but keeps populated groups paired', () => {
@@ -2439,6 +2529,7 @@ test('added edition labels survive a page reload and remain scoped to user, prof
     const refreshed = await reload('user-1', 'p1', 'run-1');
     assert.match(refreshed.renderEditionActions(needsReview), /Hardcover Edition Added/);
     assert.match(refreshed.renderEditionActions({ ...needsReview, book_id: 'li_2' }), /Hardcover Edition Added/);
+    assert.match(refreshed.renderEditionActions({ ...needsReview, book_id: 'li_2', outcome: 'synced', match_method: 'edition_asin', source_asin: 'B00SOURCE1' }), /Hardcover Edition Added/);
     assert.match(refreshed.renderEditionActions({ ...needsReview, book_id: 'li_3' }), /data-edition-action="add"/);
     for (const scope of [['user-2', 'p1', 'run-1'], ['user-1', 'p2', 'run-1'], ['user-1', 'p1', 'run-2']]) {
         const other = await reload(...scope);
