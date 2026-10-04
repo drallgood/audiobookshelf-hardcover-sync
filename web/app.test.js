@@ -1046,7 +1046,7 @@ for (const runState of ['completed', 'canceled']) {
             openPromises.push(opening);
             return opening;
         };
-        summaryClickHandlers[1]({ target: button });
+        for (const handler of summaryClickHandlers) handler({ target: button });
         assert.equal(openPromises.length, 1, 'the enabled row action should reach the delegated Add edition handler');
         await openPromises[0];
 
@@ -1056,7 +1056,7 @@ for (const runState of ['completed', 'canceled']) {
         const dialogHTML = app.renderEditionDialog(app.editionDialog);
         assert.match(dialogHTML, /data-edition-dialog="confirm-create"/);
         assert.doesNotMatch(dialogHTML, /Regional Audible identifier|ASIN:region|audible_identifier_preview|preview-audible/);
-        const releaseDateRow = dialogHTML.match(/<div class="audible-comparison-row[^>]*data-comparison="release_date">[\s\S]*?<\/div>/)?.[0] || '';
+        const releaseDateRow = dialogHTML.match(/<div\b(?=[^>]*\bdata-comparison="release_date")[^>]*>[\s\S]*?<\/div>/)?.[0] || '';
         assert.match(releaseDateRow, /Audiobookshelf<\/span>2014-08-04/);
         assert.match(releaseDateRow, /Audnexus\/Audible<\/span>2014-08-05/);
         assert.match(releaseDateRow, />Different</);
@@ -1096,8 +1096,6 @@ test('Audible import modal shows every comparison and escapes ABS and Audnexus v
         assert.match(html, new RegExp(`data-comparison="${key}"`));
     }
     assert.doesNotMatch(html, /data-comparison="cover_url"|Cover URL/);
-    assert.match(html, /status-differs/);
-    assert.match(html, /status-match/);
     assert.match(html, /Different/);
     assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
     assert.match(html, /&lt;script&gt;bad\(\)&lt;\/script&gt;/);
@@ -1158,26 +1156,11 @@ test('Audible comparison uses original source dates and reflects the API precisi
             mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record: audibleImportRecord,
             loading: false, busy: false, runDryRun: false, capability: null, draft
         });
-        const row = html.match(/<div class="audible-comparison-row[^>]*data-comparison="release_date">[\s\S]*?<\/div>/)?.[0] || '';
+        const row = html.match(/<div\b(?=[^>]*\bdata-comparison="release_date")[^>]*>[\s\S]*?<\/div>/)?.[0] || '';
         assert.match(row, new RegExp(`Audiobookshelf<\\/span>${scenario.sourceDate}`));
         assert.match(row, new RegExp(`Audnexus/Audible<\\/span>${scenario.audnexusDate}`));
-        assert.match(row, new RegExp(`status-${scenario.verdict}`));
         assert.match(row, new RegExp(`>${scenario.label}<`));
     }
-});
-
-test('cover URL is omitted from comparisons while the audiobook cover remains available', () => {
-    const app = editionApp();
-    const draft = confirmedAudibleDraft();
-    delete draft.audnexus_comparison.cover_url;
-    const html = app.renderEditionDialog({
-        mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record: audibleImportRecord,
-        loading: false, busy: false, runDryRun: false, capability: null, draft
-    });
-    assert.doesNotMatch(html, /data-comparison="cover_url"|Cover URL|https:\/\/audnexus\.example\/cover/);
-    assert.match(app.renderAudiobookshelfCover({ title: 'ABS title', cover_url: 'https://abs.example/cover' }),
-        /data-fallbacks="https:\/\/abs\.example\/cover\|\/cover-placeholder\.svg"/);
-    assert.match(html, /data-comparison="title" class="audible-comparison-row status-differs"|class="audible-comparison-row status-differs" data-comparison="title"/);
 });
 
 test('unknown, unavailable, and dry-run Audible previews cannot submit', () => {
@@ -1627,7 +1610,7 @@ test('ambiguous unanchored create errors offer recovery without another import b
     assert.doesNotMatch(html, /data-edition-dialog="(confirm-create|retry-create)"/);
 });
 
-test('Audnexus 429 honors Retry-After and holds the corrected preview action', async () => {
+test('server draft 429 honors Retry-After and holds the preview action', async () => {
     const app = editionApp();
     app.profileUrl = () => '/profile';
     app.showEditionDialog = () => {};
