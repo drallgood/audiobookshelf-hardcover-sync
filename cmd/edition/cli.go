@@ -25,7 +25,8 @@ import (
 )
 
 const (
-	maxCreateInputBytes = 1 << 20
+	maxCreateInputBytes          = 1 << 20
+	maxAudnexusConfirmationBytes = 256
 	// createHardcoverTimeout bounds each catalogue write, its polling, and its
 	// read-back, matching the create API's request timeout.
 	createHardcoverTimeout = 65 * time.Second
@@ -640,6 +641,10 @@ func resolveAudibleRegion(ctx context.Context, asin, requested, preferred string
 // resolveAudnexusPreview fetches the exact user-supplied region or discovers a
 // region and returns the record that will be shown and confirmed before import.
 func resolveAudnexusPreview(ctx context.Context, asin, requested, preferred string, services createServices) (*audnex.Book, string, error) {
+	requested = strings.ToLower(strings.TrimSpace(requested))
+	if requested != "" && !audnexregion.IsRegion(requested) {
+		return nil, "", fmt.Errorf("Audnexus lookup requested unsupported region %q", requested)
+	}
 	var book *audnex.Book
 	var region string
 	var err error
@@ -800,7 +805,12 @@ func confirmAudnexusRecord(reader io.Reader, writer io.Writer) (bool, error) {
 			return false, err
 		}
 	}
-	answer, err := bufio.NewReader(reader).ReadString('\n')
+	// Read one extra byte to detect oversized responses without consuming or
+	// allocating an unbounded line from the supplied reader.
+	answer, err := bufio.NewReader(io.LimitReader(reader, maxAudnexusConfirmationBytes+1)).ReadString('\n')
+	if len(answer) > maxAudnexusConfirmationBytes {
+		return false, fmt.Errorf("Audnexus confirmation exceeds %d bytes; no Hardcover changes were made", maxAudnexusConfirmationBytes)
+	}
 	if err != nil && !errors.Is(err, io.EOF) {
 		return false, fmt.Errorf("failed to read Audnexus confirmation: %w", err)
 	}

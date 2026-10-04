@@ -214,6 +214,8 @@ while holding the state-file lock. If another sync holds the lock, the command
 returns an error before contacting Hardcover. A local save failure after a
 successful Hardcover operation is reported separately; verify the Hardcover
 result before retrying, because a retry may create another edition.
+For Import by Audible ASIN, the saved Audnexus confirmation timestamp records
+when you acknowledged the preview, rather than when the import completed.
 The lock covers the ABS fetch and Hardcover import or insertion as well as the
 state save. A concurrent sync using the same state file can fail while create
 holds it. The Hardcover operation alone can take roughly 65 seconds, in

@@ -486,22 +486,90 @@ func newCLIAnnotationService(t *testing.T, dataDir string) (*multiuser.MultiUser
 }
 
 func TestRunCreateUnanchoredInteractiveDeclineDoesNotMutate(t *testing.T) {
-	hc := newFakeHardcover(t)
-	env := newCommandEnv(t, hc, "")
-	inputPath := writeCreateInput(t, fmt.Sprintf(`{"asin":%q,"region":"uk"}`, boundaryASIN))
-	services := env.createServices(t, false, &audnex.Book{ASIN: boundaryASIN, Title: "Boundary Book"}, "uk")
-	var preview bytes.Buffer
-	_, err := runCreate(context.Background(), createOptions{
-		InputPath: inputPath, ConfirmationReader: strings.NewReader("n\n"), PreviewWriter: &preview,
-	}, services)
-	if err == nil || !strings.Contains(err.Error(), "was not confirmed") {
-		t.Fatalf("expected confirmation-decline error, got %v", err)
+	for _, tt := range []struct {
+		name, response, wantError string
+	}{
+		{"declined", "n\n", "was not confirmed"},
+		{"oversized", "yes" + strings.Repeat(" ", 1024), "confirmation exceeds"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			hc := newFakeHardcover(t)
+			env := newCommandEnv(t, hc, "")
+			inputPath := writeCreateInput(t, fmt.Sprintf(`{"asin":%q,"region":"uk"}`, boundaryASIN))
+			services := env.createServices(t, false, &audnex.Book{ASIN: boundaryASIN, Title: "Boundary Book"}, "uk")
+			var preview bytes.Buffer
+			_, err := runCreate(context.Background(), createOptions{
+				InputPath: inputPath, ConfirmationReader: strings.NewReader(tt.response), PreviewWriter: &preview,
+			}, services)
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("expected confirmation-decline error, got %v", err)
+			}
+			if upserts, inserts, _ := hc.counts(); upserts != 0 || inserts != 0 {
+				t.Fatalf("declined confirmation reached Hardcover: upserts=%d inserts=%d", upserts, inserts)
+			}
+			if !strings.Contains(preview.String(), "Audnexus regional record") || !strings.Contains(preview.String(), "Type yes to confirm") {
+				t.Fatalf("interactive command did not display its preview and confirmation prompt: %s", preview.String())
+			}
+		})
 	}
-	if upserts, inserts, _ := hc.counts(); upserts != 0 || inserts != 0 {
-		t.Fatalf("declined confirmation reached Hardcover: upserts=%d inserts=%d", upserts, inserts)
+}
+
+func TestConfirmAudnexusRecordBoundsInput(t *testing.T) {
+	for _, tt := range []struct {
+		name, response       string
+		confirmed, wantError bool
+	}{
+		{"newline", "yes\n", true, false},
+		{"EOF", "y", true, false},
+		{"case and whitespace", " YES \n", true, false},
+		{"at limit", "yes" + strings.Repeat(" ", 253), true, false},
+		{"over limit", "yes" + strings.Repeat(" ", 254), false, true},
+		{"unbounded line", "yes" + strings.Repeat(" ", 1<<20), false, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			reader := strings.NewReader(tt.response)
+			confirmed, err := confirmAudnexusRecord(reader, nil)
+			if confirmed != tt.confirmed || (err != nil) != tt.wantError {
+				t.Fatalf("confirmed=%v error=%v; want confirmed=%v error=%v", confirmed, err, tt.confirmed, tt.wantError)
+			}
+			if consumed := len(tt.response) - reader.Len(); consumed > 257 {
+				t.Fatalf("read %d bytes from confirmation input", consumed)
+			}
+		})
 	}
-	if !strings.Contains(preview.String(), "Audnexus regional record") || !strings.Contains(preview.String(), "Type yes to confirm") {
-		t.Fatalf("interactive command did not display its preview and confirmation prompt: %s", preview.String())
+}
+
+func TestResolveAudnexusPreviewValidatesRequestedRegionBeforeLookup(t *testing.T) {
+	for _, tt := range []struct {
+		name, requested string
+		wantError       bool
+	}{
+		{"unsupported", "unsupported", true},
+		{"normalized", " UK ", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			services := createServices{
+				getAudibleBook: func(_ context.Context, asin, region string) (*audnex.Book, error) {
+					calls++
+					if tt.wantError {
+						t.Fatal("unsupported region reached Audnexus lookup")
+					}
+					if asin != boundaryASIN || region != "uk" {
+						t.Fatalf("unexpected lookup %q:%q", asin, region)
+					}
+					return &audnex.Book{ASIN: asin}, nil
+				},
+			}
+			book, region, err := resolveAudnexusPreview(context.Background(), boundaryASIN, tt.requested, "", services)
+			if tt.wantError {
+				if err == nil || !strings.Contains(err.Error(), "unsupported region") || calls != 0 {
+					t.Fatalf("expected unsupported-region rejection before lookup, got calls=%d error=%v", calls, err)
+				}
+			} else if err != nil || book == nil || region != "uk" || calls != 1 {
+				t.Fatalf("expected normalized regional lookup, got book=%v region=%q calls=%d error=%v", book, region, calls, err)
+			}
+		})
 	}
 }
 
