@@ -295,8 +295,9 @@ its valid ISBN-10/ISBN-13 counterpart), and finally by an exact audiobook
 it is not used when a higher-priority lookup fails or reports conflicting
 matches. Ebook matching remains unchanged.
 
-Only regional Audible audiobook matches are saved automatically. Audiobook ISBN
-and edition-ASIN fallback matches are resolved again during each processed sync,
+Regional Audible audiobook matches and verified audiobook ISBN matches without
+an ABS ASIN are saved automatically. Audiobook ISBN matches with an ASIN and
+edition-ASIN fallback matches are resolved again during each processed sync,
 while progress checkpoints let unchanged targets skip repeat writes. If all
 identifier searches miss for a valid Audiobookshelf ASIN (10 ASCII letters or
 digits), the item becomes `needs_review` with reason `audible_import_available`
