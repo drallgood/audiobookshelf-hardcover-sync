@@ -376,7 +376,7 @@ components:
         `audnexus_confirmed: true`. It does not require selecting a Hardcover
         book first; the request omits `book_id`, and the returned book and
         edition are verified. The source metadata is rechecked before import.
-        Audiobook `edition_asin` fallback records with outcomes `synced`,
+        Audiobook `isbn` or `edition_asin` fallback records with outcomes `synced`,
         `already_current`, or `skipped` and a valid source ASIN use the same
         confirmed import workflow. Their recorded fallback target is informational;
         the import may resolve to a different book. Successful imports save the
@@ -945,8 +945,9 @@ components:
           type: string
           description: >-
             `edition_asin` identifies an audiobook matched by the final exact
-            edition-ASIN fallback. For `synced`, `already_current`, or `skipped`
-            outcomes with a valid source ASIN, Add edition uses the existing
+            edition-ASIN fallback, and `isbn` identifies an ISBN match. For
+            audiobook matches by either method with `synced`, `already_current`,
+            or `skipped` outcomes and a valid source ASIN, Add edition uses the existing
             user-confirmed Import by Audible ASIN workflow.
         hardcover_book_id:
           type: string
@@ -956,7 +957,7 @@ components:
           description: Omitted when reason is `audible_import_available`.
         edition_added:
           type: boolean
-          description: A matching confirmed edition addition is currently saved for this eligible item, including an audiobook edition-ASIN fallback. Historical outcomes and counts are unchanged.
+          description: A matching confirmed edition addition is currently saved for this eligible item, including an audiobook ISBN or edition-ASIN fallback with a valid source ASIN. Historical outcomes and counts are unchanged.
         edition_action:
           $ref: '#/components/schemas/EditionActionState'
         hardcover_title: {type: string}
@@ -1605,7 +1606,7 @@ paths:
         eligible Audiobookshelf item. The API refetches the item and compares
         its ID, title, author, ASIN, ISBN, and reading format with the verified
         sync record before any Hardcover mutation. Audiobook records with
-        `match_method: edition_asin`, a valid source ASIN, and outcome `synced`,
+        `match_method: isbn` or `edition_asin`, a valid source ASIN, and outcome `synced`,
         `already_current`, or `skipped` are also eligible and use the same
         confirmed unanchored import workflow as `audible_import_available`.
         Their fallback Hardcover target does not constrain the import result.
@@ -1798,7 +1799,7 @@ paths:
         the exact profile, run, item, and `ASIN:region`; imports tied to a
         selected Hardcover book also bind the token to the Hardcover book from
         the run. For
-        `audible_import_available` and eligible audiobook `edition_asin`
+        `audible_import_available` and eligible audiobook `isbn` or `edition_asin`
         fallback records, it resolves the Hardcover book ID from the
         terminal regional import status or exact regional mapping, then
         revalidates the retained eligible snapshot and freshly fetched

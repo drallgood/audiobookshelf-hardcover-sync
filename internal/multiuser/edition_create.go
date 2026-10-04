@@ -452,7 +452,7 @@ func (s *MultiUserService) AnnotateEditionAdditions(profileID string, snapshot *
 	needsEditionOverlay := false
 	for i := range snapshot.BookOutcomes {
 		record := &snapshot.BookOutcomes[i]
-		fallbackASIN := sync.IsAudiobookASINFallbackRecord(*record)
+		fallbackASIN := sync.IsAudiobookIdentifierFallbackRecord(*record)
 		if action, exists := actions[record.BookID]; exists && (record.Outcome == sync.OutcomeNeedsReview || fallbackASIN) {
 			copyOf := action
 			record.EditionAction = &copyOf
@@ -482,7 +482,7 @@ func (s *MultiUserService) AnnotateEditionAdditions(profileID string, snapshot *
 	for i := range snapshot.BookOutcomes {
 		record := &snapshot.BookOutcomes[i]
 		association, exists := state.GetAssociation(record.BookID)
-		fallbackASIN := sync.IsAudiobookASINFallbackRecord(*record)
+		fallbackASIN := sync.IsAudiobookIdentifierFallbackRecord(*record)
 		associationMatchesSource := (record.Outcome == sync.OutcomeNeedsReview || fallbackASIN) && exists &&
 			association.HardcoverBookID == record.HardcoverBookID &&
 			strings.EqualFold(strings.TrimSpace(association.ReadingFormat), strings.TrimSpace(record.Format)) &&
@@ -508,7 +508,7 @@ func (s *MultiUserService) AnnotateEditionAdditions(profileID string, snapshot *
 }
 
 func unanchoredAudibleAssociationMatchesRecord(record sync.BookOutcomeRecord, association statepkg.Association) bool {
-	fallbackASIN := sync.IsAudiobookASINFallbackRecord(record)
+	fallbackASIN := sync.IsAudiobookIdentifierFallbackRecord(record)
 	if (!fallbackASIN && (record.Outcome != sync.OutcomeNeedsReview || record.Reason != mismatch.ReasonAudibleImportAvailable)) ||
 		(!fallbackASIN && (strings.TrimSpace(record.HardcoverBookID) != "" || strings.TrimSpace(record.EditionID) != "")) || association.ABSItemID != record.BookID ||
 		!strings.EqualFold(strings.TrimSpace(record.Format), string(models.ReadingFormatAudiobook)) ||

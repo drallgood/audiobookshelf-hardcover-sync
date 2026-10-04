@@ -22,6 +22,31 @@ func (c *audiobookFallbackClient) SearchBookByEditionASINResult(context.Context,
 	return c.fallback, c.err
 }
 
+func TestAudiobookIdentifierFallbackRecordEligibility(t *testing.T) {
+	for _, matchMethod := range []string{"isbn", string(hardcover.ASINMatchEditionASIN)} {
+		for _, outcome := range []SyncOutcome{OutcomeSynced, OutcomeAlreadyCurrent, OutcomeSkipped} {
+			record := BookOutcomeRecord{
+				Format: "Audiobook", MatchMethod: matchMethod, Outcome: outcome,
+				SourceASIN: "b00source1", ASIN: "invalid",
+			}
+			assert.True(t, IsAudiobookIdentifierFallbackRecord(record), "%s / %s", matchMethod, outcome)
+		}
+	}
+
+	for _, record := range []BookOutcomeRecord{
+		{Format: "Audiobook", MatchMethod: "saved_match", Outcome: OutcomeSynced, SourceASIN: "B00SOURCE1"},
+		{Format: "Audiobook", MatchMethod: string(hardcover.ASINMatchAudibleMapping), Outcome: OutcomeSynced, SourceASIN: "B00SOURCE1"},
+		{Format: "Audiobook", MatchMethod: "isbn", Outcome: OutcomeFailed, SourceASIN: "B00SOURCE1"},
+		{Format: "Audiobook", MatchMethod: "isbn", Outcome: OutcomeNeedsReview, SourceASIN: "B00SOURCE1"},
+		{Format: "Audiobook", MatchMethod: "isbn", Outcome: OutcomeWouldSync, SourceASIN: "B00SOURCE1"},
+		{Format: "Ebook", MatchMethod: "isbn", Outcome: OutcomeSynced, SourceASIN: "B00SOURCE1"},
+		{Format: "Audiobook", MatchMethod: "isbn", Outcome: OutcomeSynced, SourceASIN: "invalid", ASIN: "B00SOURCE1"},
+		{Format: "Audiobook", MatchMethod: "isbn", Outcome: OutcomeSynced},
+	} {
+		assert.False(t, IsAudiobookIdentifierFallbackRecord(record), "%+v", record)
+	}
+}
+
 func TestAudiobookIdentifierPrecedence(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -109,7 +134,7 @@ func TestAudiobookFallbackOutcomesAndIncrementalReResolution(t *testing.T) {
 			require.NoError(t, svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{}))
 			first := recordedOutcome(svc, book.ID)
 			assert.Equal(t, string(hardcover.ASINMatchEditionASIN), first.MatchMethod)
-			assert.True(t, IsAudiobookASINFallbackRecord(first))
+			assert.True(t, IsAudiobookIdentifierFallbackRecord(first))
 			if skipped {
 				assert.Equal(t, OutcomeSkipped, first.Outcome)
 			} else {
@@ -117,7 +142,7 @@ func TestAudiobookFallbackOutcomesAndIncrementalReResolution(t *testing.T) {
 			}
 			require.NoError(t, svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{}))
 			second := recordedOutcome(svc, book.ID)
-			assert.True(t, IsAudiobookASINFallbackRecord(second))
+			assert.True(t, IsAudiobookIdentifierFallbackRecord(second))
 			if !skipped {
 				assert.Equal(t, OutcomeAlreadyCurrent, second.Outcome)
 			}
@@ -130,7 +155,7 @@ func TestAudiobookFallbackOutcomesAndIncrementalReResolution(t *testing.T) {
 			association, saved := svc.state.GetAssociation(book.ID)
 			require.True(t, saved)
 			assert.Equal(t, "B0AUDIO001:us", association.RegionalExternalID)
-			assert.False(t, IsAudiobookASINFallbackRecord(recordedOutcome(svc, book.ID)))
+			assert.False(t, IsAudiobookIdentifierFallbackRecord(recordedOutcome(svc, book.ID)))
 			hc.AssertExpectations(t)
 		})
 	}

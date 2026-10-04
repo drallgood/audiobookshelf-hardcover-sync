@@ -14,27 +14,28 @@ import (
 
 func TestRunDetailsEditionRecoveryCapabilities(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		role         auth.UserRole
-		issuedAt     time.Time
-		signingKey   string
-		wantToken    bool
-		wantManual   bool
-		clearToken   bool
-		omitRecovery bool
-		fallback     bool
+		name                string
+		role                auth.UserRole
+		issuedAt            time.Time
+		signingKey          string
+		wantToken           bool
+		wantManual          bool
+		clearToken          bool
+		omitRecovery        bool
+		fallbackMatchMethod string
 	}{
-		{"owner", auth.RoleUser, time.Now(), "hardcover-token", true, false, false, false, false},
-		{"admin", auth.RoleAdmin, time.Now(), "hardcover-token", true, false, false, false, false},
-		{"viewer", auth.RoleViewer, time.Now(), "hardcover-token", false, false, false, false, false},
-		{"viewer without recovery", auth.RoleViewer, time.Now(), "hardcover-token", false, false, false, true, false},
-		{"expired", auth.RoleUser, time.Now().Add(-49 * time.Hour), "hardcover-token", false, true, false, false, false},
-		{"rotated", auth.RoleUser, time.Now(), "old-hardcover-token", false, true, false, false, false},
-		{"missing Hardcover token", auth.RoleUser, time.Now(), "hardcover-token", false, true, true, false, false},
-		{"fallback owner after resolved result", auth.RoleUser, time.Now(), "hardcover-token", true, false, false, false, true},
-		{"fallback viewer", auth.RoleViewer, time.Now(), "hardcover-token", false, false, false, false, true},
-		{"fallback expired", auth.RoleUser, time.Now().Add(-49 * time.Hour), "hardcover-token", false, true, false, false, true},
-		{"fallback rotated", auth.RoleUser, time.Now(), "old-hardcover-token", false, true, false, false, true},
+		{"owner", auth.RoleUser, time.Now(), "hardcover-token", true, false, false, false, ""},
+		{"admin", auth.RoleAdmin, time.Now(), "hardcover-token", true, false, false, false, ""},
+		{"viewer", auth.RoleViewer, time.Now(), "hardcover-token", false, false, false, false, ""},
+		{"viewer without recovery", auth.RoleViewer, time.Now(), "hardcover-token", false, false, false, true, ""},
+		{"expired", auth.RoleUser, time.Now().Add(-49 * time.Hour), "hardcover-token", false, true, false, false, ""},
+		{"rotated", auth.RoleUser, time.Now(), "old-hardcover-token", false, true, false, false, ""},
+		{"missing Hardcover token", auth.RoleUser, time.Now(), "hardcover-token", false, true, true, false, ""},
+		{"edition ASIN fallback owner after resolved result", auth.RoleUser, time.Now(), "hardcover-token", true, false, false, false, "edition_asin"},
+		{"edition ASIN fallback viewer", auth.RoleViewer, time.Now(), "hardcover-token", false, false, false, false, "edition_asin"},
+		{"edition ASIN fallback expired", auth.RoleUser, time.Now().Add(-49 * time.Hour), "hardcover-token", false, true, false, false, "edition_asin"},
+		{"edition ASIN fallback rotated", auth.RoleUser, time.Now(), "old-hardcover-token", false, true, false, false, "edition_asin"},
+		{"ISBN fallback owner after resolved result", auth.RoleUser, time.Now(), "hardcover-token", true, false, false, false, "isbn"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := newEditionDraftTestFixture(t, `{}`, "us")
@@ -47,8 +48,8 @@ func TestRunDetailsEditionRecoveryCapabilities(t *testing.T) {
 			const runID = "pending-details"
 			record := editionCreateRecord()
 			claims := editionRecoveryClaims{ProfileID: "draft-profile", RunID: runID, ABSItemID: "abs-item-1", HardcoverBookID: "42", AudibleIdentifier: "B0SOURCE12:us"}
-			if tc.fallback {
-				record = editionASINFallbackRecord(sync.OutcomeAlreadyCurrent)
+			if tc.fallbackMatchMethod != "" {
+				record = audiobookIdentifierFallbackRecord(sync.OutcomeAlreadyCurrent, tc.fallbackMatchMethod)
 				claims.HardcoverBookID = ""
 			}
 			addCompletedNeedsReviewRun(t, fixture, runID, record)
@@ -62,7 +63,7 @@ func TestRunDetailsEditionRecoveryCapabilities(t *testing.T) {
 				SubmittedBody: &sync.EditionActionSubmittedBody{RunID: runID, ABSItemID: "abs-item-1", Title: &editedTitle},
 				Data:          &sync.EditionActionData{HardcoverBookID: "42", AudibleIdentifier: claims.AudibleIdentifier, RecoveryToken: token},
 			}
-			if tc.fallback {
+			if tc.fallbackMatchMethod != "" {
 				action.Data.HardcoverBookID = "73"
 			}
 			require.NoError(t, fixture.multiUserService.SaveEditionAction("draft-profile", runID, "abs-item-1", action))

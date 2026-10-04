@@ -270,7 +270,7 @@ func (h *Handler) CheckEditionImport(w http.ResponseWriter, r *http.Request) {
 		if snapshotErr != nil {
 			return statepkg.Association{}, snapshotErr
 		}
-		unanchored := record.Reason == mismatch.ReasonAudibleImportAvailable || sync.IsAudiobookASINFallbackRecord(record)
+		unanchored := record.Reason == mismatch.ReasonAudibleImportAvailable || sync.IsAudiobookIdentifierFallbackRecord(record)
 		bookID := 0
 		if unanchored {
 			if normalizedEditionCreateFormat(record.Format) != models.ReadingFormatAudiobook ||
@@ -535,7 +535,7 @@ func (h *Handler) verifiedEditionCreateRecordWithRecoveryTransition(profileID, r
 		if record.BookID != itemID {
 			continue
 		}
-		fallbackASIN := sync.IsAudiobookASINFallbackRecord(record)
+		fallbackASIN := sync.IsAudiobookIdentifierFallbackRecord(record)
 		if (!fallbackASIN && record.Outcome != sync.OutcomeNeedsReview) || strings.TrimSpace(record.Format) == "" {
 			return nil, sync.BookOutcomeRecord{}, false, errStaleEditionCreateRun
 		}
@@ -574,10 +574,10 @@ func (h *Handler) verifiedEditionCreateRecordWithRecoveryTransition(profileID, r
 }
 
 func sameAudibleImportRecoverySource(selected, source sync.BookOutcomeRecord) bool {
-	selectedFallback := sync.IsAudiobookASINFallbackRecord(selected)
+	selectedFallback := sync.IsAudiobookIdentifierFallbackRecord(selected)
 	selectedSourceOnly := isUnanchoredAudibleImportSource(selected)
 	selectedAnchored := selected.Outcome == sync.OutcomeNeedsReview && !selectedSourceOnly && !selectedFallback
-	sourceIsFallback := sync.IsAudiobookASINFallbackRecord(source)
+	sourceIsFallback := sync.IsAudiobookIdentifierFallbackRecord(source)
 	if selected.BookID != source.BookID || (!selectedFallback && !selectedSourceOnly && !selectedAnchored) ||
 		(!sourceIsFallback && !isUnanchoredAudibleImportSource(source)) ||
 		normalizedEditionCreateFormat(selected.Format) != models.ReadingFormatAudiobook ||
@@ -625,8 +625,8 @@ func editionCreateSourceISBNs(record sync.BookOutcomeRecord) (string, string) {
 }
 
 func sameEditionCreateCandidate(requested, latest sync.BookOutcomeRecord) bool {
-	requestedFallback := sync.IsAudiobookASINFallbackRecord(requested)
-	latestFallback := sync.IsAudiobookASINFallbackRecord(latest)
+	requestedFallback := sync.IsAudiobookIdentifierFallbackRecord(requested)
+	latestFallback := sync.IsAudiobookIdentifierFallbackRecord(latest)
 	if latest.BookID != requested.BookID || requestedFallback != latestFallback ||
 		(!latestFallback && latest.Outcome != sync.OutcomeNeedsReview) ||
 		(!latestFallback && strings.TrimSpace(latest.HardcoverBookID) != strings.TrimSpace(requested.HardcoverBookID)) ||
@@ -699,7 +699,7 @@ func (h *Handler) createVerifiedEdition(ctx context.Context, profile *database.P
 		response.recovery = editionRecoveryFromAction(previousAction.Data)
 		return statepkg.Association{}, fmt.Errorf("%w: prior outcome is %s", multiuser.ErrEditionActionRequiresResolution, previousAction.Outcome)
 	}
-	unanchoredAudibleImport := record.Reason == mismatch.ReasonAudibleImportAvailable || sync.IsAudiobookASINFallbackRecord(record)
+	unanchoredAudibleImport := record.Reason == mismatch.ReasonAudibleImportAvailable || sync.IsAudiobookIdentifierFallbackRecord(record)
 	if unanchoredAudibleImport {
 		if !request.AudnexusConfirmed || strings.TrimSpace(request.AudibleIdentifier) == "" {
 			return statepkg.Association{}, errEditionAudnexusConfirmationRequired
@@ -773,7 +773,7 @@ func editionCreateSourceMatches(record sync.BookOutcomeRecord, item *models.Audi
 		return false
 	}
 	recordASIN := firstNonEmptyString(record.SourceASIN, record.ASIN)
-	if record.Reason == mismatch.ReasonAudibleImportAvailable || sync.IsAudiobookASINFallbackRecord(record) {
+	if record.Reason == mismatch.ReasonAudibleImportAvailable || sync.IsAudiobookIdentifierFallbackRecord(record) {
 		currentASIN, valid := audnex.CanonicalASIN(item.Media.Metadata.ASIN)
 		sourceASIN, sourceValid := audnex.CanonicalASIN(recordASIN)
 		if !valid || !sourceValid || currentASIN != sourceASIN {
@@ -816,7 +816,7 @@ func normalizeEditionCreateASIN(raw string) string {
 }
 
 func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database.ProfileWithTokens, item *models.AudiobookshelfBook, record sync.BookOutcomeRecord, request editionCreateRequest, client editionCreateHardcoverClient, response *editionCreateResponse) (statepkg.Association, error) {
-	unanchored := record.Reason == mismatch.ReasonAudibleImportAvailable || sync.IsAudiobookASINFallbackRecord(record)
+	unanchored := record.Reason == mismatch.ReasonAudibleImportAvailable || sync.IsAudiobookIdentifierFallbackRecord(record)
 	asin, region, err := parseSubmittedAudibleIdentifier(request.AudibleIdentifier)
 	if err != nil {
 		return statepkg.Association{}, err

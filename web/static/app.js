@@ -2009,7 +2009,7 @@ class SyncProfileApp {
 
     isAudibleImportRecord(record) {
         return (record?.outcome === 'needs_review' && record?.reason === 'audible_import_available')
-            || this.editionASINFallbackActionEligible(record);
+            || this.audiobookIdentifierFallbackActionEligible(record);
     }
 
     editionSourceASIN(record) {
@@ -2017,8 +2017,8 @@ class SyncProfileApp {
         return preferred || String(record?.asin || '').trim();
     }
 
-    editionASINFallbackActionEligible(record) {
-        return record?.match_method === 'edition_asin'
+    audiobookIdentifierFallbackActionEligible(record) {
+        return ['edition_asin', 'isbn'].includes(record?.match_method)
             && String(record.format || '').trim().toLowerCase() === 'audiobook'
             && ['synced', 'already_current', 'skipped'].includes(record.outcome)
             && /^[a-z0-9]{10}$/i.test(this.editionSourceASIN(record));
@@ -2026,10 +2026,10 @@ class SyncProfileApp {
 
     // Returns null when the create action applies, or a reason it does not.
     editionCreateIneligibleReason(record, runContext) {
-        const editionASINFallback = this.editionASINFallbackActionEligible(record);
-        if (!record || (record.outcome !== 'needs_review' && !editionASINFallback)) return 'Only needs-review items or eligible audiobook fallback matches can be resolved here.';
+        const identifierFallback = this.audiobookIdentifierFallbackActionEligible(record);
+        if (!record || (record.outcome !== 'needs_review' && !identifierFallback)) return 'Only needs-review items or eligible audiobook fallback matches can be resolved here.';
         if (!runContext || !['completed', 'canceled'].includes(runContext.state)) return 'Wait for the run to complete.';
-        if (editionASINFallback) return null;
+        if (identifierFallback) return null;
         const audibleImport = this.isAudibleImportRecord(record);
         if (audibleImport && !/^[a-z0-9]{10}$/i.test(this.editionSourceASIN(record))) return 'Audible import requires a valid 10-character ASIN from Audiobookshelf.';
         if (!audibleImport && !/^\d+$/.test(String(record.hardcover_book_id || '').trim())) return 'No Hardcover book was matched for this item.';
@@ -2063,7 +2063,7 @@ class SyncProfileApp {
         }
         if (this.isMatchedRecord(record)) {
             const syncingNote = 'A sync is running for this profile; this action will be available again when it finishes.';
-            const fallbackEligible = this.editionASINFallbackActionEligible(record);
+            const fallbackEligible = this.audiobookIdentifierFallbackActionEligible(record);
             return `<div class="edition-actions">
                 <span class="edition-note">Hardcover target: book ${this.escapeHtml(record.hardcover_book_id)}${record.edition_id ? `, edition ${this.escapeHtml(record.edition_id)}` : ''}</span>
                 ${fallbackEligible ? this.renderAddEditionAction(record, open) : ''}

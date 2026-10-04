@@ -671,7 +671,7 @@ func (h *Handler) projectEditionRecoveryCapabilities(r *http.Request, profileID 
 		}
 		if canVerifyRecoveryTokens {
 			bookID := snapshot.BookOutcomes[i].HardcoverBookID
-			if sync.IsAudiobookASINFallbackRecord(snapshot.BookOutcomes[i]) {
+			if sync.IsAudiobookIdentifierFallbackRecord(snapshot.BookOutcomes[i]) {
 				bookID = ""
 			}
 			claims := editionRecoveryClaims{
