@@ -41,6 +41,8 @@ available but makes the explicit create operation fail.
 ./edition --config ./config.yaml create --input edition.json
 # Single-user sync: saves the match in the configured sync.state_file.
 ./edition --config ./config.yaml create --input edition.json --abs-item-id li_123
+# Import by Audible ASIN: review the Audnexus preview, then confirm explicitly.
+./edition --config ./config.yaml create --input audible.json --confirm-audnexus
 # Web-service profile-123 with blank sync.state_file and paths.data_dir ./data.
 ./edition --config ./config.yaml create --input edition.json --abs-item-id li_123 --state-file ./data/sync_state.profile-123
 # Dry run without an ABS association; input has no abs_item_id.
@@ -78,13 +80,16 @@ profile-specific filename.
 
 ## Audiobook input
 
-The audiobook input needs a positive Hardcover `book_id` and either a valid
-ASIN or ISBN metadata. A valid ASIN is ten ASCII letters or digits.
+Audiobook input accepts a bare ASIN of ten ASCII letters or digits.
 `reading_format` defaults to `audiobook`. Input JSON is limited to 1 MiB.
+Provide a positive Hardcover `book_id` to add an edition to that selected
+Hardcover book. You may omit it only for an audiobook with a usable ASIN; this
+starts **Import by Audible ASIN**, which does not require selecting a
+Hardcover book first. Review the Audnexus record and confirm it by typing `y`
+or `yes`, or by passing `--confirm-audnexus`.
 
 ```json
 {
-  "book_id": 12345,
   "asin": "B00XXXYYZZ",
   "reading_format": "audiobook",
   "asin_region": "uk",
@@ -92,8 +97,30 @@ ASIN or ISBN metadata. A valid ASIN is ten ASCII letters or digits.
 }
 ```
 
-An ISBN-only audiobook uses the insertion fields while keeping
-`reading_format` set to `audiobook`:
+Add `"book_id": 12345` to add the edition to that selected Hardcover book.
+Existing export files with `book_id` continue to add the regional edition to
+the selected book.
+
+`asin_region` is optional; `region` is an alias. If both are supplied they
+must agree. A supplied region identifies the regional ASIN sent to Hardcover.
+For **Import by Audible ASIN**, `create` prints the Audnexus record for that
+exact ASIN and region before asking for confirmation. Without a region, the
+command discovers one by finding the requested ASIN in Audnexus; it prefers
+`audiobookshelf.audnexus_region` (default `us`) and does not infer a region
+from the ASIN. If discovery finds no region or Audnexus is temporarily
+unavailable, the command stops before the Hardcover import; retry later or
+supply `asin_region`.
+
+When an ABS item ID is present, the command also prints its metadata beside
+the Audnexus values and a per-field comparison. Differences are informational;
+review that the Audnexus record identifies the ABS item before confirming.
+Unknown or unavailable Audnexus data cannot be confirmed. A corrected ASIN and
+region can be supplied in the input for preview before creation. If an ABS
+item is supplied and its identifiers conflict with the input, pass
+`--confirm-identifier-correction` after reviewing the warning.
+
+An ISBN-only audiobook uses the insertion fields to add an edition to the
+selected Hardcover book while keeping `reading_format` set to `audiobook`:
 
 ```json
 {
@@ -176,10 +203,12 @@ token.
 
 The command prints a JSON result with `success`, `status`, `book_id`,
 `edition_id`, `image_id`, and `reading_format`; it may also include
-`image_error`, `existing`, `abs_item_id`, and `association_saved`. Regional
-audiobook statuses are `loaded`, `created`, or `dry_run`. Inserted editions,
-including ISBN-backed audiobooks, use `existing`, `created`, or `dry_run`.
-
+`image_error`, `existing`, `abs_item_id`, and `association_saved`. An
+**Import by Audible ASIN** result also includes `audnexus_region` and
+`audnexus_record`, plus `audnexus_comparison` when an ABS item was fetched.
+Regional audiobook imports use `loaded`, `created`, or `dry_run`; inserted
+editions, including ISBN-backed audiobooks, and ebooks use `existing`,
+`created`, or `dry_run`.
 When an ABS item ID is supplied, the command fetches the item before making a
 Hardcover change and requires its format to match the input. The saved match
 keeps the item's own ASIN and ISBN; a different submitted ASIN is recorded as

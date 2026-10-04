@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -48,28 +49,36 @@ type createOptions struct {
 	PreferredRegion             string
 	DryRun                      bool
 	ConfirmIdentifierCorrection bool
+	ConfirmAudnexus             bool
+	ConfirmationReader          io.Reader
+	PreviewWriter               io.Writer
 }
 
 type createOutput struct {
-	Success          bool   `json:"success"`
-	Status           string `json:"status,omitempty"`
-	BookID           int    `json:"book_id,omitempty"`
-	EditionID        int    `json:"edition_id"`
-	ImageID          int    `json:"image_id"`
-	ImageError       string `json:"image_error,omitempty"`
-	Existing         bool   `json:"existing,omitempty"`
-	ReadingFormat    string `json:"reading_format,omitempty"`
-	ABSItemID        string `json:"abs_item_id,omitempty"`
-	AssociationSaved bool   `json:"association_saved"`
-	Warning          string `json:"warning,omitempty"`
+	Success            bool                        `json:"success"`
+	Status             string                      `json:"status,omitempty"`
+	BookID             int                         `json:"book_id,omitempty"`
+	EditionID          int                         `json:"edition_id"`
+	ImageID            int                         `json:"image_id"`
+	ImageError         string                      `json:"image_error,omitempty"`
+	Existing           bool                        `json:"existing,omitempty"`
+	ReadingFormat      string                      `json:"reading_format,omitempty"`
+	ABSItemID          string                      `json:"abs_item_id,omitempty"`
+	AssociationSaved   bool                        `json:"association_saved"`
+	Warning            string                      `json:"warning,omitempty"`
+	AudnexusRegion     string                      `json:"audnexus_region,omitempty"`
+	AudnexusRecord     *edition.AudnexusRecord     `json:"audnexus_record,omitempty"`
+	AudnexusComparison *edition.AudnexusComparison `json:"audnexus_comparison,omitempty"`
 }
 
 type createServices struct {
-	fetchABSItem       func(context.Context, string) (*models.AudiobookshelfBook, error)
-	discoverAudible    func(context.Context, string, string) (string, error)
-	importAudiobook    func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error)
-	createEdition      func(context.Context, *edition.EditionInput) (*edition.EditionResult, error)
-	getEditionUncached func(context.Context, string) (*models.Edition, error)
+	fetchABSItem        func(context.Context, string) (*models.AudiobookshelfBook, error)
+	discoverAudible     func(context.Context, string, string) (string, error)
+	getAudibleBook      func(context.Context, string, string) (*audnex.Book, error)
+	discoverAudibleBook func(context.Context, string, string) (*audnex.Book, string, error)
+	importAudiobook     func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error)
+	createEdition       func(context.Context, *edition.EditionInput) (*edition.EditionResult, error)
+	getEditionUncached  func(context.Context, string) (*models.Edition, error)
 }
 
 func newCreateServices(cfg *config.Config, log *logger.Logger, dryRun bool) (createServices, error) {
@@ -83,6 +92,7 @@ func newCreateServices(cfg *config.Config, log *logger.Logger, dryRun bool) (cre
 	if err := creator.SetAudiobookshelfBaseURL(cfg.Audiobookshelf.URL); err != nil {
 		return createServices{}, fmt.Errorf("invalid Audiobookshelf URL: %w", err)
 	}
+	audnexClient := audnex.NewClient(log)
 	return createServices{
 		fetchABSItem: func(ctx context.Context, itemID string) (*models.AudiobookshelfBook, error) {
 			if strings.TrimSpace(cfg.Audiobookshelf.URL) == "" {
@@ -102,12 +112,16 @@ func newCreateServices(cfg *config.Config, log *logger.Logger, dryRun bool) (cre
 			return abs.GetLibraryItemByID(ctx, itemID)
 		},
 		discoverAudible: func(ctx context.Context, asin, preferred string) (string, error) {
-			_, region, err := audnex.NewClient(log).DiscoverBookByASIN(ctx, asin, preferred)
+			_, region, err := audnexClient.DiscoverBookByASIN(ctx, asin, preferred)
 			if err != nil {
 				return "", err
 			}
 			return region, nil
 		},
+		getAudibleBook: func(ctx context.Context, asin, region string) (*audnex.Book, error) {
+			return audnexClient.GetBookByASIN(ctx, asin, region)
+		},
+		discoverAudibleBook: audnexClient.DiscoverBookByASIN,
 		importAudiobook: func(ctx context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
 			return hc.ImportRegionalAudiobook(ctx, input)
 		},
@@ -136,7 +150,8 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 	default:
 		return nil, fmt.Errorf("invalid reading_format %q, expected audiobook or ebook", input.ReadingFormat)
 	}
-	if err := validateCreateInput(&input.EditionInput, input.ABSItemID != ""); err != nil {
+	unanchoredAudible := input.ReadingFormat == models.ReadingFormatAudiobook && input.BookID == 0
+	if err := validateCreateInput(&input.EditionInput, input.ABSItemID != "", unanchoredAudible); err != nil {
 		return nil, err
 	}
 
@@ -146,27 +161,40 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 	}
 	associationStatePath := statePath
 	var loadedState *state.State
-	if input.ABSItemID != "" {
-		fileLock, lockErr := state.AcquireFileLock(statePath)
-		if lockErr != nil {
-			return nil, fmt.Errorf("failed to lock sync state file: %w", lockErr)
-		}
-		defer func() {
+	var fileLock *state.FileLock
+	defer func() {
+		if fileLock != nil {
 			if closeErr := fileLock.Close(); closeErr != nil && err == nil {
 				err = fmt.Errorf("failed to release sync state lock: %w", closeErr)
 				result = nil
 			}
-		}()
+		}
+	}()
+	loadAssociationState := func() error {
+		if input.ABSItemID == "" || fileLock != nil {
+			return nil
+		}
+		acquired, lockErr := state.AcquireFileLock(statePath)
+		if lockErr != nil {
+			return fmt.Errorf("failed to lock sync state file: %w", lockErr)
+		}
+		fileLock = acquired
 		associationStatePath = fileLock.StatePath()
 		if associationStatePath == "" {
-			return nil, errors.New("state file lock did not resolve a state path")
+			return errors.New("state file lock did not resolve a state path")
 		}
 		loadedState, err = state.LoadState(associationStatePath)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load sync state: %w", err)
+			return fmt.Errorf("failed to load sync state: %w", err)
 		}
 		if _, exists := loadedState.GetAssociation(input.ABSItemID); exists {
-			return nil, fmt.Errorf("Audiobookshelf item %q already has a confirmed Hardcover association", input.ABSItemID)
+			return fmt.Errorf("Audiobookshelf item %q already has a confirmed Hardcover association", input.ABSItemID)
+		}
+		return nil
+	}
+	if input.ABSItemID != "" && !unanchoredAudible {
+		if err := loadAssociationState(); err != nil {
+			return nil, err
 		}
 	}
 
@@ -180,11 +208,8 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 		if err != nil {
 			return nil, fmt.Errorf("failed to verify Audiobookshelf item %q: %w", input.ABSItemID, err)
 		}
-		if absItem == nil || strings.TrimSpace(absItem.ID) != input.ABSItemID {
-			return nil, fmt.Errorf("Audiobookshelf returned a different item than %q", input.ABSItemID)
-		}
-		if absItem.ReadingFormat() != input.ReadingFormat {
-			return nil, fmt.Errorf("Audiobookshelf item %q is %s, but input reading_format is %s", input.ABSItemID, absItem.ReadingFormat(), input.ReadingFormat)
+		if err := validateABSCreateItem(absItem, input.ABSItemID, input.ReadingFormat); err != nil {
+			return nil, err
 		}
 	}
 
@@ -207,29 +232,88 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 	}
 
 	if input.ReadingFormat == models.ReadingFormatAudiobook && input.ASIN != "" {
-		region, regionErr := resolveAudibleRegion(ctx, input.ASIN, input.ASINRegion, options.PreferredRegion, services)
-		if regionErr != nil {
-			return nil, regionErr
+		var region string
+		var audibleRecord *edition.AudnexusRecord
+		var audibleComparison *edition.AudnexusComparison
+		var audnexusConfirmedAt time.Time
+		if unanchoredAudible {
+			book, foundRegion, previewErr := resolveAudnexusPreview(ctx, input.ASIN, input.ASINRegion, options.PreferredRegion, services)
+			if previewErr != nil {
+				return nil, previewErr
+			}
+			region = foundRegion
+			record := edition.BuildAudnexusRecord(book)
+			audibleRecord = &record
+			if absItem != nil {
+				comparison := edition.CompareAudnexus(absItem, record)
+				audibleComparison = &comparison
+			}
+			if err := writeAudnexusPreview(options.PreviewWriter, absItem, region, record, audibleComparison); err != nil {
+				return nil, fmt.Errorf("failed to display Audnexus preview: %w", err)
+			}
+		} else {
+			var regionErr error
+			region, regionErr = resolveAudibleRegion(ctx, input.ASIN, input.ASINRegion, options.PreferredRegion, services)
+			if regionErr != nil {
+				return nil, regionErr
+			}
 		}
 		if options.DryRun {
+			if unanchoredAudible && input.ABSItemID != "" {
+				if err := loadAssociationState(); err != nil {
+					return nil, err
+				}
+			}
 			return &createOutput{
-				Success:          true,
-				Status:           "dry_run",
-				BookID:           input.BookID,
-				ReadingFormat:    input.ReadingFormat,
-				ABSItemID:        input.ABSItemID,
-				AssociationSaved: false,
-				Warning:          identifierWarning,
+				Success:            true,
+				Status:             "dry_run",
+				BookID:             input.BookID,
+				ReadingFormat:      input.ReadingFormat,
+				ABSItemID:          input.ABSItemID,
+				AssociationSaved:   false,
+				Warning:            identifierWarning,
+				AudnexusRegion:     regionIfUnanchored(unanchoredAudible, region),
+				AudnexusRecord:     audibleRecord,
+				AudnexusComparison: audibleComparison,
 			}, nil
+		}
+		if unanchoredAudible && !options.ConfirmAudnexus {
+			confirmed, confirmErr := confirmAudnexusRecord(options.ConfirmationReader, options.PreviewWriter)
+			if confirmErr != nil {
+				return nil, confirmErr
+			}
+			if !confirmed {
+				return nil, errors.New("Audnexus record was not confirmed; no Hardcover changes were made")
+			}
+		}
+		if unanchoredAudible {
+			audnexusConfirmedAt = time.Now().UTC()
+			if input.ABSItemID != "" {
+				if err := loadAssociationState(); err != nil {
+					return nil, err
+				}
+				freshItem, fetchErr := services.fetchABSItem(ctx, input.ABSItemID)
+				if fetchErr != nil {
+					return nil, fmt.Errorf("failed to reverify Audiobookshelf item %q after Audnexus confirmation: %w", input.ABSItemID, fetchErr)
+				}
+				if validateErr := validateABSCreateItem(freshItem, input.ABSItemID, input.ReadingFormat); validateErr != nil {
+					return nil, fmt.Errorf("Audiobookshelf item %q changed while awaiting Audnexus confirmation: %w", input.ABSItemID, validateErr)
+				}
+				if !sameABSSourceSnapshot(absItem, freshItem) {
+					return nil, fmt.Errorf("Audiobookshelf item %q changed while awaiting Audnexus confirmation; no Hardcover changes were made", input.ABSItemID)
+				}
+				absItem = freshItem
+			}
 		}
 		if services.importAudiobook == nil {
 			return nil, errors.New("regional audiobook import is unavailable")
 		}
 		mutationCtx, cancel := withMutationBudget(ctx)
 		resolved, importErr := services.importAudiobook(mutationCtx, hardcover.RegionalAudiobookInput{
-			BookID: input.BookID,
-			ASIN:   input.ASIN,
-			Region: region,
+			BookID:     input.BookID,
+			ASIN:       input.ASIN,
+			Region:     region,
+			Unanchored: unanchoredAudible,
 		})
 		cancel()
 		if importErr != nil {
@@ -242,21 +326,32 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 			return nil, fmt.Errorf("regional audiobook import returned unsupported status %q", resolved.Status)
 		}
 		expectedExternalID := strings.ToUpper(input.ASIN) + ":" + region
-		if resolved.BookID != input.BookID || resolved.EditionID <= 0 || resolved.ReadingFormatID != models.ReadingFormatID(models.ReadingFormatAudiobook) || resolved.RegionalExternalID != expectedExternalID {
-			return nil, fmt.Errorf("regional audiobook import returned an identity or reading format that did not match book %d", input.BookID)
+		if resolved.BookID <= 0 || (!unanchoredAudible && resolved.BookID != input.BookID) || resolved.EditionID <= 0 || resolved.ReadingFormatID != models.ReadingFormatID(models.ReadingFormatAudiobook) || resolved.RegionalExternalID != expectedExternalID {
+			return nil, fmt.Errorf("regional audiobook import returned an identity or reading format that did not match the requested Audible identifier %q", expectedExternalID)
 		}
 		output := &createOutput{
-			Success:          true,
-			Status:           string(resolved.Status),
-			BookID:           resolved.BookID,
-			EditionID:        resolved.EditionID,
-			ReadingFormat:    models.ReadingFormatAudiobook,
-			ABSItemID:        input.ABSItemID,
-			AssociationSaved: false,
-			Warning:          identifierWarning,
+			Success:            true,
+			Status:             string(resolved.Status),
+			BookID:             resolved.BookID,
+			EditionID:          resolved.EditionID,
+			ReadingFormat:      models.ReadingFormatAudiobook,
+			ABSItemID:          input.ABSItemID,
+			AssociationSaved:   false,
+			Warning:            identifierWarning,
+			AudnexusRegion:     regionIfUnanchored(unanchoredAudible, region),
+			AudnexusRecord:     audibleRecord,
+			AudnexusComparison: audibleComparison,
 		}
 		if absItem != nil {
-			association := audiobookAssociation(absItem, input.ASIN, resolved)
+			var association state.Association
+			if unanchoredAudible {
+				association, err = state.NewAudibleImportAssociation(absItem, resolved, resolved.RegionalExternalID, audnexusConfirmedAt)
+				if err != nil {
+					return nil, fmt.Errorf("Hardcover reported audiobook %s, but the verified local association could not be prepared: %w", resolved.Status, err)
+				}
+			} else {
+				association = audiobookAssociation(absItem, input.ASIN, resolved)
+			}
 			if err := saveAssociation(loadedState, associationStatePath, association); err != nil {
 				return nil, fmt.Errorf("Hardcover reported audiobook %s, but the local association could not be saved. Verify the Hardcover result before retrying; retrying may create another edition: %w", resolved.Status, err)
 			}
@@ -358,6 +453,27 @@ func editionCreateError(readingFormat string, err error) error {
 	}
 }
 
+func validateABSCreateItem(item *models.AudiobookshelfBook, expectedID, expectedFormat string) error {
+	if item == nil || strings.TrimSpace(item.ID) != expectedID {
+		return fmt.Errorf("Audiobookshelf returned a different item than %q", expectedID)
+	}
+	if item.ReadingFormat() != expectedFormat {
+		return fmt.Errorf("Audiobookshelf item %q is %s, but input reading_format is %s", expectedID, item.ReadingFormat(), expectedFormat)
+	}
+	return nil
+}
+
+// sameABSSourceSnapshot compares the identifiers retained with an association.
+// ISBN separators and ASIN casing do not change the identity being confirmed.
+func sameABSSourceSnapshot(before, after *models.AudiobookshelfBook) bool {
+	if before == nil || after == nil || strings.TrimSpace(before.ID) != strings.TrimSpace(after.ID) || before.ReadingFormat() != after.ReadingFormat() {
+		return false
+	}
+	beforeASIN, beforeISBN10, beforeISBN13 := state.SourceIdentifiers(before.Media.Metadata.ASIN, before.Media.Metadata.ISBN)
+	afterASIN, afterISBN10, afterISBN13 := state.SourceIdentifiers(after.Media.Metadata.ASIN, after.Media.Metadata.ISBN)
+	return strings.EqualFold(beforeASIN, afterASIN) && isbn.Normalize(beforeISBN10) == isbn.Normalize(afterISBN10) && isbn.Normalize(beforeISBN13) == isbn.Normalize(afterISBN13)
+}
+
 func readEditionCreateInput(path string) (editionCreateInput, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -393,8 +509,8 @@ func (input editionCreateInput) selectedRegion() (string, error) {
 	return asinRegion, nil
 }
 
-func validateCreateInput(input *edition.EditionInput, hasABSItem bool) error {
-	if input.BookID <= 0 {
+func validateCreateInput(input *edition.EditionInput, hasABSItem, allowUnanchoredAudible bool) error {
+	if input.BookID < 0 || input.BookID == 0 && !allowUnanchoredAudible {
 		return errors.New("book_id must be a positive Hardcover book ID")
 	}
 	format := strings.ToLower(strings.TrimSpace(input.ReadingFormat))
@@ -406,6 +522,9 @@ func validateCreateInput(input *edition.EditionInput, hasABSItem bool) error {
 	default:
 		return fmt.Errorf("invalid reading_format %q, expected audiobook or ebook", input.ReadingFormat)
 	}
+	if allowUnanchoredAudible && input.ReadingFormat != models.ReadingFormatAudiobook {
+		return errors.New("book_id may be omitted only for an audiobook with a usable Audible ASIN")
+	}
 	input.ASIN = strings.TrimSpace(input.ASIN)
 	input.ISBN10 = strings.TrimSpace(input.ISBN10)
 	input.ISBN13 = strings.TrimSpace(input.ISBN13)
@@ -415,6 +534,9 @@ func validateCreateInput(input *edition.EditionInput, hasABSItem bool) error {
 			input.ASIN = canonicalASIN
 		} else {
 			input.ASIN = ""
+		}
+		if allowUnanchoredAudible && input.ASIN == "" {
+			return errors.New("book_id may be omitted only for an audiobook with a usable Audible ASIN")
 		}
 		if input.ASIN == "" && input.ISBN10 == "" && input.ISBN13 == "" && !hasABSItem {
 			return errors.New("an ASIN or ISBN is required")
@@ -513,6 +635,177 @@ func resolveAudibleRegion(ctx context.Context, asin, requested, preferred string
 		return "", fmt.Errorf("Audnex discovery returned unsupported region %q", region)
 	}
 	return region, nil
+}
+
+// resolveAudnexusPreview fetches the exact user-supplied region or discovers a
+// region and returns the record that will be shown and confirmed before import.
+func resolveAudnexusPreview(ctx context.Context, asin, requested, preferred string, services createServices) (*audnex.Book, string, error) {
+	var book *audnex.Book
+	var region string
+	var err error
+	if requested != "" {
+		if services.getAudibleBook == nil {
+			return nil, "", errors.New("Audnexus regional lookup is unavailable")
+		}
+		region = requested
+		book, err = services.getAudibleBook(ctx, asin, region)
+	} else {
+		preferred = strings.ToLower(strings.TrimSpace(preferred))
+		if preferred != "" && !audnexregion.IsRegion(preferred) {
+			return nil, "", fmt.Errorf("configured audiobookshelf.audnexus_region %q is unsupported", preferred)
+		}
+		if services.discoverAudibleBook == nil {
+			return nil, "", errors.New("Audnexus region discovery is unavailable")
+		}
+		book, region, err = services.discoverAudibleBook(ctx, asin, preferred)
+	}
+	if err != nil {
+		return nil, "", audnexusPreviewError(asin, region, err)
+	}
+	if book == nil {
+		if requested != "" {
+			return nil, "", fmt.Errorf("Audnexus did not find ASIN %q in region %q", asin, requested)
+		}
+		return nil, "", fmt.Errorf("Audnexus did not find ASIN %q in any supported region; set asin_region to choose a region", asin)
+	}
+	returnedASIN, validASIN := audnex.CanonicalASIN(book.ASIN)
+	if !validASIN || returnedASIN != asin {
+		return nil, "", fmt.Errorf("Audnexus returned a record for ASIN %q instead of %q", book.ASIN, asin)
+	}
+	region = strings.ToLower(strings.TrimSpace(region))
+	if !audnexregion.IsRegion(region) {
+		return nil, "", fmt.Errorf("Audnexus lookup returned unsupported region %q", region)
+	}
+	return book, region, nil
+}
+
+func audnexusPreviewError(asin, region string, err error) error {
+	switch {
+	case errors.Is(err, audnex.ErrNotFound):
+		return fmt.Errorf("Audnexus did not find ASIN %q in region %q", asin, region)
+	case errors.Is(err, audnex.ErrRateLimited):
+		return fmt.Errorf("Audnexus rate limited the regional lookup for ASIN %q; retry later: %w", asin, err)
+	case errors.Is(err, audnex.ErrTransient), errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("Audnexus regional lookup for ASIN %q is temporarily unavailable; retry later: %w", asin, err)
+	default:
+		return fmt.Errorf("failed to retrieve Audnexus metadata for ASIN %q: %w", asin, err)
+	}
+}
+
+func regionIfUnanchored(unanchored bool, region string) string {
+	if !unanchored {
+		return ""
+	}
+	return region
+}
+
+func writeAudnexusPreview(writer io.Writer, absItem *models.AudiobookshelfBook, region string, record edition.AudnexusRecord, comparison *edition.AudnexusComparison) error {
+	if writer == nil {
+		return nil
+	}
+	if _, err := fmt.Fprintf(writer, "Audnexus regional record %s:%s\n", displayText(record.ASIN), region); err != nil {
+		return err
+	}
+	audnexusFields := []struct{ name, value string }{
+		{"Title", record.Title}, {"Subtitle", record.Subtitle},
+		{"Authors", strings.Join(record.Authors, ", ")}, {"Narrators", strings.Join(record.Narrators, ", ")},
+		{"Series", strings.Join(record.Series, ", ")}, {"Series position", record.SeriesPosition},
+		{"Publisher", record.Publisher}, {"Release date", record.ReleaseDate},
+		{"Runtime", displayRuntime(record.RuntimeSeconds)}, {"Language", record.Language}, {"Cover URL", record.CoverURL},
+	}
+	for _, field := range audnexusFields {
+		if err := writePreviewValue(writer, field.name, field.value); err != nil {
+			return err
+		}
+	}
+	if absItem == nil {
+		return nil
+	}
+	if _, err := fmt.Fprintf(writer, "Audiobookshelf item %s\n", displayText(absItem.ID)); err != nil {
+		return err
+	}
+	metadata := absItem.Media.Metadata
+	absSeries, absPosition := edition.AudiobookshelfSeriesFields(metadata)
+	absReleaseDate := strings.TrimSpace(metadata.PublishedDate)
+	if absReleaseDate == "" {
+		absReleaseDate = strings.TrimSpace(metadata.PublishedYear)
+	}
+	absFields := []struct{ name, value string }{
+		{"Title", metadata.Title}, {"Subtitle", metadata.Subtitle},
+		{"Authors", metadata.AuthorName}, {"Narrators", metadata.NarratorName},
+		{"Series", absSeries}, {"Series position", absPosition},
+		{"Publisher", metadata.Publisher}, {"Release date", absReleaseDate},
+		{"Runtime", displayRuntime(int(absItem.Media.Duration + 0.5))}, {"Language", metadata.Language},
+		{"Cover path", absItem.Media.CoverPath},
+	}
+	for _, field := range absFields {
+		if err := writePreviewValue(writer, field.name, field.value); err != nil {
+			return err
+		}
+	}
+	if comparison == nil {
+		return nil
+	}
+	if _, err := fmt.Fprintln(writer, "Per-field comparison (ABS / Audnexus):"); err != nil {
+		return err
+	}
+	comparisonFields := []struct {
+		name, abs, audnexus string
+		status              edition.AudnexusFieldStatus
+	}{
+		{"Title", metadata.Title, record.Title, comparison.Title},
+		{"Subtitle", metadata.Subtitle, record.Subtitle, comparison.Subtitle},
+		{"Authors", metadata.AuthorName, strings.Join(record.Authors, ", "), comparison.Authors},
+		{"Narrators", metadata.NarratorName, strings.Join(record.Narrators, ", "), comparison.Narrators},
+		{"Series", absSeries, strings.Join(record.Series, ", "), comparison.Series},
+		{"Series position", absPosition, record.SeriesPosition, comparison.SeriesPosition},
+		{"Publisher", metadata.Publisher, record.Publisher, comparison.Publisher},
+		{"Release date", absReleaseDate, record.ReleaseDate, comparison.ReleaseDate},
+		{"Runtime", displayRuntime(int(absItem.Media.Duration + 0.5)), displayRuntime(record.RuntimeSeconds), comparison.Runtime},
+		{"Language", metadata.Language, record.Language, comparison.Language},
+	}
+	for _, field := range comparisonFields {
+		if _, err := fmt.Fprintf(writer, "  %s: %s (ABS %s; Audnexus %s)\n", field.name, field.status, displayText(field.abs), displayText(field.audnexus)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writePreviewValue(writer io.Writer, label, value string) error {
+	_, err := fmt.Fprintf(writer, "  %s: %s\n", label, displayText(value))
+	return err
+}
+
+func displayText(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "(missing)"
+	}
+	return strconv.Quote(value)
+}
+
+func displayRuntime(seconds int) string {
+	if seconds <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d seconds", seconds)
+}
+
+func confirmAudnexusRecord(reader io.Reader, writer io.Writer) (bool, error) {
+	if reader == nil {
+		return false, errors.New("Audnexus confirmation requires interactive input or --confirm-audnexus")
+	}
+	if writer != nil {
+		if _, err := fmt.Fprint(writer, "Import this audiobook without a Hardcover book ID? Type yes to confirm [y/N]: "); err != nil {
+			return false, err
+		}
+	}
+	answer, err := bufio.NewReader(reader).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, fmt.Errorf("failed to read Audnexus confirmation: %w", err)
+	}
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	return answer == "y" || answer == "yes", nil
 }
 
 func audiobookAssociation(item *models.AudiobookshelfBook, requestedASIN string, resolved *hardcover.RegionalAudiobookResult) state.Association {

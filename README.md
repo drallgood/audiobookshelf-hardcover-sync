@@ -1023,10 +1023,16 @@ The project includes several utility tools to help with specific tasks:
 
 ### Edition Tool
 
-The `edition` command adds a missing edition to an existing Hardcover book.
-Audiobooks are imported through Hardcover's regional Audible import; ebooks
-are inserted as ebook editions. It can also save the match for an
-Audiobookshelf item so the next sync uses the new edition.
+The `edition` command supports adding an edition to a selected Hardcover book
+and **Import by Audible ASIN**, which imports without selecting a Hardcover
+book first. Ebooks are inserted as ebook editions on the selected book. It can
+also save the match for an Audiobookshelf item so the next sync uses the new
+edition.
+
+For an audiobook input with a usable ASIN, omit `book_id` to review the regional
+Audnexus record and confirm it interactively or with `--confirm-audnexus`.
+Provide `--abs-item-id` to compare Audiobookshelf metadata and save the verified
+match. Existing inputs with `book_id` keep the selected-book workflow.
 
 ```bash
 # Build the tool

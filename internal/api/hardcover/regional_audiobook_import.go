@@ -54,12 +54,15 @@ func (e *RegionalAudiobookWrongFormatError) Unwrap() []error {
 	return []error{ErrRegionalAudiobookWrongFormat, ErrRegionalAudiobookIdentityConflict}
 }
 
-// RegionalAudiobookInput identifies an audiobook import for a known Hardcover
-// book using an Audible ASIN and its confirmed region.
+// RegionalAudiobookInput identifies a regional Audible audiobook import.
+// Unanchored explicitly creates or resolves the Hardcover book from the
+// regional identifier without sending book_id. The default anchored mode still
+// requires BookID.
 type RegionalAudiobookInput struct {
-	BookID int
-	ASIN   string
-	Region string
+	BookID     int
+	ASIN       string
+	Region     string
+	Unanchored bool
 }
 
 // RegionalAudiobookStatus is the terminal state reported by Hardcover's
@@ -75,6 +78,7 @@ const (
 type RegionalAudiobookResult struct {
 	Status             RegionalAudiobookStatus
 	BookID             int
+	BookTitle          string
 	EditionID          int
 	ReadingFormatID    int
 	RegionalExternalID string
@@ -82,10 +86,10 @@ type RegionalAudiobookResult struct {
 	Edition *models.Edition `json:"-"`
 }
 
-// ImportRegionalAudiobook imports or resolves a region-qualified Audible ID
-// for an existing Hardcover book. It waits for Hardcover's import status to
-// reach a terminal state, then verifies the returned edition belongs to the
-// requested book and has audiobook reading format before reporting success.
+// ImportRegionalAudiobook imports or resolves a region-qualified Audible ID.
+// It waits for Hardcover's import status to reach a terminal state, then
+// verifies the returned edition belongs to the returned or requested book and
+// has audiobook reading format before reporting success.
 func (c *Client) ImportRegionalAudiobook(ctx context.Context, input RegionalAudiobookInput) (*RegionalAudiobookResult, error) {
 	if c.dryRun {
 		return nil, ErrRegionalAudiobookDryRun
@@ -102,25 +106,29 @@ mutation UpsertRegionalAudibleBook($book: CreateBookFromPlatformInput!) {
   upsert_book(book: $book) {
     id
     status
-    book { id }
+    book { id title }
     edition { id book_id reading_format_id }
     edition_id
     errors
   }
 }`
+	bookInput := map[string]interface{}{
+		"external_id": externalID,
+		"platform_id": audiblePlatformID,
+	}
+	if !input.Unanchored {
+		bookInput["book_id"] = input.BookID
+	}
 	variables := map[string]interface{}{
-		"book": map[string]interface{}{
-			"book_id":     input.BookID,
-			"external_id": externalID,
-			"platform_id": audiblePlatformID,
-		},
+		"book": bookInput,
 	}
 	var mutationResponse struct {
 		UpsertBook struct {
 			ID     int    `json:"id"`
 			Status string `json:"status"`
 			Book   *struct {
-				ID int `json:"id"`
+				ID    int    `json:"id"`
+				Title string `json:"title"`
 			} `json:"book"`
 			Edition   *regionalImportEdition `json:"edition"`
 			EditionID *int                   `json:"edition_id"`
@@ -137,27 +145,36 @@ mutation UpsertRegionalAudibleBook($book: CreateBookFromPlatformInput!) {
 	if strings.EqualFold(strings.TrimSpace(upsert.Status), "failed") {
 		return nil, fmt.Errorf("%w: Hardcover reported failed status", ErrRegionalAudiobookImportFailed)
 	}
-	if upsert.Book != nil && upsert.Book.ID != 0 && upsert.Book.ID != input.BookID {
-		return nil, fmt.Errorf("%w: requested book %d, upsert returned book %d", ErrRegionalAudiobookIdentityConflict, input.BookID, upsert.Book.ID)
+	resolvedBookID := input.BookID
+	if upsert.Book != nil && upsert.Book.ID > 0 {
+		if !input.Unanchored && upsert.Book.ID != input.BookID {
+			return nil, fmt.Errorf("%w: requested book %d, upsert returned book %d", ErrRegionalAudiobookIdentityConflict, input.BookID, upsert.Book.ID)
+		}
+		resolvedBookID = upsert.Book.ID
 	}
 	if err := validateRegionalEditionLink(pointerInt(upsert.EditionID), upsert.Edition, "upsert"); err != nil {
 		return nil, err
 	}
-	if err := validateRegionalImportEdition(upsert.Edition, input.BookID); err != nil {
+	if err := validateRegionalImportEdition(upsert.Edition, resolvedBookID); err != nil {
 		return nil, err
 	}
 
-	status, editionID, err := c.pollRegionalAudiobookImport(ctx, input.BookID, externalID, upsert.Status, upsert.EditionID, upsert.Edition)
+	status, resolvedBookID, editionID, err := c.pollRegionalAudiobookImport(ctx, resolvedBookID, input.Unanchored, externalID, upsert.Status, upsert.EditionID, upsert.Edition)
 	if err != nil {
 		return nil, err
 	}
-	verifiedBookID, verifiedFormatID, verified, err := c.verifyRegionalAudiobookEdition(ctx, input.BookID, editionID, "verify regional Audible edition")
+	verifiedBookID, verifiedFormatID, verified, err := c.verifyRegionalAudiobookEdition(ctx, resolvedBookID, editionID, "verify regional Audible edition")
 	if err != nil {
 		return nil, err
 	}
 
 	return &RegionalAudiobookResult{
-		Status: status, BookID: verifiedBookID, EditionID: editionID,
+		Status: status, BookID: verifiedBookID, BookTitle: func() string {
+			if upsert.Book == nil {
+				return ""
+			}
+			return strings.TrimSpace(upsert.Book.Title)
+		}(), EditionID: editionID,
 		ReadingFormatID: verifiedFormatID, RegionalExternalID: externalID, Edition: verified,
 	}, nil
 }
@@ -185,7 +202,7 @@ func (c *Client) CheckRegionalAudiobookImport(ctx context.Context, input Regiona
 	}
 
 	var status RegionalAudiobookStatus
-	var editionID int
+	var resolvedBookID, editionID int
 	if len(statuses) == 1 {
 		importStatus := statuses[0]
 		if importStatus.PlatformID != audiblePlatformID || importStatus.ExternalID != externalID {
@@ -204,11 +221,33 @@ func (c *Client) CheckRegionalAudiobookImport(ctx context.Context, input Regiona
 			}
 			return nil, false, nil
 		case string(RegionalAudiobookLoaded), string(RegionalAudiobookCreated):
-			if importStatus.BookID == nil || *importStatus.BookID != input.BookID || importStatus.EditionID == nil || *importStatus.EditionID <= 0 {
-				return nil, false, fmt.Errorf("%w: completed import status returned book %v and edition %v for requested book %d", ErrRegionalAudiobookIdentityConflict, importStatus.BookID, importStatus.EditionID, input.BookID)
+			if importStatus.BookID != nil && *importStatus.BookID <= 0 {
+				return nil, false, fmt.Errorf("%w: completed import status returned nonpositive book ID %d", ErrRegionalAudiobookIdentityConflict, *importStatus.BookID)
+			}
+			if importStatus.BookID != nil {
+				if !input.Unanchored && *importStatus.BookID != input.BookID {
+					return nil, false, fmt.Errorf("%w: completed import status returned book %d for requested book %d", ErrRegionalAudiobookIdentityConflict, *importStatus.BookID, input.BookID)
+				}
+				resolvedBookID = *importStatus.BookID
+			} else if input.Unanchored && len(mappings) == 1 {
+				if err := validateRegionalImportMapping(mappings[0], 0, externalID, RegionalAudiobookStatus(state), 0); err != nil {
+					return nil, false, err
+				}
+				resolvedBookID = mappings[0].BookID
+			} else {
+				return nil, false, fmt.Errorf("%w: completed import status did not return a positive Hardcover book ID", ErrRegionalAudiobookIdentityConflict)
 			}
 			status = RegionalAudiobookStatus(state)
-			editionID = *importStatus.EditionID
+			if importStatus.EditionID != nil && *importStatus.EditionID <= 0 {
+				return nil, false, fmt.Errorf("%w: completed import status returned nonpositive edition ID %d", ErrRegionalAudiobookIdentityConflict, *importStatus.EditionID)
+			}
+			editionID = pointerInt(importStatus.EditionID)
+			if editionID <= 0 && input.Unanchored && len(mappings) == 1 {
+				editionID = firstPositiveInt(pointerInt(mappings[0].EditionID), regionalEditionID(mappings[0].Edition))
+			}
+			if resolvedBookID <= 0 || editionID <= 0 {
+				return nil, false, fmt.Errorf("%w: completed import did not return positive book and edition IDs", ErrRegionalAudiobookIdentityConflict)
+			}
 		default:
 			return nil, false, fmt.Errorf("%w: Hardcover returned unsupported regional import status %q", ErrRegionalAudiobookIdentityConflict, importStatus.Status)
 		}
@@ -234,7 +273,12 @@ func (c *Client) CheckRegionalAudiobookImport(ctx context.Context, input Regiona
 		if mappingState == "normalized" {
 			mappingStatus = RegionalAudiobookLoaded
 		}
-		if err := validateRegionalImportMapping(mapping, input.BookID, externalID, mappingStatus, 0); err != nil {
+		if input.Unanchored {
+			resolvedBookID = mapping.BookID
+		} else {
+			resolvedBookID = input.BookID
+		}
+		if err := validateRegionalImportMapping(mapping, resolvedBookID, externalID, mappingStatus, 0); err != nil {
 			return nil, false, err
 		}
 		status = mappingStatus
@@ -245,11 +289,11 @@ func (c *Client) CheckRegionalAudiobookImport(ctx context.Context, input Regiona
 	}
 
 	if len(mappings) == 1 {
-		if err := validateRegionalImportMapping(mappings[0], input.BookID, externalID, status, editionID); err != nil {
+		if err := validateRegionalImportMapping(mappings[0], resolvedBookID, externalID, status, editionID); err != nil {
 			return nil, false, err
 		}
 	}
-	verifiedBookID, verifiedFormatID, verified, err := c.verifyRegionalAudiobookEdition(ctx, input.BookID, editionID, "verify recovered regional Audible edition")
+	verifiedBookID, verifiedFormatID, verified, err := c.verifyRegionalAudiobookEdition(ctx, resolvedBookID, editionID, "verify recovered regional Audible edition")
 	if err != nil {
 		return nil, false, err
 	}
@@ -263,8 +307,12 @@ func (c *Client) CheckRegionalAudiobookImport(ctx context.Context, input Regiona
 func normalizeRegionalAudiobookInput(input RegionalAudiobookInput) (string, string, error) {
 	asin := strings.ToUpper(strings.TrimSpace(input.ASIN))
 	region := strings.ToLower(strings.TrimSpace(input.Region))
-	if input.BookID <= 0 || len(asin) != 10 || !isASIN(asin) || !audnexregion.IsRegion(region) {
-		return "", "", fmt.Errorf("%w: book ID, ten-character ASIN, and supported region are required", ErrRegionalAudiobookInvalidInput)
+	bookIDValid := input.BookID > 0
+	if input.Unanchored {
+		bookIDValid = input.BookID == 0
+	}
+	if !bookIDValid || len(asin) != 10 || !isASIN(asin) || !audnexregion.IsRegion(region) {
+		return "", "", fmt.Errorf("%w: %s, ten-character ASIN, and supported region are required", ErrRegionalAudiobookInvalidInput, map[bool]string{true: "an unanchored request", false: "a positive book ID"}[input.Unanchored])
 	}
 	return asin, region, nil
 }
@@ -332,7 +380,7 @@ type regionalImportStatus struct {
 	Error      string `json:"error"`
 }
 
-func (c *Client) pollRegionalAudiobookImport(ctx context.Context, bookID int, externalID, mutationStatus string, mutationEditionID *int, mutationEdition *regionalImportEdition) (RegionalAudiobookStatus, int, error) {
+func (c *Client) pollRegionalAudiobookImport(ctx context.Context, bookID int, allowBookResolution bool, externalID, mutationStatus string, mutationEditionID *int, mutationEdition *regionalImportEdition) (RegionalAudiobookStatus, int, int, error) {
 	// Live tests observed failed, loaded, and created statuses. An ordinary-token
 	// created import for a previously unmapped regional Audible ID returned the
 	// expected book and edition IDs, and a fresh catalogue read found its exact
@@ -345,57 +393,101 @@ func (c *Client) pollRegionalAudiobookImport(ctx context.Context, bookID int, ex
 		statuses, mappings, err := c.queryRegionalAudiobookImport(pollCtx, externalID)
 		if err != nil {
 			if ctx.Err() == nil && errors.Is(pollCtx.Err(), context.DeadlineExceeded) {
-				return "", 0, fmt.Errorf("%w: regional Audible import did not reach a terminal state", ErrRegionalAudiobookImportTimeout)
+				return "", 0, 0, fmt.Errorf("%w: regional Audible import did not reach a terminal state", ErrRegionalAudiobookImportTimeout)
 			}
-			return "", 0, fmt.Errorf("poll regional Audible import: %w", err)
+			return "", 0, 0, fmt.Errorf("poll regional Audible import: %w", err)
 		}
 		if len(statuses) > 1 {
-			return "", 0, fmt.Errorf("%w: Audible identifier %s matched multiple import statuses", ErrRegionalAudiobookIdentityConflict, externalID)
+			return "", 0, 0, fmt.Errorf("%w: Audible identifier %s matched multiple import statuses", ErrRegionalAudiobookIdentityConflict, externalID)
 		}
 		if len(mappings) > 1 {
-			return "", 0, fmt.Errorf("%w: Audible identifier %s matched multiple book mappings", ErrRegionalAudiobookIdentityConflict, externalID)
+			return "", 0, 0, fmt.Errorf("%w: Audible identifier %s matched multiple book mappings", ErrRegionalAudiobookIdentityConflict, externalID)
 		}
 		if len(statuses) == 1 {
 			importStatus := &statuses[0]
 			if importStatus.PlatformID != audiblePlatformID || importStatus.ExternalID != externalID {
-				return "", 0, fmt.Errorf("%w: import status did not match requested Audible identifier", ErrRegionalAudiobookIdentityConflict)
+				return "", 0, 0, fmt.Errorf("%w: import status did not match requested Audible identifier", ErrRegionalAudiobookIdentityConflict)
 			}
 			state := strings.ToLower(strings.TrimSpace(importStatus.Status))
 			switch state {
 			case "failed":
-				return "", 0, fmt.Errorf("%w: %s", ErrRegionalAudiobookImportFailed, firstNonEmpty(importStatus.Error, "Hardcover marked regional import failed"))
+				return "", 0, 0, fmt.Errorf("%w: %s", ErrRegionalAudiobookImportFailed, firstNonEmpty(importStatus.Error, "Hardcover marked regional import failed"))
 			case "not_found":
-				return "", 0, fmt.Errorf("%w: %s", ErrRegionalAudiobookImportFailed, firstNonEmpty(importStatus.Error, "Hardcover found no result for the regional Audible identifier"))
+				return "", 0, 0, fmt.Errorf("%w: %s", ErrRegionalAudiobookImportFailed, firstNonEmpty(importStatus.Error, "Hardcover found no result for the regional Audible identifier"))
 			case "fetching":
-				// Continue polling while Hardcover resolves its upstream source.
-			case string(RegionalAudiobookLoaded), string(RegionalAudiobookCreated):
-				if importStatus.BookID == nil || *importStatus.BookID != bookID || importStatus.EditionID == nil || *importStatus.EditionID <= 0 {
-					return "", 0, fmt.Errorf("%w: completed import status returned book %v and edition %v for requested book %d", ErrRegionalAudiobookIdentityConflict, importStatus.BookID, importStatus.EditionID, bookID)
-				}
-				if upsertStatus := strings.ToLower(strings.TrimSpace(mutationStatus)); upsertStatus == "failed" {
-					return "", 0, fmt.Errorf("%w: upsert response reported failed status", ErrRegionalAudiobookImportFailed)
-				} else if (upsertStatus == string(RegionalAudiobookLoaded) || upsertStatus == string(RegionalAudiobookCreated)) && upsertStatus != state {
-					return "", 0, fmt.Errorf("%w: upsert reported %s while import status reported %s", ErrRegionalAudiobookIdentityConflict, upsertStatus, state)
-				}
-				if mutationID := firstPositiveInt(pointerInt(mutationEditionID), regionalEditionID(mutationEdition)); mutationID > 0 && mutationID != *importStatus.EditionID {
-					return "", 0, fmt.Errorf("%w: upsert returned edition %d but import status returned edition %d", ErrRegionalAudiobookIdentityConflict, mutationID, *importStatus.EditionID)
-				}
-				if err := validateRegionalImportEdition(mutationEdition, bookID); err != nil {
-					return "", 0, err
-				}
-				if len(mappings) == 1 {
-					if err := validateRegionalImportMapping(mappings[0], bookID, externalID, RegionalAudiobookStatus(state), *importStatus.EditionID); err != nil {
-						return "", 0, err
+				if importStatus.BookID != nil && *importStatus.BookID > 0 {
+					if bookID > 0 && *importStatus.BookID != bookID {
+						return "", 0, 0, fmt.Errorf("%w: import status returned book %d for requested book %d", ErrRegionalAudiobookIdentityConflict, *importStatus.BookID, bookID)
+					}
+					if allowBookResolution && bookID == 0 {
+						bookID = *importStatus.BookID
 					}
 				}
-				return RegionalAudiobookStatus(state), *importStatus.EditionID, nil
+				// Continue polling while Hardcover resolves its upstream source.
+			case string(RegionalAudiobookLoaded), string(RegionalAudiobookCreated):
+				if importStatus.BookID != nil && *importStatus.BookID > 0 {
+					if bookID > 0 && *importStatus.BookID != bookID {
+						return "", 0, 0, fmt.Errorf("%w: import status returned book %d for requested book %d", ErrRegionalAudiobookIdentityConflict, *importStatus.BookID, bookID)
+					}
+					if allowBookResolution && bookID == 0 {
+						bookID = *importStatus.BookID
+					}
+				}
+				if !allowBookResolution && (importStatus.BookID == nil || *importStatus.BookID <= 0) {
+					return "", 0, 0, fmt.Errorf("%w: completed anchored import did not return a positive Hardcover book ID", ErrRegionalAudiobookIdentityConflict)
+				}
+				if importStatus.BookID != nil && *importStatus.BookID <= 0 {
+					return "", 0, 0, fmt.Errorf("%w: completed import status returned nonpositive book ID %d", ErrRegionalAudiobookIdentityConflict, *importStatus.BookID)
+				}
+				if allowBookResolution && bookID == 0 && len(mappings) == 1 {
+					if err := validateRegionalImportMapping(mappings[0], bookID, externalID, RegionalAudiobookStatus(state), 0); err != nil {
+						return "", 0, 0, err
+					}
+					bookID = mappings[0].BookID
+				}
+				if bookID <= 0 {
+					return "", 0, 0, fmt.Errorf("%w: completed import did not return a positive Hardcover book ID", ErrRegionalAudiobookIdentityConflict)
+				}
+				if importStatus.BookID != nil && *importStatus.BookID != bookID {
+					return "", 0, 0, fmt.Errorf("%w: completed import returned book %d for requested book %d", ErrRegionalAudiobookIdentityConflict, *importStatus.BookID, bookID)
+				}
+				if importStatus.EditionID != nil && *importStatus.EditionID <= 0 {
+					return "", 0, 0, fmt.Errorf("%w: completed import status returned nonpositive edition ID %d", ErrRegionalAudiobookIdentityConflict, *importStatus.EditionID)
+				}
+				editionID := pointerInt(importStatus.EditionID)
+				if editionID <= 0 && allowBookResolution && len(mappings) == 1 {
+					editionID = firstPositiveInt(pointerInt(mappings[0].EditionID), regionalEditionID(mappings[0].Edition))
+				}
+				if editionID <= 0 {
+					return "", 0, 0, fmt.Errorf("%w: completed import did not return a positive edition ID", ErrRegionalAudiobookIdentityConflict)
+				}
+				if upsertStatus := strings.ToLower(strings.TrimSpace(mutationStatus)); upsertStatus == "failed" {
+					return "", 0, 0, fmt.Errorf("%w: upsert response reported failed status", ErrRegionalAudiobookImportFailed)
+				} else if (upsertStatus == string(RegionalAudiobookLoaded) || upsertStatus == string(RegionalAudiobookCreated)) && upsertStatus != state {
+					return "", 0, 0, fmt.Errorf("%w: upsert reported %s while import status reported %s", ErrRegionalAudiobookIdentityConflict, upsertStatus, state)
+				}
+				if mutationID := firstPositiveInt(pointerInt(mutationEditionID), regionalEditionID(mutationEdition)); mutationID > 0 && mutationID != editionID {
+					return "", 0, 0, fmt.Errorf("%w: upsert returned edition %d but import status returned edition %d", ErrRegionalAudiobookIdentityConflict, mutationID, editionID)
+				}
+				if err := validateRegionalImportEdition(mutationEdition, bookID); err != nil {
+					return "", 0, 0, err
+				}
+				if len(mappings) == 1 {
+					if err := validateRegionalImportMapping(mappings[0], bookID, externalID, RegionalAudiobookStatus(state), editionID); err != nil {
+						return "", 0, 0, err
+					}
+				}
+				return RegionalAudiobookStatus(state), bookID, editionID, nil
 			default:
-				return "", 0, fmt.Errorf("%w: Hardcover returned unsupported regional import status %q", ErrRegionalAudiobookIdentityConflict, importStatus.Status)
+				return "", 0, 0, fmt.Errorf("%w: Hardcover returned unsupported regional import status %q", ErrRegionalAudiobookIdentityConflict, importStatus.Status)
 			}
 		}
 		if len(mappings) == 1 {
 			if err := validateRegionalImportMapping(mappings[0], bookID, externalID, "", 0); err != nil {
-				return "", 0, err
+				return "", 0, 0, err
+			}
+			if allowBookResolution && bookID == 0 {
+				bookID = mappings[0].BookID
 			}
 		}
 		// Keep the first checks responsive, then reduce quota usage while
@@ -404,13 +496,13 @@ func (c *Client) pollRegionalAudiobookImport(ctx context.Context, bookID int, ex
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return "", 0, fmt.Errorf("regional audiobook import polling canceled: %w", ctx.Err())
+			return "", 0, 0, fmt.Errorf("regional audiobook import polling canceled: %w", ctx.Err())
 		case <-pollCtx.Done():
 			timer.Stop()
 			if ctx.Err() != nil {
-				return "", 0, fmt.Errorf("regional audiobook import polling canceled: %w", ctx.Err())
+				return "", 0, 0, fmt.Errorf("regional audiobook import polling canceled: %w", ctx.Err())
 			}
-			return "", 0, fmt.Errorf("%w: regional Audible import did not reach a terminal state", ErrRegionalAudiobookImportTimeout)
+			return "", 0, 0, fmt.Errorf("%w: regional Audible import did not reach a terminal state", ErrRegionalAudiobookImportTimeout)
 		case <-timer.C:
 		}
 		pollInterval = min(2*pollInterval, regionalImportMaxPollInterval)
@@ -466,7 +558,8 @@ func validateRegionalEditionLink(editionID int, edition *regionalImportEdition, 
 }
 
 func validateRegionalImportMapping(mapping regionalImportMapping, bookID int, externalID string, status RegionalAudiobookStatus, editionID int) error {
-	if mapping.BookID != bookID || mapping.PlatformID != audiblePlatformID || mapping.ExternalID != externalID {
+	bookMatches := mapping.BookID > 0 && (bookID == 0 || mapping.BookID == bookID)
+	if !bookMatches || mapping.PlatformID != audiblePlatformID || mapping.ExternalID != externalID {
 		return fmt.Errorf("%w: mapping %d did not match requested book and Audible identifier", ErrRegionalAudiobookIdentityConflict, mapping.ID)
 	}
 	if err := validateRegionalEditionLink(pointerInt(mapping.EditionID), mapping.Edition, "mapping"); err != nil {
@@ -483,14 +576,14 @@ func validateRegionalImportMapping(mapping regionalImportMapping, bookID int, ex
 	if editionID > 0 && mappingEditionID > 0 && mappingEditionID != editionID {
 		return fmt.Errorf("%w: mapping %d returned edition %d but import status returned edition %d", ErrRegionalAudiobookIdentityConflict, mapping.ID, mappingEditionID, editionID)
 	}
-	return validateRegionalImportEdition(mapping.Edition, bookID)
+	return validateRegionalImportEdition(mapping.Edition, mapping.BookID)
 }
 
 func validateRegionalImportEdition(edition *regionalImportEdition, bookID int) error {
 	if edition == nil {
 		return nil
 	}
-	if edition.ID < 0 || (edition.BookID != 0 && edition.BookID != bookID) {
+	if edition.ID < 0 || edition.BookID < 0 || (bookID > 0 && edition.BookID != 0 && edition.BookID != bookID) {
 		return fmt.Errorf("%w: expected book %d, upsert returned edition book %d", ErrRegionalAudiobookIdentityConflict, bookID, edition.BookID)
 	}
 	// Reading format is checked only by the fresh edition read after a terminal
