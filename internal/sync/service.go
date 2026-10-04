@@ -120,6 +120,9 @@ type BookOutcomeRecord struct {
 	Author                 string               `json:"author,omitempty"`
 	ASIN                   string               `json:"asin,omitempty"`
 	ISBN                   string               `json:"isbn,omitempty"`
+	SourceASIN             string               `json:"source_asin,omitempty"`
+	SourceISBN10           string               `json:"source_isbn_10,omitempty"`
+	SourceISBN13           string               `json:"source_isbn_13,omitempty"`
 	CoverURL               string               `json:"cover_url,omitempty"`
 	Format                 string               `json:"format,omitempty"`
 	Series                 string               `json:"series,omitempty"`
@@ -844,6 +847,13 @@ func firstNonEmpty(value, fallback string) string {
 	return fallback
 }
 
+func normalizedSourceASIN(raw string) string {
+	if asin, valid := audnex.CanonicalASIN(raw); valid {
+		return asin
+	}
+	return strings.TrimSpace(raw)
+}
+
 // recordBookOutcomeWithMatchMethod atomically replaces the outcome for one ABS
 // item and its category count. Repeated calls adjust the old category without
 // inflating processed totals.
@@ -865,6 +875,7 @@ func (s *Service) recordBookOutcomeWithMatchMethod(book models.AudiobookshelfBoo
 		Author:       book.Media.Metadata.AuthorName,
 		ASIN:         book.Media.Metadata.ASIN,
 		ISBN:         book.Media.Metadata.ISBN,
+		SourceASIN:   normalizedSourceASIN(book.Media.Metadata.ASIN),
 		Format:       audiobookshelfDisplayFormat(book),
 		Series:       series,
 		SeriesNumber: seriesNumber,
@@ -872,6 +883,7 @@ func (s *Service) recordBookOutcomeWithMatchMethod(book models.AudiobookshelfBoo
 		MatchMethod:  matchMethod,
 		UpdatedAt:    time.Now().UTC(),
 	}
+	record.SourceISBN10, record.SourceISBN13 = isbn.Split(book.Media.Metadata.ISBN)
 	if book.Media.CoverPath != "" && strings.TrimSpace(s.config.Audiobookshelf.URL) != "" {
 		record.CoverURL = audiobookshelfCoverURL(s.config.Audiobookshelf.URL, book.ID)
 	}

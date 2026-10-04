@@ -116,6 +116,10 @@ func newApp() *cli.App {
 						Name:  "confirm-identifier-correction",
 						Usage: "Confirm a submitted ASIN or ISBN that differs from the Audiobookshelf item",
 					},
+					&cli.BoolFlag{
+						Name:  "confirm-audnexus",
+						Usage: "Confirm the displayed Audnexus record for an ASIN-only audiobook import",
+					},
 				},
 				Action: createEdition,
 			},
@@ -170,6 +174,9 @@ func createEdition(c *cli.Context) error {
 		PreferredRegion:             cfg.Audiobookshelf.AudnexusRegion,
 		DryRun:                      dryRun,
 		ConfirmIdentifierCorrection: c.Bool("confirm-identifier-correction"),
+		ConfirmAudnexus:             c.Bool("confirm-audnexus"),
+		ConfirmationReader:          c.App.Reader,
+		PreviewWriter:               c.App.ErrWriter,
 	}, services)
 	if err != nil {
 		return err

@@ -5,13 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audnex"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/audnexregion"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync"
 	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
@@ -306,12 +310,15 @@ func (s *MultiUserService) createEditionWithAssociationAndResync(ctx context.Con
 }
 
 func sameRecoveredEditionAssociation(existing, verified statepkg.Association) bool {
-	// Provenance records how the local match was first established. Recovery
-	// verifies the same identifiers again but must preserve the original value.
-	// Ownership verification is cached state about the association, not part of
-	// its identity, so a fresh recovery result may omit it.
+	// Provenance and the Audnexus confirmation time record how the local match
+	// was first established. Recovery verifies the same stable identity again,
+	// but it must neither conflict on a newly observed timestamp nor replace the
+	// original saved metadata. Ownership verification is cached state about the
+	// association, not part of its identity, so a fresh recovery result may omit it.
 	existing.Provenance = ""
 	verified.Provenance = ""
+	existing.AudnexusConfirmedAt = time.Time{}
+	verified.AudnexusConfirmedAt = time.Time{}
 	existing.OwnershipVerifiedAt = 0
 	verified.OwnershipVerifiedAt = 0
 	existing.OwnershipTokenFingerprint = ""
@@ -463,8 +470,9 @@ func (s *MultiUserService) AnnotateEditionAdditions(profileID string, snapshot *
 		if submittedAction && record.EditionAction.Data != nil && record.EditionAction.Data.AudibleIdentifier != "" {
 			regionalIdentifierMatches = strings.EqualFold(strings.TrimSpace(association.RegionalExternalID), strings.TrimSpace(record.EditionAction.Data.AudibleIdentifier))
 		}
-		associationConfirmsAction := associationMatchesSource && submittedAction && regionalIdentifierMatches
-		record.EditionAdded = apiAssociation || associationConfirmsAction
+		unanchoredAudibleAssociation := exists && unanchoredAudibleAssociationMatchesRecord(*record, association)
+		associationConfirmsAction := (associationMatchesSource || unanchoredAudibleAssociation) && submittedAction && regionalIdentifierMatches
+		record.EditionAdded = apiAssociation || associationConfirmsAction || (unanchoredAudibleAssociation && !submittedAction)
 		if record.EditionAdded {
 			// The saved association is authoritative. It suppresses any stale
 			// journal marker left behind by an interrupted cleanup or a later
@@ -473,4 +481,50 @@ func (s *MultiUserService) AnnotateEditionAdditions(profileID string, snapshot *
 		}
 	}
 	return nil
+}
+
+func unanchoredAudibleAssociationMatchesRecord(record sync.BookOutcomeRecord, association statepkg.Association) bool {
+	if record.Outcome != sync.OutcomeNeedsReview || record.Reason != mismatch.ReasonAudibleImportAvailable ||
+		strings.TrimSpace(record.HardcoverBookID) != "" || strings.TrimSpace(record.EditionID) != "" || association.ABSItemID != record.BookID ||
+		!strings.EqualFold(strings.TrimSpace(record.Format), string(models.ReadingFormatAudiobook)) ||
+		!strings.EqualFold(strings.TrimSpace(association.ReadingFormat), string(models.ReadingFormatAudiobook)) ||
+		association.Provenance != "audible_import_unanchored" || association.AudnexusConfirmedAt.IsZero() {
+		return false
+	}
+	bookID, bookErr := strconv.Atoi(strings.TrimSpace(association.HardcoverBookID))
+	editionID, editionErr := strconv.Atoi(strings.TrimSpace(association.HardcoverEditionID))
+	if bookErr != nil || editionErr != nil || bookID <= 0 || editionID <= 0 {
+		return false
+	}
+
+	runASIN := record.SourceASIN
+	if strings.TrimSpace(runASIN) == "" {
+		runASIN = record.ASIN
+	}
+	runASIN, runASINValid := audnex.CanonicalASIN(runASIN)
+	associationASIN, associationASINValid := audnex.CanonicalASIN(association.SourceASIN)
+	if !runASINValid || !associationASINValid || runASIN != associationASIN {
+		return false
+	}
+	runISBN10, runISBN13 := record.SourceISBN10, record.SourceISBN13
+	if strings.TrimSpace(runISBN10) == "" && strings.TrimSpace(runISBN13) == "" {
+		_, runISBN10, runISBN13 = statepkg.SourceIdentifiers(record.ASIN, record.ISBN)
+	}
+	if isbn.Normalize(runISBN10) != isbn.Normalize(association.SourceISBN10) ||
+		isbn.Normalize(runISBN13) != isbn.Normalize(association.SourceISBN13) {
+		return false
+	}
+
+	parts := strings.Split(strings.TrimSpace(association.RegionalExternalID), ":")
+	if len(parts) != 2 {
+		return false
+	}
+	regionalASIN, regionalASINValid := audnex.CanonicalASIN(parts[0])
+	region := strings.ToLower(strings.TrimSpace(parts[1]))
+	if !regionalASINValid || !audnexregion.IsRegion(region) ||
+		!strings.EqualFold(strings.TrimSpace(association.AudnexusConfirmedRegion), region) ||
+		!strings.EqualFold(strings.TrimSpace(association.Correction), regionalASIN+":"+region) {
+		return false
+	}
+	return true
 }
