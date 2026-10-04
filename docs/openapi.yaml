@@ -949,6 +949,9 @@ components:
             run_id: {type: string}
             abs_item_id: {type: string}
             audible_identifier: {type: string}
+            audnexus_confirmed:
+              type: boolean
+              description: Preserves the caller's Audnexus confirmation for restoring an unanchored Audible create request after a definitive not_submitted result.
           additionalProperties: true
         data:
           description: Recovery data or the final wrong-format edition result, when available.

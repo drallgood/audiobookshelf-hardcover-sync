@@ -177,6 +177,7 @@ type EditionActionSubmittedBody struct {
 	RunID             string  `json:"run_id"`
 	ABSItemID         string  `json:"abs_item_id"`
 	AudibleIdentifier string  `json:"audible_identifier,omitempty"`
+	AudnexusConfirmed bool    `json:"audnexus_confirmed,omitempty"`
 	Title             *string `json:"title,omitempty"`
 	Subtitle          *string `json:"subtitle,omitempty"`
 	ASIN              *string `json:"asin,omitempty"`

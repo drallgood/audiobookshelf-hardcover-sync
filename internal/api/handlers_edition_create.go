@@ -1362,7 +1362,8 @@ const (
 func submittedEditionActionBody(request editionCreateRequest) *sync.EditionActionSubmittedBody {
 	return &sync.EditionActionSubmittedBody{
 		RunID: request.RunID, ABSItemID: request.ABSItemID, AudibleIdentifier: request.AudibleIdentifier,
-		Title: request.Title, Subtitle: request.Subtitle, ASIN: request.ASIN,
+		AudnexusConfirmed: request.AudnexusConfirmed,
+		Title:             request.Title, Subtitle: request.Subtitle, ASIN: request.ASIN,
 		ISBN10: request.ISBN10, ISBN13: request.ISBN13, ReleaseDate: request.ReleaseDate,
 		EditionFormat: request.EditionFormat, Resync: request.Resync,
 	}
