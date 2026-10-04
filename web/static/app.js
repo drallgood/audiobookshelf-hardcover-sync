@@ -1928,26 +1928,9 @@ class SyncProfileApp {
     syncMatchMethodText(matchMethod) {
         const value = String(matchMethod || '').trim().toLowerCase();
         const known = {
-            audible_asin: 'Audible ASIN',
             title_author: 'Title and author',
-            title_author_candidate: 'Title and author candidate',
-            title_author_only: 'Title and author only',
-            title_author_full: 'Full title and author',
-            full_title_author: 'Full title and author',
             asin: 'ASIN',
-            isbn: 'ISBN',
-            isbn_10: 'ISBN-10',
-            isbn_13: 'ISBN-13',
-            isbn10: 'ISBN-10',
-            isbn13: 'ISBN-13',
-            manual: 'Manual',
-            manual_association: 'Manual association',
-            manual_override: 'Manual override',
-            override: 'Manual override',
-            existing: 'Existing match',
-            existing_match: 'Existing match',
-            full_match: 'Full match',
-            candidate: 'Candidate'
+            isbn: 'ISBN'
         };
         if (Object.prototype.hasOwnProperty.call(known, value)) return known[value];
 
@@ -2236,9 +2219,9 @@ class SyncProfileApp {
             if (recovery.outcome === 'not_submitted' && !recovery.draft) {
                 const restoredDialog = this.editionDialog;
                 const submittedIdentifier = recovery.submittedBody?.audible_identifier;
-                const identifierMatch = String(submittedIdentifier || '').match(/^([a-z0-9]{10}):(us|ca|uk|au|de|fr|es|in|it|jp)$/i);
-                if (this.isAudibleImportDialog(restoredDialog) && identifierMatch) {
-                    restoredDialog.audibleIdentifier = `${identifierMatch[1].toUpperCase()}:${identifierMatch[2].toLowerCase()}`;
+                if (this.isAudibleImportDialog(restoredDialog) && typeof submittedIdentifier === 'string') {
+                    // Re-preview the saved request exactly; the server validates its region.
+                    restoredDialog.audibleIdentifier = submittedIdentifier;
                 }
                 await this.loadEditionDraft();
                 if (this.editionDialog !== restoredDialog) return;
@@ -2577,7 +2560,7 @@ class SyncProfileApp {
 
     audibleImportBlockers(dialog, draft) {
         const blockers = [];
-        const gate = this.editionCapabilityGate(dialog.capability, 'audiobook');
+        const gate = this.editionCapabilityGate(dialog.capability, 'audiobook', draft.audible_identifier_candidate?.asin);
         if (!draft.eligible) blockers.push(draft.ineligible_reason || 'This item is not eligible for Audible import.');
         if (draft.region_status !== 'confirmed' || !this.displayedAudibleIdentifier(draft) || !draft.audnexus_record) {
             blockers.push(draft.region_status === 'temporarily_unavailable'
@@ -2587,7 +2570,6 @@ class SyncProfileApp {
         if (gate.blocked) blockers.push(gate.reason);
         if (Boolean(draft.dry_run || dialog.capability?.dry_run || dialog.runDryRun)) blockers.push('This profile is in dry run: no edition can be created and no resync is offered.');
         if (this.profileIsSyncing(dialog.profileId)) blockers.push('A sync is running for this profile; try again when it finishes.');
-        if (dialog.outcome === 'failed') blockers.push('Hardcover returned a failed result after receiving the import. Another create is disabled to avoid submitting it again.');
         return blockers;
     }
 
@@ -2628,7 +2610,8 @@ class SyncProfileApp {
                 <div class="audible-comparison-heading"><h4>Audiobookshelf</h4><h4>Audnexus/Audible</h4></div>
                 ${this.audibleImportComparisonRows(draft)}
             </section>` : '';
-        const regionHtml = `<div class="edition-region ${regionStatus === 'confirmed' ? 'confirmed' : 'review'}" role="status">${this.escapeHtml(regionMessage)}</div>`;
+        const identifier = this.displayedAudibleIdentifier(draft);
+        const regionHtml = `<div class="edition-region ${regionStatus === 'confirmed' ? 'confirmed' : 'review'}" role="status">${this.escapeHtml(regionMessage)}${identifier ? `<div><strong>Audible identifier:</strong> ${this.escapeHtml(identifier)}</div>` : ''}</div>`;
         const blockersHtml = blockers
             .filter(text => text !== 'The regional Audnexus record must be confirmed by preview before importing.')
             .map(text => `<div class="edition-error" data-blocker>${this.escapeHtml(text)}</div>`).join('');

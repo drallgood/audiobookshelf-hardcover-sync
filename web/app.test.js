@@ -1071,10 +1071,8 @@ test('outcome match methods render as readable labels and humanize unknown metho
         ['title_author', 'Title and author'],
         ['audible_asin', 'Audible ASIN'],
         ['isbn_13', 'ISBN-13'],
-        ['manual_association', 'Manual association'],
-        ['title_author_candidate', 'Title and author candidate'],
-        ['override', 'Manual override'],
-        ['existing_match', 'Existing match'],
+        ['asin', 'ASIN'],
+        ['isbn', 'ISBN'],
         ['unfamiliar_method_value', 'Unfamiliar method value']
     ];
     for (const [match_method, label] of cases) {
@@ -1530,6 +1528,39 @@ test('unanchored Audible create confirms the reviewed identifier and accepts the
     assert.doesNotMatch(html, /<b>Imported book/);
     assert.match(html, /Hardcover book ID:<\/strong> 71/);
     assert.match(html, /Edition ID:<\/strong> 99/);
+});
+
+test('Audible import uses regional import permission independently of insertion permission', async () => {
+    for (const canImport of [true, false]) {
+        const app = editionApp();
+        const dialog = {
+            mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record: audibleImportRecord,
+            loading: false, busy: false, error: '', result: null, runDryRun: false,
+            draft: confirmedAudibleDraft(),
+            capability: {
+                audiobook: { status: canImport ? 'allowed' : 'denied', can_attempt: canImport },
+                audiobook_isbn: { status: canImport ? 'denied' : 'allowed', can_attempt: !canImport },
+                ebook: { status: canImport ? 'denied' : 'allowed', can_attempt: !canImport }
+            }
+        };
+        app.editionDialog = dialog;
+        app.readEditionFormFields = () => ({});
+        app.showEditionDialog = () => {};
+        let creates = 0;
+        app.fetchJsonWithTimeout = async () => {
+            creates++;
+            return { response: { ok: true, status: 200 }, data: { success: true, data: {
+                abs_item_id: audibleImportRecord.book_id, reading_format: 'audiobook', status: 'loaded',
+                hardcover_book_id: '71', hardcover_edition_id: '99'
+            } } };
+        };
+        const html = app.renderEditionDialog(dialog);
+        assert.equal(/data-edition-dialog="confirm-create" disabled/.test(html), !canImport);
+        assert.match(html, /Audible identifier:<\/strong> B00ABC1234:uk/);
+        assert.doesNotMatch(html, /<input|<select|data-edition-dialog="confirm-identifier"/);
+        await app.submitEditionCreate();
+        assert.equal(creates, canImport ? 1 : 0);
+    }
 });
 
 test('dry-run Audible modal blocks submission at the UI boundary', async () => {
@@ -2941,7 +2972,7 @@ test('saved not-submitted request refreshes its draft and retains edited fields 
     assert.deepEqual(app.editionDialog.fieldValues, { title: 'Corrected title', isbn_10: '' });
 });
 
-test('restored not-submitted Audible identifier stays internal and is freshly previewed before retry', async () => {
+test('restored not-submitted Audible identifier is displayed read-only and freshly previewed before retry', async () => {
     const app = editionApp();
     const correctedIdentifier = 'B0OTHER123:ca';
     const record = { ...audibleImportRecord, edition_action: {
@@ -2981,7 +3012,8 @@ test('restored not-submitted Audible identifier stays internal and is freshly pr
     assert.equal(dialog.draft.confirmed_region, 'ca');
     assert.equal(dialog.retryCreate, true);
     assert.equal(requests.some(request => request.url.endsWith('/edition-drafts/create')), false);
-    assert.doesNotMatch(app.renderEditionDialog(dialog), /Regional Audible identifier|ASIN:region|audible_identifier_preview|preview-audible|B0OTHER123:ca/);
+    assert.doesNotMatch(app.renderEditionDialog(dialog), /<input|<select|data-edition-dialog="confirm-identifier"/);
+    assert.match(app.renderEditionDialog(dialog), /Audible identifier:<\/strong> B0OTHER123:ca/);
 
     let createBody;
     app.readEditionFormFields = () => ({});

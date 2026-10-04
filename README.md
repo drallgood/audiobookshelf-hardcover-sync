@@ -101,8 +101,10 @@ button opens the **Import by Audible ASIN** review. It compares the
 Audiobookshelf item with its regional Audnexus record, with comparison
 statuses for comparable fields. It imports using the reviewed regional ASIN
 without selecting a Hardcover book first. Review that the record identifies
-the item. The app discovers the region from Audiobookshelf and Audnexus; use
-**Refresh preview** to retry discovery if it is temporarily unavailable.
+the item. The app discovers the region from Audiobookshelf and Audnexus and
+shows the `ASIN:region` as read-only text. The identifier cannot be changed in
+the modal. If discovery is temporarily unavailable, close and reopen the dialog
+to try again.
 Selecting **Add edition** confirms the displayed record and starts the import;
 there is no separate confirmation checkbox. The action stays unavailable until
 Audnexus confirms the region, and waits out any requested retry delay. Creating
@@ -122,10 +124,9 @@ on that book. If the source ASIN is absent or malformed, the selected-book
 workflow can insert an audiobook edition from the read-only Audiobookshelf
 ISBN preview. A valid source ASIN remains authoritative if discovery or import
 fails. Ebooks need an ASIN or ISBN and allow detail corrections. After an
-Audible import, the dialog shows the returned Hardcover book and edition. After
-success,
-**Hardcover Edition Added** appears and the app resyncs that book's reading
-progress. If resync fails, the edition remains added; run another sync to retry
+Audible import, the dialog shows the returned Hardcover book and edition.
+After success, **Hardcover Edition Added** appears and the app resyncs that
+book's reading progress. If resync fails, the edition remains added; run another sync to retry
 progress updates.
 
 You can preview in dry run, but cannot add editions or forget matches. Wait for
