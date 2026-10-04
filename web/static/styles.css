@@ -2342,6 +2342,8 @@ header p {
 .edition-create-actions { flex-direction: row; flex-wrap: wrap; }
 .edition-create-actions [data-edition-dialog="close"] { margin-left: auto; }
 .edition-note { color: #666; font-size: 0.9rem; }
+.book-match-meta { color: #718096; font-size: 0.875rem; }
+.book-match-meta .book-meta-label { color: #4a5568; }
 .edition-dialog-body { padding: 20px 30px 30px; overflow-y: auto; max-height: calc(95vh - 80px); }
 .edition-dialog-subject { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .edition-dialog-subject .audiobookshelf-cover { flex: 0 0 auto; width: 4.5rem; }

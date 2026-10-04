@@ -1992,8 +1992,8 @@ class SyncProfileApp {
                         ${hardcoverLink ? `<div class="book-service-links">${hardcoverLink}</div>` : ''}
                     </div>
                     ${record.author ? `<div><strong>Author:</strong> ${this.escapeHtml(record.author)}</div>` : ''}
-                    <div class="book-meta">${asinHTML}${isbnHTML}${format ? `<span><strong>Format:</strong> ${this.escapeHtml(format)}</span>` : ''}${series ? `<span><strong>Series:</strong> ${this.escapeHtml(series)}</span>` : ''}</div>
-                    ${matchMethod ? `<div>Match method: ${this.escapeHtml(this.syncMatchMethodText(matchMethod, record))}</div>` : ''}
+                    <div class="book-meta">${asinHTML}${isbnHTML}${series ? `<span><strong>Series:</strong> ${this.escapeHtml(series)}</span>` : ''}${format ? `<span><strong>Format:</strong> ${this.escapeHtml(format)}</span>` : ''}</div>
+                    ${matchMethod ? `<div class="book-match-meta"><span class="book-meta-label">Match method:</span> ${this.escapeHtml(this.syncMatchMethodText(matchMethod, record))}</div>` : ''}
                     ${record.outcome === 'needs_review' && !this.isAudibleImportRecord(record) ? this.renderHardcoverCandidate(record, editionActionsHTML) : editionActionsHTML}
                     ${record.reason ? `<div class="book-reason"><strong>Reason:</strong> ${this.escapeHtml(this.syncReasonText(record.reason))}</div>` : ''}
                     ${record.error ? `<div class="book-error"><strong>Error:</strong> ${this.escapeHtml(record.error)}</div>` : ''}
@@ -2071,7 +2071,7 @@ class SyncProfileApp {
             const syncingNote = 'A sync is running for this profile; this action will be available again when it finishes.';
             const fallbackEligible = this.audiobookIdentifierFallbackActionEligible(record);
             return `<div class="edition-actions">
-                <span class="edition-note">Hardcover target: book ${this.escapeHtml(record.hardcover_book_id)}${record.edition_id ? `, edition ${this.escapeHtml(record.edition_id)}` : ''}</span>
+                <span class="edition-note book-match-meta"><span class="book-meta-label">Hardcover target:</span> book ${this.escapeHtml(record.hardcover_book_id)}${record.edition_id ? `, edition ${this.escapeHtml(record.edition_id)}` : ''}</span>
                 ${fallbackEligible ? this.renderAddEditionAction(record, open) : ''}
                 <button type="button" class="book-service-link edition-action-pill" data-edition-action="forget" ${syncing ? `disabled title="${this.escapeHtmlAttribute(syncingNote)}"` : ''}>Forget match</button>
             </div>`;
