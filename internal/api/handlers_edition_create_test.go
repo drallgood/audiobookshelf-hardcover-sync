@@ -184,7 +184,7 @@ func audiobookIdentifierFallbackRecord(outcome sync.SyncOutcome, matchMethod str
 
 func TestCreateEditionFromAudiobookIdentifierFallbackImportsUnanchoredAndOverlaysSavedAssociation(t *testing.T) {
 	for _, matchMethod := range []string{"edition_asin", "isbn"} {
-		for _, outcome := range []sync.SyncOutcome{sync.OutcomeSynced, sync.OutcomeAlreadyCurrent, sync.OutcomeSkipped} {
+		for _, outcome := range []sync.SyncOutcome{sync.OutcomeSynced, sync.OutcomeAlreadyCurrent} {
 			t.Run(matchMethod+"/"+string(outcome), func(t *testing.T) {
 				fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0SOURCE12","isbn":"978-0-306-40615-7"},"duration":100}}`, "us")
 				configureEditionCreateRoute(t, fixture)
@@ -253,6 +253,7 @@ func TestCreateEditionFromAudiobookIdentifierFallbackRejectsIneligibleAndStaleRe
 	}{
 		{name: "other match method", mutate: func(r *sync.BookOutcomeRecord) { r.MatchMethod = "title" }},
 		{name: "failed outcome", mutate: func(r *sync.BookOutcomeRecord) { r.Outcome = sync.OutcomeFailed }},
+		{name: "skipped outcome", mutate: func(r *sync.BookOutcomeRecord) { r.Outcome = sync.OutcomeSkipped }},
 		{name: "invalid source ASIN", mutate: func(r *sync.BookOutcomeRecord) { r.SourceASIN = "invalid" }},
 		{name: "newer fallback has different source", later: true},
 		{name: "Audiobookshelf source changed", itemJSON: `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0CHANGED12","isbn":"978-0-306-40615-7"},"duration":100}}`, wantABSRead: true},
@@ -744,19 +745,19 @@ func TestCheckEditionImportRecoversSelectedBookAfterLaterSourceOnlyRun(t *testin
 		},
 		{
 			name:         "fallback original requires its pending action journal",
-			selected:     audiobookIdentifierFallbackRecord(sync.OutcomeSkipped, "edition_asin"),
+			selected:     audiobookIdentifierFallbackRecord(sync.OutcomeSynced, "edition_asin"),
 			later:        sourceOnly,
 			clearJournal: true, wantStatus: http.StatusConflict,
 		},
 		{
 			name:       "same-source fallback original stays unanchored and accepts returned book",
-			selected:   audiobookIdentifierFallbackRecord(sync.OutcomeSkipped, "edition_asin"),
+			selected:   audiobookIdentifierFallbackRecord(sync.OutcomeSynced, "edition_asin"),
 			later:      sourceOnly,
 			wantStatus: http.StatusOK, wantCheckCalls: 1, wantBookID: 0, wantUnanchored: true, remoteBookID: 73,
 		},
 		{
 			name:       "ISBN fallback remains current when latest match uses edition ASIN",
-			selected:   audiobookIdentifierFallbackRecord(sync.OutcomeSkipped, "isbn"),
+			selected:   audiobookIdentifierFallbackRecord(sync.OutcomeAlreadyCurrent, "isbn"),
 			later:      audiobookIdentifierFallbackRecord(sync.OutcomeSynced, "edition_asin"),
 			wantStatus: http.StatusOK, wantCheckCalls: 1, wantBookID: 0, wantUnanchored: true, remoteBookID: 73,
 		},

@@ -14,17 +14,19 @@ import (
 
 type audiobookFallbackClient struct {
 	*associationLookupClient
-	fallback *hardcover.ASINLookupResult
-	err      error
+	fallback      *hardcover.ASINLookupResult
+	err           error
+	fallbackCalls int
 }
 
 func (c *audiobookFallbackClient) SearchBookByEditionASINResult(context.Context, string) (*hardcover.ASINLookupResult, error) {
+	c.fallbackCalls++
 	return c.fallback, c.err
 }
 
 func TestAudiobookIdentifierFallbackRecordEligibility(t *testing.T) {
 	for _, matchMethod := range []string{"isbn", string(hardcover.ASINMatchEditionASIN)} {
-		for _, outcome := range []SyncOutcome{OutcomeSynced, OutcomeAlreadyCurrent, OutcomeSkipped} {
+		for _, outcome := range []SyncOutcome{OutcomeSynced, OutcomeAlreadyCurrent} {
 			record := BookOutcomeRecord{
 				Format: "Audiobook", MatchMethod: matchMethod, Outcome: outcome,
 				SourceASIN: "b00source1", ASIN: "invalid",
@@ -36,6 +38,8 @@ func TestAudiobookIdentifierFallbackRecordEligibility(t *testing.T) {
 	for _, record := range []BookOutcomeRecord{
 		{Format: "Audiobook", MatchMethod: "saved_match", Outcome: OutcomeSynced, SourceASIN: "B00SOURCE1"},
 		{Format: "Audiobook", MatchMethod: string(hardcover.ASINMatchAudibleMapping), Outcome: OutcomeSynced, SourceASIN: "B00SOURCE1"},
+		{Format: "Audiobook", MatchMethod: "isbn", Outcome: OutcomeSkipped, SourceASIN: "B00SOURCE1"},
+		{Format: "Audiobook", MatchMethod: string(hardcover.ASINMatchEditionASIN), Outcome: OutcomeSkipped, SourceASIN: "B00SOURCE1"},
 		{Format: "Audiobook", MatchMethod: "isbn", Outcome: OutcomeFailed, SourceASIN: "B00SOURCE1"},
 		{Format: "Audiobook", MatchMethod: "isbn", Outcome: OutcomeNeedsReview, SourceASIN: "B00SOURCE1"},
 		{Format: "Audiobook", MatchMethod: "isbn", Outcome: OutcomeWouldSync, SourceASIN: "B00SOURCE1"},
@@ -115,47 +119,82 @@ func TestAudiobookIdentifierPrecedence(t *testing.T) {
 }
 
 func TestAudiobookFallbackOutcomesAndIncrementalReResolution(t *testing.T) {
-	for _, skipped := range []bool{false, true} {
-		t.Run(map[bool]string{false: "synced then already current", true: "skipped"}[skipped], func(t *testing.T) {
+	t.Run("synced then already current", func(t *testing.T) {
+		svc, hc := createTestService()
+		svc.config.Sync.Incremental = true
+		svc.config.Sync.ProcessUnreadBooks = true
+		svc.config.Sync.SyncWantToRead = true
+		svc.config.Sync.SyncOwned = false
+		book := associationTestBook("fallback-outcome", "B0AUDIO001", "")
+		book.Progress.CurrentTime = 0
+		client := &audiobookFallbackClient{associationLookupClient: &associationLookupClient{MockHardcoverClient: hc}, fallback: &hardcover.ASINLookupResult{Book: &models.HardcoverBook{ID: "901", EditionID: "902"}, MatchKind: hardcover.ASINMatchEditionASIN}}
+		svc.hardcover = client
+		hc.On("GetEdition", mock.Anything, "902").Return(&models.Edition{ID: "902", BookID: "901", ReadingFormatID: "2"}, nil).Once()
+		hc.On("GetUserBookID", mock.Anything, 902).Return(903, nil).Once()
+		hc.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{ID: 903, StatusID: 1}).Return(nil).Once()
+		require.NoError(t, svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{}))
+		first := recordedOutcome(svc, book.ID)
+		assert.Equal(t, string(hardcover.ASINMatchEditionASIN), first.MatchMethod)
+		assert.True(t, IsAudiobookIdentifierFallbackRecord(first))
+		assert.Equal(t, OutcomeSynced, first.Outcome)
+		require.NoError(t, svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{}))
+		second := recordedOutcome(svc, book.ID)
+		assert.True(t, IsAudiobookIdentifierFallbackRecord(second))
+		assert.Equal(t, OutcomeAlreadyCurrent, second.Outcome)
+		_, saved := svc.state.GetAssociation(book.ID)
+		assert.False(t, saved)
+		// A mapping added later must replace the ephemeral fallback even when
+		// Audiobookshelf progress has not changed.
+		client.result = &hardcover.ASINLookupResult{Book: &models.HardcoverBook{ID: "901", EditionID: "902"}, MatchKind: hardcover.ASINMatchAudibleMapping, RegionalExternalID: "B0AUDIO001:us"}
+		require.NoError(t, svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{}))
+		association, saved := svc.state.GetAssociation(book.ID)
+		require.True(t, saved)
+		assert.Equal(t, "B0AUDIO001:us", association.RegionalExternalID)
+		assert.False(t, IsAudiobookIdentifierFallbackRecord(recordedOutcome(svc, book.ID)))
+		hc.AssertExpectations(t)
+	})
+}
+
+func TestConfiguredSkippedAudiobooksDoNotMatchIdentifiersOrEnableEditionImport(t *testing.T) {
+	tests := []struct {
+		name               string
+		processUnreadBooks bool
+		syncWantToRead     bool
+		progress           float64
+		minimumProgress    float64
+	}{
+		{name: "want-to-read disabled", processUnreadBooks: true},
+		{name: "unread books disabled", syncWantToRead: true},
+		{name: "below minimum progress", processUnreadBooks: true, syncWantToRead: true, progress: 0.25, minimumProgress: 0.5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			svc, hc := createTestService()
-			svc.config.Sync.Incremental = true
-			svc.config.Sync.ProcessUnreadBooks = true
-			svc.config.Sync.SyncWantToRead = !skipped
-			svc.config.Sync.SyncOwned = false
-			book := associationTestBook("fallback-outcome", "B0AUDIO001", "")
-			book.Progress.CurrentTime = 0
-			client := &audiobookFallbackClient{associationLookupClient: &associationLookupClient{MockHardcoverClient: hc}, fallback: &hardcover.ASINLookupResult{Book: &models.HardcoverBook{ID: "901", EditionID: "902"}, MatchKind: hardcover.ASINMatchEditionASIN}}
-			svc.hardcover = client
-			if !skipped {
-				hc.On("GetEdition", mock.Anything, "902").Return(&models.Edition{ID: "902", BookID: "901", ReadingFormatID: "2"}, nil).Once()
-				hc.On("GetUserBookID", mock.Anything, 902).Return(903, nil).Once()
-				hc.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{ID: 903, StatusID: 1}).Return(nil).Once()
+			svc.config.Sync.ProcessUnreadBooks = tt.processUnreadBooks
+			svc.config.Sync.SyncWantToRead = tt.syncWantToRead
+			svc.config.Sync.MinimumProgress = tt.minimumProgress
+			book := associationTestBook("fallback-skipped-"+tt.name, "B0AUDIO001", "9780306406157")
+			book.Media.Duration = 1000
+			book.Progress.CurrentTime = tt.progress * book.Media.Duration
+			fallback := &audiobookFallbackClient{
+				associationLookupClient: &associationLookupClient{MockHardcoverClient: hc},
+				fallback:                &hardcover.ASINLookupResult{Book: &models.HardcoverBook{ID: "901", EditionID: "902"}, MatchKind: hardcover.ASINMatchEditionASIN},
 			}
+			svc.hardcover = fallback
+
 			require.NoError(t, svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{}))
-			first := recordedOutcome(svc, book.ID)
-			assert.Equal(t, string(hardcover.ASINMatchEditionASIN), first.MatchMethod)
-			assert.True(t, IsAudiobookIdentifierFallbackRecord(first))
-			if skipped {
-				assert.Equal(t, OutcomeSkipped, first.Outcome)
-			} else {
-				assert.Equal(t, OutcomeSynced, first.Outcome)
-			}
-			require.NoError(t, svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{}))
-			second := recordedOutcome(svc, book.ID)
-			assert.True(t, IsAudiobookIdentifierFallbackRecord(second))
-			if !skipped {
-				assert.Equal(t, OutcomeAlreadyCurrent, second.Outcome)
-			}
+
+			record := recordedOutcome(svc, book.ID)
+			assert.Equal(t, OutcomeSkipped, record.Outcome)
+			assert.Empty(t, record.MatchMethod)
+			assert.False(t, IsAudiobookIdentifierFallbackRecord(record))
+			assert.Zero(t, fallback.searchCount, "skipped audiobooks must not search Audible mappings")
+			assert.Zero(t, fallback.fallbackCalls, "skipped audiobooks must not search edition ASINs")
+			assertNoHardcoverBookSearches(t, hc)
 			_, saved := svc.state.GetAssociation(book.ID)
-			assert.False(t, saved)
-			// A mapping added later must replace the ephemeral fallback even when
-			// Audiobookshelf progress has not changed.
-			client.result = &hardcover.ASINLookupResult{Book: &models.HardcoverBook{ID: "901", EditionID: "902"}, MatchKind: hardcover.ASINMatchAudibleMapping, RegionalExternalID: "B0AUDIO001:us"}
-			require.NoError(t, svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{}))
-			association, saved := svc.state.GetAssociation(book.ID)
-			require.True(t, saved)
-			assert.Equal(t, "B0AUDIO001:us", association.RegionalExternalID)
-			assert.False(t, IsAudiobookIdentifierFallbackRecord(recordedOutcome(svc, book.ID)))
+			assert.False(t, saved, "skipped audiobooks must not persist a match association")
+			hc.AssertNotCalled(t, "GetEdition", mock.Anything, mock.Anything)
+			hc.AssertNotCalled(t, "GetUserBookID", mock.Anything, mock.Anything)
 			hc.AssertExpectations(t)
 		})
 	}

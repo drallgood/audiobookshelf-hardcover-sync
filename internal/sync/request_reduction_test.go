@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
-	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 	"github.com/stretchr/testify/assert"
@@ -52,24 +51,26 @@ func TestProcessBookSkipsAudiobookBelowMinimumProgressBeforeLookup(t *testing.T)
 	}
 }
 
-// An unread audiobook with no status to sync still runs the match when unread
-// books are processed, because that match is how an unmatched book is reported.
-func TestProcessBookStillMatchesAudiobookWithNoStatusToSync(t *testing.T) {
+// An unread audiobook with no status to sync remains skipped before matching,
+// even when processing unread books is enabled.
+func TestProcessBookSkipsAudiobookWithNoStatusToSyncBeforeMatching(t *testing.T) {
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
 	svc.config.Sync.ProcessUnreadBooks = true
 	svc.config.Sync.SyncWantToRead = false
 	book := toAudiobookshelfBook(createTestBook("unread-no-status", "Unread", "Author", "B0UNREAD01", ""))
 	book.Progress.CurrentTime = 0
-	hc.On("SearchBookByASIN", mock.Anything, "B0UNREAD01").Return((*models.HardcoverBook)(nil), nil).Once()
 
 	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
 
-	hc.AssertExpectations(t)
 	record := recordedOutcome(svc, book.ID)
-	assert.Equal(t, OutcomeNeedsReview, record.Outcome)
-	assert.Equal(t, mismatch.ReasonAudibleImportAvailable, record.Reason)
-	hc.AssertNotCalled(t, "SearchBooks", mock.Anything, mock.Anything, mock.Anything)
+	assert.Equal(t, OutcomeSkipped, record.Outcome)
+	assert.Equal(t, "no Hardcover status required for current progress", record.Reason)
+	assert.Empty(t, record.MatchMethod)
+	assert.False(t, IsAudiobookIdentifierFallbackRecord(record))
+	assert.Empty(t, svc.mismatchCollector.GetAll())
+	assertNoHardcoverBookSearches(t, hc)
+	hc.AssertExpectations(t)
 }
 
 // Matching alone must not read or create user books: processBook does that once

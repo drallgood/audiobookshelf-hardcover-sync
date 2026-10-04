@@ -666,6 +666,12 @@ func TestProcessBookConfirmsEbookISBNBeforePostMatchSkips(t *testing.T) {
 			err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
 
 			require.NoError(t, err)
+			record := recordedOutcome(svc, book.ID)
+			if tt.reuseAssociation {
+				assert.Equal(t, "saved_match", record.MatchMethod)
+			} else {
+				assert.Equal(t, "isbn", record.MatchMethod, "the confirmed ebook ISBN match should be exposed to the outcome")
+			}
 			association, saved := svc.state.GetAssociation(book.ID)
 			if tt.dryRun {
 				assert.False(t, saved, "dry runs must not persist a confirmed ISBN association")
@@ -702,9 +708,8 @@ func TestProcessBookDoesNotReconcileAudiobookISBNOnSkippedBooks(t *testing.T) {
 		progress        float64
 		minimumProgress float64
 		syncWantToRead  bool
-		wantLookups     int
 	}{
-		{name: "unread when want-to-read sync is disabled", wantLookups: 1},
+		{name: "unread when want-to-read sync is disabled"},
 		{name: "below minimum progress", progress: 0.25, minimumProgress: 0.5, syncWantToRead: true},
 	}
 	for _, tt := range tests {
@@ -719,17 +724,17 @@ func TestProcessBookDoesNotReconcileAudiobookISBNOnSkippedBooks(t *testing.T) {
 			book.ID = "association-audiobook-post-match-skip-" + tt.name
 			book.Progress.CurrentTime = tt.progress * book.Media.Duration
 			book.Progress.StartedAt = 0
-			if tt.wantLookups > 0 {
-				client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
-					Return(hardcoverHit(), nil).Once()
-			}
-
 			err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
 
 			require.NoError(t, err)
+			record := recordedOutcome(svc, book.ID)
+			assert.Equal(t, OutcomeSkipped, record.Outcome)
+			assert.Empty(t, record.MatchMethod)
 			_, saved := svc.state.GetAssociation(book.ID)
 			assert.False(t, saved, "audiobook ISBNs must not create saved matches")
-			client.AssertNumberOfCalls(t, "SearchBookByISBN13", tt.wantLookups)
+			assertNoHardcoverBookSearches(t, client)
+			client.AssertNumberOfCalls(t, "SearchBookByISBN13", 0)
+			client.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
 			client.AssertNotCalled(t, "CheckBookOwnership", mock.Anything, mock.Anything)
 			client.AssertNotCalled(t, "MarkEditionAsOwned", mock.Anything, mock.Anything)
 			client.AssertNotCalled(t, "GetUserBookID", mock.Anything, mock.Anything)

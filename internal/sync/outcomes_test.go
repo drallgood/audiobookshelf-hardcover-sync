@@ -140,6 +140,7 @@ func TestProcessBookRecordsSkipAndIncrementalNoChange(t *testing.T) {
 		assert.Equal(t, "hc-book-1", record.HardcoverBookID,
 			"the local association must enrich an already_current outcome so the UI can offer forget-match")
 		assert.Equal(t, "hc-edition-1", record.EditionID)
+		assert.Equal(t, "saved_match", record.MatchMethod)
 		hc.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
 	})
 
@@ -156,6 +157,7 @@ func TestProcessBookIncrementalAlreadyCurrentEnrichesOnlyMatchingAssociation(t *
 		associationISBN13 string
 		associationFormat string
 		wantEnriched      bool
+		wantMatchMethod   string
 	}{
 		{
 			name:              "stale ASIN",
@@ -186,6 +188,18 @@ func TestProcessBookIncrementalAlreadyCurrentEnrichesOnlyMatchingAssociation(t *
 			associationISBN13: "9780306406157",
 			associationFormat: models.ReadingFormatAudiobook,
 			wantEnriched:      true,
+			wantMatchMethod:   "saved_match",
+		},
+		{
+			name:              "normalized ebook identifiers",
+			asin:              " ASIN-123 ",
+			isbn:              "978-0-306-40615-7",
+			isEbook:           true,
+			associationASIN:   "ASIN-123",
+			associationISBN13: "9780306406157",
+			associationFormat: models.ReadingFormatEbook,
+			wantEnriched:      true,
+			wantMatchMethod:   "saved_match",
 		},
 	}
 
@@ -223,6 +237,7 @@ func TestProcessBookIncrementalAlreadyCurrentEnrichesOnlyMatchingAssociation(t *
 				assert.Empty(t, record.HardcoverBookID)
 				assert.Empty(t, record.EditionID)
 			}
+			assert.Equal(t, tt.wantMatchMethod, record.MatchMethod)
 			storedAssociation, exists := svc.state.GetAssociation(book.ID)
 			require.True(t, exists)
 			assert.Equal(t, association, storedAssociation, "outcome enrichment must not mutate the persisted association")

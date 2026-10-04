@@ -1931,7 +1931,7 @@ class SyncProfileApp {
             title_author: 'Title and author',
             asin: 'ASIN',
             isbn: 'ISBN',
-            edition_asin: 'Edition ASIN fallback'
+            edition_asin: 'Edition ASIN'
         };
         if (Object.prototype.hasOwnProperty.call(known, value)) return known[value];
 
@@ -1953,6 +1953,7 @@ class SyncProfileApp {
         const asin = String(record.asin || '').trim();
         const isbn = String(record.isbn || '').trim();
         const format = String(record.format || '').trim();
+        const matchMethod = record.match_method || (['synced', 'already_current'].includes(record.outcome) ? 'unknown' : '');
         const series = this.formatSeries(record.series, record.series_number);
         const audibleURL = record.outcome === 'needs_review'
             ? this.buildAudibleBookURL(asin)
@@ -1987,7 +1988,7 @@ class SyncProfileApp {
                     </div>
                     ${record.author ? `<div><strong>Author:</strong> ${this.escapeHtml(record.author)}</div>` : ''}
                     <div class="book-meta">${asinHTML}${isbnHTML}${format ? `<span><strong>Format:</strong> ${this.escapeHtml(format)}</span>` : ''}${series ? `<span><strong>Series:</strong> ${this.escapeHtml(series)}</span>` : ''}</div>
-                    ${record.match_method ? `<div><strong>Match method:</strong> ${this.escapeHtml(this.syncMatchMethodText(record.match_method))}</div>` : ''}
+                    ${matchMethod ? `<div>Match method: ${this.escapeHtml(this.syncMatchMethodText(matchMethod))}</div>` : ''}
                     ${record.outcome === 'needs_review' && !this.isAudibleImportRecord(record) ? this.renderHardcoverCandidate(record, editionActionsHTML) : editionActionsHTML}
                     ${record.reason ? `<div class="book-reason"><strong>Reason:</strong> ${this.escapeHtml(this.syncReasonText(record.reason))}</div>` : ''}
                     ${record.error ? `<div class="book-error"><strong>Error:</strong> ${this.escapeHtml(record.error)}</div>` : ''}
@@ -2020,7 +2021,7 @@ class SyncProfileApp {
     audiobookIdentifierFallbackActionEligible(record) {
         return ['edition_asin', 'isbn'].includes(record?.match_method)
             && String(record.format || '').trim().toLowerCase() === 'audiobook'
-            && ['synced', 'already_current', 'skipped'].includes(record.outcome)
+            && ['synced', 'already_current'].includes(record.outcome)
             && /^[a-z0-9]{10}$/i.test(this.editionSourceASIN(record));
     }
 

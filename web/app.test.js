@@ -989,7 +989,7 @@ for (const runState of ['completed', 'canceled']) {
         assert.equal(app.editionCreateIneligibleReason(record, app.openSummary.runContext), null);
         assert.match(row, /data-edition-action="add"(?![^>]*disabled)/);
         assert.match(row, /<strong>Reason:<\/strong> No Hardcover match found\. Import by Audible ASIN is available\./);
-        assert.match(row, /<strong>Match method:<\/strong> Audible ASIN/);
+        assert.match(row, /Match method: Audible ASIN/);
         assert.doesNotMatch(row, /audible_import_available|audible_asin/);
 
         const previousDocument = global.document;
@@ -1070,7 +1070,7 @@ test('outcome match methods render as readable labels and humanize unknown metho
     const cases = [
         ['title_author', 'Title and author'],
         ['audible_asin', 'Audible ASIN'],
-        ['edition_asin', 'Edition ASIN fallback'],
+        ['edition_asin', 'Edition ASIN'],
         ['isbn_13', 'ISBN-13'],
         ['asin', 'ASIN'],
         ['isbn', 'ISBN'],
@@ -1078,7 +1078,18 @@ test('outcome match methods render as readable labels and humanize unknown metho
     ];
     for (const [match_method, label] of cases) {
         const html = app.renderOutcomeRecord({ ...needsReview, match_method });
-        assert.ok(html.includes(`<strong>Match method:</strong> ${label}`), `${match_method} should render as ${label}`);
+        assert.ok(html.includes(`Match method: ${label}`), `${match_method} should render as ${label}`);
+    }
+});
+
+test('synced and already-current books always show a plain match-method label', () => {
+    const app = editionApp();
+    for (const outcome of ['synced', 'already_current']) {
+        for (const [match_method, label] of [['audible_mapping', 'Audible mapping'], ['isbn', 'ISBN'], ['saved_match', 'Saved match'], [undefined, 'Unknown']]) {
+            const html = app.renderOutcomeRecord({ ...needsReview, outcome, match_method });
+            assert.ok(html.includes(`Match method: ${label}`));
+            assert.doesNotMatch(html, /<strong>Match method:/);
+        }
     }
 });
 
@@ -1115,10 +1126,11 @@ test('audiobook identifier fallback is limited to completed audiobook outcomes w
             title: 'Fallback audiobook', format: 'audiobook', source_asin: 'B00SOURCE1', asin: 'invalid',
             hardcover_book_id: '42'
         };
-        for (const outcome of ['synced', 'already_current', 'skipped']) {
+        for (const outcome of ['synced', 'already_current']) {
             assert.equal(app.editionCreateIneligibleReason({ ...fallback, outcome }, app.openSummary.runContext), null);
         }
         for (const record of [
+            { ...fallback, outcome: 'skipped' },
             { ...fallback, outcome: 'would_sync' },
             { ...fallback, outcome: 'failed' },
             { ...fallback, format: 'ebook' },
@@ -1131,7 +1143,7 @@ test('audiobook identifier fallback is limited to completed audiobook outcomes w
         }
         assert.equal(app.editionCreateIneligibleReason({ ...fallback, source_asin: null, asin: 'B00FALLBK1' }, app.openSummary.runContext), null);
         const row = app.renderOutcomeRecord(fallback);
-        if (match_method === 'edition_asin') assert.match(row, /<strong>Match method:<\/strong> Edition ASIN fallback/);
+        if (match_method === 'edition_asin') assert.match(row, /Match method: Edition ASIN/);
         assert.match(row, /Hardcover target: book 42/);
         assert.match(row, /data-edition-action="add"/);
         assert.match(row, /data-edition-action="forget"/);
@@ -1148,7 +1160,7 @@ for (const match_method of ['edition_asin', 'isbn']) {
     test(`${match_method} audiobook fallback opens Audible import preview without replacing its original sync record`, async () => {
         const app = editionApp();
         const record = {
-            book_id: 'li_fallback', outcome: 'skipped', reason: 'original reason', match_method,
+            book_id: 'li_fallback', outcome: 'already_current', reason: 'original reason', match_method,
             title: 'Fallback audiobook', format: 'audiobook', source_asin: 'B00SOURCE1', asin: 'B00OTHER01',
             hardcover_book_id: '42'
         };
@@ -1168,7 +1180,7 @@ for (const match_method of ['edition_asin', 'isbn']) {
         await app.openEditionDialog(record.book_id);
 
         assert.equal(app.editionDialog.audibleImport, true);
-        assert.equal(app.editionDialog.record.outcome, 'skipped');
+        assert.equal(app.editionDialog.record.outcome, 'already_current');
         assert.equal(app.editionDialog.record.reason, 'original reason');
         assert.equal(app.editionDialog.record.hardcover_book_id, '42');
         assert.ok(requests.includes(`/api/profiles/p1/edition-drafts/source/${record.book_id}`));

@@ -856,7 +856,8 @@ func TestCreateCommandAssociationIsUsedByNextSync(t *testing.T) {
 	cfg.Audiobookshelf.Token = "abs-token"
 	cfg.Sync.StateFile = env.statePath
 	cfg.Sync.Incremental = false
-	cfg.Sync.SyncWantToRead = false
+	cfg.Sync.SyncWantToRead = true
+	cfg.Sync.DryRun = true
 	cfg.Paths.CacheDir = t.TempDir()
 	cfg.Paths.MismatchOutputDir = t.TempDir()
 	syncHC := &syncAssociationHardcover{Client: hardcover.NewClient("test-token", logger.Get())}

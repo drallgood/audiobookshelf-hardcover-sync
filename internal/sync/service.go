@@ -161,7 +161,7 @@ func IsAudiobookIdentifierFallbackRecord(record BookOutcomeRecord) bool {
 		return false
 	}
 	switch record.Outcome {
-	case OutcomeSynced, OutcomeAlreadyCurrent, OutcomeSkipped:
+	case OutcomeSynced, OutcomeAlreadyCurrent:
 	default:
 		return false
 	}
@@ -2407,6 +2407,14 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 		return nil
 	}
 
+	// Audiobooks with no Hardcover status to apply are configured skips. Keep
+	// them out of identifier matching and the audiobook edition-import workflow.
+	// Ebook matching keeps its existing confirmation and ownership behavior.
+	if book.ReadingFormat() == models.ReadingFormatAudiobook && targetStatus == "" {
+		setOutcome(OutcomeSkipped, "no Hardcover status required for current progress")
+		return nil
+	}
+
 	// Early filtering for incremental sync - check if book needs syncing
 	if s.config.Sync.Incremental && !hadPendingDateRestoration {
 		// Re-resolve association-free audiobooks before trusting a checkpoint.
@@ -2458,6 +2466,9 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 			bookProcessed = false // Explicitly mark as not processed when skipping due to no changes
 			if hcBook == nil {
 				hcBook = s.savedAssociationHardcoverBook(book)
+				if hcBook != nil {
+					matchMethod = "saved_match"
+				}
 			}
 			setOutcome(OutcomeAlreadyCurrent, "incremental state is current")
 			return nil
@@ -2472,11 +2483,10 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 
 	// An audiobook below the minimum progress depends only on Audiobookshelf
 	// data, so skip it before spending Hardcover requests on a match that cannot
-	// be used, as unread books are skipped above. Ebooks keep the later post-match
-	// skip because their verified match and ownership are saved even when the item
-	// is not synced. A book with no Hardcover status to sync still runs the match
-	// below: with ProcessUnreadBooks enabled, that match is how an unmatched book
-	// reaches the attention list. A saved match is shown when one exists.
+	// be used, after unread and no-target-status audiobooks are skipped above.
+	// Ebooks keep the later post-match skip because their verified match and
+	// ownership are saved even when the item is not synced. A saved match is shown
+	// when one exists.
 	if book.ReadingFormat() == models.ReadingFormatAudiobook && progress < s.config.Sync.MinimumProgress && progress > 0 {
 		bookLog.Debug("Skipping audiobook below minimum progress before Hardcover lookup", map[string]interface{}{
 			"progress":         progress,
@@ -2499,7 +2509,7 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 	// ISBN out of local state until that second lookup has confirmed it.
 	var asinResult *hardcover.ASINLookupResult
 	hcBook, findErr, foundByASIN, asinResult = s.findBookInHardcoverWithASINMatch(ctx, book, associationWriteASINOnly)
-	if book.ReadingFormat() == models.ReadingFormatAudiobook && findErr == nil && hcBook != nil {
+	if findErr == nil && hcBook != nil {
 		switch {
 		case asinResult != nil:
 			matchMethod = string(asinResult.MatchKind)
