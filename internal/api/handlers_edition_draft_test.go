@@ -26,6 +26,29 @@ import (
 
 const editionDraftItemPath = "/api/profiles/draft-profile/edition-drafts/source/abs-item-1"
 
+func TestGetEditionSourceDraftRejectsInvalidAudibleIdentifier(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		mediaType  string
+		identifier string
+	}{
+		{name: "malformed audiobook identifier", mediaType: "book", identifier: "B0SOURCE12:invalid"},
+		{name: "audible identifier on ebook", mediaType: "ebook", identifier: "B0SOURCE12:us"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			item := fmt.Sprintf(`{"id":"abs-item-1","mediaType":%q,"media":{"metadata":{"title":"Source","asin":"B0SOURCE12"}}}`, tc.mediaType)
+			fixture := newEditionDraftTestFixture(t, item, "us")
+			fixture.handler.editionDraftAudnexClientFactory = func() editionDraftAudnexDiscoverer {
+				t.Fatal("invalid input must not reach Audnexus")
+				return nil
+			}
+			response := fixture.request(editionDraftItemPath+"?audible_identifier="+tc.identifier, fixture.sessionCookie(t, fixture.owner))
+			require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+			require.Zero(t, fixture.hardcoverRequests.Load())
+		})
+	}
+}
+
 type editionDraftTestFixture struct {
 	routes            http.Handler
 	handler           *Handler

@@ -889,10 +889,19 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 		association = createEditionAssociation(item, record.HardcoverBookID, strconv.Itoa(result.EditionID), regionalID,
 			correction, models.ReadingFormatAudiobook, "api_regional_"+string(result.Status))
 	}
+	hardcoverTitle := strings.TrimSpace(result.BookTitle)
+	if unanchored && hardcoverTitle == "" {
+		// The verified import identity is sufficient to save the association;
+		// this lookup only fills its display title and may fail after the write.
+		bookID := strconv.Itoa(result.BookID)
+		if resolvedBook, titleErr := client.GetBookByID(ctx, bookID); titleErr == nil && resolvedBook != nil && resolvedBook.ID == bookID {
+			hardcoverTitle = strings.TrimSpace(resolvedBook.Title)
+		}
+	}
 	recovery := response.recovery
 	*response = editionCreateResponse{
 		ABSItemID: item.ID, ReadingFormat: models.ReadingFormatAudiobook, Status: string(result.Status),
-		HardcoverBookID: strconv.Itoa(result.BookID), HardcoverEditionID: strconv.Itoa(result.EditionID), HardcoverTitle: strings.TrimSpace(result.BookTitle), RegionalExternalID: regionalID,
+		HardcoverBookID: strconv.Itoa(result.BookID), HardcoverEditionID: strconv.Itoa(result.EditionID), HardcoverTitle: hardcoverTitle, RegionalExternalID: regionalID,
 		MetadataPreview: preview, recovery: recovery, sourceEdition: result.Edition, action: response.action,
 	}
 	response.action.Outcome = editionOutcomeCreated

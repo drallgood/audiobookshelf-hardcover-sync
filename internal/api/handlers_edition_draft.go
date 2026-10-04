@@ -176,8 +176,12 @@ func (h *Handler) GetEditionSourceDraft(w http.ResponseWriter, r *http.Request) 
 	}
 
 	draft := buildEditionSourceDraft(book, profile.SyncConfig.DryRun)
+	correctedIdentifier := strings.TrimSpace(r.URL.Query().Get("audible_identifier"))
+	if book.IsEbook() && correctedIdentifier != "" {
+		h.writeErrorResponse(w, http.StatusBadRequest, "audible_identifier is only valid for an audiobook")
+		return
+	}
 	if !book.IsEbook() {
-		correctedIdentifier := strings.TrimSpace(r.URL.Query().Get("audible_identifier"))
 		if correctedIdentifier != "" {
 			asin, region, parseErr := parseSubmittedAudibleIdentifier(correctedIdentifier)
 			if parseErr != nil {

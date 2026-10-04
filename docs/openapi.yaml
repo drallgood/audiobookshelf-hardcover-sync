@@ -482,7 +482,11 @@ components:
           description: Verified Hardcover edition ID.
         hardcover_title:
           type: string
-          description: Resolved Hardcover book title. Informational display value; it is not a review or identity gate.
+          description: >-
+            Resolved Hardcover book title. Unanchored create and check-import
+            may make one additional book lookup when the import result omits
+            its title. This is an informational display value; a failed title
+            lookup does not block saving the verified association.
         regional_external_id:
           type: string
           description: >-
@@ -775,7 +779,7 @@ components:
       properties:
         code:
           type: string
-          enum: [missing_identifier, invalid_isbn, invalid_source_asin, date_unavailable, missing_author, language_defaults_to_english, published_date_unrecognized, published_date_ambiguous, unsupported_audnex_region, audnex_temporarily_unavailable, audnex_date_unrecognized]
+          enum: [missing_identifier, invalid_isbn, invalid_source_asin, date_unavailable, missing_author, language_defaults_to_english, published_date_unrecognized, published_date_ambiguous, unsupported_audnex_region, audnex_temporarily_unavailable, audnex_lookup_failed, audnex_date_unrecognized]
           description: Current warning code identifying the source or draft issue. `invalid_source_asin` means a non-empty ASIN is not exactly 10 ASCII alphanumeric characters; it does not count toward eligibility, and audiobook region status is `not_applicable` when no corrected identifier is supplied. `invalid_isbn` covers unsupported ISBN shape and a bad checksum; a bad-checksum ISBN that has a supported shape remains eligible, with its validity flag false. Date warnings describe Audiobookshelf source metadata; a confirmed Audnexus release date can still replace the preview date. `published_date_ambiguous` means both month-first and day-first slash parsing succeed, so `publishedYear` is the Audiobookshelf fallback when available.
         message:
           type: string
@@ -1469,7 +1473,8 @@ paths:
             Optional corrected audiobook identifier in `ASIN:region` form, for
             example `B00XXXYYZZ:uk`. Its ASIN and supported region are validated
             and used for this preview. The region is queried exactly; it is not
-            inferred or swept. An unknown or temporarily unavailable result has
+            inferred or swept. This parameter is rejected for ebooks. An unknown
+            or temporarily unavailable result has
             no `audnexus_record` or `audnexus_comparison`.
       responses:
         '200':
@@ -1484,7 +1489,7 @@ paths:
                   data:
                     $ref: '#/components/schemas/EditionSourceDraft'
         '400':
-          description: Required profile or Audiobookshelf item ID is missing, the fetched item is not book media, or the corrected `audible_identifier` is invalid.
+          description: Required profile or Audiobookshelf item ID is missing, the fetched item is not book media, or the corrected `audible_identifier` is invalid or supplied for an ebook.
           content:
             application/json:
               schema:
@@ -1697,7 +1702,7 @@ paths:
             time for a Hardcover write (with Retry-After: 1), low or exhausted daily
             Hardcover quota prevents admission before the write deadline, a dependency request timed out,
             source-ASIN Audnexus region discovery was rate limited or transiently
-            unavailable, or the Hardcover regional import timed out. For an
+            unavailable, or the Hardcover regional import timed out. For a
             confirmed identifier in **Import by Audible ASIN**, a rate limit or
             transient failure while rereading Audnexus is retryable and no
             Hardcover import is sent.
@@ -1731,7 +1736,9 @@ paths:
         Audiobookshelf source item while holding the profile and state-file
         guards. It performs one read-only Hardcover import-status/mapping query
         and, only for a terminal result, an uncached edition readback that must
-        match the resolved Hardcover book and audiobook format. A pending
+        match the resolved Hardcover book and audiobook format. When the resolved
+        title is missing, an unanchored import may make one additional
+        `GetBookByID` read to populate the informational `hardcover_title`. A pending
         result returns HTTP 503 with `outcome: unconfirmed` and the same recovery
         data; retry this check rather than submitting edition creation again. A
         confirmed result saves the local association and returns the ordinary

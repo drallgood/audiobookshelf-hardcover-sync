@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -254,7 +256,7 @@ func TestCreateUnanchoredAudibleImportRequiresExplicitConfirmation(t *testing.T)
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := newAudibleImportCreateFixture(t)
-			var absReads, audnexReads, mutations int
+			var absReads, audnexReads, mutations, hardcoverReads int
 			fixture.handler.editionCreateABSClientFactory = func(string, string, string) (editionCreateABSClient, error) {
 				absReads++
 				return editionCreateABSClientFunc(func(context.Context, string) (*models.AudiobookshelfBook, error) {
@@ -274,10 +276,17 @@ func TestCreateUnanchoredAudibleImportRequiresExplicitConfirmation(t *testing.T)
 				}
 			}
 			fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
-				return editionCreateHardcoverStub{importFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
-					mutations++
-					return nil, nil
-				}}
+				return editionCreateHardcoverStub{
+					bookFn: func(context.Context, string) (*models.HardcoverBook, error) {
+						hardcoverReads++
+						return nil, nil
+					},
+					importFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+						hardcoverReads++
+						mutations++
+						return nil, nil
+					},
+				}
 			}
 
 			response := postEditionCreate(t, fixture, fixture.owner, tc.body)
@@ -286,6 +295,8 @@ func TestCreateUnanchoredAudibleImportRequiresExplicitConfirmation(t *testing.T)
 			require.Zero(t, absReads)
 			require.Zero(t, audnexReads)
 			require.Zero(t, mutations)
+			require.Zero(t, hardcoverReads)
+			require.Zero(t, fixture.hardcoverRequests.Load())
 			stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
 			require.NoError(t, err)
 			_, associated := stored.GetAssociation("abs-item-1")
@@ -333,7 +344,7 @@ func TestCreateUnanchoredAudibleImportRefusesDryRunWithConfirmedIdentifier(t *te
 
 func TestCreateUnanchoredAudibleImportRejectsMalformedConfirmedIdentifierBeforeMutation(t *testing.T) {
 	fixture := newAudibleImportCreateFixture(t)
-	var absReads, audnexReads, mutations int
+	var absReads, audnexReads, mutations, hardcoverReads int
 	fixture.handler.editionCreateABSClientFactory = func(string, string, string) (editionCreateABSClient, error) {
 		absReads++
 		return editionCreateABSClientFunc(func(context.Context, string) (*models.AudiobookshelfBook, error) {
@@ -345,10 +356,17 @@ func TestCreateUnanchoredAudibleImportRejectsMalformedConfirmedIdentifierBeforeM
 		return editionCreateAudnexStub{}
 	}
 	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
-		return editionCreateHardcoverStub{importFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
-			mutations++
-			return nil, nil
-		}}
+		return editionCreateHardcoverStub{
+			bookFn: func(context.Context, string) (*models.HardcoverBook, error) {
+				hardcoverReads++
+				return nil, nil
+			},
+			importFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+				hardcoverReads++
+				mutations++
+				return nil, nil
+			},
+		}
 	}
 
 	response := postEditionCreate(t, fixture, fixture.owner,
@@ -358,6 +376,8 @@ func TestCreateUnanchoredAudibleImportRejectsMalformedConfirmedIdentifierBeforeM
 	require.Equal(t, 1, absReads, "the current source snapshot is checked before validating the submitted correction")
 	require.Zero(t, audnexReads)
 	require.Zero(t, mutations)
+	require.Zero(t, hardcoverReads)
+	require.Zero(t, fixture.hardcoverRequests.Load())
 	stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
 	require.NoError(t, err)
 	_, associated := stored.GetAssociation("abs-item-1")
@@ -396,6 +416,7 @@ func TestCreateUnanchoredAudibleImportRejectsStaleSourceBeforeRemoteReads(t *tes
 	require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
 	require.Zero(t, audnexReads, "changed ABS metadata rejects the create before the confirmed-region lookup")
 	require.Zero(t, mutations)
+	require.Zero(t, fixture.hardcoverRequests.Load())
 	stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
 	require.NoError(t, err)
 	_, associated := stored.GetAssociation("abs-item-1")
@@ -492,7 +513,7 @@ func TestCreateUnanchoredAudibleImportUsesConfirmedRegionAndPersistsAssociation(
 		t.Run(string(status), func(t *testing.T) {
 			fixture := newAudibleImportCreateFixture(t)
 			var gotASIN, gotRegion string
-			var exactReads, discoveryReads, mutations int
+			var exactReads, discoveryReads, mutations, titleReads int
 			fixture.handler.editionCreateAudnexClientFactory = func() editionCreateAudnexDiscoverer {
 				return editionCreateAudnexStub{
 					getFn: func(_ context.Context, asin, region string) (*audnex.Book, error) {
@@ -507,18 +528,25 @@ func TestCreateUnanchoredAudibleImportUsesConfirmedRegionAndPersistsAssociation(
 				}
 			}
 			fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
-				return editionCreateHardcoverStub{importFn: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
-					mutations++
-					require.Zero(t, input.BookID, "unanchored import must not inherit a Hardcover ID from the run")
-					require.True(t, input.Unanchored)
-					require.Equal(t, "B0OTHER123", input.ASIN)
-					require.Equal(t, "ca", input.Region)
-					return &hardcover.RegionalAudiobookResult{
-						Status: status, BookID: 73, EditionID: 84,
-						ReadingFormatID:    models.ReadingFormatID(models.ReadingFormatAudiobook),
-						RegionalExternalID: "B0OTHER123:ca", BookTitle: "Imported Hardcover title",
-					}, nil
-				}}
+				return editionCreateHardcoverStub{
+					bookFn: func(_ context.Context, id string) (*models.HardcoverBook, error) {
+						titleReads++
+						require.Equal(t, "73", id)
+						return &models.HardcoverBook{ID: id, Title: "Resolved Hardcover title"}, nil
+					},
+					importFn: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+						mutations++
+						require.Zero(t, input.BookID, "unanchored import must not inherit a Hardcover ID from the run")
+						require.True(t, input.Unanchored)
+						require.Equal(t, "B0OTHER123", input.ASIN)
+						require.Equal(t, "ca", input.Region)
+						return &hardcover.RegionalAudiobookResult{
+							Status: status, BookID: 73, EditionID: 84,
+							ReadingFormatID:    models.ReadingFormatID(models.ReadingFormatAudiobook),
+							RegionalExternalID: "B0OTHER123:ca",
+						}, nil
+					},
+				}
 			}
 
 			response := postEditionCreate(t, fixture, fixture.owner,
@@ -529,6 +557,7 @@ func TestCreateUnanchoredAudibleImportUsesConfirmedRegionAndPersistsAssociation(
 			require.Equal(t, "ca", gotRegion)
 			require.Zero(t, discoveryReads, "create re-reads exactly the confirmed region")
 			require.Equal(t, 1, mutations)
+			require.Equal(t, 1, titleReads)
 			var envelope struct {
 				Data struct {
 					Status             string `json:"status"`
@@ -542,7 +571,7 @@ func TestCreateUnanchoredAudibleImportUsesConfirmedRegionAndPersistsAssociation(
 			require.Equal(t, string(status), envelope.Data.Status)
 			require.Equal(t, "73", envelope.Data.HardcoverBookID)
 			require.Equal(t, "84", envelope.Data.HardcoverEditionID)
-			require.Equal(t, "Imported Hardcover title", envelope.Data.HardcoverTitle)
+			require.Equal(t, "Resolved Hardcover title", envelope.Data.HardcoverTitle)
 			require.Equal(t, "B0OTHER123:ca", envelope.Data.RegionalExternalID)
 
 			stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
@@ -574,6 +603,111 @@ func TestCreateUnanchoredAudibleImportUsesConfirmedRegionAndPersistsAssociation(
 	}
 }
 
+func TestCreateUnanchoredAudibleImportKeepsAssociationWhenTitleLookupIsCanceled(t *testing.T) {
+	fixture := newAudibleImportCreateFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fixture.handler.editionCreateAudnexClientFactory = func() editionCreateAudnexDiscoverer {
+		return editionCreateAudnexStub{
+			getFn: func(_ context.Context, asin, _ string) (*audnex.Book, error) {
+				return &audnex.Book{ASIN: asin}, nil
+			},
+			discoverFn: func(context.Context, string, string) (*audnex.Book, string, error) {
+				t.Fatal("the confirmed region should be reread exactly")
+				return nil, "", nil
+			},
+		}
+	}
+	var mutations, titleReads int
+	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+		return editionCreateHardcoverStub{
+			bookFn: func(lookupCtx context.Context, id string) (*models.HardcoverBook, error) {
+				titleReads++
+				require.Equal(t, "73", id)
+				require.ErrorIs(t, lookupCtx.Err(), context.Canceled)
+				return nil, lookupCtx.Err()
+			},
+			importFn: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+				mutations++
+				require.Zero(t, input.BookID)
+				require.True(t, input.Unanchored)
+				cancel()
+				return &hardcover.RegionalAudiobookResult{
+					Status: hardcover.RegionalAudiobookCreated, BookID: 73, EditionID: 84,
+					ReadingFormatID:    models.ReadingFormatID(models.ReadingFormatAudiobook),
+					RegionalExternalID: "B0OTHER123:ca",
+				}, nil
+			},
+		}
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/profiles/draft-profile/edition-drafts/create", strings.NewReader(
+		`{"run_id":"run-audible-import","abs_item_id":"abs-item-1","audnexus_confirmed":true,"audible_identifier":"B0OTHER123:ca"}`,
+	)).WithContext(ctx)
+	request.AddCookie(fixture.sessionCookie(t, fixture.owner))
+	response := httptest.NewRecorder()
+	fixture.routes.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.Equal(t, 1, mutations)
+	require.Equal(t, 1, titleReads)
+	var envelope struct {
+		Data struct {
+			HardcoverTitle string `json:"hardcover_title"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	require.Empty(t, envelope.Data.HardcoverTitle)
+	stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+	require.NoError(t, err)
+	association, associated := stored.GetAssociation("abs-item-1")
+	require.True(t, associated, "a canceled optional title lookup must not discard the verified import")
+	require.Equal(t, "73", association.HardcoverBookID)
+	require.Equal(t, "84", association.HardcoverEditionID)
+}
+
+func TestCreateUnanchoredAudibleImportDoesNotMutateWithInsufficientBudget(t *testing.T) {
+	fixture := newAudibleImportCreateFixture(t)
+	var audnexReads, mutations int
+	fixture.handler.editionCreateAudnexClientFactory = func() editionCreateAudnexDiscoverer {
+		return editionCreateAudnexStub{
+			getFn: func(_ context.Context, asin, _ string) (*audnex.Book, error) {
+				audnexReads++
+				return &audnex.Book{ASIN: asin}, nil
+			},
+			discoverFn: func(context.Context, string, string) (*audnex.Book, string, error) {
+				t.Fatal("the confirmed region should be reread exactly")
+				return nil, "", nil
+			},
+		}
+	}
+	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+		return editionCreateHardcoverStub{importFn: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+			mutations++
+			require.Zero(t, input.BookID)
+			require.True(t, input.Unanchored)
+			return nil, nil
+		}}
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(editionCreateMutationReserve-time.Second))
+	defer cancel()
+	request := httptest.NewRequest(http.MethodPost, "/api/profiles/draft-profile/edition-drafts/create", strings.NewReader(
+		`{"run_id":"run-audible-import","abs_item_id":"abs-item-1","audnexus_confirmed":true,"audible_identifier":"B0OTHER123:ca"}`,
+	)).WithContext(ctx)
+	request.AddCookie(fixture.sessionCookie(t, fixture.owner))
+	response := httptest.NewRecorder()
+	fixture.routes.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusServiceUnavailable, response.Code, response.Body.String())
+	require.Equal(t, 1, audnexReads)
+	require.Zero(t, mutations)
+	require.Zero(t, fixture.hardcoverRequests.Load())
+	stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+	require.NoError(t, err)
+	_, associated := stored.GetAssociation("abs-item-1")
+	require.False(t, associated)
+}
+
 func TestCreateUnanchoredAudibleImportHandlesAudnexMissAndRateLimitWithoutMutation(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -584,6 +718,7 @@ func TestCreateUnanchoredAudibleImportHandlesAudnexMissAndRateLimitWithoutMutati
 		{name: "confirmed record disappeared", getErr: audnex.ErrNotFound, wantStatus: http.StatusConflict},
 		{name: "confirmed record returned a different ASIN", found: &audnex.Book{ASIN: "B0WRONG123"}, wantStatus: http.StatusConflict},
 		{name: "audnexus rate limited", getErr: audnex.ErrRateLimited, wantStatus: http.StatusServiceUnavailable},
+		{name: "audnexus transient failure", getErr: audnex.ErrTransient, wantStatus: http.StatusServiceUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := newAudibleImportCreateFixture(t)
@@ -698,6 +833,10 @@ func TestCheckUnanchoredAudibleImportRecoveryIsIdempotentWithoutResubmitting(t *
 	require.Empty(t, createEnvelope.Data.HardcoverBookID)
 	require.NotEmpty(t, createEnvelope.Data.RecoveryToken)
 	require.Equal(t, 1, mutations)
+	stateAfterTimeout, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+	require.NoError(t, err)
+	_, associatedAfterTimeout := stateAfterTimeout.GetAssociation("abs-item-1")
+	require.False(t, associatedAfterTimeout, "an ambiguous timeout is not saved as a verified local association")
 	profile, err := fixture.multiUserService.GetProfile("draft-profile")
 	require.NoError(t, err)
 	claims, valid := verifyEditionRecoveryToken(profile.HardcoverToken, createEnvelope.Data.RecoveryToken, editionRecoveryClaims{
@@ -913,6 +1052,42 @@ func audibleImportRunRecord() syncpkg.BookOutcomeRecord {
 		Title: "Reviewed title", Author: "Author", Format: "Audiobook", ASIN: "B0SOURCE12",
 		SourceASIN: "B0SOURCE12", ISBN: "978-0-306-40615-7", SourceISBN13: "9780306406157",
 	}
+}
+
+func TestCreateUnanchoredAudibleImportWrongFormatReturnsConflictWithoutAssociation(t *testing.T) {
+	fixture := newAudibleImportCreateFixture(t)
+	fixture.handler.editionCreateAudnexClientFactory = func() editionCreateAudnexDiscoverer {
+		return editionCreateAudnexStub{
+			getFn: func(_ context.Context, asin, _ string) (*audnex.Book, error) {
+				return &audnex.Book{ASIN: asin}, nil
+			},
+			discoverFn: func(context.Context, string, string) (*audnex.Book, string, error) {
+				t.Fatal("the confirmed region should be reread exactly")
+				return nil, "", nil
+			},
+		}
+	}
+	var mutations int
+	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+		return editionCreateHardcoverStub{importFn: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+			mutations++
+			require.Zero(t, input.BookID, "unanchored import must not inherit a Hardcover ID from the run")
+			require.True(t, input.Unanchored)
+			return nil, &hardcover.RegionalAudiobookWrongFormatError{
+				BookID: 73, EditionID: 84, ReadingFormatID: "4",
+			}
+		}}
+	}
+
+	response := postEditionCreate(t, fixture, fixture.owner,
+		`{"run_id":"run-audible-import","abs_item_id":"abs-item-1","audnexus_confirmed":true,"audible_identifier":"B0OTHER123:ca"}`)
+
+	require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+	require.Equal(t, 1, mutations)
+	stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+	require.NoError(t, err)
+	_, associated := stored.GetAssociation("abs-item-1")
+	require.False(t, associated, "a wrong-format result must never become the local Audible association")
 }
 
 func audibleImportABSItem(title, asin, isbn string) *models.AudiobookshelfBook {

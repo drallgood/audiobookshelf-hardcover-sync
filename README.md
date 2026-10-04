@@ -178,70 +178,42 @@ successful non-dry-run completion.
 ### Read-only edition draft
 
 `GET /api/profiles/{id}/edition-drafts/source/{itemID}` previews Audiobookshelf
-metadata without changing Hardcover. Audiobook previews may show the
-confirmed Audnexus record for the discovered or corrected regional ASIN and a
-per-field comparison with Audiobookshelf. Pass `audible_identifier=ASIN:region`
-to preview a corrected regional identifier. Drafts make no Hardcover requests.
-A non-retryable Audnexus lookup failure still returns a draft with an unknown
-region and a warning; review or correct the identifier before importing.
-A valid source ASIN is eligible for regional Audible creation; when it is absent
-or malformed, an ISBN can make the audiobook eligible for edition insertion.
-Ebooks may use an ASIN or ISBN.
-
-Use a trusted Audiobookshelf URL and enable authentication when exposing the
-API beyond localhost. See [OpenAPI](docs/openapi.yaml) for fields, warnings,
-request limits, and retry guidance.
+metadata without calling Hardcover. For audiobooks, it compares source values
+with the regional Audnexus record. Use `audible_identifier=ASIN:region` to
+preview a corrected identifier; an unavailable record can be retried.
+Ebooks may use an ASIN or ISBN. See [OpenAPI](docs/openapi.yaml) for request
+validation, fields, warnings, and retry guidance. Use a trusted Audiobookshelf
+URL and enable authentication when exposing the API beyond localhost.
 
 ### Create an edition
 
-`POST /api/profiles/{id}/edition-drafts/create` adds or reuses a Hardcover edition
-only when requested; normal sync never creates editions. It requires a
-Hardcover token with `write:catalog:append` access.
+`POST /api/profiles/{id}/edition-drafts/create` adds or reuses an edition for a
+needs-review item from a completed or canceled run. It requires profile edit
+access and a Hardcover token with `write:catalog:append` access. Sync never
+creates catalogue editions automatically.
 
-Send the `run_id` and `abs_item_id` of a needs-review item from a completed or
-canceled run. When the item has a Hardcover candidate, the app adds an edition
-to the book identified by that run.
+- **Import by Audible ASIN** applies to `audible_import_available` audiobooks.
+  Review the regional Audnexus record, then submit its `audible_identifier`
+  with `audnexus_confirmed: true`. The import resolves the Hardcover book and
+  edition without a selected book or title/author candidate.
+- **Selected-book audiobooks** keep the existing regional Audible workflow.
+  When the source ASIN is absent or malformed, an ISBN can be used to insert
+  an audiobook edition. Audiobook metadata is read-only.
+- **Ebooks** use the selected Hardcover book and allow edition corrections.
 
-- **Import by Audible ASIN** applies to audiobooks with
-  `audible_import_available`. It requires
-  `audible_identifier: "ASIN:region"` matching the Audnexus record you reviewed
-  and `audnexus_confirmed: true`. It imports by that regional ASIN without
-  selecting a Hardcover book first or using a title/author candidate. The
-  source metadata is rechecked before import.
-  A completed Audnexus miss returns `409`; a rate limit or temporary error is
-  retryable before the Hardcover import is sent. If the regional import may
-  have reached Hardcover but its result or local match cannot be confirmed,
-  use the returned recovery details with `check-import`; do not resubmit create.
-- **Other audiobooks with a selected Hardcover book** use regional Audible
-  import when a source ASIN is valid or an explicit `audible_identifier` is
-  supplied. Omit the identifier for automatic region discovery, or provide
-  `ASIN:region`; a valid source ASIN prevents ISBN fallback if discovery or
-  import fails. When the source ASIN is absent or malformed and no identifier
-  is supplied, an ISBN can be inserted as an audiobook edition. Audiobook
-  metadata cannot be edited.
-- **Ebooks** need an ASIN or ISBN and allow corrections to their edition details.
+Creation rechecks the source item, saves the verified match for later syncs,
+and is unavailable during a sync or in dry run. Set `"resync": true` to update
+reading progress immediately; a resync failure does not undo creation.
 
-The standalone `edition create` command supports **Import by Audible ASIN**
-with interactive Audnexus confirmation or `--confirm-audnexus`. Add an ABS
-item ID to see the Audiobookshelf comparison and save the verified match.
+If an import result is uncertain or its local match could not be saved, use
+`POST /api/profiles/{id}/edition-drafts/check-import` with the returned recovery
+details. This checks and saves the existing import without submitting creation
+again. If recovery is unavailable, inspect Hardcover before retrying.
+See [OpenAPI](docs/openapi.yaml) for request and response details.
 
-Creation is unavailable during a sync or in dry run. If the source metadata
-has changed, run a new sync first. A successful request saves the verified match
-for future syncs. Set `"resync": true` to update that book's reading progress
-immediately; otherwise, progress updates on the next sync. Resync failures are
-reported separately and do not undo edition creation.
-
-For an unconfirmed regional Audible import, use
-`POST /api/profiles/{id}/edition-drafts/check-import` with the original run/item
-IDs plus the returned `audible_identifier` and `recovery_token`. The recovery
-response may also include `hardcover_book_id` for an import tied to a selected
-Hardcover book; it is informational and is not sent in the check request.
-**Import by Audible ASIN** omits that field and resolves the book ID from the
-regional import status or exact regional mapping. This checks the submitted
-import and saves its confirmed match without sending another create request.
-When recovery details are unavailable, inspect Hardcover and run a new sync
-before attempting another import. See [OpenAPI](docs/openapi.yaml) for request fields, outcomes,
-and retry guidance.
+The standalone `edition create` command also supports **Import by Audible
+ASIN**, with interactive confirmation or `--confirm-audnexus`. Supply an ABS
+item ID to compare its metadata and save the verified match.
 
 ### Edition capability
 
