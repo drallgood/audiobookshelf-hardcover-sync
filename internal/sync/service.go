@@ -2981,7 +2981,9 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 		hcBook, findErr, _, _ = s.findBookInHardcoverWithASINMatch(ctx, book, associationWriteNone)
 		if audiobookISBNVerificationRun {
 			switch {
-			case findErr == nil && hcBook == nil:
+			case (findErr == nil && hcBook == nil) || errors.Is(findErr, errAudibleImportAvailable):
+				// A miss after a confirmed ISBN match is a verification failure,
+				// not a fresh import opportunity. Do not retain the import sentinel.
 				hcBook = verifiedAudiobookISBNMatch
 				findErr = fmt.Errorf("%w: audiobook ISBN match disappeared between lookups for ABS item %s", errHardcoverLookupFailed, book.ID)
 			case errors.Is(findErr, errHardcoverBookNotFound):

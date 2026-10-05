@@ -306,7 +306,8 @@ ISBN matches for audiobooks without an ASIN. Audiobook ISBN matches with an
 ASIN and audiobook edition-ASIN fallbacks are temporary: each processed sync
 resolves them again, while progress checkpoints prevent repeat writes to an
 unchanged target. Automatic ISBN matches are confirmed by a second lookup
-before saving.
+before saving. If that match disappears during confirmation, sync reports a
+lookup failure and retries on a later run instead of offering Audible import.
 
 Synced and already-current books show a plain `Match method:` label:
 

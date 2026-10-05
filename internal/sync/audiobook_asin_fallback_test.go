@@ -3,9 +3,11 @@ package sync
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -22,6 +24,54 @@ type audiobookFallbackClient struct {
 func (c *audiobookFallbackClient) SearchBookByEditionASINResult(context.Context, string) (*hardcover.ASINLookupResult, error) {
 	c.fallbackCalls++
 	return c.fallback, c.err
+}
+
+func TestAudiobookISBNDisappearanceWithValidASINFailsVerification(t *testing.T) {
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = audnexNotFoundRoundTripper{}
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+	svc, hc := createTestService()
+	svc.config.Sync.ProcessUnreadBooks = true
+	svc.config.Sync.SyncWantToRead = true
+	svc.config.Sync.SyncOwned = true
+	book := associationTestBook("isbn-disappeared-valid-asin", "B0AUDIO001", testISBN13NoTen)
+	svc.hardcover = &audiobookFallbackClient{associationLookupClient: &associationLookupClient{MockHardcoverClient: hc}}
+	hc.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+		Return(&models.HardcoverBook{ID: "901", EditionID: "902"}, nil).Once()
+	hc.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+		Return((*models.HardcoverBook)(nil), nil).Once()
+	// Failed verification may enrich the attention record using read-only lookups.
+	hc.On("GetEdition", mock.Anything, "902").Return((*models.Edition)(nil), nil).Maybe()
+	hc.On("GetBookByID", mock.Anything, "901").Return((*models.HardcoverBook)(nil), nil).Maybe()
+	hc.On("SearchBookByASIN", mock.Anything, "B0AUDIO001").Return((*models.HardcoverBook)(nil), nil).Maybe()
+	hc.On("SearchBooks", mock.Anything, book.Media.Metadata.Title, book.Media.Metadata.AuthorName).
+		Return([]models.HardcoverBook(nil), nil).Maybe()
+
+	err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
+
+	require.ErrorIs(t, err, ErrSkippedBook)
+	record := recordedOutcome(svc, book.ID)
+	assert.Equal(t, OutcomeFailed, record.Outcome)
+	assert.Contains(t, record.Reason, "ISBN match disappeared")
+	assert.NotEqual(t, mismatch.ReasonAudibleImportAvailable, record.Reason)
+	assert.Equal(t, "901", record.HardcoverBookID)
+	assert.Equal(t, "902", record.EditionID)
+	assert.False(t, IsAudiobookIdentifierFallbackRecord(record))
+	_, associated := svc.state.GetAssociation(book.ID)
+	assert.False(t, associated)
+	checkpoint, exists := svc.state.GetBookState(book.ID + ":902")
+	require.True(t, exists)
+	assert.Equal(t, "SKIPPED", checkpoint.Status)
+	assert.True(t, svc.state.NeedsSync(book.ID+":902", 0, "WANT_TO_READ", 0))
+	for _, attention := range svc.mismatchCollector.GetAll() {
+		assert.NotEqual(t, mismatch.ReasonAudibleImportAvailable, attention.Reason)
+	}
+	hc.AssertNotCalled(t, "CheckBookOwnership", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "MarkEditionAsOwned", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "GetUserBookID", mock.Anything, mock.Anything)
+	hc.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+	hc.AssertExpectations(t)
 }
 
 func TestAudiobookIdentifierFallbackRecordEligibility(t *testing.T) {
