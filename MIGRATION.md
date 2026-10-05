@@ -66,7 +66,8 @@ Audible edition**. A verified import replaces the local match with its returned
 book, edition, and regional Audible identifier, then invalidates old progress
 checkpoints. The returned book may differ from the fallback target. Existing
 reading progress and history on the previous Hardcover book stay there; the
-preview explains this before submission.
+preview explains this before submission. If ownership syncing marked the old
+book as Owned, importing a different target does not remove its Owned-list entry.
 
 No configuration or manual state migration is required. Sync Status displays
 the underlying identifier method, with **(temporary)** on temporary audiobook
