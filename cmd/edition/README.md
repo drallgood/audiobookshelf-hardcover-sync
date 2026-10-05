@@ -99,6 +99,8 @@ or `yes`, or by passing `--confirm-audnexus`.
 ```
 
 Add `"book_id": 12345` to add the edition to that selected Hardcover book.
+New mismatch exports for `audible_import_available` include `info.reason` and
+`abs_item_id` but omit `book_id`, so they use **Import by Audible ASIN**.
 Existing export files with `book_id` continue to add the regional edition to
 the selected book.
 

@@ -728,44 +728,41 @@ func TestProcessBookSeparatesNotFoundAndTechnicalLookupFailure(t *testing.T) {
 	})
 }
 
-func TestProcessBookKeepsIdentifierFailureWhenTitleSearchFindsCandidate(t *testing.T) {
+func TestProcessBookKeepsValidASINLookupFailureRetryableWithoutTitleCandidate(t *testing.T) {
 	svc, hc := createTestService()
 	book := createTestBook("outcome-incomplete-lookup", "Possible Match", "Author", "B0FAIL0001", "")
 	book.Progress.CurrentTime = 300
 	absBook := toAudiobookshelfBook(book)
 	lookupErr := errors.New("identifier lookup unavailable")
 	hc.On("SearchBookByASIN", mock.Anything, "B0FAIL0001").Return((*models.HardcoverBook)(nil), lookupErr).Once()
-	hc.On("SearchBooks", mock.Anything, "Possible Match Author", "").Return([]models.HardcoverBook{{
-		ID: "901", Title: "Possible Match", Slug: "possible-match",
-	}}, nil).Once()
-	hc.On("GetBookByID", mock.Anything, "901").Return(&models.HardcoverBook{
-		ID: "901", Title: "Possible Match", Slug: "possible-match",
-	}, nil).Once()
 
 	require.NoError(t, svc.processBook(context.Background(), *absBook, &models.AudiobookshelfUserProgress{}))
 	record := recordedOutcome(svc, absBook.ID)
 	assert.Equal(t, OutcomeFailed, record.Outcome)
 	assert.Contains(t, record.Error, lookupErr.Error())
-	assert.Empty(t, record.MatchMethod, "title candidate cannot verify an incomplete identifier search")
-	matches := svc.mismatchCollector.GetAll()
-	require.Len(t, matches, 1)
-	assert.Equal(t, absBook.ID, matches[0].BookID)
-	assert.Equal(t, "901", matches[0].HardcoverBookID)
-	assert.Equal(t, "Possible Match", matches[0].HardcoverTitle)
-	assert.Equal(t, "possible-match", matches[0].HardcoverSlug)
-	assert.Contains(t, matches[0].Reason, lookupErr.Error())
+	assert.Empty(t, record.MatchMethod)
+	assert.Empty(t, record.HardcoverBookID)
+	assert.Empty(t, record.EditionID)
+	assert.Empty(t, record.HardcoverTitle)
+	assert.Empty(t, svc.mismatchCollector.GetAll(), "a failed valid-ASIN lookup has no speculative title candidate to export")
 	snapshot := svc.GetSnapshot()
 	require.Len(t, snapshot.BookOutcomes, 1)
 	assert.Contains(t, snapshot.BookOutcomes[0].Reason, lookupErr.Error())
+	assert.Empty(t, snapshot.BookOutcomes[0].HardcoverBookID)
+	hc.AssertNotCalled(t, "SearchBooks", mock.Anything, mock.Anything, mock.Anything)
+	_, associated := svc.state.GetAssociation(absBook.ID)
+	assert.False(t, associated)
 	hc.AssertExpectations(t)
 }
 
-func TestProcessBookIdentifierFailureMismatchExportsByReadingFormat(t *testing.T) {
+func TestProcessBookLookupMismatchExportsByReadingFormat(t *testing.T) {
 	tests := []struct {
 		name           string
 		ebook          bool
+		asin           string
 		abridged       bool
 		isbn           string
+		wantOutcome    SyncOutcome
 		wantReading    string
 		wantEdition    string
 		wantInfo       string
@@ -773,15 +770,15 @@ func TestProcessBookIdentifierFailureMismatchExportsByReadingFormat(t *testing.T
 		wantISBN13     string
 		wantISBN10     string
 	}{
-		{name: "ebook is exported as an ebook edition", ebook: true, isbn: "978-0-306-40615-7", wantReading: models.ReadingFormatEbook, wantEdition: "Ebook", wantInfo: "", wantAudioTotal: 0, wantISBN13: "9780306406157", wantISBN10: ""},
-		{name: "audiobook keeps the audiobook shape", ebook: false, isbn: "0-306-40615-2", wantReading: "", wantEdition: "Audible Audio", wantInfo: "Unabridged", wantAudioTotal: 1000, wantISBN13: "", wantISBN10: "0306406152"},
-		{name: "abridged audiobook is exported as abridged", abridged: true, isbn: "0-306-40615-2", wantReading: "", wantEdition: "Audible Audio", wantInfo: "Abridged", wantAudioTotal: 1000, wantISBN13: "", wantISBN10: "0306406152"},
+		{name: "ebook lookup failure keeps ebook export shape", ebook: true, asin: "B0FAIL0001", isbn: "978-0-306-40615-7", wantOutcome: OutcomeFailed, wantReading: models.ReadingFormatEbook, wantEdition: "Ebook", wantInfo: "", wantAudioTotal: 0, wantISBN13: "9780306406157", wantISBN10: ""},
+		{name: "audiobook with malformed ASIN keeps the audiobook shape", asin: "not-a-valid-ASIN", isbn: "0-306-40615-2", wantOutcome: OutcomeNeedsReview, wantReading: "", wantEdition: "Audible Audio", wantInfo: "Unabridged", wantAudioTotal: 1000, wantISBN13: "", wantISBN10: "0306406152"},
+		{name: "malformed ASIN abridged audiobook stays abridged", asin: "not-a-valid-ASIN", abridged: true, isbn: "0-306-40615-2", wantOutcome: OutcomeNeedsReview, wantReading: "", wantEdition: "Audible Audio", wantInfo: "Abridged", wantAudioTotal: 1000, wantISBN13: "", wantISBN10: "0306406152"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			svc, hc := createTestService()
 			svc.config.Sync.IncludeEbooks = true
-			testBook := createTestBook("lookup-failed-format", "Possible Match", "Author", "B0FAIL0001", tt.isbn)
+			testBook := createTestBook("lookup-failed-format", "Possible Match", "Author", tt.asin, tt.isbn)
 			testBook.Media.Duration = 1000
 			testBook.Progress.CurrentTime = 300
 			if tt.ebook {
@@ -791,18 +788,28 @@ func TestProcessBookIdentifierFailureMismatchExportsByReadingFormat(t *testing.T
 			absBook.Media.Metadata.Abridged = tt.abridged
 			require.Equal(t, tt.ebook, absBook.IsEbook())
 			lookupErr := errors.New("identifier lookup unavailable")
-			hc.On("SearchBookByASIN", mock.Anything, "B0FAIL0001").Return((*models.HardcoverBook)(nil), lookupErr).Once()
-			hc.On("SearchBookByISBN13", mock.Anything, mock.Anything).Return((*models.HardcoverBook)(nil), nil).Maybe()
-			hc.On("SearchBookByISBN10", mock.Anything, mock.Anything).Return((*models.HardcoverBook)(nil), nil).Maybe()
+			if tt.asin != "" && tt.ebook {
+				hc.On("SearchBookByASIN", mock.Anything, tt.asin).Return((*models.HardcoverBook)(nil), lookupErr).Once()
+				hc.On("SearchBookByISBN13", mock.Anything, mock.Anything).Return((*models.HardcoverBook)(nil), nil).Maybe()
+				hc.On("SearchBookByISBN10", mock.Anything, mock.Anything).Return((*models.HardcoverBook)(nil), nil).Maybe()
+			} else {
+				// A malformed source ASIN allows the audiobook ISBN lookup; a
+				// completed miss then allows title/author review.
+				hc.On("SearchBookByISBN13", mock.Anything, mock.Anything).Return((*models.HardcoverBook)(nil), nil).Maybe()
+				hc.On("SearchBookByISBN10", mock.Anything, mock.Anything).Return((*models.HardcoverBook)(nil), nil).Maybe()
+			}
 			hc.On("SearchBooks", mock.Anything, "Possible Match Author", "").Return([]models.HardcoverBook{{
 				ID: "901", Title: "Possible Match", Slug: "possible-match",
 			}}, nil).Once()
+			// Mismatch enrichment performs its own title/author search after the
+			// process-level candidate is recorded.
+			hc.On("SearchBooks", mock.Anything, "Possible Match", "Author").Return([]models.HardcoverBook{}, nil).Maybe()
 			hc.On("GetBookByID", mock.Anything, "901").Return(&models.HardcoverBook{
 				ID: "901", Title: "Possible Match", Slug: "possible-match",
 			}, nil).Once()
 
 			require.NoError(t, svc.processBook(context.Background(), *absBook, &models.AudiobookshelfUserProgress{}))
-			require.Equal(t, OutcomeFailed, recordedOutcome(svc, absBook.ID).Outcome)
+			require.Equal(t, tt.wantOutcome, recordedOutcome(svc, absBook.ID).Outcome)
 			records := svc.mismatchCollector.GetAll()
 			require.Len(t, records, 1)
 			assert.Equal(t, tt.isbn, records[0].ISBN, "raw ISBN should match input value")
@@ -825,21 +832,22 @@ func TestProcessBookIdentifierFailureMismatchExportsByReadingFormat(t *testing.T
 func TestProcessBookSnapshotKeepsTitleOnlyEnrichment(t *testing.T) {
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
-	book := createTestBook("snapshot-title-only", "Title Only", "Author", "B0AUDIO001", "9781234567890")
+	book := createTestBook("snapshot-title-only", "Title Only", "Author", "", "")
 	book.Progress.CurrentTime = 300
 	absBook := toAudiobookshelfBook(book)
 
-	// A valid ASIN blocks the audiobook ISBN fallback, so this exercises the
-	// title-only attention path after an ASIN miss.
-	hc.On("SearchBookByASIN", mock.Anything, "B0AUDIO001").Return((*models.HardcoverBook)(nil), nil)
+	// With no usable source identifiers, audiobook title/author discovery
+	// remains available for manual review.
 	hc.On("SearchBooks", mock.Anything, "Title Only Author", "").Return([]models.HardcoverBook{{
-		ID: "901", Title: "Title Only Candidate", Slug: "candidate-slug", CoverImageURL: "candidate-cover",
-		ReleaseDate: "2021-04-05", Authors: []models.Author{{Name: "Candidate Author"}},
+		ID: "901", Title: "Title Only Candidate", Slug: "candidate-slug",
+		Authors: []models.Author{{Name: "Candidate Author"}},
 	}}, nil).Once()
-	// The search hit carries authors, cover, slug, and a usable date, so no
-	// follow-up book lookup is made.
-	// Enrichment must not replace the title candidate using an ISBN when
-	// the source has a valid ASIN.
+	hc.On("GetBookByID", mock.Anything, "901").Return(&models.HardcoverBook{
+		ID: "901", Title: "Title Only Candidate", Slug: "candidate-slug",
+		Authors: []models.Author{{Name: "Candidate Author"}},
+	}, nil).Once()
+	// Missing cover and release date make this title candidate eligible for
+	// follow-up enrichment while it remains a manual-review outcome.
 	hc.On("SearchBooks", mock.Anything, "Title Only", "Author").Return([]models.HardcoverBook{}, nil).Once()
 
 	require.NoError(t, svc.processBook(context.Background(), *absBook, &models.AudiobookshelfUserProgress{}))

@@ -25,7 +25,7 @@ type editionRecoveryClaims struct {
 
 type editionRecoveryData struct {
 	AudibleIdentifier string `json:"audible_identifier"`
-	HardcoverBookID   string `json:"hardcover_book_id"`
+	HardcoverBookID   string `json:"hardcover_book_id,omitempty"`
 	RecoveryToken     string `json:"recovery_token"`
 	RecoveryExpiresAt int64  `json:"recovery_expires_at,omitempty"`
 }
