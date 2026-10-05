@@ -846,13 +846,13 @@ func TestTransientAudiobookASINLookupFailuresAreVisibleAndRetriedIncrementally(t
 			if tt.retryable {
 				require.Equal(t, reasonRetryableHardcoverASINLookup, record.Reason)
 				hc.On("SearchBookByASIN", mock.Anything, "B0SOURCE12").Return((*models.HardcoverBook)(nil), nil).Once()
+				hc.On("SearchBookByISBN13", mock.Anything, "9780306406157").Return((*models.HardcoverBook)(nil), nil).Once()
+				hc.On("SearchBookByISBN10", mock.Anything, "0306406152").Return((*models.HardcoverBook)(nil), nil).Once()
 				require.NoError(t, svc.BatchProcessBooks(context.Background(), []models.AudiobookshelfBook{absBook}, &models.AudiobookshelfUserProgress{}))
 				hc.AssertNumberOfCalls(t, "SearchBookByASIN", 2)
 				require.Equal(t, OutcomeNeedsReview, recordedOutcome(svc, absBook.ID).Outcome)
 				require.Equal(t, mismatch.ReasonAudibleImportAvailable, recordedOutcome(svc, absBook.ID).Reason)
 				hc.AssertNotCalled(t, "SearchBooks", mock.Anything, mock.Anything, mock.Anything)
-				hc.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
-				hc.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
 			}
 			hc.AssertExpectations(t)
 		})
