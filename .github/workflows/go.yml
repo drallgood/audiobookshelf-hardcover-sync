@@ -35,16 +35,7 @@ jobs:
       with:
         go-version: ${{ matrix.go-version }}
         cache: true
-
-    - name: Cache Go modules
-      uses: actions/cache@v6
-      with:
-        path: |
-          ~/.cache/go-build
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
+        cache-dependency-path: go.sum
 
     - name: Set up Node.js
       uses: actions/setup-node@v7
