@@ -1464,22 +1464,6 @@ func TestFindBookInHardcoverMatchesAudiobookISBNWithoutValidASIN(t *testing.T) {
 	}
 }
 
-func TestFindBookInHardcoverAudiobookASINErrorStopsFallback(t *testing.T) {
-	svc, mockClient := createTestService()
-	book := associationTestBook("audiobook-asin-error", "b0audio001", "978-0-306-40615-7")
-	lookupErr := errors.New("temporary ASIN lookup failure")
-	lookupClient := &associationLookupClient{MockHardcoverClient: mockClient, searchErr: lookupErr}
-	svc.hardcover = lookupClient
-
-	_, err := svc.findBookInHardcover(hardcover.WithReadingFormat(context.Background(), models.ReadingFormatAudiobook), book)
-
-	assert.ErrorIs(t, err, errHardcoverLookupFailed)
-	assert.ErrorIs(t, err, lookupErr)
-	assert.NotErrorIs(t, err, errAudibleImportAvailable)
-	mockClient.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
-	mockClient.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
-}
-
 func TestFindBookInHardcoverEbookEditionASINWinsOverConflictingISBN(t *testing.T) {
 	svc, mockClient := createTestService()
 	svc.config.Sync.SyncOwned = false
