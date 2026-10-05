@@ -300,6 +300,8 @@ identifier searches miss for a valid ASIN (10 ASCII letters or digits), the
 book becomes `needs_review` with reason `audible_import_available`. Audiobooks
 without a valid ASIN may use title/author review candidates. Ebook matching
 continues to try Kindle edition ASIN before ISBN.
+Technical lookup failures use a stable reason summary; upstream diagnostic
+details remain available in the outcome's error field and application logs.
 
 Sync saves regional Audible matches, ebook identifier matches, and verified
 ISBN matches for audiobooks without an ASIN. Audiobook ISBN matches with an

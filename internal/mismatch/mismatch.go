@@ -28,11 +28,18 @@ var (
 type Collector struct {
 	lock       sync.Mutex
 	mismatches []BookMismatch
+	audnex     *audnex.Client
 }
 
 // NewCollector creates an empty mismatch collector.
 func NewCollector() *Collector {
 	return &Collector{}
+}
+
+// NewCollectorWithAudnexClient creates a collector with a run-scoped client
+// for optional Audnex enrichment.
+func NewCollectorWithAudnexClient(client *audnex.Client) *Collector {
+	return &Collector{audnex: client}
 }
 
 // newAudnexClient is a factory for creating Audnex API clients.
@@ -128,7 +135,10 @@ func (c *Collector) AddWithMetadata(metadata MediaMetadata, bookID, editionID, r
 		defer cancel()
 
 		// Create Audnex client and log the creation
-		audnexClient := newAudnexClient(logger.Get())
+		audnexClient := c.audnex
+		if audnexClient == nil {
+			audnexClient = newAudnexClient(logger.Get())
+		}
 		log.Debug("Created Audnex client for ASIN lookup", map[string]interface{}{
 			"asin":       metadata.ASIN,
 			"client_nil": audnexClient == nil,

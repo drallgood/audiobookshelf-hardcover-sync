@@ -43,6 +43,7 @@ var (
 )
 
 const reasonRetryableHardcoverASINLookup = "Temporary Hardcover ASIN lookup failure; this item will be retried on the next sync."
+const reasonHardcoverLookupFailed = "Hardcover identifier lookup could not be completed."
 
 type editionBoundMutationError struct {
 	editionID string
@@ -508,6 +509,11 @@ func classifyBookLookupOutcome(err error) SyncOutcome {
 func bookLookupOutcomeReason(book models.AudiobookshelfBook, err error) string {
 	if retryableAudiobookASINLookup(book, err) {
 		return reasonRetryableHardcoverASINLookup
+	}
+	if errors.Is(err, errHardcoverLookupFailed) {
+		// Keep upstream diagnostics in the outcome's Error field and logs,
+		// separate from the operator-facing summary.
+		return reasonHardcoverLookupFailed
 	}
 	return err.Error()
 }
@@ -2557,7 +2563,7 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 
 			mismatchReason := "Found by title/author only - manual verification required"
 			if errors.Is(findErr, errHardcoverLookupFailed) {
-				mismatchReason = fmt.Sprintf("Identifier lookup failed; title/author candidate requires review: %v", findErr)
+				mismatchReason = outcomeReason
 			}
 
 			// Extract ISBN10 and ISBN13 from the ISBN
@@ -3002,7 +3008,6 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 		// conclusive or technical result before the synchronous mismatch
 		// enrichment below, which may wait on Audnex.
 		s.recordBookOutcomeWithMatchMethod(book, lookupOutcome, reason, findErr, hcBook, matchMethod)
-		errMsg := "error finding book in Hardcover"
 		bookLog.Error("Error finding book in Hardcover, skipping", map[string]interface{}{
 			"error": findErr,
 		})
@@ -3051,7 +3056,7 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 			},
 			bookID,    // Use the book ID if available
 			editionID, // Use the edition ID if available
-			fmt.Sprintf("%s: %v", errMsg, findErr),
+			reason,
 			book.Media.Duration,
 			book.ID,
 			s.config.Audiobookshelf.AudnexusRegion,

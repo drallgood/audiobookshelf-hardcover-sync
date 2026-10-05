@@ -3,7 +3,6 @@ package sync
 import (
 	"context"
 	"errors"
-	"net/http"
 	"testing"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
@@ -36,11 +35,8 @@ func TestAudiobookISBNVerificationFailuresWithValidASIN(t *testing.T) {
 		{name: "lookup failure", secondErr: errors.New("ISBN verification unavailable"), wantReason: "ISBN verification unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			originalTransport := http.DefaultTransport
-			http.DefaultTransport = audnexNotFoundRoundTripper{}
-			t.Cleanup(func() { http.DefaultTransport = originalTransport })
-
 			svc, hc := createTestService()
+			svc.mismatchCollector = newNotFoundAudnexCollector(t)
 			svc.config.Sync.ProcessUnreadBooks = true
 			svc.config.Sync.SyncWantToRead = true
 			svc.config.Sync.SyncOwned = true
@@ -62,7 +58,8 @@ func TestAudiobookISBNVerificationFailuresWithValidASIN(t *testing.T) {
 			require.ErrorIs(t, err, ErrSkippedBook)
 			record := recordedOutcome(svc, book.ID)
 			assert.Equal(t, OutcomeFailed, record.Outcome)
-			assert.Contains(t, record.Reason, tc.wantReason)
+			assert.Equal(t, reasonHardcoverLookupFailed, record.Reason)
+			assert.Contains(t, record.Error, tc.wantReason)
 			assert.NotEqual(t, mismatch.ReasonAudibleImportAvailable, record.Reason)
 			assert.Equal(t, "901", record.HardcoverBookID)
 			assert.Equal(t, "902", record.EditionID)
@@ -74,6 +71,7 @@ func TestAudiobookISBNVerificationFailuresWithValidASIN(t *testing.T) {
 			assert.Equal(t, "SKIPPED", checkpoint.Status)
 			assert.True(t, svc.state.NeedsSync(book.ID+":902", 0, "WANT_TO_READ", 0))
 			for _, attention := range svc.mismatchCollector.GetAll() {
+				assert.Equal(t, reasonHardcoverLookupFailed, attention.Reason)
 				assert.NotEqual(t, mismatch.ReasonAudibleImportAvailable, attention.Reason)
 			}
 			hc.AssertNotCalled(t, "CheckBookOwnership", mock.Anything, mock.Anything)

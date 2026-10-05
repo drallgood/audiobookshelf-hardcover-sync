@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audnex"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/logger"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	statepkg "github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
@@ -204,9 +207,7 @@ func TestSecondASINMissAfterBookErrorPublishesAudibleImportAvailable(t *testing.
 			svc.config.Sync.ProcessUnreadBooks = true
 			svc.config.Sync.SyncOwned = false
 			if tc.secondLookupErr != nil {
-				originalTransport := http.DefaultTransport
-				http.DefaultTransport = audnexNotFoundRoundTripper{}
-				t.Cleanup(func() { http.DefaultTransport = originalTransport })
+				svc.mismatchCollector = newNotFoundAudnexCollector(t)
 				hardcoverMock.On("SearchBookByASIN", mock.Anything, "B0SOURCE12").Return((*models.HardcoverBook)(nil), nil).Once()
 				hardcoverMock.On("SearchBooks", mock.Anything, "Source Title", "Source Author").Return([]models.HardcoverBook(nil), nil).Once()
 			}
@@ -258,7 +259,8 @@ func TestSecondASINMissAfterBookErrorPublishesAudibleImportAvailable(t *testing.
 				require.False(t, checkpointed)
 				require.Len(t, svc.mismatchCollector.GetAll(), 1)
 			} else {
-				require.Contains(t, record.Reason, "temporary ASIN outage")
+				require.Equal(t, reasonHardcoverLookupFailed, record.Reason)
+				require.Contains(t, record.Error, "temporary ASIN outage")
 				checkpoint, checkpointed := svc.state.GetBookState(book.ID)
 				require.True(t, checkpointed, "the existing technical failure checkpoint must retain retry behavior")
 				require.Equal(t, "SKIPPED", checkpoint.Status)
@@ -278,15 +280,13 @@ func TestSecondASINMissAfterBookErrorPublishesAudibleImportAvailable(t *testing.
 	}
 }
 
-type audnexNotFoundRoundTripper struct{}
-
-func (audnexNotFoundRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	return &http.Response{
-		StatusCode: http.StatusNotFound,
-		Header:     make(http.Header),
-		Body:       http.NoBody,
-		Request:    req,
-	}, nil
+func newNotFoundAudnexCollector(t *testing.T) *mismatch.Collector {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+	return mismatch.NewCollectorWithAudnexClient(audnex.NewClientForTesting(server.URL, logger.Get()))
 }
 
 func TestAudibleImportAvailabilityDryRunDoesNotSuppressRealIncrementalRun(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -216,9 +217,15 @@ func TestProcessBookIncrementalAlreadyCurrentEnrichesOnlyMatchingAssociation(t *
 		{"api_edition_asin", "saved_edition_asin"},
 		{"api_ebook_inserted", "saved_isbn"},
 		{"cli_ebook_existing", "saved_isbn"},
+		{"api_audiobook_created", "saved_isbn"},
+		{"cli_audiobook_inserted", "saved_isbn"},
 		{"unrecognized_legacy_origin", "saved_match"},
 	} {
 		base := savedOriginCase
+		if origin.method == "saved_audible_mapping" || strings.Contains(origin.provenance, "_audiobook_") {
+			base.isEbook, base.associationFormat = false, models.ReadingFormatAudiobook
+			base.asin, base.associationASIN = "B012345678", "B012345678"
+		}
 		base.name, base.provenance, base.wantMatchMethod = origin.provenance, origin.provenance, origin.method
 		tests = append(tests, base)
 	}
@@ -771,6 +778,7 @@ func TestProcessBookSeparatesNotFoundAndTechnicalLookupFailure(t *testing.T) {
 		require.NoError(t, svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{}))
 		record := recordedOutcome(svc, book.ID)
 		assert.Equal(t, OutcomeFailed, record.Outcome)
+		assert.Equal(t, reasonHardcoverLookupFailed, record.Reason)
 		assert.Contains(t, record.Error, "temporary API failure")
 	})
 }
@@ -794,7 +802,8 @@ func TestProcessBookKeepsValidASINLookupFailureRetryableWithoutTitleCandidate(t 
 	assert.Empty(t, svc.mismatchCollector.GetAll(), "a failed valid-ASIN lookup has no speculative title candidate to export")
 	snapshot := svc.GetSnapshot()
 	require.Len(t, snapshot.BookOutcomes, 1)
-	assert.Contains(t, snapshot.BookOutcomes[0].Reason, lookupErr.Error())
+	assert.Equal(t, reasonHardcoverLookupFailed, snapshot.BookOutcomes[0].Reason)
+	assert.Contains(t, snapshot.BookOutcomes[0].Error, lookupErr.Error())
 	assert.Empty(t, snapshot.BookOutcomes[0].HardcoverBookID)
 	hc.AssertNotCalled(t, "SearchBooks", mock.Anything, mock.Anything, mock.Anything)
 	_, associated := svc.state.GetAssociation(absBook.ID)
