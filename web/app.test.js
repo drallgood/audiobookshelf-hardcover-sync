@@ -1085,11 +1085,14 @@ test('sync outcome rows show identifier labels and distinguish temporary audiobo
         ['saved_edition', 'Ebook', 'B00SOURCE1', 'Edition ASIN'],
         ['saved_match', 'Audiobook', '', 'Unknown'],
         ['unfamiliar_method_value', 'Audiobook', '', 'Unknown'],
-        [undefined, 'Audiobook', '', 'Unknown']
+        [undefined, 'Audiobook', '', 'Unknown'],
+        ['isbn', 'Audiobook', null, 'ISBN (temporary)', 'B00SOURCE1'],
+        ['isbn', 'Audiobook', '', 'ISBN (temporary)', 'B00SOURCE1'],
+        ['isbn', 'Audiobook', '   ', 'ISBN (temporary)', 'B00SOURCE1']
     ];
     for (const outcome of ['synced', 'already_current']) {
-        for (const [match_method, format, source_asin, label] of cases) {
-            const html = app.renderOutcomeRecord({ outcome, match_method, format, source_asin });
+        for (const [match_method, format, source_asin, label, asin] of cases) {
+            const html = app.renderOutcomeRecord({ outcome, match_method, format, source_asin, asin });
             assert.equal(visibleText(html).split('Match method: ')[1], label,
                 `${outcome}/${match_method}/${format}/${source_asin}`);
         }

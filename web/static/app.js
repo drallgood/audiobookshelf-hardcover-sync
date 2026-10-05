@@ -1930,7 +1930,7 @@ class SyncProfileApp {
         const saved = value.startsWith('saved_');
         let method = saved ? value.slice(6) : value;
         const audiobook = String(record.format || '').trim().toLowerCase() === 'audiobook';
-        const sourceASIN = String(record.source_asin ?? record.asin ?? '').trim();
+        const sourceASIN = this.editionSourceASIN(record);
         if (method === 'edition') {
             method = !audiobook && /^[a-z0-9]{10}$/i.test(sourceASIN) ? 'edition_asin' : 'isbn';
         }
