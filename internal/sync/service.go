@@ -5647,6 +5647,8 @@ func savedAssociationMatchMethod(association state.Association) string {
 	switch provenance {
 	case "isbn", string(hardcover.ASINMatchEditionASIN), string(hardcover.ASINMatchAudibleMapping):
 		return "saved_" + provenance
+	case "api_isbn", "api_edition_asin":
+		return "saved_" + strings.TrimPrefix(provenance, "api_")
 	case "audible_import_unanchored":
 		return "saved_audible_mapping"
 	}

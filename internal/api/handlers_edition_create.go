@@ -1342,7 +1342,7 @@ func (h *Handler) createInsertedEdition(ctx context.Context, profile *database.P
 	if result.Existing {
 		status = "existing"
 	}
-	association := createEditionAssociation(item, record.HardcoverBookID, strconv.Itoa(result.EditionID), "", "", format, statepkg.EditionIdentifierProvenance(format, input.ASIN))
+	association := createEditionAssociation(item, record.HardcoverBookID, strconv.Itoa(result.EditionID), "", "", format, "api_"+statepkg.EditionIdentifierProvenance(format, input.ASIN))
 	*response = editionCreateResponse{
 		ABSItemID: item.ID, ReadingFormat: format, Status: status,
 		HardcoverBookID: record.HardcoverBookID, HardcoverEditionID: strconv.Itoa(result.EditionID),

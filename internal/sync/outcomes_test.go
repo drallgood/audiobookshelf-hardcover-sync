@@ -212,6 +212,8 @@ func TestProcessBookIncrementalAlreadyCurrentEnrichesOnlyMatchingAssociation(t *
 		{"audible_import_unanchored", "saved_audible_mapping"},
 		{"api_regional_recovered", "saved_audible_mapping"},
 		{"cli_regional_created", "saved_audible_mapping"},
+		{"api_isbn", "saved_isbn"},
+		{"api_edition_asin", "saved_edition_asin"},
 		{"api_ebook_inserted", "saved_isbn"},
 		{"cli_ebook_existing", "saved_isbn"},
 		{"unrecognized_legacy_origin", "saved_match"},

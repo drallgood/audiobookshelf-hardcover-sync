@@ -1677,7 +1677,7 @@ func TestCreateEditionFromDraftCreatesEbookWhenOptionalPublisherSearchFails(t *t
 	require.Equal(t, "42", association.HardcoverBookID)
 	require.Equal(t, "84", association.HardcoverEditionID)
 	require.Equal(t, models.ReadingFormatEbook, association.ReadingFormat)
-	require.Equal(t, "isbn", association.Provenance)
+	require.Equal(t, "api_isbn", association.Provenance)
 }
 
 func TestCreateEditionFromDraftRejectsMismatchedReadBackEbookEditionID(t *testing.T) {
@@ -2328,6 +2328,24 @@ func TestCreateEditionFromDraftRejectsInvalidInputBeforeMutation(t *testing.T) {
 	}
 }
 
+func requireEditionAddedInFreshRunDetails(t *testing.T, fixture *editionDraftTestFixture, runID string) {
+	t.Helper()
+	_, found, err := fixture.multiUserService.GetEditionAction("draft-profile", runID, "abs-item-1")
+	require.NoError(t, err)
+	require.False(t, found, "successful save must clear the pending action journal")
+	response := fixture.request("/api/profiles/draft-profile/runs/"+runID+"/details", fixture.sessionCookie(t, fixture.owner))
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var envelope struct {
+		Data sync.SyncSnapshot `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	require.Len(t, envelope.Data.BookOutcomes, 1)
+	record := envelope.Data.BookOutcomes[0]
+	require.True(t, record.EditionAdded, "fresh run details must retain the saved edition completion label")
+	require.Nil(t, record.EditionAction)
+	require.Equal(t, sync.OutcomeNeedsReview, record.Outcome, "completion overlay must preserve the historical outcome")
+}
+
 func TestCreateEditionFromDraftCreatesASINOnlyEbook(t *testing.T) {
 	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"ebook","media":{
 		"metadata":{"title":"Ebook","authorName":"Author","asin":"b0ebook123"},"ebookFile":{},"ebookFormat":"epub"}}`, "us")
@@ -2359,6 +2377,7 @@ func TestCreateEditionFromDraftCreatesASINOnlyEbook(t *testing.T) {
 	association, exists := stored.GetAssociation("abs-item-1")
 	require.True(t, exists)
 	require.Equal(t, "84", association.HardcoverEditionID)
+	requireEditionAddedInFreshRunDetails(t, fixture, "run-create-asin-ebook")
 }
 
 func TestCreateEditionFromDraftCreatesISBNOnlyEbookWhenSourceASINIsMalformed(t *testing.T) {
@@ -2399,6 +2418,7 @@ func TestCreateEditionFromDraftCreatesISBNOnlyEbookWhenSourceASINIsMalformed(t *
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 	require.EqualValues(t, 1, counts.ebookCreates.Load())
 	require.Zero(t, counts.imports.Load())
+	requireEditionAddedInFreshRunDetails(t, fixture, "run-create-isbn-ebook")
 }
 
 func TestCreateEditionFromDraftAppliesEbookCorrections(t *testing.T) {
@@ -2794,6 +2814,7 @@ func TestCreateEditionFromDraftReusesExistingEbookEditionOfSameBook(t *testing.T
 	require.True(t, exists)
 	require.Equal(t, "91", association.HardcoverEditionID)
 	require.Equal(t, models.ReadingFormatEbook, association.ReadingFormat)
+	requireEditionAddedInFreshRunDetails(t, fixture, "run-existing-ebook")
 }
 
 func TestCreateEditionFromDraftRejectsAmbiguousSameNameAuthorFallback(t *testing.T) {
@@ -3830,6 +3851,7 @@ func TestCreateEditionFromDraftInsertsISBNOnlyAudiobook(t *testing.T) {
 			require.Equal(t, tc.formatID == "2" && !tc.delayedReadback, exists)
 			if exists {
 				require.Equal(t, models.ReadingFormatAudiobook, association.ReadingFormat)
+				requireEditionAddedInFreshRunDetails(t, fixture, "run-isbn-audio")
 				require.Equal(t, "84", association.HardcoverEditionID)
 				require.Empty(t, association.RegionalExternalID)
 			}

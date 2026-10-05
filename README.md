@@ -137,9 +137,9 @@ For ISBN and edition-ASIN fallback matches, the import preview explains that
 Audible import may select a different Hardcover book. Future syncs use the
 imported match; reading progress and history on the previous Hardcover book
 remain there and are not moved or removed.
-After success, **Hardcover Edition Added** appears and the app resyncs that
-book's reading progress. If resync fails, the edition remains added; run another sync to retry
-progress updates.
+After success, **Hardcover Edition Added** remains visible when reopening run
+details, and the app resyncs that book's reading progress. If resync fails, the
+edition remains added; run another sync to retry progress updates.
 
 You can preview in dry run, but cannot add editions or forget matches. Wait for
 an active sync to finish before making changes. If the book's Audiobookshelf
