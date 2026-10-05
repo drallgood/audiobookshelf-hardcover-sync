@@ -252,6 +252,7 @@ func TestEditionCapabilityForProfileCachesUnverifiedBeyondOldTTLUntilRefresh(t *
 func TestEditionCapabilityDoesNotCacheCanceledProbe(t *testing.T) {
 	firstRequestStarted := make(chan struct{})
 	releaseFirstRequest := make(chan struct{})
+	releaseFirst := sync.OnceFunc(func() { close(releaseFirstRequest) })
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if requests.Add(1) == 1 {
@@ -261,6 +262,7 @@ func TestEditionCapabilityDoesNotCacheCanceledProbe(t *testing.T) {
 		respondToCapabilityProbe(w, r)
 	}))
 	defer server.Close()
+	defer releaseFirst()
 
 	service, _ := newStatusLookupService(t)
 	service.globalConfig.Hardcover.BaseURL = server.URL
@@ -284,10 +286,8 @@ func TestEditionCapabilityDoesNotCacheCanceledProbe(t *testing.T) {
 	select {
 	case <-firstRequestStarted:
 		cancel()
-		close(releaseFirstRequest)
 	case <-time.After(2 * time.Second):
 		cancel()
-		close(releaseFirstRequest)
 		t.Fatal("canceled capability probe did not reach Hardcover")
 	}
 	select {
@@ -298,6 +298,9 @@ func TestEditionCapabilityDoesNotCacheCanceledProbe(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("canceled capability probe did not finish")
 	}
+	// Wait for cancellation to finish before allowing a valid response, so
+	// response delivery cannot race the canceled-probe assertions above.
+	releaseFirst()
 
 	recovered, err := service.EditionCapabilityForProfile(context.Background(), profileID)
 	require.NoError(t, err)
