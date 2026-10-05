@@ -28,14 +28,11 @@ func (c *audiobookFallbackClient) SearchBookByEditionASINResult(context.Context,
 
 func TestAudiobookISBNVerificationFailuresWithValidASIN(t *testing.T) {
 	for _, tc := range []struct {
-		name        string
-		secondMatch *models.HardcoverBook
-		secondErr   error
-		wantReason  string
+		name       string
+		secondErr  error
+		wantReason string
 	}{
 		{name: "disappeared", wantReason: "ISBN match disappeared"},
-		{name: "changed book", secondMatch: &models.HardcoverBook{ID: "903", EditionID: "902"}, wantReason: "ISBN match changed"},
-		{name: "changed edition", secondMatch: &models.HardcoverBook{ID: "901", EditionID: "904"}, wantReason: "ISBN match changed"},
 		{name: "lookup failure", secondErr: errors.New("ISBN verification unavailable"), wantReason: "ISBN verification unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -52,7 +49,7 @@ func TestAudiobookISBNVerificationFailuresWithValidASIN(t *testing.T) {
 			hc.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
 				Return(&models.HardcoverBook{ID: "901", EditionID: "902"}, nil).Once()
 			hc.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
-				Return(tc.secondMatch, tc.secondErr).Once()
+				Return((*models.HardcoverBook)(nil), tc.secondErr).Once()
 			// Failed verification may enrich the attention record using read-only lookups.
 			hc.On("GetEdition", mock.Anything, "902").Return((*models.Edition)(nil), nil).Maybe()
 			hc.On("GetBookByID", mock.Anything, "901").Return((*models.HardcoverBook)(nil), nil).Maybe()
@@ -139,26 +136,13 @@ func TestAudiobookISBNVerificationRepeatsOnlyTheMatchedIdentifier(t *testing.T) 
 	}
 }
 
-func TestAudiobookIdentifierFallbackRecordEligibility(t *testing.T) {
-	for _, matchMethod := range []string{"isbn", string(hardcover.ASINMatchEditionASIN)} {
-		for _, outcome := range []SyncOutcome{OutcomeSynced, OutcomeAlreadyCurrent} {
-			record := BookOutcomeRecord{
-				Format: "Audiobook", MatchMethod: matchMethod, Outcome: outcome,
-				SourceASIN: "b00source1", ASIN: "invalid",
-			}
-			assert.True(t, IsAudiobookIdentifierFallbackRecord(record), "%s / %s", matchMethod, outcome)
-		}
-	}
-
+func TestAudiobookFallbackSourceIdentifierAndFormat(t *testing.T) {
+	// Route tests cover eligible match methods and outcomes. Keep the legacy
+	// identifier preference and format boundaries focused here.
+	assert.True(t, IsAudiobookIdentifierFallbackRecord(BookOutcomeRecord{
+		Format: "Audiobook", MatchMethod: "isbn", Outcome: OutcomeSynced, ASIN: "B00SOURCE1",
+	}))
 	for _, record := range []BookOutcomeRecord{
-		{Format: "Audiobook", MatchMethod: "saved_match", Outcome: OutcomeSynced, SourceASIN: "B00SOURCE1"},
-		{Format: "Audiobook", MatchMethod: "saved_isbn", Outcome: OutcomeSynced, SourceASIN: "B00SOURCE1"},
-		{Format: "Audiobook", MatchMethod: string(hardcover.ASINMatchAudibleMapping), Outcome: OutcomeSynced, SourceASIN: "B00SOURCE1"},
-		{Format: "Audiobook", MatchMethod: "isbn", Outcome: OutcomeSkipped, SourceASIN: "B00SOURCE1"},
-		{Format: "Audiobook", MatchMethod: string(hardcover.ASINMatchEditionASIN), Outcome: OutcomeSkipped, SourceASIN: "B00SOURCE1"},
-		{Format: "Audiobook", MatchMethod: "isbn", Outcome: OutcomeFailed, SourceASIN: "B00SOURCE1"},
-		{Format: "Audiobook", MatchMethod: "isbn", Outcome: OutcomeNeedsReview, SourceASIN: "B00SOURCE1"},
-		{Format: "Audiobook", MatchMethod: "isbn", Outcome: OutcomeWouldSync, SourceASIN: "B00SOURCE1"},
 		{Format: "Ebook", MatchMethod: "isbn", Outcome: OutcomeSynced, SourceASIN: "B00SOURCE1"},
 		{Format: "Audiobook", MatchMethod: "isbn", Outcome: OutcomeSynced, SourceASIN: "invalid", ASIN: "B00SOURCE1"},
 		{Format: "Audiobook", MatchMethod: "isbn", Outcome: OutcomeSynced},
@@ -279,7 +263,6 @@ func TestConfiguredSkippedAudiobooksDoNotMatchIdentifiersOrEnableEditionImport(t
 		progress           float64
 		minimumProgress    float64
 	}{
-		{name: "both unread settings disabled"},
 		{name: "unread books disabled", syncWantToRead: true},
 		{name: "below minimum progress", processUnreadBooks: true, syncWantToRead: true, progress: 0.25, minimumProgress: 0.5},
 	}

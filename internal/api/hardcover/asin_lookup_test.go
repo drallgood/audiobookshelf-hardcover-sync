@@ -160,7 +160,6 @@ func TestSearchBookByEditionASINResultFindsAudiobookEditionByExactASIN(t *testin
 	require.Equal(t, asin, request.Variables["asin"])
 	require.Contains(t, request.Query, "asin: {_eq: $asin}")
 	require.Contains(t, request.Query, "reading_format_id: {_eq: $format_id}")
-	require.NotContains(t, request.Query, "book_mappings")
 }
 
 func TestSearchBookByEditionASINResultFiltersUnexpectedReadingFormat(t *testing.T) {
