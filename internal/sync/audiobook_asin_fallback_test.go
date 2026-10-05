@@ -214,7 +214,7 @@ func TestConfiguredSkippedAudiobooksDoNotMatchIdentifiersOrEnableEditionImport(t
 		progress           float64
 		minimumProgress    float64
 	}{
-		{name: "want-to-read disabled", processUnreadBooks: true},
+		{name: "both unread settings disabled"},
 		{name: "unread books disabled", syncWantToRead: true},
 		{name: "below minimum progress", processUnreadBooks: true, syncWantToRead: true, progress: 0.25, minimumProgress: 0.5},
 	}

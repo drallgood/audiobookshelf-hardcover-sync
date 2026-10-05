@@ -309,6 +309,11 @@ unchanged target. Automatic ISBN matches are confirmed by a second lookup
 before saving. If that match disappears during confirmation, sync reports a
 lookup failure and retries on a later run instead of offering Audible import.
 
+For unread audiobooks, `process_unread_books` enables matching and attention-list
+entries. `sync_want_to_read` separately enables setting matched books to
+**Want to Read**. With unread processing disabled, sync skips these books before
+matching, regardless of the want-to-read setting.
+
 Synced and already-current books show a plain `Match method:` label:
 
 | Label | Meaning |

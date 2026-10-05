@@ -746,21 +746,31 @@ func TestProcessBookDoesNotReconcileAudiobookISBNOnSkippedBooks(t *testing.T) {
 			book.ID = "association-audiobook-post-match-skip-" + tt.name
 			book.Progress.CurrentTime = tt.progress * book.Media.Duration
 			book.Progress.StartedAt = 0
+			if tt.progress == 0 {
+				client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
+					Return(&models.HardcoverBook{ID: "901", EditionID: "902"}, nil).Twice()
+			}
 			err := svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{})
 
 			require.NoError(t, err)
 			record := recordedOutcome(svc, book.ID)
 			assert.Equal(t, OutcomeSkipped, record.Outcome)
-			assert.Empty(t, record.MatchMethod)
 			_, saved := svc.state.GetAssociation(book.ID)
-			assert.False(t, saved, "audiobook ISBNs must not create saved matches")
-			assertNoHardcoverBookSearches(t, client)
-			client.AssertNumberOfCalls(t, "SearchBookByISBN13", 0)
+			if tt.progress == 0 {
+				assert.Equal(t, "isbn", record.MatchMethod)
+				assert.Equal(t, "901", record.HardcoverBookID)
+				assert.True(t, saved, "unread processing may save a confirmed ISBN match without status writes")
+			} else {
+				assert.Empty(t, record.MatchMethod)
+				assert.False(t, saved)
+				assertNoHardcoverBookSearches(t, client)
+			}
 			client.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
 			client.AssertNotCalled(t, "CheckBookOwnership", mock.Anything, mock.Anything)
 			client.AssertNotCalled(t, "MarkEditionAsOwned", mock.Anything, mock.Anything)
 			client.AssertNotCalled(t, "GetUserBookID", mock.Anything, mock.Anything)
 			client.AssertNotCalled(t, "CreateUserBook", mock.Anything, mock.Anything, mock.Anything)
+			client.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
 			client.AssertExpectations(t)
 		})
 	}
