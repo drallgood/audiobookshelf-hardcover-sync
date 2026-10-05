@@ -41,7 +41,10 @@ func TestImportRegionalAudiobookUnanchoredOmitsBookIDAndResolvesIdentity(t *test
 							"status": status, "book_id": 73, "edition_id": 900,
 							"external_id": "B0ABCDE123:uk", "platform_id": 32,
 						}},
-						"book_mappings": []map[string]interface{}{},
+						"book_mappings": []map[string]interface{}{{
+							"id": 77, "state": status, "book_id": 73,
+							"platform_id": 32, "external_id": "B0ABCDE123:uk", "edition_id": 900,
+						}},
 					}})
 					require.NoError(t, err)
 					_, _ = w.Write(payload)
@@ -83,7 +86,7 @@ func TestImportRegionalAudiobookUnanchoredResolvesNullableTerminalStatusIDs(t *t
 		statusEditionID       string
 		mapping               bool
 	}{
-		{name: "status book ID after pending response", pendingBeforeTerminal: true, upsertBook: "null", statusBookID: "73", statusEditionID: "900"},
+		{name: "status book ID after pending response", pendingBeforeTerminal: true, upsertBook: "null", statusBookID: "73", statusEditionID: "900", mapping: true},
 		{name: "terminal mapping book ID after pending response", pendingBeforeTerminal: true, upsertBook: "null", statusBookID: "null", statusEditionID: "null", mapping: true},
 		{name: "mapping resolves IDs missing from status after upsert book", upsertBook: `{"id":73}`, statusBookID: "null", statusEditionID: "null", mapping: true},
 		{name: "mapping resolves missing status edition after upsert book", upsertBook: `{"id":73}`, statusBookID: "73", statusEditionID: "null", mapping: true},
@@ -372,9 +375,15 @@ func TestCheckRegionalAudiobookImportUnanchoredResolvesBookFromStatusOrMapping(t
 		withMapping      bool
 		missingStatusIDs bool
 		wantStatus       RegionalAudiobookStatus
+		submittedAt      time.Time
+		wantPending      bool
+		wantErr          error
 	}{
-		{name: "terminal import status", withStatus: true, wantStatus: RegionalAudiobookCreated},
+		{name: "terminal import status with exact mapping", withStatus: true, withMapping: true, wantStatus: RegionalAudiobookCreated},
 		{name: "terminal status resolved from mapping", withStatus: true, withMapping: true, missingStatusIDs: true, wantStatus: RegionalAudiobookCreated},
+		{name: "missing mapping with unknown submission age", withStatus: true, wantStatus: RegionalAudiobookCreated, wantPending: true},
+		{name: "missing mapping after recent submission", withStatus: true, wantStatus: RegionalAudiobookCreated, submittedAt: time.Now(), wantPending: true},
+		{name: "missing mapping after grace period", withStatus: true, wantStatus: RegionalAudiobookCreated, submittedAt: time.Now().Add(-10 * time.Minute), wantErr: ErrRegionalAudiobookMappingMissing},
 		{name: "mapping after status expired", withMapping: true, wantStatus: RegionalAudiobookLoaded},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -427,19 +436,34 @@ func TestCheckRegionalAudiobookImportUnanchoredResolvesBookFromStatusOrMapping(t
 			}))
 
 			result, confirmed, err := client.CheckRegionalAudiobookImport(context.Background(), RegionalAudiobookInput{
-				ASIN: "b0other123", Region: "CA", Unanchored: true,
+				ASIN: "b0other123", Region: "CA", Unanchored: true, SubmittedAt: tc.submittedAt,
 			})
 
+			require.Equal(t, 1, importReads)
+			require.Equal(t, 1, editionReads, "recovery requires a fresh edition read")
+			require.Zero(t, mutations, "recovery is read-only")
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+				var missing *RegionalAudiobookMappingMissingError
+				require.ErrorAs(t, err, &missing)
+				require.Equal(t, 73, missing.BookID)
+				require.Equal(t, 900, missing.EditionID)
+				require.False(t, confirmed)
+				require.Nil(t, result)
+				return
+			}
 			require.NoError(t, err)
+			if tc.wantPending {
+				require.False(t, confirmed)
+				require.Nil(t, result)
+				return
+			}
 			require.True(t, confirmed)
 			require.Equal(t, tc.wantStatus, result.Status)
 			require.Equal(t, 73, result.BookID, "the book ID is resolved from the terminal status or mapping")
 			require.Equal(t, 900, result.EditionID)
 			require.Equal(t, 2, result.ReadingFormatID)
 			require.Equal(t, "B0OTHER123:ca", result.RegionalExternalID)
-			require.Equal(t, 1, importReads)
-			require.Equal(t, 1, editionReads, "recovery requires a fresh edition read")
-			require.Zero(t, mutations, "recovery is read-only")
 		})
 	}
 }

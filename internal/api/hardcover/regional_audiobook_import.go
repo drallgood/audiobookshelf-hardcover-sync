@@ -17,9 +17,8 @@ const (
 	// import flow was verified against platform 32 in the implementation plan.
 	audiblePlatformID = 32
 
-	regionalImportInitialPollInterval = time.Second
-	regionalImportMaxPollInterval     = 5 * time.Second
 	regionalImportMaxWait             = 30 * time.Second
+	regionalImportMissingMappingGrace = 5 * time.Minute
 )
 
 var (
@@ -28,6 +27,7 @@ var (
 	ErrRegionalAudiobookImportTimeout    = errors.New("regional audiobook import timed out")
 	ErrRegionalAudiobookIdentityConflict = errors.New("regional audiobook import returned conflicting identity")
 	ErrRegionalAudiobookDryRun           = errors.New("regional audiobook import skipped during dry run")
+	ErrRegionalAudiobookMappingMissing   = errors.New("regional audiobook import mapping is missing")
 	// ErrRegionalAudiobookWrongFormat identifies a terminal import whose freshly
 	// read edition is on the requested book but is not an audiobook. Hardcover
 	// can attach an ISBN-shaped Audible ASIN to an existing edition with that
@@ -43,6 +43,27 @@ type RegionalAudiobookWrongFormatError struct {
 	BookID          int
 	EditionID       int
 	ReadingFormatID string
+}
+
+// RegionalAudiobookMappingMissingError reports a terminal import whose
+// requested regional mapping was not visible after the edition was freshly
+// verified. Its absence does not establish that Hardcover will never publish
+// the mapping, so callers should not save the match based on this result.
+type RegionalAudiobookMappingMissingError struct {
+	BookID             int
+	EditionID          int
+	RegionalExternalID string
+	Status             RegionalAudiobookStatus
+	MappingCount       int
+}
+
+func (e *RegionalAudiobookMappingMissingError) Error() string {
+	return fmt.Sprintf("%s: Hardcover reported %s for book %d, edition %d, and Audible identifier %s, but no exact mapping was visible (mapping_count=%d); report this to Hardcover and link the regional identifier, then run sync after correction; the match was not saved",
+		ErrRegionalAudiobookMappingMissing, e.Status, e.BookID, e.EditionID, e.RegionalExternalID, e.MappingCount)
+}
+
+func (e *RegionalAudiobookMappingMissingError) Unwrap() error {
+	return ErrRegionalAudiobookMappingMissing
 }
 
 func (e *RegionalAudiobookWrongFormatError) Error() string {
@@ -63,6 +84,10 @@ type RegionalAudiobookInput struct {
 	ASIN       string
 	Region     string
 	Unanchored bool
+	// SubmittedAt is the original import submission time used by read-only
+	// recovery checks to allow eventual consistency across requests and restarts.
+	// A zero value means the age is unknown and must remain unconfirmed.
+	SubmittedAt time.Time
 }
 
 // RegionalAudiobookStatus is the terminal state reported by Hardcover's
@@ -86,10 +111,11 @@ type RegionalAudiobookResult struct {
 	Edition *models.Edition `json:"-"`
 }
 
-// ImportRegionalAudiobook imports or resolves a region-qualified Audible ID.
-// It waits for Hardcover's import status to reach a terminal state, then
-// verifies the returned edition belongs to the returned or requested book and
-// has audiobook reading format before reporting success.
+// ImportRegionalAudiobook imports or resolves a region-qualified Audible ID
+// with an optional known Hardcover book. It waits for Hardcover's import status
+// to reach a terminal state, then verifies the returned edition belongs to the
+// resolved book, has audiobook reading format, and has an exact regional
+// Audible mapping before reporting success.
 func (c *Client) ImportRegionalAudiobook(ctx context.Context, input RegionalAudiobookInput) (*RegionalAudiobookResult, error) {
 	if c.dryRun {
 		return nil, ErrRegionalAudiobookDryRun
@@ -182,8 +208,8 @@ mutation UpsertRegionalAudibleBook($book: CreateBookFromPlatformInput!) {
 // CheckRegionalAudiobookImport performs one read-only status lookup for an
 // already-submitted regional Audible import. A terminal result is returned
 // only after its edition is freshly read and verified against the requested
-// book and audiobook format. Pending imports return confirmed=false without
-// issuing any Hardcover mutation.
+// book and audiobook format, with an exact regional Audible mapping. Pending
+// imports return confirmed=false without issuing any Hardcover mutation.
 func (c *Client) CheckRegionalAudiobookImport(ctx context.Context, input RegionalAudiobookInput) (*RegionalAudiobookResult, bool, error) {
 	asin, region, err := normalizeRegionalAudiobookInput(input)
 	if err != nil {
@@ -288,9 +314,27 @@ func (c *Client) CheckRegionalAudiobookImport(ctx context.Context, input Regiona
 		}
 	}
 
-	if len(mappings) == 1 {
-		if err := validateRegionalImportMapping(mappings[0], resolvedBookID, externalID, status, editionID); err != nil {
+	confirmed, err := confirmRegionalImportMapping(mappings, resolvedBookID, externalID, status, editionID)
+	if err != nil {
+		return nil, false, err
+	}
+	if !confirmed {
+		// A terminal status gives us an edition identity to verify even when its
+		// exact mapping or mapping edition link has not appeared yet.
+		if len(statuses) != 1 || (status != RegionalAudiobookLoaded && status != RegionalAudiobookCreated) {
+			return nil, false, nil
+		}
+		if _, _, _, err := c.verifyRegionalAudiobookEdition(ctx, resolvedBookID, editionID, "verify recovered regional Audible edition"); err != nil {
 			return nil, false, err
+		}
+		if input.SubmittedAt.IsZero() || input.SubmittedAt.After(time.Now()) || time.Since(input.SubmittedAt) < regionalImportMissingMappingGrace {
+			c.logRegionalAudiobookMappingMissing(status, resolvedBookID, editionID, externalID, len(mappings), false)
+			return nil, false, nil
+		}
+		c.logRegionalAudiobookMappingMissing(status, resolvedBookID, editionID, externalID, len(mappings), true)
+		return nil, false, &RegionalAudiobookMappingMissingError{
+			BookID: resolvedBookID, EditionID: editionID, RegionalExternalID: externalID,
+			Status: status, MappingCount: len(mappings),
 		}
 	}
 	verifiedBookID, verifiedFormatID, verified, err := c.verifyRegionalAudiobookEdition(ctx, resolvedBookID, editionID, "verify recovered regional Audible edition")
@@ -388,12 +432,15 @@ func (c *Client) pollRegionalAudiobookImport(ctx context.Context, bookID int, al
 	// field; keep validation fail-closed for unknown or inconsistent results.
 	pollCtx, cancel := context.WithTimeout(ctx, regionalImportMaxWait)
 	defer cancel()
-	pollInterval := regionalImportInitialPollInterval
+	pollInterval := c.rateLimiter.GetRate()
+	var verifiedMissingMappingStatus RegionalAudiobookStatus
+	var verifiedMissingMappingEditionID int
+	missingMappingEditionVerified := false
 	for {
 		statuses, mappings, err := c.queryRegionalAudiobookImport(pollCtx, externalID)
 		if err != nil {
 			if ctx.Err() == nil && errors.Is(pollCtx.Err(), context.DeadlineExceeded) {
-				return "", 0, 0, fmt.Errorf("%w: regional Audible import did not reach a terminal state", ErrRegionalAudiobookImportTimeout)
+				return "", 0, 0, fmt.Errorf("%w: regional Audible import did not confirm a terminal status and exact edition mapping", ErrRegionalAudiobookImportTimeout)
 			}
 			return "", 0, 0, fmt.Errorf("poll regional Audible import: %w", err)
 		}
@@ -415,6 +462,7 @@ func (c *Client) pollRegionalAudiobookImport(ctx context.Context, bookID int, al
 			case "not_found":
 				return "", 0, 0, fmt.Errorf("%w: %s", ErrRegionalAudiobookImportFailed, firstNonEmpty(importStatus.Error, "Hardcover found no result for the regional Audible identifier"))
 			case "fetching":
+				missingMappingEditionVerified = false
 				if importStatus.BookID != nil && *importStatus.BookID > 0 {
 					if bookID > 0 && *importStatus.BookID != bookID {
 						return "", 0, 0, fmt.Errorf("%w: import status returned book %d for requested book %d", ErrRegionalAudiobookIdentityConflict, *importStatus.BookID, bookID)
@@ -472,15 +520,28 @@ func (c *Client) pollRegionalAudiobookImport(ctx context.Context, bookID int, al
 				if err := validateRegionalImportEdition(mutationEdition, bookID); err != nil {
 					return "", 0, 0, err
 				}
-				if len(mappings) == 1 {
-					if err := validateRegionalImportMapping(mappings[0], bookID, externalID, RegionalAudiobookStatus(state), editionID); err != nil {
+				confirmed, err := confirmRegionalImportMapping(mappings, bookID, externalID, RegionalAudiobookStatus(state), editionID)
+				if err != nil {
+					return "", 0, 0, err
+				}
+				if confirmed {
+					return RegionalAudiobookStatus(state), bookID, editionID, nil
+				}
+				terminalStatus := RegionalAudiobookStatus(state)
+				if !missingMappingEditionVerified || terminalStatus != verifiedMissingMappingStatus || editionID != verifiedMissingMappingEditionID {
+					if _, _, _, err := c.verifyRegionalAudiobookEdition(pollCtx, bookID, editionID, "verify regional Audible edition without mapping"); err != nil {
 						return "", 0, 0, err
 					}
+					verifiedMissingMappingStatus = terminalStatus
+					verifiedMissingMappingEditionID = editionID
+					missingMappingEditionVerified = true
 				}
-				return RegionalAudiobookStatus(state), bookID, editionID, nil
+				c.logRegionalAudiobookMappingMissing(terminalStatus, bookID, editionID, externalID, len(mappings), false)
 			default:
 				return "", 0, 0, fmt.Errorf("%w: Hardcover returned unsupported regional import status %q", ErrRegionalAudiobookIdentityConflict, importStatus.Status)
 			}
+		} else {
+			missingMappingEditionVerified = false
 		}
 		if len(mappings) == 1 {
 			if err := validateRegionalImportMapping(mappings[0], bookID, externalID, "", 0); err != nil {
@@ -492,6 +553,8 @@ func (c *Client) pollRegionalAudiobookImport(ctx context.Context, bookID int, al
 		}
 		// Keep the first checks responsive, then reduce quota usage while
 		// Hardcover imports its upstream data. The deadline still bounds the wait.
+		// Use the shared bounded backoff for read-only polling.
+		pollInterval = c.rateLimiter.RetryDelay(pollInterval)
 		timer := time.NewTimer(pollInterval)
 		select {
 		case <-ctx.Done():
@@ -502,11 +565,26 @@ func (c *Client) pollRegionalAudiobookImport(ctx context.Context, bookID int, al
 			if ctx.Err() != nil {
 				return "", 0, 0, fmt.Errorf("regional audiobook import polling canceled: %w", ctx.Err())
 			}
-			return "", 0, 0, fmt.Errorf("%w: regional Audible import did not reach a terminal state", ErrRegionalAudiobookImportTimeout)
+			return "", 0, 0, fmt.Errorf("%w: regional Audible import did not confirm a terminal status and exact edition mapping", ErrRegionalAudiobookImportTimeout)
 		case <-timer.C:
 		}
-		pollInterval = min(2*pollInterval, regionalImportMaxPollInterval)
 	}
+}
+
+func (c *Client) logRegionalAudiobookMappingMissing(status RegionalAudiobookStatus, bookID, editionID int, externalID string, mappingCount int, final bool) {
+	fields := map[string]interface{}{
+		"reason":        "terminal import does not have the exact regional mapping",
+		"status":        status,
+		"book_id":       bookID,
+		"edition_id":    editionID,
+		"external_id":   externalID,
+		"mapping_count": mappingCount,
+	}
+	if final {
+		c.logger.Warn("Regional audiobook import mapping remains missing after verification", fields)
+		return
+	}
+	c.logger.Debug("Regional audiobook import mapping is not visible yet", fields)
 }
 
 func (c *Client) queryRegionalAudiobookImport(ctx context.Context, externalID string) ([]regionalImportStatus, []regionalImportMapping, error) {
@@ -545,6 +623,20 @@ query RegionalAudibleImport($entries: [ImportStatusEntryInput!]!, $platformId: I
 		return nil, nil, err
 	}
 	return response.Statuses, response.Mappings, nil
+}
+
+// confirmRegionalImportMapping requires the requested Audible identifier to
+// resolve to the exact returned edition. A missing mapping or edition link may
+// still appear later, so it remains unconfirmed rather than triggering a retry.
+func confirmRegionalImportMapping(mappings []regionalImportMapping, bookID int, externalID string, status RegionalAudiobookStatus, editionID int) (bool, error) {
+	if len(mappings) != 1 {
+		return false, nil
+	}
+	mapping := mappings[0]
+	if err := validateRegionalImportMapping(mapping, bookID, externalID, status, editionID); err != nil {
+		return false, err
+	}
+	return firstPositiveInt(pointerInt(mapping.EditionID), regionalEditionID(mapping.Edition)) == editionID, nil
 }
 
 func validateRegionalEditionLink(editionID int, edition *regionalImportEdition, source string) error {

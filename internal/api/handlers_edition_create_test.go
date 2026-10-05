@@ -2822,7 +2822,7 @@ func TestCheckEditionImportRecoveryWithConcreteClients(t *testing.T) {
 		Variables map[string]interface{} `json:"variables"`
 	}
 	var upserts, statusReads, editionReads, mutations atomic.Int32
-	var status string
+	var status atomic.Value
 	hardcoverServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer hardcover-token" {
 			t.Errorf("unexpected Hardcover request: %s %s", r.Method, r.URL.Path)
@@ -2849,9 +2849,9 @@ func TestCheckEditionImportRecoveryWithConcreteClients(t *testing.T) {
 			response = `{"data":{"upsert_book":{"id":77,"status":"fetching","book":{"id":42},"errors":[]}}}`
 		case "RegionalAudibleImport":
 			statusReads.Add(1)
-			if status == "ambiguous" {
+			if status.Load() == "ambiguous" {
 				response = `{"errors":[{"message":"temporary status lookup failure"}]}`
-			} else if status == "fetching" {
+			} else if status.Load() == "fetching" {
 				response = `{"data":{"book_import_statuses":[{"status":"fetching","external_id":"B0SOURCE12:uk","platform_id":32}],"book_mappings":[]}}`
 			} else {
 				response = `{"data":{"book_import_statuses":[{"status":"created","book_id":42,"edition_id":84,"external_id":"B0SOURCE12:uk","platform_id":32}],"book_mappings":[{"id":77,"state":"normalized","book_id":42,"platform_id":32,"external_id":"B0SOURCE12:uk","edition_id":84,"edition":{"id":84,"book_id":42,"reading_format_id":2}}]}}`
@@ -2868,7 +2868,7 @@ func TestCheckEditionImportRecoveryWithConcreteClients(t *testing.T) {
 	}))
 	t.Cleanup(hardcoverServer.Close)
 	fixture.config.Hardcover.BaseURL = hardcoverServer.URL
-	status = "ambiguous"
+	status.Store("ambiguous")
 
 	created := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-concrete-recovery","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`)
 	require.Equal(t, http.StatusBadGateway, created.Code, created.Body.String())
@@ -2895,7 +2895,7 @@ func TestCheckEditionImportRecoveryWithConcreteClients(t *testing.T) {
 	body := fmt.Sprintf(`{"run_id":"run-concrete-recovery","abs_item_id":"abs-item-1","audible_identifier":%q,"recovery_token":%q}`,
 		createEnvelope.Data.AudibleIdentifier, createEnvelope.Data.RecoveryToken)
 	statusReadsBeforeChecks := statusReads.Load()
-	status = "fetching"
+	status.Store("fetching")
 	pending := postEditionImportCheck(t, fixture, fixture.owner, body)
 	require.Equal(t, http.StatusServiceUnavailable, pending.Code, pending.Body.String())
 	var pendingEnvelope struct {
@@ -2912,9 +2912,9 @@ func TestCheckEditionImportRecoveryWithConcreteClients(t *testing.T) {
 	stored, err = statepkg.LoadState(editionCreateProfileStatePath(fixture))
 	require.NoError(t, err)
 	_, exists = stored.GetAssociation("abs-item-1")
-	require.False(t, exists, "pending status must not save a guessed local association")
+	require.False(t, exists, "a pending status without an Audible mapping must not save a local association")
 
-	status = "created"
+	status.Store("created")
 	first := postEditionImportCheck(t, fixture, fixture.owner, body)
 	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
 	second := postEditionImportCheck(t, fixture, fixture.owner, body)
@@ -2930,6 +2930,174 @@ func TestCheckEditionImportRecoveryWithConcreteClients(t *testing.T) {
 	require.Equal(t, "42", association.HardcoverBookID)
 	require.Equal(t, "84", association.HardcoverEditionID)
 	require.Equal(t, "B0SOURCE12:uk", association.RegionalExternalID)
+}
+
+func TestRegionalAudiobookMissingMappingRecoveryGrace(t *testing.T) {
+	const itemJSON = `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100,"numTracks":1}}`
+	fixture := newEditionDraftTestFixture(t, itemJSON, "us")
+	configureEditionCreateRoute(t, fixture)
+	record := editionCreateRecord()
+	record.Title = "Reviewed title"
+	record.Author = "Author"
+	addCompletedNeedsReviewRun(t, fixture, "run-mapping-fresh", record)
+	addCompletedNeedsReviewRun(t, fixture, "run-mapping-expired", record)
+
+	var upserts, statusReads, editionReads atomic.Int32
+	var status atomic.Value
+	hardcoverServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode Hardcover request: %v", err)
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(request.Query, "UpsertRegionalAudibleBook"):
+			upserts.Add(1)
+			_, _ = w.Write([]byte(`{"data":{"upsert_book":{"id":77,"status":"fetching","book":{"id":42},"errors":[]}}}`))
+		case strings.Contains(request.Query, "RegionalAudibleImport"):
+			statusReads.Add(1)
+			switch status.Load() {
+			case "ambiguous":
+				_, _ = w.Write([]byte(`{"errors":[{"message":"temporary status lookup failure"}]}`))
+			case "missing":
+				_, _ = w.Write([]byte(`{"data":{"book_import_statuses":[{"status":"loaded","book_id":42,"edition_id":84,"external_id":"B0SOURCE12:uk","platform_id":32}],"book_mappings":[]}}`))
+			case "mapped":
+				_, _ = w.Write([]byte(`{"data":{"book_import_statuses":[{"status":"loaded","book_id":42,"edition_id":84,"external_id":"B0SOURCE12:uk","platform_id":32}],"book_mappings":[{"id":77,"state":"loaded","book_id":42,"platform_id":32,"external_id":"B0SOURCE12:uk","edition_id":84,"edition":{"id":84,"book_id":42,"reading_format_id":2}}]}}`))
+			default:
+				t.Errorf("unexpected test status %v", status.Load())
+				http.Error(w, "unexpected status", http.StatusBadRequest)
+			}
+		case strings.Contains(request.Query, "GetEdition"):
+			editionReads.Add(1)
+			_, _ = w.Write([]byte(`{"data":{"editions":[{"id":84,"book_id":42,"title":"Reviewed title","reading_format_id":2}]}}`))
+		default:
+			t.Errorf("unexpected Hardcover query: %s", request.Query)
+			http.Error(w, "unexpected query", http.StatusBadRequest)
+		}
+	}))
+	t.Cleanup(hardcoverServer.Close)
+	fixture.config.Hardcover.BaseURL = hardcoverServer.URL
+
+	type envelope struct {
+		Success   bool   `json:"success"`
+		Error     string `json:"error"`
+		ErrorCode string `json:"error_code"`
+		Outcome   string `json:"outcome"`
+		Data      struct {
+			AudibleIdentifier   string `json:"audible_identifier"`
+			HardcoverBookID     string `json:"hardcover_book_id"`
+			HardcoverEditionID  string `json:"hardcover_edition_id"`
+			HardcoverEditionURL string `json:"hardcover_edition_url"`
+			RecoveryToken       string `json:"recovery_token"`
+		} `json:"data"`
+	}
+
+	status.Store("ambiguous")
+	createBody := `{"run_id":"run-mapping-fresh","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`
+	created := postEditionCreate(t, fixture, fixture.owner, createBody)
+	require.Equal(t, http.StatusBadGateway, created.Code, created.Body.String())
+	var createEnvelope envelope
+	require.NoError(t, json.Unmarshal(created.Body.Bytes(), &createEnvelope))
+	require.Equal(t, editionOutcomeUnconfirmed, createEnvelope.Outcome)
+	require.NotEmpty(t, createEnvelope.Data.RecoveryToken)
+	require.EqualValues(t, 1, upserts.Load())
+
+	// A fresh signed submission remains recoverable while the mapping is absent.
+	status.Store("missing")
+	checkBody := fmt.Sprintf(`{"run_id":"run-mapping-fresh","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk","recovery_token":%q}`, createEnvelope.Data.RecoveryToken)
+	beforeFreshCheck := statusReads.Load()
+	pending := postEditionImportCheck(t, fixture, fixture.owner, checkBody)
+	require.EqualValues(t, beforeFreshCheck+1, statusReads.Load())
+	require.Equal(t, http.StatusServiceUnavailable, pending.Code, pending.Body.String())
+	var pendingEnvelope envelope
+	require.NoError(t, json.Unmarshal(pending.Body.Bytes(), &pendingEnvelope))
+	require.Equal(t, editionOutcomeUnconfirmed, pendingEnvelope.Outcome)
+	require.Equal(t, createEnvelope.Data.RecoveryToken, pendingEnvelope.Data.RecoveryToken)
+	storedFresh, found, err := fixture.multiUserService.GetEditionAction("draft-profile", "run-mapping-fresh", "abs-item-1")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, editionOutcomeUnconfirmed, storedFresh.Outcome)
+	stateBefore, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+	require.NoError(t, err)
+	_, existsBefore := stateBefore.GetAssociation("abs-item-1")
+	require.False(t, existsBefore)
+	beforeDuplicate := upserts.Load()
+	duplicateCheck := postEditionImportCheck(t, fixture, fixture.owner, checkBody)
+	require.EqualValues(t, beforeFreshCheck+2, statusReads.Load())
+	require.Equal(t, http.StatusServiceUnavailable, duplicateCheck.Code, duplicateCheck.Body.String())
+	require.EqualValues(t, beforeDuplicate, upserts.Load(), "re-polling the same recovery token must not resubmit the import")
+
+	// An old signed attempt is finalized when its five-minute recovery grace has elapsed.
+	issuedAt := time.Now().Add(-6 * time.Minute)
+	claims := editionRecoveryClaims{ProfileID: "draft-profile", RunID: "run-mapping-expired", ABSItemID: "abs-item-1", HardcoverBookID: "42", AudibleIdentifier: "B0SOURCE12:uk"}
+	token := signEditionRecoveryTokenAt("hardcover-token", claims, issuedAt)
+	recovery := &editionRecoveryData{
+		AudibleIdentifier: claims.AudibleIdentifier, HardcoverBookID: claims.HardcoverBookID,
+		RecoveryToken: token, RecoveryExpiresAt: issuedAt.Add(editionRecoveryLifetime).Unix(),
+	}
+	action := sync.EditionActionRecord{
+		Outcome: editionOutcomeUnconfirmed, Error: editionImportUnconfirmedGuidance, ErrorCode: "hardcover_import_unconfirmed",
+		Data:          editionActionDataFromRecovery(recovery),
+		SubmittedBody: &sync.EditionActionSubmittedBody{RunID: claims.RunID, ABSItemID: claims.ABSItemID, AudibleIdentifier: claims.AudibleIdentifier},
+	}
+	require.NoError(t, fixture.multiUserService.SaveEditionAction("draft-profile", claims.RunID, claims.ABSItemID, action))
+	status.Store("missing")
+	expiredBody := fmt.Sprintf(`{"run_id":%q,"abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk","recovery_token":%q}`, claims.RunID, token)
+	expired := postEditionImportCheck(t, fixture, fixture.owner, expiredBody)
+	require.Equal(t, http.StatusConflict, expired.Code, expired.Body.String())
+	var expiredEnvelope envelope
+	require.NoError(t, json.Unmarshal(expired.Body.Bytes(), &expiredEnvelope))
+	require.Equal(t, editionOutcomeFailed, expiredEnvelope.Outcome)
+	require.Equal(t, "hardcover_audible_mapping_missing", expiredEnvelope.ErrorCode)
+	require.Equal(t, editionMappingMissingGuidance, expiredEnvelope.Error)
+	require.Equal(t, "42", expiredEnvelope.Data.HardcoverBookID)
+	require.Equal(t, "84", expiredEnvelope.Data.HardcoverEditionID)
+	require.Equal(t, "https://hardcover.app/editions/84", expiredEnvelope.Data.HardcoverEditionURL)
+	require.Empty(t, expiredEnvelope.Data.RecoveryToken)
+	storedExpired, found, err := fixture.multiUserService.GetEditionAction("draft-profile", claims.RunID, claims.ABSItemID)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, editionOutcomeFailed, storedExpired.Outcome)
+	require.Equal(t, http.StatusConflict, storedExpired.HTTPStatus)
+	require.Equal(t, editionMappingMissingGuidance, storedExpired.Error)
+	require.Equal(t, editionMappingMissingGuidance, storedExpired.Data.Guidance)
+	require.Equal(t, "B0SOURCE12:uk", storedExpired.Data.AudibleIdentifier)
+	require.Empty(t, storedExpired.Data.RecoveryToken)
+
+	// Older journal prose is projected through the stable public error code.
+	storedExpired.Error = "legacy internal mapping diagnostic"
+	require.NoError(t, fixture.multiUserService.SaveEditionAction("draft-profile", claims.RunID, claims.ABSItemID, *storedExpired))
+	detailsRequest := httptest.NewRequest(http.MethodGet, "/api/profiles/draft-profile/runs/"+claims.RunID+"/details", nil)
+	detailsRequest.AddCookie(fixture.sessionCookie(t, fixture.owner))
+	detailsResponse := httptest.NewRecorder()
+	fixture.routes.ServeHTTP(detailsResponse, detailsRequest)
+	require.Equal(t, http.StatusOK, detailsResponse.Code, detailsResponse.Body.String())
+	var details struct {
+		Data sync.SyncSnapshot `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(detailsResponse.Body.Bytes(), &details))
+	require.Len(t, details.Data.BookOutcomes, 1)
+	require.Equal(t, editionMappingMissingGuidance, details.Data.BookOutcomes[0].EditionAction.Error)
+
+	// A later read can save the association without sending another mutation.
+	status.Store("mapped")
+	beforeRecovery := upserts.Load()
+	recovered := postEditionImportCheck(t, fixture, fixture.owner, checkBody)
+	require.Equal(t, http.StatusOK, recovered.Code, recovered.Body.String())
+	require.EqualValues(t, beforeRecovery, upserts.Load())
+	storedState, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+	require.NoError(t, err)
+	association, exists := storedState.GetAssociation("abs-item-1")
+	require.True(t, exists)
+	require.Equal(t, "42", association.HardcoverBookID)
+	require.Equal(t, "84", association.HardcoverEditionID)
+	require.Equal(t, "B0SOURCE12:uk", association.RegionalExternalID)
+	require.Positive(t, statusReads.Load())
+	require.Positive(t, editionReads.Load())
 }
 
 // Hardcover can resolve an ISBN-shaped Audible ASIN to an existing edition

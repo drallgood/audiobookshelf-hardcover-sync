@@ -2180,7 +2180,7 @@ class SyncProfileApp {
                 error: recovery.error || '', transportError: recovery.transportError || '',
                 errorHttpStatus: recovery.errorHttpStatus || 0, errorCode: recovery.errorCode || '',
                 recoveryHttpStatus: recovery.recoveryHttpStatus || 0, recoveryErrorCode: recovery.recoveryErrorCode || '',
-                wrongFormat: recovery.wrongFormat || null, retryCreate: recovery.outcome === 'not_submitted',
+                editionProblem: recovery.editionProblem || null, retryCreate: recovery.outcome === 'not_submitted',
                 fieldValues: recovery.fieldValues || {}
             });
             if (recovery.outcome === 'not_submitted' && !recovery.draft) {
@@ -2283,7 +2283,7 @@ class SyncProfileApp {
         } else if (dialog.result) {
             body = this.renderCreateResult(dialog.result);
         } else if (dialog.outcome === 'failed') {
-            body = dialog.wrongFormat ? this.renderEditionWrongFormat(dialog)
+            body = dialog.editionProblem ? this.renderEditionReport(dialog)
                 : `<div class="edition-error" role="alert"><strong>Hardcover edition request failed</strong><p>${this.escapeHtml(dialog.error || 'Hardcover confirmed that this request failed. Inspect Hardcover and run a new sync before taking further action.')}</p>${this.renderEditionTechnicalDetails(dialog)}</div><div class="form-actions edition-create-actions">${this.renderOpenHardcoverLink(dialog)}<button type="button" class="btn btn-warning" data-edition-dialog="close">Close</button></div>`;
         } else if (dialog.outcome === 'unconfirmed') {
             body = this.renderEditionImportUnconfirmed(dialog);
@@ -2625,10 +2625,10 @@ class SyncProfileApp {
                         const fallback = response.status === 403 && !message
                             ? 'The server returned HTTP 403 without a readable explanation. Review the profile access before trying again.'
                             : this.editionFailureMessage(outcome, response.status);
-                        dialog.wrongFormat = this.editionWrongFormatDetails(outcome, data);
-                        // The wrong-format message is final and self-contained, so it
+                        dialog.editionProblem = this.editionReportDetails(outcome, data);
+                        // Catalogue report guidance is final and self-contained, so it
                         // omits the generic stale-record hint added for other 409s.
-                        dialog.error = dialog.wrongFormat
+                        dialog.error = dialog.editionProblem
                             ? message
                             : response.status === 403 && !message
                                 ? fallback
@@ -2693,21 +2693,28 @@ class SyncProfileApp {
         return `<details class="edition-technical-details"><summary>Technical details</summary><div>${status ? `HTTP ${status}` : ''}${code ? `${status ? ' · ' : ''}Error code: ${this.escapeHtml(code)}` : ''}</div></details>`;
     }
 
-    // Hardcover returned an existing non-audiobook edition for this audiobook
-    // request. Use only a positive numeric edition ID and build the link here.
-    editionWrongFormatDetails(outcome, data) {
-        if (outcome !== 'failed' || String(data?.error_code || '') !== 'hardcover_edition_wrong_format') return null;
+    // Build report links only from verified positive edition IDs, never URLs
+    // supplied by an API response or restored browser data.
+    editionReportDetails(outcome, data) {
+        const code = String(data?.error_code || '');
+        if (outcome !== 'failed' || !['hardcover_edition_wrong_format', 'hardcover_audible_mapping_missing'].includes(code)) return null;
         const editionId = String(data?.data?.hardcover_edition_id ?? '');
         if (!/^\d+$/.test(editionId) || Number(editionId) <= 0) return null;
-        return { editionId, editionURL: `https://hardcover.app/editions/${editionId}` };
+        return { editionId, editionURL: `https://hardcover.app/editions/${editionId}`, mappingMissing: code === 'hardcover_audible_mapping_missing' };
     }
 
-    renderEditionWrongFormat(dialog) {
-        const details = dialog.wrongFormat;
-        const message = dialog.error || `Hardcover returned existing edition ${details.editionId}, which is not an audiobook. The match was not saved.`;
-        return `<div class="edition-error" role="alert" data-wrong-format><strong>Hardcover returned a non-audiobook edition</strong>
+    renderEditionReport(dialog) {
+        const details = dialog.editionProblem;
+        const title = details.mappingMissing ? 'Hardcover edition is missing its Audible mapping' : 'Hardcover returned a non-audiobook edition';
+        const message = dialog.error || (details.mappingMissing
+            ? `Hardcover returned edition ${details.editionId} without a confirmed regional Audible mapping. The match was not saved.`
+            : `Hardcover returned existing edition ${details.editionId}, which is not an audiobook. The match was not saved.`);
+        const correction = details.mappingMissing
+            ? 'ask for the regional Audible identifier to be linked to this audiobook edition'
+            : 'ask for its format to be changed to Audiobook';
+        return `<div class="edition-error" role="alert"><strong>${title}</strong>
             <p>${this.escapeHtml(message)}</p>
-            <p>On the Hardcover edition page, sign in and use <strong>Report</strong> to ask for its format to be changed to Audiobook.</p>
+            <p>On the Hardcover edition page, sign in and use <strong>Report</strong> to ${correction}. Run a new sync after Hardcover corrects the catalogue.</p>
             ${this.renderEditionTechnicalDetails(dialog)}</div>
             <div class="form-actions edition-create-actions"><a class="btn btn-primary" href="${this.escapeHtmlAttribute(details.editionURL)}" target="_blank" rel="noopener noreferrer" data-report-edition>Report a problem on Hardcover</a><button type="button" class="btn btn-warning" data-edition-dialog="close">Close</button></div>`;
     }
@@ -2785,7 +2792,7 @@ class SyncProfileApp {
                 dialog.errorHttpStatus = response.status;
                 dialog.errorCode = data.error_code || '';
                 dialog.error = this.apiErrorMessage(data, 'Hardcover confirmed that the import failed. Review the edition details before taking another action.');
-                dialog.wrongFormat = this.editionWrongFormatDetails('failed', data);
+                dialog.editionProblem = this.editionReportDetails('failed', data);
                 dialog.checkError = '';
                 this.clearPendingEditionRecovery(dialog.profileId, recovery.runId, recovery.absItemId);
             } else if (
@@ -2861,7 +2868,7 @@ class SyncProfileApp {
                     recoveryToken: data.recovery_token || '',
                     hardcoverBookId: data.hardcover_book_id || record.hardcover_book_id
                 } : null,
-                wrongFormat: this.editionWrongFormatDetails(action.outcome, action),
+                editionProblem: this.editionReportDetails(action.outcome, action),
                 transportError: action.outcome === 'transport_unknown' ? action.error || 'The import result is unknown. Inspect Hardcover, then run a new sync before trying again.' : '',
                 fieldValues: Object.fromEntries(['title', 'subtitle', 'asin', 'isbn_10', 'isbn_13', 'release_date', 'edition_format']
                     .filter(key => typeof body[key] === 'string').map(key => [key, body[key]]))
