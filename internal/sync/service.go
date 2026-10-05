@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
+	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
@@ -39,6 +41,8 @@ var (
 	errHardcoverTitleOnly     = errors.New("found by title/author only")
 	errAudibleImportAvailable = errors.New("audible import available")
 )
+
+const reasonRetryableHardcoverASINLookup = "Temporary Hardcover ASIN lookup failure; this item will be retried on the next sync."
 
 type editionBoundMutationError struct {
 	editionID string
@@ -160,14 +164,15 @@ type EditionActionRecord struct {
 // EditionActionData carries verified result details or a signed read-only
 // recovery capability. Persisted payloads are encrypted by the database layer.
 type EditionActionData struct {
-	AudibleIdentifier   string `json:"audible_identifier,omitempty"`
-	HardcoverBookID     string `json:"hardcover_book_id,omitempty"`
-	HardcoverEditionID  string `json:"hardcover_edition_id,omitempty"`
-	RecoveryToken       string `json:"recovery_token,omitempty"`
-	RecoveryExpiresAt   int64  `json:"recovery_expires_at,omitempty"`
-	ReadingFormatID     string `json:"reading_format_id,omitempty"`
-	HardcoverEditionURL string `json:"hardcover_edition_url,omitempty"`
-	Guidance            string `json:"guidance,omitempty"`
+	AudibleIdentifier   string                     `json:"audible_identifier,omitempty"`
+	AudnexusAudit       *state.AudnexusAuditRecord `json:"audnexus_audit,omitempty"`
+	HardcoverBookID     string                     `json:"hardcover_book_id,omitempty"`
+	HardcoverEditionID  string                     `json:"hardcover_edition_id,omitempty"`
+	RecoveryToken       string                     `json:"recovery_token,omitempty"`
+	RecoveryExpiresAt   int64                      `json:"recovery_expires_at,omitempty"`
+	ReadingFormatID     string                     `json:"reading_format_id,omitempty"`
+	HardcoverEditionURL string                     `json:"hardcover_edition_url,omitempty"`
+	Guidance            string                     `json:"guidance,omitempty"`
 }
 
 // EditionActionSubmittedBody preserves the user's edited create fields so a
@@ -473,6 +478,40 @@ func classifyBookLookupOutcome(err error) SyncOutcome {
 		return OutcomeNotFound
 	}
 	return OutcomeFailed
+}
+
+func bookLookupOutcomeReason(book models.AudiobookshelfBook, err error) string {
+	if retryableAudiobookASINLookup(book, err) {
+		return reasonRetryableHardcoverASINLookup
+	}
+	return err.Error()
+}
+
+func retryableAudiobookASINLookup(book models.AudiobookshelfBook, err error) bool {
+	if err == nil || book.ReadingFormat() != models.ReadingFormatAudiobook {
+		return false
+	}
+	if _, validASIN := audnex.CanonicalASIN(book.Media.Metadata.ASIN); !validASIN {
+		return false
+	}
+	if !errors.Is(err, errHardcoverLookupFailed) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var httpErr *hardcover.HTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.StatusCode == http.StatusRequestTimeout ||
+			httpErr.StatusCode == http.StatusTooManyRequests ||
+			(httpErr.StatusCode >= http.StatusInternalServerError && httpErr.StatusCode <= 599)
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) && networkErr.Timeout() {
+		return true
+	}
+	var operationErr *net.OpError
+	return errors.As(err, &operationErr)
 }
 
 // beginOutcomeRun starts a fresh, profile-local current-run partition. An
@@ -2657,10 +2696,11 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 		} else {
 			outcomeError = findErr
 			lookupOutcome := classifyBookLookupOutcome(findErr)
-			setOutcome(lookupOutcome, findErr.Error())
+			reason := bookLookupOutcomeReason(book, findErr)
+			setOutcome(lookupOutcome, reason)
 			// Publish the lookup result before mismatch enrichment so status
 			// readers observe the outcome and attention candidate atomically.
-			s.recordBookOutcomeWithMatchMethod(book, lookupOutcome, findErr.Error(), findErr, hcBook, matchMethod)
+			s.recordBookOutcomeWithMatchMethod(book, lookupOutcome, reason, findErr, hcBook, matchMethod)
 			bookLog.Warn("Book lookup did not produce a usable match", map[string]interface{}{
 				"error": findErr.Error(),
 			})
@@ -2919,11 +2959,12 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 		}
 		outcomeError = findErr
 		lookupOutcome := classifyBookLookupOutcome(findErr)
-		setOutcome(lookupOutcome, findErr.Error())
+		reason := bookLookupOutcomeReason(book, findErr)
+		setOutcome(lookupOutcome, reason)
 		// This is the second lookup after the initial match. Publish the
 		// conclusive or technical result before the synchronous mismatch
 		// enrichment below, which may wait on Audnex.
-		s.recordBookOutcomeWithMatchMethod(book, lookupOutcome, findErr.Error(), findErr, hcBook, matchMethod)
+		s.recordBookOutcomeWithMatchMethod(book, lookupOutcome, reason, findErr, hcBook, matchMethod)
 		errMsg := "error finding book in Hardcover"
 		bookLog.Error("Error finding book in Hardcover, skipping", map[string]interface{}{
 			"error": findErr,

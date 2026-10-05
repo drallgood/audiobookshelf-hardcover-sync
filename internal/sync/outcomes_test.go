@@ -2,14 +2,19 @@ package sync
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"net"
+	"net/http"
+	"net/url"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 	"github.com/stretchr/testify/assert"
@@ -753,6 +758,65 @@ func TestProcessBookKeepsValidASINLookupFailureRetryableWithoutTitleCandidate(t 
 	_, associated := svc.state.GetAssociation(absBook.ID)
 	assert.False(t, associated)
 	hc.AssertExpectations(t)
+}
+
+func TestTransientAudiobookASINLookupFailuresAreVisibleAndRetriedIncrementally(t *testing.T) {
+	tests := []struct {
+		name      string
+		lookupErr error
+		retryable bool
+	}{
+		{name: "rate limited", lookupErr: &hardcover.HTTPError{StatusCode: http.StatusTooManyRequests, Body: []byte("rate limited")}, retryable: true},
+		{name: "server unavailable", lookupErr: &hardcover.HTTPError{StatusCode: http.StatusServiceUnavailable, Body: []byte("unavailable")}, retryable: true},
+		{name: "request timeout", lookupErr: &hardcover.HTTPError{StatusCode: http.StatusRequestTimeout, Body: []byte("timeout")}, retryable: true},
+		{name: "network timeout", lookupErr: &url.Error{Op: "Post", URL: "https://hardcover.example", Err: &net.DNSError{Err: "timeout", IsTimeout: true}}, retryable: true},
+		{name: "connection refused", lookupErr: &url.Error{Op: "Post", URL: "https://hardcover.example", Err: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}}, retryable: true},
+		{name: "invalid transport configuration", lookupErr: &url.Error{Op: "Post", URL: "https://hardcover.example", Err: errors.New("unsupported protocol scheme")}},
+		{name: "certificate verification failure", lookupErr: &url.Error{Op: "Post", URL: "https://hardcover.example", Err: x509.UnknownAuthorityError{Cert: &x509.Certificate{}}}},
+		{name: "unauthorized", lookupErr: &hardcover.HTTPError{StatusCode: http.StatusUnauthorized, Body: []byte("unauthorized")}},
+		{name: "GraphQL validation failure", lookupErr: errors.New("GraphQL error: invalid query")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, hc := createTestService()
+			svc.config.Sync.Incremental = true
+			svc.config.Sync.ProcessUnreadBooks = true
+			svc.config.Sync.SyncOwned = false
+			book := createTestBook("retryable-asin-"+tt.name, "Source Title", "Source Author", "B0SOURCE12", "978-0-306-40615-7")
+			book.Progress.CurrentTime = 300
+			absBook := *toAudiobookshelfBook(book)
+			hc.On("SearchBookByASIN", mock.Anything, "B0SOURCE12").Return((*models.HardcoverBook)(nil), tt.lookupErr).Once()
+
+			require.NoError(t, svc.BatchProcessBooks(context.Background(), []models.AudiobookshelfBook{absBook}, &models.AudiobookshelfUserProgress{}))
+
+			record := recordedOutcome(svc, absBook.ID)
+			require.Equal(t, OutcomeFailed, record.Outcome, "temporary lookup errors remain technical failures")
+			require.Contains(t, record.Error, tt.lookupErr.Error())
+			require.Empty(t, record.HardcoverBookID)
+			require.Empty(t, svc.mismatchCollector.GetAll(), "an incomplete ASIN lookup must not publish a speculative candidate")
+			_, checkpointed := svc.state.GetBookState(absBook.ID)
+			require.False(t, checkpointed, "a failed lookup must not checkpoint this book")
+			_, associated := svc.state.GetAssociation(absBook.ID)
+			require.False(t, associated)
+			require.Equal(t, tt.retryable, record.Reason == reasonRetryableHardcoverASINLookup)
+			hc.AssertNotCalled(t, "SearchBooks", mock.Anything, mock.Anything, mock.Anything)
+			hc.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
+			hc.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
+
+			if tt.retryable {
+				require.Equal(t, reasonRetryableHardcoverASINLookup, record.Reason)
+				hc.On("SearchBookByASIN", mock.Anything, "B0SOURCE12").Return((*models.HardcoverBook)(nil), nil).Once()
+				require.NoError(t, svc.BatchProcessBooks(context.Background(), []models.AudiobookshelfBook{absBook}, &models.AudiobookshelfUserProgress{}))
+				hc.AssertNumberOfCalls(t, "SearchBookByASIN", 2)
+				require.Equal(t, OutcomeNeedsReview, recordedOutcome(svc, absBook.ID).Outcome)
+				require.Equal(t, mismatch.ReasonAudibleImportAvailable, recordedOutcome(svc, absBook.ID).Reason)
+				hc.AssertNotCalled(t, "SearchBooks", mock.Anything, mock.Anything, mock.Anything)
+				hc.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
+				hc.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
+			}
+			hc.AssertExpectations(t)
+		})
+	}
 }
 
 func TestProcessBookLookupMismatchExportsByReadingFormat(t *testing.T) {

@@ -485,8 +485,10 @@ components:
           description: >-
             Resolved Hardcover book title. Unanchored create and check-import
             may make one additional, time-limited book lookup when the result omits
-            its title. This is an informational display value; a failed title
-            lookup does not block saving the verified association.
+            its title, after the verified association has been saved and the
+            profile and state-file guards are released. This is an informational
+            display value; a failed title lookup does not block the verified
+            association.
         regional_external_id:
           type: string
           description: >-
@@ -496,6 +498,16 @@ components:
             from the Audiobookshelf source ASIN.
         metadata_preview:
           $ref: '#/components/schemas/AudiobookMetadataPreview'
+        warnings:
+          type: array
+          description: >-
+            Non-fatal import review warnings. `audnexus_title_differs` is
+            returned when the Audiobookshelf title differs from the exact
+            regional Audnexus title reread before an unanchored import; the
+            original normalized Audnexus comparison snapshot is saved with the
+            association and retained for recovery.
+          items:
+            $ref: '#/components/schemas/EditionDraftWarning'
         resync:
           $ref: '#/components/schemas/EditionResyncResult'
 
@@ -805,7 +817,7 @@ components:
       properties:
         code:
           type: string
-          enum: [missing_identifier, invalid_isbn, invalid_source_asin, date_unavailable, missing_author, language_defaults_to_english, published_date_unrecognized, published_date_ambiguous, unsupported_audnex_region, audnex_temporarily_unavailable, audnex_lookup_failed, audnex_date_unrecognized]
+          enum: [missing_identifier, invalid_isbn, invalid_source_asin, date_unavailable, missing_author, language_defaults_to_english, published_date_unrecognized, published_date_ambiguous, unsupported_audnex_region, audnex_temporarily_unavailable, audnex_lookup_failed, audnex_date_unrecognized, audnexus_title_differs]
           description: Current warning code identifying the source or draft issue. `invalid_source_asin` means a non-empty ASIN is not exactly 10 ASCII alphanumeric characters; it does not count toward eligibility, and audiobook region status is `not_applicable` when no corrected identifier is supplied. `invalid_isbn` covers unsupported ISBN shape and a bad checksum; a bad-checksum ISBN that has a supported shape remains eligible, with its validity flag false. Date warnings describe Audiobookshelf source metadata; a confirmed Audnexus release date can still replace the preview date. `published_date_ambiguous` means both month-first and day-first slash parsing succeed, so `publishedYear` is the Audiobookshelf fallback when available.
         message:
           type: string
@@ -1589,6 +1601,10 @@ paths:
         Hardcover ID. For an audiobook with a selected Hardcover book, it uses
         the Hardcover book ID recorded by the run; no book or author ID is
         accepted from the caller.
+        For `audible_import_available`, the exact regional Audnexus reread is
+        saved as an audit snapshot in the pre-write action journal and eventual
+        association. A mismatch between its title and the current
+        Audiobookshelf title is reported in `warnings` but does not block import.
         A valid source ASIN or supplied `audible_identifier` selects regional
         `upsert_book`, and a valid source ASIN blocks ISBN fallback if discovery
         or import fails. When the source ASIN is absent or malformed and no
@@ -1770,11 +1786,14 @@ paths:
         terminal regional import status or exact regional mapping, then
         revalidates the retained needs-review snapshot and freshly fetched
         Audiobookshelf source item while holding the profile and state-file
-        guards. It performs one read-only Hardcover import-status/mapping query
+        guards. It restores the original Audnexus audit snapshot from the
+        durable action journal into the saved association and warns if its title
+        differs from Audiobookshelf. It performs one read-only Hardcover import-status/mapping query
         and, only for a terminal result, an uncached edition readback that must
         match the resolved Hardcover book and audiobook format. When the resolved
         title is missing, an unanchored import may make one additional
-        `GetBookByID` read to populate the informational `hardcover_title`. A pending
+        `GetBookByID` read after saving the association and releasing its profile
+        and state-file guards to populate the informational `hardcover_title`. A pending
         result returns HTTP 503 with `outcome: unconfirmed` and the same recovery
         data; retry this check rather than submitting edition creation again. A
         confirmed result saves the local association and returns the ordinary

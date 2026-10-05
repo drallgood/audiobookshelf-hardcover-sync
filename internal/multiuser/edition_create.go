@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -323,7 +324,28 @@ func sameRecoveredEditionAssociation(existing, verified statepkg.Association) bo
 	verified.OwnershipVerifiedAt = 0
 	existing.OwnershipTokenFingerprint = ""
 	verified.OwnershipTokenFingerprint = ""
-	return existing == verified
+	existingAudit := existing.AudnexusAudit
+	verifiedAudit := verified.AudnexusAudit
+	existing.AudnexusAudit = nil
+	verified.AudnexusAudit = nil
+	return existing == verified && sameAudnexusAudit(existingAudit, verifiedAudit)
+}
+
+func sameAudnexusAudit(left, right *statepkg.AudnexusAuditRecord) bool {
+	if right == nil {
+		// A browser-held recovery token can outlive its cleared action journal.
+		// Such legacy/idempotent checks carry no audit snapshot, so preserve the
+		// already saved snapshot instead of treating the same match as a conflict.
+		return true
+	}
+	if left == nil {
+		return left == right
+	}
+	return left.ASIN == right.ASIN && left.Title == right.Title && left.Subtitle == right.Subtitle &&
+		slices.Equal(left.Authors, right.Authors) && slices.Equal(left.Narrators, right.Narrators) &&
+		slices.Equal(left.Series, right.Series) && left.SeriesPosition == right.SeriesPosition &&
+		left.Publisher == right.Publisher && left.ReleaseDate == right.ReleaseDate &&
+		left.RuntimeSeconds == right.RuntimeSeconds && left.Language == right.Language && left.CoverURL == right.CoverURL
 }
 
 // lockProfileGateContext waits for the shared profile gate while allowing an

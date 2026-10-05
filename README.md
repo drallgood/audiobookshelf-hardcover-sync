@@ -137,6 +137,11 @@ a match. Use **Report a problem on Hardcover** to open that edition and submit a
 new sync after the catalogue is corrected. A new sync can also find a mapping
 that appears after the final report.
 
+The create response warns when the exact regional Audnexus title confirmed
+before an unanchored import differs from the Audiobookshelf title. The
+confirmed Audnexus comparison snapshot is saved with the match and retained for
+read-only recovery.
+
 If an import submitted from the dialog cannot be confirmed, follow its recovery
 guidance:
 

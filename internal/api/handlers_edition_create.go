@@ -30,8 +30,8 @@ const (
 	editionCreateRequestTimeout  = 65 * time.Second
 	editionCreateMutationReserve = 35 * time.Second
 	editionImportCheckTimeout    = 25 * time.Second
-	// The display-title lookup after a verified unanchored import runs while the
-	// profile and state-file guards are held, so it has its own short budget.
+	// The optional display-title lookup after a verified import has its own
+	// short budget and runs after the profile and state-file guards are released.
 	defaultEditionTitleLookupTimeout = 5 * time.Second
 
 	editionMappingMissingGuidance = "Hardcover returned an edition, but its regional Audible mapping is missing. The match was not saved. Report the missing mapping on Hardcover, then sync again after it is corrected."
@@ -113,6 +113,7 @@ type editionCreateResponse struct {
 	HardcoverTitle     string                    `json:"hardcover_title,omitempty"`
 	RegionalExternalID string                    `json:"regional_external_id,omitempty"`
 	MetadataPreview    *audiobookMetadataPreview `json:"metadata_preview,omitempty"`
+	Warnings           []editionDraftWarning     `json:"warnings,omitempty"`
 	action             *sync.EditionActionRecord `json:"-"`
 	// Resync is present only when the request asked for one. A failed resync is
 	// reported here rather than failing the request, because the edition exists.
@@ -123,6 +124,9 @@ type editionCreateResponse struct {
 	// sourceItem is the verified Audiobookshelf item, kept for the optional
 	// resync so it does not need a second lookup.
 	sourceItem *models.AudiobookshelfBook
+	// lookupHardcoverTitleAfterSave defers an optional display lookup until the
+	// profile and state-file guards have been released.
+	lookupHardcoverTitleAfterSave bool
 	// recovery preserves the signed attempted-import identity for error
 	// responses only. It is never exposed on successful create responses.
 	recovery *editionRecoveryData `json:"-"`
@@ -189,13 +193,18 @@ func (h *Handler) CreateEditionFromDraft(w http.ResponseWriter, r *http.Request)
 			response.Resync = h.resyncCreatedEdition(ctx, profile, response.sourceItem, response.sourceEdition, syncState, statePath)
 		}
 	}
+	var profileForTitleLookup *database.ProfileWithTokens
 	err = h.multiUserService.CreateEditionWithAssociationAndResync(ctx, profileID, request.ABSItemID, func(profile *database.ProfileWithTokens) (statepkg.Association, error) {
+		profileForTitleLookup = profile
 		snapshot, record, snapshotErr := h.verifiedEditionCreateRecord(profileID, request.RunID, request.ABSItemID)
 		if snapshotErr != nil {
 			return statepkg.Association{}, snapshotErr
 		}
 		return h.createVerifiedEdition(ctx, profile, snapshot, record, request, &response)
 	}, resync)
+	if err == nil {
+		h.lookupImportedHardcoverTitleAfterSave(ctx, profileForTitleLookup, &response)
+	}
 	if err != nil {
 		h.log.Warn("Edition creation failed", map[string]interface{}{
 			"profile_id":  profileID,
@@ -254,7 +263,9 @@ func (h *Handler) CheckEditionImport(w http.ResponseWriter, r *http.Request) {
 	var response editionCreateResponse
 	var recovery *editionRecoveryData
 	var action *sync.EditionActionRecord
+	var profileForTitleLookup *database.ProfileWithTokens
 	err = h.multiUserService.RecoverEditionAssociation(ctx, profileID, request.ABSItemID, func(profile *database.ProfileWithTokens) (statepkg.Association, error) {
+		profileForTitleLookup = profile
 		_, record, sourceRecoveryTransition, snapshotErr := h.verifiedEditionRecoveryRecord(profileID, request.RunID, request.ABSItemID)
 		if snapshotErr != nil {
 			return statepkg.Association{}, snapshotErr
@@ -399,22 +410,27 @@ func (h *Handler) CheckEditionImport(w http.ResponseWriter, r *http.Request) {
 			if clientErr != nil {
 				return statepkg.Association{}, fmt.Errorf("%w: %v", errEditionImportUnconfirmed, clientErr)
 			}
+			if action != nil && action.Data != nil {
+				association.AudnexusAudit = cloneAudnexusAudit(action.Data.AudnexusAudit)
+			}
 		} else {
 			association = createEditionAssociation(item, record.HardcoverBookID, strconv.Itoa(result.EditionID), externalID,
 				correction, models.ReadingFormatAudiobook, "api_regional_recovered")
 		}
 		hardcoverTitle := strings.TrimSpace(result.BookTitle)
-		if unanchored && hardcoverTitle == "" {
-			hardcoverTitle = h.lookupImportedHardcoverTitle(ctx, client, result.BookID)
-		}
 		response = editionCreateResponse{
 			ABSItemID: item.ID, ReadingFormat: models.ReadingFormatAudiobook, Status: string(result.Status),
 			HardcoverBookID: strconv.Itoa(result.BookID), HardcoverEditionID: strconv.Itoa(result.EditionID), HardcoverTitle: hardcoverTitle,
 			RegionalExternalID: externalID, MetadataPreview: buildEditionSourceDraft(item, false).MetadataPreview,
-			sourceItem: item,
+			sourceItem:                    item,
+			Warnings:                      audnexusTitleWarnings(item, association.AudnexusAudit),
+			lookupHardcoverTitleAfterSave: unanchored && hardcoverTitle == "",
 		}
 		return association, nil
 	})
+	if err == nil {
+		h.lookupImportedHardcoverTitleAfterSave(ctx, profileForTitleLookup, &response)
+	}
 	if err != nil {
 		if errors.Is(err, errEditionRecoveryUnavailable) {
 			h.writeEditionCreateStructuredError(w, http.StatusConflict, editionRecoveryUnavailableGuidance, "edition_recovery_unavailable", editionOutcomeTransportUnknown, nil)
@@ -854,6 +870,10 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 			}
 		}
 	}
+	var audnexusAudit *statepkg.AudnexusAuditRecord
+	if unanchored {
+		audnexusAudit = audnexusAuditFromBook(regionalBook)
+	}
 
 	bookID := 0
 	if !unanchored {
@@ -891,6 +911,7 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 	response.action.Error = ""
 	response.action.ErrorCode = ""
 	response.action.Data = editionActionDataFromRecovery(response.recovery)
+	response.action.Data.AudnexusAudit = cloneAudnexusAudit(audnexusAudit)
 	if err := h.persistEditionAction(profile.Profile.ID, response.action, response); err != nil {
 		// The mutation has not been sent. Restore a definite safe-to-retry state
 		// in memory; the previously saved not_submitted record remains durable.
@@ -951,19 +972,19 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 		if err != nil {
 			return statepkg.Association{}, markEditionCreateRemoteOutcomeAmbiguous(err)
 		}
+		association.AudnexusAudit = cloneAudnexusAudit(audnexusAudit)
 	} else {
 		association = createEditionAssociation(item, record.HardcoverBookID, strconv.Itoa(result.EditionID), regionalID,
 			correction, models.ReadingFormatAudiobook, "api_regional_"+string(result.Status))
 	}
 	hardcoverTitle := strings.TrimSpace(result.BookTitle)
-	if unanchored && hardcoverTitle == "" {
-		hardcoverTitle = h.lookupImportedHardcoverTitle(ctx, client, result.BookID)
-	}
 	recovery := response.recovery
 	*response = editionCreateResponse{
 		ABSItemID: item.ID, ReadingFormat: models.ReadingFormatAudiobook, Status: string(result.Status),
 		HardcoverBookID: strconv.Itoa(result.BookID), HardcoverEditionID: strconv.Itoa(result.EditionID), HardcoverTitle: hardcoverTitle, RegionalExternalID: regionalID,
 		MetadataPreview: preview, recovery: recovery, sourceEdition: result.Edition, action: response.action,
+		Warnings:                      audnexusTitleWarnings(item, audnexusAudit),
+		lookupHardcoverTitleAfterSave: unanchored && hardcoverTitle == "",
 	}
 	response.action.Outcome = editionOutcomeCreated
 	response.action.HTTPStatus = http.StatusBadGateway
@@ -972,6 +993,7 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 	response.action.Data = editionActionDataFromRecovery(recovery)
 	response.action.Data.HardcoverBookID = strconv.Itoa(result.BookID)
 	response.action.Data.HardcoverEditionID = strconv.Itoa(result.EditionID)
+	response.action.Data.AudnexusAudit = cloneAudnexusAudit(audnexusAudit)
 	h.persistEditionActionBestEffort(profile.Profile.ID, response.action)
 	return association, nil
 }
@@ -999,6 +1021,67 @@ func (h *Handler) lookupImportedHardcoverTitle(ctx context.Context, client editi
 		return ""
 	}
 	return strings.TrimSpace(resolvedBook.Title)
+}
+
+func (h *Handler) lookupImportedHardcoverTitleAfterSave(ctx context.Context, profile *database.ProfileWithTokens, response *editionCreateResponse) {
+	if response == nil || !response.lookupHardcoverTitleAfterSave || profile == nil {
+		return
+	}
+	response.lookupHardcoverTitleAfterSave = false
+	client := h.editionCreateHardcoverClient(profile.Profile.ID, profile.HardcoverToken)
+	if client == nil {
+		return
+	}
+	bookID, err := strconv.Atoi(response.HardcoverBookID)
+	if err != nil || bookID <= 0 {
+		return
+	}
+	response.HardcoverTitle = h.lookupImportedHardcoverTitle(ctx, client, bookID)
+}
+
+func audnexusAuditFromBook(book *audnex.Book) *statepkg.AudnexusAuditRecord {
+	if book == nil {
+		return nil
+	}
+	record := edition.BuildAudnexusRecord(book)
+	return &statepkg.AudnexusAuditRecord{
+		ASIN: record.ASIN, Title: record.Title, Subtitle: record.Subtitle,
+		Authors: append([]string(nil), record.Authors...), Narrators: append([]string(nil), record.Narrators...),
+		Series: append([]string(nil), record.Series...), SeriesPosition: record.SeriesPosition,
+		Publisher: record.Publisher, ReleaseDate: record.ReleaseDate, RuntimeSeconds: record.RuntimeSeconds,
+		Language: record.Language, CoverURL: record.CoverURL,
+	}
+}
+
+func cloneAudnexusAudit(record *statepkg.AudnexusAuditRecord) *statepkg.AudnexusAuditRecord {
+	if record == nil {
+		return nil
+	}
+	clone := *record
+	clone.Authors = append([]string(nil), record.Authors...)
+	clone.Narrators = append([]string(nil), record.Narrators...)
+	clone.Series = append([]string(nil), record.Series...)
+	return &clone
+}
+
+func audnexusTitleWarnings(item *models.AudiobookshelfBook, record *statepkg.AudnexusAuditRecord) []editionDraftWarning {
+	if item == nil || record == nil {
+		return nil
+	}
+	audnexusRecord := edition.AudnexusRecord{
+		ASIN: record.ASIN, Title: record.Title, Subtitle: record.Subtitle,
+		Authors: append([]string(nil), record.Authors...), Narrators: append([]string(nil), record.Narrators...),
+		Series: append([]string(nil), record.Series...), SeriesPosition: record.SeriesPosition,
+		Publisher: record.Publisher, ReleaseDate: record.ReleaseDate, RuntimeSeconds: record.RuntimeSeconds,
+		Language: record.Language, CoverURL: record.CoverURL,
+	}
+	if edition.CompareAudnexus(item, audnexusRecord).Title != edition.AudnexusDiffers {
+		return nil
+	}
+	return []editionDraftWarning{{
+		Code:    "audnexus_title_differs",
+		Message: "The Audiobookshelf title differs from the exact regional Audnexus title confirmed for this import.",
+	}}
 }
 
 func parseSubmittedAudibleIdentifier(raw string) (string, string, error) {

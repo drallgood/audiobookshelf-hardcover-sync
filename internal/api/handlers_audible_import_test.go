@@ -16,6 +16,7 @@ import (
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audnex"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/database"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/edition"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
@@ -519,7 +520,10 @@ func TestCreateUnanchoredAudibleImportUsesConfirmedRegionAndPersistsAssociation(
 					getFn: func(_ context.Context, asin, region string) (*audnex.Book, error) {
 						exactReads++
 						gotASIN, gotRegion = asin, region
-						return &audnex.Book{ASIN: asin, Title: "Confirmed title", ReleaseDate: "2024-05-06"}, nil
+						return &audnex.Book{
+							ASIN: asin, Title: "Confirmed title", Authors: []interface{}{"Audnexus Author"},
+							SeriesPrimary: &audnex.Series{Name: "Audnexus Series", Position: "2"}, ReleaseDate: "2024-05-06",
+						}, nil
 					},
 					discoverFn: func(context.Context, string, string) (*audnex.Book, string, error) {
 						discoveryReads++
@@ -532,6 +536,15 @@ func TestCreateUnanchoredAudibleImportUsesConfirmedRegionAndPersistsAssociation(
 					bookFn: func(_ context.Context, id string) (*models.HardcoverBook, error) {
 						titleReads++
 						require.Equal(t, "73", id)
+						guardCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+						defer cancel()
+						guardErr := fixture.multiUserService.CreateEditionWithAssociation(guardCtx, "draft-profile", "title-lookup-guard-probe", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+							return statepkg.Association{
+								ABSItemID: "title-lookup-guard-probe", HardcoverBookID: "book-1", HardcoverEditionID: "edition-1",
+								ReadingFormat: models.ReadingFormatAudiobook, Provenance: "title_lookup_probe",
+							}, nil
+						})
+						require.NoError(t, guardErr, "another guarded profile/state operation must finish while the optional title lookup is active")
 						return &models.HardcoverBook{ID: id, Title: "Resolved Hardcover title"}, nil
 					},
 					importFn: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
@@ -560,11 +573,12 @@ func TestCreateUnanchoredAudibleImportUsesConfirmedRegionAndPersistsAssociation(
 			require.Equal(t, 1, titleReads)
 			var envelope struct {
 				Data struct {
-					Status             string `json:"status"`
-					HardcoverBookID    string `json:"hardcover_book_id"`
-					HardcoverEditionID string `json:"hardcover_edition_id"`
-					HardcoverTitle     string `json:"hardcover_title"`
-					RegionalExternalID string `json:"regional_external_id"`
+					Status             string                `json:"status"`
+					HardcoverBookID    string                `json:"hardcover_book_id"`
+					HardcoverEditionID string                `json:"hardcover_edition_id"`
+					HardcoverTitle     string                `json:"hardcover_title"`
+					RegionalExternalID string                `json:"regional_external_id"`
+					Warnings           []editionDraftWarning `json:"warnings"`
 				} `json:"data"`
 			}
 			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
@@ -573,6 +587,8 @@ func TestCreateUnanchoredAudibleImportUsesConfirmedRegionAndPersistsAssociation(
 			require.Equal(t, "84", envelope.Data.HardcoverEditionID)
 			require.Equal(t, "Resolved Hardcover title", envelope.Data.HardcoverTitle)
 			require.Equal(t, "B0OTHER123:ca", envelope.Data.RegionalExternalID)
+			require.Len(t, envelope.Data.Warnings, 1)
+			require.Equal(t, "audnexus_title_differs", envelope.Data.Warnings[0].Code)
 
 			stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
 			require.NoError(t, err)
@@ -586,6 +602,10 @@ func TestCreateUnanchoredAudibleImportUsesConfirmedRegionAndPersistsAssociation(
 			require.False(t, association.AudnexusConfirmedAt.IsZero())
 			require.Equal(t, "73", association.HardcoverBookID)
 			require.Equal(t, "84", association.HardcoverEditionID)
+			require.NotNil(t, association.AudnexusAudit)
+			require.Equal(t, "Confirmed title", association.AudnexusAudit.Title)
+			require.Equal(t, []string{"Audnexus Author"}, association.AudnexusAudit.Authors)
+			require.Equal(t, []string{"Audnexus Series"}, association.AudnexusAudit.Series)
 			_, journalExists, err := fixture.multiUserService.GetEditionAction("draft-profile", "run-audible-import", "abs-item-1")
 			require.NoError(t, err)
 			require.False(t, journalExists, "a saved association clears its run-scoped action journal")
@@ -910,7 +930,10 @@ func TestCheckUnanchoredAudibleImportRecoveryIsIdempotentWithoutResubmitting(t *
 			getFn: func(_ context.Context, asin, region string) (*audnex.Book, error) {
 				require.Equal(t, "B0OTHER123", asin)
 				require.Equal(t, "ca", region)
-				return &audnex.Book{ASIN: asin}, nil
+				return &audnex.Book{
+					ASIN: asin, Title: "Audnexus reviewed title", Authors: []interface{}{"Audnexus Author"},
+					SeriesPrimary: &audnex.Series{Name: "Audnexus Series", Position: "2"},
+				}, nil
 			},
 			discoverFn: func(context.Context, string, string) (*audnex.Book, string, error) {
 				t.Fatal("a confirmed Audible identifier must not repeat region discovery")
@@ -968,6 +991,10 @@ func TestCheckUnanchoredAudibleImportRecoveryIsIdempotentWithoutResubmitting(t *
 	storedAction, found, err := fixture.multiUserService.GetEditionAction("draft-profile", "run-audible-import", "abs-item-1")
 	require.NoError(t, err)
 	require.True(t, found)
+	require.NotNil(t, storedAction.Data.AudnexusAudit)
+	require.Equal(t, "Audnexus reviewed title", storedAction.Data.AudnexusAudit.Title)
+	require.Equal(t, []string{"Audnexus Author"}, storedAction.Data.AudnexusAudit.Authors)
+	require.Equal(t, []string{"Audnexus Series"}, storedAction.Data.AudnexusAudit.Series)
 	storedAction.Data.RecoveryToken = legacyToken
 	require.NoError(t, fixture.multiUserService.SaveEditionAction("draft-profile", "run-audible-import", "abs-item-1", *storedAction))
 
@@ -1001,15 +1028,18 @@ func TestCheckUnanchoredAudibleImportRecoveryIsIdempotentWithoutResubmitting(t *
 	require.Equal(t, 1, mutations, "status recovery must never resubmit the Hardcover mutation")
 	var checkEnvelope struct {
 		Data struct {
-			HardcoverBookID    string `json:"hardcover_book_id"`
-			HardcoverEditionID string `json:"hardcover_edition_id"`
-			HardcoverTitle     string `json:"hardcover_title"`
+			HardcoverBookID    string                `json:"hardcover_book_id"`
+			HardcoverEditionID string                `json:"hardcover_edition_id"`
+			HardcoverTitle     string                `json:"hardcover_title"`
+			Warnings           []editionDraftWarning `json:"warnings"`
 		} `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(checked.Body.Bytes(), &checkEnvelope))
 	require.Equal(t, "73", checkEnvelope.Data.HardcoverBookID)
 	require.Equal(t, "84", checkEnvelope.Data.HardcoverEditionID)
 	require.Equal(t, "Imported Hardcover title", checkEnvelope.Data.HardcoverTitle)
+	require.Len(t, checkEnvelope.Data.Warnings, 1)
+	require.Equal(t, "audnexus_title_differs", checkEnvelope.Data.Warnings[0].Code)
 	stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
 	require.NoError(t, err)
 	association, exists := stored.GetAssociation("abs-item-1")
@@ -1020,6 +1050,10 @@ func TestCheckUnanchoredAudibleImportRecoveryIsIdempotentWithoutResubmitting(t *
 	require.Equal(t, "B0OTHER123:ca", association.Correction)
 	require.Equal(t, "73", association.HardcoverBookID)
 	require.Equal(t, "84", association.HardcoverEditionID)
+	require.NotNil(t, association.AudnexusAudit)
+	require.Equal(t, "Audnexus reviewed title", association.AudnexusAudit.Title)
+	require.Equal(t, []string{"Audnexus Author"}, association.AudnexusAudit.Authors)
+	require.Equal(t, []string{"Audnexus Series"}, association.AudnexusAudit.Series)
 	confirmedAt := association.AudnexusConfirmedAt
 	require.Equal(t, time.Unix(legacyClaims.IssuedAt, 0).UTC(), confirmedAt,
 		"recovered provenance must use the original signed Audnexus confirmation time")

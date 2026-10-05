@@ -258,6 +258,40 @@ func TestAssociationAudnexusConfirmedAtOmitsZeroAndPersistsConfirmation(t *testi
 	assert.Equal(t, confirmedAt, confirmed.AudnexusConfirmedAt)
 }
 
+func TestAssociationAudnexusAuditSnapshotPersistsAndReturnsIndependentSlices(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "state.json")
+	state := NewState()
+	audit := &AudnexusAuditRecord{
+		ASIN: "B012345678", Title: "Reviewed title", Authors: []string{"Reviewed author"},
+		Series: []string{"Reviewed series"},
+	}
+	require.NoError(t, state.SetAssociation(Association{
+		ABSItemID: "item-audited", HardcoverBookID: "42", HardcoverEditionID: "84",
+		ReadingFormat: "audiobook", AudnexusAudit: audit,
+	}))
+	audit.Authors[0] = "caller mutated input"
+
+	stored, ok := state.GetAssociation("item-audited")
+	require.True(t, ok)
+	assert.Equal(t, "Reviewed author", stored.AudnexusAudit.Authors[0])
+	stored.AudnexusAudit.Authors[0] = "caller mutated result"
+	storedAgain, ok := state.GetAssociation("item-audited")
+	require.True(t, ok)
+	assert.Equal(t, "Reviewed author", storedAgain.AudnexusAudit.Authors[0])
+
+	require.NoError(t, state.Save(path))
+	reloaded, err := LoadState(path)
+	require.NoError(t, err)
+	reloadedAssociation, ok := reloaded.GetAssociation("item-audited")
+	require.True(t, ok)
+	assert.Equal(t, "B012345678", reloadedAssociation.AudnexusAudit.ASIN)
+	assert.Equal(t, "Reviewed title", reloadedAssociation.AudnexusAudit.Title)
+	assert.Equal(t, []string{"Reviewed author"}, reloadedAssociation.AudnexusAudit.Authors)
+	assert.Equal(t, []string{"Reviewed series"}, reloadedAssociation.AudnexusAudit.Series)
+}
+
 func mustGetAssociation(t *testing.T, state *State, itemID string) Association {
 	t.Helper()
 	association, ok := state.GetAssociation(itemID)
