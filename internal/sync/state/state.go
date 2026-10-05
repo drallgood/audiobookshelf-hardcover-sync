@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -122,18 +123,19 @@ type Book struct {
 // Hardcover book and edition. It is stored with that item's checkpoint so a
 // checkpoint cannot persist independently from its association.
 type Association struct {
-	ABSItemID               string    `json:"absItemId"`
-	SourceASIN              string    `json:"sourceAsin,omitempty"`
-	SourceISBN10            string    `json:"sourceIsbn10,omitempty"`
-	SourceISBN13            string    `json:"sourceIsbn13,omitempty"`
-	Correction              string    `json:"correction,omitempty"`
-	RegionalExternalID      string    `json:"regionalExternalId,omitempty"`
-	AudnexusConfirmedRegion string    `json:"audnexusConfirmedRegion,omitempty"`
-	AudnexusConfirmedAt     time.Time `json:"audnexusConfirmedAt,omitzero"`
-	HardcoverBookID         string    `json:"hardcoverBookId"`
-	HardcoverEditionID      string    `json:"hardcoverEditionId"`
-	ReadingFormat           string    `json:"readingFormat"`
-	Provenance              string    `json:"provenance"`
+	ABSItemID               string               `json:"absItemId"`
+	SourceASIN              string               `json:"sourceAsin,omitempty"`
+	SourceISBN10            string               `json:"sourceIsbn10,omitempty"`
+	SourceISBN13            string               `json:"sourceIsbn13,omitempty"`
+	Correction              string               `json:"correction,omitempty"`
+	RegionalExternalID      string               `json:"regionalExternalId,omitempty"`
+	AudnexusConfirmedRegion string               `json:"audnexusConfirmedRegion,omitempty"`
+	AudnexusConfirmedAt     time.Time            `json:"audnexusConfirmedAt,omitzero"`
+	AudnexusAudit           *AudnexusAuditRecord `json:"audnexusAudit,omitempty"`
+	HardcoverBookID         string               `json:"hardcoverBookId"`
+	HardcoverEditionID      string               `json:"hardcoverEditionId"`
+	ReadingFormat           string               `json:"readingFormat"`
+	Provenance              string               `json:"provenance"`
 	// OwnershipVerifiedAt is the Unix time Hardcover's Owned list was last
 	// confirmed to include this book and edition. It lets the next syncs skip the
 	// ownership request, and is dropped with the association when it is replaced
@@ -142,6 +144,25 @@ type Association struct {
 	// OwnershipTokenFingerprint scopes a confirmation to the Hardcover account
 	// that produced it. It stores a SHA-256 fingerprint, never the raw token.
 	OwnershipTokenFingerprint string `json:"ownershipTokenFingerprint,omitempty"`
+}
+
+// AudnexusAuditRecord preserves the normalized source fields shown for review
+// when an unanchored Audible import is submitted. Keeping this snapshot with a
+// pending action and its eventual association makes recovery auditable without
+// replacing the original review with a later Audnexus response.
+type AudnexusAuditRecord struct {
+	ASIN           string   `json:"asin,omitempty"`
+	Title          string   `json:"title,omitempty"`
+	Subtitle       string   `json:"subtitle,omitempty"`
+	Authors        []string `json:"authors,omitempty"`
+	Narrators      []string `json:"narrators,omitempty"`
+	Series         []string `json:"series,omitempty"`
+	SeriesPosition string   `json:"series_position,omitempty"`
+	Publisher      string   `json:"publisher,omitempty"`
+	ReleaseDate    string   `json:"release_date,omitempty"`
+	RuntimeSeconds int      `json:"runtime_seconds,omitempty"`
+	Language       string   `json:"language,omitempty"`
+	CoverURL       string   `json:"cover_url,omitempty"`
 }
 
 // NewAudibleImportAssociation creates the durable match recorded after a
@@ -338,6 +359,7 @@ func (s *State) SetAssociation(association Association) error {
 	if strings.TrimSpace(association.HardcoverBookID) == "" || strings.TrimSpace(association.HardcoverEditionID) == "" {
 		return fmt.Errorf("association Hardcover book and edition IDs are required")
 	}
+	association.AudnexusAudit = cloneAudnexusAuditRecord(association.AudnexusAudit)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -350,10 +372,10 @@ func (s *State) SetAssociation(association Association) error {
 		previous.OwnershipVerifiedAt = association.OwnershipVerifiedAt
 		previous.OwnershipTokenFingerprint = association.OwnershipTokenFingerprint
 		previous.Provenance = association.Provenance
-		if previous == association {
+		if sameAssociation(previous, association) {
 			association.OwnershipVerifiedAt = book.Association.OwnershipVerifiedAt
 			association.OwnershipTokenFingerprint = book.Association.OwnershipTokenFingerprint
-			if *book.Association == association {
+			if sameAssociation(*book.Association, association) {
 				return nil
 			}
 		}
@@ -373,7 +395,37 @@ func (s *State) GetAssociation(itemID string) (Association, bool) {
 	if !exists || book.Association == nil {
 		return Association{}, false
 	}
-	return *book.Association, true
+	association := *book.Association
+	association.AudnexusAudit = cloneAudnexusAuditRecord(association.AudnexusAudit)
+	return association, true
+}
+
+func sameAssociation(left, right Association) bool {
+	leftAudit, rightAudit := left.AudnexusAudit, right.AudnexusAudit
+	left.AudnexusAudit, right.AudnexusAudit = nil, nil
+	return left == right && sameAudnexusAuditRecord(leftAudit, rightAudit)
+}
+
+func sameAudnexusAuditRecord(left, right *AudnexusAuditRecord) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return left.ASIN == right.ASIN && left.Title == right.Title && left.Subtitle == right.Subtitle &&
+		slices.Equal(left.Authors, right.Authors) && slices.Equal(left.Narrators, right.Narrators) &&
+		slices.Equal(left.Series, right.Series) && left.SeriesPosition == right.SeriesPosition &&
+		left.Publisher == right.Publisher && left.ReleaseDate == right.ReleaseDate &&
+		left.RuntimeSeconds == right.RuntimeSeconds && left.Language == right.Language && left.CoverURL == right.CoverURL
+}
+
+func cloneAudnexusAuditRecord(record *AudnexusAuditRecord) *AudnexusAuditRecord {
+	if record == nil {
+		return nil
+	}
+	clone := *record
+	clone.Authors = append([]string(nil), record.Authors...)
+	clone.Narrators = append([]string(nil), record.Narrators...)
+	clone.Series = append([]string(nil), record.Series...)
+	return &clone
 }
 
 // RecordOwnershipVerified remembers that the Hardcover account identified by

@@ -194,6 +194,9 @@ func TestRecoverUnanchoredAudibleAssociationIsIdempotentAcrossConfirmationTimes(
 		RegionalExternalID: "B0OTHER123:uk", AudnexusConfirmedRegion: "uk", AudnexusConfirmedAt: confirmedAt,
 		HardcoverBookID: "73", HardcoverEditionID: "84", ReadingFormat: "audiobook",
 		Provenance: "audible_import_unanchored",
+		AudnexusAudit: &statepkg.AudnexusAuditRecord{
+			ASIN: "B0OTHER123", Title: "Original Audnexus title", Authors: []string{"Original author"},
+		},
 	}
 	require.NoError(t, service.CreateEditionWithAssociation(context.Background(), profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
 		return original, nil
@@ -211,6 +214,21 @@ func TestRecoverUnanchoredAudibleAssociationIsIdempotentAcrossConfirmationTimes(
 	association, exists := stored.GetAssociation("item-1")
 	require.True(t, exists)
 	require.Equal(t, original, association, "idempotent recovery preserves the first confirmed timestamp and provenance")
+
+	changedAudit := verifiedAgain
+	changedAudit.AudnexusAudit = &statepkg.AudnexusAuditRecord{
+		ASIN: "B0OTHER123", Title: "Different Audnexus title", Authors: []string{"Original author"},
+	}
+	err = service.RecoverEditionAssociation(context.Background(), profileID, "item-1", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+		return changedAudit, nil
+	})
+	require.ErrorIs(t, err, ErrEditionAssociationAlreadyExists, "a different saved audit snapshot is not the same recovered association")
+
+	stored, err = statepkg.LoadState(service.profileSpecificStatePath(profileID, "sync.json"))
+	require.NoError(t, err)
+	association, exists = stored.GetAssociation("item-1")
+	require.True(t, exists)
+	require.Equal(t, original, association, "a recovery with a different audit snapshot cannot replace the original")
 }
 
 func TestCreateEditionWithAssociationDistinguishesLocalSaveFailureAfterRemoteSuccess(t *testing.T) {

@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audiobookshelf"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/audnex"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/audnexregion"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/edition"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/isbn"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 )
@@ -19,6 +21,7 @@ import (
 const defaultEditionDraftRequestTimeout = 25 * time.Second
 
 type editionDraftAudnexDiscoverer interface {
+	GetBookByASIN(ctx context.Context, asin, region string) (*audnex.Book, error)
 	DiscoverBookByASIN(ctx context.Context, asin, preferredRegion string) (*audnex.Book, string, error)
 }
 
@@ -33,7 +36,10 @@ type editionDraftResponse struct {
 	ConfirmedRegion            string                      `json:"confirmed_region,omitempty"`
 	AudibleIdentifierCandidate *audibleIdentifierCandidate `json:"audible_identifier_candidate,omitempty"`
 	MetadataPreview            *audiobookMetadataPreview   `json:"metadata_preview,omitempty"`
+	SourceMetadataPreview      *audiobookMetadataPreview   `json:"source_metadata_preview,omitempty"`
 	AudnexusDetails            *audnexusDetails            `json:"audnexus_details,omitempty"`
+	AudnexusRecord             *edition.AudnexusRecord     `json:"audnexus_record,omitempty"`
+	AudnexusComparison         *edition.AudnexusComparison `json:"audnexus_comparison,omitempty"`
 	EbookCandidate             *ebookEditionCandidate      `json:"ebook_candidate,omitempty"`
 	Warnings                   []editionDraftWarning       `json:"warnings,omitempty"`
 }
@@ -68,6 +74,9 @@ type audiobookMetadataPreview struct {
 	EditionFormat      string `json:"edition_format,omitempty"`
 	EditionInformation string `json:"edition_information"`
 	AudioSeconds       int    `json:"audio_seconds"`
+	Series             string `json:"series,omitempty"`
+	SeriesPosition     string `json:"series_position,omitempty"`
+	CoverURL           string `json:"cover_url,omitempty"`
 	editionDraftISBNFields
 }
 
@@ -167,57 +176,117 @@ func (h *Handler) GetEditionSourceDraft(w http.ResponseWriter, r *http.Request) 
 	}
 
 	draft := buildEditionSourceDraft(book, profile.SyncConfig.DryRun)
-	if !book.IsEbook() && draft.SourceIdentifiers.ASIN != "" {
-		lookupASIN, validASIN := audnex.CanonicalASIN(draft.SourceIdentifiers.ASIN)
-		if !validASIN {
-			draft.RegionStatus = "not_applicable"
-		} else {
+	correctedIdentifier := strings.TrimSpace(r.URL.Query().Get("audible_identifier"))
+	if book.IsEbook() && correctedIdentifier != "" {
+		h.writeErrorResponse(w, http.StatusBadRequest, "audible_identifier is only valid for an audiobook")
+		return
+	}
+	if !book.IsEbook() {
+		if correctedIdentifier != "" {
+			asin, region, parseErr := parseSubmittedAudibleIdentifier(correctedIdentifier)
+			if parseErr != nil {
+				h.writeErrorResponse(w, http.StatusBadRequest, parseErr.Error())
+				return
+			}
+			draft.AudibleIdentifierCandidate.ASIN = asin
+			draft.AudibleIdentifierCandidate.Region = region
+			draft.lookupAudnexusRecord(r.Context(), parentCtx, h, editionDraftAudnexClient(h), book, asin, region, true)
+		} else if lookupASIN, validASIN := audnex.CanonicalASIN(draft.SourceIdentifiers.ASIN); validASIN {
 			preference := h.multiUserService.ProfileAudnexusRegion(profile.SyncConfig)
 			preferredRegion, supported := supportedAudnexPreference(preference)
 			if strings.TrimSpace(preference) != "" && !supported {
 				draft.addWarning("unsupported_audnex_region", "The saved Audnexus region is unsupported; region discovery is using US.", false)
 			}
-			var discovery editionDraftAudnexDiscoverer = audnex.NewClient(&h.log)
-			if h.editionDraftAudnexClientFactory != nil {
-				discovery = h.editionDraftAudnexClientFactory()
-			}
-			found, region, discoverErr := discovery.DiscoverBookByASIN(r.Context(), lookupASIN, preferredRegion)
-			if parentCtx.Err() != nil {
-				return
-			}
-			returnedASIN, validReturnedASIN := "", false
-			if found != nil {
-				returnedASIN, validReturnedASIN = audnex.CanonicalASIN(found.ASIN)
-			}
-			switch {
-			case errors.Is(discoverErr, context.DeadlineExceeded), errors.Is(discoverErr, audnex.ErrRateLimited), errors.Is(discoverErr, audnex.ErrTransient):
-				draft.RegionStatus = "temporarily_unavailable"
-				draft.addWarning("audnex_temporarily_unavailable", "Audnexus region discovery is temporarily unavailable. Retry to check the source ASIN.", true)
-			case discoverErr != nil:
-				h.log.Error("Failed to discover Audnexus region for edition source draft: " + discoverErr.Error())
-				h.writeErrorResponse(w, http.StatusBadGateway, "Failed to retrieve Audnexus source metadata")
-				return
-			case validReturnedASIN && returnedASIN == lookupASIN && audnexregion.IsRegion(region):
-				draft.RegionStatus = "confirmed"
-				draft.ConfirmedRegion = region
-				draft.AudibleIdentifierCandidate.Region = region
-				draft.AudnexusDetails = buildAudnexusDetails(found)
-				if found.ReleaseDate != "" {
-					if draft.AudnexusDetails.ReleaseDate != "" {
-						draft.MetadataPreview.ReleaseDate = draft.AudnexusDetails.ReleaseDate
-					} else {
-						draft.addWarning("audnex_date_unrecognized", "Audnexus returned a release date that could not be normalized; the Audiobookshelf date is shown instead.", false)
-					}
-				}
-			default:
-				draft.RegionStatus = "unknown"
-			}
+			draft.lookupAudnexusRecord(r.Context(), parentCtx, h, editionDraftAudnexClient(h), book, lookupASIN, preferredRegion, false)
+		} else {
+			draft.RegionStatus = "not_applicable"
 		}
-	} else if !book.IsEbook() {
-		draft.RegionStatus = "not_applicable"
+	}
+	if parentCtx.Err() != nil {
+		return
+	}
+	if !book.IsEbook() && draft.MetadataPreview != nil {
+		coverURL := audiobookshelfDraftCoverURL(profile.AudiobookshelfURL, book.ID)
+		draft.MetadataPreview.CoverURL = coverURL
+		if draft.SourceMetadataPreview != nil {
+			draft.SourceMetadataPreview.CoverURL = coverURL
+		}
 	}
 
 	h.writeSuccessResponse(w, draft)
+}
+
+func editionDraftAudnexClient(h *Handler) editionDraftAudnexDiscoverer {
+	if h.editionDraftAudnexClientFactory != nil {
+		return h.editionDraftAudnexClientFactory()
+	}
+	return audnex.NewClient(&h.log)
+}
+
+func audiobookshelfDraftCoverURL(baseURL, itemID string) string {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || itemID == "" {
+		return ""
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/api/items/" + url.PathEscape(itemID) + "/cover"
+	parsed.RawPath = ""
+	return parsed.String()
+}
+
+func (draft *editionDraftResponse) lookupAudnexusRecord(ctx, parentCtx context.Context, h *Handler, client editionDraftAudnexDiscoverer, abs *models.AudiobookshelfBook, asin, region string, exactRegion bool) {
+	var found *audnex.Book
+	confirmedRegion := region
+	var err error
+	if exactRegion {
+		found, err = client.GetBookByASIN(ctx, asin, region)
+	} else {
+		found, confirmedRegion, err = client.DiscoverBookByASIN(ctx, asin, region)
+	}
+	if parentCtx.Err() != nil {
+		return
+	}
+	returnedASIN, validReturnedASIN := "", false
+	if found != nil {
+		returnedASIN, validReturnedASIN = audnex.CanonicalASIN(found.ASIN)
+	}
+	switch {
+	case errors.Is(err, audnex.ErrNotFound):
+		draft.RegionStatus = "unknown"
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, audnex.ErrRateLimited), errors.Is(err, audnex.ErrTransient):
+		draft.RegionStatus = "temporarily_unavailable"
+		draft.addWarning("audnex_temporarily_unavailable", "Audnexus lookup is temporarily unavailable. Retry to check the regional Audible identifier.", true)
+	case err != nil:
+		h.log.Error("Failed to retrieve Audnexus record for edition source draft: " + err.Error())
+		draft.RegionStatus = "unknown"
+		draft.addWarning("audnex_lookup_failed", "Audnexus did not confirm this regional Audible identifier.", false)
+	case validReturnedASIN && returnedASIN == asin && audnexregion.IsRegion(strings.ToLower(strings.TrimSpace(confirmedRegion))):
+		confirmedRegion = strings.ToLower(strings.TrimSpace(confirmedRegion))
+		draft.RegionStatus = "confirmed"
+		draft.ConfirmedRegion = confirmedRegion
+		if draft.AudibleIdentifierCandidate != nil {
+			if exactRegion {
+				draft.AudibleIdentifierCandidate.ASIN = asin
+			}
+			draft.AudibleIdentifierCandidate.Region = confirmedRegion
+		}
+		draft.AudnexusDetails = buildAudnexusDetails(found)
+		record := edition.BuildAudnexusRecord(found)
+		if strings.TrimSpace(found.ReleaseDate) != "" {
+			if draft.AudnexusDetails.ReleaseDate != "" {
+				draft.MetadataPreview.ReleaseDate = draft.AudnexusDetails.ReleaseDate
+			} else {
+				draft.addWarning("audnex_date_unrecognized", "Audnexus returned a release date that could not be normalized; the Audiobookshelf date is shown instead.", false)
+			}
+		}
+		draft.AudnexusRecord = &record
+		comparison := edition.CompareAudnexus(abs, record)
+		draft.AudnexusComparison = &comparison
+	default:
+		draft.RegionStatus = "unknown"
+	}
 }
 
 func buildAudnexusDetails(book *audnex.Book) *audnexusDetails {
@@ -227,7 +296,7 @@ func buildAudnexusDetails(book *audnex.Book) *audnexusDetails {
 		Narrator:   joinAudnexNames(book.GetNarratorsAsStrings()),
 		FormatType: strings.TrimSpace(book.FormatType),
 	}
-	if releaseDate, ok := normalizeDraftDate(book.ReleaseDate); ok {
+	if releaseDate, ok := edition.NormalizeAudnexusDate(book.ReleaseDate); ok {
 		details.ReleaseDate = releaseDate
 	}
 	return details
@@ -260,7 +329,9 @@ func buildEditionSourceDraft(book *models.AudiobookshelfBook, dryRun bool) *edit
 		Eligible:          usableASIN || isbnOK,
 		SourceIdentifiers: identifiers,
 	}
+	series, position := "", ""
 	if !book.IsEbook() {
+		series, position = edition.AudiobookshelfSeriesFields(metadata)
 		draft.AudibleIdentifierCandidate = &audibleIdentifierCandidate{
 			ASIN: asin, CorrectionAllowed: true,
 		}
@@ -287,7 +358,7 @@ func buildEditionSourceDraft(book *models.AudiobookshelfBook, dryRun bool) *edit
 	if strings.TrimSpace(metadata.PublishedDate) != "" {
 		if isAmbiguousSlashDate(metadata.PublishedDate) {
 			draft.addWarning("published_date_ambiguous", "Audiobookshelf publication date is ambiguous; its published year is the fallback when available.", false)
-		} else if _, ok := normalizeDraftDate(metadata.PublishedDate); !ok {
+		} else if _, ok := edition.NormalizeAudnexusDate(metadata.PublishedDate); !ok {
 			draft.addWarning("published_date_unrecognized", "Audiobookshelf publication date could not be normalized; its published year is the fallback when available.", false)
 		}
 	}
@@ -329,7 +400,11 @@ func buildEditionSourceDraft(book *models.AudiobookshelfBook, dryRun bool) *edit
 		Language: strings.TrimSpace(metadata.Language), ReleaseDate: date,
 		EditionFormat: editionFormat, EditionInformation: editionInformation,
 		AudioSeconds: seconds, editionDraftISBNFields: isbnFields,
+		Series: series, SeriesPosition: position,
 	}
+	sourceMetadataPreview := *draft.MetadataPreview
+	sourceMetadataPreview.ReleaseDate = sourceDraftDate(metadata.PublishedDate, metadata.PublishedYear)
+	draft.SourceMetadataPreview = &sourceMetadataPreview
 	return draft
 }
 
@@ -366,37 +441,17 @@ func hasInvalidISBNChecksum(fields editionDraftISBNFields) bool {
 }
 
 func fallbackDraftDate(publishedDate, publishedYear string) (string, bool) {
-	if date, ok := normalizeDraftDate(publishedDate); ok {
+	if date, ok := edition.NormalizeAudnexusDate(publishedDate); ok {
 		return date, true
 	}
-	return normalizeDraftDate(publishedYear)
+	return edition.NormalizeAudnexusDate(publishedYear)
 }
 
-func normalizeDraftDate(raw string) (string, bool) {
-	value := strings.TrimSpace(raw)
-	if value == "" {
-		return "", false
+func sourceDraftDate(publishedDate, publishedYear string) string {
+	if value := strings.TrimSpace(publishedDate); value != "" {
+		return value
 	}
-	if isAmbiguousSlashDate(value) {
-		return "", false
-	}
-	if len(value) == 4 {
-		if _, err := time.Parse("2006", value); err == nil {
-			return value + "-01-01", true
-		}
-	}
-	layouts := []string{
-		"2006-01-02", time.RFC3339, "2006-01-02T15:04:05.000Z07:00",
-		"2006-01-02 15:04:05", "2006/01/02", "01/02/2006", "02/01/2006",
-		"Jan 2, 2006", "January 2, 2006", "2 Jan 2006", "2 January 2006",
-		"2006-01", "January 2006", "Jan 2006",
-	}
-	for _, layout := range layouts {
-		if parsed, err := time.Parse(layout, value); err == nil {
-			return parsed.Format("2006-01-02"), true
-		}
-	}
-	return "", false
+	return strings.TrimSpace(publishedYear)
 }
 
 func isAmbiguousSlashDate(raw string) bool {
