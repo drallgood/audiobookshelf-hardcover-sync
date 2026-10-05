@@ -435,6 +435,37 @@ const needsReview = {
     asin: 'B00ABC1234', hardcover_book_id: '42'
 };
 
+const audibleImportRecord = {
+    book_id: 'li_asin', outcome: 'needs_review', reason: 'audible_import_available',
+    title: 'ABS title', author: 'ABS author', asin: 'B00ABC1234', format: 'audiobook'
+};
+
+function confirmedAudibleDraft(overrides = {}) {
+    return {
+        abs_item_id: 'li_asin', reading_format: 'audiobook', eligible: true, dry_run: false,
+        region_status: 'confirmed', confirmed_region: 'uk',
+        source_identifiers: { asin: 'B00ABC1234' },
+        audible_identifier_candidate: { asin: 'B00ABC1234', region: 'uk', correction_allowed: true },
+        metadata_preview: {
+            title: 'ABS title', subtitle: 'ABS subtitle', author: 'ABS author', narrator: 'ABS narrator',
+            series: 'ABS series', series_position: '1', publisher: 'ABS publisher', release_date: '2024-01-01',
+            audio_seconds: 3600, language: 'English', cover_url: 'https://abs.example/cover'
+        },
+        audnexus_record: {
+            asin: 'B00ABC1234', title: 'Audnexus title', subtitle: 'Audnexus subtitle', authors: ['Audnexus author'],
+            narrators: ['Audnexus narrator'], series: ['Audnexus series'], series_position: '2',
+            publisher: 'Audnexus publisher', release_date: '2024-02-01', runtime_seconds: 3660,
+            language: 'English', cover_url: 'https://audnexus.example/cover'
+        },
+        audnexus_comparison: {
+            title: 'differs', subtitle: 'match', authors: 'differs', narrators: 'match', series: 'differs',
+            series_position: 'differs', publisher: 'differs', release_date: 'differs', runtime: 'differs',
+            language: 'match', cover_url: 'differs'
+        },
+        ...overrides
+    };
+}
+
 function validCreateResult(overrides = {}) {
     return {
         abs_item_id: 'li_1', reading_format: 'audiobook', status: 'created',
@@ -925,6 +956,281 @@ test('the Add edition button renders inside the Hardcover candidate region', () 
     assert.match(candidate, /data-edition-action="add"/, 'Add edition action should belong to the candidate region');
 });
 
+test('an Audible import row reuses the Add edition pill without a Hardcover candidate', () => {
+    const app = editionApp();
+    const record = { ...audibleImportRecord };
+    app.openSummary.records.set(record.book_id, record);
+    const html = app.renderOutcomeRecord(record);
+    assert.equal(app.editionCreateIneligibleReason(record, app.openSummary.runContext), null);
+    assert.match(html, /data-edition-action="add"/);
+    assert.match(html, /book-service-link edition-action-pill/);
+    assert.doesNotMatch(html, /Hardcover candidate|hardcover-candidate/);
+    assert.doesNotMatch(html, /<strong>Hardcover:<\/strong>/);
+});
+
+for (const runState of ['completed', 'canceled']) {
+    test(`an unmatched Audible ASIN audiobook can be previewed from a ${runState} run`, async t => {
+        const record = {
+            book_id: '23aefd9f-3f65-4fb1-9c19-8918919fcc09',
+            outcome: 'needs_review',
+            reason: 'audible_import_available',
+            match_method: 'audible_asin',
+            title: "The Magician's Land",
+            author: 'Lev Grossman',
+            asin: 'B00K8F87C0',
+            format: 'audiobook'
+        };
+        const app = editionApp();
+        app.openSummary.runContext.state = runState;
+        app.statuses.p1.snapshot.state = runState;
+        app.openSummary.records.set(record.book_id, record);
+
+        const row = app.renderOutcomeRecord(record);
+        assert.equal(app.editionCreateIneligibleReason(record, app.openSummary.runContext), null);
+        assert.match(row, /data-edition-action="add"(?![^>]*disabled)/);
+        assert.match(row, /<strong>Reason:<\/strong> No Hardcover match found\. Import by Audible ASIN is available\./);
+        assert.match(row, /<strong>Match method:<\/strong> Audible ASIN/);
+        assert.doesNotMatch(row, /audible_import_available|audible_asin/);
+
+        const previousDocument = global.document;
+        t.after(() => { global.document = previousDocument; });
+        const summaryClickHandlers = [];
+        const summaryContent = {
+            addEventListener(type, listener) {
+                if (type === 'click') summaryClickHandlers.push(listener);
+            }
+        };
+        const element = { style: {}, addEventListener() {}, replaceChildren() {} };
+        global.document = {
+            ...previousDocument,
+            getElementById: id => id === 'sync-summary-content' ? summaryContent : element,
+            querySelectorAll: () => []
+        };
+
+        const requests = [];
+        app.fetchJsonWithTimeout = async (url, options = {}) => {
+            requests.push({ url, method: options.method || 'GET' });
+            if (url.endsWith('/edition-capability')) {
+                return { response: { ok: true, status: 200 }, data: { success: true, data: {} } };
+            }
+            const baseDraft = confirmedAudibleDraft();
+            return {
+                response: { ok: true, status: 200 },
+                data: { success: true, data: confirmedAudibleDraft({
+                    abs_item_id: record.book_id,
+                    source_identifiers: { asin: record.asin },
+                    audible_identifier_candidate: { asin: record.asin, region: 'us', correction_allowed: true },
+                    confirmed_region: 'us',
+                    source_metadata_preview: { ...baseDraft.metadata_preview, release_date: '2014-08-04' },
+                    metadata_preview: { ...baseDraft.metadata_preview, release_date: '2014-08-05' },
+                    audnexus_record: { ...baseDraft.audnexus_record, asin: record.asin, release_date: '2014-08-05' }
+                }) }
+            };
+        };
+
+        app.setupEventListeners();
+        const article = { dataset: { bookId: record.book_id } };
+        const button = {
+            dataset: { editionAction: 'add' },
+            disabled: /data-edition-action="add"[^>]*disabled/.test(row),
+            closest(selector) {
+                if (selector === 'button[data-edition-action]') return this;
+                if (selector === '[data-book-id]') return article;
+                return null;
+            }
+        };
+        const openPromises = [];
+        const openEditionDialog = app.openEditionDialog.bind(app);
+        app.openEditionDialog = bookId => {
+            const opening = openEditionDialog(bookId);
+            openPromises.push(opening);
+            return opening;
+        };
+        for (const handler of summaryClickHandlers) handler({ target: button });
+        assert.equal(openPromises.length, 1, 'the enabled row action should reach the delegated Add edition handler');
+        await openPromises[0];
+
+        assert.equal(app.editionDialog.audibleImport, true);
+        assert.equal(requests.find(request => request.url.includes('/edition-drafts/source/'))?.url,
+            `/api/profiles/p1/edition-drafts/source/${record.book_id}`);
+        const dialogHTML = app.renderEditionDialog(app.editionDialog);
+        assert.match(dialogHTML, /data-edition-dialog="confirm-create"/);
+        assert.doesNotMatch(dialogHTML, /Regional Audible identifier|ASIN:region|audible_identifier_preview|preview-audible/);
+        const releaseDateRow = dialogHTML.match(/<div\b(?=[^>]*\bdata-comparison="release_date")[^>]*>[\s\S]*?<\/div>/)?.[0] || '';
+        assert.match(releaseDateRow, /Audiobookshelf<\/span>2014-08-04/);
+        assert.match(releaseDateRow, /Audnexus\/Audible<\/span>2014-08-05/);
+        assert.match(releaseDateRow, />Different</);
+        assert.ok(requests.every(request => request.method === 'GET'));
+        assert.equal(requests.some(request => request.url.endsWith('/edition-drafts/create')), false);
+    });
+}
+
+test('outcome match methods render as readable labels and humanize unknown methods', () => {
+    const app = editionApp();
+    const cases = [
+        ['title_author', 'Title and author'],
+        ['audible_asin', 'Audible ASIN'],
+        ['isbn_13', 'ISBN-13'],
+        ['asin', 'ASIN'],
+        ['isbn', 'ISBN'],
+        ['unfamiliar_method_value', 'Unfamiliar method value']
+    ];
+    for (const [match_method, label] of cases) {
+        const html = app.renderOutcomeRecord({ ...needsReview, match_method });
+        assert.ok(html.includes(`<strong>Match method:</strong> ${label}`), `${match_method} should render as ${label}`);
+    }
+});
+
+test('Audible import modal shows every comparison and escapes ABS and Audnexus values', () => {
+    const app = editionApp();
+    const draft = confirmedAudibleDraft({
+        metadata_preview: { ...confirmedAudibleDraft().metadata_preview, title: '<img src=x onerror=alert(1)>' },
+        audnexus_record: { ...confirmedAudibleDraft().audnexus_record, title: '<script>bad()</script>' }
+    });
+    const dialog = {
+        mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record: audibleImportRecord,
+        loading: false, busy: false, runDryRun: false, capability: null, draft
+    };
+    const html = app.renderEditionDialog(dialog);
+    for (const key of ['title', 'subtitle', 'authors', 'narrators', 'series', 'series_position', 'publisher', 'release_date', 'runtime', 'language']) {
+        assert.match(html, new RegExp(`data-comparison="${key}"`));
+    }
+    assert.doesNotMatch(html, /data-comparison="cover_url"|Cover URL/);
+    assert.match(html, /Different/);
+    assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+    assert.match(html, /&lt;script&gt;bad\(\)&lt;\/script&gt;/);
+    assert.doesNotMatch(html, /<img src=x|<script>bad/);
+    assert.doesNotMatch(html, /Hardcover candidate|type="checkbox"/);
+    assert.match(html, /data-edition-dialog="confirm-create"/);
+    assert.match(html, /<h4>Audnexus\/Audible<\/h4>/);
+    assert.match(html, /audible-comparison-source">Audnexus\/Audible<\/span>/);
+});
+
+test('Audible comparison hides empty subtitle and series groups but keeps populated groups paired', () => {
+    const app = editionApp();
+    const base = confirmedAudibleDraft();
+    const empty = {
+        source_metadata_preview: { ...base.metadata_preview, subtitle: '', series: '', series_position: '' },
+        audnexus_record: { ...base.audnexus_record, subtitle: '', series: [], series_position: '' }
+    };
+    const emptyRows = app.audibleImportComparisonRows({ ...base, ...empty });
+    assert.doesNotMatch(emptyRows, /data-comparison="subtitle"|data-comparison="series"|data-comparison="series_position"/);
+
+    for (const [label, source_metadata_preview, audnexus_record] of [
+        ['ABS subtitle', { ...empty.source_metadata_preview, subtitle: 'Subtitle' }, empty.audnexus_record],
+        ['Audnexus subtitle', empty.source_metadata_preview, { ...empty.audnexus_record, subtitle: 'Subtitle' }]
+    ]) {
+        const rows = app.audibleImportComparisonRows({ ...base, source_metadata_preview, audnexus_record });
+        assert.match(rows, /data-comparison="subtitle"/, label);
+    }
+
+    const populatedSeriesCases = [
+        { source_metadata_preview: { ...empty.source_metadata_preview, series: 'Foundation' } },
+        { source_metadata_preview: { ...empty.source_metadata_preview, series_position: 0 } },
+        { audnexus_record: { ...empty.audnexus_record, series: ['Foundation'] } },
+        { audnexus_record: { ...empty.audnexus_record, series_position: 0 } }
+    ];
+    for (const overrides of populatedSeriesCases) {
+        const rows = app.audibleImportComparisonRows({ ...base, ...empty, ...overrides });
+        assert.match(rows, /data-comparison="series"/);
+        assert.match(rows, /data-comparison="series_position"/);
+    }
+});
+
+test('Audible comparison uses original source dates and reflects the API precision verdict', () => {
+    const app = editionApp();
+    const base = confirmedAudibleDraft();
+    const cases = [
+        { sourceDate: '2014', audnexusDate: '2014-08-05', verdict: 'match', label: 'Match' },
+        { sourceDate: '2014-08-04', audnexusDate: '2014-08-05', verdict: 'differs', label: 'Different' }
+    ];
+
+    for (const scenario of cases) {
+        const draft = confirmedAudibleDraft({
+            source_metadata_preview: { ...base.metadata_preview, release_date: scenario.sourceDate },
+            metadata_preview: { ...base.metadata_preview, release_date: scenario.audnexusDate },
+            audnexus_record: { ...base.audnexus_record, release_date: scenario.audnexusDate },
+            audnexus_comparison: { ...base.audnexus_comparison, release_date: scenario.verdict }
+        });
+        const html = app.renderEditionDialog({
+            mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record: audibleImportRecord,
+            loading: false, busy: false, runDryRun: false, capability: null, draft
+        });
+        const row = html.match(/<div\b(?=[^>]*\bdata-comparison="release_date")[^>]*>[\s\S]*?<\/div>/)?.[0] || '';
+        assert.match(row, new RegExp(`Audiobookshelf<\\/span>${scenario.sourceDate}`));
+        assert.match(row, new RegExp(`Audnexus/Audible<\\/span>${scenario.audnexusDate}`));
+        assert.match(row, new RegExp(`>${scenario.label}<`));
+    }
+});
+
+test('unknown, unavailable, and dry-run Audible previews cannot submit', () => {
+    const app = editionApp();
+    const base = {
+        mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record: audibleImportRecord,
+        loading: false, busy: false, runDryRun: false, capability: null
+    };
+    for (const region_status of ['unknown', 'temporarily_unavailable']) {
+        const warning = region_status === 'temporarily_unavailable'
+            ? [{ code: 'audnex_temporarily_unavailable', message: 'Audnexus lookup is temporarily unavailable. Retry to check the regional Audible identifier.' }]
+            : [];
+        const html = app.renderEditionDialog({ ...base, draft: confirmedAudibleDraft({ region_status, confirmed_region: '', audnexus_record: undefined, warnings: warning }) });
+        assert.match(html, /confirm-create" disabled/);
+        assert.match(html, /data-edition-dialog="retry"[^>]*>Retry preview/);
+        assert.match(html, /class="edition-error" role="alert"/);
+        assert.doesNotMatch(html, /Refresh the preview|Retry to check/);
+    }
+    const unmatched = app.renderEditionDialog({
+        ...base,
+        draft: confirmedAudibleDraft({
+            region_status: 'unknown', confirmed_region: '', audnexus_record: undefined,
+            warnings: [{ code: 'language_defaults_to_english', message: 'Audiobookshelf language is shown for reference; the edition draft uses English.' }]
+        })
+    });
+    assert.match(unmatched, /Audnexus could not confirm a matching audiobook\. Audible import is unavailable\./);
+    assert.doesNotMatch(unmatched, /regional Audnexus record must be confirmed|Refresh the preview|edition draft uses English/);
+    assert.match(unmatched, /class="edition-error" role="alert"/);
+    assert.match(unmatched, /confirm-create" disabled/);
+    const failedLookup = app.renderEditionDialog({
+        ...base,
+        draft: confirmedAudibleDraft({
+            region_status: 'unknown', confirmed_region: '', audnexus_record: undefined,
+            warnings: [{ code: 'audnex_lookup_failed', message: 'Audnexus did not confirm this regional Audible identifier.' }]
+        })
+    });
+    assert.match(failedLookup, /Audnexus could not verify a regional match for this audiobook\. Audible import is unavailable\./);
+    assert.doesNotMatch(failedLookup, /No matching audiobook was found|did not confirm this regional Audible identifier/);
+    assert.match(app.renderEditionDialog({ ...base, runDryRun: true, draft: confirmedAudibleDraft() }), /confirm-create" disabled/);
+});
+
+test('retrying a failed Audnexus preview hides retry and enables Add edition after success', async () => {
+    const app = editionApp();
+    const dialog = app.editionDialog = {
+        mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record: audibleImportRecord,
+        loading: false, busy: false, runDryRun: false, capability: null,
+        audibleIdentifier: 'B00ABC1234:uk',
+        draft: confirmedAudibleDraft({ region_status: 'temporarily_unavailable', confirmed_region: '', audnexus_record: undefined })
+    };
+    assert.match(app.renderEditionDialog(dialog), /data-edition-dialog="retry"[^>]*>Retry preview/);
+    app.showEditionDialog = () => {};
+    let creates = 0;
+    app.fetchJsonWithTimeout = async () => { creates++; return {}; };
+    await app.submitEditionCreate();
+    assert.equal(creates, 0);
+    const requests = [];
+    app.fetchJsonWithTimeout = async (url, options) => {
+        requests.push({ url, options });
+        return { response: { ok: true, status: 200 }, data: { success: true, data:
+            url.endsWith('/edition-capability') ? {} : confirmedAudibleDraft() } };
+    };
+    await app.loadEditionDraft();
+    const html = app.renderEditionDialog(dialog);
+    assert.doesNotMatch(html, /data-edition-dialog="retry"/);
+    assert.doesNotMatch(html, /data-edition-dialog="confirm-create" disabled/);
+    assert.match(html, /Audible identifier:<\/strong> B00ABC1234:uk/);
+    assert.ok(requests.some(({ url }) => url.includes('audible_identifier=B00ABC1234%3Auk')));
+    assert.ok(requests.every(({ options }) => !options.method || options.method === 'GET'));
+});
+
 test('capability gate blocks on known denial, permits unverified attempts, and passes when allowed', () => {
     const app = editionApp();
     const cap = {
@@ -946,7 +1252,7 @@ test('Retry-After is honored and older servers fall back to a short wait', () =>
     assert.equal(app.retryAfterMs('Sun, 27 Sep 2026 12:00:05 GMT', now), 5000);
 });
 
-test('audiobook dialog shows region states, escapes ABS strings, and offers only the identifier edit', () => {
+test('audiobook dialog shows region status without identifier-edit controls', () => {
     const app = editionApp();
     const dialog = {
         mode: 'create', profileId: 'p1', runId: 'run-1', record: needsReview, loading: false, busy: false,
@@ -964,7 +1270,7 @@ test('audiobook dialog shows region states, escapes ABS strings, and offers only
     assert.doesNotMatch(html, /Audnexus details/);
     assert.match(html, /could not be confirmed/);
     assert.doesNotMatch(html, /Permission unverified|permission is unverified|cannot be checked/);
-    assert.doesNotMatch(html, /name="audible_identifier"/);
+    assert.doesNotMatch(html, /name="audible_identifier(?:_preview)?"|Regional Audible identifier|ASIN:region|preview-audible/);
     assert.doesNotMatch(html, /name="title"/);
     assert.doesNotMatch(html, /name="resync"/);
 
@@ -1046,7 +1352,7 @@ test('an ISBN-only audiobook can be confirmed while malformed identifiers remain
     assert.match(validUnknownRegion, /data-edition-dialog="confirm-create"(?![^>]*disabled)/);
 });
 
-test('the Audible identifier is always plain text, never an editable field', () => {
+test('region discovery is automatic and the Audible identifier has no edit control', () => {
     const app = editionApp();
     const base = {
         mode: 'create', profileId: 'p1', runId: 'run-1', record: needsReview, loading: false, busy: false,
@@ -1057,12 +1363,11 @@ test('the Audible identifier is always plain text, never an editable field', () 
         }
     };
     const confirmed = app.renderEditionDialog({ ...base, draft: { ...base.draft, region_status: 'confirmed', confirmed_region: 'us' } });
-    assert.doesNotMatch(confirmed, /name="audible_identifier"/);
-    assert.match(confirmed, /B00ABC1234:us/);
+    assert.doesNotMatch(confirmed, /name="audible_identifier(?:_preview)?"|Regional Audible identifier|ASIN:region|preview-audible/);
+    assert.match(confirmed, /Audible region confirmed automatically/);
     const unknown = app.renderEditionDialog({ ...base, draft: { ...base.draft, region_status: 'unknown' } });
-    assert.doesNotMatch(unknown, /name="audible_identifier"/);
+    assert.doesNotMatch(unknown, /name="audible_identifier(?:_preview)?"|Regional Audible identifier|ASIN:region|preview-audible/);
     assert.match(unknown, /retry region discovery during creation/);
-    assert.match(unknown, /import proceeds only if a region is confirmed/);
 });
 
 test('candidate details omit Hardcover identifiers and show available Audiobookshelf metadata', () => {
@@ -1206,6 +1511,298 @@ test('create body sends only changed ebook fields and the opt-in resync flag', (
     assert.deepEqual(app.buildEditionCreateBody(unconfirmedAudio, {}, false), {
         run_id: 'run-1', abs_item_id: 'li_9'
     });
+});
+
+test('unanchored Audible create confirms the reviewed identifier and accepts the resolved Hardcover identity', async () => {
+    const app = editionApp();
+    const record = { ...audibleImportRecord };
+    const dialog = {
+        mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record,
+        loading: false, busy: false, error: '', result: null, runDryRun: false,
+        draft: confirmedAudibleDraft()
+    };
+    app.editionDialog = dialog;
+    app.readEditionFormFields = () => ({});
+    app.showEditionDialog = () => {};
+    app.fetchJsonWithTimeout = async (_url, options) => {
+        const body = JSON.parse(options.body);
+        assert.deepEqual(body, {
+            run_id: 'run-1', abs_item_id: 'li_asin', audible_identifier: 'B00ABC1234:uk',
+            audnexus_confirmed: true, resync: true
+        });
+        return { response: { ok: true, status: 200 }, data: { success: true, data: {
+            abs_item_id: 'li_asin', reading_format: 'audiobook', status: 'loaded',
+            hardcover_book_id: '71', hardcover_edition_id: '99', hardcover_title: '<b>Imported book</b>'
+        } } };
+    };
+    await app.submitEditionCreate();
+    assert.equal(dialog.result.hardcover_book_id, '71');
+    const html = app.renderCreateResult(dialog.result);
+    assert.match(html, /&lt;b&gt;Imported book&lt;\/b&gt;/);
+    assert.doesNotMatch(html, /<b>Imported book/);
+    assert.match(html, /Hardcover book ID:<\/strong> 71/);
+    assert.match(html, /Edition ID:<\/strong> 99/);
+});
+
+test('Audible import uses regional import permission independently of insertion permission', async () => {
+    for (const canImport of [true, false]) {
+        const app = editionApp();
+        const dialog = {
+            mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record: audibleImportRecord,
+            loading: false, busy: false, error: '', result: null, runDryRun: false,
+            draft: confirmedAudibleDraft(),
+            capability: {
+                audiobook: { status: canImport ? 'allowed' : 'denied', can_attempt: canImport },
+                audiobook_isbn: { status: canImport ? 'denied' : 'allowed', can_attempt: !canImport },
+                ebook: { status: canImport ? 'denied' : 'allowed', can_attempt: !canImport }
+            }
+        };
+        app.editionDialog = dialog;
+        app.readEditionFormFields = () => ({});
+        app.showEditionDialog = () => {};
+        let creates = 0;
+        app.fetchJsonWithTimeout = async () => {
+            creates++;
+            return { response: { ok: true, status: 200 }, data: { success: true, data: {
+                abs_item_id: audibleImportRecord.book_id, reading_format: 'audiobook', status: 'loaded',
+                hardcover_book_id: '71', hardcover_edition_id: '99'
+            } } };
+        };
+        const html = app.renderEditionDialog(dialog);
+        assert.equal(/data-edition-dialog="confirm-create" disabled/.test(html), !canImport);
+        assert.match(html, /Audible identifier:<\/strong> B00ABC1234:uk/);
+        assert.doesNotMatch(html, /<input|<select|data-edition-dialog="confirm-identifier"/);
+        await app.submitEditionCreate();
+        assert.equal(creates, canImport ? 1 : 0);
+    }
+});
+
+test('dry-run Audible modal blocks submission at the UI boundary', async () => {
+    const app = editionApp();
+    const dialog = {
+        mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record: audibleImportRecord,
+        loading: false, busy: false, runDryRun: true, draft: confirmedAudibleDraft()
+    };
+    app.editionDialog = dialog;
+    let creates = 0;
+    app.fetchJsonWithTimeout = async () => { creates++; return {}; };
+    await app.submitEditionCreate();
+    assert.equal(creates, 0);
+    assert.match(app.renderEditionDialog(dialog), /Dry run/);
+    assert.match(app.renderEditionDialog(dialog), /confirm-create" disabled/);
+});
+
+test('ambiguous unanchored create errors offer recovery without another import button', async () => {
+    const app = editionApp();
+    const dialog = {
+        mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record: audibleImportRecord,
+        loading: false, busy: false, error: '', result: null, runDryRun: false, draft: confirmedAudibleDraft()
+    };
+    app.editionDialog = dialog;
+    app.readEditionFormFields = () => ({});
+    app.showEditionDialog = () => {};
+    app.fetchJsonWithTimeout = async () => ({ response: { ok: false, status: 503 }, data: { success: false, error: 'proxy timed out' } });
+    await app.submitEditionCreate();
+    assert.equal(dialog.outcome, 'transport_unknown');
+    assert.ok(app.loadPendingEditionRecovery('p1', 'run-1', 'li_asin'));
+    const html = app.renderEditionDialog(dialog);
+    assert.match(html, /import result is unknown/);
+    assert.doesNotMatch(html, /data-edition-dialog="(confirm-create|retry-create)"/);
+});
+
+test('create and recovery POSTs wait for Retry-After before allowing another request', async t => {
+    const scenarios = [
+        { name: 'unanchored create', record: audibleImportRecord, method: 'submitEditionCreate', button: 'retry-create' },
+        { name: 'selected-book create', record: needsReview, method: 'submitEditionCreate', button: 'retry-create' },
+        { name: 'ebook create preserves edits during cooldown', record: { ...needsReview, format: 'ebook' }, method: 'submitEditionCreate', button: 'retry-create', ebook: true },
+        { name: 'unconfirmed recovery', record: audibleImportRecord, method: 'checkEditionImport', button: 'check-import', outcome: 'unconfirmed' },
+        { name: 'unsaved-match recovery', record: audibleImportRecord, method: 'checkEditionImport', button: 'check-import', outcome: 'created' },
+        { name: 'selected-book recovery', record: needsReview, method: 'checkEditionImport', button: 'check-import', outcome: 'created' }
+    ];
+    for (const scenario of scenarios) {
+        await t.test(scenario.name, async t => {
+            const app = editionApp();
+            let now = Date.UTC(2026, 9, 5);
+            let tick;
+            const retryButton = { textContent: '', disabled: false };
+            const titleInput = { name: 'title', value: 'Original title', dataset: { original: 'Original title' } };
+            const previousDocument = global.document;
+            global.document = {
+                ...previousDocument,
+                querySelector: () => ({ querySelectorAll: () => scenario.ebook ? [titleInput] : [] })
+            };
+            t.after(() => { global.document = previousDocument; });
+            t.mock.method(Date, 'now', () => now);
+            t.mock.method(global, 'setInterval', callback => { tick = callback; return 1; });
+            t.mock.method(global, 'clearInterval', () => {});
+            t.mock.method(global.document, 'getElementById', () => ({
+                querySelectorAll: selector => selector.includes('data-edition-dialog') ? [retryButton] : []
+            }));
+            const dialog = app.editionDialog = {
+                mode: 'create', profileId: 'p1', runId: 'run-1', record: scenario.record,
+                loading: false, busy: false, retryAt: 0, outcome: scenario.outcome,
+                draft: confirmedAudibleDraft(scenario.ebook ? {
+                    reading_format: 'ebook', metadata_preview: { title: 'Original title' }
+                } : {}),
+                recovery: scenario.outcome ? {
+                    runId: 'run-1', absItemId: scenario.record.book_id,
+                    audibleIdentifier: 'B00ABC1234:uk', recoveryToken: 'saved-token'
+                } : null
+            };
+            let html;
+            app.showEditionDialog = () => { html = app.renderEditionDialog(dialog); };
+            const requests = [];
+            app.fetchJsonWithTimeout = async (url, options) => {
+                requests.push({ url, body: JSON.parse(options.body) });
+                return {
+                    response: { ok: false, status: 429, headers: { get: () => scenario.outcome
+                        ? new Date(now + 20000).toUTCString() : '20' } },
+                    data: { success: false, outcome: 'not_submitted', error_code: 'edition_create_busy', error: 'Service busy' }
+                };
+            };
+            const actionTag = () => html.match(new RegExp(`<button[^>]*data-edition-dialog="${scenario.button}"[^>]*>`))?.[0];
+            await app[scenario.method]();
+            assert.equal(requests.length, 1);
+            assert.equal(dialog.retryAt, now + 20000);
+            assert.match(actionTag(), / disabled/);
+            assert.match(html, /Retry in 20s/);
+            if (scenario.ebook) titleInput.value = 'Edited while waiting';
+            await app[scenario.method]();
+            assert.equal(requests.length, 1, 'direct method calls must also respect the cooldown');
+            now += 19000;
+            tick();
+            assert.equal(retryButton.textContent, 'Retry in 1s');
+            assert.equal(retryButton.disabled, true);
+            await app[scenario.method]();
+            assert.equal(requests.length, 1);
+            now += 1000;
+            tick();
+            assert.doesNotMatch(actionTag(), / disabled/);
+            assert.doesNotMatch(html, /Retry in \d+s/);
+            assert.equal(dialog.timer, null);
+            await app[scenario.method]();
+            assert.equal(requests.length, 2);
+            if (scenario.ebook) {
+                assert.match(html, /value="Edited while waiting"/);
+                assert.equal(requests[1].body.title, 'Edited while waiting');
+            } else {
+                assert.deepEqual(requests[1], requests[0], 'retry must preserve the submitted identifier and recovery token');
+            }
+            if (scenario.outcome) {
+                assert.equal(dialog.outcome, scenario.outcome);
+                assert.ok(requests.every(({ url }) => url.endsWith('/check-import')));
+            }
+        });
+    }
+});
+
+test('server draft 429 holds the Audible preview action and restores its label after the wait', async t => {
+    const app = editionApp();
+    let now = 100000;
+    let tick;
+    const retryButton = { textContent: '', disabled: false };
+    const originalNow = Date.now;
+    const originalSetInterval = global.setInterval;
+    const originalClearInterval = global.clearInterval;
+    const previousDocument = global.document;
+    Date.now = () => now;
+    global.setInterval = callback => { tick = callback; return 1; };
+    global.clearInterval = () => {};
+    global.document = {
+        ...previousDocument,
+        getElementById: () => ({ querySelector: () => retryButton })
+    };
+    t.after(() => {
+        Date.now = originalNow;
+        global.setInterval = originalSetInterval;
+        global.clearInterval = originalClearInterval;
+        global.document = previousDocument;
+    });
+    app.profileUrl = () => '/profile';
+    app.showEditionDialog = () => {};
+    app.fetchJsonWithTimeout = async url => url.includes('edition-capability')
+        ? { response: { ok: true, status: 200 }, data: { success: true, data: {} } }
+        : { response: { ok: false, status: 429, headers: { get: () => '20' } }, data: { success: false, error: 'busy' } };
+    const dialog = app.editionDialog = {
+        mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record: audibleImportRecord,
+        audibleIdentifier: 'B00ABC1234:uk', loading: false, busy: false, error: '', retryAt: 0, draft: confirmedAudibleDraft()
+    };
+    await app.loadEditionDraft();
+    assert.equal(dialog.draft, null);
+    assert.ok(dialog.retryAt - Date.now() > 15000);
+    const html = app.renderEditionDialog(dialog);
+    assert.match(html, /Retry in \d+s/);
+    assert.match(html, /data-edition-dialog="retry"[^>]*disabled/);
+    now += 19000;
+    tick();
+    assert.equal(retryButton.textContent, 'Retry in 1s');
+    assert.equal(retryButton.disabled, true);
+    now += 1000;
+    tick();
+    assert.equal(retryButton.textContent, 'Retry preview');
+    assert.equal(retryButton.disabled, false);
+    assert.equal(dialog.timer, null);
+});
+
+test('unanchored pending import recovery accepts resolved IDs without changing its ABS and run identity', async () => {
+    const app = editionApp();
+    app.openSummary.records.set(audibleImportRecord.book_id, audibleImportRecord);
+    const dialog = {
+        mode: 'create', audibleImport: true, profileId: 'p1', runId: 'run-1', record: audibleImportRecord,
+        loading: false, busy: false, error: '', result: null, runDryRun: false,
+        draft: confirmedAudibleDraft()
+    };
+    app.editionDialog = dialog;
+    app.readEditionFormFields = () => ({});
+    app.showEditionDialog = () => {};
+    let createBody;
+    app.fetchJsonWithTimeout = async (_url, options) => {
+        createBody = JSON.parse(options.body);
+        return { response: { ok: false, status: 503 }, data: { success: false, outcome: 'unconfirmed', data: {
+            audible_identifier: 'B00ABC1234:uk', recovery_token: 'opaque-token'
+        } } };
+    };
+    await app.submitEditionCreate();
+    assert.equal(dialog.outcome, 'unconfirmed');
+    assert.equal(dialog.recovery.hardcoverBookId, '');
+    const key = app.pendingEditionRecoveryKey('p1', 'run-1', 'li_asin');
+    assert.ok(window.sessionStorage.getItem(key));
+    assert.equal(createBody.abs_item_id, 'li_asin');
+    assert.equal(createBody.run_id, 'run-1');
+
+    app.editionDialog = null;
+    await app.openEditionDialog('li_asin');
+    const restoredDialog = app.editionDialog;
+    assert.equal(restoredDialog.outcome, 'unconfirmed');
+    assert.equal(restoredDialog.record.book_id, 'li_asin');
+    assert.equal(restoredDialog.runId, 'run-1');
+    assert.equal(restoredDialog.draft, null);
+    assert.equal(restoredDialog.record.format, 'audiobook');
+    assert.equal(restoredDialog.recovery.hardcoverBookId || '', '');
+    const recoveryHTML = app.renderEditionDialog(restoredDialog);
+    assert.match(recoveryHTML, /data-edition-dialog="check-import"/);
+    assert.doesNotMatch(recoveryHTML, /data-edition-dialog="(?:confirm-create|retry-create)"/);
+
+    let recoveryBody;
+    let recoveryURL;
+    app.fetchJsonWithTimeout = async (url, options) => {
+        recoveryURL = url;
+        recoveryBody = JSON.parse(options.body);
+        return { response: { ok: true, status: 200 }, data: { success: true, data: {
+            abs_item_id: 'li_asin', reading_format: 'audiobook', status: 'loaded',
+            hardcover_book_id: '71', hardcover_edition_id: '99', hardcover_title: 'Recovered title'
+        } } };
+    };
+    await app.checkEditionImport();
+    assert.match(recoveryURL, /\/edition-drafts\/check-import$/);
+    assert.deepEqual(recoveryBody, {
+        run_id: 'run-1', abs_item_id: 'li_asin', audible_identifier: 'B00ABC1234:uk', recovery_token: 'opaque-token'
+    });
+    assert.equal(restoredDialog.result.reading_format, 'audiobook');
+    assert.equal(restoredDialog.result.hardcover_book_id, '71');
+    assert.equal(restoredDialog.result.hardcover_edition_id, '99');
+    assert.equal(restoredDialog.result.hardcover_title, 'Recovered title');
+    assert.equal(app.loadPendingEditionRecovery('p1', 'run-1', 'li_asin'), null);
 });
 
 test('legacy unclassified server errors remain visible and do not trigger a second import', async () => {
@@ -2501,6 +3098,64 @@ test('saved not-submitted request refreshes its draft and retains edited fields 
     assert.equal(app.editionDialog.retryCreate, true);
     assert.equal(app.editionDialog.error, 'Nothing was submitted');
     assert.deepEqual(app.editionDialog.fieldValues, { title: 'Corrected title', isbn_10: '' });
+});
+
+test('restored not-submitted Audible identifier is displayed read-only and freshly previewed before retry', async () => {
+    const app = editionApp();
+    const correctedIdentifier = 'B0OTHER123:ca';
+    const record = { ...audibleImportRecord, edition_action: {
+        outcome: 'not_submitted', error: 'Nothing was submitted', http_status: 503,
+        submitted_body: {
+            run_id: 'run-1', abs_item_id: audibleImportRecord.book_id,
+            audible_identifier: correctedIdentifier, audnexus_confirmed: true
+        }
+    } };
+    app.openSummary.records.set(record.book_id, record);
+    const requests = [];
+    app.fetchJsonWithTimeout = async (url, options = {}) => {
+        requests.push({ url, options });
+        if (url.endsWith('/edition-capability')) {
+            return { response: { ok: true, status: 200 }, data: { success: true, data: {} } };
+        }
+        const requestedIdentifier = decodeURIComponent(url.split('audible_identifier=')[1] || '');
+        const identifier = requestedIdentifier || 'B00ABC1234:us';
+        const [asin, region] = identifier.split(':');
+        const baseDraft = confirmedAudibleDraft();
+        return { response: { ok: true, status: 200 }, data: { success: true, data: {
+            ...baseDraft,
+            confirmed_region: region,
+            audible_identifier_candidate: { asin, region, correction_allowed: true },
+            audnexus_record: { ...baseDraft.audnexus_record, asin }
+        } } };
+    };
+
+    await app.openEditionDialog(record.book_id);
+    const dialog = app.editionDialog;
+    const previewRequest = requests.find(request => request.url.includes('/edition-drafts/source/'));
+    assert.equal(previewRequest.url, `/api/profiles/p1/edition-drafts/source/${record.book_id}?audible_identifier=B0OTHER123%3Aca`);
+    assert.equal(dialog.runId, 'run-1');
+    assert.equal(dialog.record.book_id, record.book_id);
+    assert.equal(dialog.audibleIdentifier, correctedIdentifier);
+    assert.equal(dialog.draft.source_identifiers.asin, audibleImportRecord.asin);
+    assert.equal(dialog.draft.confirmed_region, 'ca');
+    assert.equal(dialog.retryCreate, true);
+    assert.equal(requests.some(request => request.url.endsWith('/edition-drafts/create')), false);
+    assert.doesNotMatch(app.renderEditionDialog(dialog), /<input|<select|data-edition-dialog="confirm-identifier"/);
+    assert.match(app.renderEditionDialog(dialog), /Audible identifier:<\/strong> B0OTHER123:ca/);
+
+    let createBody;
+    app.readEditionFormFields = () => ({});
+    app.fetchJsonWithTimeout = async (_url, options) => {
+        createBody = JSON.parse(options.body);
+        return { response: { ok: false, status: 503 }, data: {
+            success: false, outcome: 'not_submitted', error: 'still unavailable'
+        } };
+    };
+    await app.submitEditionCreate();
+    assert.equal(createBody.run_id, 'run-1');
+    assert.equal(createBody.abs_item_id, record.book_id);
+    assert.equal(createBody.audible_identifier, correctedIdentifier);
+    assert.equal(createBody.audnexus_confirmed, true);
 });
 
 test('a new browser resolves a server-saved request through status checks without creating again', async () => {
