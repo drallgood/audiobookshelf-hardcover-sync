@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/api/hardcover"
+	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/mismatch"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/models"
 	"github.com/drallgood/audiobookshelf-hardcover-sync/internal/sync/state"
 	"github.com/stretchr/testify/assert"
@@ -61,12 +62,14 @@ func TestProcessBookStillMatchesAudiobookWithNoStatusToSync(t *testing.T) {
 	book := toAudiobookshelfBook(createTestBook("unread-no-status", "Unread", "Author", "B0UNREAD01", ""))
 	book.Progress.CurrentTime = 0
 	hc.On("SearchBookByASIN", mock.Anything, "B0UNREAD01").Return((*models.HardcoverBook)(nil), nil).Once()
-	hc.On("SearchBooks", mock.Anything, "Unread Author", "").Return([]models.HardcoverBook{}, nil).Once()
 
 	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
 
 	hc.AssertExpectations(t)
-	assert.Equal(t, OutcomeNotFound, recordedOutcome(svc, book.ID).Outcome)
+	record := recordedOutcome(svc, book.ID)
+	assert.Equal(t, OutcomeNeedsReview, record.Outcome)
+	assert.Equal(t, mismatch.ReasonAudibleImportAvailable, record.Reason)
+	hc.AssertNotCalled(t, "SearchBooks", mock.Anything, mock.Anything, mock.Anything)
 }
 
 // Matching alone must not read or create user books: processBook does that once
@@ -180,15 +183,16 @@ func TestFindBookInHardcoverByTitleAuthorSkipsBookLookupWhenSearchHasRequiredMet
 	}
 }
 
-// An identifier lookup failure publishes its title/author candidate immediately.
-// Keep the candidate's year by looking up a complete search hit that omits its date.
-func TestProcessBookKeepsCandidateYearAfterIdentifierFailure(t *testing.T) {
+// An audiobook with an unusable ASIN may fall back to ISBN and then title search.
+// Keep that candidate's year when ISBN lookup fails but enrichment succeeds.
+func TestProcessBookKeepsCandidateYearAfterAudiobookISBNLookupFailure(t *testing.T) {
 	svc, hc := createTestService()
 	svc.config.Sync.SyncOwned = false
-	book := toAudiobookshelfBook(createTestBook("candidate-year", "Possible Match", "Author", "B0FAIL0001", ""))
+	book := toAudiobookshelfBook(createTestBook("candidate-year", "Possible Match", "Author", "not-a-valid-ASIN", "978-0-306-40615-7"))
 	book.Progress.CurrentTime = 300
 	lookupErr := assert.AnError
-	hc.On("SearchBookByASIN", mock.Anything, "B0FAIL0001").Return((*models.HardcoverBook)(nil), lookupErr).Once()
+	hc.On("SearchBookByISBN13", mock.Anything, "9780306406157").Return((*models.HardcoverBook)(nil), lookupErr).Once()
+	hc.On("SearchBookByISBN10", mock.Anything, "0306406152").Return((*models.HardcoverBook)(nil), nil).Once()
 	hc.On("SearchBooks", mock.Anything, "Possible Match Author", "").Return([]models.HardcoverBook{{
 		ID: "901", Title: "Possible Match", Slug: "possible-match", CoverImageURL: "candidate-cover",
 		Authors: []models.Author{{Name: "Candidate Author"}},

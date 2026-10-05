@@ -39,6 +39,8 @@ type Handler struct {
 	editionCreateABSClientFactory    func(string, string, string) (editionCreateABSClient, error)
 	editionCreateHardcoverFactory    func(string) editionCreateHardcoverClient
 	editionCreateAudnexClientFactory func() editionCreateAudnexDiscoverer
+	// A nonzero timeout overrides the optional post-import title lookup budget.
+	editionTitleLookupTimeout time.Duration
 	// editionResyncRunner replaces the profile-scoped one-book resync in tests.
 	editionResyncRunner func(context.Context, *database.ProfileWithTokens, models.AudiobookshelfBook, *statepkg.State, string) (sync.BookResyncResult, error)
 }
@@ -670,7 +672,10 @@ func (h *Handler) projectEditionRecoveryCapabilities(r *http.Request, profileID 
 		if canVerifyRecoveryTokens {
 			claims := editionRecoveryClaims{
 				ProfileID: profileID, RunID: snapshot.RunID, ABSItemID: snapshot.BookOutcomes[i].BookID,
-				HardcoverBookID: action.Data.HardcoverBookID, AudibleIdentifier: action.Data.AudibleIdentifier,
+				// A recovered unanchored import adds the resolved book ID to the
+				// journal, but its signed capability remains bound to the original
+				// source run's empty HardcoverBookID.
+				HardcoverBookID: snapshot.BookOutcomes[i].HardcoverBookID, AudibleIdentifier: action.Data.AudibleIdentifier,
 			}
 			if _, valid := verifyEditionRecoveryToken(settings.HardcoverToken, action.Data.RecoveryToken, claims); valid {
 				continue
