@@ -1149,14 +1149,16 @@ test('audiobook identifier fallback is limited to completed audiobook outcomes w
             { ...fallback, match_method: 'saved_isbn' }
         ]) {
             assert.ok(app.editionCreateIneligibleReason(record, app.openSummary.runContext), JSON.stringify(record));
-            assert.doesNotMatch(app.renderOutcomeRecord(record), /data-edition-action="add"/, JSON.stringify(record));
+            assert.doesNotMatch(visibleText(app.renderOutcomeRecord(record)), /Import Audible edition|Add edition/, JSON.stringify(record));
         }
         assert.equal(app.editionCreateIneligibleReason({ ...fallback, source_asin: null, asin: 'B00FALLBK1' }, app.openSummary.runContext), null);
         const row = app.renderOutcomeRecord(fallback);
         if (match_method === 'edition_asin') assert.match(visibleText(row), /Match method: Edition ASIN/);
-        assert.match(visibleText(row), /Hardcover target: book 42/);
-        assert.match(row, /data-edition-action="add"/);
-        assert.match(row, /data-edition-action="forget"/);
+        const rowText = visibleText(row);
+        assert.match(rowText, /Hardcover target: book 42/);
+        assert.match(rowText, /Import Audible edition/);
+        assert.equal(addEditionButton(row).disabled, false);
+        assert.match(rowText, /Forget match/);
     }
 
     const fallback = { book_id: 'li_fallback', outcome: 'synced', match_method: 'edition_asin', format: 'audiobook', source_asin: 'B00SOURCE1', hardcover_book_id: '42' };
@@ -1175,6 +1177,7 @@ for (const match_method of ['edition_asin', 'isbn']) {
             hardcover_book_id: '42'
         };
         app.openSummary.records.set(record.book_id, record);
+        const originalRow = visibleText(app.renderOutcomeRecord(record));
         const requests = [];
         app.fetchJsonWithTimeout = async url => {
             requests.push(url);
@@ -1189,16 +1192,13 @@ for (const match_method of ['edition_asin', 'isbn']) {
 
         await app.openEditionDialog(record.book_id);
 
-        assert.equal(app.editionDialog.audibleImport, true);
-        assert.equal(app.editionDialog.record.outcome, 'already_current');
-        assert.equal(app.editionDialog.record.reason, 'original reason');
-        assert.equal(app.editionDialog.record.hardcover_book_id, '42');
         assert.ok(requests.includes(`/api/profiles/p1/edition-drafts/source/${record.book_id}`));
         assert.match(app.renderEditionDialog(app.editionDialog), /Audiobookshelf and Audnexus\/Audible comparison/);
         assert.match(app.renderEditionDialog(app.editionDialog), /Audible import may select a different Hardcover book/);
         assert.match(app.renderEditionDialog(app.editionDialog), /Reading progress and history already saved on the previous Hardcover book will remain there/);
         assert.equal(app.isValidEditionCreateResult(validCreateResult({ abs_item_id: record.book_id, hardcover_book_id: '99' }), record.book_id, 'audiobook', '42', app.isAudibleImportRecord(record)), true,
             'the Audible resolver may return a different Hardcover book from the original target');
+        assert.equal(visibleText(app.renderOutcomeRecord(app.openSummary.records.get(record.book_id))), originalRow);
     });
 }
 
@@ -1215,15 +1215,46 @@ for (const match_method of ['edition_asin', 'isbn']) {
             }
         };
         app.openSummary.records.set(record.book_id, record);
+        const originalRow = visibleText(app.renderOutcomeRecord(record));
+        assert.match(originalRow, /Resolve pending edition request/);
+        const requests = [];
+        app.openSummary.addedEditionBookIds = new Set();
+        app.refreshEditionActionStates = () => {};
+        app.fetchJsonWithTimeout = async (url, options = {}) => {
+            if (url.endsWith('/check-import')) {
+                requests.push({ url, method: options.method, body: JSON.parse(options.body) });
+                return {
+                    response: { ok: true, status: 200 },
+                    data: { success: true, data: validCreateResult({
+                        abs_item_id: record.book_id, hardcover_book_id: '99', hardcover_edition_id: '95'
+                    }) }
+                };
+            }
+            throw new Error(`Unexpected request while checking saved import: ${url}`);
+        };
 
-        assert.match(app.renderEditionActions(record), /Resolve pending edition request/);
         await app.openEditionDialog(record.book_id);
+        assert.match(visibleText(app.renderEditionDialog(app.editionDialog)), /Check import status/);
+        await app.checkEditionImport();
 
-        assert.equal(app.editionDialog.outcome, 'unconfirmed');
-        assert.equal(app.editionDialog.audibleImport, true);
-        assert.equal(app.editionDialog.recovery.recoveryToken, 'opaque-token');
-        assert.equal(app.editionDialog.record.outcome, 'synced');
-        assert.equal(app.editionDialog.record.hardcover_book_id, '42');
+        assert.deepEqual(requests, [{
+            url: '/api/profiles/p1/edition-drafts/check-import',
+            method: 'POST',
+            body: {
+                run_id: 'run-1', abs_item_id: record.book_id,
+                audible_identifier: 'B00SOURCE1:us', recovery_token: 'opaque-token'
+            }
+        }]);
+        const dialogText = visibleText(app.renderEditionDialog(app.editionDialog));
+        assert.match(dialogText, /The match is saved for the next sync/);
+        assert.match(dialogText, /Hardcover book ID: 99/);
+        assert.match(dialogText, /Edition ID: 95/);
+        const recoveredRow = visibleText(app.renderOutcomeRecord(app.openSummary.records.get(record.book_id)));
+        const expectedMatchLabel = match_method === 'edition_asin' ? 'Edition ASIN' : 'ISBN';
+        assert.match(recoveredRow, new RegExp(`Match method: ${expectedMatchLabel} \\(temporary\\)`));
+        assert.match(recoveredRow, /Hardcover target: book 42/);
+        assert.match(recoveredRow, /Reason: original reason/);
+        assert.match(recoveredRow, /Hardcover Edition Added/);
     });
 }
 
