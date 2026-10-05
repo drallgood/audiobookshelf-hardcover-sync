@@ -2,7 +2,6 @@ package mismatch
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -136,7 +135,7 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 	if len(b.AuthorIDs) > 0 {
 		authorIDs = b.AuthorIDs
 	} else if b.Author != "" {
-		if hc != nil && b.Reason != ReasonAudibleImportAvailable {
+		if hc != nil {
 			// Try to look up author IDs from Hardcover
 			if ids, err := LookupAuthorIDs(ctx, hc, b.Author); err == nil && len(ids) > 0 {
 				authorIDs = ids
@@ -152,7 +151,7 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 	if len(b.NarratorIDs) > 0 {
 		narratorIDs = b.NarratorIDs
 	} else if b.Narrator != "" {
-		if hc != nil && b.Reason != ReasonAudibleImportAvailable {
+		if hc != nil {
 			// Split narrator string by commas and trim whitespace
 			narratorNames := strings.Split(b.Narrator, ",")
 			for i, name := range narratorNames {
@@ -174,7 +173,7 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 
 	// Look up publisher ID if we have a publisher name and a Hardcover client
 	if b.PublisherID == 0 && b.Publisher != "" {
-		if hc != nil && b.Reason != ReasonAudibleImportAvailable {
+		if hc != nil {
 			// Try to look up publisher ID from Hardcover
 			if id, err := LookupPublisherID(ctx, hc, b.Publisher); err == nil && id > 0 {
 				b.PublisherID = id
@@ -230,7 +229,6 @@ func (b *BookMismatch) ToEditionExport(ctx context.Context, hc hardcover.Hardcov
 			Reason:            b.Reason,
 			Attempts:          b.Attempts,
 		},
-		omitBookID: b.Reason == ReasonAudibleImportAvailable,
 	}
 
 	// If info.cover_url duplicates the main image_url, drop it to reduce redundancy
@@ -378,22 +376,4 @@ type EditionExport struct {
 
 	// Additional informational fields (not used during import)
 	Info *EditionExportInfo `json:"info,omitempty"`
-
-	omitBookID bool `json:"-"`
-}
-
-// MarshalJSON omits the legacy book_id field only for unanchored Audible
-// import records. Other exports keep their established numeric field.
-func (e EditionExport) MarshalJSON() ([]byte, error) {
-	type exportAlias EditionExport
-	data, err := json.Marshal(exportAlias(e))
-	if err != nil || !e.omitBookID {
-		return data, err
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return nil, err
-	}
-	delete(fields, "book_id")
-	return json.Marshal(fields)
 }
