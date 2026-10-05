@@ -1610,6 +1610,92 @@ test('ambiguous unanchored create errors offer recovery without another import b
     assert.doesNotMatch(html, /data-edition-dialog="(confirm-create|retry-create)"/);
 });
 
+test('create and recovery POSTs wait for Retry-After before allowing another request', async t => {
+    const scenarios = [
+        { name: 'unanchored create', record: audibleImportRecord, method: 'submitEditionCreate', button: 'retry-create' },
+        { name: 'selected-book create', record: needsReview, method: 'submitEditionCreate', button: 'retry-create' },
+        { name: 'ebook create preserves edits during cooldown', record: { ...needsReview, format: 'ebook' }, method: 'submitEditionCreate', button: 'retry-create', ebook: true },
+        { name: 'unconfirmed recovery', record: audibleImportRecord, method: 'checkEditionImport', button: 'check-import', outcome: 'unconfirmed' },
+        { name: 'unsaved-match recovery', record: audibleImportRecord, method: 'checkEditionImport', button: 'check-import', outcome: 'created' },
+        { name: 'selected-book recovery', record: needsReview, method: 'checkEditionImport', button: 'check-import', outcome: 'created' }
+    ];
+    for (const scenario of scenarios) {
+        await t.test(scenario.name, async t => {
+            const app = editionApp();
+            let now = Date.UTC(2026, 9, 5);
+            let tick;
+            const retryButton = { textContent: '', disabled: false };
+            const titleInput = { name: 'title', value: 'Original title', dataset: { original: 'Original title' } };
+            const previousDocument = global.document;
+            global.document = {
+                ...previousDocument,
+                querySelector: () => ({ querySelectorAll: () => scenario.ebook ? [titleInput] : [] })
+            };
+            t.after(() => { global.document = previousDocument; });
+            t.mock.method(Date, 'now', () => now);
+            t.mock.method(global, 'setInterval', callback => { tick = callback; return 1; });
+            t.mock.method(global, 'clearInterval', () => {});
+            t.mock.method(global.document, 'getElementById', () => ({
+                querySelectorAll: selector => selector.includes('data-edition-dialog') ? [retryButton] : []
+            }));
+            const dialog = app.editionDialog = {
+                mode: 'create', profileId: 'p1', runId: 'run-1', record: scenario.record,
+                loading: false, busy: false, retryAt: 0, outcome: scenario.outcome,
+                draft: confirmedAudibleDraft(scenario.ebook ? {
+                    reading_format: 'ebook', metadata_preview: { title: 'Original title' }
+                } : {}),
+                recovery: scenario.outcome ? {
+                    runId: 'run-1', absItemId: scenario.record.book_id,
+                    audibleIdentifier: 'B00ABC1234:uk', recoveryToken: 'saved-token'
+                } : null
+            };
+            let html;
+            app.showEditionDialog = () => { html = app.renderEditionDialog(dialog); };
+            const requests = [];
+            app.fetchJsonWithTimeout = async (url, options) => {
+                requests.push({ url, body: JSON.parse(options.body) });
+                return {
+                    response: { ok: false, status: 429, headers: { get: () => scenario.outcome
+                        ? new Date(now + 20000).toUTCString() : '20' } },
+                    data: { success: false, outcome: 'not_submitted', error_code: 'edition_create_busy', error: 'Service busy' }
+                };
+            };
+            const actionTag = () => html.match(new RegExp(`<button[^>]*data-edition-dialog="${scenario.button}"[^>]*>`))?.[0];
+            await app[scenario.method]();
+            assert.equal(requests.length, 1);
+            assert.equal(dialog.retryAt, now + 20000);
+            assert.match(actionTag(), / disabled/);
+            assert.match(html, /Retry in 20s/);
+            if (scenario.ebook) titleInput.value = 'Edited while waiting';
+            await app[scenario.method]();
+            assert.equal(requests.length, 1, 'direct method calls must also respect the cooldown');
+            now += 19000;
+            tick();
+            assert.equal(retryButton.textContent, 'Retry in 1s');
+            assert.equal(retryButton.disabled, true);
+            await app[scenario.method]();
+            assert.equal(requests.length, 1);
+            now += 1000;
+            tick();
+            assert.doesNotMatch(actionTag(), / disabled/);
+            assert.doesNotMatch(html, /Retry in \d+s/);
+            assert.equal(dialog.timer, null);
+            await app[scenario.method]();
+            assert.equal(requests.length, 2);
+            if (scenario.ebook) {
+                assert.match(html, /value="Edited while waiting"/);
+                assert.equal(requests[1].body.title, 'Edited while waiting');
+            } else {
+                assert.deepEqual(requests[1], requests[0], 'retry must preserve the submitted identifier and recovery token');
+            }
+            if (scenario.outcome) {
+                assert.equal(dialog.outcome, scenario.outcome);
+                assert.ok(requests.every(({ url }) => url.endsWith('/check-import')));
+            }
+        });
+    }
+});
+
 test('server draft 429 holds the Audible preview action and restores its label after the wait', async t => {
     const app = editionApp();
     let now = 100000;

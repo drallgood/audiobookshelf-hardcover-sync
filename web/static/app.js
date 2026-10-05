@@ -2094,6 +2094,34 @@ class SyncProfileApp {
         return Math.min(Math.max(date - now, 0), 300000);
     }
 
+    startEditionPostRetryWait(dialog, response) {
+        dialog.retryAt = Date.now() + this.retryAfterMs(response.headers?.get?.('Retry-After'));
+        if (dialog.timer) clearInterval(dialog.timer);
+        dialog.timer = setInterval(() => {
+            if (this.editionDialog !== dialog) {
+                clearInterval(dialog.timer);
+                dialog.timer = null;
+                return;
+            }
+            const waitMs = Math.max(0, dialog.retryAt - Date.now());
+            if (waitMs === 0) {
+                clearInterval(dialog.timer);
+                dialog.timer = null;
+                // Preserve any ebook edits made while waiting before replacing controls.
+                if (dialog.outcome === 'not_submitted' && dialog.draft) this.readEditionFormFields();
+                this.showEditionDialog();
+                return;
+            }
+            const buttons = document.getElementById('edition-modal-content')?.querySelectorAll?.(
+                '[data-edition-dialog="retry-create"], [data-edition-dialog="check-import"]'
+            ) || [];
+            for (const button of buttons) {
+                button.textContent = `Retry in ${Math.ceil(waitMs / 1000)}s`;
+                button.disabled = true;
+            }
+        }, 1000);
+    }
+
     // Known API codes for capability reason/warning are machine-readable
     // (see docs/openapi.yaml); translate the ones we recognize into text and
     // fall back to whatever the server sent for anything new.
@@ -2409,7 +2437,7 @@ class SyncProfileApp {
             const description = created ? dialog.error : (dialog.transportError || 'The server returned no usable confirmation. The import may still have been submitted; check Hardcover before trying again.');
             const technicalDialog = created ? dialog : { ...dialog, recoveryHttpStatus: dialog.errorHttpStatus };
             const recoveryAction = created && dialog.recovery?.recoveryToken
-                ? `<button type="button" class="btn btn-primary" data-edition-dialog="check-import" ${dialog.busy ? 'disabled' : ''}>${dialog.busy ? 'Saving…' : 'Save match'}</button>` : '';
+                ? `<button type="button" class="btn btn-primary" data-edition-dialog="check-import" ${dialog.busy || waiting ? 'disabled' : ''}>${waiting ? `Retry in ${Math.ceil(waitMs / 1000)}s` : dialog.busy ? 'Saving…' : 'Save match'}</button>` : '';
             return `<div class="edition-warning" role="alert"><strong>${title}</strong><p>${this.escapeHtml(description)}</p>${this.renderEditionTechnicalDetails(technicalDialog)}</div><div class="form-actions edition-create-actions">${recoveryAction}${openLink}${closeButton}</div>${dialog.checkError ? `<div class="edition-error" role="alert">${this.escapeHtml(dialog.checkError)}</div>` : ''}`;
         }
         if (!dialog.draft) {
@@ -2492,7 +2520,7 @@ class SyncProfileApp {
         if (dryRun) blockers.push('This profile is in dry run: no edition can be created and no resync is offered.');
         if (syncing) blockers.push('A sync is running for this profile; try again when it finishes.');
         if (dialog.outcome === 'failed') blockers.push('Hardcover returned a failed result after receiving the import. Another create is disabled to avoid submitting it again.');
-        const canConfirm = blockers.length === 0;
+        const canConfirm = blockers.length === 0 && !waiting;
         const audiobookMetadataHtml = !isEbook && !/^[a-z0-9]{10}$/i.test(String(ids.asin || '').trim())
             ? this.renderAudiobookMetadataPreview(draft.metadata_preview) : '';
         return `${dryRun ? '<div class="edition-dry-run">Dry run</div>' : ''}
@@ -2502,7 +2530,7 @@ class SyncProfileApp {
             ${blockers.map(text => `<div class="edition-error" data-blocker>${this.escapeHtml(text)}</div>`).join('')}
             ${errorHtml}
             <div class="form-actions edition-create-actions">
-                ${dialog.retryCreate ? `<button type="button" class="btn btn-primary" data-edition-dialog="retry-create" ${canConfirm && !dialog.busy ? '' : 'disabled'}>Retry add edition</button>` : `<button type="button" class="btn btn-primary" data-edition-dialog="confirm-create" ${canConfirm && !dialog.busy && dialog.outcome !== 'failed' ? '' : 'disabled'}>${dialog.busy ? 'Creating…' : 'Add edition'}</button>`}
+                ${dialog.retryCreate ? `<button type="button" class="btn btn-primary" data-edition-dialog="retry-create" ${canConfirm && !dialog.busy ? '' : 'disabled'}>${waiting ? `Retry in ${Math.ceil(waitMs / 1000)}s` : 'Retry add edition'}</button>` : `<button type="button" class="btn btn-primary" data-edition-dialog="confirm-create" ${canConfirm && !dialog.busy && dialog.outcome !== 'failed' ? '' : 'disabled'}>${dialog.busy ? 'Creating…' : 'Add edition'}</button>`}
                 <button type="button" class="btn btn-secondary" data-edition-dialog="retry" title="Reload this preview and retry the region/candidate lookup — useful after a temporary lookup failure or if the source metadata changed." ${waiting || dialog.busy ? 'disabled' : ''}>${waiting ? retryLabel : 'Refresh preview'}</button>
                 ${closeButton}
             </div>`;
@@ -2587,7 +2615,7 @@ class SyncProfileApp {
             const description = created ? dialog.error : (dialog.transportError || 'The server returned no usable confirmation. The import may still have been submitted; check Hardcover before trying again.');
             const technicalDialog = created ? dialog : { ...dialog, recoveryHttpStatus: dialog.errorHttpStatus };
             const recoveryAction = created && dialog.recovery?.recoveryToken
-                ? `<button type="button" class="btn btn-primary" data-edition-dialog="check-import" ${dialog.busy ? 'disabled' : ''}>${dialog.busy ? 'Saving…' : 'Save match'}</button>` : '';
+                ? `<button type="button" class="btn btn-primary" data-edition-dialog="check-import" ${dialog.busy || waiting ? 'disabled' : ''}>${waiting ? `Retry in ${Math.ceil(waitMs / 1000)}s` : dialog.busy ? 'Saving…' : 'Save match'}</button>` : '';
             return `<div class="edition-warning" role="alert"><strong>${this.escapeHtml(title)}</strong><p>${this.escapeHtml(description)}</p>${this.renderEditionTechnicalDetails(technicalDialog)}</div><div class="form-actions edition-create-actions">${recoveryAction}${openLink}${closeButton}</div>${dialog.checkError ? `<div class="edition-error" role="alert">${this.escapeHtml(dialog.checkError)}</div>` : ''}`;
         }
         if (!draft) {
@@ -2620,7 +2648,7 @@ class SyncProfileApp {
             .map(text => `<div class="edition-error" data-blocker>${this.escapeHtml(text)}</div>`).join('');
         const canConfirm = blockers.length === 0 && !dialog.busy && !waiting && !dialog.loading;
         const confirmButton = dialog.retryCreate
-            ? `<button type="button" class="btn btn-primary" data-edition-dialog="retry-create" ${canConfirm ? '' : 'disabled'}>Retry add edition</button>`
+            ? `<button type="button" class="btn btn-primary" data-edition-dialog="retry-create" ${canConfirm ? '' : 'disabled'}>${waiting ? `Retry in ${Math.ceil(waitMs / 1000)}s` : 'Retry add edition'}</button>`
             : `<button type="button" class="btn btn-primary" data-edition-dialog="confirm-create" ${canConfirm ? '' : 'disabled'}>${dialog.busy ? 'Creating…' : 'Add edition'}</button>`;
         return `${dryRun ? '<div class="edition-dry-run">Dry run</div>' : ''}
             ${regionHtml}${comparisonHtml}${this.renderAudibleImportWarnings(draft)}${blockersHtml}${errorHtml}
@@ -2688,6 +2716,7 @@ class SyncProfileApp {
         const dialog = this.editionDialog;
         if (!dialog || this.editionActionsUnavailableForDialog(dialog) || dialog.mode !== 'create' || !dialog.draft || dialog.busy
             || ['unconfirmed', 'created', 'transport_unknown', 'failed'].includes(dialog.outcome)) return;
+        if (dialog.retryAt && Date.now() < dialog.retryAt) return;
         if (this.isAudibleImportDialog(dialog) && this.audibleImportBlockers(dialog, dialog.draft).length) return;
         dialog.outcome = '';
         dialog.retryCreate = false;
@@ -2719,6 +2748,7 @@ class SyncProfileApp {
             });
             if (this.editionDialog !== dialog) return;
             dialog.busy = false;
+            if (response.status === 429) this.startEditionPostRetryWait(dialog, response);
             const preWriteDenial = this.knownEditionCreatePreWriteDenial(response.status, data);
             if (response.status === 401) {
                 if (preWriteDenial) this.clearPendingEditionRecovery(dialog.profileId, dialog.runId, dialog.record.book_id);
@@ -2911,10 +2941,11 @@ class SyncProfileApp {
         const openLink = this.renderOpenHardcoverLink(dialog);
         const submittedTitle = dialog.recoveryTitle || dialog.record.title || 'this audiobook';
         const technical = this.renderEditionTechnicalDetails(dialog);
+        const waitMs = Math.max(0, (dialog.retryAt || 0) - Date.now());
         return `<div class="edition-warning" role="alert"><strong>Hardcover’s import result is still unconfirmed</strong>
             <p>The request for “${this.escapeHtml(submittedTitle)}” was submitted, but the app could not confirm the result. Hardcover may still be processing it. Check the import status before trying again.</p>
             ${technical}</div>
-            <div class="form-actions edition-create-actions"><button type="button" class="btn btn-primary" data-edition-dialog="check-import" ${dialog.busy || !dialog.recovery?.recoveryToken ? 'disabled' : ''}>${dialog.busy ? 'Checking…' : 'Check import status'}</button>${openLink}<button type="button" class="btn btn-warning" data-edition-dialog="close">Close</button></div>
+            <div class="form-actions edition-create-actions"><button type="button" class="btn btn-primary" data-edition-dialog="check-import" ${dialog.busy || waitMs > 0 || !dialog.recovery?.recoveryToken ? 'disabled' : ''}>${waitMs > 0 ? `Retry in ${Math.ceil(waitMs / 1000)}s` : dialog.busy ? 'Checking…' : 'Check import status'}</button>${openLink}<button type="button" class="btn btn-warning" data-edition-dialog="close">Close</button></div>
             ${dialog.checkError ? `<div class="edition-error" role="alert">${this.escapeHtml(dialog.checkError)}</div>` : ''}`;
     }
 
@@ -2922,6 +2953,7 @@ class SyncProfileApp {
         const dialog = this.editionDialog;
         const recovery = dialog?.recovery;
         if (!dialog || this.editionActionsUnavailableForDialog(dialog) || dialog.mode !== 'create' || !['unconfirmed', 'created'].includes(dialog.outcome) || !recovery?.recoveryToken || dialog.busy) return;
+        if (dialog.retryAt && Date.now() < dialog.retryAt) return;
         dialog.busy = true;
         dialog.checkError = '';
         this.showEditionDialog();
@@ -2938,6 +2970,7 @@ class SyncProfileApp {
             });
             if (this.editionDialog !== dialog) return;
             dialog.busy = false;
+            if (response.status === 429) this.startEditionPostRetryWait(dialog, response);
             if (response.status === 401) { this.closeEditionDialog(); this.handleAuthExpiry(); return; }
             if (['unconfirmed', 'created', 'failed'].includes(data?.outcome)) {
                 this.rememberEditionAction(dialog, { ...data, http_status: response.status });

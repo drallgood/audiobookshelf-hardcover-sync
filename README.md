@@ -112,6 +112,9 @@ Audnexus confirms the region, and waits out any requested retry delay. Creating
 editions requires profile edit access and a Hardcover token with
 `write:catalog:append` access.
 
+Preview retries, edition-creation retries, and import-status checks wait for
+server-provided `Retry-After` delays when the service is busy.
+
 Permission results are retained for the profile and token while the app is
 running. Use **Refresh permissions** in View Details after granting token
 scopes; changing the token also clears the result. Pending Audible imports
