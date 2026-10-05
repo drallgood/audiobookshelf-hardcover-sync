@@ -308,9 +308,11 @@ func hasReliableEmbeddedProgress(book models.AudiobookshelfBook) bool {
 // HardcoverSyncClient is the Hardcover client contract required by sync.
 // Sync needs an uncached edition lookup to distinguish a deleted edition from
 // a stale cached result before removing a saved association.
+// Exact edition-ASIN lookup is required before offering an Audible import.
 type HardcoverSyncClient interface {
 	hardcover.HardcoverClientInterface
 	GetEditionUncached(context.Context, string) (*models.Edition, error)
+	SearchBookByEditionASINResult(context.Context, string) (*hardcover.ASINLookupResult, error)
 }
 
 // Service handles the synchronization between Audiobookshelf and Hardcover.
@@ -6003,16 +6005,12 @@ func (s *Service) findBookInHardcoverWithMatchSource(ctx context.Context, book m
 		if lookupErr != nil {
 			return nil, lookupErr, false, nil
 		}
-		if client, ok := s.hardcover.(interface {
-			SearchBookByEditionASINResult(context.Context, string) (*hardcover.ASINLookupResult, error)
-		}); ok {
-			result, err := client.SearchBookByEditionASINResult(ctx, canonicalASIN)
-			if err != nil {
-				return nil, fmt.Errorf("%w: edition ASIN fallback: %w", errHardcoverLookupFailed, err), false, nil
-			}
-			if result != nil && result.Book != nil {
-				return result.Book, nil, true, result
-			}
+		result, err := s.hardcover.SearchBookByEditionASINResult(ctx, canonicalASIN)
+		if err != nil {
+			return nil, fmt.Errorf("%w: edition ASIN fallback: %w", errHardcoverLookupFailed, err), false, nil
+		}
+		if result != nil && result.Book != nil {
+			return result.Book, nil, true, result
 		}
 		return nil, errAudibleImportAvailable, false, nil
 	}

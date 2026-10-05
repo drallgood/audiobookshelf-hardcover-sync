@@ -25,6 +25,11 @@ type MockHardcoverClient struct {
 	mock.Mock
 }
 
+// SearchBookByEditionASINResult defaults to a miss; fallback tests override it.
+func (m *MockHardcoverClient) SearchBookByEditionASINResult(context.Context, string) (*hardcover.ASINLookupResult, error) {
+	return nil, nil
+}
+
 // GetAuthHeader mocks the GetAuthHeader method
 func (m *MockHardcoverClient) GetAuthHeader() string {
 	args := m.Called()
