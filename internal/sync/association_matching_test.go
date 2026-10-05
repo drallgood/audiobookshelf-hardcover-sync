@@ -801,7 +801,7 @@ func TestProcessBookIncrementalAudiobookISBNRechecksWithoutRepeatingWrites(t *te
 				firstLookupCount = 2
 			}
 			if tt.asin == "B0AUDIO001" {
-				client.On("SearchBookByASIN", mock.Anything, tt.asin).Return((*models.HardcoverBook)(nil), nil).Times(firstLookupCount)
+				client.On("SearchBookByASIN", mock.Anything, tt.asin).Return((*models.HardcoverBook)(nil), nil).Twice()
 			}
 			client.On("SearchBookByISBN13", mock.Anything, testISBN13NoTen).
 				Return(hardcoverHit(), nil).Times(firstLookupCount)

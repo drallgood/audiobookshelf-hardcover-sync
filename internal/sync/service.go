@@ -2505,7 +2505,8 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 	// ISBN/title matches are checked again before mutation. Keep a newly found
 	// ISBN out of local state until that second lookup has confirmed it.
 	var asinResult *hardcover.ASINLookupResult
-	hcBook, findErr, foundByASIN, asinResult = s.findBookInHardcoverWithASINMatch(ctx, book, associationWriteASINOnly)
+	var matchedISBN isbnCandidate
+	hcBook, findErr, foundByASIN, asinResult = s.findBookInHardcoverWithMatchSource(ctx, book, associationWriteASINOnly, &matchedISBN)
 	if findErr == nil && hcBook != nil {
 		switch {
 		case asinResult != nil:
@@ -2786,12 +2787,12 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 		firstMatch := *hcBook
 		var confirmedByASIN bool
 		var confirmedASINResult *hardcover.ASINLookupResult
-		hcBook, findErr, confirmedByASIN, confirmedASINResult = s.findBookInHardcoverWithASINMatch(ctx, book, associationWriteNone)
-		if newAudiobookISBNMatch && ((findErr == nil && hcBook == nil) || errors.Is(findErr, errHardcoverBookNotFound)) {
-			findErr = fmt.Errorf("%w: audiobook ISBN match disappeared between lookups for ABS item %s", errHardcoverLookupFailed, book.ID)
-			hcBook = &firstMatch
+		if newAudiobookISBNMatch {
+			hcBook, findErr = s.verifyAudiobookISBNMatch(ctx, matchedISBN, &firstMatch, book.ID)
+		} else {
+			hcBook, findErr, confirmedByASIN, confirmedASINResult = s.findBookInHardcoverWithASINMatch(ctx, book, associationWriteNone)
 		}
-		if findErr == nil && hcBook != nil && (firstMatch.ID != hcBook.ID || firstMatch.EditionID != hcBook.EditionID) {
+		if newEbookMatch && findErr == nil && hcBook != nil && (firstMatch.ID != hcBook.ID || firstMatch.EditionID != hcBook.EditionID) {
 			findErr = fmt.Errorf("%w: Hardcover match changed between lookups for ABS item %s", errHardcoverLookupFailed, book.ID)
 		}
 		if findErr != nil {
@@ -2971,23 +2972,10 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 		if verifiedDurableISBNMatch != nil {
 			hcBook, findErr = s.processFoundBook(ctx, verifiedDurableISBNMatch, book)
 		}
+	} else if audiobookISBNVerificationRun {
+		hcBook, findErr = s.verifyAudiobookISBNMatch(ctx, matchedISBN, verifiedAudiobookISBNMatch, book.ID)
 	} else if !foundByASIN {
 		hcBook, findErr, _, _ = s.findBookInHardcoverWithASINMatch(ctx, book, associationWriteNone)
-		if audiobookISBNVerificationRun {
-			switch {
-			case (findErr == nil && hcBook == nil) || errors.Is(findErr, errAudibleImportAvailable):
-				// A miss after a confirmed ISBN match is a verification failure,
-				// not a fresh import opportunity. Do not retain the import sentinel.
-				hcBook = verifiedAudiobookISBNMatch
-				findErr = fmt.Errorf("%w: audiobook ISBN match disappeared between lookups for ABS item %s", errHardcoverLookupFailed, book.ID)
-			case errors.Is(findErr, errHardcoverBookNotFound):
-				hcBook = verifiedAudiobookISBNMatch
-				findErr = fmt.Errorf("%w: audiobook ISBN match disappeared between lookups for ABS item %s: %w", errHardcoverLookupFailed, book.ID, findErr)
-			case findErr == nil && (hcBook.ID != verifiedAudiobookISBNMatch.ID || hcBook.EditionID != verifiedAudiobookISBNMatch.EditionID):
-				hcBook = verifiedAudiobookISBNMatch
-				findErr = fmt.Errorf("%w: audiobook ISBN match changed between lookups for ABS item %s", errHardcoverLookupFailed, book.ID)
-			}
-		}
 	}
 	if findErr != nil {
 		if errors.Is(findErr, errAudibleImportAvailable) {
@@ -5604,6 +5592,29 @@ func (c isbnCandidate) label() string {
 	return "ISBN-10"
 }
 
+func (s *Service) lookupBookByISBN(ctx context.Context, candidate isbnCandidate) (*models.HardcoverBook, error) {
+	if candidate.is13 {
+		return s.hardcover.SearchBookByISBN13(ctx, candidate.value)
+	}
+	return s.hardcover.SearchBookByISBN10(ctx, candidate.value)
+}
+
+// verifyAudiobookISBNMatch confirms the identifier that produced the first
+// match, preserving the original candidate for diagnostics on failure.
+func (s *Service) verifyAudiobookISBNMatch(ctx context.Context, candidate isbnCandidate, firstMatch *models.HardcoverBook, absItemID string) (*models.HardcoverBook, error) {
+	confirmed, err := s.lookupBookByISBN(ctx, candidate)
+	if err != nil {
+		return firstMatch, fmt.Errorf("%w: %s verification for ABS item %s: %w", errHardcoverLookupFailed, candidate.label(), absItemID, err)
+	}
+	if confirmed == nil {
+		return firstMatch, fmt.Errorf("%w: audiobook ISBN match disappeared between lookups for ABS item %s", errHardcoverLookupFailed, absItemID)
+	}
+	if confirmed.ID != firstMatch.ID || confirmed.EditionID != firstMatch.EditionID {
+		return firstMatch, fmt.Errorf("%w: audiobook ISBN match changed between lookups for ABS item %s", errHardcoverLookupFailed, absItemID)
+	}
+	return confirmed, nil
+}
+
 // isbnSearchCandidates lists the ISBN lookups for an Audiobookshelf ISBN value,
 // in the order they are tried: the form the item has, then its derived
 // counterpart (when the checksum is valid and one exists), each searched in its
@@ -5818,6 +5829,13 @@ const (
 )
 
 func (s *Service) findBookInHardcoverWithASINMatch(ctx context.Context, book models.AudiobookshelfBook, writeMode associationWriteMode) (*models.HardcoverBook, error, bool, *hardcover.ASINLookupResult) {
+	return s.findBookInHardcoverWithMatchSource(ctx, book, writeMode, nil)
+}
+
+// findBookInHardcoverWithMatchSource optionally records the exact ISBN lookup
+// that found a complete match, so audiobook confirmation need not repeat ASIN
+// lookups or ISBN candidates that previously missed.
+func (s *Service) findBookInHardcoverWithMatchSource(ctx context.Context, book models.AudiobookshelfBook, writeMode associationWriteMode, matchedISBN *isbnCandidate) (*models.HardcoverBook, error, bool, *hardcover.ASINLookupResult) {
 	var lookupErr error
 	// Create a logger with book context
 	logCtx := map[string]interface{}{
@@ -5924,13 +5942,7 @@ func (s *Service) findBookInHardcoverWithASINMatch(ctx context.Context, book mod
 			s.debugRequestIntent(log, fmt.Sprintf("Searching for book by ISBN: %s", book.Media.Metadata.ISBN), nil)
 
 			for _, candidate := range candidates {
-				var hcBook *models.HardcoverBook
-				var err error
-				if candidate.is13 {
-					hcBook, err = s.hardcover.SearchBookByISBN13(ctx, candidate.value)
-				} else {
-					hcBook, err = s.hardcover.SearchBookByISBN10(ctx, candidate.value)
-				}
+				hcBook, err := s.lookupBookByISBN(ctx, candidate)
 				if err != nil {
 					// Check if this is a BookError with a book ID
 					var bookErr *hardcover.BookError
@@ -5961,6 +5973,9 @@ func (s *Service) findBookInHardcoverWithASINMatch(ctx context.Context, book mod
 					}
 					log.Warn(fmt.Sprintf("Search by %s failed, will try other identifiers or methods: %v", candidate.label(), err), nil)
 				} else if hcBook != nil {
+					if matchedISBN != nil {
+						*matchedISBN = candidate
+					}
 					if writeMode == associationWriteAll {
 						s.recordVerifiedISBNAssociation(book, hcBook)
 					}

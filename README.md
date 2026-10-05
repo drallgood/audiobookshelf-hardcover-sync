@@ -305,9 +305,13 @@ Sync saves regional Audible matches, ebook identifier matches, and verified
 ISBN matches for audiobooks without an ASIN. Audiobook ISBN matches with an
 ASIN and audiobook edition-ASIN fallbacks are temporary: each processed sync
 resolves them again, while progress checkpoints prevent repeat writes to an
-unchanged target. Automatic ISBN matches are confirmed by a second lookup
-before saving. If that match disappears during confirmation, sync reports a
-lookup failure and retries on a later run instead of offering Audible import.
+unchanged target. Automatic audiobook ISBN matches are confirmed by repeating
+only the ISBN lookup that found the match, including its ISBN-10 or ISBN-13 form.
+Confirmation does not repeat Audible mapping or edition-ASIN searches; a later
+sync still checks for new mappings for temporary matches. If the audiobook ISBN
+match disappears during confirmation, sync reports a lookup failure and retries
+on a later run instead of offering Audible import. Ebook matches retain their
+existing second lookup before saving.
 
 For unread audiobooks, `process_unread_books` enables matching and attention-list
 entries. `sync_want_to_read` separately enables setting matched books to
