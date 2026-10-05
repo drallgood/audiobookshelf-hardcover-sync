@@ -270,10 +270,11 @@ func (h *Handler) CheckEditionImport(w http.ResponseWriter, r *http.Request) {
 		if snapshotErr != nil {
 			return statepkg.Association{}, snapshotErr
 		}
-		unanchored := record.Reason == mismatch.ReasonAudibleImportAvailable
+		unanchored := record.Reason == mismatch.ReasonAudibleImportAvailable || sync.IsAudiobookIdentifierFallbackRecord(record)
 		bookID := 0
 		if unanchored {
-			if normalizedEditionCreateFormat(record.Format) != models.ReadingFormatAudiobook || strings.TrimSpace(record.HardcoverBookID) != "" {
+			if normalizedEditionCreateFormat(record.Format) != models.ReadingFormatAudiobook ||
+				(record.Reason == mismatch.ReasonAudibleImportAvailable && strings.TrimSpace(record.HardcoverBookID) != "") {
 				return statepkg.Association{}, errStaleEditionCreateRun
 			}
 		} else {
@@ -287,9 +288,13 @@ func (h *Handler) CheckEditionImport(w http.ResponseWriter, r *http.Request) {
 		if actionErr != nil {
 			return statepkg.Association{}, fmt.Errorf("failed to inspect pending edition request: %w: %w", multiuser.ErrEditionCreateLocalFailure, actionErr)
 		}
+		tokenBookID := record.HardcoverBookID
+		if unanchored {
+			tokenBookID = ""
+		}
 		claims := editionRecoveryClaims{
 			ProfileID: profileID, RunID: request.RunID, ABSItemID: request.ABSItemID,
-			HardcoverBookID: record.HardcoverBookID, AudibleIdentifier: externalID,
+			HardcoverBookID: tokenBookID, AudibleIdentifier: externalID,
 		}
 		verifiedClaims, validToken := verifyEditionRecoveryToken(profile.HardcoverToken, request.RecoveryToken, claims)
 		if sourceRecoveryTransition && !validToken {
@@ -304,7 +309,7 @@ func (h *Handler) CheckEditionImport(w http.ResponseWriter, r *http.Request) {
 						// The signed token binds the book ID recorded by this run. For
 						// unanchored imports that value remains empty even after the
 						// action journal stores the resolved Hardcover book ID.
-						HardcoverBookID: record.HardcoverBookID, AudibleIdentifier: storedAction.Data.AudibleIdentifier,
+						HardcoverBookID: tokenBookID, AudibleIdentifier: storedAction.Data.AudibleIdentifier,
 					}
 					_, storedTokenValid = verifyEditionRecoveryToken(profile.HardcoverToken, storedAction.Data.RecoveryToken, storedTokenClaims)
 				}
@@ -507,10 +512,10 @@ func (h *Handler) verifiedEditionCreateRecord(profileID, runID, itemID string) (
 }
 
 // verifiedEditionRecoveryRecord permits the narrow transition where a newer
-// sync can no longer anchor a pending selected-book Audible import, but still
-// reports the same Audiobookshelf source as an unanchored import candidate.
-// The recovery handler separately requires the original signed token and its
-// pending action journal before using this exception.
+// sync can no longer use the original Audible import candidate, but still
+// reports the same Audiobookshelf source as an import candidate. The recovery
+// handler separately requires the original signed token and pending action
+// journal before using this exception.
 func (h *Handler) verifiedEditionRecoveryRecord(profileID, runID, itemID string) (*sync.SyncSnapshot, sync.BookOutcomeRecord, bool, error) {
 	return h.verifiedEditionCreateRecordWithRecoveryTransition(profileID, runID, itemID, true)
 }
@@ -530,7 +535,8 @@ func (h *Handler) verifiedEditionCreateRecordWithRecoveryTransition(profileID, r
 		if record.BookID != itemID {
 			continue
 		}
-		if record.Outcome != sync.OutcomeNeedsReview || strings.TrimSpace(record.Format) == "" {
+		fallbackASIN := sync.IsAudiobookIdentifierFallbackRecord(record)
+		if (!fallbackASIN && record.Outcome != sync.OutcomeNeedsReview) || strings.TrimSpace(record.Format) == "" {
 			return nil, sync.BookOutcomeRecord{}, false, errStaleEditionCreateRun
 		}
 		if record.Reason == mismatch.ReasonAudibleImportAvailable {
@@ -544,7 +550,7 @@ func (h *Handler) verifiedEditionCreateRecordWithRecoveryTransition(profileID, r
 			if _, valid := audnex.CanonicalASIN(sourceASIN); !valid {
 				return nil, sync.BookOutcomeRecord{}, false, errStaleEditionCreateRun
 			}
-		} else {
+		} else if !fallbackASIN {
 			if strings.TrimSpace(record.HardcoverBookID) == "" {
 				return nil, sync.BookOutcomeRecord{}, false, errStaleEditionCreateRun
 			}
@@ -557,7 +563,7 @@ func (h *Handler) verifiedEditionCreateRecordWithRecoveryTransition(profileID, r
 			return nil, sync.BookOutcomeRecord{}, false, fmt.Errorf("failed to inspect newer sync outcomes: %w: %w", multiuser.ErrEditionCreateLocalFailure, laterErr)
 		}
 		if found && !sameEditionCreateCandidate(record, laterRecord) {
-			if allowRecoveryTransition && sameSelectedBookToAudibleImportSource(record, laterRecord) {
+			if allowRecoveryTransition && sameAudibleImportRecoverySource(record, laterRecord) {
 				return snapshot, record, true, nil
 			}
 			return nil, sync.BookOutcomeRecord{}, false, errStaleEditionCreateRun
@@ -567,19 +573,24 @@ func (h *Handler) verifiedEditionCreateRecordWithRecoveryTransition(profileID, r
 	return nil, sync.BookOutcomeRecord{}, false, errStaleEditionCreateRun
 }
 
-func sameSelectedBookToAudibleImportSource(selected, source sync.BookOutcomeRecord) bool {
-	if selected.BookID != source.BookID || selected.Reason == mismatch.ReasonAudibleImportAvailable || source.Reason != mismatch.ReasonAudibleImportAvailable ||
-		selected.Outcome != sync.OutcomeNeedsReview || source.Outcome != sync.OutcomeNeedsReview ||
+func sameAudibleImportRecoverySource(selected, source sync.BookOutcomeRecord) bool {
+	selectedFallback := sync.IsAudiobookIdentifierFallbackRecord(selected)
+	selectedSourceOnly := isUnanchoredAudibleImportSource(selected)
+	selectedAnchored := selected.Outcome == sync.OutcomeNeedsReview && !selectedSourceOnly && !selectedFallback
+	sourceIsFallback := sync.IsAudiobookIdentifierFallbackRecord(source)
+	if selected.BookID != source.BookID || (!selectedFallback && !selectedSourceOnly && !selectedAnchored) ||
+		(!sourceIsFallback && !isUnanchoredAudibleImportSource(source)) ||
 		normalizedEditionCreateFormat(selected.Format) != models.ReadingFormatAudiobook ||
 		normalizedEditionCreateFormat(source.Format) != models.ReadingFormatAudiobook ||
-		strings.TrimSpace(source.HardcoverBookID) != "" || strings.TrimSpace(source.EditionID) != "" ||
 		edition.NormalizeNameOrTitle(selected.Title) != edition.NormalizeNameOrTitle(source.Title) ||
 		edition.NormalizeNameOrTitle(selected.Author) != edition.NormalizeNameOrTitle(source.Author) {
 		return false
 	}
-	selectedBookID, err := strconv.Atoi(strings.TrimSpace(selected.HardcoverBookID))
-	if err != nil || selectedBookID <= 0 {
-		return false
+	if selectedAnchored {
+		selectedBookID, err := strconv.Atoi(strings.TrimSpace(selected.HardcoverBookID))
+		if err != nil || selectedBookID <= 0 {
+			return false
+		}
 	}
 	selectedASIN, selectedASINValid := audnex.CanonicalASIN(firstNonEmptyString(selected.SourceASIN, selected.ASIN))
 	sourceASIN, sourceASINValid := audnex.CanonicalASIN(firstNonEmptyString(source.SourceASIN, source.ASIN))
@@ -590,6 +601,16 @@ func sameSelectedBookToAudibleImportSource(selected, source sync.BookOutcomeReco
 	sourceISBN10, sourceISBN13 := editionCreateSourceISBNs(source)
 	return isbn.Normalize(selectedISBN10) == isbn.Normalize(sourceISBN10) &&
 		isbn.Normalize(selectedISBN13) == isbn.Normalize(sourceISBN13)
+}
+
+func isUnanchoredAudibleImportSource(record sync.BookOutcomeRecord) bool {
+	if record.Outcome != sync.OutcomeNeedsReview || record.Reason != mismatch.ReasonAudibleImportAvailable ||
+		normalizedEditionCreateFormat(record.Format) != models.ReadingFormatAudiobook ||
+		strings.TrimSpace(record.HardcoverBookID) != "" || strings.TrimSpace(record.EditionID) != "" {
+		return false
+	}
+	_, valid := audnex.CanonicalASIN(firstNonEmptyString(record.SourceASIN, record.ASIN))
+	return valid
 }
 
 func editionCreateSourceISBNs(record sync.BookOutcomeRecord) (string, string) {
@@ -604,12 +625,24 @@ func editionCreateSourceISBNs(record sync.BookOutcomeRecord) (string, string) {
 }
 
 func sameEditionCreateCandidate(requested, latest sync.BookOutcomeRecord) bool {
-	if latest.BookID != requested.BookID || latest.Outcome != sync.OutcomeNeedsReview ||
-		strings.TrimSpace(latest.HardcoverBookID) != strings.TrimSpace(requested.HardcoverBookID) ||
+	requestedFallback := sync.IsAudiobookIdentifierFallbackRecord(requested)
+	latestFallback := sync.IsAudiobookIdentifierFallbackRecord(latest)
+	if latest.BookID != requested.BookID || requestedFallback != latestFallback ||
+		(!latestFallback && latest.Outcome != sync.OutcomeNeedsReview) ||
+		(!latestFallback && strings.TrimSpace(latest.HardcoverBookID) != strings.TrimSpace(requested.HardcoverBookID)) ||
 		normalizedEditionCreateFormat(latest.Format) != normalizedEditionCreateFormat(requested.Format) ||
 		edition.NormalizeNameOrTitle(latest.Title) != edition.NormalizeNameOrTitle(requested.Title) ||
 		edition.NormalizeNameOrTitle(latest.Author) != edition.NormalizeNameOrTitle(requested.Author) {
 		return false
+	}
+	if requestedFallback {
+		requestedASIN, _ := audnex.CanonicalASIN(firstNonEmptyString(requested.SourceASIN, requested.ASIN))
+		latestASIN, _ := audnex.CanonicalASIN(firstNonEmptyString(latest.SourceASIN, latest.ASIN))
+		requestedISBN10, requestedISBN13 := editionCreateSourceISBNs(requested)
+		latestISBN10, latestISBN13 := editionCreateSourceISBNs(latest)
+		return requestedASIN == latestASIN &&
+			isbn.Normalize(requestedISBN10) == isbn.Normalize(latestISBN10) &&
+			isbn.Normalize(requestedISBN13) == isbn.Normalize(latestISBN13)
 	}
 	if requested.Reason != mismatch.ReasonAudibleImportAvailable && latest.Reason != mismatch.ReasonAudibleImportAvailable {
 		return normalizeEditionCreateASIN(latest.ASIN) == normalizeEditionCreateASIN(requested.ASIN) &&
@@ -666,7 +699,7 @@ func (h *Handler) createVerifiedEdition(ctx context.Context, profile *database.P
 		response.recovery = editionRecoveryFromAction(previousAction.Data)
 		return statepkg.Association{}, fmt.Errorf("%w: prior outcome is %s", multiuser.ErrEditionActionRequiresResolution, previousAction.Outcome)
 	}
-	unanchoredAudibleImport := record.Reason == mismatch.ReasonAudibleImportAvailable
+	unanchoredAudibleImport := record.Reason == mismatch.ReasonAudibleImportAvailable || sync.IsAudiobookIdentifierFallbackRecord(record)
 	if unanchoredAudibleImport {
 		if !request.AudnexusConfirmed || strings.TrimSpace(request.AudibleIdentifier) == "" {
 			return statepkg.Association{}, errEditionAudnexusConfirmationRequired
@@ -740,7 +773,7 @@ func editionCreateSourceMatches(record sync.BookOutcomeRecord, item *models.Audi
 		return false
 	}
 	recordASIN := firstNonEmptyString(record.SourceASIN, record.ASIN)
-	if record.Reason == mismatch.ReasonAudibleImportAvailable {
+	if record.Reason == mismatch.ReasonAudibleImportAvailable || sync.IsAudiobookIdentifierFallbackRecord(record) {
 		currentASIN, valid := audnex.CanonicalASIN(item.Media.Metadata.ASIN)
 		sourceASIN, sourceValid := audnex.CanonicalASIN(recordASIN)
 		if !valid || !sourceValid || currentASIN != sourceASIN {
@@ -783,7 +816,7 @@ func normalizeEditionCreateASIN(raw string) string {
 }
 
 func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database.ProfileWithTokens, item *models.AudiobookshelfBook, record sync.BookOutcomeRecord, request editionCreateRequest, client editionCreateHardcoverClient, response *editionCreateResponse) (statepkg.Association, error) {
-	unanchored := record.Reason == mismatch.ReasonAudibleImportAvailable
+	unanchored := record.Reason == mismatch.ReasonAudibleImportAvailable || sync.IsAudiobookIdentifierFallbackRecord(record)
 	asin, region, err := parseSubmittedAudibleIdentifier(request.AudibleIdentifier)
 	if err != nil {
 		return statepkg.Association{}, err
@@ -1309,7 +1342,7 @@ func (h *Handler) createInsertedEdition(ctx context.Context, profile *database.P
 	if result.Existing {
 		status = "existing"
 	}
-	association := createEditionAssociation(item, record.HardcoverBookID, strconv.Itoa(result.EditionID), "", "", format, "api_"+format+"_"+status)
+	association := createEditionAssociation(item, record.HardcoverBookID, strconv.Itoa(result.EditionID), "", "", format, "api_"+statepkg.EditionIdentifierProvenance(format, input.ASIN))
 	*response = editionCreateResponse{
 		ABSItemID: item.ID, ReadingFormat: format, Status: status,
 		HardcoverBookID: record.HardcoverBookID, HardcoverEditionID: strconv.Itoa(result.EditionID),

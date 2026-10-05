@@ -173,6 +173,125 @@ func editionCreateRecord() sync.BookOutcomeRecord {
 	}
 }
 
+func audiobookIdentifierFallbackRecord(outcome sync.SyncOutcome, matchMethod string) sync.BookOutcomeRecord {
+	return sync.BookOutcomeRecord{
+		BookID: "abs-item-1", Outcome: outcome, MatchMethod: matchMethod,
+		Title: "Reviewed title", Author: "Author", ASIN: "B0HCASEDIT",
+		SourceASIN: "B0SOURCE12", ISBN: "978-0-306-40615-7", SourceISBN13: "9780306406157",
+		Format: "AuDiObOoK", HardcoverBookID: "42", EditionID: "84",
+	}
+}
+
+func TestCreateEditionFromAudiobookIdentifierFallbackImportsUnanchoredAndOverlaysSavedAssociation(t *testing.T) {
+	for _, test := range []struct {
+		matchMethod string
+		outcome     sync.SyncOutcome
+	}{
+		{matchMethod: "edition_asin", outcome: sync.OutcomeSynced},
+		{matchMethod: "isbn", outcome: sync.OutcomeAlreadyCurrent},
+	} {
+		t.Run(test.matchMethod+"/"+string(test.outcome), func(t *testing.T) {
+			fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0SOURCE12","isbn":"978-0-306-40615-7"},"duration":100}}`, "us")
+			configureEditionCreateRoute(t, fixture)
+			record := audiobookIdentifierFallbackRecord(test.outcome, test.matchMethod)
+			addCompletedNeedsReviewRun(t, fixture, "run-fallback-create", record)
+			previousState := statepkg.NewState()
+			previousState.UpdateBook("abs-item-1", 0.6, "IN_PROGRESS")
+			previousState.UpdateBook("abs-item-1:84", 0.6, "IN_PROGRESS")
+			require.NoError(t, previousState.Save(editionCreateProfileStatePath(fixture)))
+			var imports atomic.Int32
+			fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+				return editionCreateHardcoverStub{importFn: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+					imports.Add(1)
+					require.Zero(t, input.BookID, "fallback import must not be anchored to the selected Hardcover book")
+					require.True(t, input.Unanchored)
+					require.Equal(t, "B0SOURCE12", input.ASIN)
+					require.Equal(t, "uk", input.Region)
+					return &hardcover.RegionalAudiobookResult{
+						Status: hardcover.RegionalAudiobookCreated, BookID: 73, EditionID: 95,
+						ReadingFormatID: models.ReadingFormatID(models.ReadingFormatAudiobook), RegionalExternalID: "B0SOURCE12:uk",
+					}, nil
+				}}
+			}
+
+			response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-fallback-create","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk","audnexus_confirmed":true}`)
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			require.EqualValues(t, 1, imports.Load())
+			var envelope struct {
+				Data struct {
+					HardcoverBookID    string `json:"hardcover_book_id"`
+					HardcoverEditionID string `json:"hardcover_edition_id"`
+					RegionalExternalID string `json:"regional_external_id"`
+				} `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+			require.Equal(t, "73", envelope.Data.HardcoverBookID)
+			require.Equal(t, "95", envelope.Data.HardcoverEditionID)
+			require.Equal(t, "B0SOURCE12:uk", envelope.Data.RegionalExternalID)
+
+			stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+			require.NoError(t, err)
+			association, exists := stored.GetAssociation("abs-item-1")
+			require.True(t, exists)
+			require.Equal(t, "73", association.HardcoverBookID)
+			require.Equal(t, "95", association.HardcoverEditionID)
+			require.Equal(t, "B0SOURCE12:uk", association.RegionalExternalID)
+			require.Equal(t, "audible_import_unanchored", association.Provenance)
+			require.NotContains(t, stored.Books, "abs-item-1:84")
+			require.True(t, stored.NeedsSync("abs-item-1", 0.6, "IN_PROGRESS", 0.001))
+
+			overlay := &sync.SyncSnapshot{ProfileID: "draft-profile", RunID: "run-fallback-create", State: string(sync.RunPhaseCompleted), BookOutcomes: []sync.BookOutcomeRecord{record}}
+			require.NoError(t, fixture.multiUserService.AnnotateEditionAdditions("draft-profile", overlay))
+			require.True(t, overlay.BookOutcomes[0].EditionAdded, "the saved import result must overlay even though it resolved to a different Hardcover book")
+		})
+	}
+}
+
+func TestCreateEditionFromAudiobookIdentifierFallbackRejectsIneligibleAndStaleRecords(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		mutate   func(*sync.BookOutcomeRecord)
+		later    bool
+		itemJSON string
+	}{
+		{name: "other match method", mutate: func(r *sync.BookOutcomeRecord) { r.MatchMethod = "title" }},
+		{name: "failed outcome", mutate: func(r *sync.BookOutcomeRecord) { r.Outcome = sync.OutcomeFailed }},
+		{name: "skipped outcome", mutate: func(r *sync.BookOutcomeRecord) { r.Outcome = sync.OutcomeSkipped }},
+		{name: "invalid source ASIN", mutate: func(r *sync.BookOutcomeRecord) { r.SourceASIN = "invalid" }},
+		{name: "newer fallback has different source", later: true},
+		{name: "Audiobookshelf source changed", itemJSON: `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0CHANGED12","isbn":"978-0-306-40615-7"},"duration":100}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			itemJSON := test.itemJSON
+			if itemJSON == "" {
+				itemJSON = `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0SOURCE12","isbn":"978-0-306-40615-7"},"duration":100}}`
+			}
+			fixture := newEditionDraftTestFixture(t, itemJSON, "us")
+			configureEditionCreateRoute(t, fixture)
+			record := audiobookIdentifierFallbackRecord(sync.OutcomeSynced, "edition_asin")
+			if test.mutate != nil {
+				test.mutate(&record)
+			}
+			addCompletedNeedsReviewRun(t, fixture, "run-fallback-stale", record)
+			if test.later {
+				later := audiobookIdentifierFallbackRecord(sync.OutcomeAlreadyCurrent, "edition_asin")
+				later.SourceASIN = "B0CHANGED12"
+				addCompletedNeedsReviewRun(t, fixture, "run-fallback-later", later)
+			}
+			var imports atomic.Int32
+			fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+				return editionCreateHardcoverStub{importFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+					imports.Add(1)
+					return nil, errors.New("fallback import must not proceed")
+				}}
+			}
+			response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-fallback-stale","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk","audnexus_confirmed":true}`)
+			require.NotEqual(t, http.StatusOK, response.Code, response.Body.String())
+			require.Zero(t, imports.Load())
+		})
+	}
+}
+
 func TestCreateEditionFromDraftUsesExactRunAndPersistsVerifiedAssociation(t *testing.T) {
 	fixture := newEditionDraftTestFixture(t, `{
 		"id":"abs-item-1","mediaType":"book","media":{
@@ -496,29 +615,96 @@ func TestCheckEditionImportPersistsReadOnlyRecoveryAndIsIdempotent(t *testing.T)
 }
 
 func TestCheckEditionImportRecoversSelectedBookAfterLaterSourceOnlyRun(t *testing.T) {
+	sourceOnly := sync.BookOutcomeRecord{
+		BookID: "abs-item-1", Outcome: sync.OutcomeNeedsReview, Reason: mismatch.ReasonAudibleImportAvailable,
+		Title: "Reviewed title", Author: "Author", Format: "Audiobook", ASIN: "B0SOURCE12",
+		SourceASIN: "B0SOURCE12", ISBN: "978-0-306-40615-7", SourceISBN13: "9780306406157",
+	}
+	changedSource := sourceOnly
+	changedSource.ASIN, changedSource.SourceASIN = "B0CHANGED1", "B0CHANGED1"
+	selectedBook := editionCreateRecord()
+	selectedBook.Title, selectedBook.Author = "Reviewed title", "Author"
+
 	for _, test := range []struct {
 		name           string
-		mutateSource   func(*sync.BookOutcomeRecord)
+		selected       sync.BookOutcomeRecord
+		later          sync.BookOutcomeRecord
+		mutateToken    bool
+		clearJournal   bool
+		noLaterRun     bool
 		wantStatus     int
 		wantCheckCalls int32
+		wantBookID     int
+		wantUnanchored bool
+		remoteBookID   int
 	}{
-		{name: "same source recovers against original selected book", wantStatus: http.StatusOK, wantCheckCalls: 1},
 		{
-			name: "changed source counterpart remains stale",
-			mutateSource: func(record *sync.BookOutcomeRecord) {
-				record.SourceASIN = "B0CHANGED1"
-				record.ASIN = "B0CHANGED1"
-			},
+			name:       "same source recovers against original selected book",
+			selected:   selectedBook,
+			later:      sourceOnly,
+			wantStatus: http.StatusOK, wantCheckCalls: 1, wantBookID: 42, remoteBookID: 42,
+		},
+		{
+			name:       "changed source counterpart remains stale",
+			selected:   selectedBook,
+			later:      changedSource,
 			wantStatus: http.StatusConflict,
+		},
+		{
+			name:       "synced fallback original recovers as unanchored",
+			selected:   audiobookIdentifierFallbackRecord(sync.OutcomeSynced, "edition_asin"),
+			later:      sourceOnly,
+			wantStatus: http.StatusOK, wantCheckCalls: 1, wantBookID: 0, wantUnanchored: true, remoteBookID: 73,
+		},
+		{
+			name:       "fallback original with changed source remains stale",
+			selected:   audiobookIdentifierFallbackRecord(sync.OutcomeSynced, "edition_asin"),
+			later:      changedSource,
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name:        "fallback original requires its signed token",
+			selected:    audiobookIdentifierFallbackRecord(sync.OutcomeAlreadyCurrent, "edition_asin"),
+			later:       sourceOnly,
+			mutateToken: true, wantStatus: http.StatusConflict,
+		},
+		{
+			name:         "fallback original requires its pending action journal",
+			selected:     audiobookIdentifierFallbackRecord(sync.OutcomeSynced, "edition_asin"),
+			later:        sourceOnly,
+			clearJournal: true, wantStatus: http.StatusConflict,
+		},
+		{
+			name:       "ISBN fallback remains current when latest match uses edition ASIN",
+			selected:   audiobookIdentifierFallbackRecord(sync.OutcomeAlreadyCurrent, "isbn"),
+			later:      audiobookIdentifierFallbackRecord(sync.OutcomeSynced, "edition_asin"),
+			wantStatus: http.StatusOK, wantCheckCalls: 1, wantBookID: 0, wantUnanchored: true, remoteBookID: 73,
+		},
+		{
+			name:           "source-only original can recover through same-source fallback",
+			selected:       sourceOnly,
+			later:          audiobookIdentifierFallbackRecord(sync.OutcomeSynced, "edition_asin"),
+			wantStatus:     http.StatusOK,
+			wantCheckCalls: 1, wantBookID: 0, wantUnanchored: true, remoteBookID: 73,
+		},
+		{
+			name:           "ISBN fallback recovers without a later run and saves resolved identity",
+			selected:       audiobookIdentifierFallbackRecord(sync.OutcomeAlreadyCurrent, "isbn"),
+			noLaterRun:     true,
+			wantStatus:     http.StatusOK,
+			wantCheckCalls: 1, wantBookID: 0, wantUnanchored: true, remoteBookID: 73,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0SOURCE12","isbn":"978-0-306-40615-7"},"duration":100,"numTracks":1}}`, "us")
 			configureEditionCreateRoute(t, fixture)
-			selected := editionCreateRecord()
-			selected.Title = "Reviewed title"
-			selected.Author = "Author"
-			addCompletedNeedsReviewRun(t, fixture, "run-selected-pending", selected)
+			addCompletedNeedsReviewRun(t, fixture, "run-selected-pending", test.selected)
+			if test.noLaterRun {
+				state := statepkg.NewState()
+				state.UpdateBook("abs-item-1", 0.6, "IN_PROGRESS")
+				state.UpdateBook("abs-item-1:84", 0.6, "IN_PROGRESS")
+				require.NoError(t, state.Save(editionCreateProfileStatePath(fixture)))
+			}
 
 			var imports, checks atomic.Int32
 			fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
@@ -529,17 +715,21 @@ func TestCheckEditionImportRecoversSelectedBookAfterLaterSourceOnlyRun(t *testin
 					},
 					checkFn: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, bool, error) {
 						checks.Add(1)
-						require.Equal(t, 42, input.BookID, "recovery must retain the selected Hardcover book ID")
-						require.False(t, input.Unanchored, "a newer source-only outcome must not convert selected-book recovery to unanchored recovery")
+						require.Equal(t, test.wantBookID, input.BookID)
+						require.Equal(t, test.wantUnanchored, input.Unanchored)
 						return &hardcover.RegionalAudiobookResult{
-							Status: hardcover.RegionalAudiobookCreated, BookID: 42, EditionID: 84,
+							Status: hardcover.RegionalAudiobookCreated, BookID: test.remoteBookID, EditionID: 84,
 							ReadingFormatID: models.ReadingFormatID(models.ReadingFormatAudiobook), RegionalExternalID: "B0SOURCE12:uk",
 						}, true, nil
 					},
 				}
 			}
 
-			created := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-selected-pending","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`)
+			createBody := `{"run_id":"run-selected-pending","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`
+			if test.selected.Reason == mismatch.ReasonAudibleImportAvailable || sync.IsAudiobookIdentifierFallbackRecord(test.selected) {
+				createBody = `{"run_id":"run-selected-pending","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk","audnexus_confirmed":true}`
+			}
+			created := postEditionCreate(t, fixture, fixture.owner, createBody)
 			require.Equal(t, http.StatusServiceUnavailable, created.Code, created.Body.String())
 			var createEnvelope struct {
 				Data struct {
@@ -550,18 +740,19 @@ func TestCheckEditionImportRecoversSelectedBookAfterLaterSourceOnlyRun(t *testin
 			require.NoError(t, json.Unmarshal(created.Body.Bytes(), &createEnvelope))
 			require.NotEmpty(t, createEnvelope.Data.RecoveryToken)
 
-			sourceOnly := sync.BookOutcomeRecord{
-				BookID: "abs-item-1", Outcome: sync.OutcomeNeedsReview, Reason: mismatch.ReasonAudibleImportAvailable,
-				Title: "Reviewed title", Author: "Author", Format: "Audiobook", ASIN: "B0SOURCE12",
-				SourceASIN: "B0SOURCE12", ISBN: "978-0-306-40615-7", SourceISBN13: "9780306406157",
+			if !test.noLaterRun {
+				addCompletedNeedsReviewRun(t, fixture, "run-later-source-only", test.later)
 			}
-			if test.mutateSource != nil {
-				test.mutateSource(&sourceOnly)
+			if test.clearJournal {
+				require.NoError(t, fixture.multiUserService.ClearEditionActionsForProfileItem("draft-profile", "abs-item-1"))
 			}
-			addCompletedNeedsReviewRun(t, fixture, "run-later-source-only", sourceOnly)
+			recoveryToken := createEnvelope.Data.RecoveryToken
+			if test.mutateToken {
+				recoveryToken += "x"
+			}
 
 			body := fmt.Sprintf(`{"run_id":"run-selected-pending","abs_item_id":"abs-item-1","audible_identifier":%q,"recovery_token":%q}`,
-				createEnvelope.Data.AudibleIdentifier, createEnvelope.Data.RecoveryToken)
+				createEnvelope.Data.AudibleIdentifier, recoveryToken)
 			checked := postEditionImportCheck(t, fixture, fixture.owner, body)
 			require.Equal(t, test.wantStatus, checked.Code, checked.Body.String())
 			require.EqualValues(t, 1, imports.Load(), "recovery must not submit another Hardcover mutation")
@@ -571,36 +762,60 @@ func TestCheckEditionImportRecoversSelectedBookAfterLaterSourceOnlyRun(t *testin
 				require.NoError(t, err)
 				association, exists := stored.GetAssociation("abs-item-1")
 				require.True(t, exists)
-				require.Equal(t, "42", association.HardcoverBookID)
+				require.Equal(t, fmt.Sprint(test.remoteBookID), association.HardcoverBookID)
 				require.Equal(t, "84", association.HardcoverEditionID)
+				if test.noLaterRun {
+					require.Equal(t, "B0SOURCE12:uk", association.RegionalExternalID)
+					require.Equal(t, "audible_import_unanchored", association.Provenance)
+					require.True(t, stored.NeedsSync("abs-item-1", 0.6, "IN_PROGRESS", 0.001))
+					require.NotContains(t, stored.Books, "abs-item-1:84")
+
+					overlay := &sync.SyncSnapshot{
+						ProfileID: "draft-profile", RunID: "run-selected-pending",
+						State: string(sync.RunPhaseCompleted), BookOutcomes: []sync.BookOutcomeRecord{test.selected},
+					}
+					require.NoError(t, fixture.multiUserService.AnnotateEditionAdditions("draft-profile", overlay))
+					require.True(t, overlay.BookOutcomes[0].EditionAdded, "the recovered result must overlay after its journal is cleared")
+				}
 			}
 		})
 	}
 }
 
 func TestCreateEditionFromDraftRejectsSelectedRecordAfterLaterSourceOnlyOutcome(t *testing.T) {
-	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0SOURCE12","isbn":"978-0-306-40615-7"},"duration":100,"numTracks":1}}`, "us")
-	configureEditionCreateRoute(t, fixture)
-	selected := editionCreateRecord()
-	selected.Title = "Reviewed title"
-	selected.Author = "Author"
-	addCompletedNeedsReviewRun(t, fixture, "run-create-stale-source", selected)
-	addCompletedNeedsReviewRun(t, fixture, "run-later-source-only", sync.BookOutcomeRecord{
-		BookID: "abs-item-1", Outcome: sync.OutcomeNeedsReview, Reason: mismatch.ReasonAudibleImportAvailable,
-		Title: "Reviewed title", Author: "Author", Format: "Audiobook", ASIN: "B0SOURCE12",
-		SourceASIN: "B0SOURCE12", ISBN: "978-0-306-40615-7", SourceISBN13: "9780306406157",
-	})
-	var imports atomic.Int32
-	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
-		return editionCreateHardcoverStub{importFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
-			imports.Add(1)
-			return nil, nil
-		}}
-	}
+	for _, selected := range []struct {
+		name   string
+		record sync.BookOutcomeRecord
+	}{
+		{name: "selected book", record: func() sync.BookOutcomeRecord {
+			record := editionCreateRecord()
+			record.Title, record.Author = "Reviewed title", "Author"
+			return record
+		}()},
+		{name: "ASIN fallback", record: audiobookIdentifierFallbackRecord(sync.OutcomeSynced, "edition_asin")},
+	} {
+		t.Run(selected.name, func(t *testing.T) {
+			fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0SOURCE12","isbn":"978-0-306-40615-7"},"duration":100,"numTracks":1}}`, "us")
+			configureEditionCreateRoute(t, fixture)
+			addCompletedNeedsReviewRun(t, fixture, "run-create-stale-source", selected.record)
+			addCompletedNeedsReviewRun(t, fixture, "run-later-source-only", sync.BookOutcomeRecord{
+				BookID: "abs-item-1", Outcome: sync.OutcomeNeedsReview, Reason: mismatch.ReasonAudibleImportAvailable,
+				Title: "Reviewed title", Author: "Author", Format: "Audiobook", ASIN: "B0SOURCE12",
+				SourceASIN: "B0SOURCE12", ISBN: "978-0-306-40615-7", SourceISBN13: "9780306406157",
+			})
+			var imports atomic.Int32
+			fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+				return editionCreateHardcoverStub{importFn: func(context.Context, hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+					imports.Add(1)
+					return nil, nil
+				}}
+			}
 
-	response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-create-stale-source","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`)
-	require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
-	require.Zero(t, imports.Load(), "the recovery-only freshness transition must not permit a new create")
+			response := postEditionCreate(t, fixture, fixture.owner, `{"run_id":"run-create-stale-source","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`)
+			require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+			require.Zero(t, imports.Load(), "the recovery-only freshness transition must not permit a new create")
+		})
+	}
 }
 
 func TestCheckEditionImportRejectsTamperedTokenBeforeExternalLookup(t *testing.T) {
@@ -1142,10 +1357,10 @@ func TestCreateEditionFromDraftAllowsCandidateAfterUnrelatedLaterRun(t *testing.
 	}
 }
 
-func TestCreateEditionFromDraftDoesNotReplaceSavedAssociation(t *testing.T) {
+func TestCreateEditionFromDraftASINFallbackDoesNotReplaceSavedAssociation(t *testing.T) {
 	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"asin":"B0SOURCE12","isbn":"9780306406157"},"duration":100}}`, "us")
 	configureEditionCreateRoute(t, fixture)
-	addCompletedNeedsReviewRun(t, fixture, "run-create-associated", editionCreateRecord())
+	addCompletedNeedsReviewRun(t, fixture, "run-create-associated", audiobookIdentifierFallbackRecord(sync.OutcomeSynced, "edition_asin"))
 	stored := statepkg.NewState()
 	require.NoError(t, stored.SetAssociation(statepkg.Association{
 		ABSItemID: "abs-item-1", HardcoverBookID: "43", HardcoverEditionID: "84",
@@ -1161,7 +1376,7 @@ func TestCreateEditionFromDraftDoesNotReplaceSavedAssociation(t *testing.T) {
 	}
 
 	request := httptest.NewRequest(http.MethodPost, "/api/profiles/draft-profile/edition-drafts/create", strings.NewReader(
-		`{"run_id":"run-create-associated","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk"}`,
+		`{"run_id":"run-create-associated","abs_item_id":"abs-item-1","audible_identifier":"B0SOURCE12:uk","audnexus_confirmed":true}`,
 	))
 	request.AddCookie(fixture.sessionCookie(t, fixture.owner))
 	response := httptest.NewRecorder()
@@ -1409,6 +1624,7 @@ func TestCreateEditionFromDraftCreatesEbookWhenOptionalPublisherSearchFails(t *t
 	require.Equal(t, "42", association.HardcoverBookID)
 	require.Equal(t, "84", association.HardcoverEditionID)
 	require.Equal(t, models.ReadingFormatEbook, association.ReadingFormat)
+	require.Equal(t, "api_isbn", association.Provenance)
 }
 
 func TestCreateEditionFromDraftRejectsMismatchedReadBackEbookEditionID(t *testing.T) {
@@ -2059,6 +2275,24 @@ func TestCreateEditionFromDraftRejectsInvalidInputBeforeMutation(t *testing.T) {
 	}
 }
 
+func requireEditionAddedInFreshRunDetails(t *testing.T, fixture *editionDraftTestFixture, runID string) {
+	t.Helper()
+	_, found, err := fixture.multiUserService.GetEditionAction("draft-profile", runID, "abs-item-1")
+	require.NoError(t, err)
+	require.False(t, found, "successful save must clear the pending action journal")
+	response := fixture.request("/api/profiles/draft-profile/runs/"+runID+"/details", fixture.sessionCookie(t, fixture.owner))
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var envelope struct {
+		Data sync.SyncSnapshot `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	require.Len(t, envelope.Data.BookOutcomes, 1)
+	record := envelope.Data.BookOutcomes[0]
+	require.True(t, record.EditionAdded, "fresh run details must retain the saved edition completion label")
+	require.Nil(t, record.EditionAction)
+	require.Equal(t, sync.OutcomeNeedsReview, record.Outcome, "completion overlay must preserve the historical outcome")
+}
+
 func TestCreateEditionFromDraftCreatesASINOnlyEbook(t *testing.T) {
 	fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"ebook","media":{
 		"metadata":{"title":"Ebook","authorName":"Author","asin":"b0ebook123"},"ebookFile":{},"ebookFormat":"epub"}}`, "us")
@@ -2090,6 +2324,7 @@ func TestCreateEditionFromDraftCreatesASINOnlyEbook(t *testing.T) {
 	association, exists := stored.GetAssociation("abs-item-1")
 	require.True(t, exists)
 	require.Equal(t, "84", association.HardcoverEditionID)
+	requireEditionAddedInFreshRunDetails(t, fixture, "run-create-asin-ebook")
 }
 
 func TestCreateEditionFromDraftCreatesISBNOnlyEbookWhenSourceASINIsMalformed(t *testing.T) {
@@ -2130,6 +2365,7 @@ func TestCreateEditionFromDraftCreatesISBNOnlyEbookWhenSourceASINIsMalformed(t *
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 	require.EqualValues(t, 1, counts.ebookCreates.Load())
 	require.Zero(t, counts.imports.Load())
+	requireEditionAddedInFreshRunDetails(t, fixture, "run-create-isbn-ebook")
 }
 
 func TestCreateEditionFromDraftAppliesEbookCorrections(t *testing.T) {
@@ -2525,6 +2761,7 @@ func TestCreateEditionFromDraftReusesExistingEbookEditionOfSameBook(t *testing.T
 	require.True(t, exists)
 	require.Equal(t, "91", association.HardcoverEditionID)
 	require.Equal(t, models.ReadingFormatEbook, association.ReadingFormat)
+	requireEditionAddedInFreshRunDetails(t, fixture, "run-existing-ebook")
 }
 
 func TestCreateEditionFromDraftRejectsAmbiguousSameNameAuthorFallback(t *testing.T) {
@@ -3561,6 +3798,7 @@ func TestCreateEditionFromDraftInsertsISBNOnlyAudiobook(t *testing.T) {
 			require.Equal(t, tc.formatID == "2" && !tc.delayedReadback, exists)
 			if exists {
 				require.Equal(t, models.ReadingFormatAudiobook, association.ReadingFormat)
+				requireEditionAddedInFreshRunDetails(t, fixture, "run-isbn-audio")
 				require.Equal(t, "84", association.HardcoverEditionID)
 				require.Empty(t, association.RegionalExternalID)
 			}

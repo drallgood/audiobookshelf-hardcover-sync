@@ -1925,23 +1925,29 @@ class SyncProfileApp {
         return known[reason] || reason;
     }
 
-    syncMatchMethodText(matchMethod) {
+    syncMatchMethodText(matchMethod, record = {}) {
         const value = String(matchMethod || '').trim().toLowerCase();
+        const saved = value.startsWith('saved_');
+        let method = saved ? value.slice(6) : value;
+        const audiobook = String(record.format || '').trim().toLowerCase() === 'audiobook';
+        const sourceASIN = this.editionSourceASIN(record);
+        if (method === 'edition') {
+            method = !audiobook && /^[a-z0-9]{10}$/i.test(sourceASIN) ? 'edition_asin' : 'isbn';
+        }
         const known = {
             title_author: 'Title and author',
-            asin: 'ASIN',
-            isbn: 'ISBN'
+            audible_mapping: 'Audible ASIN',
+            audible_asin: 'Audible ASIN',
+            asin: audiobook ? 'Audible ASIN' : 'Edition ASIN',
+            isbn: 'ISBN',
+            isbn_10: 'ISBN',
+            isbn_13: 'ISBN',
+            edition_asin: 'Edition ASIN'
         };
-        if (Object.prototype.hasOwnProperty.call(known, value)) return known[value];
-
-        const words = value.split(/[\s_-]+/).filter(Boolean);
-        if (words[0] === 'isbn' && ['10', '13'].includes(words[1])) {
-            words.splice(0, 2, `ISBN-${words[1]}`);
-        }
-        const labels = { asin: 'ASIN', isbn: 'ISBN', audible: 'Audible', hardcover: 'Hardcover', and: 'and' };
-        return words.map((word, index) => Object.prototype.hasOwnProperty.call(labels, word) ? labels[word] : (index === 0
-            ? word.charAt(0).toUpperCase() + word.slice(1)
-            : word)).join(' ');
+        const label = Object.prototype.hasOwnProperty.call(known, method) ? known[method] : 'Unknown';
+        const temporary = !saved && audiobook && (method === 'edition_asin' ||
+            (['isbn', 'isbn_10', 'isbn_13'].includes(method) && sourceASIN !== ''));
+        return temporary ? `${label} (temporary)` : label;
     }
 
     renderOutcomeRecord(record, audiobookshelfBaseURL = '') {
@@ -1952,6 +1958,7 @@ class SyncProfileApp {
         const asin = String(record.asin || '').trim();
         const isbn = String(record.isbn || '').trim();
         const format = String(record.format || '').trim();
+        const matchMethod = record.match_method || (['synced', 'already_current'].includes(record.outcome) ? 'unknown' : '');
         const series = this.formatSeries(record.series, record.series_number);
         const audibleURL = record.outcome === 'needs_review'
             ? this.buildAudibleBookURL(asin)
@@ -1985,8 +1992,8 @@ class SyncProfileApp {
                         ${hardcoverLink ? `<div class="book-service-links">${hardcoverLink}</div>` : ''}
                     </div>
                     ${record.author ? `<div><strong>Author:</strong> ${this.escapeHtml(record.author)}</div>` : ''}
-                    <div class="book-meta">${asinHTML}${isbnHTML}${format ? `<span><strong>Format:</strong> ${this.escapeHtml(format)}</span>` : ''}${series ? `<span><strong>Series:</strong> ${this.escapeHtml(series)}</span>` : ''}</div>
-                    ${record.match_method ? `<div><strong>Match method:</strong> ${this.escapeHtml(this.syncMatchMethodText(record.match_method))}</div>` : ''}
+                    <div class="book-meta">${asinHTML}${isbnHTML}${series ? `<span><strong>Series:</strong> ${this.escapeHtml(series)}</span>` : ''}${format ? `<span><strong>Format:</strong> ${this.escapeHtml(format)}</span>` : ''}</div>
+                    ${matchMethod ? `<div class="book-meta"><span><strong>Match method:</strong> ${this.escapeHtml(this.syncMatchMethodText(matchMethod, record))}</span></div>` : ''}
                     ${record.outcome === 'needs_review' && !this.isAudibleImportRecord(record) ? this.renderHardcoverCandidate(record, editionActionsHTML) : editionActionsHTML}
                     ${record.reason ? `<div class="book-reason"><strong>Reason:</strong> ${this.escapeHtml(this.syncReasonText(record.reason))}</div>` : ''}
                     ${record.error ? `<div class="book-error"><strong>Error:</strong> ${this.escapeHtml(record.error)}</div>` : ''}
@@ -2007,20 +2014,36 @@ class SyncProfileApp {
     }
 
     isAudibleImportRecord(record) {
-        return record?.outcome === 'needs_review' && record?.reason === 'audible_import_available';
+        return (record?.outcome === 'needs_review' && record?.reason === 'audible_import_available')
+            || this.audiobookIdentifierFallbackActionEligible(record);
+    }
+
+    editionSourceASIN(record) {
+        const preferred = String(record?.source_asin || '').trim();
+        return preferred || String(record?.asin || '').trim();
+    }
+
+    audiobookIdentifierFallbackActionEligible(record) {
+        return ['edition_asin', 'isbn'].includes(record?.match_method)
+            && String(record.format || '').trim().toLowerCase() === 'audiobook'
+            && ['synced', 'already_current'].includes(record.outcome)
+            && /^[a-z0-9]{10}$/i.test(this.editionSourceASIN(record));
     }
 
     // Returns null when the create action applies, or a reason it does not.
     editionCreateIneligibleReason(record, runContext) {
-        if (!record || record.outcome !== 'needs_review') return 'Only needs-review items can be resolved here.';
+        const identifierFallback = this.audiobookIdentifierFallbackActionEligible(record);
+        if (!record || (record.outcome !== 'needs_review' && !identifierFallback)) return 'Only needs-review items or eligible audiobook fallback matches can be resolved here.';
         if (!runContext || !['completed', 'canceled'].includes(runContext.state)) return 'Wait for the run to complete.';
+        if (identifierFallback) return null;
         const audibleImport = this.isAudibleImportRecord(record);
-        if (audibleImport && !/^[a-z0-9]{10}$/i.test(String(record.asin || '').trim())) return 'Audible import requires a valid 10-character ASIN from Audiobookshelf.';
+        if (audibleImport && !/^[a-z0-9]{10}$/i.test(this.editionSourceASIN(record))) return 'Audible import requires a valid 10-character ASIN from Audiobookshelf.';
         if (!audibleImport && !/^\d+$/.test(String(record.hardcover_book_id || '').trim())) return 'No Hardcover book was matched for this item.';
         if (!['audiobook', 'ebook'].includes(String(record.format || '').trim().toLowerCase())) return 'The reading format is unknown.';
-        const audioASINReason = this.audiobookSourceASINIneligibleReason(record.format, record.asin, record.isbn);
+        const sourceASIN = this.editionSourceASIN(record);
+        const audioASINReason = this.audiobookSourceASINIneligibleReason(record.format, sourceASIN, record.isbn);
         if (audioASINReason) return audioASINReason;
-        if (!String(record.asin || '').trim() && !String(record.isbn || '').trim()) return 'The item needs an ASIN or ISBN.';
+        if (!sourceASIN && !String(record.isbn || '').trim()) return 'The item needs an ASIN or ISBN.';
         return null;
     }
 
@@ -2042,36 +2065,41 @@ class SyncProfileApp {
         const profileId = open.profileId;
         const syncing = this.profileIsSyncing(profileId);
         if (record.outcome === 'needs_review') {
-            if (record.edition_added === true || open.addedEditionBookIds?.has(String(record.book_id))) {
-                return '<div class="edition-actions"><span class="edition-added" role="status">Hardcover Edition Added</span></div>';
-            }
-
-            const pendingRecovery = this.editionRequestState(record, open);
-            if (pendingRecovery) {
-                return `<div class="edition-actions"><button type="button" class="book-service-link edition-action-pill" data-edition-action="add">${this.editionRequestLabel(pendingRecovery)}</button></div>`;
-            }
-            const disabledReason = this.editionActionDisabledReason(record, open);
-            return `<div class="edition-actions">
-                <button type="button" class="book-service-link edition-action-pill" data-edition-action="add" ${disabledReason ? `disabled title="${this.escapeHtmlAttribute(disabledReason)}"` : ''}>Add edition</button>
-            </div>`;
+            return `<div class="edition-actions">${this.renderAddEditionAction(record, open)}</div>`;
         }
         if (this.isMatchedRecord(record)) {
             const syncingNote = 'A sync is running for this profile; this action will be available again when it finishes.';
+            const fallbackEligible = this.audiobookIdentifierFallbackActionEligible(record);
             return `<div class="edition-actions">
-                <span class="edition-note">Hardcover target: book ${this.escapeHtml(record.hardcover_book_id)}${record.edition_id ? `, edition ${this.escapeHtml(record.edition_id)}` : ''}</span>
+                <div class="book-meta"><span><strong>Hardcover target:</strong> book ${this.escapeHtml(record.hardcover_book_id)}${record.edition_id ? `, edition ${this.escapeHtml(record.edition_id)}` : ''}</span></div>
+                ${fallbackEligible ? this.renderAddEditionAction(record, open) : ''}
                 <button type="button" class="book-service-link edition-action-pill" data-edition-action="forget" ${syncing ? `disabled title="${this.escapeHtmlAttribute(syncingNote)}"` : ''}>Forget match</button>
             </div>`;
         }
         return '';
     }
 
+    renderAddEditionAction(record, open) {
+        if (record.edition_added === true || open.addedEditionBookIds?.has(String(record.book_id))) {
+            return '<span class="edition-added" role="status">Hardcover Edition Added</span>';
+        }
+        const recovery = this.editionRequestState(record, open);
+        if (recovery) {
+            return `<button type="button" class="book-service-link edition-action-pill" data-edition-action="add">${this.escapeHtml(this.editionRequestLabel(recovery))}</button>`;
+        }
+        const disabledReason = this.editionActionDisabledReason(record, open);
+        const label = this.audiobookIdentifierFallbackActionEligible(record) ? 'Import Audible edition' : 'Add edition';
+        return `<button type="button" class="book-service-link edition-action-pill" data-edition-action="add" ${disabledReason ? `disabled title="${this.escapeHtmlAttribute(disabledReason)}"` : ''}>${label}</button>`;
+    }
+
     editionActionDisabledReason(record, open) {
         if (this.profileIsSyncing(open.profileId)) return 'A sync is running for this profile; this action will be available again when it finishes.';
         const ineligible = this.editionCreateIneligibleReason(record, open.runContext);
         if (ineligible) return ineligible;
+        if (open.runContext?.dryRun || open.editionCapability?.dry_run) return 'This profile is in dry run: no edition can be created.';
         if (open.editionCapabilityRefreshing) return 'Checking whether this profile can add this edition.';
         if (!open.editionCapabilityLoaded) return 'Checking whether this profile can add this edition.';
-        const gate = this.editionCapabilityGate(open.editionCapability, record.format, record.asin);
+        const gate = this.editionCapabilityGate(open.editionCapability, record.format, this.editionSourceASIN(record));
         return gate.blocked ? gate.reason : '';
     }
 
@@ -2223,7 +2251,7 @@ class SyncProfileApp {
             if (this.editionCreateIneligibleReason(record, open.runContext)) return;
             if (this.profileIsSyncing(open.profileId)) return;
             if (!open.editionCapabilityLoaded) return;
-            if (this.editionCapabilityGate(open.editionCapability, record.format, record.asin).blocked) return;
+            if (this.editionCapabilityGate(open.editionCapability, record.format, this.editionSourceASIN(record)).blocked) return;
         }
         this.closeEditionDialog();
         this.editionDialog = {
@@ -2650,8 +2678,10 @@ class SyncProfileApp {
         const confirmButton = dialog.retryCreate
             ? `<button type="button" class="btn btn-primary" data-edition-dialog="retry-create" ${canConfirm ? '' : 'disabled'}>${waiting ? `Retry in ${Math.ceil(waitMs / 1000)}s` : 'Retry add edition'}</button>`
             : `<button type="button" class="btn btn-primary" data-edition-dialog="confirm-create" ${canConfirm ? '' : 'disabled'}>${dialog.busy ? 'Creating…' : 'Add edition'}</button>`;
+        const fallbackNotice = this.audiobookIdentifierFallbackActionEligible(dialog.record)
+            ? '<div class="edition-warning" role="note">Audible import may select a different Hardcover book. Future syncs will use the imported match. Reading progress and history already saved on the previous Hardcover book will remain there; they are not moved or removed.</div>' : '';
         return `${dryRun ? '<div class="edition-dry-run">Dry run</div>' : ''}
-            ${regionHtml}${comparisonHtml}${this.renderAudibleImportWarnings(draft)}${blockersHtml}${errorHtml}
+            ${regionHtml}${comparisonHtml}${fallbackNotice}${this.renderAudibleImportWarnings(draft)}${blockersHtml}${errorHtml}
             <div class="form-actions edition-create-actions">
                 ${confirmButton}
                 ${retryButton}

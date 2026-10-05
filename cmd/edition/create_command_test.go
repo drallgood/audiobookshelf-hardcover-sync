@@ -856,7 +856,8 @@ func TestCreateCommandAssociationIsUsedByNextSync(t *testing.T) {
 	cfg.Audiobookshelf.Token = "abs-token"
 	cfg.Sync.StateFile = env.statePath
 	cfg.Sync.Incremental = false
-	cfg.Sync.SyncWantToRead = false
+	cfg.Sync.SyncWantToRead = true
+	cfg.Sync.DryRun = true
 	cfg.Paths.CacheDir = t.TempDir()
 	cfg.Paths.MismatchOutputDir = t.TempDir()
 	syncHC := &syncAssociationHardcover{Client: hardcover.NewClient("test-token", logger.Get())}
@@ -1034,7 +1035,7 @@ func TestCreateCommandISBNOnlyAudiobookInsertsAudiobookEdition(t *testing.T) {
 		t.Fatalf("ISBN-only audiobook did not use insert_edition: upserts=%d inserts=%d", upserts, inserts)
 	}
 	association, exists := env.association(t)
-	if !exists || association.HardcoverEditionID != "901" || association.ReadingFormat != models.ReadingFormatAudiobook || association.Provenance != "cli_audiobook_created" {
+	if !exists || association.HardcoverEditionID != "901" || association.ReadingFormat != models.ReadingFormatAudiobook || association.Provenance != "isbn" {
 		t.Fatalf("unexpected ISBN-only audiobook association: %#v exists=%t", association, exists)
 	}
 }

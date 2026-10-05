@@ -963,9 +963,8 @@ test('an Audible import row reuses the Add edition pill without a Hardcover cand
     const html = app.renderOutcomeRecord(record);
     assert.equal(app.editionCreateIneligibleReason(record, app.openSummary.runContext), null);
     assert.match(html, /data-edition-action="add"/);
-    assert.match(html, /book-service-link edition-action-pill/);
-    assert.doesNotMatch(html, /Hardcover candidate|hardcover-candidate/);
-    assert.doesNotMatch(html, /<strong>Hardcover:<\/strong>/);
+    assert.doesNotMatch(visibleText(html), /Hardcover candidate/);
+    assert.doesNotMatch(visibleText(html), /Hardcover:/);
 });
 
 for (const runState of ['completed', 'canceled']) {
@@ -987,9 +986,9 @@ for (const runState of ['completed', 'canceled']) {
 
         const row = app.renderOutcomeRecord(record);
         assert.equal(app.editionCreateIneligibleReason(record, app.openSummary.runContext), null);
-        assert.match(row, /data-edition-action="add"(?![^>]*disabled)/);
-        assert.match(row, /<strong>Reason:<\/strong> No Hardcover match found\. Import by Audible ASIN is available\./);
-        assert.match(row, /<strong>Match method:<\/strong> Audible ASIN/);
+        assert.equal(addEditionButton(row).disabled, false);
+        assert.match(visibleText(row), /Reason: No Hardcover match found\. Import by Audible ASIN is available\./);
+        assert.match(visibleText(row), /Match method: Audible ASIN/);
         assert.doesNotMatch(row, /audible_import_available|audible_asin/);
 
         const previousDocument = global.document;
@@ -1065,19 +1064,40 @@ for (const runState of ['completed', 'canceled']) {
     });
 }
 
-test('outcome match methods render as readable labels and humanize unknown methods', () => {
+test('sync outcome rows show identifier labels and distinguish temporary audiobook matches', () => {
     const app = editionApp();
     const cases = [
-        ['title_author', 'Title and author'],
-        ['audible_asin', 'Audible ASIN'],
-        ['isbn_13', 'ISBN-13'],
-        ['asin', 'ASIN'],
-        ['isbn', 'ISBN'],
-        ['unfamiliar_method_value', 'Unfamiliar method value']
+        ['title_author', 'Audiobook', '', 'Title and author'],
+        ['audible_asin', 'Audiobook', 'B00SOURCE1', 'Audible ASIN'],
+        ['audible_mapping', 'Audiobook', 'B00SOURCE1', 'Audible ASIN'],
+        ['asin', 'Audiobook', 'B00SOURCE1', 'Audible ASIN'],
+        ['edition_asin', 'Audiobook', 'B00SOURCE1', 'Edition ASIN (temporary)'],
+        ['edition_asin', 'Ebook', 'B00SOURCE1', 'Edition ASIN'],
+        ['isbn', 'Audiobook', '', 'ISBN'],
+        ['isbn', 'Audiobook', 'malformed-ASIN', 'ISBN (temporary)'],
+        ['isbn', 'Audiobook', 'B00SOURCE1', 'ISBN (temporary)'],
+        ['isbn', 'Ebook', 'B00SOURCE1', 'ISBN'],
+        ['isbn_13', 'Audiobook', 'B00SOURCE1', 'ISBN (temporary)'],
+        ['saved_isbn', 'Audiobook', 'B00SOURCE1', 'ISBN'],
+        ['saved_edition_asin', 'Ebook', 'B00SOURCE1', 'Edition ASIN'],
+        ['saved_audible_mapping', 'Audiobook', 'B00SOURCE1', 'Audible ASIN'],
+        ['saved_edition', 'Audiobook', 'B00SOURCE1', 'ISBN'],
+        ['saved_edition', 'Ebook', 'B00SOURCE1', 'Edition ASIN'],
+        ['saved_match', 'Audiobook', '', 'Unknown'],
+        ['isbn', 'Audiobook', null, 'ISBN (temporary)', 'B00SOURCE1'],
+        ['isbn', 'Audiobook', '', 'ISBN (temporary)', 'B00SOURCE1'],
+        ['isbn', 'Audiobook', '   ', 'ISBN (temporary)', 'B00SOURCE1']
     ];
-    for (const [match_method, label] of cases) {
-        const html = app.renderOutcomeRecord({ ...needsReview, match_method });
-        assert.ok(html.includes(`<strong>Match method:</strong> ${label}`), `${match_method} should render as ${label}`);
+    for (const [match_method, format, source_asin, label, asin] of cases) {
+        const html = app.renderOutcomeRecord({ outcome: 'synced', match_method, format, source_asin, asin });
+        assert.equal(visibleText(html).split('Match method: ')[1], label,
+            `${match_method}/${format}/${source_asin}`);
+    }
+    for (const outcome of ['synced', 'already_current']) {
+        for (const match_method of ['unfamiliar_method_value', undefined]) {
+            const html = app.renderOutcomeRecord({ outcome, match_method });
+            assert.equal(visibleText(html).split('Match method: ')[1], 'Unknown', `${outcome}/${match_method}`);
+        }
     }
 });
 
@@ -1105,6 +1125,137 @@ test('Audible import modal shows every comparison and escapes ABS and Audnexus v
     assert.match(html, /<h4>Audnexus\/Audible<\/h4>/);
     assert.match(html, /audible-comparison-source">Audnexus\/Audible<\/span>/);
 });
+
+test('audiobook identifier fallback is limited to completed audiobook outcomes with a valid preferred source ASIN', () => {
+    const app = editionApp();
+    for (const match_method of ['edition_asin', 'isbn']) {
+        const fallback = {
+            book_id: 'li_fallback', outcome: 'synced', reason: 'original reason', match_method,
+            title: 'Fallback audiobook', format: 'audiobook', source_asin: 'B00SOURCE1', asin: 'invalid',
+            hardcover_book_id: '42'
+        };
+        for (const outcome of ['synced', 'already_current']) {
+            const actions = app.renderEditionActions({ ...fallback, outcome });
+            assert.match(visibleText(actions), /Import Audible edition/);
+            assert.equal(addEditionButton(actions).disabled, false);
+        }
+        const row = app.renderOutcomeRecord(fallback);
+        if (match_method === 'edition_asin') assert.match(visibleText(row), /Match method: Edition ASIN/);
+        const rowText = visibleText(row);
+        assert.match(rowText, /Hardcover target: book 42/);
+        assert.match(rowText, /Import Audible edition/);
+        assert.equal(addEditionButton(row).disabled, false);
+        assert.match(rowText, /Forget match/);
+    }
+
+    const fallback = { book_id: 'li_fallback', outcome: 'synced', match_method: 'edition_asin', format: 'audiobook', source_asin: 'B00SOURCE1', asin: 'invalid', hardcover_book_id: '42' };
+    for (const record of [
+        { ...fallback, outcome: 'skipped' },
+        { ...fallback, outcome: 'would_sync' },
+        { ...fallback, outcome: 'failed' },
+        { ...fallback, format: 'ebook' },
+        { ...fallback, source_asin: 'bad' },
+        { ...fallback, source_asin: '' },
+        { ...fallback, match_method: 'saved_match' },
+        { ...fallback, match_method: 'saved_isbn' }
+    ]) {
+        assert.doesNotMatch(visibleText(app.renderOutcomeRecord(record)), /Import Audible edition|Add edition/, JSON.stringify(record));
+    }
+    const fallbackASIN = app.renderOutcomeRecord({ ...fallback, source_asin: null, asin: 'B00FALLBK1' });
+    assert.match(visibleText(fallbackASIN), /Import Audible edition/);
+    const dryRunApp = editionApp();
+    dryRunApp.openSummary.runContext.dryRun = true;
+    assert.equal(addEditionButton(dryRunApp.renderEditionActions(fallback)).disabled, true);
+    assert.equal(editionApp({ isViewer: () => true }).renderEditionActions(fallback), '');
+});
+
+for (const match_method of ['edition_asin', 'isbn']) {
+    test(`${match_method} audiobook fallback opens Audible import preview without replacing its original sync record`, async () => {
+        const app = editionApp();
+        const record = {
+            book_id: 'li_fallback', outcome: 'already_current', reason: 'original reason', match_method,
+            title: 'Fallback audiobook', format: 'audiobook', source_asin: 'B00SOURCE1', asin: 'B00OTHER01',
+            hardcover_book_id: '42'
+        };
+        app.openSummary.records.set(record.book_id, record);
+        const originalRow = visibleText(app.renderOutcomeRecord(record));
+        const requests = [];
+        app.fetchJsonWithTimeout = async url => {
+            requests.push(url);
+            if (url.endsWith('/edition-capability')) return { response: { ok: true, status: 200 }, data: { success: true, data: {} } };
+            return { response: { ok: true, status: 200 }, data: { success: true, data: confirmedAudibleDraft({
+                abs_item_id: record.book_id,
+                source_identifiers: { asin: record.source_asin },
+                audible_identifier_candidate: { asin: record.source_asin, region: 'us', correction_allowed: true },
+                confirmed_region: 'us'
+            }) } };
+        };
+
+        await app.openEditionDialog(record.book_id);
+
+        assert.ok(requests.includes(`/api/profiles/p1/edition-drafts/source/${record.book_id}`));
+        assert.match(app.renderEditionDialog(app.editionDialog), /Audiobookshelf and Audnexus\/Audible comparison/);
+        assert.match(app.renderEditionDialog(app.editionDialog), /Audible import may select a different Hardcover book/);
+        assert.match(app.renderEditionDialog(app.editionDialog), /Reading progress and history already saved on the previous Hardcover book will remain there/);
+        assert.equal(visibleText(app.renderOutcomeRecord(app.openSummary.records.get(record.book_id))), originalRow);
+    });
+}
+
+for (const match_method of ['edition_asin', 'isbn']) {
+    test(`${match_method} audiobook fallback reopens its saved Audible import recovery against the original target`, async () => {
+        const app = editionApp();
+        const record = {
+            book_id: 'li_fallback', outcome: 'synced', reason: 'original reason', match_method,
+            title: 'Fallback audiobook', format: 'audiobook', source_asin: 'B00SOURCE1', hardcover_book_id: '42',
+            edition_action: {
+                outcome: 'unconfirmed',
+                submitted_body: { run_id: 'run-1', abs_item_id: 'li_fallback', audible_identifier: 'B00SOURCE1:us' },
+                data: { recovery_token: 'opaque-token', hardcover_book_id: '99', audible_identifier: 'B00SOURCE1:us' }
+            }
+        };
+        app.openSummary.records.set(record.book_id, record);
+        const originalRow = visibleText(app.renderOutcomeRecord(record));
+        assert.match(originalRow, /Resolve pending edition request/);
+        const requests = [];
+        app.openSummary.addedEditionBookIds = new Set();
+        app.refreshEditionActionStates = () => {};
+        app.fetchJsonWithTimeout = async (url, options = {}) => {
+            if (url.endsWith('/check-import')) {
+                requests.push({ url, method: options.method, body: JSON.parse(options.body) });
+                return {
+                    response: { ok: true, status: 200 },
+                    data: { success: true, data: validCreateResult({
+                        abs_item_id: record.book_id, hardcover_book_id: '99', hardcover_edition_id: '95'
+                    }) }
+                };
+            }
+            throw new Error(`Unexpected request while checking saved import: ${url}`);
+        };
+
+        await app.openEditionDialog(record.book_id);
+        assert.match(visibleText(app.renderEditionDialog(app.editionDialog)), /Check import status/);
+        await app.checkEditionImport();
+
+        assert.deepEqual(requests, [{
+            url: '/api/profiles/p1/edition-drafts/check-import',
+            method: 'POST',
+            body: {
+                run_id: 'run-1', abs_item_id: record.book_id,
+                audible_identifier: 'B00SOURCE1:us', recovery_token: 'opaque-token'
+            }
+        }]);
+        const dialogText = visibleText(app.renderEditionDialog(app.editionDialog));
+        assert.match(dialogText, /The match is saved for the next sync/);
+        assert.match(dialogText, /Hardcover book ID: 99/);
+        assert.match(dialogText, /Edition ID: 95/);
+        const recoveredRow = visibleText(app.renderOutcomeRecord(app.openSummary.records.get(record.book_id)));
+        const expectedMatchLabel = match_method === 'edition_asin' ? 'Edition ASIN' : 'ISBN';
+        assert.match(recoveredRow, new RegExp(`Match method: ${expectedMatchLabel} \\(temporary\\)`));
+        assert.match(recoveredRow, /Hardcover target: book 42/);
+        assert.match(recoveredRow, /Reason: original reason/);
+        assert.match(recoveredRow, /Hardcover Edition Added/);
+    });
+}
 
 test('Audible comparison hides empty subtitle and series groups but keeps populated groups paired', () => {
     const app = editionApp();
@@ -1176,7 +1327,7 @@ test('unknown, unavailable, and dry-run Audible previews cannot submit', () => {
         const html = app.renderEditionDialog({ ...base, draft: confirmedAudibleDraft({ region_status, confirmed_region: '', audnexus_record: undefined, warnings: warning }) });
         assert.match(html, /confirm-create" disabled/);
         assert.match(html, /data-edition-dialog="retry"[^>]*>Retry preview/);
-        assert.match(html, /class="edition-error" role="alert"/);
+        assert.match(html, /<[^>]+\brole="alert"[^>]*>/);
         assert.doesNotMatch(html, /Refresh the preview|Retry to check/);
     }
     const unmatched = app.renderEditionDialog({
@@ -1188,7 +1339,7 @@ test('unknown, unavailable, and dry-run Audible previews cannot submit', () => {
     });
     assert.match(unmatched, /Audnexus could not confirm a matching audiobook\. Audible import is unavailable\./);
     assert.doesNotMatch(unmatched, /regional Audnexus record must be confirmed|Refresh the preview|edition draft uses English/);
-    assert.match(unmatched, /class="edition-error" role="alert"/);
+    assert.match(unmatched, /<[^>]+\brole="alert"[^>]*>/);
     assert.match(unmatched, /confirm-create" disabled/);
     const failedLookup = app.renderEditionDialog({
         ...base,
@@ -1226,7 +1377,7 @@ test('retrying a failed Audnexus preview hides retry and enables Add edition aft
     const html = app.renderEditionDialog(dialog);
     assert.doesNotMatch(html, /data-edition-dialog="retry"/);
     assert.doesNotMatch(html, /data-edition-dialog="confirm-create" disabled/);
-    assert.match(html, /Audible identifier:<\/strong> B00ABC1234:uk/);
+    assert.match(visibleText(html), /Audible identifier: B00ABC1234:uk/);
     assert.ok(requests.some(({ url }) => url.includes('audible_identifier=B00ABC1234%3Auk')));
     assert.ok(requests.every(({ options }) => !options.method || options.method === 'GET'));
 });
@@ -1540,8 +1691,8 @@ test('unanchored Audible create confirms the reviewed identifier and accepts the
     const html = app.renderCreateResult(dialog.result);
     assert.match(html, /&lt;b&gt;Imported book&lt;\/b&gt;/);
     assert.doesNotMatch(html, /<b>Imported book/);
-    assert.match(html, /Hardcover book ID:<\/strong> 71/);
-    assert.match(html, /Edition ID:<\/strong> 99/);
+    assert.match(visibleText(html), /Hardcover book ID: 71/);
+    assert.match(visibleText(html), /Edition ID: 99/);
 });
 
 test('Audible import uses regional import permission independently of insertion permission', async () => {
@@ -1570,7 +1721,7 @@ test('Audible import uses regional import permission independently of insertion 
         };
         const html = app.renderEditionDialog(dialog);
         assert.equal(/data-edition-dialog="confirm-create" disabled/.test(html), !canImport);
-        assert.match(html, /Audible identifier:<\/strong> B00ABC1234:uk/);
+        assert.match(visibleText(html), /Audible identifier: B00ABC1234:uk/);
         assert.doesNotMatch(html, /<input|<select|data-edition-dialog="confirm-identifier"/);
         await app.submitEditionCreate();
         assert.equal(creates, canImport ? 1 : 0);
@@ -2439,6 +2590,7 @@ test('added edition labels survive a page reload and remain scoped to user, prof
     const refreshed = await reload('user-1', 'p1', 'run-1');
     assert.match(refreshed.renderEditionActions(needsReview), /Hardcover Edition Added/);
     assert.match(refreshed.renderEditionActions({ ...needsReview, book_id: 'li_2' }), /Hardcover Edition Added/);
+    assert.match(refreshed.renderEditionActions({ ...needsReview, book_id: 'li_2', outcome: 'synced', match_method: 'edition_asin', source_asin: 'B00SOURCE1' }), /Hardcover Edition Added/);
     assert.match(refreshed.renderEditionActions({ ...needsReview, book_id: 'li_3' }), /data-edition-action="add"/);
     for (const scope of [['user-2', 'p1', 'run-1'], ['user-1', 'p2', 'run-1'], ['user-1', 'p1', 'run-2']]) {
         const other = await reload(...scope);
@@ -3141,7 +3293,7 @@ test('restored not-submitted Audible identifier is displayed read-only and fresh
     assert.equal(dialog.retryCreate, true);
     assert.equal(requests.some(request => request.url.endsWith('/edition-drafts/create')), false);
     assert.doesNotMatch(app.renderEditionDialog(dialog), /<input|<select|data-edition-dialog="confirm-identifier"/);
-    assert.match(app.renderEditionDialog(dialog), /Audible identifier:<\/strong> B0OTHER123:ca/);
+    assert.match(visibleText(app.renderEditionDialog(dialog)), /Audible identifier: B0OTHER123:ca/);
 
     let createBody;
     app.readEditionFormFields = () => ({});

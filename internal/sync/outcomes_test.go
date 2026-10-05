@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,6 +141,7 @@ func TestProcessBookRecordsSkipAndIncrementalNoChange(t *testing.T) {
 		assert.Equal(t, "hc-book-1", record.HardcoverBookID,
 			"the local association must enrich an already_current outcome so the UI can offer forget-match")
 		assert.Equal(t, "hc-edition-1", record.EditionID)
+		assert.Equal(t, "saved_match", record.MatchMethod)
 		hc.AssertNotCalled(t, "SearchBookByASIN", mock.Anything, mock.Anything)
 	})
 
@@ -156,6 +158,8 @@ func TestProcessBookIncrementalAlreadyCurrentEnrichesOnlyMatchingAssociation(t *
 		associationISBN13 string
 		associationFormat string
 		wantEnriched      bool
+		wantMatchMethod   string
+		provenance        string
 	}{
 		{
 			name:              "stale ASIN",
@@ -186,8 +190,51 @@ func TestProcessBookIncrementalAlreadyCurrentEnrichesOnlyMatchingAssociation(t *
 			associationISBN13: "9780306406157",
 			associationFormat: models.ReadingFormatAudiobook,
 			wantEnriched:      true,
+			wantMatchMethod:   "saved_match",
+		},
+		{
+			name:              "normalized ebook identifiers",
+			asin:              " ASIN-123 ",
+			isbn:              "978-0-306-40615-7",
+			isEbook:           true,
+			associationASIN:   "ASIN-123",
+			associationISBN13: "9780306406157",
+			associationFormat: models.ReadingFormatEbook,
+			wantEnriched:      true,
+			wantMatchMethod:   "saved_match",
 		},
 	}
+
+	savedOriginCase := tests[len(tests)-1]
+	for _, origin := range []struct{ provenance, method string }{
+		{"isbn", "saved_isbn"},
+		{"edition_asin", "saved_edition_asin"},
+		{"audible_mapping", "saved_audible_mapping"},
+		{"audible_import_unanchored", "saved_audible_mapping"},
+		{"api_regional_recovered", "saved_audible_mapping"},
+		{"cli_regional_created", "saved_audible_mapping"},
+		{"api_isbn", "saved_isbn"},
+		{"api_edition_asin", "saved_edition_asin"},
+		{"api_ebook_inserted", "saved_isbn"},
+		{"cli_ebook_existing", "saved_isbn"},
+		{"api_audiobook_created", "saved_isbn"},
+		{"cli_audiobook_inserted", "saved_isbn"},
+		{"unrecognized_legacy_origin", "saved_match"},
+	} {
+		base := savedOriginCase
+		if origin.method == "saved_audible_mapping" || strings.Contains(origin.provenance, "_audiobook_") {
+			base.isEbook, base.associationFormat = false, models.ReadingFormatAudiobook
+			base.asin, base.associationASIN = "B012345678", "B012345678"
+		}
+		base.name, base.provenance, base.wantMatchMethod = origin.provenance, origin.provenance, origin.method
+		tests = append(tests, base)
+	}
+
+	legacyASINCase := savedOriginCase
+	legacyASINCase.name = "legacy ebook edition added by ASIN"
+	legacyASINCase.asin, legacyASINCase.associationASIN = "B012345678", "B012345678"
+	legacyASINCase.provenance, legacyASINCase.wantMatchMethod = "api_ebook_created", "saved_edition_asin"
+	tests = append(tests, legacyASINCase)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -209,6 +256,7 @@ func TestProcessBookIncrementalAlreadyCurrentEnrichesOnlyMatchingAssociation(t *
 				HardcoverBookID:    "hc-book-1",
 				HardcoverEditionID: "hc-edition-1",
 				ReadingFormat:      tt.associationFormat,
+				Provenance:         tt.provenance,
 			}
 			require.NoError(t, svc.state.SetAssociation(association))
 
@@ -223,6 +271,7 @@ func TestProcessBookIncrementalAlreadyCurrentEnrichesOnlyMatchingAssociation(t *
 				assert.Empty(t, record.HardcoverBookID)
 				assert.Empty(t, record.EditionID)
 			}
+			assert.Equal(t, tt.wantMatchMethod, record.MatchMethod)
 			storedAssociation, exists := svc.state.GetAssociation(book.ID)
 			require.True(t, exists)
 			assert.Equal(t, association, storedAssociation, "outcome enrichment must not mutate the persisted association")
@@ -729,6 +778,7 @@ func TestProcessBookSeparatesNotFoundAndTechnicalLookupFailure(t *testing.T) {
 		require.NoError(t, svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{}))
 		record := recordedOutcome(svc, book.ID)
 		assert.Equal(t, OutcomeFailed, record.Outcome)
+		assert.Equal(t, reasonHardcoverLookupFailed, record.Reason)
 		assert.Contains(t, record.Error, "temporary API failure")
 	})
 }
@@ -752,7 +802,8 @@ func TestProcessBookKeepsValidASINLookupFailureRetryableWithoutTitleCandidate(t 
 	assert.Empty(t, svc.mismatchCollector.GetAll(), "a failed valid-ASIN lookup has no speculative title candidate to export")
 	snapshot := svc.GetSnapshot()
 	require.Len(t, snapshot.BookOutcomes, 1)
-	assert.Contains(t, snapshot.BookOutcomes[0].Reason, lookupErr.Error())
+	assert.Equal(t, reasonHardcoverLookupFailed, snapshot.BookOutcomes[0].Reason)
+	assert.Contains(t, snapshot.BookOutcomes[0].Error, lookupErr.Error())
 	assert.Empty(t, snapshot.BookOutcomes[0].HardcoverBookID)
 	hc.AssertNotCalled(t, "SearchBooks", mock.Anything, mock.Anything, mock.Anything)
 	_, associated := svc.state.GetAssociation(absBook.ID)
@@ -806,13 +857,13 @@ func TestTransientAudiobookASINLookupFailuresAreVisibleAndRetriedIncrementally(t
 			if tt.retryable {
 				require.Equal(t, reasonRetryableHardcoverASINLookup, record.Reason)
 				hc.On("SearchBookByASIN", mock.Anything, "B0SOURCE12").Return((*models.HardcoverBook)(nil), nil).Once()
+				hc.On("SearchBookByISBN13", mock.Anything, "9780306406157").Return((*models.HardcoverBook)(nil), nil).Once()
+				hc.On("SearchBookByISBN10", mock.Anything, "0306406152").Return((*models.HardcoverBook)(nil), nil).Once()
 				require.NoError(t, svc.BatchProcessBooks(context.Background(), []models.AudiobookshelfBook{absBook}, &models.AudiobookshelfUserProgress{}))
 				hc.AssertNumberOfCalls(t, "SearchBookByASIN", 2)
 				require.Equal(t, OutcomeNeedsReview, recordedOutcome(svc, absBook.ID).Outcome)
 				require.Equal(t, mismatch.ReasonAudibleImportAvailable, recordedOutcome(svc, absBook.ID).Reason)
 				hc.AssertNotCalled(t, "SearchBooks", mock.Anything, mock.Anything, mock.Anything)
-				hc.AssertNotCalled(t, "SearchBookByISBN13", mock.Anything, mock.Anything)
-				hc.AssertNotCalled(t, "SearchBookByISBN10", mock.Anything, mock.Anything)
 			}
 			hc.AssertExpectations(t)
 		})

@@ -43,6 +43,7 @@ var (
 )
 
 const reasonRetryableHardcoverASINLookup = "Temporary Hardcover ASIN lookup failure; this item will be retried on the next sync."
+const reasonHardcoverLookupFailed = "Hardcover identifier lookup could not be completed."
 
 type editionBoundMutationError struct {
 	editionID string
@@ -148,6 +149,29 @@ type BookOutcomeRecord struct {
 	HardcoverSeries        string               `json:"hardcover_series,omitempty"`
 	HardcoverSeriesNumber  string               `json:"hardcover_series_number,omitempty"`
 	UpdatedAt              time.Time            `json:"updated_at"`
+}
+
+// IsAudiobookIdentifierFallbackRecord reports whether a completed ISBN or
+// edition-ASIN audiobook match can use the user-confirmed Audible import
+// workflow.
+func IsAudiobookIdentifierFallbackRecord(record BookOutcomeRecord) bool {
+	if !strings.EqualFold(strings.TrimSpace(record.Format), models.ReadingFormatAudiobook) {
+		return false
+	}
+	if record.MatchMethod != "isbn" && record.MatchMethod != string(hardcover.ASINMatchEditionASIN) {
+		return false
+	}
+	switch record.Outcome {
+	case OutcomeSynced, OutcomeAlreadyCurrent:
+	default:
+		return false
+	}
+	asin := record.SourceASIN
+	if strings.TrimSpace(asin) == "" {
+		asin = record.ASIN
+	}
+	_, valid := audnex.CanonicalASIN(asin)
+	return valid
 }
 
 // EditionActionRecord exposes the server-persisted state of a user-confirmed
@@ -285,9 +309,11 @@ func hasReliableEmbeddedProgress(book models.AudiobookshelfBook) bool {
 // HardcoverSyncClient is the Hardcover client contract required by sync.
 // Sync needs an uncached edition lookup to distinguish a deleted edition from
 // a stale cached result before removing a saved association.
+// Exact edition-ASIN lookup is required before offering an Audible import.
 type HardcoverSyncClient interface {
 	hardcover.HardcoverClientInterface
 	GetEditionUncached(context.Context, string) (*models.Edition, error)
+	SearchBookByEditionASINResult(context.Context, string) (*hardcover.ASINLookupResult, error)
 }
 
 // Service handles the synchronization between Audiobookshelf and Hardcover.
@@ -483,6 +509,11 @@ func classifyBookLookupOutcome(err error) SyncOutcome {
 func bookLookupOutcomeReason(book models.AudiobookshelfBook, err error) string {
 	if retryableAudiobookASINLookup(book, err) {
 		return reasonRetryableHardcoverASINLookup
+	}
+	if errors.Is(err, errHardcoverLookupFailed) {
+		// Keep upstream diagnostics in the outcome's Error field and logs,
+		// separate from the operator-facing summary.
+		return reasonHardcoverLookupFailed
 	}
 	return err.Error()
 }
@@ -2209,13 +2240,14 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 		editionID                    string
 		stateKey                     string
 		matchMethod                  string
-		verifiedEbookISBNMatch       *models.HardcoverBook
-		ebookISBNVerificationRun     bool
+		verifiedDurableISBNMatch     *models.HardcoverBook
+		durableISBNVerificationRun   bool
 		verifiedAudiobookISBNMatch   *models.HardcoverBook
 		audiobookISBNVerificationRun bool
 		postMatchVerificationFailed  bool
 		ownershipReconciled          bool
 		associationReused            bool
+		savedMatchMethod             string
 	)
 	setOutcome := func(outcome SyncOutcome, reason string) {
 		// A completed mutation is authoritative. Later no-op guards can run
@@ -2387,16 +2419,15 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 	// Early filtering for incremental sync - check if book needs syncing
 	if s.config.Sync.Incremental && !hadPendingDateRestoration {
 		// Re-resolve association-free audiobooks before trusting a checkpoint.
-		// ISBN-only matches keep their progress checkpoints so an unchanged,
-		// freshly resolved edition can skip writes at the post-match guard.
-		// Other unassociated audiobooks must discard legacy checkpoints that
-		// could hide unsupported direct-ASIN matches or title-only candidates.
-		reResolveAudiobookISBN := false
+		// Identifier matches keep progress checkpoints so an unchanged, freshly
+		// resolved edition can skip writes at the post-match guard. A fallback
+		// must still discover a mapping or ISBN that becomes available later.
+		reResolveAudiobookIdentifiers := false
 		if s.state != nil && book.ReadingFormat() == models.ReadingFormatAudiobook {
 			if _, hasAssociation := s.state.GetAssociation(book.ID); !hasAssociation {
 				_, validASIN := audnex.CanonicalASIN(book.Media.Metadata.ASIN)
-				reResolveAudiobookISBN = !validASIN && len(isbnSearchCandidates(book.Media.Metadata.ISBN)) > 0
-				if !reResolveAudiobookISBN {
+				reResolveAudiobookIdentifiers = validASIN || len(isbnSearchCandidates(book.Media.Metadata.ISBN)) > 0
+				if !reResolveAudiobookIdentifiers {
 					s.state.InvalidateItemCheckpoints(book.ID)
 				}
 			}
@@ -2427,7 +2458,7 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 			minChangeThreshold = float64(s.config.Sync.MinChangeThreshold) / book.Media.Duration
 		}
 
-		if !reResolveAudiobookISBN && !s.state.NeedsSync(preliminaryStateKey, currentProgress, currentStatus, minChangeThreshold) {
+		if !reResolveAudiobookIdentifiers && !s.state.NeedsSync(preliminaryStateKey, currentProgress, currentStatus, minChangeThreshold) {
 			bookLog.Debug("Skipping book - no significant changes since last sync", map[string]interface{}{
 				"current_progress": currentProgress,
 				"current_status":   currentStatus,
@@ -2436,6 +2467,10 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 			bookProcessed = false // Explicitly mark as not processed when skipping due to no changes
 			if hcBook == nil {
 				hcBook = s.savedAssociationHardcoverBook(book)
+				if hcBook != nil {
+					association, _ := s.state.GetAssociation(book.ID)
+					matchMethod = savedAssociationMatchMethod(association)
+				}
 			}
 			setOutcome(OutcomeAlreadyCurrent, "incremental state is current")
 			return nil
@@ -2450,11 +2485,12 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 
 	// An audiobook below the minimum progress depends only on Audiobookshelf
 	// data, so skip it before spending Hardcover requests on a match that cannot
-	// be used, as unread books are skipped above. Ebooks keep the later post-match
-	// skip because their verified match and ownership are saved even when the item
-	// is not synced. A book with no Hardcover status to sync still runs the match
-	// below: with ProcessUnreadBooks enabled, that match is how an unmatched book
-	// reaches the attention list. A saved match is shown when one exists.
+	// be used, after opted-out unread audiobooks are skipped above. With unread
+	// processing enabled, matching can report attention items even when there is
+	// no want-to-read status to apply; the post-match guard skips status writes.
+	// Ebooks keep the later post-match skip because their verified match and
+	// ownership are saved even when the item is not synced. A saved match is shown
+	// when one exists.
 	if book.ReadingFormat() == models.ReadingFormatAudiobook && progress < s.config.Sync.MinimumProgress && progress > 0 {
 		bookLog.Debug("Skipping audiobook below minimum progress before Hardcover lookup", map[string]interface{}{
 			"progress":         progress,
@@ -2471,11 +2507,24 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 	if s.state != nil {
 		if association, exists := s.state.GetAssociation(book.ID); exists {
 			associationReused = associationMatchesBook(association, book)
+			savedMatchMethod = savedAssociationMatchMethod(association)
 		}
 	}
 	// ISBN/title matches are checked again before mutation. Keep a newly found
 	// ISBN out of local state until that second lookup has confirmed it.
-	hcBook, findErr, foundByASIN, _ = s.findBookInHardcoverWithASINMatch(ctx, book, associationWriteASINOnly)
+	var asinResult *hardcover.ASINLookupResult
+	var matchedISBN isbnCandidate
+	hcBook, findErr, foundByASIN, asinResult = s.findBookInHardcoverWithMatchSource(ctx, book, associationWriteASINOnly, &matchedISBN)
+	if findErr == nil && hcBook != nil {
+		switch {
+		case asinResult != nil:
+			matchMethod = string(asinResult.MatchKind)
+		case associationReused:
+			matchMethod = savedMatchMethod
+		case !foundByASIN && hcBook.EditionID != "":
+			matchMethod = "isbn"
+		}
+	}
 	if findErr != nil {
 		if errors.Is(findErr, errAudibleImportAvailable) {
 			setOutcome(OutcomeNeedsReview, mismatch.ReasonAudibleImportAvailable)
@@ -2514,7 +2563,7 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 
 			mismatchReason := "Found by title/author only - manual verification required"
 			if errors.Is(findErr, errHardcoverLookupFailed) {
-				mismatchReason = fmt.Sprintf("Identifier lookup failed; title/author candidate requires review: %v", findErr)
+				mismatchReason = outcomeReason
 			}
 
 			// Extract ISBN10 and ISBN13 from the ISBN
@@ -2713,10 +2762,9 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 		if hcBook.EditionID != "" {
 			editionID = hcBook.EditionID
 		}
-		_, validASIN := audnex.CanonicalASIN(book.Media.Metadata.ASIN)
-		if book.ReadingFormat() == models.ReadingFormatAudiobook && !validASIN &&
+		if book.ReadingFormat() == models.ReadingFormatAudiobook && matchMethod == "isbn" &&
 			!associationReused && len(isbnSearchCandidates(book.Media.Metadata.ISBN)) > 0 {
-			// Audiobook ISBN matches are ephemeral, so resolve them again before
+			// Confirm fresh audiobook ISBN matches again before
 			// mutation. Keep a value snapshot to ensure the second lookup still
 			// identifies the same book and edition.
 			firstMatch := *hcBook
@@ -2736,23 +2784,29 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 		"state_key": stateKey,
 	})
 
-	// A fresh ebook ISBN match must be confirmed before any post-match skip can
-	// return. Save only the stable result here; defer processFoundBook until the
-	// item is eligible to update reading state.
+	// Confirm a fresh durable ISBN match before the incremental no-op guard.
+	// Save only the stable result; defer processFoundBook until the item is
+	// eligible to update reading state.
 	newEbookMatch := hcBook != nil && !foundByASIN && !associationReused && book.ReadingFormat() == models.ReadingFormatEbook
-	if newEbookMatch {
-		ebookISBNVerificationRun = true
-		firstMatch := hcBook
+	newAudiobookISBNMatch := hcBook != nil && matchMethod == "isbn" && !associationReused &&
+		book.ReadingFormat() == models.ReadingFormatAudiobook && strings.TrimSpace(book.Media.Metadata.ASIN) == ""
+	if newEbookMatch || newAudiobookISBNMatch {
+		durableISBNVerificationRun = true
+		firstMatch := *hcBook
 		var confirmedByASIN bool
 		var confirmedASINResult *hardcover.ASINLookupResult
-		hcBook, findErr, confirmedByASIN, confirmedASINResult = s.findBookInHardcoverWithASINMatch(ctx, book, associationWriteNone)
-		if findErr == nil && hcBook != nil && (firstMatch.ID != hcBook.ID || firstMatch.EditionID != hcBook.EditionID) {
+		if newAudiobookISBNMatch {
+			hcBook, findErr = s.verifyAudiobookISBNMatch(ctx, matchedISBN, &firstMatch, book.ID)
+		} else {
+			hcBook, findErr, confirmedByASIN, confirmedASINResult = s.findBookInHardcoverWithASINMatch(ctx, book, associationWriteNone)
+		}
+		if newEbookMatch && findErr == nil && hcBook != nil && (firstMatch.ID != hcBook.ID || firstMatch.EditionID != hcBook.EditionID) {
 			findErr = fmt.Errorf("%w: Hardcover match changed between lookups for ABS item %s", errHardcoverLookupFailed, book.ID)
 		}
 		if findErr != nil {
 			postMatchVerificationFailed = true
 		} else {
-			verifiedEbookISBNMatch = hcBook
+			verifiedDurableISBNMatch = hcBook
 			if confirmedByASIN {
 				s.recordVerifiedASINAssociation(book, confirmedASINResult)
 			} else {
@@ -2922,25 +2976,14 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 	// revalidates those results before mutation. An ASIN match is already
 	// confirmed by the format-scoped lookup and must not depend on a positive
 	// cache to avoid repeating the same external request.
-	if ebookISBNVerificationRun {
-		if verifiedEbookISBNMatch != nil {
-			hcBook, findErr = s.processFoundBook(ctx, verifiedEbookISBNMatch, book)
+	if durableISBNVerificationRun {
+		if verifiedDurableISBNMatch != nil {
+			hcBook, findErr = s.processFoundBook(ctx, verifiedDurableISBNMatch, book)
 		}
+	} else if audiobookISBNVerificationRun {
+		hcBook, findErr = s.verifyAudiobookISBNMatch(ctx, matchedISBN, verifiedAudiobookISBNMatch, book.ID)
 	} else if !foundByASIN {
 		hcBook, findErr, _, _ = s.findBookInHardcoverWithASINMatch(ctx, book, associationWriteNone)
-		if audiobookISBNVerificationRun {
-			switch {
-			case findErr == nil && hcBook == nil:
-				hcBook = verifiedAudiobookISBNMatch
-				findErr = fmt.Errorf("%w: audiobook ISBN match disappeared between lookups for ABS item %s", errHardcoverLookupFailed, book.ID)
-			case errors.Is(findErr, errHardcoverBookNotFound):
-				hcBook = verifiedAudiobookISBNMatch
-				findErr = fmt.Errorf("%w: audiobook ISBN match disappeared between lookups for ABS item %s: %w", errHardcoverLookupFailed, book.ID, findErr)
-			case findErr == nil && (hcBook.ID != verifiedAudiobookISBNMatch.ID || hcBook.EditionID != verifiedAudiobookISBNMatch.EditionID):
-				hcBook = verifiedAudiobookISBNMatch
-				findErr = fmt.Errorf("%w: audiobook ISBN match changed between lookups for ABS item %s", errHardcoverLookupFailed, book.ID)
-			}
-		}
 	}
 	if findErr != nil {
 		if errors.Is(findErr, errAudibleImportAvailable) {
@@ -2965,7 +3008,6 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 		// conclusive or technical result before the synchronous mismatch
 		// enrichment below, which may wait on Audnex.
 		s.recordBookOutcomeWithMatchMethod(book, lookupOutcome, reason, findErr, hcBook, matchMethod)
-		errMsg := "error finding book in Hardcover"
 		bookLog.Error("Error finding book in Hardcover, skipping", map[string]interface{}{
 			"error": findErr,
 		})
@@ -3014,7 +3056,7 @@ func (s *Service) processBookWithVerifiedEdition(ctx context.Context, book model
 			},
 			bookID,    // Use the book ID if available
 			editionID, // Use the edition ID if available
-			fmt.Sprintf("%s: %v", errMsg, findErr),
+			reason,
 			book.Media.Duration,
 			book.ID,
 			s.config.Audiobookshelf.AudnexusRegion,
@@ -5557,6 +5599,29 @@ func (c isbnCandidate) label() string {
 	return "ISBN-10"
 }
 
+func (s *Service) lookupBookByISBN(ctx context.Context, candidate isbnCandidate) (*models.HardcoverBook, error) {
+	if candidate.is13 {
+		return s.hardcover.SearchBookByISBN13(ctx, candidate.value)
+	}
+	return s.hardcover.SearchBookByISBN10(ctx, candidate.value)
+}
+
+// verifyAudiobookISBNMatch confirms the identifier that produced the first
+// match, preserving the original candidate for diagnostics on failure.
+func (s *Service) verifyAudiobookISBNMatch(ctx context.Context, candidate isbnCandidate, firstMatch *models.HardcoverBook, absItemID string) (*models.HardcoverBook, error) {
+	confirmed, err := s.lookupBookByISBN(ctx, candidate)
+	if err != nil {
+		return firstMatch, fmt.Errorf("%w: %s verification for ABS item %s: %w", errHardcoverLookupFailed, candidate.label(), absItemID, err)
+	}
+	if confirmed == nil {
+		return firstMatch, fmt.Errorf("%w: audiobook ISBN match disappeared between lookups for ABS item %s", errHardcoverLookupFailed, absItemID)
+	}
+	if confirmed.ID != firstMatch.ID || confirmed.EditionID != firstMatch.EditionID {
+		return firstMatch, fmt.Errorf("%w: audiobook ISBN match changed between lookups for ABS item %s", errHardcoverLookupFailed, absItemID)
+	}
+	return confirmed, nil
+}
+
 // isbnSearchCandidates lists the ISBN lookups for an Audiobookshelf ISBN value,
 // in the order they are tried: the form the item has, then its derived
 // counterpart (when the checksum is valid and one exists), each searched in its
@@ -5587,6 +5652,36 @@ func associationMatchesBook(association state.Association, book models.Audiobook
 	return strings.EqualFold(strings.TrimSpace(association.SourceASIN), strings.TrimSpace(asin)) &&
 		isbn.Normalize(association.SourceISBN10) == isbn.Normalize(isbn10) &&
 		isbn.Normalize(association.SourceISBN13) == isbn.Normalize(isbn13)
+}
+
+// savedAssociationMatchMethod describes the recorded origin without treating a
+// saved association as a fresh identifier fallback eligible for Audible import.
+func savedAssociationMatchMethod(association state.Association) string {
+	provenance := strings.ToLower(strings.TrimSpace(association.Provenance))
+	switch provenance {
+	case "isbn", string(hardcover.ASINMatchEditionASIN), string(hardcover.ASINMatchAudibleMapping):
+		return "saved_" + provenance
+	case "api_isbn", "api_edition_asin":
+		return "saved_" + strings.TrimPrefix(provenance, "api_")
+	case "audible_import_unanchored":
+		return "saved_audible_mapping"
+	}
+	if strings.HasPrefix(provenance, "api_regional_") || strings.HasPrefix(provenance, "cli_regional_") {
+		return "saved_audible_mapping"
+	}
+	for _, prefix := range []string{"api_ebook_", "api_audiobook_", "cli_ebook_", "cli_audiobook_"} {
+		if strings.HasPrefix(provenance, prefix) {
+			switch strings.TrimPrefix(provenance, prefix) {
+			case "existing", "reused", "created", "inserted":
+				submittedASIN := association.SourceASIN
+				if association.Correction != "" {
+					submittedASIN = association.Correction
+				}
+				return "saved_" + state.EditionIdentifierProvenance(association.ReadingFormat, submittedASIN)
+			}
+		}
+	}
+	return "saved_match"
 }
 
 func (s *Service) forgetConfirmedMissingEdition(ctx context.Context, itemID, editionID string) bool {
@@ -5671,12 +5766,15 @@ func (s *Service) recordVerifiedASINAssociation(book models.AudiobookshelfBook, 
 	}
 }
 
-// recordVerifiedISBNAssociation persists a durable association for an
-// ebook's exact ISBN match (ISBN-10 or ISBN-13). Audiobook ISBN matches stay
-// ephemeral and are re-resolved on every sync; only ebook ISBN persistence is
-// in scope here.
+// recordVerifiedISBNAssociation persists an exact ISBN match for ebooks and
+// audiobooks without an ASIN. Audiobooks with an ASIN remain eligible to discover
+// a regional Audible mapping on a later sync.
 func (s *Service) recordVerifiedISBNAssociation(book models.AudiobookshelfBook, hcBook *models.HardcoverBook) {
-	if s.config.Sync.DryRun || book.ReadingFormat() != models.ReadingFormatEbook || hcBook == nil {
+	if s.config.Sync.DryRun || hcBook == nil {
+		return
+	}
+	format := book.ReadingFormat()
+	if format != models.ReadingFormatEbook && (format != models.ReadingFormatAudiobook || strings.TrimSpace(book.Media.Metadata.ASIN) != "") {
 		return
 	}
 	if s.state == nil || hcBook.ID == "" || hcBook.EditionID == "" {
@@ -5721,7 +5819,8 @@ func (s *Service) lookupBookByASIN(ctx context.Context, asin string) (*models.Ha
 
 // findBookInHardcover finds a book in Hardcover by various methods
 // It tries ASIN first, then the given ISBN form and its valid counterpart.
-// If those searches fail, it falls back to title/author search.
+// Audiobooks with a usable ASIN then try editions.asin before offering Audible
+// import. Other identifier misses fall back to title/author search.
 // Callers must carry the item's reading format on ctx via hardcover.WithReadingFormat.
 func (s *Service) findBookInHardcover(ctx context.Context, book models.AudiobookshelfBook) (*models.HardcoverBook, error) {
 	hcBook, err, _, _ := s.findBookInHardcoverWithASINMatch(ctx, book, associationWriteAll)
@@ -5737,6 +5836,13 @@ const (
 )
 
 func (s *Service) findBookInHardcoverWithASINMatch(ctx context.Context, book models.AudiobookshelfBook, writeMode associationWriteMode) (*models.HardcoverBook, error, bool, *hardcover.ASINLookupResult) {
+	return s.findBookInHardcoverWithMatchSource(ctx, book, writeMode, nil)
+}
+
+// findBookInHardcoverWithMatchSource optionally records the exact ISBN lookup
+// that found a complete match, so audiobook confirmation need not repeat ASIN
+// lookups or ISBN candidates that previously missed.
+func (s *Service) findBookInHardcoverWithMatchSource(ctx context.Context, book models.AudiobookshelfBook, writeMode associationWriteMode, matchedISBN *isbnCandidate) (*models.HardcoverBook, error, bool, *hardcover.ASINLookupResult) {
 	var lookupErr error
 	// Create a logger with book context
 	logCtx := map[string]interface{}{
@@ -5777,10 +5883,9 @@ func (s *Service) findBookInHardcoverWithASINMatch(ctx context.Context, book mod
 		}
 	}
 
-	// Audiobook ISBN matching is allowed only when Audiobookshelf has no valid
-	// ASIN. A syntactically valid ASIN remains authoritative even if Hardcover
-	// cannot resolve it; a malformed value is not an identity and should not
-	// prevent an ISBN search. Ebooks keep their historical ASIN/ISBN behavior.
+	// Audiobooks prefer a regional Audible mapping, then ISBN, and use the
+	// edition ASIN only as a final identifier fallback. Ebooks keep their
+	// historical ASIN/ISBN behavior. Malformed audiobook ASINs are not searched.
 	format := book.ReadingFormat()
 	rawASIN := strings.TrimSpace(book.Media.Metadata.ASIN)
 	canonicalASIN, validASIN := audnex.CanonicalASIN(rawASIN)
@@ -5831,33 +5936,20 @@ func (s *Service) findBookInHardcoverWithASINMatch(ctx context.Context, book mod
 		}
 	}
 
-	// A completed miss for a usable audiobook ASIN is actionable in the
-	// needs-review flow. Lookup errors remain failures, and a possible title-only
-	// match must not hide the unresolved ASIN.
-	if format == models.ReadingFormatAudiobook && validASIN {
-		if lookupErr != nil {
-			return nil, lookupErr, false, nil
-		}
-		return nil, errAudibleImportAvailable, false, nil
+	// A failed mapping lookup is not a conclusive miss. Do not hide it with a
+	// lower-priority audiobook identifier or turn it into an import opportunity.
+	if format == models.ReadingFormatAudiobook && lookupErr != nil {
+		return nil, lookupErr, false, nil
 	}
 
-	// 2. Try to find by ISBN when the reading format allows it. An audiobook's
-	// ISBN may be used only without a valid source ASIN; that match remains
-	// ephemeral because it does not identify a regional Audible edition. The
-	// ABS value is searched as the form it has and as its derived counterpart,
-	// each in its own field.
-	if format == models.ReadingFormatEbook || (format == models.ReadingFormatAudiobook && !validASIN) {
+	// 2. Search the given ISBN form and its valid counterpart. Audiobook ISBN
+	// matches with an ASIN remain ephemeral so a regional mapping can replace them.
+	if format == models.ReadingFormatEbook || format == models.ReadingFormatAudiobook {
 		if candidates := isbnSearchCandidates(book.Media.Metadata.ISBN); len(candidates) > 0 {
 			s.debugRequestIntent(log, fmt.Sprintf("Searching for book by ISBN: %s", book.Media.Metadata.ISBN), nil)
 
 			for _, candidate := range candidates {
-				var hcBook *models.HardcoverBook
-				var err error
-				if candidate.is13 {
-					hcBook, err = s.hardcover.SearchBookByISBN13(ctx, candidate.value)
-				} else {
-					hcBook, err = s.hardcover.SearchBookByISBN10(ctx, candidate.value)
-				}
+				hcBook, err := s.lookupBookByISBN(ctx, candidate)
 				if err != nil {
 					// Check if this is a BookError with a book ID
 					var bookErr *hardcover.BookError
@@ -5888,6 +5980,9 @@ func (s *Service) findBookInHardcoverWithASINMatch(ctx context.Context, book mod
 					}
 					log.Warn(fmt.Sprintf("Search by %s failed, will try other identifiers or methods: %v", candidate.label(), err), nil)
 				} else if hcBook != nil {
+					if matchedISBN != nil {
+						*matchedISBN = candidate
+					}
 					if writeMode == associationWriteAll {
 						s.recordVerifiedISBNAssociation(book, hcBook)
 					}
@@ -5909,7 +6004,23 @@ func (s *Service) findBookInHardcoverWithASINMatch(ctx context.Context, book mod
 		}
 	}
 
-	// 3. If we get here, we couldn't find the book by ASIN or ISBN, try title/author search
+	// 3. Only after mapping and ISBN misses may an audiobook use editions.asin.
+	// Keep the result ephemeral so a future regional mapping takes precedence.
+	if format == models.ReadingFormatAudiobook && validASIN {
+		if lookupErr != nil {
+			return nil, lookupErr, false, nil
+		}
+		result, err := s.hardcover.SearchBookByEditionASINResult(ctx, canonicalASIN)
+		if err != nil {
+			return nil, fmt.Errorf("%w: edition ASIN fallback: %w", errHardcoverLookupFailed, err), false, nil
+		}
+		if result != nil && result.Book != nil {
+			return result.Book, nil, true, result
+		}
+		return nil, errAudibleImportAvailable, false, nil
+	}
+
+	// 4. If we get here, we couldn't find the book by ASIN or ISBN, try title/author search
 	if book.Media.Metadata.Title != "" && book.Media.Metadata.AuthorName != "" {
 		s.debugRequestIntent(log, "Trying title/author search after ASIN/ISBN search failed", map[string]interface{}{
 			"search_method": "title_author",

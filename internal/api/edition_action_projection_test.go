@@ -22,14 +22,16 @@ func TestRunDetailsEditionRecoveryCapabilities(t *testing.T) {
 		wantManual   bool
 		clearToken   bool
 		omitRecovery bool
+		fallback     bool
 	}{
-		{"owner", auth.RoleUser, time.Now(), "hardcover-token", true, false, false, false},
-		{"admin", auth.RoleAdmin, time.Now(), "hardcover-token", true, false, false, false},
-		{"viewer", auth.RoleViewer, time.Now(), "hardcover-token", false, false, false, false},
-		{"viewer without recovery", auth.RoleViewer, time.Now(), "hardcover-token", false, false, false, true},
-		{"expired", auth.RoleUser, time.Now().Add(-49 * time.Hour), "hardcover-token", false, true, false, false},
-		{"rotated", auth.RoleUser, time.Now(), "old-hardcover-token", false, true, false, false},
-		{"missing Hardcover token", auth.RoleUser, time.Now(), "hardcover-token", false, true, true, false},
+		{"owner", auth.RoleUser, time.Now(), "hardcover-token", true, false, false, false, false},
+		{"admin", auth.RoleAdmin, time.Now(), "hardcover-token", true, false, false, false, false},
+		{"viewer", auth.RoleViewer, time.Now(), "hardcover-token", false, false, false, false, false},
+		{"viewer without recovery", auth.RoleViewer, time.Now(), "hardcover-token", false, false, false, true, false},
+		{"expired", auth.RoleUser, time.Now().Add(-49 * time.Hour), "hardcover-token", false, true, false, false, false},
+		{"rotated", auth.RoleUser, time.Now(), "old-hardcover-token", false, true, false, false, false},
+		{"missing Hardcover token", auth.RoleUser, time.Now(), "hardcover-token", false, true, true, false, false},
+		{"edition ASIN fallback owner after resolved result", auth.RoleUser, time.Now(), "hardcover-token", true, false, false, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := newEditionDraftTestFixture(t, `{}`, "us")
@@ -40,8 +42,13 @@ func TestRunDetailsEditionRecoveryCapabilities(t *testing.T) {
 					Where("profile_id = ?", "draft-profile").Update("hardcover_token_encrypted", "").Error)
 			}
 			const runID = "pending-details"
-			addCompletedNeedsReviewRun(t, fixture, runID, editionCreateRecord())
+			record := editionCreateRecord()
 			claims := editionRecoveryClaims{ProfileID: "draft-profile", RunID: runID, ABSItemID: "abs-item-1", HardcoverBookID: "42", AudibleIdentifier: "B0SOURCE12:us"}
+			if tc.fallback {
+				record = audiobookIdentifierFallbackRecord(sync.OutcomeAlreadyCurrent, "edition_asin")
+				claims.HardcoverBookID = ""
+			}
+			addCompletedNeedsReviewRun(t, fixture, runID, record)
 			token := signEditionRecoveryTokenAt(tc.signingKey, claims, tc.issuedAt)
 			if tc.omitRecovery {
 				token = ""
@@ -51,6 +58,9 @@ func TestRunDetailsEditionRecoveryCapabilities(t *testing.T) {
 				Outcome:       editionOutcomeUnconfirmed,
 				SubmittedBody: &sync.EditionActionSubmittedBody{RunID: runID, ABSItemID: "abs-item-1", Title: &editedTitle},
 				Data:          &sync.EditionActionData{HardcoverBookID: "42", AudibleIdentifier: claims.AudibleIdentifier, RecoveryToken: token},
+			}
+			if tc.fallback {
+				action.Data.HardcoverBookID = "73"
 			}
 			require.NoError(t, fixture.multiUserService.SaveEditionAction("draft-profile", runID, "abs-item-1", action))
 			mux := http.NewServeMux()

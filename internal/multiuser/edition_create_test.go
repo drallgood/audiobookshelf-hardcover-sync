@@ -542,6 +542,8 @@ func TestAnnotateEditionAdditionsRequiresMatchingSavedAPIAssociation(t *testing.
 		{name: "changed source identifier", recordFormat: "Ebook", recordASIN: "B099999999", change: func(*statepkg.Association) {}, want: false},
 		{name: "other format", recordFormat: "Ebook", change: func(a *statepkg.Association) { a.ReadingFormat = "audiobook" }, want: false},
 		{name: "ordinary sync", recordFormat: "Ebook", change: func(a *statepkg.Association) { a.Provenance = "regional_mapping" }, want: false},
+		{name: "ordinary ISBN sync", recordFormat: "Ebook", change: func(a *statepkg.Association) { a.Provenance = "isbn" }, want: false},
+		{name: "ordinary edition ASIN sync", recordFormat: "Ebook", change: func(a *statepkg.Association) { a.Provenance = "edition_asin" }, want: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			service, profileID := newEditionCreateService(t)

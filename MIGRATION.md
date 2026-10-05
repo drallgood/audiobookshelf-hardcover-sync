@@ -46,38 +46,34 @@ must add a scheme. Audiobookshelf requests now connect directly and ignore
 proxy need a direct route to the configured Audiobookshelf server. These
 requirements apply to both network trust modes.
 
-### Audiobooks no longer match by direct edition ASIN
+### Audiobook identifier fallback and saved matches
 
-Sync, the mismatch export, and the edition creator's duplicate check no longer
-match an audiobook through a Hardcover edition's `asin` field; only regional
-Audible mappings, saved matches, and title/author search are used. Audiobook
-ISBN lookup is available only when the Audiobookshelf source ASIN is missing or
-malformed; see the next section. Ebook ASIN matching is unchanged. A book whose
-only link was `editions.asin` becomes `needs_review` (title/author finds it; use
-the add-edition action) or `not_found` (fix it in Hardcover or with the
-`edition` CLI and a book ID) the next time it is processed, unless its source
-ISBN independently matches while there is no valid ASIN.
+Audiobooks now try regional Audible mappings, ISBN, and exact audiobook edition
+ASIN, in that order. A completed mapping miss permits ISBN matching even when
+Audiobookshelf has a valid ASIN; lookup errors and conflicting results block
+lower-priority matching. Previously unmatched books may therefore sync
+automatically on their next run, including reading progress and enabled
+ownership updates.
+Ebook matching is unchanged.
 
-### Audiobook ISBN fallback and stale checkpoint re-evaluation
+Verified audiobook ISBN matches without an ASIN are now saved for reuse.
+Audiobook ISBN matches with an ASIN and audiobook edition-ASIN fallbacks remain
+temporary. Incremental sync resolves these temporary matches again and uses
+progress checkpoints to avoid repeating writes for an unchanged target.
 
-A bare ISBN is not a region-qualified Audible identity, but sync can use it to
-match an audiobook when Audiobookshelf has no valid ASIN. A valid source ASIN
-(exactly 10 ASCII letters or digits) remains authoritative: if its regional
-lookup misses or fails, sync does not fall back to ISBN. Ebook ISBN matching
-is unchanged and continues to be saved after a successful match. Audiobook
-ISBN matches are looked up again whenever the item is processed; they are not
-stored as local associations.
+Synced and already-current fallback matches with a valid ASIN offer **Import
+Audible edition**. A verified import replaces the local match with its returned
+book, edition, and regional Audible identifier, then invalidates old progress
+checkpoints. The returned book may differ from the fallback target. Existing
+reading progress and history on the previous Hardcover book stay there; the
+preview explains this before submission. If ownership syncing marked the old
+book as Owned, importing a different target does not remove its Owned-list entry.
 
-Audiobooks previously matched without a saved association are evaluated
-without waiting for progress or status to change. ISBN-only audiobooks keep
-their progress checkpoints but bypass the preliminary "no changes" check so
-their identifiers are resolved again. If the resulting edition, progress,
-status, and activity are unchanged, incremental sync skips writes. Other unassociated
-audiobooks clear stale checkpoints before matching. An ISBN fallback may now
-find and sync the audiobook when its source ASIN is missing or malformed;
-otherwise the item is reclassified as `needs_review` or `not_found`. A book that already has a saved
-association is unaffected and keeps syncing normally. No configuration or
-state-file migration is required.
+No configuration or manual state migration is required. Sync Status displays
+the underlying identifier method, with **(temporary)** on temporary audiobook
+fallbacks. See the [match-method table in README.md](README.md#matching-and-saved-editions).
+Audiobook edition creation never writes the ABS Audible ASIN to `editions.asin`,
+and a failed Audible import never falls back to inserting that ASIN.
 
 ### Sync Status API
 

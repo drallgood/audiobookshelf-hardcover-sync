@@ -449,18 +449,19 @@ func (s *MultiUserService) AnnotateEditionAdditions(profileID string, snapshot *
 	if err != nil {
 		return fmt.Errorf("load persisted edition actions: %w", err)
 	}
-	needsReview := false
+	needsEditionOverlay := false
 	for i := range snapshot.BookOutcomes {
 		record := &snapshot.BookOutcomes[i]
-		if action, exists := actions[record.BookID]; exists && record.Outcome == sync.OutcomeNeedsReview {
+		fallbackASIN := sync.IsAudiobookIdentifierFallbackRecord(*record)
+		if action, exists := actions[record.BookID]; exists && (record.Outcome == sync.OutcomeNeedsReview || fallbackASIN) {
 			copyOf := action
 			record.EditionAction = &copyOf
 		}
-		if record.Outcome == sync.OutcomeNeedsReview {
-			needsReview = true
+		if record.Outcome == sync.OutcomeNeedsReview || fallbackASIN {
+			needsEditionOverlay = true
 		}
 	}
-	if !needsReview {
+	if !needsEditionOverlay {
 		return nil
 	}
 	config, err := s.repository.GetProfileSyncConfig(profileID)
@@ -481,7 +482,8 @@ func (s *MultiUserService) AnnotateEditionAdditions(profileID string, snapshot *
 	for i := range snapshot.BookOutcomes {
 		record := &snapshot.BookOutcomes[i]
 		association, exists := state.GetAssociation(record.BookID)
-		associationMatchesSource := record.Outcome == sync.OutcomeNeedsReview && exists &&
+		fallbackASIN := sync.IsAudiobookIdentifierFallbackRecord(*record)
+		associationMatchesSource := (record.Outcome == sync.OutcomeNeedsReview || fallbackASIN) && exists &&
 			association.HardcoverBookID == record.HardcoverBookID &&
 			strings.EqualFold(strings.TrimSpace(association.ReadingFormat), strings.TrimSpace(record.Format)) &&
 			strings.EqualFold(strings.TrimSpace(association.SourceASIN), strings.TrimSpace(record.ASIN)) &&
@@ -506,8 +508,9 @@ func (s *MultiUserService) AnnotateEditionAdditions(profileID string, snapshot *
 }
 
 func unanchoredAudibleAssociationMatchesRecord(record sync.BookOutcomeRecord, association statepkg.Association) bool {
-	if record.Outcome != sync.OutcomeNeedsReview || record.Reason != mismatch.ReasonAudibleImportAvailable ||
-		strings.TrimSpace(record.HardcoverBookID) != "" || strings.TrimSpace(record.EditionID) != "" || association.ABSItemID != record.BookID ||
+	fallbackASIN := sync.IsAudiobookIdentifierFallbackRecord(record)
+	if (!fallbackASIN && (record.Outcome != sync.OutcomeNeedsReview || record.Reason != mismatch.ReasonAudibleImportAvailable)) ||
+		(!fallbackASIN && (strings.TrimSpace(record.HardcoverBookID) != "" || strings.TrimSpace(record.EditionID) != "")) || association.ABSItemID != record.BookID ||
 		!strings.EqualFold(strings.TrimSpace(record.Format), string(models.ReadingFormatAudiobook)) ||
 		!strings.EqualFold(strings.TrimSpace(association.ReadingFormat), string(models.ReadingFormatAudiobook)) ||
 		association.Provenance != "audible_import_unanchored" || association.AudnexusConfirmedAt.IsZero() {

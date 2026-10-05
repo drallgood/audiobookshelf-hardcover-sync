@@ -404,7 +404,7 @@ func runCreate(ctx context.Context, options createOptions, services createServic
 		return nil, fmt.Errorf("Hardcover returned %s edition %d, but it could not be verified. Check Hardcover before retrying; retrying may create another edition: %w", input.ReadingFormat, created.EditionID, err)
 	}
 	if absItem != nil {
-		association := editionAssociation(absItem, input.ASIN, output.Status, input.BookID, created.EditionID, input.ReadingFormat)
+		association := editionAssociation(absItem, input.ASIN, input.BookID, created.EditionID, input.ReadingFormat)
 		if err := saveAssociation(loadedState, associationStatePath, association); err != nil {
 			return nil, fmt.Errorf("Hardcover returned %s edition %d, but the local association could not be saved. Verify the Hardcover result before retrying; retrying may create another edition: %w", input.ReadingFormat, created.EditionID, err)
 		}
@@ -861,7 +861,7 @@ func verifyCreatedEdition(ctx context.Context, expectedEditionID, expectedBookID
 	return nil
 }
 
-func editionAssociation(item *models.AudiobookshelfBook, submittedASIN, status string, bookID, editionID int, readingFormat string) state.Association {
+func editionAssociation(item *models.AudiobookshelfBook, submittedASIN string, bookID, editionID int, readingFormat string) state.Association {
 	asin, isbn10, isbn13 := state.SourceIdentifiers(item.Media.Metadata.ASIN, item.Media.Metadata.ISBN)
 	return state.Association{
 		ABSItemID:          item.ID,
@@ -872,7 +872,7 @@ func editionAssociation(item *models.AudiobookshelfBook, submittedASIN, status s
 		HardcoverBookID:    strconv.Itoa(bookID),
 		HardcoverEditionID: strconv.Itoa(editionID),
 		ReadingFormat:      readingFormat,
-		Provenance:         "cli_" + readingFormat + "_" + status,
+		Provenance:         state.EditionIdentifierProvenance(readingFormat, submittedASIN),
 	}
 }
 

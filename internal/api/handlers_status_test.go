@@ -175,7 +175,7 @@ func TestStartSyncReturnsControlledErrorForUnknownPublicProfile(t *testing.T) {
 
 func TestStartSyncReturnsErrorWhenProfileIsAlreadySyncing(t *testing.T) {
 	absServer := newLiveStatusAudiobookshelfServer([]map[string]interface{}{
-		statusBook("blocked-book", "Blocked Until Released", "Author"),
+		statusBookWithProgress("blocked-book", "Blocked Until Released", "Author"),
 	})
 	t.Cleanup(absServer.Server.Close)
 	hardcoverServer := newLiveStatusHardcoverServer()
@@ -285,7 +285,7 @@ func TestAggregateStatusAndRunDetailsShareCurrentRunIdentity(t *testing.T) {
 		{id: "profile-b", name: "B", title: "Missing B", author: "Author B"},
 	} {
 		fixture.createProfile(t, profile.id, profile.name, absServer.Server.URL, "hardcover-token")
-		absServer.books[profile.id] = statusBook(profile.id, profile.title, profile.author)
+		absServer.books[profile.id] = statusBookWithProgress(profile.id, profile.title, profile.author)
 	}
 
 	for _, profileID := range []string{"profile-a", "profile-b"} {
@@ -684,9 +684,9 @@ func TestProfileStateFilenameValidationAtHTTPBoundary(t *testing.T) {
 
 func TestAggregateStatusAndRunDetailsExposeLiveAttentionOutcomes(t *testing.T) {
 	absServer := newLiveStatusAudiobookshelfServer([]map[string]interface{}{
-		statusBook("title-only-book", "Title Only", "Author One"),
-		statusBook("no-result-book", "No Result", "Author Two"),
-		statusBook("blocked-book", "Blocked Until Released", "Author Three"),
+		statusBookWithProgress("title-only-book", "Title Only", "Author One"),
+		statusBookWithProgress("no-result-book", "No Result", "Author Two"),
+		statusBookWithProgress("blocked-book", "Blocked Until Released", "Author Three"),
 	})
 	t.Cleanup(absServer.Server.Close)
 	hardcoverServer := newLiveStatusHardcoverServer()
@@ -899,7 +899,7 @@ func TestPublicStatusRunReplacementKeepsNewRunCurrent(t *testing.T) {
 
 func TestRunDetailsExposeTechnicalTimeoutAsFailedOutcome(t *testing.T) {
 	absServer := newLiveStatusAudiobookshelfServer([]map[string]interface{}{
-		statusBook("timeout-book", "Timeout Candidate", "Timeout Author"),
+		statusBookWithProgress("timeout-book", "Timeout Candidate", "Timeout Author"),
 	})
 	t.Cleanup(absServer.Server.Close)
 	hardcoverServer := newTimeoutStatusHardcoverServer()
@@ -1195,11 +1195,16 @@ func statusBook(id, title, author string) map[string]interface{} {
 	}
 }
 
-func statusBookWithEnrichment(id, title, author string) map[string]interface{} {
+func statusBookWithProgress(id, title, author string) map[string]interface{} {
 	book := statusBook(id, title, author)
 	book["progress"] = map[string]interface{}{"currentTime": 40.0}
-	// ISBN matching applies only to ebooks (Step 11), and this fixture's
-	// delayed second-lookup path is driven entirely by an ISBN match.
+	return book
+}
+
+func statusBookWithEnrichment(id, title, author string) map[string]interface{} {
+	book := statusBookWithProgress(id, title, author)
+	// This fixture uses an ebook for the persisted-ISBN and second-lookup
+	// contract exercised by its delayed enrichment test.
 	book["mediaType"] = "ebook"
 	metadata := book["media"].(map[string]interface{})["metadata"].(map[string]interface{})
 	metadata["isbn"] = "9780306406157"

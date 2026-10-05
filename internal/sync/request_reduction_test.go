@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -52,24 +53,62 @@ func TestProcessBookSkipsAudiobookBelowMinimumProgressBeforeLookup(t *testing.T)
 	}
 }
 
-// An unread audiobook with no status to sync still runs the match when unread
-// books are processed, because that match is how an unmatched book is reported.
-func TestProcessBookStillMatchesAudiobookWithNoStatusToSync(t *testing.T) {
-	svc, hc := createTestService()
-	svc.config.Sync.SyncOwned = false
-	svc.config.Sync.ProcessUnreadBooks = true
-	svc.config.Sync.SyncWantToRead = false
-	book := toAudiobookshelfBook(createTestBook("unread-no-status", "Unread", "Author", "B0UNREAD01", ""))
-	book.Progress.CurrentTime = 0
-	hc.On("SearchBookByASIN", mock.Anything, "B0UNREAD01").Return((*models.HardcoverBook)(nil), nil).Once()
+// Unread processing enables matching independently of want-to-read status writes.
+func TestUnreadAudiobookMatchingAndWantToReadSettings(t *testing.T) {
+	for _, syncWantToRead := range []bool{false, true} {
+		for _, matched := range []bool{false, true} {
+			t.Run(fmt.Sprintf("want-to-read=%t/matched=%t", syncWantToRead, matched), func(t *testing.T) {
+				svc, hc := createTestService()
+				svc.config.Sync.ProcessUnreadBooks = true
+				svc.config.Sync.SyncWantToRead = syncWantToRead
+				svc.config.Sync.SyncOwned = true
+				book := associationTestBook("unread-settings", "B0UNREAD01", "")
+				lookup := &audiobookFallbackClient{associationLookupClient: &associationLookupClient{MockHardcoverClient: hc}}
+				if matched {
+					lookup.result = &hardcover.ASINLookupResult{
+						Book:               &models.HardcoverBook{ID: "901", EditionID: "902"},
+						MatchKind:          hardcover.ASINMatchAudibleMapping,
+						RegionalExternalID: "B0UNREAD01:us",
+					}
+				}
+				svc.hardcover = lookup
+				shouldWrite := syncWantToRead && matched
+				if shouldWrite {
+					hc.On("CheckBookOwnership", mock.Anything, 901).Return(false, nil).Once()
+					hc.On("MarkEditionAsOwned", mock.Anything, 902).Return(nil).Once()
+					hc.On("GetEdition", mock.Anything, "902").Return(&models.Edition{ID: "902", BookID: "901", ReadingFormatID: "2"}, nil).Once()
+					hc.On("GetUserBookID", mock.Anything, 902).Return(903, nil).Once()
+					hc.On("UpdateUserBookStatus", mock.Anything, hardcover.UpdateUserBookStatusInput{ID: 903, StatusID: 1}).Return(nil).Once()
+				}
 
-	require.NoError(t, svc.processBook(context.Background(), *book, &models.AudiobookshelfUserProgress{}))
+				require.NoError(t, svc.processBook(context.Background(), book, &models.AudiobookshelfUserProgress{}))
 
-	hc.AssertExpectations(t)
-	record := recordedOutcome(svc, book.ID)
-	assert.Equal(t, OutcomeNeedsReview, record.Outcome)
-	assert.Equal(t, mismatch.ReasonAudibleImportAvailable, record.Reason)
-	hc.AssertNotCalled(t, "SearchBooks", mock.Anything, mock.Anything, mock.Anything)
+				record := recordedOutcome(svc, book.ID)
+				switch {
+				case !matched:
+					assert.Positive(t, lookup.searchCount)
+					assert.Equal(t, OutcomeNeedsReview, record.Outcome)
+					assert.Equal(t, mismatch.ReasonAudibleImportAvailable, record.Reason)
+					attention := svc.mismatchCollector.GetAll()
+					require.Len(t, attention, 1)
+					assert.Equal(t, mismatch.ReasonAudibleImportAvailable, attention[0].Reason)
+				case syncWantToRead:
+					assert.Equal(t, OutcomeSynced, record.Outcome)
+				default:
+					assert.Positive(t, lookup.searchCount)
+					assert.Equal(t, OutcomeSkipped, record.Outcome)
+					assert.Equal(t, "901", record.HardcoverBookID)
+					assert.Empty(t, svc.mismatchCollector.GetAll())
+				}
+				if !shouldWrite {
+					hc.AssertNotCalled(t, "GetUserBookID", mock.Anything, mock.Anything)
+					hc.AssertNotCalled(t, "UpdateUserBookStatus", mock.Anything, mock.Anything)
+					hc.AssertNotCalled(t, "MarkEditionAsOwned", mock.Anything, mock.Anything)
+				}
+				hc.AssertExpectations(t)
+			})
+		}
+	}
 }
 
 // Matching alone must not read or create user books: processBook does that once
