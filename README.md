@@ -103,9 +103,12 @@ After a sync finishes or is canceled, open **View Details**:
   It opens the same **Import by Audible ASIN** workflow.
 
 The Audible import preview compares the Audiobookshelf item with its regional
-Audnexus record. When no Hardcover book is selected, the import uses the
-reviewed regional ASIN to resolve its target. Review that the record identifies
-the item. The app discovers the region from Audiobookshelf and Audnexus and
+Audnexus record. When no Hardcover book is selected, the app first checks
+whether the confirmed title and author match exactly one existing Hardcover
+book and attaches the import to that book, so an existing work is not duplicated
+by an unmapped Audible ASIN. Only when no unambiguous existing book exists does
+the import use the reviewed regional ASIN to resolve its target. Review that the
+record identifies the item. The app discovers the region from Audiobookshelf and Audnexus and
 shows the `ASIN:region` as read-only text. The identifier cannot be changed in
 the modal. If the Audnexus lookup fails, the modal shows an error and a
 **Retry preview** button while **Add edition** stays disabled. A successful

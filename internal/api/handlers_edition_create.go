@@ -914,7 +914,17 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 		if err != nil || bookID <= 0 {
 			return statepkg.Association{}, errStaleEditionCreateRun
 		}
+	} else {
+		// The Audible ASIN is not mapped on Hardcover, so an unanchored regional
+		// import would create a new book. When the Audible-confirmed identity
+		// matches exactly one existing Hardcover book, attach the import to it
+		// instead so an existing work is not duplicated.
+		bookID = h.unanchoredImportAnchorBook(ctx, client, item, regionalBook)
 	}
+	// importUnanchored reports whether the regional import still has no book to
+	// attach to. The source record itself stays unanchored for recovery-token
+	// binding, which must not depend on the anchor found here.
+	importUnanchored := bookID == 0
 	if err := requireEditionCreateMutationBudget(ctx); err != nil {
 		if request.AudibleIdentifier == "" && ctx.Err() == nil {
 			return statepkg.Association{}, errEditionCreateDiscoveryBudget
@@ -953,7 +963,7 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 		return statepkg.Association{}, err
 	}
 	mutationCtx := hardcover.WithMinimumMutationBudget(ctx, editionCreateMutationReserve)
-	result, err := client.ImportRegionalAudiobook(mutationCtx, hardcover.RegionalAudiobookInput{BookID: bookID, ASIN: asin, Region: region, Unanchored: unanchored})
+	result, err := client.ImportRegionalAudiobook(mutationCtx, hardcover.RegionalAudiobookInput{BookID: bookID, ASIN: asin, Region: region, Unanchored: importUnanchored})
 	if err != nil {
 		if errors.Is(err, hardcover.ErrMutationInsufficientBudget) {
 			writeErr := errors.Join(errEditionCreateInsufficientBudget, err)
@@ -977,7 +987,7 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 		h.finalizeEditionCreateAction(profile.Profile.ID, response, writeErr)
 		return statepkg.Association{}, writeErr
 	}
-	if result == nil || result.BookID <= 0 || (!unanchored && result.BookID != bookID) || result.EditionID <= 0 || result.ReadingFormatID != models.ReadingFormatID(models.ReadingFormatAudiobook) ||
+	if result == nil || result.BookID <= 0 || (bookID > 0 && result.BookID != bookID) || result.EditionID <= 0 || result.ReadingFormatID != models.ReadingFormatID(models.ReadingFormatAudiobook) ||
 		(result.Status != hardcover.RegionalAudiobookLoaded && result.Status != hardcover.RegionalAudiobookCreated) {
 		writeErr := markEditionCreateRemoteOutcomeAmbiguous(errHardcoverEditionIdentityConflict)
 		h.finalizeEditionCreateAction(profile.Profile.ID, response, writeErr)
@@ -999,7 +1009,7 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 		}
 	}
 	var association statepkg.Association
-	if unanchored {
+	if importUnanchored {
 		confirmedAt := time.Unix(recoveryIssuedAt.Unix(), 0).UTC()
 		association, err = statepkg.NewAudibleImportAssociation(item, result, correction, confirmedAt)
 		if err != nil {
@@ -1007,7 +1017,7 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 		}
 		association.AudnexusAudit = cloneAudnexusAudit(audnexusAudit)
 	} else {
-		association = createEditionAssociation(item, record.HardcoverBookID, strconv.Itoa(result.EditionID), regionalID,
+		association = createEditionAssociation(item, strconv.Itoa(bookID), strconv.Itoa(result.EditionID), regionalID,
 			correction, models.ReadingFormatAudiobook, "api_regional_"+string(result.Status))
 	}
 	hardcoverTitle := strings.TrimSpace(result.BookTitle)
@@ -1017,7 +1027,7 @@ func (h *Handler) createRegionalAudiobook(ctx context.Context, profile *database
 		HardcoverBookID: strconv.Itoa(result.BookID), HardcoverEditionID: strconv.Itoa(result.EditionID), HardcoverTitle: hardcoverTitle, RegionalExternalID: regionalID,
 		MetadataPreview: preview, recovery: recovery, sourceEdition: result.Edition, action: response.action,
 		Warnings:                      audnexusTitleWarnings(item, audnexusAudit),
-		lookupHardcoverTitleAfterSave: unanchored && hardcoverTitle == "",
+		lookupHardcoverTitleAfterSave: importUnanchored && hardcoverTitle == "",
 	}
 	response.action.Outcome = editionOutcomeCreated
 	response.action.HTTPStatus = http.StatusBadGateway
@@ -1036,6 +1046,94 @@ func foundASINValue(book *audnex.Book) string {
 		return ""
 	}
 	return book.ASIN
+}
+
+// unanchoredImportAnchorBook finds the single existing Hardcover book that
+// exactly matches the Audiobookshelf source title and author (falling back to
+// the Audible-confirmed metadata), so an unanchored regional import can attach
+// to it instead of creating a duplicate book for an existing work. It returns 0
+// when no unambiguous match exists, leaving the import unanchored. Lookup
+// errors, clients without title search, and missing author evidence on the
+// search results all leave the import unanchored.
+func (h *Handler) unanchoredImportAnchorBook(ctx context.Context, client editionCreateHardcoverClient, item *models.AudiobookshelfBook, regionalBook *audnex.Book) int {
+	searcher, ok := client.(interface {
+		SearchBooks(context.Context, string, string) ([]models.HardcoverBook, error)
+	})
+	if !ok {
+		return 0
+	}
+	title := strings.TrimSpace(item.Media.Metadata.Title)
+	if title == "" && regionalBook != nil {
+		title = strings.TrimSpace(regionalBook.Title)
+	}
+	author := strings.TrimSpace(item.Media.Metadata.AuthorName)
+	if author == "" && regionalBook != nil {
+		author = strings.Join(regionalBook.GetAuthorsAsStrings(), ", ")
+	}
+	if title == "" {
+		return 0
+	}
+	query := title
+	if author != "" {
+		query = title + " " + author
+	}
+	lookupCtx := ctx
+	if deadline, ok := ctx.Deadline(); ok {
+		var cancel context.CancelFunc
+		lookupCtx, cancel = context.WithDeadline(ctx, deadline.Add(-editionCreateMutationReserve))
+		defer cancel()
+	}
+	results, err := searcher.SearchBooks(lookupCtx, query, "")
+	if err != nil || len(results) == 0 {
+		return 0
+	}
+
+	wantTitle := edition.NormalizeNameOrTitle(title)
+	var candidates []models.HardcoverBook
+	for i := range results {
+		book := results[i]
+		if strings.TrimSpace(book.Title) == "" || edition.NormalizeNameOrTitle(book.Title) != wantTitle {
+			continue
+		}
+		candidates = append(candidates, book)
+	}
+	if len(candidates) == 0 {
+		return 0
+	}
+
+	// The search document does not always carry contributors. Anchor only when
+	// the author can be verified, or when the exact title match is unique.
+	wantAuthor := edition.NormalizeNameOrTitle(author)
+	authorVerifiable := wantAuthor != ""
+	for _, book := range candidates {
+		if len(book.Authors) == 0 {
+			authorVerifiable = false
+		}
+	}
+	matchedID := ""
+	for _, book := range candidates {
+		if authorVerifiable && !hardcoverBookHasAuthor(book, wantAuthor) {
+			continue
+		}
+		if matchedID != "" && matchedID != book.ID {
+			return 0
+		}
+		matchedID = book.ID
+	}
+	bookID, err := strconv.Atoi(matchedID)
+	if err != nil || bookID <= 0 {
+		return 0
+	}
+	return bookID
+}
+
+func hardcoverBookHasAuthor(book models.HardcoverBook, wantAuthor string) bool {
+	for _, author := range book.Authors {
+		if edition.NormalizeNameOrTitle(author.Name) == wantAuthor {
+			return true
+		}
+	}
+	return false
 }
 
 // lookupImportedHardcoverTitle fills the informational title for a verified
