@@ -618,6 +618,55 @@ func TestAnnotateUnanchoredAudibleImportAfterJournalCleanup(t *testing.T) {
 	}
 }
 
+func TestAnnotateAnchoredUnanchoredAudibleImportAfterJournalCleanup(t *testing.T) {
+	baseRecord := syncsvc.BookOutcomeRecord{
+		BookID: "item", Outcome: syncsvc.OutcomeNeedsReview, Reason: mismatch.ReasonAudibleImportAvailable,
+		ASIN: "B012345678", SourceASIN: "B012345678", ISBN: "978-0-306-40615-7",
+		SourceISBN13: "9780306406157", Format: models.ReadingFormatAudiobook,
+	}
+	baseAssociation := statepkg.Association{
+		ABSItemID: "item", SourceASIN: "B012345678", SourceISBN13: "978-0-306-40615-7",
+		Correction: "B0OTHER123:uk", RegionalExternalID: "B0OTHER123:uk",
+		HardcoverBookID: "42", HardcoverEditionID: "84",
+		ReadingFormat: "audiobook", Provenance: "api_regional_created",
+	}
+	tests := []struct {
+		name         string
+		mutateRecord func(*syncsvc.BookOutcomeRecord)
+		mutateAssoc  func(*statepkg.Association)
+		wantAdded    bool
+	}{
+		{name: "confirmed anchored import remains visible after journal cleanup", wantAdded: true},
+		{name: "ordinary needs review item", mutateRecord: func(r *syncsvc.BookOutcomeRecord) { r.Reason = "identifier mismatch" }},
+		{name: "record carries its own Hardcover book", mutateRecord: func(r *syncsvc.BookOutcomeRecord) { r.HardcoverBookID = "73" }},
+		{name: "changed source ASIN", mutateRecord: func(r *syncsvc.BookOutcomeRecord) { r.ASIN, r.SourceASIN = "B099999999", "B099999999" }},
+		{name: "non-audiobook source", mutateRecord: func(r *syncsvc.BookOutcomeRecord) { r.Format = "Ebook" }},
+		{name: "changed source ISBN", mutateAssoc: func(a *statepkg.Association) { a.SourceISBN13 = "9781861972712" }},
+		{name: "unrelated ordinary sync association", mutateAssoc: func(a *statepkg.Association) { a.Provenance = "regional_mapping" }},
+		{name: "nonpositive Hardcover book ID", mutateAssoc: func(a *statepkg.Association) { a.HardcoverBookID = "0" }},
+		{name: "invalid Hardcover edition ID", mutateAssoc: func(a *statepkg.Association) { a.HardcoverEditionID = "invalid" }},
+		{name: "wrong associated format", mutateAssoc: func(a *statepkg.Association) { a.ReadingFormat = "ebook" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			record, association := baseRecord, baseAssociation
+			if tt.mutateRecord != nil {
+				tt.mutateRecord(&record)
+			}
+			if tt.mutateAssoc != nil {
+				tt.mutateAssoc(&association)
+			}
+			service, profileID := newEditionCreateService(t)
+			require.NoError(t, service.CreateEditionWithAssociation(context.Background(), profileID, "item", func(*database.ProfileWithTokens) (statepkg.Association, error) {
+				return association, nil
+			}))
+			snapshot := syncsvc.SyncSnapshot{State: "completed", BookOutcomes: []syncsvc.BookOutcomeRecord{record}}
+			require.NoError(t, service.AnnotateEditionAdditions(profileID, &snapshot))
+			require.Equal(t, tt.wantAdded, snapshot.BookOutcomes[0].EditionAdded)
+		})
+	}
+}
+
 func TestAnnotateEditionAdditionsStateFailureAndDryRun(t *testing.T) {
 	service, profileID := newEditionCreateService(t)
 	path := service.profileSpecificStatePath(profileID, "sync.json")

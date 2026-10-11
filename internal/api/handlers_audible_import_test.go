@@ -1297,6 +1297,7 @@ func TestCreateUnanchoredAudibleImportAttachesToExistingBook(t *testing.T) {
 	require.Equal(t, "84", association.HardcoverEditionID)
 	require.Equal(t, "B0OTHER123:ca", association.RegionalExternalID)
 	require.NotEqual(t, "audible_import_unanchored", association.Provenance)
+	requireEditionAddedInFreshRunDetails(t, fixture, "run-audible-import")
 }
 
 func TestCreateUnanchoredAudibleImportStaysUnanchoredWithoutExactAnchor(t *testing.T) {
