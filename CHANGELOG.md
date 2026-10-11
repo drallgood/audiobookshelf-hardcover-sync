@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Import temporary audiobook matches from skipped results**: show the existing Audible edition import action when a finished or canceled run recorded an ISBN or edition-ASIN fallback match and the Audiobookshelf item has a valid ASIN. Skipped books without a recorded temporary match remain ineligible.
+- **Import temporary audiobook matches from skipped results**: show the existing Audible edition import action when a finished or canceled run recorded an ISBN or edition-ASIN fallback match and the Audiobookshelf item has a valid ASIN. Skipped books without a recorded temporary match remain ineligible. By @Snuffy2. (#233)
 
 - **Unanchored Audible import no longer duplicates an existing book**: before importing an audiobook whose Audible ASIN has no regional mapping, the app searches Hardcover for the single existing book that exactly matches the confirmed title (and the exact author when the catalog provides one) and attaches the import to it. An ambiguous match, a lookup failure, or a client without title search keeps the import unanchored as before.
 
