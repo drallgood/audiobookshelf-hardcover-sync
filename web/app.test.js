@@ -1126,7 +1126,7 @@ test('Audible import modal shows every comparison and escapes ABS and Audnexus v
     assert.match(html, /audible-comparison-source">Audnexus\/Audible<\/span>/);
 });
 
-test('audiobook identifier fallback is limited to completed audiobook outcomes with a valid preferred source ASIN', () => {
+test('audiobook identifier fallback actions include skipped matches with a valid preferred source ASIN', () => {
     const app = editionApp();
     for (const match_method of ['edition_asin', 'isbn']) {
         const fallback = {
@@ -1149,10 +1149,15 @@ test('audiobook identifier fallback is limited to completed audiobook outcomes w
     }
 
     const fallback = { book_id: 'li_fallback', outcome: 'synced', match_method: 'edition_asin', format: 'audiobook', source_asin: 'B00SOURCE1', asin: 'invalid', hardcover_book_id: '42' };
+    const skipped = { ...fallback, outcome: 'skipped' };
+    const skippedRow = app.renderOutcomeRecord(skipped);
+    assert.match(visibleText(skippedRow), /Import Audible edition/);
+    assert.equal(addEditionButton(skippedRow).disabled, false);
     for (const record of [
-        { ...fallback, outcome: 'skipped' },
         { ...fallback, outcome: 'would_sync' },
         { ...fallback, outcome: 'failed' },
+        { ...skipped, match_method: '' },
+        { ...skipped, source_asin: 'bad' },
         { ...fallback, format: 'ebook' },
         { ...fallback, source_asin: 'bad' },
         { ...fallback, source_asin: '' },
@@ -1169,11 +1174,16 @@ test('audiobook identifier fallback is limited to completed audiobook outcomes w
     assert.equal(editionApp({ isViewer: () => true }).renderEditionActions(fallback), '');
 });
 
-for (const match_method of ['edition_asin', 'isbn']) {
-    test(`${match_method} audiobook fallback opens Audible import preview without replacing its original sync record`, async () => {
+for (const [match_method, outcome] of [
+    ['edition_asin', 'already_current'],
+    ['edition_asin', 'skipped'],
+    ['isbn', 'already_current'],
+    ['isbn', 'skipped']
+]) {
+    test(`${match_method} audiobook fallback in ${outcome} opens Audible import preview without replacing its original sync record`, async () => {
         const app = editionApp();
         const record = {
-            book_id: 'li_fallback', outcome: 'already_current', reason: 'original reason', match_method,
+            book_id: 'li_fallback', outcome, reason: 'original reason', match_method,
             title: 'Fallback audiobook', format: 'audiobook', source_asin: 'B00SOURCE1', asin: 'B00OTHER01',
             hardcover_book_id: '42'
         };

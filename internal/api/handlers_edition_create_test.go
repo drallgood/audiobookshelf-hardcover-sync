@@ -189,6 +189,8 @@ func TestCreateEditionFromAudiobookIdentifierFallbackImportsUnanchoredAndOverlay
 	}{
 		{matchMethod: "edition_asin", outcome: sync.OutcomeSynced},
 		{matchMethod: "isbn", outcome: sync.OutcomeAlreadyCurrent},
+		{matchMethod: "edition_asin", outcome: sync.OutcomeSkipped},
+		{matchMethod: "isbn", outcome: sync.OutcomeSkipped},
 	} {
 		t.Run(test.matchMethod+"/"+string(test.outcome), func(t *testing.T) {
 			fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0SOURCE12","isbn":"978-0-306-40615-7"},"duration":100}}`, "us")
@@ -256,7 +258,7 @@ func TestCreateEditionFromAudiobookIdentifierFallbackRejectsIneligibleAndStaleRe
 	}{
 		{name: "other match method", mutate: func(r *sync.BookOutcomeRecord) { r.MatchMethod = "title" }},
 		{name: "failed outcome", mutate: func(r *sync.BookOutcomeRecord) { r.Outcome = sync.OutcomeFailed }},
-		{name: "skipped outcome", mutate: func(r *sync.BookOutcomeRecord) { r.Outcome = sync.OutcomeSkipped }},
+		{name: "skipped without a temporary match", mutate: func(r *sync.BookOutcomeRecord) { r.Outcome, r.MatchMethod = sync.OutcomeSkipped, "" }},
 		{name: "invalid source ASIN", mutate: func(r *sync.BookOutcomeRecord) { r.SourceASIN = "invalid" }},
 		{name: "newer fallback has different source", later: true},
 		{name: "Audiobookshelf source changed", itemJSON: `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0CHANGED12","isbn":"978-0-306-40615-7"},"duration":100}}`},

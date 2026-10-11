@@ -151,9 +151,8 @@ type BookOutcomeRecord struct {
 	UpdatedAt              time.Time            `json:"updated_at"`
 }
 
-// IsAudiobookIdentifierFallbackRecord reports whether a completed ISBN or
-// edition-ASIN audiobook match can use the user-confirmed Audible import
-// workflow.
+// IsAudiobookIdentifierFallbackRecord reports whether an ISBN or edition-ASIN
+// audiobook match can use the user-confirmed Audible import workflow.
 func IsAudiobookIdentifierFallbackRecord(record BookOutcomeRecord) bool {
 	if !strings.EqualFold(strings.TrimSpace(record.Format), models.ReadingFormatAudiobook) {
 		return false
@@ -162,7 +161,7 @@ func IsAudiobookIdentifierFallbackRecord(record BookOutcomeRecord) bool {
 		return false
 	}
 	switch record.Outcome {
-	case OutcomeSynced, OutcomeAlreadyCurrent:
+	case OutcomeSynced, OutcomeAlreadyCurrent, OutcomeSkipped:
 	default:
 		return false
 	}
