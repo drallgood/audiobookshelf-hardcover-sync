@@ -1233,6 +1233,131 @@ func TestCreateUnanchoredAudibleImportWrongFormatReturnsConflictWithoutAssociati
 	require.False(t, associated, "a wrong-format result must never become the local Audible association")
 }
 
+// editionCreateHardcoverSearchStub is an editionCreateHardcoverStub that also
+// implements the optional title search the unanchored import anchor relies on.
+type editionCreateHardcoverSearchStub struct {
+	editionCreateHardcoverStub
+	searchFn func(context.Context, string, string) ([]models.HardcoverBook, error)
+}
+
+func (s editionCreateHardcoverSearchStub) SearchBooks(ctx context.Context, title, author string) ([]models.HardcoverBook, error) {
+	return s.searchFn(ctx, title, author)
+}
+
+func TestCreateUnanchoredAudibleImportAttachesToExistingBook(t *testing.T) {
+	fixture := newAudibleImportCreateFixture(t)
+	var searches, mutations int
+	var importBookID int
+	fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+		return editionCreateHardcoverSearchStub{
+			searchFn: func(_ context.Context, query, _ string) ([]models.HardcoverBook, error) {
+				searches++
+				require.Equal(t, "Reviewed title Author", query, "the anchor search must include the author")
+				return []models.HardcoverBook{{
+					ID: "42", Title: "Reviewed title", Authors: []models.Author{{Name: "Author"}},
+				}}, nil
+			},
+			editionCreateHardcoverStub: editionCreateHardcoverStub{importFn: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+				mutations++
+				importBookID = input.BookID
+				require.False(t, input.Unanchored, "an exact existing-book anchor must attach the import to that book")
+				require.Equal(t, 42, importBookID)
+				require.Equal(t, "B0OTHER123", input.ASIN)
+				require.Equal(t, "ca", input.Region)
+				return &hardcover.RegionalAudiobookResult{
+					Status: hardcover.RegionalAudiobookCreated, BookID: 42, EditionID: 84,
+					ReadingFormatID:    models.ReadingFormatID(models.ReadingFormatAudiobook),
+					RegionalExternalID: "B0OTHER123:ca",
+				}, nil
+			}},
+		}
+	}
+
+	response := postEditionCreate(t, fixture, fixture.owner,
+		`{"run_id":"run-audible-import","abs_item_id":"abs-item-1","audnexus_confirmed":true,"audible_identifier":"B0OTHER123:ca"}`)
+
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.Equal(t, 1, searches)
+	require.Equal(t, 1, mutations)
+	var envelope struct {
+		Data struct {
+			HardcoverBookID    string `json:"hardcover_book_id"`
+			HardcoverEditionID string `json:"hardcover_edition_id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+	require.Equal(t, "42", envelope.Data.HardcoverBookID)
+	require.Equal(t, "84", envelope.Data.HardcoverEditionID)
+
+	stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+	require.NoError(t, err)
+	association, exists := stored.GetAssociation("abs-item-1")
+	require.True(t, exists)
+	require.Equal(t, "42", association.HardcoverBookID, "the saved association must point at the existing book")
+	require.Equal(t, "84", association.HardcoverEditionID)
+	require.Equal(t, "B0OTHER123:ca", association.RegionalExternalID)
+	require.NotEqual(t, "audible_import_unanchored", association.Provenance)
+	requireEditionAddedInFreshRunDetails(t, fixture, "run-audible-import")
+}
+
+func TestCreateUnanchoredAudibleImportStaysUnanchoredWithoutExactAnchor(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		results []models.HardcoverBook
+	}{
+		{name: "no results"},
+		{
+			name: "ambiguous exact title match",
+			results: []models.HardcoverBook{
+				{ID: "41", Title: "Reviewed title", Authors: []models.Author{{Name: "Author"}}},
+				{ID: "42", Title: "Reviewed title", Authors: []models.Author{{Name: "Author"}}},
+			},
+		},
+		{
+			name: "wrong author",
+			results: []models.HardcoverBook{
+				{ID: "42", Title: "Reviewed title", Authors: []models.Author{{Name: "A Different Author"}}},
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newAudibleImportCreateFixture(t)
+			var searches, mutations int
+			fixture.handler.editionCreateHardcoverFactory = func(string) editionCreateHardcoverClient {
+				return editionCreateHardcoverSearchStub{
+					searchFn: func(context.Context, string, string) ([]models.HardcoverBook, error) {
+						searches++
+						return test.results, nil
+					},
+					editionCreateHardcoverStub: editionCreateHardcoverStub{importFn: func(_ context.Context, input hardcover.RegionalAudiobookInput) (*hardcover.RegionalAudiobookResult, error) {
+						mutations++
+						require.Zero(t, input.BookID, "an ambiguous anchor must keep the import unanchored")
+						require.True(t, input.Unanchored)
+						return &hardcover.RegionalAudiobookResult{
+							Status: hardcover.RegionalAudiobookCreated, BookID: 73, EditionID: 84,
+							ReadingFormatID:    models.ReadingFormatID(models.ReadingFormatAudiobook),
+							RegionalExternalID: "B0OTHER123:ca",
+						}, nil
+					}},
+				}
+			}
+
+			response := postEditionCreate(t, fixture, fixture.owner,
+				`{"run_id":"run-audible-import","abs_item_id":"abs-item-1","audnexus_confirmed":true,"audible_identifier":"B0OTHER123:ca"}`)
+
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			require.Equal(t, 1, searches)
+			require.Equal(t, 1, mutations)
+			stored, err := statepkg.LoadState(editionCreateProfileStatePath(fixture))
+			require.NoError(t, err)
+			association, exists := stored.GetAssociation("abs-item-1")
+			require.True(t, exists)
+			require.Equal(t, "73", association.HardcoverBookID)
+			require.Equal(t, "audible_import_unanchored", association.Provenance)
+		})
+	}
+}
+
 func audibleImportABSItem(title, asin, isbn string) *models.AudiobookshelfBook {
 	item := &models.AudiobookshelfBook{ID: "abs-item-1", MediaType: "book"}
 	item.Media.Metadata.Title = title

@@ -488,7 +488,8 @@ func (s *MultiUserService) AnnotateEditionAdditions(profileID string, snapshot *
 			strings.EqualFold(strings.TrimSpace(association.ReadingFormat), strings.TrimSpace(record.Format)) &&
 			strings.EqualFold(strings.TrimSpace(association.SourceASIN), strings.TrimSpace(record.ASIN)) &&
 			(record.ISBN == "" || isbn.Normalize(record.ISBN) == isbn.Normalize(association.SourceISBN10) || isbn.Normalize(record.ISBN) == isbn.Normalize(association.SourceISBN13))
-		apiAssociation := associationMatchesSource && strings.HasPrefix(association.Provenance, "api_")
+		apiAssociation := (associationMatchesSource || anchoredAudibleImportMatchesRecord(*record, association)) &&
+			exists && strings.HasPrefix(association.Provenance, "api_")
 		submittedAction := record.EditionAction != nil && record.EditionAction.SubmittedBody != nil && record.EditionAction.Outcome != "not_submitted"
 		regionalIdentifierMatches := true
 		if submittedAction && record.EditionAction.Data != nil && record.EditionAction.Data.AudibleIdentifier != "" {
@@ -505,6 +506,47 @@ func (s *MultiUserService) AnnotateEditionAdditions(profileID string, snapshot *
 		}
 	}
 	return nil
+}
+
+// anchoredAudibleImportMatchesRecord reports whether an api_* association
+// resolves an originally unanchored audiobook import to an existing Hardcover
+// book. The create flow anchors such imports only when the Audible-confirmed
+// identity matches exactly one existing book, so the saved book ID is
+// authoritative even though the run record carried no candidate (or carried a
+// fallback candidate). The identity fields must still match the source record.
+func anchoredAudibleImportMatchesRecord(record sync.BookOutcomeRecord, association statepkg.Association) bool {
+	fallbackASIN := sync.IsAudiobookIdentifierFallbackRecord(record)
+	if (!fallbackASIN && (record.Outcome != sync.OutcomeNeedsReview || record.Reason != mismatch.ReasonAudibleImportAvailable)) ||
+		(!fallbackASIN && (strings.TrimSpace(record.HardcoverBookID) != "" || strings.TrimSpace(record.EditionID) != "")) ||
+		association.ABSItemID != record.BookID ||
+		!strings.EqualFold(strings.TrimSpace(association.ReadingFormat), strings.TrimSpace(record.Format)) ||
+		!strings.EqualFold(strings.TrimSpace(record.Format), string(models.ReadingFormatAudiobook)) {
+		return false
+	}
+	bookID, bookErr := strconv.Atoi(strings.TrimSpace(association.HardcoverBookID))
+	editionID, editionErr := strconv.Atoi(strings.TrimSpace(association.HardcoverEditionID))
+	if bookErr != nil || editionErr != nil || bookID <= 0 || editionID <= 0 {
+		return false
+	}
+
+	runASIN := record.SourceASIN
+	if strings.TrimSpace(runASIN) == "" {
+		runASIN = record.ASIN
+	}
+	runASIN, runASINValid := audnex.CanonicalASIN(runASIN)
+	associationASIN, associationASINValid := audnex.CanonicalASIN(association.SourceASIN)
+	if !runASINValid || !associationASINValid || runASIN != associationASIN {
+		return false
+	}
+	runISBN10, runISBN13 := record.SourceISBN10, record.SourceISBN13
+	if strings.TrimSpace(runISBN10) == "" && strings.TrimSpace(runISBN13) == "" {
+		_, runISBN10, runISBN13 = statepkg.SourceIdentifiers(record.ASIN, record.ISBN)
+	}
+	if isbn.Normalize(runISBN10) != isbn.Normalize(association.SourceISBN10) ||
+		isbn.Normalize(runISBN13) != isbn.Normalize(association.SourceISBN13) {
+		return false
+	}
+	return true
 }
 
 func unanchoredAudibleAssociationMatchesRecord(record sync.BookOutcomeRecord, association statepkg.Association) bool {
