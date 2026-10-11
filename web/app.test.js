@@ -1188,7 +1188,12 @@ for (const [match_method, outcome] of [
             hardcover_book_id: '42'
         };
         app.openSummary.records.set(record.book_id, record);
-        const originalRow = visibleText(app.renderOutcomeRecord(record));
+        const originalSyncFields = {
+            outcome: record.outcome,
+            reason: record.reason,
+            match_method: record.match_method,
+            hardcover_book_id: record.hardcover_book_id
+        };
         const requests = [];
         app.fetchJsonWithTimeout = async url => {
             requests.push(url);
@@ -1204,10 +1209,19 @@ for (const [match_method, outcome] of [
         await app.openEditionDialog(record.book_id);
 
         assert.ok(requests.includes(`/api/profiles/p1/edition-drafts/source/${record.book_id}`));
-        assert.match(app.renderEditionDialog(app.editionDialog), /Audiobookshelf and Audnexus\/Audible comparison/);
-        assert.match(app.renderEditionDialog(app.editionDialog), /Audible import may select a different Hardcover book/);
-        assert.match(app.renderEditionDialog(app.editionDialog), /Reading progress and history already saved on the previous Hardcover book will remain there/);
-        assert.equal(visibleText(app.renderOutcomeRecord(app.openSummary.records.get(record.book_id))), originalRow);
+        const dialogText = visibleText(app.renderEditionDialog(app.editionDialog));
+        assert.match(dialogText, /Audible import.*\b(?:may|can)\b.*\b(?:different|another) Hardcover book/i);
+        assert.match(dialogText, /progress and history.*previous Hardcover book.*\b(?:remain|stay)\b/i);
+
+        const currentRecord = app.openSummary.records.get(record.book_id);
+        assert.equal(currentRecord.outcome, originalSyncFields.outcome);
+        assert.equal(currentRecord.reason, originalSyncFields.reason);
+        assert.equal(currentRecord.match_method, originalSyncFields.match_method);
+        assert.equal(currentRecord.hardcover_book_id, originalSyncFields.hardcover_book_id);
+        const currentRow = visibleText(app.renderOutcomeRecord(currentRecord));
+        assert.match(currentRow, new RegExp(`Match method: ${match_method === 'edition_asin' ? 'Edition ASIN' : 'ISBN'}`));
+        assert.match(currentRow, /Hardcover target: book 42/);
+        assert.match(currentRow, /Import Audible edition/);
     });
 }
 

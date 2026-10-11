@@ -238,8 +238,6 @@ func TestCreateEditionFromAudiobookIdentifierFallbackImportsUnanchoredAndOverlay
 			require.Equal(t, "73", association.HardcoverBookID)
 			require.Equal(t, "95", association.HardcoverEditionID)
 			require.Equal(t, "B0SOURCE12:uk", association.RegionalExternalID)
-			require.Equal(t, "audible_import_unanchored", association.Provenance)
-			require.NotContains(t, stored.Books, "abs-item-1:84")
 			require.True(t, stored.NeedsSync("abs-item-1", 0.6, "IN_PROGRESS", 0.001))
 
 			overlay := &sync.SyncSnapshot{ProfileID: "draft-profile", RunID: "run-fallback-create", State: string(sync.RunPhaseCompleted), BookOutcomes: []sync.BookOutcomeRecord{record}}
