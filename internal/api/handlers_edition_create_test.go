@@ -189,6 +189,8 @@ func TestCreateEditionFromAudiobookIdentifierFallbackImportsUnanchoredAndOverlay
 	}{
 		{matchMethod: "edition_asin", outcome: sync.OutcomeSynced},
 		{matchMethod: "isbn", outcome: sync.OutcomeAlreadyCurrent},
+		{matchMethod: "edition_asin", outcome: sync.OutcomeSkipped},
+		{matchMethod: "isbn", outcome: sync.OutcomeSkipped},
 	} {
 		t.Run(test.matchMethod+"/"+string(test.outcome), func(t *testing.T) {
 			fixture := newEditionDraftTestFixture(t, `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0SOURCE12","isbn":"978-0-306-40615-7"},"duration":100}}`, "us")
@@ -237,7 +239,6 @@ func TestCreateEditionFromAudiobookIdentifierFallbackImportsUnanchoredAndOverlay
 			require.Equal(t, "95", association.HardcoverEditionID)
 			require.Equal(t, "B0SOURCE12:uk", association.RegionalExternalID)
 			require.Equal(t, "audible_import_unanchored", association.Provenance)
-			require.NotContains(t, stored.Books, "abs-item-1:84")
 			require.True(t, stored.NeedsSync("abs-item-1", 0.6, "IN_PROGRESS", 0.001))
 
 			overlay := &sync.SyncSnapshot{ProfileID: "draft-profile", RunID: "run-fallback-create", State: string(sync.RunPhaseCompleted), BookOutcomes: []sync.BookOutcomeRecord{record}}
@@ -256,7 +257,7 @@ func TestCreateEditionFromAudiobookIdentifierFallbackRejectsIneligibleAndStaleRe
 	}{
 		{name: "other match method", mutate: func(r *sync.BookOutcomeRecord) { r.MatchMethod = "title" }},
 		{name: "failed outcome", mutate: func(r *sync.BookOutcomeRecord) { r.Outcome = sync.OutcomeFailed }},
-		{name: "skipped outcome", mutate: func(r *sync.BookOutcomeRecord) { r.Outcome = sync.OutcomeSkipped }},
+		{name: "skipped without a temporary match", mutate: func(r *sync.BookOutcomeRecord) { r.Outcome, r.MatchMethod = sync.OutcomeSkipped, "" }},
 		{name: "invalid source ASIN", mutate: func(r *sync.BookOutcomeRecord) { r.SourceASIN = "invalid" }},
 		{name: "newer fallback has different source", later: true},
 		{name: "Audiobookshelf source changed", itemJSON: `{"id":"abs-item-1","mediaType":"book","media":{"metadata":{"title":"Reviewed title","authorName":"Author","asin":"B0CHANGED12","isbn":"978-0-306-40615-7"},"duration":100}}`},

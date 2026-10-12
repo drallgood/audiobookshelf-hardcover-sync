@@ -98,7 +98,7 @@ After a sync finishes or is canceled, open **View Details**:
 - **Add edition** appears on eligible needs-review books. It adds or reuses an
   edition on the Hardcover candidate, or opens **Import by Audible ASIN** when
   the reason is `audible_import_available` and no candidate is selected.
-- **Import Audible edition** appears on synced or already-current audiobooks
+- **Import Audible edition** appears on synced, already-current, or skipped audiobooks
   matched by ISBN or edition ASIN when they have a valid Audiobookshelf ASIN.
   It opens the same **Import by Audible ASIN** workflow.
 

@@ -2026,7 +2026,7 @@ class SyncProfileApp {
     audiobookIdentifierFallbackActionEligible(record) {
         return ['edition_asin', 'isbn'].includes(record?.match_method)
             && String(record.format || '').trim().toLowerCase() === 'audiobook'
-            && ['synced', 'already_current'].includes(record.outcome)
+            && ['synced', 'already_current', 'skipped'].includes(record.outcome)
             && /^[a-z0-9]{10}$/i.test(this.editionSourceASIN(record));
     }
 
