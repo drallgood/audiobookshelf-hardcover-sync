@@ -45,6 +45,22 @@ hardcover:
 	assert.Equal(t, "file-hardcover-token", cfg.Hardcover.Token)
 }
 
+func TestLoadConfigSyncLibrariesFromFile(t *testing.T) {
+	t.Setenv("AUDIOBOOKSHELF_URL", "https://example.com/audiobookshelf")
+	t.Setenv("AUDIOBOOKSHELF_TOKEN", "test-audiobookshelf-token")
+	t.Setenv("HARDCOVER_TOKEN", "test-hardcover-token")
+	t.Setenv("SYNC_LIBRARIES_INCLUDE", "")
+	t.Setenv("SYNC_LIBRARIES_EXCLUDE", "")
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("sync:\n  libraries:\n    include:\n      - Audiobooks\n    exclude:\n      - Podcasts\n"), 0644))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Audiobooks"}, cfg.Sync.Libraries.Include)
+	assert.Equal(t, []string{"Podcasts"}, cfg.Sync.Libraries.Exclude)
+}
+
 func TestDatabaseSyncRunReportRetentionUsesYAMLAndEnvironment(t *testing.T) {
 	t.Setenv("AUDIOBOOKSHELF_URL", "https://example.com/audiobookshelf")
 	t.Setenv("AUDIOBOOKSHELF_TOKEN", "test-audiobookshelf-token")
