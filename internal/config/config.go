@@ -851,6 +851,7 @@ func mergeConfigs(dst, src *Config) {
 // mergeValues recursively merges src into dst following these rules:
 // - Strings/Floats/Ints: copy only when src is non-zero
 // - Bools: always copy (false is a valid explicit value in config)
+// - Slices: copy only when src is non-empty
 // - Structs: recurse into fields
 func mergeValues(dst, src reflect.Value) {
 	if !dst.CanSet() {
@@ -886,6 +887,10 @@ func mergeValues(dst, src reflect.Value) {
 	case reflect.Bool:
 		// Always set boolean values from config (explicit false is valid)
 		dst.SetBool(src.Bool())
+	case reflect.Slice:
+		if src.Len() > 0 {
+			dst.Set(src)
+		}
 	}
 }
 
