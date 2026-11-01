@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Upgraded `github.com/go-jose/go-jose/v4` from v4.1.4 to v4.1.6 to address CVE-2026-116587 (HIGH), CVE-2026-116585, and CVE-2026-116586. **OIDC compatibility:** RSA keys larger than 4096 bits are now rejected during JWK parsing by default. Deployments using larger RSA signing keys must rotate to supported keys at their identity provider before upgrading.
+- Docker runtime image now upgrades all Alpine packages during build, picking up the patched `musl`/`musl-utils` 1.2.5-r4 for CVE-2026-107891.
+
 ### Fixed
 
 - **Import temporary audiobook matches from skipped results**: show the existing Audible edition import action when a finished or canceled run recorded an ISBN or edition-ASIN fallback match and the Audiobookshelf item has a valid ASIN. Skipped books without a recorded temporary match remain ineligible. By @Snuffy2. (#233)
